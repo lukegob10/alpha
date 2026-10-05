@@ -22,7 +22,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 
-import { convertAnthropicMessageToGemini } from "../transform/gemini-format"
+import { convertAnthropicMessagesToGemini } from "../transform/gemini-format"
 import { t } from "i18next"
 import {
 	ApiStreamDeadlineError,
@@ -696,23 +696,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		})
 		const requestMessages = prependUserInstructionContext(geminiMessages, userContext)
 
-		// Build a map of tool IDs to names from previous messages
-		// This is needed because Anthropic's tool_result blocks only contain the ID,
-		// but Gemini requires the name in functionResponse
-		const toolIdToName = new Map<string, string>()
-		for (const message of messages) {
-			if (Array.isArray(message.content)) {
-				for (const block of message.content) {
-					if (block.type === "tool_use") {
-						toolIdToName.set(block.id, block.name)
-					}
-				}
-			}
-		}
-
-		const contents = requestMessages
-			.map((message) => convertAnthropicMessageToGemini(message, { includeThoughtSignatures, toolIdToName }))
-			.flat()
+		const contents = convertAnthropicMessagesToGemini(requestMessages, { includeThoughtSignatures })
 
 		// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS).
 		// Google built-in tools (Grounding, URL Context) are mutually exclusive

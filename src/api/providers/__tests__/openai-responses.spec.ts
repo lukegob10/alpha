@@ -6,6 +6,101 @@ import {
 import type OpenAI from "openai"
 
 describe("OpenAI Responses freeform apply_patch conversion", () => {
+	it.each([false, true])(
+		"retains raw bytes, encrypted reasoning and terminal type across reused IDs (store=%s)",
+		(store) => {
+			const patch =
+				'*** Begin Patch\r\n*** Add File: file.txt\r\n+const path = "C:\\work\\file.txt"\r\n*** End Patch\n'
+			const messages = [
+				{ type: "reasoning", id: "reasoning-1", encrypted_content: "synthetic-encrypted", summary: [] },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "reused-call", name: "apply_patch", input: patch }],
+					provider_state: { opaque: [1, 2] },
+				},
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_call_id: "reused-call",
+							content: "Error: cancelled",
+							is_error: true,
+						},
+					],
+				},
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "reused-call", name: "read_file", input: { path: "file.txt" } }],
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_call_id: "reused-call", content: null, is_error: true }],
+				},
+			] as const
+			const before = structuredClone(messages)
+			expect(buildOpenAiResponsesInput("", [], messages, store)).toEqual([
+				{
+					type: "reasoning",
+					encrypted_content: "synthetic-encrypted",
+					summary: [],
+					...(store ? { id: "reasoning-1" } : {}),
+				},
+				{ type: "custom_tool_call", call_id: "reused-call", name: "apply_patch", input: patch },
+				{ type: "custom_tool_call_output", call_id: "reused-call", output: "Error: cancelled" },
+				{ type: "function_call", call_id: "reused-call", name: "read_file", arguments: '{"path":"file.txt"}' },
+				// Retain Alpha's existing nonempty wire placeholder; the stored null/error receipt stays exact.
+				{ type: "function_call_output", call_id: "reused-call", output: "(empty)" },
+			])
+			expect(messages).toEqual(before)
+		},
+	)
+
+	it("replays a persisted freeform patch string without JSON quoting", () => {
+		const patch =
+			'*** Begin Patch\n*** Add File: quoted-path.txt\n+const path = "C:\\workspace\\file.txt"\n*** End Patch'
+		const messages = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "legacy-patch-call", name: "apply_patch", input: patch }],
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "legacy-patch-call", content: "Patch applied." }],
+			},
+		] as const
+		const before = structuredClone(messages)
+
+		expect(buildOpenAiResponsesInput("fallback prompt", [], messages, false)).toEqual([
+			{ type: "custom_tool_call", call_id: "legacy-patch-call", name: "apply_patch", input: patch },
+			{ type: "custom_tool_call_output", call_id: "legacy-patch-call", output: "Patch applied." },
+		])
+		expect(messages).toEqual(before)
+	})
+
+	it("replays a legacy tool_call_id result with its matching native function call", () => {
+		const messages = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "legacy-read-call", name: "read_file", input: { path: "file.txt" } }],
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_call_id: "legacy-read-call", content: "Saved file contents." }],
+			},
+		] as const
+
+		expect(buildOpenAiResponsesInput("fallback prompt", [], messages, false)).toEqual([
+			{
+				type: "function_call",
+				call_id: "legacy-read-call",
+				name: "read_file",
+				arguments: '{"path":"file.txt"}',
+			},
+			{ type: "function_call_output", call_id: "legacy-read-call", output: "Saved file contents." },
+		])
+	})
+
 	it("keeps view_image tool output attached as the original image data", () => {
 		const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lS8AAAAASUVORK5CYII="
 		const messages = [

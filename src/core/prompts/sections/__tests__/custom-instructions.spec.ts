@@ -633,7 +633,7 @@ Mode-specific Instructions:\n${modeInstructions}
 		statMock.mockRejectedValue({ code: "ENOENT" })
 		lstatMock.mockImplementation((filePath: PathLike) => {
 			if (filePath.toString().endsWith("AGENTS.md")) {
-				return Promise.resolve({ isSymbolicLink: vi.fn().mockReturnValue(false) })
+				return Promise.resolve({ isFile: () => true, isSymbolicLink: vi.fn().mockReturnValue(false) })
 			}
 			return Promise.reject({ code: "ENOENT" })
 		})
@@ -685,6 +685,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -787,6 +788,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -848,6 +850,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -997,6 +1000,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -1045,6 +1049,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			}
 			if (pathStr.endsWith("AGENT.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -1087,6 +1092,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md") || pathStr.endsWith("AGENT.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -1854,6 +1860,7 @@ describe("Rules directory reading", () => {
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md") || pathStr.endsWith("AGENTS.local.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -1901,6 +1908,7 @@ describe("Rules directory reading", () => {
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.local.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}
@@ -1943,6 +1951,7 @@ describe("Rules directory reading", () => {
 			const pathStr = filePath.toString()
 			if (pathStr.endsWith("AGENTS.md")) {
 				return Promise.resolve({
+					isFile: () => true,
 					isSymbolicLink: vi.fn().mockReturnValue(false),
 				})
 			}

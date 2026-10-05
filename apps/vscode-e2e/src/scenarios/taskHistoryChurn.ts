@@ -291,6 +291,7 @@ export async function runTaskHistoryChurnWorkload(options: {
 		apiProvider: "fake-ai",
 		fakeAi: model,
 		mode: "code",
+		approvalMode: "auto",
 		disabledTools: [],
 		mcpEnabled: false,
 		autoApprovalEnabled: true,

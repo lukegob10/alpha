@@ -176,6 +176,33 @@ test("accepts the live model's equivalent absent-term report", () => {
 	assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
 })
 
+test("accepts absent-term reports with hyphenated search modifiers", () => {
+	for (const toolName of ["exec_command", "execute_command"] as const) {
+		const { history, ui, lifecycle } = trace("devSearchAbsent", toolName)
+		history[3]!.content = [
+			{
+				type: "text",
+				text: "No case-insensitive matches for `AlphaMissingProvider947` were found in tracked repository files. Git status was clean.",
+			},
+		]
+		assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [], toolName)
+	}
+})
+
+test("hyphenated search wording still requires an absence report and observed absence", () => {
+	for (const report of ["Some case-insensitive matches were found.", "Search was not run."]) {
+		const { history, ui, lifecycle } = trace("devSearchAbsent", "exec_command")
+		history[3]!.content = report
+		assert.ok(failures(history, ui, "devSearchAbsent", lifecycle).includes("search_absence_reported"), report)
+	}
+	const { history, ui, lifecycle } = trace("devSearchAbsent", "exec_command")
+	history[3]!.content = "No case-insensitive matches were found."
+	const matched = JSON.parse(
+		JSON.stringify(history).replace("Process exited with code 1", "Process exited with code 0"),
+	)
+	assert.ok(failures(matched, ui, "devSearchAbsent", lifecycle).includes("search_absence_observed"))
+})
+
 test("unverified handoff accepts the actual promoted terminal UI record", () => {
 	const { history, ui, lifecycle } = trace("devVerificationUnavailable", "exec_command")
 	const promoted = ui

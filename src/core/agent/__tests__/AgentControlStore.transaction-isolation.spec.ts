@@ -1,4 +1,5 @@
-import type { AgentControlState, AgentMailboxEntry } from "@alpha-code/types"
+import { agentControlStateSchema, type AgentControlState, type AgentMailboxEntry } from "@alpha-code/types"
+import { ZodError } from "zod"
 
 import { AgentControlStore, type AgentControlPersistence } from "../AgentControlStore"
 
@@ -10,12 +11,13 @@ const deferred = () => {
 	return { promise, resolve }
 }
 
-const createPersistence = () => {
+const createPersistence = (isolated = false) => {
 	let stored: unknown
 	let transaction = Promise.resolve()
 	const persistence: AgentControlPersistence = {
 		// The generic persistence contract does not promise exclusive read ownership.
 		read: vi.fn(async () => stored),
+		readIsolated: isolated ? vi.fn(async () => structuredClone(stored)) : undefined,
 		write: vi.fn(async (state: AgentControlState) => {
 			stored = structuredClone(state)
 		}),
@@ -52,9 +54,10 @@ const eventInput = {
 	createdAt: 2_000,
 }
 
-describe("AgentControlStore transaction isolation", () => {
+describe.each(["shared", "isolated"] as const)("AgentControlStore transaction isolation with %s reads", (ownership) => {
+	const createFixture = () => createPersistence(ownership === "isolated")
 	it("keeps a no-op projection isolated from a persistence reader's shared object", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const store = await fixture.createStore()
 		await store.ensureRoot({ taskId: "root-1" })
 		await store.appendEvent(eventInput)
@@ -66,7 +69,7 @@ describe("AgentControlStore transaction isolation", () => {
 	})
 
 	it("refreshes an independent writer's receipt and projection on a no-op without writing or publishing", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const first = await fixture.createStore()
 		const second = await fixture.createStore()
 		await first.ensureRoot({ taskId: "root-1" })
@@ -93,7 +96,7 @@ describe("AgentControlStore transaction isolation", () => {
 	})
 
 	it("discards partial lifecycle changes when the event mutator rejects an idempotency mismatch", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const store = await fixture.createStore()
 		await store.ensureRoot({ taskId: "root-1" })
 		await store.appendEvent(eventInput)
@@ -128,7 +131,7 @@ describe("AgentControlStore transaction isolation", () => {
 	it.each(["write", "fence"] as const)(
 		"rolls back a rejected %s and allows the next transaction",
 		async (failure) => {
-			const fixture = createPersistence()
+			const fixture = createFixture()
 			const store = await fixture.createStore()
 			await store.ensureRoot({ taskId: "root-1" })
 			const before = store.getSnapshot()
@@ -158,7 +161,7 @@ describe("AgentControlStore transaction isolation", () => {
 	)
 
 	it("isolates nested payload inputs, outputs, subscribers, and shared persistence reads", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const store = await fixture.createStore()
 		await store.ensureRoot({ taskId: "root-1" })
 		const writeStarted = deferred()
@@ -201,7 +204,7 @@ describe("AgentControlStore transaction isolation", () => {
 	})
 
 	it("rejects a schema-invalid snapshot mutation without changing durable or projected state", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const store = await fixture.createStore()
 		await store.ensureRoot({ taskId: "root-1" })
 		const before = store.getSnapshot()
@@ -219,7 +222,7 @@ describe("AgentControlStore transaction isolation", () => {
 	})
 
 	it("rejects malformed durable state before mutation and resumes after valid state is restored", async () => {
-		const fixture = createPersistence()
+		const fixture = createFixture()
 		const store = await fixture.createStore()
 		await store.ensureRoot({ taskId: "root-1" })
 		const before = store.getSnapshot()
@@ -238,5 +241,146 @@ describe("AgentControlStore transaction isolation", () => {
 		expect(published).not.toHaveBeenCalled()
 		fixture.setStored(durable)
 		await expect(store.appendEvent(eventInput)).resolves.toMatchObject({ appended: true, entry: { sequence: 1 } })
+	})
+
+	it("normalizes defaults and external unknown fields and repairs sequence without writing a no-op", async () => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		await store.appendEvent(eventInput)
+		const external = {
+			...store.getSnapshot(),
+			nextSequence: 1,
+			verificationObligations: undefined,
+			unknownExternalField: "preserve until a real mutation",
+		}
+		fixture.setStored(external)
+		const writeCount = vi.mocked(fixture.persistence.write).mock.calls.length
+
+		await store.ensureRoot({ taskId: "root-1" })
+
+		expect(store.getSnapshot()).toMatchObject({ nextSequence: 2, verificationObligations: [] })
+		expect(store.getSnapshot()).not.toHaveProperty("unknownExternalField")
+		expect(fixture.persistence.write).toHaveBeenCalledTimes(writeCount)
+		expect(fixture.getStored()).toEqual(external)
+		await expect(store.appendEvent({ ...eventInput, eventId: "result-2" })).resolves.toMatchObject({
+			entry: { sequence: 2 },
+		})
+	})
+
+	it("migrates a legacy state after a previously validated current read", async () => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		await store.appendEvent(eventInput)
+		const before = store.getSnapshot()
+		fixture.setStored({ ...before, version: 1 })
+		const writeCount = vi.mocked(fixture.persistence.write).mock.calls.length
+
+		await store.ensureRoot({ taskId: "root-1" })
+
+		expect(store.getSnapshot()).toMatchObject({ version: 2, mailbox: before.mailbox })
+		expect(fixture.getStored()).toEqual(store.getSnapshot())
+		expect(fixture.persistence.write).toHaveBeenCalledTimes(writeCount + 1)
+	})
+
+	it("normalizes previously written records before reusing them as schema-validated state", async () => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		const snapshot = { phase: "retained", futureField: "strip on durable read" }
+		await store.updateAgentSnapshot("root-1", snapshot)
+		await store.ensureRoot({ taskId: "root-1" })
+		expect(store.getAgent("root-1")?.snapshot).toEqual({ phase: "retained" })
+		expect(fixture.getStored()).toMatchObject({ agents: [{ snapshot }] })
+	})
+
+	it.each(["agents", "tombstones", "mailbox", "verificationObligations"] as const)(
+		"rejects sparse %s arrays instead of accepting their holes as validated records",
+		async (field) => {
+			const fixture = createFixture()
+			const store = await fixture.createStore()
+			await store.ensureRoot({ taskId: "root-1" })
+			const before = store.getSnapshot()
+			fixture.setStored({ ...before, [field]: new Array(1) })
+			await expect(store.ensureRoot({ taskId: "root-2" })).rejects.toThrow()
+			expect(store.getSnapshot()).toEqual(before)
+		},
+	)
+
+	it.each([
+		["agents", { nickname: "" }],
+		["tombstones", { taskId: "" }],
+		["mailbox", { sequence: 0 }],
+		["verificationObligations", { id: "" }],
+	] as const)("validates an externally corrupted %s record during an unrelated mutation", async (field, invalid) => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		await store.createAgent({
+			taskId: "child-1",
+			parentTaskId: "root-1",
+			nickname: "Child",
+			role: "review",
+			objective: "Review",
+			status: "completed",
+		})
+		await store.closeAgent("child-1")
+		await store.appendEvent(eventInput)
+		await store.reservePrimaryMutation("root-1", "root-1", "/project", "reservation")
+		const before = store.getSnapshot()
+		const malformed = { ...before, [field]: [{ ...before[field][0], ...invalid }] }
+		fixture.setStored(malformed)
+		const writeCount = vi.mocked(fixture.persistence.write).mock.calls.length
+
+		await expect(store.ensureRoot({ taskId: "root-2" })).rejects.toThrow()
+
+		expect(store.getSnapshot()).toEqual(before)
+		expect(fixture.getStored()).toEqual(malformed)
+		expect(fixture.persistence.write).toHaveBeenCalledTimes(writeCount)
+		fixture.setStored(before)
+		await expect(store.ensureRoot({ taskId: "root-2" })).resolves.toMatchObject({ taskId: "root-2" })
+		expect(store.getVerificationObligations()).toEqual(before.verificationObligations)
+	})
+
+	it("reports canonical record positions when a later retained record is corrupt", async () => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		await store.appendEvent(eventInput)
+		await store.appendEvent({ ...eventInput, eventId: "result-2" })
+		const before = store.getSnapshot()
+		const malformed = {
+			...before,
+			mailbox: [before.mailbox[0], { ...before.mailbox[1], sequence: 0 }],
+		}
+		fixture.setStored(malformed)
+		const expected = agentControlStateSchema.safeParse(malformed)
+		const failure = await store.ensureRoot({ taskId: "root-2" }).catch((error: unknown) => error)
+		if (expected.success || !(failure instanceof ZodError))
+			throw new Error("Expected canonical validation failures")
+		const paths = (error: ZodError): unknown[] =>
+			error.issues.flatMap((issue) => [
+				issue.path,
+				...(issue.code === "invalid_union" ? issue.unionErrors.flatMap(paths) : []),
+			])
+		expect(paths(failure)).toEqual(paths(expected.error))
+		expect(store.getSnapshot()).toEqual(before)
+	})
+
+	it("preserves externally reordered records and detaches unchanged nested data", async () => {
+		const fixture = createFixture()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1", snapshot: { metadata: { nested: { value: "original" } } } })
+		await store.ensureRoot({ taskId: "root-2" })
+		const before = store.getSnapshot()
+		const reordered = { ...before, agents: [...before.agents].reverse() }
+		fixture.setStored(reordered)
+		await store.ensureRoot({ taskId: "root-2" })
+		expect(store.getSnapshot()).toEqual(reordered)
+		await store.updateAgentSnapshot("root-2", { phase: "updated" })
+		Object.assign(reordered.agents[1].snapshot!.metadata!.nested!, { value: "external mutation" })
+		expect(store.getAgent("root-1")?.snapshot?.metadata).toEqual({ nested: { value: "original" } })
+		expect(store.getAgent("root-2")?.snapshot?.phase).toBe("updated")
 	})
 })

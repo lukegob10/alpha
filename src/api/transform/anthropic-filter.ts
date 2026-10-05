@@ -1,5 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 
+import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+
 /**
  * Set of content block types that are valid for Anthropic API.
  * Only these types will be passed through to the API.
@@ -26,17 +28,32 @@ export const VALID_ANTHROPIC_BLOCK_TYPES = new Set([
 export function filterNonAnthropicBlocks(
 	messages: Anthropic.Messages.MessageParam[],
 ): Anthropic.Messages.MessageParam[] {
-	return messages
+	return normalizeToolHistory(messages)
 		.map((message) => {
 			if (typeof message.content === "string") {
 				return message
 			}
 
-			const filteredContent = message.content.filter((block) => {
-				const blockType = (block as { type: string }).type
-				// Only keep block types that Anthropic recognizes
-				return VALID_ANTHROPIC_BLOCK_TYPES.has(blockType)
-			})
+			const filteredContent = message.content
+				.filter((block) => {
+					const blockType = (block as { type: string }).type
+					// Only keep block types that Anthropic recognizes
+					return VALID_ANTHROPIC_BLOCK_TYPES.has(blockType)
+				})
+				.map((block) => {
+					if (block.type !== "tool_use") return block
+					const {
+						tool_call_id: _legacyId,
+						function: _legacyFunction,
+						arguments: _legacyArguments,
+						...fields
+					} = block as Anthropic.ToolUseBlockParam & {
+						tool_call_id?: unknown
+						function?: unknown
+						arguments?: unknown
+					}
+					return { ...fields, input: toFunctionToolInput(block.name, block.input) }
+				})
 
 			// If all content was filtered out, return undefined to filter the message later
 			if (filteredContent.length === 0) {

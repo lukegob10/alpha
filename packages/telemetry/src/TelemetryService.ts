@@ -13,9 +13,14 @@ import {
  * variables are loaded.
  */
 export class TelemetryService {
+	private shutdownPromise?: Promise<void>
+
 	constructor(private clients: TelemetryClient[]) {}
 
 	public register(client: TelemetryClient): void {
+		if (this.shutdownPromise) {
+			throw new Error("Cannot register a telemetry client after shutdown starts")
+		}
 		this.clients.push(client)
 	}
 
@@ -258,12 +263,17 @@ export class TelemetryService {
 		return this.isReady && this.clients.some((client) => client.isTelemetryEnabled())
 	}
 
-	public async shutdown(): Promise<void> {
-		if (!this.isReady) {
-			return
-		}
-
-		this.clients.forEach((client) => client.shutdown())
+	public shutdown(): Promise<void> {
+		// Publish one boundary before invoking clients, including reentrant cleanup and synchronous failures.
+		this.shutdownPromise ??= Promise.allSettled(
+			this.clients.map((client) => Promise.resolve().then(() => client.shutdown())),
+		).then((results) => {
+			const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+			if (errors.length > 0) {
+				throw new AggregateError(errors, `Failed to shut down ${errors.length} telemetry clients`)
+			}
+		})
+		return this.shutdownPromise
 	}
 
 	private static _instance: TelemetryService | null = null

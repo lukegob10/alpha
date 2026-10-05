@@ -19,6 +19,37 @@ import { waitFor } from "./utils"
 
 const TICKET_COUNT = 5
 const RESULT = "All five ticket reviews are collected."
+const INSTRUCTION_MARKER = "FANOUT_FROZEN_INSTRUCTION_ONCE"
+const TICKET_CONTEXT_POSITIONS = ["EARLY", "MIDDLE", "TAIL"] as const
+
+function ticketContextMarker(ticket: number, position: (typeof TICKET_CONTEXT_POSITIONS)[number]): string {
+	return `FANOUT_TICKET_${ticket}_${position}_🧪`
+}
+
+function countOccurrences(text: string, marker: string): number {
+	return text.split(marker).length - 1
+}
+
+function requestTextMessages(messages: unknown[]): Array<{ index: number; role: "user" | "assistant"; text: string }> {
+	return messages.map((message, index) => {
+		assert.ok(message && typeof message === "object" && "role" in message && "content" in message)
+		assert.ok(message.role === "user" || message.role === "assistant")
+		const content = message.content
+		if (typeof content === "string") return { index, role: message.role, text: content }
+		assert.ok(Array.isArray(content))
+		const text = content.flatMap((block: unknown) =>
+			block &&
+			typeof block === "object" &&
+			"type" in block &&
+			block.type === "text" &&
+			"text" in block &&
+			typeof block.text === "string"
+				? [block.text]
+				: [],
+		)
+		return { index, role: message.role, text: text.join("\n\n") }
+	})
+}
 
 interface LiveTask {
 	taskId: string
@@ -45,11 +76,16 @@ function deferred() {
 
 interface Observation {
 	provider: HostProvider
+	parentPrompt: string
 	rootId?: string
 	rootRequests: number
 	childRequests: Map<string, number>
 	completed: Map<string, number>
+	/** Legacy artifact field: JSON-serialized message length in UTF-16 code units. */
 	requestBytes: Map<string, number>
+	requestUtf8Bytes: Map<string, number>
+	initialContextCounts: Map<string, { instructions: number; environment: number }>
+	inheritedPromptChecks: Map<string, { copies: number; markerCount: number; messageIndex: number }>
 	allChildrenEntered: ReturnType<typeof deferred>
 	allChildrenCompleted: ReturnType<typeof deferred>
 	removeFromCache?: () => void
@@ -68,18 +104,65 @@ class FanoutAI {
 	set removeFromCache(value: (() => void) | undefined) {
 		observations.get(this)!.removeFromCache = value
 	}
-	async *createMessage(_systemPrompt: string, messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(systemPrompt: string, messages: unknown[], metadata?: { taskId?: string }) {
 		const observation = observations.get(this)!
 		assert.ok(metadata?.taskId)
 		const taskId = metadata.taskId
 		const task = observation.provider.getLiveTask(taskId)
 		assert.ok(task)
 		observation.rootId ??= taskId
-		observation.requestBytes.set(taskId, JSON.stringify(messages).length)
+		const serialized = JSON.stringify(messages)
+		observation.requestBytes.set(taskId, serialized.length)
+		observation.requestUtf8Bytes.set(taskId, Buffer.byteLength(serialized, "utf8"))
+		const textMessages = requestTextMessages(messages)
+		if (taskId !== observation.rootId || observation.rootRequests === 0) {
+			const requestText = [systemPrompt, ...textMessages.map(({ text }) => text)].join("\n\n")
+			const contextCounts = {
+				instructions: countOccurrences(requestText, INSTRUCTION_MARKER),
+				environment: countOccurrences(requestText, "<environment_details>"),
+			}
+			observation.initialContextCounts.set(taskId, contextCounts)
+			assert.equal(contextCounts.instructions, 1, "Each task must apply the frozen instruction layer once")
+			assert.equal(contextCounts.environment, 1, "Each task must receive one fresh environment layer")
+		}
 		if (taskId !== observation.rootId) {
 			assert.equal(observation.childRequests.has(taskId), false, "Each review needs one model request")
 			const ticket = /CHILD_TICKET_(\d+)/u.exec(task.metadata.task)?.[1]
 			assert.ok(ticket, "The child's own objective must identify its ticket")
+			const userMessages = textMessages.filter(({ role }) => role === "user")
+			const userText = userMessages.map(({ text }) => text).join("\n\n")
+			let markerCount = 0
+			for (let parentTicket = 1; parentTicket <= TICKET_COUNT; parentTicket++) {
+				for (const position of TICKET_CONTEXT_POSITIONS) {
+					const marker = ticketContextMarker(parentTicket, position)
+					assert.equal(
+						countOccurrences(userText, marker),
+						1,
+						`Child ${ticket} must inherit ticket ${parentTicket}'s ${position.toLowerCase()} context once`,
+					)
+					markerCount++
+				}
+			}
+			const copies = countOccurrences(userText, observation.parentPrompt)
+			assert.equal(copies, 1, "A full-history child must retain the entire original parent prompt once")
+			const inheritedPrompt = userMessages.find(({ text }) => text.includes(observation.parentPrompt))
+			const childObjective = userMessages.find(({ text }) => text.includes(`CHILD_TICKET_${ticket}:`))
+			assert.ok(inheritedPrompt, "The parent prompt must remain a structured user message")
+			assert.ok(childObjective, "The child's objective must be a structured user message")
+			// API shaping can merge consecutive user messages while preserving their ordered text blocks.
+			assert.ok(
+				inheritedPrompt.index < childObjective.index ||
+					(inheritedPrompt.index === childObjective.index &&
+						inheritedPrompt.text.indexOf(observation.parentPrompt) <
+							childObjective.text.indexOf(`CHILD_TICKET_${ticket}:`)),
+				"Inherited history must precede the child objective",
+			)
+			// Codex forks retain permitted user/final messages, while filtering the parent's tool-bearing spawn step.
+			const inheritedTransactions = inspectToolTransactions(messages)
+			assert.deepEqual(inheritedTransactions.errors, [])
+			assert.equal(inheritedTransactions.callCount, 0, "Children must not replay the parent spawn calls")
+			assert.equal(inheritedTransactions.resultCount, 0, "Children must not inherit orphan parent tool results")
+			observation.inheritedPromptChecks.set(taskId, { copies, markerCount, messageIndex: inheritedPrompt.index })
 			observation.childRequests.set(taskId, Number(ticket))
 			if (observation.childRequests.size === TICKET_COUNT) observation.allChildrenEntered.resolve()
 			// No child can finish until all five are admitted and sampling concurrently.
@@ -90,7 +173,6 @@ class FanoutAI {
 
 		const request = ++observation.rootRequests
 		if (request === 1) {
-			const serialized = JSON.stringify(messages)
 			for (let index = 1; index <= TICKET_COUNT; index++) {
 				assert.ok(serialized.includes(`APP-${index}`), "Every requested ticket must reach the model")
 				yield {
@@ -118,7 +200,6 @@ class FanoutAI {
 			return
 		}
 		assert.equal(request, 3, "Collecting the completed reviews must not enter an unbounded loop")
-		const serialized = JSON.stringify(messages)
 		for (let index = 1; index <= TICKET_COUNT; index++) {
 			assert.ok(
 				serialized.includes(`RESULT_AGENT_TICKET_${index}`),
@@ -148,12 +229,33 @@ suite("Large ticket prompt and parallel agents", function () {
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider: HostProvider }).sidebarProvider
 		const configuration = api.getConfiguration()
+		const tickets = Array.from({ length: TICKET_COUNT }, (_, index) => ({
+			key: `APP-${index + 1}`,
+			title: `Review app requirement ${index + 1}`,
+			description: [
+				ticketContextMarker(index + 1, "EARLY"),
+				"Preserve this requirement and its acceptance evidence. ".repeat(550),
+				ticketContextMarker(index + 1, "MIDDLE"),
+				"Preserve this requirement and its acceptance evidence. ".repeat(550),
+				ticketContextMarker(index + 1, "TAIL"),
+			].join("\n"),
+		}))
+		const prompt = `Use five Explore agents to review these tickets read-only, collect all their results, and complete:\n${JSON.stringify(tickets)}`
+		assert.ok(prompt.length >= 250_000)
+		for (const { description } of tickets) {
+			assert.ok(description.indexOf("_MIDDLE_") > 24_000)
+			assert.ok(description.lastIndexOf("_TAIL_") - description.indexOf("_MIDDLE_") > 24_000)
+		}
 		const observation: Observation = {
 			provider,
+			parentPrompt: prompt,
 			rootRequests: 0,
 			childRequests: new Map(),
 			completed: new Map(),
 			requestBytes: new Map(),
+			requestUtf8Bytes: new Map(),
+			initialContextCounts: new Map(),
+			inheritedPromptChecks: new Map(),
 			allChildrenEntered: deferred(),
 			allChildrenCompleted: deferred(),
 		}
@@ -171,18 +273,12 @@ suite("Large ticket prompt and parallel agents", function () {
 		const onToolFailed = (_taskId: string, tool: string, error: string) => failures.push(`${tool}: ${error}`)
 		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 		api.on(AlphaCodeEventName.TaskToolFailed, onToolFailed)
-		const tickets = Array.from({ length: TICKET_COUNT }, (_, index) => ({
-			key: `APP-${index + 1}`,
-			title: `Review app requirement ${index + 1}`,
-			description: "Preserve this requirement and its acceptance evidence. ".repeat(1100),
-		}))
-		const prompt = `Use five Explore agents to review these tickets read-only, collect all their results, and complete:\n${JSON.stringify(tickets)}`
-		assert.ok(prompt.length >= 250_000)
 		await withBoundedFixtureCleanup(async () => {
 			const taskConfiguration = {
 				...configuration,
 				apiProvider: "fake-ai",
 				fakeAi: model,
+				customInstructions: INSTRUCTION_MARKER,
 				mode: "code",
 				approvalMode: "auto",
 				autoApprovalEnabled: true,
@@ -231,10 +327,24 @@ suite("Large ticket prompt and parallel agents", function () {
 					{
 						hostVersion: vscode.version,
 						provider: "scripted",
+						promptCharacters: prompt.length,
 						promptBytes: Buffer.byteLength(prompt),
+						ticketDescriptionCharacters: tickets.map(({ key, description }) => ({
+							key,
+							characters: description.length,
+							utf8Bytes: Buffer.byteLength(description, "utf8"),
+						})),
 						rootRequests: observation.rootRequests,
 						childRequests: [...observation.childRequests],
 						requestBytes: [...observation.requestBytes],
+						requestUtf8Bytes: [...observation.requestUtf8Bytes],
+						requestSizeUnits: {
+							requestBytes: "UTF-16 code units (legacy)",
+							requestUtf8Bytes: "UTF-8 bytes",
+						},
+						requestSizeScope: "JSON-serialized messages; system prompt excluded; latest request per task",
+						initialContextCounts: [...observation.initialContextCounts],
+						inheritedPromptChecks: [...observation.inheritedPromptChecks],
 						completionCounts: [...observation.completed],
 						failures,
 						tree,
@@ -247,6 +357,14 @@ suite("Large ticket prompt and parallel agents", function () {
 			)
 			assert.deepEqual(failures, [])
 			assert.equal(observation.childRequests.size, TICKET_COUNT)
+			assert.equal(observation.inheritedPromptChecks.size, TICKET_COUNT)
+			assert.equal(observation.initialContextCounts.size, TICKET_COUNT + 1)
+			for (const childId of observation.childRequests.keys()) {
+				const utf8Bytes = observation.requestUtf8Bytes.get(childId)
+				const legacyCodeUnits = observation.requestBytes.get(childId)
+				assert.ok(utf8Bytes !== undefined && legacyCodeUnits !== undefined)
+				assert.ok(utf8Bytes > legacyCodeUnits, "Unicode fixture markers must distinguish bytes from code units")
+			}
 			assert.equal(observation.rootRequests, 3)
 			assert.equal(observation.completed.size, TICKET_COUNT + 1)
 			assert.ok([...observation.completed.values()].every((count) => count === 1))

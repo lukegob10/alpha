@@ -218,6 +218,7 @@ export async function exerciseSharedWorkerMailbox(options: {
 		apiProvider: "fake-ai",
 		fakeAi: model,
 		mode: "code",
+		approvalMode: "auto",
 		disabledTools: [],
 		autoApprovalEnabled: true,
 		alwaysAllowSubagents: true,

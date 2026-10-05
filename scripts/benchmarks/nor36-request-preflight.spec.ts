@@ -3,6 +3,8 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 
+import type { ProviderSettings } from "@alpha-code/types"
+
 import type { ApiHandler } from "../../src/api"
 import { AgentStepContextBuilder } from "../../src/core/agent/AgentStepContextBuilder"
 import { AgentRetryPolicy } from "../../src/core/agent/AgentRetryPolicy"
@@ -53,10 +55,15 @@ function harness(servers: Parameters<typeof createNor28Provider>[0]) {
 			yield { type: "text", text: "The default retry limit is 3 (src/config.js:1)." }
 		}),
 	} satisfies ApiHandler
+	const apiConfiguration: ProviderSettings = { apiProvider: "openai", openAiModelId: "nor36-local-fixture" }
+	const getSystemPrompt = vi.fn(async (..._args: unknown[]) => systemPrompt)
+	const reasoningHandlerUsers = new Map<ApiHandler, number>()
+	const retainedReasoningHandlers = new Set<ApiHandler>()
 	const provider = {
 		...createNor28Provider(servers),
 		getState: async () => ({
 			mode: "code",
+			approvalMode: "auto",
 			autoCondenseContext: true,
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
@@ -68,8 +75,20 @@ function harness(servers: Parameters<typeof createNor28Provider>[0]) {
 		taskKind: "primary",
 		workspacePath: root,
 		abort: false,
+		taskCancellationController: new AbortController(),
 		api: handler,
-		apiConfiguration: { apiProvider: "openai", apiModelId: "nor36-local-fixture" },
+		apiConfiguration,
+		effectiveApiConfiguration: { ...apiConfiguration },
+		// This fixture bypasses the constructor but exercises the real request admission and cleanup path.
+		reasoningPreference: { kind: "default" },
+		reasoningState: {
+			requested: { kind: "default" },
+			effective: { kind: "default" },
+			capabilities: { kind: "unavailable", canDisable: false },
+		},
+		reasoningByHandler: new WeakMap(),
+		retainedReasoningHandlers,
+		reasoningHandlerUsers,
 		providerRef: { deref: () => provider },
 		apiConversationHistory: structuredClone(history),
 		clineMessages: [],
@@ -78,7 +97,7 @@ function harness(servers: Parameters<typeof createNor28Provider>[0]) {
 		agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, jitter: "none", baseDelayMs: 0 }),
 		toolCatalogCache: new TaskToolCatalogCache(),
 		getTaskMode: async () => "code",
-		getSystemPrompt: async () => systemPrompt,
+		getSystemPrompt,
 		getCurrentProfileId: async () => "fixture-profile",
 		getTokenUsage: () => ({ contextTokens: 100 }),
 		getTaskAllowedToolNames: () => undefined,
@@ -91,7 +110,7 @@ function harness(servers: Parameters<typeof createNor28Provider>[0]) {
 		saveApiConversationHistory: async () => true,
 		settleAllPersistedWaitAgentResultClaims: async () => {},
 	}) as Task
-	return { task, handler }
+	return { task, handler, apiConfiguration, getSystemPrompt, reasoningHandlerUsers, retainedReasoningHandlers }
 }
 
 describe("NOR36 production request preflight measurement", () => {
@@ -105,7 +124,14 @@ describe("NOR36 production request preflight measurement", () => {
 			for (let sampleIndex = 0; sampleIndex < 3; sampleIndex++) {
 				vi.mocked(buildNativeToolsArrayWithRestrictions).mockClear()
 				vi.mocked(getNativeTools).mockClear()
-				const { task, handler } = harness(servers)
+				const {
+					task,
+					handler,
+					apiConfiguration,
+					getSystemPrompt,
+					reasoningHandlerUsers,
+					retainedReasoningHandlers,
+				} = harness(servers)
 				const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
 				const chunks = []
 				try {
@@ -114,6 +140,10 @@ describe("NOR36 production request preflight measurement", () => {
 					await stream.return(undefined)
 				}
 				expect(handler.createMessage).toHaveBeenCalledTimes(1)
+				expect(getSystemPrompt.mock.calls[0]?.[1]).toEqual({ apiHandler: handler, apiConfiguration })
+				expect(task.getStepApprovalMode()).toBe("auto")
+				expect(reasoningHandlerUsers.size).toBe(0)
+				expect(retainedReasoningHandlers.size).toBe(0)
 				expect(chunks).toEqual([{ type: "text", text: "The default retry limit is 3 (src/config.js:1)." }])
 				const [prompt, messages, metadata] = handler.createMessage.mock.calls[0]
 				expect(prompt).toBe(systemPrompt)
@@ -183,7 +213,7 @@ describe("NOR36 production request preflight measurement", () => {
 			node: process.version,
 			harnessDigest: digest(await fs.readFile(__filename, "utf8")),
 			fixtureDigest: digest(JSON.stringify({ fixture, history, systemPrompt })),
-			configuration: "openai-fixture-code-autoapproval-readgrant-low-context-v1",
+			configuration: "openai-fixture-code-autoapproval-readgrant-low-context-v2",
 			cache: "fresh task catalog per sample; shared process tokenizer; provider prompt caching disabled",
 			boundary:
 				"Task.attemptApiRequest with real context manager, catalog builder and step capture; injected lifecycle/UI/provider",

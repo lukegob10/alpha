@@ -38,7 +38,7 @@ export class SkillTool extends BaseTool<"skill"> {
 
 			// Get SkillsManager from provider
 			const provider = task.providerRef.deref()
-			const skillsManager = provider?.getSkillsManager()
+			const skillsManager = await provider?.getSkillsManager(task)
 
 			if (!skillsManager) {
 				task.recordToolError("skill")

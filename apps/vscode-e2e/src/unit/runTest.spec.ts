@@ -103,7 +103,7 @@ test("strict launches require terminal coherent test counts even after a zero ho
 			assert.equal(result.exitCode, variant === "passed" ? 0 : 1)
 			if (variant === "pending") assert.equal(result.failure, "tests-skipped")
 		} finally {
-			assert.equal(path.dirname(root), os.tmpdir())
+			assert.equal(await fs.realpath(path.dirname(root)), await fs.realpath(os.tmpdir()))
 			assert.match(path.basename(root), /^alpha-strict-runner-/)
 			await fs.rm(root, { recursive: true, force: true })
 		}

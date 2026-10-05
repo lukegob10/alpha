@@ -27,6 +27,7 @@ import {
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
+import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
@@ -51,7 +52,7 @@ function usesOpenAiResponsesApi(modelId: string, options: ApiHandlerOptions): bo
 	const deepseekReasoner = modelId.includes("deepseek-reasoner") || (options.openAiR1FormatEnabled ?? false)
 	return (
 		!deepseekReasoner &&
-		supportsOpenAiResponsesFreeformApplyPatch(modelId, options.openAiBaseUrl, options.openAiUseAzure)
+		getNativeOpenAiModelCapabilities(modelId, options.openAiBaseUrl, options.openAiUseAzure)?.responses === true
 	)
 }
 
@@ -332,8 +333,13 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		// Tool visibility can change by mode or approval policy; it must not switch
 		// a Codex GPT request between Responses and Chat Completions mid-task.
 		const supportsCodexResponses = this.shouldUseResponsesApi(modelId)
+		const freeformApplyPatch = supportsOpenAiResponsesFreeformApplyPatch(
+			modelId,
+			this.options.openAiBaseUrl,
+			this.options.openAiUseAzure,
+		)
 		const responseTools = supportsCodexResponses
-			? toOpenAiResponsesTools(this.convertToolsForOpenAI(metadata?.tools))
+			? toOpenAiResponsesTools(this.convertToolsForOpenAI(metadata?.tools), freeformApplyPatch)
 			: undefined
 
 		if (supportsCodexResponses) {
@@ -347,6 +353,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				modelInfo,
 				effectiveReasoning,
 				responseTools,
+				freeformApplyPatch,
 				metadata,
 			)
 			return
@@ -591,6 +598,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			| { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] }
 			| undefined,
 		tools: OpenAI.Responses.Tool[] | undefined,
+		freeformApplyPatch: boolean,
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		const summaryEnabled = this.options.enableResponsesReasoningSummary !== false
@@ -604,12 +612,18 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const maxOutputTokens = this.options.modelMaxTokens || modelInfo.maxTokens
 		const commonOptions = {
 			model: modelId,
-			input: buildOpenAiResponsesInput(systemPrompt, metadata?.instructionFragments, messages, store),
+			input: buildOpenAiResponsesInput(
+				systemPrompt,
+				metadata?.instructionFragments,
+				messages,
+				store,
+				freeformApplyPatch,
+			),
 			...(tools !== undefined ? { tools } : {}),
 			parallel_tool_calls: metadata?.parallelToolCalls ?? true,
 			include: ["reasoning.encrypted_content" as const],
 			...(metadata?.tool_choice !== undefined
-				? { tool_choice: toOpenAiResponsesToolChoice(metadata.tool_choice) }
+				? { tool_choice: toOpenAiResponsesToolChoice(metadata.tool_choice, freeformApplyPatch) }
 				: {}),
 			store,
 			...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),

@@ -54,8 +54,9 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 			const command = await getCommand(task.cwd, commandName)
 
 			if (!command) {
-				const currentMode = state?.mode ?? "code"
-				const skillsManager = provider?.getSkillsManager()
+				const currentMode =
+					typeof task.getTaskMode === "function" ? await task.getTaskMode() : (state?.mode ?? "code")
+				const skillsManager = await provider?.getSkillsManager(task)
 				const skillContent = await resolveSkillContentForMode(skillsManager, commandName, currentMode)
 
 				if (skillContent) {

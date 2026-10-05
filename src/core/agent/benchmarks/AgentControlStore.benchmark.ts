@@ -6,6 +6,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { monitorEventLoopDelay, performance } from "node:perf_hooks"
 import { isDeepStrictEqual, parseArgs } from "node:util"
+import { z } from "zod"
 
 import { agentControlStateSchema, type AgentControlState } from "@alpha-code/types"
 
@@ -416,11 +417,13 @@ async function main() {
 			"harness-timeout-ms": { type: "string", default: "1800000" },
 			"compare-baseline": { type: "string" },
 			"compare-candidate": { type: "string" },
+			"workspace-root": { type: "string" },
+			"frozen-manifest": { type: "string" },
 		},
 	})
 	if (values.help) {
 		console.log(
-			"pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --output <report.json> [--sizes 1,1000,5000] [--writers 1,2] [--samples 60] [--warmups 5] [--commands snapshot-read,noop-update,reserve-settle,owner-recovery] [--label baseline] [--quiet-window <granted window>] [--harness-timeout-ms 1800000]\nCompare: --compare-baseline <baseline.json> --compare-candidate <candidate.json> [--output <comparison.json>]",
+			"pnpm exec tsx src/core/agent/benchmarks/AgentControlStore.benchmark.ts --output <report.json> [--sizes 1,1000,5000] [--writers 1,2] [--samples 60] [--warmups 5] [--commands snapshot-read,noop-update,reserve-settle,owner-recovery] [--label baseline] [--quiet-window <granted window>] [--harness-timeout-ms 1800000]\nCompare: --compare-baseline <baseline.json> --compare-candidate <candidate.json> [--output <comparison.json>]\nFrozen compiled artifacts: --workspace-root <repository> --frozen-manifest <manifest.json>",
 		)
 		return
 	}
@@ -478,8 +481,19 @@ async function main() {
 	)
 		throw new Error("Unknown command")
 	if (!values.output) throw new Error("--output is required to retain raw measurements")
-	const sourceIdentity = async () =>
-		Object.fromEntries(
+	const sourceRoot = values["workspace-root"]
+		? path.resolve(values["workspace-root"])
+		: path.resolve(__dirname, "../../../..")
+	const frozen = values["frozen-manifest"]
+		? z
+				.object({
+					artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+					sourceIdentity: z.record(z.string(), z.string().regex(/^(?:[a-f0-9]{64}|absent)$/)),
+				})
+				.parse(JSON.parse(await fs.readFile(values["frozen-manifest"], "utf8")))
+		: undefined
+	const sourceIdentity = async () => {
+		const current = Object.fromEntries(
 			await Promise.all(
 				[
 					"src/core/agent/AgentControlStore.ts",
@@ -497,7 +511,7 @@ async function main() {
 					"pnpm-lock.yaml",
 				].map(async (relativePath) => {
 					try {
-						const bytes = await fs.readFile(path.resolve(__dirname, "../../../..", relativePath))
+						const bytes = await fs.readFile(path.resolve(sourceRoot, relativePath))
 						return [relativePath, createHash("sha256").update(bytes).digest("hex")]
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code === "ENOENT") return [relativePath, "absent"]
@@ -506,6 +520,23 @@ async function main() {
 				}),
 			),
 		)
+		if (!frozen) return current
+		const artifactSha256 = createHash("sha256")
+			.update(await fs.readFile(__filename))
+			.digest("hex")
+		if (artifactSha256 !== frozen.artifactSha256) throw new Error("Frozen benchmark artifact hash mismatch")
+		if (
+			!isDeepStrictEqual(Object.keys(current).sort(), Object.keys(frozen.sourceIdentity).sort()) ||
+			Object.keys(current).some(
+				(source) =>
+					source !== "src/core/agent/AgentControlStore.ts" &&
+					current[source] !== frozen.sourceIdentity[source],
+			)
+		) {
+			throw new Error("Frozen benchmark dependencies changed after compilation")
+		}
+		return frozen.sourceIdentity
+	}
 	const report = {
 		version: 1,
 		label: values.label,
@@ -513,6 +544,7 @@ async function main() {
 		commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
 		workingTree: execFileSync("git", ["status", "--short"], { encoding: "utf8" }).trim(),
 		sourceIdentity: await sourceIdentity(),
+		frozenArtifact: frozen ? { artifactSha256: frozen.artifactSha256, sourceRoot } : undefined,
 		runtime: {
 			node: process.version,
 			packageManager: process.env.npm_config_user_agent ?? "unavailable (invoke through pnpm exec)",

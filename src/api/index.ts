@@ -1,7 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
+import { type ProviderSettings, type ModelInfo, type ModelRequestPhase, vertexDefaultModelId } from "@alpha-code/types"
 
 import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
 
@@ -29,6 +29,8 @@ export interface ApiInstructionFragment {
 }
 
 export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadata {
+	/** Optional diagnostic observer. Callback failures never delay or change the request. */
+	onRequestPhase?: (phase: ModelRequestPhase) => void
 	/**
 	 * Task ID used for tracking and provider-specific features.
 	 */

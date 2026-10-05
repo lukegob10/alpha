@@ -202,6 +202,26 @@ describe("AsyncSubagentRunManager", () => {
 		expect(runner).not.toHaveBeenCalled()
 	})
 
+	it("delivers lifecycle events in sequence when an earlier observer cancels synchronously", async () => {
+		const runner = vi.fn(async (item) => result(item.id))
+		const manager = new AsyncSubagentRunManager(runner)
+		manager.subscribe((event) => {
+			if (event.snapshot.status === "pending") manager.cancel(event.taskId, "cancel at acknowledgement")
+		})
+		const observed: Array<{ sequence: number; status: string }> = []
+		manager.subscribe((event) => observed.push({ sequence: event.sequence, status: event.snapshot.status }))
+
+		manager.launch(envelope("child-1"), launchOptions)
+		await expect(manager.waitForResult("child-1")).resolves.toMatchObject({ status: "cancelled" })
+
+		expect(observed).toEqual([
+			{ sequence: 1, status: "pending" },
+			{ sequence: 2, status: "cancelling" },
+			{ sequence: 3, status: "cancelled" },
+		])
+		expect(runner).not.toHaveBeenCalled()
+	})
+
 	it("propagates parent cancellation and records cancelling before completion", async () => {
 		const parent = new AbortController()
 		const manager = new AsyncSubagentRunManager(

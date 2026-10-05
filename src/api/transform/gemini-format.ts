@@ -1,6 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { Content, Part } from "@google/genai"
 
+import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+
 type ThoughtSignatureContentBlock = {
 	type: "thoughtSignature"
 	thoughtSignature?: string
@@ -29,6 +31,7 @@ export function convertAnthropicContentToGemini(
 ): Part[] {
 	const includeThoughtSignatures = options?.includeThoughtSignatures ?? true
 	const toolIdToName = options?.toolIdToName
+	if (Array.isArray(content)) content = normalizeToolHistory([{ content }])[0]!.content
 
 	// First pass: find thoughtSignature if it exists in the content blocks
 	let activeThoughtSignature: string | undefined
@@ -80,17 +83,13 @@ export function convertAnthropicContentToGemini(
 					functionCall: {
 						id: block.id,
 						name: block.name,
-						args: block.input as Record<string, unknown>,
+						args: toFunctionToolInput(block.name, block.input) as Record<string, unknown>,
 					},
 					// Inject the thoughtSignature into the functionCall part if required.
 					// This is necessary for Gemini 3+ thinking models to validate the tool call.
 					...(functionCallSignature ? { thoughtSignature: functionCallSignature } : {}),
 				} as Part
 			case "tool_result": {
-				if (block.content === null) {
-					return []
-				}
-
 				// Get tool name from the map (built from tool_use blocks in message history).
 				// The map must contain the tool name - if it doesn't, this indicates a bug
 				// where the conversation history is incomplete or tool_use blocks are missing.
@@ -103,7 +102,7 @@ export function convertAnthropicContentToGemini(
 					)
 				}
 
-				if (typeof block.content === "string" || block.content === undefined) {
+				if (typeof block.content === "string" || block.content === undefined || block.content === null) {
 					return {
 						functionResponse: {
 							id: block.tool_use_id,
@@ -207,4 +206,20 @@ export function convertAnthropicMessageToGemini(
 			parts,
 		},
 	]
+}
+
+/** Resolve result names at each call occurrence, including provider-reused IDs. */
+export function convertAnthropicMessagesToGemini(
+	messages: Anthropic.Messages.MessageParam[],
+	options?: { includeThoughtSignatures?: boolean },
+): Content[] {
+	const toolIdToName = new Map<string, string>()
+	return normalizeToolHistory(messages).flatMap((message) => {
+		if (Array.isArray(message.content)) {
+			for (const block of message.content) {
+				if (block.type === "tool_use") toolIdToName.set(block.id, block.name)
+			}
+		}
+		return convertAnthropicMessageToGemini(message, { ...options, toolIdToName })
+	})
 }

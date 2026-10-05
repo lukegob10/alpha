@@ -5,14 +5,14 @@ import * as vscode from "vscode"
 import { ExtensionWorkflowHost, readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { SETTLEMENT_ORACLE, settlementRevisions } from "../scenarios/commandSettlement"
-import { assertOwnedTestRoot } from "../testProfile"
+import { CommandSettlementFixture } from "../scenarios/commandSettlementFixture"
 
 suite("Command receipt settlement", function () {
 	this.timeout(600_000)
+	const fixture = new CommandSettlementFixture(process.env.ALPHA_E2E_WORKSPACE!, process.env.ALPHA_E2E_ARTIFACTS_DIR!)
 	test("injected receipt failure stops the real task at its original error", async () => {
 		const workspace = process.env.ALPHA_E2E_WORKSPACE!
-		await assertOwnedTestRoot(workspace)
-		await fs.writeFile(path.join(workspace, ".alphaignore"), ".alpha-*\n", { flag: "wx" })
+		await fixture.prepareCase()
 		const provider = process.env.ALPHA_E2E_PROVIDER_MODE!
 		const budget = new WorkflowRequestBudget(
 			12,
@@ -61,20 +61,18 @@ suite("Command receipt settlement", function () {
 		} finally {
 			fault.restore()
 			await host.dispose()
+			await fixture.finishCase()
 		}
 	})
 	for (const terminalProvider of ["execa", "vscode"] as const) {
 		test(`HTML edits and Node output through ${terminalProvider}`, async () => {
 			const workspace = process.env.ALPHA_E2E_WORKSPACE!
-			await assertOwnedTestRoot(workspace)
+			await fixture.prepareCase()
 			assert.equal(vscode.workspace.workspaceFolders?.length, 1)
 			assert.equal(
 				await fs.realpath(vscode.workspace.workspaceFolders![0]!.uri.fsPath),
 				await fs.realpath(workspace),
 			)
-			// Each invocation owns a fresh workspace; refuse to overwrite a previous run.
-			await fs.writeFile(path.join(workspace, ".alphaignore"), ".alpha-*\n", { flag: "wx" })
-			await fs.writeFile(path.join(workspace, ".alpha-receipt-oracle.cjs"), SETTLEMENT_ORACLE, { flag: "wx" })
 			const provider = process.env.ALPHA_E2E_PROVIDER_MODE!
 			const revisions = settlementRevisions(process.env.ALPHA_E2E_SETTLEMENT_TURNS)
 			// Keep a finite run budget while allowing the extended workload to finish its additional turns.
@@ -150,7 +148,7 @@ suite("Command receipt settlement", function () {
 				try {
 					const state = taskId ? await host.captureTaskState(taskId) : undefined
 					await fs.writeFile(
-						path.join(process.env.ALPHA_E2E_ARTIFACTS_DIR!, "command-settlement.json"),
+						fixture.resultPath(terminalProvider),
 						JSON.stringify(
 							{
 								hostVersion: vscode.version,
@@ -171,6 +169,7 @@ suite("Command receipt settlement", function () {
 					)
 				} finally {
 					await host.dispose()
+					await fixture.finishCase()
 				}
 			}
 		})

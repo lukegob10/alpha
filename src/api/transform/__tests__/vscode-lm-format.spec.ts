@@ -98,6 +98,43 @@ vitest.mock("vscode", () => {
 })
 
 describe("convertToVsCodeLmMessages", () => {
+	it.each([null, undefined, "", []])(
+		"replays a legacy terminal ID with raw patch input and empty output (%j)",
+		(content) => {
+			const patch =
+				'*** Begin Patch\r\n*** Add File: file.txt\r\n+const path = "C:\\work\\file.txt"\r\n*** End Patch\n'
+			const messages = [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "patch-call", name: "apply_patch", input: patch }],
+				},
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_call_id: "patch-call",
+							content,
+							is_error: true,
+							status: "cancelled",
+						},
+					],
+				},
+			] as unknown as Anthropic.Messages.MessageParam[]
+			const before = structuredClone(messages)
+			const result = convertToVsCodeLmMessages(messages)
+			expect(result).toHaveLength(2)
+			expect(result[0].content[0]).toMatchObject({
+				type: "tool_call",
+				callId: "patch-call",
+				name: "apply_patch",
+				input: { patch },
+			})
+			expect(result[1].content[0]).toMatchObject({ type: "tool_result", callId: "patch-call" })
+			expect(messages).toEqual(before)
+		},
+	)
+
 	it("should convert simple string messages", () => {
 		const messages: Anthropic.Messages.MessageParam[] = [
 			{ role: "user", content: "Hello" },

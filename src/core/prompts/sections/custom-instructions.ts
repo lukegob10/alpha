@@ -391,8 +391,11 @@ async function readAgentInstructionFile(
 	budget?: ProjectInstructionBudget,
 ): Promise<{ ref: string; text: string } | undefined> {
 	if (budget && budget.remainingBytes <= 0) return undefined
+	let isSymbolicLink: boolean
 	try {
-		await fs.lstat(filePath)
+		const metadata = await fs.lstat(filePath)
+		isSymbolicLink = metadata.isSymbolicLink()
+		if (!isSymbolicLink && !metadata.isFile()) return undefined
 	} catch {
 		return undefined
 	}
@@ -401,11 +404,15 @@ async function readAgentInstructionFile(
 	if (!resolvedPath) return undefined
 
 	try {
+		// Resolving a link establishes its path scope; its target must also be a
+		// regular file so optional instruction discovery cannot block on a FIFO.
+		if (isSymbolicLink && !(await fs.stat(resolvedPath)).isFile()) return undefined
 		const fileContents = await fs.readFile(resolvedPath, "utf-8")
 		if (!budget) return { ref: filePath, text: fileContents.trim() }
 		const bounded = takeUtf8Prefix(fileContents, budget.remainingBytes)
-		budget.remainingBytes -= bounded.bytesUsed
-		return { ref: filePath, text: bounded.text.trim() }
+		const text = bounded.text.trim()
+		if (text) budget.remainingBytes -= bounded.bytesUsed
+		return { ref: filePath, text }
 	} catch (error) {
 		const errorCode = (error as NodeJS.ErrnoException).code
 		if (!errorCode || !["ENOENT", "EISDIR"].includes(errorCode)) throw error

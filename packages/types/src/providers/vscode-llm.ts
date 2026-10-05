@@ -29,6 +29,7 @@ const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
 const COPILOT_GPT_5_6_LUNA_CONTEXT_WINDOW = 200_000
 const COPILOT_GPT_6_CONTEXT_WINDOW = 272_000
 const COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE = 1_050_000
+const COPILOT_GPT_6_1_SOL_INPUT_CEILING = 922_000
 const COPILOT_EXTENDED_CONTEXT_SIZE = 922_000
 const COPILOT_CLAUDE_CONTEXT_WINDOW = 200_000
 const COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE = 936_000
@@ -113,8 +114,8 @@ function copilotModel({
 	}
 }
 
-// Mirrors the current GitHub Copilot supported-models documentation. The live
-// VS Code LM provider still uses vscode.lm.selectChatModels() as the source of truth.
+// Capability fallback from GitHub Copilot documentation and recorded exact-host catalogs.
+// The live VS Code LM provider uses vscode.lm.selectChatModels() for availability and routing.
 // https://docs.github.com/en/copilot/reference/ai-models/supported-models
 export const vscodeLlmModels = {
 	"gpt-5-mini": copilotModel({
@@ -215,6 +216,16 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE,
+	}),
+	// VS Code 1.125.0 / Copilot 0.53.0 catalog captured 2026-10-02. The observed
+	// prompt ceiling does not establish a configurable window or reasoning default.
+	// Provenance: docs/convergence-context-provider-2026-10-03.md.
+	"gpt-6.1-sol": copilotModel({
+		name: "GPT-6.1 Sol",
+		family: "gpt-6.1-sol",
+		contextWindow: COPILOT_GPT_6_1_SOL_INPUT_CEILING,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
 	}),
 	"claude-fable-5": copilotModel({
 		name: "Claude Fable 5",
@@ -422,6 +433,8 @@ export const vscodeLlmModels = {
 } as const satisfies Record<string, VscodeLlmModelInfo>
 
 const vscodeLlmModelAliases: Partial<Record<VscodeLlmModelId, readonly string[]>> = {
+	// The first alias is also the broad catalog family; retain the canonical selector.
+	"gpt-6.1-sol": ["gpt-6.1-sol", "gpt-6.1 sol"],
 	"gemini-3-flash": ["gemini-3-flash-preview"],
 	"gemini-3.1-pro": ["gemini-3.1-pro-preview"],
 	"mai-code-1-flash": ["mai-code-1-flash-picker"],

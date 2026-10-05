@@ -18,7 +18,8 @@ import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
-import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
+import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
+import { buildInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 import { SUBAGENT_CALLSIGNS, SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
@@ -102,6 +103,7 @@ const makeProviderHarness = (
 			}),
 		},
 		taskSessions,
+		getSkillsManager: vi.fn(async () => Reflect.get(provider, "skillsManager")),
 		taskHistoryStore: {
 			get: () => undefined,
 			getAll: () => [],
@@ -121,6 +123,7 @@ const makeProviderHarness = (
 		agentControlRootStatusWrites: new Map(),
 		taskLifecycleHistoryWrites: new Map(),
 		agentFollowupAdmissions: new Map(),
+		subagentRunFinalizations: new Map(),
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },
@@ -246,6 +249,43 @@ describe("AlphaProvider root lifecycle ownership", () => {
 })
 
 describe("AlphaProvider bounded sub-agent preparation", () => {
+	it.each(["auto", "bypass"] as const)(
+		"keeps an Ask task's child authority below the global %s setting",
+		async (approvalMode) => {
+			const provider = makeProviderHarness(2, { approvalMode })
+			const parent = { ...makeParent(), getStepApprovalMode: vi.fn(() => "ask") }
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect under the parent task policy", agent_kind: "review" },
+			])
+			const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+
+			expect(prepared.requiresExplicitApproval).toBe(true)
+			expect(descriptor.contextManifest.runtimePolicy.autoApproval).toMatchObject({
+				alwaysAllowWrite: false,
+				alwaysAllowExecute: false,
+				alwaysAllowSubagents: false,
+				alwaysAllowTickets: false,
+				commandApproval: { allowAll: false },
+			})
+		},
+	)
+
+	it("narrows a Bypass task's child authority when the global setting is Ask", async () => {
+		const provider = makeProviderHarness(2, { approvalMode: "ask" })
+		const parent = { ...makeParent(), getStepApprovalMode: vi.fn(() => "bypass") }
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Respect the current narrower grant", agent_kind: "review" },
+		])
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+
+		expect(prepared.requiresExplicitApproval).toBe(true)
+		expect(descriptor.contextManifest.runtimePolicy.autoApproval).toMatchObject({
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+			alwaysAllowSubagents: false,
+		})
+	})
+
 	it.each(["auto", "bypass"] as const)(
 		"launches a default %s sub-agent without an approval dialog",
 		async (approvalMode) => {
@@ -833,6 +873,230 @@ If complete, use attempt_completion.
 		expect(descriptor.inheritedInstructions).toBeUndefined()
 	})
 
+	it("forks the invoking step's captured history, instructions, and route after its persistence barrier", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const capturedText = `CAPTURED_PARENT_CONTEXT ${"complete context ".repeat(2_000)} END_CAPTURED_CONTEXT`
+		const captured = {
+			mode: "code",
+			apiConfiguration: { apiProvider: "openai", openAiModelId: "captured-model" },
+			apiConfigName: "Captured profile",
+			modelRoute: {
+				source: "parent",
+				resolution: "selected",
+				provider: "openai",
+				modelId: "captured-model",
+				profileName: "Captured profile",
+			},
+			history: [
+				{ role: "user", input_origin: "human", content: capturedText },
+				{ role: "assistant", content: [{ type: "text", text: "Captured final response" }] },
+			],
+			finalAssistantMessageIndexes: [1],
+			instructions: {
+				effectiveText: "Captured applied instructions",
+				sources: [{ kind: "agent-rules", ref: "captured:AGENTS.md", text: "Captured applied instructions" }],
+			},
+		}
+		const invocation = vi.fn(() => structuredClone(captured))
+		let release!: () => void
+		let entered!: () => void
+		const pending = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const flushing = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		Object.assign(parent, {
+			getSubagentInvocationContext: invocation,
+			flushApiConversationHistoryPersistence: vi.fn(async () => {
+				entered()
+				await pending
+			}),
+		})
+
+		const preparing = provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect the captured context", agent_kind: "review", fork_turns: "all" },
+		])
+		await flushing
+		expect(invocation).toHaveBeenCalledOnce()
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+		parent.apiConversationHistory = [{ role: "user", content: "LIVE_REPLACEMENT" }]
+		parent.apiConfiguration.openAiModelId = "live-model"
+		parent.getTaskMode.mockResolvedValue("architect")
+		parent.captureEffectiveInheritedInstructions.mockResolvedValue({
+			effectiveText: "Live changed instructions",
+			sources: [],
+		})
+		release()
+		const prepared = await preparing
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+
+		expect(prepared.group.agents[0].modelRoute).toMatchObject({
+			modelId: "captured-model",
+			profileName: "Captured profile",
+		})
+		expect(descriptor.inheritedInstructions).toBe("Captured applied instructions")
+		expect(descriptor.contextManifest.instructions.sources).toContainEqual(
+			expect.objectContaining({ ref: "captured:AGENTS.md" }),
+		)
+		expect(descriptor.historyFork).toMatchObject({ kind: "native", requiresContextRebuild: true })
+		expect(descriptor.historyFork.messages).toHaveLength(2)
+		expect(JSON.stringify(descriptor.historyFork.messages)).toContain(capturedText)
+		expect(descriptor.historyFork.messages.every((message: any) => message.input_origin === "agent")).toBe(true)
+		expect(descriptor.inheritedTurnContext).toBe("")
+		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
+		expect(parent.getTaskMode).not.toHaveBeenCalled()
+		expect(parent.getTaskApiConfigName).not.toHaveBeenCalled()
+	})
+
+	it("does not replace an explicitly unnamed invoking profile with a live profile name", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		parent.getTaskApiConfigName.mockResolvedValue("Live replacement profile")
+		Object.assign(parent, {
+			getSubagentInvocationContext: vi.fn(() => ({
+				mode: "code",
+				apiConfiguration: structuredClone(parent.apiConfiguration),
+				apiConfigName: undefined,
+				modelRoute: {
+					source: "parent",
+					resolution: "selected",
+					provider: "openai",
+					modelId: "alpha-model",
+					profileName: "Parent profile",
+				},
+				history: [],
+				finalAssistantMessageIndexes: [],
+				instructions: {
+					effectiveText: "Language Preference: English",
+					sources: [
+						{ kind: "aggregate", ref: "step:captured-instructions", text: "Language Preference: English" },
+					],
+				},
+			})),
+		})
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Retain unnamed profile", agent_kind: "review" },
+		])
+		expect(prepared.group.agents[0].modelRoute?.profileName).not.toBe("Live replacement profile")
+		expect(parent.getTaskApiConfigName).not.toHaveBeenCalled()
+	})
+
+	it("retains the invoking step's protected-file and command ceilings when the same live approval tier widens", async () => {
+		const settings = {
+			approvalMode: "auto" as const,
+			alwaysAllowWriteProtected: false,
+			deniedCommands: ["git push"],
+		}
+		const provider = makeProviderHarness(2, settings)
+		const parent = makeParent()
+		const capturedApproval = structuredClone((provider as any).snapshotSubagentAutoApprovalPolicy(settings))
+		Object.assign(parent, {
+			getStepApprovalMode: vi.fn(() => "auto"),
+			getSubagentInvocationContext: vi.fn(() => ({
+				mode: "code",
+				apiConfiguration: structuredClone(parent.apiConfiguration),
+				apiConfigName: "Parent",
+				modelRoute: {
+					source: "parent",
+					resolution: "selected",
+					provider: "openai",
+					modelId: "alpha-model",
+					profileName: "Parent",
+				},
+				history: [],
+				finalAssistantMessageIndexes: [],
+				instructions: {
+					effectiveText: "Language Preference: English",
+					sources: [
+						{ kind: "aggregate", ref: "step:captured-instructions", text: "Language Preference: English" },
+					],
+				},
+				autoApprovalPolicy: capturedApproval,
+			})),
+		})
+		settings.alwaysAllowWriteProtected = true
+		settings.deniedCommands = []
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Retain captured authority", agent_kind: "review" },
+		])
+		const policy = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+			.autoApproval
+		expect(policy.alwaysAllowWriteProtected).toBe(false)
+		expect(policy.commandApprovalCeilings).toContainEqual(capturedApproval.commandApproval)
+		expect(JSON.stringify(policy)).not.toContain("git push")
+	})
+
+	it("does not reserve or publish children when the parent persistence barrier fails", async () => {
+		const provider = makeProviderHarness()
+		const parent = Object.assign(makeParent(), {
+			flushApiConversationHistoryPersistence: vi.fn(async () => {
+				throw new Error("parent transcript unavailable")
+			}),
+		})
+
+		await expect(
+			provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect durable history", agent_kind: "review" },
+			]),
+		).rejects.toThrow("parent transcript unavailable")
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+		expect((provider as any).reservedSubagentSlots.size).toBe(0)
+		expect((provider as any).subagentDescriptors.size).toBe(0)
+	})
+
+	it("keeps the frozen skill catalog and content digests through nested delegation", async () => {
+		const provider = makeProviderHarness(3, { subagentDelegationPolicy: "proactive", subagentMaxDepth: 2 })
+		const root = makeParent()
+		let skillBody = "Frozen skill body"
+		let catalog = [
+			{
+				name: "review-repository",
+				path: "F:/workspace/.agents/skills/review-repository/SKILL.md",
+				description: "Frozen skill description",
+			},
+		]
+		const manager = {
+			getSkillsForMode: vi.fn(() => catalog),
+			getSkillContent: vi.fn(async () => ({ instructions: skillBody })),
+		}
+		;(provider as any).skillsManager = manager
+		const direct = await provider.prepareSubagentGroup(root as any, [
+			{ objective: "Inspect first layer", agent_kind: "review" },
+		])
+		const directDescriptor = (provider as any).subagentDescriptors.get(direct.envelopes[0].id)
+		const frozenSkills = structuredClone(directDescriptor.contextManifest.skills)
+		catalog = [
+			{ ...catalog[0], description: "Live replacement description" },
+			{
+				name: "new-skill",
+				path: "F:/workspace/.agents/skills/new-skill/SKILL.md",
+				description: "New live skill",
+			},
+		]
+		skillBody = "Changed live skill body"
+		manager.getSkillContent.mockClear()
+		const child = {
+			...makeParent(),
+			taskId: direct.envelopes[0].id,
+			rootTaskId: root.taskId,
+			taskKind: "subagent",
+			subagentContextManifest: directDescriptor.contextManifest,
+			subagentDelegationPolicy: "proactive",
+		}
+		const nested = await provider.prepareSubagentGroup(child as any, [
+			{ objective: "Inspect second layer", agent_kind: "explore" },
+		])
+		const nestedDescriptor = (provider as any).subagentDescriptors.get(nested.envelopes[0].id)
+
+		expect(nestedDescriptor.contextManifest.skills).toEqual(frozenSkills)
+		expect(nestedDescriptor.inheritedSkills).toEqual([{ ...catalog[0], description: "Frozen skill description" }])
+		expect(manager.getSkillContent).not.toHaveBeenCalled()
+	})
+
 	it("fails before child start when the private instruction snapshot cannot be persisted", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -1013,6 +1277,84 @@ If complete, use attempt_completion.
 		},
 	)
 
+	it.each(["async", "blocking"] as const)(
+		"preserves failed child shutdown through the public %s delegation path",
+		async (executionMode) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			let started!: () => void
+			const startup = new Promise<void>((resolve) => (started = resolve))
+			let releaseLifecycle!: () => void
+			const lifecycle = new Promise<void>((resolve) => (releaseLifecycle = resolve))
+			let published!: () => void
+			const terminalPublication = new Promise<void>((resolve) => (published = resolve))
+			parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
+				if (group.status === "failed") published()
+			})
+			const emitter = new EventEmitter()
+			const child = Object.assign(emitter, {
+				taskId: "",
+				clineMessages: [] as Task["clineMessages"],
+				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+				finalizeSubagentHistory: vi.fn(async () => undefined),
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn(async () => {
+					throw new Error("Owned process remains unconfirmed")
+				}),
+				waitForTermination: () => lifecycle,
+				start: () => started(),
+			})
+			;(provider as any).taskSessions.getTask = (taskId: string) =>
+				taskId === parent.taskId ? parent : taskId === child.taskId ? child : undefined
+			;(provider as any).createTask = vi.fn(
+				async (_prompt: string, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+					child.taskId = options.taskId
+					return child
+				},
+			)
+			const bounded = new BoundedDelegationManager((envelope, signal) =>
+				(provider as any).runSubagentEnvelope(envelope, signal),
+			)
+			const runs = new AsyncSubagentRunManager(bounded)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = runs
+			const controller = new AbortController()
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{
+					task_name: "cleanup_child",
+					objective: "Inspect cancellation",
+					agent_kind: "review",
+					fork_turns: "none",
+				},
+			])
+			let completion: Promise<unknown>
+			if (executionMode === "async") {
+				const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, controller.signal)
+				completion = runs.waitForResult(handle.taskId)!
+			} else completion = provider.runSubagentGroup(parent as any, prepared, controller.signal)
+			try {
+				await startup
+				controller.abort(new Error("Parent requested cancellation"))
+				await expect(completion).resolves.toMatchObject({ status: "failed" })
+				await terminalPublication
+				expect(child.abortTask).toHaveBeenCalledOnce()
+				expect(child.finalizeSubagentHistory).toHaveBeenCalledWith(
+					"failed",
+					expect.stringContaining("Owned process remains unconfirmed"),
+					"parent_cancelled",
+				)
+				await expect(provider.listAgents(parent as any)).resolves.toMatchObject({
+					agents: [{ taskId: child.taskId, status: "failed", stopReason: "parent_cancelled" }],
+				})
+			} finally {
+				releaseLifecycle()
+				controller.abort()
+				await completion
+			}
+		},
+	)
+
 	it.each(["approval", "recovery", "blocked"] as const)(
 		"preserves an explicit %s boundary when the retained child lifecycle settles",
 		async (boundary) => {
@@ -1131,6 +1473,142 @@ If complete, use attempt_completion.
 		])
 
 		expect(prepared.group.agents.map((agent) => agent.nickname)).toEqual(["backend_review", "frontend_review"])
+	})
+
+	it("reuses a requested task name across roots prepared by the same provider", async () => {
+		const provider = makeProviderHarness()
+		const firstParent = makeParent()
+		const secondParent = { ...makeParent(), taskId: "parent-2" }
+		const drafts = [{ task_name: "history_churn_child", objective: "Inspect this root", agent_kind: "explore" }]
+
+		const first = await provider.prepareSubagentGroup(firstParent as any, drafts)
+		expect(first.group).toMatchObject({
+			parentTaskId: firstParent.taskId,
+			agents: [{ nickname: "history_churn_child" }],
+		})
+
+		const second = await provider.prepareSubagentGroup(secondParent as any, drafts)
+		expect(second.group).toMatchObject({
+			parentTaskId: secondParent.taskId,
+			agents: [{ nickname: "history_churn_child" }],
+		})
+		expect(second.group.agents[0]!.taskId).not.toBe(first.group.agents[0]!.taskId)
+	})
+
+	it("keeps pending alias reservations scoped to their root during concurrent preparation", async () => {
+		const provider = makeProviderHarness()
+		const firstParent = makeParent()
+		const secondParent = { ...makeParent(), taskId: "parent-2" }
+		const captured = await firstParent.captureEffectiveInheritedInstructions()
+		let entered!: () => void
+		const captureEntered = new Promise<void>((resolve) => (entered = resolve))
+		let release!: () => void
+		const captureRelease = new Promise<void>((resolve) => (release = resolve))
+		firstParent.captureEffectiveInheritedInstructions.mockImplementationOnce(async () => {
+			entered()
+			await captureRelease
+			return captured
+		})
+		const drafts = [{ task_name: "shared_alias", objective: "Inspect this root", agent_kind: "review" }]
+		const first = provider.prepareSubagentGroup(firstParent as any, drafts)
+		try {
+			await captureEntered
+			await expect(provider.prepareSubagentGroup(firstParent as any, drafts)).rejects.toThrow("already in use")
+			await expect(provider.prepareSubagentGroup(secondParent as any, drafts)).resolves.toMatchObject({
+				group: { parentTaskId: secondParent.taskId, agents: [{ nickname: "shared_alias" }] },
+			})
+		} finally {
+			release()
+			await first
+		}
+	})
+
+	it("reuses an alias after asynchronous preparation failure and never-launched cancellation", async () => {
+		const provider = makeProviderHarness(1, { maxConcurrentSubagents: 1 })
+		const parent = makeParent()
+		const drafts = [{ task_name: "retry_alias", objective: "Inspect this root", agent_kind: "explore" }]
+		parent.captureEffectiveInheritedInstructions.mockRejectedValueOnce(new Error("capture failed"))
+		await expect(provider.prepareSubagentGroup(parent as any, drafts)).rejects.toThrow("capture failed")
+		const first = await provider.prepareSubagentGroup(parent as any, drafts)
+		await provider.cancelPreparedSubagentGroup(parent as any, first, "Preparation cancelled")
+		await expect(provider.prepareSubagentGroup(parent as any, drafts)).resolves.toMatchObject({
+			group: { agents: [{ nickname: "retry_alias" }] },
+		})
+	})
+
+	it("rolls back an alias rejected by root capacity without releasing the admitted sibling", async () => {
+		const provider = makeProviderHarness(2, { maxConcurrentSubagents: 1 })
+		const parent = makeParent()
+		const first = await provider.prepareSubagentGroup(parent as any, [
+			{ task_name: "admitted_alias", objective: "Inspect this root", agent_kind: "explore" },
+		])
+		const drafts = [{ task_name: "retry_alias", objective: "Inspect another case", agent_kind: "review" }]
+		await expect(provider.prepareSubagentGroup(parent as any, drafts)).rejects.toThrow("root-wide child capacity")
+		await expect(
+			provider.prepareSubagentGroup(parent as any, [
+				{ task_name: "admitted_alias", objective: "Collide with the admitted child", agent_kind: "review" },
+			]),
+		).rejects.toThrow("already in use")
+		await provider.cancelPreparedSubagentGroup(parent as any, first, "Preparation cancelled")
+		await expect(provider.prepareSubagentGroup(parent as any, drafts)).resolves.toMatchObject({
+			group: { agents: [{ nickname: "retry_alias" }] },
+		})
+	})
+
+	it("routes a shared alias to the caller's root after both preparations launch", async () => {
+		const provider = makeProviderHarness()
+		const firstParent = makeParent()
+		const secondParent = { ...makeParent(), taskId: "parent-2" }
+		let release!: () => void
+		const finish = new Promise<void>((resolve) => (release = resolve))
+		const bounded = new BoundedDelegationManager(async (envelope) => {
+			await finish
+			return {
+				taskId: envelope.id,
+				status: "completed" as const,
+				summary: "Reviewed",
+				evidence: [],
+				changedFiles: [],
+				verification: [],
+				remainingRisks: [],
+				usage: { durationMs: 1 },
+			}
+		})
+		const runs = new AsyncSubagentRunManager(bounded)
+		;(provider as any).boundedDelegationManager = bounded
+		;(provider as any).asyncSubagentRunManager = runs
+		const drafts = [{ task_name: "shared_alias", objective: "Inspect this root", agent_kind: "review" }]
+		const first = await provider.prepareSubagentGroup(firstParent as any, drafts)
+		const second = await provider.prepareSubagentGroup(secondParent as any, drafts)
+		const firstHandle = await provider.launchPreparedSubagentGroup(
+			firstParent as any,
+			first,
+			new AbortController().signal,
+		)
+		const secondHandle = await provider.launchPreparedSubagentGroup(
+			secondParent as any,
+			second,
+			new AbortController().signal,
+		)
+		try {
+			await expect(
+				provider.sendMessageToAgent(firstParent as any, "shared_alias", "First root message"),
+			).resolves.toMatchObject({ taskId: firstHandle.taskId, path: firstHandle.path, delivery: "buffered" })
+			await expect(
+				provider.sendMessageToAgent(secondParent as any, "shared_alias", "Second root message"),
+			).resolves.toMatchObject({ taskId: secondHandle.taskId, path: secondHandle.path, delivery: "buffered" })
+			await expect(provider.listAgents(firstParent as any)).resolves.toMatchObject({
+				rootTaskId: firstParent.taskId,
+				agents: [{ taskId: firstHandle.taskId }],
+			})
+			await expect(provider.listAgents(secondParent as any)).resolves.toMatchObject({
+				rootTaskId: secondParent.taskId,
+				agents: [{ taskId: secondHandle.taskId }],
+			})
+		} finally {
+			release()
+			await Promise.all([runs.waitForResult(firstHandle.taskId), runs.waitForResult(secondHandle.taskId)])
+		}
 	})
 
 	it("rejects a requested task name retained in the current root task", async () => {
@@ -1604,12 +2082,12 @@ If complete, use attempt_completion.
 
 		expect(result).toMatchObject({
 			status: "failed",
-			stopReason: "failed",
+			stopReason: "cancelled",
 		})
 		expect(result.summary).toContain("process tree still alive")
 		expect(child.cancelCurrentRequest).toHaveBeenCalledOnce()
 		expect(child.abortTask).toHaveBeenCalledOnce()
-		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith("failed", result.summary, "failed")
+		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith("failed", result.summary, "cancelled")
 	})
 
 	it("uses the current report when a retained follow-up completes successfully", async () => {
@@ -2694,6 +3172,246 @@ If complete, use attempt_completion.
 		])
 	})
 
+	it.each(["async", "blocking"] as const)(
+		"propagates a failed %s descendant settlement before removing its ancestor layer",
+		async (executionMode) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const root = await (provider as any).ensureAgentControlRoot(parent)
+			const store = (provider as any).agentControlStore as AgentControlStore
+			const ancestor = await store.createAgent({
+				taskId: "cleanup-ancestor",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "ancestor",
+				role: "review",
+				objective: "Own a child layer",
+				status: "running",
+			})
+			const descendant = await store.createAgent({
+				taskId: "cleanup-descendant",
+				parentTaskId: ancestor.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "descendant",
+				role: "review",
+				objective: "Keep an owned layer",
+				status: "running",
+			})
+			const taskEnvelope = (taskId: string, parentTaskId: string, depth: number) =>
+				buildInternalTaskEnvelope({
+					id: taskId,
+					parentTaskId,
+					rootTaskId: root.rootTaskId,
+					depth,
+					agentKind: "review",
+					objective: "Inspect cleanup",
+					workspaceRoots: [parent.cwd],
+					budget: { maxDepth: 2 },
+					parentPolicy: {
+						read: true,
+						execute: false,
+						mutate: false,
+						delegate: true,
+						network: false,
+						externalSideEffects: false,
+						requireApproval: false,
+					},
+					requestedPolicy: {},
+				})
+			let entered!: () => void
+			const bothStarted = new Promise<void>((resolve) => (entered = resolve))
+			let releaseAncestor!: () => void
+			const ancestorFinished = new Promise<void>((resolve) => (releaseAncestor = resolve))
+			let ancestorSignal: AbortSignal | undefined
+			let started = 0
+			const bounded = new BoundedDelegationManager(async (item, signal) => {
+				const stopped = new Promise<void>((resolve) => {
+					if (signal.aborted) resolve()
+					else signal.addEventListener("abort", () => resolve(), { once: true })
+				})
+				if (item.id === ancestor.taskId) ancestorSignal = signal
+				if (++started === 2) entered()
+				if (item.id === descendant.taskId) await stopped
+				else await Promise.race([stopped, ancestorFinished])
+				return {
+					taskId: item.id,
+					status: item.id === descendant.taskId ? ("failed" as const) : ("completed" as const),
+					summary: item.id === descendant.taskId ? "Descendant cleanup is unconfirmed" : "Ancestor retained",
+					evidence: [],
+					changedFiles: [],
+					verification: [],
+					remainingRisks: [],
+					usage: { durationMs: 1 },
+				}
+			})
+			const runs = new AsyncSubagentRunManager(bounded)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = runs
+			const controller = new AbortController()
+			const ancestorCompletion = bounded.run(taskEnvelope(ancestor.taskId, parent.taskId, 1), controller.signal)
+			const envelope = taskEnvelope(descendant.taskId, ancestor.taskId, 2)
+			let descendantCompletion: Promise<unknown>
+			if (executionMode === "async") {
+				runs.launch(
+					envelope,
+					{
+						groupId: "descendant-group",
+						path: descendant.path,
+						nickname: descendant.nickname,
+						role: "review",
+					},
+					controller.signal,
+				)
+				descendantCompletion = runs.waitForResult(descendant.taskId)!
+			} else descendantCompletion = bounded.run(envelope, controller.signal)
+			try {
+				await bothStarted
+				await expect(provider.cancelAgent(parent as any, ancestor.taskId, "Stop the subtree")).rejects.toThrow(
+					`Managed descendant ${descendant.taskId} did not settle cleanly (status=failed, stopReason=parent_cancelled)`,
+				)
+				expect(ancestorSignal?.aborted).toBe(false)
+				await expect(descendantCompletion).resolves.toMatchObject({
+					status: "failed",
+					stopReason: "parent_cancelled",
+				})
+			} finally {
+				releaseAncestor()
+				controller.abort()
+				await Promise.all([ancestorCompletion, descendantCompletion])
+			}
+		},
+	)
+
+	it.each(["cancelAgent", "cancelTask"] as const)(
+		"finishes an independent branch through %s when another descendant fails cleanup",
+		async (caller) => {
+			const provider = makeProviderHarness()
+			const parent = Object.assign(makeParent(), {
+				instanceId: "cancellation-owner",
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn(async () => undefined),
+				lifecycleRuntime: {
+					join: vi.fn(async () => undefined),
+					waitForPersistence: vi.fn(async () => undefined),
+				},
+			})
+			;(provider as any).taskSessions.getTask = (taskId: string) =>
+				taskId === parent.taskId ? parent : undefined
+			const rehydrate = vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue(parent as any)
+			const root = await (provider as any).ensureAgentControlRoot(parent)
+			const store = (provider as any).agentControlStore as AgentControlStore
+			const ancestor = await store.createAgent({
+				taskId: "branch-owner",
+				parentTaskId: root.taskId,
+				rootTaskId: root.rootTaskId,
+				nickname: "branch_owner",
+				role: "review",
+				objective: "Own independent cleanup branches",
+				status: "running",
+			})
+			const branches = []
+			for (const nickname of ["failed_branch", "independent_branch"]) {
+				branches.push(
+					await store.createAgent({
+						taskId: nickname,
+						parentTaskId: ancestor.taskId,
+						rootTaskId: root.rootTaskId,
+						nickname,
+						role: "review",
+						objective: "Settle an owned branch",
+						status: "running",
+					}),
+				)
+			}
+			const failed = branches[0]!
+			const independent = branches[1]!
+			const records = [ancestor, failed, independent]
+			let entered!: () => void
+			const allStarted = new Promise<void>((resolve) => (entered = resolve))
+			let releaseAncestor!: () => void
+			const ancestorFinished = new Promise<void>((resolve) => (releaseAncestor = resolve))
+			const signals = new Map<string, AbortSignal>()
+			const bounded = new BoundedDelegationManager(async (item, signal) => {
+				signals.set(item.id, signal)
+				const stopped = new Promise<void>((resolve) => {
+					if (signal.aborted) resolve()
+					else signal.addEventListener("abort", () => resolve(), { once: true })
+				})
+				if (signals.size === records.length) entered()
+				if (item.id === ancestor.taskId) await Promise.race([stopped, ancestorFinished])
+				else await stopped
+				return {
+					taskId: item.id,
+					status: item.id === failed.taskId ? "failed" : "completed",
+					summary: "Owned branch settlement",
+					evidence: [],
+					changedFiles: [],
+					verification: [],
+					remainingRisks: [],
+					usage: { durationMs: 1 },
+				}
+			}, 3)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = new AsyncSubagentRunManager(bounded)
+			const controller = new AbortController()
+			const completions = records.map((record) =>
+				bounded.run(
+					buildInternalTaskEnvelope({
+						id: record.taskId,
+						parentTaskId: record.parentTaskId!,
+						rootTaskId: root.rootTaskId,
+						depth: record.taskId === ancestor.taskId ? 1 : 2,
+						agentKind: "review",
+						objective: "Inspect cleanup",
+						workspaceRoots: [parent.cwd],
+						budget: { maxDepth: 2 },
+						parentPolicy: {
+							read: true,
+							execute: false,
+							mutate: false,
+							delegate: true,
+							network: false,
+							externalSideEffects: false,
+							requireApproval: false,
+						},
+						requestedPolicy: {},
+					}),
+					controller.signal,
+				),
+			)
+			try {
+				await allStarted
+				const cancellation =
+					caller === "cancelAgent"
+						? provider.cancelAgent(parent as any, ancestor.taskId, "Stop owned branches")
+						: provider.cancelTask(parent.taskId, "webview_stop")
+				await expect(cancellation).rejects.toThrow(`Managed descendant ${failed.taskId} did not settle cleanly`)
+				expect(signals.get(independent.taskId)?.aborted).toBe(true)
+				await expect(completions[2]).resolves.toMatchObject({
+					status: "cancelled",
+					stopReason: caller === "cancelAgent" ? "parent_cancelled" : "ancestor_cancelled",
+				})
+				expect(signals.get(ancestor.taskId)?.aborted).toBe(false)
+				expect(store.getAgent(ancestor.taskId, root.rootTaskId)?.status).toBe("running")
+				const intentRecipients = store
+					.getRecentRootMailboxEntries(root.rootTaskId, 20)
+					.entries.filter((event) => event.name === "cancel_requested")
+					.sort((left, right) => left.sequence - right.sequence)
+					.map((event) => event.recipientTaskId)
+				expect(intentRecipients).toEqual([failed.taskId, independent.taskId, ancestor.taskId])
+				expect(rehydrate).not.toHaveBeenCalled()
+				if (caller === "cancelTask") {
+					expect(parent.abortTask).toHaveBeenCalledOnce()
+					expect(parent.lifecycleRuntime.join).toHaveBeenCalledOnce()
+				}
+			} finally {
+				releaseAncestor()
+				controller.abort()
+				await Promise.all(completions)
+			}
+		},
+	)
+
 	it("runs two mocked children concurrently, publishes live progress, and returns one ordered result", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -2835,6 +3553,107 @@ If complete, use attempt_completion.
 			},
 		})
 	})
+
+	it.each(["async", "blocking"] as const)(
+		"joins the previous %s terminal publication before admitting a retained follow-up",
+		async (execution) => {
+			const provider = makeProviderHarness(2, { maxConcurrentSubagents: 1 })
+			const parent = makeParent()
+			;(provider as any).taskSessions.getTask = (taskId: string) =>
+				taskId === parent.taskId ? parent : undefined
+			let entered!: () => void
+			const publicationEntered = new Promise<void>((resolve) => (entered = resolve))
+			let releasePublication!: () => void
+			const publication = new Promise<void>((resolve) => (releasePublication = resolve))
+			let blockFirstPublication = true
+			parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
+				if (group.status === "completed" && blockFirstPublication) {
+					blockFirstPublication = false
+					entered()
+					await publication
+				}
+				parent.clineMessages.splice(0, parent.clineMessages.length, { subagentGroup: structuredClone(group) })
+			})
+			const completed = (taskId: string) => ({
+				taskId,
+				status: "completed" as const,
+				summary: "Reviewed",
+				evidence: [],
+				changedFiles: [],
+				verification: [],
+				remainingRisks: [],
+				usage: { durationMs: 1 },
+			})
+			let releaseFirst!: () => void
+			const firstCompletion = new Promise<void>((resolve) => (releaseFirst = resolve))
+			let enteredRunner!: () => void
+			const runnerEntered = new Promise<void>((resolve) => (enteredRunner = resolve))
+			const runner = vi.fn<InternalTaskRunner>(async (envelope, signal) => {
+				if (runner.mock.calls.length === 1) {
+					enteredRunner()
+					await firstCompletion
+					return completed(envelope.id)
+				}
+				await new Promise<void>((resolve) => {
+					if (signal.aborted) resolve()
+					else signal.addEventListener("abort", () => resolve(), { once: true })
+				})
+				return completed(envelope.id)
+			})
+			const bounded = new BoundedDelegationManager(runner)
+			const runs = new AsyncSubagentRunManager(bounded)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = runs
+			const controller = new AbortController()
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ task_name: "retained_alias", objective: "Inspect this root", agent_kind: "review" },
+			])
+			const firstTaskId = prepared.envelopes[0].id
+			const initialRun =
+				execution === "async"
+					? provider.launchPreparedSubagentGroup(parent as any, prepared, controller.signal)
+					: provider.runSubagentGroup(parent as any, prepared, controller.signal)
+			await runnerEntered
+			const firstRunId = runs.getEvents(firstTaskId).at(0)?.runId
+			releaseFirst()
+			await publicationEntered
+			vi.useFakeTimers()
+			let followup: Promise<unknown> | undefined
+			try {
+				if (execution === "async") expect(firstRunId).toEqual(expect.any(String))
+				let admitted = false
+				followup = provider.followupAgentTask(parent as any, firstTaskId, "Inspect the next case")
+				void followup.then(
+					() => (admitted = true),
+					() => undefined,
+				)
+				// Drain the deterministic mock admission queue without advancing a deadline.
+				await vi.advanceTimersByTimeAsync(0)
+				expect(admitted).toBe(false)
+				expect(runner).toHaveBeenCalledOnce()
+				releasePublication()
+				const second = (await followup) as any
+				expect(second).toMatchObject({ taskId: firstTaskId, followup: true })
+				expect(second.runId).not.toBe(firstRunId)
+				const retained = (await provider.listAgents(parent as any)) as any
+				const groupId = retained.agents.find((agent: any) => agent.taskId === firstTaskId).groupId
+				await provider.cancelSubagentGroup(parent.taskId, groupId)
+				await expect(runs.waitForResult(firstTaskId)).resolves.toMatchObject({
+					status: "cancelled",
+					stopReason: "parent_cancelled",
+				})
+			} finally {
+				releasePublication()
+				controller.abort()
+				await followup?.catch(() => undefined)
+				runs.cancel(firstTaskId, "Test cleanup", "parent_cancelled")
+				await runs.waitForResult(firstTaskId)
+				await initialRun.catch(() => undefined)
+				await vi.advanceTimersByTimeAsync(0)
+				vi.useRealTimers()
+			}
+		},
+	)
 
 	it("exposes the root launch limits before the first child and freezes them at preparation", async () => {
 		const routingSettings: Parameters<typeof makeProviderHarness>[1] = {

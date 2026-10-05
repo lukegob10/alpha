@@ -17,6 +17,7 @@ import type { ContextRecoveryStatus } from "../context-management/recovery"
 import { evaluateCompactionProgress, getCompactionTargetTokens } from "../context-management/recovery"
 import { getModelReservedOutputTokens } from "../../shared/api"
 import { createTokenCountContext, TokenCountContext } from "./tokenCountContext"
+import { getToolCallId, getToolResultId } from "../../utils/tool-id"
 
 export {
 	createTokenCountContext,
@@ -149,28 +150,6 @@ export type ToolCallResultPair = {
 	resultMessageIndexes: number[]
 }
 
-function getToolCallId(block: unknown): string | undefined {
-	if (!block || typeof block !== "object") return undefined
-	const candidate = block as { type?: unknown; id?: unknown; tool_call_id?: unknown }
-	if (candidate.type !== "tool_use" && candidate.type !== "tool_call") return undefined
-	if (typeof candidate.id === "string" && candidate.id.length > 0) return candidate.id
-	return typeof candidate.tool_call_id === "string" && candidate.tool_call_id.length > 0
-		? candidate.tool_call_id
-		: undefined
-}
-
-function getToolResultId(block: unknown): string | undefined {
-	if (!block || typeof block !== "object") return undefined
-	const candidate = block as { type?: unknown; tool_use_id?: unknown; tool_call_id?: unknown }
-	if (candidate.type !== "tool_result") return undefined
-	if (typeof candidate.tool_use_id === "string" && candidate.tool_use_id.length > 0) {
-		return candidate.tool_use_id
-	}
-	return typeof candidate.tool_call_id === "string" && candidate.tool_call_id.length > 0
-		? candidate.tool_call_id
-		: undefined
-}
-
 /**
  * Collects the message indexes participating in each tool call/result pair.
  * The returned map is useful to truncation policies: a pair can be hidden as
@@ -211,24 +190,22 @@ export function getToolCallResultPairs(messages: ApiMessage[]): Map<string, Tool
  * history; callers that need recovery can use `injectSyntheticToolResults`.
  */
 export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
-	const calls = new Set<string>()
-	const results = new Set<string>()
+	const pending = new Set<string>()
 	for (const message of messages) {
 		if (!Array.isArray(message.content)) continue
 		for (const block of message.content) {
 			const callId = getToolCallId(block)
 			if (callId) {
-				if (calls.has(callId)) return false
-				calls.add(callId)
+				if (pending.has(callId)) return false
+				pending.add(callId)
 			}
 			const resultId = getToolResultId(block)
 			if (resultId) {
-				if (!calls.has(resultId) || results.has(resultId)) return false
-				results.add(resultId)
+				if (!pending.delete(resultId)) return false
 			}
 		}
 	}
-	return calls.size === results.size
+	return pending.size === 0
 }
 
 export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
@@ -271,15 +248,7 @@ function nextStreamItem<T>(iterator: AsyncIterator<T>, signal?: AbortSignal): Pr
 			signal.removeEventListener("abort", onAbort)
 			callback()
 		}
-		const onAbort = () => {
-			try {
-				const cleanup = iterator.return?.()
-				if (cleanup) void Promise.resolve(cleanup).catch(() => undefined)
-			} catch {
-				// Caller cancellation remains authoritative even if iterator cleanup fails.
-			}
-			finish(() => reject(getSignalAbortReason(signal)))
-		}
+		const onAbort = () => finish(() => reject(getSignalAbortReason(signal)))
 		signal.addEventListener("abort", onAbort, { once: true })
 		if (signal.aborted) onAbort()
 		pending.then(
@@ -287,6 +256,16 @@ function nextStreamItem<T>(iterator: AsyncIterator<T>, signal?: AbortSignal): Pr
 			(error) => finish(() => reject(error)),
 		)
 	})
+}
+
+/** Release an interrupted/terminal iterator without waiting for an uncooperative transport. */
+function closeSummaryIterator(iterator: AsyncIterator<unknown>): void {
+	try {
+		const cleanup = iterator.return?.()
+		if (cleanup) void Promise.resolve(cleanup).catch(() => undefined)
+	} catch {
+		// Cleanup must not replace caller cancellation or the observed provider outcome.
+	}
 }
 
 /** Race non-provider preparation work with terminal caller cancellation. */
@@ -655,12 +634,19 @@ The goal is for work to continue seamlessly after condensation - as if it never 
  * @returns The messages with synthetic tool_results appended if needed
  */
 export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[] {
-	// Find orphans (tool_calls without matching tool_results).  Pair discovery is
-	// shared with truncation so `tool_use` and `tool_call` histories follow the
-	// same integrity rules.
-	const orphanIds = [...getToolCallResultPairs(messages).values()]
-		.filter((pair) => pair.callMessageIndexes.length > 0 && pair.resultMessageIndexes.length === 0)
-		.map((pair) => pair.id)
+	// A provider may reuse a completed call ID. Only a result for the currently
+	// pending occurrence can satisfy that call; older receipts remain untouched.
+	const pending = new Set<string>()
+	for (const message of messages) {
+		if (!Array.isArray(message.content)) continue
+		for (const block of message.content) {
+			const callId = getToolCallId(block)
+			if (callId !== undefined) pending.add(callId)
+			const resultId = getToolResultId(block)
+			if (resultId !== undefined) pending.delete(resultId)
+		}
+	}
+	const orphanIds = [...pending]
 
 	if (orphanIds.length === 0) {
 		return messages
@@ -737,6 +723,7 @@ export type CompactionDiagnostic = {
 		| "invalid_tail_count"
 		| "provider_error"
 		| "incomplete_outcome"
+		| "unexpected_tool_output"
 		| "empty_summary"
 		| "invalid_candidate_count"
 		| "candidate_over_budget"
@@ -813,8 +800,10 @@ export type SummarizeConversationOptions = {
  * Condensing converts historical tool blocks to text, so carrying the active
  * tool registry or a required/automatic tool choice into this request is both
  * unnecessary and provider-dependent.  Keep tracing/request controls intact,
- * but explicitly provide an empty tool list and disable tool selection.  The
- * input object is never mutated.  `undefined` remains `undefined` for callers
+ * but explicitly provide an empty tool list and disable tool selection.
+ * Live instruction fragments must not override the summary system prompt, and
+ * a provider must not append this operation to the live response chain. The
+ * input object is never mutated. `undefined` remains `undefined` for callers
  * that did not provide metadata, preserving the historical API call shape.
  */
 export function getToolFreeMetadata(
@@ -822,13 +811,16 @@ export function getToolFreeMetadata(
 ): ApiHandlerCreateMessageMetadata | undefined {
 	if (!metadata) return undefined
 
-	return {
+	const isolated: ApiHandlerCreateMessageMetadata = {
 		...metadata,
+		suppressPreviousResponseId: true,
 		tools: [],
 		tool_choice: "none",
 		parallelToolCalls: false,
 		allowedFunctionNames: [],
 	}
+	delete isolated.instructionFragments
+	return isolated
 }
 
 /** Alias for consumers that prefer an imperative name. */
@@ -1083,6 +1075,7 @@ ${commandBlocks}
 	let completedOutcomeObserved = false
 	let unsuccessfulOutcome: ApiStreamOutcomeChunk | undefined
 	let streamError: ApiStreamError | undefined
+	let unexpectedToolOutput = false
 	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
 		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
 		return finish(
@@ -1102,41 +1095,58 @@ ${commandBlocks}
 		// active task tool registry leak into this summarization-only request.
 		const stream = apiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
 		const iterator = stream[Symbol.asyncIterator]()
-
-		while (true) {
-			const next = await nextStreamItem(iterator, signal)
-			if (next.done) break
-			const chunk = next.value
-			signal?.throwIfAborted()
-			if (chunk.type === "text") {
-				diagnostic.textParts++
-				diagnostic.summaryCharacters += chunk.text.length
-			} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
-			else if (chunk.type === "tool_call") diagnostic.toolParts++
-			if (chunk.type === "error") {
-				// An explicit provider failure is terminal for condensing. Keep the
-				// first one and ignore any cleanup/outcome chunks that follow it.
-				streamError ??= chunk
-				continue
-			}
-			if (chunk.type === "usage") {
-				// Usage may arrive after a provider error while the transport drains;
-				// preserve the final accounting even though the summary is rejected.
-				cost = chunk.totalCost ?? 0
-				continue
-			}
-			if (streamError) continue
-			if (chunk.type === "text") {
-				summary += chunk.text
-			} else if (chunk.type === "outcome") {
-				if (chunk.status === "completed" && chunk.terminal) {
-					completedOutcomeObserved = true
-				} else {
-					// Once a provider declares this summary incomplete, failed, or
-					// cancelled, a later nominal completion cannot make partial text safe.
-					unsuccessfulOutcome ??= chunk
+		let reachedEof = false
+		try {
+			while (true) {
+				const next = await nextStreamItem(iterator, signal)
+				if (next.done) {
+					reachedEof = true
+					break
 				}
+				const chunk = next.value
+				signal?.throwIfAborted()
+				if (chunk.type === "text") {
+					diagnostic.textParts++
+					diagnostic.summaryCharacters += chunk.text.length
+				} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
+				else if (
+					chunk.type === "tool_call" ||
+					chunk.type === "tool_call_start" ||
+					chunk.type === "tool_call_delta" ||
+					chunk.type === "tool_call_end" ||
+					chunk.type === "tool_call_partial"
+				) {
+					diagnostic.toolParts++
+					unexpectedToolOutput = true
+				}
+				if (chunk.type === "error") {
+					streamError ??= chunk
+					continue
+				}
+				if (chunk.type === "usage") {
+					// Keep accounting delivered before the terminal outcome, including
+					// usage after an explicit error while the transport drains.
+					cost = chunk.totalCost ?? 0
+					continue
+				}
+				if (chunk.type === "outcome") {
+					if (!streamError) {
+						if (chunk.status === "completed" && chunk.terminal && !chunk.requiresContinuation) {
+							completedOutcomeObserved = true
+						} else {
+							// An incomplete declaration cannot be repaired by a later completion.
+							unsuccessfulOutcome ??= chunk
+						}
+					}
+					// A canonical terminal outcome ends the response. Further reads can
+					// stall indefinitely or append text belonging to a different response.
+					if (chunk.terminal) break
+					continue
+				}
+				if (!streamError && chunk.type === "text") summary += chunk.text
 			}
+		} finally {
+			if (!reachedEof) closeSummaryIterator(iterator)
 		}
 	} catch (error) {
 		signal?.throwIfAborted()
@@ -1177,6 +1187,12 @@ ${commandBlocks}
 	diagnostic.lifecycleRequired = apiHandler.streamCapabilities?.lifecycle === true
 	diagnostic.completedOutcomeObserved = completedOutcomeObserved
 	diagnostic.unsuccessfulOutcome = unsuccessfulOutcome?.status
+	if (unexpectedToolOutput) {
+		return finish(
+			{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"unexpected_tool_output",
+		)
+	}
 
 	// Lifecycle-capable providers promise an explicit terminal outcome, so EOF
 	// without completed evidence must fail closed. Legacy providers have no such

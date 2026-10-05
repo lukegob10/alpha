@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest"
 import {
 	CODEX_MODEL_INSTRUCTIONS,
 	CODEX_MODEL_INSTRUCTIONS_SHA256,
+	CODEX_GPT61_REFERENCE_COMMIT,
+	CODEX_GPT61_REFERENCE_RETRIEVED_AT,
 	CODEX_PROMPT_SOURCE_COMMIT,
 	CODEX_PROMPT_SOURCE_RETRIEVED_AT,
 	DEFAULT_CODEX_MODEL_PROMPT,
@@ -14,6 +16,7 @@ import {
 } from "../codex-model-instructions"
 
 const codexModelIds = [
+	["gpt-6.1-sol", "gpt-6.1-sol"],
 	["gpt-6-astra", "gpt-6-astra"],
 	["gpt-6-sol", "gpt-6-sol"],
 	["gpt-6-luna", "gpt-6-luna"],
@@ -38,6 +41,20 @@ const pinnedSourceSha256 = {
 } as const
 
 describe("pinned Codex model instructions", () => {
+	it("recognizes GPT-6.1 Sol without selecting the unsupported-model fallback", () => {
+		const result = resolveCodexModelPrompt("copilot/gpt-6.1-sol")
+
+		expect(result).toMatchObject({
+			matchedModelId: "copilot/gpt-6.1-sol",
+			promptSlug: "gpt-6.1-sol",
+			isFallback: false,
+		})
+		expect(result.instructions).toContain("State actions directly")
+		expect(result.instructions).toContain("Acknowledge and repair meaningful errors briefly")
+		expect(CODEX_GPT61_REFERENCE_COMMIT).toBe("b741e480e203f037ca726bc2a76d99a8e8668e66")
+		expect(CODEX_GPT61_REFERENCE_RETRIEVED_AT).toBe("2026-10-03")
+	})
+
 	it("records the current upstream catalog provenance", () => {
 		expect(CODEX_PROMPT_SOURCE_COMMIT).toBe("4994306e9f80448bde85e770a0b0c93d3fee5665")
 		expect(CODEX_PROMPT_SOURCE_RETRIEVED_AT).toBe("2026-09-29")
@@ -101,12 +118,11 @@ describe("pinned Codex model instructions", () => {
 	})
 
 	it("keeps every embedded prompt byte-for-byte equal to its pinned source digest", () => {
-		for (const [slug, instructions] of Object.entries(CODEX_MODEL_INSTRUCTIONS)) {
+		for (const [slug, expectedDigest] of Object.entries(pinnedSourceSha256)) {
+			const instructions = CODEX_MODEL_INSTRUCTIONS[slug as keyof typeof pinnedSourceSha256]
 			const digest = createHash("sha256").update(instructions, "utf8").digest("hex")
-			expect(digest, slug).toBe(pinnedSourceSha256[slug as keyof typeof pinnedSourceSha256])
-			expect(CODEX_MODEL_INSTRUCTIONS_SHA256[slug as keyof typeof CODEX_MODEL_INSTRUCTIONS]).toBe(
-				pinnedSourceSha256[slug as keyof typeof pinnedSourceSha256],
-			)
+			expect(digest, slug).toBe(expectedDigest)
+			expect(CODEX_MODEL_INSTRUCTIONS_SHA256[slug as keyof typeof pinnedSourceSha256]).toBe(expectedDigest)
 			expect(instructions.toLowerCase(), `${slug} sandbox language`).not.toContain("sandbox")
 		}
 	})

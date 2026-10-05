@@ -15,11 +15,96 @@ import {
 	cleanupAfterTruncation,
 	extractCommandBlocks,
 	injectSyntheticToolResults,
+	hasToolCallResultIntegrity,
+	getToolCallResultPairs,
 	toolUseToText,
 	toolResultToText,
 	convertToolBlocksToText,
 	transformMessagesForCondensing,
 } from "../index"
+
+describe("tool transaction occurrence integrity", () => {
+	const call = (name = "read_file"): ApiMessage => ({
+		role: "assistant",
+		content: [{ type: "tool_use", id: "reused-call", name, input: {} }],
+	})
+	const result = (content: string): ApiMessage => ({
+		role: "user",
+		content: [{ type: "tool_result", tool_use_id: "reused-call", content, is_error: true }],
+	})
+
+	it("accepts two completed occurrences of a provider-reused call ID", () => {
+		const messages = [call(), result("Error: first read failed"), call("list_files"), result("Error: denied")]
+		const before = structuredClone(messages)
+		expect(hasToolCallResultIntegrity(messages)).toBe(true)
+		expect(getToolCallResultPairs(messages).get("reused-call")).toEqual({
+			id: "reused-call",
+			callMessageIndexes: [0, 2],
+			resultMessageIndexes: [1, 3],
+		})
+		expect(messages).toEqual(before)
+	})
+
+	it("rejects duplicate open calls and duplicate terminal receipts", () => {
+		expect(hasToolCallResultIntegrity([call(), call(), result("Error: denied")])).toBe(false)
+		expect(hasToolCallResultIntegrity([call(), result("Error: denied"), result("Error: cancelled")])).toBe(false)
+	})
+
+	it.each(["tool_use_id", "tool_call_id"])(
+		"repairs only the current missing result after a completed reused-ID %s transaction",
+		(resultIdField) => {
+			const messages = [
+				call(),
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							[resultIdField]: "reused-call",
+							content: "Error: denied",
+							is_error: true,
+						},
+					],
+				},
+				call("list_files"),
+			] as unknown as ApiMessage[]
+			const before = structuredClone(messages)
+			const repaired = injectSyntheticToolResults(messages)
+			expect(repaired).toHaveLength(4)
+			expect(repaired.slice(0, 3)).toEqual(before)
+			expect(repaired[3].content).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "reused-call",
+					content: "Context condensation triggered. Tool execution deferred.",
+				},
+			])
+			expect(hasToolCallResultIntegrity(repaired)).toBe(true)
+			expect(injectSyntheticToolResults(repaired)).toBe(repaired)
+			expect(messages).toEqual(before)
+		},
+	)
+
+	it("preserves an accepted legacy error result rather than injecting a successful replacement", () => {
+		const messages = [
+			call(),
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "",
+						tool_call_id: "reused-call",
+						content: null,
+						is_error: true,
+					},
+				],
+			},
+		] as unknown as ApiMessage[]
+		expect(hasToolCallResultIntegrity(messages)).toBe(true)
+		expect(injectSyntheticToolResults(messages)).toEqual(messages)
+	})
+})
 
 vi.mock("../../../api/transform/image-cleaning", () => ({
 	maybeRemoveImageBlocks: vi.fn((messages: ApiMessage[], _apiHandler: ApiHandler) => [...messages]),

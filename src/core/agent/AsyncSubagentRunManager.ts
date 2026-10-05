@@ -59,6 +59,8 @@ export class AsyncSubagentRunManager {
 	private readonly runs = new Map<string, AsyncSubagentRunRecord>()
 	private readonly knownTaskIds = new Set<string>()
 	private readonly events: SubagentLifecycleEvent[] = []
+	private readonly pendingNotifications: SubagentLifecycleEvent[] = []
+	private publishing = false
 	private nextEventSequence = 1
 	private readonly listeners = new Set<AsyncSubagentLifecycleListener>()
 
@@ -364,12 +366,24 @@ export class AsyncSubagentRunManager {
 			snapshot: cloneState(record.state),
 		} as SubagentLifecycleEvent
 		this.events.push(event)
-		for (const listener of this.listeners) {
-			try {
-				listener(cloneEvent(event))
-			} catch {
-				// One observer must not corrupt lifecycle state or another observer.
+		this.pendingNotifications.push(event)
+		// An observer may synchronously cancel or launch a run. Finish delivering
+		// the current event before any observer receives the resulting later event.
+		if (this.publishing) return
+		this.publishing = true
+		try {
+			let next: SubagentLifecycleEvent | undefined
+			while ((next = this.pendingNotifications.shift())) {
+				for (const listener of this.listeners) {
+					try {
+						listener(cloneEvent(next))
+					} catch {
+						// One observer must not corrupt lifecycle state or another observer.
+					}
+				}
 			}
+		} finally {
+			this.publishing = false
 		}
 	}
 }

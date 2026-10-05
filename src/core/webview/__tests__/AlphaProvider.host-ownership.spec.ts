@@ -9,6 +9,7 @@ import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { AgentLifecycleProjector } from "../AgentLifecycleProjection"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
+import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { Task } from "../../task/Task"
 import { readTaskMessages } from "../../task-persistence/taskMessages"
@@ -68,6 +69,7 @@ function makeProvider(storagePath: string) {
 		agentLifecycleMessageQueue: Promise.resolve(),
 		agentLifecycleJournals: new Map(),
 		preparedSubagentGroups: new Map(),
+		subagentNicknameRegistry: new SubagentNicknameRegistry(),
 		subagentDescriptors: new Map(),
 		subagentGroupControllers: new Map(),
 		reservedSubagentSlots: new Map(),

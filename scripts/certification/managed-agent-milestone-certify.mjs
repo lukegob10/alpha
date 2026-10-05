@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import {
@@ -32,7 +33,7 @@ if (help) {
   --strict  Fail when deterministic merge-dependent evidence is still missing.
   --list    Print resolved commands and pending integration rows without running tests.
   --self-check
-			Verify evidence output-path confinement and strict debt handling without running tests.
+			Verify Vitest diagnostics, evidence output-path confinement and strict debt handling without running tests.
   --evidence <path>
             Write deterministic, commit/source-bound JSON evidence inside the repository.
             Default: ${defaultEvidencePath}`)
@@ -136,6 +137,7 @@ function parseArguments(args) {
 }
 
 function runSelfCheck() {
+	const vitestSummaryCases = runVitestSummarySelfCheck()
 	const pnpm = resolvePnpmInvocation()
 	const pnpmVersion = spawnSync(pnpm.command, [...pnpm.args, "--version"], {
 		encoding: "utf8",
@@ -199,8 +201,65 @@ function runSelfCheck() {
 	}
 
 	console.log(
-		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; livePreflight=${livePreflightMode}; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2)`,
+		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; livePreflight=${livePreflightMode}; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2; vitestSummary=${vitestSummaryCases})`,
 	)
+}
+
+function runVitestSummarySelfCheck() {
+	const reportDirectory = mkdtempSync(path.join(tmpdir(), "alpha-managed-agent-certification-self-check-"))
+	const reportPath = path.join(reportDirectory, "vitest.json")
+	const report = {
+		numTotalTestSuites: 3,
+		numPassedTestSuites: 1,
+		numFailedTestSuites: 1,
+		numPendingTestSuites: 1,
+		numTotalTests: 5,
+		numPassedTests: 1,
+		numFailedTests: 1,
+		numPendingTests: 2,
+		numTodoTests: 1,
+		testResults: [
+			{
+				assertionResults: [
+					{ fullName: "passed assertion", status: "passed" },
+					{ fullName: "failed assertion", status: "failed" },
+					{ fullName: "skipped assertion", status: "skipped" },
+					{ fullName: "legacy pending assertion", status: "pending" },
+					{ fullName: "todo assertion", status: "todo" },
+				],
+			},
+		],
+	}
+	try {
+		writeFileSync(reportPath, JSON.stringify(report))
+		assert.deepStrictEqual(
+			readVitestSummary("self-check", reportPath),
+			{
+				suites: { total: 3, passed: 1, failed: 1, skipped: 1 },
+				tests: { total: 5, passed: 1, failed: 1, skipped: 2, todo: 1 },
+				failedTests: ["failed assertion"],
+				skippedTests: ["skipped assertion", "legacy pending assertion", "todo assertion"],
+			},
+			"Vitest diagnostics must retain skipped, legacy pending and todo names without changing counts",
+		)
+		writeFileSync(reportPath, JSON.stringify({ ...report, numPendingTests: -1 }))
+		assert.deepStrictEqual(readVitestSummary("self-check", reportPath), {
+			error: "self-check emitted an invalid Vitest JSON count for numPendingTests",
+		})
+		writeFileSync(reportPath, "{")
+		assert.match(
+			readVitestSummary("self-check", reportPath).error,
+			/^self-check did not emit readable Vitest JSON:/,
+		)
+		rmSync(reportPath)
+		assert.match(
+			readVitestSummary("self-check", reportPath).error,
+			/^self-check did not emit readable Vitest JSON:/,
+		)
+		return 4
+	} finally {
+		removeReportDirectory(reportDirectory)
+	}
 }
 
 function runLivePlaybookPreflightSelfCheck() {
@@ -672,7 +731,10 @@ function readVitestSummary(trackId, reportPath) {
 			.filter((assertion) => assertion.status === "failed")
 			.map((assertion) => assertion.fullName),
 		skippedTests: assertions
-			.filter((assertion) => assertion.status === "pending" || assertion.status === "todo")
+			.filter(
+				(assertion) =>
+					assertion.status === "skipped" || assertion.status === "pending" || assertion.status === "todo",
+			)
 			.map((assertion) => assertion.fullName),
 	}
 }

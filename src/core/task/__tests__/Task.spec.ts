@@ -5499,6 +5499,25 @@ describe("Alpha", () => {
 			expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(2)
 		})
 
+		it("closes the current call occurrence even when an older call reused its ID", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "assistant", content: [{ type: "tool_use", id: "reused-id", name: "read_file", input: {} }] },
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused-id", content: "old output" }] },
+				{ role: "assistant", content: [{ type: "tool_use", id: "reused-id", name: "read_file", input: {} }] },
+			] as any
+			task.assistantMessageSavedToHistory = true
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const response = createAgentResponse([
+				{ type: "tool_call", id: "reused-id", name: "read_file", arguments: {} },
+			])
+			await expect((task as any).persistUnexecutedTerminalToolResults(response, "cancelled")).resolves.toBe(true)
+			expect(task.apiConversationHistory.at(-1)).toMatchObject({
+				role: "user",
+				content: [{ tool_use_id: "reused-id", is_error: true, content: expect.stringContaining("cancelled") }],
+			})
+		})
+
 		it("retains terminal error receipts in memory when their history write fails", async () => {
 			const task = createTask()
 			task.apiConversationHistory = [
@@ -7485,6 +7504,51 @@ describe("Alpha", () => {
 				expect(task.apiConversationHistory).toEqual([])
 			}
 		})
+
+		it.each([false, true])(
+			"resumes reversed historical receipts without replacing output (legacy calls: %s)",
+			async (legacyCalls) => {
+				const task = createTask()
+				const receipts = [
+					{ type: "tool_result", tool_call_id: "second-reload", content: "actual failure", is_error: true },
+					{ type: "tool_result", tool_call_id: "first-reload", content: "actual success", is_error: false },
+				]
+				const savedApiHistory = [
+					{ role: "user", content: "inspect", ts: 1 },
+					{
+						role: "assistant",
+						content: ["first-reload", "second-reload"].map((id) =>
+							legacyCalls
+								? {
+										type: "tool_call",
+										tool_call_id: id,
+										name: "read_file",
+										input: { path: `${id}.txt` },
+									}
+								: { type: "tool_use", id, name: "read_file", input: { path: `${id}.txt` } },
+						),
+						ts: 2,
+					},
+					{ role: "user", content: receipts, ts: 3 },
+				]
+				const original = structuredClone(savedApiHistory)
+				vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue([
+					{ ts: 1, type: "say", say: "text", text: "historical task" },
+				])
+				vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(savedApiHistory)
+				vi.spyOn(task as any, "overwriteAlphaMessages").mockResolvedValue(true)
+				vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+				vi.spyOn(task, "say").mockResolvedValue(undefined)
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "messageResponse", text: "continue", images: [] })
+				const continueLoop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+				await task["resumeTaskFromHistory"]()
+				expect(continueLoop).toHaveBeenCalledOnce()
+				const content = continueLoop.mock.calls[0][0] as Array<{ type: string }>
+				expect(content.filter((block) => block.type === "tool_result")).toEqual(receipts)
+				expect(savedApiHistory).toEqual(original)
+			},
+		)
 
 		it("repairs an interrupted tool call when a root task resumes after reload", async () => {
 			const task = createTask()

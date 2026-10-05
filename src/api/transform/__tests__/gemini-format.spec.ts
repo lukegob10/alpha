@@ -227,7 +227,7 @@ describe("convertAnthropicMessageToGemini", () => {
 		])
 	})
 
-	it("should handle empty tool result content", () => {
+	it("retains a null terminal result paired with its matching call", () => {
 		const anthropicMessage: Anthropic.Messages.MessageParam = {
 			role: "user",
 			content: [
@@ -239,10 +239,24 @@ describe("convertAnthropicMessageToGemini", () => {
 			],
 		}
 
-		const result = convertAnthropicMessageToGemini(anthropicMessage)
+		const result = convertAnthropicMessageToGemini(anthropicMessage, {
+			toolIdToName: new Map([["calculator-123", "calculator"]]),
+		})
 
-		// Should skip the empty tool result
-		expect(result).toEqual([])
+		expect(result).toEqual([
+			{
+				role: "user",
+				parts: [
+					{
+						functionResponse: {
+							id: "calculator-123",
+							name: "calculator",
+							response: { name: "calculator", content: "" },
+						},
+					},
+				],
+			},
+		])
 	})
 
 	it("should convert a message with tool result as array with text only", () => {

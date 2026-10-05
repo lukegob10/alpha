@@ -16,18 +16,29 @@ export const lanes = {
 		proves: "Extension dependency and UI contracts; includes bundle prerequisite",
 		commands: [
 			["bundle"],
-			...["packages/types", "packages/core", "packages/ipc", "packages/telemetry", "webview-ui", "src"].map(
-				(directory) => ["--dir", directory, "test"],
-			),
+			...[
+				"packages/types",
+				"packages/core",
+				"packages/ipc",
+				"packages/telemetry",
+				"packages/build",
+				"webview-ui",
+				"src",
+			].map((directory) => ["--dir", directory, "test"]),
 		],
 		// Ordinary workspace units retain their declared skips, recorded in each
 		// receipt. Hard acceptance lanes below continue to require every test.
 		receipts: [
 			null,
-			...["packages/types", "packages/core", "packages/ipc", "packages/telemetry", "webview-ui", "src"].map(
-				(directory) =>
-					directory === "packages/telemetry" ? null : { runner: "vitest", packageDir: directory },
-			),
+			...[
+				"packages/types",
+				"packages/core",
+				"packages/ipc",
+				"packages/telemetry",
+				"packages/build",
+				"webview-ui",
+				"src",
+			].map((directory) => ({ runner: "vitest", packageDir: directory })),
 		],
 	},
 	focused: {

@@ -53,18 +53,8 @@ export async function exerciseRenderedAcceptance(
 			throw error
 		}
 	}
-	const key = async (key: string, code: string, keyCode: number, modifiers = 0, target = workbenchSession) => {
-		await cdp.request(
-			"Input.dispatchKeyEvent",
-			{ type: "keyDown", key, code, windowsVirtualKeyCode: keyCode, modifiers },
-			target,
-		)
-		await cdp.request(
-			"Input.dispatchKeyEvent",
-			{ type: "keyUp", key, code, windowsVirtualKeyCode: keyCode, modifiers },
-			target,
-		)
-	}
+	const outputPreview =
+		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
 	const click = async (element: string) => {
 		const position = await evaluate<{ x: number; y: number }>(
 			`(()=>{const e=${element};e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();const f=document.getElementById('active-frame').getBoundingClientRect();return {x:f.x+r.x+r.width/2,y:f.y+r.y+r.height/2}})()`,
@@ -128,18 +118,17 @@ export async function exerciseRenderedAcceptance(
 		assert.equal(detail?.nonce, nonce)
 		assert.equal(detail?.stage, stage)
 		if (stage === "settings-edit") {
-			await activate("button", "Agents")
-			await check("d.querySelector('#max-concurrent-subagents-input')?.value==='3'")
-			await click("d.querySelector('#max-concurrent-subagents-input')")
-			await key("a", "KeyA", 65, 2)
-			await cdp.request("Input.insertText", { text: "4" }, workbenchSession)
-			await check("d.querySelector('#max-concurrent-subagents-input')?.value==='4'")
+			await activate('[data-testid="tab-terminal"]')
+			await check(`${outputPreview}?.textContent?.includes('Medium (10KB)')`)
+			await click(outputPreview)
+			await activate('[role="option"]', "Large (20KB)")
+			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
 			await evaluate(
 				"(()=>{const w=d.defaultView;w.__alphaUiRefreshSequences=[];w.__alphaUiRefreshObserver=e=>{const seq=e.data?.state?.taskStateSeq;if(e.data?.type==='state'&&Number.isInteger(seq)&&!w.__alphaUiRefreshSequences.includes(seq)&&w.__alphaUiRefreshSequences.length<8)w.__alphaUiRefreshSequences.push(seq)};w.addEventListener('message',w.__alphaUiRefreshObserver);return true})()",
 			)
 		} else if (stage === "settings-refresh-discard") {
 			await check("d.defaultView.__alphaUiRefreshSequences.length>=2")
-			await check("d.querySelector('#max-concurrent-subagents-input')?.value==='4'")
+			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
 			const sequences = await evaluate<number[]>("d.defaultView.__alphaUiRefreshSequences")
 			await fs.writeFile(
 				path.join(directory, "ui-settings-refresh-count.json"),
@@ -152,11 +141,11 @@ export async function exerciseRenderedAcceptance(
 			await check("d.body.innerText.includes('Unsaved Changes')")
 			await activate('[role="alertdialog"] button', "Cancel")
 			await check(
-				"!d.querySelector('[role=alertdialog]')&&d.querySelector('#max-concurrent-subagents-input')?.value==='4'",
+				`!d.querySelector('[role=alertdialog]')&&${outputPreview}?.textContent?.includes('Large (20KB)')`,
 			)
 			await activate("button", "Done")
 			await activate('[role="alertdialog"] button', "Discard changes")
-			await check("!d.querySelector('#max-concurrent-subagents-input')")
+			await check(`!(${outputPreview})`)
 		} else if (stage.endsWith("-apply") || stage === "discard-discard") {
 			assert.ok(detail?.nickname)
 			const action = `[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${JSON.stringify(`Actions for ${detail.nickname}`)})`

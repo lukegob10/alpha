@@ -4,6 +4,7 @@ import OpenAI from "openai"
 
 import {
 	type ModelInfo,
+	type ModelRequestPhase,
 	type ProviderSettings,
 	openAiModelInfoSaneDefaults,
 	getVscodeLlmModelInfo,
@@ -31,6 +32,7 @@ import {
 	isLanguageModelTextPartLike,
 	isLanguageModelToolCallPartLike,
 } from "../transform/vscode-lm-format"
+import { normalizeToolHistory } from "../transform/tool-history"
 
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
@@ -272,7 +274,7 @@ function getAbortSignalReason(signal: AbortSignal): unknown {
 	return error
 }
 
-type VsCodeLmRequestPhase = "model-selection" | "request-admission" | "first-response-chunk" | "response-stream"
+type VsCodeLmRequestPhase = ModelRequestPhase
 
 function normalizeVsCodeLmStreamError(
 	error: Error,
@@ -608,7 +610,7 @@ function decodeVsCodeLmStatefulMarker(value: unknown): Uint8Array | undefined {
 function convertToStatefulVsCodeLmMessages(
 	messages: Anthropic.Messages.MessageParam[],
 ): vscode.LanguageModelChatMessage[] {
-	return messages.flatMap((message) => {
+	return normalizeToolHistory(messages).flatMap((message) => {
 		const converted = convertToVsCodeLmMessages([message])
 		const marker = decodeVsCodeLmStatefulMarker((message as VsCodeLmPersistedMessage).vscodeLmStatefulMarker)
 
@@ -1167,6 +1169,15 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
 		let requestPhase: VsCodeLmRequestPhase = "model-selection"
+		const onRequestPhase = metadata?.onRequestPhase
+		const notifyRequestPhase = () => {
+			if (!onRequestPhase) return
+			try {
+				void Promise.resolve(onRequestPhase(requestPhase)).catch(() => undefined)
+			} catch {
+				// Diagnostic callbacks do not own request outcome, cancellation or cleanup.
+			}
+		}
 
 		// Keep response parts for providers that do not report terminal usage metadata.
 		// Joining once avoids quadratic concatenation during long streamed responses.
@@ -1174,6 +1185,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		let reportedUsage: VsCodeLmUsage | undefined
 
 		try {
+			notifyRequestPhase()
 			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 
 			const client: vscode.LanguageModelChat =
@@ -1200,6 +1212,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			}
 
 			requestPhase = "request-admission"
+			notifyRequestPhase()
 			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 			const response = await withApiRequestTimeout(
 				raceApiStreamAbort(
@@ -1218,6 +1231,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			// Consume the stream and handle both text and tool call chunks
 			responseIterator = response.stream[Symbol.asyncIterator]()
 			requestPhase = "first-response-chunk"
+			notifyRequestPhase()
 
 			while (true) {
 				throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
@@ -1239,7 +1253,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 				const chunk = nextChunk.value
 				const isToolIntent = isVsCodeLmToolCallIntent(chunk)
-				requestPhase = "response-stream"
+				if (requestPhase !== "response-stream") {
+					requestPhase = "response-stream"
+					notifyRequestPhase()
+				}
 				// Once recognized tool intent is lost, retain only continuation/usage
 				// metadata. Later semantic output must not authorize further effects.
 				if (

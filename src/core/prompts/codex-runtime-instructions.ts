@@ -8,7 +8,7 @@ export const CODEX_RUNTIME_PROMPT_SOURCE_COMMIT = "4994306e9f80448bde85e770a0b0c
 export const CODEX_RUNTIME_PROMPT_SOURCE_PATH = "codex-rs/models-manager/models.json" as const
 export const CODEX_RUNTIME_PROMPT_SOURCE_RETRIEVED_AT = "2026-09-29" as const
 
-const GPT_6_MODEL_PROMPTS = new Set<CodexModelPromptSlug>(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+const GPT_6_MODEL_PROMPTS = new Set<CodexModelPromptSlug>(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"])
 
 const DEFAULT_COLLABORATION_MODE =
 	"# Collaboration Mode: Default\n\nYou are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.\n\nYour active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.\n\n## request_user_input availability\n\nUse the `request_user_input` tool only when it is listed in the available tools for this turn.\n\nUse the `request_user_input` tool only for optional questions where the answer would materially improve the quality of the work.\n\nIf `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.\n\nNever use the `request_user_input` tool for permission requests or permission-related escalations.\n"

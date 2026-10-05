@@ -484,6 +484,175 @@
 		border-color: var(--vscode-focusBorder);
 	}
 
+	.new-task-home {
+		padding: 32px 15px 0;
+	}
+
+	.new-task-dock {
+		max-width: calc(var(--chat-content-width) + 30px);
+		padding: 0 15px 21px;
+	}
+
+	.new-task-history-heading {
+		margin-bottom: 10px;
+		padding-inline: 15px;
+		color: color-mix(in srgb, var(--chat-foreground) 65%, transparent);
+	}
+
+	.vscode-high-contrast .new-task-history-heading,
+	.vscode-high-contrast-light .new-task-history-heading {
+		color: var(--chat-foreground);
+	}
+
+	.new-task-history-heading h2 {
+		font-size: max(14px, calc(var(--vscode-font-size) * 1.3));
+		line-height: 1.3;
+		letter-spacing: -0.2px;
+	}
+
+	.new-task-history-list {
+		padding-inline: 15px;
+		border-color: var(--vscode-contrastBorder, color-mix(in srgb, var(--border-subtle) 70%, transparent));
+		border-radius: 14px;
+		background: color-mix(in srgb, var(--chat-background) 72%, var(--chat-surface));
+	}
+
+	.new-task-history-list .new-task-history-row,
+	.new-task-history-list .new-task-history-group {
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.new-task-history-list > .new-task-history-row:last-child,
+	.new-task-history-items > .new-task-history-row:last-child,
+	.new-task-history-items > .new-task-history-group:last-child {
+		border-bottom: 0;
+	}
+
+	.new-task-composer {
+		border: 1px solid var(--vscode-contrastBorder, color-mix(in srgb, var(--border-accent) 70%, transparent));
+		border-radius: 20px;
+		box-shadow: var(--shadow-raised);
+	}
+
+	.new-task-composer:focus-within {
+		border-color: color-mix(
+			in srgb,
+			color-mix(in srgb, var(--vscode-focusBorder) 40%, var(--chat-foreground)) 50%,
+			transparent
+		);
+	}
+
+	.vscode-high-contrast .new-task-composer:focus-within,
+	.vscode-high-contrast-light .new-task-composer:focus-within {
+		border-color: var(--vscode-focusBorder);
+	}
+
+	/* Reclaim the top inset inside the textarea while retaining the initial composer height. */
+	.new-task-input {
+		padding: 8px 14px 20px;
+	}
+
+	.new-task-input-text {
+		font-family: var(--vscode-font-family);
+		font-size: max(14px, calc(var(--vscode-font-size) * 1.1));
+		line-height: 1.5;
+	}
+
+	.new-task-input-actions {
+		top: 3px;
+		right: 0;
+	}
+
+	.new-task-attachment {
+		width: 34px;
+		height: 34px;
+		border: 1px solid var(--vscode-contrastBorder, var(--border-accent));
+		border-radius: 9px;
+	}
+
+	.new-task-composer-footer {
+		display: flex;
+		align-items: flex-end;
+		gap: 16px;
+		padding: 10px 14px;
+		border-top: 1px solid var(--border-subtle);
+		border-radius: 0 0 19px 19px;
+		background: color-mix(in srgb, var(--chat-background) 50%, var(--chat-surface));
+	}
+
+	.new-task-settings {
+		display: flex;
+		flex: 1;
+		flex-wrap: wrap;
+		gap: 8px 24px;
+		min-width: 0;
+	}
+
+	.new-task-setting {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1px;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.new-task-setting-label {
+		font-size: max(11px, calc(var(--vscode-font-size) * 0.85));
+		line-height: 1.5;
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.new-task-composer .composer-selector {
+		height: 23px;
+		padding: 0;
+		font-size: max(12px, var(--vscode-font-size));
+		font-weight: 400;
+		line-height: 1.5;
+		color: color-mix(in srgb, var(--chat-foreground) 65%, transparent);
+	}
+
+	@media (max-width: 600px) {
+		.new-task-home {
+			padding: 27px 10px 0;
+		}
+
+		.new-task-dock {
+			padding-inline: 10px;
+		}
+
+		.new-task-settings {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 8px 16px;
+		}
+	}
+
+	@media (max-width: 390px) {
+		.new-task-home {
+			padding-inline: 7px;
+		}
+
+		.new-task-dock {
+			padding-inline: 7px;
+		}
+
+		.new-task-composer-footer {
+			gap: 10px;
+		}
+	}
+
+	@media (pointer: coarse) {
+		.new-task-composer .composer-selector,
+		.new-task-attachment {
+			min-height: 44px;
+		}
+
+		.new-task-attachment {
+			min-width: 44px;
+		}
+	}
+
 	.hero-panel {
 		background: var(--chat-surface);
 		border: 1px solid var(--border-subtle);
@@ -507,6 +676,98 @@
 	.vscode-light .brand-mark-watermark,
 	.vscode-high-contrast-light .brand-mark-watermark {
 		filter: brightness(0) saturate(100%);
+	}
+}
+
+@layer utilities {
+	.new-task-composer textarea,
+	.new-task-history-search {
+		color: color-mix(in srgb, var(--chat-foreground) 60%, transparent);
+		caret-color: var(--chat-foreground);
+	}
+
+	/* Separate pseudo-element rules avoid invalid :is() selectors in the CSS build. */
+	.new-task-composer textarea::placeholder {
+		color: color-mix(in srgb, var(--chat-foreground) 50%, transparent);
+	}
+
+	.new-task-history-search::placeholder {
+		color: color-mix(in srgb, var(--chat-foreground) 50%, transparent);
+	}
+
+	.vscode-high-contrast .new-task-composer textarea,
+	.vscode-high-contrast-light .new-task-composer textarea,
+	.vscode-high-contrast .new-task-composer textarea::placeholder,
+	.vscode-high-contrast-light .new-task-composer textarea::placeholder,
+	.vscode-high-contrast .new-task-composer .composer-selector,
+	.vscode-high-contrast-light .new-task-composer .composer-selector,
+	.vscode-high-contrast .new-task-history-search,
+	.vscode-high-contrast-light .new-task-history-search,
+	.vscode-high-contrast .new-task-history-search::placeholder,
+	.vscode-high-contrast-light .new-task-history-search::placeholder {
+		color: var(--chat-foreground);
+	}
+
+	/* Keep home overrides above the compact row and watermark size utilities. */
+	.new-task-home .brand-mark-watermark {
+		width: 96px;
+		height: 96px;
+	}
+
+	.new-task-history-list .new-task-history-row,
+	.new-task-history-compact [data-contained="true"],
+	.new-task-history-compact .history-subtask-row {
+		border-radius: 0;
+		color: color-mix(in srgb, var(--chat-foreground) 55%, transparent);
+	}
+
+	.vscode-high-contrast .new-task-history-list .new-task-history-row,
+	.vscode-high-contrast-light .new-task-history-list .new-task-history-row,
+	.vscode-high-contrast .new-task-history-compact [data-contained="true"],
+	.vscode-high-contrast-light .new-task-history-compact [data-contained="true"],
+	.vscode-high-contrast .new-task-history-compact .history-subtask-row,
+	.vscode-high-contrast-light .new-task-history-compact .history-subtask-row {
+		color: var(--chat-foreground);
+	}
+
+	.new-task-history-compact [data-selected="true"] {
+		background: color-mix(in srgb, var(--chat-foreground) 8%, transparent);
+	}
+
+	.vscode-high-contrast .new-task-history-compact [data-selected="true"],
+	.vscode-high-contrast-light .new-task-history-compact [data-selected="true"] {
+		outline: 1px solid var(--vscode-contrastBorder);
+		outline-offset: -1px;
+	}
+
+	.new-task-history-compact .history-subtask-row {
+		min-height: 28px;
+	}
+
+	.new-task-history-compact .history-subtask-open {
+		padding-block: 4px;
+	}
+
+	.new-task-history-row > div:first-child,
+	.new-task-history-compact [data-contained="true"] > div:first-child {
+		min-height: 28px;
+		padding: 4px 0;
+	}
+
+	@media (pointer: coarse) {
+		.new-task-history-row > div:first-child,
+		.new-task-history-compact [data-contained="true"] > div:first-child,
+		.new-task-history-compact .history-subtask-row {
+			min-height: 44px;
+		}
+	}
+
+	@media (hover: none), (pointer: coarse) {
+		.history-chat-actions {
+			width: 28px;
+			height: 28px;
+			opacity: 1;
+		}
 	}
 }
 

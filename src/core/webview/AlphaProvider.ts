@@ -115,7 +115,9 @@ import {
 	subagentUsageSchema,
 	subagentAgentTypesSchema,
 	disabledSubagentAutoApprovalPolicy,
+	approvalModeRank,
 	effectiveCommandAllowlistForMode,
+	inferApprovalModeFromPolicy,
 	isSubagentApprovalNarrowerThanParent,
 	migrateApprovalMode,
 	resolveApprovalFlags,
@@ -218,6 +220,8 @@ import {
 	isValidSubagentContextManifest,
 	SUBAGENT_HOST_CONTEXT_HEADER,
 	upgradeLegacySubagentContextManifest,
+	type SubagentHistoryFork,
+	type SubagentContextSkillInput,
 } from "../agent/SubagentContextCapture"
 import {
 	applySubagentSpawnOverrides,
@@ -392,6 +396,7 @@ type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
 type ManagedCreateTaskOptions = CreateTaskOptions & {
 	subagentInitialContext?: string
 	subagentFrozenInstructions?: string
+	subagentHistoryFork?: SubagentHistoryFork
 }
 
 interface SubagentSlotReservation {
@@ -474,6 +479,7 @@ export class AlphaProvider
 	private readonly independentTaskWaiters = new Map<string, number>()
 	/** Serialize retained relaunches before reading or changing the agent's lifecycle. */
 	private readonly agentFollowupAdmissions = new Map<string, Promise<unknown>>()
+	private readonly subagentRunFinalizations = new Map<string, Promise<void>>()
 	/** Tasks whose legacy transcript remains authoritative after a canonical failure. */
 	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
@@ -500,6 +506,7 @@ export class AlphaProvider
 			contextManifest?: SubagentContextManifest
 			/** Body-bearing snapshots live only until the first child task owns their persistence. */
 			inheritedTurnContext?: string
+			historyFork?: SubagentHistoryFork
 			inheritedInstructions?: string
 			inheritedSkills?: SkillCatalogEntry[]
 			inheritedSkillMode?: string
@@ -523,6 +530,10 @@ export class AlphaProvider
 	protected mcpHub?: McpHub // Change from private to protected
 	private readonly mcpHubInitialization: Promise<void>
 	protected skillsManager?: SkillsManager
+	private readonly scopedSkillsManagers = new Map<
+		string,
+		{ manager: SkillsManager; ready: Promise<void>; taskIds: Set<string> }
+	>()
 	private scheduledTaskService?: ScheduledTaskService
 	private marketplaceManager: MarketplaceManager
 	private taskCreationCallback: (task: Task) => void
@@ -1057,6 +1068,7 @@ export class AlphaProvider
 
 		this.taskStack = taskStack.filter((alphaTask) => alphaTask.taskId !== currentTask.taskId)
 		let task: Task | undefined = this.taskSessions?.unregister(currentTask.taskId, currentTask) ?? currentTask
+		await this.releaseScopedSkillsManager(currentTask.taskId)
 		for (const provider of this.getHostProviders()) {
 			provider.publishedTaskTranscriptRevisions.delete(currentTask.taskId)
 			if (provider.currentView.type === "task" && provider.currentView.taskId === currentTask.taskId) {
@@ -1178,6 +1190,7 @@ export class AlphaProvider
 
 		this.log("Cleared all tasks")
 		await this.closeAgentLifecycleJournals()
+		this.subagentRunFinalizations?.clear()
 
 		this.log("Cleared pending operations")
 
@@ -1204,6 +1217,11 @@ export class AlphaProvider
 		await McpServerManager.unregisterProvider(this, this.mcpHub)
 		this.mcpHub = undefined
 		await this.skillsManager?.dispose()
+		for (const entry of this.scopedSkillsManagers?.values() ?? []) {
+			await entry.ready.catch(() => undefined)
+			await entry.manager.dispose()
+		}
+		this.scopedSkillsManagers?.clear()
 		this.skillsManager = undefined
 		this.marketplaceManager?.cleanup()
 		this.customModesManager?.dispose()
@@ -1214,6 +1232,7 @@ export class AlphaProvider
 		})
 		await this.flushGlobalStateWriteThrough()
 		this.taskHistoryStore.dispose()
+		this.subagentNicknameRegistry?.clear()
 		this.taskSessions.disposeView()
 		this.log("Disposed all disposables")
 		AlphaProvider.activeInstances.delete(this)
@@ -1592,7 +1611,14 @@ export class AlphaProvider
 		// loads custom modes from disk, which can block subagent navigation for no
 		// benefit because the task's mode and provider profile were restored above.
 		const stateValues = this.contextProxy.getValues()
-		const taskApprovalMode = historyItem.approvalMode ?? migrateApprovalMode(stateValues)
+		const taskApprovalMode =
+			historyItem.approvalMode ??
+			(historyItem.taskKind === "subagent"
+				? inferApprovalModeFromPolicy(
+						historyItem.subagentContextManifest?.runtimePolicy.autoApproval ??
+							disabledSubagentAutoApprovalPolicy,
+					)
+				: migrateApprovalMode(stateValues))
 		const currentApiConfiguration = this.getProviderSettingsSnapshot()
 		const enableCheckpoints = stateValues.enableCheckpoints ?? true
 		const checkpointTimeout = stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS
@@ -3773,10 +3799,17 @@ export class AlphaProvider
 	}
 
 	/** Capture the effective approval grant without persisting plaintext command rules. */
-	private snapshotSubagentAutoApprovalPolicy(settings: AlphaCodeSettings): SubagentAutoApprovalPolicy {
+	public snapshotSubagentAutoApprovalPolicy(
+		settings: AlphaCodeSettings,
+		commandListsResolved = false,
+	): SubagentAutoApprovalPolicy {
 		const flags = resolveApprovalFlags(settings)
-		const allowedCommands = this.mergeAllowedCommands(settings.allowedCommands)
-		const deniedCommands = this.mergeDeniedCommands(settings.deniedCommands)
+		const allowedCommands = commandListsResolved
+			? this.normalizeCommandList(settings.allowedCommands)
+			: this.mergeAllowedCommands(settings.allowedCommands)
+		const deniedCommands = commandListsResolved
+			? this.normalizeCommandList(settings.deniedCommands)
+			: this.mergeDeniedCommands(settings.deniedCommands)
 		const allowlist = shouldDeriveApprovalFlags(settings)
 			? effectiveCommandAllowlistForMode(migrateApprovalMode(settings), allowedCommands)
 			: allowedCommands
@@ -4698,8 +4731,50 @@ export class AlphaProvider
 		return this.mcpHub
 	}
 
-	public getSkillsManager(): SkillsManager | undefined {
-		return this.skillsManager
+	public getSkillsManager(task: Task): Promise<SkillsManager | undefined>
+	public getSkillsManager(): SkillsManager | undefined
+	public getSkillsManager(task?: Task): SkillsManager | undefined | Promise<SkillsManager | undefined> {
+		return task ? this.getScopedSkillsManager(task) : this.skillsManager
+	}
+
+	private async getScopedSkillsManager(task: Task): Promise<SkillsManager> {
+		if (this._disposed) throw new Error("Skills manager owner has been disposed")
+		const owner = this.getTaskOwner(task.taskId)
+		if (owner && owner !== this) {
+			const manager = await owner.getSkillsManager(task)
+			if (!manager) throw new Error("Skills manager owner is unavailable")
+			return manager
+		}
+		const workspacePath = path.resolve(task.taskKind === "subagent" ? task.historyWorkspacePath : task.cwd)
+		const key = process.platform === "win32" ? workspacePath.toLowerCase() : workspacePath
+		await this.releaseScopedSkillsManager(task.taskId, key)
+		let entry = this.scopedSkillsManagers.get(key)
+		if (!entry) {
+			const manager = new SkillsManager(this, workspacePath, { notifyWebview: false })
+			entry = { manager, ready: Promise.resolve(), taskIds: new Set<string>() }
+			this.scopedSkillsManagers.set(key, entry)
+			const ownedEntry = entry
+			entry.ready = manager.initialize().catch(async (error) => {
+				if (this.scopedSkillsManagers.get(key) === ownedEntry) this.scopedSkillsManagers.delete(key)
+				await manager.dispose()
+				throw error
+			})
+		}
+		entry.taskIds.add(task.taskId)
+		await entry.ready
+		if (this._disposed || this.scopedSkillsManagers.get(key) !== entry) {
+			throw new Error("Skills manager owner was released during discovery")
+		}
+		return entry.manager
+	}
+
+	private async releaseScopedSkillsManager(taskId: string, keepKey?: string): Promise<void> {
+		for (const [key, entry] of this.scopedSkillsManagers ?? []) {
+			if (key === keepKey || !entry.taskIds.delete(taskId) || entry.taskIds.size > 0) continue
+			this.scopedSkillsManagers.delete(key)
+			await entry.ready.catch(() => undefined)
+			await entry.manager.dispose()
+		}
 	}
 
 	public setScheduledTaskService(service: ScheduledTaskService): void {
@@ -6240,6 +6315,7 @@ export class AlphaProvider
 		task.abandoned = true
 
 		this.log(`[cancelTask] source=${source} task=${task.taskId}.${task.instanceId}`)
+		const cancellationCleanupErrors: unknown[] = []
 		try {
 			await this.agentControlStoreReady
 			await this.cancelManagedTaskDescendants(
@@ -6248,6 +6324,7 @@ export class AlphaProvider
 				`Managed descendants cancelled because task ${task.taskId} was cancelled`,
 			)
 		} catch (error) {
+			cancellationCleanupErrors.push(error)
 			this.log(`[cancelTask] managed descendant cleanup failed for ${task.taskId}: ${String(error)}`)
 		}
 
@@ -6291,7 +6368,7 @@ export class AlphaProvider
 				this.log(
 					`[cancelTask] abortTask() failed for ${task.taskId}.${task.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
 				)
-				throw error
+				cancellationCleanupErrors.push(error)
 			})
 		try {
 			await awaitTaskCancellationBoundary(task, abortResult)
@@ -6303,8 +6380,18 @@ export class AlphaProvider
 			)
 			// A replacement must never be constructed while a runtime boundary is
 			// unresolved. Preserve the current task for a later retry.
+			if (cancellationCleanupErrors.length > 0) {
+				throw new AggregateError(
+					[...cancellationCleanupErrors, error],
+					`Task ${task.taskId} cancellation cleanup failed`,
+				)
+			}
 			if (task.taskKind === "subagent" && task.subagentRole === "worker") throw error
 			return
+		}
+		if (cancellationCleanupErrors.length === 1) throw cancellationCleanupErrors[0]
+		if (cancellationCleanupErrors.length > 1) {
+			throw new AggregateError(cancellationCleanupErrors, `Task ${task.taskId} cancellation cleanup failed`)
 		}
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
@@ -6617,7 +6704,15 @@ export class AlphaProvider
 		await this.taskHistoryStoreReady
 		const owner = this.getTaskOwner(parent.taskId)
 		if (owner && owner !== this) return owner.prepareSubagentGroup(parent, drafts, toolCallId)
-		const parentMode = await parent.getTaskMode()
+		const invocation = parent.getSubagentInvocationContext?.()
+		const invokingApprovalMode = parent.getStepApprovalMode?.()
+		const parentHistory =
+			invocation?.history ?? structuredClone(getEffectiveApiHistory(parent.apiConversationHistory))
+		await parent.flushApiConversationHistoryPersistence?.()
+		if (parent.abort || parent.getTaskLifetimeCancellationSignal?.().aborted) {
+			throw new Error("Subagent preparation was cancelled")
+		}
+		const parentMode = invocation?.mode ?? (await parent.getTaskMode())
 		const parentAuthority = this.getParentDelegationAuthority(parent)
 		const settings = this.contextProxy.getValues()
 		const spawnRequest: SpawnAgentRequest | undefined = Array.isArray(drafts)
@@ -6676,14 +6771,28 @@ export class AlphaProvider
 		}
 		assertSubagentTaskAuthorities(normalizedDrafts)
 		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
+		const liveApprovalMode = migrateApprovalMode(settings)
+		const parentApprovalMode = invokingApprovalMode ?? liveApprovalMode
+		// A spawn approval authorizes this child, not a wider approval tier. The
+		// invoking step may be narrower than the foreground/global setting.
+		const parentTierApprovalPolicy =
+			approvalModeRank[parentApprovalMode] < approvalModeRank[liveApprovalMode]
+				? this.intersectSubagentAutoApprovalPolicies(
+						this.snapshotSubagentAutoApprovalPolicy({ ...settings, approvalMode: parentApprovalMode }),
+						liveAutoApprovalPolicy,
+					)
+				: liveAutoApprovalPolicy
+		const parentAutoApprovalPolicy = invocation?.autoApprovalPolicy
+			? this.intersectSubagentAutoApprovalPolicies(parentTierApprovalPolicy, invocation.autoApprovalPolicy)
+			: parentTierApprovalPolicy
 		const inheritedAutoApprovalPolicy =
 			parent.taskKind === "subagent"
 				? (parent.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy)
-				: liveAutoApprovalPolicy
+				: parentAutoApprovalPolicy
 		const childAutoApprovalPolicy =
 			parent.taskKind === "subagent"
-				? this.intersectSubagentAutoApprovalPolicies(liveAutoApprovalPolicy, inheritedAutoApprovalPolicy)
-				: liveAutoApprovalPolicy
+				? this.intersectSubagentAutoApprovalPolicies(parentAutoApprovalPolicy, inheritedAutoApprovalPolicy)
+				: parentAutoApprovalPolicy
 		const orchestrationSettings = this.getResolvedSubagentOrchestrationSettings()
 		const controlRoot = await this.ensureAgentControlRoot(parent)
 		const orchestrationBases = normalizedDrafts.map((draft) =>
@@ -6708,7 +6817,7 @@ export class AlphaProvider
 			policy.alwaysAllowReadOnly &&
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
-		const approvalMode = migrateApprovalMode(settings)
+		const approvalMode = inferApprovalModeFromPolicy(childAutoApprovalPolicy)
 		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
@@ -6759,16 +6868,29 @@ export class AlphaProvider
 			const descriptorRootTaskId = this.getAgentControlRootTaskId(descriptor.parent)
 			if (descriptorRootTaskId === controlRoot.rootTaskId) reservedNames.push(descriptor.nickname)
 		}
+		const groupId = crypto.randomUUID()
 		const nicknames = this.subagentNicknameRegistry.assign(
+			controlRoot.rootTaskId,
+			groupId,
 			normalizedDrafts.length,
 			reservedNames,
 			normalizedDrafts.map((draft) => draft.task_name),
 		)
-		const groupId = crypto.randomUUID()
 		const frozenTotalCap = Math.min(...orchestrations.map(({ limits }) => limits.maxConcurrentTasks))
 		const effectiveTotalCap = Math.min(this.taskSessions.getMaxLiveTasks(), frozenTotalCap)
 		const rootCap = Math.min(...orchestrations.map(({ limits }) => limits.maxConcurrentSubagents))
-		this.reserveSubagentSlots(groupId, controlRoot.rootTaskId, normalizedDrafts.length, effectiveTotalCap, rootCap)
+		try {
+			this.reserveSubagentSlots(
+				groupId,
+				controlRoot.rootTaskId,
+				normalizedDrafts.length,
+				effectiveTotalCap,
+				rootCap,
+			)
+		} catch (error) {
+			this.subagentNicknameRegistry.release(groupId)
+			throw error
+		}
 		const runReserved = async <T>(operation: () => Promise<T>): Promise<T> => {
 			try {
 				return await operation()
@@ -6806,13 +6928,15 @@ export class AlphaProvider
 		)
 
 		const createdAt = Date.now()
-		const parentApiConfigName = await runReserved(() => parent.getTaskApiConfigName())
+		const parentApiConfigName = invocation
+			? invocation.apiConfigName
+			: await runReserved(() => parent.getTaskApiConfigName())
 		const routes = await runReserved(() =>
 			Promise.all(
 				normalizedDrafts.map((draft) =>
 					resolveSubagentModelRoute({
 						role: draft.agent_kind,
-						parentApiConfiguration: parent.apiConfiguration,
+						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
 						profileLoader: this.providerSettingsManager,
 						...(spawnRequest?.source === "codex-v2"
@@ -6825,7 +6949,9 @@ export class AlphaProvider
 				),
 			),
 		)
-		const inheritedInstructions = await runReserved(() => parent.captureEffectiveInheritedInstructions())
+		const inheritedInstructions = invocation
+			? structuredClone(invocation.instructions)
+			: await runReserved(() => parent.captureEffectiveInheritedInstructions())
 		if (typeName && typeDefinition?.developerInstructions) {
 			inheritedInstructions.effectiveText += `\n\n${typeDefinition.developerInstructions}`
 			inheritedInstructions.sources.push({
@@ -6834,27 +6960,40 @@ export class AlphaProvider
 				text: typeDefinition.developerInstructions,
 			})
 		}
-		const skillMetadata = this.skillsManager?.getSkillsForMode(parentMode) ?? []
-		const inheritedSkills = (
-			await runReserved(() =>
-				Promise.all(
-					skillMetadata.map(async (skill) => {
-						const content = await this.skillsManager?.getSkillContent(skill.name, parentMode)
-						return content
-							? {
-									name: skill.name,
-									description: skill.description,
-									path: skill.path,
-									content: content.instructions,
-								}
-							: undefined
-					}),
-				),
-			)
-		).filter(
-			(skill): skill is { name: string; description: string; path: string; content: string } =>
-				skill !== undefined,
-		)
+		const skillsManager = await runReserved(() => this.getSkillsManager(parent))
+		const skillMetadata = skillsManager?.getSkillsForMode(parentMode) ?? []
+		const frozenParentSkills =
+			parent.taskKind === "subagent" ? (parent.subagentContextManifest?.skills ?? []) : undefined
+		const parentSkillCatalog = this.subagentDescriptors.get(parent.taskId)?.inheritedSkills
+		const inheritedSkills: Array<SubagentContextSkillInput & { description: string }> = frozenParentSkills
+			? frozenParentSkills.map(({ name, path: skillPath, digest }) => ({
+					name,
+					path: skillPath,
+					digest,
+					description:
+						parentSkillCatalog?.find((skill) => skill.name === name && skill.path === skillPath)
+							?.description ?? "Skill inherited from the parent's frozen catalog",
+				}))
+			: (
+					await runReserved(() =>
+						Promise.all(
+							skillMetadata.map(async (skill) => {
+								const content = await skillsManager?.getSkillContent(skill.name, parentMode)
+								return content
+									? {
+											name: skill.name,
+											description: skill.description,
+											path: skill.path,
+											content: content.instructions,
+										}
+									: undefined
+							}),
+						),
+					)
+				).filter(
+					(skill): skill is { name: string; description: string; path: string; content: string } =>
+						skill !== undefined,
+				)
 		const capturedContexts = runReservedSync(() =>
 			normalizedDrafts.map((draft, index) => {
 				const role = draft.agent_kind
@@ -6867,7 +7006,15 @@ export class AlphaProvider
 					parentTaskId: parent.taskId,
 					capturedAt: createdAt,
 					forkTurns: draft.fork_turns,
-					history: getEffectiveApiHistory(parent.apiConversationHistory),
+					history: parentHistory,
+					...(invocation
+						? {
+								historyInheritance: {
+									parentModelRoute: invocation.modelRoute,
+									finalAssistantMessageIndexes: invocation.finalAssistantMessageIndexes,
+								},
+							}
+						: {}),
 					instructions: inheritedInstructions,
 					skills: inheritedSkills,
 					cwd: parent.cwd,
@@ -6944,6 +7091,7 @@ export class AlphaProvider
 					validatedScope: validatedScopes[index],
 					contextManifest: structuredClone(capturedContext.manifest),
 					inheritedTurnContext: capturedContext.inheritedTurnContext,
+					historyFork: capturedContext.historyFork,
 					inheritedInstructions: inheritedInstructions.effectiveText,
 					inheritedSkills: inheritedSkills.map(({ name, description, path }) => ({
 						name,
@@ -7186,7 +7334,7 @@ export class AlphaProvider
 			const completion = this.asyncSubagentRunManager.waitForResult(handle.taskId)
 			if (!completion) throw new Error(`Missing asynchronous result channel for ${handle.taskId}`)
 
-			void this.finalizeSpawnedSubagent(
+			const finalization = this.finalizeSpawnedSubagent(
 				parent,
 				prepared,
 				handle,
@@ -7194,7 +7342,9 @@ export class AlphaProvider
 				() => lifecycleWrites,
 				unsubscribe,
 				() => parentSignal.removeEventListener("abort", cancelFromParent),
-			).catch(async (error) => {
+			)
+			this.trackSubagentFinalization([handle.taskId], finalization)
+			void finalization.catch(async (error) => {
 				const message = `Managed sub-agent ${handle.path} finished, but its durable result could not be committed: ${error instanceof Error ? error.message : String(error)}. The result remains pending for recovery.`
 				this.log(message)
 				if (typeof parent.say === "function") {
@@ -8899,7 +9049,14 @@ export class AlphaProvider
 			.catch(() => undefined)
 			.then(async () => {
 				if (parent.abort) throw new Error("Follow-up admission was cancelled")
-				const latest = await this.requireControlledAgent(parent, record.taskId)
+				let latest = await this.requireControlledAgent(parent, record.taskId)
+				if (latest.status !== "running" && latest.status !== "pending") {
+					// A terminal row can precede the last parent publication and release of
+					// the old run's controller/slots. Join that owner before replacing it.
+					await this.subagentRunFinalizations.get(record.taskId)
+					if (parent.abort) throw new Error("Follow-up admission was cancelled")
+					latest = await this.requireControlledAgent(parent, record.taskId)
+				}
 				const resume = () => this.followupAgentTaskAfterAdmission(parent, latest, instruction)
 				return latest.role === "worker"
 					? this.workspaceMutationGate.run(
@@ -9142,39 +9299,25 @@ export class AlphaProvider
 		const ordered = [...descendants, target].sort(
 			(left, right) => right.path.split("/").length - left.path.split("/").length,
 		)
-		let targetCancelled = target.status === "cancelling"
-		for (const record of ordered) {
-			const stopReason =
-				record.taskId === target.taskId
-					? targetStopReason
-					: record.parentTaskId === target.taskId
-						? "parent_cancelled"
-						: "ancestor_cancelled"
-			const message =
-				record.taskId === target.taskId
-					? reason
-					: `Agent ${record.path} cancelled because ${target.path} was cancelled`
-			const didCancel =
-				(record.taskId === target.taskId && targetCancellationAlreadyRequested) ||
-				record.status === "cancelling" ||
-				this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason) ||
-				this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
-			if (record.taskId === target.taskId) targetCancelled = didCancel
-			await this.agentControlStore.appendEvent({
-				rootTaskId: record.rootTaskId,
-				sender: actorTaskId,
-				recipient: record.taskId,
-				kind: "control",
-				name: "cancel_requested",
-				payload: { reason: message, stopReason },
-			})
-			// Nested Worker worktrees are layered on their owning parent worktree.
-			// Let each deeper run finish process shutdown and change capture before
-			// cancelling the ancestor that owns (and will remove) that parent layer.
-			await this.waitForManagedAgentRunSettlement(record.taskId)
-		}
+		const cancelled = await this.cancelManagedAgentRecords(
+			actorTaskId,
+			ordered.map((record) => ({
+				record,
+				reason:
+					record.taskId === target.taskId
+						? reason
+						: `Agent ${record.path} cancelled because ${target.path} was cancelled`,
+				stopReason:
+					record.taskId === target.taskId
+						? targetStopReason
+						: record.parentTaskId === target.taskId
+							? "parent_cancelled"
+							: "ancestor_cancelled",
+				alreadyRequested: record.taskId === target.taskId && targetCancellationAlreadyRequested,
+			})),
+		)
 		return {
-			targetCancelled,
+			targetCancelled: cancelled.get(target.taskId) ?? false,
 			descendantTaskIds: descendants.map(({ taskId }) => taskId),
 		}
 	}
@@ -9187,29 +9330,105 @@ export class AlphaProvider
 				(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
 			)
 			.sort((left, right) => right.path.split("/").length - left.path.split("/").length)
-		for (const record of descendants) {
-			const stopReason = record.parentTaskId === taskId ? "parent_cancelled" : "ancestor_cancelled"
-			if (record.status !== "cancelling") {
-				if (!this.asyncSubagentRunManager.cancel(record.taskId, reason, stopReason)) {
-					this.boundedDelegationManager.cancel(record.taskId, reason, stopReason)
-				}
-			}
-			await this.agentControlStore.appendEvent({
-				rootTaskId,
-				sender: taskId,
-				recipient: record.taskId,
-				kind: "control",
-				name: "cancel_requested",
-				payload: { reason, stopReason },
-			})
-			await this.waitForManagedAgentRunSettlement(record.taskId)
-		}
+		await this.cancelManagedAgentRecords(
+			taskId,
+			descendants.map((record) => ({
+				record,
+				reason,
+				stopReason: record.parentTaskId === taskId ? "parent_cancelled" : "ancestor_cancelled",
+			})),
+		)
 		return descendants.map(({ taskId: descendantTaskId }) => descendantTaskId)
 	}
 
-	private async waitForManagedAgentRunSettlement(taskId: string): Promise<void> {
-		const completion = this.asyncSubagentRunManager.waitForResult(taskId)
-		if (completion) await completion
+	private async cancelManagedAgentRecords(
+		actorTaskId: string,
+		requests: Array<{
+			record: AgentRecord
+			reason: string
+			stopReason: "cancelled" | "parent_cancelled" | "ancestor_cancelled"
+			alreadyRequested?: boolean
+		}>,
+	): Promise<Map<string, boolean>> {
+		const cancelled = new Map<string, boolean>()
+		const cleanupErrors: unknown[] = []
+		const unsafeAncestors = new Set<string>()
+		const retainAncestors = (record: AgentRecord) => {
+			let ancestorTaskId = record.parentTaskId
+			while (ancestorTaskId && !unsafeAncestors.has(ancestorTaskId)) {
+				unsafeAncestors.add(ancestorTaskId)
+				ancestorTaskId = this.agentControlStore.getAgent(ancestorTaskId, record.rootTaskId)?.parentTaskId
+			}
+		}
+		for (const { record, reason, stopReason, alreadyRequested } of requests) {
+			// Descendant settlement precedes removal of its owning Worker layer. A
+			// failed branch retains those ancestors, while independent branches still
+			// receive cancellation and finish their bounded cleanup before we reject.
+			const canSettle = !unsafeAncestors.has(record.taskId) || alreadyRequested || record.status === "cancelling"
+			let cancellationFailed = false
+			let completion: Promise<InternalTaskResult | undefined> | undefined
+			if (canSettle) {
+				try {
+					cancelled.set(
+						record.taskId,
+						Boolean(
+							alreadyRequested ||
+								record.status === "cancelling" ||
+								this.asyncSubagentRunManager.cancel(record.taskId, reason, stopReason) ||
+								this.boundedDelegationManager.cancel(record.taskId, reason, stopReason),
+						),
+					)
+					// Capture the owned join before journal persistence yields: a blocking
+					// run can finish and release its manager entry after this abort.
+					completion =
+						this.asyncSubagentRunManager.waitForResult(record.taskId) ??
+						this.boundedDelegationManager.waitForResult?.(record.taskId)
+				} catch (error) {
+					cleanupErrors.push(error)
+					retainAncestors(record)
+					cancellationFailed = true
+				}
+			}
+			try {
+				await this.agentControlStore.appendEvent({
+					rootTaskId: record.rootTaskId,
+					sender: actorTaskId,
+					recipient: record.taskId,
+					kind: "control",
+					name: "cancel_requested",
+					payload: { reason, stopReason },
+				})
+			} catch (error) {
+				cleanupErrors.push(error)
+			}
+			if (canSettle && !cancellationFailed) {
+				try {
+					await this.waitForManagedAgentRunSettlement(record.taskId, completion)
+				} catch (error) {
+					cleanupErrors.push(error)
+					retainAncestors(record)
+				}
+			}
+		}
+		if (cleanupErrors.length === 1) throw cleanupErrors[0]
+		if (cleanupErrors.length > 1) {
+			throw new AggregateError(cleanupErrors, `Managed agent cleanup failed for ${actorTaskId}`)
+		}
+		return cancelled
+	}
+
+	private async waitForManagedAgentRunSettlement(
+		taskId: string,
+		completion: Promise<InternalTaskResult | undefined> | undefined,
+	): Promise<void> {
+		if (completion) {
+			const result = await completion
+			if (result?.status === "failed") {
+				throw new Error(
+					`Managed descendant ${taskId} did not settle cleanly (status=${result.status}, stopReason=${result.stopReason ?? "unknown"})`,
+				)
+			}
+		}
 	}
 
 	public async closeAgent(parent: Task, target: string): Promise<unknown> {
@@ -9759,6 +9978,34 @@ export class AlphaProvider
 		prepared: PreparedSubagentGroup,
 		parentSignal: AbortSignal,
 	): Promise<SubagentToolResult> {
+		const completion = this.executeBlockingSubagentGroup(parent, prepared, parentSignal)
+		this.trackSubagentFinalization(
+			prepared.envelopes.map(({ id }) => id),
+			completion.then(() => undefined),
+		)
+		return completion
+	}
+
+	private trackSubagentFinalization(taskIds: string[], finalization: Promise<void>): void {
+		for (const taskId of taskIds) this.subagentRunFinalizations.set(taskId, finalization)
+		void finalization.then(
+			() => {
+				for (const taskId of taskIds) {
+					if (this.subagentRunFinalizations.get(taskId) === finalization)
+						this.subagentRunFinalizations.delete(taskId)
+				}
+			},
+			() => undefined,
+		)
+		// Rejected finalization remains addressable and blocks reuse until durable
+		// recovery, rather than granting a successor ownership over unproven release.
+	}
+
+	private async executeBlockingSubagentGroup(
+		parent: Task,
+		prepared: PreparedSubagentGroup,
+		parentSignal: AbortSignal,
+	): Promise<SubagentToolResult> {
 		const controlRecords = new Map<string, AgentRecord>()
 		const admit = async () => {
 			await this.assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared)
@@ -10132,6 +10379,9 @@ export class AlphaProvider
 					startTask: false,
 					initialStatus: "active",
 					taskMode: "code",
+					taskApprovalMode: inferApprovalModeFromPolicy(
+						finalizedManifest.data.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy,
+					),
 					taskApiConfigName: modelRoute.apiConfigName,
 					apiConfiguration: structuredClone(modelRoute.apiConfiguration),
 					enableCheckpoints: false,
@@ -10147,6 +10397,7 @@ export class AlphaProvider
 					subagentDelegationExplicitlyEnabled: false,
 					subagentInstructionPlacement: "system",
 					subagentFrozenInstructions: descriptor.inheritedInstructions,
+					subagentHistoryFork: descriptor.historyFork,
 					subagentInitialContext,
 					...(descriptor.contextManifest
 						? { subagentContextManifest: structuredClone(descriptor.contextManifest) }
@@ -10160,6 +10411,7 @@ export class AlphaProvider
 				await child.persistFrozenSubagentInstructions()
 			}
 			delete descriptor.inheritedInstructions
+			delete descriptor.historyFork
 		} catch (error) {
 			if (descriptor.managedWorktree) {
 				await managedSubagentWorktreeService
@@ -10173,6 +10425,7 @@ export class AlphaProvider
 
 		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
 		const currentRunMessages: AlphaMessage[] = []
+		let cleanupFailed = false
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
 			(resolve) => {
 				let settled = false
@@ -10267,13 +10520,14 @@ export class AlphaProvider
 					void stopChild().then(
 						() => resolveResult(status, tokenUsage, summaryOverride, stopReason),
 						(error) => {
+							cleanupFailed = true
 							const cleanupFailure = `Failed to stop sub-agent ${child.taskId}: ${error instanceof Error ? error.message : String(error)}`
 							this.log(cleanupFailure)
 							resolveResult(
 								"failed",
 								child.getTokenUsage(),
 								[summaryOverride, cleanupFailure].filter(Boolean).join("\n\n"),
-								"failed",
+								stopReason,
 							)
 						},
 					)
@@ -10413,7 +10667,7 @@ export class AlphaProvider
 			},
 		)
 
-		if (role === "worker" && descriptor.managedWorktree) {
+		if (role === "worker" && descriptor.managedWorktree && !cleanupFailed) {
 			const artifact = await managedSubagentWorktreeService.capture(
 				this.context.globalStorageUri.fsPath,
 				descriptor.managedWorktree.artifact.id,
@@ -11227,6 +11481,7 @@ export class AlphaProvider
 	}
 
 	private releaseSubagentGroup(groupId: string): void {
+		this.subagentNicknameRegistry.release(groupId)
 		const taskIds = this.preparedSubagentGroups.get(groupId)?.group.agents.map((agent) => agent.taskId) ?? []
 		this.preparedSubagentGroups.delete(groupId)
 		this.subagentGroupControllers.delete(groupId)
@@ -11239,6 +11494,7 @@ export class AlphaProvider
 	}
 
 	private retainCompletedSubagentGroup(groupId: string): void {
+		this.subagentNicknameRegistry.release(groupId)
 		this.subagentGroupControllers.delete(groupId)
 		this.reservedSubagentSlots.delete(groupId)
 		this.taskSessions.releaseTaskSlots(groupId)

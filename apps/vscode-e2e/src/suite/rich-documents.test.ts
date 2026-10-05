@@ -6,6 +6,7 @@ import * as vscode from "vscode"
 import type { AlphaMessage, SkillMetadata } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
+import { addFilePatch, updateFilePatch } from "../scenarios/scriptedPatch"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
@@ -57,7 +58,11 @@ class DocumentScriptedAI {
 	set removeFromCache(value: (() => void) | undefined) {
 		scripts.get(this)!.removeRegistration = value
 	}
-	async *createMessage(system: string, messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(
+		system: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; tools?: readonly { type: string; function?: { name: string } }[] },
+	) {
 		const state = scripts.get(this)!
 		assert.ok(metadata?.taskId)
 		state.taskId ??= metadata.taskId
@@ -66,6 +71,10 @@ class DocumentScriptedAI {
 		state.inputs.push(JSON.stringify({ system, messages }))
 		const tool = state.plan.shift()
 		if (tool) {
+			assert.ok(
+				metadata?.tools?.some((schema) => schema.type === "function" && schema.function?.name === tool.name),
+				`Scripted rich-document tool "${tool.name}" is absent from this request's captured tool catalog; update the fixture plan to the current advertised tools.`,
+			)
 			yield {
 				type: "tool_call" as const,
 				id: `${this.id}-${state.requests}`,
@@ -96,7 +105,7 @@ const html = (revision: number) => `<!doctype html>
 <h1>Keep revisions in one document</h1><p>This deterministic test spec defines fixture behavior, not production measurements.</p>
 <section><h2>Acceptance criteria</h2><ol><li>Open the HTML in Alpha.</li><li>Revise the same source file.</li></ol></section>
 <section><h2>Revision evidence</h2><p>Scripted revision ${revision}; no measured performance claims.</p></section>
-</main></body></html>`
+</main></body></html>\n`
 
 suite("Rich document authoring through captured task tools", function () {
 	this.timeout(180_000)
@@ -193,7 +202,7 @@ suite("Rich document authoring through captured task tools", function () {
 							),
 						},
 					},
-					{ name: "write_to_file", arguments: { path: relativeFile, content: html(1) } },
+					{ name: "apply_patch", arguments: { patch: addFilePatch(relativeFile, html(1)) } },
 				]
 				const deliveryGroup = vscode.window.tabGroups.activeTabGroup
 				const taskId = await globalThis.api.startNewTask({
@@ -204,6 +213,7 @@ suite("Rich document authoring through captured task tools", function () {
 						apiProvider: "fake-ai",
 						fakeAi: scripted,
 						mode: "code",
+						approvalMode: "auto",
 						autoApprovalEnabled: true,
 						alwaysAllowReadOnly: true,
 						alwaysAllowReadOnlyOutsideWorkspace: true,
@@ -259,16 +269,16 @@ suite("Rich document authoring through captured task tools", function () {
 				assert.ok((await vscode.commands.getCommands(true)).includes("alpha.previewHtmlDocument"))
 				await waitForRevision(1)
 				assert.equal(documentTabs()[0]!.group, deliveryGroup, "Delivery opens in the existing active group")
+				const unsupportedRevision = html(2).replace(
+					'name="alpha-document" content="1"',
+					'name="alpha-document" content="999"',
+				)
 				state.plan = [
 					{ name: "exec_command", arguments: { cmd: nodeReadCommand(relativeFile) } },
 					{
-						name: "write_to_file",
+						name: "apply_patch",
 						arguments: {
-							path: relativeFile,
-							content: html(2).replace(
-								'name="alpha-document" content="1"',
-								'name="alpha-document" content="999"',
-							),
+							patch: updateFilePatch(relativeFile, html(1), unsupportedRevision),
 						},
 					},
 				]
@@ -276,14 +286,14 @@ suite("Rich document authoring through captured task tools", function () {
 					"Revise the existing document to scripted revision 2; retain its URI and preview link.",
 				)
 				await settle(7)
-				assert.equal(
-					await readDocument(),
-					html(2).replace('name="alpha-document" content="1"', 'name="alpha-document" content="999"'),
-				)
+				assert.equal(await readDocument(), unsupportedRevision)
 				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
 				state.plan = [
 					{ name: "exec_command", arguments: { cmd: nodeReadCommand(relativeFile) } },
-					{ name: "write_to_file", arguments: { path: relativeFile, content: html(3) } },
+					{
+						name: "apply_patch",
+						arguments: { patch: updateFilePatch(relativeFile, unsupportedRevision, html(3)) },
+					},
 				]
 				await globalThis.api.sendMessage(
 					"Correct the unsupported document marker using the shipped contract in the same document. Do not reset this task.",

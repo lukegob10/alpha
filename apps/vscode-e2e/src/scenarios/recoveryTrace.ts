@@ -192,7 +192,7 @@ export function inspectRecoveryTrace(
 			{ name: "search_absence_observed", passed: exited(RECOVERY_COMMANDS.absent, 1) },
 			{
 				name: "search_absence_reported",
-				passed: /no\s+(?:\w+\s+){0,3}(?:match|occurrence|reference|result)|no\s+(?:tracked\s+)?(?:repository\s+)?files?\s+contain|not\s+found|does\s+not\s+(?:appear|exist)|absent|0\s+(?:match|occurrence)/i.test(
+				passed: /no\s+(?:\w+(?:-\w+)*\s+){0,3}(?:match|occurrence|reference|result)|no\s+(?:tracked\s+)?(?:repository\s+)?files?\s+contain|not\s+found|does\s+not\s+(?:appear|exist)|absent|0\s+(?:match|occurrence)/i.test(
 					finalText,
 				),
 			},

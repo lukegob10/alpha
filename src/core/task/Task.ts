@@ -139,6 +139,7 @@ import {
 	resolveSubagentDelegationPolicy,
 	migrateApprovalMode,
 	disabledSubagentAutoApprovalPolicy,
+	type SubagentAutoApprovalPolicy,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -201,7 +202,7 @@ import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/
 import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
 import { getCommandShell } from "../../utils/shell"
-import { sanitizeToolUseId } from "../../utils/tool-id"
+import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 import { getTaskDirectoryPath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
 // prompts
@@ -244,6 +245,12 @@ import {
 	type AgentRetryDecision,
 } from "../agent/AgentRetryPolicy"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../agent/AgentStepContextBuilder"
+import {
+	captureInheritedStepInstructions,
+	getFinalAssistantMessageIndexes,
+	type SubagentInvocationContext,
+} from "../agent/SubagentInvocationContext"
+import { snapshotProviderSettings } from "../agent/SubagentModelRouter"
 import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
 import type { AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
@@ -327,8 +334,10 @@ import {
 } from "../task-persistence/canonicalAssistantHistory"
 import { lifecycleResponseItems } from "../agent/lifecycle/responseItems"
 import {
+	assertSubagentHistoryFork,
 	isValidSubagentContextManifest,
 	type SubagentContextInstructionSourceInput,
+	type SubagentHistoryFork,
 } from "../agent/SubagentContextCapture"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 
@@ -469,6 +478,7 @@ type CapturedTaskProvider = {
 	apiHandler: ApiHandler
 	apiConfiguration: ProviderSettings
 	profileConfiguration?: ProviderSettings
+	apiConfigName?: string
 }
 
 type TaskRequestOptions = {
@@ -538,6 +548,7 @@ interface CurrentAgentStep {
 	}
 	releaseRequest: () => void
 	hasRetainedRequest?: () => boolean
+	getSubagentInvocationContext?: () => SubagentInvocationContext
 	turnId: string
 	stepId: string
 	requestId: string
@@ -631,6 +642,8 @@ export interface TaskOptions extends CreateTaskOptions {
 	subagentInitialContext?: string
 	/** Exact frozen body for first launch; later instances recover it from private task storage. */
 	subagentFrozenInstructions?: string
+	/** Host-captured conversational seed for a fresh child; resumed children read their own transcript. */
+	subagentHistoryFork?: SubagentHistoryFork
 	/** Monotonic timestamp captured when the provider begins admitting this task. */
 	performanceSubmissionStartedAt?: number
 	/** Optional provider-neutral reviewer; omitted tasks route typed approvals to the user. */
@@ -717,6 +730,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly subagentDelegationExplicitlyEnabled?: boolean
 	private subagentStopReason?: SubagentStopReason
 	private subagentFrozenInstructions?: string
+	private subagentHistoryFork?: SubagentHistoryFork
 	private subagentInstructionSnapshotLoaded = false
 	private subagentInstructionSnapshotPersisted = false
 	private readonly subagentInitialContext?: string
@@ -890,7 +904,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly waitAgentClaimEventIds = new Map<string, Set<string>>()
 	private readonly durableWaitAgentClaimIds = new Set<string>()
 	private readonly pendingWaitAgentNotificationBlocks = new Set<Anthropic.TextBlockParam>()
-	private readonly persistedToolResultIds = new Set<string>()
+	private persistedToolResultIds = new Set<string>()
 	private steerMessageAwaitingPersistence = false
 	private isAgentTurnEngineActive = false
 	private externalMutationLease?: { label: string; token: symbol }
@@ -1644,6 +1658,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		initialStatus,
 		subagentInitialContext,
 		subagentFrozenInstructions,
+		subagentHistoryFork,
 		taskKind,
 		subagentGroupId,
 		subagentNickname,
@@ -1749,6 +1764,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!contextManifest) throw new Error("Managed child frozen instructions require a context manifest")
 			assertFrozenSubagentInstructions(subagentFrozenInstructions, contextManifest.instructions.digest)
 			this.subagentFrozenInstructions = subagentFrozenInstructions
+		}
+		if (subagentHistoryFork !== undefined) {
+			if (this.taskKind !== "subagent" || historyItem || !contextManifest) {
+				throw new Error("A managed history fork requires a fresh child and a captured context manifest")
+			}
+			assertSubagentHistoryFork(subagentHistoryFork, contextManifest)
+			this.subagentHistoryFork = structuredClone(subagentHistoryFork)
 		}
 		this.childTaskId = undefined
 
@@ -2294,8 +2316,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.taskApprovalMode ?? "auto"
 	}
 
+	/** Authority of the invoking step, including when the task dial changes while a tool is pending. */
+	public getStepApprovalMode(): ApprovalMode {
+		return this.getApprovalModeForAsk()
+	}
+
 	private getApprovalModeForAsk(): ApprovalMode {
 		return this.currentAgentStep?.snapshot.context.policy.approval.mode ?? this.getTaskApprovalMode()
+	}
+
+	/** A fresh private copy of the invoking request boundary, never redacted diagnostic state. */
+	public getSubagentInvocationContext(): SubagentInvocationContext | undefined {
+		return this.currentAgentStep?.getSubagentInvocationContext?.()
 	}
 
 	private approvalStateForAsk(state: TaskRequestState | undefined, approvalMode: ApprovalMode) {
@@ -2937,6 +2969,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * So we usually only need to flush the pending user message with tool_results.
 	 */
 	public async flushPendingToolResultsToHistory(options: { allowAborted?: boolean } = {}): Promise<boolean> {
+		// A delayed acknowledgment belongs to the turn that began this flush.
+		const persistedToolResultIds = this.persistedToolResultIds
 		// Only flush if there's actually pending content to save
 		if (this.userMessageContent.length === 0) {
 			return true
@@ -3013,7 +3047,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			for (const block of pendingContent) {
 				if (block.type === "tool_result") {
-					this.persistedToolResultIds.add(sanitizeToolUseId(block.tool_use_id))
+					persistedToolResultIds.add(sanitizeToolUseId(getToolResultId(block) ?? ""))
 				}
 			}
 			// Remove only the snapshot that was persisted. Tool results arriving while
@@ -3059,13 +3093,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!this.assistantMessageSavedToHistory) return false
 
 		const historyToolResultIds = new Set<string>()
-		for (const message of this.apiConversationHistory) {
-			if (message.role !== "user" || !Array.isArray(message.content)) continue
-			for (const block of message.content) {
-				if (block.type === "tool_result") {
-					historyToolResultIds.add(sanitizeToolUseId(block.tool_use_id))
-				}
-			}
+		for (const call of toolCalls) {
+			const id = sanitizeToolUseId(call.id)
+			if (this.findPersistedProviderToolResult(id)) historyToolResultIds.add(id)
 		}
 
 		const pendingToolResultIds = new Set(
@@ -3113,15 +3143,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Treat the persisted transcript, rather than only the in-memory dedupe
 		// set, as the durability check. This also makes the helper safe for direct
 		// continuation/retry callers that invoke it more than once.
-		const persistedIds = new Set<string>()
-		for (const message of this.apiConversationHistory) {
-			if (message.role !== "user" || !Array.isArray(message.content)) continue
-			for (const block of message.content) {
-				if (block.type === "tool_result") persistedIds.add(sanitizeToolUseId(block.tool_use_id))
-			}
-		}
 		const persisted =
-			transcriptPersisted && [...expectedToolResultIds].every((toolUseId) => persistedIds.has(toolUseId))
+			transcriptPersisted &&
+			[...expectedToolResultIds].every((toolUseId) => this.findPersistedProviderToolResult(toolUseId))
 		// Always close the canonical call set, even when the legacy transcript
 		// write failed. This keeps the lifecycle reducer terminally consistent;
 		// the false return still promotes the host/task result to a durability
@@ -4145,6 +4169,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// durable turn_started event is already in the journal; emitting another
 		// event would add a meaningless transition and duplicate UI work.
 		if (!resumeExistingTurn) {
+			// Provider IDs may be reused by a fresh turn. Resumed turns retain their
+			// existing receipt cache so retries cannot duplicate a settled result.
+			this.persistedToolResultIds = new Set<string>()
 			await this.enqueueCanonicalLifecycleEvent("turn_started", {
 				phase: "starting",
 				effectTrackingVersion: 1,
@@ -4546,9 +4573,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (
 					message?.role === "assistant" &&
 					Array.isArray(message.content) &&
-					message.content.some(
-						(block) => block.type === "tool_use" && sanitizeToolUseId(block.id) === toolCallId,
-					)
+					message.content.some((block) => sanitizeToolUseId(getToolCallId(block) ?? "") === toolCallId)
 				) {
 					assistantIndex = index
 					break
@@ -4576,7 +4601,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const existingIds = new Set(
 					content
 						.filter((block) => block.type === "tool_result")
-						.map((block) => sanitizeToolUseId(block.tool_use_id)),
+						.map((block) => sanitizeToolUseId(getToolResultId(block) ?? "")),
 				)
 				const missingResults = results.filter(
 					(result) => !existingIds.has(sanitizeToolUseId(result.tool_use_id)),
@@ -4610,7 +4635,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (assistantMessage?.role !== "assistant" || !Array.isArray(assistantMessage.content)) continue
 
 			const containsCall = assistantMessage.content.some(
-				(block) => block.type === "tool_use" && sanitizeToolUseId(block.id) === toolCallId,
+				(block) => sanitizeToolUseId(getToolCallId(block) ?? "") === toolCallId,
 			)
 			if (!containsCall) continue
 
@@ -4624,7 +4649,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (followingMessage?.role !== "user" || !Array.isArray(followingMessage.content)) continue
 
 				const result = followingMessage.content.find(
-					(block) => block.type === "tool_result" && sanitizeToolUseId(block.tool_use_id) === toolCallId,
+					(block) =>
+						block.type === "tool_result" && sanitizeToolUseId(getToolResultId(block) ?? "") === toolCallId,
 				)
 				if (result?.type === "tool_result") return result
 			}
@@ -4814,6 +4840,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		retainedStep?: CurrentAgentStep,
 		capturedProvider?: CapturedTaskProvider,
 		designHandoffOverride?: TaskDesignHandoff | null,
+		capturedAutoApprovalPolicy?: SubagentAutoApprovalPolicy,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
@@ -4854,6 +4881,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			messages: [...cleanConversationHistory],
 			metadata: { ...capturedMetadata, taskId: this.taskId, mode, requestId, attemptId },
 		})
+		const stepId = `${turnId}:step-${this.agentTurnStep}`
+		const capturedApiConfigName = capturedProvider ? capturedProvider.apiConfigName : this._taskApiConfigName
+		const forkHistory = surface.allowedFunctionNames.includes("spawn_agent")
+			? structuredClone(getEffectiveApiHistory(this.apiConversationHistory))
+			: undefined
+		let capturedForkContext: SubagentInvocationContext | undefined = forkHistory
+			? {
+					mode,
+					apiConfiguration: snapshotProviderSettings(
+						capturedProvider?.profileConfiguration ??
+							capturedProvider?.apiConfiguration ??
+							this.apiConfiguration,
+					),
+					apiConfigName: capturedApiConfigName,
+					modelRoute: {
+						source: "parent",
+						resolution: "selected",
+						provider: apiConfiguration.apiProvider,
+						modelId: model.id,
+						profileName: capturedApiConfigName ?? "Parent profile",
+					},
+					history: forkHistory,
+					finalAssistantMessageIndexes: getFinalAssistantMessageIndexes(forkHistory),
+					...(capturedAutoApprovalPolicy
+						? { autoApprovalPolicy: structuredClone(capturedAutoApprovalPolicy) }
+						: {}),
+					instructions:
+						this.taskKind === "subagent" && this.subagentFrozenInstructions !== undefined
+							? {
+									effectiveText: this.subagentFrozenInstructions,
+									sources:
+										this.subagentContextManifest?.instructions.sources.map(
+											({ kind, ref, digest }) => ({
+												kind,
+												ref,
+												digest,
+											}),
+										) ?? [],
+								}
+							: captureInheritedStepInstructions(
+									this.taskId,
+									stepId,
+									metadata.instructionFragments ?? [],
+								),
+				}
+			: undefined
 		// FakeAI is an in-process executable, not serializable provider configuration.
 		// Retain it through the runtime handler without copying callbacks into diagnostics.
 		const { fakeAi: _fakeAi, ...diagnosticProviderOptions } = apiConfiguration ?? {}
@@ -4963,11 +5036,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 			releaseRequest: () => {
 				capturedRequest = undefined
+				capturedForkContext = undefined
 				this.retireReasoningHandler(apiHandler)
 			},
 			hasRetainedRequest: () => capturedRequest !== undefined,
+			...(forkHistory
+				? {
+						getSubagentInvocationContext: () => {
+							if (!capturedForkContext)
+								throw new Error("The captured subagent invocation has been released.")
+							return structuredClone(capturedForkContext)
+						},
+					}
+				: {}),
 			turnId,
-			stepId: `${turnId}:step-${this.agentTurnStep}`,
+			stepId,
 			requestId,
 			attemptId,
 			surface,
@@ -5634,7 +5717,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.abort) {
 			throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
-		const taskApprovalMode = this.getApprovalModeForAsk()
+		const taskApprovalMode = this.getStepApprovalMode()
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
 		const alphaToolApprovalRequest: ToolApprovalPrompt | undefined = toolApprovalRequest
 			? {
@@ -6419,7 +6502,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const message = nextHistory[index]
 			if (message.role !== "user" || !Array.isArray(message.content)) continue
 			const nextContent = message.content.filter(
-				(block) => block.type !== "tool_result" || sanitizeToolUseId(block.tool_use_id) !== sanitizedId,
+				(block) =>
+					block.type !== "tool_result" || sanitizeToolUseId(getToolResultId(block) ?? "") !== sanitizedId,
 			)
 			if (nextContent.length === message.content.length) continue
 			if (nextContent.length === 0) nextHistory.splice(index, 1)
@@ -6500,7 +6584,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				model: this.currentAgentStep?.snapshot.context.provider.modelId ?? this.api?.getModel().id ?? "",
 				stop_hook_active: this.completionHookActive,
 				last_assistant_message: lastAssistantMessage.slice(0, 16_000),
-				permission_mode: this.getApprovalModeForAsk(),
+				permission_mode: this.getStepApprovalMode(),
 				...(target === "SubagentStop"
 					? {
 							agent_id: this.taskId,
@@ -9285,9 +9369,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// messages from previous session).
 			this.invalidateBackgroundUsageDrain("A fresh task transcript was started")
 			this.clineMessages = []
-			this.apiConversationHistory = []
+			this.apiConversationHistory =
+				this.subagentHistoryFork?.kind === "native" ? structuredClone(this.subagentHistoryFork.messages) : []
 
 			await this.persistFrozenSubagentInstructions()
+			if (this.subagentHistoryFork?.kind === "native") {
+				if (!(await this.saveApiConversationHistory())) {
+					throw new Error("Managed child inherited history could not be persisted")
+				}
+				await this.flushApiConversationHistoryPersistence()
+				this.subagentHistoryFork = undefined
+			}
+			if (this.abort || this.abandoned || this.getTaskLifetimeCancellationSignal().aborted) return
 
 			// The todo list is already set in the constructor if initialTodos were provided
 			// No need to add any messages - the todoList property is already set
@@ -9743,14 +9836,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const content = Array.isArray(lastMessage.content)
 						? lastMessage.content
 						: [{ type: "text", text: lastMessage.content }]
-					const hasToolUse = content.some((block) => block.type === "tool_use")
+					const hasToolUse = content.some((block) => getToolCallId(block) !== undefined)
 
 					if (hasToolUse) {
-						const toolUseBlocks = content.filter(
-							(block) => block.type === "tool_use",
-						) as Anthropic.Messages.ToolUseBlock[]
+						const toolUseBlocks = content.filter((block) => getToolCallId(block) !== undefined)
 						const toolResponses: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((block) =>
-							recoveredToolResult(block.id),
+							recoveredToolResult(getToolCallId(block)!),
 						)
 						modifiedApiConversationHistory = [...existingApiConversationHistory] // no changes
 						modifiedOldUserContent = [...toolResponses]
@@ -9772,9 +9863,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							? previousAssistantMessage.content
 							: [{ type: "text", text: previousAssistantMessage.content }]
 
-						const toolUseBlocks = assistantContent.filter(
-							(block) => block.type === "tool_use",
-						) as Anthropic.Messages.ToolUseBlock[]
+						const toolUseBlocks = assistantContent.filter((block) => getToolCallId(block) !== undefined)
 
 						if (toolUseBlocks.length > 0) {
 							const existingToolResults = existingUserContent.filter(
@@ -9784,9 +9873,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const missingToolResponses: Anthropic.ToolResultBlockParam[] = toolUseBlocks
 								.filter(
 									(toolUse) =>
-										!existingToolResults.some((result) => result.tool_use_id === toolUse.id),
+										!existingToolResults.some(
+											(result) => getToolResultId(result) === getToolCallId(toolUse),
+										),
 								)
-								.map((toolUse) => recoveredToolResult(toolUse.id))
+								.map((toolUse) => recoveredToolResult(getToolCallId(toolUse)!))
 
 							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1) // removes the last user message
 							modifiedOldUserContent = [...existingUserContent, ...missingToolResponses]
@@ -11176,7 +11267,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					showRooIgnoredFiles,
 					includeDiagnosticMessages,
 					maxDiagnosticMessages,
-					skillsManager: provider?.getSkillsManager(),
+					skillsManager: await provider?.getSkillsManager(this),
 					currentMode,
 					signal: this.getTaskCancellationSignal(),
 					onTicketActivity: async (activity) => {
@@ -13592,7 +13683,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				},
 				undefined, // todoList
 				instructionModel.instructionModelId ?? instructionModel.id,
-				isSubagent ? undefined : provider.getSkillsManager(),
+				isSubagent ? undefined : await provider.getSkillsManager(this),
 			)
 		})()
 
@@ -14060,7 +14151,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			yield* this.attemptCapturedApiRequest(retryAttempt, options, {
 				apiHandler: requestHandler,
 				apiConfiguration,
-				profileConfiguration: this.apiConfiguration,
+				profileConfiguration: snapshotProviderSettings(this.apiConfiguration),
+				apiConfigName: this._taskApiConfigName,
 			})
 		} finally {
 			const users = (this.reasoningHandlerUsers.get(requestHandler) ?? 1) - 1
@@ -14099,6 +14191,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			alwaysAllowWriteProtected: state?.alwaysAllowWriteProtected === true,
 			alwaysAllowMcp: state?.alwaysAllowMcp === true,
 		})
+		const capturedAutoApprovalPolicy = this.providerRef
+			.deref()
+			?.snapshotSubagentAutoApprovalPolicy?.({ ...state, approvalMode: capturedApprovalMode }, true)
 
 		const {
 			autoApprovalEnabled,
@@ -14697,8 +14792,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			modelInfo,
 			taskToolSurface,
 			retainedStep,
-			{ apiHandler: requestHandler, apiConfiguration },
+			{ ...capturedProvider, apiHandler: requestHandler, apiConfiguration },
 			capturedDesignHandoff ?? null,
+			capturedAutoApprovalPolicy,
 		)
 		if (!retainedStep && step.snapshot.context.policy.approval.mode !== capturedApprovalMode) {
 			throw new Error("Captured approval mode differs from the tool policy for this step")

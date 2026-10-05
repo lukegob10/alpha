@@ -734,6 +734,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			experiments: { preventFocusDisruption: true },
 			commandExecutionTimeout: 30,
 			enableCheckpoints: false,
+			terminalOutputPreviewSize: "medium",
 			maxConcurrentTasks: 6,
 			maxConcurrentSubagents: 4,
 			subagentDelegationPolicy: "proactive",
@@ -815,9 +816,20 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				await provider.postStateToWebview()
 				await vscode.commands.executeCommand("alpha.settingsButtonClicked")
 				await uiFixtureBarrier("settings-edit", { version: vscode.version })
+				assert.equal(
+					api.getConfiguration().terminalOutputPreviewSize,
+					"medium",
+					"Rendered edits must stay buffered until Save",
+				)
+				await api.setConfiguration({ ...configuration, terminalOutputPreviewSize: "small" })
 				await provider.postStateToWebview()
 				await provider.postStateToWebview()
 				await uiFixtureBarrier("settings-refresh-discard")
+				assert.equal(
+					api.getConfiguration().terminalOutputPreviewSize,
+					"small",
+					"Discard must preserve the latest authoritative setting",
+				)
 				assert.equal(api.getConfiguration().maxConcurrentSubagents, 4)
 			}
 

@@ -1,4 +1,4 @@
-import { useCallback } from "react"
+import { useCallback, type ComponentProps } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import {
 	AlertDialog,
@@ -16,22 +16,30 @@ import { AlertDialogProps } from "@radix-ui/react-alert-dialog"
 
 interface BatchDeleteTaskDialogProps extends AlertDialogProps {
 	taskIds: string[]
+	onConfirm?: () => void
+	onCloseAutoFocus?: ComponentProps<typeof AlertDialogContent>["onCloseAutoFocus"]
 }
 
-export const BatchDeleteTaskDialog = ({ taskIds, ...props }: BatchDeleteTaskDialogProps) => {
+export const BatchDeleteTaskDialog = ({
+	taskIds,
+	onConfirm,
+	onCloseAutoFocus,
+	...props
+}: BatchDeleteTaskDialogProps) => {
 	const { t } = useAppTranslation()
 	const { onOpenChange } = props
 
 	const onDelete = useCallback(() => {
 		if (taskIds.length > 0) {
 			vscode.postMessage({ type: "deleteMultipleTasksWithIds", ids: taskIds })
+			onConfirm?.()
 			onOpenChange?.(false)
 		}
-	}, [taskIds, onOpenChange])
+	}, [taskIds, onConfirm, onOpenChange])
 
 	return (
 		<AlertDialog {...props}>
-			<AlertDialogContent className="max-w-md">
+			<AlertDialogContent className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
 				<AlertDialogHeader>
 					<AlertDialogTitle>{t("history:deleteTasks")}</AlertDialogTitle>
 					<AlertDialogDescription className="text-vscode-foreground">

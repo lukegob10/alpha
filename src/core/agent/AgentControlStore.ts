@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "crypto"
 import { isDeepStrictEqual } from "util"
 import { AsyncLocalStorage } from "async_hooks"
 import * as lockfile from "proper-lockfile"
+import { ZodError } from "zod"
 import {
 	AGENT_CONTROL_OPERATIONS,
 	AgentControlTransactionError,
@@ -105,6 +106,93 @@ const initialState = (now: number): AgentControlState => ({
 })
 
 const clone = <T>(value: T): T => structuredClone(value)
+
+const matchesValidated = <T>(value: unknown, validated: T): value is T => isDeepStrictEqual(value, validated)
+
+function validateStateChanges(state: AgentControlState, validated?: AgentControlState): AgentControlState {
+	return validated
+		? parseIsolatedState(state, validated).comparisonState
+		: clone(agentControlStateSchema.parse(state))
+}
+
+function parseIsolatedState(
+	stored: unknown,
+	validated: AgentControlState,
+): PersistedAgentControlState & { comparisonState: AgentControlState } {
+	if (
+		typeof stored !== "object" ||
+		stored === null ||
+		!("version" in stored) ||
+		stored.version !== 2 ||
+		!("agents" in stored) ||
+		!Array.isArray(stored.agents) ||
+		!("tombstones" in stored) ||
+		!Array.isArray(stored.tombstones) ||
+		!("mailbox" in stored) ||
+		!Array.isArray(stored.mailbox) ||
+		!("verificationObligations" in stored) ||
+		!Array.isArray(stored.verificationObligations)
+	) {
+		const state = clone(agentControlStateSchema.parse(stored))
+		return { state, comparisonState: clone(state), migrated: false }
+	}
+
+	// Each retained record is validated independently of its array position.
+	// Equality against an owned normalized snapshot also proves that defaults and
+	// removal of unknown typed fields were applied before a record can be reused.
+	const prepare = <T>(records: unknown[], previous: readonly T[]) => {
+		const changed: unknown[] = []
+		const entries = Array.from(records, (record, index): { record: T; previous: T } | { changedIndex: number } => {
+			if (index < previous.length && matchesValidated(record, previous[index])) {
+				return { record, previous: previous[index] }
+			}
+			const changedIndex = changed.length
+			changed.push(record)
+			return { changedIndex }
+		})
+		return {
+			changed,
+			restore: (parsed: T[]) =>
+				entries.map((entry) => ("record" in entry ? entry.record : parsed[entry.changedIndex])),
+			comparison: (parsed: T[]) =>
+				entries.map((entry) => ("previous" in entry ? entry.previous : parsed[entry.changedIndex])),
+		}
+	}
+	const agents = prepare(stored.agents, validated.agents)
+	const tombstones = prepare(stored.tombstones, validated.tombstones)
+	const mailbox = prepare(stored.mailbox, validated.mailbox)
+	const obligations = prepare(stored.verificationObligations, validated.verificationObligations)
+	let changed: AgentControlState
+	try {
+		changed = agentControlStateSchema.parse({
+			...stored,
+			agents: agents.changed,
+			tombstones: tombstones.changed,
+			mailbox: mailbox.changed,
+			verificationObligations: obligations.changed,
+		})
+	} catch (error) {
+		if (!(error instanceof ZodError)) throw error
+		// Reduced arrays must not renumber durable-record diagnostics. Use the
+		// canonical complete parse on this failure path, retaining its exact errors.
+		const state = clone(agentControlStateSchema.parse(stored))
+		return { state, comparisonState: clone(state), migrated: false }
+	}
+	// The read owns its graph. Reuse equal read records as the mutable draft, but
+	// keep comparison records in the previous immutable projection. Changed opaque
+	// leaves also need distinct ownership on both sides of the comparison.
+	const state = clone(changed)
+	const comparisonState = clone(changed)
+	state.agents = agents.restore(state.agents)
+	state.tombstones = tombstones.restore(state.tombstones)
+	state.mailbox = mailbox.restore(state.mailbox)
+	state.verificationObligations = obligations.restore(state.verificationObligations)
+	comparisonState.agents = agents.comparison(comparisonState.agents)
+	comparisonState.tombstones = tombstones.comparison(comparisonState.tombstones)
+	comparisonState.mailbox = mailbox.comparison(comparisonState.mailbox)
+	comparisonState.verificationObligations = obligations.comparison(comparisonState.verificationObligations)
+	return { state, comparisonState, migrated: false }
+}
 interface TransactionLockOwner {
 	token: string
 	pid: number
@@ -131,7 +219,7 @@ interface OwnerLeaseHandle {
 interface PersistedAgentControlState {
 	state: AgentControlState
 	migrated: boolean
-	comparisonState?: unknown
+	comparisonState?: AgentControlState
 }
 
 /** Replaceable persistence seam used by the production file store and deterministic tests. */
@@ -142,6 +230,8 @@ export interface AgentControlPersistence {
 	/** Report rejections that occur before the persistence transaction is invoked. */
 	reportTransactionDiagnostic?(diagnostic: AgentControlTransactionDiagnostic): void
 	read(): Promise<unknown | undefined>
+	/** Every returned graph is exclusively owned by the caller, including opaque nested values. */
+	readIsolated?(): Promise<unknown | undefined>
 	write(state: AgentControlState): Promise<void>
 	/**
 	 * Optional exclusive transaction boundary for persistence shared by multiple
@@ -901,6 +991,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		}
 	}
 
+	async readIsolated(): Promise<unknown | undefined> {
+		return this.read()
+	}
+
 	async write(state: AgentControlState): Promise<void> {
 		const context = this.transactionContext.getStore()
 		if (!context) return this.withTransaction(() => this.write(state))
@@ -1156,6 +1250,8 @@ export class AgentControlStore {
 	private static readonly globalStores = new Map<string, AgentControlStore>()
 	private static runtimeOwnerId = agentRuntimeOwnerIdSchema.parse(randomUUID())
 	private state: AgentControlState
+	/** One normalized, privately owned validation baseline; never exposed as a mutable draft. */
+	private validatedState?: AgentControlState
 	private initialized = false
 	private disposed = false
 	private shutdownOperation?: Promise<void>
@@ -1268,6 +1364,7 @@ export class AgentControlStore {
 						{ operation: "initialize", queueWaitMs },
 					)
 					this.state = loadedState
+					this.validatedState = undefined
 					this.initialized = true
 					this.publish(recoveredEvents)
 				} catch (error) {
@@ -1316,6 +1413,7 @@ export class AgentControlStore {
 		await this.writeQueue.whenIdle()
 		await this.releaseOwnerLease()
 		this.initialized = false
+		this.validatedState = undefined
 	}
 
 	/** Reap active records only after their previous runtime owner's lease is revoked. */
@@ -1352,6 +1450,7 @@ export class AgentControlStore {
 					{ operation: "recovery", queueWaitMs },
 				)
 				this.state = recoveredState
+				this.validatedState = undefined
 				this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 				this.publish(recoveredEvents)
 				return recoveredRecordCount
@@ -2883,6 +2982,7 @@ export class AgentControlStore {
 		return this.withWriteLock(
 			async (queueWaitMs) => {
 				let committedState!: AgentControlState
+				let committedValidatedState!: AgentControlState
 				let publishedEntries: AgentMailboxEntry[] = []
 				let value!: T
 				let ownerLeaseRecovery: OwnerLeaseRecovery | undefined
@@ -2902,22 +3002,25 @@ export class AgentControlStore {
 						// A file transaction may have refreshed state while finding the
 						// requested mutation already applied. Refresh the local projection but
 						// avoid rewriting an identical complete snapshot.
-						if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
+						if (persisted?.comparisonState && !persisted.migrated && isDeepStrictEqual(draft, base)) {
 							committedState = draft
+							committedValidatedState = persisted.comparisonState
 							return
 						}
 
 						draft.updatedAt = this.now()
-						agentControlStateSchema.parse(draft)
+						const validated = validateStateChanges(draft, persisted?.comparisonState ?? this.validatedState)
 						await this.assertCurrentOwnerLease()
 						await this.assertPersistenceTransaction()
 						await this.persistence.write(draft)
 						committedState = draft
+						committedValidatedState = validated
 						publishedEntries = draft.mailbox.slice(previousMailboxLength)
 					},
 					{ operation: "mutation", ...options, queueWaitMs },
 				)
 				this.state = committedState
+				this.validatedState = committedValidatedState
 				this.completeOwnerLeaseRecovery(ownerLeaseRecovery)
 				this.publish(publishedEntries)
 				return value
@@ -3299,7 +3402,21 @@ export class AgentControlStore {
 	}
 
 	private async readPersistedState(forTransaction = false): Promise<PersistedAgentControlState> {
-		const stored = await this.persistence.read()
+		const stored = this.persistence.readIsolated
+			? await this.persistence.readIsolated()
+			: await this.persistence.read()
+		if (stored !== undefined && this.validatedState && this.persistence.readIsolated) {
+			const parsed = parseIsolatedState(stored, this.validatedState)
+			const highestSequence = parsed.state.mailbox.reduce(
+				(highest, entry) => Math.max(highest, entry.sequence),
+				0,
+			)
+			parsed.state.nextSequence = Math.max(parsed.state.nextSequence, highestSequence + 1)
+			parsed.comparisonState.nextSequence = parsed.state.nextSequence
+			parsed.migrated =
+				typeof stored === "object" && stored !== null && "version" in stored && stored.version === 1
+			return forTransaction ? parsed : { state: parsed.state, migrated: parsed.migrated }
+		}
 		const state = stored === undefined ? initialState(this.now()) : agentControlStateSchema.parse(stored)
 		// Zod copies typed fields, but unknown-valued records keep opaque nested
 		// references. Detach those leaves before using the parsed graph as a draft.
@@ -3314,7 +3431,7 @@ export class AgentControlStore {
 			state,
 			// Defaults, migration and sequence repair can change parsed values. In those
 			// cases compare against an isolated normalized snapshot, preserving no-op semantics.
-			comparisonState: forTransaction ? (isDeepStrictEqual(stored, state) ? stored : clone(state)) : undefined,
+			comparisonState: forTransaction ? clone(state) : undefined,
 			migrated:
 				stored !== undefined &&
 				typeof stored === "object" &&
