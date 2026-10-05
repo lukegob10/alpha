@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- Keep managed Worker checkouts usable with current Git for Windows when extension storage paths are long, while preserving proposal recovery and owned cleanup.
 - Preserve tool call and result identity across provider history replay, recovery, and context compaction.
 - Align inherited instructions, skills, Plan mode, and bounded subagent context with the shared agent harness.
 - Fix root-scoped subagent names, worktree recovery, provider cancellation diagnostics, and awaited telemetry cleanup.
