@@ -53,8 +53,6 @@ After discovery, parsing deliberately pauses when the bounded embedding queue is
 
 Validation passed: `pnpm --dir src exec vitest run services/glob services/code-index core/ignore/__tests__/AlphaIgnoreController.spec.ts core/ignore/__tests__/AlphaIgnoreController.security.spec.ts --maxWorkers=4` (661 tests across 43 files, including real ripgrep), `pnpm --dir src check-types`, ESLint and Prettier checks on touched files, and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (actual VS Code 1.122.1).
 
-The [embedding improvement plan](code-index-improvement-plan.md) records the remaining opportunities and their acceptance criteria.
-
 ### Vertex scheduling check
 
 ```sh

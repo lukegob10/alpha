@@ -26,7 +26,7 @@ export const campaignConfigSchema = z.object({
 		.regex(/^[a-z0-9][a-z0-9-]*$/),
 	target: z.string().min(1),
 	suite: z.string().min(1).optional(),
-	artifactRoot: z.string().min(1).default(".frontier-campaign/campaigns"),
+	artifactRoot: z.string().min(1).default("packages/evals/artifacts/campaigns"),
 	budgets: z.object({
 		maxCampaignWallMs: z
 			.number()

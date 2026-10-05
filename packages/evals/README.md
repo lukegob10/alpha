@@ -30,6 +30,8 @@ pnpm --filter @alpha-code/evals benchmark:fixture-check
 The committed `evals/` corpus and database migrations are versioned test inputs.
 Preserve their bytes and checksum manifests. Generic repository exercises remain because
 they measure the extension's coding behavior; they are not another shipped application.
+See the [evaluation directory guide](../../evals/README.md) for suites, reporting scripts, historical campaigns,
+and generated output locations.
 
 ## Database-backed checks
 

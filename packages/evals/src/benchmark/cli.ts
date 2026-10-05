@@ -169,7 +169,7 @@ async function main() {
 	}
 	if (command === "author-check") {
 		const outputRoot = path.resolve(
-			optionalValueAfter(args, "--output") ?? path.join(process.cwd(), ".frontier-campaign"),
+			optionalValueAfter(args, "--output") ?? path.resolve(import.meta.dirname, "../../artifacts/authoring"),
 		)
 		const fingerprints = optionalValueAfter(args, "--private-fingerprints")
 		const report = await runAuthoringCheck({

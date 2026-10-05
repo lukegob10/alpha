@@ -101,8 +101,8 @@ checks source/build stability before and after execution. Legacy installed-exten
 checkout was the executed build; their missing identity remains explicit.
 
 Export each final host report with `benchmark:export-host-campaign`, then use `benchmark:campaign-paired-report` with
-the predeclared experiment manifest. See [paired implementation and example](harness-implementation-experiments.md)
-for exact commands, denominators, nullable usage and conservative source-component identity limits. Source digests do
+the predeclared experiment manifest. See the [evaluator commands](../packages/evals/package.json) and
+[experiment implementation](../packages/evals/src/experiments/) for flags, denominators, nullable usage, and source identity. Source digests do
 not certify a fresh rebuild; actual build digests identify the bytes. Scripted samples can validate the pipeline, while
 live success differences require repeated live observations and an appropriate uncertainty analysis.
 
@@ -145,5 +145,5 @@ boundary; do not silently downgrade container isolation to a normal workstation 
 5. Read the diagnosis and comparison with failures, retries and missing measurements visible.
 6. Record keep/revise/revert/inconclusive and the claim's scope. Preserve unresolved incidents separately.
 
-A green rerun does not explain the historical ticket-progress timeout. The 75 ms real-filesystem fixture incident is
-separate. The [diagnostics record](harness-implementation-diagnostics.md) explains the safe-export compatibility.
+A green rerun does not explain the historical ticket-progress timeout. Preserve each incident's original evidence;
+the [evidence runbook](harness-evidence.md) describes report validation and retention.

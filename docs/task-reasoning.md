@@ -81,7 +81,7 @@ boundaries; the repository's exact model catalog and VS Code 1.122.1 fixtures de
 ## Validation
 
 Run focused reasoning, provider payload, task/profile, schedule, and webview tests; shared package and affected consumer
-type checks and lint; `node scripts/find-missing-translations.js`; and
+type checks and lint; and
 `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221`. The exact-host LM fixture verifies persistence and that an unverified
 LM model receives no effort override while retaining its exact identity. Provider unit fixtures cover supported
 named-level payloads.

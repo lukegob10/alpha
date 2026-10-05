@@ -4,7 +4,7 @@
 > `cancel_agent` calls that are no longer advertised to models. They are not ready-to-run prompts for the current
 > catalog. Adapt those checkpoints to actual host lifecycle controls before live use; `close_agent` is not a
 > cancellation replacement. Current scripted acceptance uses the six-tool managed-agent surface described in
-> [the tool surface contract](../tool-surface-refactor.md). Historical command calls remain readable through aliases.
+> [the canonical tool registry](../../src/core/tools/ToolRegistry.ts). Historical command calls remain readable through aliases.
 
 ## Purpose
 

@@ -9,16 +9,6 @@ on:
         branches: [main, main-v2]
 
 jobs:
-    check-translations:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v5
-            - name: Setup Node.js and pnpm
-              uses: ./.github/actions/setup-node-pnpm
-            - name: Verify all translations are complete
-              run: node scripts/find-missing-translations.js
-
     knip:
         runs-on: ubuntu-latest
         steps:

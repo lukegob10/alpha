@@ -49,6 +49,8 @@
 **/*.log
 **/*.tmp
 src/webview-ui/
+evals/archive/
+evals/reports/
 packages/evals/.docker/postgres/
 packages/evals/.docker/redis/
 **/.env*

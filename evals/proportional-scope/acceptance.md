@@ -7,14 +7,14 @@ failed-completion references are excluded from equal-quality comparisons.
 
 ## Measurement contract
 
-The existing seven [proportional-scope fixtures](../evals/proportional-scope/README.md), prompts, scripted actions,
+The existing seven [proportional-scope fixtures](README.md), prompts, scripted actions,
 repairs, and quality assertions remain unchanged. Run three independent invocations, each with fresh temporary fixture
 workspaces. Preserve their raw privacy-safe reports and phase attribution. An invocation's existing internal sample index
 is zero; an external repetition ordinal identifies the three separate runs. Their real engine/scheduler execution still
 uses fixture tools and fixed decisions. It does not measure production Task prompts, adaptive strategy, approval enforcement,
 or durable completion. Unknown provider usage and timing stay unavailable.
 
-The added [request preflight measurement](../scripts/benchmarks/nor36-request-preflight.spec.ts) invokes the actual
+The added [request preflight measurement](../../scripts/benchmarks/nor36-request-preflight.spec.ts) invokes the actual
 `Task.attemptApiRequest`, `manageContext`, native catalog builder, task catalog cache, and immutable step capture. The
 bounded Task prototype seam injects lifecycle/UI methods, a fixed system prompt, and an offline provider. It preserves a
 fixed user question, assistant tool call with opaque reasoning state, and its successful result. Existing NOR-28 catalog
@@ -83,13 +83,13 @@ This is not a claim of 50% faster requests. The reports omit elapsed times.
 Each continuation made one provider request, emitted no tools, and ran no commands. System text was 90 bytes / 23 local
 estimated tokens; messages were 398 bytes / 155 local estimated tokens; response text was 47 bytes. The provider fixture
 does not measure usage. Large MCP catalogs retain the existing deferred-discovery behavior, explaining their smaller
-outgoing schema than a fully expanded catalog. The complete [reference](benchmarks/nor36-preflight-reference-20260905.json),
-[candidate](benchmarks/nor36-preflight-candidate-20260905.json), and
-[admission result](benchmarks/nor36-preflight-comparison-20260905.json) contain only allowlisted counters and identities.
+outgoing schema than a fully expanded catalog. The complete [reference](../reports/nor36/nor36-preflight-reference-20260905.json),
+[candidate](../reports/nor36/nor36-preflight-candidate-20260905.json), and
+[admission result](../reports/nor36/nor36-preflight-comparison-20260905.json) contain only allowlisted counters and identities.
 
 All **42 engine observations** (seven classes × three invocations × two revisions) passed. For each class, the six
 existing reports were exactly equal after excluding only source revision. The
-[engine evidence](benchmarks/nor36-engine-oracle-pair-20260905.json) retains the equal metrics once per class and the six
+[engine evidence](../reports/nor36/nor36-engine-oracle-pair-20260905.json) retains the equal metrics once per class and the six
 original report hashes. Provider usage, completion-stage observations, and timing remain unavailable where unobserved.
 
 | Class                    | Model requests | Tool results | Commands | Tool-output bytes | Discovery / implementation / validation / finalization tools |
@@ -133,7 +133,7 @@ The tested extension bundle SHA-256 was
 
 ## Paired evidence admission
 
-The small [comparison helper](../scripts/evals/proportional-scope-compare.mjs) admits only complete seven-class sample
+The small [comparison helper](../../scripts/evals/proportional-scope-compare.mjs) admits only complete seven-class sample
 sets with passing completed outcomes, clean consistent source identities, matching fixture/policy/full-harness/oracle/
 configuration/cache declarations, complete phase attribution, and matching sample ordinals. It rejects a failed-quality
 reference, script changes, partial coverage, and missing samples. Missing usage remains unavailable; local estimates or
@@ -148,8 +148,8 @@ Use Node 20.19.2 and pnpm 10.8.1. Frozen dependency installation and the existin
 ```sh
 node --test scripts/evals/proportional-scope-report.test.mjs scripts/evals/proportional-scope-compare.test.mjs
 pnpm --dir src test core/agent/__tests__/proportionalScope.integration.spec.ts
-pnpm --dir src exec vitest run --config ../scripts/benchmarks/nor36-request-preflight.config.ts
-pnpm --dir src exec tsc --noEmit --project ../scripts/benchmarks/nor36-request-preflight.tsconfig.json
+pnpm --dir src exec vitest run --config ../../scripts/benchmarks/nor36-request-preflight.config.ts
+pnpm --dir src exec tsc --noEmit --project ../../scripts/benchmarks/nor36-request-preflight.tsconfig.json
 pnpm exec eslint --config src/eslint.config.mjs scripts/benchmarks/nor36-request-preflight.spec.ts scripts/benchmarks/nor36-request-preflight.config.ts scripts/evals/proportional-scope-compare.mjs scripts/evals/proportional-scope-compare.test.mjs --max-warnings=0
 ```
 

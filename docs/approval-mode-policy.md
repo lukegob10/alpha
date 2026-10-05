@@ -27,8 +27,8 @@ remain readable, while a new source-qualified call cannot borrow a grant from a 
 Approval metadata and complete review details travel separately. Large file snapshots or MCP review data do not count
 against the bounded `description` field. The complete action still reaches the user and any injected reviewer, and
 exact session approval identity still includes the original review data. Commands retain their exact description for
-command amendments. See [file edit and approval alignment](file-edit-approval-codex-alignment.md) for the reproduction
-and pinned Codex source comparison.
+command amendments. The owning implementation and regression coverage are in
+[`AutoApprovalHandler`](../src/core/auto-approval/AutoApprovalHandler.ts) and its adjacent tests.
 
 The [official Codex sandbox and approvals guidance](https://developers.openai.com/codex/security/) checked on
 2026-09-26 describes Codex Auto as `workspace-write` plus `on-request`: routine commands can run inside the workspace

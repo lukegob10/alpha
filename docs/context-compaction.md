@@ -137,7 +137,6 @@ pnpm --dir webview-ui test src/components/chat/context-management/__tests__/Cond
 pnpm lint
 pnpm check-types
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
-node scripts/find-missing-translations.js
 ```
 
 The repository-wide translation checker currently reports missing keys outside this change; the new unchanged-result

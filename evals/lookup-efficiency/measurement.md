@@ -1,6 +1,6 @@
 # Lookup-efficiency measurement contract
 
-21 September 2026. Sibling of the [NOR-36 independent efficiency acceptance](nor36-efficiency-acceptance.md). This document owns measurement of production-shaped **“where does X live?”** lookups. It does not block NOR-70–74, does not change the seven proportional-scope fixtures or their scripts, and does not revive NOR-36’s unproven 25% tool / 20% token targets.
+21 September 2026. Sibling of the [NOR-36 independent efficiency acceptance](../proportional-scope/acceptance.md). This document owns measurement of production-shaped **“where does X live?”** lookups. It does not block NOR-70–74, does not change the seven proportional-scope fixtures or their scripts, and does not revive NOR-36’s unproven 25% tool / 20% token targets.
 
 The NOR-36 scripted **narrow lookup** class remains **2 model requests / 1 tool result** on a fixture oracle. That is not a live-model budget. Lookup-efficiency scripted traces prove this reporter and contract only.
 

@@ -177,7 +177,7 @@ The central exact-1.122.1 candidate run at `a64816cb917fb32b0ca8baa9834e2f96a133
 each, with no fixture or provider-policy changes between reference and candidate. The compiled fixture/helper equality
 was verified by the central runner. Bundle SHA-256:
 `7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb`.
-The [allowlisted candidate report](../../docs/benchmarks/nor-36-completion-candidate-2026-09-05.json) records fixture digest
+The [allowlisted candidate report](../reports/nor36/nor-36-completion-candidate-2026-09-05.json) records fixture digest
 `bd251c5348d3a4cc1e489fd59dacb9f6f66ea3cc7dcdf5606b7a446a37d2570a` and policy digest
 `2a8f50b3d44b8a0ceb040361371c36c726f2a91b7b6705225434e0b2b7f66ba4`, plus source/build/configuration/cache declarations.
 
@@ -196,6 +196,6 @@ The reference's two-request samples failed durable correctness; the candidate's 
 quality difference and bounded candidate behavior, with attribution to NOR-37's shared completion/root corrections. Do
 not report a percentage speedup, equal-quality cost saving, NOR-36's proposed tool/command or input-token target, or improved
 model strategy from this comparison. The separate
-[candidate context report](../../docs/benchmarks/nor-36-context-candidate-2026-09-05.json) passed three conversation samples
+[candidate context report](../reports/nor36/nor-36-context-candidate-2026-09-05.json) passed three conversation samples
 at one request/no tools and three scoped lookups at two requests/one actual read each. Those are fixed-script contract
 results; no additional reference run or exploration policy change is implied.
