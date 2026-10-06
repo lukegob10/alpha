@@ -331,6 +331,36 @@ test("requires a true two-parent merge that resolves the seeded conflict", async
 	})
 })
 
+test("migration verifier canonicalizes its owned temporary oracle before bounded reads", async (context) => {
+	await withOwnedWorkspace(async (workspace) => {
+		await createDevelopmentFixture(workspace, "dev-local-migration")
+		await applyDevelopmentScript(workspace, "devMigrationUpgrade")
+		const originalMkdtemp = fs.mkdtemp
+		let linkedOracles = 0
+		context.mock.method(fs, "mkdtemp", async (prefix: string) => {
+			const directory = await originalMkdtemp(prefix)
+			if (!path.basename(prefix).startsWith("alpha-development-migration-oracle-")) return directory
+			const canonical = await fs.realpath(directory)
+			context.after(async () => {
+				assert.equal(path.dirname(canonical), await fs.realpath(tmpdir()))
+				assert.match(path.basename(canonical), /^alpha-development-migration-oracle-/)
+				await fs.rm(canonical, { recursive: true, force: true })
+			})
+			assert.deepEqual(await fs.readdir(directory), [])
+			const linked = path.join(
+				path.dirname(workspace),
+				`alpha-development-migration-oracle-link-${linkedOracles++}`,
+			)
+			await fs.symlink(directory, linked, process.platform === "win32" ? "junction" : "dir")
+			assert.equal(await fs.realpath(linked), await fs.realpath(directory))
+			assert.deepEqual(await fs.readdir(linked), [])
+			return linked
+		})
+		await assertChecksPass(workspace, "dev-local-migration", "devMigrationUpgrade")
+		assert.equal(linkedOracles, 1)
+	})
+})
+
 test("requires a fresh-v1 migration, executed tests, and idempotent rerun", async () => {
 	await withOwnedWorkspace(async (workspace) => {
 		await createDevelopmentFixture(workspace, "dev-local-migration")

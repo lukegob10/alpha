@@ -870,7 +870,7 @@ function migrationDataContract(value: unknown): boolean {
 }
 
 async function migrationIdempotence(root: string): Promise<boolean> {
-	const oracleRoot = await fs.mkdtemp(path.join(tmpdir(), MIGRATION_ORACLE_PREFIX))
+	const oracleRoot = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), MIGRATION_ORACLE_PREFIX)))
 	try {
 		if (!path.basename(oracleRoot).startsWith(MIGRATION_ORACLE_PREFIX))
 			throw new Error("Unsafe migration oracle directory")

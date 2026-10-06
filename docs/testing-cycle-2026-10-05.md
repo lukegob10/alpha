@@ -70,6 +70,12 @@ Production path checks still reject symlinks. A new provenance regression requir
 linked spelling to fail for the intended reason, and explicit filesystem resolution to preserve the source identity.
 The receipt-path regression also verifies its canonical positive control before asserting symlink rejection.
 
+The complete macOS runner suite then exposed a redaction assertion that confused `/private/var` with leaked failure
+details, plus an uncanonicalized migration oracle created inside the development fixture verifier. Redaction assertions
+now check unique injected error strings across the complete report. The verifier resolves its fresh owned oracle before
+filesystem operations and bounded reads. Two new regressions reproduce these cases with an owned directory named
+`private` and a controlled temporary-directory link on Windows too; both failed before the corrections and passed after.
+
 ## Candidate validation
 
 Commit `561965bf46f76328cd076e2c1d34c6acd196dfca` passed the complete local `static`, `tooling`, `offline`, `host`,
@@ -78,12 +84,12 @@ lanes. Extended executed nine tests across its four selected files; confidence e
 3,138 certification tests across ten tracks, with no certification skips. Outcomes completed all three scenarios.
 The first CI cycle passed every job except the two macOS fixture failures described above.
 
-The change adds 29 tests: five scheduled-task host cases, 12 packaging cases, two manifest contracts, seven
+The change adds 31 tests: five scheduled-task host cases, 12 packaging cases, two manifest contracts, nine
 discovery/evidence/workflow guards and three PowerShell fixture regressions. The corrections passed all 24 focused
 native-package/PowerShell tests, all 42 focused harness/packaging tests and the extension type check. `pnpm bundle` and
 `pnpm vsix` succeeded; content verification checked all 1,675 archive entries and matched all 16 document assets to
-current source bytes. The final temporary-root corrections passed all 15 focused evidence/provenance cases and the
-complete tooling lane: 204 repository checks and 551 runner checks passed, with two declared Windows-only runner skips.
+current source bytes. The temporary-root corrections passed all 15 focused evidence/provenance cases. The final complete
+tooling lane passed 204 repository checks and 553 runner checks, with two declared Windows-only runner skips.
 The host-runner lint and ESM type check passed. CI validates the corrections through the same three-platform jobs.
 Source-bound evidence from earlier revisions remains historical rather than being reused as current evidence for a
 later correction.
