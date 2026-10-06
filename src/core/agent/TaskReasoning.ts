@@ -1,4 +1,5 @@
 import {
+	reasoningEffortsExtended,
 	taskReasoningCustomTokenPattern,
 	resolveOpenAiCustomModelInfo,
 	type TaskReasoningCapabilities,
@@ -31,6 +32,23 @@ export type TaskReasoningResolution = {
 }
 
 const DEFAULT_PREFERENCE: TaskReasoningPreference = { kind: "default" }
+
+/** Increment the acknowledged next-step choice, skipping unsupported levels without wrapping. */
+export function getAdjacentReasoningPreference(
+	state: TaskReasoningState,
+	direction: -1 | 1,
+): TaskReasoningPreference | undefined {
+	if (state.capabilities.kind === "binary") {
+		if (direction === -1 && !state.capabilities.canDisable) return undefined
+		const kind = direction === 1 ? "on" : "off"
+		return state.effective.kind !== kind ? { kind } : undefined
+	}
+	if (state.capabilities.kind !== "effort") return undefined
+	const efforts = reasoningEffortsExtended.filter((effort) => state.capabilities.efforts?.includes(effort))
+	const current = state.effective.kind === "effort" ? efforts.indexOf(state.effective.effort) : -1
+	const next = current === -1 ? (direction === 1 ? 0 : -1) : current + direction
+	return next >= 0 && next < efforts.length ? { kind: "effort", effort: efforts[next] } : undefined
+}
 
 /**
  * Resolve one task preference against the model descriptor captured for the

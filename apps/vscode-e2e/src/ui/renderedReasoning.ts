@@ -15,6 +15,7 @@ export async function exerciseRenderedReasoning(
 	signal?: AbortSignal,
 ) {
 	let sessionId = initialSession
+	let editorSession: string | undefined
 	const initialTargets = await cdp.request<{ targetInfos: Array<{ targetId: string }> }>("Target.getTargets")
 	const initialTargetIds = new Set(initialTargets.targetInfos.map((target) => target.targetId))
 	await cdp.request("Page.bringToFront", {}, workbenchSession)
@@ -33,7 +34,7 @@ export async function exerciseRenderedReasoning(
 	}
 	const check = (expression: string) =>
 		waitUntil(() => evaluate<boolean>(expression), Date.now() + 15_000, `reasoning_render_timeout: ${expression}`)
-	const key = async (key: string, code: string, keyCode: number) => {
+	const key = async (key: string, code: string, keyCode: number, modifiers = 0) => {
 		for (const type of ["keyDown", "keyUp"]) {
 			await cdp.request(
 				"Input.dispatchKeyEvent",
@@ -41,6 +42,7 @@ export async function exerciseRenderedReasoning(
 					type,
 					key,
 					code,
+					modifiers,
 					windowsVirtualKeyCode: keyCode,
 					...(type === "keyDown" && (key === "Enter" || key === " ")
 						? { text: key === "Enter" ? "\r" : " " }
@@ -86,6 +88,18 @@ export async function exerciseRenderedReasoning(
 		"reasoning-reload",
 		"reasoning-fallback",
 		"reasoning-editor",
+		...(process.platform === "win32"
+			? [
+					"hotkeys-queue",
+					"hotkeys-steer",
+					"hotkeys-previous",
+					"hotkeys-next",
+					"hotkeys-attention",
+					"hotkeys-new",
+					"hotkeys-editor-next",
+					"hotkeys-editor-previous",
+				]
+			: []),
 	]
 	try {
 		for (const stage of stages) {
@@ -105,6 +119,52 @@ export async function exerciseRenderedReasoning(
 				Date.now() + 60_000,
 				`reasoning_${stage}_timeout`,
 			)
+			if (stage.startsWith("hotkeys-")) {
+				if (stage.startsWith("hotkeys-editor-")) {
+					assert.ok(editorSession)
+					sessionId = editorSession
+				} else {
+					sessionId = initialSession
+				}
+				await focus("textarea")
+				if (stage === "hotkeys-queue" || stage === "hotkeys-steer") {
+					await cdp.request(
+						"Input.insertText",
+						{
+							text:
+								stage === "hotkeys-queue"
+									? "Windows queue instruction."
+									: "Windows steering instruction.",
+						},
+						workbenchSession,
+					)
+					if (stage === "hotkeys-queue") await key("Enter", "Enter", 13)
+					else await key("s", "KeyS", 83, 3)
+					await check("d.querySelector('textarea').value===''")
+				} else if (stage.endsWith("previous") || stage.endsWith("next")) {
+					const previous = stage.endsWith("previous")
+					await key(previous ? "PageUp" : "PageDown", previous ? "PageUp" : "PageDown", previous ? 33 : 34, 3)
+					const prompt = previous ? "Complete the first fixture turn." : "Windows steering fixture"
+					await check(
+						`d.querySelector('[data-testid=chat-view]')?.innerText.includes(${JSON.stringify(prompt)})`,
+					)
+				} else if (stage === "hotkeys-attention") {
+					await key("Home", "Home", 36, 3)
+					await check(
+						"d.querySelector('[data-testid=chat-view]')?.innerText.includes('Windows approval fixture')",
+					)
+				} else {
+					await key("n", "KeyN", 78, 3)
+					await check("!!d.querySelector('[data-testid=alpha-home-brand]')")
+				}
+				await capture(stage)
+				await writeJsonAtomically(
+					path.join(directory, `ui-done-${stage}.json`),
+					{ nonce, stage, status: "passed" },
+					{ rename: fs.link },
+				)
+				continue
+			}
 			if (stage === "reasoning-editor") {
 				// Opening an editor panel creates another webview target. Attach only to this owned host.
 				await waitUntil(
@@ -133,9 +193,27 @@ export async function exerciseRenderedReasoning(
 					"reasoning_editor_timeout",
 				)
 				await check("d.body.innerText.includes('Continue with the selected reasoning.')")
+				editorSession = sessionId
 			}
 			await focus("[data-testid=reasoning-trigger]")
 			if (stage === "reasoning-high") {
+				if (process.platform === "win32") {
+					await focus("textarea")
+					await key(".", "Period", 190, 1)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
+					)
+					await key(",", "Comma", 188, 1)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: Low'",
+					)
+					await key(".", "Period", 190, 1)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
+					)
+					assert.equal(await evaluate("d.querySelector('textarea').value"), "")
+				}
+				await focus("[data-testid=reasoning-trigger]")
 				await key("Enter", "Enter", 13)
 				await check("!!d.querySelector('[role=slider][aria-label=Reasoning]')")
 				await evaluate("d.querySelector('[role=slider][aria-label=Reasoning]').focus()")
@@ -196,6 +274,17 @@ export async function exerciseRenderedReasoning(
 				await capture(stage)
 				await key("Escape", "Escape", 27)
 				await check("d.activeElement===d.querySelector('[data-testid=reasoning-trigger]')")
+				if (stage === "reasoning-editor" && process.platform === "win32") {
+					await focus("textarea")
+					await key(",", "Comma", 188, 1)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: Low'",
+					)
+					await key(".", "Period", 190, 1)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
+					)
+				}
 			}
 			assert.equal(
 				await evaluate(
