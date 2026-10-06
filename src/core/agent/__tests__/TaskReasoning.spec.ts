@@ -1,6 +1,48 @@
-import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
+import type { ModelInfo, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
 
-import { resolveTaskReasoning } from "../TaskReasoning"
+import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../TaskReasoning"
+
+describe("reasoning hotkey levels", () => {
+	const state: TaskReasoningState = {
+		requested: { kind: "default" },
+		effective: { kind: "effort", effort: "low" },
+		capabilities: { kind: "effort", efforts: ["max", "low", "high", "high"], canDisable: true },
+	}
+
+	it("advances from the effective level and skips unsupported levels in either direction", () => {
+		expect(getAdjacentReasoningPreference(state, 1)).toEqual({ kind: "effort", effort: "high" })
+		expect(getAdjacentReasoningPreference({ ...state, effective: { kind: "effort", effort: "max" } }, -1)).toEqual({
+			kind: "effort",
+			effort: "high",
+		})
+	})
+
+	it("clamps the endpoints and can enable a disabled named-level model", () => {
+		expect(getAdjacentReasoningPreference(state, -1)).toBeUndefined()
+		expect(
+			getAdjacentReasoningPreference({ ...state, effective: { kind: "effort", effort: "max" } }, 1),
+		).toBeUndefined()
+		expect(getAdjacentReasoningPreference({ ...state, effective: { kind: "off" } }, 1)).toEqual({
+			kind: "effort",
+			effort: "low",
+		})
+	})
+
+	it("supports binary reasoning without inventing levels for budget or custom controls", () => {
+		const binary: TaskReasoningState = {
+			...state,
+			effective: { kind: "off" },
+			capabilities: { kind: "binary", canDisable: true },
+		}
+		expect(getAdjacentReasoningPreference(binary, 1)).toEqual({ kind: "on" })
+		expect(getAdjacentReasoningPreference({ ...binary, effective: { kind: "on" } }, -1)).toEqual({ kind: "off" })
+		for (const kind of ["budget", "custom", "unavailable"] as const) {
+			expect(
+				getAdjacentReasoningPreference({ ...state, capabilities: { kind, canDisable: true } }, 1),
+			).toBeUndefined()
+		}
+	})
+})
 
 const modelInfo = (overrides: Partial<ModelInfo> = {}): ModelInfo => ({
 	contextWindow: 128_000,

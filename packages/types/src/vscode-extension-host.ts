@@ -277,6 +277,7 @@ export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegrad
 export type ChatCommand =
 	| "askResponse"
 	| "queueMessage"
+	| "sendAndSteer"
 	| "steerQueuedMessage"
 	| "editQueuedMessage"
 	| "resumeCompletedTask"
@@ -297,9 +298,22 @@ export interface ChatCommandResult {
 	command: ChatCommand
 	status: "accepted" | "rejected"
 	errorCode?: ChatCommandErrorCode
-	/** Accepted input was retained in the queue when immediate completed-task delivery could not start. */
+	/** Accepted input was retained in the queue when immediate delivery could not start. */
 	deliveryState?: "queued"
 }
+
+export const sendAndSteerMessageSchema = z.object({
+	type: z.literal("sendAndSteer"),
+	taskId: z.string().min(1),
+	requestId: z.string().min(1),
+	text: z.string(),
+	images: z.array(z.string()).optional(),
+})
+
+export const webviewFocusChangedMessageSchema = z.object({
+	type: z.literal("webviewFocusChanged"),
+	focused: z.boolean(),
+})
 
 /**
  * ExtensionMessage
@@ -347,6 +361,7 @@ export interface ExtensionMessage {
 		| "incidentDashboardTurnDetail"
 		| "toggleApiConfigPin"
 		| "acceptInput"
+		| "sendAndSteer"
 		| "setHistoryPreviewCollapsed"
 		| "commandExecutionStatus"
 		| "mcpExecutionStatus"
@@ -755,6 +770,7 @@ interface WebviewMessageBase {
 		| "customInstructions"
 		| "webviewDidLaunch"
 		| "webviewUiReady"
+		| "webviewFocusChanged"
 		| "newTask"
 		| "resumeCompletedTask"
 		| "startBlankTask"
@@ -877,6 +893,7 @@ interface WebviewMessageBase {
 		| "createCommand"
 		| "insertTextIntoTextarea"
 		| "queueMessage"
+		| "sendAndSteer"
 		| "removeQueuedMessage"
 		| "editQueuedMessage"
 		| "steerQueuedMessage"
@@ -1077,13 +1094,18 @@ export type WebviewMessage =
 			taskApprovalModeUpdate: TaskApprovalModeUpdate
 	  })
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
+	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
+			z.infer<typeof sendAndSteerMessageSchema> & { clientSubmittedAt?: number })
 	| (Omit<WebviewMessageBase, "type"> & { type: "webviewUiReady"; durationMs: number })
+	| (Omit<WebviewMessageBase, "type"> & z.infer<typeof webviewFocusChangedMessageSchema>)
 	| (Omit<WebviewMessageBase, "type"> & {
 			type: Exclude<
 				WebviewMessageBase["type"],
 				| "updateVSCodeSetting"
 				| "webviewUiReady"
+				| "webviewFocusChanged"
 				| "queueMessage"
+				| "sendAndSteer"
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
 				| "startDebuggingTask"

@@ -6,6 +6,8 @@ import { vscode } from "@src/utils/vscode"
 
 import AppWithProviders from "../App"
 
+const mockChatCommands = vi.hoisted(() => ({ acceptInput: vi.fn(), sendAndSteer: vi.fn() }))
+
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
 		postMessage: vi.fn(),
@@ -26,17 +28,24 @@ vi.mock("@src/utils/TelemetryClient", () => ({
 	},
 }))
 
-vi.mock("@src/components/chat/ChatView", () => ({
-	__esModule: true,
-	default: function ChatView({ isHidden, historyFocusRequest }: { isHidden: boolean; historyFocusRequest: number }) {
-		return (
-			<div data-testid="chat-view" data-hidden={isHidden} data-history-request={historyFocusRequest}>
-				<input aria-label="Draft" defaultValue="" />
-				Chat View
-			</div>
-		)
-	},
-}))
+vi.mock("@src/components/chat/ChatView", async () => {
+	const React = await import("react")
+	return {
+		__esModule: true,
+		default: React.forwardRef(function ChatView(
+			{ isHidden, historyFocusRequest }: { isHidden: boolean; historyFocusRequest: number },
+			ref,
+		) {
+			React.useImperativeHandle(ref, () => mockChatCommands)
+			return (
+				<div data-testid="chat-view" data-hidden={isHidden} data-history-request={historyFocusRequest}>
+					<input aria-label="Draft" defaultValue="" />
+					Chat View
+				</div>
+			)
+		}),
+	}
+})
 
 vi.mock("@src/components/settings/SettingsView", () => ({
 	__esModule: true,
@@ -237,6 +246,45 @@ describe("App", () => {
 		})
 		window.dispatchEvent(messageEvent)
 	}
+
+	it("reports iframe focus changes once and releases focus when unmounted", () => {
+		const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true)
+		const { unmount } = render(<AppWithProviders />)
+		const messages = () =>
+			vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.filter((m) => m.type === "webviewFocusChanged")
+		expect(messages()).toEqual([{ type: "webviewFocusChanged", focused: true }])
+		act(() => {
+			window.dispatchEvent(new Event("focus"))
+			window.dispatchEvent(new Event("blur"))
+			window.dispatchEvent(new Event("blur"))
+			window.dispatchEvent(new Event("focus"))
+		})
+		expect(messages()).toEqual([
+			{ type: "webviewFocusChanged", focused: true },
+			{ type: "webviewFocusChanged", focused: false },
+			{ type: "webviewFocusChanged", focused: true },
+		])
+		unmount()
+		expect(messages().at(-1)).toEqual({ type: "webviewFocusChanged", focused: false })
+		const count = messages().length
+		window.dispatchEvent(new Event("focus"))
+		expect(messages()).toHaveLength(count)
+		hasFocus.mockRestore()
+	})
+
+	it("forwards the captured steering target to the composer without invoking ordinary accept", () => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "sendAndSteer", taskId: "captured-task" } }),
+			),
+		)
+		expect(mockChatCommands.sendAndSteer).toHaveBeenCalledWith("captured-task")
+		expect(mockChatCommands.acceptInput).not.toHaveBeenCalled()
+	})
 
 	const triggerForcedChatMessage = () => {
 		const messageEvent = new MessageEvent("message", {

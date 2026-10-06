@@ -207,6 +207,9 @@ const App = () => {
 			if (message.type === "acceptInput") {
 				chatViewRef.current?.acceptInput()
 			}
+			if (message.type === "sendAndSteer") {
+				chatViewRef.current?.sendAndSteer(message.taskId)
+			}
 		},
 		[switchTab, navigateToTab, currentTaskId],
 	)
@@ -228,6 +231,25 @@ const App = () => {
 
 	// Tell the extension that we are ready to receive messages.
 	useEffect(() => vscode.postMessage({ type: "webviewDidLaunch" }), [])
+
+	useEffect(() => {
+		let lastFocused: boolean | undefined
+		const reportFocus = (focused: boolean) => {
+			if (focused === lastFocused) return
+			lastFocused = focused
+			vscode.postMessage({ type: "webviewFocusChanged", focused })
+		}
+		const onFocus = () => reportFocus(true)
+		const onBlur = () => reportFocus(false)
+		window.addEventListener("focus", onFocus)
+		window.addEventListener("blur", onBlur)
+		reportFocus(document.hasFocus())
+		return () => {
+			window.removeEventListener("focus", onFocus)
+			window.removeEventListener("blur", onBlur)
+			if (lastFocused) reportFocus(false)
+		}
+	}, [])
 
 	// Initialize source map support for better error reporting
 	useEffect(() => {

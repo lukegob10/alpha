@@ -240,6 +240,46 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 		resetTaskConstructor()
 	})
 
+	it("serializes repeated increases using the saved level while retaining task identity", async () => {
+		const first = fakeTask("first", { kind: "effort", effort: "low" })
+		const second = fakeTask("second", { kind: "effort", effort: "low" })
+		const { provider, contextProxy } = providerHarness([first, second])
+		let finish!: () => void
+		let started!: () => void
+		const writing = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		first.updateReasoningPreference.mockImplementationOnce(async (preference: TaskReasoningPreference) => {
+			started()
+			await new Promise<void>((resolve) => {
+				finish = resolve
+			})
+			first.reasoningPreference = preference
+		})
+		const increase = provider.adjustTaskReasoningEffort("first", 1)
+		const increaseAgain = provider.adjustTaskReasoningEffort("first", 1)
+		await writing
+		expect(first.updateReasoningPreference).toHaveBeenCalledTimes(1)
+		finish()
+		await Promise.all([increase, increaseAgain])
+		expect(first.updateReasoningPreference.mock.calls).toEqual([
+			[{ kind: "effort", effort: "medium" }],
+			[{ kind: "effort", effort: "high" }],
+		])
+		expect(second.updateReasoningPreference).not.toHaveBeenCalled()
+		expect(contextProxy.setValue).not.toHaveBeenCalled()
+	})
+
+	it("does not persist an increase past the maximum and advances the blank composer's preference", async () => {
+		const task = fakeTask("first", { kind: "effort", effort: "high" })
+		const { provider, state } = providerHarness([task], { kind: "effort", effort: "low" })
+		await provider.adjustTaskReasoningEffort("first", 1)
+		expect(task.updateReasoningPreference).not.toHaveBeenCalled()
+		await provider.adjustTaskReasoningEffort(undefined, 1)
+		expect(state.newTaskReasoningPreference).toEqual({ kind: "effort", effort: "medium" })
+		expect(task.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
+	})
+
 	it("projects VS Code LM reasoning without waiting for model selection", async () => {
 		const prepareModel = vi.fn(() => new Promise<void>(() => undefined))
 		vi.mocked(buildApiHandler).mockReturnValueOnce({

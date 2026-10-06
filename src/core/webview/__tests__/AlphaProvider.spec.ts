@@ -940,6 +940,24 @@ describe("AlphaProvider", () => {
 		await Promise.all([condenseMessage, cancelMessage])
 	})
 
+	test("tracks webview focus immediately while a global operation is pending", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		let releaseCondense!: () => void
+		const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+			new Promise<void>((resolve) => {
+				releaseCondense = resolve
+			}),
+		)
+		const focus = vi.spyOn(provider, "setWebviewFocused").mockResolvedValue(undefined)
+		const pending = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
+		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
+		await messageHandler({ type: "webviewFocusChanged", focused: true })
+		expect(focus).toHaveBeenCalledExactlyOnceWith(true)
+		releaseCondense()
+		await pending
+	})
+
 	test("waits for an accepted webview message before draining tasks during disposal", async () => {
 		let releaseMessage!: () => void
 		const task = new Task(defaultTaskOptions)
