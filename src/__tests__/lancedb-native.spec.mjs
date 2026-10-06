@@ -26,7 +26,8 @@ afterEach(() => {
 })
 
 function fixture(installed = platformNames, hideManifests = false) {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-native-packaging-"))
+	// Node's package resolver canonicalizes symlinked temp parents, including macOS /var -> /private/var.
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "alpha-native-packaging-")))
 	roots.push(root)
 	const writePackage = (name, manifest, files) => {
 		const directory = path.join(root, "node_modules", name)

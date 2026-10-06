@@ -58,6 +58,27 @@ new tests cannot silently disappear between unit, contract, certification, servi
 The existing CI unit/tooling matrix adds macOS alongside Windows and Linux. All platforms use the same harness commands
 and retain execution reports; the local Windows cycle alone does not establish a macOS pass.
 
+The first macOS run exposed two existing fixture defects: Node resolved a native package through `/private/var` while
+its fixture compared the symlinked `/var` spelling, and an outer shell expanded PowerShell variables before `pwsh`
+received them. The native fixture now records its canonical root. The PowerShell fixture passes a literal argument
+array, with three regressions for quoting, normalized output and failed command/spawn status. Its existing large-output
+test now requires an exact normalized match on every platform. These corrections stay in test fixtures.
+
+## Candidate validation
+
+Commit `561965bf46f76328cd076e2c1d34c6acd196dfca` passed the complete local `static`, `tooling`, `offline`, `host`,
+`extended`, `confidence` and `outcomes` cycle with unchanged source. Strict matrix admission accepted all six required
+lanes. Extended executed nine tests across its four selected files; confidence executed all 18 host files and all
+3,138 certification tests across ten tracks, with no certification skips. Outcomes completed all three scenarios.
+The first CI cycle passed every job except the two macOS fixture failures described above.
+
+The change adds 28 tests: five scheduled-task host cases, 12 packaging cases, two manifest contracts, six
+discovery/evidence/workflow guards and three PowerShell fixture regressions. The corrections passed all 24 focused
+native-package/PowerShell tests, all 42 focused harness/packaging tests and the extension type check. `pnpm bundle` and
+`pnpm vsix` succeeded; content verification checked all 1,675 archive entries and matched all 16 document assets to
+current source bytes. CI validates the corrections through the same three-platform jobs. Source-bound evidence from
+the earlier revision remains historical rather than being reused as current evidence for the correction.
+
 ## Repeat the cycle
 
 ```sh
