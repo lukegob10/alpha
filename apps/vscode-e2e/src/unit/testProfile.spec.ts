@@ -21,7 +21,7 @@ const removeTestArea = async (root: string): Promise<void> => {
 }
 
 const createTestArea = async (context: TestContext): Promise<string> => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-test-profile-spec-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-test-profile-spec-")))
 	context.after(() => removeTestArea(root))
 	return root
 }

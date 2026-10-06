@@ -80,7 +80,7 @@ function makeEdit(relativePath: string, before: string, replacement: string): Pa
 }
 
 async function makeRoot(): Promise<string> {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor43-patch-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor43-patch-")))
 	await fs.mkdir(path.join(root, "src"), { recursive: true })
 	await fs.mkdir(path.join(root, "webview-ui", "src"), { recursive: true })
 	await fs.mkdir(path.join(root, "apps", "vscode-e2e", "src"), { recursive: true })
@@ -204,7 +204,7 @@ test("rejects traversal, absolute, duplicate, protected, and generated paths", a
 
 test("rejects symlink and reparse-point escapes without touching the outside file", async () => {
 	const root = await makeRoot()
-	const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor43-outside-"))
+	const outsideRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor43-outside-")))
 	const linkPath = path.join(root, "src", "linked")
 	try {
 		const outsideFile = path.join(outsideRoot, "outside.ts")

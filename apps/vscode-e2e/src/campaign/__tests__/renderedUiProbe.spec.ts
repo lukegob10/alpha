@@ -33,7 +33,7 @@ for (const testFile of [
 	})
 
 	test(`the normal runner passes only an ephemeral renderer port for ${testFile}`, async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-port-test-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-port-test-")))
 		try {
 			let launched = false
 			await runExtensionTests(

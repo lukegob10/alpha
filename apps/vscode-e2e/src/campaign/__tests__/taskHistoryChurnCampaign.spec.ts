@@ -25,7 +25,7 @@ function phases(): SharedStorageCampaignReport[] {
 }
 
 test("aggregate writes full phase reports above16KiB without overwriting retained results", async () => {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "churn-report-"))
+	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "churn-report-")))
 	try {
 		const report = await writeTaskHistoryChurnReport(directory, phases())
 		assert.equal(report.status, "passed")
@@ -38,7 +38,7 @@ test("aggregate writes full phase reports above16KiB without overwriting retaine
 })
 
 test("oversize aggregate fails before writing and incomplete verification cannot pass", async () => {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "churn-report-"))
+	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "churn-report-")))
 	try {
 		const oversized = phases()
 		oversized[0]!.artifactDirectory = "x".repeat(128 * 1024)

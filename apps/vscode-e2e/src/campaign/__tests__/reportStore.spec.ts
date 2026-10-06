@@ -19,7 +19,7 @@ const report: CampaignReport = {
 }
 
 test("writes immutable complete checkpoints and rejects reused run IDs", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-")))
 	try {
 		await openCampaignRoot(root, true)
 		assert.equal(await openCampaignRoot(root, false), await fs.realpath(root))
@@ -36,7 +36,7 @@ test("writes immutable complete checkpoints and rejects reused run IDs", async (
 })
 
 test("refuses unmarked nonempty roots and broad directories", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-")))
 	try {
 		await fs.writeFile(path.join(root, "sentinel"), "keep")
 		await assert.rejects(openCampaignRoot(root, true))
@@ -49,7 +49,7 @@ test("refuses unmarked nonempty roots and broad directories", async () => {
 })
 
 test("rejects existing ancestor symlink before creating anything outside the root", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-")))
 	try {
 		const target = path.join(root, "outside")
 		await fs.mkdir(target)
@@ -62,7 +62,7 @@ test("rejects existing ancestor symlink before creating anything outside the roo
 })
 
 test("never replaces an existing checkpoint even if the next filename was occupied", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-campaign-report-")))
 	try {
 		await openCampaignRoot(root, true)
 		const store = await createReportStore(root, "sample")

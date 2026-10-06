@@ -13,7 +13,7 @@ import type { ExtensionTestRunResult } from "../../runTest"
 test("dedicated restart sequence requires evidence and quiescence before quarantine and healthy launch", async (context) => {
 	for (const condition of ["complete", "incomplete", "late-unsafe-storage"]) {
 		const complete = condition !== "incomplete"
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-restart-campaign-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-restart-campaign-")))
 		context.after(() => fs.rm(root, { recursive: true, force: true }))
 		const events: string[] = []
 		const manifest = JSON.parse(

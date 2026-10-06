@@ -113,7 +113,7 @@ async function applyDevelopmentScript(workspace: string, phase: DevelopmentPhase
 }
 
 async function createOwnedWorkspace(): Promise<{ container: string; workspace: string }> {
-	const container = await fs.mkdtemp(path.join(tmpdir(), TEST_ROOT_PREFIX))
+	const container = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), TEST_ROOT_PREFIX)))
 	const workspace = path.join(container, "workspace")
 	await fs.mkdir(workspace)
 	await fs.writeFile(path.join(workspace, TEST_ROOT_OWNERSHIP_MARKER), RUNNER_WORKSPACE_MARKER, "utf8")

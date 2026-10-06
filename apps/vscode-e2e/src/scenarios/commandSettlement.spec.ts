@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
 import { execFile } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile, realpath } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
@@ -9,7 +9,7 @@ import { settlementPrompt, settlementScript, settlementRevisions, SETTLEMENT_ORA
 import { applyFixturePatch } from "./fixturePatchTestHelper"
 
 test("the independent HTML oracle accepts browser click events and rejects broken controls", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-settlement-oracle-"))
+	const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-settlement-oracle-")))
 	try {
 		for (const call of settlementScript(1, root)) {
 			if (call.name === "apply_patch") await applyFixturePatch(root, call.arguments.patch)
@@ -73,7 +73,7 @@ test("settlement workload bounds revisions and yields only the exact approved No
 })
 
 test("canonical settlement patches preserve prior files through every supported revision", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-settlement-patches-"))
+	const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-settlement-patches-")))
 	try {
 		for (const revision of settlementRevisions("12")) {
 			for (const call of settlementScript(revision, root))

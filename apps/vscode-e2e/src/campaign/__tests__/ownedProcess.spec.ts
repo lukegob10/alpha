@@ -1,5 +1,5 @@
 import childProcess, { ChildProcess, spawn, type ChildProcess as ChildProcessHandle } from "node:child_process"
-import { access, mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, mkdtemp, readFile, rm, realpath } from "node:fs/promises"
 import { watch } from "node:fs"
 import * as assert from "node:assert/strict"
 import { afterEach, test, type TestContext } from "node:test"
@@ -382,7 +382,7 @@ test("waits for a launch error and rejects it", async () => {
 })
 
 async function makeRoot(): Promise<string> {
-	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-owned-process-"))
+	const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-owned-process-")))
 	temporaryRoots.push(root)
 	return root
 }

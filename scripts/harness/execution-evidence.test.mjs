@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs/promises"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { syncBuiltinESMExports } from "node:module"
 import os from "node:os"
 import path from "node:path"
@@ -91,7 +91,7 @@ test("test source identities are confined and compiled host tests map back to so
 })
 
 test("the pinned Node runner emits a sanitized receipt for passing and skipped tests", async () => {
-	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-execution-evidence-"))
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-execution-evidence-")))
 	try {
 		const source = path.join(directory, "sample.test.mjs")
 		const destination = path.join(directory, "execution.json")
@@ -130,7 +130,7 @@ test("the pinned Node runner emits a sanitized receipt for passing and skipped t
 })
 
 test("receipt reads reject growth at the stat/read boundary without calling unbounded readFile", async () => {
-	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-growing-receipt-"))
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-growing-receipt-")))
 	const file = path.join(directory, "result.json")
 	const original = { stat: fs.stat, lstat: fs.lstat, readFile: fs.readFile }
 	let grown = false
@@ -162,14 +162,15 @@ test("receipt reads reject growth at the stat/read boundary without calling unbo
 })
 
 test("receipt reads reject linked result paths through the existing evidence owner", async () => {
-	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-linked-receipt-"))
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-linked-receipt-")))
 	try {
 		const origin = path.join(directory, "origin")
 		const linked = path.join(directory, "linked")
 		await mkdir(origin)
 		await writeFile(path.join(origin, "result.json"), "{}")
+		assert.deepEqual(await readExecutionJson(path.join(origin, "result.json"), 64), {})
 		await symlink(origin, linked, process.platform === "win32" ? "junction" : "dir")
-		await assert.rejects(readExecutionJson(path.join(linked, "result.json"), 64))
+		await assert.rejects(readExecutionJson(path.join(linked, "result.json"), 64), /cannot contain symlinks/)
 	} finally {
 		await rm(directory, { recursive: true, force: true })
 	}

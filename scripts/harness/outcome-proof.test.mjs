@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -187,7 +187,7 @@ test("legacy optional identity fields and additive events without a turn remain 
 })
 
 test("real bounded owner files are joined, and a failed complete capture is rejected before saving a proof", async () => {
-	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-outcome-proof-"))
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-outcome-proof-")))
 	try {
 		const fixture = proofFixture()
 		for (const [index, proof] of fixture.proofs.entries()) {

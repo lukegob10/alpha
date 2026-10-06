@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto"
 
 test("a startup deadline returns unknown close and leaves its owned child alive for inspection", async (context) => {
 	context.mock.timers.enable({ apis: ["setTimeout"] })
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-unknown-close-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-unknown-close-")))
 	const cancellation = new AbortController()
 	let ownedPid: number | undefined
 	try {
@@ -71,7 +71,7 @@ test("normal hosts do not retain campaign console pipes; deterministic hosts kee
 })
 
 test("normal sidecar hosts never receive extensionTestsPath, including undefined", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-sidecar-args-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-sidecar-args-")))
 	try {
 		const output = path.join(root, "arguments.json")
 		const options = {
@@ -98,7 +98,7 @@ test("normal sidecar hosts never receive extensionTestsPath, including undefined
 })
 
 test("real child preserves paths with spaces and shell metacharacters and reports a failing numeric exit", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha launch %ALPHA_ARG_TEST% & $value "))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha launch %ALPHA_ARG_TEST% & $value ")))
 	try {
 		const output = path.join(root, "received.json")
 		const development = path.join(root, "extension development")

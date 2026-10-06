@@ -15,7 +15,7 @@ const verifiedHost = {
 } as const
 
 test("history UI accepts only a complete result from its owned exact-version host", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-history-ui-outcome-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-history-ui-outcome-")))
 	try {
 		const evidence = path.join(root, "evidence")
 		const output = path.join(root, "output")

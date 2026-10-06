@@ -27,7 +27,7 @@ const liveProcess = (): true => true
 const unknownProcess = (): undefined => undefined
 
 async function createTestFixture(): Promise<TestFixture> {
-	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-storage-"))
+	const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-storage-")))
 	const fixture = await initializeRecoveryFixture(path.join(tempRoot, "fixture"))
 	const storagePath = path.join(fixture.fixtureRoot, "storage")
 	await fs.mkdir(storagePath)
@@ -93,7 +93,7 @@ async function assertLockStillPresent(lockPath: string): Promise<void> {
 }
 
 test("initializes only managed empty roots and exposes an exclusive lifecycle gate", async () => {
-	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-init-"))
+	const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-init-")))
 	let controller: RecoveryFixture["controller"] | undefined
 	try {
 		const root = path.join(tempRoot, "fixture")
@@ -126,7 +126,7 @@ test("initializes only managed empty roots and exposes an exclusive lifecycle ga
 })
 
 test("does not adopt a marked root after controller restart and cannot repair it", async () => {
-	const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-abandoned-"))
+	const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-abandoned-")))
 	try {
 		const root = path.join(tempRoot, "fixture")
 		const storagePath = path.join(root, "storage")
