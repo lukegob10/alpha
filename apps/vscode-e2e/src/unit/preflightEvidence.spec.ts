@@ -37,7 +37,7 @@ async function runMochaFailure(
 }
 
 test("an interrupted atomic preflight update leaves the previous receipt valid", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-atomic-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-atomic-")))
 	try {
 		const target = path.join(root, "host-preflight.json")
 		await fs.writeFile(target, '{"status":"passed"}\n')
@@ -68,7 +68,7 @@ test("an interrupted atomic preflight update leaves the previous receipt valid",
 })
 
 test("preflight snapshots serialize in order and continue after an interrupted write", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-queue-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-queue-")))
 	try {
 		const target = path.join(root, "host-preflight.json")
 		let writes = 0
@@ -91,7 +91,7 @@ test("preflight snapshots serialize in order and continue after an interrupted w
 })
 
 test("a serialization failure stays behind an in-flight write and cannot let a later snapshot overtake it", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-serialization-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-serialization-")))
 	try {
 		const target = path.join(root, "host-preflight.json")
 		let releaseFirst!: () => void
@@ -180,7 +180,7 @@ test("valid source coordinates cannot smuggle arbitrary stack or runnable path t
 })
 
 test("failed exclusive temp creation preserves the existing file and last published receipt", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-exclusive-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-preflight-exclusive-")))
 	try {
 		const target = path.join(root, "host-preflight.json")
 		await fs.writeFile(target, '{"sequence":1}\n')

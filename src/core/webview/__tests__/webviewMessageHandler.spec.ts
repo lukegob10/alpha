@@ -548,7 +548,7 @@ describe("webviewMessageHandler - terminalOperation", () => {
 	})
 })
 
-describe("webviewMessageHandler - Vertex code index settings", () => {
+describe("webviewMessageHandler - Google code index settings", () => {
 	const createVertexSettings = () => ({
 		codebaseIndexEnabled: false,
 		codebaseIndexVectorStoreProvider: "lancedb",
@@ -613,7 +613,7 @@ describe("webviewMessageHandler - Vertex code index settings", () => {
 		)
 	})
 
-	it("reports only Vertex and vector-store secret status", async () => {
+	it("reports only presence flags for embedding and vector-store secrets", async () => {
 		const secrets = (mockAlphaProvider.context as any).secrets.get
 		secrets.mockImplementation(async (key: string) =>
 			key === "codeIndexQdrantApiKey"
@@ -628,14 +628,47 @@ describe("webviewMessageHandler - Vertex code index settings", () => {
 		expect(secrets.mock.calls.map(([key]: [string]) => key)).toEqual([
 			"codeIndexQdrantApiKey",
 			"codebaseIndexVertexJsonCredentials",
+			"codebaseIndexGeminiApiKey",
 		])
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "codeIndexSecretStatus",
 			values: {
 				hasQdrantApiKey: true,
 				hasVertexJsonCredentials: true,
+				hasGeminiApiKey: false,
 			},
 		})
+	})
+
+	it("stores Gemini credentials only in SecretStorage and preserves an omitted key", async () => {
+		const settings = {
+			...createVertexSettings(),
+			codebaseIndexEmbedderProvider: "gemini",
+			codebaseIndexGeminiApiKey: "index-secret",
+		}
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: settings,
+		} as any)
+		const contextProxy = mockAlphaProvider.contextProxy as any
+		expect(contextProxy.storeSecret).toHaveBeenCalledWith("codebaseIndexGeminiApiKey", "index-secret")
+		expect(
+			contextProxy.setValue.mock.calls.find(([key]: [string]) => key === "codebaseIndexConfig")[1],
+		).not.toHaveProperty("codebaseIndexGeminiApiKey")
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({ codebaseIndexGeminiApiKey: "index-secret" }),
+			}),
+		)
+		contextProxy.storeSecret.mockClear()
+		const { codebaseIndexGeminiApiKey: _key, ...withoutKey } = settings
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: withoutKey,
+		} as any)
+		expect(contextProxy.storeSecret.mock.calls.some(([key]: [string]) => key === "codebaseIndexGeminiApiKey")).toBe(
+			false,
+		)
 	})
 })
 

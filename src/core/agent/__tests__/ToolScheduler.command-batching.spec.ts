@@ -13,6 +13,7 @@ function fixture(
 	durationForCall: (id: string) => number = () => 100,
 	requirePreparedCommandRead = false,
 	deferResultCommit = false,
+	finalizeForCall?: (id: string) => Promise<void>,
 ) {
 	let active = 0
 	let peak = 0
@@ -64,6 +65,7 @@ function fixture(
 				run: async (callbacks) => {
 					await run({ ...context, callbacks: { ...context.callbacks, ...callbacks } })
 					return async () => {
+						await finalizeForCall?.(context.call.id!)
 						trace.push(`publish:${context.call.id}`)
 					}
 				},
@@ -193,7 +195,7 @@ describe("approved command batches", () => {
 		expect(test.trace).not.toContain("start:command-4")
 	})
 
-	it("admits only the settled isolated exec_command read into the pre-EOF deferred lane", async () => {
+	it("admits only isolated reads into the pre-EOF deferred lane", async () => {
 		const test = fixture("selective-parallel", 5, "mutation", () => 0, true, true)
 		const outcome = await test.scheduler.run(test.calls)
 
@@ -207,14 +209,96 @@ describe("approved command batches", () => {
 		expect(test.trace).toContain("start:command-0")
 		expect(test.trace).not.toContain("start:command-4")
 		expect(test.host.userMessageContent).toEqual([])
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual([])
 
 		await test.scheduler.commitDeferredResults()
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual([
+			"publish:command-0",
+			"publish:command-1",
+			"publish:command-2",
+			"publish:command-3",
+		])
 		expect(test.host.userMessageContent).toMatchObject([
 			{ type: "tool_result", tool_use_id: "command-0", is_error: false },
 			{ type: "tool_result", tool_use_id: "command-1", is_error: false },
 			{ type: "tool_result", tool_use_id: "command-2", is_error: false },
 			{ type: "tool_result", tool_use_id: "command-3", is_error: false },
 			{ type: "tool_result", tool_use_id: "command-4", is_error: true },
+		])
+	})
+
+	it("fails closed when serial policy disables the isolated early executor", async () => {
+		const test = fixture("serial", 2, "read", () => 0, true, true)
+		const outcome = await test.scheduler.run(test.calls)
+		expect(outcome.results.map(({ status }) => status)).toEqual(["denied", "denied"])
+		expect(test.trace).toEqual([])
+		expect(test.host.askApproval).not.toHaveBeenCalled()
+		await test.scheduler.commitDeferredResults()
+		expect(test.host.userMessageContent).toMatchObject([
+			{ tool_use_id: "command-0", is_error: true },
+			{ tool_use_id: "command-1", is_error: true },
+		])
+	})
+
+	it("discards deferred command presentation when the provider rejects the response", async () => {
+		const test = fixture("selective-parallel", 2, "read", () => 0, true, true)
+		await test.scheduler.run(test.calls)
+		test.scheduler.discardDeferredResults()
+		await test.scheduler.commitDeferredResults()
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual([])
+		expect(test.host.userMessageContent).toEqual([])
+	})
+
+	it("finalizes each command once across concurrent commits and a publication retry", async () => {
+		const test = fixture("selective-parallel", 2, "read", () => 0, true, true)
+		await test.scheduler.run(test.calls)
+		const push = test.host.pushToolResultToUserContent.bind(test.host)
+		test.host.pushToolResultToUserContent = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("fixture publication failed")
+			})
+			.mockImplementation(push)
+		await expect(test.scheduler.commitDeferredResults()).rejects.toThrow("fixture publication failed")
+		await Promise.all([test.scheduler.commitDeferredResults(), test.scheduler.commitDeferredResults()])
+		await test.scheduler.commitDeferredResults()
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual([
+			"publish:command-0",
+			"publish:command-1",
+		])
+		expect(test.host.userMessageContent).toHaveLength(2)
+	})
+
+	it("drops held command presentation if cancellation wins before commit", async () => {
+		const test = fixture("selective-parallel", 2, "read", () => 0, true, true)
+		const outcome = await test.scheduler.run(test.calls)
+		test.controller.abort()
+		await test.scheduler.commitDeferredResults()
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual([])
+		expect(outcome.results.map(({ status }) => status)).toEqual(["cancelled", "cancelled"])
+		expect(test.host.userMessageContent).toMatchObject([
+			{ tool_use_id: "command-0", is_error: true },
+			{ tool_use_id: "command-1", is_error: true },
+		])
+	})
+
+	it("commits a deferred finalizer failure as an error in both returned results and history", async () => {
+		const finalize = vi.fn(async () => {
+			throw new Error("fixture finalizer failed")
+		})
+		const test = fixture("selective-parallel", 1, "read", () => 0, true, true, finalize)
+		const outcome = await test.scheduler.run(test.calls)
+		expect(finalize).not.toHaveBeenCalled()
+		expect(outcome.results[0].status).toBe("success")
+		await test.scheduler.commitDeferredResults()
+		await test.scheduler.commitDeferredResults()
+		expect(finalize).toHaveBeenCalledOnce()
+		expect(outcome.results[0]).toMatchObject({
+			status: "error",
+			content: expect.stringContaining("fixture finalizer failed"),
+		})
+		expect(test.host.userMessageContent).toMatchObject([
+			{ tool_use_id: "command-0", is_error: true, content: expect.stringContaining("fixture finalizer failed") },
 		])
 	})
 

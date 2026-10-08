@@ -113,7 +113,7 @@ async function applyDevelopmentScript(workspace: string, phase: DevelopmentPhase
 }
 
 async function createOwnedWorkspace(): Promise<{ container: string; workspace: string }> {
-	const container = await fs.mkdtemp(path.join(tmpdir(), TEST_ROOT_PREFIX))
+	const container = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), TEST_ROOT_PREFIX)))
 	const workspace = path.join(container, "workspace")
 	await fs.mkdir(workspace)
 	await fs.writeFile(path.join(workspace, TEST_ROOT_OWNERSHIP_MARKER), RUNNER_WORKSPACE_MARKER, "utf8")
@@ -328,6 +328,36 @@ test("requires a true two-parent merge that resolves the seeded conflict", async
 		await assertChecksPass(workspace, "dev-merge-conflict", "baseline")
 		await applyDevelopmentScript(workspace, "devMergeResolve")
 		await assertChecksPass(workspace, "dev-merge-conflict", "devMergeResolve")
+	})
+})
+
+test("migration verifier canonicalizes its owned temporary oracle before bounded reads", async (context) => {
+	await withOwnedWorkspace(async (workspace) => {
+		await createDevelopmentFixture(workspace, "dev-local-migration")
+		await applyDevelopmentScript(workspace, "devMigrationUpgrade")
+		const originalMkdtemp = fs.mkdtemp
+		let linkedOracles = 0
+		context.mock.method(fs, "mkdtemp", async (prefix: string) => {
+			const directory = await originalMkdtemp(prefix)
+			if (!path.basename(prefix).startsWith("alpha-development-migration-oracle-")) return directory
+			const canonical = await fs.realpath(directory)
+			context.after(async () => {
+				assert.equal(path.dirname(canonical), await fs.realpath(tmpdir()))
+				assert.match(path.basename(canonical), /^alpha-development-migration-oracle-/)
+				await fs.rm(canonical, { recursive: true, force: true })
+			})
+			assert.deepEqual(await fs.readdir(directory), [])
+			const linked = path.join(
+				path.dirname(workspace),
+				`alpha-development-migration-oracle-link-${linkedOracles++}`,
+			)
+			await fs.symlink(directory, linked, process.platform === "win32" ? "junction" : "dir")
+			assert.equal(await fs.realpath(linked), await fs.realpath(directory))
+			assert.deepEqual(await fs.readdir(linked), [])
+			return linked
+		})
+		await assertChecksPass(workspace, "dev-local-migration", "devMigrationUpgrade")
+		assert.equal(linkedOracles, 1)
 	})
 })
 

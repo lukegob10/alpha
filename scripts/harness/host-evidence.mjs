@@ -26,6 +26,12 @@ export const confidenceHostFiles = [
 	"managed-agents.acceptance.test",
 	"long-context-fanout.test",
 ]
+export const extendedHostFiles = [
+	"instruction-discovery.acceptance.test",
+	"html-document.test",
+	"storage-recovery.test",
+	"scheduled-tasks.acceptance.test",
+]
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
 const integer = (value) => Number.isSafeInteger(value) && value >= 0
@@ -108,13 +114,14 @@ export async function readHostReceipts(directory, startedAt) {
 }
 
 export function hostSuiteVerdict(receipts, suite) {
-	if (!["smoke", "confidence"].includes(suite)) return { status: "failed", reason: "unknown_host_suite" }
+	if (!["smoke", "confidence", "extended"].includes(suite)) return { status: "failed", reason: "unknown_host_suite" }
 	try {
 		receipts = receipts.map(validateHostReceipt)
 	} catch {
 		return { status: "failed", reason: "invalid_host_receipt" }
 	}
-	const expected = suite === "smoke" ? smokeHostFiles : confidenceHostFiles
+	const expected =
+		suite === "smoke" ? smokeHostFiles : suite === "confidence" ? confidenceHostFiles : extendedHostFiles
 	const observed = receipts.map((receipt) => receipt.testFile)
 	if (new Set(receipts.map((receipt) => receipt.runId)).size !== receipts.length)
 		return { status: "failed", reason: "duplicate_host_run" }

@@ -30,6 +30,7 @@
 	},
 	"serviceFactory": {
 		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
+		"geminiConfigMissing": "Gemini API key missing for code indexing",
 		"invalidEmbedderType": "Invalid embedder type configured: {{embedderProvider}}",
 		"vectorDimensionNotDetermined": "Could not determine vector dimension for model '{{modelId}}' with provider '{{provider}}'. Check model profiles or configuration.",
 		"qdrantUrlMissing": "Qdrant URL missing for vector store creation",

@@ -8,7 +8,7 @@ import { lanes } from "./catalog.mjs"
 import { admitHarnessReport, buildEvidenceMatrix } from "./matrix.mjs"
 import { hostReceipt } from "./fixtures/evidence.mjs"
 import { expectedTestFiles, laneExpectedInventories } from "./lane-evidence.mjs"
-import { outcomeCampaignVerdict } from "./host-evidence.mjs"
+import { extendedHostFiles, hostSuiteVerdict, outcomeCampaignVerdict } from "./host-evidence.mjs"
 import { proofFixture } from "./fixtures/outcome-proof.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -141,7 +141,7 @@ test("matrix discovery is truthful and machinery passes cannot promote productio
 		receipt: execution("src/core/agent/lifecycle/__tests__/AgentLifecycleJournal.spec.ts"),
 	}
 	const matrix = await buildEvidenceMatrix({ root, ...context, reports: [value], requiredLanes: ["focused", "host"] })
-	assert.equal(matrix.cells.length, 18)
+	assert.equal(matrix.cells.length, 22)
 	assert.equal(matrix.columns.length, 8)
 	assert.equal(matrix.layers.length, 15)
 	assert.ok(matrix.evidence.every((entry) => entry.references.every((reference) => reference.found)))
@@ -262,4 +262,38 @@ test("overlapping runs select the latest completed observation and preserve conf
 	assert.equal(entry.currentExecutions[0].reportId, failure.id)
 	assert.equal(entry.state, "executed-fail")
 	assert.equal(entry.executions.length, 2)
+})
+
+test("Alpha-native feature coverage has real owners and cannot infer execution from discovery", async () => {
+	const matrix = await buildEvidenceMatrix({ root, ...context })
+	for (const id of ["ticket-engine", "skill-catalog", "scheduled-task-service", "html-document-preview"]) {
+		const feature = matrix.evidence.find((entry) => entry.id === id)
+		assert.ok(feature, `${id} needs an explicit coverage owner`)
+		assert.equal(feature.state, "discovered")
+		assert.ok(feature.references.every((reference) => reference.found))
+		assert.ok(feature.tests.length > 0)
+		assert.deepEqual(feature.unexecutedTests, feature.tests)
+	}
+	for (const surface of ["tickets", "skills", "scheduled-tasks", "html-preview"])
+		assert.ok(
+			matrix.cells.some((cell) => cell.surface === surface),
+			`${surface} needs its own coverage row`,
+		)
+})
+
+test("extended host evidence promotes only its executed feature contracts and rejects incomplete inventories", async () => {
+	const value = report("extended")
+	value.steps[0].evidence = hostSuiteVerdict(extendedHostFiles.map(hostReceipt), "extended")
+	assert.equal(admitHarnessReport(value, context).state, "executed-pass")
+	const matrix = await buildEvidenceMatrix({ root, ...context, reports: [value], requiredLanes: ["extended"] })
+	assert.equal(matrix.gate.status, "passed")
+	for (const id of ["host-instructions", "host-storage-recovery", "host-html-preview", "host-scheduled-tasks"])
+		assert.equal(matrix.evidence.find((entry) => entry.id === id)?.state, "executed-pass", id)
+	assert.equal(matrix.evidence.find((entry) => entry.id === "host-storage")?.state, "discovered")
+	assert.equal(matrix.evidence.find((entry) => entry.id === "host-tickets")?.state, "discovered")
+	value.steps[0].evidence.receipts.pop()
+	assert.equal(admitHarnessReport(value, context).reason, "incomplete_host_suite")
+	const partial = await buildEvidenceMatrix({ root, ...context, reports: [value], requiredLanes: ["extended"] })
+	assert.equal(partial.gate.status, "failed")
+	assert.equal(partial.evidence.find((entry) => entry.id === "host-html-preview")?.state, "discovered")
 })

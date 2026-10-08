@@ -1064,6 +1064,7 @@ interface WebviewMessageBase {
 
 		codeIndexQdrantApiKey?: string
 		codebaseIndexVertexJsonCredentials?: string
+		codebaseIndexGeminiApiKey?: string
 	}
 	updatedSettings?: AlphaCodeSettings
 	/** Task configuration applied via `createTask()`. */

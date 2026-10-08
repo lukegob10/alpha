@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CodeIndexServiceFactory } from "../service-factory"
 import { VertexGeminiEmbedder } from "../embedders/vertex"
+import { GeminiEmbedder } from "../embedders/gemini"
 import { LanceDbVectorStore } from "../vector-store/lancedb-client"
 import { QdrantVectorStore } from "../vector-store/qdrant-client"
 import { getDefaultModelId, getModelDimension } from "../../../shared/embeddingModels"
 
 vi.mock("../embedders/vertex", () => ({ VertexGeminiEmbedder: vi.fn() }))
+vi.mock("../embedders/gemini", () => ({ GeminiEmbedder: vi.fn() }))
 vi.mock("../vector-store/lancedb-client", () => ({ LanceDbVectorStore: vi.fn() }))
 vi.mock("../vector-store/qdrant-client", () => ({ QdrantVectorStore: vi.fn() }))
 vi.mock("../../../shared/embeddingModels", () => ({
@@ -59,6 +61,19 @@ describe("CodeIndexServiceFactory", () => {
 		})
 
 		expect(() => factory.createEmbedder()).toThrow("unsupported provider: openai")
+		expect(VertexGeminiEmbedder).not.toHaveBeenCalled()
+	})
+
+	it("creates Gemini independently of the selected chat provider and Vertex settings", () => {
+		configManager.getConfig.mockReturnValue({
+			isConfigured: true,
+			embedderProvider: "gemini",
+			geminiApiKey: "index-key",
+			modelId: "gemini-embedding-2",
+			embeddingRateLimitSeconds: 1,
+		})
+		factory.createEmbedder()
+		expect(GeminiEmbedder).toHaveBeenCalledWith("index-key", "gemini-embedding-2", 1)
 		expect(VertexGeminiEmbedder).not.toHaveBeenCalled()
 	})
 

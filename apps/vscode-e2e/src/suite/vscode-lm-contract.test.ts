@@ -77,7 +77,9 @@ interface ContractHostProvider {
 		taskId: string | undefined,
 		preference: TaskReasoningPreference,
 	): Promise<TaskReasoningProjection>
-	getTaskWithId(taskId: string): Promise<{ historyItem: { reasoningPreference?: TaskReasoningPreference } }>
+	getTaskWithId(
+		taskId: string,
+	): Promise<{ taskDirPath: string; historyItem: { reasoningPreference?: TaskReasoningPreference } }>
 	getAgentLifecycleSnapshot(taskId: string | undefined): AgentLifecycleSnapshot | undefined
 	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string): ContractTask | undefined
@@ -130,11 +132,11 @@ const createCommandReadConfiguration = (): AlphaCodeSettings => ({
 	allowedCommands: [READ_COMMAND],
 })
 
-const createReadProofFile = async (): Promise<() => Promise<void>> => {
+const createReadProofFile = async (lineCount = 1): Promise<() => Promise<void>> => {
 	const workspace = vscode.workspace.workspaceFolders?.[0]
 	assert.ok(workspace, "The VS Code LM contract test has no workspace folder")
 	const filePath = path.join(workspace.uri.fsPath, READ_PROOF_FILE)
-	await fs.writeFile(filePath, `${READ_PROOF}\n`, { encoding: "utf8", flag: "wx" })
+	await fs.writeFile(filePath, `${READ_PROOF}\n`.repeat(lineCount), { encoding: "utf8", flag: "wx" })
 	return async () => fs.rm(filePath, { force: true })
 }
 
@@ -456,7 +458,9 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 	test("starts an audited exec_command read while the VS Code LM response tail is held", async () => {
 		const provider = getHostProvider()
 		const callId = "alpha-e2e-command-read-1"
-		const cleanupReadProof = await createReadProofFile()
+		// Force bounded output to spill so physical execution can be observed independently of UI publication.
+		const proofLines = 400
+		const cleanupReadProof = await createReadProofFile(proofLines)
 		fixture.reset("tool-followup-tail", { holdAfterToolCallRequestIndexes: [0] })
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
@@ -489,19 +493,37 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 				},
 			)
 			const effectObservedAtMs = Date.now() - taskStartedAt
+			const { taskDirPath } = await provider.getTaskWithId(taskId)
+			const outputDirectory = path.join(taskDirPath, "command-output")
+			const expectedOutput = Array.from({ length: proofLines }, (_, index) => `${index + 1}:${READ_PROOF}`).join(
+				"\n",
+			)
 			await waitFor(
-				() =>
-					provider
-						.getLiveTask(taskId)
-						?.clineMessages?.some(
-							({ say, text }) => say === "command_output" && text?.includes(READ_PROOF) === true,
-						) ?? false,
+				async () => {
+					const files = await fs.readdir(outputDirectory).catch((error: NodeJS.ErrnoException) => {
+						if (error.code === "ENOENT") return []
+						throw error
+					})
+					const outputFile = files.find((file) => file.startsWith("cmd-") && file.endsWith(".txt"))
+					if (!outputFile) return false
+					const output = await fs.readFile(path.join(outputDirectory, outputFile), "utf8")
+					return output.replace(/\r\n/g, "\n").trimEnd() === expectedOutput
+				},
 				{
 					timeout: 10_000,
 					interval: 25,
 					description: "the isolated rg read to return the workspace proof before provider completion",
 					onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
 				},
+			)
+			assert.equal(
+				provider.getLiveTask(taskId)?.clineMessages?.some(({ say }) => say === "command_output"),
+				false,
+				"Read presentation must wait for the assistant response to be durably saved",
+			)
+			assert.ok(
+				!provider.getAgentLifecycleSnapshot(taskId)?.terminalToolCallIds.includes(callId),
+				"The early read must withhold its terminal receipt until the assistant response boundary",
 			)
 
 			const heldEvents = fixture.getEvents()
@@ -557,6 +579,14 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 			assert.ok(
 				getToolResultText(toolResultRequest, callId).includes(READ_PROOF),
 				"The persisted exec_command result omitted content read from the workspace fixture",
+			)
+			assert.equal(
+				provider
+					.getLiveTask(taskId)
+					?.clineMessages?.filter(({ say, text }) => say === "command_output" && text?.includes(READ_PROOF))
+					.length,
+				1,
+				"The deferred read presentation must publish exactly once after provider completion",
 			)
 
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)

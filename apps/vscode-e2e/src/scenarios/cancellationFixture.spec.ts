@@ -77,7 +77,7 @@ test("provider fixture observes the task signal and aborts its held HTTP read", 
 })
 
 test("process fixture has a real command and grandchild that can be terminated", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-cancel-fixture-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-cancel-fixture-")))
 	const fixture = await writeProcessTreeFixture(root)
 	let observation = await readProcessTreeObservation(fixture.statePath)
 	const child = spawn(process.execPath, [fixture.commandPath], { cwd: root, stdio: "ignore", windowsHide: true })

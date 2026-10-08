@@ -124,7 +124,7 @@ test("validates independent identity, task, and done fields", () => {
 })
 
 test("publishes immutable bounded receipts and cleans rejected candidates", async () => {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-pair-protocol-"))
+	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-pair-protocol-")))
 	try {
 		assert.equal(await readOptional(directory, "ready-a.json"), undefined)
 		await publish(directory, "ready-a.json", { nonce: "first" })

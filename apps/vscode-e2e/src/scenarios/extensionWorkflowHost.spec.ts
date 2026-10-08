@@ -40,7 +40,7 @@ for (const [name, later, attributed] of [
 	["late auxiliary usage", [{ type: "request_usage", purpose: "reasoning-summary" }], true],
 ] as const) {
 	test(`resume failure preserves ${name} attribution without changing its primary code`, async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-timeout-attribution-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-timeout-attribution-")))
 		const taskId = "timeout-task"
 		const task = { taskId, taskAsk: { ts: 1, ask: "resume_task", partial: false }, apiConversationHistory: [] }
 		const directory = path.join(root, taskId)
@@ -687,7 +687,7 @@ test("workspace comparison follows the host path semantics without accepting sib
 })
 
 async function withEvidenceDirectory(run: (directory: string) => Promise<void>): Promise<void> {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-workflow-evidence-"))
+	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-workflow-evidence-")))
 	try {
 		await run(directory)
 	} finally {

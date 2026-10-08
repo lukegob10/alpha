@@ -8,7 +8,7 @@ import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MI
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
 
 /**
- * Owns persisted code-index settings and the Vertex-only embedding contract.
+ * Owns persisted code-index settings and supported Google embedding providers.
  *
  * Legacy provider strings are intentionally retained in `legacyEmbedderProvider`
  * instead of being mapped to Vertex. This keeps old settings readable while
@@ -22,6 +22,7 @@ export class CodeIndexConfigManager {
 	private modelId?: string
 	private modelDimension?: number
 	private vertexOptions?: ProviderSettings
+	private geminiApiKey?: string
 	private vectorStoreProvider: VectorStoreProvider = "lancedb"
 	private qdrantUrl?: string = "http://localhost:6333"
 	private qdrantApiKey?: string
@@ -168,7 +169,8 @@ export class CodeIndexConfigManager {
 			this.legacyEmbedderProvider =
 				typeof rawProvider === "string" && rawProvider.length > 0 ? rawProvider : "<missing>"
 		}
-		this.embedderProvider = "vertex"
+		this.embedderProvider = isSupportedCodebaseIndexEmbedderProvider(rawProvider) ? rawProvider : "vertex"
+		this.geminiApiKey = this.contextProxy?.getSecret("codebaseIndexGeminiApiKey") ?? ""
 
 		const providerSettings = this.contextProxy?.getProviderSettings?.()
 		const activeVertexOptions = providerSettings?.apiProvider === "vertex" ? providerSettings : undefined
@@ -221,6 +223,7 @@ export class CodeIndexConfigManager {
 			modelId?: string
 			modelDimension?: number
 			vertexOptions?: ProviderSettings
+			geminiApiKey?: string
 			qdrantUrl?: string
 			qdrantApiKey?: string
 			localIndexPath?: string
@@ -242,6 +245,7 @@ export class CodeIndexConfigManager {
 			vertexRegion: this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? "",
 			vertexKeyFile: this.vertexOptions?.vertexKeyFile ?? "",
 			vertexJsonCredentials: this.vertexOptions?.vertexJsonCredentials ?? "",
+			geminiApiKey: this.geminiApiKey,
 			vertexGatewayBaseUrl: this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? "",
 			vertexGatewayCaBundlePath:
 				this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? "",
@@ -269,6 +273,7 @@ export class CodeIndexConfigManager {
 				modelId: this.modelId,
 				modelDimension: this.modelDimension,
 				vertexOptions: this.vertexOptions,
+				geminiApiKey: this.geminiApiKey,
 				qdrantUrl: this.qdrantUrl,
 				qdrantApiKey: this.qdrantApiKey,
 				localIndexPath: this.localIndexPath,
@@ -281,6 +286,13 @@ export class CodeIndexConfigManager {
 	}
 
 	public isConfigured(): boolean {
+		if (this.embedderProvider === "gemini") {
+			return (
+				this.legacyEmbedderProvider === undefined &&
+				Boolean(this.geminiApiKey?.trim()) &&
+				this.isVectorStoreConfigured()
+			)
+		}
 		return (
 			this.legacyEmbedderProvider === undefined &&
 			this.vertexOptions?.apiProvider === "vertex" &&
@@ -313,6 +325,10 @@ export class CodeIndexConfigManager {
 				embedderProvider: this.legacyEmbedderProvider,
 			})
 		}
+		if (this.embedderProvider === "gemini") {
+			if (!this.geminiApiKey?.trim()) return t("embeddings:serviceFactory.geminiConfigMissing")
+			return this.isVectorStoreConfigured() ? undefined : t("embeddings:serviceFactory.codeIndexingNotConfigured")
+		}
 		if (
 			!this.vertexOptions ||
 			!this.getConfiguredProjectId(this.vertexOptions) ||
@@ -338,8 +354,13 @@ export class CodeIndexConfigManager {
 
 		if (prev.legacyEmbedderProvider !== this.legacyEmbedderProvider) return true
 		if (prev.embedderProvider !== this.embedderProvider) return true
+		if (this.embedderProvider === "gemini" && prev.geminiApiKey !== this.geminiApiKey) return true
 		if (prev.vectorStoreProvider !== this.vectorStoreProvider) return true
-		if ((prev.modelId ?? getDefaultModelId("vertex")) !== (this.modelId ?? getDefaultModelId("vertex"))) return true
+		if (
+			(prev.modelId ?? getDefaultModelId(prev.embedderProvider)) !==
+			(this.modelId ?? getDefaultModelId(this.embedderProvider))
+		)
+			return true
 		if (prev.modelDimension !== this.modelDimension) return true
 
 		const currentProjectId = this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? ""
@@ -357,15 +378,16 @@ export class CodeIndexConfigManager {
 		const currentGatewayModelRoutingMap = this.serializeModelRoutingMap(this.vertexOptions)
 
 		if (
-			prev.vertexProjectId !== currentProjectId ||
-			prev.vertexRegion !== currentRegion ||
-			prev.vertexKeyFile !== currentKeyFile ||
-			prev.vertexJsonCredentials !== currentJsonCredentials ||
-			prev.vertexGatewayBaseUrl !== currentGatewayBaseUrl ||
-			prev.vertexGatewayCaBundlePath !== currentGatewayCaBundlePath ||
-			prev.vertexGatewayHelixCommand !== currentGatewayHelixCommand ||
-			prev.vertexGatewayTokenRefreshMinutes !== currentGatewayTokenRefreshMinutes ||
-			prev.vertexGatewayModelRoutingMap !== currentGatewayModelRoutingMap
+			this.embedderProvider === "vertex" &&
+			(prev.vertexProjectId !== currentProjectId ||
+				prev.vertexRegion !== currentRegion ||
+				prev.vertexKeyFile !== currentKeyFile ||
+				prev.vertexJsonCredentials !== currentJsonCredentials ||
+				prev.vertexGatewayBaseUrl !== currentGatewayBaseUrl ||
+				prev.vertexGatewayCaBundlePath !== currentGatewayCaBundlePath ||
+				prev.vertexGatewayHelixCommand !== currentGatewayHelixCommand ||
+				prev.vertexGatewayTokenRefreshMinutes !== currentGatewayTokenRefreshMinutes ||
+				prev.vertexGatewayModelRoutingMap !== currentGatewayModelRoutingMap)
 		) {
 			return true
 		}
@@ -390,6 +412,7 @@ export class CodeIndexConfigManager {
 			modelId: this.modelId,
 			modelDimension: this.modelDimension,
 			vertexOptions: this.vertexOptions,
+			geminiApiKey: this.geminiApiKey,
 			qdrantUrl: this.qdrantUrl,
 			qdrantApiKey: this.qdrantApiKey,
 			localIndexPath: this.localIndexPath,
@@ -428,15 +451,15 @@ export class CodeIndexConfigManager {
 	}
 
 	public get currentModelDimension(): number | undefined {
-		const modelId = this.modelId ?? getDefaultModelId("vertex")
-		const modelDimension = getModelDimension("vertex", modelId)
+		const modelId = this.modelId ?? getDefaultModelId(this.embedderProvider)
+		const modelDimension = getModelDimension(this.embedderProvider, modelId)
 		return modelDimension ?? (this.modelDimension && this.modelDimension > 0 ? this.modelDimension : undefined)
 	}
 
 	public get currentSearchMinScore(): number {
 		if (this.searchMinScore !== undefined) return this.searchMinScore
-		const modelId = this.modelId ?? getDefaultModelId("vertex")
-		return getModelScoreThreshold("vertex", modelId) ?? DEFAULT_SEARCH_MIN_SCORE
+		const modelId = this.modelId ?? getDefaultModelId(this.embedderProvider)
+		return getModelScoreThreshold(this.embedderProvider, modelId) ?? DEFAULT_SEARCH_MIN_SCORE
 	}
 
 	public get currentSearchMaxResults(): number {

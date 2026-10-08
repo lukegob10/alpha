@@ -52,6 +52,8 @@ jobs:
                       name: ubuntu-latest
                     - os: windows-latest
                       name: windows-latest
+                    - os: macos-latest
+                      name: macos-latest
         steps:
             - name: Checkout code
               uses: actions/checkout@v5
@@ -150,11 +152,13 @@ jobs:
               run: pnpm --filter @alpha-code/types build
             - name: Run the exact reference-host smoke gate
               run: pnpm harness run host
+            - name: Run extended exact-host feature coverage
+              run: pnpm harness run extended
             - name: Run independently asserted scripted task outcomes
               run: pnpm harness run outcomes
             - name: Require current host and task evidence
               if: always()
-              run: pnpm harness matrix --output artifacts/harness/matrix-outcomes.json --require host --require outcomes
+              run: pnpm harness matrix --output artifacts/harness/matrix-outcomes.json --require host --require extended --require outcomes
             - name: Retain projected outcome evidence
               if: always()
               uses: actions/upload-artifact@v6

@@ -31,9 +31,15 @@ Initial scanning and filesystem updates share contextual input construction, poi
 
 Cancellation skips a batch before its replacement transaction starts and waits for already accepted work to settle. Once replacement has begun, the existing write sequence finishes before teardown. Existing provider calls may still need to finish before cancellation settles; this change does not add transport abort support to every provider.
 
-Search explicitly requests query embeddings. GCP Vertex AI is the only supported embedding provider. Direct Vertex uses the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases.
+Search explicitly requests query embeddings. Supported embedding providers are GCP Vertex AI and Gemini Developer API. Both use the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases.
 
 Vertex submits one input per request, with at most 16 active requests for a configured `gemini-embedding-2` model and eight for other models, shared across batches and queries on an embedder instance. Each caller queues at most that many tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; concurrency does not override an enabled rate limit.
+
+Gemini Developer API uses synchronous `batchEmbedContents`, with at most 60 inputs and 20,000 estimated token units per payload, and two active requests per adapter instance. Each explicit Content object produces its own vector. Indexing has a dedicated SecretStorage key independent of the chat provider. Provider/model changes select a new index fingerprint; key rotation and inactive Vertex settings do not invalidate Gemini vectors.
+
+Both adapters own actual request pacing. Gemini reserves delay for every batched input, preserving the existing per-input budget rather than treating 60 inputs as one quota unit. A 429 extends the shared cooldown for scans, watcher updates, and query calls on that instance. Retry-After and Google RetryInfo take priority over bounded exponential backoff; waits and requests receive scan cancellation. An adapter's terminal request failure does not restart its retry budget at the scanner layer. Validated vectors survive storage retries, and indexing progress is reported once after writes and cache hashes succeed.
+
+These bounds cannot guarantee the absence of 429s: provider RPM, TPM, daily quotas, and other clients sharing the project still apply. The limiter is shared within an embedder instance, not across separate workspaces or processes. Gemini's synchronous endpoint reduces HTTP overhead; it is distinct from the asynchronous Batch API.
 
 Vertex prefers indexing groups matching its request concurrency while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
 
@@ -109,7 +115,7 @@ Gateway input restoration adds a gateway-specific `raw-content-v1` fingerprint. 
 
 The existing minimum-score setting applies to the semantic candidate channel. Returned hybrid scores express rank agreement, not cosine similarity or a probability of correctness. Lexical-only matches can be returned even when the semantic channel has no result above its threshold.
 
-No new production dependencies or user settings were added. The protected CLI and VS Code shim were not changed.
+These indexing improvements reuse existing production dependencies. Gemini selection adds a dedicated indexing API key. Development tooling runs the real extension through VS Code; see [CLI retirement](cli-retirement.md).
 
 ### Gemini 001 gateway regression review (2026-09-12)
 

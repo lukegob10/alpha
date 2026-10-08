@@ -120,6 +120,7 @@ describe("FileWatcher", () => {
 
 		mockEmbedder = {
 			createEmbeddings: vi.fn().mockResolvedValue({ embeddings: [[0.1, 0.2, 0.3]] }),
+			embedderInfo: { name: "vertex" },
 		}
 
 		mockVectorStore = {

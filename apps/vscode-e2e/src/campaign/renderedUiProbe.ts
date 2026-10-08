@@ -7,6 +7,7 @@ import { runExtensionTests } from "../runTest"
 import { exerciseRenderedAcceptance } from "../ui/renderedAcceptance"
 import { exerciseRenderedFileReview } from "../ui/renderedFileReview"
 import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
+import { exerciseRenderedComposer } from "../ui/renderedComposer"
 import { CdpConnection } from "../ui/cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
@@ -24,7 +25,7 @@ interface Evaluation<T> {
 export async function runRenderedUiProbe(
 	executable: string,
 	output: string,
-	mode: "probe" | "acceptance" | "reasoning" | "file-review" = "probe",
+	mode: "probe" | "acceptance" | "reasoning" | "file-review" | "composer" = "probe",
 	signal?: AbortSignal,
 ) {
 	await fs.mkdir(output, { recursive: true })
@@ -43,13 +44,15 @@ export async function runRenderedUiProbe(
 		vscodeVersion: "1.125.0",
 		vscodeExecutablePath: executable,
 		testFile:
-			mode === "file-review"
-				? "file-review-ui.test"
-				: mode === "reasoning"
-					? "reasoning-ui.test"
-					: mode === "acceptance"
-						? "managed-agents.acceptance.test"
-						: "rendered-ui-probe.test",
+			mode === "composer"
+				? "composer-ui.test"
+				: mode === "file-review"
+					? "file-review-ui.test"
+					: mode === "reasoning"
+						? "reasoning-ui.test"
+						: mode === "acceptance"
+							? "managed-agents.acceptance.test"
+							: "rendered-ui-probe.test",
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -57,7 +60,10 @@ export async function runRenderedUiProbe(
 		artifactsDir: path.join(profileRoot, "evidence"),
 		initializeProfile: true,
 		retainEvidenceForCampaign: true,
-		extensionTestsEnv: mode !== "probe" ? { ALPHA_UI_ACCEPTANCE_NONCE: nonce } : { ALPHA_UI_PROBE_NONCE: nonce },
+		extensionTestsEnv:
+			mode !== "probe" && mode !== "composer"
+				? { ALPHA_UI_ACCEPTANCE_NONCE: nonce }
+				: { ALPHA_UI_PROBE_NONCE: nonce },
 		signal: combinedSignal,
 	}).finally(() => {
 		hostSettled = true
@@ -141,11 +147,13 @@ export async function runRenderedUiProbe(
 			assert.ok(workbenchSession)
 			if (mode !== "probe") {
 				const stages = await (
-					mode === "file-review"
-						? exerciseRenderedFileReview
-						: mode === "reasoning"
-							? exerciseRenderedReasoning
-							: exerciseRenderedAcceptance
+					mode === "composer"
+						? exerciseRenderedComposer
+						: mode === "file-review"
+							? exerciseRenderedFileReview
+							: mode === "reasoning"
+								? exerciseRenderedReasoning
+								: exerciseRenderedAcceptance
 				)(cdp, sessionId, workbenchSession, directory, nonce, combinedSignal)
 				const modelSwitchTiming =
 					mode === "reasoning"

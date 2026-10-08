@@ -161,6 +161,66 @@ describe("CodeIndexPopover", () => {
 		expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeDisabled()
 	})
 
+	it.each(["edited-key", ""])("keeps Gemini secret edits and saved-secret presence separate (%s)", async (draft) => {
+		render(
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button type="button">Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		fireEvent.keyDown(screen.getAllByRole("combobox")[1], { key: "ArrowDown" })
+		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.geminiProvider" }))
+		const input = screen.getByPlaceholderText("settings:codeIndex.geminiApiKeyPlaceholder")
+		if (draft) fireEvent.input(input, { target: { value: draft } })
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "codeIndexSecretStatus", values: { hasGeminiApiKey: true } },
+				}),
+			),
+		)
+		expect(input).toHaveProperty("value", draft)
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		const saved = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "saveCodeIndexSettingsAtomic")?.[0]
+		expect(saved?.codeIndexSettings).toMatchObject({
+			codebaseIndexEmbedderProvider: "gemini",
+			codebaseIndexEmbedderModelId: "gemini-embedding-001",
+		})
+		if (draft) expect(saved?.codeIndexSettings?.codebaseIndexGeminiApiKey).toBe(draft)
+		else expect(saved?.codeIndexSettings).not.toHaveProperty("codebaseIndexGeminiApiKey")
+	})
+
+	it("requires a dedicated Gemini key before saving a new configuration", async () => {
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+			...useExtensionState(),
+			codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: "gemini" },
+		})
+		render(
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button type="button">Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		fireEvent.input(screen.getByPlaceholderText("settings:codeIndex.geminiApiKeyPlaceholder"), {
+			target: { value: " " },
+		})
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		expect(await screen.findByText("settings:codeIndex.validation.apiKeyRequired")).toBeInTheDocument()
+		expect(
+			vi
+				.mocked(vscode.postMessage)
+				.mock.calls.some(([message]) => message.type === "saveCodeIndexSettingsAtomic"),
+		).toBe(false)
+	})
+
 	it("keeps save errors visible for five seconds", async () => {
 		render(
 			<CodeIndexPopover indexingStatus={indexingStatus}>

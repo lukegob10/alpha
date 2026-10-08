@@ -10,7 +10,12 @@ export interface IEmbedder {
 	 * @param purpose Document indexing by default; search callers explicitly request query embeddings
 	 * @returns Promise resolving to an EmbeddingResponse
 	 */
-	createEmbeddings(texts: string[], model?: string, purpose?: "document" | "query"): Promise<EmbeddingResponse>
+	createEmbeddings(
+		texts: string[],
+		model?: string,
+		purpose?: "document" | "query",
+		signal?: AbortSignal,
+	): Promise<EmbeddingResponse>
 
 	/**
 	 * Validates the embedder configuration by testing connectivity and credentials.
@@ -29,10 +34,12 @@ export interface EmbeddingResponse {
 	}
 }
 
-export type AvailableEmbedders = "vertex"
+export type AvailableEmbedders = "vertex" | "gemini"
 
 export interface EmbedderInfo {
 	name: AvailableEmbedders
 	/** Target group size for indexing; whole files remain together for safe replacement. */
 	preferredBatchSize?: number
+	/** Adapter paces actual provider requests, including split batches and retries. */
+	managesRateLimit?: boolean
 }

@@ -63,7 +63,7 @@ test("strict launches require terminal coherent test counts even after a zero ho
 		"pending",
 		"incoherent",
 	] as const) {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-strict-runner-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-strict-runner-")))
 		try {
 			const result = await runExtensionTests(
 				{
@@ -137,7 +137,7 @@ async function writeNormalCompletion(options: HostLaunchOptions, status: "passed
 }
 
 test("installed artifact runs load only the test sidecar, preserve identity, and reject paths outside the owned profile", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-installed-runner-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-installed-runner-")))
 	try {
 		const options = {
 			providerMode: "scripted" as const,
@@ -194,7 +194,7 @@ test("installed artifact runs load only the test sidecar, preserve identity, and
 
 test("live Copilot and explicit scripted diagnostics use the normal sidecar with protected correlation and shared storage", async () => {
 	for (const providerMode of ["live-copilot", "scripted"] as const) {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-normal-runner-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-normal-runner-")))
 		try {
 			const result = await runExtensionTests(
 				{
@@ -259,7 +259,7 @@ test("normal-mode missing, stale, and failed receipts cannot pass a zero exit; p
 		"blocked",
 		"before-preflight",
 	] as const) {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-normal-receipt-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-normal-receipt-")))
 		try {
 			const result = await runExtensionTests(
 				{
@@ -476,7 +476,7 @@ async function seedRetentionCandidate(
 }
 
 test("runner really prunes eligible artifacts while preserving active, incomplete, failed, current and raw sources", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-integration-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-integration-")))
 	try {
 		const artifactsRoot = path.join(root, "artifacts")
 		const eligible = await seedRetentionCandidate(artifactsRoot, "older-eligible", "eligible")
@@ -528,7 +528,7 @@ test("runner really prunes eligible artifacts while preserving active, incomplet
 })
 
 test("standalone retention quota failure preserves the primary provider failure and durable phase evidence", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-failure-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-failure-")))
 	try {
 		const result = await runExtensionTests(
 			{
@@ -601,7 +601,7 @@ test("campaign holds preserve older evidence and a 22-launch matrix without appl
 })
 
 test("standalone finalizer writes a report then releases only a complete synthetic owned-close receipt", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-release-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-release-")))
 	try {
 		const profile = await prepareTestProfile({
 			vscodeVersion: "1.125.0",

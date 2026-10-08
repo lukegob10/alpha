@@ -29,7 +29,8 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { TelemetryEventName } from "@alpha-code/types"
 import { sanitizeErrorMessage } from "../shared/validation-helpers"
 import { Package } from "../../../shared/package"
-import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
+import { EmbeddingRateLimiter, waitForEmbeddingDelay } from "../shared/embedding-rate-limiter"
+import { EmbeddingRequestError } from "../shared/embedding-retry"
 
 export class DirectoryScanner implements IDirectoryScanner {
 	private readonly batchSegmentThreshold: number
@@ -65,7 +66,9 @@ export class DirectoryScanner implements IDirectoryScanner {
 			this.batchSegmentThreshold,
 			this.embedder?.embedderInfo.preferredBatchSize ?? this.batchSegmentThreshold,
 		)
-		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
+		this.embeddingRateLimiter = new EmbeddingRateLimiter(
+			this.embedder?.embedderInfo.managesRateLimit ? 0 : (embeddingRateLimitSeconds ?? 0) * 1000,
+		)
 	}
 
 	/**
@@ -400,21 +403,27 @@ export class DirectoryScanner implements IDirectoryScanner {
 		let attempts = 0
 		let success = false
 		let lastError: Error | null = null
+		// Validated vectors survive storage retries; retrying an upsert must not re-embed source files.
+		const pendingPoints: PointStruct[][] = []
 
 		while (attempts < MAX_BATCH_RETRIES && !success) {
 			if (signal?.aborted) return
 			attempts++
 			try {
 				// Validate all provider results before replacing any existing source chunks.
-				const pendingPoints: PointStruct[][] = []
-				for (let offset = 0; offset < batchBlocks.length; offset += this.batchSegmentThreshold) {
+				for (
+					let offset = pendingPoints.reduce((count, points) => count + points.length, 0);
+					offset < batchBlocks.length;
+					offset += this.batchSegmentThreshold
+				) {
 					const blocks = batchBlocks.slice(offset, offset + this.batchSegmentThreshold)
-					await this.embeddingRateLimiter.wait()
+					await this.embeddingRateLimiter.wait(signal)
 					if (signal?.aborted) return
 					const { embeddings } = await this.embedder.createEmbeddings(
 						batchTexts.slice(offset, offset + blocks.length),
 						undefined,
 						"document",
+						signal,
 					)
 					validateEmbeddingBatch(embeddings, blocks.length)
 					pendingPoints.push(
@@ -466,15 +475,16 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 				for (const points of pendingPoints) {
 					await this.qdrantClient.upsertPoints(points)
-					onBlocksIndexed?.(points.length)
 				}
 
 				// Update hashes for successfully processed files in this batch
 				for (const fileInfo of batchFileInfos) {
 					await this.cacheManager.updateHash(fileInfo.filePath, fileInfo.fileHash)
 				}
+				onBlocksIndexed?.(pendingPoints.reduce((count, points) => count + points.length, 0))
 				success = true
 			} catch (error) {
+				if (signal?.aborted) return
 				lastError = error as Error
 				console.error(
 					`[DirectoryScanner] Error processing batch (attempt ${attempts}) in workspace ${scanWorkspace}:`,
@@ -488,15 +498,21 @@ export class DirectoryScanner implements IDirectoryScanner {
 					batchSize: batchBlocks.length,
 				})
 
+				if (error instanceof EmbeddingRequestError) break
 				if (attempts < MAX_BATCH_RETRIES) {
 					const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempts - 1)
-					await new Promise((resolve) => setTimeout(resolve, delay))
+					try {
+						await waitForEmbeddingDelay(delay, signal)
+					} catch (delayError) {
+						if (signal?.aborted) return
+						throw delayError
+					}
 				}
 			}
 		}
 
 		if (!success && lastError) {
-			console.error(`[DirectoryScanner] Failed to process batch after ${MAX_BATCH_RETRIES} attempts`)
+			console.error(`[DirectoryScanner] Failed to process batch after ${attempts} attempts`)
 			if (onError) {
 				// Preserve the original error message from embedders which now have detailed i18n messages
 				const errorMessage = lastError.message || "Unknown error"
@@ -505,7 +521,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 				onError(
 					new Error(
 						t("embeddings:scanner.failedToProcessBatchWithError", {
-							maxRetries: MAX_BATCH_RETRIES,
+							maxRetries: attempts,
 							errorMessage,
 						}),
 					),

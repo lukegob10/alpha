@@ -77,9 +77,10 @@ pnpm harness run tooling
 pnpm harness run offline
 pnpm harness run focused core/agent/__tests__/AgentTurnEngine.spec.ts
 pnpm harness run host
+pnpm harness run extended
 pnpm harness run confidence
 pnpm harness run outcomes
-pnpm harness matrix --output artifacts/harness/evidence-matrix.json --require static --require offline --require host --require confidence --require outcomes
+pnpm harness matrix --output artifacts/harness/evidence-matrix.json --require static --require offline --require host --require extended --require confidence --require outcomes
 ```
 
 Run build and host lanes sequentially. Their shared lease prevents one runner from replacing binaries used by another.
@@ -87,18 +88,19 @@ Focused checks accept test paths, without a standalone `--` or arbitrary runner 
 two in harness processes. Source changes during a run invalidate that run; editing after a run makes its receipt stale
 for the edited checkout. Repeat the required lanes after the final source change.
 
-| Lane             | Existing owner and evidence scope                                                                           |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `static`         | Root lint and type checks for extension, webview and host runner; mechanical command evidence               |
-| `unit`           | Root bundle and Turbo package tests; command exit evidence only                                             |
-| `tooling`        | Repository Node tests and compiled host-runner Node tests; observed file counts and outcomes                |
-| `offline`        | Evaluator unit, contract and certification suites; complete configured test inventory                       |
-| `focused`        | Selected extension Vitest files; observed execution for that selected scope                                 |
-| `host`           | The literal `test:smoke:1250` owner, including the LM fixture contract; every selected test required        |
-| `confidence`     | Core confidence owner, full smoke plus five core host suites, and deterministic managed-agent certification |
-| `outcomes`       | Existing smoke campaign, one sample each of three independently asserted scripted workflows                 |
-| `services`       | Existing PostgreSQL/Redis integration suite, requiring dedicated test service URLs                          |
-| `infrastructure` | Optional Docker adapter suite, requiring its configured engine and images                                   |
+| Lane             | Existing owner and evidence scope                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| `static`         | Root lint and type checks for extension, webview and host runner; mechanical command evidence                 |
+| `unit`           | Bundle plus extension/shared/React Vitest receipts; declared skips remain visible                             |
+| `tooling`        | Repository Node tests and compiled host-runner Node tests; observed file counts and outcomes                  |
+| `offline`        | Evaluator unit, contract and certification suites; complete configured test inventory                         |
+| `focused`        | Selected extension Vitest files; observed execution for that selected scope                                   |
+| `host`           | The literal `test:smoke:1250` owner, including the LM fixture contract; every selected test required          |
+| `extended`       | Instruction discovery, HTML previews, offline lock recovery and scheduled tasks; every selected test required |
+| `confidence`     | Core confidence owner, full smoke plus five core host suites, and deterministic managed-agent certification   |
+| `outcomes`       | Existing smoke campaign, one sample each of three independently asserted scripted workflows                   |
+| `services`       | Existing PostgreSQL/Redis integration suite, requiring dedicated test service URLs                            |
+| `infrastructure` | Optional Docker adapter suite, requiring its configured engine and images                                     |
 
 The three outcome scenarios are `dev-git-inspect`, `dev-repo-bootstrap` and `review-edit-test-commit-followup`. They run
 real extension tasks with a scripted provider and inspect repository effects independently. They establish bounded
@@ -113,10 +115,11 @@ not require those services, Docker, Copilot authentication or paid provider requ
 
 ## Reading the matrix
 
-`scripts/harness/inventory.mjs` maps current owners and nearest tests to 18 surfaces and eight evidence columns:
+`scripts/harness/inventory.mjs` maps current owners and nearest tests to 22 surfaces and eight evidence columns:
 mechanical, component, end-to-end, regression, robustness, security, performance and live. The surfaces cover the agent
 loop, instructions, providers, context, persistence, search, diagnostics/LSP, reads, edits, shell, verification, Git,
-tool routing, subagents, permissions, recovery, compaction and extension UI. Each entry retains its source/test references,
+tool routing, subagents, permissions, recovery, compaction, extension UI, Tickets, skills, scheduled tasks and HTML previews.
+Each entry retains its source/test references,
 execution history, current observations and unexecuted files.
 
 An existing file is **discovered** evidence, not an executed test. **Executed-pass** applies only to the admitted scope;
@@ -164,18 +167,18 @@ retain their history; current evidence follows completion order so an older succ
 
 The host owner exports only actual extension-host results, never its unit-test seam. Required suites bind unique run IDs,
 the exact actual host version, each file's expected provider, complete test counts, ownership, capture and retention.
-Confidence requires all 17 host suites from its existing smoke prerequisites and core checks. Unit-runner children clear
-the host-receipt destination while retaining their separate Node execution collector, so negative unit fixtures cannot
-publish host evidence.
+Confidence requires all 18 host files from its existing smoke prerequisites and core checks. Extended requires its four
+selected feature files. Unit-runner children clear the host-receipt destination while retaining their separate Node
+execution collector, so negative unit fixtures cannot publish host evidence.
 Outcome admission additionally binds unique scenario/attempt/run identities and the campaign's source, build and task
 configuration to captured task evidence. Completed capture alone is insufficient: task outcome, task IDs, required
 artifacts and their digests must agree. Saved reports are revalidated on matrix import instead of trusting a saved pass
 label or scenario summary.
 
-The broad `unit` lane currently has no unified per-file execution receipt across Turbo package runners. Its command must
-succeed in CI and release workflows, but `--require unit` intentionally fails because that command result cannot prove
-each test executed. Windows host-runner tooling has two POSIX-specific process-group skips: its successful command is
-retained as partial evidence, and `--require tooling` rejects that partial receipt. Linux CI requires complete tooling
+The broad `unit` lane collects per-file Vitest receipts from seven package owners. Its declared skips remain partial
+execution, so `--require unit` rejects those receipts even when the command succeeds. Windows host-runner tooling has
+two POSIX-specific process-group skips: its successful command is retained as partial evidence, and `--require tooling`
+rejects that partial receipt. Linux CI requires complete tooling
 evidence. The matrix never converts those exceptions into tests that passed.
 
 Run logs remain with their existing owners. Normalized receipts omit test names, assertion messages, prompts, raw tool
@@ -185,15 +188,15 @@ lane or receipt boundary. An unverified process cleanup preserves the build leas
 
 ## CI and release use
 
-Code QA retains the existing unit and tooling command gates on Linux and Windows. It adds current-source matrix checks
-for mechanical, offline evaluator, confidence, and exact-host/task-outcome jobs. Each job admits its own checkout and
-retains its evidence; results from different operating systems are not silently merged into one comparable run.
+Code QA runs the existing unit and tooling command gates on Linux, Windows and macOS. It requires current-source matrix
+checks for mechanical, offline evaluator, confidence, and smoke/extended/task-outcome jobs. Each job admits its own
+checkout and retains its evidence; results from different operating systems are not silently merged into one comparable run.
 
-Both stable and preview release workflows run mechanical, unit, tooling, offline, exact-host, managed-agent confidence
-and scripted-outcome checks, plus evaluator lint and type checks, before packaging and publication. They require current
-`static`, `offline`, `host`, `confidence` and `outcomes` evidence in addition to command success. Each release owns its
-confidence gate because a separate QA workflow does not order publication. Existing command-path approval and VSIX-content
-checks remain required.
+Both stable and preview release workflows run mechanical, unit, tooling, offline, smoke/extended exact-host, managed-agent
+confidence and scripted-outcome checks, plus evaluator lint and type checks, before packaging and publication. They require
+current `static`, `offline`, `host`, `extended`, `confidence` and `outcomes` evidence in addition to command success. Each
+release owns its confidence gate because a separate QA workflow does not order publication. Existing command-path approval
+and VSIX-content checks remain required.
 Upload steps run on failure too and retain reports/projected artifacts for 14 days, without uploading campaign profile or
 workspace directories.
 

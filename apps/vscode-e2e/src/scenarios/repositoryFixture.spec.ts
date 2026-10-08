@@ -27,7 +27,7 @@ const TEST_COMMAND_OPTIONS = {
 const RUNNER_WORKSPACE_MARKER = `${JSON.stringify({ schemaVersion: 1, purpose: "alpha-vscode-e2e", kind: "workspace" }, null, 2)}\n`
 
 async function createOwnedTempDirectory(): Promise<string> {
-	return fs.mkdtemp(path.join(tmpdir(), "alpha-code-repository-fixture-"))
+	return fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "alpha-code-repository-fixture-")))
 }
 
 async function removeOwnedTempDirectory(directory: string): Promise<void> {

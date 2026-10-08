@@ -76,7 +76,7 @@ test("scripted session waits ignore unrelated receipts and running text inside c
 })
 
 test("sequential extension patches retain one executable accumulated-case loop", async () => {
-	const root = await fs.mkdtemp(path.join(tmpdir(), "alpha-scripted-extend-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "alpha-scripted-extend-")))
 	try {
 		await fs.mkdir(path.join(root, "test"))
 		await fs.mkdir(path.join(root, "lib"))

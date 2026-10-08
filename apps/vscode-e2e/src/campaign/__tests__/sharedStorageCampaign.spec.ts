@@ -19,6 +19,12 @@ import type { CaptureRunEvidenceOptions } from "../../evidence/types"
 import type { CampaignHost } from "../types"
 import { main } from "../../runCampaign"
 
+const RAW_FAILURE_DETAILS = {
+	ancestry: "ALPHA_TEST_PRIVATE_ANCESTRY_DETAIL",
+	launch: "ALPHA_TEST_PRIVATE_LAUNCH_PAYLOAD",
+	capture: "ALPHA_TEST_PRIVATE_PROVIDER_DATA",
+} as const
+
 type Fault =
 	| "mailbox-duplicate"
 	| "mailbox-replay"
@@ -47,9 +53,9 @@ type Fault =
 	| "scan-incomplete"
 
 /** File receipts simulate the external hosts; no process, live provider or real-host evidence is manufactured. */
-async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.0") {
+async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.0", directoryName = "campaign") {
 	const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-pair-unit-")))
-	const root = path.join(temporary, "campaign")
+	const root = path.join(temporary, directoryName)
 	const executable = await fs.realpath(process.execPath)
 	const extension = path.join(temporary, "extension")
 	const entry = path.join(temporary, "entry.js")
@@ -101,7 +107,7 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.
 				assertAncestry: async (owner, pid) => {
 					assert.equal(owner, process.pid)
 					assert.ok(pid !== undefined && pids.includes(pid))
-					if (fault === "ancestry") throw new Error("private ancestry detail")
+					if (fault === "ancestry") throw new Error(RAW_FAILURE_DETAILS.ancestry)
 				},
 				runProcess: async (command, options) => {
 					launched++
@@ -123,7 +129,7 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.
 					const profileVersion = path.join(manifest.profileRoot, version)
 					leasePath = path.join(profileVersion, ".alpha-e2e-launch.json")
 					assert.equal(JSON.parse(await fs.readFile(leasePath, "utf8")).pid, process.pid)
-					if (fault === "launch-rejection") throw new Error("private launch payload")
+					if (fault === "launch-rejection") throw new Error(RAW_FAILURE_DETAILS.launch)
 					const result = {
 						exitCode: 0,
 						signal: null,
@@ -280,7 +286,7 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.
 					await fs.access(leasePath)
 					capture = options
 					if (fault === "capture-timeout") expired = true
-					if (fault === "capture") throw new Error("private provider data")
+					if (fault === "capture") throw new Error(RAW_FAILURE_DETAILS.capture)
 					if (options.storagePath) {
 						assert.equal(options.storagePath, actualStorage)
 						await options.assertSourceOwned!(options.storagePath)
@@ -301,7 +307,10 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.
 				)
 			: false
 		assert.deepEqual(JSON.parse(await fs.readFile(report.reportPath, "utf8")), report)
-		assert.doesNotMatch(JSON.stringify(report), /private|payload|provider data/)
+		const serializedReport = JSON.stringify(report)
+		for (const detail of Object.values(RAW_FAILURE_DETAILS)) {
+			assert.equal(serializedReport.includes(detail), false, "Report must redact injected failure details")
+		}
 		if (report.artifactDirectory)
 			await assert.rejects(fs.access(path.join(report.artifactDirectory, ".retention-eligible.json")), {
 				code: "ENOENT",
@@ -331,6 +340,14 @@ for (const version of ["1.125.0"] as const)
 		assert.deepEqual(capture?.metadata.taskIds, ["task-a", "task-b"])
 		assert.equal(capture?.metadata.hostVersion, version)
 	})
+
+test("raw failure details stay redacted when an owned report path contains private", async () => {
+	const { report } = await exercise("capture", "1.125.0", "private")
+	assert.equal(report.status, "failed")
+	assert.deepEqual(report.failure, { stage: "capture", code: "operation_failed" })
+	assert.ok(report.reportPath.split(path.sep).includes("private"))
+})
+
 for (const fault of [
 	"stale-nonce",
 	"duplicate-pid",

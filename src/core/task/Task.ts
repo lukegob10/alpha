@@ -219,6 +219,8 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
 import { classifyCommandRead } from "../tools/ParallelCommandRead"
+import { isPathWithinRoot } from "../tools/pathSafety"
+import { isPathAllowed } from "../agent/ToolPolicy"
 import { formatToolFailureGuidance, normalizeToolFailure, type ToolFailureMetadata } from "../tools/ToolFailure"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
@@ -3925,19 +3927,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? (call.arguments as Record<string, unknown>)
 				: undefined
 		const command = args?.cmd
-		const requestedCwd = args?.workdir ?? args?.cwd
+		const requestedCwd = args?.workdir
 		if (
 			captured?.parallelCommandRead !== true ||
 			captured.controlFlow ||
 			typeof command !== "string" ||
 			args?.verification != null ||
-			(requestedCwd !== undefined && requestedCwd !== ".")
+			(args?.workdir == null && args?.cwd != null && args.cwd !== ".") ||
+			(requestedCwd != null && typeof requestedCwd !== "string")
 		) {
 			return false
 		}
 
 		try {
-			return (await classifyCommandRead(command, this.cwd, this.cwd)) !== undefined
+			const cwd = path.resolve(this.cwd, typeof requestedCwd === "string" ? requestedCwd : ".")
+			if (!isPathWithinRoot(this.cwd, cwd) || !isPathAllowed(surface.policy, cwd, this.cwd)) return false
+			// Admission uses the executor's workdir semantics. Preparation still
+			// rechecks the canonical scope and approval behind the durable call fence.
+			return (await classifyCommandRead(command, this.cwd, cwd)) !== undefined
 		} catch {
 			return false
 		}

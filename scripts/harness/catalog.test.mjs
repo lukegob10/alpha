@@ -84,3 +84,47 @@ test("hard offline and host lanes require explicit execution receipts", () => {
 	assert.equal(lanes.infrastructure.receipts[0].config, "infrastructure")
 	assert.equal(lanes.infrastructure.receipts[0].requireAllTests, true)
 })
+
+test("every evaluator test belongs to exactly one executable suite", async () => {
+	const root = fileURLToPath(new URL("../../", import.meta.url))
+	const discovered = []
+	for await (const file of glob("packages/evals/src/**/*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}", {
+		cwd: root,
+		// Grader fixture repositories contain their own test programs, executed by localFixtures rather than Vitest.
+		exclude: ["**/node_modules/**", "**/dist/**", "**/out/**", "**/__fixtures__/**"],
+	}))
+		discovered.push(file.replaceAll("\\", "/"))
+	const owners = new Map()
+	for (const config of ["unit", "contract", "certification", "integration", "services", "infrastructure"])
+		for (const file of await expectedTestFiles(root, { runner: "vitest", config }, []))
+			owners.set(file, [...(owners.get(file) ?? []), config])
+	assert.ok(discovered.length > 0)
+	assert.deepEqual(
+		[...owners.keys()].sort(),
+		discovered.sort(),
+		"Evaluator files must not disappear from suite selection",
+	)
+	for (const [file, suites] of owners)
+		assert.equal(suites.length, 1, `${file} is selected by multiple suites: ${suites.join(", ")}`)
+})
+
+test("extended exact-host coverage is mandatory in QA and both release workflows", async () => {
+	assert.equal(lanes.extended.exclusiveBuild, true)
+	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1250"]])
+	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
+	for (const file of ["code-qa.yml", "release-vsix.yml", "release-vsix-v2-preview.yml"]) {
+		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
+		assert.match(workflow, /run: pnpm harness run extended/, `${file} must execute the extended host lane`)
+		assert.match(workflow, /--require extended/, `${file} must reject missing extended execution evidence`)
+	}
+})
+
+test("platform unit and tooling checks retain Windows, Linux and macOS execution", () => {
+	const workflow = readFileSync(new URL("../../.github/workflows/code-qa.yml", import.meta.url), "utf8")
+	const platformJob = workflow.split("    unit-test:")[1]?.split("    offline-evaluator:")[0]
+	assert.ok(platformJob)
+	for (const platform of ["ubuntu-latest", "windows-latest", "macos-latest"])
+		assert.ok(platformJob.includes(`os: ${platform}`), `Platform regressions must run on ${platform}`)
+	assert.match(platformJob, /run: pnpm harness run unit/)
+	assert.match(platformJob, /run: pnpm harness run tooling/)
+})

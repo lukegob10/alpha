@@ -18,6 +18,7 @@ import {
 	type IndexingStatus,
 	CODEBASE_INDEX_DEFAULTS,
 	VERTEX_REGIONS,
+	isSupportedCodebaseIndexEmbedderProvider,
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
@@ -86,11 +87,13 @@ interface LocalCodeIndexSettings {
 
 	codeIndexQdrantApiKey?: string
 	codebaseIndexVertexJsonCredentials?: string
+	codebaseIndexGeminiApiKey?: string
 }
 
 const secretStatusKeyByField = {
 	codeIndexQdrantApiKey: "hasQdrantApiKey",
 	codebaseIndexVertexJsonCredentials: "hasVertexJsonCredentials",
+	codebaseIndexGeminiApiKey: "hasGeminiApiKey",
 } as const
 
 type SecretField = keyof typeof secretStatusKeyByField
@@ -126,8 +129,7 @@ const isValidVertexGatewayModelRoutingMap = (value: string | undefined): boolean
 	}
 }
 
-// Validation schema for the Vertex-only codebase index settings.
-const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, t: any) => {
+const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, embedderProvider: string, t: any) => {
 	const vectorStoreSchema =
 		vectorStoreProvider === "qdrant"
 			? {
@@ -147,6 +149,7 @@ const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, t: any
 	const baseSchema = z.object({
 		codebaseIndexEnabled: z.boolean(),
 		codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]),
+		codebaseIndexEmbedderProvider: z.enum(["vertex", "gemini"]),
 		codeIndexQdrantApiKey: z.string().optional(),
 		codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
 		codebaseIndexEmbeddingRateLimitSeconds: z
@@ -162,6 +165,11 @@ const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, t: any
 			.optional(),
 		...vectorStoreSchema,
 	})
+	if (embedderProvider === "gemini") {
+		return baseSchema.extend({
+			codebaseIndexGeminiApiKey: z.string().trim().min(1, t("settings:codeIndex.validation.apiKeyRequired")),
+		})
+	}
 
 	return baseSchema.extend({
 		codebaseIndexVertexProjectId: z.string().min(1, t("settings:codeIndex.validation.vertexProjectIdRequired")),
@@ -247,6 +255,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		codebaseIndexVertexGatewayModelRoutingMap: "",
 		codeIndexQdrantApiKey: "",
 		codebaseIndexVertexJsonCredentials: "",
+		codebaseIndexGeminiApiKey: "",
 	})
 
 	// Initial settings state - stores the settings when popover opens
@@ -314,7 +323,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 				codebaseIndexEmbedderProvider: embedderProvider,
 				codebaseIndexEmbedderModelId:
 					codebaseIndexConfig.codebaseIndexEmbedderModelId ||
-					(embedderProvider === "vertex" ? DEFAULT_VERTEX_MODEL : ""),
+					(isSupportedCodebaseIndexEmbedderProvider(embedderProvider) ? DEFAULT_VERTEX_MODEL : ""),
 				codebaseIndexEmbedderModelDimension:
 					codebaseIndexConfig.codebaseIndexEmbedderModelDimension || undefined,
 				codebaseIndexSearchMaxResults:
@@ -368,6 +377,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					"",
 				codeIndexQdrantApiKey: "",
 				codebaseIndexVertexJsonCredentials: "",
+				codebaseIndexGeminiApiKey: "",
 			}
 			setInitialSettings(settings)
 			setCurrentSettings(settings)
@@ -471,6 +481,9 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					) {
 						updated.codebaseIndexVertexJsonCredentials = ""
 					}
+					if (!prev.codebaseIndexGeminiApiKey || prev.codebaseIndexGeminiApiKey === SECRET_PLACEHOLDER) {
+						updated.codebaseIndexGeminiApiKey = ""
+					}
 
 					return updated
 				}
@@ -502,7 +515,11 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	// Validation function
 	const validateSettings = (): boolean => {
-		const schema = createValidationSchema(currentSettings.codebaseIndexVectorStoreProvider, t)
+		const schema = createValidationSchema(
+			currentSettings.codebaseIndexVectorStoreProvider,
+			currentSettings.codebaseIndexEmbedderProvider,
+			t,
+		)
 
 		// Prepare data for validation
 		const dataToValidate: any = {}
@@ -513,7 +530,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 				value === SECRET_PLACEHOLDER ||
 				(key in secretStatusKeyByField && !value && savedSecretStatus[secretField])
 			) {
-				if (key === "codebaseIndexQdrantApiKey" || key === "codebaseIndexVertexJsonCredentials") {
+				if (key in secretStatusKeyByField) {
 					dataToValidate[key] = "placeholder-valid"
 				}
 			} else {
@@ -627,11 +644,16 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	const transformStyleString = `translateX(-${100 - progressPercentage}%)`
 
 	const getAvailableModels = () => {
-		return codebaseIndexModels?.vertex ? Object.keys(codebaseIndexModels.vertex) : []
+		const provider = currentSettings.codebaseIndexEmbedderProvider
+		const models = isSupportedCodebaseIndexEmbedderProvider(provider) ? codebaseIndexModels?.[provider] : undefined
+		return models ? Object.keys(models) : []
 	}
 
 	const getModelProfile = (modelId: string) => {
-		return codebaseIndexModels?.vertex?.[modelId]
+		const provider = currentSettings.codebaseIndexEmbedderProvider
+		return isSupportedCodebaseIndexEmbedderProvider(provider)
+			? codebaseIndexModels?.[provider]?.[modelId]
+			: undefined
 	}
 
 	const portalContainer = useAlphaPortal("alpha-portal")
@@ -779,12 +801,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 										</label>
 										<Select
 											value={
-												currentSettings.codebaseIndexEmbedderProvider === "vertex"
-													? "vertex"
+												isSupportedCodebaseIndexEmbedderProvider(
+													currentSettings.codebaseIndexEmbedderProvider,
+												)
+													? currentSettings.codebaseIndexEmbedderProvider
 													: ""
 											}
 											onValueChange={(value) => {
-												if (value !== "vertex") return
+												if (!isSupportedCodebaseIndexEmbedderProvider(value)) return
 
 												updateSetting("codebaseIndexEmbedderProvider", value)
 												updateSetting("codebaseIndexEmbedderModelId", DEFAULT_VERTEX_MODEL)
@@ -834,6 +858,9 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											<SelectContent>
 												<SelectItem value="vertex">
 													{t("settings:codeIndex.vertexProvider")}
+												</SelectItem>
+												<SelectItem value="gemini">
+													{t("settings:codeIndex.geminiProvider")}
 												</SelectItem>
 											</SelectContent>
 										</Select>
@@ -1042,43 +1069,74 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 													</p>
 												)}
 											</div>
-
-											<div className="space-y-2">
-												<label className="text-sm font-medium">
-													{t("settings:codeIndex.modelLabel")}
-												</label>
-												<VSCodeDropdown
-													value={currentSettings.codebaseIndexEmbedderModelId}
-													onChange={(e: any) =>
-														updateSetting("codebaseIndexEmbedderModelId", e.target.value)
-													}
-													className={cn("w-full", {
-														"border-red-500": formErrors.codebaseIndexEmbedderModelId,
-													})}>
-													<VSCodeOption value="" className="p-2">
-														{t("settings:codeIndex.selectModel")}
-													</VSCodeOption>
-													{getAvailableModels().map((modelId) => {
-														const model = getModelProfile(modelId)
-														return (
-															<VSCodeOption key={modelId} value={modelId} className="p-2">
-																{modelId}{" "}
-																{model
-																	? t("settings:codeIndex.modelDimensions", {
-																			dimension: model.dimension,
-																		})
-																	: ""}
-															</VSCodeOption>
-														)
-													})}
-												</VSCodeDropdown>
-												{formErrors.codebaseIndexEmbedderModelId && (
-													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
-														{formErrors.codebaseIndexEmbedderModelId}
-													</p>
-												)}
-											</div>
 										</>
+									)}
+									{currentSettings.codebaseIndexEmbedderProvider === "gemini" && (
+										<div className="space-y-2">
+											<label htmlFor="code-index-gemini-key" className="text-sm font-medium">
+												{t("settings:codeIndex.geminiApiKeyLabel")}
+											</label>
+											<VSCodeTextField
+												id="code-index-gemini-key"
+												type="password"
+												value={currentSettings.codebaseIndexGeminiApiKey || ""}
+												onInput={(e) =>
+													updateSetting(
+														"codebaseIndexGeminiApiKey",
+														(e.target as HTMLInputElement).value,
+													)
+												}
+												placeholder={getSecretPlaceholder(
+													"codebaseIndexGeminiApiKey",
+													"settings:codeIndex.geminiApiKeyPlaceholder",
+												)}
+												className="w-full"
+											/>
+											{formErrors.codebaseIndexGeminiApiKey && (
+												<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+													{formErrors.codebaseIndexGeminiApiKey}
+												</p>
+											)}
+										</div>
+									)}
+									{isSupportedCodebaseIndexEmbedderProvider(
+										currentSettings.codebaseIndexEmbedderProvider,
+									) && (
+										<div className="space-y-2">
+											<label className="text-sm font-medium">
+												{t("settings:codeIndex.modelLabel")}
+											</label>
+											<VSCodeDropdown
+												value={currentSettings.codebaseIndexEmbedderModelId}
+												onChange={(e: any) =>
+													updateSetting("codebaseIndexEmbedderModelId", e.target.value)
+												}
+												className={cn("w-full", {
+													"border-red-500": formErrors.codebaseIndexEmbedderModelId,
+												})}>
+												<VSCodeOption value="" className="p-2">
+													{t("settings:codeIndex.selectModel")}
+												</VSCodeOption>
+												{getAvailableModels().map((modelId) => {
+													const model = getModelProfile(modelId)
+													return (
+														<VSCodeOption key={modelId} value={modelId} className="p-2">
+															{modelId}{" "}
+															{model
+																? t("settings:codeIndex.modelDimensions", {
+																		dimension: model.dimension,
+																	})
+																: ""}
+														</VSCodeOption>
+													)
+												})}
+											</VSCodeDropdown>
+											{formErrors.codebaseIndexEmbedderModelId && (
+												<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+													{formErrors.codebaseIndexEmbedderModelId}
+												</p>
+											)}
+										</div>
 									)}
 
 									{/* Vector Store Settings */}

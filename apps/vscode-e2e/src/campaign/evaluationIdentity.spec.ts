@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { captureCampaignEvaluationIdentity, finishCampaignEvaluationIdentity } from "./evaluationIdentity"
@@ -27,7 +27,7 @@ test("identity finalization rejects missing evidence and source/build drift", ()
 	assert.equal(finishCampaignEvaluationIdentity(identity, { ...identity, missing: ["source"] }).unchanged, false)
 })
 test("missing source and builds remain explicit; operational IDs and model selection do not alter config identity", async () => {
-	const root = await mkdtemp(path.join(tmpdir(), "alpha-identity-"))
+	const root = await realpath(await mkdtemp(path.join(tmpdir(), "alpha-identity-")))
 	const config: CampaignConfig = {
 		id: "first",
 		hosts: [{ version: "1.125.0" }],
@@ -55,7 +55,7 @@ test("missing source and builds remain explicit; operational IDs and model selec
 })
 
 test("extension build identity includes native and external runtime files, including removal", async () => {
-	const root = await mkdtemp(path.join(tmpdir(), "alpha-runtime-identity-"))
+	const root = await realpath(await mkdtemp(path.join(tmpdir(), "alpha-runtime-identity-")))
 	const config: CampaignConfig = {
 		id: "runtime",
 		hosts: [{ version: "1.125.0" }],

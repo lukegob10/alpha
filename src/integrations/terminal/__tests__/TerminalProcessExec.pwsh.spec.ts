@@ -1,4 +1,4 @@
-// npx vitest src/integrations/terminal/__tests__/TerminalProcessExec.pwsh.spec.ts
+// pnpm --dir src test integrations/terminal/__tests__/TerminalProcessExec.pwsh.spec.ts
 
 // Probe shell availability only for this suite instead of every unit-test file.
 import "./setupTerminalTests"
@@ -75,7 +75,6 @@ async function testPowerShellCommand(
 	command: string,
 	expectedOutput: string,
 	useMock: boolean = false,
-	skipVerification: boolean = false,
 ): Promise<{ executionTimeUs: number; capturedOutput: string; exitDetails: ExitCodeDetails }> {
 	let startTime: bigint = BigInt(0)
 	let endTime: bigint = BigInt(0)
@@ -212,10 +211,7 @@ async function testPowerShellCommand(
 		}
 		const executionTimeUs = Number((endTime - startTime) / BigInt(1000))
 
-		// Verify the output matches the expected output (unless skipped)
-		if (!skipVerification) {
-			expect(capturedOutput).toBe(expectedOutput)
-		}
+		expect(capturedOutput).toBe(expectedOutput)
 
 		return { executionTimeUs, capturedOutput, exitDetails }
 	} finally {
@@ -307,29 +303,7 @@ describePlatform("TerminalProcess with PowerShell Command Output", () => {
 		const expectedOutput =
 			Array.from({ length: lines }, (_, i) => `${TEST_TEXT.LARGE_PREFIX}${i + 1}`).join("\n") + "\n"
 
-		// Skip the automatic output verification
-		const skipVerification = true
-		const { executionTimeUs, capturedOutput } = await testPowerShellCommand(
-			command,
-			expectedOutput,
-			false,
-			skipVerification,
-		)
-
-		// Log the actual and expected output for debugging
-		console.log("Actual output:", JSON.stringify(capturedOutput))
-		console.log("Expected output:", JSON.stringify(expectedOutput))
-
-		// Manually verify the output
-		if (process.platform === "linux") {
-			// On Linux, we'll check if the output contains the expected lines in any format
-			for (let i = 1; i <= lines; i++) {
-				expect(capturedOutput).toContain(`${TEST_TEXT.LARGE_PREFIX}${i}`)
-			}
-		} else {
-			// On other platforms, we'll do the exact match
-			expect(capturedOutput).toBe(expectedOutput)
-		}
+		const { executionTimeUs } = await testPowerShellCommand(command, expectedOutput)
 
 		console.log(`Large output command (${lines} lines) execution time: ${executionTimeUs} microseconds`)
 	})

@@ -5,6 +5,7 @@ import { stat } from "fs/promises"
 import * as vscode from "vscode"
 import { AlphaIgnoreController } from "../../../../core/ignore/AlphaIgnoreController"
 import { MAX_LIST_FILES_LIMIT_CODE_INDEX } from "../../constants"
+import { EmbeddingRequestError } from "../../shared/embedding-retry"
 
 // Mock TelemetryService
 vi.mock("@alpha-code/telemetry", () => ({
@@ -499,6 +500,38 @@ describe("DirectoryScanner", () => {
 			)
 		})
 
+		it("reuses validated embeddings when a vector-store write is retried", async () => {
+			vi.useFakeTimers()
+			try {
+				const { listFiles } = await import("../../../glob/list-files")
+				vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+				mockCodeParser.parseFile.mockResolvedValue([
+					{
+						file_path: "test/file1.js",
+						content: "function fixture() {}",
+						start_line: 1,
+						end_line: 1,
+						type: "function",
+						identifier: "fixture",
+						fileHash: "new-hash",
+						segmentHash: "segment",
+					},
+				])
+				mockVectorStore.upsertPoints.mockRejectedValueOnce(new Error("Temporary storage failure"))
+				const run = scanner.scanDirectory("/test")
+				await vi.runAllTimersAsync()
+				await run
+				expect(mockEmbedder.createEmbeddings).toHaveBeenCalledOnce()
+				expect(mockVectorStore.upsertPoints).toHaveBeenCalledTimes(2)
+				expect(mockVectorStore.upsertPoints.mock.calls[0][0]).toEqual(
+					mockVectorStore.upsertPoints.mock.calls[1][0],
+				)
+				expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("embeds and stores a parsed file while another file is still being parsed", async () => {
 			mockEmbedder.embedderInfo.preferredBatchSize = 8
 			const streamingScanner = new DirectoryScanner(
@@ -540,6 +573,7 @@ describe("DirectoryScanner", () => {
 					[expect.stringContaining("file1.js")],
 					undefined,
 					"document",
+					undefined,
 				)
 			} finally {
 				finishParsing()
@@ -736,6 +770,74 @@ describe("DirectoryScanner", () => {
 			expect(mockVectorStore.deletePointsByMultipleFilePaths).not.toHaveBeenCalled()
 			expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
 			expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+	it("does not multiply a settled provider retry budget at the scanner layer", async () => {
+		vi.useFakeTimers()
+		try {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCodeParser.parseFile.mockResolvedValue([
+				{
+					file_path: "test/file1.js",
+					content: "source",
+					start_line: 1,
+					end_line: 1,
+					type: "function",
+					fileHash: "new-hash",
+					segmentHash: "segment",
+				},
+			])
+			mockEmbedder.createEmbeddings.mockRejectedValue(
+				new EmbeddingRequestError(new Error("Provider retry budget exhausted")),
+			)
+			const onError = vi.fn()
+			const scanning = scanner.scanDirectory("/test", onError)
+			await vi.runAllTimersAsync()
+			await scanning
+			expect(mockEmbedder.createEmbeddings).toHaveBeenCalledOnce()
+			expect(onError).toHaveBeenCalledOnce()
+			expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
+			expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+	it("counts progress once after all storage writes and hashes settle", async () => {
+		vi.useFakeTimers()
+		try {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCodeParser.parseFile.mockResolvedValue(
+				[1, 2].map((line) => ({
+					file_path: "test/file1.js",
+					content: "source",
+					start_line: line,
+					end_line: line,
+					type: "function",
+					fileHash: "new-hash",
+					segmentHash: "segment-" + line,
+				})),
+			)
+			mockVectorStore.upsertPoints
+				.mockResolvedValueOnce(undefined)
+				.mockRejectedValueOnce(new Error("Temporary storage failure"))
+			const progress = vi.fn()
+			const chunked = new DirectoryScanner(
+				mockEmbedder,
+				mockVectorStore,
+				mockCodeParser,
+				mockCacheManager,
+				mockIgnoreInstance,
+				1,
+			)
+			const scanning = chunked.scanDirectory("/test", undefined, progress)
+			await vi.runAllTimersAsync()
+			await scanning
+			expect(progress.mock.calls.reduce((sum, [count]) => sum + count, 0)).toBe(2)
+			expect(mockEmbedder.createEmbeddings).toHaveBeenCalledTimes(2)
 		} finally {
 			vi.useRealTimers()
 		}

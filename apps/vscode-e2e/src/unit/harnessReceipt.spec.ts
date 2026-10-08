@@ -8,7 +8,7 @@ import { writeHarnessReceipt } from "../harnessReceipt"
 import type { ExtensionTestRunResult } from "../runTest"
 
 test("harness receipts project final observed state and omit raw locations and error text", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-harness-receipt-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-harness-receipt-")))
 	try {
 		const result: ExtensionTestRunResult = {
 			runId: "receipt-test",

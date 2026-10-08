@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-/** The only provider supported by the code index. */
+/** Default provider for new code indexes. */
 export const CODEBASE_INDEX_EMBEDDER_PROVIDER = "vertex" as const
 
 /**
@@ -11,10 +11,8 @@ export const CODEBASE_INDEX_EMBEDDER_PROVIDER = "vertex" as const
  */
 export type CodebaseIndexEmbedderProvider = string
 
-export function isSupportedCodebaseIndexEmbedderProvider(
-	value: unknown,
-): value is typeof CODEBASE_INDEX_EMBEDDER_PROVIDER {
-	return value === CODEBASE_INDEX_EMBEDDER_PROVIDER
+export function isSupportedCodebaseIndexEmbedderProvider(value: unknown): value is "vertex" | "gemini" {
+	return value === CODEBASE_INDEX_EMBEDDER_PROVIDER || value === "gemini"
 }
 
 /**
@@ -85,9 +83,10 @@ export type CodebaseIndexConfig = z.infer<typeof codebaseIndexConfigSchema>
 export const codebaseIndexModelsSchema = z
 	.object({
 		vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+		gemini: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	})
 	// Preserve legacy provider model maps while they are being migrated. They
-	// are never selected by the Vertex-only runtime.
+	// are never selected by the supported runtime.
 	.passthrough()
 
 export type CodebaseIndexModels = z.infer<typeof codebaseIndexModelsSchema>
@@ -99,6 +98,7 @@ export type CodebaseIndexModels = z.infer<typeof codebaseIndexModelsSchema>
 export const codebaseIndexProviderSchema = z.object({
 	codeIndexQdrantApiKey: z.string().optional(),
 	codebaseIndexVertexJsonCredentials: z.string().optional(),
+	codebaseIndexGeminiApiKey: z.string().optional(),
 })
 
 export type CodebaseIndexProvider = z.infer<typeof codebaseIndexProviderSchema>

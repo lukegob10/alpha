@@ -98,7 +98,7 @@ test("does not accept incomplete or cyclic ancestry and propagates unavailable i
 })
 
 test("profile launch lease serializes runners and releases only its own token", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-e2e-lease-test-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-e2e-lease-test-")))
 	try {
 		const userData = path.join(root, "user-data")
 		await fs.mkdir(userData)
@@ -117,7 +117,7 @@ test("profile launch lease serializes runners and releases only its own token", 
 })
 
 test("an empty or crashed launch lease is retained rather than stolen by age", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-e2e-lease-test-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-e2e-lease-test-")))
 	try {
 		await fs.writeFile(path.join(root, ".alpha-e2e-launch.json"), "")
 		await assert.rejects(acquireProfileLease(path.join(root, "user-data")), { code: "profile-busy" })

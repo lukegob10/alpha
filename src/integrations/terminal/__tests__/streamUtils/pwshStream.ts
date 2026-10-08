@@ -1,6 +1,6 @@
 // streamUtils/pwshStream.ts
-import { execSync } from "child_process"
-import { CommandStream } from "./index"
+import { execFileSync } from "child_process"
+import type { CommandStream } from "./index"
 
 /**
  * Creates a stream with real command output using PowerShell Core
@@ -12,27 +12,12 @@ export function createPowerShellStream(command: string): CommandStream {
 	let exitCode: number
 
 	try {
-		// Execute the PowerShell command directly
-		let shellCommand: string
-
-		if (process.platform === "linux") {
-			// On Linux, use single quotes to preserve PowerShell variables
-			// Escape any single quotes in the command
-			const escapedCommand = command.replace(/'/g, "'\\''")
-			shellCommand = `pwsh -NoProfile -NonInteractive -Command '${escapedCommand}'`
-		} else {
-			// On Windows/macOS, use double quotes and escape inner double quotes
-			// This is the original approach that works on Windows
-			const escapedCommand = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-			shellCommand = `pwsh -NoProfile -NonInteractive -Command "${escapedCommand}"`
-		}
-
-		console.log(`Executing PowerShell command on ${process.platform}: ${shellCommand}`)
-
-		realOutput = execSync(shellCommand, {
+		// An outer POSIX shell would expand PowerShell variables such as $i before pwsh receives them.
+		realOutput = execFileSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], {
 			encoding: "utf8",
 			maxBuffer: 100 * 1024 * 1024,
 			stdio: ["pipe", "pipe", "pipe"], // Capture stderr for debugging
+			windowsHide: true,
 		})
 		exitCode = 0 // Command succeeded
 	} catch (error: any) {

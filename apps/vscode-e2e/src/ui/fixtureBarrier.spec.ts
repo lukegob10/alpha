@@ -8,7 +8,7 @@ import { uiFixtureBarrier } from "./fixtureBarrier"
 test("UI fixture barriers require matching external receipts and preserve reserved identity", async () => {
 	const previousNonce = process.env.ALPHA_UI_ACCEPTANCE_NONCE
 	const previousDirectory = process.env.ALPHA_E2E_ARTIFACTS_DIR
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-barrier-"))
+	const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-barrier-")))
 	const nonce = "12345678-1234-1234-1234-123456789012"
 	try {
 		delete process.env.ALPHA_UI_ACCEPTANCE_NONCE

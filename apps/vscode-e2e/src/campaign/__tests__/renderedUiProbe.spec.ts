@@ -10,6 +10,7 @@ for (const testFile of [
 	"tickets-ui.test",
 	"file-review-ui.test",
 	"task-navigation-ui.test",
+	"composer-ui.test",
 ]) {
 	test(`renderer debugging for ${testFile} requires scripted execution and an owned profile`, async () => {
 		for (const change of [
@@ -33,7 +34,7 @@ for (const testFile of [
 	})
 
 	test(`the normal runner passes only an ephemeral renderer port for ${testFile}`, async () => {
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-port-test-"))
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-port-test-")))
 		try {
 			let launched = false
 			await runExtensionTests(

@@ -4040,10 +4040,14 @@ describe("Alpha", () => {
 			outcome?: "failed" | "cancelled"
 			mismatch?: boolean
 			command?: { command: string; arguments: string }
+			workdir?: (cwd: string) => string
+			timing?: { providerTailMs: number; readMs: number; assistantSaveMs: number }
 		}) => {
 			const task = createTask()
-			if (scenario.command) {
+			if (scenario.command || scenario.timing) {
 				vi.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects").mockResolvedValue(undefined)
+			}
+			if (scenario.command) {
 				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
 			}
 			const events: AgentTurnEvent[] = []
@@ -4058,6 +4062,7 @@ describe("Alpha", () => {
 			const readStarted = deferred()
 			const readResultReady = deferred()
 			const providerTailReached = deferred()
+			const providerEof = deferred()
 			const normalCommandStarted = deferred()
 			const releaseRead = deferred()
 			const releaseProvider = deferred()
@@ -4096,12 +4101,13 @@ describe("Alpha", () => {
 							readEffectCount += 1
 							eventOrder.push("read_started")
 							readStarted.resolve()
+							if (scenario.timing) setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
 							await releaseRead.promise
 							callbacks.pushToolResult("directory listing")
 							eventOrder.push("read_result_ready")
 							readResultReady.resolve()
 							return async () => {
-								// The command result is collected during the read; Task publishes it after durable history.
+								eventOrder.push("read_published")
 							}
 						},
 					}),
@@ -4238,8 +4244,11 @@ describe("Alpha", () => {
 					initialAssistantCount
 				) {
 					assistantSaveStarted.resolve()
+					if (scenario.timing)
+						setTimeout(() => releaseAssistantSave.resolve(), scenario.timing.assistantSaveMs)
 					await releaseAssistantSave.promise
 					persistedAssistantHistory.push(structuredClone(task.apiConversationHistory))
+					eventOrder.push("assistant_saved")
 				}
 				return true
 			})
@@ -4294,10 +4303,12 @@ describe("Alpha", () => {
 						id: acceptedCallId,
 						name: "exec_command",
 						arguments:
-							scenario.command?.arguments ?? JSON.stringify({ cmd: "git status --short", workdir: "." }),
+							scenario.command?.arguments ??
+							JSON.stringify({ cmd: "git status --short", workdir: scenario.workdir?.(task.cwd) ?? "." }),
 					}
 					yield { type: "tool_call_end", id: acceptedCallId }
 					providerTailReached.resolve()
+					if (scenario.timing) setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
 					await releaseProvider.promise
 					if (scenario.barrier) {
 						yield {
@@ -4336,6 +4347,7 @@ describe("Alpha", () => {
 					}
 					eventOrder.push("provider_eof")
 					providerReachedEof = true
+					providerEof.resolve()
 				})(),
 			)
 			const run = task.runAgentRequests([{ type: "text", text: "Inspect this directory." }], false)
@@ -4370,6 +4382,7 @@ describe("Alpha", () => {
 					}),
 				lifecyclePublications,
 				providerTailReached: providerTailReached.promise,
+				providerEof: providerEof.promise,
 				normalCommandStarted: normalCommandStarted.promise,
 				normalCommandEffectCount: () => normalCommandEffectCount,
 				commandPreparationCount: () => commandPreparationCount,
@@ -4390,103 +4403,216 @@ describe("Alpha", () => {
 			}
 		}
 
-		it("starts list_files before provider EOF and withholds its result until assistant history is durable", async () => {
-			const fixture = await startEarlyReadStream({})
+		const earlyReadWorkdirs = [
+			{ directory: "default", workdir: undefined },
+			{ directory: "absolute", workdir: (cwd: string) => cwd },
+			{ directory: "nested", workdir: () => "src" },
+		]
+
+		it.each(earlyReadWorkdirs)(
+			"starts an audited read from $directory workdir before EOF and commits after durable history",
+			async ({ workdir }) => {
+				const fixture = await startEarlyReadStream({ workdir })
+				const state = fixture.debugState
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, state)
+					expect(fixture.providerReachedEof()).toBe(false)
+					expect(fixture.readEffectCount()).toBe(1)
+					const acceptance = fixture.lifecyclePublications.findIndex(
+						(publication) => publication.type === "tool_call_accepted" && publication.durable,
+					)
+					expect(acceptance).toBeGreaterThanOrEqual(0)
+					expect(fixture.eventOrder.indexOf("lifecycle:tool_call_accepted")).toBeLessThan(
+						fixture.eventOrder.indexOf("read_started"),
+					)
+
+					fixture.releaseRead()
+					await waitForControlledSignal("read result", fixture.readResultReady, state)
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+					expect(fixture.providerReachedEof()).toBe(false)
+					expect(fixture.eventOrder).not.toContain("read_published")
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+					fixture.releaseAssistantSave()
+					const result = await waitForControlledSignal("task run", fixture.run, state)
+
+					expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
+					expect(fixture.eventOrder.indexOf("read_published")).toBeGreaterThan(
+						fixture.eventOrder.indexOf("assistant_saved"),
+					)
+					expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(1)
+					expect(fixture.eventOrder.indexOf("read_started")).toBeLessThan(
+						fixture.eventOrder.indexOf("provider_eof"),
+					)
+					expect(fixture.eventOrder.indexOf("provider_eof")).toBeLessThan(
+						fixture.eventOrder.indexOf("event:tool_result"),
+					)
+					expect(fixture.eventOrder.filter((event) => event === "read_started")).toHaveLength(1)
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.persistedAssistantHistory[0]).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({
+								role: "assistant",
+								content: expect.arrayContaining([
+									expect.objectContaining({ type: "tool_use", id: fixture.acceptedCallId }),
+								]),
+							}),
+						]),
+					)
+					const pendingResults = fixture.task.userMessageContent.filter(
+						(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+					)
+					expect(pendingResults).toHaveLength(1)
+					expect(pendingResults[0]).toMatchObject({ content: "directory listing", is_error: false })
+					expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+					const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(historyResults).toHaveLength(1)
+					const callHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+						(message) =>
+							message.role === "assistant" &&
+							Array.isArray(message.content) &&
+							message.content.some(
+								(block) => block.type === "tool_use" && block.id === fixture.acceptedCallId,
+							),
+					)
+					const resultHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+						(message) =>
+							message.role === "user" &&
+							Array.isArray(message.content) &&
+							message.content.some(
+								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+							),
+					)
+					expect(callHistoryIndex).toBeGreaterThanOrEqual(0)
+					expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				} finally {
+					fixture.releaseRead()
+					fixture.releaseProvider()
+					fixture.releaseAssistantSave()
+					await Promise.race([
+						fixture.run.catch(() => undefined),
+						new Promise((resolve) => setTimeout(resolve, 500)),
+					])
+				}
+			},
+		)
+
+		it.each(earlyReadWorkdirs)(
+			"measures read overlap for $directory workdir on the same controlled stream",
+			async ({ directory, workdir }) => {
+				vi.useFakeTimers()
+				try {
+					const started = Date.now()
+					const fixture = await startEarlyReadStream({
+						workdir,
+						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
+					})
+					await vi.runAllTimersAsync()
+					const result = await fixture.run
+					const elapsedMs = Date.now() - started
+					const readStartedBeforeEof =
+						fixture.eventOrder.indexOf("read_started") < fixture.eventOrder.indexOf("provider_eof")
+					console.info(JSON.stringify({ directory, elapsedMs, readStartedBeforeEof }))
+					expect(result).toMatchObject({ status: "completed" })
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledTimes(1)
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(readStartedBeforeEof).toBe(true)
+					expect(elapsedMs).toBe(400)
+				} finally {
+					vi.useRealTimers()
+				}
+			},
+		)
+
+		it.each(["../outside", "../path-sibling"])(
+			"withholds a read from escaping workdir %s until ordinary staging",
+			async (workdir) => {
+				vi.useFakeTimers()
+				try {
+					const fixture = await startEarlyReadStream({
+						workdir: () => workdir,
+						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
+					})
+					await vi.runAllTimersAsync()
+					await fixture.run
+					expect(fixture.readEffectCount()).toBe(0)
+					expect(fixture.eventOrder).not.toContain("read_started")
+					expect(fixture.task.userMessageContent).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({
+								type: "tool_result",
+								tool_use_id: fixture.acceptedCallId,
+								is_error: true,
+							}),
+						]),
+					)
+				} finally {
+					vi.useRealTimers()
+				}
+			},
+		)
+
+		it("drains an in-flight nested read on provider cancellation and persists one cancelled result", async () => {
+			const fixture = await startEarlyReadStream({ workdir: () => "src", outcome: "cancelled" })
 			const state = fixture.debugState
 			try {
 				await waitForControlledSignal("read start", fixture.readStarted, state)
-				expect(fixture.providerReachedEof()).toBe(false)
-				expect(fixture.readEffectCount()).toBe(1)
-				const acceptance = fixture.lifecyclePublications.findIndex(
-					(publication) => publication.type === "tool_call_accepted" && publication.durable,
-				)
-				expect(acceptance).toBeGreaterThanOrEqual(0)
-				expect(fixture.eventOrder.indexOf("lifecycle:tool_call_accepted")).toBeLessThan(
-					fixture.eventOrder.indexOf("read_started"),
-				)
-
-				fixture.releaseRead()
-				await waitForControlledSignal("read result", fixture.readResultReady, state)
-				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
-				expect(fixture.providerReachedEof()).toBe(false)
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-				expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
-
 				fixture.releaseProvider()
-				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				await waitForControlledSignal("provider EOF", fixture.providerEof, state)
+				expect(fixture.eventOrder).not.toContain("read_result_ready")
 				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-				expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+				fixture.releaseRead()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				expect(fixture.eventOrder).not.toContain("read_published")
 				fixture.releaseAssistantSave()
-				const result = await waitForControlledSignal("task run", fixture.run, state)
-
-				expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
-				expect(fixture.eventOrder.indexOf("read_started")).toBeLessThan(
-					fixture.eventOrder.indexOf("provider_eof"),
-				)
-				expect(fixture.eventOrder.indexOf("provider_eof")).toBeLessThan(
-					fixture.eventOrder.indexOf("event:tool_result"),
-				)
-				expect(fixture.eventOrder.filter((event) => event === "read_started")).toHaveLength(1)
-				expect(fixture.readEffectCount()).toBe(1)
-				expect(fixture.persistedAssistantHistory[0]).toEqual(
-					expect.arrayContaining([
-						expect.objectContaining({
-							role: "assistant",
-							content: expect.arrayContaining([
-								expect.objectContaining({ type: "tool_use", id: fixture.acceptedCallId }),
-							]),
-						}),
-					]),
-				)
-				const pendingResults = fixture.task.userMessageContent.filter(
-					(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
-				)
-				expect(pendingResults).toHaveLength(1)
-				expect(pendingResults[0]).toMatchObject({ content: "directory listing", is_error: false })
-				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
-				const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
+				expect(await waitForControlledSignal("task run", fixture.run, state)).toMatchObject({
+					status: "aborted",
+				})
+				const results = fixture.task.apiConversationHistory.flatMap((message) =>
 					message.role === "user" && Array.isArray(message.content)
 						? message.content.filter(
 								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
 							)
 						: [],
 				)
-				expect(historyResults).toHaveLength(1)
-				const callHistoryIndex = fixture.task.apiConversationHistory.findIndex(
-					(message) =>
-						message.role === "assistant" &&
-						Array.isArray(message.content) &&
-						message.content.some(
-							(block) => block.type === "tool_use" && block.id === fixture.acceptedCallId,
-						),
-				)
-				const resultHistoryIndex = fixture.task.apiConversationHistory.findIndex(
-					(message) =>
-						message.role === "user" &&
-						Array.isArray(message.content) &&
-						message.content.some(
-							(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
-						),
-				)
-				expect(callHistoryIndex).toBeGreaterThanOrEqual(0)
-				expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
+				expect(results).toHaveLength(1)
+				expect(results[0]).toMatchObject({ is_error: true })
+				expect(fixture.readEffectCount()).toBe(1)
 				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
 			} finally {
 				fixture.releaseRead()
 				fixture.releaseProvider()
 				fixture.releaseAssistantSave()
-				await Promise.race([
-					fixture.run.catch(() => undefined),
-					new Promise((resolve) => setTimeout(resolve, 500)),
-				])
+				await fixture.run.catch(() => undefined)
 			}
 		})
 
-		it("runs a non-audited exec_command once through normal staging after provider EOF", async () => {
-			const command = "node --version"
+		it.each([
+			{ label: "non-audited command", command: "node --version", arguments: { cmd: "node --version" } },
+			{
+				label: "legacy cwd command",
+				command: "git status --short",
+				arguments: { cmd: "git status --short", cwd: "src" },
+			},
+		])("runs a $label once through normal staging after provider EOF", async ({ command, arguments: args }) => {
 			const callId = "early-read-1"
 			const fixture = await startEarlyReadStream({
-				command: { command, arguments: JSON.stringify({ cmd: command }) },
+				command: { command, arguments: JSON.stringify(args) },
 			})
 			const state = fixture.debugState
 			try {
@@ -4550,141 +4676,157 @@ describe("Alpha", () => {
 			}
 		})
 
-		it("settles an early list_files read before rejecting a later lifecycle barrier", async () => {
-			const fixture = await startEarlyReadStream({ barrier: true })
-			const state = fixture.debugState
-			try {
-				await waitForControlledSignal("read start", fixture.readStarted, state)
-				expect(fixture.providerReachedEof()).toBe(false)
-				fixture.releaseRead()
-				await waitForControlledSignal("read result", fixture.readResultReady, state)
-				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+		it.each(earlyReadWorkdirs)(
+			"settles an early $directory command read before rejecting a later lifecycle barrier",
+			async ({ workdir }) => {
+				const fixture = await startEarlyReadStream({ barrier: true, workdir })
+				const state = fixture.debugState
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, state)
+					expect(fixture.providerReachedEof()).toBe(false)
+					fixture.releaseRead()
+					await waitForControlledSignal("read result", fixture.readResultReady, state)
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
 
-				fixture.releaseProvider()
-				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-				fixture.releaseAssistantSave()
-				const result = await waitForControlledSignal("task run", fixture.run, state)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					fixture.releaseAssistantSave()
+					const result = await waitForControlledSignal("task run", fixture.run, state)
 
-				expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
-				expect(fixture.barrierExecute).not.toHaveBeenCalled()
-				const pendingResults = fixture.task.userMessageContent.filter((block) => block.type === "tool_result")
-				expect(pendingResults).toHaveLength(2)
-				const pendingEarly = pendingResults.find((block) => block.tool_use_id === fixture.acceptedCallId)
-				const pendingBarrier = pendingResults.find((block) => block.tool_use_id === "later-barrier-1")
-				expect(pendingEarly).toMatchObject({ content: "directory listing", is_error: false })
-				expect(pendingBarrier).toMatchObject({ is_error: true })
-				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
-				const results = fixture.task.apiConversationHistory.flatMap((message) =>
-					message.role === "user" && Array.isArray(message.content)
-						? message.content.filter((block) => block.type === "tool_result")
-						: [],
-				)
-				expect(results).toHaveLength(2)
-				expect(results).toEqual(
-					expect.arrayContaining([
-						expect.objectContaining({
-							tool_use_id: fixture.acceptedCallId,
-							content: "directory listing",
-							is_error: false,
-						}),
-						expect.objectContaining({
-							tool_use_id: "later-barrier-1",
-							is_error: true,
-						}),
-					]),
-				)
-				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([
-					fixture.acceptedCallId,
-					"later-barrier-1",
-				])
-				expect(fixture.eventOrder.indexOf("event:tool_result")).toBeLessThan(
-					fixture.eventOrder.indexOf("event:tool_batch_finished"),
-				)
-			} finally {
-				fixture.releaseRead()
-				fixture.releaseProvider()
-				fixture.releaseAssistantSave()
-				await fixture.run.catch(() => undefined)
-			}
-		})
+					expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
+					expect(fixture.barrierExecute).not.toHaveBeenCalled()
+					const pendingResults = fixture.task.userMessageContent.filter(
+						(block) => block.type === "tool_result",
+					)
+					expect(pendingResults).toHaveLength(2)
+					const pendingEarly = pendingResults.find((block) => block.tool_use_id === fixture.acceptedCallId)
+					const pendingBarrier = pendingResults.find((block) => block.tool_use_id === "later-barrier-1")
+					expect(pendingEarly).toMatchObject({ content: "directory listing", is_error: false })
+					expect(pendingBarrier).toMatchObject({ is_error: true })
+					expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+					const results = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter((block) => block.type === "tool_result")
+							: [],
+					)
+					expect(results).toHaveLength(2)
+					expect(results).toEqual(
+						expect.arrayContaining([
+							expect.objectContaining({
+								tool_use_id: fixture.acceptedCallId,
+								content: "directory listing",
+								is_error: false,
+							}),
+							expect.objectContaining({
+								tool_use_id: "later-barrier-1",
+								is_error: true,
+							}),
+						]),
+					)
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([
+						fixture.acceptedCallId,
+						"later-barrier-1",
+					])
+					expect(fixture.eventOrder.indexOf("event:tool_result")).toBeLessThan(
+						fixture.eventOrder.indexOf("event:tool_batch_finished"),
+					)
+				} finally {
+					fixture.releaseRead()
+					fixture.releaseProvider()
+					fixture.releaseAssistantSave()
+					await fixture.run.catch(() => undefined)
+				}
+			},
+		)
 
-		it.each([
-			{ outcome: "failed" as const, expectedStatus: "failed" },
-			{ outcome: "cancelled" as const, expectedStatus: "aborted" },
-		])("withholds an early read result when the provider ends $outcome", async ({ outcome, expectedStatus }) => {
-			const fixture = await startEarlyReadStream({ outcome })
-			const state = fixture.debugState
-			try {
-				await waitForControlledSignal("read start", fixture.readStarted, state)
-				fixture.releaseRead()
-				await waitForControlledSignal("read result", fixture.readResultReady, state)
-				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
-				fixture.releaseProvider()
-				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-				fixture.releaseAssistantSave()
-				const result = await waitForControlledSignal("task run", fixture.run, state)
+		it.each(
+			earlyReadWorkdirs.flatMap((workdir) => [
+				{ ...workdir, outcome: "failed" as const, expectedStatus: "failed" },
+				{ ...workdir, outcome: "cancelled" as const, expectedStatus: "aborted" },
+			]),
+		)(
+			"withholds an early $directory read result when the provider ends $outcome",
+			async ({ outcome, expectedStatus, workdir }) => {
+				const fixture = await startEarlyReadStream({ outcome, workdir })
+				const state = fixture.debugState
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, state)
+					fixture.releaseRead()
+					await waitForControlledSignal("read result", fixture.readResultReady, state)
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					fixture.releaseAssistantSave()
+					const result = await waitForControlledSignal("task run", fixture.run, state)
 
-				expect(result).toMatchObject({ status: expectedStatus })
-				const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
-					message.role === "user" && Array.isArray(message.content)
-						? message.content.filter(
-								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
-							)
-						: [],
-				)
-				expect(historyResults).toHaveLength(1)
-				expect(historyResults[0]).toMatchObject({
-					is_error: true,
-					content: expect.stringContaining("read completed"),
-				})
-				expect(fixture.events.filter((event) => event.type === "tool_result")).toHaveLength(0)
-				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
-			} finally {
-				fixture.releaseRead()
-				fixture.releaseProvider()
-				fixture.releaseAssistantSave()
-				await fixture.run.catch(() => undefined)
-			}
-		})
-
-		it("repairs a final provider response that omits an already accepted early read", async () => {
-			const fixture = await startEarlyReadStream({ mismatch: true })
-			const state = fixture.debugState
-			try {
-				await waitForControlledSignal("read start", fixture.readStarted, state)
-				fixture.releaseRead()
-				await waitForControlledSignal("read result", fixture.readResultReady, state)
-				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
-				fixture.releaseProvider()
-				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-				fixture.releaseAssistantSave()
-				const result = await waitForControlledSignal("task run", fixture.run, state)
-
-				expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
-				expect(
-					fixture.task.apiConversationHistory.flatMap((message) =>
+					expect(result).toMatchObject({ status: expectedStatus })
+					expect(fixture.eventOrder).not.toContain("read_published")
+					const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
 						message.role === "user" && Array.isArray(message.content)
 							? message.content.filter(
 									(block) =>
 										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
 								)
 							: [],
-					),
-				).toHaveLength(1)
-				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
-				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
-			} finally {
-				fixture.releaseRead()
-				fixture.releaseProvider()
-				fixture.releaseAssistantSave()
-				fixture.restoreMismatchSpy()
-				await fixture.run.catch(() => undefined)
-			}
-		})
+					)
+					expect(historyResults).toHaveLength(1)
+					expect(historyResults[0]).toMatchObject({
+						is_error: true,
+						content: expect.stringContaining("read completed"),
+					})
+					expect(fixture.events.filter((event) => event.type === "tool_result")).toHaveLength(0)
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				} finally {
+					fixture.releaseRead()
+					fixture.releaseProvider()
+					fixture.releaseAssistantSave()
+					await fixture.run.catch(() => undefined)
+				}
+			},
+		)
+
+		it.each(earlyReadWorkdirs)(
+			"repairs an omitted accepted early $directory read in the final response",
+			async ({ workdir }) => {
+				const fixture = await startEarlyReadStream({ mismatch: true, workdir })
+				const state = fixture.debugState
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, state)
+					fixture.releaseRead()
+					await waitForControlledSignal("read result", fixture.readResultReady, state)
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					fixture.releaseAssistantSave()
+					const result = await waitForControlledSignal("task run", fixture.run, state)
+
+					expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
+					expect(
+						fixture.task.apiConversationHistory.flatMap((message) =>
+							message.role === "user" && Array.isArray(message.content)
+								? message.content.filter(
+										(block) =>
+											block.type === "tool_result" &&
+											block.tool_use_id === fixture.acceptedCallId,
+									)
+								: [],
+						),
+					).toHaveLength(1)
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				} finally {
+					fixture.releaseRead()
+					fixture.releaseProvider()
+					fixture.releaseAssistantSave()
+					fixture.restoreMismatchSpy()
+					await fixture.run.catch(() => undefined)
+				}
+			},
+		)
 
 		it.each(["apply_patch", "edit"])(
 			"executes the advertised %s preference through the Task scheduler",

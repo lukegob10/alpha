@@ -64,7 +64,7 @@ test("receipts require exact run, nonce, host version, mode, status and process 
 })
 
 test("owned atomic receipts cannot be overwritten; missing or malformed completion never passes", async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-live-receipts-"))
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-live-receipts-")))
 	try {
 		const { artifactDirectory } = await prepareEvidenceRun({ artifactsRoot: root, runId: expected.runId })
 		await assert.rejects(readLiveHostReceipt(artifactDirectory, LIVE_HOST_COMPLETION, expected), {
