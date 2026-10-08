@@ -29,6 +29,7 @@
 				"src/runCoreConfidence.ts",
 				"src/runEvidence.ts",
 				"src/runFailure.ts",
+				"src/runComposerUi.ts",
 				"src/runReasoningUi.ts",
 				"src/runFileReviewUi.ts",
 				"src/runHistoryUi.ts",
