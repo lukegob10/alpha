@@ -701,6 +701,7 @@ export class ToolScheduler {
 	private readonly repetitionSkippedResults = new WeakSet<ToolSchedulerResult>()
 	private readonly effectStartedCallIds = new Set<string>()
 	private deferredResultCommit?: { calls: AgentToolCall[]; results: ToolSchedulerResult[] }
+	private readonly deferredReadFinalizers = new Map<string, { item: PreparedCall; result: ToolSchedulerResult }>()
 	private deferredCommitPromise?: Promise<void>
 	private readonly deferredCommittedResultIds = new Set<string>()
 	private readonly deferredResultEventIds = new Set<string>()
@@ -992,7 +993,17 @@ export class ToolScheduler {
 		if (!item.scope || !path.isAbsolute(item.scope)) item.scope = undefined
 	}
 
-	private async finalizeRead(item: PreparedCall, result: ToolSchedulerResult): Promise<ToolSchedulerResult> {
+	private async finalizeRead(
+		item: PreparedCall,
+		result: ToolSchedulerResult,
+		commitDeferred = false,
+	): Promise<ToolSchedulerResult> {
+		if (this.options.deferResultCommit && !commitDeferred && (item.finalizeCommand || item.finalizeRead)) {
+			// Finalizers publish command evidence and UI state as well as output.
+			// Keep them behind the same durable assistant boundary as the result.
+			this.deferredReadFinalizers.set(result.callId, { item, result })
+			return result
+		}
 		const finalizeCommand = item.finalizeCommand
 		item.finalizeCommand = undefined
 		if (finalizeCommand) {
@@ -1241,7 +1252,8 @@ export class ToolScheduler {
 					if (result) results[parallelItems[offset].index] = result
 				})
 				// No worker is live here, including workers that ignored cancellation.
-				// Publish UI and shared Task state in model-call order.
+				// Join presentation in model-call order; deferred lanes hold
+				// these finalizers until the durable assistant boundary commits.
 				for (const readItem of parallelItems) {
 					const result = results[readItem.index]
 					if (result) results[readItem.index] = await this.finalizeRead(readItem, result)
@@ -2650,6 +2662,19 @@ export class ToolScheduler {
 			for (const [index, result] of deferred.results.entries()) {
 				const callId = sanitizeToolUseId(result.callId)
 				if (this.deferredCommittedResultIds.has(callId)) continue
+				const pending = this.deferredReadFinalizers.get(result.callId)
+				if (pending) {
+					// A publication retry must not repeat a finalizer that already ran.
+					this.deferredReadFinalizers.delete(result.callId)
+					const finalized = this.isCancelled()
+						? this.cancelledResultFor(pending.item.call)
+						: await this.finalizeRead(pending.item, result, true)
+					pending.item.finalizeCommand = undefined
+					pending.item.finalizeRead = undefined
+					// Task retains the run outcome; keep it consistent with committed receipts.
+					Object.assign(pending.result, finalized)
+					Object.assign(result, finalized)
+				}
 				try {
 					await this.observeToolResult(result, deferred.calls[index])
 				} catch (error) {
@@ -2729,6 +2754,7 @@ export class ToolScheduler {
 	/** Drop held output when the host rejects or abandons the speculative read batch. */
 	discardDeferredResults(): void {
 		if (this.deferredCommitPromise) throw new Error("Committed deferred tool results cannot be discarded.")
+		this.deferredReadFinalizers.clear()
 		this.deferredResultCommit = undefined
 		this.deferredBatchFinishedEvent = undefined
 	}

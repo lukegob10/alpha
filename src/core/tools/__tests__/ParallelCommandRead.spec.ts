@@ -195,25 +195,80 @@ describe("isolated command reads", () => {
 		await finalize()
 	})
 
-	it("prepares an exec_command rg read from its native cmd and workdir fields", async () => {
-		const command = "rg -n needle src"
-		context.call = {
-			...context.call,
-			name: "exec_command",
-			nativeArgs: { cmd: command, workdir: ".", yield_time_ms: 10_000 },
-		}
+	it.each(["root-relative", "root-absolute", "nested-relative", "nested-absolute"])(
+		"prepares an exec_command rg read from %s workdir",
+		async (directory) => {
+			const command = "rg -n needle ."
+			const cwd = directory.startsWith("nested") ? path.join(root, "src") : root
+			const workdir = directory.endsWith("absolute") ? cwd : directory.startsWith("nested") ? "src" : "."
+			context.call = {
+				...context.call,
+				name: "exec_command",
+				nativeArgs: { cmd: command, workdir, yield_time_ms: 10_000 },
+			}
 
+			const read = await prepareParallelCommand(context, policy)
+
+			// Invocation cwd can narrow; the scheduler's read scope still covers the workspace.
+			expect(read).toMatchObject({ scope: root })
+			expect(context.callbacks.askApproval).toHaveBeenCalledExactlyOnceWith("command", command, { text: cwd })
+			const finalize = await read!.run!(context.callbacks)
+			expect(execa).toHaveBeenCalledWith(
+				expect.stringContaining("rg"),
+				expect.arrayContaining(["--no-config", "-n", "needle", "."]),
+				expect.objectContaining({ cwd, timeout: 10_000, shell: false }),
+			)
+			await finalize()
+		},
+	)
+
+	it.each(["relative", "absolute", "junction", "captured-policy"])(
+		"rejects %s workdir outside the authorized workspace before approval or process launch",
+		async (directory) => {
+			const outside = path.join(root, "..", "outside")
+			await fs.mkdir(outside)
+			const link = path.join(root, "linked-outside")
+			if (directory === "junction")
+				await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
+			context.call = {
+				...context.call,
+				name: "exec_command",
+				nativeArgs: {
+					cmd: "rg --files .",
+					workdir:
+						directory === "captured-policy"
+							? root
+							: directory === "relative"
+								? "../outside"
+								: directory === "junction"
+									? link
+									: outside,
+				},
+			}
+			const capturedPolicy =
+				directory === "captured-policy"
+					? createToolPolicySnapshot({
+							visibleTools: ["exec_command"],
+							execution: { workspaceRoots: [path.join(root, "src")] },
+						})
+					: policy
+			expect(await prepareParallelCommand(context, capturedPolicy)).toBeUndefined()
+			expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+			expect(execa).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rejects a nested workdir replaced with an escaping junction after approval", async () => {
+		const nested = path.join(root, "src")
+		const outside = path.join(root, "..", "outside")
+		await fs.mkdir(outside)
+		context.call = { ...context.call, name: "exec_command", nativeArgs: { cmd: "rg --files .", workdir: "src" } }
 		const read = await prepareParallelCommand(context, policy)
-
-		expect(read).toMatchObject({ scope: root })
-		expect(context.callbacks.askApproval).toHaveBeenCalledExactlyOnceWith("command", command, { text: root })
-		const finalize = await read!.run!(context.callbacks)
-		expect(execa).toHaveBeenCalledWith(
-			expect.stringContaining("rg"),
-			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
-			expect.objectContaining({ cwd: root, timeout: 10_000, shell: false }),
-		)
-		await finalize()
+		expect(read).toBeDefined()
+		await fs.rename(nested, path.join(root, "original-src"))
+		await fs.symlink(outside, nested, process.platform === "win32" ? "junction" : "dir")
+		await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
+		expect(execa).not.toHaveBeenCalled()
 	})
 
 	it("uses the extension-bundled ripgrep when rg is absent from PATH", async () => {
