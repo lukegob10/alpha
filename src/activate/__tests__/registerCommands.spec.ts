@@ -155,4 +155,70 @@ describe("registerCommands", () => {
 		expect(commands).not.toContain("alpha.goalSeekButtonClicked")
 		expect(commands).toContain("alpha.scheduledTasksButtonClicked")
 	})
+
+	it.each([
+		["decreaseReasoningEffort", "adjustTaskReasoningEffort", ["sidebar-task", -1]],
+		["increaseReasoningEffort", "adjustTaskReasoningEffort", ["sidebar-task", 1]],
+		["previousTask", "navigateTask", [-1]],
+		["nextTask", "navigateTask", [1]],
+		["nextTaskNeedingInput", "navigateTask", [1, true]],
+	] as const)("routes the %s sidebar hotkey to its originating view", async (command, method, args) => {
+		const sidebar = {
+			getActiveTaskId: vi.fn(() => "sidebar-task"),
+			adjustTaskReasoningEffort: vi.fn(),
+			navigateTask: vi.fn(),
+		} as unknown as AlphaProvider
+		const editor = { adjustTaskReasoningEffort: vi.fn(), navigateTask: vi.fn() }
+		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor as unknown as AlphaProvider)
+		registerCommands({
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+			outputChannel: mockOutputChannel,
+			provider: sidebar,
+		})
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === `alpha.${command}`)![1]
+		await callback("sidebar")
+		expect(sidebar[method]).toHaveBeenCalledWith(...args)
+		expect(editor[method]).not.toHaveBeenCalled()
+	})
+
+	it("captures the editor task identity when requesting a steering submission", async () => {
+		const editor = {
+			getActiveTaskId: vi.fn(() => "editor-task"),
+			postMessageToWebview: vi.fn(),
+		} as unknown as AlphaProvider
+		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor)
+		registerCommands({
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+			outputChannel: mockOutputChannel,
+			provider: {} as AlphaProvider,
+		})
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === "alpha.sendAndSteer")![1]
+		await callback()
+		expect(editor.postMessageToWebview).toHaveBeenCalledWith({ type: "sendAndSteer", taskId: "editor-task" })
+	})
+
+	it("reveals Alpha when starting a new chat without a visible view", async () => {
+		const sidebar = {
+			startBlankTask: vi.fn(),
+			refreshWorkspace: vi.fn(),
+			postMessageToWebview: vi.fn(),
+		} as unknown as AlphaProvider
+		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(undefined)
+		vi.mocked(AlphaProvider.getInstance).mockResolvedValue(sidebar)
+		registerCommands({
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+			outputChannel: mockOutputChannel,
+			provider: sidebar,
+		})
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === "alpha.plusButtonClicked")![1]
+		await callback()
+		expect(AlphaProvider.getInstance).toHaveBeenCalledTimes(1)
+		expect(sidebar.startBlankTask).toHaveBeenCalledTimes(1)
+	})
 })

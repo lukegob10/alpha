@@ -1,16 +1,23 @@
 import * as assert from "node:assert/strict"
-import { createServer } from "node:http"
+import { createServer, type ServerResponse } from "node:http"
 import * as vscode from "vscode"
-import { AlphaCodeEventName, type ProviderSettings, type TaskReasoningProjection } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	type ProviderSettings,
+	type TaskReasoningProjection,
+	type CreateTaskOptions,
+} from "@alpha-code/types"
 import { uiFixtureBarrier } from "../ui/fixtureBarrier"
 import { waitFor } from "./utils"
 
 interface ReasoningTask {
+	taskId: string
 	apiConfiguration: ProviderSettings
 	taskAsk?: { ask: string }
 	approveAsk(): void
 	getReasoningState(): TaskReasoningProjection
 	updateApiConfiguration(configuration: ProviderSettings): void
+	messageQueueService: { messages: Array<{ text: string }> }
 }
 interface ReasoningHost {
 	viewLaunched: boolean
@@ -20,21 +27,41 @@ interface ReasoningHost {
 	getLiveTask(id: string): ReasoningTask | undefined
 	showTaskWithId(id: string): Promise<void>
 	postStateToWebview(): Promise<void>
+	getActiveTaskId(): string | undefined
+	createTask(text: string, images?: string[], parent?: undefined, options?: CreateTaskOptions): Promise<ReasoningTask>
+	removeTaskFromStack(options: { taskId: string }): Promise<void>
 }
 
 suite("Rendered reasoning controls", function () {
 	this.timeout(300_000)
-	test("uses the acknowledged composer choice on the wire without saving a profile", async function () {
+	test("uses acknowledged reasoning and scoped Windows hotkeys without saving a profile", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
 		assert.equal(vscode.version, "1.125.0")
 		const provider = (globalThis.api as unknown as { sidebarProvider: ReasoningHost }).sidebarProvider
 		const requests: Array<{ model: string; reasoning_effort?: string }> = []
+		const requestMessages: string[] = []
+		let heldResponse: ServerResponse | undefined
+		let heldRequestCancelled = false
+		const createdTaskIds: string[] = []
 		const server = createServer((request, response) => {
 			void (async () => {
 				const chunks: Buffer[] = []
 				for await (const chunk of request) chunks.push(Buffer.from(chunk))
 				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 				requests.push({ model: body.model, reasoning_effort: body.reasoning_effort })
+				const messages = JSON.stringify(body.messages)
+				requestMessages.push(messages)
+				if (
+					messages.includes("Windows steering fixture") &&
+					!messages.includes("Windows steering instruction")
+				) {
+					heldResponse = response
+					response.once("close", () => {
+						heldRequestCancelled = true
+					})
+					return
+				}
+				const approval = messages.includes("Windows approval fixture")
 				response.writeHead(200, { "Content-Type": "application/json" })
 				response.end(
 					JSON.stringify({
@@ -45,8 +72,23 @@ suite("Rendered reasoning controls", function () {
 						choices: [
 							{
 								index: 0,
-								message: { role: "assistant", content: "The deterministic fixture is complete." },
-								finish_reason: "stop",
+								message: approval
+									? {
+											role: "assistant",
+											content: null,
+											tool_calls: [
+												{
+													id: "windows-hotkey-approval",
+													type: "function",
+													function: {
+														name: "exec_command",
+														arguments: JSON.stringify({ cmd: "git --version" }),
+													},
+												},
+											],
+										}
+									: { role: "assistant", content: "The deterministic fixture is complete." },
+								finish_reason: approval ? "tool_calls" : "stop",
 							},
 						],
 						usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
@@ -159,8 +201,65 @@ suite("Rendered reasoning controls", function () {
 			await editor.showTaskWithId(taskId)
 			await editor.postStateToWebview()
 			await uiFixtureBarrier("reasoning-editor")
+			if (process.platform === "win32") {
+				const createFixture = async (text: string) => {
+					const task = await provider.createTask(text, undefined, undefined, {
+						preserveExisting: true,
+						apiConfiguration: configuration,
+						taskApprovalMode: "ask",
+						enableCheckpoints: false,
+					})
+					createdTaskIds.push(task.taskId)
+					return task
+				}
+				const steering = await createFixture("Windows steering fixture: wait for direction.")
+				await waitFor(() => !!heldResponse, { description: "held steering request" })
+				await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+				await provider.postStateToWebview()
+				const beforeQueue = requests.length
+				await uiFixtureBarrier("hotkeys-queue")
+				await waitFor(() =>
+					steering.messageQueueService.messages.some((m) => m.text.includes("Windows queue instruction")),
+				)
+				assert.equal(requests.length, beforeQueue, "Enter must queue without interrupting the held turn")
+				assert.equal(heldRequestCancelled, false)
+				await uiFixtureBarrier("hotkeys-steer")
+				await waitFor(() => requestMessages.some((m) => m.includes("Windows steering instruction")), {
+					description: "steered guidance on the next model request",
+				})
+				assert.equal(heldRequestCancelled, true, "Steering must cancel the previous model request")
+				await waitFor(() => completions >= 3 || steering.taskAsk?.ask === "completion_result")
+				if (completions < 3) steering.approveAsk()
+				await waitFor(() => completions >= 3)
+				assert.ok(
+					requestMessages.some(
+						(m) => m.includes("Windows steering instruction") && m.includes("Windows queue instruction"),
+					),
+					"Previously queued input must reach the model before task completion",
+				)
+				await uiFixtureBarrier("hotkeys-previous")
+				await waitFor(() => provider.getActiveTaskId() === taskId)
+				assert.equal(editor.getActiveTaskId(), taskId, "Sidebar navigation must preserve the editor selection")
+				await uiFixtureBarrier("hotkeys-next")
+				await waitFor(() => provider.getActiveTaskId() === steering.taskId)
+				const approval = await createFixture("Windows approval fixture: request command approval.")
+				await waitFor(() => approval.taskAsk?.ask === "command", { description: "pending command approval" })
+				await provider.showTaskWithId(steering.taskId)
+				await uiFixtureBarrier("hotkeys-attention")
+				await waitFor(() => provider.getActiveTaskId() === approval.taskId)
+				assert.equal(approval.taskAsk?.ask, "command", "Navigation must not approve the command")
+				await uiFixtureBarrier("hotkeys-new")
+				await waitFor(() => provider.getActiveTaskId() === undefined)
+				assert.ok(provider.getLiveTask(approval.taskId), "New task must preserve the pending task")
+				await uiFixtureBarrier("hotkeys-editor-next")
+				await waitFor(() => editor.getActiveTaskId() === steering.taskId)
+				assert.equal(provider.getActiveTaskId(), undefined, "Editor navigation must preserve the sidebar draft")
+				await uiFixtureBarrier("hotkeys-editor-previous")
+				await waitFor(() => editor.getActiveTaskId() === taskId)
+			}
 		} finally {
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, completed)
+			for (const id of createdTaskIds) await provider.removeTaskFromStack({ taskId: id }).catch(() => undefined)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
 			server.closeAllConnections()
 			await new Promise<void>((resolve) => server.close(() => resolve()))

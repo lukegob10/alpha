@@ -13,7 +13,7 @@ export interface TaskComposerDraft {
 	inputValue: string
 	selectedImages: string[]
 	editingQueuedMessage: { taskId: string; id: string; priorText: string; priorImages: string[] } | null
-	pendingQueueRequest: ComposerSubmission | null
+	pendingQueueRequest: (ComposerSubmission & { command?: "sendAndSteer" }) | null
 	pendingSteerRequest: { requestId: string; taskId: string; messageId: string } | null
 	pendingEditRequest: (ComposerSubmission & { messageId: string }) | null
 	pendingResumeRequest: ComposerSubmission | null

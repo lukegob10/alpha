@@ -2,6 +2,7 @@ import EventEmitter from "node:events"
 import path from "node:path"
 import os from "node:os"
 import fs from "node:fs/promises"
+import * as vscode from "vscode"
 
 import { type HistoryItem, AlphaCodeEventName, TaskLifecycleState } from "@alpha-code/types"
 
@@ -48,6 +49,7 @@ function makeProvider(storagePath: string) {
 	const store = new AgentControlStore(new InMemoryAgentControlPersistence())
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		_disposed: false,
+		renderContext: "sidebar",
 		taskSessions: TaskSessionRegistry.forGlobalStorage(storagePath, 3),
 		taskStack: [],
 		taskNavigationGeneration: 0,
@@ -118,8 +120,70 @@ const sessions = (provider: AlphaProvider) =>
 	(provider as unknown as { taskSessions: TaskSessionRegistry }).taskSessions
 const storage = () => path.join(os.tmpdir(), `alpha-host-ownership-${crypto.randomUUID()}`)
 
-afterEach(() => {
+describe("agent hotkey view ownership", () => {
+	beforeEach(() => vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined))
+
+	it("routes keyboard commands to the focused sidebar despite an active editor panel", async () => {
+		const sidebar = makeProvider(storage())
+		const editor = makeProvider(storage())
+		Object.assign(sidebar, { view: { visible: true } })
+		Object.assign(editor, { view: { visible: true, active: true }, renderContext: "editor" })
+		await sidebar.setWebviewFocused(true)
+		expect(AlphaProvider.getVisibleInstance()).toBe(sidebar)
+		expect(vscode.commands.executeCommand).toHaveBeenLastCalledWith("setContext", "alpha.focusedWebview", "sidebar")
+		await editor.setWebviewFocused(true)
+		await sidebar.setWebviewFocused(false)
+		expect(AlphaProvider.getVisibleInstance()).toBe(editor)
+		expect(vscode.commands.executeCommand).toHaveBeenLastCalledWith("setContext", "alpha.focusedWebview", "editor")
+	})
+
+	it("clears disposed focus and ignores focus notifications from hidden or disposed views", async () => {
+		const sidebar = makeProvider(storage())
+		Object.assign(sidebar, { view: { visible: false } })
+		vi.mocked(vscode.commands.executeCommand).mockClear()
+		await sidebar.setWebviewFocused(true)
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		Object.assign(sidebar, { view: { visible: true } })
+		await sidebar.setWebviewFocused(true)
+		Object.assign(sidebar, { _disposed: true })
+		;(sidebar as unknown as { clearWebviewResources(): void }).clearWebviewResources()
+		expect(vscode.commands.executeCommand).toHaveBeenLastCalledWith("setContext", "alpha.focusedWebview", undefined)
+		vi.mocked(vscode.commands.executeCommand).mockClear()
+		await sidebar.setWebviewFocused(true)
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		expect(AlphaProvider.getVisibleInstance()).toBeUndefined()
+	})
+
+	it("prefers the active editor panel over a more recently created visible view", () => {
+		const active = makeProvider(storage())
+		const inactive = makeProvider(storage())
+		Object.assign(active, { view: { visible: true, active: true } })
+		Object.assign(inactive, { view: { visible: true, active: false } })
+		expect(AlphaProvider.getVisibleInstance()).toBe(active)
+		Object.assign(active, { view: { visible: false, active: true } })
+		expect(AlphaProvider.getVisibleInstance()).toBe(inactive)
+	})
+
+	it("opens and focuses the next registered task without cancelling either view's work", async () => {
+		const directory = storage()
+		const sidebar = makeProvider(directory)
+		const panel = makeProvider(directory)
+		const first = makeTask("first")
+		const second = makeTask("second")
+		await sidebar.addTaskToStack(first)
+		await panel.addTaskToStack(second)
+		await sidebar.navigateTask(1)
+		expect(sidebar.getActiveTaskId()).toBe("second")
+		expect(panel.getActiveTaskId()).toBe("second")
+		expect(first.abortTask).not.toHaveBeenCalled()
+		expect(second.abortTask).not.toHaveBeenCalled()
+		expect(sidebar.postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "focusInput" })
+	})
+})
+
+afterEach(async () => {
 	for (const provider of created.splice(0)) {
+		await provider.setWebviewFocused(false)
 		instances.delete(provider)
 		sessions(provider).disposeView()
 	}

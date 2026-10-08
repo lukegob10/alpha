@@ -45,6 +45,12 @@ export const commandIds = [
 
 	"focusInput",
 	"acceptInput",
+	"sendAndSteer",
+	"decreaseReasoningEffort",
+	"increaseReasoningEffort",
+	"previousTask",
+	"nextTask",
+	"nextTaskNeedingInput",
 	"focusPanel",
 	"toggleAutoApprove",
 ] as const

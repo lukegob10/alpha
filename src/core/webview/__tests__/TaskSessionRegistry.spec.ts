@@ -63,6 +63,45 @@ const deferred = () => {
 	return { promise, resolve }
 }
 
+describe("task hotkey navigation", () => {
+	it("cycles in registration order, wraps, and leaves other views' focus untouched", () => {
+		const { sidebar, panel } = createHostViews()
+		sidebar.register(createTask("z-first"))
+		sidebar.register(createTask("a-second"))
+		panel.register(createTask("m-third"))
+		sidebar.focus("z-first")
+		expect(sidebar.getAdjacentTaskId(1)).toBe("a-second")
+		expect(sidebar.getAdjacentTaskId(-1)).toBe("m-third")
+		sidebar.focus("m-third")
+		expect(sidebar.getAdjacentTaskId(1)).toBe("z-first")
+		expect(panel.getActiveTaskId()).toBe("m-third")
+		sidebar.clearFocus()
+		expect(sidebar.getAdjacentTaskId(1)).toBe("z-first")
+		expect(sidebar.getAdjacentTaskId(-1)).toBe("m-third")
+	})
+
+	it("skips managed children, aborted tasks, and completion reviews when seeking input", () => {
+		const registry = new TaskSessionRegistry()
+		registry.register(createTask("running"))
+		registry.register(
+			createTask("child", { taskKind: "subagent", taskAsk: { ts: 2, type: "ask", ask: "followup" } }),
+		)
+		registry.register(createTask("aborted", { abort: true }))
+		registry.register(createTask("review", { taskAsk: { ts: 2, type: "ask", ask: "completion_result" } }))
+		registry.register(createTask("question", { taskAsk: { ts: 2, type: "ask", ask: "followup" } }))
+		registry.register(createTask("approval", { taskAsk: { ts: 2, type: "ask", ask: "tool" } }))
+		registry.focus("running")
+		expect(registry.getAdjacentTaskId(1)).toBe("review")
+		expect(registry.getAdjacentTaskId(1, true)).toBe("question")
+		registry.focus("question")
+		expect(registry.getAdjacentTaskId(1, true)).toBe("approval")
+		registry.markLifecycle("question", TaskLifecycleState.Completed)
+		registry.markLifecycle("approval", TaskLifecycleState.Completed)
+		expect(registry.getAdjacentTaskId(1, true)).toBeUndefined()
+		expect(registry.getActiveTaskId()).toBe("question")
+	})
+})
+
 describe("host task ownership", () => {
 	it("reserves prepared child capacity across views and roots before any child starts", () => {
 		const { sidebar, panel } = createHostViews(3)
