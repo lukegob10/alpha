@@ -92,8 +92,8 @@ describe("VertexGeminiEmbedder", () => {
 			])
 			await vitest.runAllTimersAsync()
 			await responses
-			// The 429 at one second retains the provider's five-second fallback backoff.
-			expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 2000, 3000, 6000])
+			// The 429 pauses every queued batch/query for the provider's five-second cooldown.
+			expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 6000, 7000, 8000])
 			expect(mockForceRefreshToken).toHaveBeenCalledOnce()
 		},
 	)
@@ -347,6 +347,22 @@ describe("VertexGeminiEmbedder", () => {
 			contents: ["test"],
 			config: { taskType: "RETRIEVAL_DOCUMENT" },
 		})
+	})
+
+	it("rejects a late SDK response after cancellation and forwards the abort signal", async () => {
+		const controller = new AbortController()
+		mockEmbedContent.mockImplementation(async () => {
+			controller.abort()
+			return { embeddings: [{ values: [1, 0] }] }
+		})
+		const embedder = new VertexGeminiEmbedder({ apiProvider: "vertex", projectId: "project", location: "global" })
+		await expect(
+			embedder.createEmbeddings(["source"], undefined, "document", controller.signal),
+		).rejects.toMatchObject({ name: "AbortError" })
+		expect(mockEmbedContent).toHaveBeenCalledOnce()
+		expect(mockEmbedContent).toHaveBeenCalledWith(
+			expect.objectContaining({ config: expect.objectContaining({ abortSignal: controller.signal }) }),
+		)
 	})
 	it.each([
 		{ model: "gemini-embedding-001", concurrency: 8 },

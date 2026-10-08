@@ -50,6 +50,23 @@ describe("index representation", () => {
 			}),
 		)
 	})
+	it("separates providers and ignores credentials and Vertex settings for Gemini indexes", () => {
+		const config: CodeIndexConfig = {
+			isConfigured: true,
+			embedderProvider: "gemini",
+			modelId: "gemini-embedding-001",
+		}
+		const identity = getIndexIdentity(config)
+		expect(identity).not.toBe(getIndexIdentity({ ...config, embedderProvider: "vertex" }))
+		expect(identity).not.toBe(getIndexIdentity({ ...config, modelId: "gemini-embedding-2" }))
+		expect(identity).toBe(
+			getIndexIdentity({
+				...config,
+				geminiApiKey: "rotated-secret",
+				vertexOptions: { gatewayBaseUrl: "https://example.com", modelRoutingMap: "{}" },
+			}),
+		)
+	})
 	it("rebuilds gateway indexes after restoring raw inputs without invalidating native Vertex indexes", () => {
 		const config: CodeIndexConfig = {
 			isConfigured: true,

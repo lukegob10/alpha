@@ -2666,6 +2666,12 @@ export const webviewMessageHandler = async (
 						settings.codebaseIndexVertexJsonCredentials,
 					)
 				}
+				if (settings.codebaseIndexGeminiApiKey !== undefined) {
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexGeminiApiKey",
+						settings.codebaseIndexGeminiApiKey,
+					)
+				}
 
 				// Send success response first - settings are saved regardless of validation
 				await provider.postMessageToWebview({
@@ -2797,12 +2803,14 @@ export const webviewMessageHandler = async (
 			const hasVertexJsonCredentials = !!(await provider.context.secrets.get(
 				"codebaseIndexVertexJsonCredentials",
 			))
+			const hasGeminiApiKey = !!(await provider.context.secrets.get("codebaseIndexGeminiApiKey"))
 
 			provider.postMessageToWebview({
 				type: "codeIndexSecretStatus",
 				values: {
 					hasQdrantApiKey,
 					hasVertexJsonCredentials,
+					hasGeminiApiKey,
 				},
 			})
 			break

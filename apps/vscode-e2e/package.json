@@ -21,6 +21,7 @@
 		"test:smoke:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:smoke:1250:run",
 		"test:cross-task:1250": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file cross-task-orchestration.acceptance.test",
 		"test:reasoning:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runReasoningUi.js",
+		"test:composer-ui:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runComposerUi.js",
 		"test:history-ui:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runHistoryUi.js",
 		"test:task-navigation:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file task-navigation-latency.test",
 		"test:task-navigation-ui:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTaskNavigationUi.js",

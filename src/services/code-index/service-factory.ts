@@ -13,6 +13,7 @@ import { Package } from "../../shared/package"
 import { AlphaIgnoreController } from "../../core/ignore/AlphaIgnoreController"
 
 import { VertexGeminiEmbedder } from "./embedders/vertex"
+import { GeminiEmbedder } from "./embedders/gemini"
 import { QdrantVectorStore } from "./vector-store/qdrant-client"
 import { LanceDbVectorStore } from "./vector-store/lancedb-client"
 import { codeParser, DirectoryScanner, FileWatcher } from "./processors"
@@ -37,9 +38,13 @@ export class CodeIndexServiceFactory {
 	public createEmbedder(): IEmbedder {
 		const config = this.configManager.getConfig()
 
-		if (!this.configManager.isFeatureConfigured || !config.vertexOptions) {
+		if (!this.configManager.isFeatureConfigured) {
 			throw new Error(this.configManager.configurationError ?? t("embeddings:serviceFactory.vertexConfigMissing"))
 		}
+		if (config.embedderProvider === "gemini") {
+			return new GeminiEmbedder(config.geminiApiKey ?? "", config.modelId, config.embeddingRateLimitSeconds)
+		}
+		if (!config.vertexOptions) throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 
 		return new VertexGeminiEmbedder(config.vertexOptions, config.modelId, config.embeddingRateLimitSeconds)
 	}
@@ -74,14 +79,14 @@ export class CodeIndexServiceFactory {
 	public createVectorStore(): IVectorStore {
 		const config = this.configManager.getConfig()
 
-		const defaultModel = getDefaultModelId("vertex")
+		const defaultModel = getDefaultModelId(config.embedderProvider)
 		// Use the embedding model ID from config, not the chat model IDs
 		const modelId = config.modelId ?? defaultModel
 
 		let vectorSize: number | undefined
 
 		// First try to get the model-specific dimension from profiles
-		vectorSize = getModelDimension("vertex", modelId)
+		vectorSize = getModelDimension(config.embedderProvider, modelId)
 
 		// Only use manual dimension if model doesn't have a built-in dimension
 		if (!vectorSize && config.modelDimension && config.modelDimension > 0) {
@@ -90,7 +95,10 @@ export class CodeIndexServiceFactory {
 
 		if (vectorSize === undefined || vectorSize <= 0) {
 			throw new Error(
-				t("embeddings:serviceFactory.vectorDimensionNotDetermined", { modelId, provider: "vertex" }),
+				t("embeddings:serviceFactory.vectorDimensionNotDetermined", {
+					modelId,
+					provider: config.embedderProvider,
+				}),
 			)
 		}
 

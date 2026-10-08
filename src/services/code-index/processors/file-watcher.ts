@@ -100,7 +100,9 @@ export class FileWatcher implements IFileWatcher {
 				this.batchSegmentThreshold = BATCH_SEGMENT_THRESHOLD
 			}
 		}
-		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
+		this.embeddingRateLimiter = new EmbeddingRateLimiter(
+			this.embedder?.embedderInfo.managesRateLimit ? 0 : (embeddingRateLimitSeconds ?? 0) * 1000,
+		)
 	}
 
 	/**

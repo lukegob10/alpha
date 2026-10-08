@@ -3,16 +3,16 @@ import { CodeIndexConfigManager } from "../config-manager"
 
 type StoredState = Record<string, unknown> | undefined
 
-function createContextProxy(initial: StoredState, providerSettings?: Record<string, unknown>) {
+function createContextProxy(
+	initial: StoredState,
+	providerSettings?: Record<string, unknown>,
+	secrets: Record<string, string> = {},
+) {
 	let state = initial
 	return {
 		getGlobalState: vi.fn(() => state),
 		getProviderSettings: vi.fn(() => providerSettings),
-		getSecret: vi.fn((key: string) => {
-			if (key === "codeIndexQdrantApiKey") return ""
-			if (key === "codebaseIndexVertexJsonCredentials") return ""
-			return ""
-		}),
+		getSecret: vi.fn((key: string) => secrets[key] ?? ""),
 		refreshSecrets: vi.fn(async () => undefined),
 		setState(next: StoredState) {
 			state = next
@@ -67,6 +67,36 @@ describe("CodeIndexConfigManager", () => {
 		expect(manager.currentEmbedderProvider).toBe("vertex")
 		expect(manager.isFeatureConfigured).toBe(false)
 		expect(manager.configurationError).toBeTruthy()
+	})
+
+	it("loads Gemini only with its dedicated indexing secret", () => {
+		const config = vertexConfig({ codebaseIndexEmbedderProvider: "gemini" })
+		const chat = { apiProvider: "gemini", geminiApiKey: "chat-secret" }
+		const missing = new CodeIndexConfigManager(createContextProxy(config, chat) as any)
+		expect(missing.isFeatureConfigured).toBe(false)
+		expect(missing.configurationError).toBeTruthy()
+		const context = createContextProxy(config, chat, { codebaseIndexGeminiApiKey: "index-secret" })
+		const configured = new CodeIndexConfigManager(context as any)
+		expect(configured.isFeatureConfigured).toBe(true)
+		expect(configured.legacyProvider).toBeUndefined()
+		expect(configured.currentEmbedderProvider).toBe("gemini")
+		expect(configured.currentModelDimension).toBe(3072)
+		expect(configured.getConfig().geminiApiKey).toBe("index-secret")
+	})
+
+	it("restarts on Gemini provider, model, and secret changes, but ignores Vertex edits", async () => {
+		const secrets = { codebaseIndexGeminiApiKey: "first" }
+		const context = createContextProxy(vertexConfig(), undefined, secrets)
+		const manager = new CodeIndexConfigManager(context as any)
+		const gemini = vertexConfig({ codebaseIndexEmbedderProvider: "gemini" })
+		context.setState(gemini)
+		expect((await manager.loadConfiguration()).requiresRestart).toBe(true)
+		context.setState({ ...gemini, codebaseIndexVertexProjectId: "unrelated-project" })
+		expect((await manager.loadConfiguration()).requiresRestart).toBe(false)
+		context.setState({ ...gemini, codebaseIndexEmbedderModelId: "gemini-embedding-2" })
+		expect((await manager.loadConfiguration()).requiresRestart).toBe(true)
+		secrets.codebaseIndexGeminiApiKey = "rotated"
+		expect((await manager.loadConfiguration()).requiresRestart).toBe(true)
 	})
 
 	it("does not treat a missing provider in a persisted config as Vertex", () => {

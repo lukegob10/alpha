@@ -2,9 +2,9 @@
  * Provider used to create code-index embeddings.
  *
  * Chat provider selection is independent from this contract. Code indexing
- * uses the GCP Vertex AI embedding API exclusively.
+ * supports Vertex AI and the Gemini Developer API independently.
  */
-export type EmbedderProvider = "vertex"
+export type EmbedderProvider = "vertex" | "gemini"
 
 export interface EmbeddingModelProfile {
 	dimension: number

@@ -966,6 +966,12 @@ export const ChatTextArea = memo(
 				isMouseDownOnMenuRef.current = false
 			}, [])
 
+			const syncHighlightScroll = useCallback(() => {
+				if (!textAreaRef.current || !highlightLayerRef.current) return
+				highlightLayerRef.current.scrollTop = textAreaRef.current.scrollTop
+				highlightLayerRef.current.scrollLeft = textAreaRef.current.scrollLeft
+			}, [])
+
 			const updateHighlights = useCallback(() => {
 				if (!textAreaRef.current || !highlightLayerRef.current) return
 
@@ -1003,9 +1009,8 @@ export const ChatTextArea = memo(
 
 				highlightLayerRef.current.innerHTML = processedText
 
-				highlightLayerRef.current.scrollTop = textAreaRef.current.scrollTop
-				highlightLayerRef.current.scrollLeft = textAreaRef.current.scrollLeft
-			}, [commands])
+				syncHighlightScroll()
+			}, [commands, syncHighlightScroll])
 
 			useLayoutEffect(() => {
 				updateHighlights()
@@ -1239,7 +1244,8 @@ export const ChatTextArea = memo(
 									"flex-col-reverse",
 									"min-h-0",
 									isNewTask ? "overflow-visible" : "overflow-hidden",
-									"rounded-xl",
+									// The outer composer owns rounding; text scrolls through a square viewport.
+									"rounded-none",
 								)}>
 								<div
 									ref={highlightLayerRef}
@@ -1266,7 +1272,7 @@ export const ChatTextArea = memo(
 										isEditMode ? "pr-20" : isNewTask ? "pr-10" : "pr-9",
 										"z-10",
 										"forced-color-adjust-none",
-										"rounded-xl",
+										"rounded-none",
 									)}
 									style={{
 										color: "transparent",
@@ -1292,10 +1298,7 @@ export const ChatTextArea = memo(
 											? `${contextMenuId}-option-${selectedMenuIndex}`
 											: undefined
 									}
-									onChange={(e) => {
-										handleInputChange(e)
-										updateHighlights()
-									}}
+									onChange={handleInputChange}
 									onFocus={() => setIsFocused(true)}
 									onKeyDown={(e) => {
 										// Handle ESC to cancel in edit mode
@@ -1343,7 +1346,7 @@ export const ChatTextArea = memo(
 										"will-change-background-color",
 										isNewTask ? "min-h-[98px]" : "min-h-[94px]",
 										"box-border",
-										"rounded-xl",
+										"rounded-none",
 										"resize-none",
 										"overflow-x-hidden",
 										"overflow-y-auto",
@@ -1353,7 +1356,7 @@ export const ChatTextArea = memo(
 										"scrollbar-none",
 										"scrollbar-hide",
 									)}
-									onScroll={() => updateHighlights()}
+									onScroll={syncHighlightScroll}
 								/>
 
 								<div

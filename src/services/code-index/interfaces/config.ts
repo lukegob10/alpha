@@ -13,6 +13,7 @@ export interface CodeIndexConfig {
 	modelId?: string
 	modelDimension?: number // Optional override for custom Vertex models
 	vertexOptions?: ProviderSettings
+	geminiApiKey?: string
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string
@@ -36,6 +37,7 @@ export type PreviousConfigSnapshot = {
 	vertexRegion?: string
 	vertexKeyFile?: string
 	vertexJsonCredentials?: string
+	geminiApiKey?: string
 	vertexGatewayBaseUrl?: string
 	vertexGatewayCaBundlePath?: string
 	vertexGatewayHelixCommand?: string

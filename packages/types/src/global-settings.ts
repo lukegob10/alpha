@@ -308,6 +308,7 @@ export const SECRET_STATE_KEYS = [
 	"openAiApiKey",
 	"codeIndexQdrantApiKey",
 	"codebaseIndexVertexJsonCredentials",
+	"codebaseIndexGeminiApiKey",
 ] as const
 
 type ProviderSecretKey = (typeof SECRET_STATE_KEYS)[number]

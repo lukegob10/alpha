@@ -11,7 +11,7 @@ export const CODE_INDEX_VERSION = 2
 
 /** Fingerprints representation and model identity, never credentials. */
 export function getIndexIdentity(config: CodeIndexConfig): string {
-	const vertex = config.vertexOptions
+	const vertex = config.embedderProvider === "vertex" ? config.vertexOptions : undefined
 	const configuredRoutes = vertex?.modelRoutingMap ?? vertex?.vertexGatewayModelRoutingMap
 	let routes: unknown = configuredRoutes
 	if (typeof routes === "string") {

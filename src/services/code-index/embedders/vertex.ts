@@ -15,9 +15,15 @@ import pLimit from "p-limit"
 import { t } from "../../../i18n"
 import { HelixTokenManager, type HelixParseMode } from "../../../api/providers/utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "../../../api/providers/utils/vertex-gateway-transport"
-import { GEMINI_MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS, MAX_BATCH_RETRIES } from "../constants"
+import { GEMINI_MAX_ITEM_TOKENS, MAX_BATCH_RETRIES } from "../constants"
 import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
-import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
+import { EmbeddingRateLimiter, waitForEmbeddingDelay } from "../shared/embedding-rate-limiter"
+import {
+	EmbeddingRequestError,
+	getEmbeddingStatus,
+	getEmbeddingRetryDelayMs,
+	isRetryableEmbeddingError,
+} from "../shared/embedding-retry"
 import { formatEmbeddingError, withValidationErrorHandling } from "../shared/validation-helpers"
 
 type VertexGatewayRouteTarget = {
@@ -136,7 +142,9 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		texts: string[],
 		model?: string,
 		purpose: "document" | "query" = "document",
+		signal?: AbortSignal,
 	): Promise<EmbeddingResponse> {
+		signal?.throwIfAborted()
 		const selectedModel = model || this.modelId
 		const maxItemTokens = this.getMaxItemTokens(selectedModel)
 		const validTexts: string[] = []
@@ -175,6 +183,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		const workers = await Promise.allSettled(
 			Array.from({ length: Math.min(this.requestConcurrency, validTexts.length) }, async () => {
 				while (!failed && nextIndex < validTexts.length) {
+					signal?.throwIfAborted()
 					const index = nextIndex++
 					try {
 						responses[index] = await this.embeddingRequests(() =>
@@ -183,6 +192,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 								[estimatedTokenCounts[index]],
 								selectedModel,
 								purpose,
+								signal,
 							),
 						)
 					} catch (error) {
@@ -233,6 +243,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		return {
 			name: "vertex",
 			preferredBatchSize: this.requestConcurrency,
+			managesRateLimit: true,
 		}
 	}
 
@@ -507,7 +518,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	}
 
 	private isGatewayAuthFailure(error: unknown): boolean {
-		const status = this.extractStatusCode(error)
+		const status = getEmbeddingStatus(error)
 		if (status === 401 || status === 403) {
 			return true
 		}
@@ -520,40 +531,6 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		)
 	}
 
-	private extractStatusCode(error: unknown): number | undefined {
-		if (!error || typeof error !== "object") {
-			return undefined
-		}
-
-		const errorRecord = error as Record<string, unknown>
-		const nestedResponse =
-			errorRecord.response && typeof errorRecord.response === "object"
-				? (errorRecord.response as Record<string, unknown>)
-				: undefined
-
-		const possibleStatusValues = [
-			errorRecord.status,
-			errorRecord.statusCode,
-			errorRecord.code,
-			nestedResponse?.status,
-		]
-
-		for (const value of possibleStatusValues) {
-			if (typeof value === "number" && Number.isFinite(value)) {
-				return value
-			}
-
-			if (typeof value === "string") {
-				const parsed = Number.parseInt(value, 10)
-				if (Number.isFinite(parsed)) {
-					return parsed
-				}
-			}
-		}
-
-		return undefined
-	}
-
 	private getMaxItemTokens(modelId: string): number {
 		return modelId === "gemini-embedding-2" ? 8192 : GEMINI_MAX_ITEM_TOKENS
 	}
@@ -563,12 +540,14 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		estimatedTokenCounts: number[],
 		selectedModel: string,
 		purpose: "document" | "query",
+		signal?: AbortSignal,
 	): Promise<EmbeddingResponse> {
 		let didRetryForGatewayAuth = false
 		let lastError: unknown
 		let requestAttempts = 0
 
 		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
+			signal?.throwIfAborted()
 			const requestContext = await this.getRequestContext(selectedModel)
 			// Preserve the gateway's pre-2.1.34 predict payload, including opaque model aliases.
 			// Native Google task types/instructions are not part of that gateway contract.
@@ -581,16 +560,19 @@ export class VertexGeminiEmbedder implements IEmbedder {
 				config: {
 					...(requestContext.httpOptions ? { httpOptions: requestContext.httpOptions } : {}),
 					...input.config,
+					...(signal ? { abortSignal: signal } : {}),
 				},
 			}
 
 			try {
-				// Scanner delays apply to whole batches; split requests and retries need their own shared bound.
-				await this.embeddingRateLimiter.wait()
+				// Gate actual request starts, including retries and calls from concurrent index consumers.
+				await this.embeddingRateLimiter.wait(signal)
 				requestAttempts++
 				const response = await requestContext.client.models.embedContent(params)
+				signal?.throwIfAborted()
 				return this.createEmbeddingResponse(response, estimatedTokenCounts)
 			} catch (error) {
+				signal?.throwIfAborted()
 				lastError = error
 
 				if (!didRetryForGatewayAuth && (await this.shouldRetryWithRefreshedGatewayToken(error))) {
@@ -600,8 +582,10 @@ export class VertexGeminiEmbedder implements IEmbedder {
 				}
 
 				const hasMoreAttempts = attempt < MAX_BATCH_RETRIES - 1
-				if (hasMoreAttempts && this.isRetryableEmbeddingError(error)) {
-					await new Promise((resolve) => setTimeout(resolve, this.getRetryDelayMs(error, attempt)))
+				const retryDelayMs = getEmbeddingRetryDelayMs(error, attempt)
+				if (getEmbeddingStatus(error) === 429) this.embeddingRateLimiter.defer(retryDelayMs)
+				if (hasMoreAttempts && isRetryableEmbeddingError(error)) {
+					await waitForEmbeddingDelay(retryDelayMs, signal)
 					continue
 				}
 
@@ -611,11 +595,11 @@ export class VertexGeminiEmbedder implements IEmbedder {
 					location: "VertexGeminiEmbedder:createEmbeddings",
 					attempt: requestAttempts,
 				})
-				throw formatEmbeddingError(error, requestAttempts)
+				throw new EmbeddingRequestError(formatEmbeddingError(error, requestAttempts))
 			}
 		}
 
-		throw formatEmbeddingError(lastError, requestAttempts)
+		throw new EmbeddingRequestError(formatEmbeddingError(lastError, requestAttempts))
 	}
 
 	private createEmbeddingResponse(response: EmbedContentResponse, estimatedTokenCounts: number[]): EmbeddingResponse {
@@ -639,52 +623,5 @@ export class VertexGeminiEmbedder implements IEmbedder {
 				totalTokens,
 			},
 		}
-	}
-
-	private isRetryableEmbeddingError(error: unknown): boolean {
-		const status = this.extractStatusCode(error)
-		if (status === 429 || (status !== undefined && status >= 500)) {
-			return true
-		}
-
-		const message = error instanceof Error ? error.message : String(error)
-		return /rate limit|too many requests|temporarily unavailable|timeout/i.test(message)
-	}
-
-	private getRetryDelayMs(error: unknown, attempt: number): number {
-		const retryAfterMs = this.extractRetryAfterMs(error)
-		if (retryAfterMs !== undefined) {
-			return retryAfterMs
-		}
-
-		const status = this.extractStatusCode(error)
-		const baseDelayMs = status === 429 ? 5000 : INITIAL_RETRY_DELAY_MS
-		return baseDelayMs * Math.pow(2, attempt)
-	}
-
-	private extractRetryAfterMs(error: unknown): number | undefined {
-		if (!error || typeof error !== "object") {
-			return undefined
-		}
-
-		const errorRecord = error as Record<string, any>
-		const headers = errorRecord.response?.headers ?? errorRecord.headers
-		const retryAfter = typeof headers?.get === "function" ? headers.get("retry-after") : headers?.["retry-after"]
-
-		if (typeof retryAfter !== "string") {
-			return undefined
-		}
-
-		const seconds = Number.parseFloat(retryAfter)
-		if (Number.isFinite(seconds) && seconds >= 0) {
-			return seconds * 1000
-		}
-
-		const retryAt = Date.parse(retryAfter)
-		if (Number.isFinite(retryAt)) {
-			return Math.max(0, retryAt - Date.now())
-		}
-
-		return undefined
 	}
 }

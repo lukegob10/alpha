@@ -84,6 +84,34 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	describe("composer scrolling", () => {
+		it.each(["default", "newTask"] as const)("keeps the %s text viewport square", (appearance) => {
+			render(<ChatTextArea {...defaultProps} appearance={appearance} />)
+			const textarea = screen.getByRole("textbox")
+			const highlights = screen.getByTestId("highlight-layer")
+			for (const viewport of [textarea, highlights, textarea.parentElement!]) {
+				expect(viewport).toHaveClass("rounded-none")
+				expect(viewport).not.toHaveClass("rounded-xl")
+			}
+		})
+
+		it("synchronizes scrolling without replacing highlighted text", () => {
+			render(<ChatTextArea {...defaultProps} inputValue={"@/file.ts\n".repeat(30)} />)
+			const textarea = screen.getByRole("textbox")
+			const highlights = screen.getByTestId("highlight-layer")
+			const mark = highlights.querySelector("mark")
+			expect(mark).not.toBeNull()
+			for (const scrollTop of [21, 84, 210, 42, 0]) {
+				textarea.scrollTop = scrollTop
+				textarea.scrollLeft = 7
+				fireEvent.scroll(textarea)
+				expect(highlights.scrollTop).toBe(scrollTop)
+				expect(highlights.scrollLeft).toBe(7)
+				expect(highlights.querySelector("mark")).toBe(mark)
+			}
+		})
+	})
+
 	describe("new task appearance", () => {
 		it("labels the existing settings and removes the helper text without changing Enter submission", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)
