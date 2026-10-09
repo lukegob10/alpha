@@ -6,6 +6,7 @@ import { AlphaProvider } from "../AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task } from "../../task/Task"
 import type { HistoryItem, ProviderName } from "@alpha-code/types"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 
 vi.mock("vscode", () => ({
 	ExtensionContext: vi.fn(),
@@ -286,6 +287,12 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+
+		// Mode-switch tests mock storage; exercise the real store API through
+		// in-memory persistence while filesystem ownership is tested separately.
+		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
+			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
+		)
 
 		if (!TelemetryService.hasInstance()) {
 			TelemetryService.createInstance([])
