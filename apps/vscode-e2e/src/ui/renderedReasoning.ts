@@ -138,8 +138,12 @@ export async function exerciseRenderedReasoning(
 						},
 						workbenchSession,
 					)
-					if (stage === "hotkeys-queue") await key("Enter", "Enter", 13)
-					else await key("s", "KeyS", 83, 3)
+					if (stage === "hotkeys-queue") {
+						await focus(
+							'button[aria-label="Add message to queue (will be sent after current task completes)"]',
+						)
+						await key(" ", "Space", 32)
+					} else await key("Enter", "Enter", 13)
 					await check("d.querySelector('textarea').value===''")
 				} else if (stage.endsWith("previous") || stage.endsWith("next")) {
 					const previous = stage.endsWith("previous")

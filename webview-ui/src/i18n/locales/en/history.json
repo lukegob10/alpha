@@ -9,6 +9,22 @@
 		"month": "{{count}}mo",
 		"year": "{{count}}y"
 	},
+	"status": {
+		"complete": "Complete",
+		"failed": "Failed",
+		"closing": "Closing",
+		"closed": "Closed",
+		"idle": "Idle",
+		"needsInput": "Needs input",
+		"waiting": "Waiting",
+		"starting": "Starting",
+		"running": "Running",
+		"active": "Active",
+		"indicator": "Task status: {{status}}",
+		"selectedTask": "Selected task: {{status}}",
+		"backgroundTask": "Background task: {{status}}",
+		"withReason": "{{status}} ({{reason}})"
+	},
 	"history": "History",
 	"exitSelectionMode": "Exit Selection Mode",
 	"enterSelectionMode": "Enter Selection Mode",

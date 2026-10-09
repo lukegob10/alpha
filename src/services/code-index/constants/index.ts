@@ -26,3 +26,7 @@ export const BATCH_PROCESSING_CONCURRENCY = 10
 
 /**Gemini Embedder */
 export const GEMINI_MAX_ITEM_TOKENS = 2048
+
+/** Bound a single network attempt; quota pacing is handled separately. */
+export const EMBEDDING_REQUEST_TIMEOUT_MS = 30_000
+export const MAX_REUSABLE_FILE_POINTS = 2048

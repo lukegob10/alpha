@@ -1416,12 +1416,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
 				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
 			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
-				return postQueuedMessage(
-					text,
-					images,
-					asyncUserInputMessageTs,
-					steer && isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput,
-				)
+				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
 			}
 
 			const isCurrentFollowUpResponse =
@@ -1444,12 +1439,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
 
 			if (shouldQueueMessage) {
-				return postQueuedMessage(
-					text,
-					images,
-					asyncUserInputMessageTs,
-					steer && isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput,
-				)
+				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
 			}
 
 			// Composer operations apply only at an eligible idle boundary. Active
@@ -1538,7 +1528,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			t,
 			markFollowUpAsAnswered,
 			isTurnActive,
-			effectiveVisibleLiveTask?.isWaitingForInput,
+			isStreaming,
 			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
@@ -1627,8 +1617,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [visibleTaskPayload, setDidClickCancel])
 
 	const handleComposerSend = useCallback(() => {
-		handleSendMessage(inputValue, selectedImages)
-	}, [handleSendMessage, inputValue, selectedImages])
+		handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
+	}, [handleSendMessage, inputValue, selectedImages, isManagedSubagent])
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
@@ -3109,7 +3099,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (hasInput) {
 				// The host Enter shortcut and textarea submit share input routing.
 				// Approval buttons remain explicit actions when no draft is present.
-				if (!isProfileDisabled && !isCondensing) handleSendMessage(inputValue, selectedImages)
+				if (!isProfileDisabled && !isCondensing)
+					handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
 				return
 			}
 

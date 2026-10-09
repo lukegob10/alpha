@@ -1331,6 +1331,23 @@ describe("sub-agent context capture", () => {
 		expect(isValidSubagentContextManifest(first.manifest)).toBe(true)
 	})
 
+	it.each(["none", "all", "2"] as const)(
+		"retains captured skills and authority independently of fork_turns=%s",
+		(forkTurns) => {
+			const captured = capture(forkTurns)
+			const reference = capture("all")
+			expect(captured.manifest.skills).toEqual(reference.manifest.skills)
+			expect(captured.manifest.instructions).toEqual(reference.manifest.instructions)
+			expect(captured.manifest.runtimePolicy).toEqual(reference.manifest.runtimePolicy)
+			const restored = subagentContextManifestSchema.parse(
+				JSON.parse(serializeSubagentContextManifest(captured.manifest)),
+			)
+			expect(restored.skills).toEqual(reference.manifest.skills)
+			expect(restored.runtimePolicy).toEqual(reference.manifest.runtimePolicy)
+			expect(restored.skills).toMatchObject([{ name: "typescript", path: "/skills/typescript/SKILL.md" }])
+		},
+	)
+
 	it("stores only compact refs and digests and serializes no captured secrets", () => {
 		const secret = "sk-secret-value-never-persist"
 		const result = captureSubagentContext({

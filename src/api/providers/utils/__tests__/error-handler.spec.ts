@@ -78,6 +78,91 @@ describe("handleProviderError", () => {
 		})
 	})
 
+	describe("retry advice preservation", () => {
+		it.each([
+			{ headers: { "retry-after": "60" }, expected: 60_000 },
+			{ headers: { "Retry-After": "12" }, expected: 12_000 },
+			{ headers: new Headers({ "retry-after": "3" }), expected: 3_000 },
+			{ error: { headers: { "retry-after": "5" } }, headers: { "retry-after": "12" }, expected: 5_000 },
+			{ error: { headers: { "retry-after": "invalid" } }, headers: { "retry-after": "12" }, expected: 12_000 },
+			{ error: { headers: { "retry-after": "0" } }, headers: { "retry-after": "12" }, expected: 0 },
+		])("normalizes server advice without retaining headers (%j)", ({ expected, ...metadata }) => {
+			const error = Object.assign(new Error("Rate limited"), { status: 429, ...metadata })
+			const result = handleProviderError(error, providerName)
+
+			expect(result).toMatchObject({ status: 429, retryAfterMs: expected })
+			expect(result).not.toHaveProperty("headers")
+			expect(result).not.toHaveProperty("error")
+		})
+
+		it("preserves explicit retry metadata through repeated wrapping", () => {
+			const error = Object.assign(new Error("Do not replay"), {
+				retryAfterMs: 60_000,
+				retryable: false,
+				retryCategory: "rate-limit",
+				headers: { "retry-after": "12" },
+			})
+			const result = handleOpenAIError(handleProviderError(error, providerName), "OpenAI")
+
+			expect(result).toMatchObject({ retryAfterMs: 60_000, retryable: false, retryCategory: "rate-limit" })
+		})
+
+		it("normalizes plain error objects without logging or retaining their headers", () => {
+			const log = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				const error = { status: 503, headers: { "retry-after": "5", authorization: "secret-fixture" } }
+				const result = handleProviderError(error, providerName)
+
+				expect(result).toMatchObject({ status: 503, retryAfterMs: 5_000 })
+				expect(result).not.toHaveProperty("headers")
+				expect(JSON.stringify(log.mock.calls)).not.toContain("secret-fixture")
+			} finally {
+				log.mockRestore()
+			}
+		})
+
+		it.each([NaN, Infinity, -1, "5000"])(
+			"ignores invalid explicit advice %s and uses valid headers",
+			(retryAfterMs) => {
+				const error = Object.assign(new Error("Rate limited"), {
+					retryAfterMs,
+					headers: { "retry-after": "2" },
+				})
+				expect(handleProviderError(error, providerName)).toMatchObject({ retryAfterMs: 2_000 })
+			},
+		)
+
+		it("does not infer permission to retry from the presence of advice", () => {
+			const error = Object.assign(new Error("Request failed"), { headers: { "retry-after": "2" } })
+			const result = handleProviderError(error, providerName)
+			expect(result).not.toHaveProperty("retryable")
+			expect(result).not.toHaveProperty("retryCategory")
+		})
+
+		it("retains a provider abort identity even when the message does not name cancellation", () => {
+			const error = Object.assign(new Error("Operation stopped"), { name: "AbortError", retryAfterMs: 5_000 })
+			expect(handleProviderError(error, providerName)).toMatchObject({ name: "AbortError", retryAfterMs: 5_000 })
+		})
+		it("retains cancellation and retry restrictions from plain error objects", () => {
+			expect(handleProviderError({ name: "AbortError", retryable: false }, providerName)).toMatchObject({
+				name: "AbortError",
+				retryable: false,
+			})
+		})
+		it("does not copy malformed retry metadata", () => {
+			const error = Object.assign(new Error("Request failed"), {
+				retryable: "true",
+				retryCategory: "unknown-category",
+				retryAfterMs: Infinity,
+				headers: { "retry-after": "invalid" },
+			})
+			const result = handleProviderError(error, providerName)
+			expect(result).not.toHaveProperty("retryable")
+			expect(result).not.toHaveProperty("retryCategory")
+			expect(result).not.toHaveProperty("retryAfterMs")
+		})
+	})
+
 	describe("custom message prefix", () => {
 		it("should use custom message prefix when provided", () => {
 			const error = new Error("Stream failed")

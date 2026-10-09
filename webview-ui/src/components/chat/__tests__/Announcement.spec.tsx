@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.2",
+		version: "3.1.9",
 	},
 }))
 
@@ -37,13 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.2" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.9" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.2")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.9")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
+				"Alpha v3.1.9 keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
 			),
 		).toBeInTheDocument()
 	})
@@ -54,19 +54,23 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
+				"Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Recover from repeated search-only steps by consolidating evidence and taking a concrete next action.",
+				"Send a message during an active response to steer the conversation sooner, while keeping queued input safe.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("See a subtle pulse on folded command and edit traces while work is still running."),
+			screen.getByText(
+				"Codebase search checks snippets against saved files and explains when search coverage is incomplete.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Use Codex-aligned Plan tools, command outcomes, prompts, and turn sequencing."),
+			screen.getByText(
+				"See clearer activity in recent chats and keep using the Windows shortcuts for task navigation and reasoning.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -75,12 +79,12 @@ describe("Announcement", () => {
 
 		expect(
 			screen.getByText(
-				"Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
+				"Alpha v3.1.9 keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
+				"Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
 			),
 		).toBeInTheDocument()
 	})

@@ -2,6 +2,8 @@ import { Task } from "../Task"
 import { SearchLoopRecoveryPolicy } from "../../agent/SearchLoopRecoveryPolicy"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
+import { handleProviderError } from "../../../api/providers/utils/error-handler"
+import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 
 function retryTask() {
 	const waits: number[] = []
@@ -24,6 +26,72 @@ function retryTask() {
 afterEach(() => {
 	vi.useRealTimers()
 	vi.restoreAllMocks()
+})
+
+it.each(["policy", "compatibility"] as const)(
+	"carries normalized server advice into the %s retry deadline",
+	async (path) => {
+		vi.useFakeTimers()
+		vi.setSystemTime(0)
+		const { task, waits } = retryTask()
+		const error = handleProviderError(
+			Object.assign(new Error("Rate limited"), { status: 429, headers: { "retry-after": "60" } }),
+			"OpenAI",
+		)
+		const decision = new AgentRetryPolicy({ jitter: "none" }).decide({
+			category: "rate-limit",
+			attempt: 1,
+			retryAfterMs: task["retryAfterMs"](error),
+		})
+		expect(decision).toMatchObject({ shouldRetry: true, delayMs: 60_000, retryAt: 60_000 })
+		vi.mocked(task.say).mockImplementationOnce(async () => {
+			vi.setSystemTime(10_000)
+		})
+		if (path === "policy") {
+			await task["waitForRetryDecision"](decision, error)
+		} else {
+			await task["backoffAndAnnounce"](0, error, undefined, undefined, decision.delayMs, decision.retryAt)
+		}
+		expect(waits.reduce((total, delay) => total + delay, 0)).toBe(50_000)
+		expect(Date.now()).toBe(60_000)
+	},
+)
+
+it("refuses server advice which outlives the existing retry allowance", () => {
+	const { task } = retryTask()
+	const error = handleProviderError(
+		Object.assign(new Error("Rate limited"), { status: 429, headers: { "retry-after": "120" } }),
+		"OpenAI",
+	)
+	expect(
+		new AgentRetryPolicy().decide({
+			category: "rate-limit",
+			attempt: 1,
+			retryAfterMs: task["retryAfterMs"](error),
+		}),
+	).toMatchObject({ shouldRetry: false, delayMs: 0, reason: "elapsed-budget" })
+})
+
+it("cancels an advised retry during notification without entering the wait", async () => {
+	vi.useFakeTimers()
+	vi.setSystemTime(0)
+	const { task, waits } = retryTask()
+	const controller = new AbortController()
+	const error = handleProviderError(
+		Object.assign(new Error("Rate limited"), { headers: { "retry-after": "60" } }),
+		"OpenAI",
+	)
+	const decision = new AgentRetryPolicy().decide({
+		category: "rate-limit",
+		attempt: 1,
+		retryAfterMs: task["retryAfterMs"](error),
+	})
+	vi.mocked(task.say).mockImplementationOnce(async () => {
+		controller.abort(new Error("Retry cancelled"))
+	})
+	await expect(task["waitForRetryDecision"](decision, error, controller.signal)).rejects.toThrow("Retry cancelled")
+	expect(waits).toEqual([])
+	expect(vi.getTimerCount()).toBe(0)
 })
 
 it("counts retry notification latency against the selected provider deadline", async () => {

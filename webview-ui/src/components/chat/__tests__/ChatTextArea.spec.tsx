@@ -112,6 +112,38 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	it.each(["", "NEW_DIRECTION"])("uses the streaming action appropriate to draft %j", (inputValue) => {
+		const onStop = vi.fn()
+		render(<ChatTextArea {...defaultProps} inputValue={inputValue} isStreaming onStop={onStop} />)
+		const button = screen.getByRole("button", {
+			name: (_, element) =>
+				element.querySelector(inputValue ? ".lucide-send-horizontal" : ".lucide-square") !== null,
+		})
+		fireEvent.click(button)
+		expect(defaultProps.onSend).toHaveBeenCalledTimes(inputValue ? 1 : 0)
+		expect(onStop).toHaveBeenCalledTimes(inputValue ? 0 : 1)
+	})
+
+	it("disables repeat streaming submission while retaining the empty-draft Stop action", () => {
+		const onStop = vi.fn()
+		const view = render(
+			<ChatTextArea {...defaultProps} inputValue="NEW_DIRECTION" isStreaming enqueueDisabled onStop={onStop} />,
+		)
+		const send = screen.getByRole("button", {
+			name: (_, element) => element.querySelector(".lucide-send-horizontal") !== null,
+		})
+		expect(send).toBeDisabled()
+		fireEvent.click(send)
+		expect(defaultProps.onSend).not.toHaveBeenCalled()
+		view.rerender(<ChatTextArea {...defaultProps} inputValue="" isStreaming enqueueDisabled onStop={onStop} />)
+		const stop = screen.getByRole("button", {
+			name: (_, element) => element.querySelector(".lucide-square") !== null,
+		})
+		expect(stop).toBeEnabled()
+		fireEvent.click(stop)
+		expect(onStop).toHaveBeenCalledTimes(1)
+	})
+
 	describe("new task appearance", () => {
 		it("labels the existing settings and removes the helper text without changing Enter submission", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)

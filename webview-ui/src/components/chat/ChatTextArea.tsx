@@ -314,7 +314,10 @@ export const ChatTextArea = memo(
 			const hasInputContent = useMemo(() => {
 				return inputValue.trim().length > 0 || selectedImages.length > 0
 			}, [inputValue, selectedImages])
-			const sendDisabled = sendingDisabled && !isStreaming && !isEditMode
+			const isStopAction = isStreaming && !isEditMode && !hasInputContent
+			const sendDisabled =
+				(sendingDisabled && !isStreaming && !isEditMode) ||
+				(isStreaming && !isEditMode && hasInputContent && enqueueDisabled)
 
 			// Compute the key combination text for the send button tooltip based on enterBehavior
 			const sendKeyCombination = useMemo(() => {
@@ -1462,30 +1465,18 @@ export const ChatTextArea = memo(
 									{/* Send/Stop button - morphs based on streaming state, always visible in edit mode */}
 									<StandardTooltip
 										content={
-											isEditMode
-												? t("chat:pressToSend", { keyCombination: sendKeyCombination })
-												: isStreaming
-													? t("chat:stop.title")
-													: t("chat:pressToSend", { keyCombination: sendKeyCombination })
+											isStopAction
+												? t("chat:stop.title")
+												: t("chat:pressToSend", { keyCombination: sendKeyCombination })
 										}>
 										<button
 											aria-label={
-												isEditMode
-													? t("chat:pressToSend", { keyCombination: sendKeyCombination })
-													: isStreaming
-														? t("chat:stop.title")
-														: t("chat:pressToSend", { keyCombination: sendKeyCombination })
+												isStopAction
+													? t("chat:stop.title")
+													: t("chat:pressToSend", { keyCombination: sendKeyCombination })
 											}
 											disabled={sendDisabled}
-											onClick={
-												sendDisabled
-													? undefined
-													: isEditMode
-														? onSend
-														: isStreaming
-															? onStop
-															: onSend
-											}
+											onClick={sendDisabled ? undefined : isStopAction ? onStop : onSend}
 											className={cn(
 												"relative inline-flex items-center justify-center",
 												"border-none p-1.5",
@@ -1502,7 +1493,7 @@ export const ChatTextArea = memo(
 												!(isEditMode || isStreaming || hasInputContent) &&
 													"bg-transparent text-vscode-descriptionForeground",
 											)}>
-											{!isEditMode && isStreaming ? (
+											{isStopAction ? (
 												<Square className="size-4 stroke-none fill-current" />
 											) : (
 												<SendHorizontal className="size-4" />

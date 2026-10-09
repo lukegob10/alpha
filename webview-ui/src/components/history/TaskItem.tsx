@@ -1,5 +1,5 @@
 import { memo, useContext, type KeyboardEvent } from "react"
-import { ArrowRight, Folder, LoaderCircle } from "lucide-react"
+import { ArrowRight, CircleAlert, Folder, LoaderCircle } from "lucide-react"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
@@ -17,34 +17,37 @@ import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 const formatStatusText = (value: string) =>
 	value.replace(/[_-]/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
 
-const getLiveTaskIndicator = (liveTask: LiveTaskMetadata) => {
+const getLiveTaskIndicator = (liveTask: LiveTaskMetadata, t: ReturnType<typeof useAppTranslation>["t"]) => {
 	switch (liveTask.lifecycle) {
 		case TaskLifecycleState.Completed:
-			return { label: "Complete", className: "bg-green-500" }
+			return { label: t("history:status.complete"), className: "bg-vscode-charts-green" }
 		case TaskLifecycleState.Failed:
-			return { label: "Failed", className: "bg-vscode-errorForeground" }
+			return { label: t("history:status.failed"), className: "text-vscode-errorForeground" }
 		case TaskLifecycleState.Closing:
-			return { label: "Closing", className: "bg-vscode-descriptionForeground/70" }
+			return { label: t("history:status.closing"), className: "bg-vscode-descriptionForeground/70" }
 		case TaskLifecycleState.Closed:
-			return { label: "Closed", className: "bg-vscode-descriptionForeground/50" }
+			return { label: t("history:status.closed"), className: "bg-vscode-descriptionForeground/50" }
 		case TaskLifecycleState.Waiting:
 			if (liveTask.status === TaskStatus.Idle || liveTask.waitingReason === "idle") {
-				return { label: "Idle", className: "bg-blue-500" }
+				return { label: t("history:status.idle"), className: "bg-vscode-textLink-foreground" }
 			}
 
 			if (liveTask.isWaitingForInput || liveTask.status === TaskStatus.Interactive) {
-				return { label: "Waiting for input", className: "bg-yellow-500" }
+				return { label: t("history:status.needsInput"), className: "bg-vscode-textLink-foreground" }
 			}
 
 			return {
-				label: liveTask.waitingReason ? formatStatusText(liveTask.waitingReason) : "Waiting",
-				className: "bg-blue-500",
+				label: liveTask.waitingReason ? formatStatusText(liveTask.waitingReason) : t("history:status.waiting"),
+				className: "bg-vscode-textLink-foreground",
 			}
 		case TaskLifecycleState.Initializing:
-			return { label: "Starting", className: "bg-vscode-progressBar-background" }
+			return { label: t("history:status.starting"), className: "bg-vscode-progressBar-background" }
 		case TaskLifecycleState.Running:
 		default:
-			return { label: liveTask.isStreaming ? "Running" : "Active", className: "bg-vscode-progressBar-background" }
+			return {
+				label: t(liveTask.isStreaming ? "history:status.running" : "history:status.active"),
+				className: "bg-vscode-progressBar-background",
+			}
 	}
 }
 
@@ -94,16 +97,20 @@ const TaskItem = ({
 	const currentTaskId = extensionState?.currentTaskId
 	const liveTasksById = extensionState?.liveTasksById
 	const liveTask = liveTasksById?.[item.id]
-	const liveTaskIndicator = liveTask ? getLiveTaskIndicator(liveTask) : undefined
+	const liveTaskIndicator = liveTask ? getLiveTaskIndicator(liveTask, t) : undefined
 	const isRunning =
 		liveTask?.lifecycle === TaskLifecycleState.Running || liveTask?.lifecycle === TaskLifecycleState.Initializing
 	const isActive = currentTaskId === item.id
-	const liveTaskTooltip = liveTask
-		? `${isActive ? "Selected" : "Background"} task: ${liveTaskIndicator?.label ?? formatStatusText(liveTask.lifecycle)}${
-				liveTask.waitingReason && liveTaskIndicator?.label !== formatStatusText(liveTask.waitingReason)
-					? ` (${formatStatusText(liveTask.waitingReason)})`
-					: ""
-			}`
+	const liveTaskStatus = liveTaskIndicator
+		? liveTask?.waitingReason && liveTaskIndicator.label !== formatStatusText(liveTask.waitingReason)
+			? t("history:status.withReason", {
+					status: liveTaskIndicator.label,
+					reason: formatStatusText(liveTask.waitingReason),
+				})
+			: liveTaskIndicator.label
+		: undefined
+	const liveTaskTooltip = liveTaskStatus
+		? t(isActive ? "history:status.selectedTask" : "history:status.backgroundTask", { status: liveTaskStatus })
 		: undefined
 
 	const handleClick = () => {
@@ -138,13 +145,16 @@ const TaskItem = ({
 		<StandardTooltip content={liveTaskTooltip ?? liveTaskIndicator.label}>
 			<span
 				className={cn("flex size-3.5 shrink-0 items-center justify-center", !isCompact && "mt-1.5")}
-				aria-label={`Task status: ${liveTaskIndicator.label}`}
+				role="img"
+				aria-label={t("history:status.indicator", { status: liveTaskIndicator.label })}
 				data-testid="task-status-indicator">
 				{isRunning ? (
 					<LoaderCircle
 						className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
 						aria-hidden="true"
 					/>
+				) : liveTask?.lifecycle === TaskLifecycleState.Failed ? (
+					<CircleAlert className={cn("size-3.5", liveTaskIndicator.className)} aria-hidden="true" />
 				) : (
 					<span className={cn("block size-2 rounded-full", liveTaskIndicator.className)} aria-hidden="true" />
 				)}
@@ -212,19 +222,18 @@ const TaskItem = ({
 							</div>
 						)}
 						{isCompact ? (
-							<div
-								className="grid shrink-0 grid-cols-[0.875rem_3rem] items-center gap-1.5"
-								data-testid="task-metadata">
-								{statusIndicator ?? <span aria-hidden="true" />}
-								<StandardTooltip content={new Date(item.ts).toLocaleString()}>
-									<span
-										className="w-12 shrink-0 whitespace-nowrap text-right text-xs text-vscode-descriptionForeground"
-										title={new Date(item.ts).toLocaleString()}
-										aria-label={formatTimeAgo(item.ts)}
-										data-testid="task-time-ago">
-										{compactAge}
-									</span>
-								</StandardTooltip>
+							<div className="flex w-12 shrink-0 items-center justify-end" data-testid="task-metadata">
+								{statusIndicator ?? (
+									<StandardTooltip content={new Date(item.ts).toLocaleString()}>
+										<span
+											className="w-12 shrink-0 whitespace-nowrap text-right text-xs text-vscode-descriptionForeground"
+											title={new Date(item.ts).toLocaleString()}
+											aria-label={formatTimeAgo(item.ts)}
+											data-testid="task-time-ago">
+											{compactAge}
+										</span>
+									</StandardTooltip>
+								)}
 							</div>
 						) : (
 							statusIndicator

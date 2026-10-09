@@ -123,7 +123,7 @@ export async function prepareRun(options) {
 	const sidecar = path.join(runDirectory, "sidecar")
 	await fs.mkdir(sidecar)
 	await Promise.all(
-		["package.json", "extension.js"].map((name) =>
+		["package.json", "extension.js", "receipt.js"].map((name) =>
 			fs.copyFile(path.join(sourceDirectory, name), path.join(sidecar, name)),
 		),
 	)

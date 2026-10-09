@@ -27,10 +27,7 @@ function localizationReferences(value: unknown): string[] {
 }
 
 describe("extension command manifest", () => {
-	it("exposes Windows agent hotkeys in the focused webview without taking over Enter or Plan/Code switching", () => {
-		const manifest = JSON.parse(
-			readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
-		) as ExtensionManifest
+	it("exposes scoped agent hotkeys without taking over Enter or Plan/Code switching", () => {
 		for (const command of [
 			"plusButtonClicked",
 			"sendAndSteer",
@@ -57,11 +54,13 @@ describe("extension command manifest", () => {
 			}
 			expect(manifest.contributes.commands.some((item) => item.command === `alpha.${command}`)).toBe(true)
 		}
+		expect(manifest.contributes.keybindings.some((binding) => binding.command === "alpha.plusButtonClicked")).toBe(
+			true,
+		)
 		expect(manifest.contributes.keybindings.some((binding) => ["enter", "shift+tab"].includes(binding.key))).toBe(
 			false,
 		)
 	})
-
 	it("uses the Codicon pencil and New Chat label for the new chat action", () => {
 		const newChatCommand = manifest.contributes.commands.find(
 			({ command }) => command === "alpha.plusButtonClicked",

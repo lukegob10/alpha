@@ -49,7 +49,14 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 
 		ipc.config.silent = true
 
-		ipc.serve(this.socketPath, this._handleStart)
+		// node-ipc 12 prefixes server paths unconditionally on Windows; its client
+		// already accepts fully qualified pipe names supplied by the evaluator.
+		const pipePrefix = "\\\\.\\pipe\\"
+		const transportPath =
+			process.platform === "win32" && this.socketPath.startsWith(pipePrefix)
+				? this.socketPath.slice(pipePrefix.length)
+				: this.socketPath
+		ipc.serve(transportPath, this._handleStart)
 
 		const server = (this._server = ipc.server)
 

@@ -129,6 +129,79 @@ test("the pinned Node runner emits a sanitized receipt for passing and skipped t
 	}
 })
 
+const nodeControls = [
+	{
+		name: "failed assertions",
+		source: 'test("private pass", () => {})\ntest("private failure", () => { throw new Error("private details") })',
+		counts: { ...counts, total: 2, failed: 1 },
+		success: false,
+	},
+	{
+		name: "cancelled assertions",
+		source: 'const controller = new AbortController()\ntest("private cancellation", { signal: controller.signal }, () => { controller.abort(); return new Promise(() => {}) })',
+		counts: { ...counts, passed: 0, cancelled: 1 },
+		success: false,
+	},
+	{
+		name: "mixed passing and cancelled assertions",
+		source: 'test("private pass", () => {})\nconst controller = new AbortController()\ntest("private cancellation", { signal: controller.signal }, () => { controller.abort(); return new Promise(() => {}) })',
+		counts: { ...counts, total: 2, cancelled: 1 },
+		success: false,
+	},
+	{
+		name: "TODO assertions",
+		source: 'test("private pass", () => {})\ntest.todo("private todo")',
+		counts: { ...counts, total: 2, todo: 1 },
+		success: true,
+	},
+]
+
+for (const control of nodeControls) {
+	test(`the pinned Node reporter preserves ${control.name} without leaking test details`, async () => {
+		const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-node-control-")))
+		try {
+			const source = path.join(directory, "control.test.mjs")
+			const destination = path.join(directory, "execution.json")
+			await writeFile(source, `import { test } from "node:test"\n${control.source}\n`)
+			const result = spawnSync(
+				process.execPath,
+				[
+					"--test",
+					`--test-reporter=${pathToFileURL(path.join(root, "scripts/harness/node-reporter.mjs")).href}`,
+					source,
+				],
+				{
+					encoding: "utf8",
+					windowsHide: true,
+					timeout: 15_000,
+					env: {
+						...process.env,
+						NODE_TEST_CONTEXT: undefined,
+						ALPHA_HARNESS_EVIDENCE_FILE: destination,
+						ALPHA_HARNESS_REPOSITORY_ROOT: directory,
+					},
+				},
+			)
+			assert.equal(result.error, undefined)
+			assert.equal(result.signal, null)
+			assert.equal(result.status, control.success ? 0 : 1, result.stderr)
+			const output = await readFile(destination, "utf8")
+			const receipt = validateTestEvidence(JSON.parse(output))
+			assert.equal(receipt.success, control.success)
+			assert.deepEqual(receipt.counts, control.counts)
+			assert.deepEqual(receipt.files, [{ path: "control.test.mjs", counts: control.counts }])
+			assert.equal(output.includes("private"), false)
+			assert.equal(testEvidenceVerdict(receipt).status, control.success ? "passed" : "failed")
+			assert.equal(
+				testEvidenceVerdict(receipt, true).reason,
+				control.success ? "skipped_hard_gate" : "test_execution_failed",
+			)
+		} finally {
+			await rm(directory, { recursive: true, force: true })
+		}
+	})
+}
+
 test("receipt reads reject growth at the stat/read boundary without calling unbounded readFile", async () => {
 	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-growing-receipt-")))
 	const file = path.join(directory, "result.json")

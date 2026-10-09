@@ -1,7 +1,7 @@
 import { cloneElement } from "react"
 import type { IndexingStatus } from "@alpha-code/types"
 
-import { act, fireEvent, render, screen } from "@src/utils/test-utils"
+import { act, fireEvent, render, screen, within } from "@src/utils/test-utils"
 import { PopoverTrigger } from "@src/components/ui"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -40,6 +40,61 @@ describe("CodeIndexPopover", () => {
 			codebaseIndexModels: undefined,
 			cwd: "/workspace",
 			apiConfiguration: undefined,
+		})
+	})
+
+	it("explains that yellow freshness status keeps validated search available", async () => {
+		render(
+			<CodeIndexPopover indexingStatus={{ ...indexingStatus, systemStatus: "Indexing" }}>
+				<PopoverTrigger asChild>
+					<button>Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		expect(await screen.findByText("settings:codeIndex.freshnessNote")).toBeVisible()
+	})
+
+	it("normalizes a legacy result limit and preserves slider edits across state refreshes until saving", async () => {
+		const state = {
+			...useExtensionState(),
+			codebaseIndexConfig: {
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "vertex" as const,
+				codebaseIndexVertexProjectId: "index-project",
+				codebaseIndexVertexRegion: "global",
+				codebaseIndexSearchMaxResults: 150,
+			},
+		}
+		vi.mocked(useExtensionState).mockReturnValue(state)
+		const view = (
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button type="button">Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>
+		)
+		const { rerender } = render(view)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.advancedConfigLabel" }))
+		const slider = within(screen.getByTestId("search-max-results-slider")).getByRole("slider", {
+			name: "settings:codeIndex.searchMaxResultsLabel",
+		})
+		expect(slider).toHaveAttribute("aria-valuemax", "100")
+		expect(slider).toHaveAttribute("aria-valuenow", "100")
+		fireEvent.keyDown(slider, { key: "ArrowLeft" })
+		expect(slider).toHaveAttribute("aria-valuenow", "90")
+		vi.mocked(useExtensionState).mockReturnValue({
+			...state,
+			codebaseIndexConfig: { ...state.codebaseIndexConfig },
+		})
+		rerender(cloneElement(view))
+		expect(slider).toHaveAttribute("aria-valuenow", "90")
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: expect.objectContaining({ codebaseIndexSearchMaxResults: 90 }),
 		})
 	})
 

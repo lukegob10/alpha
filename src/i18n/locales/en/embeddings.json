@@ -1,11 +1,30 @@
 {
 	"unknownError": "Unknown error",
+	"requestQueueFull": "Too many embedding requests are queued. Wait for indexing to catch up, then try again.",
+	"searchTimeout": "Code search timed out before returning usable evidence. Try file search, or retry after indexing catches up.",
+	"searchNotConfigured": "Code indexing is not configured. Check the selected embedding provider and vector store settings.",
 	"authenticationFailed": "Failed to create embeddings: Authentication failed. Please check your API key.",
 	"failedWithStatus": "Failed to create embeddings after {{attempts}} attempts: HTTP {{statusCode}} - {{errorMessage}}",
 	"failedWithError": "Failed to create embeddings after {{attempts}} attempts: {{errorMessage}}",
 	"failedMaxAttempts": "Failed to create embeddings after {{attempts}} attempts",
 	"textExceedsTokenLimit": "Text at index {{index}} exceeds maximum token limit ({{itemTokens}} > {{maxTokens}}). Skipping.",
 	"rateLimitRetry": "Rate limit hit, retrying in {{delayMs}}ms (attempt {{attempt}}/{{maxRetries}})",
+	"incremental": {
+		"queued": "Waiting for an embedding request.",
+		"reading": "Reading the saved file.",
+		"embedding": "Preparing embeddings for {{count}} changed chunks.",
+		"request": "Waiting for the embedding provider.",
+		"waiting": "Waiting {{seconds}}s for the configured embedding rate limit.",
+		"retry": "Retrying the embedding request in {{seconds}}s.",
+		"saving": "Saving updated chunks.",
+		"pending": "Saved changes are waiting to be indexed.",
+		"upToDate": "File changes processed. Index up-to-date.",
+		"queueOverflow": "Too many pending file changes. Restart indexing to reconcile the workspace.",
+		"scanLimit": "Workspace discovery reached the {{limit}} file limit. Narrow the indexed scope before restarting; existing entries were retained.",
+		"requestTimeout": "Embedding request timeout after 30s. Check the provider connection and retry indexing.",
+		"invalidReplacement": "The index replacement contains chunks from another file.",
+		"progress": "Processing {{processed}} / {{total}} files. Current: {{file}}. {{detail}}"
+	},
 	"scanner": {
 		"unknownErrorProcessingFile": "Unknown error processing file {{filePath}}",
 		"unknownErrorDeletingPoints": "Unknown error deleting points for {{filePath}}",
@@ -38,6 +57,7 @@
 		"localIndexPathMissing": "Local vector index path missing for vector store creation"
 	},
 	"orchestrator": {
+		"scanFailed": "Workspace scan failed.",
 		"indexingFailedNoBlocks": "Indexing failed: No code blocks were successfully indexed. This usually indicates an embedder configuration issue.",
 		"indexingFailedCritical": "Indexing failed: No code blocks were successfully indexed despite finding files to process. This indicates a critical embedder failure.",
 		"fileWatcherStarted": "File watcher started.",

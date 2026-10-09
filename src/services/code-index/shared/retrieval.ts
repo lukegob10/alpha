@@ -1,7 +1,8 @@
 import type { VectorStoreSearchResult } from "../interfaces"
+import { CODEBASE_INDEX_SEARCH_LIMITS, type CodebaseSearchDiagnostics } from "@alpha-code/types"
 import { countCodeTokens } from "../processors/chunking"
 
-export const SEARCH_CONTEXT_TOKEN_BUDGET = 6000
+export const SEARCH_CONTEXT_TOKEN_BUDGET = CODEBASE_INDEX_SEARCH_LIMITS.CONTEXT_TOKEN_BUDGET
 const RRF_OFFSET = 60
 
 /** Fuse ranks, not incomparable cosine and lexical scores. Keep channel scores for diagnostics. */
@@ -31,11 +32,44 @@ export async function packSearchResults(
 	tokenBudget = SEARCH_CONTEXT_TOKEN_BUDGET,
 	accept?: (result: VectorStoreSearchResult) => Promise<boolean>,
 ): Promise<VectorStoreSearchResult[]> {
+	return (await packSearchResultsWithDiagnostics(results, maxResults, tokenBudget, accept)).results
+}
+
+export async function packSearchResultsWithDiagnostics(
+	results: VectorStoreSearchResult[],
+	maxResults: number,
+	tokenBudget: number = SEARCH_CONTEXT_TOKEN_BUDGET,
+	accept?: (result: VectorStoreSearchResult) => Promise<boolean>,
+) {
 	const selected: VectorStoreSearchResult[] = []
 	let remaining = tokenBudget
+	const diagnostics: Pick<
+		CodebaseSearchDiagnostics,
+		| "estimatedContextTokens"
+		| "returnedChunks"
+		| "candidatesExamined"
+		| "skippedDuplicates"
+		| "skippedBudget"
+		| "skippedSource"
+		| "skippedInvalid"
+		| "remainingCandidates"
+	> = {
+		estimatedContextTokens: 0,
+		returnedChunks: 0,
+		candidatesExamined: 0,
+		skippedDuplicates: 0,
+		skippedBudget: 0,
+		skippedSource: 0,
+		skippedInvalid: 0,
+		remainingCandidates: 0,
+	}
 	for (const result of results) {
+		diagnostics.candidatesExamined++
 		const payload = result.payload
-		if (!payload) continue
+		if (!payload) {
+			diagnostics.skippedInvalid++
+			continue
+		}
 		const duplicate = selected.some(
 			({ payload: other }) =>
 				other &&
@@ -48,13 +82,25 @@ export async function packSearchResults(
 						payload.startOffset < other.endOffset &&
 						payload.endOffset > other.startOffset)),
 		)
-		if (duplicate) continue
+		if (duplicate) {
+			diagnostics.skippedDuplicates++
+			continue
+		}
 		const cost = (await countCodeTokens(`${payload.filePath}\n${payload.context ?? ""}\n${payload.codeChunk}`)) + 40
-		if (cost > remaining) continue
-		if (accept && !(await accept(result))) continue
+		if (cost > remaining) {
+			diagnostics.skippedBudget++
+			continue
+		}
+		if (accept && !(await accept(result))) {
+			diagnostics.skippedSource++
+			continue
+		}
 		selected.push(result)
 		remaining -= cost
 		if (selected.length >= maxResults) break
 	}
-	return selected
+	diagnostics.estimatedContextTokens = tokenBudget - remaining
+	diagnostics.returnedChunks = selected.length
+	diagnostics.remainingCandidates = results.length - diagnostics.candidatesExamined
+	return { results: selected, diagnostics }
 }

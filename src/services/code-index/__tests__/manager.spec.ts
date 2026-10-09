@@ -121,6 +121,20 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 	let mockContext: any
 	let manager: CodeIndexManager
 
+	it("cancels in-flight retrieval before stopping the index", () => {
+		const cancelPending = vi.fn()
+		const stopIndexing = vi.fn()
+		;(manager as unknown as { _searchService: { cancelPending: () => void } })._searchService = { cancelPending }
+		;(manager as unknown as { _orchestrator: { stopIndexing: () => void; dispose: () => void } })._orchestrator = {
+			stopIndexing,
+			dispose: vi.fn(),
+		}
+		manager.stopIndexing()
+		expect(cancelPending).toHaveBeenCalledOnce()
+		expect(stopIndexing).toHaveBeenCalledOnce()
+		expect(cancelPending.mock.invocationCallOrder[0]).toBeLessThan(stopIndexing.mock.invocationCallOrder[0])
+	})
+
 	// Define test paths for use in tests
 	const testWorkspacePath = path.join(path.sep, "test", "workspace")
 	const testExtensionPath = path.join(path.sep, "test", "extension")
@@ -279,7 +293,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				whenIdle: vi.fn().mockResolvedValue(undefined),
 				dispose: vi.fn(),
 			}
-			;(manager as any)._searchService = {}
+			;(manager as any)._searchService = { cancelPending: vi.fn() }
 
 			// Verify manager is considered initialized
 			expect(manager.isInitialized).toBe(true)
@@ -353,7 +367,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				dispose: vi.fn(),
 			}
 			;(manager as any)._orchestrator = oldOrchestrator
-			;(manager as any)._searchService = {}
+			;(manager as any)._searchService = { cancelPending: vi.fn() }
 			;(manager as any)._serviceFactory = {}
 			;(manager as any)._cacheManager = {}
 
@@ -585,7 +599,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				dispose: vi.fn(),
 				state: "Error",
 			}
-			;(manager as any)._searchService = {}
+			;(manager as any)._searchService = { cancelPending: vi.fn() }
 			;(manager as any)._serviceFactory = {}
 		})
 
@@ -799,7 +813,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				whenIdle: vi.fn().mockResolvedValue(undefined),
 				dispose: vi.fn(),
 			}
-			;(manager as any)._searchService = {}
+			;(manager as any)._searchService = { cancelPending: vi.fn() }
 
 			// Spy on console.error
 			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})

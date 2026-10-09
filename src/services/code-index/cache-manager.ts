@@ -12,7 +12,8 @@ import { TelemetryEventName } from "@alpha-code/types"
 export class CacheManager implements ICacheManager {
 	private cachePath: vscode.Uri
 	private fileHashes: Record<string, string> = {}
-	private _debouncedSaveCache: () => void
+	private _debouncedSaveCache: ReturnType<typeof debounce<() => Promise<void>>>
+	private saveTail: Promise<void> = Promise.resolve()
 
 	/**
 	 * Creates a new cache manager
@@ -38,7 +39,16 @@ export class CacheManager implements ICacheManager {
 	async initialize(): Promise<void> {
 		try {
 			const cacheData = await vscode.workspace.fs.readFile(this.cachePath)
-			this.fileHashes = JSON.parse(cacheData.toString())
+			const parsed: unknown = JSON.parse(Buffer.from(cacheData).toString("utf8"))
+			if (
+				!parsed ||
+				typeof parsed !== "object" ||
+				Array.isArray(parsed) ||
+				Object.values(parsed).some((hash) => typeof hash !== "string")
+			) {
+				throw new Error("Invalid code index hash cache")
+			}
+			this.fileHashes = parsed as Record<string, string>
 		} catch (error) {
 			this.fileHashes = {}
 			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
@@ -54,7 +64,7 @@ export class CacheManager implements ICacheManager {
 	 */
 	private async _performSave(): Promise<void> {
 		try {
-			await safeWriteJson(this.cachePath.fsPath, this.fileHashes)
+			await this.writeCache({ ...this.fileHashes })
 		} catch (error) {
 			console.error("Failed to save cache:", error)
 			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
@@ -65,13 +75,21 @@ export class CacheManager implements ICacheManager {
 		}
 	}
 
+	private writeCache(snapshot: Record<string, string>): Promise<void> {
+		const result = this.saveTail.then(() => safeWriteJson(this.cachePath.fsPath, snapshot))
+		this.saveTail = result.catch(() => {})
+		return result
+	}
+
 	/**
 	 * Clears the cache file by writing an empty object to it
 	 */
 	async clearCacheFile(): Promise<void> {
+		this._debouncedSaveCache.cancel()
+		// A newly created collection must never be skipped using hashes from its retired predecessor.
+		this.fileHashes = {}
 		try {
-			await safeWriteJson(this.cachePath.fsPath, {})
-			this.fileHashes = {}
+			await this.writeCache({})
 		} catch (error) {
 			console.error("Failed to clear cache file:", error, this.cachePath)
 			TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
@@ -79,6 +97,7 @@ export class CacheManager implements ICacheManager {
 				stack: error instanceof Error ? error.stack : undefined,
 				location: "clearCacheFile",
 			})
+			throw error
 		}
 	}
 
@@ -114,6 +133,7 @@ export class CacheManager implements ICacheManager {
 	 * Flushes any pending debounced cache writes to disk immediately.
 	 */
 	async flush(): Promise<void> {
+		this._debouncedSaveCache.cancel()
 		await this._performSave()
 	}
 

@@ -21,6 +21,7 @@ vitest.mock("../../../../i18n", () => ({
 const createQueryBuilder = (rowsQueue: any[][]) => {
 	const builder = {
 		where: vitest.fn().mockReturnThis(),
+		select: vitest.fn().mockReturnThis(),
 		limit: vitest.fn().mockReturnThis(),
 		toArray: vitest.fn().mockImplementation(async () => rowsQueue.shift() ?? []),
 	}
@@ -41,6 +42,7 @@ const createMergeBuilder = () => {
 const createSearchBuilder = (rows: any[]) => {
 	const builder = {
 		distanceType: vitest.fn().mockReturnThis(),
+		select: vitest.fn().mockReturnThis(),
 		where: vitest.fn().mockReturnThis(),
 		limit: vitest.fn().mockReturnThis(),
 		toArray: vitest.fn().mockResolvedValue(rows),

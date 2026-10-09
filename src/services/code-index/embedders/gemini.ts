@@ -1,8 +1,15 @@
 import { GoogleGenAI } from "@google/genai"
-import pLimit from "p-limit"
 import { t } from "../../../i18n"
 import { BATCH_SEGMENT_THRESHOLD, GEMINI_MAX_ITEM_TOKENS, MAX_BATCH_RETRIES } from "../constants"
-import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
+import type {
+	IEmbedder,
+	EmbeddingResponse,
+	EmbedderInfo,
+	EmbeddingProgress,
+	EmbeddingPriority,
+} from "../interfaces/embedder"
+import { EmbeddingRequestQueue } from "../shared/embedding-request-queue"
+import { withEmbeddingTimeout } from "../shared/embedding-request"
 import { googleEmbeddingInput } from "../shared/google-embedding"
 import { validateEmbeddingBatch } from "../shared/embedding-input"
 import { EmbeddingRateLimiter, waitForEmbeddingDelay } from "../shared/embedding-rate-limiter"
@@ -17,7 +24,7 @@ import { formatEmbeddingError, withValidationErrorHandling } from "../shared/val
 /** Synchronous Gemini Developer API batches, with one ordered vector per source chunk. */
 export class GeminiEmbedder implements IEmbedder {
 	private readonly client: GoogleGenAI
-	private readonly requests = pLimit(2)
+	private readonly requests = new EmbeddingRequestQueue(2)
 	private readonly rateLimiter: EmbeddingRateLimiter
 
 	constructor(
@@ -39,6 +46,8 @@ export class GeminiEmbedder implements IEmbedder {
 		model = this.modelId,
 		purpose: "document" | "query" = "document",
 		signal?: AbortSignal,
+		onProgress?: (progress: EmbeddingProgress) => void,
+		priority: EmbeddingPriority = purpose === "query" ? "query" : "bulk",
 	): Promise<EmbeddingResponse> {
 		signal?.throwIfAborted()
 		const maxItemTokens = model.includes("embedding-2") ? 8192 : GEMINI_MAX_ITEM_TOKENS
@@ -70,8 +79,11 @@ export class GeminiEmbedder implements IEmbedder {
 				while (!failed && nextIndex < batches.length) {
 					const index = nextIndex++
 					try {
-						results[index] = await this.requests(() =>
-							this.embedBatch(batches[index], model, purpose, signal),
+						onProgress?.({ stage: "queued" })
+						results[index] = await this.requests.run(
+							priority,
+							() => this.embedBatch(batches[index], model, purpose, signal, onProgress, priority),
+							signal,
 						)
 					} catch (error) {
 						failed = true
@@ -96,18 +108,31 @@ export class GeminiEmbedder implements IEmbedder {
 		model: string,
 		purpose: "document" | "query",
 		signal?: AbortSignal,
+		onProgress?: (progress: EmbeddingProgress) => void,
+		priority: EmbeddingPriority = purpose === "query" ? "query" : "bulk",
 	): Promise<EmbeddingResponse> {
 		const input = googleEmbeddingInput(texts, model, purpose)
 		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
 			signal?.throwIfAborted()
 			try {
 				// Account for every input, so batching does not multiply the configured quota budget.
-				await this.rateLimiter.wait(signal, texts.length)
-				const response = await this.client.models.embedContent({
-					model,
-					...input,
-					config: { ...input.config, ...(signal ? { abortSignal: signal } : {}) },
-				})
+				onProgress?.({ stage: "queued" })
+				await this.rateLimiter.wait(
+					signal,
+					texts.length,
+					(waitMs) => onProgress?.({ stage: "queued", waitMs }),
+					priority,
+				)
+				onProgress?.({ stage: "request" })
+				const response = await withEmbeddingTimeout(
+					(requestSignal) =>
+						this.client.models.embedContent({
+							model,
+							...input,
+							config: { ...input.config, abortSignal: requestSignal },
+						}),
+					signal,
+				)
 				signal?.throwIfAborted()
 				const embeddings = (response.embeddings ?? []).map((embedding) => embedding.values ?? [])
 				validateEmbeddingBatch(embeddings, texts.length)
@@ -118,6 +143,7 @@ export class GeminiEmbedder implements IEmbedder {
 				const retryDelayMs = getEmbeddingRetryDelayMs(error, attempt)
 				if (getEmbeddingStatus(error) === 429) this.rateLimiter.defer(retryDelayMs)
 				if (attempt < MAX_BATCH_RETRIES - 1 && isRetryableEmbeddingError(error)) {
+					onProgress?.({ stage: "retry", waitMs: retryDelayMs })
 					await waitForEmbeddingDelay(retryDelayMs, signal)
 					continue
 				}

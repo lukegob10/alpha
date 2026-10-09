@@ -160,6 +160,7 @@
 		"description": "Configure support prompts that are used for quick actions like enhancing prompts, explaining code, and fixing issues. These prompts help Alpha provide better assistance for common development tasks."
 	},
 	"codeIndex": {
+		"freshnessNote": "Embeddings are catching up. Validated indexed results and recent saved edits remain searchable; semantic results for the newest code may be incomplete.",
 		"title": "Codebase Indexing",
 		"description": "Configure codebase indexing settings to enable semantic search of your project. <0>Learn more</0>",
 		"statusTitle": "Status",
@@ -185,11 +186,11 @@
 		"qdrantApiKeyPlaceholder": "Enter your Qdrant API key (optional)",
 		"setupConfigLabel": "Setup",
 		"advancedConfigLabel": "Advanced Configuration",
-		"searchMinScoreLabel": "Search Score Threshold",
-		"searchMinScoreDescription": "Minimum similarity score (0.0-1.0) required for search results. Lower values return more results but may be less relevant. Higher values return fewer but more relevant results.",
+		"searchMinScoreLabel": "Semantic similarity threshold",
+		"searchMinScoreDescription": "Minimum similarity score (0–1) for semantic matches. Higher values filter more semantic matches and may exclude useful code. Keyword matches can still be returned. This score is not a confidence percentage.",
 		"searchMinScoreResetTooltip": "Reset to default value (0.4)",
-		"searchMaxResultsLabel": "Maximum Search Results",
-		"searchMaxResultsDescription": "Maximum number of search results to return when querying the codebase index. Higher values provide more context but may include less relevant results.",
+		"searchMaxResultsLabel": "Maximum code chunks",
+		"searchMaxResultsDescription": "Return up to this many code chunks, within the search context budget. Duplicate, stale or inaccessible chunks are excluded, so fewer chunks may be returned. This limit does not change how broadly the index is searched.",
 		"embeddingRateLimitLabel": "Limit embedding request rate",
 		"embeddingRateLimitDescription": "Spaces embedding inputs across indexing, file updates and searches. Gemini batches account for every input. Provider cooldowns pause queued requests after a rate-limit response. Increase the interval to match your project's quota.",
 		"resetToDefault": "Reset to default",

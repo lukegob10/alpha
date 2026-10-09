@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 import { ContextProxy } from "../../core/config/ContextProxy"
-import { VectorStoreSearchResult } from "./interfaces"
+import type { CodeIndexSearchResponse, VectorStoreSearchResult } from "./interfaces"
 import { IndexingState } from "./interfaces/manager"
 import { CodeIndexConfigManager } from "./config-manager"
 import { CodeIndexStateManager } from "./state-manager"
@@ -169,6 +169,7 @@ export class CodeIndexManager {
 
 		// 2. Check if feature is enabled
 		if (!this.isFeatureEnabled) {
+			this._searchService?.cancelPending()
 			if (this._orchestrator) {
 				this._orchestrator.stopIndexing()
 				await this._orchestrator.whenIdle()
@@ -182,6 +183,7 @@ export class CodeIndexManager {
 		if (!this.isFeatureConfigured) {
 			await this.enqueueServiceLifecycle(async () => {
 				const currentOrchestrator = this._orchestrator
+				this._searchService?.cancelPending()
 				this._orchestrator = undefined
 				this._searchService = undefined
 				this._serviceFactory = undefined
@@ -265,6 +267,7 @@ export class CodeIndexManager {
 	 * Stops any in-progress indexing operation and the file watcher.
 	 */
 	public stopIndexing(): void {
+		this._searchService?.cancelPending()
 		if (this._orchestrator) {
 			this._orchestrator.stopIndexing()
 		}
@@ -342,6 +345,7 @@ export class CodeIndexManager {
 			return
 		}
 		this.assertInitialized()
+		this._searchService?.cancelPending()
 		await this._orchestrator!.clearIndexData()
 		await this._cacheManager!.clearCacheFile()
 	}
@@ -366,6 +370,11 @@ export class CodeIndexManager {
 		return this._searchService!.searchIndex(query, directoryPrefix)
 	}
 
+	public async searchIndexWithDiagnostics(query: string, directoryPrefix?: string): Promise<CodeIndexSearchResponse> {
+		this.assertInitialized()
+		return this._searchService!.searchIndexWithDiagnostics(query, directoryPrefix)
+	}
+
 	/**
 	 * Private helper method to recreate services with current configuration.
 	 * Used by both initialize() and handleSettingsChange().
@@ -384,6 +393,7 @@ export class CodeIndexManager {
 	}
 
 	private async retireOrchestrator(orchestrator: CodeIndexOrchestrator): Promise<void> {
+		this._searchService?.cancelPending()
 		orchestrator.stopIndexing()
 		await orchestrator.whenIdle()
 		orchestrator.dispose()
@@ -433,7 +443,7 @@ export class CodeIndexManager {
 		await alphaIgnoreController.initialize()
 
 		// (Re)Create shared service instances
-		const { embedder, vectorStore, scanner, fileWatcher } = this._serviceFactory.createServices(
+		const { embedder, vectorStore, parser, scanner, fileWatcher } = this._serviceFactory.createServices(
 			this.context,
 			this._cacheManager!,
 			ignoreInstance,
@@ -443,6 +453,7 @@ export class CodeIndexManager {
 		// Validate embedder configuration before proceeding
 		const validationResult = await this._serviceFactory.validateEmbedder(embedder)
 		if (!validationResult.valid) {
+			fileWatcher.dispose()
 			const errorMessage = validationResult.error || "Embedder configuration validation failed"
 			this._stateManager.setSystemState("Error", errorMessage)
 			throw new Error(errorMessage)
@@ -467,6 +478,8 @@ export class CodeIndexManager {
 			vectorStore,
 			{
 				workspacePath,
+				parser,
+				pendingFiles: (limit) => fileWatcher.getPendingFilePaths?.(limit) ?? [],
 				validateAccess: (filePath) =>
 					!ignoreInstance.ignores(filePath) && alphaIgnoreController.validateAccess(filePath),
 			},
@@ -491,6 +504,7 @@ export class CodeIndexManager {
 
 			// If feature is disabled, stop the service (including any active scan)
 			if (!isFeatureEnabled) {
+				this._searchService?.cancelPending()
 				if (this._orchestrator) {
 					this._orchestrator.stopIndexing()
 					await this._orchestrator.whenIdle()
@@ -502,6 +516,7 @@ export class CodeIndexManager {
 			if (!isFeatureConfigured) {
 				await this.enqueueServiceLifecycle(async () => {
 					const currentOrchestrator = this._orchestrator
+					this._searchService?.cancelPending()
 					this._orchestrator = undefined
 					this._searchService = undefined
 					this._serviceFactory = undefined

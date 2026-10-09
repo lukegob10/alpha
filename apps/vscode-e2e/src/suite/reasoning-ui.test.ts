@@ -221,13 +221,17 @@ suite("Rendered reasoning controls", function () {
 				await waitFor(() =>
 					steering.messageQueueService.messages.some((m) => m.text.includes("Windows queue instruction")),
 				)
-				assert.equal(requests.length, beforeQueue, "Enter must queue without interrupting the held turn")
+				assert.equal(requests.length, beforeQueue, "Explicit queueing must retain the held turn")
 				assert.equal(heldRequestCancelled, false)
 				await uiFixtureBarrier("hotkeys-steer")
 				await waitFor(() => requestMessages.some((m) => m.includes("Windows steering instruction")), {
 					description: "steered guidance on the next model request",
 				})
-				assert.equal(heldRequestCancelled, true, "Steering must cancel the previous model request")
+				assert.equal(
+					heldRequestCancelled,
+					true,
+					"Ordinary Enter must steer and cancel the previous model request",
+				)
 				await waitFor(() => completions >= 3 || steering.taskAsk?.ask === "completion_result")
 				if (completions < 3) steering.approveAsk()
 				await waitFor(() => completions >= 3)

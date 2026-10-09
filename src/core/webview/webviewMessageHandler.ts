@@ -3462,6 +3462,9 @@ export const webviewMessageHandler = async (
 				}
 			}
 			const queue = task.messageQueueService.visibleMessages
+			if (queue.some((entry) => entry.id === parsed.data.requestId && entry.deliveryState !== "delivering")) {
+				deliveryState = "queued"
+			}
 			if (queue.some((entry) => entry.id === parsed.data.requestId)) {
 				await provider.postTaskQueueToWebview(task.taskId, queue)
 			} else {

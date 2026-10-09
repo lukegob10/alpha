@@ -11,12 +11,6 @@ vi.mock("@/utils/vscode", () => ({
 		postMessage: vi.fn(),
 	},
 }))
-vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({
-		t: (key: string) => key,
-	}),
-}))
-
 vi.mock("@/utils/format", () => ({
 	formatTimeAgo: vi.fn(() => "2 hours ago"),
 	formatDate: vi.fn(() => "January 15 at 2:30 PM"),
@@ -49,12 +43,12 @@ const liveTask = (overrides: Partial<LiveTaskMetadata>): LiveTaskMetadata => ({
 	...overrides,
 })
 
-const taskWithLiveMetadata = (metadata: LiveTaskMetadata, variant: "compact" | "full" = "compact") => (
+const taskWithLiveMetadata = (metadata: LiveTaskMetadata | undefined, variant: "compact" | "full" = "compact") => (
 	<ExtensionStateContext.Provider
 		value={
 			{
 				currentTaskId: undefined,
-				liveTasksById: { [metadata.id]: metadata },
+				liveTasksById: metadata ? { [metadata.id]: metadata } : {},
 				getCachedTranscriptRevision: () => undefined,
 			} as unknown as ExtensionStateContextType
 		}>
@@ -163,18 +157,41 @@ describe("TaskItem", () => {
 		expect(screen.getByText(/ago/)).toBeInTheDocument()
 	})
 
-	it.each([false, true])("aligns compact metadata with a fixed status slot (hasStatus=%s)", (hasStatus) => {
-		if (hasStatus) render(taskWithLiveMetadata(liveTask({ lifecycle: TaskLifecycleState.Completed }), "compact"))
-		else render(<TaskItem item={mockTask} variant="compact" />)
-
+	it("uses the compact metadata slot for the saved task age when there is no live status", () => {
+		render(<TaskItem item={mockTask} variant="compact" />)
 		const metadata = screen.getByTestId("task-metadata")
 		const age = screen.getByTestId("task-time-ago")
 
-		expect(metadata).toHaveClass("grid-cols-[0.875rem_3rem]")
+		expect(metadata).toHaveClass("w-12", "justify-end")
 		expect(age).toHaveClass("w-12", "text-right")
-		expect(metadata.children).toHaveLength(2)
-		if (hasStatus) expect(metadata).toContainElement(screen.getByTestId("task-status-indicator"))
-		else expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+		expect(metadata.children).toHaveLength(1)
+		expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+	})
+
+	it.each([
+		TaskLifecycleState.Initializing,
+		TaskLifecycleState.Running,
+		TaskLifecycleState.Waiting,
+		TaskLifecycleState.Completed,
+		TaskLifecycleState.Failed,
+	])("replaces the compact timestamp with live %s status in the same slot", (lifecycle) => {
+		render(taskWithLiveMetadata(liveTask({ lifecycle })))
+		const metadata = screen.getByTestId("task-metadata")
+
+		expect(metadata).toHaveClass("w-12", "justify-end")
+		expect(metadata.children).toHaveLength(1)
+		expect(metadata).toContainElement(screen.getByTestId("task-status-indicator"))
+		expect(screen.queryByTestId("task-time-ago")).not.toBeInTheDocument()
+	})
+
+	it("restores the compact timestamp when live session metadata is removed", () => {
+		const { rerender } = render(taskWithLiveMetadata(liveTask({})))
+		expect(screen.queryByTestId("task-time-ago")).not.toBeInTheDocument()
+
+		rerender(taskWithLiveMetadata(undefined))
+		expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+		expect(screen.getByTestId("task-metadata")).toContainElement(screen.getByTestId("task-time-ago"))
+		expect(screen.getByTestId("task-metadata").children).toHaveLength(1)
 	})
 
 	it("applies hover effect class", () => {
@@ -278,17 +295,57 @@ describe("TaskItem", () => {
 
 			const indicator = screen.getByTestId("task-status-indicator")
 			expect(indicator).toHaveAttribute("aria-label", `Task status: ${label}`)
-			expect(indicator.querySelector(".animate-spin")).toBeInTheDocument()
+			expect(indicator.querySelector(".animate-spin")).toHaveClass("motion-reduce:animate-none")
 			expect(indicator.querySelector(".rounded-full")).not.toBeInTheDocument()
 			expect(screen.queryByTestId("task-opening-indicator")).not.toBeInTheDocument()
+		})
+
+		it.each([
+			{ status: TaskStatus.Interactive, isWaitingForInput: false },
+			{ status: TaskStatus.Running, isWaitingForInput: true },
+		])("shows Needs input as a blue dot (status=$status)", ({ status, isWaitingForInput }) => {
+			render(
+				taskWithLiveMetadata(
+					liveTask({ lifecycle: TaskLifecycleState.Waiting, status, isWaitingForInput }),
+					variant,
+				),
+			)
+			const indicator = screen.getByRole("img", { name: "Task status: Needs input" })
+			expect(indicator.querySelector(".rounded-full")).toHaveClass("bg-vscode-textLink-foreground")
+			expect(indicator.querySelector("svg")).not.toBeInTheDocument()
+		})
+
+		it("shows Complete as a green dot even with stale streaming and input flags", () => {
+			render(
+				taskWithLiveMetadata(
+					liveTask({ lifecycle: TaskLifecycleState.Completed, isWaitingForInput: true }),
+					variant,
+				),
+			)
+			const indicator = screen.getByRole("img", { name: "Task status: Complete" })
+			expect(indicator.querySelector(".rounded-full")).toHaveClass("bg-vscode-charts-green")
+			expect(indicator.querySelector("svg")).not.toBeInTheDocument()
+		})
+
+		it("shows Failed as a static error symbol even with stale streaming and input flags", () => {
+			render(
+				taskWithLiveMetadata(
+					liveTask({ lifecycle: TaskLifecycleState.Failed, isWaitingForInput: true }),
+					variant,
+				),
+			)
+			const indicator = screen.getByRole("img", { name: "Task status: Failed" })
+			expect(indicator.querySelector(".lucide-circle-alert")).toHaveClass("text-vscode-errorForeground")
+			expect(indicator.querySelector(".animate-spin")).not.toBeInTheDocument()
+			expect(indicator.querySelector(".rounded-full")).not.toBeInTheDocument()
 		})
 	})
 
 	it.each([
-		{ lifecycle: TaskLifecycleState.Waiting, status: TaskStatus.Interactive, label: "Waiting for input" },
+		{ lifecycle: TaskLifecycleState.Waiting, status: TaskStatus.Interactive, label: "Needs input" },
 		{ lifecycle: TaskLifecycleState.Completed, status: TaskStatus.None, label: "Complete" },
 		{ lifecycle: TaskLifecycleState.Failed, status: TaskStatus.None, label: "Failed" },
-	])("replaces the running spinner with a dot when the task becomes $label", ({ lifecycle, status, label }) => {
+	])("replaces the running spinner when the task becomes $label", ({ lifecycle, status, label }) => {
 		const { rerender } = render(taskWithLiveMetadata(liveTask({})))
 		expect(screen.getByTestId("task-status-indicator").querySelector(".animate-spin")).toBeInTheDocument()
 
@@ -298,7 +355,11 @@ describe("TaskItem", () => {
 		const indicator = screen.getByTestId("task-status-indicator")
 		expect(indicator).toHaveAttribute("aria-label", `Task status: ${label}`)
 		expect(indicator.querySelector(".animate-spin")).not.toBeInTheDocument()
-		expect(indicator.querySelector(".rounded-full")).toBeInTheDocument()
+		if (lifecycle === TaskLifecycleState.Failed) {
+			expect(indicator.querySelector(".lucide-circle-alert")).toBeInTheDocument()
+		} else {
+			expect(indicator.querySelector(".rounded-full")).toBeInTheDocument()
+		}
 	})
 
 	it("shows waiting live tasks as a static status dot", () => {

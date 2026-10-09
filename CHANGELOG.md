@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.9
+
+### Patch Changes
+
+- Refresh saved-code indexing with quiet-window batching, cancellation-safe processing, and atomic per-file LanceDB updates while reusing unchanged embedding inputs.
+- Keep codebase search available while embeddings catch up, validate snippets against current saved source, and explain incomplete search coverage.
+- Prioritize search and edited-file embedding requests with bounded concurrency, shared rate-limit pacing, and provider cooldowns.
+- Make Send and Enter steer eligible active conversations promptly while preserving explicit queueing, approval boundaries, and durable input receipts.
+- Improve provider retry advice and cancellation of stalled streams and pending tool dispatch without losing ordered tool results.
+- Show clearer activity in recent chats and refresh the in-app release announcement for this version.
+- Strengthen portable IPC, test discovery, large tool-argument persistence, and exact VS Code 1.125.0 coverage.
+
 ## 3.1.8
 
 ### Patch Changes

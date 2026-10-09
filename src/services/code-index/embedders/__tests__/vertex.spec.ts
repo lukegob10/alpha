@@ -164,7 +164,7 @@ describe("VertexGeminiEmbedder", () => {
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
 			contents: ["first text"],
-			config: { taskType: "RETRIEVAL_DOCUMENT" },
+			config: { taskType: "RETRIEVAL_DOCUMENT", abortSignal: expect.any(AbortSignal) },
 		})
 	})
 
@@ -204,6 +204,7 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
+				abortSignal: expect.any(AbortSignal),
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {
@@ -235,6 +236,7 @@ describe("VertexGeminiEmbedder", () => {
 			model: "gateway-embedding-model",
 			contents: ["text"],
 			config: {
+				abortSignal: expect.any(AbortSignal),
 				httpOptions: {
 					baseUrl: "https://gateway.example.com/vertex",
 					headers: {
@@ -327,7 +329,7 @@ describe("VertexGeminiEmbedder", () => {
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-2",
 			contents: [{ parts: [{ text: "title: none | text: " + textOverGemini001Limit }] }],
-			config: {},
+			config: { abortSignal: expect.any(AbortSignal) },
 		})
 	})
 
@@ -345,7 +347,7 @@ describe("VertexGeminiEmbedder", () => {
 		expect(mockEmbedContent).toHaveBeenCalledWith({
 			model: "gemini-embedding-001",
 			contents: ["test"],
-			config: { taskType: "RETRIEVAL_DOCUMENT" },
+			config: { taskType: "RETRIEVAL_DOCUMENT", abortSignal: expect.any(AbortSignal) },
 		})
 	})
 
@@ -361,7 +363,7 @@ describe("VertexGeminiEmbedder", () => {
 		).rejects.toMatchObject({ name: "AbortError" })
 		expect(mockEmbedContent).toHaveBeenCalledOnce()
 		expect(mockEmbedContent).toHaveBeenCalledWith(
-			expect.objectContaining({ config: expect.objectContaining({ abortSignal: controller.signal }) }),
+			expect.objectContaining({ config: expect.objectContaining({ abortSignal: expect.any(AbortSignal) }) }),
 		)
 	})
 	it.each([
@@ -370,6 +372,7 @@ describe("VertexGeminiEmbedder", () => {
 	])(
 		"refills $model request slots before slower requests finish and preserves result order",
 		async ({ model, concurrency }) => {
+			if (concurrency > 8) concurrency-- // Larger pools keep one slot available for foreground search.
 			const embedder = new VertexGeminiEmbedder(
 				{
 					apiProvider: "vertex",
@@ -497,4 +500,35 @@ describe("VertexGeminiEmbedder", () => {
 		expect(results.map((result) => result.usage?.totalTokens)).toEqual([120, 120, 3])
 		expect(mockEmbedContent).toHaveBeenCalledTimes(81)
 	})
+	it.each(["gemini-embedding-001", "gemini-embedding-2"])(
+		"caps an incremental edit burst at two actual %s requests",
+		async (model) => {
+			vitest.useFakeTimers()
+			const embedder = new VertexGeminiEmbedder(
+				{ apiProvider: "vertex", projectId: "fixture", location: "global" },
+				model,
+			)
+			let active = 0
+			let maximum = 0
+			mockEmbedContent.mockImplementation(async () => {
+				maximum = Math.max(maximum, ++active)
+				await new Promise((resolve) => setTimeout(resolve, 100))
+				active--
+				return { embeddings: [{ values: [1, 0] }] }
+			})
+			const run = embedder.createEmbeddings(
+				Array.from({ length: 10 }, (_, index) => `changed-${index}`),
+				undefined,
+				"document",
+				undefined,
+				undefined,
+				"incremental",
+			)
+			await vitest.runAllTimersAsync()
+			expect((await run).embeddings).toHaveLength(10)
+			expect(mockEmbedContent).toHaveBeenCalledTimes(10)
+			expect(maximum).toBe(2)
+			expect(active).toBe(0)
+		},
+	)
 })

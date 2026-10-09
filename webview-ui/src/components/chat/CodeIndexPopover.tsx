@@ -19,6 +19,7 @@ import {
 	CODEBASE_INDEX_DEFAULTS,
 	VERTEX_REGIONS,
 	isSupportedCodebaseIndexEmbedderProvider,
+	normalizeCodeIndexSearchMaxResults,
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
@@ -326,8 +327,9 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 					(isSupportedCodebaseIndexEmbedderProvider(embedderProvider) ? DEFAULT_VERTEX_MODEL : ""),
 				codebaseIndexEmbedderModelDimension:
 					codebaseIndexConfig.codebaseIndexEmbedderModelDimension || undefined,
-				codebaseIndexSearchMaxResults:
-					codebaseIndexConfig.codebaseIndexSearchMaxResults ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS,
+				codebaseIndexSearchMaxResults: normalizeCodeIndexSearchMaxResults(
+					codebaseIndexConfig.codebaseIndexSearchMaxResults,
+				),
 				codebaseIndexSearchMinScore:
 					codebaseIndexConfig.codebaseIndexSearchMinScore ?? CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_MIN_SCORE,
 				codebaseIndexEmbeddingRateLimitEnabled:
@@ -727,6 +729,9 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 							{indexingStatus.systemStatus === "Indexing" && (
 								<div className="mt-2">
+									<p className="mb-2 text-xs text-vscode-descriptionForeground">
+										{t("settings:codeIndex.freshnessNote")}
+									</p>
 									<ProgressPrimitive.Root
 										className="relative h-2 w-full overflow-hidden rounded-full bg-secondary"
 										value={progressPercentage}>
@@ -1245,7 +1250,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 							{isAdvancedSettingsOpen && (
 								<div className="mt-4 space-y-4">
-									{/* Search Score Threshold Slider */}
+									{/* Semantic Similarity Threshold Slider */}
 									<div className="space-y-2">
 										<div className="flex items-center gap-2">
 											<label className="text-sm font-medium">
@@ -1258,6 +1263,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 										</div>
 										<div className="flex items-center gap-2">
 											<Slider
+												aria-label={t("settings:codeIndex.searchMinScoreLabel")}
 												min={CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_SCORE}
 												max={CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_SCORE}
 												step={CODEBASE_INDEX_DEFAULTS.SEARCH_SCORE_STEP}
@@ -1304,6 +1310,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 										</div>
 										<div className="flex items-center gap-2">
 											<Slider
+												aria-label={t("settings:codeIndex.searchMaxResultsLabel")}
 												min={CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS}
 												max={CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS}
 												step={CODEBASE_INDEX_DEFAULTS.SEARCH_RESULTS_STEP}

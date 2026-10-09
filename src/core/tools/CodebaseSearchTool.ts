@@ -2,7 +2,8 @@ import { Task } from "../task/Task"
 import { CodeIndexManager } from "../../services/code-index/manager"
 import { getWorkspacePath } from "../../utils/path"
 import { formatResponse } from "../prompts/responses"
-import { VectorStoreSearchResult } from "../../services/code-index/interfaces"
+import { t } from "../../i18n"
+import type { CodebaseSearchResult } from "@alpha-code/types"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
@@ -64,32 +65,17 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 				throw new Error("Code Indexing is disabled in the settings.")
 			}
 			if (!manager.isFeatureConfigured) {
-				throw new Error("Code Indexing is not configured (Missing OpenAI Key or Qdrant URL).")
+				throw new Error(t("embeddings:searchNotConfigured"))
 			}
 
-			const searchResults: VectorStoreSearchResult[] = await manager.searchIndex(query, directoryPrefix)
-
-			if (!searchResults || searchResults.length === 0) {
-				pushToolResult(`No relevant code snippets found for the query: "${query}"`)
-				return
-			}
-
-			const jsonResult = {
+			const search = await manager.searchIndexWithDiagnostics(query, directoryPrefix)
+			const jsonResult: CodebaseSearchResult = {
 				query,
 				results: [],
-			} as {
-				query: string
-				results: Array<{
-					filePath: string
-					score: number
-					startLine: number
-					endLine: number
-					context?: string
-					codeChunk: string
-				}>
+				diagnostics: search.diagnostics,
 			}
 
-			searchResults.forEach((result) => {
+			search.results.forEach((result) => {
 				if (!result.payload) return
 				if (!("filePath" in result.payload)) return
 
@@ -98,6 +84,9 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 				jsonResult.results.push({
 					filePath: relativePath,
 					score: result.score,
+					scoreType: result.scoreType,
+					semanticScore: result.semanticScore,
+					lexicalScore: result.lexicalScore,
 					startLine: result.payload.startLine,
 					endLine: result.payload.endLine,
 					context: result.payload.context,
@@ -107,14 +96,29 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 
 			const payload = { tool: "codebaseSearch", content: jsonResult }
 			await task.say("codebase_search_result", JSON.stringify(payload))
+			const partial = [
+				search.diagnostics.semanticStatus,
+				search.diagnostics.lexicalStatus,
+				search.diagnostics.freshStatus,
+			].some((status) => status && status !== "complete")
+			const incompleteIndex = search.diagnostics.indexFreshness && search.diagnostics.indexFreshness !== "current"
+			const coverage = partial
+				? "Search coverage is partial because a retrieval channel timed out or failed. Use read_file or search_files to verify missing evidence.\n"
+				: incompleteIndex
+					? "The code index is incomplete. Semantic coverage of recent changes may lag; use read_file or search_files to verify missing evidence.\n"
+					: ""
+			if (jsonResult.results.length === 0) {
+				pushToolResult(`${coverage}No relevant code snippets found for the query: "${query}"`)
+				return
+			}
 
-			const output = `Query: ${query}
-Results:
+			const output = `${coverage}Query: ${query}
+Results (hybrid rank scores are not confidence probabilities):
 
 ${jsonResult.results
 	.map(
 		(result) => `File path: ${result.filePath}
-Score: ${result.score}
+Hybrid rank score: ${result.score}
 Lines: ${result.startLine}-${result.endLine}
 Context: ${result.context ?? ""}
 Code Chunk: ${result.codeChunk}

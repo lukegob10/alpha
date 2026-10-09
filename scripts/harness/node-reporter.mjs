@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
-import { repositoryTestPath, validateTestEvidence } from "./execution-evidence.mjs"
+import { repositoryTestPath, validateCounts, validateTestEvidence } from "./execution-evidence.mjs"
 
 const projectCounts = (value) => ({
 	total: value.tests,
@@ -28,13 +28,18 @@ export default async function* reporter(events) {
 	}
 	if (!destination) return
 	if (!root || !path.isAbsolute(destination) || !summary) throw new Error("Missing test execution receipt boundary")
+	const counts = validateCounts(projectCounts(summary.counts))
+	// Node 24 can collapse cancelled child tests into failed files in its cumulative
+	// summary. Preserve per-file outcomes on unsuccessful runs; success still fails closed.
+	if (summary.success === false)
+		for (const key of Object.keys(counts)) counts[key] = files.reduce((sum, file) => sum + file.counts[key], 0)
 	const receipt = validateTestEvidence({
 		schemaVersion: 1,
 		kind: "alpha-test-execution",
 		runner: "node",
 		complete: true,
 		success: summary.success,
-		counts: projectCounts(summary.counts),
+		counts,
 		files,
 	})
 	await writeFile(destination, JSON.stringify(receipt, null, 2) + "\n", { flag: "wx", mode: 0o600 })

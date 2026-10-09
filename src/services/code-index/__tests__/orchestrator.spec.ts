@@ -103,7 +103,7 @@ vi.mock("../../i18n", () => ({
 	},
 }))
 
-describe("CodeIndexOrchestrator - error path cleanup gating", () => {
+describe("CodeIndexOrchestrator - startup failure data preservation", () => {
 	const workspacePath = "/test/workspace"
 
 	let configManager: any
@@ -151,7 +151,9 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 		}
 
 		fileWatcher = {
+			resumeProcessing: vi.fn(),
 			initialize: vi.fn().mockResolvedValue(undefined),
+			whenIdle: vi.fn().mockResolvedValue(undefined),
 			stop: vi.fn(),
 			onDidStartBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onBatchProgressUpdate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
@@ -187,10 +189,9 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 		expect(lastCall[0]).toBe("Error")
 	})
 
-	it("should call clearCollection() and clear cache when an error occurs after initialize() succeeds (indexing started)", async () => {
-		// Arrange: initialize succeeds; fail soon after to enter error path with indexingStarted=true
+	it("preserves partial index data when a startup operation fails after initialization", async () => {
+		// An existing collection must survive a later startup failure.
 		vectorStore.initialize.mockResolvedValue(false) // existing collection
-		vectorStore.hasIndexedData.mockResolvedValue(false) // force full scan path
 		vectorStore.markIndexingIncomplete.mockRejectedValue(new Error("mark incomplete failure"))
 
 		const orchestrator = new CodeIndexOrchestrator(
@@ -206,9 +207,9 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 		// Act
 		await orchestrator.startIndexing()
 
-		// Assert: cleanup gated behind indexingStarted should have happened
-		expect(vectorStore.clearCollection).toHaveBeenCalledTimes(1)
-		expect(cacheManager.clearCacheFile).toHaveBeenCalledTimes(1)
+		// Preserve prior commits and hashes so a later retry can reconcile them.
+		expect(vectorStore.clearCollection).not.toHaveBeenCalled()
+		expect(cacheManager.clearCacheFile).not.toHaveBeenCalled()
 
 		// Error state should be set
 		expect(stateManager.setSystemState).toHaveBeenCalled()
@@ -240,7 +241,7 @@ describe("CodeIndexOrchestrator - error path cleanup gating", () => {
 		expect(vectorStore.markIndexingComplete).not.toHaveBeenCalled()
 		expect(vectorStore.clearCollection).not.toHaveBeenCalled()
 		expect(cacheManager.clearCacheFile).not.toHaveBeenCalled()
-		expect(fileWatcher.initialize).not.toHaveBeenCalled()
+		expect(fileWatcher.stop).toHaveBeenCalled()
 		expect(stateManager.state).toBe("Error")
 	})
 })
@@ -293,13 +294,14 @@ describe("CodeIndexOrchestrator - stopIndexing", () => {
 		}
 
 		fileWatcher = {
+			resumeProcessing: vi.fn(),
 			initialize: vi.fn().mockResolvedValue(undefined),
+			whenIdle: vi.fn().mockResolvedValue(undefined),
 			stop: vi.fn(),
 			onDidStartBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onBatchProgressUpdate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidFinishBatchProcessing: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			dispose: vi.fn(),
-			whenIdle: vi.fn().mockResolvedValue(undefined),
 		}
 	})
 

@@ -1069,44 +1069,50 @@ describe("webviewMessageHandler - queued message steering", () => {
 		vi.clearAllMocks()
 	})
 
-	it("waits for durable direct steering before acknowledging the addressed task", async () => {
-		let finish!: () => void
-		const steerUserMessageDurably = vi.fn(
-			() =>
-				new Promise<void>((resolve) => {
-					finish = resolve
-				}),
-		)
-		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
-			taskId: "background",
-			steerUserMessageDurably,
-			messageQueueService: {
-				visibleMessages: [{ id: "direct-steer", text: "Use the existing parser", timestamp: 1 }],
-			},
-		} as any)
-		const dispatch = webviewMessageHandler(mockAlphaProvider, {
-			type: "sendAndSteer",
-			taskId: "background",
-			requestId: "direct-steer",
-			text: "Use the existing parser",
-			images: [],
-		})
-		expect(steerUserMessageDurably).toHaveBeenCalledWith("Use the existing parser", [], "direct-steer")
-		expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
-		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
-		finish()
-		await dispatch
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
-			expect.objectContaining({
-				chatCommandResult: {
-					command: "sendAndSteer",
-					taskId: "background",
-					requestId: "direct-steer",
-					status: "accepted",
+	it.each(["delivering", "queued"] as const)(
+		"waits for durable direct steering before acknowledging %s input on the addressed task",
+		async (deliveryState) => {
+			let finish!: () => void
+			const steerUserMessageDurably = vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						finish = resolve
+					}),
+			)
+			vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+				taskId: "background",
+				steerUserMessageDurably,
+				messageQueueService: {
+					visibleMessages: [
+						{ id: "direct-steer", text: "Use the existing parser", timestamp: 1, deliveryState },
+					],
 				},
-			}),
-		)
-	})
+			} as any)
+			const dispatch = webviewMessageHandler(mockAlphaProvider, {
+				type: "sendAndSteer",
+				taskId: "background",
+				requestId: "direct-steer",
+				text: "Use the existing parser",
+				images: [],
+			})
+			expect(steerUserMessageDurably).toHaveBeenCalledWith("Use the existing parser", [], "direct-steer")
+			expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+			finish()
+			await dispatch
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					chatCommandResult: {
+						command: "sendAndSteer",
+						taskId: "background",
+						requestId: "direct-steer",
+						status: "accepted",
+						...(deliveryState === "queued" ? { deliveryState: "queued" } : {}),
+					},
+				}),
+			)
+		},
+	)
 
 	it("acknowledges a retained steering message as queued when the handoff fails", async () => {
 		const queue = [{ id: "retained-steer", text: "Keep this correction", timestamp: 1 }]

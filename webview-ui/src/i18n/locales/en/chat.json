@@ -339,12 +339,15 @@
 		"didSearchOutsideWorkspace": "Alpha searched a directory (outside workspace)"
 	},
 	"codebaseSearch": {
+		"partialCoverageNote": "Showing available matches. The index or retrieval is incomplete; use file search to verify missing evidence.",
 		"title": "Codebase search",
 		"wantsToSearch": "Alpha wants to search the codebase for <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha wants to search the codebase for <code>{{query}}</code> in <code>{{path}}</code>",
 		"didSearch_one": "Found 1 result",
 		"didSearch_other": "Found {{count}} results",
-		"resultTooltip": "Similarity score: {{score}} (click to open file)"
+		"resultTooltip": "Hybrid rank score: {{score}} (click to open file)",
+		"contextBudgetNote": "Some matches did not fit within the search context budget.",
+		"resultLimitNote": "Additional matches were omitted at the configured chunk limit."
 	},
 	"commandOutput": "Command Output",
 	"commandExecution": {
@@ -468,11 +471,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
-			"acceptanceChecks": "Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
-			"commandControl": "Recover from repeated search-only steps by consolidating evidence and taking a concrete next action.",
-			"workflowContinuity": "See a subtle pulse on folded command and edit traces while work is still running.",
-			"chatUpdates": "Use Codex-aligned Plan tools, command outcomes, prompts, and turn sequencing."
+			"welcome": "Alpha v{{version}} keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
+			"indexingUpdates": "Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
+			"steeringUpdates": "Send a message during an active response to steer the conversation sooner, while keeping queued input safe.",
+			"searchCoverage": "Codebase search checks snippets against saved files and explains when search coverage is incomplete.",
+			"chatUpdates": "See clearer activity in recent chats and keep using the Windows shortcuts for task navigation and reasoning."
 		}
 	},
 	"crossTasks": {
@@ -584,7 +587,7 @@
 	},
 	"indexingStatus": {
 		"ready": "Index ready",
-		"indexing": "Indexing {{percentage}}%",
+		"indexing": "Embeddings catching up ({{percentage}}%). Current saved edits remain searchable.",
 		"indexed": "Indexed",
 		"error": "Index error",
 		"status": "Index status",

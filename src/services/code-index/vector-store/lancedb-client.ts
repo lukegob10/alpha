@@ -4,7 +4,12 @@ import * as lancedb from "@lancedb/lancedb"
 import type { Connection, Table } from "@lancedb/lancedb"
 
 import { t } from "../../../i18n"
-import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE } from "../constants"
+import {
+	DEFAULT_LOCAL_INDEX_PATH,
+	DEFAULT_MAX_SEARCH_RESULTS,
+	DEFAULT_SEARCH_MIN_SCORE,
+	MAX_REUSABLE_FILE_POINTS,
+} from "../constants"
 import { IVectorStore, Payload, PointStruct, VectorStoreSearchResult } from "../interfaces"
 
 import { codeTerms, lexicalText } from "../shared/lexical"
@@ -14,6 +19,21 @@ const TABLE_NAME = "code_blocks"
 const METADATA_ID = "__indexing_metadata__"
 const CODE_TYPE = "code"
 const METADATA_TYPE = "metadata"
+const SEARCH_COLUMNS = [
+	"id",
+	"filePath",
+	"codeChunk",
+	"startLine",
+	"endLine",
+	"segmentHash",
+	"context",
+	"identifier",
+	"chunkType",
+	"fileHash",
+	"startOffset",
+	"endOffset",
+	"tokenCount",
+]
 
 type LanceDbRecord = {
 	indexIdentity: string
@@ -225,6 +245,33 @@ export class LanceDbVectorStore implements IVectorStore {
 		this.lexicalDirty = true
 	}
 
+	async getPointsByFilePath(filePath: string): Promise<PointStruct[]> {
+		const table = await this.getTable()
+		if (!table) return []
+		const filter = `type = '${CODE_TYPE}' AND filePath = '${this.escapeSqlString(this.normalizeStoredPath(filePath))}'`
+		const rows = await table.query().where(filter).limit(MAX_REUSABLE_FILE_POINTS).toArray()
+		return rows.map((row) => ({ id: String(row.id), vector: Array.from(row.vector), payload: this.toPayload(row) }))
+	}
+
+	async replaceFilePoints(filePath: string, points: PointStruct[]): Promise<void> {
+		const normalized = this.normalizeStoredPath(filePath)
+		if (points.some((point) => this.normalizeStoredPath(String(point.payload.filePath)) !== normalized)) {
+			throw new Error(t("embeddings:incremental.invalidReplacement"))
+		}
+		if (!points.length) return this.deletePointsByFilePath(filePath)
+		const table = await this.getTable()
+		if (!table) throw new Error(t("embeddings:serviceFactory.localIndexPathMissing"))
+		await table
+			.mergeInsert("id")
+			.whenMatchedUpdateAll()
+			.whenNotMatchedInsertAll()
+			.whenNotMatchedBySourceDelete({
+				where: `type = '${CODE_TYPE}' AND filePath = '${this.escapeSqlString(normalized)}'`,
+			})
+			.execute(points.map((point) => this.toRecord(point)))
+		this.lexicalDirty = true
+	}
+
 	async search(
 		queryVector: number[],
 		directoryPrefix?: string,
@@ -240,6 +287,7 @@ export class LanceDbVectorStore implements IVectorStore {
 			.vectorSearch(queryVector)
 			.distanceType("cosine")
 			.where(this.searchFilter(directoryPrefix))
+			.select([...SEARCH_COLUMNS, "_distance"])
 			.limit(maxResults ?? DEFAULT_MAX_SEARCH_RESULTS)
 			.toArray()
 
@@ -316,6 +364,7 @@ export class LanceDbVectorStore implements IVectorStore {
 			.query()
 			.fullTextSearch(terms, { columns: ["lexicalText"] })
 			.where(this.searchFilter(directoryPrefix))
+			.select([...SEARCH_COLUMNS, "_score"])
 			.limit(maxResults)
 			.toArray()
 		return rows.map((row) => ({

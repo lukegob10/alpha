@@ -6,8 +6,53 @@ import test from "node:test"
 import { pathToFileURL } from "node:url"
 
 import { parseArguments, prepareRun, runPortableRepro } from "./run-portable-alpha-repro.mjs"
+import { writeReceipt } from "../apps/vscode-e2e/portable-automation/receipt.js"
 
 const absolute = (name) => path.join(os.tmpdir(), name)
+
+test("portable receipts are invisible until complete and cannot replace an existing result", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-portable-runner-"))
+	let resumeWrite
+	const writable = new Promise((resolve) => {
+		resumeWrite = resolve
+	})
+	let opened
+	const started = new Promise((resolve) => {
+		opened = resolve
+	})
+	const target = path.join(root, "result.json")
+	const value = { runId: "atomic-run", hostVersion: "1.125.0", status: "completed" }
+	const publication = writeReceipt(target, value, {
+		...fs,
+		writeFile: async (file, bytes, options) => {
+			const handle = await fs.open(file, options.flag, options.mode)
+			opened()
+			try {
+				await writable
+				await handle.writeFile(bytes)
+			} finally {
+				await handle.close()
+			}
+		},
+	})
+	try {
+		await started
+		await assert.rejects(fs.readFile(target, "utf8"), { code: "ENOENT" })
+		resumeWrite()
+		await publication
+		assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), value)
+		await assert.rejects(writeReceipt(target, { ...value, status: "failed" }), { code: "EEXIST" })
+		assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), value)
+		assert.deepEqual(await fs.readdir(root), ["result.json"])
+	} finally {
+		resumeWrite()
+		await publication
+		const actual = await fs.realpath(root)
+		assert.equal(path.dirname(actual), await fs.realpath(os.tmpdir()))
+		assert.match(path.basename(actual), /^alpha-portable-runner-/)
+		await fs.rm(actual, { recursive: true, force: true })
+	}
+})
 
 test("portable runner requires explicit, bounded run inputs", () => {
 	assert.throws(() => parseArguments(["--host", absolute("Code.exe")]), /Missing --workspace/)
@@ -94,6 +139,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 		)
 		const prepared = await prepareRun(options)
 		assert.equal((await fs.stat(path.join(prepared.sidecar, "extension.js"))).isFile(), true)
+		assert.equal((await fs.stat(path.join(prepared.sidecar, "receipt.js"))).isFile(), true)
 		const job = JSON.parse(await fs.readFile(path.join(prepared.sidecar, "run.json"), "utf8"))
 		assert.equal(job.promptFile, await fs.realpath(path.join(workspace, "SPEC.md")))
 		assert.equal(job.allowProtectedWrites, false)
@@ -128,17 +174,14 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					assert.equal(args[0], `--folder-uri=${pathToFileURL(realWorkspace).href}`)
 					assert.equal(args[1], "--new-window")
 					const sidecar = args[2].slice("--extensionDevelopmentPath=".length)
-					void fs.writeFile(
-						path.join(sidecar, "run-2-task-result.json"),
-						JSON.stringify({
-							runId: "run-2",
-							hostVersion: "1.125.0",
-							status: "completed",
-							taskId: "task-1",
-							workspaceAddedByAutomation: true,
-							dirtyEditorsAtFinish: 0,
-						}),
-					)
+					void writeReceipt(path.join(sidecar, "run-2-task-result.json"), {
+						runId: "run-2",
+						hostVersion: "1.125.0",
+						status: "completed",
+						taskId: "task-1",
+						workspaceAddedByAutomation: true,
+						dirtyEditorsAtFinish: 0,
+					})
 					return { unref() {} }
 				},
 				windowGuard: async (phase, preparedRun, result) => {
@@ -166,10 +209,11 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					assert.equal(args[0], `--folder-uri=${pathToFileURL(realWorkspace).href}`)
 					assert.equal(args[1], "--new-window")
 					const sidecar = args[2].slice("--extensionDevelopmentPath=".length)
-					void fs.writeFile(
-						path.join(sidecar, "run-3-probe-result.json"),
-						JSON.stringify({ runId: "run-3", hostVersion: "1.125.0", stage: "ready" }),
-					)
+					void writeReceipt(path.join(sidecar, "run-3-probe-result.json"), {
+						runId: "run-3",
+						hostVersion: "1.125.0",
+						stage: "ready",
+					})
 					return { unref() {} }
 				},
 				sleep: async () => {},
@@ -182,16 +226,48 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 				launch: (_executable, args) => {
 					assert.equal(args[2], `--extensionDevelopmentPath=${realAlphaDevelopmentPath}`)
 					const sidecar = args[3].slice("--extensionDevelopmentPath=".length)
-					void fs.writeFile(
-						path.join(sidecar, "run-4-probe-result.json"),
-						JSON.stringify({ runId: "run-4", hostVersion: "1.125.0", stage: "ready" }),
-					)
+					void writeReceipt(path.join(sidecar, "run-4-probe-result.json"), {
+						runId: "run-4",
+						hostVersion: "1.125.0",
+						stage: "ready",
+					})
 					return { unref() {} }
 				},
 				sleep: async () => {},
 			},
 		)
 		assert.equal(overlay.result.stage, "ready")
+		for (const [runId, bytes, expected] of [
+			["malformed", "{", SyntaxError],
+			[
+				"wrong-run",
+				JSON.stringify({ runId: "another-run", hostVersion: "1.125.0", stage: "ready" }),
+				/receipt identity/,
+			],
+			[
+				"wrong-host",
+				JSON.stringify({ runId: "wrong-host", hostVersion: "1.140.0", stage: "ready" }),
+				/receipt identity/,
+			],
+		]) {
+			let receiptPath
+			await assert.rejects(
+				runPortableRepro(
+					{ ...options, runId, mode: "probe" },
+					{
+						launch: (_executable, args) => {
+							receiptPath = path.join(
+								args[2].slice("--extensionDevelopmentPath=".length),
+								`${runId}-probe-result.json`,
+							)
+							return { unref() {} }
+						},
+						sleep: () => fs.writeFile(receiptPath, bytes, { flag: "wx" }),
+					},
+				),
+				expected,
+			)
+		}
 	} finally {
 		const actual = await fs.realpath(root)
 		const temporaryRoot = await fs.realpath(os.tmpdir())

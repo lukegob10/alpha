@@ -3421,6 +3421,56 @@ describe("ToolScheduler", () => {
 		expect(events.filter((event) => event.type === "tool_result").map((event) => event.callId)).toEqual(["1", "2"])
 	})
 
+	it("settles cancellation before a blocked progress hook releases dispatch admission", async () => {
+		vi.useFakeTimers()
+		try {
+			const task = makeTask()
+			const controller = new AbortController()
+			const entered = deferred()
+			const release = deferred()
+			const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("obsolete output")
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(descriptor("read", "serial", execute))
+			const events: AgentTurnEvent[] = []
+			let settled = false
+			const pending = new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+				signal: controller.signal,
+				preserveAbortedResults: true,
+				onEvent: async (event) => {
+					events.push(event)
+					if (event.type === "progress") {
+						entered.resolve()
+						await release.promise
+					}
+				},
+			}).run(response({ id: "blocked-hook", name: "read" }, { id: "not-started", name: "read" }))
+			void pending.then(() => {
+				settled = true
+			})
+			await entered.promise
+			controller.abort(new Error("steered user input"))
+			await vi.advanceTimersByTimeAsync(0)
+			const settledBeforeHook = settled
+			release.resolve()
+			const outcome = await pending
+			expect(settledBeforeHook).toBe(true)
+			expect(outcome.status).toBe("aborted")
+			expect(outcome.results.map((result) => result.status)).toEqual(["cancelled", "cancelled"])
+			expect(resultIds(task)).toEqual(["blocked-hook", "not-started"])
+			expect(events.filter((event) => event.type === "tool_result")).toHaveLength(2)
+			expect(execute).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("fails closed when the transcript fence rejects before an effect", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
