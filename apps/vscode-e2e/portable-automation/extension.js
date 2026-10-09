@@ -2,6 +2,7 @@ const fs = require("node:fs/promises")
 const path = require("node:path")
 const { createHash } = require("node:crypto")
 const vscode = require("vscode")
+const { writeReceipt } = require("./receipt")
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -235,7 +236,7 @@ async function runTask(context, job, api, configuration, model, workspaceAddedBy
 		}
 		outcome.finishedAt = new Date().toISOString()
 		outcome.dirtyEditorsAtFinish = vscode.workspace.textDocuments.filter((document) => document.isDirty).length
-		await fs.writeFile(file("task-result.json"), JSON.stringify(outcome, null, 2) + "\n", { flag: "wx" })
+		await writeReceipt(file("task-result.json"), outcome)
 		closeAutomationWindow()
 	}
 }
@@ -249,13 +250,7 @@ async function activate(context) {
 		return
 	}
 	const write = async (name, value) => {
-		await fs.writeFile(
-			path.join(context.extensionPath, `${job.runId}-${name}`),
-			JSON.stringify(value, null, 2) + "\n",
-			{
-				flag: "wx",
-			},
-		)
+		await writeReceipt(path.join(context.extensionPath, `${job.runId}-${name}`), value)
 	}
 	const report = {
 		schemaVersion: 1,

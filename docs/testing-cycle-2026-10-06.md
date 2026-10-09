@@ -96,3 +96,19 @@ skips remain visible and are not promoted into fully executed strict acceptance.
 
 The final index records actual cycle outcomes, unresolved failures and retained evidence. A passing deterministic cycle
 does not imply complete surface coverage or production readiness.
+
+## Release runner follow-up — 2026-10-09
+
+The 3.1.9 local tooling gate reproduced a portable receipt race: polling could observe an empty result file between its
+creation and the completion of `writeFile`, then fail JSON parsing. Both the real portable task/probe writer and its
+fixture used this publication pattern. Their shared portable-sidecar writer now completes a unique sibling temporary
+file before publishing with an atomic, exclusive hard link, following the existing live-host receipt contract. Another
+activation cannot replace a terminal receipt, and the temporary file is removed after publication or failure. The
+sidecar preparation copies this helper alongside the extension entry point.
+
+A controlled write barrier reproduces the old failure without sleeps: the receipt became visible while the writer was
+paused, so the required `ENOENT` assertion failed. The repaired test verifies invisibility until completion, complete
+JSON, duplicate-publication refusal, unchanged original bytes, and temporary-file cleanup. The runner retains immediate
+rejection of malformed JSON, mismatched run IDs, and hosts other than 1.125.0. Run the focused coverage with
+`node --test scripts/run-portable-alpha-repro.test.mjs`, then the owning `pnpm harness run tooling` gate. No live provider
+request is needed for these checks.
