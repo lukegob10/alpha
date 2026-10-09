@@ -593,16 +593,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.1.2 announcement once per installation", async () => {
-		const announcementId = "september-2026-v3.1.2-agent-recovery"
+	test("shows the v3.1.9 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.1.9-indexing-steering"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue(
-			"lastShownAnnouncementId",
-			"september-2026-v3.0.0-approval-and-performance",
-		)
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "september-2026-v3.1.2-agent-recovery")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
