@@ -81,7 +81,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 		expect(attempts.map(({ fence }) => fence)).toEqual([1, 2])
 		expect(attempts[0].source).toBe(attempts[1].source)
 		expect(await persistence.read()).toEqual(state(2))
-		expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+		expect(await fs.readdir(directory)).toEqual([
+			path.basename(persistence.filePath),
+			"agent_control.json.coordination.sqlite",
+		])
 	})
 
 	it("bounds persistent sharing failures without replaying the body or replacing the prior state", async () => {
@@ -103,7 +106,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 		expect(new Set(attempts).size).toBe(1)
 		expect(retries.mock.calls.map(([, delay]) => delay)).toEqual([10, 25, 50, 100, 200])
 		expect(await persistence.read()).toEqual(state(1))
-		expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+		expect(await fs.readdir(directory)).toEqual([
+			path.basename(persistence.filePath),
+			"agent_control.json.coordination.sqlite",
+		])
 	})
 
 	it("does not retry a permanent replacement error", async () => {
@@ -124,7 +130,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 		expect(body).toHaveBeenCalledTimes(1)
 		expect(retries).not.toHaveBeenCalled()
 		expect(await persistence.read()).toEqual(state(1))
-		expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+		expect(await fs.readdir(directory)).toEqual([
+			path.basename(persistence.filePath),
+			"agent_control.json.coordination.sqlite",
+		])
 	})
 
 	it("rejects ownership loss during backoff before attempting another replacement", async () => {
@@ -181,7 +190,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 			expect(body).toHaveBeenCalledTimes(1)
 			expect(attemptedVersions).toEqual([2, 2, 3])
 			expect(await persistence.read()).toEqual(state(3))
-			expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+			expect(await fs.readdir(directory)).toEqual([
+				path.basename(persistence.filePath),
+				"agent_control.json.coordination.sqlite",
+			])
 		} finally {
 			await vi.runAllTimersAsync()
 			await Promise.all([original, unrelated])
@@ -216,7 +228,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 			expect(body).toHaveBeenCalledTimes(1)
 			expect(attempts).toBe(1)
 			expect(await persistence.read()).toEqual(state(1))
-			expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+			expect(await fs.readdir(directory)).toEqual([
+				path.basename(persistence.filePath),
+				"agent_control.json.coordination.sqlite",
+			])
 		} finally {
 			cancellation.abort()
 			await Promise.allSettled([writing])
@@ -250,7 +265,10 @@ describe("FileAgentControlPersistence fenced replacement", () => {
 			await expect(escaped).resolves.toMatchObject({ message: "Agent control transaction ownership was lost" })
 			expect(attemptedVersions).toEqual([2, 3])
 			expect(await persistence.read()).toEqual(state(3))
-			expect(await fs.readdir(directory)).toEqual([path.basename(persistence.filePath)])
+			expect(await fs.readdir(directory)).toEqual([
+				path.basename(persistence.filePath),
+				"agent_control.json.coordination.sqlite",
+			])
 		} finally {
 			await vi.runAllTimersAsync()
 			await escaped

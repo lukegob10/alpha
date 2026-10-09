@@ -6308,7 +6308,7 @@ describe("Alpha", () => {
 		)
 
 		it.each(["ELOCKOWNER", "ELOCKLEGACY"] as const)(
-			"explains the offline repair required by %s before offering recovery",
+			"explains automatic recovery and the unknown-owner fallback for %s",
 			async (code) => {
 				const task = createTask()
 				const privateReason = "Private storage path and request content"
@@ -6321,11 +6321,32 @@ describe("Alpha", () => {
 
 				const errors = task.clineMessages.filter((message) => message.say === "error")
 				expect(errors).toHaveLength(1)
-				expect(errors[0].text).toContain("Close all VS Code windows")
+				expect(errors[0].text).toContain("automatically recovers abandoned locks")
+				expect(errors[0].text).toContain("close all VS Code windows")
 				expect(errors[0].text).toContain("agent_control.json.transaction.lock")
 				expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
 			},
 		)
+
+		it.each(["ELOCKED", "EQUEUEFULL"] as const)("explains %s as task-storage contention", async (code) => {
+			const task = createTask()
+			const privateReason = "Private storage path and request content"
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			const request = vi
+				.spyOn(task, "runAgentRequests")
+				.mockRejectedValueOnce(new AgentControlTransactionError(privateReason, code))
+				.mockResolvedValueOnce(true)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "start" }])
+
+			const errors = task.clineMessages.filter((message) => message.say === "error")
+			expect(errors).toHaveLength(1)
+			expect(errors[0].text).toContain("waiting for Alpha's task storage")
+			expect(errors[0].text).toContain("then resume")
+			expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+			expect(ask).toHaveBeenCalledExactlyOnceWith("resume_task")
+			expect(request).toHaveBeenCalledTimes(2)
+		})
 
 		it("explains an unhandled pre-provider exception without copying private diagnostics", async () => {
 			const task = createTask()

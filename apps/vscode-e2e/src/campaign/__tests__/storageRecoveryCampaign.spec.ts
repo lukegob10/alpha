@@ -53,6 +53,19 @@ test("dedicated restart sequence requires evidence and quiescence before quarant
 					const lockPath = path.join(storagePath, AGENT_CONTROL_TRANSACTION_LOCK)
 					if (phase === "fault") {
 						assert.equal((await fs.readFile(path.join(lockPath, "owner.json"))).length, 0)
+						assert.equal(
+							JSON.parse(
+								await fs.readFile(
+									path.join(
+										storagePath,
+										"agent_control.json.owners",
+										"storage-restart-controller.json",
+									),
+									"utf8",
+								),
+							).pid,
+							process.pid,
+						)
 						await fs.writeFile(path.join(storagePath, "agent_control.json"), '{"test":"sentinel"}')
 						await fs.mkdir(path.join(storagePath, "tasks", "task-fault"), { recursive: true })
 						await fs.writeFile(
@@ -60,6 +73,12 @@ test("dedicated restart sequence requires evidence and quiescence before quarant
 							"[]",
 						)
 					} else {
+						await assert.rejects(
+							fs.stat(
+								path.join(storagePath, "agent_control.json.owners", "storage-restart-controller.json"),
+							),
+							{ code: "ENOENT" },
+						)
 						await assert.rejects(fs.stat(lockPath), { code: "ENOENT" })
 						assert.ok((await fs.stat(`${lockPath}.offline-quarantine`)).isDirectory())
 					}

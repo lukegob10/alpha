@@ -721,7 +721,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.1.9-indexing-steering"
+	public readonly latestAnnouncementId = "october-2026-v3.1.10-task-lock-recovery"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

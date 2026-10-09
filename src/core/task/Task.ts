@@ -10759,13 +10759,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						failure.error instanceof AgentControlTransactionError &&
 						(failure.error.code === "ELOCKOWNER" || failure.error.code === "ELOCKLEGACY")
 							? t("common:errors.task_recovery_lock_repair")
-							: failure.error instanceof TaskPersistenceError
-								? t("common:errors.task_recovery_persistence")
-								: failure.status === "exhausted"
-									? t("common:errors.task_recovery_exhausted")
-									: failure.status === "incomplete"
-										? t("common:errors.task_recovery_incomplete")
-										: t("common:errors.task_recovery_failed")
+							: failure.error instanceof AgentControlTransactionError &&
+								  (failure.error.code === "ELOCKED" || failure.error.code === "EQUEUEFULL")
+								? t("common:errors.task_recovery_storage_busy")
+								: failure.error instanceof TaskPersistenceError
+									? t("common:errors.task_recovery_persistence")
+									: failure.status === "exhausted"
+										? t("common:errors.task_recovery_exhausted")
+										: failure.status === "incomplete"
+											? t("common:errors.task_recovery_incomplete")
+											: t("common:errors.task_recovery_failed")
 					await this.say("error", message)
 				}
 			}

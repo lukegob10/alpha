@@ -6,6 +6,7 @@ import { AlphaProvider } from "../AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task } from "../../task/Task"
 import type { HistoryItem } from "@alpha-code/types"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 
 vi.mock("vscode", () => ({
 	ExtensionContext: vi.fn(),
@@ -250,6 +251,11 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		// Provider-profile tests mock storage; the OS mutex requires a real host
+		// filesystem, exercised separately by persistence and extension tests.
+		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
+			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
+		)
 		taskIdCounter = 0
 		originalRooCliRuntimeEnv = process.env.ROO_CLI_RUNTIME
 		delete process.env.ROO_CLI_RUNTIME
@@ -338,6 +344,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 	})
 
 	afterEach(() => {
+		vi.mocked(AgentControlStore.forGlobalStorage).mockRestore()
 		if (originalRooCliRuntimeEnv === undefined) {
 			delete process.env.ROO_CLI_RUNTIME
 		} else {

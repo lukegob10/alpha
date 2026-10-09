@@ -593,8 +593,8 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.1.9 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.1.9-indexing-steering"
+	test("shows the v3.1.10 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.1.10-task-lock-recovery"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

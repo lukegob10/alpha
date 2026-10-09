@@ -23,6 +23,7 @@ import {
 	type FileAgentControlPersistenceOptions,
 } from "./AgentControlTransaction"
 import { AgentControlLockWaiter } from "./AgentControlLockWaiter"
+import { AgentControlTransactionGuard } from "./AgentControlTransactionGuard"
 
 export { AgentControlTransactionError } from "./AgentControlTransaction"
 export type {
@@ -197,6 +198,8 @@ interface TransactionLockOwner {
 	token: string
 	pid: number
 	operation?: AgentControlOperation
+	/** Derived from the filesystem shape, never trusted from serialized metadata. */
+	fileLock?: boolean
 }
 
 interface ActiveTransaction {
@@ -278,6 +281,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private releasedTransactionToken?: string
 	private readonly transactionContext = new AsyncLocalStorage<ActiveTransaction>()
 	private readonly transactionQueue: AgentControlTransactionQueue
+	private transactionGuard?: AgentControlTransactionGuard
 	readonly transactionWaitTimeoutMs: number
 	readonly maxPendingTransactions: number
 
@@ -286,9 +290,8 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		private readonly options: FileAgentControlPersistenceOptions = {},
 	) {
 		this.filePath = path.join(globalStoragePath, GlobalFileNames.agentControl)
-		// This deliberately matches the directory path used by the former
-		// proper-lockfile transaction lease. A legacy live holder therefore blocks
-		// admission instead of running concurrently with the process-owned lock.
+		// Keep the former directory namespace: atomic file publication also refuses
+		// an existing legacy directory, so mixed-version hosts cannot run concurrently.
 		this.transactionLockPath = `${this.filePath}.transaction.lock`
 		this.ownerLeaseDirectory = `${this.filePath}.owners`
 		this.transactionWaitTimeoutMs = options.transactionWaitTimeoutMs ?? DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS
@@ -401,7 +404,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private async readOwnerLeaseMetadata(ownerId: AgentRuntimeOwnerId): Promise<OwnerLeaseMetadata | undefined> {
 		let serialized: string
 		try {
-			serialized = await fs.readFile(this.ownerLeaseMetadataPath(ownerId), "utf8")
+			const metadataPath = this.ownerLeaseMetadataPath(ownerId)
+			const stat = await fs.lstat(metadataPath)
+			if (!stat.isFile() || stat.size > 1_024) return undefined
+			serialized = await this.readBoundedLockMetadata(metadataPath, 1_024)
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
 			throw error
@@ -419,7 +425,8 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			typeof value.token !== "string" ||
 			!("pid" in value) ||
 			!Number.isSafeInteger(value.pid) ||
-			(value.pid as number) <= 0
+			(value.pid as number) <= 0 ||
+			(value.pid as number) > 2_147_483_647
 		)
 			return undefined
 		return { token: value.token, pid: value.pid as number }
@@ -474,9 +481,54 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			signal: options.signal,
 		}
 		const acquiringAt = performance.now()
+		const guard = new AgentControlTransactionGuard(`${this.filePath}.coordination.sqlite`)
+		let guardWaiter: AgentControlLockWaiter | undefined
 		try {
+			await fs.mkdir(path.dirname(this.transactionLockPath), { recursive: true })
+			const deadline = acquiringAt + this.transactionWaitTimeoutMs - diagnostic.queueWaitMs
+			let retriedAbsentOwner = false
+			for (let attempt = 0; ; attempt++) {
+				const checkpoint = guardWaiter?.checkpoint() ?? 0
+				throwIfTransactionCancelled(options.signal)
+				if (performance.now() >= deadline) {
+					throw new AgentControlTransactionError(
+						"Agent control bookkeeping is busy; transaction acquisition wait expired (no operation was started)",
+						"ELOCKED",
+					)
+				}
+				if (await guard.tryAcquire()) break
+				diagnostic.ownerState = "live"
+				diagnostic.attempts++
+				if (!guardWaiter) {
+					guardWaiter = new AgentControlLockWaiter(this.transactionLockPath)
+					continue
+				}
+				const owner = await this.observeTransactionLockForAcquisition()
+				if (owner && typeof owner === "object") {
+					diagnostic.ownerPid = owner.pid
+					diagnostic.ownerOperation = owner.operation
+				}
+				if (!owner && !retriedAbsentOwner) {
+					retriedAbsentOwner = true
+					continue
+				}
+				retriedAbsentOwner = !owner
+				const delay = TRANSACTION_LOCK_RETRY_DELAYS_MS[attempt] ?? 400
+				await guardWaiter.wait(
+					checkpoint,
+					Math.max(0, Math.min(delay, deadline - performance.now())),
+					options.signal,
+				)
+			}
+			this.transactionGuard = guard
+			diagnostic.acquisitionWaitMs = performance.now() - acquiringAt
 			await this.acquireTransactionLock(transaction.token, options, diagnostic)
+		} catch (error) {
+			this.transactionGuard = undefined
+			guard.close()
+			throw error
 		} finally {
+			guardWaiter?.close()
 			diagnostic.acquisitionWaitMs = performance.now() - acquiringAt
 		}
 		this.activeTransaction = transaction
@@ -504,19 +556,20 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		diagnostic.committed = transaction.committed
 		const releasingAt = performance.now()
 		let releaseFailed = false
-		let releaseError: unknown
 		try {
 			await this.releaseTransactionLock(transaction.token, diagnostic)
 			delete diagnostic.releaseFailurePhase
 		} catch (error) {
 			releaseFailed = true
-			releaseError = error
 			diagnostic.releaseFailurePhase ??= "unknown"
 			diagnostic.releaseFailureCode = transactionReleaseFailureCode(error)
 			// Publish local proof only after every release/marker attempt settled.
 			// The instance queue and finished fence forbid any later write by this
 			// owner, even when the durable marker could not be written.
 			this.releasedTransactionToken = transaction.token
+		} finally {
+			this.transactionGuard = undefined
+			guard.close()
 		}
 		if (this.activeTransaction === transaction) {
 			this.activeTransaction = undefined
@@ -525,28 +578,31 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		diagnostic.releaseFailed = releaseFailed
 		// Preserve the mutation failure when both the operation and cleanup fail.
 		if (operationFailed) throw operationError
-		// Once the synchronous fenced rename committed, a later cleanup failure
-		// must not turn a durable success into a rejected API call. The immutable
-		// process-owned protocol prevents normal contenders from causing this;
-		// surface cleanup failures only for transactions that did not commit.
-		if (releaseFailed && !transaction.committed) throw releaseError
+		// The OS guard has released ownership even if marker cleanup failed.
+		// Preserve every successful, fenced operation, including initialization
+		// and read-only work. A marker is diagnostic evidence, not a live mutex.
 		diagnostic.outcome = "success"
 		return result!
 	}
 
 	async assertTransactionOwner(): Promise<void> {
 		const transaction = this.activeTransaction
-		if (!transaction) throw new Error("Agent control transaction is not active")
+		if (!transaction || !this.transactionGuard?.owned) throw new Error("Agent control transaction is not active")
 		const observed = await this.readTransactionLock(this.transactionLockPath)
 		if (observed?.token !== transaction.token) throw new Error("Agent control transaction ownership was lost")
 	}
 
 	private assertTransactionOwnerSync(): void {
 		const transaction = this.activeTransaction
-		if (!transaction) throw new Error("Agent control transaction is not active")
+		if (!transaction || !this.transactionGuard?.owned) throw new Error("Agent control transaction is not active")
 		let observed: TransactionLockOwner
 		try {
-			const descriptor = fsSync.openSync(this.transactionLockOwnerPath(this.transactionLockPath), "r")
+			const descriptor = fsSync.openSync(
+				fsSync.lstatSync(this.transactionLockPath).isDirectory()
+					? this.transactionLockOwnerPath(this.transactionLockPath)
+					: this.transactionLockPath,
+				"r",
+			)
 			try {
 				const buffer = Buffer.alloc(1_025)
 				const bytesRead = fsSync.readSync(descriptor, buffer, 0, buffer.length, 0)
@@ -602,7 +658,8 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		options: AgentControlTransactionOptions,
 		diagnostic: AgentControlTransactionDiagnostic,
 	): Promise<void> {
-		const deadline = performance.now() + this.transactionWaitTimeoutMs - diagnostic.queueWaitMs
+		const deadline =
+			performance.now() + this.transactionWaitTimeoutMs - diagnostic.queueWaitMs - diagnostic.acquisitionWaitMs
 		await fs.mkdir(path.dirname(this.transactionLockPath), { recursive: true })
 		const owner: TransactionLockOwner = {
 			token: transactionToken,
@@ -640,8 +697,9 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 					diagnostic.ownerState = observed
 					delete diagnostic.ownerPid
 					delete diagnostic.ownerOperation
-					// mkdir reserves ownership before metadata publication. A contender
-					// must tolerate that brief window, but cannot recover it by age.
+					if (await this.tryQuarantineUnownedTransactionLock()) continue
+					// Older hosts can reserve a directory before publishing their owner.
+					// Honor that protocol; new file locks are always published complete.
 					await waiter.wait(
 						checkpoint,
 						Math.max(0, Math.min(400, deadline - performance.now())),
@@ -652,7 +710,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 				diagnostic.ownerPid = observed?.pid
 				diagnostic.ownerOperation = observed?.operation
 				diagnostic.ownerState = observed ? "live" : "none"
-				// The holder released between mkdir and observation. Do not sleep
+				// The holder released between publication and observation. Do not sleep
 				// through a known admission opportunity while it reacquires the lock.
 				if (!observed) {
 					if (retriedAbsentLock) {
@@ -668,6 +726,13 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 					continue
 				}
 				retriedAbsentLock = false
+				// A regular file belongs to the new protocol. Exclusive OS ownership
+				// proves that its former transaction ended, even if its PID is still
+				// alive/reused or every metadata cleanup attempt failed.
+				if (observed.fileLock) {
+					diagnostic.ownerState = "released"
+					if (await this.tryReapReleasedTransactionLock(observed)) continue
+				}
 				if (
 					this.releasedTransactionToken === observed.token ||
 					(await this.isTransactionLockMarkedReleased(this.transactionLockPath, observed.token))
@@ -703,9 +768,8 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			try {
 				const lock = await fs.stat(this.transactionLockPath)
 				if (lock.isDirectory()) {
-					// Empty proper-lockfile transaction directories only existed in an
-					// unlanded predecessor of this protocol. Never replace one: on POSIX
-					// rename could otherwise claim an empty live legacy directory.
+					// Older directory owners could crash before publishing metadata.
+					// Recovery must also check activation leases before moving them.
 					return (readError as NodeJS.ErrnoException).code === "ENOENT" ? "legacy" : "unreadable"
 				}
 			} catch {
@@ -717,28 +781,100 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private async tryCreateTransactionLock(owner: TransactionLockOwner, signal?: AbortSignal): Promise<boolean> {
 		throwIfTransactionCancelled(signal)
+		// Finish and close immutable metadata before the no-replace link claims the
+		// canonical path. A crash during preparation leaves only an unused candidate;
+		// a crash after publication always leaves an identifiable process owner.
+		const candidatePath = `${this.transactionLockPath}.candidate.${owner.token}`
 		try {
-			// Unlike rename of a candidate directory, mkdir cannot replace an empty
-			// legacy holder that appeared after an earlier existence check (POSIX).
-			await fs.mkdir(this.transactionLockPath)
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
-			throw error
-		}
-		// If the process crashes here, retain an explicit ownerless lock. No
-		// contender can prove it abandoned; the documented offline repair applies.
-		try {
-			await fs.writeFile(this.transactionLockOwnerPath(this.transactionLockPath), JSON.stringify(owner), {
+			await fs.writeFile(candidatePath, JSON.stringify(owner), {
 				encoding: "utf8",
 				flag: "wx",
+				mode: 0o600,
+				flush: true,
 			})
+			throwIfTransactionCancelled(signal)
+			try {
+				await fs.link(candidatePath, this.transactionLockPath)
+				return true
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+				throw error
+			}
+		} finally {
+			try {
+				await fs.unlink(candidatePath)
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+					// Candidates never control admission. Cleanup cannot abandon a
+					// published owner or mask the original cancellation/write failure.
+					console.warn(
+						"[AgentControlStore] Lock candidate cleanup failed",
+						transactionReleaseFailureCode(error),
+					)
+				}
+			}
+		}
+	}
+
+	private async tryQuarantineUnownedTransactionLock(): Promise<boolean> {
+		if (!this.transactionGuard?.owned) return false
+		let observed: Awaited<ReturnType<typeof fs.lstat>>
+		try {
+			observed = await fs.lstat(this.transactionLockPath)
 		} catch (error) {
-			// No valid foreign owner can acquire our freshly created directory.
-			// Clean a failed publication while this process still proves ownership.
-			await this.removeTransactionLockDirectory(this.transactionLockPath, true).catch(() => undefined)
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
 			throw error
 		}
-		return true
+		if (observed.isDirectory()) {
+			// Production hosts acquire an activation lease before any transaction.
+			// An unknown legacy directory is repairable only when we hold our own
+			// lease and every foreign lease proves its process is dead. A missing
+			// or malformed foreign owner remains a reason to wait, never to steal.
+			if (this.ownerLeaseHandles.size === 0) return false
+			const entries: string[] = []
+			const directory = await fs.opendir(this.ownerLeaseDirectory)
+			for await (const entry of directory) {
+				if (entries.length >= 1_024 || entry.isSymbolicLink()) return false
+				entries.push(entry.name)
+			}
+			const ownerIds = new Set(entries.map((entry) => entry.replace(/(?:\.json|\.lock)$/, "")))
+			for (const ownerId of ownerIds) {
+				if (!agentRuntimeOwnerIdSchema.safeParse(ownerId).success) return false
+				if (this.ownerLeaseHandles.has(ownerId)) continue
+				const metadata = await this.readOwnerLeaseMetadata(ownerId)
+				if (!metadata || this.isProcessLive(metadata.pid)) return false
+			}
+		} else if (!observed.isFile()) {
+			return false
+		}
+		let current: Awaited<ReturnType<typeof fs.lstat>>
+		try {
+			current = await fs.lstat(this.transactionLockPath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+			throw error
+		}
+		if (
+			current.dev !== observed.dev ||
+			current.ino !== observed.ino ||
+			current.birthtimeMs !== observed.birthtimeMs
+		) {
+			return false
+		}
+		// Preserve malformed/ownerless metadata for diagnosis; task history and
+		// agent_control.json are never reset. OS ownership serializes new reapers.
+		try {
+			await this.renameTransactionLock(
+				this.transactionLockPath,
+				`${this.transactionLockPath}.quarantine.${randomUUID()}`,
+			)
+			return true
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? ""
+			if (code === "ENOENT") return true
+			if (TRANSIENT_RENAME_ERROR_CODES.has(code)) return false
+			throw error
+		}
 	}
 
 	private async tryReapTransactionLock(observed: TransactionLockOwner): Promise<boolean> {
@@ -746,8 +882,31 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	}
 
 	private async reapTransactionLock(observed: TransactionLockOwner, released: boolean): Promise<boolean> {
-		// Earlier releases used a second namespace. Honor existing tombstones;
-		// all new dead/released recovery shares one atomic destination per token.
+		let stat: Awaited<ReturnType<typeof fs.lstat>>
+		try {
+			stat = await fs.lstat(this.transactionLockPath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+			throw error
+		}
+		if (stat.isFile()) {
+			if (!this.transactionGuard?.owned) return false
+			const current = await this.readTransactionLock(this.transactionLockPath)
+			if (current?.token !== observed.token) return false
+			// All file-lock recovery holds the same OS mutex; no live writer or
+			// delayed reaper can enter between this comparison and the unlink.
+			try {
+				await fs.unlink(this.transactionLockPath)
+				return true
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code ?? ""
+				if (code === "ENOENT") return true
+				if (TRANSIENT_RENAME_ERROR_CODES.has(code)) return false
+				throw error
+			}
+		}
+		// Legacy reapers need permanent no-replace destinations. New file owners
+		// are serialized by the OS guard and cannot be stranded by old tombstones.
 		try {
 			await fs.stat(`${this.transactionLockPath}.released.${observed.token}`)
 			return false
@@ -830,6 +989,9 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 				if (!current || current.token !== transactionToken) return
 			}
 		}
+		// The body is finished and its canonical marker is gone. Let successors
+		// proceed while Windows finishes cleanup of this token-specific path.
+		this.transactionGuard?.close()
 		await this.removeReleasedTransactionLockDirectory(releasePath, diagnostic)
 	}
 
@@ -839,10 +1001,16 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	): Promise<void> {
 		// Only the renamed, token-specific directory is eligible for these retries.
 		// A successor may already own the canonical lock while cleanup is pending.
-		const removals = [
-			{ phase: "cleanup-owner", remove: () => fs.unlink(this.transactionLockOwnerPath(releasePath)) },
-			{ phase: "cleanup-directory", remove: () => fs.rmdir(releasePath) },
-		] as const
+		const directory = (await fs.lstat(releasePath)).isDirectory()
+		const removals: Array<{
+			phase: "cleanup-owner" | "cleanup-directory"
+			remove: () => Promise<void>
+		}> = directory
+			? [
+					{ phase: "cleanup-owner", remove: () => fs.unlink(this.transactionLockOwnerPath(releasePath)) },
+					{ phase: "cleanup-directory", remove: () => fs.rmdir(releasePath) },
+				]
+			: [{ phase: "cleanup-owner", remove: () => fs.unlink(releasePath) }]
 		for (const { phase, remove } of removals) {
 			diagnostic.releaseFailurePhase = phase
 			for (let attempt = 0; ; attempt++) {
@@ -875,7 +1043,9 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 	private async markTransactionLockReleased(transactionToken: string): Promise<void> {
 		const observed = await this.readTransactionLock(this.transactionLockPath)
 		if (!observed || observed.token !== transactionToken) return
-		const markerPath = this.transactionLockReleasedMarkerPath(this.transactionLockPath)
+		const markerPath = (await fs.lstat(this.transactionLockPath)).isDirectory()
+			? this.transactionLockReleasedMarkerPath(this.transactionLockPath)
+			: `${this.transactionLockPath}.release-marker.${transactionToken}`
 		try {
 			await fs.writeFile(markerPath, transactionToken, { encoding: "utf8", flag: "wx" })
 		} catch (error) {
@@ -889,10 +1059,10 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private async isTransactionLockMarkedReleased(lockPath: string, transactionToken: string): Promise<boolean> {
 		try {
-			return (
-				(await this.readBoundedLockMetadata(this.transactionLockReleasedMarkerPath(lockPath), 128)) ===
-				transactionToken
-			)
+			const markerPath = (await fs.lstat(lockPath)).isDirectory()
+				? this.transactionLockReleasedMarkerPath(lockPath)
+				: `${this.transactionLockPath}.release-marker.${transactionToken}`
+			return (await this.readBoundedLockMetadata(markerPath, 128)) === transactionToken
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
 			throw error
@@ -909,8 +1079,15 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 
 	private async readTransactionLock(lockPath: string): Promise<TransactionLockOwner | undefined> {
 		try {
+			const stat = await fs.lstat(lockPath)
+			if (!stat.isDirectory() && !stat.isFile())
+				throw new Error("Agent control lock is not a regular file or directory")
 			return this.parseTransactionLock(
-				await this.readBoundedLockMetadata(this.transactionLockOwnerPath(lockPath), 1_024),
+				await this.readBoundedLockMetadata(
+					stat.isDirectory() ? this.transactionLockOwnerPath(lockPath) : lockPath,
+					1_024,
+				),
+				stat.isFile(),
 			)
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -940,16 +1117,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		}
 	}
 
-	private async removeTransactionLockDirectory(lockPath: string, ignoreMissing: boolean): Promise<void> {
-		await fs.unlink(this.transactionLockOwnerPath(lockPath)).catch((error: NodeJS.ErrnoException) => {
-			if (!ignoreMissing || error.code !== "ENOENT") throw error
-		})
-		await fs.rmdir(lockPath).catch((error: NodeJS.ErrnoException) => {
-			if (!ignoreMissing || error.code !== "ENOENT") throw error
-		})
-	}
-
-	private parseTransactionLock(serialized: string): TransactionLockOwner {
+	private parseTransactionLock(serialized: string, fileLock = false): TransactionLockOwner {
 		const candidate = JSON.parse(serialized) as Partial<TransactionLockOwner>
 		if (
 			!candidate ||
@@ -965,6 +1133,7 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			token: candidate.token,
 			pid: candidate.pid!,
 			operation: AGENT_CONTROL_OPERATIONS.includes(candidate.operation!) ? candidate.operation : undefined,
+			fileLock,
 		}
 	}
 

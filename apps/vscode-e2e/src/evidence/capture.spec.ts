@@ -31,6 +31,24 @@ const options = (): CaptureRunEvidenceOptions => ({
 	metadata: metadata(),
 })
 
+test("captures structural ownership from the atomically published file lock", async () => {
+	const storage = await ownedSource("storage")
+	const token = "private-owner-token"
+	await fs.writeFile(
+		path.join(storage, "agent_control.json.transaction.lock"),
+		JSON.stringify({ token, pid: process.pid }),
+	)
+	const result = await captureRunEvidence({
+		...options(),
+		metadata: { ...metadata(), taskIds: [] },
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	const captured = await fs.readFile(path.join(result.artifactDirectory, "storage-lock.json"), "utf8")
+	assert.equal(JSON.parse(captured).state, "recorded-owner")
+	assert.equal(captured.includes(token), false)
+})
+
 beforeEach(async () => {
 	root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-evidence-test-")))
 })

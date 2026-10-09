@@ -169,6 +169,13 @@ export async function runStorageRecoveryCampaign(
 		const lockPath = path.join(storagePath, AGENT_CONTROL_TRANSACTION_LOCK)
 		await fs.mkdir(lockPath)
 		await fs.writeFile(path.join(lockPath, "owner.json"), "", { flag: "wx", mode: 0o600 })
+		// An ownerless legacy lock alone now recovers automatically. Keep this
+		// offline safety campaign focused on uncertain foreign ownership by
+		// publishing a fixture-controlled live activation lease during fault injection.
+		const foreignLease = path.join(storagePath, "agent_control.json.owners", "storage-restart-controller.json")
+		await fs.mkdir(path.dirname(foreignLease), { recursive: true })
+		const foreignLeaseBytes = JSON.stringify({ token: "storage-restart-controller", pid: process.pid })
+		await fs.writeFile(foreignLease, foreignLeaseBytes, { flag: "wx", mode: 0o600 })
 		for (const phase of ["fault", "healthy"] as const) {
 			if (options.signal?.aborted) {
 				report.stopReason = "cancelled"
@@ -212,6 +219,13 @@ export async function runStorageRecoveryCampaign(
 							return
 						}
 						if (phase === "fault") {
+							// This synthetic owner performs no storage writes. Remove only
+							// our exact record after proving the launched writers exited.
+							if ((await readBounded(foreignLease, 1_024)).toString("utf8") !== foreignLeaseBytes) {
+								report.stopReason = "recovery_unverified"
+								return
+							}
+							await fs.unlink(foreignLease)
 							const before = await snapshotStorage(storagePath)
 							report.storagePreservation = { before }
 							await checkpoint()

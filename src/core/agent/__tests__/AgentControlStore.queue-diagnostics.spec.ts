@@ -148,6 +148,12 @@ describe("AgentControlStore queue diagnostics", () => {
 
 	it("does not report a second diagnostic when disk acquisition fails", async () => {
 		const lockPath = `${persistence.filePath}.transaction.lock`
+		const leaseDirectory = `${persistence.filePath}.owners`
+		await fs.mkdir(path.join(leaseDirectory, "foreign-live-host.lock"))
+		await fs.writeFile(
+			path.join(leaseDirectory, "foreign-live-host.json"),
+			JSON.stringify({ token: "foreign-live-lease", pid: process.pid }),
+		)
 		await fs.mkdir(lockPath)
 		try {
 			const error = await reserve().catch((failure: unknown) => failure)
@@ -168,6 +174,8 @@ describe("AgentControlStore queue diagnostics", () => {
 			expect(error).toMatchObject({ diagnostic: reported[0] })
 		} finally {
 			await fs.rmdir(lockPath)
+			await fs.unlink(path.join(leaseDirectory, "foreign-live-host.json"))
+			await fs.rmdir(path.join(leaseDirectory, "foreign-live-host.lock"))
 		}
 	})
 

@@ -696,9 +696,9 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 			const stat = await fs.lstat(lock)
 			let state = "legacy-ownerless"
 			let ownerBytes: number | undefined
-			if (stat.isDirectory()) {
+			if (stat.isDirectory() || stat.isFile()) {
 				try {
-					const owner = await readBounded(path.join(lock, "owner.json"), 1_024)
+					const owner = await readBounded(stat.isDirectory() ? path.join(lock, "owner.json") : lock, 1_024)
 					ownerBytes = owner.length
 					state = owner.length === 0 ? "empty-owner" : "unreadable-owner"
 					try {
