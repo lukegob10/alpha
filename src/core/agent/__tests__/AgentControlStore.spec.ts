@@ -1032,7 +1032,7 @@ describe("AgentControlStore", () => {
 		}
 	})
 
-	it("acquires with mkdir without promoting over a potentially empty legacy directory", async () => {
+	it("publishes a complete file lock without using a directory replacement", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-acquire-retry-"))
 		const persistence = new FileAgentControlPersistence(directory)
 		const lockPath = `${persistence.filePath}.transaction.lock`
@@ -1089,10 +1089,10 @@ describe("AgentControlStore", () => {
 				}),
 			).resolves.toBe("committed")
 			await expect(persistence.withTransaction(async () => "next transaction")).resolves.toBe("next transaction")
-			expect(rename.mock.calls.filter(([source]) => source === lockPath)).toHaveLength(8)
+			expect(rename.mock.calls.filter(([source]) => source === lockPath)).toHaveLength(7)
 			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 			const entries = await fs.readdir(directory)
-			expect(entries.some((entry) => entry.includes(".transaction.lock.reap."))).toBe(true)
+			expect(entries.some((entry) => entry.includes(".transaction.lock.reap."))).toBe(false)
 		} finally {
 			rename.mockRestore()
 			errorLog.mockRestore()

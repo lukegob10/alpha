@@ -3,6 +3,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import { randomUUID } from "crypto"
 import * as vscode from "vscode"
+import { AlphaCodeEventName } from "@alpha-code/types"
 
 import { captureRunEvidence } from "../evidence/capture"
 import { isWithin, readBounded, rejectSymlinkComponents } from "../evidence/paths"
@@ -12,12 +13,48 @@ import {
 	quarantineOfflineAgentControlLock,
 	RECOVERY_FIXTURE_MARKER,
 } from "../evidence/storageRecovery"
+import { waitFor } from "./utils"
+
+class RecoveryAI {
+	readonly id = "storage-recovery-scripted"
+	requests = 0
+	async *createMessage() {
+		this.requests++
+		assert.equal(this.requests, 1)
+		yield { type: "text" as const, text: "Task storage recovered successfully." }
+		yield { type: "usage" as const, inputTokens: 10, outputTokens: 5, totalCost: 0 }
+	}
+	getModel() {
+		return {
+			id: this.id,
+			info: {
+				contextWindow: 128_000,
+				maxTokens: 8_192,
+				supportsImages: false,
+				supportsPromptCache: false,
+				inputPrice: 0,
+				outputPrice: 0,
+			},
+		}
+	}
+	async countTokens(content: unknown[]): Promise<number> {
+		return Math.max(1, Math.ceil(JSON.stringify(content).length / 4))
+	}
+	async completePrompt(): Promise<string> {
+		return ""
+	}
+}
 
 interface BundledPersistence {
 	filePath: string
 	withTransaction<T>(operation: () => Promise<T>): Promise<T>
 	read(): Promise<unknown>
 	write(state: unknown): Promise<void>
+	acquireOwnerLease(
+		ownerId: string,
+		options: { staleMs: number; updateMs: number; onCompromised: (error: Error) => void },
+	): Promise<void>
+	releaseOwnerLease(ownerId: string): Promise<void>
 }
 type PersistenceConstructor = new (storage: string, options: { transactionWaitTimeoutMs: number }) => BundledPersistence
 
@@ -39,6 +76,41 @@ function bundledPersistenceConstructor(): PersistenceConstructor {
 
 suite("Agent-control failure evidence and isolated offline recovery", function () {
 	this.timeout(30_000)
+
+	test("automatically recovers an abandoned legacy lock in the exact extension host without changing retained history", async () => {
+		const workspace = process.env.ALPHA_E2E_WORKSPACE
+		assert.ok(workspace && path.isAbsolute(workspace))
+		const storage = await fs.mkdtemp(path.join(workspace, "storage-auto-recovery-"))
+		const Persistence = bundledPersistenceConstructor()
+		const persistence = new Persistence(storage, { transactionWaitTimeoutMs: 1_000 })
+		const state = '{"retained":"agent state"}'
+		await fs.writeFile(persistence.filePath, state)
+		await fs.mkdir(path.join(storage, "tasks", "retained"), { recursive: true })
+		const history = path.join(storage, "tasks", "retained", "history_item.json")
+		await fs.writeFile(history, '{"id":"retained"}')
+		const lock = path.join(storage, AGENT_CONTROL_TRANSACTION_LOCK)
+		await fs.mkdir(lock)
+		await fs.writeFile(path.join(lock, "owner.json"), "")
+		const ownerId = randomUUID()
+		await persistence.acquireOwnerLease(ownerId, {
+			staleMs: 60_000,
+			updateMs: 10_000,
+			onCompromised: () => assert.fail("Activation lease lost"),
+		})
+		try {
+			await persistence.withTransaction(async () => {
+				assert.equal(JSON.parse(await fs.readFile(lock, "utf8")).pid, process.pid)
+				assert.equal(await fs.readFile(persistence.filePath, "utf8"), state)
+			})
+			assert.equal(await fs.readFile(history, "utf8"), '{"id":"retained"}')
+			const quarantines = (await fs.readdir(storage)).filter((name) => name.includes(".quarantine."))
+			assert.equal(quarantines.length, 1)
+			assert.equal((await fs.stat(path.join(storage, quarantines[0]!, "owner.json"))).size, 0)
+			await new Persistence(storage, { transactionWaitTimeoutMs: 1_000 }).withTransaction(async () => undefined)
+		} finally {
+			await persistence.releaseOwnerLease(ownerId)
+		}
+	})
 
 	test("retains empty ownership evidence across fresh persistence instances, then repairs only the offline fixture lock", async () => {
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
@@ -169,12 +241,97 @@ suite("Agent-control failure evidence and isolated offline recovery", function (
 					registrySeal: fixture.controller.sealForOfflineRecovery(),
 				}),
 			)
-			assert.ok(await fs.stat(path.join(storage, AGENT_CONTROL_TRANSACTION_LOCK, "owner.json")))
+			assert.ok((await fs.stat(path.join(storage, AGENT_CONTROL_TRANSACTION_LOCK))).isFile())
 		} finally {
 			release()
 			await transaction
 			fixture.controller.dispose()
 		}
 		await assert.rejects(fs.stat(path.join(storage, AGENT_CONTROL_TRANSACTION_LOCK)), { code: "ENOENT" })
+	})
+
+	test("reaches the model and completes through the real task API after an interrupted legacy publication", async function () {
+		this.timeout(120_000)
+		const api = globalThis.api
+		const provider = (
+			api as unknown as {
+				sidebarProvider: {
+					agentControlStore: { persistence: BundledPersistence; initialize(): Promise<void> }
+					getAgentLifecycleSnapshot(id: string): { status: string } | undefined
+					getLiveTask(
+						id: string,
+					):
+						| { taskAsk?: { ask?: string }; approveAsk(): void; waitForTermination(): Promise<void> }
+						| undefined
+				}
+			}
+		).sidebarProvider
+		await provider.agentControlStore.initialize()
+		const persistence = provider.agentControlStore.persistence
+		const profile = process.env.ALPHA_E2E_PROFILE_DIR
+		const workspace = process.env.ALPHA_E2E_WORKSPACE
+		assert.ok(workspace && path.isAbsolute(workspace))
+		// The default runner owns sibling workspace/user-data directories in one
+		// temporary root; persistent campaigns instead provide an explicit profile.
+		const fixtureRoot = profile ?? path.dirname(workspace)
+		await rejectSymlinkComponents(fixtureRoot)
+		assert.ok(isWithin(await fs.realpath(fixtureRoot), await fs.realpath(path.dirname(persistence.filePath))))
+		const lock = `${persistence.filePath}.transaction.lock`
+		// Inject the interrupted old format while holding the real OS guard, so
+		// no background transaction can race the fixture publication.
+		await assert.rejects(
+			persistence.withTransaction(async () => {
+				await fs.unlink(lock)
+				await fs.mkdir(lock)
+				await fs.writeFile(path.join(lock, "owner.json"), "")
+				throw new Error("Injected legacy publication interruption")
+			}),
+			/Injected legacy publication interruption/,
+		)
+		const model = new RecoveryAI()
+		const completed = new Set<string>()
+		const onCompleted = (id: string) => completed.add(id)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const taskId = await api.startNewTask({
+				configuration: {
+					...api.getConfiguration(),
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "code",
+					autoApprovalEnabled: true,
+					requestDelaySeconds: 0,
+					writeDelayMs: 0,
+					enableCheckpoints: false,
+				},
+				text: "Reply with one short acknowledgement. Do not use tools or commands.",
+			})
+			let approved = false
+			await waitFor(
+				() => {
+					const task = provider.getLiveTask(taskId)
+					if (!approved && task?.taskAsk?.ask === "completion_result") {
+						approved = true
+						task.approveAsk()
+					}
+					return completed.has(taskId) && provider.getAgentLifecycleSnapshot(taskId)?.status === "completed"
+				},
+				{ timeout: 90_000, description: "model completion after automatic lock recovery" },
+			)
+			await provider.getLiveTask(taskId)?.waitForTermination()
+			assert.equal(model.requests, 1)
+			assert.ok(await api.isTaskInHistory(taskId))
+			const history = JSON.parse(
+				(
+					await readBounded(
+						path.join(path.dirname(persistence.filePath), "tasks", taskId, "api_conversation_history.json"),
+						256 * 1_024,
+					)
+				).toString("utf8"),
+			)
+			assert.ok(Array.isArray(history) && history.length > 0)
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+		}
 	})
 })

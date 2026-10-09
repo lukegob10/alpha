@@ -471,11 +471,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
-			"indexingUpdates": "Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
-			"steeringUpdates": "Send a message during an active response to steer the conversation sooner, while keeping queued input safe.",
-			"searchCoverage": "Codebase search checks snippets against saved files and explains when search coverage is incomplete.",
-			"chatUpdates": "See clearer activity in recent chats and keep using the Windows shortcuts for task navigation and reasoning."
+			"welcome": "Alpha v{{version}} recovers abandoned task-storage locks so chats can resume after an interrupted session.",
+			"lockRecovery": "Interrupted sessions can resume without manually deleting a leftover task lock.",
+			"legacyRecovery": "Abandoned locks from older versions recover automatically once other Alpha hosts have stopped.",
+			"historySafety": "Recovery preserves saved task history and protects storage still used by an active host.",
+			"recoveryGuidance": "Storage delays show a specific recovery message with guidance for resuming."
 		}
 	},
 	"crossTasks": {

@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.9",
+		version: "3.1.10",
 	},
 }))
 
@@ -37,13 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.9" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.10" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.9")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.10")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v3.1.9 keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
+				"Alpha v3.1.10 recovers abandoned task-storage locks so chats can resume after an interrupted session.",
 			),
 		).toBeInTheDocument()
 	})
@@ -53,24 +53,20 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
+			screen.getByText("Interrupted sessions can resume without manually deleting a leftover task lock."),
+		).toBeInTheDocument()
+		expect(
 			screen.getByText(
-				"Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
+				"Abandoned locks from older versions recover automatically once other Alpha hosts have stopped.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Send a message during an active response to steer the conversation sooner, while keeping queued input safe.",
+				"Recovery preserves saved task history and protects storage still used by an active host.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Codebase search checks snippets against saved files and explains when search coverage is incomplete.",
-			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"See clearer activity in recent chats and keep using the Windows shortcuts for task navigation and reasoning.",
-			),
+			screen.getByText("Storage delays show a specific recovery message with guidance for resuming."),
 		).toBeInTheDocument()
 	})
 
@@ -79,13 +75,11 @@ describe("Announcement", () => {
 
 		expect(
 			screen.getByText(
-				"Alpha v3.1.9 keeps saved code searchable while indexing catches up and makes conversation steering more responsive.",
+				"Alpha v3.1.10 recovers abandoned task-storage locks so chats can resume after an interrupted session.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Saved edits remain searchable while embeddings catch up, with grouped updates and bounded embedding traffic.",
-			),
+			screen.getByText("Interrupted sessions can resume without manually deleting a leftover task lock."),
 		).toBeInTheDocument()
 	})
 })

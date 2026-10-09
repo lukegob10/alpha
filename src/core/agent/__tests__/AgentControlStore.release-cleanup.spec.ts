@@ -34,7 +34,7 @@ const timerDescriptors = {
 	clearTimeout: Object.getOwnPropertyDescriptor(globalThis, "clearTimeout")!,
 }
 
-describe("FileAgentControlPersistence released-directory cleanup", () => {
+describe("FileAgentControlPersistence legacy released-directory cleanup", () => {
 	let directory: string
 	let persistence: FileAgentControlPersistence
 	let actualFs: typeof import("fs/promises")
@@ -53,6 +53,22 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 		diagnostics = []
 		persistence = new FileAgentControlPersistence(directory, {
 			onTransactionDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+		})
+		// Retain coverage of the directory cleanup contract used by older hosts.
+		// Production publication now uses complete immutable file locks.
+		const legacyPublisher = persistence as unknown as {
+			tryCreateTransactionLock(owner: { token: string; pid: number }): Promise<boolean>
+		}
+		vi.spyOn(legacyPublisher, "tryCreateTransactionLock").mockImplementation(async (owner) => {
+			const lockPath = `${persistence.filePath}.transaction.lock`
+			try {
+				await fs.mkdir(lockPath)
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+				throw error
+			}
+			await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner), { flag: "wx" })
+			return true
 		})
 		heldOwner = undefined
 	})
@@ -124,7 +140,7 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 			expect(diagnostics).toEqual([expect.objectContaining({ outcome: "success", releaseFailed: false })])
 			expect(diagnostics[0]).not.toHaveProperty("releaseFailurePhase")
 			expect(diagnostics[0]).not.toHaveProperty("releaseFailureCode")
-			expect(await fs.readdir(directory)).toEqual([])
+			expect(await fs.readdir(directory)).toEqual(["agent_control.json.coordination.sqlite"])
 		} finally {
 			cancellation.abort()
 			await heldOwner?.close()
@@ -228,18 +244,18 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 				await finishSuccessor.promise
 			})
 			await successorEntered.promise
-			const successorOwner = await fs.readFile(path.join(lockPath, "owner.json"), "utf8")
+			const successorOwner = await fs.readFile(lockPath, "utf8")
 			await heldOwner?.close()
 			heldOwner = undefined
 			await vi.advanceTimersByTimeAsync(10)
 			await expect(released).resolves.toBe("old owner released")
 			expect(attempts).toBe(2)
 			await expect(fs.stat(releasePath)).rejects.toMatchObject({ code: "ENOENT" })
-			expect(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")).toBe(successorOwner)
+			expect(await fs.readFile(lockPath, "utf8")).toBe(successorOwner)
 			await expect(successor.assertTransactionOwner()).resolves.toBeUndefined()
 			finishSuccessor.resolve()
 			await succeeding
-			expect(await fs.readdir(directory)).toEqual([])
+			expect(await fs.readdir(directory)).toEqual(["agent_control.json.coordination.sqlite"])
 		} finally {
 			await heldOwner?.close()
 			heldOwner = undefined

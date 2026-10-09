@@ -26,6 +26,38 @@ const deadProcess = (): false => false
 const liveProcess = (): true => true
 const unknownProcess = (): undefined => undefined
 
+test("understands file lock owners and preserves the live writer during offline recovery", async () => {
+	const fixture = await createTestFixture()
+	try {
+		const lock = path.join(fixture.storagePath, AGENT_CONTROL_TRANSACTION_LOCK)
+		const bytes = JSON.stringify({ token: "file-owner", pid: 45_001 })
+		await fs.writeFile(lock, bytes)
+		await assert.rejects(
+			quarantineOfflineAgentControlLock(
+				recoveryOptions(fixture, sealFixture(fixture.fixture), { isProcessLive: liveProcess }),
+			),
+			/still live/,
+		)
+		assert.equal(await fs.readFile(lock, "utf8"), bytes)
+	} finally {
+		await cleanupTestFixture(fixture)
+	}
+})
+
+test("quarantines an offline file lock without changing its owner evidence", async () => {
+	const fixture = await createTestFixture()
+	try {
+		const lock = path.join(fixture.storagePath, AGENT_CONTROL_TRANSACTION_LOCK)
+		const bytes = JSON.stringify({ token: "file-owner", pid: 45_001 })
+		await fs.writeFile(lock, bytes)
+		const outcome = await quarantineOfflineAgentControlLock(recoveryOptions(fixture, sealFixture(fixture.fixture)))
+		assert.equal(outcome.outcome, "quarantined")
+		if (outcome.outcome === "quarantined") assert.equal(await fs.readFile(outcome.quarantinePath, "utf8"), bytes)
+	} finally {
+		await cleanupTestFixture(fixture)
+	}
+})
+
 async function createTestFixture(): Promise<TestFixture> {
 	const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-nor42-storage-")))
 	const fixture = await initializeRecoveryFixture(path.join(tempRoot, "fixture"))

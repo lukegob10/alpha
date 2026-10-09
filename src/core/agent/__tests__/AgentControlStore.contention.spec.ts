@@ -139,7 +139,7 @@ describe("Agent control transaction contention", () => {
 			await release.promise
 		})
 		await entered.promise
-		const ownerPath = path.join(`${holder.filePath}.transaction.lock`, "owner.json")
+		const ownerPath = `${holder.filePath}.transaction.lock`
 		const ownerBefore = await fs.readFile(ownerPath, "utf8")
 		const cancellation = new AbortController()
 		const operation = vi.fn(async () => "must not run")
@@ -259,7 +259,7 @@ describe("Agent control transaction contention", () => {
 			await release.promise
 		})
 		await entered.promise
-		const ownerPath = path.join(`${holder.filePath}.transaction.lock`, "owner.json")
+		const ownerPath = `${holder.filePath}.transaction.lock`
 		const ownerBefore = await fs.readFile(ownerPath, "utf8")
 		const operation = vi.fn(async () => "must not run")
 		useRetryDrivenClock()
@@ -312,7 +312,7 @@ describe("Agent control transaction contention", () => {
 			message: expect.stringContaining("Close all Alpha extension hosts"),
 		})
 		expect(operation).not.toHaveBeenCalled()
-		expect(await fs.readdir(directory)).toEqual(contentsBefore)
+		expect(await fs.readdir(directory)).toEqual(["agent_control.json.coordination.sqlite", ...contentsBefore])
 		expect(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")).toBe(serialized)
 		expect(await fs.readFile(path.join(directory, "sentinel"), "utf8")).toBe("preserve external content")
 		expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ ownerState: "unreadable", outcome: "error" }))

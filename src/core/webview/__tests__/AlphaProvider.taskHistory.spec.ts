@@ -6,6 +6,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ContextProxy } from "../../config/ContextProxy"
 import { AlphaProvider } from "../AlphaProvider"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 
 // Mock setup
 vi.mock("p-wait-for", () => ({
@@ -288,6 +289,11 @@ describe("AlphaProvider Task History Synchronization", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		// This suite uses nonexistent, mocked storage paths. File locking is
+		// covered by persistence and exact-host tests; retain the real store API.
+		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
+			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
+		)
 
 		if (!TelemetryService.hasInstance()) {
 			TelemetryService.createInstance([])

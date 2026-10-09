@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.10
+
+### Patch Changes
+
+- Release task-storage ownership automatically when an Alpha process exits, so interrupted sessions do not leave a permanent lock.
+- Publish transaction metadata atomically and recover abandoned locks from older versions when no other host may own them, preserving task history and active-writer protection.
+- Keep completed transactions and task initialization successful when leftover metadata cleanup fails, while preserving real operation and persistence errors.
+- Explain task-storage contention and recovery with actionable Resume guidance.
+- Add deterministic crash, cleanup, and exact VS Code 1.125.0 regressions, including a recovered task reaching the model and completing.
+
 ## 3.1.9
 
 ### Patch Changes

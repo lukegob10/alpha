@@ -377,8 +377,12 @@ async function quarantineOwnedLock(
 		)
 	}
 	const movedStat = await fs.lstat(quarantinePath)
-	if (!movedStat.isDirectory() || movedStat.isSymbolicLink()) {
-		throw new StorageRecoverySafetyError("Offline quarantine is not a regular lock directory")
+	if (
+		movedStat.isSymbolicLink() ||
+		movedStat.isDirectory() !== lockSnapshot.stat.isDirectory() ||
+		movedStat.isFile() !== lockSnapshot.stat.isFile()
+	) {
+		throw new StorageRecoverySafetyError("Offline quarantine no longer matches the original lock type")
 	}
 
 	return markRecoveryVerified(controllerState, registrySeal, {
@@ -600,14 +604,16 @@ async function validateOptionalSibling(inputPath: string, label: string, directo
 
 async function readLockSnapshot(lockPath: string): Promise<LockSnapshot> {
 	const stat = await lstatOrSafetyError(lockPath, "canonical transaction lock")
-	if (stat.isSymbolicLink() || !stat.isDirectory()) {
-		throw new StorageRecoverySafetyError("The canonical transaction lock is not a regular directory")
+	if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+		throw new StorageRecoverySafetyError("The canonical transaction lock is not a regular file or directory")
 	}
-	return { stat, ownerMetadata: await readOwnerMetadata(lockPath) }
+	return {
+		stat,
+		ownerMetadata: await readOwnerMetadata(stat.isDirectory() ? path.join(lockPath, OWNER_FILE_NAME) : lockPath),
+	}
 }
 
-async function readOwnerMetadata(lockPath: string): Promise<OwnerMetadataSnapshot> {
-	const ownerPath = path.join(lockPath, OWNER_FILE_NAME)
+async function readOwnerMetadata(ownerPath: string): Promise<OwnerMetadataSnapshot> {
 	const inspection = await inspectPathComponents(ownerPath, "lock owner metadata")
 	if (!inspection.exists) return { kind: "unknown" }
 	const stat = await lstatOrSafetyError(ownerPath, "lock owner metadata")
