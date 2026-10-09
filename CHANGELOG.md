@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.1.8
+
+### Patch Changes
+
+- Fix multiline chat input clipping and scrolling on VS Code 1.125.0.
+- Restore Gemini codebase indexing with bounded multi-input batches and a dedicated indexing credential.
+- Improve embedding rate-limit recovery and cancellation, and preserve computed vectors across storage retries.
+- Start audited command reads from absolute and nested workspace paths while the model response is still streaming.
+- Publish command output after the assistant response is durably saved, preserving ordered results through cancellation and retries.
+- Expand exact-host feature coverage, scheduled-task contracts, packaging checks, and portable Windows, Linux, and macOS test fixtures.
+
+## 3.1.7
+
+### Patch Changes
+
+- Add Windows hotkeys for new tasks, send and steer, reasoning minus/plus, previous/next task, and next task needing input.
+- Fix shortcut dispatch from the sidebar composer and route commands to the focused Alpha view when an editor tab is also open.
+- Preserve durable input receipts, queued messages, composer drafts, and pending approvals during steering and task navigation.
+- Verify the Windows shortcuts with actual keypresses in VS Code 1.125.0, including sidebar and editor task selection.
+
 ## 3.1.6
 
 ### Patch Changes
