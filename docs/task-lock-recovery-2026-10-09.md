@@ -93,6 +93,12 @@ Focused validation passed 543 extension tests across the agent-control, task-rec
 recovery executes four tests, including the task-to-model regression; the 1.125.0 smoke gate also covers the full task
 surface. The final change reruns the host gates after the read-only cleanup correction.
 
+Release validation also passed the complete local unit lane: **13,228 tests**, with 33 existing skips across the shared
+packages, webview, and extension. Provider fixtures that mock filesystem I/O use the existing in-memory persistence
+boundary. Queue-diagnostic fixtures retain the production deadline for real filesystem setup and admit their blocking
+transaction before narrowing the controlled queue budget; legacy-owner expiry advances only at the retry-wait boundary.
+This keeps diagnostic assertions independent of Windows disk latency without changing production admission limits.
+
 Reproduction/validation commands:
 
 ```sh
