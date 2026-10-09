@@ -3,7 +3,7 @@ import * as path from "path"
 
 import { AgentControlTransactionError, throwIfTransactionCancelled } from "./AgentControlTransaction"
 
-/** Filesystem events only shorten polling; mkdir remains the ownership boundary. */
+/** Filesystem events only shorten polling; the caller's lock acquisition establishes ownership. */
 export class AgentControlLockWaiter {
 	private watcher?: fs.FSWatcher
 	private generation = 0
@@ -11,7 +11,7 @@ export class AgentControlLockWaiter {
 
 	constructor(lockPath: string) {
 		try {
-			// The lock directory is renamed on release. Watch its stable parent so
+			// Lock metadata is renamed on release. Watch its stable parent so
 			// Windows notifications and inode-based watchers see subsequent owners.
 			const lockName = path.basename(lockPath)
 			this.watcher = fs.watch(path.dirname(lockPath), { persistent: false }, (_event, filename) => {

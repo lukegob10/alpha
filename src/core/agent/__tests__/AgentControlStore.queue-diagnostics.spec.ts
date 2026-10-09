@@ -7,6 +7,8 @@ import {
 	FileAgentControlPersistence,
 	type AgentControlTransactionDiagnostic,
 } from "../AgentControlStore"
+import { AgentControlLockWaiter } from "../AgentControlLockWaiter"
+import { DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS } from "../AgentControlTransaction"
 
 const barrier = () => {
 	let resolve!: () => void
@@ -38,8 +40,8 @@ describe("AgentControlStore queue diagnostics", () => {
 	beforeEach(async () => {
 		directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-control-queue-diagnostics-"))
 		diagnostics = []
-		// Keep setup on the base production deadline. The test-only subclass narrows
-		// the inherited value only after initialization and root creation.
+		// Real filesystem admission uses the production deadline. Narrow budgets
+		// apply only after the blocking transaction enters, or under a controlled clock.
 		persistence = new QueueDiagnosticsPersistence(directory, {
 			maxPendingTransactions: 1,
 			onTransactionDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
@@ -47,8 +49,7 @@ describe("AgentControlStore queue diagnostics", () => {
 		store = new AgentControlStore(persistence)
 		await store.initialize()
 		await store.ensureRoot({ taskId: "root", status: "running" })
-		persistence.useControlledAdmissionTimeout(controlledAdmissionTimeoutMs)
-		expect(persistence.transactionWaitTimeoutMs).toBe(controlledAdmissionTimeoutMs)
+		expect(persistence.transactionWaitTimeoutMs).toBe(DEFAULT_TRANSACTION_WAIT_TIMEOUT_MS)
 		diagnostics.length = 0
 		release = barrier()
 		holding = undefined
@@ -74,7 +75,11 @@ describe("AgentControlStore queue diagnostics", () => {
 			return read()
 		})
 		holding = store.updateAgentSnapshot("root", { phase: "holding store queue" })
-		await entered.promise
+		// Propagate an admission failure immediately rather than waiting forever
+		// for a body that was never admitted.
+		await Promise.race([entered.promise, holding])
+		persistence.useControlledAdmissionTimeout(controlledAdmissionTimeoutMs)
+		expect(persistence.transactionWaitTimeoutMs).toBe(controlledAdmissionTimeoutMs)
 	}
 
 	const reserve = (token = "reservation") =>
@@ -155,6 +160,14 @@ describe("AgentControlStore queue diagnostics", () => {
 			JSON.stringify({ token: "foreign-live-lease", pid: process.pid }),
 		)
 		await fs.mkdir(lockPath)
+		persistence.useControlledAdmissionTimeout(controlledAdmissionTimeoutMs)
+		let elapsedMs = 0
+		vi.spyOn(performance, "now").mockImplementation(() => elapsedMs)
+		// Advance the deadline only at the retry boundary; real filesystem latency
+		// must not decide whether this test reaches the intended legacy-owner error.
+		vi.spyOn(AgentControlLockWaiter.prototype, "wait").mockImplementation(async (_checkpoint, delayMs) => {
+			elapsedMs += delayMs
+		})
 		try {
 			const error = await reserve().catch((failure: unknown) => failure)
 			expect(error).toMatchObject({
