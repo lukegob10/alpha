@@ -34,22 +34,60 @@ export interface RequestUsageBreakdown {
 	retry: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number }
 }
 
-export function parseRetryAfterMs(headers: unknown, now = Date.now()): number {
-	const source = headers as { get?: (name: string) => unknown; [key: string]: unknown } | undefined
-	const read = (name: string): unknown =>
-		typeof source?.get === "function"
-			? source.get(name)
-			: (source?.[name] ?? source?.[name.toLowerCase()] ?? source?.[name.toUpperCase()])
-	const retryAfter = read("retry-after")
-	if (retryAfter !== undefined && retryAfter !== null) {
-		const seconds = Number(retryAfter)
-		if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000)
-		const date = Date.parse(String(retryAfter))
-		if (Number.isFinite(date)) return Math.max(0, date - now)
+function readHeader(headers: unknown, name: string): string | undefined {
+	if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined
+	const source = headers as Record<string, unknown>
+	let value: unknown
+	if (typeof source.get === "function") {
+		try {
+			value = source.get(name)
+		} catch {
+			// A malformed header accessor must not replace the original provider error.
+			return undefined
+		}
+	} else {
+		for (const [key, candidate] of Object.entries(source)) {
+			if (key.toLowerCase() === name && typeof candidate === "string" && !/[^\t\x20-\x7e]/.test(candidate)) {
+				value = candidate
+			}
+		}
 	}
-	const reset = Number(read("x-ratelimit-reset"))
-	if (!Number.isFinite(reset) || reset <= 0) return 0
-	return Math.max(0, (reset > 10_000_000_000 ? reset : reset * 1_000) - now)
+	// Retry advice uses HTTP header values, not arbitrary JS numeric coercion.
+	if (typeof value !== "string" || /[^\t\x20-\x7e]/.test(value)) return undefined
+	return value.trim()
+}
+
+const HTTP_DATE_PATTERN =
+	/^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[A-Za-z]+day, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/
+
+function safeDelayMs(value: number): number | undefined {
+	return Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? Math.ceil(value) : undefined
+}
+
+/** Absence is distinct from valid zero advice when falling back between error/header envelopes. */
+export function readRetryAfterMs(headers: unknown, now = Date.now()): number | undefined {
+	const retryAfter = readHeader(headers, "retry-after")
+	if (retryAfter !== undefined) {
+		if (/^\d+$/.test(retryAfter)) {
+			const delay = safeDelayMs(Number(retryAfter) * 1_000)
+			if (delay !== undefined) return delay
+		} else if (HTTP_DATE_PATTERN.test(retryAfter)) {
+			// The obsolete asctime HTTP form is also GMT, never the extension host's local timezone.
+			const date = retryAfter.endsWith(" GMT") ? retryAfter : `${retryAfter} GMT`
+			const delay = safeDelayMs(Math.max(0, Date.parse(date) - now))
+			if (delay !== undefined) return delay
+		}
+	}
+	// Retain Alpha's existing reset-epoch fallback for compatible endpoints.
+	const resetHeader = readHeader(headers, "x-ratelimit-reset")
+	if (resetHeader === undefined || !/^\d+$/.test(resetHeader)) return undefined
+	const reset = Number(resetHeader)
+	if (!Number.isFinite(reset) || reset <= 0) return undefined
+	return safeDelayMs(Math.max(0, (reset > 10_000_000_000 ? reset : reset * 1_000) - now))
+}
+
+export function parseRetryAfterMs(headers: unknown, now = Date.now()): number {
+	return readRetryAfterMs(headers, now) ?? 0
 }
 export function recordRequestUsage(
 	report: RequestUsageBreakdown,

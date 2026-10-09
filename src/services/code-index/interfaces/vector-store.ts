@@ -1,3 +1,5 @@
+import type { CodebaseSearchDiagnostics } from "@alpha-code/types"
+
 /**
  * Interface for vector database clients
  */
@@ -8,6 +10,10 @@ export type PointStruct = {
 }
 
 export interface IVectorStore {
+	/** Reads one file's current chunks, including vectors, for exact-input embedding reuse. */
+	getPointsByFilePath(filePath: string): Promise<PointStruct[]>
+	/** Replaces one file after embeddings are ready. Failed writes must not eagerly erase old chunks. */
+	replaceFilePoints(filePath: string, points: PointStruct[]): Promise<void>
 	/** Indexed lexical candidates; scores are local to this retrieval channel. */
 	searchLexical?(query: string, directoryPrefix?: string, maxResults?: number): Promise<VectorStoreSearchResult[]>
 	/**
@@ -91,6 +97,11 @@ export interface VectorStoreSearchResult {
 	semanticScore?: number
 	lexicalScore?: number
 	payload?: Payload | null
+}
+
+export interface CodeIndexSearchResponse {
+	results: VectorStoreSearchResult[]
+	diagnostics: CodebaseSearchDiagnostics
 }
 
 export interface Payload {

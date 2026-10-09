@@ -189,6 +189,7 @@ export class CodeIndexServiceFactory {
 			alphaIgnoreController,
 			batchSize,
 			config.embeddingRateLimitSeconds,
+			true,
 		)
 	}
 

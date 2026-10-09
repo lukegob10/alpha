@@ -10,6 +10,34 @@
  */
 
 import i18n from "../../../i18n/setup"
+import { isAgentRetryCategory } from "../../../core/agent/AgentRetryPolicy"
+import { readRetryAfterMs } from "../../../core/agent/RequestPacing"
+
+function errorRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+function preserveProviderMetadata(wrapped: Error, source: Record<string, unknown> | undefined): Error {
+	if (!source) return wrapped
+	// Cancellation identity is part of the retry contract even when its message is opaque.
+	if (typeof source.name === "string") wrapped.name = source.name
+	for (const key of ["status", "errorDetails", "code", "$metadata"] as const) {
+		if (source[key] !== undefined) Object.assign(wrapped, { [key]: source[key] })
+	}
+	const explicitDelay = source.retryAfterMs
+	const retryAfterMs =
+		typeof explicitDelay === "number" &&
+		Number.isFinite(explicitDelay) &&
+		explicitDelay >= 0 &&
+		explicitDelay <= Number.MAX_SAFE_INTEGER
+			? Math.ceil(explicitDelay)
+			: (readRetryAfterMs(errorRecord(source.error)?.headers) ?? readRetryAfterMs(source.headers))
+	// Normalize only scheduling advice; raw headers may contain credentials.
+	if (retryAfterMs !== undefined) Object.assign(wrapped, { retryAfterMs })
+	if (typeof source.retryable === "boolean") Object.assign(wrapped, { retryable: source.retryable })
+	if (isAgentRetryCategory(source.retryCategory)) Object.assign(wrapped, { retryCategory: source.retryCategory })
+	return wrapped
+}
 
 /**
  * Handles API provider errors and transforms them into user-friendly messages
@@ -45,17 +73,18 @@ export function handleProviderError(
 	},
 ): Error {
 	const messagePrefix = options?.messagePrefix || "completion"
+	const source = errorRecord(error)
 
 	if (error instanceof Error) {
-		const anyErr = error as any
-		const msg = anyErr?.error?.metadata?.raw || error.message || ""
+		const raw = errorRecord(errorRecord(source?.error)?.metadata)?.raw
+		const msg = (typeof raw === "string" && raw) || error.message || ""
 
 		// Log the original error details for debugging
 		console.error(`[${providerName}] API error:`, {
 			message: msg,
 			name: error.name,
 			stack: error.stack,
-			status: anyErr.status,
+			status: source?.status,
 		})
 
 		let wrapped: Error
@@ -72,37 +101,13 @@ export function handleProviderError(
 			wrapped = new Error(finalMessage)
 		}
 
-		// Preserve HTTP status and structured details for retry/backoff + UI
-		// These fields are used by Task.backoffAndAnnounce() and ChatRow/ErrorRow
-		// to provide status-aware error messages and handling
-		if (anyErr.status !== undefined) {
-			;(wrapped as any).status = anyErr.status
-		}
-		if (anyErr.errorDetails !== undefined) {
-			;(wrapped as any).errorDetails = anyErr.errorDetails
-		}
-		if (anyErr.code !== undefined) {
-			;(wrapped as any).code = anyErr.code
-		}
-		// Preserve AWS-specific metadata if present (for Bedrock)
-		if (anyErr.$metadata !== undefined) {
-			;(wrapped as any).$metadata = anyErr.$metadata
-		}
-
-		return wrapped
+		return preserveProviderMetadata(wrapped, source)
 	}
 
 	// Non-Error: wrap with provider-specific prefix
-	console.error(`[${providerName}] Non-Error exception:`, error)
+	console.error(`[${providerName}] Non-Error exception:`, { message: String(error), status: source?.status })
 	const wrapped = new Error(`${providerName} ${messagePrefix} error: ${String(error)}`)
-
-	// Also try to preserve status for non-Error exceptions (e.g., plain objects with status)
-	const anyErr = error as any
-	if (typeof anyErr?.status === "number") {
-		;(wrapped as any).status = anyErr.status
-	}
-
-	return wrapped
+	return preserveProviderMetadata(wrapped, source)
 }
 
 /**

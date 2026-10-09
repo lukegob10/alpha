@@ -1,10 +1,10 @@
 import { ContextProxy } from "../../core/config/ContextProxy"
 import { t } from "../../i18n"
 import type { ProviderSettings } from "@alpha-code/types"
-import { isSupportedCodebaseIndexEmbedderProvider } from "@alpha-code/types"
+import { isSupportedCodebaseIndexEmbedderProvider, normalizeCodeIndexSearchMaxResults } from "@alpha-code/types"
 import type { EmbedderProvider } from "./interfaces/manager"
 import type { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
-import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE } from "./constants"
+import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE } from "./constants"
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
 
 /**
@@ -463,6 +463,6 @@ export class CodeIndexConfigManager {
 	}
 
 	public get currentSearchMaxResults(): number {
-		return this.searchMaxResults ?? DEFAULT_MAX_SEARCH_RESULTS
+		return normalizeCodeIndexSearchMaxResults(this.searchMaxResults)
 	}
 }

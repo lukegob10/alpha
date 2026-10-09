@@ -15,6 +15,8 @@ export interface IEmbedder {
 		model?: string,
 		purpose?: "document" | "query",
 		signal?: AbortSignal,
+		onProgress?: (progress: EmbeddingProgress) => void,
+		priority?: EmbeddingPriority,
 	): Promise<EmbeddingResponse>
 
 	/**
@@ -25,6 +27,9 @@ export interface IEmbedder {
 
 	get embedderInfo(): EmbedderInfo
 }
+
+export type EmbeddingProgress = { stage: "queued" | "request" | "retry"; waitMs?: number }
+export type EmbeddingPriority = "query" | "incremental" | "bulk"
 
 export interface EmbeddingResponse {
 	embeddings: number[][]

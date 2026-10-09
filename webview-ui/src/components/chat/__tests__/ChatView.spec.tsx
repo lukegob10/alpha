@@ -3308,7 +3308,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			fireEvent.change(input, { target: { value: "follow-up question during spinner" } })
 
 			// Simulate pressing Enter to send
-			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			fireEvent.click(getByTestId("mock-enqueue"))
 		})
 
 		// Verify that the message was queued, not sent as askResponse
@@ -3410,7 +3410,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.change(input, { target: { value: "do not lose this draft" } })
-		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		fireEvent.click(getByTestId("mock-enqueue"))
 
 		const request = await waitFor(() => {
 			const posted = vi
@@ -3443,6 +3443,272 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		expect(input).toHaveValue("do not lose this draft")
 		expect(getByRole("alert")).toHaveTextContent("chat:queuedMessages.queueFailed")
+	})
+
+	it("submits a steering draft once and retains new typing until its receipt", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Use the existing parser" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => {
+			ref.current!.sendAndSteer("task-1")
+			ref.current!.sendAndSteer("task-1")
+		})
+		const requests = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.map(([request]) => request)
+			.filter((request) => request.type === "sendAndSteer")
+		expect(requests).toHaveLength(1)
+		const request = requests[0]
+		expect(request).toMatchObject({
+			taskId: "task-1",
+			text: "Use the existing parser",
+			images: [],
+			requestId: expect.any(String),
+		})
+		expect(input).toHaveValue("Use the existing parser")
+		fireEvent.change(input, { target: { value: "Next instruction" } })
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						chatCommandResult: {
+							command: "sendAndSteer",
+							taskId: "task-1",
+							requestId: request.requestId,
+							status: "accepted",
+						},
+					},
+				}),
+			),
+		)
+		expect(input).toHaveValue("Next instruction")
+	})
+
+	it("steers the current response when ordinary Send submits a visible draft", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Use the new direction now" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "sendAndSteer",
+				taskId: "task-1",
+				text: "Use the new direction now",
+				requestId: expect.any(String),
+			}),
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		expect(input).toHaveValue("Use the new direction now")
+	})
+
+	it("reports a retained steering message without keeping a duplicate draft", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		const runningMessages: AlphaMessage[] = [
+			{ type: "say", say: "task", ts: 1, text: "Initial task" },
+			{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+		]
+		mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Retain this correction" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => ref.current!.sendAndSteer("task-1"))
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "sendAndSteer")![0]
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: runningMessages,
+			messageQueue: [{ id: request.requestId!, text: request.text!, images: [] }],
+		})
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						chatCommandResult: {
+							command: "sendAndSteer",
+							taskId: "task-1",
+							requestId: request.requestId,
+							status: "accepted",
+							deliveryState: "queued",
+						},
+					},
+				}),
+			),
+		)
+		expect(input).toHaveValue("")
+		await waitFor(() => expect(view.getByTestId("queued-messages")).toHaveTextContent("Retain this correction"))
+		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.steerRetained")
+	})
+
+	it("answers a complete follow-up through send-and-steer even before waiting metadata arrives", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "ask", ask: "followup", ts: 2, text: "Which parser?" },
+			],
+			liveTasksById: {
+				"task-1": {
+					id: "task-1",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: false,
+					isTurnActive: true,
+					isWaitingForInput: false,
+					lastUpdatedAt: 2,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Use the existing parser" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => ref.current!.sendAndSteer("task-1"))
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "askResponse",
+				askResponse: "messageResponse",
+				askMessageTs: 2,
+				taskId: "task-1",
+				text: "Use the existing parser",
+			}),
+		)
+	})
+
+	it("preserves a steering draft when its provider is retired", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			apiConfiguration: { apiProvider: "anthropic" },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
+			],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Keep this draft" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => ref.current!.sendAndSteer("task-1"))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(input).toHaveValue("Keep this draft")
+		expect(view.getByText("chat:retiredProvider.message")).toBeInTheDocument()
+	})
+
+	it.each(["rejected", "accepted"] as const)(
+		"handles a %s steering receipt after switching tasks without losing either draft",
+		async (status) => {
+			const ref = React.createRef<ChatViewRef>()
+			const view = renderChatView({}, ref)
+			const runningMessages = [
+				{ type: "say" as const, say: "task", ts: 1, text: "Initial task" },
+				{
+					type: "say" as const,
+					say: "api_req_started",
+					ts: 2,
+					text: JSON.stringify({ apiProtocol: "openai" }),
+				},
+			]
+			mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+			const input = await waitFor(
+				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
+			)
+			fireEvent.change(input, { target: { value: "Steering correction" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			act(() => ref.current!.sendAndSteer("task-1"))
+			const request = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.find(([message]) => message.type === "sendAndSteer")![0]
+			mockPostMessage({ currentTaskId: "task-2", clineMessages: runningMessages })
+			await waitFor(() => expect(input).toHaveValue(""))
+			fireEvent.change(input, { target: { value: "Other task draft" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			act(() => ref.current!.sendAndSteer("task-1"))
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: {
+								command: "sendAndSteer",
+								taskId: "task-1",
+								requestId: request.requestId,
+								status,
+							},
+						},
+					}),
+				),
+			)
+			expect(input).toHaveValue("Other task draft")
+			mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+			await waitFor(() => expect(input).toHaveValue(status === "accepted" ? "" : "Steering correction"))
+		},
+	)
+
+	it("preserves a hidden composer's draft when the steering command arrives", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({ isHidden: true }, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+			],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
+		fireEvent.change(input, { target: { value: "Draft for later" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => ref.current!.sendAndSteer("task-1"))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(input).toHaveValue("Draft for later")
+	})
+
+	it("does not approve a pending action when send-and-steer has an empty draft", async () => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{
+					type: "ask",
+					ask: "tool",
+					ts: 2,
+					text: JSON.stringify({ tool: "editedExistingFile", path: "test.js" }),
+				},
+			],
+		})
+		await waitFor(() => view.getByTestId("chat-textarea"))
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => ref.current!.sendAndSteer("task-1"))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
 	it("renders a steer button for queued messages and posts steerQueuedMessage with the task id", async () => {
@@ -4731,7 +4997,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		await act(async () => {
 			fireEvent.change(input, { target: { value: "message during queue drain" } })
-			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			fireEvent.click(getByTestId("mock-enqueue"))
 		})
 
 		// Verify that the new message was queued (not sent directly) to preserve order
@@ -5074,7 +5340,7 @@ describe("ChatView chat-owned composer commands", () => {
 		await waitFor(() => view.getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
-		fireEvent.keyDown(input, { key: "Enter" })
+		fireEvent.click(view.getByTestId("mock-enqueue"))
 		const request = vi
 			.mocked(vscode.postMessage)
 			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
@@ -5092,7 +5358,7 @@ describe("ChatView chat-owned composer commands", () => {
 		await waitFor(() => view.getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
-		fireEvent.keyDown(input, { key: "Enter" })
+		fireEvent.click(view.getByTestId("mock-enqueue"))
 		const request = vi
 			.mocked(vscode.postMessage)
 			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
@@ -5102,7 +5368,7 @@ describe("ChatView chat-owned composer commands", () => {
 		expect(input.value).toContain("Another draft")
 		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.queueFailed")
 	})
-	it("queues an operation request during streaming instead of clearing an ineligible operation", async () => {
+	it("steers with operation text during streaming without starting an ineligible compaction", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a"))
 		await waitFor(() => view.getByText("Prompt a"))
@@ -5110,7 +5376,7 @@ describe("ChatView chat-owned composer commands", () => {
 		fireEvent.change(input, { target: { value: "compact the context" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "queueMessage", taskId: "a", text: "compact the context" }),
+			expect.objectContaining({ type: "sendAndSteer", taskId: "a", text: "compact the context" }),
 		)
 		expect(input).toHaveValue("compact the context")
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
@@ -5135,12 +5401,23 @@ describe("ChatView chat-owned composer commands", () => {
 		expect(input).toHaveValue("compact the context")
 	})
 	it.each(["streaming", "command", "tool"] as const)(
-		"queues typed input through the host Enter command during %s",
+		"routes typed input through the host Enter command during %s",
 		async (boundary) => {
 			const ref = React.createRef<ChatViewRef>()
 			const view = renderChatView({}, ref)
 			mockPostMessage({
 				...runningState("a"),
+				// A complete ask must govern input even before the live waiting flag catches up.
+				liveTasksById: {
+					a: {
+						id: "a",
+						status: "running",
+						isActive: true,
+						isTurnActive: true,
+						isStreaming: true,
+						isWaitingForInput: false,
+					},
+				},
 				...(boundary === "streaming"
 					? {}
 					: {
@@ -5165,7 +5442,11 @@ describe("ChatView chat-owned composer commands", () => {
 			vi.mocked(vscode.postMessage).mockClear()
 			act(() => ref.current!.acceptInput())
 			expect(vscode.postMessage).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "queueMessage", taskId: "a", text: "Review the remaining changes" }),
+				expect.objectContaining({
+					type: boundary === "streaming" ? "sendAndSteer" : "queueMessage",
+					taskId: "a",
+					text: "Review the remaining changes",
+				}),
 			)
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(
@@ -5243,7 +5524,7 @@ describe("ChatView chat-owned composer commands", () => {
 		fireEvent.change(input, { target: { value: "Draft b" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "queueMessage", taskId: "b", text: "Draft b" }),
+			expect.objectContaining({ type: "sendAndSteer", taskId: "b", text: "Draft b" }),
 		)
 		expect(
 			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "editQueuedMessage"),
@@ -5286,7 +5567,7 @@ describe("ChatView chat-owned composer commands", () => {
 		fireEvent.keyDown(input, { key: "Enter" })
 		const requestA = vi
 			.mocked(vscode.postMessage)
-			.mock.calls.find(([message]) => message.type === "queueMessage" && message.taskId === "a")![0]
+			.mock.calls.find(([message]) => message.type === "sendAndSteer" && message.taskId === "a")![0]
 		// Retain the subscribed callbacks to model a receipt dispatched in the
 		// commit-to-passive-effect window, independently of React's test scheduler.
 		const subscribed = [...listeners]
@@ -5297,7 +5578,7 @@ describe("ChatView chat-owned composer commands", () => {
 				data: {
 					type: "chatCommandResult",
 					chatCommandResult: {
-						command: "queueMessage",
+						command: "sendAndSteer",
 						requestId: requestA.requestId,
 						taskId: "a",
 						status: "accepted",
@@ -5314,7 +5595,7 @@ describe("ChatView chat-owned composer commands", () => {
 			expect(
 				vi
 					.mocked(vscode.postMessage)
-					.mock.calls.filter(([message]) => message.type === "queueMessage" && message.taskId === "b"),
+					.mock.calls.filter(([message]) => message.type === "sendAndSteer" && message.taskId === "b"),
 			).toHaveLength(1)
 		} finally {
 			addSpy.mockRestore()

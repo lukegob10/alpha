@@ -4,7 +4,7 @@ import * as vscode from "vscode"
 
 import type { ApiHandler } from "../../../api"
 import { FakeAIHandler } from "../../../api/providers/fake-ai"
-import type { ApiStream } from "../../../api/transform/stream"
+import type { ApiStream, ApiStreamChunk } from "../../../api/transform/stream"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import type { AgentTurnOutcome } from "../../agent/AgentTurnEngine"
@@ -148,6 +148,172 @@ function capturedStep(task: Task) {
 		getRequest: () => { messages: unknown[] }
 	}
 }
+
+function deferred<T = void>() {
+	let resolve!: (value: T | PromiseLike<T>) => void
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
+describe("request stream steering", () => {
+	it("does not publish a ready first chunk after steering is admitted", async () => {
+		vi.useFakeTimers()
+		try {
+			const { task, originalHandler } = harness()
+			const firstRead = deferred<IteratorResult<ApiStreamChunk>>()
+			const reading = deferred()
+			const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+			originalHandler.createMessage.mockReturnValueOnce({
+				[Symbol.asyncIterator]() {
+					return this
+				},
+				next: () => {
+					reading.resolve()
+					return firstRead.promise
+				},
+				return: close,
+			} as unknown as ApiStream)
+			Object.assign(task, {
+				isTaskLoopActive: true,
+				resetMistakeRecoveryState: vi.fn(),
+				resetCompletionRecoveryState: vi.fn(),
+				cancelAutoApprovalTimeout: vi.fn(),
+				emit: vi.fn(),
+			})
+			const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+			const pending = stream.next().catch((error: unknown) => error)
+			await reading.promise
+			firstRead.resolve({ done: false, value: { type: "text", text: "obsolete answer" } })
+			// Fulfill the provider read before interruption, while request control is still resuming.
+			await firstRead.promise
+			await task.steerUserMessage("use the new direction")
+			expect(await pending).toMatchObject({ name: "SteerRequestInterruptError" })
+			expect(close).toHaveBeenCalledOnce()
+			expect(task.abort).toBe(false)
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("bounds a stalled later read by its captured deadline without first-chunk retry metadata", async () => {
+		vi.useFakeTimers()
+		try {
+			const { task, originalHandler } = harness()
+			const lateRead = deferred<IteratorResult<ApiStreamChunk>>()
+			const reading = deferred()
+			const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+			const next = vi.fn(async (): Promise<IteratorResult<ApiStreamChunk>> => {
+				if (next.mock.calls.length === 1) return { done: false, value: { type: "text", text: "first chunk" } }
+				reading.resolve()
+				return lateRead.promise
+			})
+			originalHandler.createMessage.mockReturnValueOnce({
+				[Symbol.asyncIterator]() {
+					return this
+				},
+				next,
+				return: close,
+			} as unknown as ApiStream)
+			const stream = task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				retryDeadline: Date.now() + 1_000,
+			})
+			await stream.next()
+			const signal = originalHandler.createMessage.mock.calls[0][2]?.signal
+			const pending = stream.next().catch((error: unknown) => error)
+			await reading.promise
+			await vi.advanceTimersByTimeAsync(1_000)
+			const error = await pending
+			expect(error).toMatchObject({ name: "ApiStreamDeadlineError", code: "ProviderTimeout" })
+			expect(error).not.toHaveProperty("firstChunkFailure")
+			expect(signal?.aborted).toBe(true)
+			expect(close).toHaveBeenCalledOnce()
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			lateRead.resolve({ done: true, value: undefined })
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it.each(["first", "subsequent"] as const)(
+		"releases a stalled %s read and its iterator on steering",
+		async (phase) => {
+			vi.useFakeTimers()
+			try {
+				const { task, originalHandler } = harness()
+				const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+				const lateRead = deferred<IteratorResult<ApiStreamChunk>>()
+				const reading = deferred()
+				const next = vi.fn(async (): Promise<IteratorResult<ApiStreamChunk>> => {
+					if (phase === "subsequent" && next.mock.calls.length === 1) {
+						return { done: false, value: { type: "text", text: "original answer" } }
+					}
+					reading.resolve()
+					return lateRead.promise
+				})
+				originalHandler.createMessage.mockReturnValueOnce({
+					[Symbol.asyncIterator]() {
+						return this
+					},
+					next,
+					return: close,
+				} as unknown as ApiStream)
+				Object.assign(task, {
+					isTaskLoopActive: true,
+					resetMistakeRecoveryState: vi.fn(),
+					resetCompletionRecoveryState: vi.fn(),
+					cancelAutoApprovalTimeout: vi.fn(),
+					emit: vi.fn(),
+				})
+				const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+				if (phase === "subsequent") await stream.next()
+				let settled = false
+				const pending = stream.next().then(
+					() => {
+						settled = true
+					},
+					(error: unknown) => {
+						settled = true
+						return error
+					},
+				)
+				await reading.promise
+				const startedAt = Date.now()
+				await task.steerUserMessage("use the new direction")
+				await vi.advanceTimersByTimeAsync(0)
+				const settledOnInterrupt = settled
+				// Release the obsolete response even before the fix, so a failing test cannot hang.
+				if (!settled) await vi.advanceTimersByTimeAsync(5_000)
+				lateRead.resolve({ done: true, value: undefined })
+				const error = await pending
+				console.info(
+					JSON.stringify({
+						workload: `steer-${phase}-read`,
+						handoffMs: Date.now() - startedAt,
+						settledOnInterrupt,
+					}),
+				)
+				expect(settledOnInterrupt).toBe(true)
+				expect(error).toMatchObject({ name: "SteerRequestInterruptError" })
+				expect(close).toHaveBeenCalledOnce()
+				expect(task.abort).toBe(false)
+				expect(task.currentRequestAbortController).toBeUndefined()
+				expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+})
 
 function logicalRequest(call: Parameters<ApiHandler["createMessage"]>) {
 	const [prompt, messages, metadata] = call

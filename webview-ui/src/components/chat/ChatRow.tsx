@@ -12,6 +12,7 @@ import type {
 	AlphaAskUseMcpServer,
 	AlphaSayTool,
 } from "@alpha-code/types"
+import { codebaseSearchResultSchema } from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
 import { parseProposedPlan } from "@alpha/plan-mode"
@@ -53,7 +54,7 @@ import { CommandExecution } from "./CommandExecution"
 import { CommandExecutionError } from "./CommandExecutionError"
 import { AutoApprovedRequestLimitWarning } from "./AutoApprovedRequestLimitWarning"
 import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationResultRow } from "./context-management"
-import CodebaseSearchResultsDisplay, { type CodebaseSearchMatch } from "./CodebaseSearchResultsDisplay"
+import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
 import { CodebaseSearchActivity } from "./CodebaseSearchActivity"
 import { FileSearchBatch } from "./FileSearchBatch"
 import { appendImages } from "@src/utils/imageUtils"
@@ -1644,30 +1645,17 @@ const ChatRowContentInner = ({
 						return <TruncationResultRow data={message.contextTruncation} />
 					}
 					return null
-				case "codebase_search_result":
-					let parsed: {
-						content: {
-							query: string
-							results: CodebaseSearchMatch[]
-						}
-					} | null = null
-
-					try {
-						if (message.text) {
-							parsed = JSON.parse(message.text)
-						}
-					} catch (error) {
-						console.error("Failed to parse codebaseSearch content:", error)
-					}
-
-					if (parsed && !parsed?.content) {
-						console.error("Invalid codebaseSearch content structure:", parsed.content)
-						return <div>Error displaying search results.</div>
-					}
-
-					const { results = [] } = parsed?.content || {}
-
-					return <CodebaseSearchResultsDisplay results={results} {...activityProps} />
+				case "codebase_search_result": {
+					const envelope = safeJsonParse<{ content?: unknown }>(message.text)
+					const parsed = codebaseSearchResultSchema.safeParse(envelope?.content)
+					return (
+						<CodebaseSearchResultsDisplay
+							results={parsed.success ? parsed.data.results : []}
+							diagnostics={parsed.success ? parsed.data.diagnostics : undefined}
+							{...activityProps}
+						/>
+					)
+				}
 				case "user_edit_todos":
 					return <UpdateTodoListToolBlock userEdited onChange={() => {}} />
 				case "tool" as any:

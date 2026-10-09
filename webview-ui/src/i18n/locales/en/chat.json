@@ -339,12 +339,15 @@
 		"didSearchOutsideWorkspace": "Alpha searched a directory (outside workspace)"
 	},
 	"codebaseSearch": {
+		"partialCoverageNote": "Showing available matches. The index or retrieval is incomplete; use file search to verify missing evidence.",
 		"title": "Codebase search",
 		"wantsToSearch": "Alpha wants to search the codebase for <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha wants to search the codebase for <code>{{query}}</code> in <code>{{path}}</code>",
 		"didSearch_one": "Found 1 result",
 		"didSearch_other": "Found {{count}} results",
-		"resultTooltip": "Similarity score: {{score}} (click to open file)"
+		"resultTooltip": "Hybrid rank score: {{score}} (click to open file)",
+		"contextBudgetNote": "Some matches did not fit within the search context budget.",
+		"resultLimitNote": "Additional matches were omitted at the configured chunk limit."
 	},
 	"commandOutput": "Command Output",
 	"commandExecution": {
@@ -584,7 +587,7 @@
 	},
 	"indexingStatus": {
 		"ready": "Index ready",
-		"indexing": "Indexing {{percentage}}%",
+		"indexing": "Embeddings catching up ({{percentage}}%). Current saved edits remain searchable.",
 		"indexed": "Indexed",
 		"error": "Index error",
 		"status": "Index status",
@@ -621,6 +624,7 @@
 		"didRun": "Alpha ran a slash command"
 	},
 	"queuedMessages": {
+		"steerRetained": "Your message is queued because the task could not be steered. Use Steer to try again.",
 		"title": "Queued Messages",
 		"clickToEdit": "Click to edit message",
 		"edit": "Edit",

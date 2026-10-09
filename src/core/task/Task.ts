@@ -8215,10 +8215,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			text = (text ?? "").trim()
 			await this.messageQueueService.ready
 			if (receiptId && (await this.hasAcceptedQueuedUserMessage(receiptId))) return
-			if (!this.canAcceptSteerMessage()) throw new Error("The task cannot accept a steering message")
+			if (
+				this.abort ||
+				this.abandoned ||
+				this.didComplete ||
+				(!this.canAcceptSteerMessage() && !this.hasPendingSteerMessage())
+			)
+				throw new Error("The task cannot accept a steering message")
 			const message = await this.messageQueueService.addMessageDurably(text, images, receiptId)
 			if (!message) throw new Error("A steering message or image is required")
 			await this.messageQueueService.flush()
+			// A rapid second submission belongs to the FIFO until the first input's
+			// transcript receipt commits; it cannot replace that selected input.
+			if (this.hasPendingSteerMessage()) return
 			try {
 				await this.applyQueuedSteeringMessage(message.id)
 			} catch (error) {
@@ -8389,8 +8398,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
-	 * Await Task-owned preflight work without letting a stalled persistence or
-	 * pacing dependency hide cancellation or consume an absolute retry budget.
+	 * Await Task-owned work without letting a stalled dependency hide cancellation
+	 * or consume a captured request or retry budget.
 	 * The attached rejection handler also absorbs a late failure after the race.
 	 */
 	private waitForRequestControl<T>(
@@ -14881,6 +14890,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw error
 		}
 		const iterator = stream[Symbol.asyncIterator]()
+		let streamCompleted = false
 
 		try {
 			try {
@@ -14920,6 +14930,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				removeFirstChunkAbortListener?.()
 				removeFirstChunkAbortListener = undefined
 				this.isWaitingForFirstChunk = false
+				this.throwIfStepInterrupted(abortSignal)
+				streamCompleted = firstChunk.done === true
 				yield firstChunk.value
 			} catch (error) {
 				this.isWaitingForFirstChunk = false
@@ -15145,8 +15157,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// No error, so pass every subsequent chunk through without applying the
 			// first-chunk retry UX. The surrounding finally also runs if a consumer
 			// closes the generator while it is suspended at the first yield.
-			yield* iterator
+			while (!streamCompleted) {
+				this.throwIfStepInterrupted(abortSignal)
+				const chunk = await this.waitForRequestControl(iterator.next(), abortSignal, requestDeadline)
+				this.throwIfStepInterrupted(abortSignal)
+				streamCompleted = chunk.done === true
+				if (!chunk.done) yield chunk.value
+			}
 		} finally {
+			if (!streamCompleted) {
+				if (!abortSignal.aborted) requestController.abort(new Error("Provider request closed"))
+				// A provider may ignore abort or block return() behind an outstanding read.
+				// Request cleanup must not hold the next logical step behind that transport.
+				try {
+					void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined)
+				} catch {
+					// Best effort after termination; late cleanup cannot change the owned result.
+				}
+			}
 			clearRequestOwnership()
 		}
 	}

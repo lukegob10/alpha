@@ -18,9 +18,16 @@ export function isSupportedCodebaseIndexEmbedderProvider(value: unknown): value 
 /**
  * Codebase Index Constants
  */
+export const CODEBASE_INDEX_SEARCH_LIMITS = {
+	MAX_RESULTS: 100,
+	LEGACY_MAX_RESULTS: 200,
+	CANDIDATES_PER_CHANNEL: 200,
+	CONTEXT_TOKEN_BUDGET: 6000,
+} as const
+
 export const CODEBASE_INDEX_DEFAULTS = {
 	MIN_SEARCH_RESULTS: 10,
-	MAX_SEARCH_RESULTS: 200,
+	MAX_SEARCH_RESULTS: CODEBASE_INDEX_SEARCH_LIMITS.MAX_RESULTS,
 	DEFAULT_SEARCH_RESULTS: 50,
 	SEARCH_RESULTS_STEP: 10,
 	MIN_SEARCH_SCORE: 0,
@@ -32,6 +39,65 @@ export const CODEBASE_INDEX_DEFAULTS = {
 	DEFAULT_EMBEDDING_RATE_LIMIT_SECONDS: 1,
 	EMBEDDING_RATE_LIMIT_STEP: 0.1,
 } as const
+
+/** Older settings allowed 200 results even though search capped them at 100. */
+export function normalizeCodeIndexSearchMaxResults(value?: number): number {
+	if (value === undefined || !Number.isFinite(value)) return CODEBASE_INDEX_DEFAULTS.DEFAULT_SEARCH_RESULTS
+	return Math.max(
+		CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS,
+		Math.min(CODEBASE_INDEX_SEARCH_LIMITS.MAX_RESULTS, Math.trunc(value)),
+	)
+}
+
+const countSchema = z.number().int().nonnegative()
+
+export const codebaseSearchDiagnosticsSchema = z.object({
+	candidateLimit: countSchema,
+	semanticCandidates: countSchema,
+	lexicalCandidates: countSchema,
+	fusedCandidates: countSchema,
+	effectiveMaxResults: countSchema,
+	contextTokenBudget: countSchema,
+	estimatedContextTokens: countSchema,
+	returnedChunks: countSchema,
+	candidatesExamined: countSchema,
+	skippedDuplicates: countSchema,
+	skippedBudget: countSchema,
+	skippedSource: countSchema,
+	skippedInvalid: countSchema,
+	remainingCandidates: countSchema,
+	/** Optional so historical search messages remain readable. */
+	freshCandidates: countSchema.optional(),
+	indexFreshness: z.enum(["current", "catching-up", "error"]).optional(),
+	semanticStatus: z.enum(["complete", "timeout", "error"]).optional(),
+	lexicalStatus: z.enum(["complete", "timeout", "error"]).optional(),
+	freshStatus: z.enum(["complete", "timeout", "error"]).optional(),
+})
+
+export type CodebaseSearchDiagnostics = z.infer<typeof codebaseSearchDiagnosticsSchema>
+
+export const codebaseSearchMatchSchema = z.object({
+	filePath: z.string(),
+	score: z.number().finite(),
+	scoreType: z.literal("hybrid").optional(),
+	semanticScore: z.number().finite().optional(),
+	lexicalScore: z.number().finite().optional(),
+	startLine: z.number(),
+	endLine: z.number(),
+	context: z.string().optional(),
+	codeChunk: z.string(),
+})
+
+export type CodebaseSearchMatch = z.infer<typeof codebaseSearchMatchSchema>
+
+/** Optional diagnostics and score metadata keep older saved search messages readable. */
+export const codebaseSearchResultSchema = z.object({
+	query: z.string(),
+	results: z.array(codebaseSearchMatchSchema),
+	diagnostics: codebaseSearchDiagnosticsSchema.optional(),
+})
+
+export type CodebaseSearchResult = z.infer<typeof codebaseSearchResultSchema>
 
 /**
  * CodebaseIndexConfig
@@ -52,7 +118,8 @@ export const codebaseIndexConfigSchema = z
 		codebaseIndexSearchMaxResults: z
 			.number()
 			.min(CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS)
-			.max(CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS)
+			.max(CODEBASE_INDEX_SEARCH_LIMITS.LEGACY_MAX_RESULTS)
+			.transform(normalizeCodeIndexSearchMaxResults)
 			.optional(),
 		codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
 		codebaseIndexEmbeddingRateLimitSeconds: z

@@ -1,11 +1,14 @@
 import { useState } from "react"
+import type { CodebaseSearchDiagnostics } from "@alpha-code/types"
 import { fireEvent, render, screen } from "@/utils/test-utils"
 import { vscode } from "@src/utils/vscode"
 import SearchResults, { type CodebaseSearchMatch } from "../CodebaseSearchResultsDisplay"
 
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 vi.mock("react-i18next", () => ({
-	useTranslation: () => ({ t: (_key: string, options?: { count?: number }) => `Found ${options?.count} results` }),
+	useTranslation: () => ({
+		t: (key: string, options?: { count?: number }) => (options ? `Found ${options.count} results` : key),
+	}),
 	Trans: ({ count }: { count: number }) => <>Found {count} results</>,
 }))
 
@@ -27,6 +30,66 @@ function CodebaseSearchResultsDisplay({ results }: { results: CodebaseSearchMatc
 
 describe("codebase search results", () => {
 	beforeEach(() => vi.clearAllMocks())
+	it.each([{ results: [] }, { results: [result] }])(
+		"explains partial coverage even for an empty or collapsed result",
+		({ results }) => {
+			const diagnostics: CodebaseSearchDiagnostics = {
+				candidateLimit: 200,
+				semanticCandidates: 0,
+				lexicalCandidates: results.length,
+				fusedCandidates: results.length,
+				effectiveMaxResults: 50,
+				contextTokenBudget: 6000,
+				estimatedContextTokens: 0,
+				returnedChunks: results.length,
+				candidatesExamined: results.length,
+				skippedDuplicates: 0,
+				skippedBudget: 0,
+				skippedSource: 0,
+				skippedInvalid: 0,
+				remainingCandidates: 0,
+				semanticStatus: "timeout",
+			}
+			render(
+				<SearchResults
+					results={results}
+					diagnostics={diagnostics}
+					isExpanded={false}
+					onToggleExpand={vi.fn()}
+				/>,
+			)
+			expect(screen.getByText("codebaseSearch.partialCoverageNote")).toBeVisible()
+		},
+	)
+	it.each(["skippedBudget", "remainingCandidates"] as const)("explains %s only when expanded", (reason) => {
+		const diagnostics: CodebaseSearchDiagnostics = {
+			candidateLimit: 200,
+			semanticCandidates: 1,
+			lexicalCandidates: 1,
+			fusedCandidates: 1,
+			effectiveMaxResults: 50,
+			contextTokenBudget: 6000,
+			estimatedContextTokens: 70,
+			returnedChunks: 1,
+			candidatesExamined: 1,
+			skippedDuplicates: 0,
+			skippedBudget: 0,
+			skippedSource: 0,
+			skippedInvalid: 0,
+			remainingCandidates: 0,
+			[reason]: 1,
+		}
+		const note = reason === "skippedBudget" ? "codebaseSearch.contextBudgetNote" : "codebaseSearch.resultLimitNote"
+		const { rerender } = render(
+			<SearchResults results={[result]} diagnostics={diagnostics} isExpanded={false} onToggleExpand={vi.fn()} />,
+		)
+		expect(screen.queryByText(note)).not.toBeInTheDocument()
+		rerender(
+			<SearchResults results={[result]} diagnostics={diagnostics} isExpanded={true} onToggleExpand={vi.fn()} />,
+		)
+		expect(screen.getByText(note)).toBeVisible()
+		expect(screen.queryByText("0.983")).not.toBeInTheDocument()
+	})
 
 	it("routes expansion through the chat's controller so it can release automatic scrolling", () => {
 		const onToggleExpand = vi.fn()

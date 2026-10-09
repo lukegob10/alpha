@@ -81,6 +81,7 @@ export interface ChatViewProps {
 
 export interface ChatViewRef {
 	acceptInput: () => void
+	sendAndSteer: (taskId?: string) => void
 }
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
@@ -1264,7 +1265,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 
 	const postQueuedMessage = useCallback(
-		(text: string, images: string[], asyncUserInputMessageTs?: number) => {
+		(text: string, images: string[], asyncUserInputMessageTs?: number, steer = false) => {
 			// Queue messages are task-scoped on the extension side. Preserve the draft
 			// during transient view/task state instead of posting a request it will reject.
 			if (!visibleCurrentTaskId || pendingQueueRequestRef.current) {
@@ -1278,13 +1279,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				text,
 				images: [...images],
 				clientSubmittedAt: Date.now(),
+				...(steer ? { command: "sendAndSteer" as const } : {}),
 				...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
 			}
 			pendingQueueRequestRef.current = request
 			setPendingQueueRequest(request)
 			setChatCommandError(undefined)
 			vscode.postMessage({
-				type: "queueMessage",
+				type: steer ? "sendAndSteer" : "queueMessage",
 				text,
 				images,
 				taskId: visibleCurrentTaskId,
@@ -1303,7 +1305,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	 * @param images - Array of image data URLs to send with the message
 	 */
 	const handleSendMessage = useCallback(
-		(text: string, images: string[], asyncUserInputMessageTs?: number): boolean => {
+		(text: string, images: string[], asyncUserInputMessageTs?: number, steer = false): boolean => {
 			text = text.trim()
 			const planCommand = parsePlanModeCommand(text)
 
@@ -1414,7 +1416,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
 				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
 			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
-				return postQueuedMessage(text, images, asyncUserInputMessageTs)
+				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
 			}
 
 			const isCurrentFollowUpResponse =
@@ -1437,7 +1439,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
 
 			if (shouldQueueMessage) {
-				return postQueuedMessage(text, images, asyncUserInputMessageTs)
+				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
 			}
 
 			// Composer operations apply only at an eligible idle boundary. Active
@@ -1526,6 +1528,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			t,
 			markFollowUpAsAnswered,
 			isTurnActive,
+			isStreaming,
 			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
@@ -1614,8 +1617,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [visibleTaskPayload, setDidClickCancel])
 
 	const handleComposerSend = useCallback(() => {
-		handleSendMessage(inputValue, selectedImages)
-	}, [handleSendMessage, inputValue, selectedImages])
+		handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
+	}, [handleSendMessage, inputValue, selectedImages, isManagedSubagent])
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
@@ -2041,7 +2044,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					const asyncSubmission =
 						result.command === "askResponse"
 							? askRequest
-							: result.command === "queueMessage"
+							: result.command === "queueMessage" || result.command === "sendAndSteer"
 								? queueRequest
 								: result.command === "resumeCompletedTask"
 									? draft.pendingResumeRequest
@@ -2089,7 +2092,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}))
 					}
 
-					if (result.command === "queueMessage" && queueRequest?.requestId === result.requestId) {
+					if (
+						(result.command === "queueMessage" || result.command === "sendAndSteer") &&
+						queueRequest?.requestId === result.requestId &&
+						result.command === (queueRequest.command ?? "queueMessage")
+					) {
 						if (owner === visibleCurrentTaskId) pendingQueueRequestRef.current = null
 						updateTaskDraft(owner, (current) => {
 							const unchangedText = current.inputValue.trim() === queueRequest.text
@@ -2114,7 +2121,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 										}
 									: {}),
 								chatCommandError:
-									result.status === "accepted" ? undefined : t("chat:queuedMessages.queueFailed"),
+									result.status === "accepted"
+										? result.command === "sendAndSteer" && result.deliveryState === "queued"
+											? t("chat:queuedMessages.steerRetained")
+											: undefined
+										: t(
+												result.command === "sendAndSteer"
+													? "chat:queuedMessages.steerFailed"
+													: "chat:queuedMessages.queueFailed",
+											),
 							}
 						})
 					}
@@ -3062,13 +3077,30 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		!toolApprovalRequest
 
 	useImperativeHandle(ref, () => ({
+		sendAndSteer: (taskId) => {
+			if (
+				taskId !== visibleCurrentTaskId ||
+				isHidden ||
+				isManagedSubagent ||
+				isProfileDisabled ||
+				isCondensing ||
+				editingQueuedMessage ||
+				pendingQueueRequestRef.current ||
+				pendingSteerRequestRef.current ||
+				pendingResumeRequestRef.current ||
+				pendingEditRequestRef.current
+			)
+				return
+			handleSendMessage(inputValue, selectedImages, undefined, true)
+		},
 		acceptInput: () => {
 			const hasInput = inputValue.trim() || selectedImages.length > 0
 
 			if (hasInput) {
 				// The host Enter shortcut and textarea submit share input routing.
 				// Approval buttons remain explicit actions when no draft is present.
-				if (!isProfileDisabled && !isCondensing) handleSendMessage(inputValue, selectedImages)
+				if (!isProfileDisabled && !isCondensing)
+					handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
 				return
 			}
 

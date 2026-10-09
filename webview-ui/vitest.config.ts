@@ -12,7 +12,7 @@ export default defineConfig({
 		reporters,
 		silent,
 		environment: "jsdom",
-		include: ["src/**/*.spec.ts", "src/**/*.spec.tsx"],
+		include: ["src/**/*.{test,spec}.{ts,tsx}"],
 		onConsoleLog,
 	},
 	resolve: {

@@ -68,6 +68,30 @@ describe("IpcServer disposal", () => {
 		vi.clearAllMocks()
 		mocks.reset()
 	})
+	it.each([
+		["win32", "\\\\.\\pipe\\evals-fixture.sock", "evals-fixture.sock"],
+		["win32", "evals-fixture.sock", "evals-fixture.sock"],
+		["linux", "/tmp/evals-fixture.sock", "/tmp/evals-fixture.sock"],
+		["darwin", "/tmp/evals-fixture.sock", "/tmp/evals-fixture.sock"],
+	] as const)(
+		"adapts the %s server transport while preserving the public endpoint %s",
+		(platform, endpoint, transportPath) => {
+			const original = Object.getOwnPropertyDescriptor(process, "platform")
+			if (!original) throw new Error("Missing platform descriptor")
+			let server: IpcServer | undefined
+			try {
+				// This transport is synchronous and mocked; platform substitution cannot start native sockets.
+				Object.defineProperty(process, "platform", { ...original, value: platform })
+				server = new IpcServer(endpoint, vi.fn())
+				server.listen()
+				expect(server.socketPath).toBe(endpoint)
+				expect(mocks.ipc.serve).toHaveBeenCalledExactlyOnceWith(transportPath, expect.any(Function))
+			} finally {
+				server?.dispose()
+				Object.defineProperty(process, "platform", original)
+			}
+		},
+	)
 	it("sends the observed installation receipt only after capture completes", async () => {
 		const identity: ExecutionIdentity = {
 			schemaVersion: 1,

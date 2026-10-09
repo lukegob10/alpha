@@ -32,6 +32,7 @@ vitest.mock("path", async () => {
 })
 
 const mockQdrantClientInstance = {
+	scroll: vitest.fn(),
 	getCollection: vitest.fn(),
 	retrieve: vitest.fn().mockResolvedValue([{ payload: { indexIdentity: "code-index-2" } }]),
 	updateCollection: vitest.fn().mockResolvedValue(true),
@@ -81,6 +82,7 @@ describe("QdrantVectorStore", () => {
 			https: false,
 			port: 6333,
 			apiKey: mockApiKey,
+			timeout: 30_000,
 			headers: {
 				"User-Agent": "Alpha",
 			},
@@ -92,6 +94,54 @@ describe("QdrantVectorStore", () => {
 		expect((vectorStore as any).collectionName).toBe(expectedCollectionName)
 		expect((vectorStore as any).vectorSize).toBe(mockVectorSize)
 	})
+
+	it("reads a bounded set of vectors for an exact file", async () => {
+		mockQdrantClientInstance.scroll.mockResolvedValueOnce({
+			points: [
+				{
+					id: "point",
+					vector: { "": [1, 0], lexical: { indices: [1], values: [1] } },
+					payload: { filePath: "src/state.ts", codeChunk: "source" },
+				},
+			],
+		})
+		const points = await vectorStore.getPointsByFilePath("src/state.ts")
+		expect(points[0].vector).toEqual([1, 0])
+		expect(mockQdrantClientInstance.scroll).toHaveBeenCalledWith(expectedCollectionName, {
+			filter: { must: [{ key: "filePath", match: { value: "src/state.ts" } }] },
+			limit: 2048,
+			with_payload: true,
+			with_vector: true,
+		})
+	})
+
+	it("upserts before pruning stale points and scopes pruning to the exact file", async () => {
+		mockQdrantClientInstance.upsert.mockResolvedValueOnce(undefined)
+		mockQdrantClientInstance.delete.mockResolvedValueOnce(undefined)
+		await vectorStore.replaceFilePoints("src/state.ts", [
+			{ id: "current", vector: [1, 0], payload: { filePath: "src/state.ts" } },
+		])
+		expect(mockQdrantClientInstance.upsert.mock.invocationCallOrder[0]).toBeLessThan(
+			mockQdrantClientInstance.delete.mock.invocationCallOrder[0],
+		)
+		expect(mockQdrantClientInstance.delete).toHaveBeenCalledWith(expectedCollectionName, {
+			filter: {
+				must: [{ key: "filePath", match: { value: "src/state.ts" } }],
+				must_not: [{ has_id: ["current"] }],
+			},
+			wait: true,
+		})
+	})
+
+	it("preserves old points when a replacement upsert fails", async () => {
+		mockQdrantClientInstance.upsert.mockRejectedValueOnce(new Error("write failed"))
+		await expect(
+			vectorStore.replaceFilePoints("src/state.ts", [
+				{ id: "current", vector: [1, 0], payload: { filePath: "src/state.ts" } },
+			]),
+		).rejects.toThrow("write failed")
+		expect(mockQdrantClientInstance.delete).not.toHaveBeenCalled()
+	})
 	it("should handle constructor with default URL when none provided", () => {
 		const vectorStoreWithDefaults = new QdrantVectorStore(mockWorkspacePath, undefined as any, mockVectorSize)
 
@@ -100,6 +150,7 @@ describe("QdrantVectorStore", () => {
 			https: false,
 			port: 6333,
 			apiKey: undefined,
+			timeout: 30_000,
 			headers: {
 				"User-Agent": "Alpha",
 			},
@@ -114,6 +165,7 @@ describe("QdrantVectorStore", () => {
 			https: false,
 			port: 6333,
 			apiKey: undefined,
+			timeout: 30_000,
 			headers: {
 				"User-Agent": "Alpha",
 			},
@@ -134,6 +186,7 @@ describe("QdrantVectorStore", () => {
 					port: 443,
 					prefix: undefined, // No prefix for root path
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -149,6 +202,7 @@ describe("QdrantVectorStore", () => {
 					port: 9000,
 					prefix: undefined, // No prefix for root path
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -168,6 +222,7 @@ describe("QdrantVectorStore", () => {
 					port: 443,
 					prefix: "/api/v1", // Should have prefix
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -185,6 +240,7 @@ describe("QdrantVectorStore", () => {
 					port: 80,
 					prefix: undefined, // No prefix for root path
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -200,6 +256,7 @@ describe("QdrantVectorStore", () => {
 					port: 8080,
 					prefix: undefined, // No prefix for root path
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -219,6 +276,7 @@ describe("QdrantVectorStore", () => {
 					port: 80,
 					prefix: "/api/v1", // Should have prefix
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -235,6 +293,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 80,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -249,6 +308,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 6333,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -263,6 +323,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 9000,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -279,6 +340,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 80,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -293,6 +355,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 6333,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -309,6 +372,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 6333,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -323,6 +387,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 6333,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -337,6 +402,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 6333,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -353,6 +419,7 @@ describe("QdrantVectorStore", () => {
 					https: false,
 					port: 80,
 					apiKey: undefined,
+					timeout: 30_000,
 					headers: {
 						"User-Agent": "Alpha",
 					},
@@ -375,6 +442,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: "/some/path",
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -394,6 +462,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: undefined,
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -413,6 +482,7 @@ describe("QdrantVectorStore", () => {
 				port: 443,
 				prefix: "/api",
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -432,6 +502,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: "/api", // Trailing slash should be removed
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -451,6 +522,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: "/api", // All trailing slashes should be removed
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -470,6 +542,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: "/api/v1/qdrant",
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -486,6 +559,7 @@ describe("QdrantVectorStore", () => {
 				port: 443,
 				prefix: "/ollama/api/v1", // Trailing slash removed, query/fragment ignored
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -505,6 +579,7 @@ describe("QdrantVectorStore", () => {
 				port: 6333,
 				prefix: "/api/path", // Query params and fragment should be ignored
 				apiKey: undefined,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},

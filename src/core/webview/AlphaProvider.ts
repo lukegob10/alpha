@@ -4,7 +4,7 @@ import {
 	type TaskReasoningPreference,
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
-import { resolveTaskReasoning } from "../agent/TaskReasoning"
+import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/TaskReasoning"
 import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
 import os from "os"
@@ -456,6 +456,7 @@ export class AlphaProvider
 	public static readonly sideBarId = `${Package.name}.SidebarProvider`
 	public static readonly tabPanelId = `${Package.name}.TabPanelProvider`
 	private static activeInstances: Set<AlphaProvider> = new Set()
+	private static focusedInstance?: AlphaProvider
 	private disposables: vscode.Disposable[] = []
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
@@ -650,23 +651,40 @@ export class AlphaProvider
 		options: { rememberForNewTasks?: boolean } = {},
 	): Promise<TaskReasoningProjection> {
 		const preference = taskReasoningPreferenceSchema.parse(input)
+		return this.enqueueConfiguration(() => this.applyTaskReasoningPreference(taskId, preference, options))
+	}
+
+	public adjustTaskReasoningEffort(taskId: string | undefined, direction: -1 | 1): Promise<TaskReasoningProjection> {
+		// Read and advance inside the same queue so rapid keypresses cannot lose increments.
 		return this.enqueueConfiguration(async () => {
 			const task = taskId ? this.getLiveTask(taskId) : undefined
 			if (taskId && (!task || task.abort || task.abandoned)) throw new Error("Task is unavailable")
-			const rememberForNewTasks = !taskId || options.rememberForNewTasks === true
-			const previous = rememberForNewTasks ? this.contextProxy.getValue("newTaskReasoningPreference") : undefined
-			// Persist an explicitly remembered choice first; restore it if the task transaction fails.
-			if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", preference)
-			try {
-				if (task) await task.updateReasoningPreference(preference)
-			} catch (error) {
-				if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", previous)
-				throw error
-			}
 			const state = await this.getReasoningProjection(task)
-			await this.postStateToWebview().catch(() => this.log("Failed to refresh reasoning state after persistence"))
-			return state
+			const preference = getAdjacentReasoningPreference(state, direction)
+			return preference ? this.applyTaskReasoningPreference(taskId, preference) : state
 		})
+	}
+
+	private async applyTaskReasoningPreference(
+		taskId: string | undefined,
+		preference: TaskReasoningPreference,
+		options: { rememberForNewTasks?: boolean } = {},
+	): Promise<TaskReasoningProjection> {
+		const task = taskId ? this.getLiveTask(taskId) : undefined
+		if (taskId && (!task || task.abort || task.abandoned)) throw new Error("Task is unavailable")
+		const rememberForNewTasks = !taskId || options.rememberForNewTasks === true
+		const previous = rememberForNewTasks ? this.contextProxy.getValue("newTaskReasoningPreference") : undefined
+		// Persist an explicitly remembered choice first; restore it if the task transaction fails.
+		if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", preference)
+		try {
+			if (task) await task.updateReasoningPreference(preference)
+		} catch (error) {
+			if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", previous)
+			throw error
+		}
+		const state = await this.getReasoningProjection(task)
+		await this.postStateToWebview().catch(() => this.log("Failed to refresh reasoning state after persistence"))
+		return state
 	}
 	/** Apply a task-scoped approval choice to future step admissions for exactly the addressed task. */
 	public updateTaskApprovalMode(update: TaskApprovalModeUpdate): TaskApprovalModeUpdateResult {
@@ -1153,6 +1171,7 @@ export class AlphaProvider
 	*/
 	private clearWebviewResources() {
 		this.isViewLaunched = false
+		this.clearWebviewFocus()
 		while (this.webviewDisposables.length) {
 			const x = this.webviewDisposables.pop()
 			if (x) {
@@ -1242,7 +1261,36 @@ export class AlphaProvider
 	}
 
 	public static getVisibleInstance(): AlphaProvider | undefined {
-		return findLast(Array.from(this.activeInstances), (instance) => instance.view?.visible === true)
+		const visible = Array.from(this.activeInstances).filter(
+			(instance) => !instance._disposed && instance.view?.visible === true,
+		)
+		if (this.focusedInstance && visible.includes(this.focusedInstance)) return this.focusedInstance
+		return (
+			findLast(visible, (instance) =>
+				Boolean(instance.view && "active" in instance.view && instance.view.active),
+			) ?? visible.at(-1)
+		)
+	}
+
+	public async setWebviewFocused(focused: boolean): Promise<void> {
+		if (focused) {
+			if (this._disposed || !this.view?.visible) return
+			AlphaProvider.focusedInstance = this
+		} else {
+			// A late blur from the previous view must not clear the newly focused view.
+			if (AlphaProvider.focusedInstance !== this) return
+			AlphaProvider.focusedInstance = undefined
+		}
+		// VS Code's sidebar focusedView context does not follow focus into its webview overlay.
+		await vscode.commands.executeCommand(
+			"setContext",
+			"alpha.focusedWebview",
+			AlphaProvider.focusedInstance?.renderContext,
+		)
+	}
+
+	private clearWebviewFocus() {
+		void this.setWebviewFocused(false).catch((error) => this.log(`Could not clear webview focus: ${String(error)}`))
 	}
 
 	public static async getInstance(): Promise<AlphaProvider | undefined> {
@@ -1342,6 +1390,7 @@ export class AlphaProvider
 
 	async resolveWebviewView(webviewView: vscode.WebviewView | vscode.WebviewPanel) {
 		this.isViewLaunched = false
+		this.clearWebviewFocus()
 		this.view = webviewView
 		const inTabMode = "onDidChangeViewState" in webviewView
 
@@ -1427,6 +1476,8 @@ export class AlphaProvider
 			const viewStateDisposable = webviewView.onDidChangeViewState(() => {
 				if (this.view?.visible) {
 					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
+				} else {
+					this.clearWebviewFocus()
 				}
 			})
 
@@ -1436,6 +1487,8 @@ export class AlphaProvider
 			const visibilityDisposable = webviewView.onDidChangeVisibility(() => {
 				if (this.view?.visible) {
 					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
+				} else {
+					this.clearWebviewFocus()
 				}
 			})
 
@@ -1770,6 +1823,7 @@ export class AlphaProvider
 	private setWebviewMessageListener(webview: vscode.Webview) {
 		const taskControlTypes = new Set<WebviewMessage["type"]>([
 			"queueMessage",
+			"sendAndSteer",
 			"steerQueuedMessage",
 			"removeQueuedMessage",
 			"editQueuedMessage",
@@ -1781,6 +1835,7 @@ export class AlphaProvider
 			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
+			"webviewFocusChanged",
 			"cancelTask",
 			"cancelSubagent",
 			"cancelSubagentGroup",
@@ -5952,6 +6007,15 @@ export class AlphaProvider
 
 	public getLiveTaskMetadata(): Record<string, LiveTaskMetadata> {
 		return this.taskSessions.getMetadata()
+	}
+
+	public async navigateTask(direction: -1 | 1, needsInputOnly = false): Promise<void> {
+		const taskId = this.taskSessions.getAdjacentTaskId(direction, needsInputOnly)
+		if (!taskId) return
+		await this.showTaskWithId(taskId)
+		if (this.getActiveTaskId() === taskId) {
+			await this.postMessageToWebview({ type: "action", action: "focusInput" })
+		}
 	}
 
 	public async focusTask(taskId: string, navigationGeneration?: number): Promise<boolean> {

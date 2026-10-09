@@ -1,4 +1,5 @@
-import { createIndexPoint, getEmbeddingText, validateEmbeddingBatch } from "../shared/embedding-input"
+import { relativeIndexPath } from "../shared/embedding-input"
+import { prepareIndexPoints } from "../shared/file-indexing"
 import { listFiles } from "../../glob/list-files"
 import { Ignore } from "ignore"
 import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
@@ -93,9 +94,15 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 		// Ripgrep already traverses the tree and applies Git ignore rules. The indexer
 		// needs only files, so avoid the listing helper's second walk for directory entries.
-		const [filePaths] = await listFiles(directoryPath, true, MAX_LIST_FILES_LIMIT_CODE_INDEX, signal, {
-			includeDirectories: false,
-		})
+		const [filePaths, hitFileLimit] = await listFiles(
+			directoryPath,
+			true,
+			MAX_LIST_FILES_LIMIT_CODE_INDEX,
+			signal,
+			{
+				includeDirectories: false,
+			},
+		)
 
 		// Reject unsupported paths before Alpha ignore validation resolves symlinks on disk.
 		const candidatePaths = filePaths.filter((filePath) => {
@@ -133,7 +140,6 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 		// Shared batch accumulators (protected by mutex)
 		let currentBatchBlocks: CodeBlock[] = []
-		let currentBatchTexts: string[] = []
 		let currentBatchFileInfos: { filePath: string; fileHash: string; isNew: boolean }[] = []
 		const activeBatchPromises = new Set<Promise<void>>()
 		let pendingBatchCount = 0
@@ -153,23 +159,13 @@ export class DirectoryScanner implements IDirectoryScanner {
 			}
 
 			const batchBlocks = currentBatchBlocks
-			const batchTexts = currentBatchTexts
 			const batchFileInfos = currentBatchFileInfos
 			currentBatchBlocks = []
-			currentBatchTexts = []
 			currentBatchFileInfos = []
 			pendingBatchCount++
 
 			const batchPromise = batchLimiter(() =>
-				this.processBatch(
-					batchBlocks,
-					batchTexts,
-					batchFileInfos,
-					scanWorkspace,
-					onError,
-					onBlocksIndexed,
-					signal,
-				),
+				this.processBatch(batchBlocks, batchFileInfos, scanWorkspace, onError, onBlocksIndexed, signal),
 			)
 			activeBatchPromises.add(batchPromise)
 			const cleanup = () => {
@@ -227,9 +223,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 					// Process embeddings if configured
 					if (this.embedder && this.qdrantClient) {
-						const indexedBlocks = blocks
-							.filter((block) => block.content.trim().length > 0)
-							.map((block) => ({ block, text: getEmbeddingText(block, scanWorkspace) }))
+						const indexedBlocks = blocks.filter((block) => block.content.trim().length > 0)
 						const release = await mutex.acquire()
 						try {
 							if (signal?.aborted) {
@@ -244,8 +238,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 								await dispatchCurrentBatch()
 							}
 
-							currentBatchBlocks.push(...indexedBlocks.map(({ block }) => block))
-							currentBatchTexts.push(...indexedBlocks.map(({ text }) => text))
+							currentBatchBlocks.push(...indexedBlocks)
 							currentBatchFileInfos.push({ filePath, fileHash: currentFileHash, isNew: isNewFile })
 							if (indexedBlocks.length > 0) {
 								totalBlockCount += fileBlockCount
@@ -268,6 +261,8 @@ export class DirectoryScanner implements IDirectoryScanner {
 						await this.cacheManager.updateHash(filePath, currentFileHash)
 					}
 				} catch (error) {
+					// Discovery confirmed this path; a transient stat/read failure is not evidence of deletion.
+					processedFiles.add(filePath)
 					// Re-throw AbortError — it's not a file processing error, just a user-initiated stop
 					if (error instanceof DOMException && error.name === "AbortError") {
 						throw error
@@ -337,6 +332,10 @@ export class DirectoryScanner implements IDirectoryScanner {
 		}
 
 		// Handle deleted files
+		if (hitFileLimit) {
+			onError?.(new Error(t("embeddings:incremental.scanLimit", { limit: MAX_LIST_FILES_LIMIT_CODE_INDEX })))
+			return { stats: { processed: processedCount, skipped: skippedCount }, totalBlockCount }
+		}
 		const oldHashes = this.cacheManager.getAllHashes()
 		for (const cachedFilePath of Object.keys(oldHashes)) {
 			if (!processedFiles.has(cachedFilePath)) {
@@ -393,7 +392,6 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 	private async processBatch(
 		batchBlocks: CodeBlock[],
-		batchTexts: string[],
 		batchFileInfos: { filePath: string; fileHash: string; isNew: boolean }[],
 		scanWorkspace: string,
 		onError?: (error: Error) => void,
@@ -404,84 +402,36 @@ export class DirectoryScanner implements IDirectoryScanner {
 		let success = false
 		let lastError: Error | null = null
 		// Validated vectors survive storage retries; retrying an upsert must not re-embed source files.
-		const pendingPoints: PointStruct[][] = []
+		let pendingPoints: PointStruct[] | undefined
 
 		while (attempts < MAX_BATCH_RETRIES && !success) {
 			if (signal?.aborted) return
 			attempts++
 			try {
-				// Validate all provider results before replacing any existing source chunks.
-				for (
-					let offset = pendingPoints.reduce((count, points) => count + points.length, 0);
-					offset < batchBlocks.length;
-					offset += this.batchSegmentThreshold
-				) {
-					const blocks = batchBlocks.slice(offset, offset + this.batchSegmentThreshold)
-					await this.embeddingRateLimiter.wait(signal)
-					if (signal?.aborted) return
-					const { embeddings } = await this.embedder.createEmbeddings(
-						batchTexts.slice(offset, offset + blocks.length),
-						undefined,
-						"document",
-						signal,
-					)
-					validateEmbeddingBatch(embeddings, blocks.length)
-					pendingPoints.push(
-						blocks.map((block, index) => createIndexPoint(block, scanWorkspace, embeddings[index])),
-					)
-				}
-				// Cancellation stops before the replacement transaction. Once started, settle every write before teardown.
-				if (signal?.aborted) return
-				// --- Deletion Step ---
-				const uniqueFilePaths = [
-					...new Set(
-						batchFileInfos
-							.filter((info) => !info.isNew) // Only modified files (not new)
-							.map((info) => info.filePath),
+				pendingPoints ??= await prepareIndexPoints(batchBlocks, scanWorkspace, {
+					embedder: this.embedder,
+					vectorStore: this.qdrantClient,
+					rateLimiter: this.embeddingRateLimiter,
+					batchSize: this.batchSegmentThreshold,
+					signal,
+					reusableFilePaths: new Set(
+						batchFileInfos.filter((info) => !info.isNew).map((info) => info.filePath),
 					),
-				]
-				if (uniqueFilePaths.length > 0) {
-					try {
-						await this.qdrantClient.deletePointsByMultipleFilePaths(uniqueFilePaths)
-					} catch (deleteError: any) {
-						const errorStatus =
-							deleteError?.status || deleteError?.response?.status || deleteError?.statusCode
-						const errorMessage = deleteError instanceof Error ? deleteError.message : String(deleteError)
-
-						console.error(
-							`[DirectoryScanner] Failed to delete points for ${uniqueFilePaths.length} files before upsert in workspace ${scanWorkspace}:`,
-							deleteError,
-						)
-
-						TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-							error: sanitizeErrorMessage(errorMessage),
-							stack:
-								deleteError instanceof Error
-									? sanitizeErrorMessage(deleteError.stack || "")
-									: undefined,
-							location: "processBatch:deletePointsByMultipleFilePaths",
-							fileCount: uniqueFilePaths.length,
-							errorStatus: errorStatus,
-						})
-
-						// Re-throw with workspace context
-						throw new Error(
-							`Failed to delete points for ${uniqueFilePaths.length} files. Workspace: ${scanWorkspace}. ${errorMessage}`,
-							{ cause: deleteError },
-						)
-					}
-				}
-				// --- End Deletion Step ---
-
-				for (const points of pendingPoints) {
-					await this.qdrantClient.upsertPoints(points)
+				})
+				if (signal?.aborted) return
+				// Settle replacement writes before teardown, retaining prepared vectors across storage retries.
+				for (const fileInfo of batchFileInfos) {
+					const points = pendingPoints.filter(
+						(point) => point.payload.filePath === relativeIndexPath(fileInfo.filePath, scanWorkspace),
+					)
+					await this.qdrantClient.replaceFilePoints(fileInfo.filePath, points)
 				}
 
 				// Update hashes for successfully processed files in this batch
 				for (const fileInfo of batchFileInfos) {
 					await this.cacheManager.updateHash(fileInfo.filePath, fileInfo.fileHash)
 				}
-				onBlocksIndexed?.(pendingPoints.reduce((count, points) => count + points.length, 0))
+				onBlocksIndexed?.(pendingPoints.length)
 				success = true
 			} catch (error) {
 				if (signal?.aborted) return

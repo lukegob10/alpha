@@ -52,10 +52,15 @@ export interface IDirectoryScanner {
  * Interface for file watcher
  */
 export interface IFileWatcher extends vscode.Disposable {
+	readonly hasPendingChanges?: boolean
+	/** Bounded snapshot of saved paths whose embeddings have not caught up, including failed files. */
+	getPendingFilePaths?(limit: number): readonly string[]
 	/**
 	 * Initializes the file watcher
 	 */
-	initialize(): Promise<void>
+	initialize(options?: { deferProcessing?: boolean }): Promise<void>
+	/** Releases changes captured during workspace reconciliation. */
+	resumeProcessing(): void
 
 	/** Stops accepting filesystem events while preserving event subscribers for a later restart. */
 	stop(): void
@@ -76,6 +81,7 @@ export interface IFileWatcher extends vscode.Disposable {
 		processedInBatch: number
 		totalInBatch: number
 		currentFile?: string
+		message?: string
 	}>
 
 	/**
@@ -89,10 +95,16 @@ export interface IFileWatcher extends vscode.Disposable {
 	 * @param filePath Path to the file to process
 	 * @returns Promise resolving to processing result
 	 */
-	processFile(filePath: string): Promise<FileProcessingResult>
+	processFile(
+		filePath: string,
+		signal?: AbortSignal,
+		onProgress?: (message: string) => void,
+	): Promise<FileProcessingResult>
 }
 
 export interface BatchProcessingSummary {
+	/** True while newer file events still await processing. */
+	hasPendingChanges?: boolean
 	/** All files attempted in the batch, including their final status. */
 	processedFiles: FileProcessingResult[]
 	/** Optional error if the entire batch operation failed (e.g., database connection issue). */

@@ -24,6 +24,7 @@ import {
 	createApiStreamOutcome,
 	createLinkedAbortController,
 	iterateApiStreamWithAbort,
+	isApiStreamAbortError,
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
@@ -296,21 +297,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		this.lastReasoningDetails = undefined
-		if (!metadata?.signal && !metadata?.deadline) {
-			yield* this.createMessageInternal(systemPrompt, messages, metadata)
-			return
-		}
-		const control = createLinkedAbortController(metadata)
+		const control =
+			metadata && (metadata.signal || metadata.deadline) ? createLinkedAbortController(metadata) : undefined
 		try {
+			if (!control || !metadata) {
+				yield* this.createMessageInternal(systemPrompt, messages, metadata)
+				return
+			}
 			control.signal.throwIfAborted()
 			yield* iterateApiStreamWithAbort(
 				this.createMessageInternal(systemPrompt, messages, { ...metadata, signal: control.signal }),
 				control.signal,
 			)
 			control.signal.throwIfAborted()
+		} catch (error) {
+			if (isApiStreamAbortError(error, control?.signal ?? metadata?.signal)) throw error
+			// Request admission and asynchronous stream iteration share one metadata-preserving boundary.
+			throw handleOpenAIError(error, this.providerName)
 		} finally {
-			control.controller.abort()
-			control.dispose()
+			control?.controller.abort()
+			control?.dispose()
 		}
 	}
 
@@ -451,15 +457,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// Add max_tokens if needed
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			let stream
-			try {
-				stream = await this.client.chat.completions.create(requestOptions, {
-					...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
-					...(metadata?.signal ? { signal: metadata.signal } : {}),
-				})
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const stream = await this.client.chat.completions.create(requestOptions, {
+				...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(metadata?.signal ? { signal: metadata.signal } : {}),
+			})
 
 			const matcher = new TagMatcher(
 				"think",
@@ -543,15 +544,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// Add max_tokens if needed
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			let response
-			try {
-				response = await this.client.chat.completions.create(requestOptions, {
-					...(this._isAzureAiInference(modelUrl) ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
-					...(metadata?.signal ? { signal: metadata.signal } : {}),
-				})
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const response = await this.client.chat.completions.create(requestOptions, {
+				...(this._isAzureAiInference(modelUrl) ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(metadata?.signal ? { signal: metadata.signal } : {}),
+			})
 
 			const message = response.choices?.[0]?.message
 			const finishReason = response.choices?.[0]?.finish_reason
@@ -637,14 +633,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...commonOptions,
 				stream: true,
 			}
-			let stream
-			try {
-				stream = await this.client.responses.create(requestOptions, {
-					...(metadata?.signal ? { signal: metadata.signal } : {}),
-				})
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const stream = await this.client.responses.create(requestOptions, {
+				...(metadata?.signal ? { signal: metadata.signal } : {}),
+			})
 			yield* this.handleOpenAiResponsesStream(stream)
 			return
 		}
@@ -653,14 +644,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			...commonOptions,
 			stream: false,
 		}
-		let response
-		try {
-			response = await this.client.responses.create(requestOptions, {
-				...(metadata?.signal ? { signal: metadata.signal } : {}),
-			})
-		} catch (error) {
-			throw handleOpenAIError(error, this.providerName)
-		}
+		const response = await this.client.responses.create(requestOptions, {
+			...(metadata?.signal ? { signal: metadata.signal } : {}),
+		})
 		yield* this.handleOpenAiResponsesResult(response)
 	}
 
@@ -1062,23 +1048,14 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// Add max_tokens if needed
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			let response
-			try {
-				response = await this.client.chat.completions.create(
-					requestOptions,
-					isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
-				)
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const response = await this.client.chat.completions.create(
+				requestOptions,
+				isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
+			)
 
 			return response.choices?.[0]?.message.content || ""
 		} catch (error) {
-			if (error instanceof Error) {
-				throw new Error(`${this.providerName} completion error: ${error.message}`)
-			}
-
-			throw error
+			throw handleOpenAIError(error, this.providerName)
 		}
 	}
 
@@ -1118,15 +1095,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// This allows O3 models to limit response length when includeMaxTokens is enabled
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			let stream
-			try {
-				stream = await this.client.chat.completions.create(requestOptions, {
-					...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
-					...(metadata?.signal ? { signal: metadata.signal } : {}),
-				})
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const stream = await this.client.chat.completions.create(requestOptions, {
+				...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(metadata?.signal ? { signal: metadata.signal } : {}),
+			})
 
 			yield* this.handleStreamResponse(stream)
 		} else {
@@ -1146,15 +1118,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// This allows O3 models to limit response length when includeMaxTokens is enabled
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			let response
-			try {
-				response = await this.client.chat.completions.create(requestOptions, {
-					...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
-					...(metadata?.signal ? { signal: metadata.signal } : {}),
-				})
-			} catch (error) {
-				throw handleOpenAIError(error, this.providerName)
-			}
+			const response = await this.client.chat.completions.create(requestOptions, {
+				...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(metadata?.signal ? { signal: metadata.signal } : {}),
+			})
 
 			const message = response.choices?.[0]?.message
 			const finishReason = response.choices?.[0]?.finish_reason

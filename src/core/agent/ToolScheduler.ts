@@ -2415,11 +2415,16 @@ export class ToolScheduler {
 			let execution: Promise<void> | undefined
 			await this.admissionMutex.run(async () => {
 				if (this.isCancelled()) return
-				await this.options.onEvent?.({
-					type: "progress",
-					callId: prepared.call.id,
-					text: `Running ${prepared.call.name}`,
+				// Advisory progress cannot hold cancellation behind a blocked presenter.
+				// The durable effect fence and terminal receipts keep their joined ordering.
+				await this.raceCancellation(async () => {
+					await this.options.onEvent?.({
+						type: "progress",
+						callId: prepared.call.id,
+						text: `Running ${prepared.call.name}`,
+					})
 				})
+				if (this.isCancelled()) return
 				await this.checkEffectFence(prepared.call)
 				if (this.isCancelled()) return
 				assertPathIdentities(prepared)

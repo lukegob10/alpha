@@ -1,110 +1,201 @@
-import path from "path"
-import fs from "fs/promises"
-import { createHash } from "crypto"
-import type { VectorStoreSearchResult } from "./interfaces"
+import type { CodeIndexSearchResponse, VectorStoreSearchResult } from "./interfaces"
+import { CODEBASE_INDEX_SEARCH_LIMITS, normalizeCodeIndexSearchMaxResults } from "@alpha-code/types"
 import type { IEmbedder } from "./interfaces/embedder"
 import type { IVectorStore } from "./interfaces/vector-store"
 import type { CodeIndexConfigManager } from "./config-manager"
 import type { CodeIndexStateManager } from "./state-manager"
-import { MAX_FILE_SIZE_BYTES } from "./constants"
 import { relativeIndexPath, validateEmbeddingBatch } from "./shared/embedding-input"
-import { fuseSearchResults, packSearchResults } from "./shared/retrieval"
+import { fuseSearchResults, packSearchResultsWithDiagnostics } from "./shared/retrieval"
+import { CurrentSource, type SearchSource } from "./shared/current-source"
+import { withIndexingCancellation } from "./shared/file-indexing"
+import { t } from "../../i18n"
+
+const RETRIEVAL_WAIT_MS = 1500
+const SEMANTIC_WAIT_MS = 8000
 
 export class CodeIndexSearchService {
+	private readonly pending = new Set<AbortController>()
 	constructor(
 		private readonly configManager: CodeIndexConfigManager,
 		private readonly stateManager: CodeIndexStateManager,
 		private readonly embedder: IEmbedder,
 		private readonly vectorStore: IVectorStore,
-		private readonly source?: { workspacePath: string; validateAccess: (filePath: string) => boolean },
+		private readonly source?: SearchSource,
 	) {}
 
 	public async searchIndex(query: string, directoryPrefix?: string): Promise<VectorStoreSearchResult[]> {
+		return (await this.searchIndexWithDiagnostics(query, directoryPrefix)).results
+	}
+
+	public async searchIndexWithDiagnostics(query: string, directoryPrefix?: string): Promise<CodeIndexSearchResponse> {
+		const controller = new AbortController()
+		this.pending.add(controller)
+		try {
+			return await this.retrieve(query, directoryPrefix, controller)
+		} finally {
+			this.pending.delete(controller)
+		}
+	}
+
+	public cancelPending(): void {
+		for (const controller of this.pending) controller.abort(new DOMException("Code search stopped", "AbortError"))
+	}
+
+	private async retrieve(
+		query: string,
+		directoryPrefix: string | undefined,
+		controller: AbortController,
+	): Promise<CodeIndexSearchResponse> {
 		if (!this.configManager.isFeatureEnabled || !this.configManager.isFeatureConfigured) {
 			throw new Error("Code index feature is disabled or not configured.")
 		}
 		const state = this.stateManager.getCurrentStatus().systemStatus
-		if (state !== "Indexed" && state !== "Indexing")
+		if (state !== "Indexed" && state !== "Indexing" && state !== "Error")
 			throw new Error("Code index is not ready for search. Current state: " + state)
-		if (!query.trim()) return []
+		const maxResults = normalizeCodeIndexSearchMaxResults(this.configManager.currentSearchMaxResults)
+		const minScore = this.configManager.currentSearchMinScore
+		// Preserve the default search breadth when the user asks for less output context.
+		const candidates = CODEBASE_INDEX_SEARCH_LIMITS.CANDIDATES_PER_CHANNEL
+		const searchDiagnostics = {
+			candidateLimit: candidates,
+			semanticCandidates: 0,
+			lexicalCandidates: 0,
+			fusedCandidates: 0,
+			effectiveMaxResults: maxResults,
+			contextTokenBudget: CODEBASE_INDEX_SEARCH_LIMITS.CONTEXT_TOKEN_BUDGET,
+			indexFreshness:
+				state === "Indexed"
+					? ("current" as const)
+					: state === "Indexing"
+						? ("catching-up" as const)
+						: ("error" as const),
+		}
+		if (!query.trim()) {
+			const packed = await packSearchResultsWithDiagnostics([], maxResults)
+			return { results: [], diagnostics: { ...searchDiagnostics, ...packed.diagnostics } }
+		}
 		if (query.length > 8192) throw new Error("Code search query exceeds 8192 characters")
 		const prefix = directoryPrefix
 			? relativeIndexPath(directoryPrefix, this.source?.workspacePath ?? process.cwd())
 			: undefined
-		const maxResults = Math.max(1, Math.min(100, this.configManager.currentSearchMaxResults))
-		const candidates = Math.min(200, Math.max(40, maxResults * 4))
-		const semantic = async () => {
-			const response = await this.embedder.createEmbeddings([query], undefined, "query")
-			validateEmbeddingBatch(response.embeddings, 1)
-			return this.vectorStore.search(
-				response.embeddings[0],
-				prefix,
-				this.configManager.currentSearchMinScore,
-				candidates,
-			)
+		const started = Date.now()
+		const timeout = () => controller.abort(new DOMException(t("embeddings:searchTimeout"), "TimeoutError"))
+		let timer = setTimeout(timeout, SEMANTIC_WAIT_MS)
+		let localDeadline = false
+		const limitWaiting = () => {
+			if (localDeadline || controller.signal.aborted) return
+			localDeadline = true
+			clearTimeout(timer)
+			timer = setTimeout(timeout, Math.max(0, started + RETRIEVAL_WAIT_MS - Date.now()))
 		}
-		const channels = await Promise.allSettled([
-			semantic(),
-			this.vectorStore.searchLexical?.(query, prefix, candidates) ?? Promise.resolve([]),
-		])
+		const signal = controller.signal
+		let current: CurrentSource | undefined
+		const fresh = async () => {
+			if (!this.source) return []
+			const opened = await CurrentSource.open(this.source)
+			signal.throwIfAborted()
+			current = opened
+			return current.searchFresh(query, prefix, candidates, signal, limitWaiting)
+		}
+		const semantic = async () => {
+			const response = await this.embedder.createEmbeddings([query], undefined, "query", signal)
+			signal.throwIfAborted()
+			validateEmbeddingBatch(response.embeddings, 1)
+			return this.vectorStore.search(response.embeddings[0], prefix, minScore, candidates)
+		}
+		let channels: PromiseSettledResult<VectorStoreSearchResult[]>[]
+		try {
+			channels = await Promise.allSettled(
+				[
+					semantic(),
+					this.vectorStore.searchLexical?.(query, prefix, candidates) ?? Promise.resolve([]),
+					fresh(),
+				].map((channel) =>
+					withIndexingCancellation(
+						Promise.resolve(channel).then((matches) => {
+							if (matches.length) limitWaiting()
+							return matches
+						}),
+						signal,
+					),
+				),
+			)
+		} finally {
+			clearTimeout(timer)
+		}
+		const assertActive = () => {
+			if (signal.aborted && !(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError"))
+				signal.throwIfAborted()
+		}
+		assertActive()
 		// A transient search failure must not change the indexing lifecycle or disable future searches.
-		const available = channels.some((channel) => channel.status === "fulfilled" && channel.value.length > 0)
+		const matches = channels.map((channel) => (channel.status === "fulfilled" ? channel.value : []))
+		if (channels[2].status === "rejected" && signal.aborted && channels[2].reason === signal.reason)
+			matches[2] = current?.getFreshMatches() ?? []
+		const available = matches.some((matches) => matches.length > 0)
 		const failed = channels.find((channel) => channel.status === "rejected")
 		if (!available && failed?.status === "rejected") throw failed.reason
 		if (failed) console.warn("[CodeIndexSearchService] One retrieval channel failed; returning available matches")
-		const ranked = fuseSearchResults(
-			channels.map((channel) => (channel.status === "fulfilled" ? channel.value : [])),
-		)
-		return packSearchResults(ranked, maxResults, undefined, await this.sourceValidator(prefix))
-	}
-
-	private async sourceValidator(
-		prefix?: string,
-	): Promise<((result: VectorStoreSearchResult) => Promise<boolean>) | undefined> {
-		if (!this.source) return undefined
-		const source = this.source
-		const root = await fs.realpath(source.workspacePath)
-		// Validate only evidence that fits the output budget. Keep at most eight source files in memory.
-		const files = new Map<string, { content: string; hash: string } | null>()
-		return async (result) => {
-			const payload = result.payload
-			if (!payload) return false
-			try {
-				const relative = relativeIndexPath(payload.filePath, source.workspacePath)
-				const scope = prefix?.replace(/\/$/, "")
-				if (scope && scope !== "." && relative !== scope && !relative.startsWith(scope + "/")) return false
-				if (!source.validateAccess(relative)) return false
-				if (!files.has(relative)) {
-					if (files.size >= 8) files.delete(files.keys().next().value!)
-					files.set(relative, null)
-					const real = await fs.realpath(path.join(root, relative))
-					const realRelative = relativeIndexPath(real, root)
-					if (!source.validateAccess(realRelative) || (await fs.stat(real)).size > MAX_FILE_SIZE_BYTES)
-						return false
-					const content = await fs.readFile(real, "utf8")
-					files.set(relative, { content, hash: createHash("sha256").update(content).digest("hex") })
-				}
-				const file = files.get(relative)
-				if (!file || file.hash !== payload.fileHash) return false
-				if (
-					!Number.isInteger(payload.startOffset) ||
-					!Number.isInteger(payload.endOffset) ||
-					payload.startOffset < 0 ||
-					payload.endOffset <= payload.startOffset
-				)
-					return false
-				if (file.content.slice(payload.startOffset, payload.endOffset) !== payload.codeChunk) return false
+		const seen = new Set<string>()
+		const lexical = [...matches[2], ...matches[1]]
+			.filter((match) => {
+				const id = String(match.id)
+				if (seen.has(id)) return false
+				seen.add(id)
 				return true
-			} catch (error) {
-				// Concurrent deletes, changed symlinks and out-of-scope results cannot expose stale source.
-				if (
-					error instanceof Error &&
-					"code" in error &&
-					!["ENOENT", "EACCES", "EPERM"].includes(String(error.code))
-				)
-					throw error
-				return false
-			}
+			})
+			.slice(0, candidates)
+		const freshById = new Map(matches[2].map((match) => [String(match.id), match]))
+		// An old vector with the same chunk ID must not hide current lexical evidence behind its stale file hash.
+		const semanticMatches = matches[0].filter((match) => {
+			const fresh = freshById.get(String(match.id))
+			return !fresh || match.payload?.fileHash === fresh.payload?.fileHash
+		})
+		const ranked = fuseSearchResults([semanticMatches, lexical])
+		// Source may have changed while the cloud request was pending. Validate again before returning evidence.
+		current?.clear()
+		const validatedSource = current
+		const packed = await packSearchResultsWithDiagnostics(
+			ranked,
+			maxResults,
+			undefined,
+			this.source
+				? (result) => {
+						assertActive()
+						return validatedSource?.accept(result, prefix) ?? Promise.resolve(false)
+					}
+				: undefined,
+		)
+		assertActive()
+		if (!packed.results.length && failed?.status === "rejected") throw failed.reason
+		return {
+			results: packed.results,
+			diagnostics: {
+				...searchDiagnostics,
+				semanticCandidates: matches[0].length,
+				lexicalCandidates: lexical.length,
+				freshCandidates: matches[2].length,
+				semanticStatus:
+					channels[0].status === "fulfilled"
+						? "complete"
+						: channels[0].reason === signal.reason
+							? "timeout"
+							: "error",
+				lexicalStatus:
+					channels[1].status === "fulfilled"
+						? "complete"
+						: channels[1].reason === signal.reason
+							? "timeout"
+							: "error",
+				freshStatus:
+					channels[2].status === "fulfilled"
+						? "complete"
+						: channels[2].reason === signal.reason
+							? "timeout"
+							: "error",
+				fusedCandidates: ranked.length,
+				...packed.diagnostics,
+			},
 		}
 	}
 }

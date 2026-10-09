@@ -17,8 +17,11 @@ import { t } from "../i18n"
 /**
  * Helper to get the visible AlphaProvider instance or log if not found.
  */
-export function getVisibleProviderOrLog(outputChannel: vscode.OutputChannel): AlphaProvider | undefined {
-	const visibleProvider = AlphaProvider.getVisibleInstance()
+export function getVisibleProviderOrLog(
+	outputChannel: vscode.OutputChannel,
+	preferredProvider?: AlphaProvider,
+): AlphaProvider | undefined {
+	const visibleProvider = preferredProvider ?? AlphaProvider.getVisibleInstance()
 	if (!visibleProvider) {
 		outputChannel.appendLine("Cannot find any visible Alpha instances.")
 		return undefined
@@ -69,8 +72,10 @@ export const registerCommands = (options: RegisterCommandOptions) => {
 
 const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOptions): Record<CommandId, any> => ({
 	activationCompleted: () => {},
-	plusButtonClicked: async () => {
-		const visibleProvider = getVisibleProviderOrLog(outputChannel)
+	plusButtonClicked: async (surface?: string) => {
+		const visibleProvider =
+			(surface === "sidebar" ? provider : AlphaProvider.getVisibleInstance()) ??
+			(await AlphaProvider.getInstance())
 
 		if (!visibleProvider) {
 			return
@@ -183,6 +188,34 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		}
 
 		visibleProvider.postMessageToWebview({ type: "acceptInput" })
+	},
+	sendAndSteer: async (surface?: string) => {
+		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
+		if (!visibleProvider) return
+		await visibleProvider.postMessageToWebview({
+			type: "sendAndSteer",
+			taskId: visibleProvider.getActiveTaskId(),
+		})
+	},
+	decreaseReasoningEffort: async (surface?: string) => {
+		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
+		if (visibleProvider) await visibleProvider.adjustTaskReasoningEffort(visibleProvider.getActiveTaskId(), -1)
+	},
+	increaseReasoningEffort: async (surface?: string) => {
+		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
+		if (visibleProvider) await visibleProvider.adjustTaskReasoningEffort(visibleProvider.getActiveTaskId(), 1)
+	},
+	previousTask: async (surface?: string) => {
+		await getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)?.navigateTask(-1)
+	},
+	nextTask: async (surface?: string) => {
+		await getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)?.navigateTask(1)
+	},
+	nextTaskNeedingInput: async (surface?: string) => {
+		await getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)?.navigateTask(
+			1,
+			true,
+		)
 	},
 	toggleAutoApprove: async () => {
 		const visibleProvider = getVisibleProviderOrLog(outputChannel)

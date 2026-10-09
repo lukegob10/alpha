@@ -84,6 +84,60 @@ it("retains newly admitted steering as queued input when its later handoff fails
 	expect(await task.hasAcceptedQueuedUserMessage("steer-receipt")).toBe(true)
 })
 
+it("does not interrupt generation before the human input's durable admission", async () => {
+	const { task } = harness()
+	const saving = deferred()
+	const saved = deferred()
+	const queue = new MessageQueueService({
+		load: async () => [],
+		save: async () => {
+			saving.resolve()
+			await saved.promise
+		},
+	})
+	Object.assign(task, { messageQueueService: queue })
+	const request = new AbortController()
+	task.currentRequestAbortController = request
+	Object.assign(task, {
+		resetMistakeRecoveryState: vi.fn(),
+		resetCompletionRecoveryState: vi.fn(),
+		cancelAutoApprovalTimeout: vi.fn(),
+	})
+	const steering = task.steerUserMessageDurably("DURABLE_BEFORE_INTERRUPT", [], "durable-steer")
+	await saving.promise
+	expect(request.signal.aborted).toBe(false)
+	saved.resolve()
+	await steering
+	expect(request.signal.aborted).toBe(true)
+	expect(task.abort).toBe(false)
+	expect(task["pendingSteerMessage"]).toMatchObject({ queuedMessageIds: ["durable-steer"] })
+	expect(queue.visibleMessages).toMatchObject([{ id: "durable-steer", deliveryState: "delivering" }])
+})
+
+it("durably queues rapid additional steering without replacing input awaiting its transcript receipt", async () => {
+	const { task, queue } = harness()
+	task["pendingSteerMessage"] = { text: "FIRST_INPUT", images: [], queuedMessageIds: ["first-steer"] }
+	task["steerMessageAwaitingPersistence"] = true
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	await task.steerUserMessageDurably("SECOND_INPUT", [], "second-steer")
+	await task.steerUserMessageDurably("SECOND_INPUT", [], "second-steer")
+	expect(handoff).not.toHaveBeenCalled()
+	expect(queue.messages).toMatchObject([{ id: "second-steer", text: "SECOND_INPUT" }])
+	expect(queue.messages).toHaveLength(1)
+	expect(task["pendingSteerMessage"]).toMatchObject({ text: "FIRST_INPUT", queuedMessageIds: ["first-steer"] })
+})
+
+it.each(["abort", "abandoned", "didComplete"] as const)(
+	"rejects new steering when %s wins with an older input still pending",
+	async (state) => {
+		const { task, queue } = harness()
+		task["steerMessageAwaitingPersistence"] = true
+		task[state] = true
+		await expect(task.steerUserMessageDurably("AFTER_STOP", [], "stopped-steer")).rejects.toThrow("cannot accept")
+		expect(queue.visibleMessages).toEqual([])
+	},
+)
+
 it("returns accepted steering input to the queue if a command timeout supersedes its ask", async () => {
 	vi.useFakeTimers()
 	vi.setSystemTime(1_000)

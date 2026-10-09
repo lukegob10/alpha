@@ -37,6 +37,16 @@ describe("CodeIndexConfigManager", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
+	it("normalizes old result limits and applies search-only changes without restarting the index", async () => {
+		const context = createContextProxy(vertexConfig({ codebaseIndexSearchMaxResults: 200 }))
+		const manager = new CodeIndexConfigManager(context as any)
+		expect(manager.currentSearchMaxResults).toBe(100)
+		context.setState(vertexConfig({ codebaseIndexSearchMaxResults: 20, codebaseIndexSearchMinScore: 0.7 }))
+		const loaded = await manager.loadConfiguration()
+		expect(loaded.requiresRestart).toBe(false)
+		expect(manager.currentSearchMaxResults).toBe(20)
+		expect(manager.currentSearchMinScore).toBe(0.7)
+	})
 
 	it("loads a configured Vertex AI embedder", async () => {
 		const context = createContextProxy(vertexConfig())

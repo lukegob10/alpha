@@ -9,7 +9,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 }))
 
 import type { AlphaProvider } from "../../webview/AlphaProvider"
-import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
+import { buildNativeToolsArrayWithRestrictions, buildTaskToolSurface } from "../build-tools"
 
 const capableModel: ModelInfo = {
 	contextWindow: 128_000,
@@ -47,5 +47,25 @@ describe("user input tool catalog", () => {
 	it("keeps the question action out of managed child catalogs", async () => {
 		expect(await getCatalogNames(undefined, "subagent")).not.toContain("request_user_input")
 		expect(await getCatalogNames(capableModel, "subagent")).not.toContain("request_user_input_async")
+	})
+
+	it("honors a captured async-question disable in schema visibility and executable authority", async () => {
+		const surface = await buildTaskToolSurface({
+			provider: { context: {}, getMcpHub: () => undefined } as unknown as AlphaProvider,
+			cwd: process.cwd(),
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			modelInfo: capableModel,
+			taskKind: "primary",
+			disabledTools: ["request_user_input_async"],
+		})
+		expect(surface.schemas.map((tool) => (tool.type === "function" ? tool.function.name : ""))).not.toContain(
+			"request_user_input_async",
+		)
+		expect(surface.isCallable("request_user_input_async")).toBe(false)
+		expect(surface.resolve("request_user_input_async")).toBeUndefined()
+		expect(surface.isCallable("request_user_input")).toBe(true)
 	})
 })

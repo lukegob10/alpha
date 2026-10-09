@@ -87,6 +87,11 @@ describe("DirectoryScanner", () => {
 			embedderInfo: { name: "mock-embedder", dimensions: 384 },
 		}
 		mockVectorStore = {
+			getPointsByFilePath: vi.fn().mockResolvedValue([]),
+			replaceFilePoints: vi.fn(async (filePath: string, points: unknown[]) => {
+				if (points.length) await mockVectorStore.upsertPoints(points)
+				else await mockVectorStore.deletePointsByMultipleFilePaths([filePath])
+			}),
 			upsertPoints: vi.fn().mockResolvedValue(undefined),
 			deletePointsByFilePath: vi.fn().mockResolvedValue(undefined),
 			deletePointsByMultipleFilePaths: vi.fn().mockResolvedValue(undefined),
@@ -484,18 +489,15 @@ describe("DirectoryScanner", () => {
 
 			await thresholdScanner.scanDirectory("/test")
 
-			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledOnce()
-			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledWith(["test/file1.js"])
+			expect(mockVectorStore.replaceFilePoints).toHaveBeenCalledOnce()
+			expect(mockVectorStore.replaceFilePoints).toHaveBeenCalledWith("test/file1.js", expect.any(Array))
 			expect(mockEmbedder.createEmbeddings.mock.calls.map(([texts]: [string[]]) => texts.length)).toEqual([2, 1])
-			expect(mockVectorStore.upsertPoints).toHaveBeenCalledTimes(2)
+			expect(mockVectorStore.upsertPoints).toHaveBeenCalledOnce()
 			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
 			expect(mockEmbedder.createEmbeddings.mock.invocationCallOrder[1]).toBeLessThan(
-				mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0],
+				mockVectorStore.replaceFilePoints.mock.invocationCallOrder[0],
 			)
-			expect(mockVectorStore.deletePointsByMultipleFilePaths.mock.invocationCallOrder[0]).toBeLessThan(
-				mockVectorStore.upsertPoints.mock.invocationCallOrder[0],
-			)
-			expect(mockVectorStore.upsertPoints.mock.invocationCallOrder[1]).toBeLessThan(
+			expect(mockVectorStore.upsertPoints.mock.invocationCallOrder[0]).toBeLessThan(
 				mockCacheManager.updateHash.mock.invocationCallOrder[0],
 			)
 		})
@@ -574,6 +576,8 @@ describe("DirectoryScanner", () => {
 					undefined,
 					"document",
 					undefined,
+					undefined,
+					undefined,
 				)
 			} finally {
 				finishParsing()
@@ -612,7 +616,7 @@ describe("DirectoryScanner", () => {
 
 			await thresholdScanner.scanDirectory("/test")
 
-			expect(mockVectorStore.deletePointsByMultipleFilePaths).toHaveBeenCalledWith(["test/file1.js"])
+			expect(mockVectorStore.replaceFilePoints).toHaveBeenCalledWith("test/file1.js", expect.any(Array))
 			expect(mockCacheManager.updateHash).toHaveBeenCalledOnce()
 		})
 
@@ -644,6 +648,37 @@ describe("DirectoryScanner", () => {
 			expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
 			expect(mockCacheManager.deleteHash).not.toHaveBeenCalled()
 			consoleErrorSpy.mockRestore()
+		})
+
+		it("preserves cached vectors when discovery finds a file whose stat fails transiently", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])
+			mockCacheManager.getAllHashes.mockReturnValue({ "test/file1.js": "old-hash" })
+			vi.mocked(stat).mockRejectedValueOnce(new Error("temporary stat failure"))
+			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				const onError = vi.fn()
+				await scanner.scanDirectory("/test", onError)
+
+				expect(onError).toHaveBeenCalledOnce()
+				expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
+				expect(mockCacheManager.deleteHash).not.toHaveBeenCalled()
+			} finally {
+				consoleErrorSpy.mockRestore()
+			}
+		})
+
+		it("retains entries absent from a truncated discovery and reports that reconciliation is incomplete", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([["test/discovered.js"], true])
+			mockCacheManager.getAllHashes.mockReturnValue({ "test/omitted.js": "old-hash" })
+			const onError = vi.fn()
+
+			await scanner.scanDirectory("/test", onError)
+
+			expect(onError).toHaveBeenCalledOnce()
+			expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
+			expect(mockCacheManager.deleteHash).not.toHaveBeenCalled()
 		})
 
 		it("surfaces a rejected batch without an unhandled cleanup rejection", async () => {

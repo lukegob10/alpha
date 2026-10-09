@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { t } from "../../i18n"
 
 export type IndexingState = "Standby" | "Indexing" | "Indexed" | "Error" | "Stopping"
 
@@ -80,31 +81,29 @@ export class CodeIndexStateManager {
 		}
 	}
 
-	public reportFileQueueProgress(processedFiles: number, totalFiles: number, currentFileBasename?: string): void {
+	public reportFileQueueProgress(
+		processedFiles: number,
+		totalFiles: number,
+		currentFileBasename?: string,
+		detail?: string,
+	): void {
 		const progressChanged = processedFiles !== this._processedItems || totalFiles !== this._totalItems
 
 		// Don't override Stopping state with progress updates
 		if (this._systemStatus === "Stopping") return
-		if (progressChanged || this._systemStatus !== "Indexing") {
+		const message = t("embeddings:incremental.progress", {
+			processed: processedFiles,
+			total: totalFiles,
+			file: currentFileBasename ?? "...",
+			detail: detail ?? "",
+		})
+		if (progressChanged || this._systemStatus !== "Indexing" || message !== this._statusMessage) {
 			this._processedItems = processedFiles
 			this._totalItems = totalFiles
 			this._currentItemUnit = "files"
-			this._systemStatus = "Indexing"
-
-			let message: string
-			if (totalFiles > 0 && processedFiles < totalFiles) {
-				message = `Processing ${processedFiles} / ${totalFiles} ${this._currentItemUnit}. Current: ${
-					currentFileBasename || "..."
-				}`
-			} else if (totalFiles > 0 && processedFiles === totalFiles) {
-				message = `Finished processing ${totalFiles} ${this._currentItemUnit} from queue.`
-			} else {
-				message = `File queue processed.`
-			}
-
 			const oldStatus = this._systemStatus
 			const oldMessage = this._statusMessage
-
+			this._systemStatus = "Indexing"
 			this._statusMessage = message
 
 			if (oldStatus !== this._systemStatus || oldMessage !== this._statusMessage || progressChanged) {

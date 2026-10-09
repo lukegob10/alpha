@@ -1,6 +1,7 @@
 // npx vitest services/code-index/processors/__tests__/file-watcher.spec.ts
 
 import * as vscode from "vscode"
+import { createHash } from "crypto"
 
 import { FileWatcher } from "../file-watcher"
 
@@ -124,6 +125,11 @@ describe("FileWatcher", () => {
 		}
 
 		mockVectorStore = {
+			getPointsByFilePath: vi.fn().mockResolvedValue([]),
+			replaceFilePoints: vi.fn(async (filePath: string, points: unknown[]) => {
+				if (points.length) await mockVectorStore.upsertPoints(points)
+				else await mockVectorStore.deletePointsByMultipleFilePaths([filePath])
+			}),
 			upsertPoints: vi.fn().mockResolvedValue(undefined),
 			deletePointsByFilePath: vi.fn().mockResolvedValue(undefined),
 			deletePointsByMultipleFilePaths: vi.fn().mockResolvedValue(undefined),
@@ -392,16 +398,10 @@ describe("FileWatcher", () => {
 
 			releaseUpsert.resolve(undefined)
 			await Promise.all([changeBatch, deleteBatch])
+			await fileWatcher.whenIdle()
 
-			expect(operationsBeforeRelease).toEqual(["delete", "upsert-start"])
-			expect(operations).toEqual([
-				"delete",
-				"upsert-start",
-				"upsert-end",
-				"cache-update",
-				"delete",
-				"cache-delete",
-			])
+			expect(operationsBeforeRelease).toEqual(["upsert-start"])
+			expect(operations).toEqual(["upsert-start", "upsert-end", "cache-update", "delete", "cache-delete"])
 		})
 	})
 	it("decodes VS Code Uint8Array snapshots as UTF-8 before parsing and hashing", async () => {
@@ -414,5 +414,252 @@ describe("FileWatcher", () => {
 			"/mock/workspace/state.ts",
 			expect.objectContaining({ content }),
 		)
+	})
+
+	describe("incremental indexing regressions", () => {
+		afterEach(() => {
+			fileWatcher.dispose()
+			vi.useRealTimers()
+		})
+		it("exposes only the newest bounded pending paths and removes them after reconciliation", async () => {
+			vi.useFakeTimers()
+			await fileWatcher.initialize()
+			for (let index = 0; index < 70; index++)
+				await mockOnDidChange({ fsPath: `/mock/workspace/src/file${index}.ts` })
+			const pending = fileWatcher.getPendingFilePaths(1000)
+			expect(pending).toHaveLength(64)
+			expect(pending[0]).toBe("/mock/workspace/src/file69.ts")
+			expect(pending).not.toContain("/mock/workspace/src/file0.ts")
+			await fileWatcher.whenIdle()
+			expect(fileWatcher.getPendingFilePaths(64)).toEqual([])
+		})
+
+		it("keeps queued files in an active batch available for current-source search", async () => {
+			vi.useFakeTimers()
+			const entered = deferred<void>()
+			const release = deferred<void>()
+			let started = 0
+			vi.spyOn(fileWatcher, "processFile").mockImplementation(async (filePath) => {
+				if (++started === 10) entered.resolve(undefined)
+				await release.promise
+				return { path: filePath, status: "skipped", reason: "File has not changed" }
+			})
+			await fileWatcher.initialize()
+			const paths = Array.from({ length: 70 }, (_, index) => `/mock/workspace/src/file${index}.ts`)
+			for (const fsPath of paths) await mockOnDidChange({ fsPath })
+			const run = fileWatcher.whenIdle()
+			await entered.promise
+			const pending = fileWatcher.getPendingFilePaths(64)
+			release.resolve(undefined)
+			await run
+
+			expect(pending).toEqual([...paths].reverse().slice(0, 64))
+			expect(fileWatcher.getPendingFilePaths(64)).toEqual([])
+		})
+
+		it("preserves the index for a duplicate change notification with unchanged content", async () => {
+			vi.useFakeTimers()
+			mockCacheManager.getHash.mockReturnValue(createHash("sha256").update("test content").digest("hex"))
+			await fileWatcher.initialize()
+			await mockOnDidChange({ fsPath: "/mock/workspace/src/file.ts" })
+			await vi.advanceTimersByTimeAsync(500)
+			await fileWatcher.whenIdle()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).not.toHaveBeenCalled()
+			expect(mockVectorStore.upsertPoints).not.toHaveBeenCalled()
+			expect(mockEmbedder.createEmbeddings).not.toHaveBeenCalled()
+		})
+
+		it("groups an edit burst until quiet, bounded by the first event's deadline", async () => {
+			vi.useFakeTimers()
+			await fileWatcher.initialize()
+			const processFile = vi.spyOn(fileWatcher, "processFile")
+			for (let index = 0; index < 10; index++) {
+				await mockOnDidChange({ fsPath: `/mock/workspace/src/file${index}.ts` })
+				await vi.advanceTimersByTimeAsync(100)
+			}
+			expect(processFile).not.toHaveBeenCalled()
+			await vi.advanceTimersByTimeAsync(400)
+			expect(processFile).toHaveBeenCalledTimes(10)
+			await fileWatcher.whenIdle()
+			processFile.mockClear()
+			for (let index = 0; index < 20; index++) {
+				await mockOnDidChange({ fsPath: `/mock/workspace/src/repeated.ts` })
+				await vi.advanceTimersByTimeAsync(100)
+			}
+			expect(processFile).toHaveBeenCalledOnce()
+		})
+
+		it("does not replace existing chunks when an embedding request fails", async () => {
+			vi.useFakeTimers()
+			const { codeParser } = await import("../parser")
+			vi.mocked(codeParser.parseFile).mockResolvedValueOnce([
+				{
+					file_path: "/mock/workspace/src/file.ts",
+					identifier: "f",
+					type: "code_chunk",
+					start_line: 1,
+					end_line: 1,
+					content: "code",
+					fileHash: "new",
+					segmentHash: "segment",
+				},
+			])
+			mockEmbedder.createEmbeddings.mockRejectedValueOnce(new Error("provider unavailable"))
+			await fileWatcher.initialize()
+			await mockOnDidChange({ fsPath: "/mock/workspace/src/file.ts" })
+			await vi.advanceTimersByTimeAsync(500)
+			await fileWatcher.whenIdle()
+			expect(mockVectorStore.deletePointsByMultipleFilePaths).not.toHaveBeenCalled()
+			expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
+		})
+
+		it("commits the hash for a file that becomes empty and removes its old chunks", async () => {
+			vi.useFakeTimers()
+			vi.mocked(vscode.workspace.fs.readFile).mockResolvedValueOnce(new Uint8Array())
+			const { codeParser } = await import("../parser")
+			vi.mocked(codeParser.parseFile).mockResolvedValueOnce([])
+			await fileWatcher.initialize()
+			await mockOnDidChange({ fsPath: "/mock/workspace/src/file.ts" })
+			await fileWatcher.whenIdle()
+			expect(mockVectorStore.replaceFilePoints).toHaveBeenCalledWith("/mock/workspace/src/file.ts", [])
+			expect(mockCacheManager.updateHash).toHaveBeenCalledWith(
+				"/mock/workspace/src/file.ts",
+				createHash("sha256").update("").digest("hex"),
+			)
+		})
+
+		it("cancels an unresponsive provider on Stop and prevents late commits", async () => {
+			vi.useFakeTimers()
+			const entered = deferred<void>()
+			const response = deferred<{ embeddings: number[][] }>()
+			const { codeParser } = await import("../parser")
+			vi.mocked(codeParser.parseFile).mockResolvedValueOnce([
+				{
+					file_path: "/mock/workspace/src/file.ts",
+					identifier: "f",
+					type: "code",
+					start_line: 1,
+					end_line: 1,
+					content: "source",
+					fileHash: "hash",
+					segmentHash: "segment",
+				},
+			])
+			let signal: AbortSignal | undefined
+			mockEmbedder.createEmbeddings.mockImplementationOnce(
+				(_texts: string[], _model: unknown, _purpose: unknown, cancellation: AbortSignal) => {
+					signal = cancellation
+					entered.resolve(undefined)
+					return response.promise
+				},
+			)
+			await fileWatcher.initialize()
+			await mockOnDidChange({ fsPath: "/mock/workspace/src/file.ts" })
+			const run = fileWatcher.whenIdle()
+			await entered.promise
+			fileWatcher.stop()
+			await run
+			expect(signal?.aborted).toBe(true)
+			response.resolve({ embeddings: [[1, 0, 0]] })
+			await Promise.resolve()
+			expect(mockVectorStore.replaceFilePoints).not.toHaveBeenCalled()
+			expect(mockCacheManager.updateHash).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+		})
+
+		it("coalesces rapid edits behind an active write and reads only the latest pending version", async () => {
+			vi.useFakeTimers()
+			const entered = deferred<void>()
+			const release = deferred<void>()
+			mockVectorStore.replaceFilePoints.mockImplementationOnce(async () => {
+				entered.resolve(undefined)
+				await release.promise
+			})
+			const versions: string[] = []
+			let version = "first"
+			vi.spyOn(fileWatcher, "processFile").mockImplementation(async (filePath) => {
+				versions.push(version)
+				return { path: filePath, status: "processed_for_batching", newHash: version, pointsToUpsert: [] }
+			})
+			await fileWatcher.initialize()
+			const uri = { fsPath: "/mock/workspace/src/file.ts" }
+			await mockOnDidChange(uri)
+			const run = fileWatcher.whenIdle()
+			await entered.promise
+			for (let index = 0; index < 100; index++) {
+				version = `edit-${index}`
+				await mockOnDidChange(uri)
+				await vi.advanceTimersByTimeAsync(500)
+			}
+			release.resolve(undefined)
+			await run
+			expect(versions).toEqual(["first", "edit-99"])
+			expect(mockCacheManager.updateHash).toHaveBeenLastCalledWith(uri.fsPath, "edit-99")
+		})
+
+		it("supersedes a queued delete before a worker starts when the file is recreated", async () => {
+			vi.useFakeTimers()
+			const entered = deferred<void>()
+			const release = deferred<void>()
+			const recreated = "/mock/workspace/src/recreated.ts"
+			let started = 0
+			const process = vi.spyOn(fileWatcher, "processFile").mockImplementation(async (filePath) => {
+				if (filePath === recreated)
+					return { path: filePath, status: "local_error", error: new Error("provider unavailable") }
+				if (++started === 10) entered.resolve(undefined)
+				await release.promise
+				return { path: filePath, status: "skipped", reason: "File has not changed" }
+			})
+			await fileWatcher.initialize()
+			for (let index = 0; index < 10; index++)
+				await mockOnDidChange({ fsPath: `/mock/workspace/src/blocked-${index}.ts` })
+			await mockOnDidDelete({ fsPath: recreated })
+			const run = fileWatcher.whenIdle()
+			await entered.promise
+			await mockOnDidCreate({ fsPath: recreated })
+			release.resolve(undefined)
+			await run
+
+			expect(process).toHaveBeenCalledWith(recreated, expect.any(AbortSignal), expect.any(Function))
+			expect(mockVectorStore.replaceFilePoints).not.toHaveBeenCalled()
+			expect(mockCacheManager.deleteHash).not.toHaveBeenCalled()
+		})
+
+		it("retains saved edits while the initial scan owns the index", async () => {
+			vi.useFakeTimers()
+			const process = vi.spyOn(fileWatcher, "processFile")
+			await fileWatcher.initialize({ deferProcessing: true })
+			await mockOnDidChange({ fsPath: "/mock/workspace/src/file.ts" })
+			await vi.advanceTimersByTimeAsync(5000)
+			await fileWatcher.whenIdle()
+			expect(process).not.toHaveBeenCalled()
+			fileWatcher.resumeProcessing()
+			await fileWatcher.whenIdle()
+			expect(process).toHaveBeenCalledOnce()
+		})
+
+		it("settles an active replacement before Clear/restart can retire it", async () => {
+			vi.useFakeTimers()
+			const entered = deferred<void>()
+			const release = deferred<void>()
+			mockVectorStore.replaceFilePoints.mockImplementationOnce(async () => {
+				entered.resolve(undefined)
+				await release.promise
+			})
+			await fileWatcher.initialize()
+			await mockOnDidDelete({ fsPath: "/mock/workspace/src/file.ts" })
+			const run = fileWatcher.whenIdle()
+			await entered.promise
+			fileWatcher.stop()
+			let idle = false
+			const settled = run.then(() => {
+				idle = true
+			})
+			await Promise.resolve()
+			expect(idle).toBe(false)
+			release.resolve(undefined)
+			await settled
+			expect(mockCacheManager.deleteHash).toHaveBeenCalledOnce()
+		})
 	})
 })

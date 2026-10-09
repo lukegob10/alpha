@@ -3,8 +3,14 @@ import { createHash } from "crypto"
 import * as path from "path"
 import { v5 as uuidv5 } from "uuid"
 import { IVectorStore } from "../interfaces/vector-store"
-import { Payload, VectorStoreSearchResult } from "../interfaces"
-import { DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE, QDRANT_CODE_BLOCK_NAMESPACE } from "../constants"
+import { Payload, VectorStoreSearchResult, PointStruct } from "../interfaces"
+import {
+	DEFAULT_MAX_SEARCH_RESULTS,
+	DEFAULT_SEARCH_MIN_SCORE,
+	QDRANT_CODE_BLOCK_NAMESPACE,
+	MAX_REUSABLE_FILE_POINTS,
+	BATCH_SEGMENT_THRESHOLD,
+} from "../constants"
 import { t } from "../../../i18n"
 import { lexicalText, lexicalVector } from "../shared/lexical"
 import { CODE_INDEX_VERSION, relativeIndexPath } from "../shared/embedding-input"
@@ -69,6 +75,7 @@ export class QdrantVectorStore implements IVectorStore {
 				port: port,
 				prefix: urlObj.pathname === "/" ? undefined : urlObj.pathname.replace(/\/+$/, ""),
 				apiKey,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -79,6 +86,7 @@ export class QdrantVectorStore implements IVectorStore {
 			this.client = new QdrantClient({
 				url: parsedUrl,
 				apiKey,
+				timeout: 30_000,
 				headers: {
 					"User-Agent": "Alpha",
 				},
@@ -510,6 +518,41 @@ export class QdrantVectorStore implements IVectorStore {
 	 * Deletes points by file path
 	 * @param filePath Path of the file to delete points for
 	 */
+	async getPointsByFilePath(filePath: string): Promise<PointStruct[]> {
+		const response = await this.client.scroll(this.collectionName, {
+			filter: { must: [{ key: "filePath", match: { value: relativeIndexPath(filePath, this.workspacePath) } }] },
+			limit: MAX_REUSABLE_FILE_POINTS,
+			with_payload: true,
+			with_vector: true,
+		})
+		return response.points.flatMap((point) => {
+			const vector = Array.isArray(point.vector) ? point.vector : point.vector?.[""]
+			return Array.isArray(vector) && point.payload
+				? [{ id: String(point.id), vector, payload: point.payload }]
+				: []
+		})
+	}
+
+	async replaceFilePoints(filePath: string, points: PointStruct[]): Promise<void> {
+		const normalized = relativeIndexPath(filePath, this.workspacePath)
+		if (
+			points.some((point) => relativeIndexPath(String(point.payload.filePath), this.workspacePath) !== normalized)
+		) {
+			throw new Error(t("embeddings:incremental.invalidReplacement"))
+		}
+		// Qdrant settles each upsert before pruning. Retries are idempotent and a failed upsert retains old chunks.
+		for (let offset = 0; offset < points.length; offset += BATCH_SEGMENT_THRESHOLD) {
+			await this.upsertPoints(points.slice(offset, offset + BATCH_SEGMENT_THRESHOLD))
+		}
+		await this.client.delete(this.collectionName, {
+			filter: {
+				must: [{ key: "filePath", match: { value: normalized } }],
+				...(points.length ? { must_not: [{ has_id: points.map((point) => point.id) }] } : {}),
+			},
+			wait: true,
+		})
+	}
+
 	async deletePointsByFilePath(filePath: string): Promise<void> {
 		return this.deletePointsByMultipleFilePaths([filePath])
 	}
@@ -537,29 +580,9 @@ export class QdrantVectorStore implements IVectorStore {
 				throw collectionError
 			}
 
-			const workspaceRoot = this.workspacePath
-
-			// Build filters using pathSegments to match the indexed fields
-			const filters = filePaths.map((filePath) => {
-				// IMPORTANT: Use the relative path to match what's stored in upsertPoints
-				// upsertPoints stores the relative filePath, not the absolute path
-				const relativePath = path.isAbsolute(filePath) ? path.relative(workspaceRoot, filePath) : filePath
-
-				// Normalize the relative path
-				const normalizedRelativePath = path.normalize(relativePath)
-
-				// Split the path into segments like we do in upsertPoints
-				const segments = normalizedRelativePath.split(path.sep).filter(Boolean)
-
-				// Create a filter that matches all segments of the path
-				// This ensures we only delete points that match the exact file path
-				const mustConditions = segments.map((segment, index) => ({
-					key: `pathSegments.${index}`,
-					match: { value: segment },
-				}))
-
-				return { must: mustConditions }
-			})
+			const filters = filePaths.map((filePath) => ({
+				must: [{ key: "filePath", match: { value: relativeIndexPath(filePath, this.workspacePath) } }],
+			}))
 
 			// Use 'should' to match any of the file paths (OR condition)
 			const filter = filters.length === 1 ? filters[0] : { should: filters }

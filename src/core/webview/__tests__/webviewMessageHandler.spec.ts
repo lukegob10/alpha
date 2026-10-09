@@ -58,6 +58,7 @@ const mockAlphaProvider = {
 	handleImplementPlan: vi.fn(),
 	handleModeSwitch: vi.fn(),
 	setTaskReasoningPreference: vi.fn(),
+	setWebviewFocused: vi.fn(async () => undefined),
 	updateTaskApprovalMode: vi.fn(),
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
@@ -84,6 +85,20 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("webview focus messages", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("updates the sending provider's focus and rejects malformed focus input", async () => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "webviewFocusChanged", focused: true })
+		expect(mockAlphaProvider.setWebviewFocused).toHaveBeenCalledExactlyOnceWith(true)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "webviewFocusChanged",
+			focused: "true",
+		} as unknown as WebviewMessage)
+		expect(mockAlphaProvider.setWebviewFocused).toHaveBeenCalledOnce()
+	})
+})
 
 describe("task reasoning messages", () => {
 	const state = {
@@ -1052,6 +1067,139 @@ describe("webviewMessageHandler - retained completed-task input receipts", () =>
 describe("webviewMessageHandler - queued message steering", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it.each(["delivering", "queued"] as const)(
+		"waits for durable direct steering before acknowledging %s input on the addressed task",
+		async (deliveryState) => {
+			let finish!: () => void
+			const steerUserMessageDurably = vi.fn(
+				() =>
+					new Promise<void>((resolve) => {
+						finish = resolve
+					}),
+			)
+			vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+				taskId: "background",
+				steerUserMessageDurably,
+				messageQueueService: {
+					visibleMessages: [
+						{ id: "direct-steer", text: "Use the existing parser", timestamp: 1, deliveryState },
+					],
+				},
+			} as any)
+			const dispatch = webviewMessageHandler(mockAlphaProvider, {
+				type: "sendAndSteer",
+				taskId: "background",
+				requestId: "direct-steer",
+				text: "Use the existing parser",
+				images: [],
+			})
+			expect(steerUserMessageDurably).toHaveBeenCalledWith("Use the existing parser", [], "direct-steer")
+			expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+			finish()
+			await dispatch
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					chatCommandResult: {
+						command: "sendAndSteer",
+						taskId: "background",
+						requestId: "direct-steer",
+						status: "accepted",
+						...(deliveryState === "queued" ? { deliveryState: "queued" } : {}),
+					},
+				}),
+			)
+		},
+	)
+
+	it("acknowledges a retained steering message as queued when the handoff fails", async () => {
+		const queue = [{ id: "retained-steer", text: "Keep this correction", timestamp: 1 }]
+		const task = {
+			taskId: "background",
+			messageQueueService: { visibleMessages: queue },
+			steerUserMessageDurably: vi.fn().mockRejectedValue(new Error("approval began")),
+			hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValue(true),
+		}
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as any)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: "background",
+			requestId: "retained-steer",
+			text: "Keep this correction",
+		})
+		expect(task.hasAcceptedQueuedUserMessage).toHaveBeenCalledWith("retained-steer")
+		expect(mockAlphaProvider.postTaskQueueToWebview).toHaveBeenCalledWith("background", queue)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({
+					command: "sendAndSteer",
+					status: "accepted",
+					deliveryState: "queued",
+				}),
+			}),
+		)
+	})
+
+	it("rejects a failed steering admission without reporting it as accepted", async () => {
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: "background",
+			steerUserMessageDurably: vi.fn().mockRejectedValue(new Error("steer pending")),
+			hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValue(false),
+			hasPendingSteerMessage: vi.fn(() => true),
+		} as any)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: "background",
+			requestId: "rejected-steer",
+			text: "Keep this draft",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({
+					command: "sendAndSteer",
+					status: "rejected",
+					errorCode: "steer_pending",
+				}),
+			}),
+		)
+	})
+
+	it("rejects malformed direct steering and managed-child composer submissions", async () => {
+		const steerUserMessageDurably = vi.fn()
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: "child",
+			taskKind: "subagent",
+			steerUserMessageDurably,
+		} as any)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: "child",
+			requestId: "child-steer",
+			text: "Use parent controls",
+		})
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: "child",
+			requestId: "invalid-steer",
+			text: 42,
+		} as unknown as WebviewMessage)
+		expect(steerUserMessageDurably).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({
+					requestId: "child-steer",
+					status: "rejected",
+					errorCode: "task_unavailable",
+				}),
+			}),
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ requestId: "invalid-steer", status: "rejected" }),
+			}),
+		)
 	})
 
 	it("publishes accepted input before acknowledging the composer submission", async () => {

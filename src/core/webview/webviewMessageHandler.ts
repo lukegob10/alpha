@@ -33,6 +33,8 @@ import {
 	openDiffPayloadSchema,
 	scheduledTaskSkillsRequestSchema,
 	taskReasoningUpdateSchema,
+	sendAndSteerMessageSchema,
+	webviewFocusChangedMessageSchema,
 	subagentAgentTypesSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
@@ -586,6 +588,11 @@ export const webviewMessageHandler = async (
 				)
 			}
 			break
+		case "webviewFocusChanged": {
+			const focus = webviewFocusChangedMessageSchema.safeParse(message)
+			if (focus.success) await provider.setWebviewFocused(focus.data.focused)
+			break
+		}
 		case "webviewDidLaunch":
 			const webviewLaunchStartedAt = performance.now()
 			provider.clearPublishedTaskTranscriptRevisions()
@@ -3409,6 +3416,63 @@ export const webviewMessageHandler = async (
 		/**
 		 * Chat Message Queue
 		 */
+
+		case "sendAndSteer": {
+			const parsed = sendAndSteerMessageSchema.safeParse(message)
+			if (!parsed.success) {
+				await postChatCommandResult("sendAndSteer", "rejected", "unknown")
+				break
+			}
+			const task = getRequiredTaskForMessage(provider, message, "sendAndSteer")
+			if (!task || task.taskKind === "subagent") {
+				await postChatCommandResult("sendAndSteer", "rejected", "task_unavailable")
+				break
+			}
+			let resolved = { text: parsed.data.text, images: parsed.data.images ?? [] }
+			try {
+				if (resolved.images.length || textHasImageMention(resolved.text)) {
+					resolved = await resolveIncomingImages({ ...resolved, taskId: parsed.data.taskId })
+				}
+			} catch {
+				await postChatCommandResult("sendAndSteer", "rejected", "image_resolution_failed")
+				break
+			}
+			let deliveryState: ChatCommandResult["deliveryState"]
+			try {
+				await task.steerUserMessageDurably(resolved.text, resolved.images, parsed.data.requestId)
+			} catch (error) {
+				provider.log(`[webviewMessageHandler] Direct steering failed for task ${task.taskId}: ${String(error)}`)
+				// A handoff can become unavailable after durable admission. Keep that
+				// accepted message in the existing queue instead of duplicating its draft.
+				const retained = await task.hasAcceptedQueuedUserMessage(parsed.data.requestId).catch((lookupError) => {
+					provider.log(
+						`[webviewMessageHandler] Steering receipt lookup failed for task ${task.taskId}: ${String(lookupError)}`,
+					)
+					return false
+				})
+				if (retained) {
+					deliveryState = "queued"
+				} else {
+					await postChatCommandResult(
+						"sendAndSteer",
+						"rejected",
+						task.hasPendingSteerMessage() ? "steer_pending" : "unknown",
+					)
+					break
+				}
+			}
+			const queue = task.messageQueueService.visibleMessages
+			if (queue.some((entry) => entry.id === parsed.data.requestId && entry.deliveryState !== "delivering")) {
+				deliveryState = "queued"
+			}
+			if (queue.some((entry) => entry.id === parsed.data.requestId)) {
+				await provider.postTaskQueueToWebview(task.taskId, queue)
+			} else {
+				await provider.postTaskQueueToWebview(task.taskId, queue, { includeTranscript: true })
+			}
+			await postChatCommandResult("sendAndSteer", "accepted", undefined, deliveryState)
+			break
+		}
 
 		case "queueMessage": {
 			const queueStartedAt = process.env.ALPHA_TASK_OBSERVABILITY === "1" ? performance.now() : undefined

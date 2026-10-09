@@ -182,6 +182,36 @@
 				"category": "%configuration.title%"
 			},
 			{
+				"command": "alpha.sendAndSteer",
+				"title": "%command.sendAndSteer.title%",
+				"category": "%configuration.title%"
+			},
+			{
+				"command": "alpha.decreaseReasoningEffort",
+				"title": "%command.decreaseReasoningEffort.title%",
+				"category": "%configuration.title%"
+			},
+			{
+				"command": "alpha.increaseReasoningEffort",
+				"title": "%command.increaseReasoningEffort.title%",
+				"category": "%configuration.title%"
+			},
+			{
+				"command": "alpha.previousTask",
+				"title": "%command.previousTask.title%",
+				"category": "%configuration.title%"
+			},
+			{
+				"command": "alpha.nextTask",
+				"title": "%command.nextTask.title%",
+				"category": "%configuration.title%"
+			},
+			{
+				"command": "alpha.nextTaskNeedingInput",
+				"title": "%command.nextTaskNeedingInput.title%",
+				"category": "%configuration.title%"
+			},
+			{
 				"command": "alpha.toggleAutoApprove",
 				"title": "%command.toggleAutoApprove.title%",
 				"category": "%configuration.title%"
@@ -327,6 +357,83 @@
 			]
 		},
 		"keybindings": [
+			{
+				"command": "alpha.plusButtonClicked",
+				"key": "ctrl+alt+n",
+				"when": "isWindows && alpha.focusedWebview != sidebar && focusedView != alpha.SidebarProvider"
+			},
+			{
+				"command": "alpha.plusButtonClicked",
+				"key": "ctrl+alt+n",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.sendAndSteer",
+				"key": "ctrl+alt+s",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.sendAndSteer",
+				"key": "ctrl+alt+s",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.decreaseReasoningEffort",
+				"key": "alt+,",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.decreaseReasoningEffort",
+				"key": "alt+,",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.increaseReasoningEffort",
+				"key": "alt+.",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.increaseReasoningEffort",
+				"key": "alt+.",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.previousTask",
+				"key": "ctrl+alt+pageup",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.previousTask",
+				"key": "ctrl+alt+pageup",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.nextTask",
+				"key": "ctrl+alt+pagedown",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.nextTask",
+				"key": "ctrl+alt+pagedown",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
+			{
+				"command": "alpha.nextTaskNeedingInput",
+				"key": "ctrl+alt+home",
+				"when": "isWindows && alpha.focusedWebview == editor"
+			},
+			{
+				"command": "alpha.nextTaskNeedingInput",
+				"key": "ctrl+alt+home",
+				"when": "isWindows && (alpha.focusedWebview == sidebar || focusedView == alpha.SidebarProvider)",
+				"args": "sidebar"
+			},
 			{
 				"command": "alpha.addToContext",
 				"key": "cmd+k cmd+a",

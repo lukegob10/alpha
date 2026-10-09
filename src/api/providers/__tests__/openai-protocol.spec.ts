@@ -1,6 +1,8 @@
 import { OpenAiHandler } from "../openai"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import * as modelCapabilities from "../utils/openai-model-capabilities"
+import { AgentRetryPolicy } from "../../../core/agent/AgentRetryPolicy"
+import { isApiStreamSemanticChunk, type ApiStreamChunk } from "../../transform/stream"
 
 const { chatCreate, responsesCreate } = vi.hoisted(() => ({ chatCreate: vi.fn(), responsesCreate: vi.fn() }))
 
@@ -46,6 +48,127 @@ describe("native OpenAI protocol capabilities", () => {
 			],
 			usage: null,
 		})
+	})
+
+	it.each([
+		{ responses: true, streaming: false, modelId: "gpt-6.1-sol" },
+		{ responses: true, streaming: true, modelId: "gpt-6.1-sol" },
+		{ responses: false, streaming: false, modelId: "gpt-6.1-sol" },
+		{ responses: false, streaming: true, modelId: "gpt-6.1-sol" },
+		{ responses: false, streaming: false, modelId: "o3" },
+		{ responses: false, streaming: true, modelId: "o3" },
+	])("retains SDK retry advice at the public provider boundary (%j)", async ({ responses, streaming, modelId }) => {
+		const client = responses ? responsesCreate : chatCreate
+		client.mockRejectedValueOnce(
+			Object.assign(new Error("Rate limited"), { status: 429, headers: new Headers({ "retry-after": "60" }) }),
+		)
+		const provider = new OpenAiHandler({
+			...options,
+			openAiModelId: modelId,
+			openAiBaseUrl: responses ? options.openAiBaseUrl : "https://compatible.example/v1",
+			openAiStreamingEnabled: streaming,
+		})
+		const consume = async () => {
+			for await (const _chunk of provider.createMessage("system", [], { taskId: "retry-advice", tools })) {
+				// Consume the public provider stream.
+			}
+		}
+
+		await expect(consume()).rejects.toMatchObject({ status: 429, retryAfterMs: 60_000 })
+		expect(client).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{ responses: true, modelId: "gpt-6.1-sol" },
+		{ responses: false, modelId: "gpt-6.1-sol" },
+		{ responses: false, modelId: "o3" },
+	])("preserves advice after streamed output without replay (%j)", async ({ responses, modelId }) => {
+		const client = responses ? responsesCreate : chatCreate
+		client.mockResolvedValueOnce(
+			(async function* () {
+				if (responses) {
+					yield {
+						type: "response.output_text.delta",
+						output_index: 0,
+						content_index: 0,
+						delta: "Partial answer",
+					}
+				} else {
+					yield { choices: [{ delta: { content: "Partial answer" } }] }
+				}
+				throw Object.assign(new Error("Rate limited"), { status: 429, headers: { "retry-after": "60" } })
+			})(),
+		)
+		const provider = new OpenAiHandler({
+			...options,
+			openAiModelId: modelId,
+			openAiBaseUrl: responses ? options.openAiBaseUrl : "https://compatible.example/v1",
+			openAiStreamingEnabled: true,
+		})
+		const chunks: ApiStreamChunk[] = []
+		let failure: unknown
+		try {
+			for await (const chunk of provider.createMessage("system", [], { taskId: "retry-advice", tools })) {
+				chunks.push(chunk)
+			}
+		} catch (error) {
+			failure = error
+		}
+		expect(failure).toMatchObject({ status: 429, retryAfterMs: 60_000 })
+		expect(chunks).toContainEqual({ type: "text", text: "Partial answer" })
+		const retryAfterMs = (failure as { retryAfterMs: number }).retryAfterMs
+		expect(
+			new AgentRetryPolicy().decide({
+				category: "rate-limit",
+				attempt: 1,
+				retryAfterMs,
+				hasSemanticOutput: chunks.some(isApiStreamSemanticChunk),
+			}),
+		).toMatchObject({ shouldRetry: false, reason: "semantic-output" })
+		expect(client).toHaveBeenCalledOnce()
+	})
+
+	it.each([false, true])("preserves SDK abort identity with linked control=%s", async (controlled) => {
+		const abort = Object.assign(new Error("Operation stopped"), { name: "AbortError" })
+		responsesCreate.mockRejectedValueOnce(abort)
+		const consume = async () => {
+			for await (const _chunk of new OpenAiHandler(options).createMessage("system", [], {
+				taskId: "cancel-fixture",
+				...(controlled ? { signal: new AbortController().signal } : {}),
+			})) {
+				// Consume the public provider stream.
+			}
+		}
+		await expect(consume()).rejects.toBe(abort)
+		expect(responsesCreate).toHaveBeenCalledOnce()
+	})
+
+	it("does not admit a request after linked caller cancellation", async () => {
+		const controller = new AbortController()
+		const abort = Object.assign(new Error("Operation stopped"), { name: "AbortError" })
+		controller.abort(abort)
+		const consume = async () => {
+			for await (const _chunk of new OpenAiHandler(options).createMessage("system", [], {
+				taskId: "cancel-fixture",
+				signal: controller.signal,
+			})) {
+				// A cancelled caller must never reach SDK admission.
+			}
+		}
+		await expect(consume()).rejects.toBe(abort)
+		expect(responsesCreate).not.toHaveBeenCalled()
+	})
+
+	it("retains completePrompt retry metadata with one provider prefix", async () => {
+		chatCreate.mockRejectedValueOnce(
+			Object.assign(new Error("Rate limited"), { status: 429, headers: { "retry-after": "60" } }),
+		)
+		await expect(new OpenAiHandler(options).completePrompt("fixture")).rejects.toMatchObject({
+			status: 429,
+			retryAfterMs: 60_000,
+			message: "OpenAI completion error: Rate limited",
+		})
+		expect(chatCreate).toHaveBeenCalledOnce()
 	})
 
 	it("selects Responses independently of the model's freeform patch capability", async () => {

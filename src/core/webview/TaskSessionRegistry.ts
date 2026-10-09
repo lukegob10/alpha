@@ -294,6 +294,33 @@ export class TaskSessionRegistry {
 		return this.activeTaskId ? this.sessions.get(this.activeTaskId)?.task : undefined
 	}
 
+	/** Registration order stays stable while activity and per-view selection change. */
+	getAdjacentTaskId(direction: -1 | 1, needsInputOnly = false): string | undefined {
+		const tasks = Array.from(this.sessions.values()).filter(
+			({ task }) => task.taskKind !== "subagent" && !task.abandoned && !task.abort,
+		)
+		const current = tasks.findIndex(({ task }) => task.taskId === this.activeTaskId)
+		const metadata = needsInputOnly ? this.getMetadata() : undefined
+		for (let offset = 1; offset <= tasks.length; offset++) {
+			const index =
+				current === -1
+					? direction === 1
+						? offset - 1
+						: tasks.length - offset
+					: (current + direction * offset + tasks.length) % tasks.length
+			const taskId = tasks[index].task.taskId
+			const state = metadata?.[taskId]
+			if (
+				!needsInputOnly ||
+				(state?.isWaitingForInput &&
+					state.waitingReason !== "completion" &&
+					state.waitingReason !== "completion_result")
+			)
+				return taskId
+		}
+		return undefined
+	}
+
 	getTask(taskId: string | undefined): Task | undefined {
 		return taskId ? this.sessions.get(taskId)?.task : undefined
 	}

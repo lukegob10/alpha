@@ -91,6 +91,8 @@ it.each([
 			},
 		}
 		const vectorStore = {
+			getPointsByFilePath: vi.fn(async () => []),
+			replaceFilePoints: vi.fn(async () => pause(2)),
 			upsertPoints: vi.fn(async () => pause(2)),
 			deletePointsByMultipleFilePaths: vi.fn(),
 		} as unknown as IVectorStore
@@ -139,7 +141,7 @@ it.each([
 		expect(errors).toEqual([])
 		expect(indexed).toBe(1700)
 		expect(requests).toBe(provider === "gemini" ? 29 : 1700)
-		expect(maxActive).toBe(provider === "gemini" ? 2 : model === "gemini-embedding-2" ? 16 : 8)
+		expect(maxActive).toBe(provider === "gemini" ? 2 : model === "gemini-embedding-2" ? 15 : 8)
 		expect(firstRequestMs).toBeLessThan(parsingFinishedMs)
 		expect(firstIndexedMs).toBeLessThan(parsingFinishedMs)
 		expect(firstIndexedMs).toBeLessThan(provider === "gemini" ? 1000 : model === "gemini-embedding-2" ? 1800 : 3000)
