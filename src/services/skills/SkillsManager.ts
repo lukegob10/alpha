@@ -19,6 +19,7 @@ import {
 	SKILL_NAME_MAX_LENGTH,
 } from "@alpha-code/types"
 import { t } from "../../i18n"
+import { readSkillInvocationPolicy } from "./skillPolicy"
 
 // Re-export for convenience
 export type { SkillMetadata, SkillContent, SkillSource }
@@ -220,6 +221,7 @@ export class SkillsManager {
 			// For backward compatibility, use first mode slug or undefined for the key
 			const primaryMode = modeSlugs?.[0]
 			const skillKey = this.getSkillKey(effectiveSkillName, source, primaryMode)
+			const allowImplicitInvocation = await readSkillInvocationPolicy(skillDir)
 
 			const skill: SkillMetadata = {
 				name: effectiveSkillName,
@@ -228,6 +230,7 @@ export class SkillsManager {
 				source,
 				mode: primaryMode, // Deprecated: kept for backward compatibility
 				modeSlugs, // New: array of mode slugs, undefined = any mode
+				...(allowImplicitInvocation === undefined ? {} : { allowImplicitInvocation }),
 			}
 			discovered.set(skillKey, skill)
 			// Override resolution changes the visible catalog, but a child may have captured
@@ -270,6 +273,11 @@ export class SkillsManager {
 		}
 
 		return Array.from(resolvedSkills.values())
+	}
+
+	/** Filter only after override resolution so an explicit-only override cannot reveal its ancestor. */
+	getImplicitSkillsForMode(currentMode: string): SkillMetadata[] {
+		return this.getSkillsForMode(currentMode).filter((skill) => skill.allowImplicitInvocation !== false)
 	}
 
 	/**
@@ -825,6 +833,8 @@ Add your skill instructions here.
 
 	private watchSkillsTree(basePath: string, configDirName: string): void {
 		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/**/SKILL.md`)
+		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/**/agents/openai.yaml`)
+		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/**/agents`)
 		this.watchPattern(basePath, configDirName)
 		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}`)
 		this.watchPattern(basePath, `${configDirName}/{skills,skills-*}/*`)

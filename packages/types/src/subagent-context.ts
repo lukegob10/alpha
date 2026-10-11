@@ -86,6 +86,8 @@ export const subagentContextSkillSchema = z
 		name: z.string().min(1),
 		path: z.string().min(1),
 		digest: subagentContextDigestSchema,
+		/** Captured discovery policy; omission keeps legacy implicit invocation enabled. */
+		allowImplicitInvocation: z.boolean().optional(),
 	})
 	.strict()
 export type SubagentContextSkill = z.infer<typeof subagentContextSkillSchema>

@@ -1331,6 +1331,53 @@ describe("sub-agent context capture", () => {
 		expect(isValidSubagentContextManifest(first.manifest)).toBe(true)
 	})
 
+	it.each([false, true, undefined])(
+		"preserves portable implicit policy %s through immutable capture and durable reload",
+		(allowImplicitInvocation) => {
+			const skill = {
+				name: "portable-review",
+				path: "/skills/portable-review/SKILL.md",
+				content: "Captured review instructions",
+				...(allowImplicitInvocation === undefined ? {} : { allowImplicitInvocation }),
+			}
+			const captured = captureSubagentContext({
+				parentTaskId: "parent-task",
+				capturedAt: 1_700_000_000_000,
+				forkTurns: "none",
+				history: [],
+				instructions: {
+					effectiveText: "Captured host instructions",
+					sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Captured host instructions" }],
+				},
+				skills: [skill],
+				cwd: "/workspace",
+				workspaceRoots: ["/workspace"],
+				modelRoute: route,
+				runtimePolicy,
+			})
+			const restored = subagentContextManifestSchema.parse(
+				JSON.parse(serializeSubagentContextManifest(captured.manifest)),
+			)
+			expect(restored.skills).toEqual(captured.manifest.skills)
+			expect(restored.skills[0]).toMatchObject({
+				name: skill.name,
+				path: skill.path,
+				digest: digestValue("Captured review instructions"),
+			})
+			expect(restored.skills[0].allowImplicitInvocation).toBe(allowImplicitInvocation)
+			if (allowImplicitInvocation === undefined)
+				expect(restored.skills[0]).not.toHaveProperty("allowImplicitInvocation")
+			skill.allowImplicitInvocation = allowImplicitInvocation !== false ? false : true
+			expect(captured.manifest.skills[0].allowImplicitInvocation).toBe(allowImplicitInvocation)
+			expect(isValidSubagentContextManifest(restored)).toBe(true)
+			if (allowImplicitInvocation !== undefined) {
+				const tampered = structuredClone(restored)
+				tampered.skills[0].allowImplicitInvocation = !allowImplicitInvocation
+				expect(isValidSubagentContextManifest(tampered)).toBe(false)
+			}
+		},
+	)
+
 	it.each(["none", "all", "2"] as const)(
 		"retains captured skills and authority independently of fork_turns=%s",
 		(forkTurns) => {

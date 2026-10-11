@@ -1,12 +1,9 @@
+import type { SkillMetadata } from "@alpha-code/types"
 import type { SkillsManager } from "../../../services/skills/SkillsManager"
 
 type SkillsManagerLike = Pick<SkillsManager, "getSkillsForMode">
 
-export interface SkillCatalogEntry {
-	name: string
-	description: string
-	path: string
-}
+export type SkillCatalogEntry = Pick<SkillMetadata, "name" | "description" | "path" | "allowImplicitInvocation">
 
 export interface SkillSectionParts {
 	catalog: string
@@ -63,9 +60,11 @@ export function getSkillsCatalogSectionParts(
 	skills: readonly SkillCatalogEntry[],
 	currentMode: string | undefined,
 ): SkillSectionParts {
-	if (!currentMode || skills.length === 0) return { catalog: "", guidance: "" }
+	// Resolve overrides before hiding explicit-only skills; never expose a shadowed fallback.
+	const implicitSkills = skills.filter((skill) => skill.allowImplicitInvocation !== false)
+	if (!currentMode || implicitSkills.length === 0) return { catalog: "", guidance: "" }
 
-	const skillsXml = skills
+	const skillsXml = implicitSkills
 		.map((skill) => {
 			const name = escapeXml(skill.name)
 			const description = escapeXml(skill.description)

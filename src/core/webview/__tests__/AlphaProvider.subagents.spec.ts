@@ -24,6 +24,7 @@ import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 import { SUBAGENT_CALLSIGNS, SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
 import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
+import { getSkillsCatalogSection, type SkillCatalogEntry } from "../../prompts/sections/skills"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -876,6 +877,12 @@ If complete, use attempt_completion.
 					description: "Review repository evidence",
 					path: "F:/workspace/.alpha/skills/review-repository/SKILL.md",
 				},
+				{
+					name: "explicit-review",
+					description: "Explicit-only frozen review",
+					path: "F:/workspace/.agents/skills/explicit-review/SKILL.md",
+					allowImplicitInvocation: false,
+				},
 			]),
 			getSkillContent: vi.fn(async () => ({ instructions: "Use the review checklist." })),
 		}
@@ -927,12 +934,22 @@ If complete, use attempt_completion.
 			instructions: {
 				sources: expect.arrayContaining([expect.objectContaining({ ref: "F:/workspace/AGENTS.md" })]),
 			},
-			skills: [expect.objectContaining({ name: "review-repository" })],
+			skills: [
+				expect.objectContaining({ name: "explicit-review", allowImplicitInvocation: false }),
+				expect.objectContaining({ name: "review-repository" }),
+			],
 		})
 		expect(prepared.envelopes[0].scope.contextRefs).toEqual(manifest.contextRefs)
 		expect(prepared.envelopes[0].skills).toEqual([
-			expect.objectContaining({ id: "review-repository", digest: manifest.skills[0].digest }),
+			expect.objectContaining({ id: "explicit-review", digest: manifest.skills[0].digest }),
+			expect.objectContaining({ id: "review-repository", digest: manifest.skills[1].digest }),
 		])
+		expect(descriptor.inheritedSkills).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "explicit-review", allowImplicitInvocation: false }),
+			]),
+		)
+		expect(getSkillsCatalogSection(descriptor.inheritedSkills, "code")).not.toContain("explicit-review")
 
 		await provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
 
@@ -954,6 +971,8 @@ If complete, use attempt_completion.
 		expect(childOptions.subagentFrozenInstructions).toBe("Follow the frozen repository instructions.")
 		expect(childOptions.subagentInitialContext).toContain("Host-supplied managed-child context")
 		expect(childOptions.subagentInitialContext).toContain("review-repository")
+		expect(childOptions.subagentInitialContext).not.toContain("explicit-review")
+		expect(childOptions.subagentInitialContext).not.toContain("Explicit-only frozen review")
 		expect(childOptions.subagentInitialContext).toContain("LATEST_PARENT_TURN")
 		expect(childOptions.subagentInitialContext).toContain("LATEST_PARENT_REPLY")
 		expect(childOptions.subagentInitialContext).not.toContain("Follow the frozen repository instructions.")
@@ -1196,11 +1215,12 @@ If complete, use attempt_completion.
 		const provider = makeProviderHarness(3, { subagentDelegationPolicy: "proactive", subagentMaxDepth: 2 })
 		const root = makeParent()
 		let skillBody = "Frozen skill body"
-		let catalog = [
+		let catalog: SkillCatalogEntry[] = [
 			{
 				name: "review-repository",
 				path: "F:/workspace/.agents/skills/review-repository/SKILL.md",
 				description: "Frozen skill description",
+				allowImplicitInvocation: false,
 			},
 		]
 		const manager = {
@@ -1214,7 +1234,7 @@ If complete, use attempt_completion.
 		const directDescriptor = (provider as any).subagentDescriptors.get(direct.envelopes[0].id)
 		const frozenSkills = structuredClone(directDescriptor.contextManifest.skills)
 		catalog = [
-			{ ...catalog[0], description: "Live replacement description" },
+			{ ...catalog[0], description: "Live replacement description", allowImplicitInvocation: true },
 			{
 				name: "new-skill",
 				path: "F:/workspace/.agents/skills/new-skill/SKILL.md",
@@ -1237,8 +1257,58 @@ If complete, use attempt_completion.
 		const nestedDescriptor = (provider as any).subagentDescriptors.get(nested.envelopes[0].id)
 
 		expect(nestedDescriptor.contextManifest.skills).toEqual(frozenSkills)
-		expect(nestedDescriptor.inheritedSkills).toEqual([{ ...catalog[0], description: "Frozen skill description" }])
+		expect(nestedDescriptor.inheritedSkills).toEqual([
+			{ ...catalog[0], description: "Frozen skill description", allowImplicitInvocation: false },
+		])
+		expect(getSkillsCatalogSection(nestedDescriptor.inheritedSkills, "code")).toBe("")
+		expect(nestedDescriptor.contextManifest.runtimePolicy.allowedTools).toContain("skill")
 		expect(manager.getSkillContent).not.toHaveBeenCalled()
+	})
+
+	it("freezes explicit skill policy and exact content identity across a discovery refresh during capture", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const original: SkillCatalogEntry = {
+			name: "explicit-review",
+			description: "Captured explicit-only description",
+			path: "F:/workspace/.agents/skills/explicit-review/SKILL.md",
+			allowImplicitInvocation: false,
+		}
+		let catalog = [original]
+		const manager = {
+			getSkillsForMode: vi.fn(() => catalog),
+			getSkillContent: vi.fn(async () => ({ instructions: "Wrong same-name override body" })),
+			getSkillContentByPath: vi.fn(async () => {
+				catalog = [
+					{
+						...original,
+						path: "F:/workspace/.alpha/skills/explicit-review/SKILL.md",
+						description: "Live implicit override",
+						allowImplicitInvocation: true,
+					},
+				]
+				return { instructions: "Captured exact-path body", allowImplicitInvocation: true }
+			}),
+		}
+		;(provider as any).skillsManager = manager
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Review captured context", agent_kind: "review" },
+		])
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+
+		expect(manager.getSkillsForMode).toHaveBeenCalledExactlyOnceWith("code")
+		expect(manager.getSkillContentByPath).toHaveBeenCalledExactlyOnceWith(original.name, original.path)
+		expect(manager.getSkillContent).not.toHaveBeenCalled()
+		expect(descriptor.inheritedSkills).toEqual([original])
+		expect(descriptor.contextManifest.skills).toEqual([
+			expect.objectContaining({
+				name: original.name,
+				path: original.path,
+				allowImplicitInvocation: false,
+			}),
+		])
+		expect(getSkillsCatalogSection(descriptor.inheritedSkills, "code")).toBe("")
+		expect(descriptor.contextManifest.runtimePolicy.allowedTools).toContain("skill")
 	})
 
 	it("fails before child start when the private instruction snapshot cannot be persisted", async () => {

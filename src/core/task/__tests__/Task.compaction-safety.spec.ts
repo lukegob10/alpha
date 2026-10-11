@@ -463,6 +463,29 @@ describe("Task proportional context preflight", () => {
 })
 
 describe("Task manual compaction boundary", () => {
+	it("retains a child's captured explicit-only catalog when provider history is compacted", async () => {
+		const { task, history, save, provider } = harness()
+		const capturedSkills = [
+			{
+				name: "explicit-review",
+				path: "F:/workspace/.agents/skills/explicit-review/SKILL.md",
+				digest: "a".repeat(64),
+				allowImplicitInvocation: false,
+			},
+		]
+		const manifest = { skills: structuredClone(capturedSkills) }
+		Object.assign(task, { taskKind: "subagent", subagentContextManifest: manifest })
+
+		await task.condenseContext()
+
+		expect(save).toHaveBeenCalledOnce()
+		expect(task.apiConversationHistory).not.toEqual(history)
+		expect(task.subagentContextManifest).toBe(manifest)
+		expect(task.subagentContextManifest?.skills).toEqual(capturedSkills)
+		expect(task.getInheritedSubagentSkill("explicit-review")?.allowImplicitInvocation).toBe(false)
+		expect(provider.getSkillsManager).not.toHaveBeenCalled()
+	})
+
 	it("uses the captured instruction roles and provenance for manual compaction", async () => {
 		const { task } = harness()
 		const fragments = [

@@ -1,6 +1,7 @@
 import { taskMetadata } from "../taskMetadata"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
+import { historyItemSchema } from "@alpha-code/types"
 
 describe("taskMetadata sub-agent routing", () => {
 	let storageRoot: string
@@ -82,7 +83,14 @@ describe("taskMetadata sub-agent routing", () => {
 				effectiveText: "private frozen instructions",
 				sources: [{ kind: "agents", ref: path.join(workspace, "AGENTS.md"), text: "private AGENTS body" }],
 			},
-			skills: [],
+			skills: [
+				{
+					name: "explicit-review",
+					path: path.join(workspace, ".agents", "skills", "explicit-review", "SKILL.md"),
+					content: "private explicit skill body",
+					allowImplicitInvocation: false,
+				},
+			],
 			cwd: workspace,
 			workspaceRoots: [workspace],
 			modelRoute: route,
@@ -129,9 +137,14 @@ describe("taskMetadata sub-agent routing", () => {
 		expect(historyItem.subagentContextManifest?.runtimePolicy.autoApproval).toEqual(
 			manifest.runtimePolicy.autoApproval,
 		)
+		expect(historyItem.subagentContextManifest?.skills[0]?.allowImplicitInvocation).toBe(false)
+		const reloadedHistoryItem = historyItemSchema.parse(JSON.parse(JSON.stringify(historyItem)))
+		expect(reloadedHistoryItem.subagentContextManifest?.skills).toEqual(manifest.skills)
+		expect(reloadedHistoryItem.subagentContextManifest?.skills[0]?.allowImplicitInvocation).toBe(false)
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private parent body")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private frozen instructions")
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private AGENTS body")
+		expect(JSON.stringify(reloadedHistoryItem.subagentContextManifest)).not.toContain("private explicit skill body")
 	})
 })
 import fs from "fs/promises"

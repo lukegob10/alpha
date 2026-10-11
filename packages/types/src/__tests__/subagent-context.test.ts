@@ -178,6 +178,42 @@ describe("explicit sub-agent context contracts", () => {
 		).toBe(false)
 	})
 
+	it.each([true, false])(
+		"round-trips captured skill invocation policy %j in saved history",
+		(allowImplicitInvocation) => {
+			const original = makeManifest()
+			const manifest = subagentContextManifestSchema.parse({
+				...original,
+				skills: [{ ...original.skills[0], allowImplicitInvocation }],
+			})
+			const history = historyItemSchema.parse({
+				id: "child-with-policy",
+				number: 1,
+				ts: 1,
+				task: "Use a captured skill",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				subagentContextManifest: JSON.parse(JSON.stringify(manifest)),
+			})
+			expect(history.subagentContextManifest?.skills).toEqual(manifest.skills)
+			expect(manifest.skills[0]?.allowImplicitInvocation).toBe(allowImplicitInvocation)
+			expect(subagentContextManifestSchema.parse(original).skills[0]).not.toHaveProperty(
+				"allowImplicitInvocation",
+			)
+		},
+	)
+
+	it.each(["false", 0, null, []])("rejects invalid captured invocation policy %j", (allowImplicitInvocation) => {
+		const original = makeManifest()
+		expect(
+			subagentContextManifestSchema.safeParse({
+				...original,
+				skills: [{ ...original.skills[0], allowImplicitInvocation }],
+			}).success,
+		).toBe(false)
+	})
+
 	it("rejects inconsistent selection metadata and credential-bearing route fields", () => {
 		expect(
 			subagentContextManifestSchema.safeParse({

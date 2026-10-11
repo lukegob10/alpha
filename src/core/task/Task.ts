@@ -314,6 +314,10 @@ import {
 
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
 import {
+	getHumanFeedbackToolResultIds,
+	getSkillLookupForCapturedCatalog,
+} from "../../services/skills/skillInvocationProvenance"
+import {
 	countContextTokens,
 	createTokenCountContext,
 	getMessagesSinceLastSummary,
@@ -901,6 +905,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onPersisted?: () => Promise<void> | void
 	}
 	private queuedInputBlockReceipts = new WeakMap<object, readonly string[]>()
+	private inputBlockOrigins = new WeakMap<object, "human" | "agent">()
 	private queuedToolResultReceipts = new Map<
 		string,
 		{ ids: readonly string[]; content: Anthropic.Messages.ContentBlockParam[] }
@@ -1368,6 +1373,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (notifications && hasWaitReceipt && !toolResult.is_error) {
 			this.userMessageContent.push(...notifications)
 			for (const notification of notifications) this.pendingWaitAgentNotificationBlocks.add(notification)
+			this.captureInputBlockOrigins(notifications, "agent")
 			this.stagedWaitAgentNotifications.delete(claimId!)
 		} else if (claimId) {
 			// A cancellation/error receipt did not deliver the claim; retry it from the mailbox.
@@ -2819,6 +2825,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		for (const block of content) this.queuedInputBlockReceipts.set(block, ids)
 	}
 
+	/** Admission origin outlives consumable queue receipts and notification ACK markers. */
+	private captureInputBlockOrigins(
+		content: readonly Anthropic.Messages.ContentBlockParam[],
+		fallback: "human" | "agent",
+	): void {
+		this.inputBlockOrigins ??= new WeakMap()
+		const claimedIds = new Set(this.messageQueueService?.getClaimedMessageIds?.() ?? [])
+		for (const block of content) {
+			if (block.type === "text" && this.pendingWaitAgentNotificationBlocks?.has(block)) {
+				this.inputBlockOrigins.set(block, "agent")
+			} else if (!this.inputBlockOrigins.has(block)) {
+				const humanReceipt = this.queuedInputBlockReceipts?.get(block)?.some((id) => claimedIds.has(id))
+				this.inputBlockOrigins.set(block, humanReceipt ? "human" : fallback)
+			}
+		}
+	}
+
 	/** A queued tool reply belongs to its actual terminal result, not the next unrelated user message. */
 	public retainQueuedMessageToolResult(
 		toolCallId: string | undefined,
@@ -3043,6 +3066,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Save the user message with tool_result blocks
 		const pendingContent = [...this.userMessageContent]
 		const content = this.includeQueuedToolReplyContent(pendingContent)
+		this.captureInputBlockOrigins(content, "agent")
 		const queuedMessageIds = this.getQueuedInputReceipts(content)
 		const userMessage: ApiMessage = {
 			role: "user",
@@ -5732,6 +5756,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				...formatResponse.imageBlocks(images),
 			]
 			this.bindQueuedInputBlocks(feedback, queuedMessageIds ?? [])
+			this.captureInputBlockOrigins(feedback, "human")
 			currentUserContent.push(...feedback)
 
 			await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
@@ -11203,6 +11228,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// before the next provider request has started.
 				this.recoveryAttemptMessageStart = this.clineMessages.length
 				const precedingMessages = currentItem.precedingMessages ?? []
+				// Capture each source before merging host deliveries or promoting the envelope's display origin.
+				this.captureInputBlockOrigins(currentItem.userContent, currentItem.inputOrigin ?? "human")
+				for (const message of precedingMessages) {
+					this.captureInputBlockOrigins(message.content, message.input_origin ?? "agent")
+				}
 				const firstPrecedingMessage = precedingMessages[0]
 				if (firstPrecedingMessage) {
 					// Pending results belong before the fresh steer. Reconcile them once
@@ -11222,6 +11252,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					: this.includeQueuedToolReplyContent(
 							this.mergePendingToolResultsIntoUserContent(currentItem.userContent),
 						)
+				this.captureInputBlockOrigins(currentUserContent, "agent")
+				if (firstPrecedingMessage) this.captureInputBlockOrigins(firstPrecedingMessage.content, "agent")
 				currentItem.queuedMessageIds = [
 					...new Set([
 						...(currentItem.queuedMessageIds ?? []),
@@ -11295,6 +11327,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					]),
 				]
 				if (currentItem.queuedMessageIds.length) currentItem.inputOrigin = "human"
+				this.captureInputBlockOrigins(currentUserContent, "agent")
 
 				// Determine API protocol based on provider and model
 				const modelId = getModelId(this.apiConfiguration)
@@ -11309,10 +11342,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
 				const currentMode = await this.getTaskMode()
 
-				const messagesToPrepare = [...precedingMessages, { role: "user" as const, content: currentUserContent }]
+				const messagesToPrepare = [
+					...precedingMessages,
+					{ role: "user" as const, content: currentUserContent, input_origin: currentItem.inputOrigin },
+				]
+				// Parsing replaces block identities; later deliveries must not enter this save's acknowledgment.
+				const inputBlocksToAcknowledge = messagesToPrepare.flatMap((message) => message.content)
 				const preparedMessages: typeof messagesToPrepare = []
 				let slashCommandMode: string | undefined
 				const skillsManager = await provider?.getSkillsManager(this)
+				const invocationSkills =
+					this.taskKind === "subagent"
+						? getSkillLookupForCapturedCatalog(skillsManager, this.subagentContextManifest?.skills ?? [])
+						: skillsManager
 				for (const message of messagesToPrepare) {
 					const prepared = await processUserContentMentions({
 						userContent: message.content,
@@ -11322,13 +11364,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						showRooIgnoredFiles,
 						includeDiagnosticMessages,
 						maxDiagnosticMessages,
-						skillsManager,
+						skillsManager: invocationSkills,
+						inputOrigin: message.input_origin ?? currentItem.inputOrigin,
+						inputBlockOrigins: new Map(
+							message.content.map((block) => [block, this.inputBlockOrigins.get(block) ?? "agent"]),
+						),
+						humanFeedbackToolResultIds: getHumanFeedbackToolResultIds(
+							this.apiConversationHistory,
+							message.content,
+						),
 						currentMode,
 						signal: this.getTaskCancellationSignal(),
 						onTicketActivity: async (activity) => {
 							await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
 						},
 					})
+					for (const [block, origin] of prepared.blockOrigins ?? []) {
+						if (!this.inputBlockOrigins.has(block) || origin === "agent") {
+							this.inputBlockOrigins.set(block, origin)
+						}
+					}
 					slashCommandMode ??= prepared.mode
 					preparedMessages.push({ ...message, content: prepared.content })
 				}
@@ -11390,6 +11445,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								historyPersisted = true
 								if (this.userMessageContent?.length) {
 									this.acknowledgePersistedUserMessageContent([
+										...inputBlocksToAcknowledge,
 										...preparedMessages.flatMap((message) => message.content),
 										...finalUserContent,
 									])

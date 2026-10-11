@@ -3,16 +3,20 @@ import Anthropic from "@anthropic-ai/sdk"
 import { parseMentions, ParseMentionsResult, MentionContentBlock } from "./index"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import type { SkillLookup } from "../../services/skills/skillInvocation"
+import { getSkillLookupForInput } from "../../services/skills/skillInvocationProvenance"
 import type { TicketActivity } from "@alpha-code/types"
+import { sanitizeToolUseId } from "../../utils/tool-id"
 
 // Internal aliases for the Anthropic content block subtypes used during processing.
 type TextPart = Anthropic.Messages.TextBlockParam
 type ImagePart = Anthropic.Messages.ImageBlockParam
 type ToolResultPart = Anthropic.Messages.ToolResultBlockParam
+type InputOrigin = "human" | "agent"
 
 export interface ProcessUserContentMentionsResult {
 	content: Anthropic.Messages.ContentBlockParam[]
 	mode?: string // Mode from the first slash command that has one
+	blockOrigins?: ReadonlyMap<Anthropic.Messages.ContentBlockParam, InputOrigin>
 }
 
 /**
@@ -43,6 +47,9 @@ export async function processUserContentMentions({
 	includeDiagnosticMessages = true,
 	maxDiagnosticMessages = 50,
 	skillsManager,
+	inputOrigin = "human",
+	inputBlockOrigins,
+	humanFeedbackToolResultIds,
 	currentMode = "code",
 	onTicketActivity,
 	signal,
@@ -55,11 +62,22 @@ export async function processUserContentMentions({
 	includeDiagnosticMessages?: boolean
 	maxDiagnosticMessages?: number
 	skillsManager?: SkillLookup
+	/** Host-owned message provenance; markup in external text cannot supply it. */
+	inputOrigin?: InputOrigin
+	/** Host-owned block provenance; missing entries in a supplied map are agent input. */
+	inputBlockOrigins?: ReadonlyMap<Anthropic.Messages.ContentBlockParam, InputOrigin>
+	/** Successful feedback calls matched against the host's accepted assistant history. */
+	humanFeedbackToolResultIds?: ReadonlySet<string>
 	currentMode?: string
 	onTicketActivity?: (activity: TicketActivity) => Promise<void>
 	signal?: AbortSignal
 }): Promise<ProcessUserContentMentionsResult> {
 	signal?.throwIfAborted()
+	// Snapshot every origin before parsing can await or the caller can mutate its map.
+	const sourceBlockOrigins = inputBlockOrigins
+		? userContent.map((block) => inputBlockOrigins.get(block) ?? "agent")
+		: undefined
+	const blockOrigins = sourceBlockOrigins ? new Map<Anthropic.Messages.ContentBlockParam, InputOrigin>() : undefined
 	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
 	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
 		if (mode) {
@@ -76,6 +94,10 @@ export async function processUserContentMentions({
 
 				if (block.type === "text") {
 					if (shouldProcessMentions(block.text)) {
+						const textSkillLookup = getSkillLookupForInput(
+							skillsManager,
+							(sourceBlockOrigins?.[blockIndex] ?? inputOrigin) === "human",
+						)
 						const result = await parseMentions(
 							block.text,
 							cwd,
@@ -84,7 +106,7 @@ export async function processUserContentMentions({
 							showRooIgnoredFiles,
 							includeDiagnosticMessages,
 							maxDiagnosticMessages,
-							skillsManager,
+							textSkillLookup,
 							currentMode,
 							onTicketActivity,
 							signal,
@@ -118,6 +140,11 @@ export async function processUserContentMentions({
 
 					return block
 				} else if (block.type === "tool_result") {
+					const feedbackSkillLookup = getSkillLookupForInput(
+						skillsManager,
+						block.is_error !== true &&
+							(humanFeedbackToolResultIds?.has(sanitizeToolUseId(block.tool_use_id)) ?? false),
+					)
 					if (typeof block.content === "string") {
 						if (shouldProcessMentions(block.content)) {
 							const result = await parseMentions(
@@ -128,7 +155,7 @@ export async function processUserContentMentions({
 								showRooIgnoredFiles,
 								includeDiagnosticMessages,
 								maxDiagnosticMessages,
-								skillsManager,
+								feedbackSkillLookup,
 								currentMode,
 								onTicketActivity,
 								signal,
@@ -178,7 +205,7 @@ export async function processUserContentMentions({
 											showRooIgnoredFiles,
 											includeDiagnosticMessages,
 											maxDiagnosticMessages,
-											skillsManager,
+											feedbackSkillLookup,
 											currentMode,
 											onTicketActivity,
 											signal,
@@ -226,10 +253,22 @@ export async function processUserContentMentions({
 				return block
 			}),
 		)
-	).flat()
+	).flatMap((processed, blockIndex) => {
+		const blocks = Array.isArray(processed) ? processed : [processed]
+		if (blockOrigins && sourceBlockOrigins) {
+			for (const [index, block] of blocks.entries()) {
+				blockOrigins.set(block, index === 0 ? sourceBlockOrigins[blockIndex] : "agent")
+			}
+		}
+		return blocks
+	})
 	signal?.throwIfAborted()
 	const commandMode = commandModes.sort((a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex)[0]
 		?.mode
 
-	return { content: content as Anthropic.Messages.ContentBlockParam[], mode: commandMode }
+	return {
+		content: content as Anthropic.Messages.ContentBlockParam[],
+		mode: commandMode,
+		...(blockOrigins ? { blockOrigins } : {}),
+	}
 }

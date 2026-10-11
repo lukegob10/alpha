@@ -81,6 +81,8 @@ export interface SubagentContextInstructionSourceInput {
 export interface SubagentContextSkillInput {
 	name: string
 	path: string
+	/** Prompt visibility is captured independently from explicit skill availability. */
+	allowImplicitInvocation?: boolean
 	/** Exact, mode-filtered skill content. It is digested but never persisted in the manifest. */
 	content?: string
 	digest?: string
@@ -1048,6 +1050,9 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 			name: skill.name.trim(),
 			path: skill.path.trim(),
 			digest: resolveContentDigest(skill, `Skill ${index + 1}`),
+			...(skill.allowImplicitInvocation !== undefined
+				? { allowImplicitInvocation: skill.allowImplicitInvocation }
+				: {}),
 		}))
 		.sort((left, right) => left.name.localeCompare(right.name) || left.path.localeCompare(right.path))
 	const runtimePolicy = buildRuntimePolicy(input.runtimePolicy)

@@ -414,6 +414,7 @@ function quoteInheritedContext(text: string): string {
 
 function renderInheritedSkillCatalog(skills: readonly SkillCatalogEntry[]): string {
 	return skills
+		.filter((skill) => skill.allowImplicitInvocation !== false)
 		.map(({ name, description, path: skillPath }) =>
 			[
 				`- name: ${JSON.stringify(name)}`,
@@ -7038,10 +7039,11 @@ export class AlphaProvider
 			parent.taskKind === "subagent" ? (parent.subagentContextManifest?.skills ?? []) : undefined
 		const parentSkillCatalog = this.subagentDescriptors.get(parent.taskId)?.inheritedSkills
 		const inheritedSkills: Array<SubagentContextSkillInput & { description: string }> = frozenParentSkills
-			? frozenParentSkills.map(({ name, path: skillPath, digest }) => ({
+			? frozenParentSkills.map(({ name, path: skillPath, digest, allowImplicitInvocation }) => ({
 					name,
 					path: skillPath,
 					digest,
+					...(allowImplicitInvocation !== undefined ? { allowImplicitInvocation } : {}),
 					description:
 						parentSkillCatalog?.find((skill) => skill.name === name && skill.path === skillPath)
 							?.description ?? "Skill inherited from the parent's frozen catalog",
@@ -7049,17 +7051,24 @@ export class AlphaProvider
 			: (
 					await runReserved(() =>
 						Promise.all(
-							skillMetadata.map(async (skill) => {
-								const content = await skillsManager?.getSkillContent(skill.name, parentMode)
-								return content
-									? {
-											name: skill.name,
-											description: skill.description,
-											path: skill.path,
-											content: content.instructions,
-										}
-									: undefined
-							}),
+							skillMetadata.map(
+								async ({ name, description, path: skillPath, allowImplicitInvocation }) => {
+									const content = skillsManager?.getSkillContentByPath
+										? await skillsManager.getSkillContentByPath(name, skillPath)
+										: await skillsManager?.getSkillContent(name, parentMode)
+									return content
+										? {
+												name,
+												description,
+												path: skillPath,
+												content: content.instructions,
+												...(allowImplicitInvocation !== undefined
+													? { allowImplicitInvocation }
+													: {}),
+											}
+										: undefined
+								},
+							),
 						),
 					)
 				).filter(
@@ -7165,10 +7174,11 @@ export class AlphaProvider
 					inheritedTurnContext: capturedContext.inheritedTurnContext,
 					historyFork: capturedContext.historyFork,
 					inheritedInstructions: inheritedInstructions.effectiveText,
-					inheritedSkills: inheritedSkills.map(({ name, description, path }) => ({
+					inheritedSkills: inheritedSkills.map(({ name, description, path, allowImplicitInvocation }) => ({
 						name,
 						description,
 						path,
+						...(allowImplicitInvocation !== undefined ? { allowImplicitInvocation } : {}),
 					})),
 					inheritedSkillMode: parentMode,
 					approvalProvenance: requiresExplicitApproval ? "group" : "auto",
