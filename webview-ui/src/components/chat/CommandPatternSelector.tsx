@@ -45,12 +45,6 @@ export const CommandPatternSelector: React.FC<CommandPatternSelectorProps> = ({
 		return uniquePatterns
 	}, [patterns])
 
-	const getPatternStatus = (pattern: string): "allowed" | "denied" | "none" => {
-		if (allowedCommands.includes(pattern)) return "allowed"
-		if (deniedCommands.includes(pattern)) return "denied"
-		return "none"
-	}
-
 	const getEditState = (pattern: string) => {
 		return editingStates[pattern] || { isEditing: false, value: pattern }
 	}
@@ -89,7 +83,9 @@ export const CommandPatternSelector: React.FC<CommandPatternSelectorProps> = ({
 				<div className="pl-6 pr-2 pt-1 pb-2 space-y-2">
 					{allPatterns.map((item) => {
 						const editState = getEditState(item.pattern)
-						const status = getPatternStatus(editState.value)
+						// These controls edit saved rules; the extension owns the effective command decision.
+						const isAllowed = allowedCommands.includes(editState.value)
+						const isDenied = deniedCommands.includes(editState.value)
 
 						return (
 							<div key={item.pattern} className="flex items-center gap-2">
@@ -129,20 +125,19 @@ export const CommandPatternSelector: React.FC<CommandPatternSelectorProps> = ({
 								<div className="flex items-center gap-1">
 									<StandardTooltip
 										content={t(
-											status === "allowed"
+											isAllowed
 												? "chat:commandExecution.removeFromAllowed"
 												: "chat:commandExecution.addToAllowed",
 										)}>
 										<button
 											className={cn("p-1 rounded transition-all cursor-pointer", {
-												"bg-green-500/20 text-green-500 hover:bg-green-500/30":
-													status === "allowed",
+												"bg-green-500/20 text-green-500 hover:bg-green-500/30": isAllowed,
 												"text-vscode-descriptionForeground hover:text-green-500 hover:bg-green-500/10":
-													status !== "allowed",
+													!isAllowed,
 											})}
 											onClick={() => onAllowPatternChange(editState.value)}
 											aria-label={t(
-												status === "allowed"
+												isAllowed
 													? "chat:commandExecution.removeFromAllowed"
 													: "chat:commandExecution.addToAllowed",
 											)}>
@@ -151,19 +146,19 @@ export const CommandPatternSelector: React.FC<CommandPatternSelectorProps> = ({
 									</StandardTooltip>
 									<StandardTooltip
 										content={t(
-											status === "denied"
+											isDenied
 												? "chat:commandExecution.removeFromDenied"
 												: "chat:commandExecution.addToDenied",
 										)}>
 										<button
 											className={cn("p-1 rounded transition-all cursor-pointer", {
-												"bg-red-500/20 text-red-500 hover:bg-red-500/30": status === "denied",
+												"bg-red-500/20 text-red-500 hover:bg-red-500/30": isDenied,
 												"text-vscode-descriptionForeground hover:text-red-500 hover:bg-red-500/10":
-													status !== "denied",
+													!isDenied,
 											})}
 											onClick={() => onDenyPatternChange(editState.value)}
 											aria-label={t(
-												status === "denied"
+												isDenied
 													? "chat:commandExecution.removeFromDenied"
 													: "chat:commandExecution.addToDenied",
 											)}>

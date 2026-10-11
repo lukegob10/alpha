@@ -8330,6 +8330,29 @@ describe("Task typed tool approval bridge", () => {
 		).resolves.toEqual({ decision: "deny" })
 	})
 
+	it("persists separately approved argument casing and avoids duplicate exact rules", async () => {
+		const allowedCommands = ["node scripts/check.js"]
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getValue: vi.fn((key: string) => (key === "allowedCommands" ? allowedCommands : undefined)),
+			setValue: vi.fn(async (_key: string, value: string[]) => {
+				allowedCommands.splice(0, allowedCommands.length, ...value)
+			}),
+			getState: vi.fn().mockResolvedValue({}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			log: vi.fn(),
+		} as unknown as AlphaProvider
+		const task = createTask({ provider, taskApprovalMode: "ask" })
+
+		await expect(task.persistCommandApprovalPrefix("node Scripts/check.js")).resolves.toBe(true)
+		await expect(task.persistCommandApprovalPrefix("node Scripts/check.js")).resolves.toBe(true)
+		expect(provider.setValue).toHaveBeenCalledExactlyOnceWith("allowedCommands", [
+			"node scripts/check.js",
+			"node Scripts/check.js",
+		])
+	})
+
 	const runApprovalTool = async (task: Task, askType: AlphaAsk, reviewMessage = "Perform the reviewed action") => {
 		const executeEffect = vi.fn()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
@@ -8496,6 +8519,129 @@ describe("Task typed tool approval bridge", () => {
 			isAnswered: true,
 		})
 		expect(task.clineMessages.at(-1)?.isAnswered).toBe(true)
+	})
+
+	it("evaluates the original worker command while publishing only redacted private paths", async () => {
+		const privateWorkspace = path.resolve("private-command-policy", "worker")
+		const command = `rm "${path.join(privateWorkspace, "build")}"`
+		const publishedMessages: unknown[] = []
+		let task: Task
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getState: vi.fn().mockResolvedValue({
+				approvalMode: "auto",
+				allowedCommands: ["*"],
+				deniedCommands: [command],
+			}),
+			postTaskMessageToWebview: vi.fn(async (...args: unknown[]) => {
+				const message = { ...(args[2] as { isAnswered?: boolean }) }
+				publishedMessages.push(message)
+				if (!message.isAnswered) task.handleWebviewAskResponse("noButtonClicked")
+			}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			clearSubagentApproval: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		task = createTask({ provider, taskApprovalMode: "auto" })
+		vi.spyOn(task, "cwd", "get").mockReturnValue(privateWorkspace)
+		Object.assign(task, {
+			taskKind: "subagent",
+			subagentRole: "worker",
+			subagentPrivateWorkspaceRoot: path.dirname(privateWorkspace),
+		})
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: command,
+			requiresExplicitApproval: false,
+		})
+
+		await expect(
+			task.ask("command", command, undefined, undefined, undefined, false, approval),
+		).resolves.toMatchObject({
+			response: "noButtonClicked",
+		})
+		expect(publishedMessages).toHaveLength(1)
+		expect(publishedMessages[0]).toMatchObject({ type: "ask", ask: "command", isAnswered: true })
+		expect(JSON.stringify(task.clineMessages)).not.toContain(privateWorkspace)
+		expect(task.clineMessages.at(-1)?.text).toContain(`.${path.sep}build`)
+	})
+
+	it.each([
+		{
+			command: "git $arguments",
+			mode: "auto" as const,
+			advanceStep: false,
+			allowedPrefixes: ["git"],
+			deniedPrefixes: ["git status"],
+		},
+		{
+			command: "git diff",
+			mode: "ask" as const,
+			advanceStep: false,
+			allowedPrefixes: ["git status"],
+			deniedPrefixes: [],
+		},
+		{
+			command: "git $arguments",
+			mode: "auto" as const,
+			advanceStep: true,
+			allowedPrefixes: ["git"],
+			deniedPrefixes: ["git status"],
+		},
+	])("keeps the admitted command ceiling when live rules widen: $command, advance=$advanceStep", async (scenario) => {
+		const publishedMessages: unknown[] = []
+		let task: Task
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getState: vi.fn().mockResolvedValue({
+				approvalMode: scenario.mode,
+				allowedCommands: ["git"],
+				deniedCommands: [],
+			}),
+			postTaskMessageToWebview: vi.fn(async (...args: unknown[]) => {
+				const message = args[2] as { isAnswered?: boolean }
+				publishedMessages.push(message)
+				if (!message.isAnswered) task.handleWebviewAskResponse("noButtonClicked")
+			}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		task = createTask({ provider, taskApprovalMode: scenario.mode })
+		Object.assign(task, {
+			currentAgentStep: {
+				snapshot: {
+					context: { policy: { approval: { mode: scenario.mode }, execution: { command: scenario } } },
+				},
+			},
+		})
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: scenario.command,
+			requiresExplicitApproval: false,
+		})
+
+		const asking = task.ask("command", scenario.command, undefined, undefined, undefined, false, approval)
+		if (scenario.advanceStep) {
+			// getState has yielded; later step admission must not change this pending ask's ceiling.
+			Object.assign(task, {
+				currentAgentStep: {
+					snapshot: {
+						context: {
+							policy: {
+								approval: { mode: scenario.mode },
+								execution: { command: { allowedPrefixes: ["*"], deniedPrefixes: [] } },
+							},
+						},
+					},
+				},
+			})
+		}
+		await expect(asking).resolves.toMatchObject({ response: "noButtonClicked" })
+		expect(publishedMessages).toHaveLength(1)
+		expect(publishedMessages[0]).toMatchObject({ type: "ask", ask: "command", text: scenario.command })
+		expect(publishedMessages[0]).not.toHaveProperty("isAnswered", true)
 	})
 
 	it.each([

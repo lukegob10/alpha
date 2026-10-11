@@ -41,16 +41,18 @@ block commands. The analyzer cannot confine a process, prevent arbitrary network
 program stays within the workspace. Auto therefore grants command approval inside the workspace, not OS-level
 isolation. Full Access skips outside-path review; explicit deny rules still block commands in every mode.
 
-The saved allow-prefix list remains available for Ask mode and for a more specific exception to a broader deny prefix.
-It is not required for normal Auto operation. If Alpha later adds process confinement, keep the approval policy and
-the confinement boundary separate.
+The saved allow-prefix list remains available for Ask mode. Rules match complete executable and argument tokens;
+arguments are case-sensitive, and any matching deny takes precedence over an allow. It is not required for normal Auto
+operation. See [command matching alignment](codex-alignment-command-matching-2026-10-11.md) for the upstream reference
+and compatibility contract. If Alpha later adds process confinement, keep the approval policy and the confinement
+boundary separate.
 
 ## Existing settings migration
 
 Earlier extension manifests seeded `git log`, `git diff`, and `git show` into global command rules. Those entries were
 product defaults, not a deliberate user opt-in. On upgrade, a one-time migration removes only those exact built-in
 prefixes from global state, preserving other saved prefixes. It does not edit VS Code user, workspace, or folder
-settings. Users can re-add a prefix for Ask mode or to override a broader deny rule.
+settings. Users can re-add a prefix for Ask mode. A matching deny must be removed explicitly before an allow can apply.
 
 ## Owning code
 

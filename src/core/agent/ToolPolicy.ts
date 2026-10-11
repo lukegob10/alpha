@@ -2,6 +2,7 @@ import type { ToolConcurrency, ToolSideEffects } from "../tools/ToolRegistry"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
 import path from "path"
 import { isPathWithinRoot } from "../tools/pathSafety"
+import { getCommandDecision } from "../auto-approval/commands"
 
 import { digestValue } from "./StepContext"
 import type { ApprovalMode } from "@alpha-code/types"
@@ -88,6 +89,10 @@ function uniqueNames(names: readonly string[]): string[] {
 	return [...new Set(names.map((name) => canonicalizeToolName(name)))].sort()
 }
 
+function uniqueCommandRules(rules: readonly string[]): string[] {
+	return [...new Set(rules)].sort()
+}
+
 function canonicalizeRecord<T>(record: Readonly<Record<string, T>> | undefined): Record<string, T> {
 	const result: Record<string, T> = {}
 	for (const [name, value] of Object.entries(record ?? {})) {
@@ -118,10 +123,10 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 		workspaceRoots: uniqueNames(executionInput.workspaceRoots ?? []),
 		...(executionInput.outsideWorkspace === "approval" ? { outsideWorkspace: "approval" as const } : {}),
 		command: {
-			allowedPrefixes: uniqueNames(commandInput.allowedPrefixes ?? []),
-			deniedPrefixes: uniqueNames(commandInput.deniedPrefixes ?? []),
+			allowedPrefixes: uniqueCommandRules(commandInput.allowedPrefixes ?? []),
+			deniedPrefixes: uniqueCommandRules(commandInput.deniedPrefixes ?? []),
 			userTimeoutMs: Math.max(0, Math.floor(commandInput.userTimeoutMs ?? 0)),
-			timeoutAllowlist: uniqueNames(commandInput.timeoutAllowlist ?? []),
+			timeoutAllowlist: uniqueCommandRules(commandInput.timeoutAllowlist ?? []),
 		},
 		cancellation: "abort-process",
 	}
@@ -200,9 +205,8 @@ export function resolveCommandTimeoutMs(
 	command: string,
 ): number {
 	const userTimeoutMs = policy?.execution.command.userTimeoutMs ?? 0
-	const allowlisted = (policy?.execution.command.timeoutAllowlist ?? []).some((prefix) =>
-		command.trim().startsWith(prefix.trim()),
-	)
+	const allowlisted =
+		getCommandDecision(command, policy?.execution.command.timeoutAllowlist ?? [], []) === "auto_approve"
 	const configuredTimeouts = [requestedTimeoutMs, allowlisted ? 0 : userTimeoutMs].filter((value) => value > 0)
 	return configuredTimeouts.length > 0 ? Math.min(...configuredTimeouts) : 0
 }
@@ -213,16 +217,7 @@ export function isCommandDeniedByPolicy(policy: ToolPolicySnapshot | undefined, 
 	const allowed = policy?.execution.command.allowedPrefixes ?? []
 	if (denied.length === 0) return false
 
-	const normalized = command.trim().toLowerCase()
-	const longest = (prefixes: readonly string[]) =>
-		prefixes
-			.map((prefix) => prefix.trim().toLowerCase())
-			.filter((prefix) => prefix === "*" || normalized.startsWith(prefix))
-			.sort((left, right) => right.length - left.length)[0]
-
-	const deniedMatch = longest(denied)
-	const allowedMatch = longest(allowed)
-	return Boolean(deniedMatch && (!allowedMatch || deniedMatch.length >= allowedMatch.length))
+	return getCommandDecision(command, allowed, denied) === "auto_deny"
 }
 
 function formatToolPolicySummary(

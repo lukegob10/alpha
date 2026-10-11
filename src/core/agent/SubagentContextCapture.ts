@@ -931,15 +931,24 @@ function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteS
 function sanitizeAutoApprovalPolicy(
 	input: NonNullable<RuntimePolicyInput["autoApproval"]>,
 ): NonNullable<SubagentContextRuntimePolicy["autoApproval"]> {
-	const normalizeRules = (rules: typeof input.commandApproval.allowed) =>
-		[...new Map(rules.map((rule) => [`${rule.prefixLength}:${rule.digest}`, { ...rule }] as const)).values()].sort(
-			(left, right) => left.prefixLength - right.prefixLength || left.digest.localeCompare(right.digest),
+	const normalizeRules = <Rule extends { digest: string }>(rules: readonly Rule[], length: (rule: Rule) => number) =>
+		[...new Map(rules.map((rule) => [`${length(rule)}:${rule.digest}`, { ...rule }] as const)).values()].sort(
+			(left, right) => length(left) - length(right) || left.digest.localeCompare(right.digest),
 		)
-	const sanitizeCommandApproval = (policy: typeof input.commandApproval) => ({
-		...policy,
-		allowed: normalizeRules(policy.allowed),
-		denied: normalizeRules(policy.denied),
-	})
+	const sanitizeCommandApproval = (policy: typeof input.commandApproval): typeof input.commandApproval => {
+		if (policy.algorithm === "sha256-salted-prefix-v1") {
+			return {
+				...policy,
+				allowed: normalizeRules(policy.allowed, (rule) => rule.prefixLength),
+				denied: normalizeRules(policy.denied, (rule) => rule.prefixLength),
+			}
+		}
+		return {
+			...policy,
+			allowed: normalizeRules(policy.allowed, (rule) => rule.tokenCount),
+			denied: normalizeRules(policy.denied, (rule) => rule.tokenCount),
+		}
+	}
 
 	return subagentAutoApprovalPolicySchema.parse({
 		autoApprovalEnabled: input.autoApprovalEnabled,

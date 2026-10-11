@@ -5775,6 +5775,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		const taskApprovalMode = this.getStepApprovalMode()
+		const commandPolicy = this.currentAgentStep?.snapshot.context.policy.execution?.command
+		// Policy compares execution text; private-path redaction belongs only to presentation.
+		const commandForApproval = type === "command" ? text : undefined
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
 		const alphaToolApprovalRequest: ToolApprovalPrompt | undefined = toolApprovalRequest
 			? {
@@ -5822,13 +5825,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? ({ decision: "ask" } as const)
 				: await checkAutoApprovalWithInheritedPolicy({
 						state: taskApprovalState,
+						commandPolicy,
 						inheritedState:
 							this.taskKind === "subagent"
 								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
 									disabledSubagentAutoApprovalPolicy)
 								: undefined,
 						ask: type,
-						text,
+						text: type === "command" ? commandForApproval : text,
 						isProtected,
 						requiresExplicitApproval,
 					})
@@ -6220,7 +6224,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					.filter((command): command is string => typeof command === "string")
 					.map((command) => command.trim())
 			: []
-		if (!allowedCommands.some((command) => command.toLowerCase() === amendment.data.prefix.toLowerCase())) {
+		if (!allowedCommands.includes(amendment.data.prefix)) {
 			await provider.setValue("allowedCommands", [...allowedCommands.filter(Boolean), amendment.data.prefix])
 		}
 

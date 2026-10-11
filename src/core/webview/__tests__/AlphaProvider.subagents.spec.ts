@@ -2845,11 +2845,11 @@ If complete, use attempt_completion.
 			alwaysAllowExecute: true,
 			alwaysAllowSubagents: true,
 			commandApproval: {
-				algorithm: "sha256-salted-prefix-v1",
+				algorithm: "sha256-salted-argv-v2",
 				allowAll: true,
 				denyAll: false,
-				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
-				denied: [expect.objectContaining({ prefixLength: "git push".length })],
+				allowed: [expect.objectContaining({ tokenCount: 2 })],
+				denied: [expect.objectContaining({ tokenCount: 2 })],
 			},
 		})
 		expect(JSON.stringify(directManifest.runtimePolicy.autoApproval)).not.toContain("git diff")
@@ -6102,8 +6102,8 @@ If complete, use attempt_completion.
 			commandApproval: {
 				allowAll: true,
 				denyAll: false,
-				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
-				denied: [expect.objectContaining({ prefixLength: "git push".length })],
+				allowed: [expect.objectContaining({ tokenCount: 2 })],
+				denied: [expect.objectContaining({ tokenCount: 2 })],
 			},
 		})
 		;(provider as any).__historyItems.set(prepared.envelopes[0].id, {

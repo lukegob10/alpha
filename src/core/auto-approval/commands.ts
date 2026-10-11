@@ -1,21 +1,35 @@
 import { createHash, randomBytes } from "crypto"
 
-import type { SubagentCommandApprovalPolicy, SubagentCommandApprovalRule } from "@alpha-code/types"
+import type {
+	SubagentCommandApprovalPolicy,
+	SubagentCommandApprovalRule,
+	SubagentCommandApprovalTokenRule,
+} from "@alpha-code/types"
 
-import { parseCommand } from "../../shared/parse-command"
-import { analyzeShellCommands, containsDynamicExecutable } from "./shellCommand"
+import {
+	analyzeShellCommands,
+	analyzeShellCommandTokens,
+	containsDynamicExecutable,
+	shellCommandArgumentTokens,
+	type ShellCommandPlatform,
+	type ShellCommandToken,
+} from "./shellCommand"
 import { analyzeIndirectCommandExecution } from "./indirectCommandExecution"
 
-const SUBAGENT_COMMAND_APPROVAL_ALGORITHM = "sha256-salted-prefix-v1" as const
-
-// Match findLongestPrefixMatch exactly: commands are trimmed, configured prefixes are not.
-const normalizeCommandPrefix = (prefix: string): string => prefix.toLowerCase()
+const commandPlatform = (): ShellCommandPlatform => (process.platform === "win32" ? "win32" : "posix")
 
 const digestCommandPrefix = (salt: string, prefix: string): string =>
 	createHash("sha256").update(salt).update("\0").update(prefix).digest("hex")
 
+const normalizeArgv = (tokens: string[], platform: ShellCommandPlatform): string[] =>
+	tokens.map((token, index) =>
+		index === 0 && platform === "win32" ? token.replace(/\\/g, "/").toLowerCase() : token,
+	)
+
+const digestCommandArgv = (salt: string, tokens: string[]): string => digestCommandPrefix(salt, JSON.stringify(tokens))
+
 /**
- * Freeze command prefix rules without copying their potentially credential-bearing
+ * Freeze complete argv prefix rules without copying their potentially credential-bearing
  * plaintext into durable child manifests.
  */
 export function createSubagentCommandApprovalPolicy(
@@ -23,32 +37,45 @@ export function createSubagentCommandApprovalPolicy(
 	deniedCommands: string[],
 	salt = randomBytes(32).toString("hex"),
 ): SubagentCommandApprovalPolicy {
-	const buildRules = (commands: string[]): { wildcard: boolean; rules: SubagentCommandApprovalRule[] } => {
+	const platform = commandPlatform()
+	const buildRules = (
+		commands: string[],
+	): { wildcard: boolean; unresolved: boolean; rules: SubagentCommandApprovalTokenRule[] } => {
 		let wildcard = false
-		const normalized = new Set<string>()
+		let unresolved = false
+		const rules = new Map<string, SubagentCommandApprovalTokenRule>()
 		for (const command of commands) {
-			const prefix = normalizeCommandPrefix(command)
-			if (!prefix) continue
-			if (prefix === "*") wildcard = true
-			else normalized.add(prefix)
+			if (!command?.trim()) continue
+			if (command === "*") {
+				wildcard = true
+				continue
+			}
+			const tokens = parseLiteralPrefix(command, platform)
+			if (!tokens) {
+				unresolved = true
+				continue
+			}
+			const digest = digestCommandArgv(salt, tokens)
+			rules.set(`${tokens.length}:${digest}`, { tokenCount: tokens.length, digest })
 		}
 		return {
 			wildcard,
-			rules: [...normalized]
-				.map((prefix) => ({ prefixLength: prefix.length, digest: digestCommandPrefix(salt, prefix) }))
-				.sort(
-					(left, right) => left.prefixLength - right.prefixLength || left.digest.localeCompare(right.digest),
-				),
+			unresolved,
+			rules: [...rules.values()].sort(
+				(left, right) => left.tokenCount - right.tokenCount || left.digest.localeCompare(right.digest),
+			),
 		}
 	}
 
 	const allowed = buildRules(allowedCommands)
 	const denied = buildRules(deniedCommands)
 	return {
-		algorithm: SUBAGENT_COMMAND_APPROVAL_ALGORITHM,
+		algorithm: "sha256-salted-argv-v2",
+		platform,
 		salt,
 		allowAll: allowed.wildcard,
 		denyAll: denied.wildcard,
+		unresolvedDenyRules: denied.unresolved,
 		allowed: allowed.rules,
 		denied: denied.rules,
 	}
@@ -118,382 +145,302 @@ export function containsDangerousSubstitution(source: string): boolean {
 	)
 }
 
-/**
- * Find the longest matching prefix from a list of prefixes for a given command.
- *
- * This is the core function that implements the "longest prefix match" strategy.
- * It searches through all provided prefixes and returns the longest one that
- * matches the beginning of the command (case-insensitive).
- *
- * **Special Cases:**
- * - Wildcard "*" matches any command but is treated as length 1 for comparison
- * - Empty command or empty prefixes list returns null
- * - Matching is case-insensitive and uses startsWith logic
- *
- * **Examples:**
- * ```typescript
- * findLongestPrefixMatch("git push origin", ["git", "git push"])
- * // Returns "git push" (longer match)
- *
- * findLongestPrefixMatch("npm install", ["*", "npm"])
- * // Returns "npm" (specific match preferred over wildcard)
- *
- * findLongestPrefixMatch("unknown command", ["git", "npm"])
- * // Returns null (no match found)
- * ```
- *
- * @param command - The command to match against
- * @param prefixes - List of prefix patterns to search through
- * @returns The longest matching prefix, or null if no match found
- */
-export function findLongestPrefixMatch(command: string, prefixes: string[]): string | null {
-	if (!command || !prefixes?.length) {
-		return null
+/** Command approval decisions are shared by execution, frozen child ceilings, and presentation. */
+export type CommandDecision = "auto_approve" | "auto_deny" | "ask_user"
+
+type ParsedCommand = { source: string; tokens: ShellCommandToken[] }
+
+function parseSingleCommand(
+	command: string,
+	platform: ShellCommandPlatform,
+	literalRule = false,
+): ParsedCommand | undefined {
+	const parsed = analyzeShellCommandTokens(command.trim(), platform)
+	if (
+		parsed.malformed ||
+		parsed.unsupportedSyntax ||
+		(!literalRule && parsed.ambiguousSyntax) ||
+		parsed.hasChainOperators ||
+		parsed.commands.length !== 1
+	) {
+		return undefined
 	}
+	const single = parsed.commands[0]
+	const tokens = shellCommandArgumentTokens(single.tokens)
+	if (!tokens.length || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].value)) return undefined
+	return { source: single.source, tokens }
+}
 
-	const trimmedCommand = command.trim().toLowerCase()
+function parseLiteralPrefix(prefix: string, platform: ShellCommandPlatform): string[] | undefined {
+	const parsed = parseSingleCommand(prefix, platform, true)
+	if (
+		!parsed ||
+		parsed.tokens.some((token) => token.dynamic) ||
+		analyzeShellCommandTokens(prefix.trim(), platform).commands[0].tokens.some((token) => token.redirection)
+	) {
+		return undefined
+	}
+	return normalizeArgv(
+		parsed.tokens.map(({ value }) => value),
+		platform,
+	)
+}
+
+function matchesPrefix(tokens: ShellCommandToken[], prefix: string[], platform: ShellCommandPlatform): boolean {
+	if (tokens.length < prefix.length) return false
+	const argv = normalizeArgv(
+		tokens.map(({ value }) => value),
+		platform,
+	)
+	return prefix.every((expected, index) => !tokens[index].dynamic && argv[index] === expected)
+}
+
+/**
+ * Return the most specific matching complete argv prefix, preserving configured text.
+ * A specific rule outranks '*'; shell syntax and partial argument strings are never prefixes.
+ */
+export function findLongestPrefixMatch(command: string, prefixes: readonly string[]): string | null {
+	if (!command?.trim() || !prefixes?.length) return null
+	const platform = commandPlatform()
+	const parsed = parseSingleCommand(command, platform)
+	if (!parsed) return null
 	let longestMatch: string | null = null
-
+	let longestTokenCount = -1
 	for (const prefix of prefixes) {
-		const lowerPrefix = prefix.toLowerCase()
-		// Handle wildcard "*" - it matches any command
-		if (lowerPrefix === "*" || trimmedCommand.startsWith(lowerPrefix)) {
-			if (!longestMatch || lowerPrefix.length > longestMatch.length) {
-				longestMatch = lowerPrefix
-			}
+		const expected = prefix === "*" ? [] : parseLiteralPrefix(prefix, platform)
+		if (!expected || (prefix !== "*" && !matchesPrefix(parsed.tokens, expected, platform))) continue
+		if (expected.length > longestTokenCount) {
+			longestMatch = prefix
+			longestTokenCount = expected.length
 		}
 	}
-
 	return longestMatch
 }
 
-/**
- * Check if a single command should be auto-approved.
- * Returns true only for commands that explicitly match the allowlist
- * and either don't match the denylist or have a longer allowlist match.
- *
- * Special handling for wildcards: "*" in allowlist allows any command,
- * but denylist can still block specific commands.
- */
 export function isAutoApprovedSingleCommand(
 	command: string,
-	allowedCommands: string[],
-	deniedCommands?: string[],
+	allowedCommands: readonly string[],
+	deniedCommands?: readonly string[],
 ): boolean {
-	if (!command) {
-		return true
-	}
-
-	// If no allowlist configured, nothing can be auto-approved
-	if (!allowedCommands?.length) {
-		return false
-	}
-
-	// Check if wildcard is present in allowlist
-	const hasWildcard = allowedCommands.some((cmd) => cmd.toLowerCase() === "*")
-
-	// If no denylist provided (undefined), use simple allowlist logic
-	if (deniedCommands === undefined) {
-		const trimmedCommand = command.trim().toLowerCase()
-
-		return allowedCommands.some((prefix) => {
-			const lowerPrefix = prefix.toLowerCase()
-			// Handle wildcard "*" - it matches any command
-			return lowerPrefix === "*" || trimmedCommand.startsWith(lowerPrefix)
-		})
-	}
-
-	// Find longest matching prefix in both lists
-	const longestDeniedMatch = findLongestPrefixMatch(command, deniedCommands)
-	const longestAllowedMatch = findLongestPrefixMatch(command, allowedCommands)
-
-	// Special case: if wildcard is present and no denylist match, auto-approve
-	if (hasWildcard && !longestDeniedMatch) {
-		return true
-	}
-
-	// Must have an allowlist match to be auto-approved
-	if (!longestAllowedMatch) {
-		return false
-	}
-
-	// If no denylist match, auto-approve
-	if (!longestDeniedMatch) {
-		return true
-	}
-
-	// Both have matches - allowlist must be longer to auto-approve
-	return longestAllowedMatch.length > longestDeniedMatch.length
+	return getSingleCommandDecision(command, allowedCommands, deniedCommands) === "auto_approve"
 }
 
-/**
- * Check if a single command should be auto-denied.
- * Returns true only for commands that explicitly match the denylist
- * and either don't match the allowlist or have a longer denylist match.
- */
 export function isAutoDeniedSingleCommand(
 	command: string,
-	allowedCommands: string[],
-	deniedCommands?: string[],
+	allowedCommands: readonly string[],
+	deniedCommands?: readonly string[],
 ): boolean {
-	if (!command) return false
-
-	// If no denylist configured, nothing can be auto-denied
-	if (!deniedCommands?.length) return false
-
-	// Find longest matching prefix in both lists
-	const longestDeniedMatch = findLongestPrefixMatch(command, deniedCommands)
-	const longestAllowedMatch = findLongestPrefixMatch(command, allowedCommands || [])
-
-	// Must have a denylist match to be auto-denied
-	if (!longestDeniedMatch) return false
-
-	// If no allowlist match, auto-deny
-	if (!longestAllowedMatch) return true
-
-	// Both have matches - denylist must be longer or equal to auto-deny
-	return longestDeniedMatch.length >= longestAllowedMatch.length
+	return getSingleCommandDecision(command, allowedCommands, deniedCommands) === "auto_deny"
 }
 
-/**
- * Command approval decision types
- */
-export type CommandDecision = "auto_approve" | "auto_deny" | "ask_user"
+function compileRules(commands: readonly string[], platform: ShellCommandPlatform) {
+	const prefixes: string[][] = []
+	let wildcard = false
+	let unresolved = false
+	for (const command of commands) {
+		if (!command?.trim()) continue
+		if (command === "*") wildcard = true
+		else {
+			const prefix = parseLiteralPrefix(command, platform)
+			if (prefix) prefixes.push(prefix)
+			else unresolved = true
+		}
+	}
+	return { prefixes, wildcard, unresolved }
+}
 
-/**
- * Unified command validation that implements the longest prefix match rule.
- * Returns a definitive decision for a command based on allowlist and denylist.
- *
- * This is the main entry point for command validation in the Command Denylist feature.
- * It handles complex command chains and applies the longest prefix match strategy
- * to resolve conflicts between allowlist and denylist patterns.
- *
- * **Decision Logic:**
- * 1. **Dangerous Substitution Protection**: Commands with dangerous parameter expansions are never auto-approved
- * 2. **Command Parsing**: Split command chains (&&, ||, ;, |, &) into individual commands
- * 3. **Individual Validation**: For each sub-command, apply longest prefix match rule
- * 4. **Aggregation**: Combine decisions using "any denial blocks all" principle
- *
- * **Return Values:**
- * - `"auto_approve"`: All sub-commands are explicitly allowed and no dangerous patterns detected
- * - `"auto_deny"`: At least one sub-command is explicitly denied
- * - `"ask_user"`: Mixed or no matches found, requires user decision, or contains dangerous patterns
- *
- * **Examples:**
- * ```typescript
- * // Simple approval
- * getCommandDecision("git status", ["git"], [])
- * // Returns "auto_approve"
- *
- * // Dangerous pattern - never auto-approved
- * getCommandDecision('echo "${var@P}"', ["echo"], [])
- * // Returns "ask_user"
- *
- * // Longest prefix match - denial wins
- * getCommandDecision("git push origin", ["git"], ["git push"])
- * // Returns "auto_deny"
- *
- * // Command chain - any denial blocks all
- * getCommandDecision("git status && rm file", ["git"], ["rm"])
- * // Returns "auto_deny"
- *
- * // No matches - ask user
- * getCommandDecision("unknown command", ["git"], ["rm"])
- * // Returns "ask_user"
- * ```
- *
- * @param command - The full command string to validate
- * @param allowedCommands - List of allowed command prefixes
- * @param deniedCommands - Optional list of denied command prefixes
- * @returns Decision indicating whether to approve, deny, or ask user
- */
+/** Match every executable and apply any matching denial, regardless of allow-prefix specificity. */
 export function getCommandDecision(
 	command: string,
-	allowedCommands: string[],
-	deniedCommands?: string[],
+	allowedCommands: readonly string[],
+	deniedCommands?: readonly string[],
 ): CommandDecision {
-	// A global wildcard accepts scripts and computed commands. Path review is a separate scheduler check.
-	if (allowedCommands.includes("*") && !deniedCommands?.length) return "auto_approve"
+	const platform = commandPlatform()
+	const allowed = compileRules(allowedCommands ?? [], platform)
+	const denied = compileRules(deniedCommands ?? [], platform)
+	const hasDeniedRules = denied.wildcard || denied.unresolved || denied.prefixes.length > 0
 	return aggregateCommandDecision(
 		command,
-		(singleCommand) => getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),
-		Boolean(deniedCommands?.length),
+		({ tokens }) => {
+			if (denied.wildcard || denied.prefixes.some((prefix) => matchesPrefix(tokens, prefix, platform))) {
+				return "auto_deny"
+			}
+			if (denied.unresolved) return "ask_user"
+			if (allowed.wildcard || allowed.prefixes.some((prefix) => matchesPrefix(tokens, prefix, platform))) {
+				return "auto_approve"
+			}
+			return "ask_user"
+		},
+		hasDeniedRules,
+		allowed.wildcard && !hasDeniedRules,
+		platform,
 	)
 }
 
 function aggregateCommandDecision(
 	command: string,
-	getDecision: (singleCommand: string) => CommandDecision,
-	hasDeniedRules = false,
+	getDecision: (singleCommand: ParsedCommand) => CommandDecision,
+	hasDeniedRules: boolean,
+	unrestrictedWildcard: boolean,
+	platform: ShellCommandPlatform,
 ): CommandDecision {
-	if (!command?.trim()) {
-		return "auto_approve"
-	}
+	if (!command?.trim()) return "auto_approve"
 
-	// Keep the established parser for compatibility, then add commands that are
-	// executable through quoted, parameter-default, arithmetic, or process substitution.
+	// Work from original source and parsed tokens: joining argv would turn a quoted argument into new commands.
 	const shellAnalysis = analyzeShellCommands(command)
-	const subCommands = [
-		...new Set([...parseCommand(command), ...shellAnalysis.commands.flatMap((inner) => parseCommand(inner))]),
-	]
-
-	// Check each sub-command and collect decisions
-	const decisions: CommandDecision[] = subCommands.map((cmd) => {
-		// Remove simple PowerShell-like redirections (e.g. 2>&1) before checking
-		const cmdWithoutRedirection = cmd.replace(/\d*>&\d*/, "").trim()
-
-		return getDecision(cmdWithoutRedirection)
-	})
-
-	// If any sub-command is denied, deny the whole command
-	if (decisions.includes("auto_deny")) {
-		return "auto_deny"
-	}
-
-	const indirect = analyzeIndirectCommandExecution(command)
-	const nestedDecisions = indirect.commands.flatMap((nested) => parseCommand(nested).map(getDecision))
-	if (nestedDecisions.includes("auto_deny")) return "auto_deny"
-
-	// Require explicit user approval for dangerous patterns
-	if (containsDangerousSubstitution(command)) {
+	const parsed = [command, ...shellAnalysis.commands].map((source) => analyzeShellCommandTokens(source, platform))
+	const commands = parsed.flatMap((analysis) =>
+		analysis.commands.map(({ source, tokens }) => ({ source, tokens: shellCommandArgumentTokens(tokens) })),
+	)
+	const decisions = commands.map(getDecision)
+	if (decisions.includes("auto_deny")) return "auto_deny"
+	if (!commands.length || parsed.some((analysis) => analysis.malformed) || shellAnalysis.malformedSubstitution) {
 		return "ask_user"
 	}
 
-	// A prefix policy cannot determine an executable supplied by shell expansion.
-	// Never inherit approval for an indeterminate command name.
+	// Preserve explicit global grants for scripts/computed commands after rejecting malformed syntax.
+	// Workspace/path protections remain at the execution boundary.
+	if (unrestrictedWildcard) return "auto_approve"
+
+	const indirect = analyzeIndirectCommandExecution(command, platform)
+	const nestedCommands = indirect.commands.flatMap((source) =>
+		analyzeShellCommandTokens(source, platform).commands.map(({ source, tokens }) => ({
+			source,
+			tokens: shellCommandArgumentTokens(tokens),
+		})),
+	)
+	const nestedDecisions = [
+		...nestedCommands.map(getDecision),
+		...indirect.tokenCommands.map((tokens) =>
+			getDecision({ source: "", tokens: shellCommandArgumentTokens(tokens) }),
+		),
+	]
+	if (nestedDecisions.includes("auto_deny")) return "auto_deny"
+
 	if (
-		shellAnalysis.malformedSubstitution ||
-		containsDynamicExecutable(command) ||
+		containsDangerousSubstitution(command) ||
+		containsDynamicExecutable(command, platform) ||
 		indirect.dynamicCode ||
-		(hasDeniedRules && !indirect.resolved)
+		(hasDeniedRules && !indirect.resolved) ||
+		// Argument expansion may produce a denied prefix even when its raw spelling does not match.
+		(hasDeniedRules &&
+			([...commands, ...nestedCommands].some(({ tokens }) => tokens.some((token) => token.dynamic)) ||
+				indirect.tokenCommands.some((tokens) => tokens.some((token) => token.dynamic)))) ||
+		parsed.some((analysis) => analysis.unsupportedSyntax || analysis.ambiguousSyntax) ||
+		commands.some(
+			({ tokens }) => !tokens.length || tokens[0].dynamic || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0].value),
+		)
 	) {
 		return "ask_user"
 	}
 
-	// If all sub-commands are approved, approve the whole command
-	if (decisions.every((decision) => decision === "auto_approve")) {
-		return "auto_approve"
-	}
-
-	// Otherwise, ask user
-	return "ask_user"
+	return decisions.every((decision) => decision === "auto_approve") ? "auto_approve" : "ask_user"
 }
 
-function findLongestHashedPrefixMatch(
-	command: string,
-	rules: SubagentCommandApprovalRule[],
+function matchesHashedArgv(
+	tokens: ShellCommandToken[],
+	rules: SubagentCommandApprovalTokenRule[],
 	salt: string,
-	wildcard: boolean,
-): number | null {
-	const normalizedCommand = command.trim().toLowerCase()
-	let longestMatch: number | null = wildcard ? 1 : null
-
-	for (const rule of rules) {
-		if (rule.prefixLength > normalizedCommand.length) continue
-		const candidate = normalizedCommand.slice(0, rule.prefixLength)
-		if (digestCommandPrefix(salt, candidate) === rule.digest) {
-			longestMatch = Math.max(longestMatch ?? 0, rule.prefixLength)
-		}
-	}
-
-	return longestMatch
-}
-
-function getHashedSingleCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
-	if (!command) return "auto_approve"
-
-	const longestAllowedMatch = findLongestHashedPrefixMatch(command, policy.allowed, policy.salt, policy.allowAll)
-	const longestDeniedMatch = findLongestHashedPrefixMatch(command, policy.denied, policy.salt, policy.denyAll)
-
-	if (longestAllowedMatch !== null && longestDeniedMatch === null) return "auto_approve"
-	if (longestAllowedMatch === null && longestDeniedMatch !== null) return "auto_deny"
-	if (longestAllowedMatch !== null && longestDeniedMatch !== null) {
-		return longestAllowedMatch > longestDeniedMatch ? "auto_approve" : "auto_deny"
-	}
-	return "ask_user"
-}
-
-/** Evaluate a command against an approval ceiling that contains no plaintext command rules. */
-export function getSubagentCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
-	if (policy.allowAll && !policy.denyAll && !policy.denied.length) return "auto_approve"
-	return aggregateCommandDecision(
-		command,
-		(singleCommand) => getHashedSingleCommandDecision(singleCommand, policy),
-		policy.denyAll || policy.denied.length > 0,
+	platform: ShellCommandPlatform,
+): boolean {
+	const argv = normalizeArgv(
+		tokens.map(({ value }) => value),
+		platform,
+	)
+	return rules.some(
+		(rule) =>
+			rule.tokenCount <= tokens.length &&
+			!tokens.slice(0, rule.tokenCount).some((token) => token.dynamic) &&
+			digestCommandArgv(salt, argv.slice(0, rule.tokenCount)) === rule.digest,
 	)
 }
 
-/**
- * Get the decision for a single command using longest prefix match rule.
- *
- * This is the core logic that implements the conflict resolution between
- * allowlist and denylist using the "longest prefix match" strategy.
- *
- * **Longest Prefix Match Algorithm:**
- * 1. Find the longest matching prefix in the allowlist
- * 2. Find the longest matching prefix in the denylist
- * 3. Compare lengths to determine which rule takes precedence
- * 4. Longer (more specific) match wins the conflict
- *
- * **Decision Matrix:**
- * | Allowlist Match | Denylist Match | Result | Reason |
- * |----------------|----------------|---------|---------|
- * | Yes | No | auto_approve | Only allowlist matches |
- * | No | Yes | auto_deny | Only denylist matches |
- * | Yes | Yes (shorter) | auto_approve | Allowlist is more specific |
- * | Yes | Yes (longer/equal) | auto_deny | Denylist is more specific |
- * | No | No | ask_user | No rules apply |
- *
- * **Examples:**
- * ```typescript
- * // Only allowlist matches
- * getSingleCommandDecision("git status", ["git"], ["npm"])
- * // Returns "auto_approve"
- *
- * // Denylist is more specific
- * getSingleCommandDecision("git push origin", ["git"], ["git push"])
- * // Returns "auto_deny" (denylist "git push" > allowlist "git")
- *
- * // Allowlist is more specific
- * getSingleCommandDecision("git push --dry-run", ["git push --dry-run"], ["git push"])
- * // Returns "auto_approve" (allowlist is longer)
- *
- * // No matches
- * getSingleCommandDecision("unknown", ["git"], ["npm"])
- * // Returns "ask_user"
- * ```
- *
- * @param command - Single command to validate (no chaining)
- * @param allowedCommands - List of allowed command prefixes
- * @param deniedCommands - Optional list of denied command prefixes
- * @returns Decision for this specific command
- */
+function matchesLegacyRawPrefix(command: string, rules: SubagentCommandApprovalRule[], salt: string): boolean {
+	const normalized = command.trim().toLowerCase()
+	return rules.some(
+		(rule) =>
+			rule.prefixLength <= normalized.length &&
+			digestCommandPrefix(salt, normalized.slice(0, rule.prefixLength)) === rule.digest,
+	)
+}
+
+function matchesLegacyAllowedPrefix(
+	command: ParsedCommand,
+	rules: SubagentCommandApprovalRule[],
+	salt: string,
+	platform: ShellCommandPlatform,
+): boolean {
+	const raw = command.source.trim()
+	const normalized = raw.toLowerCase()
+	return rules.some((rule) => {
+		if (rule.prefixLength > normalized.length) return false
+		if (digestCommandPrefix(salt, normalized.slice(0, rule.prefixLength)) !== rule.digest) return false
+		// v1 discarded case and token structure. Only grant a proven complete raw prefix;
+		// never infer quoted/normalized variants or mixed-case argument authority from its opaque digest.
+		const prefix = parseSingleCommand(raw.slice(0, rule.prefixLength), platform)
+		if (!prefix || prefix.tokens.some((token) => token.dynamic)) return false
+		if (
+			prefix.tokens.some(
+				({ value }, index) => (index > 0 || platform === "posix") && value !== value.toLowerCase(),
+			)
+		) {
+			return false
+		}
+		return matchesPrefix(
+			command.tokens,
+			normalizeArgv(
+				prefix.tokens.map(({ value }) => value),
+				platform,
+			),
+			platform,
+		)
+	})
+}
+
+/** Evaluate a frozen ceiling without persisting or reconstructing plaintext command rules. */
+export function getSubagentCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
+	if (policy.algorithm === "sha256-salted-argv-v2") {
+		return aggregateCommandDecision(
+			command,
+			({ tokens }) => {
+				if (policy.denyAll || matchesHashedArgv(tokens, policy.denied, policy.salt, policy.platform)) {
+					return "auto_deny"
+				}
+				if (policy.unresolvedDenyRules) return "ask_user"
+				return policy.allowAll || matchesHashedArgv(tokens, policy.allowed, policy.salt, policy.platform)
+					? "auto_approve"
+					: "ask_user"
+			},
+			policy.denyAll || policy.unresolvedDenyRules || policy.denied.length > 0,
+			policy.allowAll && !policy.denyAll && !policy.unresolvedDenyRules && !policy.denied.length,
+			policy.platform,
+		)
+	}
+	if (policy.algorithm !== "sha256-salted-prefix-v1") return "ask_user"
+	const platform = commandPlatform()
+	return aggregateCommandDecision(
+		command,
+		(single) => {
+			if (policy.denyAll || matchesLegacyRawPrefix(single.source, policy.denied, policy.salt)) return "auto_deny"
+			// An opaque v1 deny may use any old quoting/spacing. A raw miss cannot establish exclusion under argv rules.
+			if (policy.denied.length) return "ask_user"
+			return policy.allowAll || matchesLegacyAllowedPrefix(single, policy.allowed, policy.salt, platform)
+				? "auto_approve"
+				: "ask_user"
+		},
+		policy.denyAll || policy.denied.length > 0,
+		policy.allowAll && !policy.denyAll && !policy.denied.length,
+		platform,
+	)
+}
+
+/** Single-command callers cannot accidentally approve a chain; full command decisions use the same policy. */
 export function getSingleCommandDecision(
 	command: string,
-	allowedCommands: string[],
-	deniedCommands?: string[],
+	allowedCommands: readonly string[],
+	deniedCommands?: readonly string[],
 ): CommandDecision {
-	if (!command) return "auto_approve"
-
-	// Find longest matching prefixes in both lists
-	const longestAllowedMatch = findLongestPrefixMatch(command, allowedCommands || [])
-	const longestDeniedMatch = findLongestPrefixMatch(command, deniedCommands || [])
-
-	// If only allowlist has a match, auto-approve
-	if (longestAllowedMatch && !longestDeniedMatch) {
-		return "auto_approve"
-	}
-
-	// If only denylist has a match, auto-deny
-	if (!longestAllowedMatch && longestDeniedMatch) {
-		return "auto_deny"
-	}
-
-	// Both lists have matches - apply longest prefix match rule
-	if (longestAllowedMatch && longestDeniedMatch) {
-		return longestAllowedMatch.length > longestDeniedMatch.length ? "auto_approve" : "auto_deny"
-	}
-
-	// If neither list has a match, ask user
-	return "ask_user"
+	if (!command?.trim()) return "auto_approve"
+	if (!parseSingleCommand(command, commandPlatform())) return "ask_user"
+	return getCommandDecision(command, allowedCommands, deniedCommands)
 }

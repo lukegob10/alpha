@@ -52,6 +52,7 @@ import {
 	type WorkspaceMutationState,
 } from "../agent/VerificationScope"
 import { getTrustedCommandExploration } from "./CommandExploration"
+import { getCommandDecision } from "../auto-approval/commands"
 
 class ShellIntegrationError extends Error {}
 
@@ -324,10 +325,9 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				.getConfiguration(Package.name)
 				.get<string[]>("commandTimeoutAllowlist", [])
 
-			// Check if command matches any prefix in the allowlist
-			const isCommandAllowlisted = commandTimeoutAllowlist.some((prefix) =>
-				canonicalCommand.startsWith(prefix.trim()),
-			)
+			// Every executable in a command chain must match a complete-token timeout rule.
+			const isCommandAllowlisted =
+				getCommandDecision(canonicalCommand, commandTimeoutAllowlist, []) === "auto_approve"
 
 			// Convert seconds to milliseconds for internal use, but skip timeout if command is allowlisted
 			const commandExecutionTimeout = isCommandAllowlisted ? 0 : commandExecutionTimeoutSeconds * 1000

@@ -241,6 +241,31 @@ describe("CommandPatternSelector", () => {
 		expect(mockOnAllowPatternChange).toHaveBeenCalledWith("npm install express")
 	})
 
+	it("shows both saved memberships on conflicts without hiding the deny rule", () => {
+		const allow = vi.fn()
+		const deny = vi.fn()
+		render(
+			<TestWrapper>
+				<CommandPatternSelector
+					{...defaultProps}
+					patterns={[{ pattern: "git push" }]}
+					allowedCommands={["git push"]}
+					deniedCommands={["git push"]}
+					onAllowPatternChange={allow}
+					onDenyPatternChange={deny}
+				/>
+			</TestWrapper>,
+		)
+		fireEvent.click(screen.getByText("chat:commandExecution.manageCommands").closest("button")!)
+
+		const allowButton = screen.getByRole("button", { name: "chat:commandExecution.removeFromAllowed" })
+		const denyButton = screen.getByRole("button", { name: "chat:commandExecution.removeFromDenied" })
+		fireEvent.click(allowButton)
+		fireEvent.click(denyButton)
+		expect(allow).toHaveBeenCalledWith("git push")
+		expect(deny).toHaveBeenCalledWith("git push")
+	})
+
 	it("should call onDenyPatternChange when deny button is clicked", () => {
 		const mockOnDenyPatternChange = vi.fn()
 		const props = {
