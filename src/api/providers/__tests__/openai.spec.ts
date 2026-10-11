@@ -282,7 +282,12 @@ describe("OpenAiHandler", () => {
 				.join("")
 			expect(JSON.parse(partialArguments)).toEqual({ patch })
 			expect(chunks).toContainEqual({ type: "tool_call_end", id: "call_patch" })
-			expect(chunks).toContainEqual({ type: "text", text: "Applying the patch.", outputIndex: 2 })
+			expect(chunks).toContainEqual({
+				type: "text",
+				text: "Applying the patch.",
+				id: "message_1",
+				outputIndex: 2,
+			})
 			expect(chunks).not.toContainEqual({ type: "reasoning", text: "Reviewed the patch." })
 			expect(chunks).toContainEqual({
 				type: "usage",
@@ -620,7 +625,7 @@ describe("OpenAiHandler", () => {
 				.join("")
 			expect(JSON.parse(argumentsText)).toEqual(isCustom ? { patch } : { cmd: "pwd" })
 			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
-				{ type: "text", text: "Finished.", outputIndex: 1 },
+				{ type: "text", text: "Finished.", id: "final-message", outputIndex: 1 },
 			])
 		})
 
@@ -727,7 +732,7 @@ describe("OpenAiHandler", () => {
 			expect(mockResponsesCreate).toHaveBeenCalledOnce()
 			expect(mockCreate).not.toHaveBeenCalled()
 			expect(mockResponsesCreate.mock.calls[0]?.[0].tools).toEqual(expectedTools)
-			expect(chunks).toContainEqual({ type: "text", text: "Ready.", outputIndex: 0 })
+			expect(chunks).toContainEqual({ type: "text", text: "Ready.", id: "message_1", outputIndex: 0 })
 		})
 
 		it("normalizes freeform input in non-streaming mode", async () => {

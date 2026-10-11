@@ -1,3 +1,5 @@
+import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+
 import type { ApiStreamChunk } from "../../api/transform/stream"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import {
@@ -34,6 +36,11 @@ interface ToolSlot {
 }
 
 type OrderedResponseEntry = AgentResponseItem | ToolSlot
+
+interface TextMessageState {
+	metadata: AssistantMessageMetadata
+	items: Set<Extract<AgentResponseItem, { type: "text" }>>
+}
 
 type ParsedArguments = { ok: true; value: unknown } | { ok: false }
 
@@ -87,6 +94,8 @@ export class AgentResponseAccumulator {
 	private readonly emittedNormalizedToolIds = new Map<string, string>()
 	private readonly completedToolCallIds = new Set<string>()
 	private readonly outputIndexes = new Map<AgentResponseItem, number>()
+	private readonly textMessagesById = new Map<string, TextMessageState>()
+	private readonly textMessagesByIndex = new Map<number, TextMessageState>()
 	private readonly opaqueReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private readonly latestReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private lastReasoningItem: Extract<AgentResponseItem, { type: "reasoning" }> | undefined
@@ -107,8 +116,21 @@ export class AgentResponseAccumulator {
 		}
 
 		switch (chunk.type) {
-			case "text":
-				return this.emit({ type: "text", text: chunk.text }, onItem, true, chunk.outputIndex)
+			case "text": {
+				const metadata = normalizeAssistantMessageMetadata(chunk)
+				const message = this.reconcileTextMessage(metadata)
+				const item: Extract<AgentResponseItem, { type: "text" }> = {
+					type: "text",
+					text: chunk.text,
+					...(message?.metadata ?? metadata),
+				}
+				message?.items.add(item)
+				return this.emit(item, onItem, true, item.outputIndex)
+			}
+
+			case "message_metadata":
+				this.reconcileTextMessage(normalizeAssistantMessageMetadata(chunk))
+				return
 
 			case "reasoning": {
 				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
@@ -350,6 +372,54 @@ export class AgentResponseAccumulator {
 		this.responseOutcome = outcome
 	}
 
+	private reconcileTextMessage(metadata: AssistantMessageMetadata): TextMessageState | undefined {
+		if (metadata.id === undefined && metadata.outputIndex === undefined) return undefined
+		const byId = metadata.id === undefined ? undefined : this.textMessagesById.get(metadata.id)
+		const byIndex =
+			metadata.outputIndex === undefined ? undefined : this.textMessagesByIndex.get(metadata.outputIndex)
+		const compatibleIdentity = (left: AssistantMessageMetadata, right: AssistantMessageMetadata) =>
+			(left.id === undefined || right.id === undefined || left.id === right.id) &&
+			(left.outputIndex === undefined ||
+				right.outputIndex === undefined ||
+				left.outputIndex === right.outputIndex)
+		// Conflicting provider identity cannot safely retag already displayed text.
+		if (
+			(byId && !compatibleIdentity(byId.metadata, metadata)) ||
+			(byIndex && !compatibleIdentity(byIndex.metadata, metadata)) ||
+			(byId && byIndex && !compatibleIdentity(byId.metadata, byIndex.metadata))
+		) {
+			return undefined
+		}
+
+		const message: TextMessageState = byIndex ?? byId ?? { metadata: {}, items: new Set() }
+		const previous = message.metadata
+		const merged = byId !== undefined && byIndex !== undefined && byId !== byIndex
+		if (merged) {
+			for (const item of byId.items) message.items.add(item)
+		}
+		message.metadata = { ...(merged ? byId.metadata : {}), ...previous, ...metadata }
+		if (message.metadata.id !== undefined) this.textMessagesById.set(message.metadata.id, message)
+		if (message.metadata.outputIndex !== undefined) {
+			this.textMessagesByIndex.set(message.metadata.outputIndex, message)
+		}
+		if (
+			merged ||
+			previous.id !== message.metadata.id ||
+			previous.phase !== message.metadata.phase ||
+			previous.outputIndex !== message.metadata.outputIndex
+		) {
+			// Late completion metadata enriches the same fragments. It is not a new
+			// visible message and does not produce another onItem notification.
+			for (const item of message.items) {
+				Object.assign(item, message.metadata)
+				if (message.metadata.outputIndex !== undefined) {
+					this.outputIndexes.set(item, message.metadata.outputIndex)
+				}
+			}
+		}
+		return message
+	}
+
 	private async flushPendingTools(
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<AgentResponse> {
@@ -401,6 +471,8 @@ export class AgentResponseAccumulator {
 		)
 		this.pendingTools.clear()
 		this.pendingToolIndexes.clear()
+		this.textMessagesById.clear()
+		this.textMessagesByIndex.clear()
 		return createAgentResponse(reconciledItems, this.responseOutcome)
 	}
 

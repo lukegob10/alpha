@@ -5,6 +5,283 @@ import {
 } from "../openai-responses"
 import type OpenAI from "openai"
 
+describe("OpenAI Responses assistant message replay", () => {
+	it.each([false, true])(
+		"replays phases and original message IDs around reasoning and tool transactions (store=%s)",
+		(store) => {
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Checking.", id: "msg_commentary", phase: "commentary", outputIndex: 0 },
+						{ type: "reasoning", id: "reasoning_id", encrypted_content: "opaque+/=", summary: [] },
+						{
+							type: "text",
+							text: "Stable result.",
+							id: "msg_partial",
+							phase: "partial_answer",
+							outputIndex: 2,
+						},
+						{ type: "tool_use", id: "call_read", name: "read_file", input: { path: "file.txt" } },
+					],
+				},
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "call_read", content: "Contents." }] },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Done.", id: "msg_final", phase: "final_answer", outputIndex: 0 }],
+				},
+			] as const
+			const before = structuredClone(messages)
+			expect(buildOpenAiResponsesInput("", [], messages, store)).toEqual([
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_commentary",
+					phase: "commentary",
+					content: [{ type: "output_text", text: "Checking.", annotations: [] }],
+				},
+				{
+					type: "reasoning",
+					...(store ? { id: "reasoning_id" } : {}),
+					encrypted_content: "opaque+/=",
+					summary: [],
+				},
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_partial",
+					phase: "partial_answer",
+					content: [{ type: "output_text", text: "Stable result.", annotations: [] }],
+				},
+				{ type: "function_call", call_id: "call_read", name: "read_file", arguments: '{"path":"file.txt"}' },
+				{ type: "function_call_output", call_id: "call_read", output: "Contents." },
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_final",
+					phase: "final_answer",
+					content: [{ type: "output_text", text: "Done.", annotations: [] }],
+				},
+			])
+			expect(messages).toEqual(before)
+		},
+	)
+
+	it("retains same-phase and phase-less message boundaries without emitting output indexes", () => {
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "One.", id: "msg_1", phase: "commentary", outputIndex: 0 },
+					{ type: "text", text: "Two.", id: "msg_2", phase: "commentary", outputIndex: 1 },
+					{ type: "text", text: "Three.", outputIndex: 2 },
+					{ type: "text", text: "Four.", outputIndex: 3 },
+					{ type: "text", text: "Legacy." },
+				],
+			},
+		]
+		expect(buildOpenAiResponsesInput("", [], messages, false)).toEqual([
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_1",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "One.", annotations: [] }],
+			},
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_2",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "Two.", annotations: [] }],
+			},
+			{ role: "assistant", content: "Three." },
+			{ role: "assistant", content: "Four." },
+			{ role: "assistant", content: "Legacy." },
+		])
+	})
+
+	it("replays adjacent fragments of one identified source message in their original order", () => {
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "First ", id: "msg_parts", phase: "partial_answer", outputIndex: 0 },
+					{ type: "text", text: "second.", id: "msg_parts", phase: "partial_answer", outputIndex: 0 },
+				],
+			},
+		]
+		expect(buildOpenAiResponsesInput("", [], messages, false)).toEqual([
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_parts",
+				phase: "partial_answer",
+				content: [
+					{ type: "output_text", text: "First ", annotations: [] },
+					{ type: "output_text", text: "second.", annotations: [] },
+				],
+			},
+		])
+	})
+
+	it("does not use a shared phase as a source message identity", () => {
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "One.", phase: "commentary" },
+					{ type: "text", text: "Two.", phase: "commentary" },
+				],
+			},
+		]
+		expect(buildOpenAiResponsesInput("", [], messages, false)).toEqual([
+			{
+				type: "message",
+				role: "assistant",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "One.", annotations: [] }],
+			},
+			{
+				type: "message",
+				role: "assistant",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "Two.", annotations: [] }],
+			},
+		])
+	})
+
+	it.each([undefined, null, "future_phase", 4])(
+		"keeps unknown phase %s off the wire without losing valid original IDs",
+		(phase) => {
+			expect(
+				buildOpenAiResponsesInput(
+					"",
+					[],
+					[{ type: "message", role: "assistant", id: "msg_saved", phase, content: "Saved." }],
+					false,
+				),
+			).toEqual([
+				{
+					type: "message",
+					role: "assistant",
+					id: "msg_saved",
+					content: [{ type: "output_text", text: "Saved.", annotations: [] }],
+				},
+			])
+		},
+	)
+
+	it("accepts original Responses output-message histories and keeps phase only on assistant input", () => {
+		const messages = [
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_output",
+				phase: "final_answer",
+				content: [
+					{ type: "output_text", text: "Saved output." },
+					{ type: "refusal", refusal: "Cannot provide that." },
+				],
+			},
+			{ role: "user", id: "not-an-assistant-id", phase: "final_answer", content: "Follow-up." },
+		]
+		expect(buildOpenAiResponsesInput("", [], messages, false)).toEqual([
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_output",
+				phase: "final_answer",
+				content: [
+					{ type: "output_text", text: "Saved output.", annotations: [] },
+					{ type: "refusal", refusal: "Cannot provide that." },
+				],
+			},
+			{ role: "user", content: "Follow-up." },
+		])
+	})
+
+	it("retains empty identified source messages while omitting legacy empty text", () => {
+		expect(
+			buildOpenAiResponsesInput(
+				"",
+				[],
+				[
+					{
+						role: "assistant",
+						content: [
+							{ type: "text", text: "", id: "msg_empty", phase: "commentary", outputIndex: 0 },
+							{ type: "text", text: "" },
+						],
+					},
+				],
+				false,
+			),
+		).toEqual([
+			{
+				type: "message",
+				role: "assistant",
+				id: "msg_empty",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "", annotations: [] }],
+			},
+		])
+	})
+
+	it("ignores legacy response-envelope IDs and replays only explicitly declared message identity", () => {
+		const messages = [
+			{ role: "assistant", id: "arbitrary-response-envelope", content: "Legacy string." },
+			{
+				role: "assistant",
+				id: "arbitrary-response-envelope",
+				content: [{ type: "text", text: "Legacy block." }],
+			},
+			{ role: "assistant", id: "response-envelope", phase: "commentary", content: "Classified legacy." },
+			{
+				role: "assistant",
+				id: "response-envelope",
+				messageId: "source-message",
+				phase: "partial_answer",
+				content: "Explicit source.",
+			},
+		]
+		expect(buildOpenAiResponsesInput("", [], messages, false)).toEqual([
+			{ role: "assistant", content: "Legacy string." },
+			{ role: "assistant", content: "Legacy block." },
+			{
+				type: "message",
+				role: "assistant",
+				phase: "commentary",
+				content: [{ type: "output_text", text: "Classified legacy.", annotations: [] }],
+			},
+			{
+				type: "message",
+				role: "assistant",
+				id: "source-message",
+				phase: "partial_answer",
+				content: [{ type: "output_text", text: "Explicit source.", annotations: [] }],
+			},
+		])
+	})
+
+	it("replays empty raw Responses messages without inventing IDs", () => {
+		expect(
+			buildOpenAiResponsesInput(
+				"",
+				[],
+				[
+					{ type: "message", role: "assistant", id: "empty-source", phase: "commentary", content: [] },
+					{ type: "message", role: "assistant", content: [] },
+				],
+				false,
+			),
+		).toEqual([
+			{ type: "message", role: "assistant", id: "empty-source", phase: "commentary", content: [] },
+			{ role: "assistant", content: "" },
+		])
+	})
+})
+
 describe("OpenAI Responses freeform apply_patch conversion", () => {
 	it.each([false, true])(
 		"retains raw bytes, encrypted reasoning and terminal type across reused IDs (store=%s)",

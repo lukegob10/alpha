@@ -18,6 +18,7 @@ import {
 	toolApprovalDecisionSchema,
 	toolApprovalRequestSchema,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
+	normalizeAssistantMessageMetadata,
 } from "@alpha-code/types"
 import {
 	captureAcceptanceChecks,
@@ -4297,7 +4298,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				case "text":
 					await this.enqueueCanonicalLifecycleEvent(
 						"item_added",
-						{ item: { itemId, stepId: step.stepId, type: "assistant_text", text: responseItem.text } },
+						{
+							item: {
+								itemId,
+								stepId: step.stepId,
+								type: "assistant_text",
+								text: responseItem.text,
+								...(responseItem.id !== undefined ? { messageId: responseItem.id } : {}),
+								...(responseItem.phase !== undefined ? { phase: responseItem.phase } : {}),
+								...(responseItem.outputIndex !== undefined
+									? { outputIndex: responseItem.outputIndex }
+									: {}),
+							},
+						},
 						step.stepId,
 					)
 					break
@@ -15361,8 +15374,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const cleanConversationHistory: (Anthropic.Messages.MessageParam | ReasoningItemForRequest)[] = []
+		const projectAssistantContent = (
+			content: Anthropic.Messages.ContentBlockParam[],
+		): Anthropic.Messages.MessageParam["content"] => {
+			if (content.length === 0) return ""
+			const first = content[0]
+			// Flatten only legacy unmarked text. A source message ID/phase/index
+			// belongs to the block and would be discarded by string conversion.
+			if (
+				content.length === 1 &&
+				first.type === "text" &&
+				Object.keys(normalizeAssistantMessageMetadata(first)).length === 0
+			) {
+				return first.text
+			}
+			return content
+		}
 
 		for (const msg of messages) {
+			const sourceMetadata =
+				msg.role === "assistant"
+					? normalizeAssistantMessageMetadata({ id: msg.messageId, phase: msg.phase })
+					: {}
+			const assistantSourceMetadata = {
+				...(sourceMetadata.id !== undefined ? { messageId: sourceMetadata.id } : {}),
+				...(sourceMetadata.phase !== undefined ? { phase: sourceMetadata.phase } : {}),
+			}
 			const persistedVscodeLmMarker = (msg as ApiMessage & { vscodeLmStatefulMarker?: unknown })
 				.vscodeLmStatefulMarker
 			const vscodeLmMetadata =
@@ -15403,20 +15440,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const msgWithDetails = msg
 				if (msgWithDetails.reasoning_details && Array.isArray(msgWithDetails.reasoning_details)) {
 					// Build the assistant message with reasoning_details
-					let assistantContent: Anthropic.Messages.MessageParam["content"]
-
-					if (contentArray.length === 0) {
-						assistantContent = ""
-					} else if (contentArray.length === 1 && contentArray[0].type === "text") {
-						assistantContent = (contentArray[0] as Anthropic.Messages.TextBlockParam).text
-					} else {
-						assistantContent = contentArray
-					}
+					const assistantContent = projectAssistantContent(contentArray)
 
 					// Create message with reasoning_details property
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 						reasoning_details: msgWithDetails.reasoning_details,
 					} as any)
@@ -15449,20 +15479,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					// Send assistant message without reasoning
-					let assistantContent: Anthropic.Messages.MessageParam["content"]
 					const remainingContent = contentArray.slice(encryptedReasoningPrefixLength)
-
-					if (remainingContent.length === 0) {
-						assistantContent = ""
-					} else if (remainingContent.length === 1 && remainingContent[0].type === "text") {
-						assistantContent = (remainingContent[0] as Anthropic.Messages.TextBlockParam).text
-					} else {
-						assistantContent = remainingContent
-					}
+					const assistantContent = projectAssistantContent(remainingContent)
 
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 					} as Anthropic.Messages.MessageParam)
 
@@ -15479,18 +15502,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						assistantContent = contentArray
 					} else {
 						// Strip reasoning out - stored for history only, not sent back to API
-						if (rest.length === 0) {
-							assistantContent = ""
-						} else if (rest.length === 1 && rest[0].type === "text") {
-							assistantContent = (rest[0] as Anthropic.Messages.TextBlockParam).text
-						} else {
-							assistantContent = rest
-						}
+						assistantContent = projectAssistantContent(rest)
 					}
 
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 					} as Anthropic.Messages.MessageParam)
 
@@ -15503,6 +15521,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cleanConversationHistory.push({
 					role: msg.role,
 					content: msg.content as Anthropic.Messages.ContentBlockParam[] | string,
+					...assistantSourceMetadata,
 					...vscodeLmMetadata,
 				} as Anthropic.Messages.MessageParam)
 			}

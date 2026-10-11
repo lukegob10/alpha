@@ -1,15 +1,33 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
+import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
 
 import type { AgentResponse } from "../agent/AgentResponse"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 
 /** Ordered assistant history items, retaining provider reasoning metadata until provider projection. */
 export type CanonicalAssistantHistoryItem =
-	| Anthropic.TextBlockParam
+	| CanonicalAssistantTextHistoryItem
 	| Anthropic.ToolUseBlockParam
 	| Anthropic.RedactedThinkingBlockParam
 	| { type: "reasoning"; text: string; signature?: string; outputIndex?: number }
 	| CanonicalEncryptedReasoningHistoryItem
+
+/** Persisted source metadata is stripped only when projecting to a provider without message phases. */
+export type CanonicalAssistantTextHistoryItem = Anthropic.TextBlockParam & AssistantMessageMetadata
+
+function canMergeText(
+	previous: CanonicalAssistantTextHistoryItem,
+	current: CanonicalAssistantTextHistoryItem,
+): boolean {
+	return (
+		// A matching phase describes meaning, not message identity. Only legacy
+		// fragments with no metadata may merge without a known source boundary.
+		(previous.id !== undefined || previous.outputIndex !== undefined || previous.phase === undefined) &&
+		previous.id === current.id &&
+		previous.phase === current.phase &&
+		previous.outputIndex === current.outputIndex
+	)
+}
 
 export interface CanonicalEncryptedReasoningHistoryItem {
 	type: "reasoning"
@@ -33,10 +51,12 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 
 	for (const item of response.items) {
 		if (item.type === "text") {
-			if (item.text) {
+			const metadata = normalizeAssistantMessageMetadata(item)
+			if (item.text || Object.keys(metadata).length > 0) {
+				const current = { type: "text" as const, text: item.text, ...metadata }
 				const previous = items.at(-1)
-				if (previous?.type === "text") previous.text += item.text
-				else items.push({ type: "text", text: item.text })
+				if (previous?.type === "text" && canMergeText(previous, current)) previous.text += item.text
+				else items.push(current)
 			}
 			continue
 		}
@@ -89,12 +109,16 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 	return items
 }
 
-/** Replay sealed Anthropic reasoning; interrupted, unsigned text remains only in canonical evidence. */
+/**
+ * Persist sealed Anthropic thinking with the canonical text metadata. Provider
+ * wire filters own capability fallback; this history projection must retain
+ * source identity and phase through task reload.
+ */
 export function buildCanonicalAnthropicAssistantHistoryContent(
 	response: AgentResponse,
 ):
 	| Array<
-			| Anthropic.Messages.TextBlockParam
+			| CanonicalAssistantTextHistoryItem
 			| Anthropic.Messages.ToolUseBlockParam
 			| Anthropic.Messages.ThinkingBlockParam
 			| Anthropic.Messages.RedactedThinkingBlockParam
@@ -104,7 +128,7 @@ export function buildCanonicalAnthropicAssistantHistoryContent(
 	if (!items.some((item) => item.type === "reasoning" || item.type === "redacted_thinking")) return undefined
 
 	const content: Array<
-		| Anthropic.Messages.TextBlockParam
+		| CanonicalAssistantTextHistoryItem
 		| Anthropic.Messages.ToolUseBlockParam
 		| Anthropic.Messages.ThinkingBlockParam
 		| Anthropic.Messages.RedactedThinkingBlockParam
@@ -130,9 +154,9 @@ export function buildCanonicalAnthropicAssistantHistoryContent(
 /** Project ordered canonical items into the legacy history view, including opaque provider state. */
 export function buildCanonicalAssistantHistoryContent(
 	response: AgentResponse,
-): Array<Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam | Anthropic.RedactedThinkingBlockParam> {
+): Array<CanonicalAssistantTextHistoryItem | Anthropic.ToolUseBlockParam | Anthropic.RedactedThinkingBlockParam> {
 	const content: Array<
-		| Anthropic.TextBlockParam
+		| CanonicalAssistantTextHistoryItem
 		| Anthropic.ToolUseBlockParam
 		| Anthropic.RedactedThinkingBlockParam
 		| CanonicalEncryptedReasoningHistoryItem
@@ -145,7 +169,7 @@ export function buildCanonicalAssistantHistoryContent(
 		}
 		if (item.type === "text") {
 			const previous = content.at(-1)
-			if (previous?.type === "text") previous.text += item.text
+			if (previous?.type === "text" && canMergeText(previous, item)) previous.text += item.text
 			else content.push(item)
 			continue
 		}
@@ -155,6 +179,6 @@ export function buildCanonicalAssistantHistoryContent(
 	// The legacy Anthropic SDK shape does not declare Alpha's persisted opaque
 	// reasoning blocks. Keep this compatibility cast at the projection boundary.
 	return content as Array<
-		Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam | Anthropic.RedactedThinkingBlockParam
+		CanonicalAssistantTextHistoryItem | Anthropic.ToolUseBlockParam | Anthropic.RedactedThinkingBlockParam
 	>
 }

@@ -1,5 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
+import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
 
@@ -21,6 +22,41 @@ export interface ConvertToOpenAiMessagesOptions {
 	 * reasoning_content. Default is false for backward compatibility.
 	 */
 	mergeToolResultText?: boolean
+}
+
+/** Chat has no phase field. Keep known source text boundaries as assistant messages. */
+function assistantTextGroups(content: Anthropic.Messages.ContentBlockParam[]): string[] | undefined {
+	if (
+		!content.some((part) => {
+			if (part.type !== "text") return false
+			return Object.keys(normalizeAssistantMessageMetadata(part)).length > 0
+		})
+	)
+		return undefined
+
+	const groups: string[] = []
+	let previous: AssistantMessageMetadata | undefined
+	for (const part of content) {
+		if (part.type !== "text") {
+			previous = undefined
+			continue
+		}
+		const metadata = normalizeAssistantMessageMetadata(part)
+		if (
+			previous &&
+			(previous.id !== undefined || previous.outputIndex !== undefined || previous.phase === undefined) &&
+			previous.id === metadata.id &&
+			previous.phase === metadata.phase &&
+			previous.outputIndex === metadata.outputIndex
+		) {
+			const separator = previous.id === undefined && previous.outputIndex === undefined ? "\n" : ""
+			groups[groups.length - 1] += `${separator}${part.text}`
+		} else {
+			groups.push(part.text)
+		}
+		previous = metadata
+	}
+	return groups
 }
 
 export function convertToOpenAiMessages(
@@ -182,6 +218,7 @@ export function convertToOpenAiMessages(
 					}
 				}
 			} else if (anthropicMessage.role === "assistant") {
+				const textGroups = assistantTextGroups(anthropicMessage.content)
 				const { nonToolMessages, toolMessages } = anthropicMessage.content.reduce<{
 					nonToolMessages: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
 					toolMessages: Anthropic.ToolUseBlockParam[]
@@ -200,14 +237,16 @@ export function convertToOpenAiMessages(
 				// Process non-tool messages
 				let content: string | undefined
 				if (nonToolMessages.length > 0) {
-					content = nonToolMessages
-						.map((part) => {
-							if (part.type === "image") {
-								return "" // impossible as the assistant cannot send images
-							}
-							return part.text
-						})
-						.join("\n")
+					content =
+						textGroups?.at(-1) ??
+						nonToolMessages
+							.map((part) => {
+								if (part.type === "image") {
+									return "" // impossible as the assistant cannot send images
+								}
+								return part.text
+							})
+							.join("\n")
 				}
 
 				// Process tool use messages
@@ -249,6 +288,12 @@ export function convertToOpenAiMessages(
 					baseMessage.tool_calls = tool_calls
 				}
 
+				// Chat requires results adjacent to the assistant tool-call envelope.
+				// Keep opaque reasoning and all calls on that last envelope, without
+				// copying source phases or provider state onto the preceding text.
+				for (const text of textGroups?.slice(0, -1) ?? []) {
+					openAiMessages.push({ role: "assistant", content: text })
+				}
 				openAiMessages.push(baseMessage)
 			}
 		}

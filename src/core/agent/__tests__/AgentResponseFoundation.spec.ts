@@ -28,7 +28,7 @@ describe("AgentResponseAccumulator", () => {
 
 		const response = await accumulator.finish()
 		expect(response.items).toEqual([
-			{ type: "text", text: "Before." },
+			{ type: "text", text: "Before.", outputIndex: 0 },
 			{
 				type: "reasoning",
 				text: "",
@@ -44,7 +44,7 @@ describe("AgentResponseAccumulator", () => {
 				id: "reasoning-2",
 				summary: [{ type: "summary_text", text: "Second." }],
 			},
-			{ type: "text", text: "After." },
+			{ type: "text", text: "After.", outputIndex: 4 },
 		])
 		expect(response.text).toBe("Before.After.")
 		expect(response.reasoning).toBe("")

@@ -9,6 +9,8 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
+import type { AgentResponseItem, AgentResponseOutcome } from "../agent/AgentResponse"
+import type { AssistantMessagePhase } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
 import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
 import {
@@ -39,7 +41,15 @@ export type ApiMessage = Anthropic.MessageParam & {
 	hook_prompt?: CompletionHookPromptProvenance
 	ts?: number
 	isSummary?: boolean
+	/** Legacy response receipt (or standalone reasoning ID); never an assistant output-message ID. */
 	id?: string
+	/** Optional original assistant message identity for a single-message envelope. */
+	messageId?: string
+	/** Original assistant message classification; absent for legacy or unsupported providers. */
+	phase?: AssistantMessagePhase
+	/** Ordered canonical response evidence retained across persistence and context projection. */
+	agentResponseItems?: AgentResponseItem[]
+	agentResponseOutcome?: AgentResponseOutcome
 	// For reasoning items stored in API history
 	type?: "reasoning"
 	summary?: any[]

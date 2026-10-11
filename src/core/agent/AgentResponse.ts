@@ -1,3 +1,5 @@
+import type { AssistantMessageMetadata } from "@alpha-code/types"
+
 /**
  * Provider-neutral source information attached to a response.
  *
@@ -52,7 +54,7 @@ export interface AgentResponseOutcome {
  * These items are intentionally separate from UI messages and API history.
  */
 export type AgentResponseItem =
-	| { type: "text"; text: string }
+	| ({ type: "text"; text: string } & AssistantMessageMetadata)
 	| {
 			type: "reasoning"
 			text: string

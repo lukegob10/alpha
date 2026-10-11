@@ -105,8 +105,8 @@ function invocationHarness(toolName = "spawn_agent") {
 		Object.assign(
 			{ role: "assistant" as const, content: [{ type: "text" as const, text: "Canonical final answer" }], ts: 2 },
 			{
-				agentResponseItems: [{ type: "text", text: "Canonical final answer" }],
-				agentResponseOutcome: { status: "completed" },
+				agentResponseItems: [{ type: "text" as const, text: "Canonical final answer" }],
+				agentResponseOutcome: { status: "completed" as const },
 			},
 		),
 		{ role: "user", input_origin: "human", content: "Invoking human request", ts: 3 },

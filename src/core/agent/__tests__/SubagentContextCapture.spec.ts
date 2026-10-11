@@ -461,7 +461,7 @@ describe("native sub-agent conversation forks", () => {
 		const final = {
 			role: "assistant" as const,
 			content: "Final from a classified provider response",
-			phase: "final_answer",
+			phase: "final_answer" as const,
 			internal_chat_message_metadata_passthrough: {
 				content_item_kinds: ["generic.assistant"],
 				user_input_order: 12,
@@ -623,13 +623,13 @@ describe("native sub-agent conversation forks", () => {
 		const final = {
 			role: "assistant" as const,
 			content: "Final answer",
-			phase: "final_answer",
+			phase: "final_answer" as const,
 			id: "parent-response-id",
 			vscodeLmStatefulMarker: "opaque-parent-state",
 			previous_response_id: "resp-parent-chain",
 			provider_metadata: { opaque: "parent-provider-state" },
-			agentResponseItems: [{ type: "reasoning", text: "private reasoning" }],
-			agentResponseOutcome: { status: "completed" },
+			agentResponseItems: [{ type: "reasoning" as const, text: "private reasoning" }],
+			agentResponseOutcome: { status: "completed" as const },
 		}
 		const captured = captureNative("all", [{ role: "user", content: "Request" }, final])
 		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")

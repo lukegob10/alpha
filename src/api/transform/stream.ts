@@ -1,3 +1,5 @@
+import type { AssistantMessageMetadata } from "@alpha-code/types"
+
 /**
  * The stream boundary is intentionally provider-neutral. Providers that have
  * not opted into lifecycle reporting may continue to emit the legacy chunks
@@ -70,6 +72,7 @@ export interface ApiStreamLifecycleChunk extends ApiStreamRequestMetadata {
 
 export type ApiStreamChunk =
 	| ApiStreamTextChunk
+	| ApiStreamMessageMetadataChunk
 	| ApiStreamUsageChunk
 	| ApiStreamReasoningChunk
 	| ApiStreamThinkingCompleteChunk
@@ -411,11 +414,14 @@ export async function raceApiStreamAbort<T>(promise: PromiseLike<T>, signal?: Ab
 	}
 }
 
-export interface ApiStreamTextChunk {
+export interface ApiStreamTextChunk extends AssistantMessageMetadata {
 	type: "text"
 	text: string
-	/** Position in a provider's ordered output, including reasoning and tools. */
-	outputIndex?: number
+}
+
+/** Source message metadata supplied before text or finalized after its visible deltas. */
+export interface ApiStreamMessageMetadataChunk extends AssistantMessageMetadata {
+	type: "message_metadata"
 }
 
 /**

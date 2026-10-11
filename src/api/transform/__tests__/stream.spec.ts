@@ -1,8 +1,20 @@
 // npx vitest run src/api/transform/__tests__/stream.spec.ts
 
-import { ApiStreamChunk } from "../stream"
+import { isApiStreamSemanticChunk, type ApiStreamChunk } from "../stream"
 
 describe("API Stream Types", () => {
+	it("does not classify message metadata alone as semantic output for lifecycle and retry decisions", () => {
+		expect(
+			isApiStreamSemanticChunk({
+				type: "message_metadata",
+				id: "message",
+				phase: "final_answer",
+				outputIndex: 0,
+			}),
+		).toBe(false)
+		expect(isApiStreamSemanticChunk({ type: "text", text: "Visible.", phase: "final_answer" })).toBe(true)
+	})
+
 	describe("ApiStreamChunk", () => {
 		it("should correctly handle text chunks", () => {
 			const textChunk: ApiStreamChunk = {

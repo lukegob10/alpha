@@ -148,7 +148,12 @@ async function addToolResult(task: TaskHistoryBridge, text = "File contents.", i
 
 function expectedReplay(store: boolean) {
 	return [
-		{ role: "assistant", content: "Before the read." },
+		{
+			type: "message",
+			role: "assistant",
+			id: "message-before",
+			content: [{ type: "output_text", text: "Before the read.", annotations: [] }],
+		},
 		{
 			type: "reasoning",
 			encrypted_content: firstReasoning.encrypted_content,
@@ -162,7 +167,12 @@ function expectedReplay(store: boolean) {
 			summary: secondReasoning.summary,
 			...(store ? { id: secondReasoning.id } : {}),
 		},
-		{ role: "assistant", content: "After the read." },
+		{
+			type: "message",
+			role: "assistant",
+			id: "message-after",
+			content: [{ type: "output_text", text: "After the read.", annotations: [] }],
+		},
 		{ type: "function_call_output", call_id: "read-call", output: "File contents." },
 	]
 }
@@ -211,11 +221,11 @@ describe("OpenAI reasoning persistence and replay", () => {
 		const reloaded: ApiMessage[] = JSON.parse(JSON.stringify(task.apiConversationHistory))
 		expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
 		expect(reloaded[0]!.content).toEqual([
-			{ type: "text", text: "Before the read." },
+			{ type: "text", text: "Before the read.", id: "message-before", outputIndex: 0 },
 			firstReasoning,
 			{ type: "tool_use", id: "read-call", name: "read_file", input: { path: "a.ts" } },
 			secondReasoning,
-			{ type: "text", text: "After the read." },
+			{ type: "text", text: "After the read.", id: "message-after", outputIndex: 4 },
 		])
 		for (const store of [false, true]) {
 			expect(buildOpenAiResponsesInput("", [], task.buildCleanConversationHistory(reloaded), store)).toEqual(

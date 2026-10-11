@@ -5,6 +5,8 @@ import { isDeepStrictEqual } from "node:util"
 
 import {
 	type ModelInfo,
+	type AssistantMessageMetadata,
+	normalizeAssistantMessageMetadata,
 	taskReasoningCustomTokenPattern,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
@@ -214,6 +216,9 @@ function toR1InstructionMessages(
 }
 
 function openAiResponsesOutputIdentity(item: OpenAI.Responses.ResponseOutputItem): string {
+	// Message IDs are optional in the protocol and may arrive only at completion.
+	// Their stable index owns the boundary; the metadata map validates known IDs.
+	if (item.type === "message") return JSON.stringify([item.type])
 	return item.type === "function_call" || item.type === "custom_tool_call"
 		? JSON.stringify([item.type, item.call_id, item.name])
 		: JSON.stringify([item.type, item.id])
@@ -653,6 +658,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	private async *handleOpenAiResponsesStream(stream: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
+		const messageMetadata = new Map<number, AssistantMessageMetadata>()
 		const handledOutputIdentities = new Map<number, string>()
 		const textDeltaParts = new Set<string>()
 		let reasoningSummary = ""
@@ -662,7 +668,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			switch (event.type) {
 				case "response.output_item.added": {
 					const item = event.item
-					if (item.type === "function_call") {
+					if (item.type === "message") {
+						yield {
+							type: "message_metadata",
+							...this.captureOpenAiResponsesMessageMetadata(item, event.output_index, messageMetadata),
+						}
+					} else if (item.type === "function_call") {
 						toolCalls.set(event.output_index, {
 							id: item.call_id,
 							name: item.name,
@@ -716,12 +727,28 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 				case "response.output_text.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta, outputIndex: event.output_index }
+					yield {
+						type: "text",
+						text: event.delta,
+						...this.captureOpenAiResponsesMessageMetadata(
+							{ id: event.item_id },
+							event.output_index,
+							messageMetadata,
+						),
+					}
 					break
 				}
 				case "response.refusal.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta, outputIndex: event.output_index }
+					yield {
+						type: "text",
+						text: event.delta,
+						...this.captureOpenAiResponsesMessageMetadata(
+							{ id: event.item_id },
+							event.output_index,
+							messageMetadata,
+						),
+					}
 					break
 				}
 				case "response.reasoning_summary_text.delta": {
@@ -740,10 +767,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					const handled = handledOutputIdentities.get(event.output_index)
 					if (handled !== undefined) {
 						if (handled !== identity) throw new Error("OpenAI Responses output item changed identity")
+						if (event.item.type === "message") {
+							yield {
+								type: "message_metadata",
+								...this.captureOpenAiResponsesMessageMetadata(
+									event.item,
+									event.output_index,
+									messageMetadata,
+								),
+							}
+						}
 						break
 					}
 					handledOutputIdentities.set(event.output_index, identity)
-					yield* this.emitOpenAiResponsesOutputItem(event.item, event.output_index, toolCalls, textDeltaParts)
+					yield* this.emitOpenAiResponsesOutputItem(
+						event.item,
+						event.output_index,
+						toolCalls,
+						textDeltaParts,
+						messageMetadata,
+					)
 					break
 				}
 				case "response.incomplete":
@@ -757,6 +800,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						toolCalls,
 						handledOutputIdentities,
 						textDeltaParts,
+						messageMetadata,
 						reasoningSummary,
 						true,
 					)
@@ -780,7 +824,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
 		const textDeltaParts = new Set<string>()
-		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), textDeltaParts, "")
+		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), textDeltaParts, new Map(), "")
 	}
 
 	private async *finishOpenAiResponsesResult(
@@ -788,6 +832,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		handledOutputIdentities: Map<number, string>,
 		textDeltaParts: Set<string>,
+		messageMetadata: Map<number, AssistantMessageMetadata>,
 		reasoningSummary: string,
 		completedEvent = false,
 	): ApiStream {
@@ -818,6 +863,13 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 		for (const [index, item] of output.entries()) {
 			if (handledOutputIdentities.has(index)) {
+				if (item.type === "message") {
+					yield {
+						type: "message_metadata",
+						...this.captureOpenAiResponsesMessageMetadata(item, index, messageMetadata),
+					}
+					continue
+				}
 				if (item.type !== "reasoning" || !item.encrypted_content) continue
 				const streamed = this.responsesReasoningItems.get(index)
 				if (
@@ -828,7 +880,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					continue
 				}
 			}
-			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts)
+			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts, messageMetadata)
 		}
 		if (toolCalls.size > 0) {
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
@@ -851,6 +903,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		outputIndex: number,
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		textDeltaParts: Set<string>,
+		messageMetadata: Map<number, AssistantMessageMetadata>,
 	): ApiStream {
 		const active = toolCalls.get(outputIndex)
 		if (
@@ -932,16 +985,42 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (item.type !== "message") return
+		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata)
+		// Some providers attach phase only when the item or response completes.
+		// Update prior deltas without emitting the same visible text a second time.
+		yield { type: "message_metadata", ...metadata }
+		if (item.content.length === 0 && !textDeltaParts.has(`${outputIndex}:empty`)) {
+			textDeltaParts.add(`${outputIndex}:empty`)
+			yield { type: "text", text: "", ...metadata }
+		}
 		for (const [contentIndex, content] of item.content.entries()) {
 			const key = `${outputIndex}:${contentIndex}`
 			if (content.type === "output_text" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.text, outputIndex }
+				yield { type: "text", text: content.text, ...metadata }
 			} else if (content.type === "refusal" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.refusal, outputIndex }
+				yield { type: "text", text: content.refusal, ...metadata }
 			}
 		}
+	}
+
+	private captureOpenAiResponsesMessageMetadata(
+		item: unknown,
+		outputIndex: number,
+		messages: Map<number, AssistantMessageMetadata>,
+	): AssistantMessageMetadata {
+		if (!Number.isSafeInteger(outputIndex) || outputIndex < 0) {
+			throw new Error("OpenAI Responses message has an invalid index")
+		}
+		const previous = messages.get(outputIndex)
+		const incoming = normalizeAssistantMessageMetadata(item)
+		if (previous?.id !== undefined && incoming.id !== undefined && previous.id !== incoming.id) {
+			throw new Error("OpenAI Responses streamed message changed identity")
+		}
+		const metadata = { ...previous, ...incoming, outputIndex }
+		messages.set(outputIndex, metadata)
+		return metadata
 	}
 
 	private captureOpenAiResponsesState(response: Partial<OpenAI.Responses.Response>): void {

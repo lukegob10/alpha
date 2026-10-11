@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { filterNonAnthropicBlocks } from "../../../api/transform/anthropic-filter"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import {
 	buildCanonicalAnthropicAssistantHistoryContent,
@@ -8,6 +9,83 @@ import {
 } from "../canonicalAssistantHistory"
 
 describe("buildCanonicalAssistantHistoryContent", () => {
+	it("retains phases, original message IDs, and boundaries in canonical and persisted history", () => {
+		const response = createAgentResponse([
+			{ type: "text", text: "Checking ", id: "preamble", phase: "commentary", outputIndex: 0 },
+			{ type: "text", text: "the file.", id: "preamble", phase: "commentary", outputIndex: 0 },
+			{ type: "text", text: "Partial.", id: "partial", phase: "partial_answer", outputIndex: 1 },
+			{ type: "text", text: "Final.", id: "final", phase: "final_answer", outputIndex: 2 },
+		])
+		const expected = [
+			{ type: "text", text: "Checking the file.", id: "preamble", phase: "commentary", outputIndex: 0 },
+			{ type: "text", text: "Partial.", id: "partial", phase: "partial_answer", outputIndex: 1 },
+			{ type: "text", text: "Final.", id: "final", phase: "final_answer", outputIndex: 2 },
+		]
+
+		expect(buildCanonicalAssistantHistoryItems(response)).toEqual(expected)
+		expect(JSON.parse(JSON.stringify(buildCanonicalAssistantHistoryContent(response)))).toEqual(expected)
+		expect(response.items).toHaveLength(4)
+		expect(response.text).toBe("Checking the file.Partial.Final.")
+	})
+
+	it.each([
+		[{ id: "first" }, { id: "second" }],
+		[{ outputIndex: 0 }, { outputIndex: 1 }],
+		[{ phase: "commentary" as const }, { phase: "final_answer" as const }],
+		[{ phase: "commentary" as const }, { phase: "commentary" as const }],
+	])("preserves known adjacent boundaries even without all message metadata (%j)", (first, second) => {
+		const response = createAgentResponse([
+			{ type: "text", text: "First.", ...first },
+			{ type: "text", text: "Second.", ...second },
+		])
+
+		expect(buildCanonicalAssistantHistoryItems(response)).toEqual(response.items)
+		expect(buildCanonicalAssistantHistoryContent(response)).toEqual(response.items)
+	})
+
+	it("keeps empty source messages and legacy phase-less text compatibility", () => {
+		const response = createAgentResponse([
+			{ type: "text", text: "" },
+			{ type: "text", text: "Legacy " },
+			{ type: "text", text: "answer." },
+			{ type: "text", text: "", id: "empty", phase: "commentary", outputIndex: 0 },
+			{ type: "text", text: "New.", id: "new", outputIndex: 1 },
+		])
+
+		expect(buildCanonicalAssistantHistoryContent(response)).toEqual([
+			{ type: "text", text: "Legacy answer." },
+			{ type: "text", text: "", id: "empty", phase: "commentary", outputIndex: 0 },
+			{ type: "text", text: "New.", id: "new", outputIndex: 1 },
+		])
+	})
+
+	it("persists source text metadata alongside signed thinking and strips it only on the Anthropic wire", () => {
+		const response = createAgentResponse([
+			{ type: "reasoning", text: "Thinking.", signature: "signature" },
+			{ type: "text", text: "Progress.", id: "progress", phase: "commentary", outputIndex: 1 },
+			{ type: "text", text: "Answer.", id: "answer", phase: "final_answer", outputIndex: 2 },
+		])
+
+		const persisted = buildCanonicalAnthropicAssistantHistoryContent(response)
+		expect(JSON.parse(JSON.stringify(persisted))).toEqual([
+			{ type: "thinking", thinking: "Thinking.", signature: "signature" },
+			{ type: "text", text: "Progress.", id: "progress", phase: "commentary", outputIndex: 1 },
+			{ type: "text", text: "Answer.", id: "answer", phase: "final_answer", outputIndex: 2 },
+		])
+		expect(filterNonAnthropicBlocks([{ role: "assistant", content: persisted! }])).toEqual([
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Thinking.", signature: "signature" },
+					{ type: "text", text: "Progress." },
+					{ type: "text", text: "Answer." },
+				],
+			},
+		])
+		expect(persisted?.at(-1)).toEqual(response.items.at(-1))
+		expect(buildCanonicalAssistantHistoryItems(response).at(-1)).toEqual(response.items.at(-1))
+	})
+
 	it("retains each opaque reasoning item without merging bytes, summaries, or adjacent text", () => {
 		const summary = [{ type: "summary_text", text: "Original summary." }]
 		const response = createAgentResponse([
