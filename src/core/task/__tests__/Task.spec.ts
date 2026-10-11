@@ -4187,6 +4187,9 @@ describe("Alpha", () => {
 			expect(JSON.stringify(task.apiConversationHistory)).toContain("STEERING_MESSAGE")
 		})
 
+		// Keep the existing watchdog live while the scenario clock is frozen.
+		const controlledSignalSetTimeout = setTimeout
+		const controlledSignalClearTimeout = clearTimeout
 		const waitForControlledSignal = async <T>(
 			name: string,
 			promise: Promise<T>,
@@ -4197,11 +4200,14 @@ describe("Alpha", () => {
 				return await Promise.race([
 					promise,
 					new Promise<T>((_resolve, reject) => {
-						timer = setTimeout(() => reject(new Error(`${name} timed out: ${state()}`)), 4000)
+						timer = controlledSignalSetTimeout(
+							() => reject(new Error(`${name} timed out: ${state()}`)),
+							4000,
+						)
 					}),
 				])
 			} finally {
-				if (timer) clearTimeout(timer)
+				if (timer) controlledSignalClearTimeout(timer)
 			}
 		}
 
@@ -4222,6 +4228,9 @@ describe("Alpha", () => {
 			}
 			const events: AgentTurnEvent[] = []
 			const eventOrder: string[] = []
+			let readTimer: ReturnType<typeof setTimeout> | undefined
+			let providerTimer: ReturnType<typeof setTimeout> | undefined
+			let assistantSaveTimer: ReturnType<typeof setTimeout> | undefined
 			const lifecyclePublications: Array<{ type: string; durable: boolean }> = []
 			let lifecycleSnapshot: any
 			let sequence = 0
@@ -4271,7 +4280,9 @@ describe("Alpha", () => {
 							readEffectCount += 1
 							eventOrder.push("read_started")
 							readStarted.resolve()
-							if (scenario.timing) setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+							if (scenario.timing) {
+								readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+							}
 							await releaseRead.promise
 							callbacks.pushToolResult("directory listing")
 							eventOrder.push("read_result_ready")
@@ -4414,8 +4425,13 @@ describe("Alpha", () => {
 					initialAssistantCount
 				) {
 					assistantSaveStarted.resolve()
-					if (scenario.timing)
-						setTimeout(() => releaseAssistantSave.resolve(), scenario.timing.assistantSaveMs)
+					// The delay models the first assistant receipt; later result saves retain the released gate.
+					if (scenario.timing && assistantSaveTimer === undefined) {
+						assistantSaveTimer = setTimeout(
+							() => releaseAssistantSave.resolve(),
+							scenario.timing.assistantSaveMs,
+						)
+					}
 					await releaseAssistantSave.promise
 					persistedAssistantHistory.push(structuredClone(task.apiConversationHistory))
 					eventOrder.push("assistant_saved")
@@ -4478,7 +4494,9 @@ describe("Alpha", () => {
 					}
 					yield { type: "tool_call_end", id: acceptedCallId }
 					providerTailReached.resolve()
-					if (scenario.timing) setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
+					if (scenario.timing) {
+						providerTimer = setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
+					}
 					await releaseProvider.promise
 					if (scenario.barrier) {
 						yield {
@@ -4522,8 +4540,10 @@ describe("Alpha", () => {
 			)
 			const run = task.runAgentRequests([{ type: "text", text: "Inspect this directory." }], false)
 			let runCompletion: unknown
+			let runCompletedAt: number | undefined
 			void run.then(
 				(result) => {
+					runCompletedAt = Date.now()
 					runCompletion =
 						typeof result === "boolean"
 							? { value: result }
@@ -4540,6 +4560,11 @@ describe("Alpha", () => {
 				restoreMismatchSpy: () => mismatchFinishSpy?.mockRestore(),
 				events,
 				eventOrder,
+				clearTimingTimers: () => {
+					if (readTimer !== undefined) clearTimeout(readTimer)
+					if (providerTimer !== undefined) clearTimeout(providerTimer)
+					if (assistantSaveTimer !== undefined) clearTimeout(assistantSaveTimer)
+				},
 				lifecycleSnapshot: () => lifecycleSnapshot,
 				debugState: () =>
 					JSON.stringify({
@@ -4563,6 +4588,7 @@ describe("Alpha", () => {
 				readEffectCount: () => readEffectCount,
 				providerReachedEof: () => providerReachedEof,
 				runCompletion: () => runCompletion,
+				runCompletedAt: () => runCompletedAt,
 				assistantSaveStarted: assistantSaveStarted.promise,
 				readStarted: readStarted.promise,
 				readResultReady: readResultReady.promise,
@@ -4702,9 +4728,25 @@ describe("Alpha", () => {
 						workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
-					await vi.runAllTimersAsync()
-					const result = await fixture.run
-					const elapsedMs = Date.now() - started
+					// Cold request setup settles while fake time is frozen, before the controlled workload advances.
+					await waitForControlledSignal(
+						"timed read and provider tail",
+						Promise.all([fixture.readStarted, fixture.providerTailReached]),
+						fixture.debugState,
+					)
+					expect(Date.now()).toBe(started)
+					await vi.advanceTimersByTimeAsync(300)
+					await waitForControlledSignal(
+						"timed assistant save",
+						fixture.assistantSaveStarted,
+						fixture.debugState,
+					)
+					expect(Date.now()).toBe(started + 300)
+					await vi.advanceTimersByTimeAsync(100)
+					const result = await waitForControlledSignal("timed task run", fixture.run, fixture.debugState)
+					const completedAt = fixture.runCompletedAt()
+					expect(completedAt).toBeDefined()
+					const elapsedMs = completedAt! - started
 					const readStartedBeforeEof =
 						fixture.eventOrder.indexOf("read_started") < fixture.eventOrder.indexOf("provider_eof")
 					console.info(JSON.stringify({ directory, elapsedMs, readStartedBeforeEof }))
@@ -4714,7 +4756,18 @@ describe("Alpha", () => {
 					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
 					expect(readStartedBeforeEof).toBe(true)
 					expect(elapsedMs).toBe(400)
+					expect(
+						await waitForControlledSignal(
+							"timed result flush",
+							fixture.task.flushPendingToolResultsToHistory(),
+							fixture.debugState,
+						),
+					).toBe(true)
+					expect(vi.getTimerCount()).toBe(0)
+					await vi.runAllTimersAsync()
+					expect(Date.now()).toBe(completedAt)
 				} finally {
+					fixture?.clearTimingTimers()
 					vi.useRealTimers()
 					await stopEarlyReadStream(fixture)
 				}
@@ -4731,8 +4784,13 @@ describe("Alpha", () => {
 						workdir: () => workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
+					await waitForControlledSignal(
+						"escaping provider tail",
+						fixture.providerTailReached,
+						fixture.debugState,
+					)
 					await vi.runAllTimersAsync()
-					await fixture.run
+					await waitForControlledSignal("escaping task run", fixture.run, fixture.debugState)
 					expect(fixture.readEffectCount()).toBe(0)
 					expect(fixture.eventOrder).not.toContain("read_started")
 					expect(fixture.task.userMessageContent).toEqual(
@@ -4745,6 +4803,7 @@ describe("Alpha", () => {
 						]),
 					)
 				} finally {
+					fixture?.clearTimingTimers()
 					vi.useRealTimers()
 					await stopEarlyReadStream(fixture)
 				}
