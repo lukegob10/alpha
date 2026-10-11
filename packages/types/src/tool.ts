@@ -88,6 +88,8 @@ export interface CommandToolResult {
 	output: string
 	exit_code?: number
 	session_id?: number
+	/** The session retains unread output beyond this bounded receipt, even after process exit. */
+	has_more_output?: boolean
 	original_token_count?: number
 	/** Preserves the read handle when large command output was spilled to an artifact. */
 	artifact_id?: string

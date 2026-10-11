@@ -175,6 +175,7 @@
 		"geminiProvider": "Gemini API",
 		"geminiApiKeyLabel": "Gemini API key",
 		"geminiApiKeyPlaceholder": "Enter the API key for your indexing project",
+		"geminiApiKeySaved": "API key saved securely. Leave blank to keep it, or enter a new key to replace it.",
 		"modelDimensionLabel": "Model Dimension",
 		"modelLabel": "Model",
 		"modelPlaceholder": "Enter model name",

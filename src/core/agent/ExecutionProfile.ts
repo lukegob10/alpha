@@ -63,6 +63,7 @@ export interface ExecutionProfileApplication {
 // scheduler metadata is broader than their call-specific authority.
 const PLAN_HOST_RESTRICTED_TOOLS = new Set([
 	"exec_command",
+	"write_stdin",
 	"request_user_input",
 	"request_user_input_async",
 	"update_plan",

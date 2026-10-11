@@ -54,6 +54,7 @@ describe("skillsMessageHandler", () => {
 	const mockGetSkillsMetadata = vi.fn()
 	const mockCreateSkill = vi.fn()
 	const mockDeleteSkill = vi.fn()
+	const mockUpdateSkillModes = vi.fn()
 	const mockMoveSkill = vi.fn()
 	const mockGetSkill = vi.fn()
 	const mockAssertSkillEditable = vi.fn()
@@ -66,6 +67,7 @@ describe("skillsMessageHandler", () => {
 					getSkillsMetadata: mockGetSkillsMetadata,
 					createSkill: mockCreateSkill,
 					deleteSkill: mockDeleteSkill,
+					updateSkillModes: mockUpdateSkillModes,
 					moveSkill: mockMoveSkill,
 					getSkill: mockGetSkill,
 					assertSkillEditable: mockAssertSkillEditable,
@@ -115,6 +117,7 @@ describe("skillsMessageHandler", () => {
 		expect(vscode.window.showErrorMessage).toHaveBeenCalled()
 		expect(mockCreateSkill).not.toHaveBeenCalled()
 		expect(mockDeleteSkill).not.toHaveBeenCalled()
+		expect(mockUpdateSkillModes).not.toHaveBeenCalled()
 		expect(mockMoveSkill).not.toHaveBeenCalled()
 		expect(openFile).not.toHaveBeenCalled()
 	})
@@ -292,7 +295,10 @@ describe("skillsMessageHandler", () => {
 			} as WebviewMessage)
 
 			expect(result).toEqual([mockSkills[1]])
-			expect(mockDeleteSkill).toHaveBeenCalledWith("test-skill", "global", undefined)
+			expect(mockDeleteSkill).toHaveBeenCalledWith("test-skill", "global", undefined, {
+				path: undefined,
+				modeSlugs: undefined,
+			})
 			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: [mockSkills[1]] })
 		})
 
@@ -309,7 +315,10 @@ describe("skillsMessageHandler", () => {
 			} as WebviewMessage)
 
 			expect(result).toEqual([mockSkills[0]])
-			expect(mockDeleteSkill).toHaveBeenCalledWith("project-skill", "project", "code")
+			expect(mockDeleteSkill).toHaveBeenCalledWith("project-skill", "project", "code", {
+				path: undefined,
+				modeSlugs: undefined,
+			})
 		})
 
 		it("returns undefined when required fields are missing", async () => {
@@ -426,7 +435,11 @@ describe("skillsMessageHandler", () => {
 				source: "global",
 			} as WebviewMessage)
 
-			expect(mockFindSkillByNameAndSource).toHaveBeenCalledWith("test-skill", "global")
+			expect(mockFindSkillByNameAndSource).toHaveBeenCalledWith("test-skill", "global", {
+				path: undefined,
+				modeSlugs: undefined,
+				mode: undefined,
+			})
 			expect(openFile).toHaveBeenCalledWith("/path/to/test-skill/SKILL.md")
 		})
 
@@ -441,7 +454,11 @@ describe("skillsMessageHandler", () => {
 				skillMode: "code",
 			} as WebviewMessage)
 
-			expect(mockFindSkillByNameAndSource).toHaveBeenCalledWith("project-skill", "project")
+			expect(mockFindSkillByNameAndSource).toHaveBeenCalledWith("project-skill", "project", {
+				path: undefined,
+				modeSlugs: undefined,
+				mode: "code",
+			})
 			expect(openFile).toHaveBeenCalledWith("/project/.alpha/skills/project-skill/SKILL.md")
 		})
 

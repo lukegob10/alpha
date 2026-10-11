@@ -222,7 +222,7 @@ describe("VertexHandler", () => {
 				for await (const chunk of handler.createMessage(systemPrompt, [])) chunks.push(chunk)
 			}).rejects.toThrow("Prompt caching has been disabled")
 			expect(mockCreate).toHaveBeenCalledOnce()
-			expect(chunks).toEqual([{ type: "text", text: "First attempt" }])
+			expect(chunks).toEqual([{ type: "text", text: "First attempt", outputIndex: 0 }])
 		})
 
 		it("retries a prompt-cache rejection before any response is emitted", async () => {
@@ -246,7 +246,7 @@ describe("VertexHandler", () => {
 			expect(mockCreate.mock.calls[0]?.[0].system).toEqual(expect.any(Array))
 			expect(mockCreate.mock.calls[1]?.[0].system).toBe(systemPrompt)
 			expect(chunks).toEqual([
-				{ type: "text", text: "Uncached attempt" },
+				{ type: "text", text: "Uncached attempt", outputIndex: 0 },
 				expect.objectContaining({ type: "outcome", status: "incomplete", terminal: false }),
 			])
 		})
@@ -395,6 +395,7 @@ describe("VertexHandler", () => {
 			expect(chunks[1]).toEqual({
 				type: "text",
 				text: "Hello",
+				outputIndex: 0,
 			})
 			expect(chunks[2]).toEqual({
 				type: "text",
@@ -490,14 +491,20 @@ describe("VertexHandler", () => {
 					cacheWriteTokens: 3,
 					cacheReadTokens: 4,
 				},
-				{ type: "text", text: "Completed response" },
-				{ type: "tool_call", id: "toolu_1", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{ type: "text", text: "Completed response", outputIndex: 0 },
+				{
+					type: "tool_call",
+					id: "toolu_1",
+					name: "read_file",
+					arguments: '{"path":"src/index.ts"}',
+					outputIndex: 1,
+				},
 				{ type: "tool_call_end", id: "toolu_1" },
 				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
 
-		it("should handle multiple content blocks with line breaks for Claude", async () => {
+		it("preserves provider text without injecting line breaks between blocks", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -541,20 +548,18 @@ describe("VertexHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(4)
+			expect(chunks.length).toBe(3)
 			expect(chunks[0]).toEqual({
 				type: "text",
 				text: "First line",
+				outputIndex: 0,
 			})
 			expect(chunks[1]).toEqual({
 				type: "text",
-				text: "\n",
-			})
-			expect(chunks[2]).toEqual({
-				type: "text",
 				text: "Second line",
+				outputIndex: 1,
 			})
-			expect(chunks[3]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
+			expect(chunks[2]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
 		})
 
 		it("should handle API errors for Claude", async () => {
@@ -779,6 +784,7 @@ describe("VertexHandler", () => {
 			const create = vitest
 				.fn()
 				.mockResolvedValueOnce({
+					stop_reason: "tool_use",
 					content: [
 						{ type: "thinking", thinking: "Need to read the file.", signature: "signed-thinking" },
 						{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } },
@@ -792,12 +798,18 @@ describe("VertexHandler", () => {
 			])) {
 				chunks.push(chunk)
 			}
-			expect(chunks).toContainEqual({ type: "reasoning", text: "Need to read the file." })
+			expect(chunks).toContainEqual({
+				type: "reasoning",
+				text: "Need to read the file.",
+				signature: "signed-thinking",
+				outputIndex: 0,
+			})
 			expect(chunks).toContainEqual({
 				type: "tool_call",
 				id: "read-1",
 				name: "read_file",
 				arguments: '{"path":"a.ts"}',
+				outputIndex: 1,
 			})
 			expect(provider.getThoughtSignature()).toBe("signed-thinking")
 
@@ -857,6 +869,7 @@ describe("VertexHandler", () => {
 				},
 				{
 					type: "content_block_delta",
+					index: 0,
 					delta: {
 						type: "thinking_delta",
 						thinking: " I need to consider all options.",
@@ -864,8 +877,10 @@ describe("VertexHandler", () => {
 				},
 				{
 					type: "content_block_delta",
+					index: 0,
 					delta: { type: "signature_delta", signature: "claude-signature-1" },
 				},
+				{ type: "content_block_stop", index: 0 },
 				{
 					type: "content_block_start",
 					index: 1,
@@ -874,6 +889,9 @@ describe("VertexHandler", () => {
 						text: "Here's my answer:",
 					},
 				},
+				{ type: "content_block_stop", index: 1 },
+				{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } },
+				{ type: "message_stop" },
 			]
 
 			// Setup async iterator for mock stream
@@ -904,12 +922,11 @@ describe("VertexHandler", () => {
 
 			// Verify text content is processed correctly
 			const textChunks = chunks.filter((chunk) => chunk.type === "text")
-			expect(textChunks).toHaveLength(2) // One for the text block, one for the newline
-			expect(textChunks[0].text).toBe("\n")
-			expect(textChunks[1].text).toBe("Here's my answer:")
+			expect(textChunks).toHaveLength(1)
+			expect(textChunks[0].text).toBe("Here's my answer:")
 		})
 
-		it("should handle multiple thinking blocks with line breaks for Claude", async () => {
+		it("preserves provider reasoning without injecting line breaks between blocks", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -953,20 +970,18 @@ describe("VertexHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(4)
+			expect(chunks.length).toBe(3)
 			expect(chunks[0]).toEqual({
 				type: "reasoning",
 				text: "First thinking block",
+				outputIndex: 0,
 			})
 			expect(chunks[1]).toEqual({
 				type: "reasoning",
-				text: "\n",
-			})
-			expect(chunks[2]).toEqual({
-				type: "reasoning",
 				text: "Second thinking block",
+				outputIndex: 1,
 			})
-			expect(chunks[3]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
+			expect(chunks[2]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
 		})
 
 		it("should filter out internal reasoning blocks before sending to API", async () => {

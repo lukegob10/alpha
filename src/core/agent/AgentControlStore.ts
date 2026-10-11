@@ -1203,6 +1203,7 @@ export interface CreateAgentInput {
 export interface UpdateAgentStatusInput {
 	snapshot?: AgentRuntimeSnapshot
 	terminalResult?: AgentTerminalResultMetadata
+	pendingFollowupEventId?: string | null
 	at?: number
 }
 
@@ -1927,6 +1928,9 @@ export class AgentControlStore {
 		record.status = status
 		this.claimRecordOwnership(record)
 		record.updatedAt = timestamp
+		if (input.pendingFollowupEventId === null) delete record.pendingFollowupEventId
+		else if (input.pendingFollowupEventId !== undefined)
+			record.pendingFollowupEventId = input.pendingFollowupEventId
 		if (input.snapshot) record.snapshot = clone(input.snapshot)
 		if (ACTIVE_STATUSES.has(status) && record.snapshot) {
 			delete record.snapshot.stopReason
@@ -1946,6 +1950,23 @@ export class AgentControlStore {
 				: { status: status as AgentTerminalResultMetadata["status"], completedAt: timestamp }
 		}
 		return record
+	}
+
+	/** Restore only the unlaunched admission that still owns this pending row. */
+	async rollbackAgentFollowup(previous: AgentRecord, eventId: string): Promise<boolean> {
+		return this.transact((draft) => {
+			const index = draft.agents.findIndex(
+				(record) => record.taskId === previous.taskId && record.rootTaskId === previous.rootTaskId,
+			)
+			const record = draft.agents[index]
+			if (!record || record.status !== "pending" || record.pendingFollowupEventId !== eventId) return false
+			this.assertRecordOwned(draft, record, "roll back follow-up admission")
+			if (!CLOSABLE_STATUSES.has(previous.status))
+				throw new Error("Follow-up rollback requires a terminal record")
+			// The mailbox instruction remains authoritative even though no runner started.
+			draft.agents[index] = { ...clone(previous), pendingFollowupEventId: eventId }
+			return true
+		})
 	}
 
 	async updateAgentSnapshot(
@@ -1990,6 +2011,13 @@ export class AgentControlStore {
 			.filter((record) => options.includeRoot !== false || record.role !== "root")
 			.filter((record) => !statuses || statuses.has(record.status))
 			.sort((left, right) => left.path.localeCompare(right.path) || left.createdAt - right.createdAt)
+			.map(clone)
+	}
+
+	listClosedAgents(rootTaskId: string): ClosedAgentTombstone[] {
+		this.assertInitialized()
+		return this.state.tombstones
+			.filter((record) => record.rootTaskId === rootTaskId && record.taskId !== rootTaskId)
 			.map(clone)
 	}
 
@@ -2547,7 +2575,12 @@ export class AgentControlStore {
 	}
 
 	/** Terminal and interrupted records remain queryable until this explicit close. */
-	async closeAgent(target: string, rootTaskId?: string): Promise<ClosedAgentTombstone> {
+	async closeAgent(
+		target: string,
+		rootTaskId?: string,
+		budgetUsage?: ClosedAgentTombstone["budgetUsage"],
+		orchestration?: ClosedAgentTombstone["orchestration"],
+	): Promise<ClosedAgentTombstone> {
 		return this.transact((draft) => {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
 			this.assertRecordOwned(draft, record, "close it")
@@ -2556,6 +2589,10 @@ export class AgentControlStore {
 			}
 			if (draft.agents.some((candidate) => candidate.parentTaskId === record.taskId)) {
 				throw new Error(`Agent ${record.path} cannot be closed while it has retained children`)
+			}
+			const retainedOrchestration = record.snapshot?.contextManifest?.orchestration ?? orchestration
+			if (retainedOrchestration && retainedOrchestration.ancestry.rootTaskId !== record.rootTaskId) {
+				throw new Error(`Agent ${record.path} retained orchestration from a different root`)
 			}
 
 			const tombstone: ClosedAgentTombstone = {
@@ -2566,6 +2603,20 @@ export class AgentControlStore {
 				status: record.status as ClosedAgentTombstone["status"],
 				closedAt: this.now(),
 				stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
+				budgetUsage: {
+					tokens: Math.max(
+						budgetUsage?.tokens ?? 0,
+						(record.terminalResult?.usage?.inputTokens ?? 0) +
+							(record.terminalResult?.usage?.outputTokens ?? 0),
+						(record.snapshot?.usage?.inputTokens ?? 0) + (record.snapshot?.usage?.outputTokens ?? 0),
+					),
+					cost: Math.max(
+						budgetUsage?.cost ?? 0,
+						record.terminalResult?.usage?.cost ?? 0,
+						record.snapshot?.usage?.cost ?? 0,
+					),
+				},
+				...(retainedOrchestration ? { orchestration: clone(retainedOrchestration) } : {}),
 			}
 			draft.agents = draft.agents.filter((candidate) => candidate.taskId !== record.taskId)
 			draft.tombstones.push(tombstone)

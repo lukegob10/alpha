@@ -76,13 +76,22 @@ describe("command tool schemas", () => {
 		const parameters = writeStdin.function.parameters as ObjectSchema
 
 		expect(writeStdin.function.name).toBe("write_stdin")
-		expect(parameters.required).toEqual(["session_id"])
+		expect(parameters.required).toEqual([])
 		expect(parameters.properties).toMatchObject({
 			session_id: { type: "integer" },
 			chars: { type: "string" },
 			yield_time_ms: { type: "integer" },
 			max_output_tokens: { type: "integer" },
 		})
+		expect(parameters.additionalProperties).toBe(false)
+	})
+
+	it("advertises only task artifact reads through write_stdin in Plan", () => {
+		const tool = createWriteStdinTool(true)
+		if (tool.type !== "function") throw new Error("Expected function tool")
+		const parameters = tool.function.parameters as ObjectSchema
+		expect(parameters.required).toEqual(["artifact_id"])
+		expect(Object.keys(parameters.properties ?? {}).sort()).toEqual(["artifact_id", "limit", "offset", "search"])
 		expect(parameters.additionalProperties).toBe(false)
 	})
 

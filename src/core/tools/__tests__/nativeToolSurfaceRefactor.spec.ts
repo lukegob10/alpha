@@ -145,6 +145,7 @@ describe("native tool-surface refactor contract", () => {
 				"update_ticket",
 				"delete_ticket",
 				"apply_patch",
+				"codebase_search",
 				"exec_command",
 				"request_user_input",
 				"view_image",
@@ -162,7 +163,7 @@ describe("native tool-surface refactor contract", () => {
 			].sort()
 
 			expect(names).toEqual(expected)
-			for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+			for (const legacyName of ["read_file", "list_files", "search_files"])
 				expect(names, legacyName).not.toContain(legacyName)
 			expect(new Set(names).size).toBe(names.length)
 		})
@@ -188,6 +189,7 @@ describe("native tool-surface refactor contract", () => {
 					"read_ticket",
 					"request_user_input",
 					"exec_command",
+					"write_stdin",
 					"spawn_agent",
 					"list_agents",
 					"wait_agent",
@@ -196,7 +198,8 @@ describe("native tool-surface refactor contract", () => {
 					"interrupt_agent",
 				].sort(),
 			)
-			for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+			expect(result.allowedFunctionNames).not.toContain("codebase_search")
+			for (const legacyName of ["read_file", "list_files", "search_files"])
 				expect(result.allowedFunctionNames, legacyName).not.toContain(legacyName)
 		})
 

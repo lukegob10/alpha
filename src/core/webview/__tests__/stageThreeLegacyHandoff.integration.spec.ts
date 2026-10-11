@@ -176,6 +176,7 @@ async function createHarness() {
 		task.overwriteAlphaMessages = vi.fn<Task["overwriteAlphaMessages"]>(async (messages) => {
 			task.clineMessages = structuredClone(messages)
 			await saveTaskMessages({ messages, taskId, globalStoragePath: storagePath })
+			return true
 		})
 		return task
 	}

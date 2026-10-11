@@ -8,6 +8,33 @@ import {
 } from "../canonicalAssistantHistory"
 
 describe("buildCanonicalAssistantHistoryContent", () => {
+	it("retains each opaque reasoning item without merging bytes, summaries, or adjacent text", () => {
+		const summary = [{ type: "summary_text", text: "Original summary." }]
+		const response = createAgentResponse([
+			{ type: "text", text: "Before." },
+			{ type: "reasoning", text: "", encryptedContent: "opaque-1", id: "r1", summary },
+			{ type: "reasoning", text: "", encryptedContent: "opaque-2", id: "r2", summary: [] },
+			{ type: "tool_call", id: "call", name: "read_file", arguments: {} },
+			{ type: "text", text: "After." },
+		])
+		const content = buildCanonicalAssistantHistoryContent(response)
+		summary[0]!.text = "External mutation"
+
+		expect(content).toEqual([
+			{ type: "text", text: "Before." },
+			{
+				type: "reasoning",
+				encrypted_content: "opaque-1",
+				id: "r1",
+				summary: [{ type: "summary_text", text: "Original summary." }],
+			},
+			{ type: "reasoning", encrypted_content: "opaque-2", id: "r2", summary: [] },
+			{ type: "tool_use", id: "call", name: "read_file", input: {} },
+			{ type: "text", text: "After." },
+		])
+		expect(buildCanonicalAnthropicAssistantHistoryContent(response)).toBeUndefined()
+	})
+
 	it("preserves reasoning positions and signatures in the canonical history projection", () => {
 		const response = createAgentResponse([
 			{ type: "text", text: "Before. " },
@@ -124,4 +151,43 @@ describe("buildCanonicalAssistantHistoryContent", () => {
 			{ type: "text", text: "Next." },
 		])
 	})
+
+	it("preserves signed empty and adjacent redacted thinking through serialization", () => {
+		const response = createAgentResponse([
+			{ type: "reasoning", text: "", signature: "empty-signature", outputIndex: 0 },
+			{ type: "reasoning", text: "", redactedData: "opaque-one+/=", outputIndex: 1 },
+			{ type: "reasoning", text: "", redactedData: "opaque-two+/=", outputIndex: 2 },
+			{ type: "tool_call", id: "call", name: "exec_command", arguments: {} },
+		])
+		const reloaded = JSON.parse(JSON.stringify(response))
+		expect(buildCanonicalAnthropicAssistantHistoryContent(reloaded)).toEqual([
+			{ type: "thinking", thinking: "", signature: "empty-signature" },
+			{ type: "redacted_thinking", data: "opaque-one+/=" },
+			{ type: "redacted_thinking", data: "opaque-two+/=" },
+			{ type: "tool_use", id: "call", name: "exec_command", input: {} },
+		])
+		expect(response.reasoning).toBe("")
+	})
+
+	it.each(["incomplete", "cancelled", "failed"] as const)(
+		"never seals an earlier unsigned block with another source position's signature (%s)",
+		(status) => {
+			const response = createAgentResponse(
+				[
+					{ type: "reasoning", text: "Unfinished earlier block.", outputIndex: 0 },
+					{ type: "reasoning", text: "Saved ", outputIndex: 1 },
+					{ type: "reasoning", text: "reasoning.", signature: "sealed-signature", outputIndex: 1 },
+					{ type: "reasoning", text: "", redactedData: "sealed-redacted+/=", outputIndex: 2 },
+					{ type: "reasoning", text: "Unfinished later block.", outputIndex: 3 },
+				],
+				{ status },
+			)
+			expect(buildCanonicalAnthropicAssistantHistoryContent(response)).toEqual([
+				{ type: "thinking", thinking: "Saved reasoning.", signature: "sealed-signature" },
+				{ type: "redacted_thinking", data: "sealed-redacted+/=" },
+			])
+			expect(response.items[0]).not.toHaveProperty("signature")
+			expect(response.items.at(-1)).not.toHaveProperty("signature")
+		},
+	)
 })

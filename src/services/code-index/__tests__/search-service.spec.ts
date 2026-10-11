@@ -108,6 +108,52 @@ describe("hybrid code search", () => {
 			vi.useRealTimers()
 		}
 	})
+	it("rejects an already cancelled caller without starting retrieval", async () => {
+		const controller = new AbortController()
+		const reason = new DOMException("Task stopped", "AbortError")
+		controller.abort(reason)
+		const service = new CodeIndexSearchService(config, state, embedder, store)
+		await expect(service.searchIndex("authentication", undefined, controller.signal)).rejects.toBe(reason)
+		expect(embedder.createEmbeddings).not.toHaveBeenCalled()
+		expect(store.searchLexical).not.toHaveBeenCalled()
+		expect(store.search).not.toHaveBeenCalled()
+	})
+
+	it("cancels only the caller's search and releases its cancellation subscription", async () => {
+		vi.useFakeTimers()
+		try {
+			const first = new AbortController()
+			const second = new AbortController()
+			const providerSignals: AbortSignal[] = []
+			const releases: Array<(response: { embeddings: number[][] }) => void> = []
+			vi.mocked(embedder.createEmbeddings).mockImplementation(
+				(_texts, _options, _purpose, signal) =>
+					new Promise((resolve) => {
+						providerSignals.push(signal!)
+						releases.push(resolve)
+					}),
+			)
+			const service = new CodeIndexSearchService(config, state, embedder, store)
+			const cancelledRun = service.searchIndex("authentication", undefined, first.signal)
+			const activeRun = service.searchIndex("sessions", undefined, second.signal)
+			const reason = new DOMException("First task stopped", "AbortError")
+			const rejected = expect(cancelledRun).rejects.toBe(reason)
+			first.abort(reason)
+			await rejected
+			expect(providerSignals[0].aborted).toBe(true)
+			expect(providerSignals[1].aborted).toBe(false)
+			releases[0]({ embeddings: [[1, 0, 0]] })
+			releases[1]({ embeddings: [[0, 1, 0]] })
+			await expect(activeRun).resolves.toEqual([])
+			expect(store.search).toHaveBeenCalledExactlyOnceWith([0, 1, 0], undefined, 0.4, 200)
+			second.abort()
+			expect(providerSignals[1].aborted).toBe(false)
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("allows a semantic-only query time to produce evidence when local channels have no candidates", async () => {
 		vi.useFakeTimers()
 		try {
@@ -124,6 +170,30 @@ describe("hybrid code search", () => {
 				results: [{ id: "semantic" }],
 				diagnostics: { semanticStatus: "complete" },
 			})
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("does not return partial success when the caller cancels with a timeout", async () => {
+		vi.useFakeTimers()
+		try {
+			const controller = new AbortController()
+			vi.mocked(embedder.createEmbeddings).mockImplementation(
+				(_texts, _model, _purpose, signal) =>
+					new Promise((_resolve, reject) => {
+						signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })
+					}),
+			)
+			vi.mocked(store.searchLexical!).mockResolvedValue([result("local")])
+			const service = new CodeIndexSearchService(config, state, embedder, store)
+			const pending = service.searchIndex("authentication", undefined, controller.signal)
+			await vi.advanceTimersByTimeAsync(0)
+			const reason = new DOMException("Caller deadline reached", "TimeoutError")
+			const cancelled = expect(pending).rejects.toBe(reason)
+			controller.abort(reason)
+			await cancelled
+			expect(vi.getTimerCount()).toBe(0)
 		} finally {
 			vi.useRealTimers()
 		}

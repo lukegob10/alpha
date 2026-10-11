@@ -2739,7 +2739,8 @@ describe("Alpha", () => {
 			})
 			await task.resumeWithEditedMessage("Replacement", images)
 			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
-			expect(overwrite).toHaveBeenCalledWith(prefix)
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toEqual(prefix)
 			expect(loop).toHaveBeenCalledWith(
 				[
 					{ type: "text", text: "<user_message>\nReplacement\n</user_message>" },
@@ -3312,30 +3313,65 @@ describe("Alpha", () => {
 			expect(newerController.signal.aborted).toBe(false)
 		})
 
-		it("merges steered content with the interrupted user turn", async () => {
+		it.each([true, false])("keeps separate steering inputs atomic when saving succeeds=%s", async (saved) => {
 			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "initial task",
 				startTask: false,
 			})
-			task.apiConversationHistory = [
-				{
+			const prefix: ApiMessage = { role: "assistant", content: "Ready", ts: 1 }
+			const original: ApiMessage = {
+				role: "user",
+				content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
+				input_origin: "human",
+				queued_message_ids: ["original-input"],
+				ts: 2,
+			}
+			task.apiConversationHistory = [prefix]
+			let attemptedHistory: ApiMessage[] = []
+			const save = vi.spyOn(task as any, "saveApiConversationHistory").mockImplementation(async () => {
+				attemptedHistory = structuredClone(task.apiConversationHistory)
+				return saved
+			})
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+			const acknowledge = vi.spyOn(task.messageQueueService, "acknowledgeMessages")
+			const capture = { details: "", commit: vi.fn(), release: vi.fn() }
+			const onPersisted = vi.fn()
+			const steer = task["buildUserMessageContent"]("steered context", [])
+			const persist = task["persistUserContentWithEnvironment"](
+				steer,
+				capture,
+				undefined,
+				onPersisted,
+				undefined,
+				["steering-input"],
+				"human",
+				[original],
+			)
+			if (saved) {
+				await persist
+				expect(task.apiConversationHistory).toEqual(attemptedHistory)
+				expect(acknowledge).toHaveBeenCalledWith(["original-input", "steering-input"])
+			} else {
+				await expect(persist).rejects.toThrow("Failed to persist the user turn")
+				expect(task.apiConversationHistory).toEqual([prefix])
+				expect(acknowledge).not.toHaveBeenCalled()
+			}
+			expect(attemptedHistory).toEqual([
+				prefix,
+				original,
+				expect.objectContaining({
 					role: "user",
-					content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
-				} as any,
-			]
-
-			const mergedContent = [
-				...(task as any).takeLastApiUserMessageContent(),
-				...(task as any).buildUserMessageContent("steered context", []),
-			]
-
-			expect(mergedContent).toEqual([
-				{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
-				{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
+					content: steer,
+					input_origin: "human",
+					queued_message_ids: ["steering-input"],
+				}),
 			])
-			expect(task.apiConversationHistory).toEqual([])
+			expect(save).toHaveBeenCalledOnce()
+			expect(onPersisted).toHaveBeenCalledTimes(saved ? 1 : 0)
+			expect(capture.commit).toHaveBeenCalledTimes(saved ? 1 : 0)
+			expect(capture.release).toHaveBeenCalledOnce()
 		})
 	})
 
@@ -3850,13 +3886,23 @@ describe("Alpha", () => {
 				expect((task as any).buildCleanConversationHistory(task.apiConversationHistory)[0]).not.toHaveProperty(
 					"agent_message_id",
 				)
-				// Human steering must preserve the receipt instead of merging away its identity.
-				expect((task as any).takeLastApiUserMessageContent()).toEqual([])
-				expect(task.apiConversationHistory).toHaveLength(1)
+				// Human steering retains the complete agent envelope and its delivery receipt.
+				const delivered = structuredClone(task.apiConversationHistory[0])
+				await task["persistUserContentWithEnvironment"](
+					task["buildUserMessageContent"]("Human steering", []),
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					[],
+					"human",
+				)
+				expect(task.apiConversationHistory[0]).toEqual(delivered)
+				expect(task.apiConversationHistory[1]).toMatchObject({ role: "user", input_origin: "human" })
 				// Replay after a crash between transcript persistence and inbox ACK.
 				await task.receiveAgentMessage(message)
 				await (task as any).deliverAgentMessages()
-				expect(task.apiConversationHistory).toHaveLength(1)
+				expect(task.apiConversationHistory).toHaveLength(2)
 			},
 		)
 
@@ -5211,6 +5257,69 @@ describe("Alpha", () => {
 					expect.objectContaining({ id: "provider-failure-reply", text: "Use the smaller repair" }),
 				])
 				expect(task.apiConversationHistory.some((message) => message.queued_message_ids?.length)).toBe(false)
+			},
+		)
+
+		it.each([false, true])(
+			"persists fresh steering during manual retry publication without replay (split=%s)",
+			async (split) => {
+				const task = createTask()
+				const initial = "Inspect the parser in this chat."
+				const original = "Create a new independent task for the parser review."
+				const steer = "Do not create a new task. Stay in this chat."
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "say").mockImplementation(async (type) => {
+					if (type === "api_req_retried") await task.steerUserMessageDurably(steer, [], "retry-steering")
+				})
+				if (split) {
+					vi.mocked(captureEnvironmentDetails).mockImplementationOnce(async () => {
+						await task.steerUserMessageDurably(original, [], "initial-steering")
+						return { details: "", commit: vi.fn(), release: vi.fn() }
+					})
+				}
+				let retriedHistory: ApiMessage[] = []
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("Manual retry required"), { firstChunkFailure: true })
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							retriedHistory = structuredClone(task.apiConversationHistory)
+							yield { type: "text", text: "Continuing in this chat." }
+						})(),
+					)
+
+				await expect(
+					task.runAgentRequests(task["buildUserMessageContent"](split ? initial : original, []), false),
+				).resolves.toMatchObject({
+					status: "completed",
+				})
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(task["getUserRequestTextForCatalog"]()).toBe(steer)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(initial)),
+				).toHaveLength(split ? 1 : 0)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(original)),
+				).toHaveLength(1)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(steer)),
+				).toHaveLength(1)
+				expect(retriedHistory.at(-1)).toMatchObject({
+					input_origin: "human",
+					queued_message_ids: ["retry-steering"],
+				})
+				expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
 			},
 		)
 
@@ -7597,7 +7706,7 @@ describe("Alpha", () => {
 				await readBarrier
 				return savedApi
 			})
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
@@ -7631,7 +7740,7 @@ describe("Alpha", () => {
 				.mockResolvedValue([{ role: "user", content: "saved", ts: 1 }])
 			if (phase === "ui") uiRead.mockRejectedValue(failure)
 			else apiRead.mockRejectedValue(failure)
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask")
 			await expect((task as any).resumeTaskFromHistory()).rejects.toBe(failure)
@@ -7650,7 +7759,7 @@ describe("Alpha", () => {
 				task.abandoned = true
 				return [{ role: "user", content: "saved", ts: 1 }]
 			})
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
@@ -7708,7 +7817,9 @@ describe("Alpha", () => {
 				await task["resumeTaskFromHistory"]()
 				expect(continueLoop).toHaveBeenCalledOnce()
 				const content = continueLoop.mock.calls[0][0] as Array<{ type: string }>
-				expect(content.filter((block) => block.type === "tool_result")).toEqual(receipts)
+				expect(content.filter((block) => block.type === "tool_result")).toEqual([])
+				expect(task.apiConversationHistory.at(-1)?.content).toEqual(receipts)
+				expect(task.apiConversationHistory).toEqual(original)
 				expect(savedApiHistory).toEqual(original)
 			},
 		)

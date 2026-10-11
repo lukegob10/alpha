@@ -21,7 +21,7 @@ import { ContextProxy } from "../../config/ContextProxy"
 import { createAgentLifecycleSnapshot, reduceAgentLifecycleEvent } from "../../agent/lifecycle/reducer"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
-import { createAgentResponse } from "../../agent/AgentResponse"
+import { createAgentResponse, type AgentResponseItem } from "../../agent/AgentResponse"
 import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import { getToolBatchIsolationError } from "../../agent/ToolScheduler"
 import { getNativeTools } from "../../prompts/tools/native-tools"
@@ -744,6 +744,90 @@ describe("Task persistence", () => {
 		})
 	})
 
+	it.each([
+		{
+			name: "signed empty thinking",
+			item: { type: "reasoning", text: "", signature: "sealed-empty", outputIndex: 0 },
+			content: { type: "thinking", thinking: "", signature: "sealed-empty" },
+		},
+		{
+			name: "redacted thinking",
+			item: { type: "reasoning", text: "", redactedData: "opaque-redacted", outputIndex: 0 },
+			content: { type: "redacted_thinking", data: "opaque-redacted" },
+		},
+	] satisfies Array<{ name: string; item: AgentResponseItem; content: unknown }>)(
+		"retains a terminal assistant boundary containing only $name",
+		async ({ item, content }) => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test",
+				startTask: false,
+			})
+			task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
+			Object.assign(task, { api: { getThoughtSignature: () => "legacy-aggregate-signature" } })
+			const response = createAgentResponse([item], { status: "cancelled", reason: "interrupted" })
+
+			const result = await task["persistTerminalCanonicalResponse"](response, "cancelled", "interrupted")
+
+			expect(result.assistantPersisted).toBe(true)
+			expect(task.apiConversationHistory).toHaveLength(1)
+			expect(JSON.parse(JSON.stringify(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages))).toEqual([
+				expect.objectContaining({
+					role: "assistant",
+					content: [content],
+					agentResponseItems: [item],
+					agentResponseOutcome: response.outcome,
+				}),
+			])
+		},
+	)
+
+	it("does not apply a sealed signature to unsigned partial thinking after interruption", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "test",
+			startTask: false,
+		})
+		task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
+		Object.assign(task, { api: { getThoughtSignature: () => "legacy-aggregate-signature" } })
+		const response = createAgentResponse(
+			[
+				{ type: "reasoning", text: "", signature: "sealed-empty", outputIndex: 0 },
+				{ type: "reasoning", text: "Unfinished thinking", outputIndex: 1 },
+			],
+			{ status: "incomplete", reason: "provider disconnected" },
+		)
+
+		await task["persistTerminalCanonicalResponse"](response, "incomplete", "provider disconnected")
+
+		expect(task.apiConversationHistory.at(-1)).toMatchObject({
+			content: [{ type: "thinking", thinking: "", signature: "sealed-empty" }],
+			agentResponseItems: response.items,
+		})
+	})
+
+	it.each([
+		[],
+		[{ type: "text", text: "" }],
+		[{ type: "reasoning", text: "", outputIndex: 0 }],
+		[{ type: "usage", inputTokens: 10, outputTokens: 0 }],
+	] satisfies AgentResponseItem[][])("skips empty terminal output %j", async (...items) => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "test",
+			startTask: false,
+		})
+		const response = createAgentResponse(items, { status: "failed" })
+
+		await task["persistTerminalCanonicalResponse"](response, "failed", "provider failed before output")
+
+		expect(task.apiConversationHistory).toEqual([])
+		expect(mockSaveApiMessages).not.toHaveBeenCalled()
+	})
+
 	it("persists and replays every encrypted OpenAI Responses reasoning item in order", async () => {
 		const task = new Task({
 			provider: mockProvider,
@@ -1183,6 +1267,88 @@ describe("Task persistence", () => {
 			expect(callArgs.messages).not.toBe(task.apiConversationHistory)
 			// But the content should be the same
 			expect(callArgs.messages).toEqual(task.apiConversationHistory)
+		})
+
+		it("does not acknowledge a resume repair absent from an older queued snapshot", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test",
+				startTask: false,
+			})
+			const repair = { message: { role: "user" as const, content: "Repaired receipt" }, persisted: false }
+			task.apiConversationHistory = [{ role: "user", content: "Original history" }]
+			task["pendingResumeHistoryRepair"] = repair
+			let release!: () => void
+			const barrier = new Promise<void>((resolve) => (release = resolve))
+			let entered!: () => void
+			const started = new Promise<void>((resolve) => (entered = resolve))
+			mockSaveApiMessages.mockImplementationOnce(async () => {
+				entered()
+				await barrier
+			})
+			const olderSave = task["saveApiConversationHistory"]()
+			await started
+			task.apiConversationHistory.push(repair.message)
+			release()
+
+			expect(await olderSave).toBe(true)
+			expect(repair.persisted).toBe(false)
+			expect(await task["saveApiConversationHistory"]()).toBe(true)
+			expect(repair.persisted).toBe(true)
+		})
+
+		it("acknowledges only the repair captured by a queued save when a newer receipt takes ownership", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test",
+				startTask: false,
+			})
+			const older = { message: { role: "user" as const, content: "Older repair" }, persisted: false }
+			const newer = { message: { role: "user" as const, content: "Newer repair" }, persisted: false }
+			task.apiConversationHistory = [older.message]
+			task["pendingResumeHistoryRepair"] = older
+			let release!: () => void
+			const barrier = new Promise<void>((resolve) => (release = resolve))
+			let entered!: () => void
+			const started = new Promise<void>((resolve) => (entered = resolve))
+			mockSaveApiMessages.mockImplementationOnce(async () => {
+				entered()
+				await barrier
+			})
+			const olderSave = task["saveApiConversationHistory"]()
+			await started
+			task.apiConversationHistory = [newer.message]
+			task["pendingResumeHistoryRepair"] = newer
+			release()
+
+			expect(await olderSave).toBe(true)
+			expect(older.persisted).toBe(true)
+			expect(newer.persisted).toBe(false)
+			expect(task["pendingResumeHistoryRepair"]).toBe(newer)
+			expect(await task["saveApiConversationHistory"]()).toBe(true)
+			expect(newer.persisted).toBe(true)
+		})
+
+		it("does not acknowledge a repair until both transcript stores accept the snapshot", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test",
+				startTask: false,
+			})
+			const repair = { message: { role: "user" as const, content: "Repaired receipt" }, persisted: false }
+			task.apiConversationHistory = [repair.message]
+			task["pendingResumeHistoryRepair"] = repair
+			vi.spyOn(task["providerTranscriptStore"], "commitAuthoritativeTranscript").mockRejectedValueOnce(
+				new Error("fixture: sidecar commit failed"),
+			)
+
+			expect(await task["saveApiConversationHistory"]()).toBe(false)
+			expect(repair.persisted).toBe(false)
+			expect(await task["saveApiConversationHistory"]()).toBe(true)
+			expect(repair.persisted).toBe(true)
 		})
 
 		it("serializes replacement instances so an older delayed save cannot land after the replacement", async () => {

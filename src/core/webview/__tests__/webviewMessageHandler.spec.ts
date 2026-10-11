@@ -670,6 +670,107 @@ describe("webviewMessageHandler - Google code index settings", () => {
 			false,
 		)
 	})
+
+	it("keeps a saved Gemini key and reports validation failure without a second initialization", async () => {
+		const settings = {
+			...createVertexSettings(),
+			codebaseIndexEnabled: true,
+			codebaseIndexEmbedderProvider: "gemini",
+			codebaseIndexGeminiApiKey: "index-secret",
+		}
+		const status = {
+			systemStatus: "Error",
+			message: "HTTP 402: prepayment credits depleted",
+			workspaceEnabled: true,
+		}
+		const manager = {
+			handleSettingsChange: vi.fn().mockRejectedValue(new Error(status.message)),
+			initialize: vi.fn(),
+			isFeatureEnabled: true,
+			isFeatureConfigured: true,
+			isInitialized: false,
+			getCurrentStatus: vi.fn(() => status),
+		}
+		vi.mocked(mockAlphaProvider.contextProxy.getValue).mockReturnValue({ codebaseIndexEmbedderProvider: "gemini" })
+		vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: settings,
+		} as WebviewMessage)
+
+		expect(mockAlphaProvider.contextProxy.storeSecret).toHaveBeenCalledWith(
+			"codebaseIndexGeminiApiKey",
+			"index-secret",
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "codeIndexSettingsSaved", success: true }),
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "indexingStatusUpdate",
+			values: status,
+		})
+		expect(manager.initialize).not.toHaveBeenCalled()
+	})
+
+	it.each(["startIndexing", "toggleWorkspaceIndexing"] as const)(
+		"loads saved configuration before checking readiness when enabling via %s",
+		async (type) => {
+			const manager = {
+				isFeatureEnabled: false,
+				isFeatureConfigured: false,
+				isInitialized: false,
+				state: "Standby",
+				setWorkspaceEnabled: vi.fn().mockResolvedValue(undefined),
+				initialize: vi.fn(async () => {
+					manager.isFeatureEnabled = true
+					manager.isFeatureConfigured = true
+					manager.isInitialized = true
+				}),
+				startIndexing: vi.fn(),
+				getCurrentStatus: vi.fn(() => ({ systemStatus: "Standby", workspaceEnabled: true })),
+			}
+			vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+			await webviewMessageHandler(mockAlphaProvider, { type, bool: true })
+
+			expect(manager.setWorkspaceEnabled).toHaveBeenCalledWith(true)
+			expect(manager.initialize).toHaveBeenCalledWith(mockAlphaProvider.contextProxy)
+			expect(manager.startIndexing).toHaveBeenCalledOnce()
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "indexingStatusUpdate",
+				values: manager.getCurrentStatus(),
+			})
+		},
+	)
+
+	it.each(["startIndexing", "toggleWorkspaceIndexing"] as const)(
+		"publishes the enabled workspace and provider error when %s fails",
+		async (type) => {
+			const status = {
+				systemStatus: "Error",
+				message: "HTTP 402: prepayment credits depleted",
+				workspaceEnabled: true,
+			}
+			const manager = {
+				setWorkspaceEnabled: vi.fn().mockResolvedValue(undefined),
+				isFeatureEnabled: true,
+				isFeatureConfigured: true,
+				initialize: vi.fn().mockRejectedValue(new Error(status.message)),
+				startIndexing: vi.fn(),
+				getCurrentStatus: vi.fn(() => status),
+			}
+			vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+			await webviewMessageHandler(mockAlphaProvider, { type, bool: true })
+
+			expect(manager.startIndexing).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "indexingStatusUpdate",
+				values: status,
+			})
+		},
+	)
 })
 
 describe("webviewMessageHandler - image mentions", () => {

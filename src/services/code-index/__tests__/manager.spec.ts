@@ -514,6 +514,61 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			)
 		})
 
+		it.each([true, false])(
+			"retries failed Gemini validation with unchanged settings after workspace enablement (%s)",
+			async (validOnRetry) => {
+				mockEmbedder.embedderInfo.name = "gemini"
+				;(manager as any)._cacheManager = { initialize: vi.fn() }
+				mockServiceFactoryInstance.validateEmbedder
+					.mockResolvedValueOnce({ valid: false, error: "HTTP 402: prepayment credits depleted" })
+					.mockResolvedValueOnce({ valid: validOnRetry, error: "HTTP 402: prepayment credits depleted" })
+				const contextProxy = {} as Parameters<CodeIndexManager["initialize"]>[0]
+
+				await expect(manager.initialize(contextProxy)).rejects.toThrow("HTTP 402")
+				expect(manager.isInitialized).toBe(false)
+				expect(mockFileWatcher.dispose).toHaveBeenCalledOnce()
+				await manager.setWorkspaceEnabled(false)
+				await manager.initialize(contextProxy)
+				expect(mockStateManager.setSystemState).toHaveBeenLastCalledWith(
+					"Standby",
+					"Indexing not enabled for this workspace",
+				)
+				await manager.setWorkspaceEnabled(true)
+
+				if (validOnRetry) {
+					await manager.initialize(contextProxy)
+					expect(manager.isInitialized).toBe(true)
+					expect(CodeIndexOrchestrator.prototype.startIndexing).toHaveBeenCalledOnce()
+				} else {
+					await expect(manager.initialize(contextProxy)).rejects.toThrow("HTTP 402")
+					expect(mockStateManager.setSystemState).toHaveBeenLastCalledWith(
+						"Error",
+						"HTTP 402: prepayment credits depleted",
+					)
+					expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+				}
+				expect(mockServiceFactoryInstance.validateEmbedder).toHaveBeenCalledTimes(2)
+				expect(manager.getCurrentStatus().workspaceEnabled).toBe(true)
+			},
+		)
+
+		it("rebuilds initialized services after an indexing error before the next start", async () => {
+			;(manager as any)._cacheManager = { initialize: vi.fn() }
+			mockFileWatcher.whenIdle = vi.fn().mockResolvedValue(undefined)
+			mockServiceFactoryInstance.validateEmbedder.mockResolvedValue({ valid: true })
+			const contextProxy = {} as Parameters<CodeIndexManager["initialize"]>[0]
+			await manager.initialize(contextProxy)
+			expect(manager.isInitialized).toBe(true)
+
+			// A running scanner can fail after the initial credential check succeeds.
+			mockStateManager.state = "Error"
+			await manager.initialize(contextProxy)
+
+			expect(mockServiceFactoryInstance.validateEmbedder).toHaveBeenCalledTimes(2)
+			expect(CodeIndexOrchestrator.prototype.startIndexing).toHaveBeenCalledTimes(2)
+			expect(manager.isInitialized).toBe(true)
+		})
+
 		it("should set generic error state when embedder validation throws", async () => {
 			// Arrange
 			// Since the real service factory catches exceptions, we should mock it to resolve with an error

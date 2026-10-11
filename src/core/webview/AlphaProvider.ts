@@ -7350,6 +7350,7 @@ export class AlphaProvider
 		this.subagentGroupControllers.set(prepared.group.groupId, controller)
 
 		let lifecycleWrites = Promise.resolve()
+		let launched = false
 		const unsubscribe = this.asyncSubagentRunManager.subscribe((event) => {
 			if (event.groupId !== prepared.group.groupId || event.taskId !== envelope.id) return
 			lifecycleWrites = lifecycleWrites
@@ -7374,6 +7375,15 @@ export class AlphaProvider
 
 		try {
 			await this.attachSubagentGroupToParentHistory(parent, prepared)
+			const currentControl = this.agentControlStore.getAgent(controlRecord.taskId, controlRecord.rootTaskId)
+			if (
+				controlRecord.pendingFollowupEventId &&
+				(controller.signal.aborted ||
+					currentControl?.status !== "pending" ||
+					currentControl.pendingFollowupEventId !== controlRecord.pendingFollowupEventId)
+			) {
+				throw new Error("Follow-up admission was cancelled before launch")
+			}
 			const launchOptions = {
 				groupId: prepared.group.groupId,
 				nickname: agent.nickname,
@@ -7389,6 +7399,7 @@ export class AlphaProvider
 			const handle = isFollowup
 				? this.asyncSubagentRunManager.relaunch(envelope, launchOptions, controller.signal)
 				: this.asyncSubagentRunManager.launch(envelope, launchOptions, controller.signal)
+			launched = true
 			if (!isFollowup) {
 				parent.emit(AlphaCodeEventName.TaskSpawned, handle.taskId)
 			}
@@ -7421,6 +7432,11 @@ export class AlphaProvider
 		} catch (error) {
 			parentSignal.removeEventListener("abort", cancelFromParent)
 			if (!controller.signal.aborted) controller.abort(error)
+			if (controlRecord.pendingFollowupEventId && !launched) {
+				unsubscribe()
+				this.subagentGroupControllers.delete(prepared.group.groupId)
+				throw error
+			}
 			const cancelled = this.asyncSubagentRunManager.cancel(envelope.id, error as Error)
 			await lifecycleWrites
 			unsubscribe()
@@ -7700,6 +7716,7 @@ export class AlphaProvider
 					at: event.occurredAt,
 					snapshot: this.toAgentRuntimeSnapshot(event.snapshot),
 					terminalResult,
+					pendingFollowupEventId: null,
 				},
 				record.rootTaskId,
 			)
@@ -7712,6 +7729,7 @@ export class AlphaProvider
 				at: event.occurredAt,
 				snapshot: this.toAgentRuntimeSnapshot(event.snapshot),
 				terminalResult,
+				pendingFollowupEventId: null,
 			},
 			{
 				eventId: `agent-lifecycle:${event.eventId}`,
@@ -9184,56 +9202,93 @@ export class AlphaProvider
 		const descriptor = this.subagentDescriptors.get(record.taskId)
 		if (!descriptor) throw new Error(`Agent ${record.path} is missing its retained runtime descriptor`)
 		this.assertRetainedAgentRelaunchCapacity(record, prepared, descriptor.contextManifest)
-		descriptor.pendingFollowup = instruction
+		const previousGroup = structuredClone(prepared.group)
+		const previousInstruction = descriptor.pendingFollowup
+		const publicationKey = `${prepared.group.groupId}:${record.taskId}`
+		const wasPublished = this.publishedSubagentResults.has(publicationKey)
+		const previousRunId = this.asyncSubagentRunManager.getEvents(record.taskId).at(-1)?.runId
+		const eventId = record.pendingFollowupEventId ?? `agent-followup:${crypto.randomUUID()}`
+		let admitted = false
+		try {
+			descriptor.pendingFollowup = instruction
+			const restartedAt = Date.now()
+			prepared.group.executionMode = "async"
+			prepared.group.status = "pending"
+			delete prepared.group.startedAt
+			delete prepared.group.completedAt
+			const agent = prepared.group.agents[0]
+			agent.status = "pending"
+			agent.phase = "queued"
+			agent.phaseStartedAt = restartedAt
+			agent.usage = { durationMs: 0 }
+			delete agent.startedAt
+			delete agent.completedAt
+			delete agent.cancelRequestedAt
+			delete agent.summary
+			delete agent.error
+			delete agent.changedFiles
+			delete agent.verification
+			delete agent.resultDeliveredAt
+			delete agent.pendingApproval
+			delete agent.stopReason
+			this.publishedSubagentResults.delete(publicationKey)
 
-		const restartedAt = Date.now()
-		prepared.group.executionMode = "async"
-		prepared.group.status = "pending"
-		delete prepared.group.startedAt
-		delete prepared.group.completedAt
-		const agent = prepared.group.agents[0]
-		agent.status = "pending"
-		agent.phase = "queued"
-		agent.phaseStartedAt = restartedAt
-		agent.usage = { durationMs: 0 }
-		delete agent.startedAt
-		delete agent.completedAt
-		delete agent.cancelRequestedAt
-		delete agent.summary
-		delete agent.error
-		delete agent.changedFiles
-		delete agent.verification
-		delete agent.resultDeliveredAt
-		delete agent.pendingApproval
-		delete agent.stopReason
-		this.publishedSubagentResults.delete(`${prepared.group.groupId}:${record.taskId}`)
+			const admission = await this.agentControlStore.updateAgentStatusAndAppendEvent(
+				record.taskId,
+				"pending",
+				{ at: restartedAt, snapshot: this.toAgentRuntimeSnapshot(agent), pendingFollowupEventId: eventId },
+				{
+					eventId,
+					rootTaskId: record.rootTaskId,
+					sender: parent.taskId,
+					recipient: record.taskId,
+					kind: "followup",
+					name: "followup_started",
+					payload: { message: instruction },
+					// A failed publication reuses the original authoritative receipt.
+					createdAt: record.pendingFollowupEventId ? undefined : restartedAt,
+				},
+				record.rootTaskId,
+			)
+			admitted = true
+			await owner.upsertSubagentGroup(prepared.group)
+			if (parent.abort || owner.abort || owner.getTaskLifetimeCancellationSignal().aborted)
+				throw new Error("Follow-up admission was cancelled before launch")
 
-		await this.agentControlStore.updateAgentStatus(
-			record.taskId,
-			"pending",
-			{ at: restartedAt, snapshot: this.toAgentRuntimeSnapshot(agent) },
-			record.rootTaskId,
-		)
-		await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: parent.taskId,
-			recipient: record.taskId,
-			kind: "followup",
-			name: "followup_started",
-			payload: { message: instruction },
-			createdAt: restartedAt,
-		})
-		await owner.upsertSubagentGroup(prepared.group)
-
-		const retainedSnapshot = this.asyncSubagentRunManager.getSnapshot(record.taskId)
-		const handle = await this.startPreparedSubagentRun(
-			owner,
-			prepared,
-			owner.getTaskLifetimeCancellationSignal(),
-			this.agentControlStore.getAgent(record.taskId, record.rootTaskId) ?? record,
-			retainedSnapshot !== undefined,
-		)
-		return { ...handle, followup: true }
+			const retainedSnapshot = this.asyncSubagentRunManager.getSnapshot(record.taskId)
+			const handle = await this.startPreparedSubagentRun(
+				owner,
+				prepared,
+				owner.getTaskLifetimeCancellationSignal(),
+				admission.record,
+				retainedSnapshot !== undefined,
+			)
+			return { ...handle, followup: true }
+		} catch (error) {
+			// A new generation owns lifecycle and cleanup once launch has happened,
+			// even if a later publication throws or the run completes immediately.
+			if (this.asyncSubagentRunManager.getEvents(record.taskId).at(-1)?.runId !== previousRunId) throw error
+			const rolledBack =
+				!admitted ||
+				(await this.retryDurableSubagentWrite(
+					`restore sub-agent ${record.taskId} after follow-up admission failed`,
+					() => this.agentControlStore.rollbackAgentFollowup(record, eventId),
+				))
+			if (rolledBack) {
+				prepared.group = previousGroup
+				descriptor.pendingFollowup = previousInstruction
+				if (wasPublished) this.publishedSubagentResults.add(publicationKey)
+				this.retainCompletedSubagentGroup(prepared.group.groupId)
+				if (admitted) {
+					try {
+						await owner.upsertSubagentGroup(prepared.group)
+					} catch (publicationError) {
+						this.log(`Failed to publish restored sub-agent ${record.taskId}: ${String(publicationError)}`)
+					}
+				}
+			}
+			throw error
+		}
 	}
 
 	private assertAgentHasRetainedTask(record: AgentRecord): void {
@@ -9500,7 +9555,12 @@ export class AlphaProvider
 		if (owner && owner !== this) return owner.closeAgent(parent, target)
 		const record = await this.requireControlledAgent(parent, target)
 		await this.synchronizeParentVerificationObligations(parent)
-		const tombstone = await this.agentControlStore.closeAgent(record.taskId, record.rootTaskId)
+		const tombstone = await this.agentControlStore.closeAgent(
+			record.taskId,
+			record.rootTaskId,
+			this.getSubagentTaskBudgetUsage(record.taskId, record),
+			this.findFrozenRootOrchestration(record.rootTaskId),
+		)
 		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
 		try {
 			await this.agentControlStore.appendEvent({
@@ -9594,13 +9654,15 @@ export class AlphaProvider
 	private getSubagentRootBudgetExhaustion(rootTaskId: string): "root_token_budget" | "root_cost_budget" | undefined {
 		const retained = this.exhaustedSubagentRootBudgets.get(rootTaskId)
 		if (retained) return retained
-		const persisted = this.agentControlStore
-			.listAgents({ rootTaskId, includeRoot: false })
-			.map((record) => record.terminalResult?.stopReason ?? record.snapshot?.stopReason)
-			.find(
-				(reason): reason is "root_token_budget" | "root_cost_budget" =>
-					reason === "root_token_budget" || reason === "root_cost_budget",
-			)
+		const persisted = [
+			...this.agentControlStore
+				.listAgents({ rootTaskId, includeRoot: false })
+				.map((record) => record.terminalResult?.stopReason ?? record.snapshot?.stopReason),
+			...this.agentControlStore.listClosedAgents(rootTaskId).map((record) => record.stopReason),
+		].find(
+			(reason): reason is "root_token_budget" | "root_cost_budget" =>
+				reason === "root_token_budget" || reason === "root_cost_budget",
+		)
 		if (persisted) this.exhaustedSubagentRootBudgets.set(rootTaskId, persisted)
 		return persisted
 	}
@@ -9610,47 +9672,47 @@ export class AlphaProvider
 		let cost = 0
 		const seen = new Set<string>()
 		for (const record of this.agentControlStore.listAgents({ rootTaskId, includeRoot: false })) {
-			const history = this.taskHistoryStore.get(record.taskId)
-			const historyTokens = (history?.tokensIn ?? 0) + (history?.tokensOut ?? 0)
-			const historyCost = history?.totalCost ?? 0
-			const retainedUsage = record.terminalResult?.usage ?? record.snapshot?.usage
-			const retainedTokens = (retainedUsage?.inputTokens ?? 0) + (retainedUsage?.outputTokens ?? 0)
-			const retainedCost = retainedUsage?.cost ?? 0
-			const live = this.getLiveTask(record.taskId)
-			if (live) {
-				const usage =
-					typeof live.getTokenUsage === "function"
-						? live.getTokenUsage()
-						: {
-								totalTokensIn: 0,
-								totalTokensOut: 0,
-								totalCost: 0,
-								contextTokens: 0,
-							}
-				tokens += Math.max(usage.totalTokensIn + usage.totalTokensOut, retainedTokens, historyTokens)
-				cost += Math.max(usage.totalCost, retainedCost, historyCost)
-			} else {
-				tokens += Math.max(retainedTokens, historyTokens)
-				cost += Math.max(retainedCost, historyCost)
-			}
+			const usage = this.getSubagentTaskBudgetUsage(record.taskId, record)
+			tokens += usage.tokens
+			cost += usage.cost
+			seen.add(record.taskId)
+		}
+		for (const record of this.agentControlStore.listClosedAgents(rootTaskId)) {
+			if (seen.has(record.taskId)) continue
+			const usage = this.getSubagentTaskBudgetUsage(record.taskId)
+			tokens += Math.max(usage.tokens, record.budgetUsage?.tokens ?? 0)
+			cost += Math.max(usage.cost, record.budgetUsage?.cost ?? 0)
 			seen.add(record.taskId)
 		}
 		for (const taskId of this.taskSessions.getLiveTaskIds()) {
 			if (seen.has(taskId)) continue
 			const task = this.getLiveTask(taskId)
 			if (!task || task.taskKind !== "subagent" || (task.rootTaskId ?? task.taskId) !== rootTaskId) continue
-			const usage =
-				typeof task.getTokenUsage === "function"
-					? task.getTokenUsage()
-					: { totalTokensIn: 0, totalTokensOut: 0, totalCost: 0, contextTokens: 0 }
-			const history = this.taskHistoryStore.get(taskId)
-			tokens += Math.max(
-				usage.totalTokensIn + usage.totalTokensOut,
-				(history?.tokensIn ?? 0) + (history?.tokensOut ?? 0),
-			)
-			cost += Math.max(usage.totalCost, history?.totalCost ?? 0)
+			const usage = this.getSubagentTaskBudgetUsage(taskId)
+			tokens += usage.tokens
+			cost += usage.cost
 		}
 		return { tokens, cost }
+	}
+
+	private getSubagentTaskBudgetUsage(taskId: string, record?: AgentRecord): { tokens: number; cost: number } {
+		const history = this.taskHistoryStore.get(taskId)
+		const live = this.getLiveTask(taskId)
+		const liveUsage = typeof live?.getTokenUsage === "function" ? live.getTokenUsage() : undefined
+		return {
+			tokens: Math.max(
+				(history?.tokensIn ?? 0) + (history?.tokensOut ?? 0),
+				(liveUsage?.totalTokensIn ?? 0) + (liveUsage?.totalTokensOut ?? 0),
+				(record?.terminalResult?.usage?.inputTokens ?? 0) + (record?.terminalResult?.usage?.outputTokens ?? 0),
+				(record?.snapshot?.usage?.inputTokens ?? 0) + (record?.snapshot?.usage?.outputTokens ?? 0),
+			),
+			cost: Math.max(
+				history?.totalCost ?? 0,
+				liveUsage?.totalCost ?? 0,
+				record?.terminalResult?.usage?.cost ?? 0,
+				record?.snapshot?.usage?.cost ?? 0,
+			),
+		}
 	}
 
 	private exhaustSubagentRootBudget(
@@ -9700,6 +9762,10 @@ export class AlphaProvider
 			this.agentControlStore
 				.listAgents({ rootTaskId, includeRoot: false })
 				.map((record) => record.snapshot?.contextManifest?.orchestration)
+				.find((orchestration) => orchestration?.ancestry.rootTaskId === rootTaskId) ??
+			this.agentControlStore
+				.listClosedAgents(rootTaskId)
+				.map((record) => record.orchestration)
 				.find((orchestration) => orchestration?.ancestry.rootTaskId === rootTaskId) ??
 			this.taskHistoryStore
 				.getAll()

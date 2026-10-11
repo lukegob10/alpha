@@ -1514,7 +1514,7 @@ function formatPersistedOutput(
 		"Preview:",
 		result.preview,
 		"",
-		'In Code mode, use manage_command with action "read" and this artifact_id to view more output.',
+		"Use write_stdin with this artifact_id to view more output.",
 	].join("\n")
 }
 

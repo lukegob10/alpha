@@ -8,6 +8,8 @@ export const MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS = 32
 
 export interface TerminalOutputReceipt {
 	readonly output: string
+	/** Unread raw output remains outside this reservation at capture time. */
+	readonly hasMoreOutput?: boolean
 	commit(): void
 	release(): void
 }

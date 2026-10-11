@@ -17,6 +17,7 @@ type OutputReceiptReservation = {
 
 const EMPTY_TERMINAL_OUTPUT_RECEIPT: TerminalOutputReceipt = Object.freeze({
 	output: "",
+	hasMoreOutput: false,
 	commit: () => undefined,
 	release: () => undefined,
 })
@@ -191,7 +192,9 @@ export abstract class BaseTerminalProcess
 		const limit = this.normalizeReceiptLimit(maxCharacters)
 
 		if (limit === 0 || this.activeOutputReceipt) {
-			return EMPTY_TERMINAL_OUTPUT_RECEIPT
+			return this.hasUnretrievedOutput()
+				? { ...EMPTY_TERMINAL_OUTPUT_RECEIPT, hasMoreOutput: true }
+				: EMPTY_TERMINAL_OUTPUT_RECEIPT
 		}
 
 		const startIndex = this.clampRetrievedIndex()
@@ -200,7 +203,9 @@ export abstract class BaseTerminalProcess
 		const endIndex = Math.min(maxEndIndex, Math.max(startIndex, range.endIndex))
 
 		if (endIndex <= startIndex) {
-			return EMPTY_TERMINAL_OUTPUT_RECEIPT
+			return this.hasUnretrievedOutput()
+				? { ...EMPTY_TERMINAL_OUTPUT_RECEIPT, hasMoreOutput: true }
+				: EMPTY_TERMINAL_OUTPUT_RECEIPT
 		}
 
 		const reservation: OutputReceiptReservation = {
@@ -231,6 +236,7 @@ export abstract class BaseTerminalProcess
 
 		return Object.freeze({
 			output: range.output,
+			hasMoreOutput: endIndex < this.fullOutput.length,
 			commit: () => finish(true),
 			release: () => finish(false),
 		})

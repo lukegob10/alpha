@@ -7,7 +7,7 @@ import { customToolRegistry } from "@alpha-code/core"
 import { type Mode, FileRestrictionError, getModeBySlug, getGroupName, planModeSlug } from "../../shared/modes"
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { isPlanCommandAllowed, isPlanCommandCwdAllowed } from "../../shared/plan-command"
-import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../shared/tools"
+import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES, isCommandArtifactRead } from "../../shared/tools"
 import { parseMcpToolName } from "../../utils/mcp-name"
 
 const executableNativeToolNames: readonly string[] = validToolNames
@@ -23,6 +23,7 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"request_user_input",
 	"request_user_input_async",
 	"exec_command",
+	"write_stdin",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
@@ -204,6 +205,14 @@ export function isToolAllowedForMode(
 		if (typeof command !== "string" || !isPlanCommandAllowed(command)) return false
 		if (!isPlanCommandCwdAllowed(cwd)) return false
 		if (toolParams.verification != null) return false
+	}
+	if (
+		modeSlug === planModeSlug &&
+		resolvedTool === "write_stdin" &&
+		toolParams &&
+		!isCommandArtifactRead(toolParams)
+	) {
+		return false
 	}
 
 	// Plan's allowed set is canonical and cannot be weakened or expanded by a

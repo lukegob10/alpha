@@ -57,6 +57,8 @@ export interface ToolResultMetadata {
 	exitCode?: number
 	/** Structured command outcome retained alongside the legacy user-facing content string. */
 	commandResult?: CommandToolResult
+	/** The producer returned a partial view while retaining additional output for retrieval. */
+	truncated?: boolean
 	timedOut?: boolean
 	/** Host-issued progress observation. This is deliberately not verification evidence. */
 	trustedExploration?: TrustedExplorationObservation
@@ -144,7 +146,9 @@ export function formatCommandToolResult(result: CommandToolResult, maxCharacters
 		...(chunkId ? [`Chunk ID: ${chunkId}`] : []),
 		`Wall time: ${result.wall_time_seconds.toFixed(4)} seconds`,
 		...(typeof result.exit_code === "number" ? [`Process exited with code ${result.exit_code}`] : []),
-		...(result.session_id ? [`Process running with session ID ${result.session_id}`] : []),
+		...(result.session_id && !result.has_more_output
+			? [`Process running with session ID ${result.session_id}`]
+			: []),
 		...(typeof result.original_token_count === "number"
 			? [`Original token count: ${result.original_token_count}`]
 			: []),
@@ -152,8 +156,12 @@ export function formatCommandToolResult(result: CommandToolResult, maxCharacters
 	]
 	const prefix = `${lines.join("\n")}\n`
 	const artifactNote = result.artifact_id
-		? `\nOutput truncated. Read artifact ${result.artifact_id} with read_command_output.`
+		? `\nOutput truncated. Read artifact ${result.artifact_id} with write_stdin using ${JSON.stringify({ artifact_id: result.artifact_id })}.`
 		: ""
+	const remainingOutputNote =
+		result.has_more_output && result.session_id
+			? `\nOutput truncated. Read remaining output with write_stdin using ${JSON.stringify({ session_id: result.session_id })}.`
+			: ""
 	const budget = Math.max(0, Math.floor(maxCharacters))
 	const marker = "\n[output truncated]"
 	const output =
@@ -162,7 +170,7 @@ export function formatCommandToolResult(result: CommandToolResult, maxCharacters
 			: budget <= marker.length
 				? result.output.slice(0, budget)
 				: `${result.output.slice(0, budget - marker.length)}${marker}`
-	return `${prefix}${output}${artifactNote}`
+	return `${prefix}${output}${artifactNote}${remainingOutputNote}`
 }
 
 /**

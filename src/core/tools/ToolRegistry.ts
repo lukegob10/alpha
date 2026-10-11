@@ -17,7 +17,7 @@ import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { captureVerificationContent, extractMutationPaths } from "../agent/VerificationScope"
 import path from "path"
 import { isPathWithinRoot } from "./pathSafety"
-import { TOOL_ALIASES } from "../../shared/tools"
+import { isCommandArtifactRead, TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { toolSearch } from "../prompts/tools/native-tools/discover_tools"
@@ -35,8 +35,10 @@ import { requestUserInputTool } from "./RequestUserInputTool"
 import { requestUserInputAsyncTool } from "./RequestUserInputAsyncTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
+import { createToolFailure } from "./ToolFailure"
 import { cancelAgentTool } from "./CancelAgentTool"
 import { closeAgentTool } from "./CloseAgentTool"
+import { codebaseSearchTool } from "./CodebaseSearchTool"
 import {
 	createTaskTool,
 	listTasksTool,
@@ -98,6 +100,8 @@ export interface ToolCapabilities {
 export interface ToolExecutionContext {
 	task: Task
 	call: ToolUse
+	/** Captured scheduler mode; custom tools must not consult mutable task settings. */
+	readonly mode?: string
 	signal?: AbortSignal
 	callbacks: ToolCallbacks
 }
@@ -310,6 +314,42 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 	readonly name = "write_stdin" as const
 
 	async execute(params: NativeToolArgs["write_stdin"], task: Task, callbacks: ToolCallbacks): Promise<void> {
+		const denial = task.getTaskToolDenialReason?.("write_stdin", params)
+		if (denial) {
+			callbacks.setResultMetadata?.({ status: "denied" })
+			callbacks.pushToolResult(denial)
+			return
+		}
+		if (isCommandArtifactRead(params)) {
+			await manageCommandTool.execute(
+				{
+					action: "read",
+					artifact_id: params.artifact_id,
+					...(params.search != null ? { search: params.search } : {}),
+					...(params.offset != null ? { offset: params.offset } : {}),
+					...(params.limit != null ? { limit: params.limit } : {}),
+				},
+				task,
+				callbacks,
+			)
+			return
+		}
+		if (
+			typeof params.session_id !== "number" ||
+			params.artifact_id != null ||
+			params.search != null ||
+			params.offset != null ||
+			params.limit != null
+		) {
+			callbacks.setResultMetadata?.({ status: "error" })
+			await callbacks.handleError(
+				"controlling command",
+				new Error(
+					"Supply either session_id with session controls, or artifact_id with optional search, offset, and limit",
+				),
+			)
+			return
+		}
 		const session = commandSessionRegistry.resolve(task, params.session_id)
 		if (!session) {
 			callbacks.setResultMetadata?.({ status: "error" })
@@ -477,6 +517,7 @@ const TOOL_NAMES = [
 	"list_mcp_resource_templates",
 	"read_mcp_resource",
 	"read_diagnostic_evidence",
+	"codebase_search",
 	"apply_diff",
 	"apply_patch",
 	"ask_followup_question",
@@ -807,6 +848,17 @@ export class ToolRegistry {
 		this.registerBuiltIn("list_mcp_resource_templates", listMcpResourceTemplatesTool, schemas)
 		this.registerBuiltIn("read_mcp_resource", readMcpResourceTool, schemas)
 		this.registerBuiltIn("read_diagnostic_evidence", readDiagnosticEvidenceTool, schemas)
+		this.registerBuiltIn(
+			"codebase_search",
+			codebaseSearchTool,
+			schemas,
+			async ({ task, call, signal, callbacks }) => {
+				await codebaseSearchTool.handle(task, call as ToolUse<"codebase_search">, {
+					...callbacks,
+					signal: signal ?? callbacks.signal,
+				})
+			},
+		)
 		this.registerBuiltIn("apply_diff", applyDiffTool, schemas)
 		this.registerBuiltIn("manage_command", manageCommandTool, schemas)
 		this.registerBuiltIn("write_stdin", writeStdinTool, schemas)
@@ -996,22 +1048,38 @@ export class ToolRegistry {
 					capabilities: getToolCapabilities("custom_tool"),
 					statusSource: "handler",
 					exposure: "deferred",
-					execute: async ({ task, call, callbacks }) => {
+					execute: async ({ task, call, mode, signal, callbacks }) => {
+						signal?.throwIfAborted()
+						if (!mode) throw new Error(t("tools:customToolMissingMode"))
+						let args: unknown
 						try {
-							const args = parameters?.parse(call.nativeArgs ?? {}) ?? call.nativeArgs ?? {}
-							const result = await execute(args, {
-								mode: await task.getTaskMode(),
-								task,
-							})
-							callbacks.pushToolResult(result)
+							args = parameters?.parse(call.nativeArgs ?? {}) ?? call.nativeArgs ?? {}
 						} catch (error) {
-							callbacks.setResultMetadata?.({ status: "error" })
-							callbacks.pushToolResult(
-								formatResponse.toolError(
-									`Error executing custom tool "${customTool.name}": ${error instanceof Error ? error.message : String(error)}`,
-								),
-							)
+							callbacks.setResultMetadata?.({
+								status: "error",
+								failure: createToolFailure({
+									reason: "invalid_arguments",
+									scopeKind: "operation",
+									scopeIdentity: [customTool.name, call.nativeArgs],
+									effectsStarted: "no",
+									outcome: "known",
+									recovery: { kind: "repair" },
+								}),
+							})
+							throw error
 						}
+						// A fixed discriminator prevents custom names from inheriting built-in approval exemptions.
+						if (
+							!(await callbacks.askApproval(
+								"tool",
+								JSON.stringify({ tool: "custom_tool", name: customTool.name, arguments: args }),
+							))
+						)
+							return
+						signal?.throwIfAborted()
+						const result = await execute(args, { mode, task, signal })
+						signal?.throwIfAborted()
+						callbacks.pushToolResult(result)
 					},
 				})
 			}

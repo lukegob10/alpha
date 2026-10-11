@@ -391,7 +391,7 @@ class ToolResultCollector {
 	}
 
 	isTruncated(): boolean {
-		return this.truncated
+		return this.truncated || this.metadata.truncated === true
 	}
 }
 
@@ -1842,6 +1842,7 @@ export class ToolScheduler {
 		const requiresEffectStart =
 			startsAuditedCommandRead ||
 			(!prepareCommand &&
+				!prepareMcpRead &&
 				prepared.descriptor?.capabilities.sideEffects !== undefined &&
 				prepared.descriptor.capabilities.sideEffects !== "none" &&
 				(!prepared.commandRead || prepared.commandRead.serialFallback))
@@ -1868,6 +1869,7 @@ export class ToolScheduler {
 			const effectsUnknown =
 				executionAdmitted &&
 				!prepareCommand &&
+				!prepareMcpRead &&
 				(!prepared.commandRead || prepared.commandRead.serialFallback) &&
 				prepared.descriptor?.capabilities.sideEffects !== "none" &&
 				status !== "denied"
@@ -2446,6 +2448,7 @@ export class ToolScheduler {
 							{
 								task: this.toolTask,
 								call: prepared.toolCall!,
+								mode: this.options.mode,
 								signal: this.executionSignal,
 								callbacks,
 							},
@@ -2465,6 +2468,7 @@ export class ToolScheduler {
 							: prepared.descriptor!.execute({
 									task: this.toolTask,
 									call: prepared.toolCall!,
+									mode: this.options.mode,
 									signal: this.executionSignal,
 									callbacks,
 								})

@@ -5,6 +5,38 @@ import { ApiMessage } from "../task-persistence/apiMessages"
 import { cleanupAfterTruncation } from "../condense"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 import { getTaskDirectoryPath } from "../../utils/storage"
+import {
+	getCommandArtifactExecutionId,
+	READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH,
+} from "../tools/commandOutputContract"
+
+/** Retain references in native inputs/results, summaries, and historical message representations. */
+function collectArtifactExecutionIds(messages: readonly (AlphaMessage | ApiMessage)[]): Set<string> {
+	const ids = new Set<string>()
+	const pending: unknown[] = [...messages]
+	const seen = new WeakSet<object>()
+	const artifactReferences = new RegExp(
+		`cmd-[0-9a-f-]{1,${READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH - 8}}\\.txt`,
+		"g",
+	)
+	for (const message of messages) {
+		if (message.ts) ids.add(String(message.ts))
+	}
+	while (pending.length > 0) {
+		const value = pending.pop()
+		if (typeof value === "string") {
+			// Candidate extraction is conservative; the shared validator owns accepted filenames.
+			for (const match of value.matchAll(artifactReferences)) {
+				const id = getCommandArtifactExecutionId(match[0])
+				if (id !== undefined) ids.add(id)
+			}
+		} else if (value !== null && typeof value === "object" && !seen.has(value)) {
+			seen.add(value)
+			pending.push(...Object.values(value))
+		}
+	}
+	return ids
+}
 
 export interface RewindOptions {
 	/** Whether to include the target message in deletion (edit=true, delete=false) */
@@ -77,6 +109,9 @@ export class MessageManager {
 	 */
 	private async performRewind(toIndex: number, cutoffTs: number, options: RewindOptions): Promise<void> {
 		const { skipCleanup = false } = options
+		const artifactCandidates = skipCleanup
+			? undefined
+			: collectArtifactExecutionIds([...this.task.clineMessages, ...this.task.apiConversationHistory])
 		const firstMessage = this.task.clineMessages[0]
 		const replacesOpeningPrompt =
 			firstMessage?.ts === cutoffTs && firstMessage.type === "say" && firstMessage.say === "text"
@@ -85,10 +120,16 @@ export class MessageManager {
 		const removedIds = this.collectRemovedContextEventIds(toIndex)
 
 		// Step 2: Truncate clineMessages
-		await this.truncateAlphaMessages(toIndex)
+		const uiSaved = await this.truncateAlphaMessages(toIndex)
 
 		// Step 3: Truncate and clean API history (combined with cleanup for efficiency)
-		await this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup, replacesOpeningPrompt)
+		await this.truncateApiHistoryWithCleanup(
+			cutoffTs,
+			removedIds,
+			skipCleanup,
+			replacesOpeningPrompt,
+			uiSaved === true ? artifactCandidates : undefined,
+		)
 	}
 
 	/**
@@ -127,8 +168,8 @@ export class MessageManager {
 	/**
 	 * Truncate clineMessages to the specified index.
 	 */
-	private async truncateAlphaMessages(toIndex: number): Promise<void> {
-		await this.task.overwriteAlphaMessages(this.task.clineMessages.slice(0, toIndex))
+	private async truncateAlphaMessages(toIndex: number): Promise<boolean> {
+		return this.task.overwriteAlphaMessages(this.task.clineMessages.slice(0, toIndex))
 	}
 
 	/**
@@ -137,7 +178,7 @@ export class MessageManager {
 	 *
 	 * This combined approach:
 	 * 1. Avoids multiple writes to API history
-	 * 2. Only writes if the history actually changed
+	 * 2. Only writes if history changed or artifact cleanup needs a durable receipt
 	 * 3. Handles both truncation and cleanup atomically
 	 *
 	 * Note on timestamp handling:
@@ -153,6 +194,7 @@ export class MessageManager {
 		removedIds: ContextEventIds,
 		skipCleanup: boolean,
 		replacesOpeningPrompt: boolean,
+		artifactCandidates?: ReadonlySet<string>,
 	): Promise<void> {
 		const originalHistory = this.task.apiConversationHistory
 		let apiHistory = [...originalHistory]
@@ -220,46 +262,46 @@ export class MessageManager {
 			apiHistory = cleanupAfterTruncation(apiHistory)
 		}
 
-		// Step 6: Cleanup orphaned command output artifacts
-		// Collect timestamps from remaining messages to identify valid artifact IDs
-		// Artifacts whose IDs don't match any remaining message timestamp will be removed
-		if (!skipCleanup) {
-			const validIds = new Set<string>()
-
-			// Collect timestamps from remaining clineMessages
-			for (const msg of this.task.clineMessages) {
-				if (msg.ts) {
-					validIds.add(String(msg.ts))
-				}
-			}
-
-			// Collect timestamps from remaining apiHistory
-			for (const msg of apiHistory) {
-				if (msg.ts) {
-					validIds.add(String(msg.ts))
-				}
-			}
-
-			// Cleanup artifacts asynchronously (fire-and-forget with error handling)
-			this.cleanupOrphanedArtifacts(validIds).catch((error) => {
-				console.error("[MessageManager] Error cleaning up orphaned command output artifacts:", error)
-			})
-		}
-
-		// Only write if the history actually changed
+		const retainedIds = collectArtifactExecutionIds([...this.task.clineMessages, ...apiHistory])
+		const hasRemovedArtifacts =
+			artifactCandidates !== undefined && [...artifactCandidates].some((id) => !retainedIds.has(id))
+		const mayCleanArtifacts = !skipCleanup && hasRemovedArtifacts && this.isArtifactCleanupIdle()
 		const historyChanged =
 			apiHistory.length !== originalHistory.length || apiHistory.some((msg, i) => msg !== originalHistory[i])
 
-		if (historyChanged) {
-			await this.task.overwriteApiConversationHistory(apiHistory)
+		// A failed earlier save can leave already-truncated memory ahead of disk. Even unchanged
+		// API history needs an affirmative save before removing artifacts from either transcript.
+		if (historyChanged || mayCleanArtifacts) {
+			const apiSaved = await this.task.overwriteApiConversationHistory(apiHistory)
+			if (apiSaved === true && mayCleanArtifacts && artifactCandidates && this.isArtifactCleanupIdle()) {
+				const currentIds = collectArtifactExecutionIds([
+					...this.task.clineMessages,
+					...this.task.apiConversationHistory,
+				])
+				await this.cleanupOrphanedArtifacts(currentIds, artifactCandidates)
+			}
 		}
 	}
 
+	private isArtifactCleanupIdle(): boolean {
+		// Abort can precede process termination; it is not evidence that cancellation has joined.
+		return (
+			!this.task.abort &&
+			!this.task.isTurnActive?.() &&
+			!this.task.hasActiveCommandExecutions?.() &&
+			!this.task.hasPendingSteerMessage?.() &&
+			!this.task.messageQueueService?.hasUnconsumedInput()
+		)
+	}
+
 	/**
-	 * Cleanup orphaned command output artifacts.
-	 * Removes artifact files whose execution IDs don't match any remaining message timestamps.
+	 * Remove only artifacts referenced before this committed rewind and no longer retained.
+	 * New or untracked command output is outside this cleanup's ownership.
 	 */
-	private async cleanupOrphanedArtifacts(validIds: Set<string>): Promise<void> {
+	private async cleanupOrphanedArtifacts(
+		validIds: ReadonlySet<string>,
+		candidates: ReadonlySet<string>,
+	): Promise<void> {
 		try {
 			// Access globalStoragePath and taskId through the task reference
 			const task = this.task as any // Access private member
@@ -272,7 +314,19 @@ export class MessageManager {
 
 			const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
 			const outputDir = path.join(taskDir, "command-output")
-			await OutputInterceptor.cleanupByIds(outputDir, validIds)
+			if (this.isArtifactCleanupIdle()) {
+				await OutputInterceptor.cleanupByIds(outputDir, validIds, candidates, (id) => {
+					// Directory reads and prior unlinks yield. A follow-up may have resumed or
+					// retained this same artifact in the meantime; recheck at effect admission.
+					return (
+						this.isArtifactCleanupIdle() &&
+						!collectArtifactExecutionIds([
+							...this.task.clineMessages,
+							...this.task.apiConversationHistory,
+						]).has(id)
+					)
+				})
+			}
 		} catch (error) {
 			// Silently fail - cleanup is best-effort
 			console.debug("[MessageManager] Artifact cleanup skipped:", error)

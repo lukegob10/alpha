@@ -1,15 +1,15 @@
 import type OpenAI from "openai"
 
-const CODEBASE_SEARCH_DESCRIPTION = `Find files most relevant to the search query using semantic search. Searches based on meaning rather than exact text matches. By default searches entire workspace. Reuse the user's exact wording unless there's a clear reason not to - their phrasing often helps semantic search. Queries MUST be in English (translate if needed).
+const CODEBASE_SEARCH_DESCRIPTION = `Find relevant code using hybrid search: semantic embeddings, keyword matches, and current workspace evidence. Results include source snippets, paths, enclosing symbols, and coverage diagnostics. Searches the entire workspace unless path narrows the scope. Queries must be in English (translate if needed).
 
-Use only when the implementation location is unknown and one semantic query will help locate it. Not the first hop for a known token, symbol, or filename; use search_files for those. When a relevant path or line is already known, read it directly. Reuse relevant evidence already obtained. Search another area only to resolve a material unanswered question, dependency, or contradiction in the requested task.
+Use this for conceptual discovery when the implementation location or terminology is unknown, such as finding the code responsible for authentication. For a known token, symbol, filename, or error message, use a bounded exec_command with rg or rg --files. Read known files directly through exec_command and reuse evidence already obtained. If this search fails, returns no useful results, or reports partial coverage, continue with bounded command inspection; do not repeatedly retry an unavailable index. Search another area only to resolve a material unanswered question in the requested scope.
 
 Parameters:
-- query: (required) The search query. Reuse the user's exact wording/question format unless there's a clear reason not to.
+- query: (required) Describe the behavior or responsibility you need to locate. Reuse the user's wording when it expresses that intent.
 - path: (optional) Limit search to specific subdirectory (relative to the current workspace directory). Leave empty for entire workspace.
 
 Example: Searching for user authentication code
-{ "query": "User login and password hashing", "path": "src/auth" }
+{ "query": "Where are user login and password verification handled?", "path": null }
 
 Example: Searching entire workspace
 { "query": "database connection pooling", "path": null }`

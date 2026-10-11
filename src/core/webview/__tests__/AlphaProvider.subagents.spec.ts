@@ -129,6 +129,7 @@ const makeProviderHarness = (
 		boundedDelegationManager: { cancel: () => false },
 		asyncSubagentRunManager: {
 			cancel: () => false,
+			getEvents: () => [],
 			getSnapshot: () => undefined,
 			waitForResult: () => undefined,
 			resolveRunTaskId: () => undefined,

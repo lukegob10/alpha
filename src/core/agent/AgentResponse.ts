@@ -53,7 +53,17 @@ export interface AgentResponseOutcome {
  */
 export type AgentResponseItem =
 	| { type: "text"; text: string }
-	| { type: "reasoning"; text: string; signature?: string }
+	| {
+			type: "reasoning"
+			text: string
+			signature?: string
+			encryptedContent?: string
+			redactedData?: string
+			/** Preserves provider block boundaries when reasoning deltas are projected to history. */
+			outputIndex?: number
+			id?: string
+			summary?: unknown[]
+	  }
 	| { type: "tool_call"; id: string; name: string; arguments: unknown }
 	| ({ type: "usage" } & AgentResponseUsage)
 	| { type: "grounding"; sources: GroundingSource[] }

@@ -14,7 +14,7 @@ import {
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
-import { type ToolUse, type McpToolUse, type NativeToolArgs } from "../../shared/tools"
+import { isCommandArtifactRead, type ToolUse, type McpToolUse, type NativeToolArgs } from "../../shared/tools"
 import { resolveToolAlias } from "../prompts/tools/filter-tools-for-mode"
 import type {
 	ApiStreamToolCallStartChunk,
@@ -106,9 +106,25 @@ export class NativeToolCallParser {
 	}
 
 	private static isWriteStdinArgs(value: unknown): value is NativeToolArgs["write_stdin"] {
+		if (!this.isArgumentObject(value)) return false
+		if (isCommandArtifactRead(value)) return true
+		// Strict-schema providers use null for inactive fields in either branch.
+		// Artifact paths and ranges remain subject to the canonical reader's validation.
 		if (
-			!this.isArgumentObject(value) ||
-			!this.hasOnlyKeys(value, ["session_id", "chars", "yield_time_ms", "max_output_tokens"])
+			!this.hasOnlyKeys(value, [
+				"session_id",
+				"chars",
+				"yield_time_ms",
+				"max_output_tokens",
+				"artifact_id",
+				"search",
+				"offset",
+				"limit",
+			]) ||
+			value.artifact_id != null ||
+			value.search != null ||
+			value.offset != null ||
+			value.limit != null
 		) {
 			return false
 		}
@@ -116,13 +132,13 @@ export class NativeToolCallParser {
 			typeof value.session_id === "number" &&
 			Number.isSafeInteger(value.session_id) &&
 			value.session_id >= 1 &&
-			(value.chars === undefined || (typeof value.chars === "string" && value.chars.length <= 16_384)) &&
-			(value.yield_time_ms === undefined ||
+			(value.chars == null || (typeof value.chars === "string" && value.chars.length <= 16_384)) &&
+			(value.yield_time_ms == null ||
 				(typeof value.yield_time_ms === "number" &&
 					Number.isInteger(value.yield_time_ms) &&
 					value.yield_time_ms >= 0 &&
 					value.yield_time_ms <= 300_000)) &&
-			(value.max_output_tokens === undefined ||
+			(value.max_output_tokens == null ||
 				(typeof value.max_output_tokens === "number" &&
 					Number.isInteger(value.max_output_tokens) &&
 					value.max_output_tokens >= 0 &&

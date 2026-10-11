@@ -84,6 +84,7 @@ describe("custom tool catalog names", () => {
 		const outputs: unknown[] = []
 		await descriptor!.execute({
 			task: { getTaskMode: async () => "code" } as Task,
+			mode: "code",
 			call: {
 				type: "tool_use",
 				id: "custom-call",
@@ -93,6 +94,7 @@ describe("custom tool catalog names", () => {
 				nativeArgs: { value: "test" },
 			} as ToolUse,
 			callbacks: {
+				askApproval: async () => true,
 				pushToolResult: (value: unknown) => {
 					outputs.push(value)
 				},

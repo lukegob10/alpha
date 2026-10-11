@@ -4,6 +4,131 @@ import type { ApiStreamChunk } from "../../../api/transform/stream"
 import { AgentResponseAccumulator } from "../AgentResponseAccumulator"
 
 describe("AgentResponseAccumulator", () => {
+	it("retains opaque reasoning at source positions when final items arrive after text and calls", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "text", text: "Before.", outputIndex: 0 })
+		await accumulator.add({ type: "tool_call", id: "call", name: "read_file", arguments: "{}", outputIndex: 2 })
+		await accumulator.add({ type: "text", text: "After.", outputIndex: 4 })
+		await accumulator.add({
+			type: "reasoning",
+			text: "",
+			encryptedContent: "opaque-2",
+			id: "reasoning-2",
+			summary: [{ type: "summary_text", text: "Second." }],
+			outputIndex: 3,
+		})
+		await accumulator.add({
+			type: "reasoning",
+			text: "",
+			encryptedContent: "opaque-1",
+			id: "reasoning-1",
+			summary: [{ type: "summary_text", text: "First." }],
+			outputIndex: 1,
+		})
+
+		const response = await accumulator.finish()
+		expect(response.items).toEqual([
+			{ type: "text", text: "Before." },
+			{
+				type: "reasoning",
+				text: "",
+				encryptedContent: "opaque-1",
+				id: "reasoning-1",
+				summary: [{ type: "summary_text", text: "First." }],
+			},
+			{ type: "tool_call", id: "call", name: "read_file", arguments: {} },
+			{
+				type: "reasoning",
+				text: "",
+				encryptedContent: "opaque-2",
+				id: "reasoning-2",
+				summary: [{ type: "summary_text", text: "Second." }],
+			},
+			{ type: "text", text: "After." },
+		])
+		expect(response.text).toBe("Before.After.")
+		expect(response.reasoning).toBe("")
+	})
+
+	it("reconciles streamed and final opaque metadata once per output position", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const emitted: string[] = []
+		const onItem = (item: { type: string }) => {
+			emitted.push(item.type)
+		}
+		const reasoning = {
+			type: "reasoning" as const,
+			text: "",
+			encryptedContent: "opaque-1",
+			id: "reasoning-1",
+			outputIndex: 0,
+		}
+		await accumulator.add({ ...reasoning, summary: [] }, onItem)
+		const summary = [{ type: "summary_text", text: "Final summary." }]
+		await accumulator.add({ ...reasoning, summary }, onItem)
+		await accumulator.add({ ...reasoning, summary }, onItem)
+		await accumulator.add({ ...reasoning, id: "reasoning-2", encryptedContent: "opaque-2", outputIndex: 1 }, onItem)
+		summary[0]!.text = "External mutation"
+
+		const response = await accumulator.finish()
+		expect(response.items).toEqual([
+			{
+				type: "reasoning",
+				text: "",
+				encryptedContent: "opaque-1",
+				id: "reasoning-1",
+				summary: [{ type: "summary_text", text: "Final summary." }],
+			},
+			{ type: "reasoning", text: "", encryptedContent: "opaque-2", id: "reasoning-2" },
+		])
+		expect(emitted).toEqual(["reasoning", "reasoning"])
+	})
+
+	it("seals the indexed reasoning block without repeating visible deltas or signing a different block", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const observed: string[] = []
+		const onItem = (item: { type: string; text?: string }) => {
+			if (item.type === "reasoning" && item.text) observed.push(item.text)
+		}
+		await accumulator.add({ type: "reasoning", text: "First.", outputIndex: 0 }, onItem)
+		await accumulator.add({ type: "reasoning", text: "Second.", outputIndex: 2 }, onItem)
+		await accumulator.add({ type: "thinking_complete", signature: "first-signature", outputIndex: 0 }, onItem)
+		await accumulator.add({ type: "reasoning", text: "", redactedData: "opaque+/=", outputIndex: 1 }, onItem)
+		await accumulator.add({ type: "thinking_complete", signature: "second-signature", outputIndex: 2 }, onItem)
+		await accumulator.add({ type: "thinking_complete", signature: "empty-signature", outputIndex: 3 }, onItem)
+
+		const response = await accumulator.finish()
+		expect(response.items).toEqual([
+			{ type: "reasoning", text: "First.", signature: "first-signature", outputIndex: 0 },
+			{ type: "reasoning", text: "", redactedData: "opaque+/=", outputIndex: 1 },
+			{ type: "reasoning", text: "Second.", signature: "second-signature", outputIndex: 2 },
+			{ type: "reasoning", text: "", signature: "empty-signature", outputIndex: 3 },
+		])
+		expect(observed).toEqual(["First.", "Second."])
+		expect(response.reasoning).toBe("First.Second.")
+	})
+
+	it("keeps unindexed text and reasoning in place for providers with tool-only indexes", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "text", text: "Before." })
+		await accumulator.add({ type: "tool_call_partial", index: 0, id: "first", name: "read_file", arguments: "{}" })
+		await accumulator.add({ type: "tool_call_end", id: "first" })
+		await accumulator.add({ type: "text", text: "Between." })
+		await accumulator.add({ type: "reasoning", text: "Legacy reasoning", signature: "legacy-signature" })
+		await accumulator.add({ type: "tool_call_partial", index: 1, id: "second", name: "read_file", arguments: "{}" })
+		await accumulator.add({ type: "tool_call_end", id: "second" })
+		await accumulator.add({ type: "text", text: "After." })
+
+		expect((await accumulator.finish()).items).toEqual([
+			{ type: "text", text: "Before." },
+			{ type: "tool_call", id: "first", name: "read_file", arguments: {} },
+			{ type: "text", text: "Between." },
+			{ type: "reasoning", text: "Legacy reasoning", signature: "legacy-signature" },
+			{ type: "tool_call", id: "second", name: "read_file", arguments: {} },
+			{ type: "text", text: "After." },
+		])
+	})
+
 	it("retains text, signed reasoning, usage, grounding, and tool calls", async () => {
 		const accumulator = new AgentResponseAccumulator()
 		await accumulator.add({ type: "text", text: "answer" })

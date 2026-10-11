@@ -115,7 +115,11 @@ describe("native OpenAI protocol capabilities", () => {
 			failure = error
 		}
 		expect(failure).toMatchObject({ status: 429, retryAfterMs: 60_000 })
-		expect(chunks).toContainEqual({ type: "text", text: "Partial answer" })
+		expect(chunks).toContainEqual({
+			type: "text",
+			text: "Partial answer",
+			...(responses ? { outputIndex: 0 } : {}),
+		})
 		const retryAfterMs = (failure as { retryAfterMs: number }).retryAfterMs
 		expect(
 			new AgentRetryPolicy().decide({

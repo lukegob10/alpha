@@ -354,6 +354,64 @@ describe("OutputInterceptor", () => {
 	})
 
 	describe("Cleanup methods", () => {
+		it("keeps referenced numeric and UUID artifacts while removing only validated unreferenced filenames", async () => {
+			const retainedId = "f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10"
+			const removedId = "714aeb9b-744b-4fd9-862b-17a20e9fb785"
+			const files = [
+				"cmd-123.txt",
+				"cmd-456.txt",
+				`cmd-${retainedId}.txt`,
+				`cmd-${removedId}.txt`,
+				"cmd-unrecognized.txt",
+				"cmd-123.txt:stream",
+				"cmd-456.txt\n",
+				"cmd-456.txt\r",
+				`cmd-${removedId}.txt\r\n`,
+				"../cmd-789.txt",
+				"other-file.txt",
+			]
+			vi.mocked(fs.promises.readdir).mockResolvedValue(files as never)
+			vi.mocked(fs.promises.unlink).mockResolvedValue(undefined)
+
+			await OutputInterceptor.cleanupByIds(storageDir, new Set(["123", retainedId]))
+
+			expect(vi.mocked(fs.promises.unlink).mock.calls.map(([file]) => file)).toEqual([
+				path.join(storageDir, "cmd-456.txt"),
+				path.join(storageDir, `cmd-${removedId}.txt`),
+			])
+		})
+
+		it("limits selective removal to candidates captured before a rewind", async () => {
+			vi.mocked(fs.promises.readdir).mockResolvedValue(["cmd-123.txt", "cmd-456.txt", "cmd-789.txt"] as never)
+			vi.mocked(fs.promises.unlink).mockResolvedValue(undefined)
+
+			await OutputInterceptor.cleanupByIds(storageDir, new Set(["123"]), new Set(["123", "456"]))
+
+			expect(fs.promises.unlink).toHaveBeenCalledExactlyOnceWith(path.join(storageDir, "cmd-456.txt"))
+		})
+
+		it("limits full cleanup to recognized artifact filenames", async () => {
+			const artifact = "cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt"
+			vi.mocked(fs.promises.readdir).mockResolvedValue([
+				artifact,
+				"cmd-123.txt",
+				"cmd-not-an-artifact.txt",
+				"cmd-123.txt.bak",
+				"cmd-123.txt\n",
+				`${artifact}\r`,
+				"cmd-123.txt/../other.txt",
+				"other-file.txt",
+			] as never)
+			vi.mocked(fs.promises.unlink).mockResolvedValue(undefined)
+
+			await OutputInterceptor.cleanup(storageDir)
+
+			expect(vi.mocked(fs.promises.unlink).mock.calls.map(([file]) => file)).toEqual([
+				path.join(storageDir, artifact),
+				path.join(storageDir, "cmd-123.txt"),
+			])
+		})
+
 		it("should clean up all artifacts in directory", async () => {
 			const mockFiles = ["cmd-12345.txt", "cmd-67890.txt", "other-file.txt", "cmd-11111.txt"]
 			vi.mocked(fs.promises.readdir).mockResolvedValue(mockFiles as any)

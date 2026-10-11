@@ -175,7 +175,13 @@ import { formatLanguage } from "../../shared/language"
 import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../shared/getApiMetrics"
 import { AlphaAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
-import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
+import {
+	DiffStrategy,
+	type ToolUse,
+	type ToolParamName,
+	toolParamNames,
+	isCommandArtifactRead,
+} from "../../shared/tools"
 import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
 import {
 	ensureProposedPlanBlock,
@@ -333,6 +339,7 @@ import { createAgentResponse } from "../agent/AgentResponse"
 import {
 	buildCanonicalAnthropicAssistantHistoryContent,
 	buildCanonicalAssistantHistoryContent,
+	isCanonicalEncryptedReasoningHistoryItem,
 } from "../task-persistence/canonicalAssistantHistory"
 import { lifecycleResponseItems } from "../agent/lifecycle/responseItems"
 import {
@@ -693,7 +700,7 @@ export function getSubagentAllowedToolNames(
 	const tools: ToolName[] =
 		role === "worker"
 			? ["apply_patch", "exec_command", "manage_command", "write_stdin", "send_message", "attempt_completion"]
-			: ["exec_command", "send_message", "attempt_completion"]
+			: ["exec_command", "write_stdin", "send_message", "attempt_completion"]
 	if (hasInheritedSkills) tools.splice(tools.length - 1, 0, "skill")
 	if (allowDelegation) {
 		tools.splice(
@@ -857,6 +864,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private providerTranscriptCommitReceipt?: ProviderTranscriptCommitReceipt
 	private providerTranscriptSidecarFailure?: ProviderTranscriptStoreError
 	private apiConversationHistoryFailureGeneration = 0
+	/** A staged resume repair is retired by its transcript receipt, independently of input admission. */
+	private pendingResumeHistoryRepair?: { message: ApiMessage; persisted: boolean }
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
@@ -2463,6 +2472,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (message.role === "assistant") {
+			const canonicalEncryptedReasoningProjected =
+				Array.isArray(message.content) && message.content.some(isCanonicalEncryptedReasoningHistoryItem)
 			const responseId = handler.getResponseId?.()
 			const reasoningData = handler.getEncryptedContent?.()
 			const encryptedReasoningItems = (handler.getReasoningItems?.() ?? []).filter(
@@ -2518,6 +2529,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Skip if reasoning_details already contains the reasoning (to avoid duplication)
 			if (
 				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
 				isAnthropicProtocol &&
 				reasoning &&
 				thoughtSignature &&
@@ -2542,7 +2554,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (!messageWithTs.content) {
 					messageWithTs.content = [thinkingBlock]
 				}
-			} else if (!canonicalAnthropicThinkingProjected && reasoning && !reasoningDetails) {
+			} else if (
+				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
+				reasoning &&
+				!reasoningDetails
+			) {
 				// Other providers (non-Anthropic): Store as generic reasoning block
 				const reasoningBlock = {
 					type: "reasoning",
@@ -2560,7 +2577,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (!messageWithTs.content) {
 					messageWithTs.content = [reasoningBlock]
 				}
-			} else if (!canonicalAnthropicThinkingProjected && encryptedReasoningBlocks.length > 0) {
+			} else if (
+				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
+				encryptedReasoningBlocks.length > 0
+			) {
 				// OpenAI Native encrypted reasoning
 				if (typeof messageWithTs.content === "string") {
 					messageWithTs.content = [
@@ -2597,41 +2618,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			this.apiConversationHistory.push(messageWithTs)
 		} else {
-			// For user messages, validate tool_result IDs ONLY when the immediately previous *effective* message
-			// is an assistant message.
-			//
-			// If the previous effective message is also a user message (e.g., summary + a new user message),
-			// validating against any earlier assistant message can incorrectly inject placeholder tool_results.
-			const effectiveHistoryForValidation = getEffectiveApiHistory(this.apiConversationHistory)
-			const lastEffective = effectiveHistoryForValidation[effectiveHistoryForValidation.length - 1]
-			const historyForValidation = lastEffective?.role === "assistant" ? effectiveHistoryForValidation : []
-
-			// If the previous effective message is NOT an assistant, convert tool_result blocks to text blocks.
-			// This prevents orphaned tool_results from being filtered out by getEffectiveApiHistory.
-			// This can happen when condensing occurs after the assistant sends tool_uses but before
-			// the user responds - the tool_use blocks get condensed away, leaving orphaned tool_results.
-			let messageToAdd = message
-			if (lastEffective?.role !== "assistant" && Array.isArray(message.content)) {
-				messageToAdd = {
-					...message,
-					content: message.content.map((block) =>
-						block.type === "tool_result"
-							? {
-									type: "text" as const,
-									text: `Tool result:\n${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`,
-								}
-							: block,
-					),
-				}
-			}
-
-			const validatedMessage = validateAndFixToolResultIds(messageToAdd, historyForValidation)
-			const messageWithTs = {
-				...validatedMessage,
-				ts: Date.now(),
-				...(hookPrompt ? { hook_prompt: hookPrompt } : {}),
-			}
-			this.apiConversationHistory.push(messageWithTs)
+			this.stageApiUserMessage({ ...message, ...(hookPrompt ? { hook_prompt: hookPrompt } : {}) })
 		}
 
 		const saved = await this.saveApiConversationHistory()
@@ -2644,25 +2631,84 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return saved
 	}
 
+	/** Stage each input envelope before the shared transcript save, preserving its own provenance. */
+	private stageApiUserMessage(message: ApiMessage): ApiMessage {
+		// For user messages, validate tool_result IDs ONLY when the immediately previous *effective* message
+		// is an assistant message.
+		//
+		// If the previous effective message is also a user message (e.g., summary + a new user message),
+		// validating against any earlier assistant message can incorrectly inject placeholder tool_results.
+		const effectiveHistoryForValidation = getEffectiveApiHistory(this.apiConversationHistory)
+		const lastEffective = effectiveHistoryForValidation[effectiveHistoryForValidation.length - 1]
+		const historyForValidation = lastEffective?.role === "assistant" ? effectiveHistoryForValidation : []
+
+		// If the previous effective message is NOT an assistant, convert tool_result blocks to text blocks.
+		// This prevents orphaned tool_results from being filtered out by getEffectiveApiHistory.
+		// This can happen when condensing occurs after the assistant sends tool_uses but before
+		// the user responds - the tool_use blocks get condensed away, leaving orphaned tool_results.
+		let messageToAdd = message
+		if (lastEffective?.role !== "assistant" && Array.isArray(message.content)) {
+			messageToAdd = {
+				...message,
+				content: message.content.map((block) =>
+					block.type === "tool_result"
+						? {
+								type: "text" as const,
+								text: `Tool result:\n${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`,
+							}
+						: block,
+				),
+			}
+		}
+
+		const validatedMessage = validateAndFixToolResultIds(messageToAdd, historyForValidation)
+		const messageWithTs = {
+			...validatedMessage,
+			ts: message.ts ?? Date.now(),
+		}
+		this.apiConversationHistory.push(messageWithTs)
+		return messageWithTs
+	}
+
 	private async persistUserContentWithEnvironment(
 		content: Anthropic.Messages.ContentBlockParam[],
 		capture: EnvironmentCapture | undefined,
 		signal: AbortSignal | undefined,
-		onPersisted?: () => void,
+		onPersisted?: () => Promise<void> | void,
 		hookPrompt?: CompletionHookPromptProvenance,
 		queuedMessageIds: readonly string[] = [],
 		inputOrigin?: "human" | "agent",
+		precedingMessages: readonly ApiMessage[] = [],
 	): Promise<void> {
 		let persisted = false
-		let stagedMessage: ApiMessage | undefined
+		const stagedMessages: ApiMessage[] = []
+		const acknowledgedQueueIds = [
+			...new Set([
+				...precedingMessages.flatMap((message) => message.queued_message_ids ?? []),
+				...queuedMessageIds,
+			]),
+		]
+		let acknowledgment: Promise<void> | undefined
+		const resumeHistoryRepair =
+			this.pendingResumeHistoryRepair &&
+			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
+				? this.pendingResumeHistoryRepair
+				: undefined
 		const acknowledge = () => {
 			if (persisted) return
 			persisted = true
-			onPersisted?.()
+			if (resumeHistoryRepair) resumeHistoryRepair.persisted = true
 			capture?.commit()
+			acknowledgment = (async () => {
+				await onPersisted?.()
+			})()
+			// The transcript callback cannot await admission, but its caller joins it
+			// before independent queue deletion. Observe early rejection until then.
+			void acknowledgment.catch(() => undefined)
 		}
 		try {
 			this.throwIfStepInterrupted(signal)
+			for (const message of precedingMessages) stagedMessages.push(this.stageApiUserMessage(message))
 			const previousMessage = this.apiConversationHistory.at(-1)
 			// addToApiConversationHistory stages its user message synchronously before
 			// awaiting the save. Keep that exact identity for rollback, not an index.
@@ -2679,22 +2725,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				hookPrompt,
 			)
 			const latest = this.apiConversationHistory.at(-1)
-			if (latest !== previousMessage) stagedMessage = latest
+			if (latest && latest !== previousMessage) stagedMessages.push(latest)
 			if ((await save) || (await this.retrySaveApiConversationHistory(acknowledge, signal))) acknowledge()
 			if (!persisted)
 				throw new TaskPersistenceError("Failed to persist the user turn before starting the provider request")
-			if (queuedMessageIds.length) {
-				this.messageQueueService.acknowledgeMessages(queuedMessageIds)
+			await acknowledgment
+			if (acknowledgedQueueIds.length) {
+				this.messageQueueService.acknowledgeMessages(acknowledgedQueueIds)
 				await this.messageQueueService.flush()
 				for (const [callId, reply] of this.queuedToolResultReceipts ?? []) {
-					if (reply.ids.every((id) => queuedMessageIds.includes(id)))
+					if (reply.ids.every((id) => acknowledgedQueueIds.includes(id)))
 						this.queuedToolResultReceipts.delete(callId)
 				}
 			}
 		} catch (error) {
-			if (!persisted && stagedMessage) {
-				const index = this.apiConversationHistory.indexOf(stagedMessage)
-				if (index >= 0) this.apiConversationHistory.splice(index, 1)
+			if (!persisted) {
+				for (const stagedMessage of stagedMessages) {
+					const index = this.apiConversationHistory.indexOf(stagedMessage)
+					if (index >= 0) this.apiConversationHistory.splice(index, 1)
+				}
 			}
 			throw error
 		} finally {
@@ -2902,30 +2951,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
-	private takeLastApiUserMessageContent(): Anthropic.Messages.ContentBlockParam[] {
-		const lastMessage = this.apiConversationHistory.at(-1)
-
-		// Steering starts a new user boundary after a summary or truncation marker.
-		// Extracting just its content would erase the metadata that hides old history.
-		if (
-			lastMessage?.role !== "user" ||
-			lastMessage.isSummary ||
-			lastMessage.isTruncationMarker ||
-			lastMessage.agent_message_id ||
-			lastMessage.queued_message_ids?.length
-		) {
-			return []
-		}
-
-		this.apiConversationHistory.pop()
-
-		if (Array.isArray(lastMessage.content)) {
-			return lastMessage.content as Anthropic.Messages.ContentBlockParam[]
-		}
-
-		return [{ type: "text", text: lastMessage.content }]
-	}
-
 	// NOTE: We intentionally do NOT mutate stored messages to merge consecutive user turns.
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
@@ -3041,9 +3066,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const saved = await this.saveApiConversationHistory()
 
 		if (saved) {
-			this.messageQueueService?.acknowledgeMessages?.(queuedMessageIds)
-			await this.messageQueueService?.flush?.()
-			await this.settlePersistedWaitAgentResultClaims(userMessageWithTs as ApiMessage)
+			// Retire the durable snapshot before fallible queue/mailbox settlement.
+			// A failed acknowledgment must not stage already saved results again.
 			for (const block of pendingContent) {
 				if (block.type === "text") this.pendingWaitAgentNotificationBlocks.delete(block)
 			}
@@ -3060,6 +3084,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const persisted = new Set(pendingContent)
 				this.userMessageContent = this.userMessageContent.filter((block) => !persisted.has(block))
 			}
+			this.messageQueueService?.acknowledgeMessages?.(queuedMessageIds)
+			await this.messageQueueService?.flush?.()
+			await this.settlePersistedWaitAgentResultClaims(userMessageWithTs as ApiMessage)
 		} else {
 			const appendedIndex = this.apiConversationHistory.indexOf(userMessageWithTs as ApiMessage)
 			if (appendedIndex >= 0) this.apiConversationHistory.splice(appendedIndex, 1)
@@ -3190,7 +3217,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		error?: Error
 	}> {
 		const assistantContent = buildCanonicalAssistantHistoryContent(response)
-		const hasAssistantBoundary = assistantContent.length > 0 || response.reasoning.length > 0
+		// A sealed empty reasoning block still owns provider state needed on replay.
+		const hasAssistantBoundary =
+			assistantContent.length > 0 ||
+			response.reasoning.length > 0 ||
+			response.items.some((item) => item.type === "reasoning" && item.signature !== undefined)
 		let assistantPersisted = !hasAssistantBoundary
 
 		if (hasAssistantBoundary) {
@@ -3299,6 +3330,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Capture the intended legacy snapshot before entering the queue. Each
 		// caller therefore commits the history state it observed, while calls made
 		// after a later mutation remain ordered behind it and cannot race a write.
+		const resumeHistoryRepair =
+			this.pendingResumeHistoryRepair &&
+			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
+				? this.pendingResumeHistoryRepair
+				: undefined
 		const messages = structuredClone(this.apiConversationHistory)
 		const failureGeneration = this.apiConversationHistoryFailureGeneration
 
@@ -3346,6 +3382,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (failureGeneration !== this.apiConversationHistoryFailureGeneration) return false
 				this.providerTranscriptCommitReceipt = receipt
 				this.providerTranscriptSidecarFailure = undefined
+				if (resumeHistoryRepair) resumeHistoryRepair.persisted = true
 				this.providerRef.deref()?.retryIndependentTaskCompletionsForParent?.(this.taskId)
 				return true
 			} catch (error) {
@@ -5198,14 +5235,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	public async overwriteAlphaMessages(newMessages: AlphaMessage[]) {
+	public async overwriteAlphaMessages(newMessages: AlphaMessage[]): Promise<boolean> {
 		this.reasoningSummaries?.dispose()
 		this.reasoningSummaries = undefined
 		this.invalidateBackgroundUsageDrain("UI transcript was replaced")
 		this.clineMessages = newMessages
 		this.alphaMessagesHydrated = true
 		restoreTodoListForTask(this)
-		await this.saveAlphaMessages()
+		return this.saveAlphaMessages()
 	}
 
 	private async updateAlphaMessage(message: AlphaMessage) {
@@ -7543,9 +7580,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.subagentContextManifest?.runtimePolicy.delegate === true,
 		)
 		const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
-		const hardCeiling = execute
-			? roleCeiling
-			: roleCeiling.filter((tool) => tool !== "manage_command" && tool !== "write_stdin")
+		const hardCeiling = execute ? roleCeiling : roleCeiling.filter((tool) => tool !== "manage_command")
 		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
 		if (!capturedGrant) return hardCeiling
 		// Preserve equivalent renamed capabilities in saved manifests. An artifact-read
@@ -7624,6 +7659,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const allowed = this.getTaskAllowedToolNames()
 		if (allowed && !(allowed as readonly string[]).includes(toolName)) {
 			return `Tool "${toolName}" is not allowed for this parent-managed ${this.subagentRole === "worker" ? "editing worker" : "read-only sub-agent"}.`
+		}
+		if (this.taskKind === "subagent" && toolName === "write_stdin" && params) {
+			const role = this.subagentRole ?? this.subagentContextManifest?.runtimePolicy.role ?? "review"
+			const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
+			if (!execute && !isCommandArtifactRead(params)) {
+				return "This read-only sub-agent may read command artifacts but cannot control command sessions."
+			}
 		}
 
 		if (this.subagentRole === "worker" && this.isWorkerEditTool(toolName) && params) {
@@ -9820,51 +9862,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			// Make sure that the api conversation history can be resumed by the API,
-			// even if it goes out of sync with task messages.
+			// Keep committed messages in their original envelopes. Replaying an old
+			// user tail as new input would lose receipts/provenance and could let an
+			// earlier instruction override the fresh follow-up.
 			const existingApiConversationHistory: ApiMessage[] = this.apiConversationHistory
-
-			// Tool blocks are always preserved; native tool calling only.
-
-			// if the last message is an assistant message, we need to check if there's tool use since every tool use has to have a tool response
-			// if there's no tool use and only a text block, then we can just add a user message
-			// (note this isn't relevant anymore since we use custom tool prompts instead of tool use blocks, but this is here for legacy purposes in case users resume old tasks)
-
-			// if the last message is a user message, we can need to get the assistant message before it to see if it made tool calls, and if so, fill in the remaining tool responses with 'interrupted'
-
-			let modifiedOldUserContent: Anthropic.Messages.ContentBlockParam[] // either the last message if its user message, or the user message before the last (assistant) message
-			let modifiedApiConversationHistory: ApiMessage[] // need to remove the last user message to replace with new modified user message
+			let modifiedApiConversationHistory = existingApiConversationHistory
+			const newUserContent: Anthropic.Messages.ContentBlockParam[] = []
 			if (existingApiConversationHistory.length > 0) {
 				const lastMessage = existingApiConversationHistory[existingApiConversationHistory.length - 1]
 
-				if (lastMessage.isSummary || lastMessage.agent_message_id) {
-					// Agent delivery receipts must also survive resume without merging into a new user message.
-					// IMPORTANT: If the last message is a condensation summary, we must preserve it
-					// intact. The summary message carries critical metadata (isSummary, condenseId)
-					// that getEffectiveApiHistory() uses to filter out condensed messages.
-					// Removing or merging it would destroy this metadata, causing all condensed
-					// messages to become "orphaned" and restored to active status — effectively
-					// undoing the condensation and sending the full history to the API.
-					// See: https://github.com/AlphaInc/Alpha/issues/11487
-					modifiedApiConversationHistory = [...existingApiConversationHistory]
-					modifiedOldUserContent = []
+				if (lastMessage.isSummary || lastMessage.isTruncationMarker || lastMessage.agent_message_id) {
+					// Compaction boundaries and delivery receipts retain their identity.
 				} else if (lastMessage.role === "assistant") {
 					const content = Array.isArray(lastMessage.content)
 						? lastMessage.content
 						: [{ type: "text", text: lastMessage.content }]
-					const hasToolUse = content.some((block) => getToolCallId(block) !== undefined)
-
-					if (hasToolUse) {
-						const toolUseBlocks = content.filter((block) => getToolCallId(block) !== undefined)
-						const toolResponses: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((block) =>
-							recoveredToolResult(getToolCallId(block)!),
-						)
-						modifiedApiConversationHistory = [...existingApiConversationHistory] // no changes
-						modifiedOldUserContent = [...toolResponses]
-					} else {
-						modifiedApiConversationHistory = [...existingApiConversationHistory]
-						modifiedOldUserContent = []
-					}
+					newUserContent.push(
+						...content
+							.filter((block) => getToolCallId(block) !== undefined)
+							.map((block) => recoveredToolResult(getToolCallId(block)!)),
+					)
 				} else if (lastMessage.role === "user") {
 					const previousAssistantMessage: ApiMessage | undefined =
 						existingApiConversationHistory[existingApiConversationHistory.length - 2]
@@ -9895,48 +9912,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								)
 								.map((toolUse) => recoveredToolResult(getToolCallId(toolUse)!))
 
-							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1) // removes the last user message
-							modifiedOldUserContent = [...existingUserContent, ...missingToolResponses]
-						} else {
-							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1)
-							modifiedOldUserContent = [...existingUserContent]
+							if (missingToolResponses.length > 0) {
+								modifiedApiConversationHistory = [...existingApiConversationHistory]
+								modifiedApiConversationHistory[modifiedApiConversationHistory.length - 1] = {
+									...lastMessage,
+									content: [...existingUserContent, ...missingToolResponses],
+								}
+							}
 						}
-					} else {
-						modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1)
-						modifiedOldUserContent = [...existingUserContent]
 					}
 				} else {
 					throw new Error("Unexpected: Last message is not a user or assistant message")
 				}
-			} else if (hasDirectFollowup) {
-				// Editing the opening prompt intentionally removes the entire old request.
-				modifiedApiConversationHistory = []
-				modifiedOldUserContent = []
-			} else {
+			} else if (!hasDirectFollowup) {
 				throw new Error("Unexpected: No existing API conversation history")
 			}
-
-			let newUserContent: Anthropic.Messages.ContentBlockParam[] = [...modifiedOldUserContent]
-
-			const agoText = ((): string => {
-				const timestamp = lastAlphaMessage?.ts ?? Date.now()
-				const now = Date.now()
-				const diff = now - timestamp
-				const minutes = Math.floor(diff / 60000)
-				const hours = Math.floor(minutes / 60)
-				const days = Math.floor(hours / 24)
-
-				if (days > 0) {
-					return `${days} day${days > 1 ? "s" : ""} ago`
-				}
-				if (hours > 0) {
-					return `${hours} hour${hours > 1 ? "s" : ""} ago`
-				}
-				if (minutes > 0) {
-					return `${minutes} minute${minutes > 1 ? "s" : ""} ago`
-				}
-				return "just now"
-			})()
 
 			if (responseText) {
 				newUserContent.push({
@@ -9963,38 +9953,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 			}
 
-			let resumedUserContentPersisted = false
-			const onResumedUserContentPersisted = useRetainedHistory
-				? async () => {
-						resumedUserContentPersisted = true
-						await onSubagentSteeringPersisted?.()
-					}
-				: onSubagentSteeringPersisted
-			if (useRetainedHistory) {
-				// The next task-loop boundary persists this repaired prefix together
-				// with the follow-up. Avoid a redundant full-transcript write (and an
-				// interim assistant-tool-use without its user result) on long threads.
-				this.apiConversationHistory = modifiedApiConversationHistory
-			} else if (!(await this.overwriteApiConversationHistory(modifiedApiConversationHistory))) {
-				throw new Error("Unable to persist resumed conversation history before continuing.")
-			}
+			const historyRepair =
+				modifiedApiConversationHistory !== existingApiConversationHistory
+					? { message: modifiedApiConversationHistory.at(-1)!, persisted: false }
+					: undefined
+			if (historyRepair) this.pendingResumeHistoryRepair = historyRepair
+			// Stage additive legacy repairs for the same save as the new input. Never
+			// write a shortened prefix while preparation or cancellation can still fail.
+			this.apiConversationHistory = modifiedApiConversationHistory
 
 			// Task resuming from history item.
 			try {
+				const inputOrigin: "human" | "agent" =
+					responseText || responseImages?.length ? (options.inputOrigin ?? "human") : "agent"
 				const loopOptions = {
 					deferTaskStartedUntilInitialUserContentPersisted:
 						options.deferTaskStartedUntilInitialUserContentPersisted === true,
 					includeInitialFileDetails: !useRetainedHistory,
-					inputOrigin: options.inputOrigin ?? "human",
+					inputOrigin,
 				}
-				if (options.deferTaskStartedUntilInitialUserContentPersisted) {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
-				} else {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
-				}
+				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted, loopOptions)
 			} finally {
-				if (useRetainedHistory && !resumedUserContentPersisted) {
-					this.apiConversationHistory = existingApiConversationHistory
+				if (historyRepair && this.pendingResumeHistoryRepair === historyRepair) {
+					if (!historyRepair.persisted) this.apiConversationHistory = existingApiConversationHistory
+					this.pendingResumeHistoryRepair = undefined
 				}
 			}
 		} catch (error) {
@@ -11144,6 +11126,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		interface StackItem {
 			userContent: Anthropic.Messages.ContentBlockParam[]
+			/** Inputs interrupted before commit retain their chronological origin and receipts. */
+			precedingMessages?: Array<ApiMessage & { content: Anthropic.Messages.ContentBlockParam[] }>
 			inputOrigin?: "human" | "agent"
 			queuedMessageIds?: string[]
 			includeFileDetails: boolean
@@ -11155,10 +11139,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			/** Category-local counters keep transport/context/empty retries independent. */
 			retryAttempts?: TaskRetryAttempts
 			userMessageWasRemoved?: boolean // Track if user message was removed due to empty response
-			steeringPersistence?: {
-				onPersisted?: () => Promise<void> | void
-			}
+			steeringPersistence?: Array<() => Promise<void> | void>
 		}
+		const mergeSteeringPersistence = (item: StackItem, onPersisted?: () => Promise<void> | void) => [
+			...(item.steeringPersistence ?? []),
+			...(onPersisted ? [onPersisted] : []),
+		]
 
 		const stack: StackItem[] = [
 			{
@@ -11166,11 +11152,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				queuedMessageIds: [...(options.queuedMessageIds ?? this.getQueuedInputReceipts(userContent))],
 				inputOrigin: options.inputOrigin,
 				includeFileDetails,
-				hookPrompt: options.hookPrompt,
+				hookPrompt: options.hookPrompt ?? this.pendingCompletionHookPrompt,
 				retryAttempt: 0,
-				...(onInitialUserContentPersisted
-					? { steeringPersistence: { onPersisted: onInitialUserContentPersisted } }
-					: {}),
+				...(onInitialUserContentPersisted ? { steeringPersistence: [onInitialUserContentPersisted] } : {}),
 			},
 		]
 		const wasTaskLoopActive = this.isTaskLoopActive
@@ -11201,9 +11185,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// A recovered attempt must not hide a later failure, including one
 				// before the next provider request has started.
 				this.recoveryAttemptMessageStart = this.clineMessages.length
-				const currentUserContent = this.includeQueuedToolReplyContent(
-					this.mergePendingToolResultsIntoUserContent(currentItem.userContent),
-				)
+				const precedingMessages = currentItem.precedingMessages ?? []
+				const firstPrecedingMessage = precedingMessages[0]
+				if (firstPrecedingMessage) {
+					// Pending results belong before the fresh steer. Reconcile them once
+					// with their original input, rather than duplicating them in both envelopes.
+					firstPrecedingMessage.content = this.includeQueuedToolReplyContent(
+						this.mergePendingToolResultsIntoUserContent(firstPrecedingMessage.content),
+					)
+					firstPrecedingMessage.queued_message_ids = [
+						...new Set([
+							...(firstPrecedingMessage.queued_message_ids ?? []),
+							...this.getQueuedInputReceipts(firstPrecedingMessage.content),
+						]),
+					]
+				}
+				const currentUserContent = firstPrecedingMessage
+					? currentItem.userContent
+					: this.includeQueuedToolReplyContent(
+							this.mergePendingToolResultsIntoUserContent(currentItem.userContent),
+						)
 				currentItem.queuedMessageIds = [
 					...new Set([
 						...(currentItem.queuedMessageIds ?? []),
@@ -11224,22 +11225,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// accepted. Reset again at durable consumption time so this exact
 					// guidance reaches the next model request.
 					this.resetMistakeRecoveryState()
+					const hasUncommittedInput =
+						(currentItem.retryAttempt ?? 0) === 0 || currentItem.userMessageWasRemoved
 					stack.push({
-						queuedMessageIds: currentItem.queuedMessageIds,
-						userContent: [
-							...currentUserContent,
-							...this.buildUserMessageContent(
-								pendingSteer.text,
-								pendingSteer.images,
-								pendingSteer.queuedMessageIds,
-							),
+						precedingMessages: [
+							...precedingMessages,
+							...(hasUncommittedInput && currentUserContent.length
+								? [
+										{
+											role: "user" as const,
+											content: currentUserContent,
+											input_origin: currentItem.inputOrigin,
+											queued_message_ids: currentItem.queuedMessageIds,
+											...(currentItem.hookPrompt ? { hook_prompt: currentItem.hookPrompt } : {}),
+										},
+									]
+								: []),
 						],
+						queuedMessageIds: pendingSteer.queuedMessageIds,
+						userContent: this.buildUserMessageContent(
+							pendingSteer.text,
+							pendingSteer.images,
+							pendingSteer.queuedMessageIds,
+						),
 						includeFileDetails: currentIncludeFileDetails,
-						retryAttempt: currentItem.retryAttempt,
-						retryAttempts: currentItem.retryAttempts,
-						userMessageWasRemoved: currentItem.userMessageWasRemoved,
+						// A fresh instruction must cross its own save fence even when it
+						// arrives while publishing a retry of an already committed input.
+						retryAttempt: 0,
 						inputOrigin: pendingSteer.inputOrigin,
-						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+						steeringPersistence: mergeSteeringPersistence(currentItem, pendingSteer.onPersisted),
 					})
 					continue
 				}
@@ -11278,21 +11292,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
 				const currentMode = await this.getTaskMode()
 
-				const { content: parsedUserContent, mode: slashCommandMode } = await processUserContentMentions({
-					userContent: currentUserContent,
-					cwd: this.cwd,
-					fileContextTracker: this.fileContextTracker,
-					alphaIgnoreController: this.alphaIgnoreController,
-					showRooIgnoredFiles,
-					includeDiagnosticMessages,
-					maxDiagnosticMessages,
-					skillsManager: await provider?.getSkillsManager(this),
-					currentMode,
-					signal: this.getTaskCancellationSignal(),
-					onTicketActivity: async (activity) => {
-						await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
-					},
-				})
+				const messagesToPrepare = [...precedingMessages, { role: "user" as const, content: currentUserContent }]
+				const preparedMessages: typeof messagesToPrepare = []
+				let slashCommandMode: string | undefined
+				const skillsManager = await provider?.getSkillsManager(this)
+				for (const message of messagesToPrepare) {
+					const prepared = await processUserContentMentions({
+						userContent: message.content,
+						cwd: this.cwd,
+						fileContextTracker: this.fileContextTracker,
+						alphaIgnoreController: this.alphaIgnoreController,
+						showRooIgnoredFiles,
+						includeDiagnosticMessages,
+						maxDiagnosticMessages,
+						skillsManager,
+						currentMode,
+						signal: this.getTaskCancellationSignal(),
+						onTicketActivity: async (activity) => {
+							await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
+						},
+					})
+					slashCommandMode ??= prepared.mode
+					preparedMessages.push({ ...message, content: prepared.content })
+				}
+				const parsedUserContent = preparedMessages.pop()!.content
 
 				// Switch mode if specified in a slash command's frontmatter
 				if (slashCommandMode && provider) {
@@ -11327,7 +11350,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// 2. The original userContent was not empty (empty signals delegation resume where
 				//    the user message with tool_result and env details is already in history), OR
 				// 3. The message was removed in a previous iteration (userMessageWasRemoved === true)
-				// This prevents consecutive user messages while allowing re-add when needed
+				// A committed retry reuses its saved input; fresh steering starts at attempt zero.
 				const isEmptyUserContent = currentUserContent.length === 0 && pendingSpawnedSubagentResults.length === 0
 				const shouldAddUserMessage =
 					((currentItem.retryAttempt ?? 0) === 0 && !isEmptyUserContent) || currentItem.userMessageWasRemoved
@@ -11346,18 +11369,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							finalUserContent,
 							capture,
 							stepInterruptionSignal,
-							() => {
+							async () => {
 								historyPersisted = true
+								if (this.userMessageContent?.length) {
+									this.acknowledgePersistedUserMessageContent([
+										...preparedMessages.flatMap((message) => message.content),
+										...finalUserContent,
+									])
+								}
+								this.pendingCompletionHookPrompt = undefined
+								if (currentItem.steeringPersistence) {
+									// One transcript commit acknowledges original admission and
+									// fresh steering. Consume each callback once, even if another fails.
+									const failures: unknown[] = []
+									for (const onPersisted of currentItem.steeringPersistence.splice(0)) {
+										try {
+											await onPersisted()
+										} catch (error) {
+											failures.push(error)
+										}
+									}
+									this.steerMessageAwaitingPersistence = false
+									if (failures.length === 1) throw failures[0]
+									if (failures.length > 1) {
+										throw new AggregateError(failures, "Failed to acknowledge committed input")
+									}
+								}
 							},
-							currentItem.hookPrompt ?? this.pendingCompletionHookPrompt,
+							currentItem.hookPrompt,
 							currentItem.queuedMessageIds,
 							currentItem.inputOrigin,
+							preparedMessages,
 						)
-						this.pendingCompletionHookPrompt = undefined
-						if (currentItem.steeringPersistence) {
-							await currentItem.steeringPersistence.onPersisted?.()
-							this.steerMessageAwaitingPersistence = false
-						}
 						await this.markSpawnedSubagentResultsDelivered(
 							pendingSpawnedSubagentResults.map(({ taskId }) => taskId),
 						)
@@ -11447,18 +11490,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 					this.resetMistakeRecoveryState()
 					stack.push({
-						queuedMessageIds: currentItem.queuedMessageIds,
-						userContent: [
-							...this.takeLastApiUserMessageContent(),
-							...this.buildUserMessageContent(
-								pendingSteer.text,
-								pendingSteer.images,
-								pendingSteer.queuedMessageIds,
-							),
-						],
+						queuedMessageIds: pendingSteer.queuedMessageIds,
+						userContent: this.buildUserMessageContent(
+							pendingSteer.text,
+							pendingSteer.images,
+							pendingSteer.queuedMessageIds,
+						),
 						includeFileDetails: false,
 						inputOrigin: pendingSteer.inputOrigin,
-						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+						steeringPersistence: mergeSteeringPersistence(currentItem, pendingSteer.onPersisted),
 					})
 					continue
 				}
@@ -11594,7 +11634,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.currentRequestSignal = undefined
 					this.currentAssistantResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
-					this.acknowledgePersistedUserMessageContent(finalUserContent)
 					this.userMessageContentReady = false
 					this.didRejectTool = false
 					this.assistantMessageSavedToHistory = false
@@ -11858,6 +11897,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 							switch (chunk.type) {
 								case "reasoning": {
+									if (!chunk.text) break
 									reasoningMessage += chunk.text
 									// Only apply formatting if the message contains sentence-ending punctuation followed by **
 									let formattedReasoning = reasoningMessage
@@ -12210,18 +12250,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 
 								stack.push({
-									queuedMessageIds: currentItem.queuedMessageIds,
-									userContent: [
-										...this.takeLastApiUserMessageContent(),
-										...this.buildUserMessageContent(
-											pendingSteer.text,
-											pendingSteer.images,
-											pendingSteer.queuedMessageIds,
-										),
-									],
+									queuedMessageIds: pendingSteer.queuedMessageIds,
+									userContent: this.buildUserMessageContent(
+										pendingSteer.text,
+										pendingSteer.images,
+										pendingSteer.queuedMessageIds,
+									),
 									includeFileDetails: false,
 									inputOrigin: pendingSteer.inputOrigin,
-									steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+									steeringPersistence: mergeSteeringPersistence(
+										currentItem,
+										pendingSteer.onPersisted,
+									),
 								})
 
 								continue
@@ -12443,18 +12483,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 									this.resetMistakeRecoveryState()
 									stack.push({
-										queuedMessageIds: currentItem.queuedMessageIds,
-										userContent: [
-											...this.takeLastApiUserMessageContent(),
-											...this.buildUserMessageContent(
-												pendingSteer.text,
-												pendingSteer.images,
-												pendingSteer.queuedMessageIds,
-											),
-										],
+										queuedMessageIds: pendingSteer.queuedMessageIds,
+										userContent: this.buildUserMessageContent(
+											pendingSteer.text,
+											pendingSteer.images,
+											pendingSteer.queuedMessageIds,
+										),
 										includeFileDetails: false,
 										inputOrigin: pendingSteer.inputOrigin,
-										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+										steeringPersistence: mergeSteeringPersistence(
+											currentItem,
+											pendingSteer.onPersisted,
+										),
 									})
 									continue
 								}
@@ -13246,18 +13286,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 									this.resetMistakeRecoveryState()
 									stack.push({
-										queuedMessageIds: currentItem.queuedMessageIds,
-										userContent: [
-											...this.takeLastApiUserMessageContent(),
-											...this.buildUserMessageContent(
-												pendingSteer.text,
-												pendingSteer.images,
-												pendingSteer.queuedMessageIds,
-											),
-										],
+										queuedMessageIds: pendingSteer.queuedMessageIds,
+										userContent: this.buildUserMessageContent(
+											pendingSteer.text,
+											pendingSteer.images,
+											pendingSteer.queuedMessageIds,
+										),
 										includeFileDetails: false,
 										inputOrigin: pendingSteer.inputOrigin,
-										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+										steeringPersistence: mergeSteeringPersistence(
+											currentItem,
+											pendingSteer.onPersisted,
+										),
 									})
 									continue
 								}
@@ -15620,9 +15660,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? (args as Record<string, unknown>)
 				: undefined
 		const commandRead =
-			canonicalName === "manage_command" &&
-			(argumentRecord?.action === "read" ||
-				(name === "read_command_output" && Object.hasOwn(argumentRecord ?? {}, "artifact_id")))
+			(canonicalName === "write_stdin" && isCommandArtifactRead(argumentRecord)) ||
+			(canonicalName === "manage_command" &&
+				(argumentRecord?.action === "read" ||
+					(name === "read_command_output" && Object.hasOwn(argumentRecord ?? {}, "artifact_id"))))
 		const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
 		const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
 			changeSetId,

@@ -1,6 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI, { AzureOpenAI } from "openai"
 import axios from "axios"
+import { isDeepStrictEqual } from "node:util"
 
 import {
 	type ModelInfo,
@@ -715,12 +716,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 				case "response.output_text.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta }
+					yield { type: "text", text: event.delta, outputIndex: event.output_index }
 					break
 				}
 				case "response.refusal.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta }
+					yield { type: "text", text: event.delta, outputIndex: event.output_index }
 					break
 				}
 				case "response.reasoning_summary_text.delta": {
@@ -816,7 +817,17 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 		}
 		for (const [index, item] of output.entries()) {
-			if (handledOutputIdentities.has(index)) continue
+			if (handledOutputIdentities.has(index)) {
+				if (item.type !== "reasoning" || !item.encrypted_content) continue
+				const streamed = this.responsesReasoningItems.get(index)
+				if (
+					streamed?.encrypted_content === item.encrypted_content &&
+					streamed.id === item.id &&
+					isDeepStrictEqual(streamed.summary, item.summary)
+				) {
+					continue
+				}
+			}
 			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts)
 		}
 		if (toolCalls.size > 0) {
@@ -855,7 +866,13 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 		if (item.type === "function_call") {
 			if (!active) {
-				yield { type: "tool_call", id: item.call_id, name: item.name, arguments: item.arguments }
+				yield {
+					type: "tool_call",
+					id: item.call_id,
+					name: item.name,
+					arguments: item.arguments,
+					outputIndex,
+				}
 				yield { type: "tool_call_end", id: item.call_id }
 				return
 			}
@@ -877,6 +894,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					id: item.call_id,
 					name: item.name,
 					arguments: normalizeOpenAiCustomToolInput(item.name, item.input),
+					outputIndex,
 				}
 				yield { type: "tool_call_end", id: item.call_id }
 				return
@@ -900,6 +918,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		if (item.type === "reasoning") {
 			this.captureOpenAiResponsesReasoningItem(item, outputIndex)
+			if (typeof item.encrypted_content === "string" && item.encrypted_content) {
+				yield {
+					type: "reasoning",
+					text: "",
+					encryptedContent: item.encrypted_content,
+					id: item.id,
+					...(item.summary !== undefined ? { summary: structuredClone(item.summary) } : {}),
+					outputIndex,
+				}
+			}
 			return
 		}
 
@@ -908,10 +936,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const key = `${outputIndex}:${contentIndex}`
 			if (content.type === "output_text" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.text }
+				yield { type: "text", text: content.text, outputIndex }
 			} else if (content.type === "refusal" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.refusal }
+				yield { type: "text", text: content.refusal, outputIndex }
 			}
 		}
 	}

@@ -86,6 +86,9 @@ export class AgentResponseAccumulator {
 	private readonly emittedToolIds = new Set<string>()
 	private readonly emittedNormalizedToolIds = new Map<string, string>()
 	private readonly completedToolCallIds = new Set<string>()
+	private readonly outputIndexes = new Map<AgentResponseItem, number>()
+	private readonly opaqueReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
+	private readonly latestReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private lastReasoningItem: Extract<AgentResponseItem, { type: "reasoning" }> | undefined
 	private nextToolOrder = 0
 	private nextSyntheticId = 0
@@ -105,23 +108,53 @@ export class AgentResponseAccumulator {
 
 		switch (chunk.type) {
 			case "text":
-				return this.emit({ type: "text", text: chunk.text }, onItem)
+				return this.emit({ type: "text", text: chunk.text }, onItem, true, chunk.outputIndex)
 
 			case "reasoning": {
 				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
 					type: "reasoning",
 					text: chunk.text,
 					...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
+					...(chunk.encryptedContent !== undefined ? { encryptedContent: chunk.encryptedContent } : {}),
+					...(chunk.redactedData !== undefined ? { redactedData: chunk.redactedData } : {}),
+					// Opaque items are already indivisible; plaintext deltas also need
+					// their source boundary when history groups them into signed blocks.
+					...(chunk.outputIndex !== undefined && chunk.encryptedContent === undefined
+						? { outputIndex: chunk.outputIndex }
+						: {}),
+					...(chunk.id !== undefined ? { id: chunk.id } : {}),
+					...(chunk.summary !== undefined ? { summary: structuredClone(chunk.summary) } : {}),
+				}
+				if (chunk.encryptedContent !== undefined && chunk.outputIndex !== undefined) {
+					const previous = this.opaqueReasoningItems.get(chunk.outputIndex)
+					if (previous) {
+						// Completion can supply opaque state omitted by the streamed item.
+						// Reconcile the same source position instead of appending another item.
+						Object.assign(previous, item)
+						return
+					}
+					this.opaqueReasoningItems.set(chunk.outputIndex, item)
 				}
 				this.lastReasoningItem = item
-				return this.emit(item, onItem)
+				if (chunk.outputIndex !== undefined) this.latestReasoningItems.set(chunk.outputIndex, item)
+				return this.emit(item, onItem, true, chunk.outputIndex)
 			}
 
 			case "thinking_complete": {
-				if (this.lastReasoningItem) {
+				const item =
+					chunk.outputIndex === undefined
+						? this.lastReasoningItem
+						: this.latestReasoningItems.get(chunk.outputIndex)
+				if (item) {
 					// Keep an empty signature too: an explicitly supplied signature is
 					// different from a provider which did not report one.
-					this.lastReasoningItem.signature = chunk.signature
+					item.signature = chunk.signature
+				} else {
+					// A valid signed block can have no visible reasoning at all.
+					return this.add(
+						{ type: "reasoning", text: "", signature: chunk.signature, outputIndex: chunk.outputIndex },
+						onItem,
+					)
 				}
 				return
 			}
@@ -180,10 +213,14 @@ export class AgentResponseAccumulator {
 				const id = asString(chunk.id)
 				let pending = id ? this.pendingTools.get(id) : undefined
 				if (!pending) {
-					pending = this.createPending(id || this.createSyntheticId(), chunk.name, undefined, !id)
+					pending = this.createPending(id || this.createSyntheticId(), chunk.name, chunk.outputIndex, !id)
 				} else if (!pending.name && chunk.name) {
 					pending.name = chunk.name
 					pending.preflightAnnounced = false
+				}
+				if (chunk.outputIndex !== undefined) {
+					pending.index = chunk.outputIndex
+					this.pendingToolIndexes.set(chunk.outputIndex, pending.id)
 				}
 
 				const incomingArguments = asString(chunk.arguments)
@@ -352,9 +389,19 @@ export class AgentResponseAccumulator {
 			}
 		}
 		orderedItems.push(...toolItems.slice(nextToolItem))
+		// Some Responses items arrive only with the final response, after later
+		// text deltas or tool receipts. Sort source-positioned items within their
+		// existing slots; providers without positions retain arrival ordering.
+		const positionedItems = orderedItems
+			.filter((item) => this.outputIndexes.has(item))
+			.sort((left, right) => this.outputIndexes.get(left)! - this.outputIndexes.get(right)!)
+		let nextPositionedItem = 0
+		const reconciledItems = orderedItems.map((item) =>
+			this.outputIndexes.has(item) ? positionedItems[nextPositionedItem++]! : item,
+		)
 		this.pendingTools.clear()
 		this.pendingToolIndexes.clear()
-		return createAgentResponse(orderedItems, this.responseOutcome)
+		return createAgentResponse(reconciledItems, this.responseOutcome)
 	}
 
 	private createPending(id: string, name: string, index?: number, syntheticId = false): PendingToolCall {
@@ -652,14 +699,18 @@ export class AgentResponseAccumulator {
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<void> {
 		this.flushedToolItems.set(pending.id, item)
-		await this.emit(item, onItem, false)
+		await this.emit(item, onItem, false, pending.index)
 	}
 
 	private async emit(
 		item: AgentResponseItem,
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 		recordOrder = true,
+		outputIndex?: number,
 	) {
+		if (outputIndex !== undefined && Number.isSafeInteger(outputIndex) && outputIndex >= 0) {
+			this.outputIndexes.set(item, outputIndex)
+		}
 		if (recordOrder) this.orderedEntries.push(item)
 		await onItem?.(item)
 	}

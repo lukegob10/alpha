@@ -1012,6 +1012,8 @@ interface WebviewMessageBase {
 	payload?: WebViewMessagePayload
 	source?: "global" | "project" | "builtin"
 	skillName?: string // For skill operations (createSkill, deleteSkill, moveSkill, openSkillFile)
+	/** Discovered SKILL.md identity for openSkillFile, updateSkillModes, and deleteSkill. */
+	skillPath?: string
 	/** @deprecated Use skillModeSlugs instead */
 	skillMode?: string // For skill operations (current mode restriction)
 	/** @deprecated Use newSkillModeSlugs instead */

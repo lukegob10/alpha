@@ -23,16 +23,30 @@ export class CodeIndexSearchService {
 		private readonly source?: SearchSource,
 	) {}
 
-	public async searchIndex(query: string, directoryPrefix?: string): Promise<VectorStoreSearchResult[]> {
-		return (await this.searchIndexWithDiagnostics(query, directoryPrefix)).results
+	public async searchIndex(
+		query: string,
+		directoryPrefix?: string,
+		signal?: AbortSignal,
+	): Promise<VectorStoreSearchResult[]> {
+		return (await this.searchIndexWithDiagnostics(query, directoryPrefix, signal)).results
 	}
 
-	public async searchIndexWithDiagnostics(query: string, directoryPrefix?: string): Promise<CodeIndexSearchResponse> {
+	public async searchIndexWithDiagnostics(
+		query: string,
+		directoryPrefix?: string,
+		signal?: AbortSignal,
+	): Promise<CodeIndexSearchResponse> {
+		signal?.throwIfAborted()
 		const controller = new AbortController()
+		const abort = () => controller.abort(signal?.reason)
+		signal?.addEventListener("abort", abort, { once: true })
 		this.pending.add(controller)
 		try {
-			return await this.retrieve(query, directoryPrefix, controller)
+			const response = await this.retrieve(query, directoryPrefix, controller)
+			signal?.throwIfAborted()
+			return response
 		} finally {
+			signal?.removeEventListener("abort", abort)
 			this.pending.delete(controller)
 		}
 	}
@@ -79,7 +93,8 @@ export class CodeIndexSearchService {
 			? relativeIndexPath(directoryPrefix, this.source?.workspacePath ?? process.cwd())
 			: undefined
 		const started = Date.now()
-		const timeout = () => controller.abort(new DOMException(t("embeddings:searchTimeout"), "TimeoutError"))
+		const timeoutReason = new DOMException(t("embeddings:searchTimeout"), "TimeoutError")
+		const timeout = () => controller.abort(timeoutReason)
 		let timer = setTimeout(timeout, SEMANTIC_WAIT_MS)
 		let localDeadline = false
 		const limitWaiting = () => {
@@ -124,8 +139,7 @@ export class CodeIndexSearchService {
 			clearTimeout(timer)
 		}
 		const assertActive = () => {
-			if (signal.aborted && !(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError"))
-				signal.throwIfAborted()
+			if (signal.aborted && signal.reason !== timeoutReason) signal.throwIfAborted()
 		}
 		assertActive()
 		// A transient search failure must not change the indexing lifecycle or disable future searches.

@@ -64,7 +64,7 @@ export interface NativeToolsOptions {
 
 /** Schemas kept only for decoding and dispatching tool calls saved by older tasks. */
 export function getLegacyFileToolSchemas(options: Pick<NativeToolsOptions, "supportsImages"> = {}) {
-	return [codebaseSearch, listFiles, createReadFileTool({ supportsImages: options.supportsImages }), searchFiles]
+	return [listFiles, createReadFileTool({ supportsImages: options.supportsImages }), searchFiles]
 }
 
 /**
@@ -104,6 +104,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(mcpResourcesAvailable ? mcpResourceTools : []),
 		...(includeLegacyMcpResource ? [accessMcpResource] : []),
 		applyPatch,
+		codebaseSearch,
 		...(includeRequestUserInput ? [requestUserInput] : []),
 		...(includeRequestUserInputAsync && taskKind === "primary" ? [requestUserInputAsync] : []),
 		createExecCommandTool(planMode),
@@ -122,7 +123,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		sendMessage,
 		followupTask,
 		interruptAgent,
-		...(!planMode ? [createWriteStdinTool()] : []),
+		createWriteStdinTool(planMode),
 		runSlashCommand,
 		skill,
 		...(taskKind === "primary" && !planMode ? [updatePlan] : []),

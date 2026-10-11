@@ -25,6 +25,8 @@ export type { SkillMetadata, SkillContent, SkillSource }
 
 const ALPHA_CONFIG_DIR = ".alpha"
 
+type SkillSelection = Partial<Pick<SkillMetadata, "path" | "modeSlugs" | "mode">>
+
 export interface SkillsManagerOptions {
 	/** Only the foreground manager may publish the Settings skill catalog. */
 	notifyWebview?: boolean
@@ -432,16 +434,43 @@ export class SkillsManager {
 	}
 
 	/**
-	 * Find a skill by name and source (regardless of mode).
-	 * Useful for opening/editing skills where the exact mode key may vary.
+	 * Resolve a Settings selection against this manager's complete discovery catalog.
+	 * Paths retain identity across mode edits and overrides; legacy selectors must be unambiguous.
 	 */
-	findSkillByNameAndSource(name: string, source: SkillSource): SkillMetadata | undefined {
-		for (const skill of this.skills.values()) {
-			if (skill.name === name && skill.source === source) {
-				return skill
-			}
+	findSkillByNameAndSource(
+		name: string,
+		source: SkillSource,
+		selection: SkillSelection = {},
+	): SkillMetadata | undefined {
+		if (selection.path !== undefined) {
+			if (typeof selection.path !== "string" || !path.isAbsolute(selection.path)) return undefined
+			const skill = this.skillsByPath.get(this.normalizeSkillPath(selection.path))
+			return skill?.name === name && skill.source === source ? skill : undefined
 		}
-		return undefined
+
+		let candidates = Array.from(this.skillsByPath.values()).filter(
+			(skill) => skill.name === name && skill.source === source,
+		)
+		if (selection.modeSlugs !== undefined) {
+			if (
+				!Array.isArray(selection.modeSlugs) ||
+				!selection.modeSlugs.every((slug) => typeof slug === "string" && slug.length > 0)
+			) {
+				return undefined
+			}
+			const selectedModes = new Set(selection.modeSlugs)
+			candidates = candidates.filter((skill) => {
+				const skillModes = new Set(skill.modeSlugs ?? [])
+				return (
+					skillModes.size === selectedModes.size && [...selectedModes].every((slug) => skillModes.has(slug))
+				)
+			})
+		} else if (selection.mode !== undefined) {
+			// Legacy single-mode requests identified the primary mode, including multi-mode skills.
+			candidates = candidates.filter((skill) => skill.mode === selection.mode)
+		}
+		if (candidates.length > 1) throw new Error(t("skills:errors.ambiguous_skill", { name }))
+		return candidates[0]
 	}
 
 	/**
@@ -554,10 +583,10 @@ Add your skill instructions here.
 	 * @param source - Where the skill is located
 	 * @param mode - Optional mode (to locate in skills-{mode}/ directory)
 	 */
-	async deleteSkill(name: string, source: SkillSource, mode?: string): Promise<void> {
+	async deleteSkill(name: string, source: SkillSource, mode?: string, selection: SkillSelection = {}): Promise<void> {
 		this.assertWritableSource(source)
 		// Find the skill
-		const skill = this.getSkill(name, source, mode)
+		const skill = this.findSkillByNameAndSource(name, source, { mode, ...selection })
 		if (!skill) {
 			const modeInfo = mode ? ` (mode: ${mode})` : ""
 			throw new Error(t("skills:errors.not_found", { name, source, modeInfo }))
@@ -656,16 +685,14 @@ Add your skill instructions here.
 	 * @param source - Where the skill is located ("global" or "project")
 	 * @param newModeSlugs - New mode slugs (undefined/empty = any mode)
 	 */
-	async updateSkillModes(name: string, source: SkillSource, newModeSlugs?: string[]): Promise<void> {
+	async updateSkillModes(
+		name: string,
+		source: SkillSource,
+		newModeSlugs?: string[],
+		selection: SkillSelection = {},
+	): Promise<void> {
 		this.assertWritableSource(source)
-		// Find any skill with this name and source (regardless of current mode)
-		let skill: SkillMetadata | undefined
-		for (const s of this.skills.values()) {
-			if (s.name === name && s.source === source) {
-				skill = s
-				break
-			}
-		}
+		const skill = this.findSkillByNameAndSource(name, source, selection)
 
 		if (!skill) {
 			throw new Error(t("skills:errors.not_found", { name, source, modeInfo: "" }))
@@ -676,16 +703,9 @@ Add your skill instructions here.
 		const fileContent = await fs.readFile(skill.path, "utf-8")
 		const { data: frontmatter, content: body } = matter(fileContent)
 
-		// Update the frontmatter with new modeSlugs
-		if (newModeSlugs && newModeSlugs.length > 0) {
-			frontmatter.modeSlugs = newModeSlugs
-			// Remove legacy mode field if present
-			delete frontmatter.mode
-		} else {
-			// Empty/undefined = any mode, remove mode restrictions
-			delete frontmatter.modeSlugs
-			delete frontmatter.mode
-		}
+		// An explicit empty array overrides skills-{mode}/ defaults during rediscovery.
+		frontmatter.modeSlugs = newModeSlugs ?? []
+		delete frontmatter.mode
 
 		// Serialize back to SKILL.md format
 		const newContent = matter.stringify(body, frontmatter)

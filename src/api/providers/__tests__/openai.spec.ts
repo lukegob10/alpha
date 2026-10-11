@@ -282,7 +282,7 @@ describe("OpenAiHandler", () => {
 				.join("")
 			expect(JSON.parse(partialArguments)).toEqual({ patch })
 			expect(chunks).toContainEqual({ type: "tool_call_end", id: "call_patch" })
-			expect(chunks).toContainEqual({ type: "text", text: "Applying the patch." })
+			expect(chunks).toContainEqual({ type: "text", text: "Applying the patch.", outputIndex: 2 })
 			expect(chunks).not.toContainEqual({ type: "reasoning", text: "Reviewed the patch." })
 			expect(chunks).toContainEqual({
 				type: "usage",
@@ -366,6 +366,7 @@ describe("OpenAiHandler", () => {
 				type: "tool_call",
 				id: "call_list",
 				name: "list_files",
+				outputIndex: 0,
 				arguments: '{"path":"."}',
 			})
 			expect(chunks[toolCallEndIndex]).toEqual({ type: "tool_call_end", id: "call_list" })
@@ -407,7 +408,13 @@ describe("OpenAiHandler", () => {
 			}
 
 			expect(chunks.filter((chunk) => chunk.type === "tool_call")).toEqual([
-				{ type: "tool_call", id: "call_minimal", name: "read_file", arguments: '{"path":"example.txt"}' },
+				{
+					type: "tool_call",
+					id: "call_minimal",
+					name: "read_file",
+					arguments: '{"path":"example.txt"}',
+					outputIndex: 1,
+				},
 			])
 			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
 				{ type: "tool_call_end", id: "call_minimal" },
@@ -612,7 +619,9 @@ describe("OpenAiHandler", () => {
 				.map((chunk) => chunk.arguments ?? "")
 				.join("")
 			expect(JSON.parse(argumentsText)).toEqual(isCustom ? { patch } : { cmd: "pwd" })
-			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([{ type: "text", text: "Finished." }])
+			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
+				{ type: "text", text: "Finished.", outputIndex: 1 },
+			])
 		})
 
 		it.each([
@@ -718,7 +727,7 @@ describe("OpenAiHandler", () => {
 			expect(mockResponsesCreate).toHaveBeenCalledOnce()
 			expect(mockCreate).not.toHaveBeenCalled()
 			expect(mockResponsesCreate.mock.calls[0]?.[0].tools).toEqual(expectedTools)
-			expect(chunks).toContainEqual({ type: "text", text: "Ready." })
+			expect(chunks).toContainEqual({ type: "text", text: "Ready.", outputIndex: 0 })
 		})
 
 		it("normalizes freeform input in non-streaming mode", async () => {
@@ -779,6 +788,7 @@ describe("OpenAiHandler", () => {
 				id: "call_patch",
 				name: "apply_patch",
 				arguments: JSON.stringify({ patch }),
+				outputIndex: 1,
 			})
 			expect(provider.getReasoningItems()).toEqual([
 				{

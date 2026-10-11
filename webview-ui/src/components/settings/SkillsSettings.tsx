@@ -95,6 +95,7 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 				type: "deleteSkill",
 				skillName: skillToDelete.name,
 				source: skillToDelete.source,
+				skillPath: skillToDelete.path,
 				skillModeSlugs: skillToDelete.modeSlugs,
 			})
 			setDeleteDialogOpen(false)
@@ -112,6 +113,7 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 			type: "openSkillFile",
 			skillName: skill.name,
 			source: skill.source,
+			skillPath: skill.path,
 			skillModeSlugs: skill.modeSlugs,
 		})
 	}, [])
@@ -156,11 +158,12 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 	// Save mode changes
 	const handleSaveModes = useCallback(() => {
 		if (skillToEditModes) {
-			const newModeSlugs = isAnyMode ? undefined : selectedModes.length > 0 ? selectedModes : undefined
+			const newModeSlugs = isAnyMode ? [] : selectedModes
 			vscode.postMessage({
 				type: "updateSkillModes",
 				skillName: skillToEditModes.name,
 				source: skillToEditModes.source,
+				skillPath: skillToEditModes.path,
 				newSkillModeSlugs: newModeSlugs,
 			})
 			setModeDialogOpen(false)
@@ -186,9 +189,7 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 	const renderSkillItem = useCallback(
 		(skill: SkillMetadata) => {
 			return (
-				<div
-					key={`${skill.source}-${skill.name}-${skill.modeSlugs?.join(",") || "any"}`}
-					className="p-2.5 px-2 rounded-xl border border-transparent">
+				<div key={skill.path} className="p-2.5 px-2 rounded-xl border border-transparent">
 					<div className="flex items-start justify-between gap-2 flex-col min-[400px]:flex-row overflow-hidden">
 						<div className="flex-1 min-w-0">
 							{/* Skill name */}

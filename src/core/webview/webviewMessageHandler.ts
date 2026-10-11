@@ -2630,10 +2630,7 @@ export const webviewMessageHandler = async (
 			const settings = message.codeIndexSettings
 
 			try {
-				// Check if embedder provider has changed
 				const currentConfig = getGlobalState("codebaseIndexConfig") || {}
-				const embedderProviderChanged =
-					currentConfig.codebaseIndexEmbedderProvider !== settings.codebaseIndexEmbedderProvider
 
 				// Save global state settings atomically
 				const globalStateConfig = {
@@ -2693,38 +2690,19 @@ export const webviewMessageHandler = async (
 				// Then handle validation and initialization for the current workspace
 				const currentCodeIndexManager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (currentCodeIndexManager) {
-					// If embedder provider changed, perform proactive validation
-					if (embedderProviderChanged) {
-						try {
-							// Force handleSettingsChange which will trigger validation
-							await currentCodeIndexManager.handleSettingsChange()
-						} catch (error) {
-							// Validation failed - the error state is already set by handleSettingsChange
-							provider.log(
-								`Embedder validation failed after provider change: ${error instanceof Error ? error.message : String(error)}`,
-							)
-							// Send validation error to webview
-							await provider.postMessageToWebview({
-								type: "indexingStatusUpdate",
-								values: currentCodeIndexManager.getCurrentStatus(),
-							})
-							// Exit early - don't try to start indexing with invalid configuration
-							break
-						}
-					} else {
-						// No provider change, just handle settings normally
-						try {
-							await currentCodeIndexManager.handleSettingsChange()
-						} catch (error) {
-							// Log but don't fail - settings are saved
-							provider.log(
-								`Settings change handling error: ${error instanceof Error ? error.message : String(error)}`,
-							)
-						}
+					try {
+						await currentCodeIndexManager.handleSettingsChange()
+					} catch (error) {
+						provider.log(
+							`Code index settings validation failed: ${error instanceof Error ? error.message : String(error)}`,
+						)
+						await provider.postMessageToWebview({
+							type: "indexingStatusUpdate",
+							values: currentCodeIndexManager.getCurrentStatus(),
+						})
+						// Keep the saved credentials, but leave validation retries to an explicit start or save.
+						break
 					}
-
-					// Wait a bit more to ensure everything is ready
-					await new Promise((resolve) => setTimeout(resolve, 200))
 
 					// Auto-start indexing if now enabled and configured
 					if (currentCodeIndexManager.isFeatureEnabled && currentCodeIndexManager.isFeatureConfigured) {
@@ -2823,8 +2801,8 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "startIndexing": {
+			const manager = provider.getCurrentWorkspaceCodeIndexManager()
 			try {
-				const manager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (!manager) {
 					provider.postMessageToWebview({
 						type: "indexingStatusUpdate",
@@ -2842,24 +2820,24 @@ export const webviewMessageHandler = async (
 
 				// "Start Indexing" implicitly enables the workspace
 				await manager.setWorkspaceEnabled(true)
+				// Load persisted settings before reading readiness, including newly added workspaces.
+				await manager.initialize(provider.contextProxy)
 
-				if (manager.isFeatureEnabled && manager.isFeatureConfigured) {
-					await manager.initialize(provider.contextProxy)
-
+				if (manager.isFeatureEnabled && manager.isInitialized) {
 					const currentState = manager.state
 					if (currentState === "Standby" || currentState === "Error") {
 						manager.startIndexing()
-
-						if (!manager.isInitialized) {
-							await manager.initialize(provider.contextProxy)
-							if (manager.state === "Standby" || manager.state === "Error") {
-								manager.startIndexing()
-							}
-						}
 					}
 				}
 			} catch (error) {
 				provider.log(`Error starting indexing: ${error instanceof Error ? error.message : String(error)}`)
+			} finally {
+				if (manager) {
+					await provider.postMessageToWebview({
+						type: "indexingStatusUpdate",
+						values: manager.getCurrentStatus(),
+					})
+				}
 			}
 			break
 		}
@@ -2881,28 +2859,31 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "toggleWorkspaceIndexing": {
+			const manager = provider.getCurrentWorkspaceCodeIndexManager()
 			try {
-				const manager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (!manager) {
 					provider.log("Cannot toggle workspace indexing: No workspace folder open")
 					return
 				}
 				const enabled = message.bool ?? false
 				await manager.setWorkspaceEnabled(enabled)
-				if (enabled && manager.isFeatureEnabled && manager.isFeatureConfigured) {
+				if (enabled) {
 					await manager.initialize(provider.contextProxy)
-					manager.startIndexing()
-				} else if (!enabled) {
+					if (manager.isFeatureEnabled && manager.isInitialized) manager.startIndexing()
+				} else {
 					manager.stopIndexing()
 				}
-				provider.postMessageToWebview({
-					type: "indexingStatusUpdate",
-					values: manager.getCurrentStatus(),
-				})
 			} catch (error) {
 				provider.log(
 					`Error toggling workspace indexing: ${error instanceof Error ? error.message : String(error)}`,
 				)
+			} finally {
+				if (manager) {
+					await provider.postMessageToWebview({
+						type: "indexingStatusUpdate",
+						values: manager.getCurrentStatus(),
+					})
+				}
 			}
 			break
 		}

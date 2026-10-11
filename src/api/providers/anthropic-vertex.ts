@@ -15,7 +15,7 @@ import { safeJsonParse } from "@alpha-code/core"
 import { ApiHandlerOptions } from "../../shared/api"
 import { logger } from "../../utils/logging"
 
-import { ApiStream, createApiStreamOutcome, isApiStreamAbortError } from "../transform/stream"
+import { ApiStream, type ApiStreamUsageChunk, createApiStreamOutcome, isApiStreamAbortError } from "../transform/stream"
 import { addCacheBreakpoints } from "../transform/caching/vertex"
 import { getModelParams } from "../transform/model-params"
 import { filterNonAnthropicBlocks } from "../transform/anthropic-filter"
@@ -67,6 +67,34 @@ type VertexGatewayGoogleAuth = {
 type ProviderInstructionParts = {
 	systemInstructions: string
 	userContext: string
+}
+
+type AnthropicUsageCounters = Pick<
+	Anthropic.Usage,
+	"input_tokens" | "output_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens"
+>
+
+function createAnthropicUsageAccumulator() {
+	const totals = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+	return (usage: Partial<AnthropicUsageCounters>): ApiStreamUsageChunk => {
+		const delta = (key: keyof AnthropicUsageCounters): number | undefined => {
+			const total = usage[key]
+			if (typeof total !== "number" || !Number.isSafeInteger(total) || total < totals[key]) return undefined
+			const increment = total - totals[key]
+			totals[key] = total
+			return increment
+		}
+		// Anthropic message_delta counters are cumulative, including optional
+		// input/cache updates. Task and the canonical usage ledger consume deltas;
+		// repeated or stale snapshots must not debit usage or lower the baseline.
+		return {
+			type: "usage",
+			inputTokens: delta("input_tokens") ?? 0,
+			outputTokens: delta("output_tokens") ?? 0,
+			cacheWriteTokens: delta("cache_creation_input_tokens"),
+			cacheReadTokens: delta("cache_read_input_tokens"),
+		}
+	}
 }
 
 function getProviderInstructionParts(
@@ -121,6 +149,7 @@ function createAnthropicOutcome(
 	semanticOutputObserved: boolean,
 	metadata?: ApiHandlerCreateMessageMetadata,
 	hasUnterminatedToolCall = false,
+	hasIncompleteThinking = false,
 ) {
 	let reason: string | undefined
 	if (!terminal) {
@@ -131,6 +160,8 @@ function createAnthropicOutcome(
 		reason = "Anthropic response reached the model context window limit."
 	} else if (hasUnterminatedToolCall) {
 		reason = "Anthropic response stopped before its streamed tool call was complete."
+	} else if (hasIncompleteThinking) {
+		reason = "Anthropic response stopped before its thinking block was complete and signed."
 	} else if (!stopReason) {
 		reason = "Anthropic response did not include a terminal stop reason."
 	} else if (
@@ -820,6 +851,13 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			let emittedAnyStreamChunk = false
 			let semanticOutputObserved = false
 			let stopReason: string | null | undefined
+			const accumulateUsage = createAnthropicUsageAccumulator()
+			const activeThinkingBlocks = new Map<
+				number,
+				{ type: "thinking"; signature?: string } | { type: "redacted_thinking"; data: string }
+			>()
+			let hasIncompleteThinking = false
+			let lastCompletedThoughtSignature: string | undefined
 			const activeToolUseBlocks = new Map<
 				number,
 				{
@@ -837,32 +875,31 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 					)
 
 					if (response.usage) {
-						yield {
-							type: "usage",
-							inputTokens: response.usage.input_tokens || 0,
-							outputTokens: response.usage.output_tokens || 0,
-							cacheWriteTokens: response.usage.cache_creation_input_tokens || undefined,
-							cacheReadTokens: response.usage.cache_read_input_tokens || undefined,
-						}
+						yield accumulateUsage(response.usage)
 					}
 
 					for (const [index, block] of response.content.entries()) {
 						switch (block.type) {
 							case "text": {
 								semanticOutputObserved ||= Boolean(block.text)
-								if (index > 0) {
-									yield { type: "text", text: "\n" }
-								}
-								yield { type: "text", text: block.text }
+								yield { type: "text", text: block.text, outputIndex: index }
 								break
 							}
 							case "thinking": {
-								semanticOutputObserved ||= Boolean(block.thinking)
-								this.lastThoughtSignature = block.signature || undefined
-								if (index > 0) {
-									yield { type: "reasoning", text: "\n" }
+								semanticOutputObserved = true
+								hasIncompleteThinking ||= !block.signature
+								lastCompletedThoughtSignature = block.signature || undefined
+								yield {
+									type: "reasoning",
+									text: block.thinking,
+									signature: block.signature,
+									outputIndex: index,
 								}
-								yield { type: "reasoning", text: (block as any).thinking }
+								break
+							}
+							case "redacted_thinking": {
+								semanticOutputObserved = true
+								yield { type: "reasoning", text: "", redactedData: block.data, outputIndex: index }
 								break
 							}
 							case "tool_use": {
@@ -873,6 +910,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									id: toolUseBlock.id,
 									name: toolUseBlock.name,
 									arguments: this.stringifyToolArguments(toolUseBlock.input),
+									outputIndex: index,
 								}
 								yield { type: "tool_call_end", id: toolUseBlock.id }
 								break
@@ -880,7 +918,16 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 						}
 					}
 
-					yield createAnthropicOutcome(response.stop_reason, true, semanticOutputObserved, metadata)
+					const outcome = createAnthropicOutcome(
+						response.stop_reason,
+						true,
+						semanticOutputObserved,
+						metadata,
+						false,
+						hasIncompleteThinking,
+					)
+					if (outcome.status === "completed") this.lastThoughtSignature = lastCompletedThoughtSignature
+					yield outcome
 					return
 				}
 
@@ -894,58 +941,56 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 					switch (chunk.type) {
 						case "message_start": {
-							const usage = chunk.message!.usage
-
-							yield {
-								type: "usage",
-								inputTokens: usage.input_tokens || 0,
-								outputTokens: usage.output_tokens || 0,
-								cacheWriteTokens: usage.cache_creation_input_tokens || undefined,
-								cacheReadTokens: usage.cache_read_input_tokens || undefined,
-							}
-
+							yield accumulateUsage(chunk.message.usage)
 							break
 						}
 						case "message_delta": {
 							stopReason = chunk.delta?.stop_reason ?? stopReason
-							yield {
-								type: "usage",
-								inputTokens: 0,
-								outputTokens: chunk.usage!.output_tokens || 0,
-							}
+							yield accumulateUsage(chunk.usage)
 
 							break
 						}
 						case "message_stop": {
 							metadata?.signal?.throwIfAborted()
-							yield createAnthropicOutcome(
+							const outcome = createAnthropicOutcome(
 								stopReason,
 								true,
 								semanticOutputObserved,
 								metadata,
 								activeToolUseBlocks.size > 0,
+								hasIncompleteThinking || activeThinkingBlocks.size > 0,
 							)
+							if (outcome.status === "completed")
+								this.lastThoughtSignature = lastCompletedThoughtSignature
+							yield outcome
 							return
 						}
 						case "content_block_start": {
 							switch (chunk.content_block!.type) {
 								case "text": {
 									semanticOutputObserved ||= Boolean(chunk.content_block.text)
-									if (chunk.index! > 0) {
-										yield { type: "text", text: "\n" }
-									}
-
-									yield { type: "text", text: chunk.content_block!.text }
+									yield { type: "text", text: chunk.content_block.text, outputIndex: chunk.index }
 									break
 								}
 								case "thinking": {
-									semanticOutputObserved ||= Boolean(chunk.content_block.thinking)
-									this.lastThoughtSignature = chunk.content_block.signature || undefined
-									if (chunk.index! > 0) {
-										yield { type: "reasoning", text: "\n" }
+									semanticOutputObserved = true
+									activeThinkingBlocks.set(chunk.index, {
+										type: "thinking",
+										signature: chunk.content_block.signature || undefined,
+									})
+									yield {
+										type: "reasoning",
+										text: chunk.content_block.thinking,
+										outputIndex: chunk.index,
 									}
-
-									yield { type: "reasoning", text: (chunk.content_block as any).thinking }
+									break
+								}
+								case "redacted_thinking": {
+									semanticOutputObserved = true
+									activeThinkingBlocks.set(chunk.index, {
+										type: "redacted_thinking",
+										data: chunk.content_block.data,
+									})
 									break
 								}
 								case "tool_use": {
@@ -978,16 +1023,17 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 							switch (chunk.delta!.type) {
 								case "text_delta": {
 									semanticOutputObserved ||= Boolean(chunk.delta.text)
-									yield { type: "text", text: chunk.delta!.text }
+									yield { type: "text", text: chunk.delta.text, outputIndex: chunk.index }
 									break
 								}
 								case "thinking_delta": {
 									semanticOutputObserved ||= Boolean(chunk.delta.thinking)
-									yield { type: "reasoning", text: (chunk.delta as any).thinking }
+									yield { type: "reasoning", text: chunk.delta.thinking, outputIndex: chunk.index }
 									break
 								}
 								case "signature_delta": {
-									this.lastThoughtSignature = (chunk.delta as { signature: string }).signature
+									const block = activeThinkingBlocks.get(chunk.index)
+									if (block?.type === "thinking") block.signature = chunk.delta.signature
 									break
 								}
 								case "input_json_delta": {
@@ -1012,6 +1058,27 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 							break
 						}
 						case "content_block_stop": {
+							const thinkingBlock = activeThinkingBlocks.get(chunk.index)
+							if (thinkingBlock?.type === "thinking") {
+								if (thinkingBlock.signature) {
+									lastCompletedThoughtSignature = thinkingBlock.signature
+									yield {
+										type: "thinking_complete",
+										signature: thinkingBlock.signature,
+										outputIndex: chunk.index,
+									}
+								} else {
+									hasIncompleteThinking = true
+								}
+							} else if (thinkingBlock?.type === "redacted_thinking") {
+								yield {
+									type: "reasoning",
+									text: "",
+									redactedData: thinkingBlock.data,
+									outputIndex: chunk.index,
+								}
+							}
+							activeThinkingBlocks.delete(chunk.index)
 							const activeToolUseBlock = activeToolUseBlocks.get(chunk.index!)
 							if (activeToolUseBlock) {
 								if (!activeToolUseBlock.sawInputJsonDelta && activeToolUseBlock.initialArguments) {

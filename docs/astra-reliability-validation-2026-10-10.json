@@ -1,0 +1,595 @@
+{
+	"schemaVersion": 1,
+	"recordedAt": "2026-10-11 03:09:48 UTC",
+	"upstream": {
+		"sha": "cc7ba33601286a751477832b01de7b6f8de0dd9c",
+		"commitDate": "2026-10-10T22:28:01Z",
+		"retrieved": "2026-10-11 01:37:17 UTC",
+		"tree": "31ae1b017ac0a7ca7a21c82ee37b6c7a097b44cc"
+	},
+	"scope": "Final automated reliability validation; scripted providers and one VS Code LM fixture. No live-model evaluation.",
+	"sourceNote": "Code and test files were frozen for the final gates. Final report and this receipt summary were saved afterward; the certification hash identifies its during-run working tree.",
+	"affectedSurface": {
+		"command": "pnpm --dir src test api/providers/__tests__/provider-history-roundtrip.audit.spec.ts api/providers/__tests__/anthropic-vertex.spec.ts core/agent/__tests__/AgentResponseFoundation.spec.ts core/task-persistence/__tests__/canonicalAssistantHistory.spec.ts core/task-persistence/__tests__/openaiReasoningReplay.spec.ts core/task/__tests__/Task.persistence.spec.ts core/task/__tests__/Task.result-ack-durability.astra.spec.ts core/task/__tests__/Task.resume-durability.astra.spec.ts core/task/__tests__/additional-chat-reload.astra.spec.ts services/scheduled-tasks/__tests__/ScheduledTaskService.before-run.astra-audit.spec.ts core/webview/__tests__/AlphaProvider.delegation-astra-audit.spec.ts core/webview/__tests__/AlphaProvider.closed-budget-freeze.astra-review.spec.ts core/agent/__tests__/AgentControlStore.followup-admission.astra.spec.ts core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts core/tools/__tests__/additional-chat-tool-flow.astra.spec.ts core/tools/__tests__/CustomToolPolicy.astra.spec.ts core/tools/__tests__/writeStdinAdapter.spec.ts integrations/terminal/__tests__/TerminalOutputReceipt.spec.ts core/tools/__tests__/commandResult.spec.ts core/task/__tests__/Task.resume-steering-commit.astra-review.spec.ts core/task/__tests__/Task.steering-authorization.astra-review.spec.ts core/task/__tests__/Task.spec.ts core/assistant-message/__tests__/NativeToolCallParser.write-stdin.spec.ts core/tools/__tests__/ParallelCommandRead.integration.spec.ts core/tools/__tests__/ParallelCommandRead.spec.ts core/tools/__tests__/ReadCommandOutputTool.test.ts integrations/terminal/__tests__/OutputInterceptor.test.ts core/message-manager/index.artifacts.spec.ts core/message-manager/index.spec.ts core/webview/__tests__/stageThreeLegacyHandoff.integration.spec.ts --maxWorkers=2",
+		"exitCode": 0,
+		"files": 30,
+		"tests": 987
+	},
+	"sharedTypes": {
+		"package": "@alpha-code/types",
+		"exitCode": 0,
+		"files": 41,
+		"tests": 404
+	},
+	"lint": {
+		"command": "pnpm lint",
+		"exitCode": 0,
+		"tasks": 8
+	},
+	"types": {
+		"command": "pnpm check-types",
+		"exitCode": 0,
+		"tasks": 9
+	},
+	"exactHost": {
+		"launches": 18,
+		"passed": 55,
+		"profile": "Each launch used an isolated runner-owned temporary profile. Successful profiles were released; stdout JSON receipt metadata is preserved below.",
+		"groups": [
+			{
+				"name": "smoke",
+				"command": "pnpm --filter @alpha-code/vscode-e2e test:smoke:1250",
+				"exitCode": 0,
+				"receipts": [
+					{
+						"runId": "cdd75cba-36e9-4ea9-893b-7ce455a237da",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 5,
+							"passed": 5,
+							"pending": 0,
+							"executed": 5,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "8866d2cb-b603-44b3-8354-37c7560a2055",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 2,
+							"passed": 2,
+							"pending": 0,
+							"executed": 2,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "bb7a888c-e85d-4931-859f-fd29685f9bd7",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 17,
+							"passed": 17,
+							"pending": 0,
+							"executed": 17,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "ff24fd71-a4c6-437d-9ec5-fd11ce3d755c",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "44df9b57-8de0-4cf8-aac5-85d7deeba1bd",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "7c45a79b-71bf-4f6b-a90d-08e6e9df2036",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "0cdc01d3-22d0-4bd3-b14e-612e0d5165d5",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "9577b83d-2763-43e2-8b5b-56ed2134c616",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "9f265429-136b-4310-ad82-77c513389c8e",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "c76bb783-8997-4fe5-b0cd-1dd3c7e567c5",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "f6f58359-dee1-41c7-a696-d7133a7999f9",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 2,
+							"passed": 2,
+							"pending": 0,
+							"executed": 2,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "aec50b06-9b23-484c-a608-67301f72e0c3",
+						"status": "passed",
+						"providerMode": "vscode-lm-fixture",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 7,
+							"passed": 7,
+							"pending": 0,
+							"executed": 7,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "62694f83-f172-445b-9dde-68603c1c1af1",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 2,
+							"passed": 2,
+							"pending": 0,
+							"executed": 2,
+							"failed": 0
+						}
+					}
+				]
+			},
+			{
+				"name": "commandArtifact",
+				"command": "pnpm --dir apps/vscode-e2e exec node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file command-artifact-workflow.astra.test",
+				"exitCode": 0,
+				"receipts": [
+					{
+						"runId": "498f13d6-d2a9-4d9d-9fc8-77d1766531b9",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 2,
+							"passed": 2,
+							"pending": 0,
+							"executed": 2,
+							"failed": 0
+						}
+					}
+				]
+			},
+			{
+				"name": "coreLoop",
+				"command": "pnpm --dir apps/vscode-e2e exec node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file core-loop-boundaries.test",
+				"exitCode": 0,
+				"receipts": [
+					{
+						"runId": "5ca22cab-8903-4d56-ba0f-db9ea31de9f8",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 4,
+							"passed": 4,
+							"pending": 0,
+							"executed": 4,
+							"failed": 0
+						}
+					}
+				]
+			},
+			{
+				"name": "scheduledTasks",
+				"command": "pnpm --dir apps/vscode-e2e exec node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file scheduled-tasks.acceptance.test",
+				"exitCode": 0,
+				"receipts": [
+					{
+						"runId": "27b88d10-f434-40c5-ad7c-ea464a74e69c",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 5,
+							"passed": 5,
+							"pending": 0,
+							"executed": 5,
+							"failed": 0
+						}
+					}
+				]
+			},
+			{
+				"name": "managedAgents",
+				"command": "pnpm certify:managed-agents:automated",
+				"exitCode": 0,
+				"receipts": [
+					{
+						"runId": "eb943c60-37e7-4c14-adf6-3ab5ffc2a444",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					},
+					{
+						"runId": "e80b6b5f-c26c-4b53-a224-de4dc5263279",
+						"status": "passed",
+						"providerMode": "scripted",
+						"requestedVSCodeVersion": "1.125.0",
+						"actualVSCodeVersion": "1.125.0",
+						"requireAllTests": true,
+						"ownershipGate": "verified",
+						"captureComplete": true,
+						"hostExitObserved": true,
+						"exitCode": 0,
+						"retained": false,
+						"testCounts": {
+							"total": 1,
+							"passed": 1,
+							"pending": 0,
+							"executed": 1,
+							"failed": 0
+						}
+					}
+				]
+			}
+		]
+	},
+	"managedCertification": {
+		"command": "pnpm certify:managed-agents:automated",
+		"exitCode": 0,
+		"generatedAt": "2026-10-11T03:06:04.418Z",
+		"scope": "deterministic-offline-only",
+		"outcome": {
+			"status": "PASS-DETERMINISTIC",
+			"exitCode": 0,
+			"testCounts": {
+				"total": 3277,
+				"passed": 3277,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"testBaseline": {
+				"minimum": 935,
+				"actual": 3277,
+				"satisfied": true
+			},
+			"rowStatusCounts": {
+				"PASS": 26,
+				"PENDING-INTEGRATION": 8
+			},
+			"rowBaseline": {
+				"deterministic": 26,
+				"pendingIntegration": 8
+			},
+			"liveAcceptance": "NOT_RUN",
+			"integrationRowsPending": 8,
+			"note": "Passing deterministic rows do not satisfy real provider, VS Code host, multi-window, or live UI acceptance."
+		},
+		"sourceStable": true,
+		"sourceStateSha256": "631680e2a17bd5d44db38f7fde889ac2e887de206d459d7099e14d33330f977a",
+		"matrixSha256": "c16a9349c306d2edf6125696c9a37ccd9d2d8a750f177429736bea23eff06bcc",
+		"tracks": [
+			{
+				"id": "types-contracts",
+				"status": "PASS",
+				"tests": {
+					"total": 112,
+					"passed": 112,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "worker-worktree",
+				"status": "PASS",
+				"tests": {
+					"total": 40,
+					"passed": 40,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "runtime-invariants",
+				"status": "PASS",
+				"tests": {
+					"total": 1213,
+					"passed": 1213,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "lifecycle-routing",
+				"status": "PASS",
+				"tests": {
+					"total": 712,
+					"passed": 712,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "terminal-process-cleanup",
+				"status": "PASS",
+				"tests": {
+					"total": 57,
+					"passed": 57,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "task-history-compatibility",
+				"status": "PASS",
+				"tests": {
+					"total": 29,
+					"passed": 29,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "worker-completion-gate",
+				"status": "PASS",
+				"tests": {
+					"total": 205,
+					"passed": 205,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "provider-protocol",
+				"status": "PASS",
+				"tests": {
+					"total": 486,
+					"passed": 486,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "live-tree-ui",
+				"status": "PASS",
+				"tests": {
+					"total": 379,
+					"passed": 379,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			},
+			{
+				"id": "settings-buffering",
+				"status": "PASS",
+				"tests": {
+					"total": 44,
+					"passed": 44,
+					"failed": 0,
+					"skipped": 0,
+					"todo": 0
+				}
+			}
+		],
+		"countingNote": "Track test executions overlap and are not a unique-test total."
+	},
+	"protectedWork": {
+		"files": 16,
+		"unchangedHashes": 12,
+		"narrowIntegrations": [
+			"src/core/prompts/tools/native-tools/index.ts",
+			"src/core/task/__tests__/tool-catalog-invalidation.spec.ts",
+			"src/core/tools/ToolRegistry.ts",
+			"src/core/tools/__tests__/nativeToolSurfaceRefactor.spec.ts"
+		]
+	}
+}

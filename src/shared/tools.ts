@@ -32,6 +32,28 @@ import type {
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
+export type CommandArtifactReadArgs = {
+	artifact_id: string
+	search?: string | null
+	offset?: number | null
+	limit?: number | null
+	session_id?: null
+	chars?: null
+	yield_time_ms?: null
+	max_output_tokens?: null
+}
+
+/** Recognize the read-only branch; artifact paths, ranges, and patterns are validated by the reader. */
+export function isCommandArtifactRead(args: Record<string, unknown> | undefined): args is CommandArtifactReadArgs {
+	if (!args || typeof args.artifact_id !== "string" || args.artifact_id.length === 0) return false
+	return Object.entries(args).every(([key, value]) => {
+		if (key === "artifact_id") return true
+		if (key === "search") return value == null || typeof value === "string"
+		if (key === "offset" || key === "limit") return value == null || typeof value === "number"
+		return ["session_id", "chars", "yield_time_ms", "max_output_tokens"].includes(key) && value == null
+	})
+}
+
 export type AskApproval = (
 	type: AlphaAsk,
 	partialMessage?: string,
@@ -201,12 +223,18 @@ export type NativeToolArgs = BrowserToolArgs & {
 				offset?: number
 				limit?: number
 		  }
-	write_stdin: {
-		session_id: number
-		chars?: string
-		yield_time_ms?: number
-		max_output_tokens?: number
-	}
+	write_stdin:
+		| CommandArtifactReadArgs
+		| {
+				session_id: number
+				chars?: string | null
+				yield_time_ms?: number | null
+				max_output_tokens?: number | null
+				artifact_id?: null
+				search?: null
+				offset?: null
+				limit?: null
+		  }
 	shell: {
 		command: string
 		cwd?: string | null

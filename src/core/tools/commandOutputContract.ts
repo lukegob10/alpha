@@ -13,11 +13,19 @@ export const READ_COMMAND_OUTPUT_MAX_SEARCH_LENGTH = 256
 /** Search does not retain an unterminated line beyond this bound. */
 export const READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES = 64 * 1024
 
-/** Artifact identifiers are generated ASCII names; keep schema and runtime validation identical. */
-export const READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN = "^cmd-[0-9]+\\.txt$"
+/** Preserve timestamp artifacts and the lowercase UUID v4 IDs used by audited command reads. */
+export const READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN =
+	"^cmd-([0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\\.txt$"
 
 /** Maximum artifact identifier length accepted by the native schema and runtime. */
 export const READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH = 64
+
+/** The reader and cleanup must agree on the exact generated filenames they own. */
+export function getCommandArtifactExecutionId(artifactId: string): string | undefined {
+	if (artifactId.length > READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH) return undefined
+	const match = new RegExp(READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN).exec(artifactId)
+	return match?.[0] === artifactId ? match[1] : undefined
+}
 
 /** Keep the displayed pattern and generated metadata bounded independently of the input pattern. */
 export const READ_COMMAND_OUTPUT_MAX_DISPLAY_PATTERN_BYTES = 32

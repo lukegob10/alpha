@@ -142,26 +142,33 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
 			assertActive()
 			const current = evidence()!
+			// A completed nonzero exit is a process failure, not a failed tool transaction.
+			const completedProcessFailure =
+				current.status === "failed" && typeof current.exitCode === "number" && current.signalName === undefined
 			const receiptOutputLimit =
 				callbacks.commandResultMaxOutputTokens !== undefined
 					? Math.max(0, Math.min(8_000, getCommandToolResultLimit(callbacks) - 512))
 					: Math.max(0, Math.min(8_000, (callbacks.getRemainingOutputChars?.() ?? 9_000) - 1_000))
 			const receipt = process?.captureUnretrievedOutput(receiptOutputLimit)
 			try {
-				const commandResult: CommandToolResult | undefined =
-					callbacks.commandResultMaxOutputTokens === undefined
-						? undefined
-						: boundCommandToolResult(
-								{
-									wall_time_seconds: Math.max(0, (performance.now() - startedAt) / 1000),
-									output: receipt?.output ?? "",
-									...(typeof current.exitCode === "number" ? { exit_code: current.exitCode } : {}),
-									...(current.status === "running" && sessionId !== undefined
-										? { session_id: sessionId }
-										: {}),
-								},
-								getCommandToolResultLimit(callbacks),
-							)
+				const hasMoreOutput = receipt?.hasMoreOutput === true
+				let commandResult: CommandToolResult | undefined
+				if (callbacks.commandResultMaxOutputTokens !== undefined) {
+					commandResult = {
+						wall_time_seconds: Math.max(0, (performance.now() - startedAt) / 1000),
+						output: receipt?.output ?? "",
+						...(typeof current.exitCode === "number" ? { exit_code: current.exitCode } : {}),
+						...((current.status === "running" || hasMoreOutput) && sessionId !== undefined
+							? { session_id: sessionId }
+							: {}),
+						...(hasMoreOutput ? { has_more_output: true } : {}),
+					}
+					// Native text receipts already reserve their framing within the raw cap.
+					// JSON escaping must not discard output whose cursor is about to commit.
+					if (callbacks.commandResultFormat !== "codex") {
+						commandResult = boundCommandToolResult(commandResult, getCommandToolResultLimit(callbacks))
+					}
+				}
 				callbacks.pushToolResult(
 					callbacks.commandResultFormat === "codex" && commandResult
 						? formatCommandToolResult(
@@ -172,6 +179,7 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 						: `${JSON.stringify({ execution_id: current.executionId, status: current.status, exit_code: current.exitCode ?? null, process_available: Boolean(process), stop_requested: params.action === "stop" })}\nOutput:\n${receipt?.output ?? ""}`,
 				)
 				callbacks.setResultMetadata?.({
+					...(hasMoreOutput ? { truncated: true } : {}),
 					...(commandResult
 						? {
 								executionStatus:
@@ -183,7 +191,9 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 												? current.status
 												: "error",
 								status:
-									current.status === "running" || current.status === "succeeded"
+									current.status === "running" ||
+									current.status === "succeeded" ||
+									completedProcessFailure
 										? "success"
 										: current.status === "denied" || current.status === "cancelled"
 											? current.status

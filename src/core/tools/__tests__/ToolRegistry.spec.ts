@@ -99,7 +99,12 @@ describe("ToolRegistry", () => {
 		expect(registry.resolve("wait_agent")?.capabilities.concurrency).toBe("barrier")
 		expect(registry.resolve("exec_command")?.capabilities.concurrency).toBe("serial")
 		expect(registry.resolve("exec_command")?.schema).toMatchObject({ function: { name: "exec_command" } })
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search"]) {
+		expect(registry.resolve("codebase_search")?.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "none",
+			requiresApproval: true,
+		})
+		for (const name of ["read_file", "list_files", "search_files"]) {
 			expect(registry.resolve(name), name).toBeUndefined()
 		}
 		expect(registry.resolve("write_stdin")?.capabilities.sideEffects).toBe("workspace")
@@ -145,7 +150,7 @@ describe("ToolRegistry", () => {
 		})
 		const catalogNames = catalog.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
 
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search"]) {
+		for (const name of ["read_file", "list_files", "search_files"]) {
 			expect(catalogNames, name).not.toContain(name)
 			expect(registry.resolve(name), name).toBeUndefined()
 		}

@@ -225,7 +225,8 @@ describe("SkillsSettings", () => {
 			type: "openSkillFile",
 			skillName: "rich-documents",
 			source: "builtin",
-			skillMode: undefined,
+			skillPath: builtinSkill.path,
+			skillModeSlugs: undefined,
 		})
 	})
 
@@ -362,6 +363,7 @@ describe("SkillsSettings", () => {
 			type: "updateSkillModes",
 			skillName: "legacy-bound-skill",
 			source: "project",
+			skillPath: legacySkills[0].path,
 			newSkillModeSlugs: [savedMode, "debug"],
 		})
 
@@ -374,6 +376,7 @@ describe("SkillsSettings", () => {
 			type: "updateSkillModes",
 			skillName: "legacy-bound-skill",
 			source: "project",
+			skillPath: legacySkills[0].path,
 			newSkillModeSlugs: ["debug"],
 		})
 	})
@@ -409,7 +412,8 @@ describe("SkillsSettings", () => {
 				type: "deleteSkill",
 				skillName: "project-skill",
 				source: "project",
-				skillMode: undefined,
+				skillPath: mockSkills[0].path,
+				skillModeSlugs: undefined,
 			})
 		})
 	})
@@ -449,7 +453,75 @@ describe("SkillsSettings", () => {
 			type: "openSkillFile",
 			skillName: "project-skill",
 			source: "project",
-			skillMode: undefined,
+			skillPath: mockSkills[0].path,
+			skillModeSlugs: undefined,
+		})
+	})
+
+	it.each([{ modeSlugs: undefined }, { modeSlugs: ["code"] }])(
+		"carries the selected path for duplicate names with $modeSlugs mode bindings",
+		({ modeSlugs }) => {
+			const selected: SkillMetadata = {
+				name: "duplicate-review",
+				description: "Selected review variant",
+				path: "/workspace/.agents/skills-code/duplicate-review/SKILL.md",
+				source: "project",
+				modeSlugs,
+			}
+			const sibling: SkillMetadata = {
+				...selected,
+				description: "Sibling review variant",
+				path: "/workspace/.alpha/skills/duplicate-review/SKILL.md",
+			}
+			renderSkillsSettings([sibling, selected])
+			const selectedRow = screen.getByText(selected.description).closest(".border-transparent")!
+			const [configureButton, editButton, deleteButton] = selectedRow.querySelectorAll("button")
+			fireEvent.click(editButton)
+			expect(vscode.postMessage).toHaveBeenLastCalledWith({
+				type: "openSkillFile",
+				skillName: selected.name,
+				source: selected.source,
+				skillPath: selected.path,
+				skillModeSlugs: modeSlugs,
+			})
+			fireEvent.click(configureButton)
+			fireEvent.click(screen.getByTestId("checkbox-mode-architect"))
+			fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+			expect(vscode.postMessage).toHaveBeenLastCalledWith({
+				type: "updateSkillModes",
+				skillName: selected.name,
+				source: selected.source,
+				skillPath: selected.path,
+				newSkillModeSlugs: [...(modeSlugs ?? []), "architect"],
+			})
+			fireEvent.click(deleteButton)
+			fireEvent.click(screen.getByTestId("alert-dialog-action"))
+			expect(vscode.postMessage).toHaveBeenLastCalledWith({
+				type: "deleteSkill",
+				skillName: selected.name,
+				source: selected.source,
+				skillPath: selected.path,
+				skillModeSlugs: modeSlugs,
+			})
+		},
+	)
+
+	it("emits the selected directory skill identity and explicit Any mode when saving", () => {
+		const skill: SkillMetadata = { ...mockSkills[1], modeSlugs: ["code"] }
+		renderSkillsSettings([skill])
+		const configureButton = screen
+			.getAllByTestId("button")
+			.find((button) => button.querySelector(".lucide-settings"))
+		fireEvent.click(configureButton!)
+		fireEvent.click(screen.getByTestId("checkbox-mode-any"))
+		expect(screen.getByTestId("checkbox-mode-code")).not.toBeChecked()
+		fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+		expect(vscode.postMessage).toHaveBeenLastCalledWith({
+			type: "updateSkillModes",
+			skillName: skill.name,
+			source: skill.source,
+			skillPath: skill.path,
+			newSkillModeSlugs: [],
 		})
 	})
 
@@ -473,7 +545,8 @@ describe("SkillsSettings", () => {
 				type: "deleteSkill",
 				skillName: "project-skill",
 				source: "project",
-				skillMode: undefined,
+				skillPath: mockSkills[0].path,
+				skillModeSlugs: undefined,
 			})
 		})
 
