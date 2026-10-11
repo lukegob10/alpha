@@ -29,7 +29,7 @@ import {
 } from "../prompts/tools/filter-tools-for-mode"
 import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } from "../tools/TaskToolSurface"
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
-import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
+import type { ToolPolicyInput, ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
 import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
@@ -73,6 +73,8 @@ export interface BuildToolsOptions {
 	crossTaskRole?: "root" | "child" | "none"
 	/** Optional caller policy values used when exposing the unified surface. */
 	policy?: ToolPolicySnapshot
+	/** Execution defaults captured with the request; never read from live settings inside the catalog. */
+	execution?: ToolPolicyInput["execution"]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
 	readGrant?: TaskReadGrant
@@ -466,6 +468,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
+				execution: options.execution,
 				historicalToolNames: includeAllToolsWithRestrictions
 					? toolNamesReferencedInHistory(options.discoveryHistory)
 					: undefined,
@@ -648,6 +651,7 @@ function createCapturedToolSurface(input: {
 		allowedToolNames: allowedFunctionNames,
 		disabledTools,
 		policy: options.policy,
+		execution: options.execution,
 		approvalMode: options.approvalMode,
 		autoApprovalEnabled: options.autoApprovalEnabled,
 		readGrant: options.readGrant,

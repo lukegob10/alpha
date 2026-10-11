@@ -284,6 +284,7 @@ import {
 	type ToolSchedulerResult,
 } from "../agent/ToolScheduler"
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
+import type { ToolPolicyInput } from "../agent/ToolPolicy"
 import type { AgentTurnEvent, AgentTurnEventIdentity } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
 import {
@@ -2405,6 +2406,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private approvalStateForAsk(state: TaskRequestState | undefined, approvalMode: ApprovalMode) {
 		return state ? { ...state, approvalMode } : undefined
+	}
+
+	/** Copy command authority before asynchronous request preparation can observe changed settings. */
+	private captureToolExecutionPolicy(state?: TaskRequestState): NonNullable<ToolPolicyInput["execution"]> {
+		return Object.freeze({
+			workspaceRoots: Object.freeze([this.cwd]),
+			...(this.taskKind === "primary" ? { outsideWorkspace: "approval" as const } : {}),
+			command: Object.freeze({
+				allowedPrefixes: Object.freeze([...(state?.allowedCommands ?? [])]),
+				deniedPrefixes: Object.freeze([...(state?.deniedCommands ?? [])]),
+			}),
+		})
 	}
 
 	/**
@@ -9525,6 +9538,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const pendingState = this.providerRef.deref()?.getState()
 		const state = pendingState ? await waitForContextPreparation(pendingState) : undefined
 		assertWithinBudget()
+		const capturedExecution = this.captureToolExecutionPolicy(state)
 		const mode = await waitForContextPreparation(this.getTaskMode())
 		let instructionFragments: readonly ApiInstructionFragment[] | undefined
 		const systemPrompt = await waitForContextPreparation(
@@ -9550,6 +9564,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: state?.disabledTools,
+					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
 					includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -14870,6 +14885,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const pendingState = this.providerRef.deref()?.getState()
 			const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
 			assertRecoveryWithinBudget()
+			const capturedExecution = this.captureToolExecutionPolicy(state)
 			const mode = await waitForBoundedRecovery(this.getTaskMode())
 			assertRecoveryWithinBudget()
 
@@ -14922,6 +14938,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							experiments: state?.experiments,
 							apiConfiguration,
 							disabledTools: state?.disabledTools,
+							execution: capturedExecution,
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
 							includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -15319,6 +15336,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const pendingState = options.state === undefined ? this.providerRef.deref()?.getState() : undefined
 		const state = options.state ?? (pendingState ? await waitForBoundedPreflight(pendingState) : undefined)
 		assertPreflightWithinBudget()
+		const capturedExecution =
+			retainedStep?.surface?.policy.execution ??
+			retainedStep?.snapshot.context.policy.execution ??
+			this.captureToolExecutionPolicy(state)
 		const capturedApprovalMode =
 			retainedStep?.snapshot.context.policy.approval.mode ?? this.captureTaskApprovalMode(state)
 		const capturedApprovalFlags = deriveAutoApprovalFlags(capturedApprovalMode, {
@@ -15520,6 +15541,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									experiments: state?.experiments,
 									apiConfiguration,
 									disabledTools: state?.disabledTools,
+									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
 									includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -15811,6 +15833,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: state?.disabledTools,
+					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
 					includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
