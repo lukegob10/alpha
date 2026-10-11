@@ -4,6 +4,106 @@ import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
+const RENDERED_CONTROL_TIMEOUT_MS = 15_000
+
+interface RenderedControlPosition {
+	x: number
+	y: number
+	width: number
+	height: number
+}
+
+export function createRenderedAcceptanceControls(
+	cdp: Pick<CdpConnection, "request">,
+	sessionId: string,
+	signal?: AbortSignal,
+) {
+	const evaluate = async <T>(expression: string): Promise<T> => {
+		signal?.throwIfAborted()
+		const value = await cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
+			"Runtime.evaluate",
+			{
+				expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			sessionId,
+		)
+		signal?.throwIfAborted()
+		assert.equal(value.exceptionDetails, undefined)
+		return value.result.value
+	}
+	const click = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
+		const ensureActive = () => {
+			signal?.throwIfAborted()
+			if (Date.now() >= deadline) throw new Error("rendered_control_timeout")
+		}
+		ensureActive()
+		await evaluate(
+			`(()=>{const e=${element};e?.scrollIntoView({block:'center',behavior:'instant'});return true})()`,
+		)
+		const samePosition = (left: RenderedControlPosition, right: RenderedControlPosition) =>
+			left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+		const waitForPosition = async (): Promise<RenderedControlPosition> => {
+			let previous: RenderedControlPosition | undefined
+			while (true) {
+				ensureActive()
+				// Resolve the current node on each rendering frame; portals can change geometry or document ownership.
+				const current = await evaluate<RenderedControlPosition | null>(
+					`new Promise(resolve=>d.defaultView.requestAnimationFrame(()=>{
+						const frame=document.getElementById('active-frame');
+						if(!frame||frame.contentDocument!==d){resolve(null);return}
+						const e=${element},w=d.defaultView;
+						if(!e?.isConnected||e.disabled||e.getAttribute('aria-disabled')==='true'){resolve(null);return}
+						for(let node=e;node;node=node.parentElement){
+							const style=w.getComputedStyle(node);
+							if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0){resolve(null);return}
+							if((node.getAnimations?.()??[]).some(a=>a.playState==='running'&&Number.isFinite(a.effect?.getComputedTiming().endTime))){resolve(null);return}
+						}
+						const r=e.getBoundingClientRect(),f=frame.getBoundingClientRect();
+						const localX=r.x+r.width/2,localY=r.y+r.height/2,x=f.x+localX,y=f.y+localY;
+						if(r.width<=0||r.height<=0||![x,y,r.width,r.height].every(Number.isFinite)||!e.contains(d.elementFromPoint(localX,localY))||document.elementFromPoint(x,y)!==frame){resolve(null);return}
+						resolve({x,y,width:r.width,height:r.height});
+					}))`,
+				)
+				ensureActive()
+				if (current && previous && samePosition(current, previous)) return current
+				previous = current ?? undefined
+			}
+		}
+		let position = await waitForPosition()
+		while (true) {
+			ensureActive()
+			await cdp.request(
+				"Input.dispatchMouseEvent",
+				{ type: "mouseMoved", x: position.x, y: position.y },
+				sessionId,
+			)
+			const afterMove = await waitForPosition()
+			if (samePosition(position, afterMove)) break
+			position = afterMove
+		}
+		ensureActive()
+		try {
+			await cdp.request(
+				"Input.dispatchMouseEvent",
+				{ type: "mousePressed", x: position.x, y: position.y, button: "left", buttons: 1, clickCount: 1 },
+				sessionId,
+			)
+			ensureActive()
+		} finally {
+			// A cancelled or failed press must not leave the owned renderer's mouse button held.
+			await cdp.request(
+				"Input.dispatchMouseEvent",
+				{ type: "mouseReleased", x: position.x, y: position.y, button: "left", buttons: 0, clickCount: 1 },
+				sessionId,
+			)
+		}
+		ensureActive()
+	}
+	return { evaluate, click }
+}
+
 /** Drives rendered controls only; the existing EH fixture verifies authoritative settings, files and task state. */
 export async function exerciseRenderedAcceptance(
 	cdp: CdpConnection,
@@ -14,22 +114,11 @@ export async function exerciseRenderedAcceptance(
 	signal?: AbortSignal,
 ) {
 	await cdp.request("Page.bringToFront", {}, workbenchSession)
-	const evaluate = async <T>(expression: string): Promise<T> => {
-		signal?.throwIfAborted()
-		const value = await cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
-			"Runtime.evaluate",
-			{
-				expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
-				returnByValue: true,
-			},
-			sessionId,
-		)
-		assert.equal(value.exceptionDetails, undefined)
-		return value.result.value
-	}
-	const check = async (expression: string) => {
+	const controls = createRenderedAcceptanceControls(cdp, sessionId, signal)
+	const { evaluate } = controls
+	const retainFailure = async (expression: string, operation: () => Promise<void>) => {
 		try {
-			await waitUntil(() => evaluate<boolean>(expression), Date.now() + 15000, "rendered_control_timeout")
+			await operation()
 		} catch (error) {
 			const screenshot = await cdp.request<{ data: string }>(
 				"Page.captureScreenshot",
@@ -53,28 +142,19 @@ export async function exerciseRenderedAcceptance(
 			throw error
 		}
 	}
+	const check = (expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		retainFailure(expression, () =>
+			waitUntil(() => evaluate<boolean>(expression), deadline, "rendered_control_timeout"),
+		)
+	const click = (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		retainFailure(element, () => controls.click(element, deadline))
 	const outputPreview =
 		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
-	const click = async (element: string) => {
-		const position = await evaluate<{ x: number; y: number }>(
-			`(()=>{const e=${element};e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();const f=document.getElementById('active-frame').getBoundingClientRect();return {x:f.x+r.x+r.width/2,y:f.y+r.y+r.height/2}})()`,
-		)
-		await cdp.request("Input.dispatchMouseEvent", { type: "mouseMoved", ...position }, sessionId)
-		await cdp.request(
-			"Input.dispatchMouseEvent",
-			{ type: "mousePressed", ...position, button: "left", buttons: 1, clickCount: 1 },
-			sessionId,
-		)
-		await cdp.request(
-			"Input.dispatchMouseEvent",
-			{ type: "mouseReleased", ...position, button: "left", buttons: 0, clickCount: 1 },
-			sessionId,
-		)
-	}
 	const activate = async (selector: string, label?: string, prefix = false) => {
 		const find = `[...d.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.getBoundingClientRect().width>0&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'${label === undefined ? "" : `&&(e.getAttribute('aria-label')??e.textContent).trim().${prefix ? "startsWith" : "includes"}(${JSON.stringify(label)})`})`
-		await check(`!!(${find})`)
-		await click(find)
+		const deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS
+		await check(`!!(${find})`, deadline)
+		await click(find, deadline)
 	}
 	const completed: string[] = []
 	const capture = async (name: string) => {
