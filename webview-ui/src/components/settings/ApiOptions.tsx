@@ -11,6 +11,7 @@ import {
 	DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 	vertexDefaultModelId,
 	stellarDefaultModelId,
+	resolveModelParameterApplicability,
 } from "@alpha-code/types"
 
 import {
@@ -98,6 +99,7 @@ const ApiOptions = ({
 	)
 
 	const [isAdvancedSettingsOpen, setIsAdvancedSettingsOpen] = useState(false)
+	const [outputTokenLimitError, setOutputTokenLimitError] = useState<string | undefined>()
 
 	const handleInputChange = useCallback(
 		<K extends keyof ProviderSettings, E>(
@@ -120,6 +122,12 @@ const ApiOptions = ({
 		: undefined
 	const isUnsupportedSelectedProvider =
 		typeof apiConfiguration.apiProvider === "string" && !isProviderName(apiConfiguration.apiProvider)
+	const parameterApplicability = resolveModelParameterApplicability({
+		provider: selectedProvider,
+		modelId: selectedModelId,
+		model: selectedModelInfo,
+		settings: apiConfiguration,
+	})
 
 	// Update `apiModelId` whenever `selectedModelId` changes.
 	useEffect(() => {
@@ -170,8 +178,15 @@ const ApiOptions = ({
 			undefined,
 			organizationAllowList,
 		)
-		setErrorMessage(apiValidationResult)
-	}, [apiConfiguration, organizationAllowList, setErrorMessage, isUnsupportedSelectedProvider])
+		setErrorMessage(apiValidationResult ?? (selectedProvider === "openai" ? outputTokenLimitError : undefined))
+	}, [
+		apiConfiguration,
+		organizationAllowList,
+		setErrorMessage,
+		isUnsupportedSelectedProvider,
+		selectedProvider,
+		outputTokenLimitError,
+	])
 
 	const onProviderChange = useCallback(
 		(value: ProviderName) => {
@@ -347,6 +362,7 @@ const ApiOptions = ({
 							organizationAllowList={organizationAllowList}
 							modelValidationError={modelValidationError}
 							simplifySettings={fromWelcomeView}
+							onOutputTokenLimitError={setOutputTokenLimitError}
 						/>
 					)}
 
@@ -402,12 +418,12 @@ const ApiOptions = ({
 						/>
 					)}
 
-					{/* Gate Verbosity UI by capability flag */}
-					{!fromWelcomeView && selectedModelInfo?.supportsVerbosity && (
+					{!fromWelcomeView && parameterApplicability.supportsVerbosity && (
 						<Verbosity
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
 							modelInfo={selectedModelInfo}
+							modelId={selectedModelId}
 						/>
 					)}
 
@@ -423,7 +439,7 @@ const ApiOptions = ({
 									todoListEnabled={apiConfiguration.todoListEnabled}
 									onChange={(field, value) => setApiConfigurationField(field, value)}
 								/>
-								{selectedModelInfo?.supportsTemperature !== false && (
+								{parameterApplicability.supportsTemperature && (
 									<TemperatureControl
 										value={apiConfiguration.modelTemperature}
 										onChange={handleInputChange("modelTemperature", noTransform)}

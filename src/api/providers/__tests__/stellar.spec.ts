@@ -142,6 +142,55 @@ describe("StellarHandler", () => {
 		expect(request).not.toHaveProperty("stream")
 	})
 
+	it.each([true, false])("honors sampling and server-default cap with streaming=%s", async (streaming) => {
+		mocks.create.mockResolvedValueOnce(
+			streaming
+				? createAsyncStream([{ choices: [{ delta: { content: "sampled" }, finish_reason: "stop" }] }])
+				: { choices: [{ message: { content: "sampled" }, finish_reason: "stop" }] },
+		)
+		const handler = createHandler({
+			stellarStreamingEnabled: streaming,
+			modelTemperature: 0.4,
+			includeMaxTokens: true,
+			modelMaxTokens: -1,
+			verbosity: "high",
+		})
+
+		for await (const _chunk of handler.createMessage("system", [])) {
+			// Consume the inherited OpenAI-compatible request path.
+		}
+
+		const [request] = mocks.create.mock.calls[0]
+		expect(request).toMatchObject({ model: stellarDefaultModelId, temperature: 0.4 })
+		expect(request).not.toHaveProperty("max_completion_tokens")
+		expect(request).not.toHaveProperty("verbosity")
+		expect(request).not.toHaveProperty("text.verbosity")
+	})
+
+	it.each(["stream", "response", "single-prompt"])(
+		"preserves gateway sampling for an opaque internal model on %s",
+		async (surface) => {
+			mocks.create.mockResolvedValueOnce(
+				surface === "stream"
+					? createAsyncStream([{ choices: [{ delta: { content: "answer" }, finish_reason: "stop" }] }])
+					: { choices: [{ message: { content: "answer" }, finish_reason: "stop" }] },
+			)
+			const handler = createHandler({
+				apiModelId: "internal-model-v2",
+				modelTemperature: 0.4,
+				stellarStreamingEnabled: surface === "stream",
+			})
+			if (surface === "single-prompt") {
+				expect(await handler.completePrompt("hello")).toBe("answer")
+			} else {
+				for await (const _chunk of handler.createMessage("system", [])) {
+					// The legacy gateway fallback is an adapter contract, independent of the model ID.
+				}
+			}
+			expect(mocks.create.mock.calls[0][0]).toHaveProperty("temperature", 0.4)
+		},
+	)
+
 	it("sends a constrained task-only reasoning token without changing the model profile", async () => {
 		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "custom" } }] }]))
 		const handler = createHandler({ taskReasoningCustomEffort: "balanced_reasoning" })

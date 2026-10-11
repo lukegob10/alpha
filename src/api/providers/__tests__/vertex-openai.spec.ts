@@ -252,6 +252,74 @@ describe("VertexOpenAiHandler", () => {
 		expect(request).not.toHaveProperty("stream")
 	})
 
+	it.each([true, false])(
+		"honors sampling and server-default cap on the gateway with streaming=%s",
+		async (streaming) => {
+			mocks.create.mockResolvedValueOnce(
+				streaming
+					? createAsyncStream([{ choices: [{ delta: { content: "sampled" }, finish_reason: "stop" }] }])
+					: { choices: [{ message: { content: "sampled" }, finish_reason: "stop" }] },
+			)
+			const handler = createHandler({
+				vertexStreamingEnabled: streaming,
+				modelTemperature: 0.4,
+				includeMaxTokens: true,
+				modelMaxTokens: -1,
+				verbosity: "high",
+				modelRoutingMap: { "xai/grok-4.6": { modelOverride: "gateway-model-id" } },
+			})
+
+			for await (const _chunk of handler.createMessage("system", [])) {
+				// Consume the gateway response.
+			}
+
+			const [request] = mocks.create.mock.calls[0]
+			expect(request).toMatchObject({ model: "gateway-model-id", temperature: 0.4 })
+			expect(request).not.toHaveProperty("max_completion_tokens")
+			expect(request).not.toHaveProperty("verbosity")
+			expect(request).not.toHaveProperty("text.verbosity")
+		},
+	)
+
+	it.each(["stream", "response", "single-prompt"])(
+		"preserves saved sampling for an unknown partner model on %s",
+		async (surface) => {
+			mocks.create.mockResolvedValueOnce(
+				surface === "stream"
+					? createAsyncStream([{ choices: [{ delta: { content: "sampled" }, finish_reason: "stop" }] }])
+					: { choices: [{ message: { content: "sampled" }, finish_reason: "stop" }] },
+			)
+			const handler = createHandler({
+				apiModelId: "partner-future",
+				vertexStreamingEnabled: surface === "stream",
+				modelTemperature: 0.8,
+			})
+			if (surface === "single-prompt") {
+				await handler.completePrompt("hello")
+			} else {
+				for await (const _chunk of handler.createMessage("system", [])) {
+					// The compatible partner adapter retains its legacy sampling contract.
+				}
+			}
+			expect(mocks.create.mock.calls[0][0]).toMatchObject({ model: "partner-future", temperature: 0.8 })
+		},
+	)
+
+	it("omits explicitly unsupported sampling inherited from the selected catalog model", async () => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: {}, finish_reason: "stop" }] }]))
+		const handler = createHandler({
+			apiModelId: "claude-opus-5",
+			modelTemperature: 0.4,
+			modelRoutingMap: { "claude-opus-5": { modelOverride: "gateway-model-id" } },
+		})
+
+		for await (const _chunk of handler.createMessage("system", [])) {
+			// This direct adapter test verifies its capability guard, independent of factory routing.
+		}
+
+		expect(mocks.create.mock.calls[0][0]).not.toHaveProperty("temperature")
+	})
+
 	it("rejects incomplete, invalid, or malformed gateway settings", () => {
 		expect(() => createHandler({ gatewayBaseUrl: undefined, vertexGatewayBaseUrl: undefined })).toThrow(
 			"Missing required Vertex gateway settings: gatewayBaseUrl",

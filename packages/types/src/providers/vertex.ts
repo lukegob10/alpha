@@ -1,4 +1,71 @@
 import type { ModelInfo } from "../model.js"
+import type { ProviderSettings } from "../provider-settings.js"
+import { openAiModelInfoSaneDefaults } from "./openai.js"
+
+export type VertexGatewayRouteTarget = {
+	projectId?: string
+	location?: string
+	modelOverride?: string
+	extraHeaders?: Record<string, string>
+}
+
+/** Keep the partner adapter's legacy compatible metadata available to its editor. */
+export function resolveVertexOpenAiModelInfo(modelId: string): ModelInfo {
+	return vertexModels[modelId as VertexModelId] ?? openAiModelInfoSaneDefaults
+}
+
+/** Resolve the same effective partner-model route in settings and requests. */
+export function resolveVertexGatewayRoute(
+	options: Pick<ProviderSettings, "modelRoutingMap" | "vertexGatewayModelRoutingMap">,
+	modelId: string,
+): VertexGatewayRouteTarget {
+	const rawRoutingMap = options.modelRoutingMap ?? options.vertexGatewayModelRoutingMap
+	if (!rawRoutingMap || (typeof rawRoutingMap === "string" && !rawRoutingMap.trim())) return {}
+
+	let routingMap: unknown = rawRoutingMap
+	if (typeof rawRoutingMap === "string") {
+		try {
+			routingMap = JSON.parse(rawRoutingMap)
+		} catch {
+			throw new Error("Invalid modelRoutingMap JSON for Vertex gateway configuration.")
+		}
+	}
+	if (!routingMap || typeof routingMap !== "object" || Array.isArray(routingMap)) {
+		throw new Error("Invalid modelRoutingMap. Expected an object keyed by model name.")
+	}
+	const routeValue = (routingMap as Record<string, unknown>)[modelId]
+	if (routeValue === undefined) return {}
+	if (typeof routeValue === "string") {
+		const modelOverride = routeValue.trim()
+		return modelOverride ? { modelOverride } : {}
+	}
+	if (!routeValue || typeof routeValue !== "object" || Array.isArray(routeValue)) {
+		throw new Error(`Invalid modelRoutingMap entry for "${modelId}".`)
+	}
+	const routeRecord = routeValue as Record<string, unknown>
+	const route: VertexGatewayRouteTarget = {}
+	for (const field of ["projectId", "location", "modelOverride"] as const) {
+		const value = routeRecord[field]
+		if (typeof value === "string" && value.trim()) route[field] = value.trim()
+	}
+	if (routeRecord.extraHeaders !== undefined) {
+		if (
+			!routeRecord.extraHeaders ||
+			typeof routeRecord.extraHeaders !== "object" ||
+			Array.isArray(routeRecord.extraHeaders)
+		) {
+			throw new Error(`Invalid extraHeaders for modelRoutingMap entry "${modelId}".`)
+		}
+		route.extraHeaders = Object.fromEntries(
+			Object.entries(routeRecord.extraHeaders as Record<string, unknown>)
+				.filter(
+					(entry): entry is [string, string] => entry[0].trim().length > 0 && typeof entry[1] === "string",
+				)
+				.map(([key, value]) => [key.trim(), value]),
+		)
+	}
+	return route
+}
 
 // https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude
 export type VertexModelId = keyof typeof vertexModels
@@ -185,6 +252,7 @@ export const vertexModels = {
 		description: "Claude Sonnet 5: Fast model balancing frontier intelligence and cost",
 	},
 	"claude-sonnet-4-6": {
+		supportsTemperature: true,
 		maxTokens: 8192,
 		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
 		supportsImages: true,
@@ -206,6 +274,7 @@ export const vertexModels = {
 		],
 	},
 	"claude-opus-4-6": {
+		supportsTemperature: true,
 		maxTokens: 8192,
 		contextWindow: 200_000, // Default 200K, extendable to 1M with beta flag 'context-1m-2025-08-07'
 		supportsImages: true,

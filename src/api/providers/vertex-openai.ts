@@ -1,7 +1,11 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { type ModelInfo, openAiModelInfoSaneDefaults, vertexModels } from "@alpha-code/types"
+import {
+	type VertexGatewayRouteTarget,
+	resolveVertexGatewayRoute,
+	resolveVertexOpenAiModelInfo,
+} from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import type { ApiHandlerCreateMessageMetadata } from "../index"
@@ -13,13 +17,6 @@ import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-mana
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
-
-type VertexGatewayRouteTarget = {
-	projectId?: string
-	location?: string
-	modelOverride?: string
-	extraHeaders?: Record<string, string>
-}
 
 type VertexOpenAiSettings = {
 	baseUrl: string
@@ -52,7 +49,7 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 
 		const route = resolveVertexGatewayRoute(options, selectedModelId)
 		const routedModelId = route.modelOverride ?? selectedModelId
-		const modelInfo = getVertexOpenAiModelInfo(selectedModelId)
+		const modelInfo = resolveVertexOpenAiModelInfo(selectedModelId)
 		const settings = resolveVertexOpenAiSettings(options, route)
 
 		// OpenAiHandler owns chat-completions message conversion and tool streaming.
@@ -220,70 +217,6 @@ function buildVertexOpenAiBaseUrl(gatewayBaseUrl: string, projectId: string, loc
 	return parsedBaseUrl.toString().replace(/\/$/, "")
 }
 
-function resolveVertexGatewayRoute(options: ApiHandlerOptions, modelId: string): VertexGatewayRouteTarget {
-	const rawRoutingMap = options.modelRoutingMap ?? options.vertexGatewayModelRoutingMap
-	if (!rawRoutingMap || (typeof rawRoutingMap === "string" && !rawRoutingMap.trim())) {
-		return {}
-	}
-
-	let routingMap: unknown = rawRoutingMap
-	if (typeof rawRoutingMap === "string") {
-		try {
-			routingMap = JSON.parse(rawRoutingMap)
-		} catch {
-			throw new Error("Invalid modelRoutingMap JSON for Vertex gateway configuration.")
-		}
-	}
-
-	if (!routingMap || typeof routingMap !== "object" || Array.isArray(routingMap)) {
-		throw new Error("Invalid modelRoutingMap. Expected an object keyed by model name.")
-	}
-
-	const routeValue = (routingMap as Record<string, unknown>)[modelId]
-	if (routeValue === undefined) {
-		return {}
-	}
-
-	if (typeof routeValue === "string") {
-		const modelOverride = routeValue.trim()
-		return modelOverride ? { modelOverride } : {}
-	}
-
-	if (!routeValue || typeof routeValue !== "object" || Array.isArray(routeValue)) {
-		throw new Error(`Invalid modelRoutingMap entry for "${modelId}".`)
-	}
-
-	const routeRecord = routeValue as Record<string, unknown>
-	const route: VertexGatewayRouteTarget = {}
-
-	for (const field of ["projectId", "location", "modelOverride"] as const) {
-		const value = routeRecord[field]
-		if (typeof value === "string" && value.trim()) {
-			route[field] = value.trim()
-		}
-	}
-
-	if (routeRecord.extraHeaders !== undefined) {
-		if (
-			!routeRecord.extraHeaders ||
-			typeof routeRecord.extraHeaders !== "object" ||
-			Array.isArray(routeRecord.extraHeaders)
-		) {
-			throw new Error(`Invalid extraHeaders for modelRoutingMap entry "${modelId}".`)
-		}
-
-		route.extraHeaders = Object.fromEntries(
-			Object.entries(routeRecord.extraHeaders as Record<string, unknown>)
-				.filter(
-					(entry): entry is [string, string] => entry[0].trim().length > 0 && typeof entry[1] === "string",
-				)
-				.map(([key, value]) => [key.trim(), value]),
-		)
-	}
-
-	return route
-}
-
 function getGatewaySetting(primary: string | undefined, legacy: string | undefined): string | undefined {
 	const value = primary ?? legacy
 	return typeof value === "string" && value.trim() ? value.trim() : undefined
@@ -295,10 +228,6 @@ function normalizeRefreshInterval(value: number | undefined): number {
 	}
 
 	return Math.max(1, Math.floor(value as number))
-}
-
-function getVertexOpenAiModelInfo(modelId: string): ModelInfo {
-	return vertexModels[modelId as keyof typeof vertexModels] ?? openAiModelInfoSaneDefaults
 }
 
 function isAuthenticationFailure(error: unknown): boolean {

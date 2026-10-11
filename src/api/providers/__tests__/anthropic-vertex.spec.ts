@@ -1573,16 +1573,16 @@ describe("VertexHandler", () => {
 
 			expect(handlerWithDefaultBudget.getModel().reasoningBudget).toBe(8000) // 80% of 10000
 
-			// Test with minimum thinking budget (should be at least 1024)
+			// The minimum thinking budget must fit inside the response token limit.
 			const handlerWithSmallMaxTokens = new AnthropicVertexHandler({
 				apiModelId: "claude-sonnet-4-6",
 				enableReasoningEffort: true,
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
-				modelMaxTokens: 1000, // This would result in 800 tokens for thinking, but minimum is 1024
+				modelMaxTokens: 1000,
 			})
 
-			expect(handlerWithSmallMaxTokens.getModel().reasoningBudget).toBe(1024)
+			expect(() => handlerWithSmallMaxTokens.getModel()).toThrow(/exceed.*thinking token budget/)
 		})
 
 		it("should pass thinking configuration to API", async () => {

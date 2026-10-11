@@ -9,10 +9,12 @@ import {
 	vertexModels,
 	ANTHROPIC_DEFAULT_MAX_TOKENS,
 	VERTEX_1M_CONTEXT_MODEL_IDS,
+	resolveModelParameterApplicability,
+	validateOptionalOutputTokenLimit,
 } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha-code/core"
 
-import { ApiHandlerOptions } from "../../shared/api"
+import { type ApiHandlerOptions, shouldUseReasoningBudget } from "../../shared/api"
 import { logger } from "../../utils/logging"
 
 import { ApiStream, type ApiStreamUsageChunk, createApiStreamOutcome, isApiStreamAbortError } from "../transform/stream"
@@ -829,7 +831,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			const params = {
 				model: id,
 				max_tokens: maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
-				temperature,
+				...(temperature !== undefined ? { temperature } : {}),
 				thinking,
 				system: usePromptCache
 					? [{ text: systemInstructions, type: "text" as const, cache_control: { type: "ephemeral" } }]
@@ -1166,13 +1168,20 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 		info = applyModelToolPreferences({ provider: "vertex", id }, info)
 
+		const settings = shouldUseReasoningBudget({ model: info, settings: this.options })
+			? { ...this.options, modelMaxTokens: validateOptionalOutputTokenLimit(this.options.modelMaxTokens) }
+			: this.options
 		const params = getModelParams({
 			format: "anthropic",
 			modelId: id,
 			model: info,
-			settings: this.options,
+			settings,
 			defaultTemperature: 0,
 		})
+		const maxTokens = validateOptionalOutputTokenLimit(params.maxTokens) ?? ANTHROPIC_DEFAULT_MAX_TOKENS
+		if (params.reasoningBudget !== undefined && params.reasoningBudget >= maxTokens) {
+			throw new RangeError("Output token limit must exceed the thinking token budget.")
+		}
 
 		// Build betas array for request headers
 		const betas: string[] = []
@@ -1187,12 +1196,22 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		// The actual model ID honored by Anthropic's API does not have this
 		// suffix.
 		const resolvedId = id.endsWith(":thinking") ? id.replace(":thinking", "") : id
+		const applicability = resolveModelParameterApplicability({
+			provider: "vertex",
+			modelId: resolvedId,
+			model: info,
+			settings,
+		})
 		return {
 			id: resolvedId,
 			info,
 			betas: betas.length > 0 ? betas : undefined,
 			toolIdentity: { provider: "vertex", id: resolvedId },
 			...params,
+			maxTokens,
+			temperature:
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? params.temperature : undefined),
+			verbosity: undefined,
 		}
 	}
 
@@ -1216,7 +1235,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
 					model: id,
 					max_tokens: maxTokens,
-					temperature,
+					...(temperature !== undefined ? { temperature } : {}),
 					thinking,
 					messages: [
 						{

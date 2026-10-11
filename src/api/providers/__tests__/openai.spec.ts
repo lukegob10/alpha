@@ -1722,6 +1722,7 @@ describe("OpenAiHandler", () => {
 				{
 					model: mockOptions.openAiModelId,
 					messages: [{ role: "user", content: "Test prompt" }],
+					temperature: 0,
 				},
 				{},
 			)
@@ -1857,6 +1858,7 @@ describe("OpenAiHandler", () => {
 						{ role: "user", content: "Hello!" },
 					],
 					tools: undefined,
+					temperature: 0,
 					tool_choice: undefined,
 					parallel_tool_calls: true,
 				},
@@ -1876,6 +1878,7 @@ describe("OpenAiHandler", () => {
 				{
 					model: azureOptions.openAiModelId,
 					messages: [{ role: "user", content: "Test prompt" }],
+					temperature: 0,
 				},
 				{ path: "/models/chat/completions" },
 			)

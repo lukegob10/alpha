@@ -2,12 +2,14 @@ import type { ProviderSettings, ModelInfo } from "@alpha-code/types"
 import {
 	isProviderName,
 	openAiModelInfoSaneDefaults,
+	resolveOpenAiCustomModelInfo,
 	getVscodeLlmContextWindow,
 	getVscodeLlmModelInfo,
 	vertexDefaultModelId,
 	vertexModels,
+	resolveVertexOpenAiModelInfo,
 	stellarDefaultModelId,
-	stellarModels,
+	resolveStellarModelInfo,
 	vscodeLlmDefaultModelId,
 } from "@alpha-code/types"
 
@@ -27,10 +29,15 @@ export const useSelectedModel = (apiConfiguration?: ProviderSettings) => {
 
 	if (provider === "vertex") {
 		const id = apiConfiguration?.apiModelId ?? vertexDefaultModelId
+		const family = id.trim().toLowerCase()
+		const info =
+			family.includes("claude") || family.startsWith("gemini")
+				? (vertexModels as Record<string, ModelInfo>)[id]
+				: resolveVertexOpenAiModelInfo(id.trim())
 		return {
 			provider,
 			id,
-			info: (vertexModels as Record<string, ModelInfo>)[id],
+			info,
 			isLoading: false,
 			isError: false,
 		}
@@ -41,7 +48,7 @@ export const useSelectedModel = (apiConfiguration?: ProviderSettings) => {
 		return {
 			provider,
 			id,
-			info: (stellarModels as Record<string, ModelInfo>)[id],
+			info: resolveStellarModelInfo(id),
 			isLoading: false,
 			isError: false,
 		}
@@ -52,7 +59,7 @@ export const useSelectedModel = (apiConfiguration?: ProviderSettings) => {
 		return {
 			provider,
 			id,
-			info: apiConfiguration?.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults,
+			info: resolveOpenAiCustomModelInfo(apiConfiguration?.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults),
 			isLoading: false,
 			isError: false,
 		}

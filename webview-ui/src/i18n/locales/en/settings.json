@@ -448,7 +448,7 @@
 			"capabilities": "Configure the capabilities and pricing for your custom OpenAI-compatible model. Be careful when specifying the model capabilities, as they can affect how Alpha performs.",
 			"maxTokens": {
 				"label": "Max Output Tokens",
-				"description": "Maximum number of tokens the model can generate in a response. (Specify -1 to allow the server to set the max tokens.)"
+				"description": "Per-response output cap, including reasoning tokens where the provider counts them. Enter a positive whole number, or -1 to use the server default. This is separate from context size and cumulative task budgets."
 			},
 			"contextWindow": {
 				"label": "Context Window Size",
@@ -457,6 +457,10 @@
 			"imageSupport": {
 				"label": "Image Support",
 				"description": "Is this model capable of processing and understanding images?"
+			},
+			"temperatureSupport": {
+				"label": "Supports temperature",
+				"description": "Declares support for temperature on Chat Completions routes. Disable this if the model does not support temperature. The temperature control appears for supported request routes."
 			},
 			"computerUse": {
 				"label": "Computer Use",
@@ -508,10 +512,11 @@
 		},
 		"verbosity": {
 			"label": "Output Verbosity",
+			"default": "Server default",
 			"high": "High",
 			"medium": "Medium",
 			"low": "Low",
-			"description": "Controls how detailed the model's responses are. Low verbosity produces concise answers, while high verbosity provides thorough explanations."
+			"description": "Controls response detail on supported request routes. Server default omits the verbosity parameter. Low produces concise answers; high provides thorough explanations."
 		},
 		"setReasoningLevel": "Enable Reasoning Effort"
 	},
@@ -831,6 +836,8 @@
 		"modelId": "You must provide a valid model ID.",
 		"modelSelector": "You must provide a valid model selector.",
 		"openAi": "You must provide a valid base URL, API key, and model ID.",
+		"outputTokenLimit": "Output token limit must be a positive whole number or -1 for the server default.",
+		"responsesOutputTokenLimit": "The Responses API requires an output token limit of at least {{minimum}}, or -1 for the server default.",
 		"modelAvailability": "The model ID ({{modelId}}) you provided is not available. Please choose a different model.",
 		"modelDeprecated": "This model is no longer available. Please select a different model.",
 		"providerNotAllowed": "Provider '{{provider}}' is not allowed by your organization",
@@ -856,7 +863,7 @@
 	"defaults": {},
 	"labels": {},
 	"includeMaxOutputTokens": "Include max output tokens",
-	"includeMaxOutputTokensDescription": "Send max output tokens parameter in API requests. Some providers may not support this.",
+	"includeMaxOutputTokensDescription": "Send an explicit per-response output cap when a positive limit is configured. Unchecked, unset, or -1 uses the server default. Some endpoints may not support output caps.",
 	"limitMaxTokensDescription": "Limit the maximum number of tokens in the response",
 	"maxOutputTokensLabel": "Max output tokens",
 	"maxTokensGenerateDescription": "Maximum tokens to generate in response",

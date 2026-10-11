@@ -1,7 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { type ModelInfo, stellarDefaultModelId, stellarModels } from "@alpha-code/types"
+import { resolveModelParameterApplicability, resolveStellarModelInfo, stellarDefaultModelId } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { getModelParams } from "../transform/model-params"
@@ -37,7 +37,7 @@ export class StellarHandler extends OpenAiHandler {
 	constructor(options: ApiHandlerOptions) {
 		const settings = resolveStellarSettings(options)
 		const modelId = options.apiModelId?.trim() || stellarDefaultModelId
-		const modelInfo = getStellarModelInfo(modelId)
+		const modelInfo = resolveStellarModelInfo(modelId)
 
 		// OpenAiHandler owns the OpenAI chat-completions implementation. The placeholder
 		// key is replaced with a Helix token before the first request is sent.
@@ -66,7 +66,7 @@ export class StellarHandler extends OpenAiHandler {
 
 	override getModel() {
 		const id = this.options.openAiModelId?.trim() || stellarDefaultModelId
-		const info = applyModelToolPreferences({ provider: "stellar", id }, getStellarModelInfo(id))
+		const info = applyModelToolPreferences({ provider: "stellar", id }, resolveStellarModelInfo(id))
 		const params = getModelParams({
 			format: "openai",
 			modelId: id,
@@ -75,7 +75,21 @@ export class StellarHandler extends OpenAiHandler {
 			defaultTemperature: info.defaultTemperature ?? 0.7,
 		})
 
-		return { id, info, ...params, toolIdentity: { provider: "stellar", id } }
+		const applicability = resolveModelParameterApplicability({
+			provider: "stellar",
+			modelId: id,
+			model: info,
+			settings: this.options,
+		})
+		return {
+			id,
+			info,
+			...params,
+			temperature:
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? params.temperature : undefined),
+			verbosity: applicability.supportsVerbosity ? params.verbosity : undefined,
+			toolIdentity: { provider: "stellar", id },
+		}
 	}
 
 	override async *createMessage(
@@ -190,10 +204,6 @@ function normalizeRefreshInterval(value: number | undefined): number {
 	}
 
 	return Math.max(1, Math.floor(value as number))
-}
-
-function getStellarModelInfo(modelId: string): ModelInfo {
-	return stellarModels[modelId as keyof typeof stellarModels] ?? stellarModels[stellarDefaultModelId]
 }
 
 function isAuthenticationFailure(error: unknown): boolean {

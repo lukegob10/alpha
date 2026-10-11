@@ -12,6 +12,10 @@ import {
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
 	OPENAI_AZURE_AI_INFERENCE_PATH,
+	resolveModelParameterApplicability,
+	resolveOptionalOutputTokenLimit,
+	usesOpenAiReasoningFamilyChat,
+	usesOpenAiResponsesApi,
 } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
@@ -31,7 +35,6 @@ import {
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
-import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
@@ -51,14 +54,6 @@ import {
 // protocol default local to the generic adapter; the retired DeepSeek catalog
 // and provider remain removed.
 const DEEP_SEEK_DEFAULT_TEMPERATURE = 0.3
-
-function usesOpenAiResponsesApi(modelId: string, options: ApiHandlerOptions): boolean {
-	const deepseekReasoner = modelId.includes("deepseek-reasoner") || (options.openAiR1FormatEnabled ?? false)
-	return (
-		!deepseekReasoner &&
-		getNativeOpenAiModelCapabilities(modelId, options.openAiBaseUrl, options.openAiUseAzure)?.responses === true
-	)
-}
 
 function createOpenAiChatCompletionOutcome(
 	finishReason: string | null | undefined,
@@ -335,7 +330,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		this.responsesEncryptedContent = undefined
 		this.responsesReasoningItems.clear()
 		this.responsesSummary = undefined
-		const { info: modelInfo, reasoning } = this.getModel()
+		const { info: modelInfo, reasoning, temperature } = this.getModel()
 		const effectiveReasoning = this.getRuntimeReasoning(reasoning)
 		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
@@ -371,7 +366,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			return
 		}
 
-		if (modelId.includes("o1") || modelId.includes("o3") || modelId.includes("o4")) {
+		if (usesOpenAiReasoningFamilyChat(modelId)) {
 			yield* this.handleO3FamilyMessage(modelId, systemPrompt, messages, metadata)
 			return
 		}
@@ -450,7 +445,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 				model: modelId,
-				temperature: this.options.modelTemperature ?? (deepseekReasoner ? DEEP_SEEK_DEFAULT_TEMPERATURE : 0),
+				...(temperature !== undefined ? { temperature } : {}),
 				messages: convertedMessages,
 				stream: true as const,
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
@@ -532,6 +527,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		} else {
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: modelId,
+				...(temperature !== undefined ? { temperature } : {}),
 				messages: deepseekReasoner
 					? convertToR1Format([...toR1InstructionMessages(systemPrompt, instructionFragments), ...messages])
 					: [
@@ -611,7 +607,17 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				: {}),
 			...(summaryEnabled ? { summary: "auto" as const } : {}),
 		}
-		const maxOutputTokens = this.options.modelMaxTokens || modelInfo.maxTokens
+		const maxOutputTokens = resolveOptionalOutputTokenLimit({
+			model: modelInfo,
+			settings: this.options,
+			route: "openai-responses",
+		})
+		const { supportsVerbosity } = resolveModelParameterApplicability({
+			provider: "openai",
+			modelId,
+			model: modelInfo,
+			settings: this.options,
+		})
 		const commonOptions = {
 			model: modelId,
 			input: buildOpenAiResponsesInput(
@@ -629,8 +635,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				: {}),
 			store,
 			...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-			...(this.options.includeMaxTokens === true && maxOutputTokens
-				? { max_output_tokens: maxOutputTokens }
+			...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
+			...(supportsVerbosity && this.options.verbosity !== undefined
+				? { text: { verbosity: this.options.verbosity } }
 				: {}),
 		}
 
@@ -1134,9 +1141,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			modelId: id,
 			model: info,
 			settings: this.options,
-			defaultTemperature: 0,
+			defaultTemperature:
+				id.includes("deepseek-reasoner") || this.options.openAiR1FormatEnabled
+					? DEEP_SEEK_DEFAULT_TEMPERATURE
+					: 0,
 		})
-		return { id, info, ...params, toolIdentity: { provider: "openai", id } }
+		const applicability = resolveModelParameterApplicability({
+			provider: "openai",
+			modelId: id,
+			model: info,
+			settings: this.options,
+		})
+		return {
+			id,
+			info,
+			...params,
+			temperature:
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? params.temperature : undefined),
+			verbosity: applicability.supportsVerbosity ? params.verbosity : undefined,
+			toolIdentity: { provider: "openai", id },
+		}
 	}
 
 	async completePrompt(prompt: string): Promise<string> {
@@ -1145,10 +1169,51 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const model = this.getModel()
 			const modelInfo = model.info
 			const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+			const applicability = resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: model.id,
+				model: modelInfo,
+				settings: this.options,
+			})
 
+			if (this.shouldUseResponsesApi(model.id)) {
+				const maxOutputTokens = resolveOptionalOutputTokenLimit({
+					model: modelInfo,
+					settings: this.options,
+					route: "openai-responses",
+				})
+				const response = await this.client.responses.create({
+					model: model.id,
+					input: [{ role: "user", content: prompt }],
+					stream: false,
+					store: false,
+					...(effectiveReasoning?.reasoning_effort !== undefined
+						? { reasoning: { effort: effectiveReasoning.reasoning_effort } }
+						: {}),
+					...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
+					...(applicability.supportsVerbosity && this.options.verbosity !== undefined
+						? { text: { verbosity: this.options.verbosity } }
+						: {}),
+				})
+				if (response.status !== "completed") {
+					const detail = response.error?.code
+						? `; code: ${response.error.code}`
+						: response.incomplete_details?.reason
+							? `; reason: ${response.incomplete_details.reason}`
+							: ""
+					throw new Error(
+						`Responses completion did not complete (status: ${response.status ?? "unknown"}${detail}).`,
+					)
+				}
+				return response.output_text || ""
+			}
+
+			const temperature =
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? model.temperature : undefined)
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: model.id,
 				messages: [{ role: "user", content: prompt }],
+				...(temperature !== undefined ? { temperature } : {}),
 				...(effectiveReasoning && effectiveReasoning),
 			}
 
@@ -1385,11 +1450,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			| OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
 		modelInfo: ModelInfo,
 	): void {
-		// Only add max_completion_tokens if includeMaxTokens is true
-		if (this.options.includeMaxTokens === true) {
-			// Use user-configured modelMaxTokens if available, otherwise fall back to model's default maxTokens
-			// Using max_completion_tokens as max_tokens is deprecated
-			requestOptions.max_completion_tokens = this.options.modelMaxTokens || modelInfo.maxTokens
+		const maxOutputTokens = resolveOptionalOutputTokenLimit({ model: modelInfo, settings: this.options })
+		if (maxOutputTokens !== undefined) {
+			requestOptions.max_completion_tokens = maxOutputTokens
 		}
 	}
 }
