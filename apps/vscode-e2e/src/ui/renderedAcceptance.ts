@@ -18,36 +18,71 @@ export function createRenderedAcceptanceControls(
 	sessionId: string,
 	signal?: AbortSignal,
 ) {
-	const evaluate = async <T>(expression: string): Promise<T> => {
+	const ensureActive = (deadline: number) => {
 		signal?.throwIfAborted()
-		const value = await cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
-			"Runtime.evaluate",
-			{
-				expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
-				returnByValue: true,
-				awaitPromise: true,
-			},
-			sessionId,
+		if (Date.now() >= deadline) throw new Error("rendered_control_timeout")
+	}
+	const settle = async <T>(operation: () => Promise<T>, deadline: number): Promise<T> => {
+		ensureActive(deadline)
+		let timer: ReturnType<typeof setTimeout> | undefined
+		let aborted: (() => void) | undefined
+		try {
+			const interrupted = new Promise<never>((_, reject) => {
+				aborted = () => reject(signal?.reason)
+				signal?.addEventListener("abort", aborted, { once: true })
+				timer = setTimeout(() => reject(new Error("rendered_control_timeout")), deadline - Date.now())
+			})
+			// Attach both race handlers before dispatch; a late transport rejection remains handled after interruption.
+			const pending = Promise.resolve().then(() => {
+				ensureActive(deadline)
+				return operation()
+			})
+			const value = await Promise.race([pending, interrupted])
+			ensureActive(deadline)
+			return value
+		} catch (error) {
+			ensureActive(deadline)
+			throw error
+		} finally {
+			if (timer !== undefined) clearTimeout(timer)
+			if (aborted) signal?.removeEventListener("abort", aborted)
+		}
+	}
+	const evaluate = async <T>(expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS): Promise<T> => {
+		const value = await settle(
+			() =>
+				cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
+					"Runtime.evaluate",
+					{
+						expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
+						returnByValue: true,
+						awaitPromise: true,
+					},
+					sessionId,
+				),
+			deadline,
 		)
-		signal?.throwIfAborted()
+		ensureActive(deadline)
 		assert.equal(value.exceptionDetails, undefined)
 		return value.result.value
 	}
+	const check = (expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		settle(
+			() => waitUntil(() => evaluate<boolean>(expression, deadline), deadline, "rendered_control_timeout"),
+			deadline,
+		)
 	const click = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
-		const ensureActive = () => {
-			signal?.throwIfAborted()
-			if (Date.now() >= deadline) throw new Error("rendered_control_timeout")
-		}
-		ensureActive()
+		ensureActive(deadline)
 		await evaluate(
 			`(()=>{const e=${element};e?.scrollIntoView({block:'center',behavior:'instant'});return true})()`,
+			deadline,
 		)
 		const samePosition = (left: RenderedControlPosition, right: RenderedControlPosition) =>
 			left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
 		const waitForPosition = async (): Promise<RenderedControlPosition> => {
 			let previous: RenderedControlPosition | undefined
 			while (true) {
-				ensureActive()
+				ensureActive(deadline)
 				// Resolve the current node on each rendering frame; portals can change geometry or document ownership.
 				const current = await evaluate<RenderedControlPosition | null>(
 					`new Promise(resolve=>d.defaultView.requestAnimationFrame(()=>{
@@ -65,43 +100,61 @@ export function createRenderedAcceptanceControls(
 						if(r.width<=0||r.height<=0||![x,y,r.width,r.height].every(Number.isFinite)||!e.contains(d.elementFromPoint(localX,localY))||document.elementFromPoint(x,y)!==frame){resolve(null);return}
 						resolve({x,y,width:r.width,height:r.height});
 					}))`,
+					deadline,
 				)
-				ensureActive()
+				ensureActive(deadline)
 				if (current && previous && samePosition(current, previous)) return current
 				previous = current ?? undefined
 			}
 		}
 		let position = await waitForPosition()
 		while (true) {
-			ensureActive()
-			await cdp.request(
-				"Input.dispatchMouseEvent",
-				{ type: "mouseMoved", x: position.x, y: position.y },
-				sessionId,
+			ensureActive(deadline)
+			await settle(
+				() =>
+					cdp.request(
+						"Input.dispatchMouseEvent",
+						{ type: "mouseMoved", x: position.x, y: position.y },
+						sessionId,
+					),
+				deadline,
 			)
 			const afterMove = await waitForPosition()
 			if (samePosition(position, afterMove)) break
 			position = afterMove
 		}
-		ensureActive()
+		ensureActive(deadline)
+		let pressAttempted = false
 		try {
-			await cdp.request(
-				"Input.dispatchMouseEvent",
-				{ type: "mousePressed", x: position.x, y: position.y, button: "left", buttons: 1, clickCount: 1 },
-				sessionId,
-			)
-			ensureActive()
+			await settle(() => {
+				pressAttempted = true
+				return cdp.request(
+					"Input.dispatchMouseEvent",
+					{
+						type: "mousePressed",
+						x: position.x,
+						y: position.y,
+						button: "left",
+						buttons: 1,
+						clickCount: 1,
+					},
+					sessionId,
+				)
+			}, deadline)
+			ensureActive(deadline)
 		} finally {
-			// A cancelled or failed press must not leave the owned renderer's mouse button held.
-			await cdp.request(
-				"Input.dispatchMouseEvent",
-				{ type: "mouseReleased", x: position.x, y: position.y, button: "left", buttons: 0, clickCount: 1 },
-				sessionId,
-			)
+			// A release alone can activate a Radix option when cancellation prevented the press.
+			if (pressAttempted) {
+				await cdp.request(
+					"Input.dispatchMouseEvent",
+					{ type: "mouseReleased", x: position.x, y: position.y, button: "left", buttons: 0, clickCount: 1 },
+					sessionId,
+				)
+			}
 		}
-		ensureActive()
+		ensureActive(deadline)
 	}
-	return { evaluate, click }
+	return { evaluate, check, click }
 }
 
 /** Drives rendered controls only; the existing EH fixture verifies authoritative settings, files and task state. */
@@ -143,9 +196,7 @@ export async function exerciseRenderedAcceptance(
 		}
 	}
 	const check = (expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
-		retainFailure(expression, () =>
-			waitUntil(() => evaluate<boolean>(expression), deadline, "rendered_control_timeout"),
-		)
+		retainFailure(expression, () => controls.check(expression, deadline))
 	const click = (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
 		retainFailure(element, () => controls.click(element, deadline))
 	const outputPreview =
