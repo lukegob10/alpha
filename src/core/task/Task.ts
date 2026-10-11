@@ -224,6 +224,7 @@ import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/
 import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
 import { getCommandShell } from "../../utils/shell"
+import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 import { getTaskDirectoryPath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
@@ -240,6 +241,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
+import { extractApplyPatchCommand } from "../tools/apply-patch/invocation"
 import { classifyCommandRead } from "../tools/ParallelCommandRead"
 import { isPathWithinRoot } from "../tools/pathSafety"
 import { isPathAllowed } from "../agent/ToolPolicy"
@@ -8013,6 +8015,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				await this.requireAlphaMessagesSaved("acceptance check admission")
 			}
 		})
+	}
+
+	/** Terminal attempt observation only; no process or verification was admitted. */
+	private recordDeniedCommandAttempt(toolCallId: string, command: string): void {
+		if (this.abort || this.didComplete || this.commandExecutionEvidence.has(toolCallId)) return
+		if (this.getCurrentEffectStartedToolCallIds().has(sanitizeToolUseId(toolCallId))) return
+		for (const [id, evidence] of this.commandExecutionEvidence) {
+			if (this.commandExecutionEvidence.size < 128) break
+			// Diagnostic attempts must not displace pending receipts or live verification inputs.
+			if (
+				evidence.status !== "running" &&
+				!evidence.acceptanceChecks?.length &&
+				!evidence.verificationChangeSetIds?.length &&
+				!Object.keys(evidence.verificationVersions ?? {}).length &&
+				!evidence.verificationDiagnostics?.length
+			) {
+				this.commandExecutionEvidence.delete(id)
+			}
+		}
+		if (this.commandExecutionEvidence.size >= 128) return
+		const observedAt = Date.now()
+		this.commandExecutionEvidence.set(toolCallId, {
+			toolCallId,
+			// This is a diagnostic attempt identity, never a process or command-session ID.
+			executionId: `denied:${toolCallId}`,
+			status: "denied",
+			command,
+			startedAt: observedAt,
+			completedAt: observedAt,
+		})
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 	}
 
 	private async prepareCommandEvidenceSlot(toolCallId: string): Promise<void> {
@@ -16935,6 +16968,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			args !== null && typeof args === "object" && !Array.isArray(args)
 				? (args as Record<string, unknown>)
 				: undefined
+		if (
+			canonicalName === "exec_command" &&
+			status === "denied" &&
+			result?.status === "denied" &&
+			canonicalizeToolName(result.name) === "exec_command" &&
+			result.callId &&
+			failure?.effectsStarted === "no" &&
+			failure.outcome === "known" &&
+			(failure.reason === "policy_denied" || failure.reason === "approval_denied")
+		) {
+			const command =
+				typeof argumentRecord?.command === "string"
+					? argumentRecord.command
+					: typeof argumentRecord?.cmd === "string"
+						? argumentRecord.cmd
+						: undefined
+			const conflictingCommands =
+				typeof argumentRecord?.command === "string" &&
+				typeof argumentRecord.cmd === "string" &&
+				argumentRecord.command !== argumentRecord.cmd
+			if (command && !conflictingCommands) {
+				const canonicalCommand = unescapeHtmlEntities(command)
+				const deniedBeforeInterception =
+					failure.reason === "policy_denied" && failure.affectedScope.kind === "capability"
+				// Command-rule capability denials precede interception; effective patch denials stay out.
+				if (extractApplyPatchCommand(canonicalCommand)?.kind !== "patch" || deniedBeforeInterception) {
+					this.recordDeniedCommandAttempt(result.callId, canonicalCommand)
+				}
+			}
+		}
 		const commandRead =
 			(canonicalName === "write_stdin" && isCommandArtifactRead(argumentRecord)) ||
 			(canonicalName === "manage_command" &&
