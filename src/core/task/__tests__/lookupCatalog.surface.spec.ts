@@ -123,7 +123,7 @@ describe("request-independent tool authority", () => {
 			options({ userRequestText: "Where is retryLimit defined?" }),
 		)
 		expect(namesOf(result.tools)).toEqual(
-			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch"]),
+			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch", "codebase_search"]),
 		)
 		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(true)
@@ -135,7 +135,8 @@ describe("request-independent tool authority", () => {
 		expect(result.surface?.resolve("spawn_agent")).toBeDefined()
 		expect(isToolAllowed(result.surface?.policy, "spawn_agent")).toBe(true)
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
+		expect(result.surface?.isCallable("codebase_search")).toBe(true)
+		for (const name of ["read_file", "list_files", "search_files"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
 	})
 
@@ -176,7 +177,8 @@ describe("request-independent tool authority", () => {
 		})
 		expect(result.surface?.resolve("exec_command")).toMatchObject({ name: "exec_command" })
 		expect(result.surface?.resolve("exec_command")?.prepareParallelCommand).toEqual(expect.any(Function))
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search", "write_to_file"])
+		expect(result.surface?.isCallable("codebase_search")).toBe(true)
+		for (const name of ["read_file", "list_files", "search_files", "write_to_file"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
 	})
 
@@ -602,8 +604,11 @@ describe("request-independent tool authority", () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ mode: "architect", userRequestText: "Where is retryLimit defined?" }),
 		)
-		expect(namesOf(result.tools)).toEqual(expect.arrayContaining(["exec_command", "request_user_input"]))
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
+		expect(namesOf(result.tools)).toEqual(
+			expect.arrayContaining(["exec_command", "request_user_input", "codebase_search"]),
+		)
+		expect(result.surface?.isCallable("codebase_search")).toBe(true)
+		for (const name of ["read_file", "list_files", "search_files"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 		expect(result.surface?.isCallable("apply_patch")).toBe(false)
