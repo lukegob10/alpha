@@ -198,6 +198,248 @@ describe("Task goal controls at the existing completion gate", () => {
 		expect(task.ask).not.toHaveBeenCalled()
 		expect(await controller.get()).toMatchObject({ status: "complete", continuationCount: 0 })
 	})
+
+	it.each(["legacy", "canonical"] as const)(
+		"continues %s goal completion progress and publishes TaskCompleted only after the goal completes",
+		async (resultKind) => {
+			const { task, controller, emit, queue } = completingTask()
+			await controller.create({ objective: "Finish the objective." }, "user")
+			const completeGoalTurn = vi.spyOn(task, "completeGoalTurn")
+			vi.mocked(task.runAgentRequests)
+				.mockImplementationOnce(async () => {
+					expect(await task.completeGoalTurn("The first part is done.")).toBe(true)
+					const progress = createAgentResponse([{ type: "text", text: "The first part is done." }])
+					Object.assign(task, { currentAgentResponse: progress })
+					return resultKind === "legacy" ? true : { status: "completed", response: progress }
+				})
+				.mockImplementationOnce(async () => {
+					await task.updateGoalStatus("complete", { source: "tool" })
+					return { status: "completed", response: createAgentResponse([{ type: "text", text: "Done." }]) }
+				})
+			try {
+				await task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+				expect(completeGoalTurn).toHaveBeenCalledOnce()
+				expect(task.runAgentRequests).toHaveBeenCalledTimes(2)
+				expect(task.runAgentRequests).toHaveBeenNthCalledWith(
+					2,
+					expect.arrayContaining([
+						expect.objectContaining({ text: expect.stringContaining("Finish the objective.") }),
+					]),
+					false,
+					undefined,
+					expect.objectContaining({ inputOrigin: "agent" }),
+				)
+				expect(emit.mock.calls.filter(([event]) => event === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+				expect(task.ask).not.toHaveBeenCalled()
+				expect(await controller.get()).toMatchObject({ status: "complete", continuationCount: 1 })
+			} finally {
+				queue.dispose()
+			}
+		},
+	)
+})
+
+describe("Task idle continuation completion authority", () => {
+	function holdIdleReservation(controller: GoalController, store: MemoryStore) {
+		const entered = barrier(),
+			release = barrier()
+		const reserve = controller.reserveContinuation.bind(controller)
+		vi.spyOn(controller, "reserveContinuation").mockImplementationOnce((boundary) => {
+			store.beforeTransaction = async () => {
+				entered.resolve()
+				await release.promise
+			}
+			return reserve(boundary)
+		})
+		return { entered, release }
+	}
+
+	it.each(["absent", "active", "late"] as const)(
+		"preserves queued guidance after authoritative host completion with a %s goal",
+		async (goalState) => {
+			const { task, controller, queue } = fixture()
+			if (goalState === "active") await controller.create({ objective: "Finish." }, "user")
+			const queued = queue.addMessage("Save this guidance for a later turn.")
+			const reserve = vi.spyOn(controller, "reserveContinuation")
+			vi.mocked(task.runAgentRequests)
+				.mockImplementationOnce(async () => {
+					if (goalState === "late")
+						await task.createGoal({ objective: "Finish." }, { source: "user", approved: true })
+					Object.assign(task, {
+						currentAgentResponse: createAgentResponse([{ type: "text", text: "Host completion." }]),
+					})
+					return true
+				})
+				.mockResolvedValue({ status: "aborted" })
+			try {
+				await task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+				expect(task.runAgentRequests).toHaveBeenCalledOnce()
+				expect(queue.messages).toEqual([queued])
+				expect(queue.getClaimedMessageIds()).toEqual([])
+				expect(vi.mocked(task.say).mock.calls.filter(([type]) => type === "user_feedback")).toEqual([])
+				expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
+				expect(reserve).not.toHaveBeenCalled()
+				if (goalState !== "absent")
+					expect(await controller.get()).toMatchObject({ status: "active", continuationCount: 0 })
+			} finally {
+				queue.dispose()
+			}
+		},
+	)
+
+	it.each(["active", "late"] as const)(
+		"does not admit a %s goal after authoritative host completion without pending input",
+		async (goalState) => {
+			const { task, controller, queue } = fixture()
+			if (goalState === "active") await controller.create({ objective: "Finish." }, "user")
+			const reserve = vi.spyOn(controller, "reserveContinuation")
+			vi.mocked(task.runAgentRequests)
+				.mockImplementationOnce(async () => {
+					if (goalState === "late")
+						await task.createGoal({ objective: "Finish." }, { source: "user", approved: true })
+					Object.assign(task, {
+						currentAgentResponse: createAgentResponse([{ type: "text", text: "Host completion." }]),
+					})
+					return true
+				})
+				.mockResolvedValue({ status: "aborted" })
+			try {
+				await task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+				expect(task.runAgentRequests).toHaveBeenCalledOnce()
+				expect(reserve).not.toHaveBeenCalled()
+				expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
+				expect(await controller.get()).toMatchObject({ status: "active", continuationCount: 0 })
+			} finally {
+				queue.dispose()
+			}
+		},
+	)
+
+	it("promotes human guidance arriving during goal storage admission ahead of synthetic input", async () => {
+		const { task, controller, store, queue } = fixture()
+		await controller.create({ objective: "Finish." }, "user")
+		const { entered, release } = holdIdleReservation(controller, store)
+		vi.mocked(task.runAgentRequests).mockImplementation(async () => {
+			if (vi.mocked(task.runAgentRequests).mock.calls.length === 2)
+				await task.updateGoalStatus("complete", { source: "tool" })
+			return { status: "completed", response: createAgentResponse([{ type: "text", text: "Progress." }]) }
+		})
+		const run = task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+		try {
+			await entered.promise
+			queue.addMessage("Use the correction that arrived during admission.")
+			release.resolve()
+			await run
+			expect(task.runAgentRequests).toHaveBeenCalledTimes(2)
+			expect(task.runAgentRequests).toHaveBeenNthCalledWith(
+				2,
+				expect.arrayContaining([
+					expect.objectContaining({
+						text: expect.stringContaining("Use the correction that arrived during admission."),
+					}),
+				]),
+				false,
+				undefined,
+				expect.objectContaining({ inputOrigin: "human" }),
+			)
+			expect(await controller.get()).toMatchObject({ status: "complete", continuationCount: 0 })
+			expect(task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+		} finally {
+			task.abort = true
+			release.resolve()
+			await run
+			await task["stopGoalForTaskCancellation"]()
+			queue.dispose()
+		}
+	})
+
+	it("does not consume an automatic continuation after history ownership changes during goal admission", async () => {
+		const { task, controller, store, queue } = fixture()
+		await controller.create({ objective: "Finish." }, "user")
+		const { entered, release } = holdIdleReservation(controller, store)
+		const run = task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+		try {
+			await entered.promise
+			Object.assign(task, { isCurrentApiConversationHistoryOwner: () => false })
+			release.resolve()
+			await run
+			expect(await controller.get()).toMatchObject({ status: "active", continuationCount: 0 })
+			expect(task.runAgentRequests).toHaveBeenCalledOnce()
+			expect(task.ask).not.toHaveBeenCalled()
+			expect(task.say).not.toHaveBeenCalled()
+			expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
+			expect(
+				vi.mocked(task["appendAgentTurnEvent"]).mock.calls.filter(([event]) => event.type === "task_completed"),
+			).toEqual([])
+		} finally {
+			task.abort = true
+			task["taskCancellationController"].abort()
+			release.resolve()
+			await run
+			await task["stopGoalForTaskCancellation"]()
+			queue.dispose()
+		}
+	})
+
+	it.each(["stop", "lifetime", "abandoned", "replaced", "completed", "stop-after-complete"] as const)(
+		"leaves queued input unclaimed when %s wins an awaited goal admission",
+		async (terminal) => {
+			const { task, controller, store, queue } = fixture()
+			await controller.create({ objective: "Finish." }, "user")
+			const { entered, release } = holdIdleReservation(controller, store)
+			const claim = vi.spyOn(queue, "claimMessage")
+			vi.mocked(task.runAgentRequests)
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Progress." }]),
+				})
+				.mockResolvedValue({ status: "aborted" })
+			vi.mocked(task.say).mockImplementation(async () => {
+				if (task.abort) throw new Error("Task was aborted")
+			})
+			const run = task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+			let stopped: Promise<void> | undefined
+			try {
+				await entered.promise
+				const queued = queue.addMessage("Keep this queued after the terminal boundary.")
+				if (terminal === "completed" || terminal === "stop-after-complete") task.markCompleted()
+				if (terminal === "stop" || terminal === "stop-after-complete") task.abort = true
+				if (terminal === "abandoned") Object.assign(task, { abandoned: true })
+				if (terminal === "replaced") Object.assign(task, { isCurrentApiConversationHistoryOwner: () => false })
+				if (terminal === "stop" || terminal === "stop-after-complete" || terminal === "lifetime")
+					task["taskCancellationController"].abort()
+				if (terminal !== "completed" && terminal !== "replaced") {
+					stopped = task["stopGoalForTaskCancellation"]()
+				}
+				release.resolve()
+				await run
+				await stopped
+				expect(task.runAgentRequests).toHaveBeenCalledOnce()
+				expect(claim).not.toHaveBeenCalled()
+				expect(queue.messages).toEqual([queued])
+				expect(queue.getClaimedMessageIds()).toEqual([])
+				expect(task.say).not.toHaveBeenCalled()
+				expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
+				const terminalEvents = vi
+					.mocked(task["appendAgentTurnEvent"])
+					.mock.calls.filter(([event]) => event.type === "task_completed")
+				expect(terminalEvents).toEqual(
+					terminal === "replaced"
+						? []
+						: [[expect.objectContaining({ status: terminal === "completed" ? "completed" : "aborted" })]],
+				)
+				expect(await controller.get()).toMatchObject({ continuationCount: 0 })
+			} finally {
+				task.abort = true
+				task["taskCancellationController"].abort()
+				release.resolve()
+				await run
+				await stopped
+				await task["stopGoalForTaskCancellation"]()
+				queue.dispose()
+			}
+		},
+	)
 })
 
 describe("Task goal integration through the shared turn engine", () => {

@@ -6916,7 +6916,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			isCancelled: this.abort || this.abandoned,
 			mode: mode === "code" ? ("code" as const) : ("architect" as const),
 			signal: this.taskCancellationController?.signal,
-			isStillAdmissible: () => this.isGoalIdleBoundary() && this.taskMode === "code",
+			isStillAdmissible: () =>
+				this.isCurrentApiConversationHistoryOwner() && this.isGoalIdleBoundary() && this.taskMode === "code",
 		}
 		const reservation = await this.goalController.reserveContinuation(boundary)
 		if (!reservation) return undefined
@@ -11883,8 +11884,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					continue
 				}
 
-				if (outcome.status === "completed" && !this.abort && !this.didComplete) {
+				if (completedBoundary && !this.abort && !this.didComplete) {
 					const goalContinuation = await engine.continueIfIdle(outcome)
+					if (
+						this.abort ||
+						this.abandoned ||
+						this.didComplete ||
+						this.getTaskLifetimeCancellationSignal().aborted ||
+						!this.isCurrentApiConversationHistoryOwner()
+					) {
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : this.didComplete ? "completed" : "aborted",
+						)
+						return
+					}
 					if (goalContinuation) {
 						nextTurnInput = goalContinuation
 						continue

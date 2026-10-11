@@ -17,6 +17,10 @@ history, not evidence for these contracts. References below use that exact commi
   `continue_if_idle` holds the goal-state permit across persisted deferral checking, state reading, and host
   `start_turn_if_idle` admission. Only active goals continue. The host turn options survive continuation, and the admitted
   goal turn is identified before an immediately completing response can be handled. External changes share the permit.
+- [`core/src/session/turn.rs`](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/session/turn.rs)
+  and [`core/tests/suite/turn_input_submission.rs`](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/tests/suite/turn_input_submission.rs):
+  normal pending input drains after sampling and tool settlement, while an authoritative host stop ends the turn. Idle
+  continuation starts a separately admitted turn; stale prior-turn IDs cannot admit another one.
 - [`ext/goal/src/spec.rs`](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/ext/goal/src/spec.rs)
   and [`tool.rs`](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/ext/goal/src/tool.rs):
   `create_goal` takes an explicit objective and an optional positive token budget and rejects an unfinished goal.
@@ -60,6 +64,14 @@ fences. Reads return copies. Execution remains in `AgentTurnEngine` and the exis
 owns neither a timer nor another model/tool loop. Automatic continuation is considered only after a completed turn's effects,
 persistence, lifecycle terminal event, and cleanup have settled. Human input, approvals, cancellation, task pause,
 compaction, disposal, policy, and mode boundaries take precedence over idle work.
+
+The Task adapter considers idle continuation only after assistant completion or explicit native goal progress through
+`completeGoalTurn`. An authoritative host completion preserves queued input for a later admission, even if a goal is
+active or was created during the completed turn. After awaited goal admission, Task rechecks cancellation, abandonment,
+durable completion, and history ownership before selecting queued input or publishing feedback. The existing terminal
+journal helper records the current owner's terminal event and suppresses writes from a superseded history owner.
+Reservation and consumption also recheck history ownership, so a superseded instance cannot spend the goal's continuation
+allowance while storage is awaited.
 
 The command palette exposes **Alpha: Manage Task Goal** (`alpha.manageGoal`). In the selected task the user can create,
 inspect, pause, resume, or clear its goal. Creation asks for the concrete objective and optional total token budget;
@@ -240,4 +252,23 @@ webview-ui/src/components/chat/__tests__/GoalApproval.spec.tsx
 webview-ui/src/components/chat/ChatRow.tsx
 webview-ui/src/components/chat/GoalApproval.tsx
 webview-ui/src/i18n/locales/en/chat.json
+```
+
+## Host completion follow-up validation
+
+The separate host-completion fix starts from fixture commit `241cc05734bfd5196d47bcab1ceeb20526c9fc6d`. Its initial
+controlled baseline failed 11 of 13 cases; two subsequent owner-only reproductions exposed queued-input claims and
+continuation allowance consumption after history ownership changed. The final 15 boundary cases passed, including
+canonical and legacy native goal progress, authoritative host completion, human guidance during admission, and terminal
+or ownership changes while goal storage was awaited.
+
+The two original queue regressions remained unchanged and passed. The complete `Task.spec.ts` passed all 315 tests on
+the final source. The adjacent engine, goal-request, completion, follow-up, disposal, and native completion-tool set passed
+165 tests across eight files. Final extension typechecking, scoped ESLint, and diff checks passed. These were bounded unit
+checks; this follow-up did not run extension-host, live-provider, bundle, or repository-wide test gates.
+
+```sh
+pnpm --dir src test core/task/__tests__/Task.spec.ts --maxWorkers=2
+pnpm --dir src test core/task/__tests__/Task.goals.spec.ts --maxWorkers=2 --testNamePattern 'Task idle continuation completion authority|continues (legacy|canonical) goal completion progress'
+pnpm --dir src test core/agent/__tests__/AgentTurnEngine.goals.spec.ts core/agent/__tests__/AgentTurnEngine.spec.ts core/task/__tests__/Task.goals.spec.ts core/task/__tests__/Task.goal-request.spec.ts core/task/__tests__/Task.completion-followup.spec.ts core/task/__tests__/Task.post-turn-followup.spec.ts core/task/__tests__/Task.dispose.test.ts core/tools/__tests__/attemptCompletionTool.spec.ts --maxWorkers=2
 ```
