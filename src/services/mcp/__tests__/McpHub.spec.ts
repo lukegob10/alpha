@@ -978,7 +978,7 @@ describe("McpHub", () => {
 					args: ["test.js"],
 					source: "global",
 				} as any,
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -1028,7 +1028,7 @@ describe("McpHub", () => {
 					alwaysAllow: ["existing-tool"],
 					source: "global",
 				} as any,
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -1077,7 +1077,7 @@ describe("McpHub", () => {
 					alwaysAllow: [],
 					source: "global",
 				} as any,
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -1266,7 +1266,7 @@ describe("McpHub", () => {
 					status: "connected",
 					source: "global",
 				},
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -1314,7 +1314,7 @@ describe("McpHub", () => {
 					status: "connected",
 					source: "global",
 				},
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -1361,7 +1361,7 @@ describe("McpHub", () => {
 					status: "connected",
 					source: "global",
 				},
-				client: {} as any,
+				client: { request: vi.fn().mockResolvedValue({ tools: [] }) } as any,
 				transport: {} as any,
 			}
 			mcpHub.connections = [mockConnection]
@@ -2023,8 +2023,11 @@ describe("McpHub", () => {
 			expect(request).toHaveBeenCalledWith(
 				{ method: "resources/list", params: { cursor: "page-2" } },
 				expect.any(Object),
-				{ signal: controller.signal },
+				expect.objectContaining({ signal: expect.any(AbortSignal) }),
 			)
+			const sdkSignal = request.mock.calls[0][2].signal as AbortSignal
+			controller.abort()
+			expect(sdkSignal.aborted).toBe(true)
 		})
 
 		it("lists templates and refuses a disabled server", async () => {
@@ -2038,7 +2041,11 @@ describe("McpHub", () => {
 				},
 			]
 			await mcpHub.listResourceTemplates("test-server")
-			expect(request).toHaveBeenCalledWith({ method: "resources/templates/list" }, expect.any(Object), undefined)
+			expect(request).toHaveBeenCalledWith(
+				{ method: "resources/templates/list" },
+				expect.any(Object),
+				expect.objectContaining({ signal: expect.any(AbortSignal) }),
+			)
 			mcpHub.connections[0].server.disabled = true
 			await expect(mcpHub.listResourceTemplates("test-server")).rejects.toThrow("No enabled connection")
 			expect(request).toHaveBeenCalledTimes(1)

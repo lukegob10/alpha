@@ -13,6 +13,8 @@ import {
 	ListResourceTemplatesResultSchema,
 	ListToolsResultSchema,
 	ReadResourceResultSchema,
+	ResourceListChangedNotificationSchema,
+	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import chokidar, { FSWatcher } from "chokidar"
 import delay from "delay"
@@ -40,6 +42,7 @@ import { injectVariables } from "../../utils/config"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import { sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
 import { getProjectMcpConfigPath } from "../config-paths"
+import { collectPaginatedCatalog, MAX_MCP_CATALOG_ITEMS, validateMcpPaginationCursor } from "./pagination"
 
 // Discriminated union for connection states
 export type ConnectedMcpConnection = {
@@ -205,6 +208,15 @@ export class McpHub {
 	private flagResetTimer?: NodeJS.Timeout
 	private sanitizedNameRegistry: Map<string, string> = new Map()
 	private initializationPromise: Promise<void>
+	private connectionControllers = new Map<ConnectedMcpConnection, AbortController>()
+	private catalogRefreshControllers = new Map<
+		ConnectedMcpConnection,
+		{ controller: AbortController; full: boolean }
+	>()
+	private connectionAttempts = new Map<string, AbortController>()
+	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
+	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
+	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
 
 	constructor(provider: AlphaProvider) {
 		this.providerRef = new WeakRef(provider)
@@ -704,15 +716,34 @@ export class McpHub {
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "global" | "project" = "global",
 	): Promise<void> {
-		// Remove existing connection if it exists with the same source
-		await this.deleteConnection(name, source)
+		if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
+		const key = `${source}:${name}`
+		this.connectionAttempts.get(key)?.abort()
+		const controller = new AbortController()
+		this.connectionAttempts.set(key, controller)
+		try {
+			await this.disconnectConnections(name, source)
+			controller.signal.throwIfAborted()
+			await this.connectServerAttempt(name, config, source, controller.signal)
+		} finally {
+			if (this.connectionAttempts.get(key) === controller) this.connectionAttempts.delete(key)
+		}
+	}
 
+	private async connectServerAttempt(
+		name: string,
+		config: z.infer<typeof ServerConfigSchema>,
+		source: "global" | "project",
+		signal: AbortSignal,
+	): Promise<void> {
 		// Register the sanitized name for O(1) lookup
 		const sanitizedName = sanitizeMcpName(name)
 		this.sanitizedNameRegistry.set(sanitizedName, name)
 
 		// Check if MCP is globally enabled
-		const mcpEnabled = await this.isMcpEnabled()
+		const mcpEnabled = await requestWithAbort(() => this.isMcpEnabled(), signal)
+		signal.throwIfAborted()
+		if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
 		if (!mcpEnabled) {
 			// Still create a connection object to track the server, but don't actually connect
 			const connection = this.createPlaceholderConnection(name, config, source, DisableReason.MCP_DISABLED)
@@ -731,6 +762,9 @@ export class McpHub {
 		// Set up file watchers for enabled servers
 		this.setupFileWatcher(name, config, source)
 
+		let connectingConnection: ConnectedMcpConnection | undefined
+		let provisionalClient: Client | undefined
+		let provisionalTransport: ConnectedMcpConnection["transport"] | undefined
 		try {
 			const client = new Client(
 				{
@@ -741,14 +775,20 @@ export class McpHub {
 					capabilities: {},
 				},
 			)
+			provisionalClient = client
 
 			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
 
 			// Inject variables to the config (environment, magic variables,...)
-			const configInjected = (await injectVariables(config, {
-				env: process.env,
-				workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
-			})) as typeof config
+			const configInjected = (await requestWithAbort(
+				() =>
+					injectVariables(config, {
+						env: process.env,
+						workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
+					}),
+				signal,
+			)) as typeof config
+			signal.throwIfAborted()
 
 			if (configInjected.type === "stdio") {
 				// On Windows, wrap commands with cmd.exe to handle non-exe executables like npx.ps1
@@ -777,29 +817,41 @@ export class McpHub {
 					},
 					stderr: "pipe",
 				})
+				provisionalTransport = transport
 
 				// Set up stdio specific error handling
 				transport.onerror = async (error) => {
 					console.error(`Transport error for "${name}":`, error)
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
 						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 
 				transport.onclose = async () => {
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 
 				// transport.stderr is only available after the process has been started. However we can't start it separately from the .connect() call because it also starts the transport. And we can't place this after the connect call since we need to capture the stderr stream before the connection is established, in order to capture errors during the connection process.
 				// As a workaround, we start the transport ourselves, and then monkey-patch the start method to no-op so that .connect() doesn't try to start it again.
-				await transport.start()
+				const startingTransport = transport
+				const started = startingTransport.start()
+				void started
+					.then(
+						() => (signal.aborted ? startingTransport.close() : undefined),
+						() => undefined,
+					)
+					.catch((error) => console.error(`Failed to close cancelled MCP transport for ${name}:`, error))
+				await requestWithAbort(() => started, signal)
+				signal.throwIfAborted()
 				const stderrStream = transport.stderr
 				if (stderrStream) {
 					stderrStream.on("data", async (data: Buffer) => {
@@ -814,7 +866,7 @@ export class McpHub {
 							// Treat as error log
 							console.error(`Server "${name}" stderr:`, output)
 							const connection = this.findConnection(name, source)
-							if (connection) {
+							if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 								this.appendErrorMessage(connection, output)
 								if (connection.server.status === "disconnected") {
 									await this.notifyWebviewOfServerChanges()
@@ -832,24 +884,27 @@ export class McpHub {
 						headers: configInjected.headers,
 					},
 				})
+				provisionalTransport = transport
 
 				// Set up Streamable HTTP specific error handling
 				transport.onerror = async (error) => {
 					console.error(`Transport error for "${name}" (streamable-http):`, error)
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
 						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 
 				transport.onclose = async () => {
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 			} else if (configInjected.type === "sse") {
 				// SSE connection
@@ -875,24 +930,27 @@ export class McpHub {
 					...sseOptions,
 					eventSourceInit: reconnectingEventSourceOptions,
 				})
+				provisionalTransport = transport
 
 				// Set up SSE specific error handling
 				transport.onerror = async (error) => {
 					console.error(`Transport error for "${name}":`, error)
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
 						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 
 				transport.onclose = async () => {
 					const connection = this.findConnection(name, source)
-					if (connection) {
+					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 						connection.server.status = "disconnected"
+						this.cancelConnectionRequests(connection)
+						await this.notifyWebviewOfServerChanges()
 					}
-					await this.notifyWebviewOfServerChanges()
 				}
 			} else {
 				// Should not happen if validateServerConfig is correct
@@ -905,6 +963,8 @@ export class McpHub {
 			}
 
 			// Create a connected connection
+			signal.throwIfAborted()
+			if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
 			const connection: ConnectedMcpConnection = {
 				type: "connected",
 				server: {
@@ -920,24 +980,58 @@ export class McpHub {
 				transport,
 			}
 			this.connections.push(connection)
+			connectingConnection = connection
+			const lifecycleController = new AbortController()
+			this.connectionControllers.set(connection, lifecycleController)
+			const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
+			// The SDK owns transport callbacks after connect; forward lifecycle events through the client.
+			client.onclose = transport.onclose
+			client.onerror = (error) => {
+				// Protocol diagnostics include late responses to cancelled requests and are nonfatal.
+				if (!this.isDisposed && this.connections.includes(connection)) {
+					console.error(`MCP protocol error for ${name}:`, error)
+				}
+			}
+			const onTransportError = transport.onerror
+			client.setNotificationHandler?.(ToolListChangedNotificationSchema, () =>
+				this.queueCatalogRefresh(connection),
+			)
+			client.setNotificationHandler?.(ResourceListChangedNotificationSchema, () =>
+				this.queueCatalogRefresh(connection),
+			)
 
 			// Connect (this will automatically start the transport)
-			await client.connect(transport)
-			connection.server.status = "connected"
-			connection.server.error = ""
+			await requestWithAbort(() => {
+				const connecting = client.connect(transport, { signal: connectionSignal })
+				const onProtocolTransportError = transport.onerror
+				transport.onerror = async (error) => {
+					onProtocolTransportError?.(error)
+					await onTransportError?.(error)
+				}
+				return connecting
+			}, connectionSignal)
+			this.assertConnectionCurrent(connection, connectionSignal)
+			await this.waitForCurrentCatalog(connection, this.refreshServerCatalog(connection))
+			this.assertConnectionCurrent(connection, connectionSignal)
 			connection.server.instructions = client.getInstructions()
-
-			// Initial fetch of tools and resources
-			connection.server.tools = await this.fetchToolsList(name, source)
-			connection.server.resources = await this.fetchResourcesList(name, source)
-			connection.server.resourceTemplates = await this.fetchResourceTemplatesList(name, source)
+			connection.server.error = ""
+			connection.server.status = "connected"
 		} catch (error) {
 			// Update status with error
-			const connection = this.findConnection(name, source)
-			if (connection) {
+			const connection = connectingConnection
+			if (connection && this.connections.includes(connection) && !this.isDisposed) {
+				const alreadyDisconnected = connection.server.status === "disconnected"
 				connection.server.status = "disconnected"
-				this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
+				const message = error instanceof Error ? error.message : String(error)
+				if ((!alreadyDisconnected || !connection.server.error) && connection.server.error !== message) {
+					this.appendErrorMessage(connection, message)
+				}
+				this.cancelConnectionRequests(connection)
 			}
+			if (this.connectionAttempts.get(`${source}:${name}`)?.signal === signal) {
+				this.removeFileWatchersForServer(name, source)
+			}
+			await Promise.allSettled([provisionalClient?.close(), provisionalTransport?.close()])
 			throw error
 		}
 	}
@@ -1024,98 +1118,269 @@ export class McpHub {
 		return null
 	}
 
-	private async fetchToolsList(serverName: string, source?: "global" | "project"): Promise<McpTool[]> {
-		try {
-			// Use the helper method to find the connection
-			const connection = this.findConnection(serverName, source)
-
-			if (!connection || connection.type !== "connected") {
-				return []
-			}
-
-			const response = await connection.client.request({ method: "tools/list" }, ListToolsResultSchema)
-
-			// Determine the actual source of the server
-			const actualSource = connection.server.source || "global"
-			let configPath: string
-			let alwaysAllowConfig: string[] = []
-			let disabledToolsList: string[] = []
-
-			// Read from the appropriate config file based on the actual source
-			try {
-				let serverConfigData: Record<string, any> = {}
-				if (actualSource === "project") {
-					// Get project MCP config path
-					const projectMcpPath = await this.getProjectMcpPath()
-					if (projectMcpPath) {
-						configPath = projectMcpPath
-						const content = await fs.readFile(configPath, "utf-8")
-						serverConfigData = JSON.parse(content)
-					}
-				} else {
-					// Get global MCP settings path
-					configPath = await this.getMcpSettingsFilePath()
-					const content = await fs.readFile(configPath, "utf-8")
-					serverConfigData = JSON.parse(content)
-				}
-				if (serverConfigData) {
-					alwaysAllowConfig = serverConfigData.mcpServers?.[serverName]?.alwaysAllow || []
-					disabledToolsList = serverConfigData.mcpServers?.[serverName]?.disabledTools || []
-				}
-			} catch (error) {
-				console.error(`Failed to read tool configuration for ${serverName}:`, error)
-				// Continue with empty configs
-			}
-
-			// Check if wildcard "*" is in the alwaysAllow config
-			const hasWildcard = alwaysAllowConfig.includes("*")
-
-			// Mark tools as always allowed and enabled for prompt based on settings
-			const tools = (response?.tools || []).map((tool) => ({
-				...tool,
-				alwaysAllow: hasWildcard || alwaysAllowConfig.includes(tool.name),
-				enabledForPrompt: !disabledToolsList.includes(tool.name),
-			}))
-
-			return tools
-		} catch (error) {
-			console.error(`Failed to fetch tools for ${serverName}:`, error)
-			return []
+	private assertConnectionCurrent(connection: ConnectedMcpConnection, signal?: AbortSignal): void {
+		signal?.throwIfAborted()
+		if (
+			this.isDisposed ||
+			!this.connections.includes(connection) ||
+			connection.server.disabled ||
+			connection.server.status === "disconnected"
+		) {
+			throw new DOMException("MCP connection is no longer available", "AbortError")
 		}
 	}
 
-	private async fetchResourcesList(serverName: string, source?: "global" | "project"): Promise<McpResource[]> {
-		try {
-			const connection = this.findConnection(serverName, source)
-			if (!connection || connection.type !== "connected") {
-				return []
-			}
-			const response = await this.listResources(serverName, undefined, source)
-			return response?.resources || []
-		} catch (error) {
-			// console.error(`Failed to fetch resources for ${serverName}:`, error)
-			return []
+	private getConnectionSignal(connection: ConnectedMcpConnection, signal?: AbortSignal): AbortSignal {
+		this.assertConnectionCurrent(connection, signal)
+		let controller = this.connectionControllers.get(connection)
+		if (!controller) {
+			controller = new AbortController()
+			this.connectionControllers.set(connection, controller)
 		}
+		return signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
+	}
+
+	private cancelConnectionRequests(connection: ConnectedMcpConnection): void {
+		this.connectionControllers.get(connection)?.abort()
+		this.connectionControllers.delete(connection)
+		this.catalogRefreshControllers.get(connection)?.controller.abort()
+		this.catalogRefreshControllers.delete(connection)
+		this.catalogChanges.delete(connection)
+	}
+
+	private async waitForCurrentCatalog(connection: ConnectedMcpConnection, refresh: Promise<void>): Promise<void> {
+		while (true) {
+			let failure: unknown
+			let failed = false
+			try {
+				await refresh
+			} catch (error) {
+				failure = error
+				failed = true
+			}
+			this.assertConnectionCurrent(connection, this.connectionControllers.get(connection)?.signal)
+			const queued = this.catalogChanges.get(connection)
+			if (queued) await queued.promise
+			this.assertConnectionCurrent(connection, this.connectionControllers.get(connection)?.signal)
+			const latest = this.latestCatalogRefresh.get(connection)
+			if (!latest || latest === refresh) {
+				if (failed) throw failure
+				return
+			}
+			refresh = latest
+		}
+	}
+
+	/** Coalesce notifications into one owned refresh and at most one requested follow-up. */
+	private queueCatalogRefresh(connection: ConnectedMcpConnection): Promise<void> {
+		if (this.isDisposed || !this.connections.includes(connection) || connection.server.status === "disconnected") {
+			return Promise.resolve()
+		}
+		this.catalogRefreshControllers.get(connection)?.controller.abort()
+		const queued = this.catalogChanges.get(connection)
+		if (queued) {
+			queued.requested = true
+			return queued.promise
+		}
+		const entry = { requested: true, promise: Promise.resolve() }
+		this.catalogChanges.set(connection, entry)
+		entry.promise = (async () => {
+			// A microtask boundary coalesces a burst without retaining timers after disposal.
+			await Promise.resolve()
+			try {
+				while (entry.requested && this.catalogChanges.get(connection) === entry) {
+					entry.requested = false
+					try {
+						await this.refreshServerCatalog(connection)
+					} catch (error) {
+						if (this.catalogChanges.get(connection) !== entry || entry.requested) continue
+						console.error(`Failed to refresh MCP catalog for ${connection.server.name}:`, error)
+					}
+					if (!this.isDisposed && this.connections.includes(connection)) {
+						await this.notifyWebviewOfServerChanges()
+					}
+				}
+			} finally {
+				if (this.catalogChanges.get(connection) === entry) this.catalogChanges.delete(connection)
+			}
+		})()
+		return entry.promise
+	}
+
+	/** Publish a catalog only after every required page and identity check succeeds. */
+	private refreshServerCatalog(connection: ConnectedMcpConnection, toolsOnly = false): Promise<void> {
+		const lifecycleSignal = this.getConnectionSignal(connection)
+		const previous = this.catalogRefreshControllers.get(connection)
+		// Grant changes cannot supersede a required full discovery with a tools-only catalog.
+		toolsOnly =
+			toolsOnly &&
+			connection.server.status !== "connecting" &&
+			!previous?.full &&
+			!this.catalogChanges.has(connection) &&
+			!this.catalogErrors.has(connection)
+		previous?.controller.abort()
+		const controller = new AbortController()
+		this.catalogRefreshControllers.set(connection, { controller, full: !toolsOnly })
+		const signal = AbortSignal.any([lifecycleSignal, controller.signal])
+		const refresh = (async () => {
+			try {
+				const tools = await this.fetchToolsList(
+					connection.server.name,
+					connection.server.source,
+					signal,
+					connection,
+				)
+				const resources = toolsOnly ? undefined : await this.fetchResourcesList(connection, signal)
+				const resourceTemplates = toolsOnly
+					? undefined
+					: await this.fetchResourceTemplatesList(connection, signal)
+				this.assertConnectionCurrent(connection, signal)
+				connection.server.tools = tools
+				if (!toolsOnly) {
+					connection.server.resources = resources
+					connection.server.resourceTemplates = resourceTemplates
+				}
+				if (connection.server.error === this.catalogErrors.get(connection)) connection.server.error = ""
+				this.catalogErrors.delete(connection)
+			} catch (error) {
+				if (!signal.aborted && !this.isDisposed && this.connections.includes(connection)) {
+					this.appendErrorMessage(connection, error instanceof Error ? error.message : String(error))
+					if (connection.server.error !== undefined)
+						this.catalogErrors.set(connection, connection.server.error)
+				}
+				throw error
+			} finally {
+				if (this.catalogRefreshControllers.get(connection)?.controller === controller) {
+					this.catalogRefreshControllers.delete(connection)
+				}
+			}
+		})()
+		this.latestCatalogRefresh.set(connection, refresh)
+		return refresh
+	}
+
+	private async fetchToolsList(
+		serverName: string,
+		source?: "global" | "project",
+		signal?: AbortSignal,
+		connection = this.findConnection(serverName, source),
+	): Promise<McpTool[]> {
+		if (!connection || connection.type !== "connected")
+			throw new Error(`No connection found for server: ${serverName}`)
+		return this.fetchConnectionTools(connection, this.getConnectionSignal(connection, signal))
+	}
+
+	private async fetchConnectionTools(connection: ConnectedMcpConnection, signal: AbortSignal): Promise<McpTool[]> {
+		this.assertConnectionCurrent(connection, signal)
+		const capabilities = connection.client.getServerCapabilities?.()
+		if (capabilities && !capabilities.tools) return []
+		let hasTools = false
+		let grants: Pick<z.infer<typeof BaseConfigSchema>, "alwaysAllow" | "disabledTools"> = {
+			alwaysAllow: [],
+			disabledTools: [],
+		}
+		const listedTools = await collectPaginatedCatalog(
+			"tools/list",
+			async (params, pageSignal) => {
+				this.assertConnectionCurrent(connection, pageSignal)
+				const response = await connection.client.request(
+					params ? { method: "tools/list", params } : { method: "tools/list" },
+					ListToolsResultSchema,
+					{ signal: pageSignal },
+				)
+				hasTools ||= response.tools.length > 0
+				if (response.nextCursor === undefined && hasTools) {
+					// Keep local policy projection inside the same overall catalog deadline.
+					grants = await this.readToolGrants(connection, pageSignal)
+				}
+				return { items: response.tools, nextCursor: response.nextCursor }
+			},
+			{ signal },
+		)
+		this.assertConnectionCurrent(connection, signal)
+		const hasWildcard = grants.alwaysAllow.includes("*")
+		return listedTools.map((tool) => ({
+			...tool,
+			alwaysAllow: hasWildcard || grants.alwaysAllow.includes(tool.name),
+			enabledForPrompt: !grants.disabledTools.includes(tool.name),
+		}))
+	}
+
+	private async readToolGrants(
+		connection: ConnectedMcpConnection,
+		signal: AbortSignal,
+	): Promise<Pick<z.infer<typeof BaseConfigSchema>, "alwaysAllow" | "disabledTools">> {
+		const serverName = connection.server.name
+		try {
+			const configPath =
+				connection.server.source === "project"
+					? await this.getProjectMcpPath()
+					: await this.getMcpSettingsFilePath()
+			signal.throwIfAborted()
+			if (!configPath) throw new Error("MCP configuration path is unavailable")
+			const content = await requestWithAbort(() => fs.readFile(configPath, "utf-8"), signal)
+			const serverConfigData = JSON.parse(content)
+			const serverConfig = serverConfigData.mcpServers?.[serverName]
+			if (!serverConfig) throw new Error("MCP server configuration is unavailable")
+			this.assertConnectionCurrent(connection, signal)
+			return BaseConfigSchema.parse(serverConfig)
+		} catch (error) {
+			signal.throwIfAborted()
+			throw new Error(`Failed to read tool configuration for ${serverName}`, { cause: error })
+		}
+	}
+
+	private async fetchResourcesList(connection: ConnectedMcpConnection, signal: AbortSignal): Promise<McpResource[]> {
+		this.assertConnectionCurrent(connection, signal)
+		const capabilities = connection.client.getServerCapabilities?.()
+		if (capabilities && !capabilities.resources) return []
+		return collectPaginatedCatalog(
+			"resources/list",
+			async (params, pageSignal) => {
+				this.assertConnectionCurrent(connection, pageSignal)
+				const response = await connection.client.request(
+					params ? { method: "resources/list", params } : { method: "resources/list" },
+					ListResourcesResultSchema,
+					{ signal: pageSignal },
+				)
+				return { items: response.resources, nextCursor: response.nextCursor }
+			},
+			{ signal },
+		)
 	}
 
 	private async fetchResourceTemplatesList(
-		serverName: string,
-		source?: "global" | "project",
+		connection: ConnectedMcpConnection,
+		signal: AbortSignal,
 	): Promise<McpResourceTemplate[]> {
-		try {
-			const connection = this.findConnection(serverName, source)
-			if (!connection || connection.type !== "connected") {
-				return []
-			}
-			const response = await this.listResourceTemplates(serverName, undefined, source)
-			return response?.resourceTemplates || []
-		} catch (error) {
-			// console.error(`Failed to fetch resource templates for ${serverName}:`, error)
-			return []
-		}
+		this.assertConnectionCurrent(connection, signal)
+		const capabilities = connection.client.getServerCapabilities?.()
+		if (capabilities && !capabilities.resources) return []
+		return collectPaginatedCatalog(
+			"resources/templates/list",
+			async (params, pageSignal) => {
+				this.assertConnectionCurrent(connection, pageSignal)
+				const response = await connection.client.request(
+					params ? { method: "resources/templates/list", params } : { method: "resources/templates/list" },
+					ListResourceTemplatesResultSchema,
+					{ signal: pageSignal },
+				)
+				return { items: response.resourceTemplates, nextCursor: response.nextCursor }
+			},
+			{ signal },
+		)
 	}
 
 	async deleteConnection(name: string, source?: "global" | "project"): Promise<void> {
+		for (const candidateSource of source ? [source] : ["global", "project"]) {
+			const key = `${candidateSource}:${name}`
+			this.connectionAttempts.get(key)?.abort()
+			this.connectionAttempts.delete(key)
+		}
+		await this.disconnectConnections(name, source)
+	}
+
+	private async disconnectConnections(name: string, source?: "global" | "project"): Promise<void> {
 		// Clean up file watchers for this server
 		this.removeFileWatchersForServer(name, source)
 
@@ -1123,6 +1388,13 @@ export class McpHub {
 		const connections = source
 			? this.connections.filter((conn) => conn.server.name === name && conn.server.source === source)
 			: this.connections.filter((conn) => conn.server.name === name)
+
+		// Detach before awaiting transport teardown so late callbacks cannot target a replacement.
+		const removed = new Set(connections)
+		this.connections = this.connections.filter((connection) => !removed.has(connection))
+		for (const connection of connections) {
+			if (connection.type === "connected") this.cancelConnectionRequests(connection)
+		}
 
 		for (const connection of connections) {
 			try {
@@ -1134,13 +1406,6 @@ export class McpHub {
 				console.error(`Failed to close transport for ${name}:`, error)
 			}
 		}
-
-		// Remove the connections from the array
-		this.connections = this.connections.filter((conn) => {
-			if (conn.server.name !== name) return true
-			if (source && conn.server.source !== source) return true
-			return false
-		})
 
 		// Remove from sanitized name registry if no more connections with this name exist
 		const remainingConnections = this.connections.filter((conn) => conn.server.name === name)
@@ -1503,17 +1768,12 @@ export class McpHub {
 						await this.deleteConnection(serverName, serverSource)
 						// When re-enabling, file watchers will be set up in connectToServer
 						await this.connectToServer(serverName, updatedConfig, serverSource)
-					} else if (connection.server.status === "connected") {
-						// Only refresh capabilities if connected
-						connection.server.tools = await this.fetchToolsList(serverName, serverSource)
-						connection.server.resources = await this.fetchResourcesList(serverName, serverSource)
-						connection.server.resourceTemplates = await this.fetchResourceTemplatesList(
-							serverName,
-							serverSource,
-						)
+					} else if (connection.type === "connected" && connection.server.status === "connected") {
+						await this.refreshServerCatalog(connection)
 					}
 				} catch (error) {
 					console.error(`Failed to refresh capabilities for ${serverName}:`, error)
+					throw error
 				}
 			}
 
@@ -1748,17 +2008,25 @@ export class McpHub {
 	}
 
 	async listResources(serverName: string, cursor?: string, source?: "global" | "project", signal?: AbortSignal) {
+		validateMcpPaginationCursor("resources/list", cursor)
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected" || connection.server.disabled) {
 			throw new Error(`No enabled connection found for server: ${serverName}`)
 		}
-		const request = cursor
-			? { method: "resources/list" as const, params: { cursor } }
-			: { method: "resources/list" as const }
-		return await requestWithAbort(
-			() => connection.client.request(request, ListResourcesResultSchema, signal ? { signal } : undefined),
-			signal,
+		const requestSignal = this.getConnectionSignal(connection, signal)
+		const request =
+			cursor !== undefined
+				? { method: "resources/list" as const, params: { cursor } }
+				: { method: "resources/list" as const }
+		const response = await requestWithAbort(
+			() => connection.client.request(request, ListResourcesResultSchema, { signal: requestSignal }),
+			requestSignal,
 		)
+		this.assertConnectionCurrent(connection, requestSignal)
+		validateMcpPaginationCursor("resources/list", response.nextCursor)
+		if (response.resources.length > MAX_MCP_CATALOG_ITEMS)
+			throw new Error("resources/list exceeded the catalog item limit")
+		return response
 	}
 
 	async listResourceTemplates(
@@ -1767,18 +2035,25 @@ export class McpHub {
 		source?: "global" | "project",
 		signal?: AbortSignal,
 	) {
+		validateMcpPaginationCursor("resources/templates/list", cursor)
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected" || connection.server.disabled) {
 			throw new Error(`No enabled connection found for server: ${serverName}`)
 		}
-		const request = cursor
-			? { method: "resources/templates/list" as const, params: { cursor } }
-			: { method: "resources/templates/list" as const }
-		return await requestWithAbort(
-			() =>
-				connection.client.request(request, ListResourceTemplatesResultSchema, signal ? { signal } : undefined),
-			signal,
+		const requestSignal = this.getConnectionSignal(connection, signal)
+		const request =
+			cursor !== undefined
+				? { method: "resources/templates/list" as const, params: { cursor } }
+				: { method: "resources/templates/list" as const }
+		const response = await requestWithAbort(
+			() => connection.client.request(request, ListResourceTemplatesResultSchema, { signal: requestSignal }),
+			requestSignal,
 		)
+		this.assertConnectionCurrent(connection, requestSignal)
+		validateMcpPaginationCursor("resources/templates/list", response.nextCursor)
+		if (response.resourceTemplates.length > MAX_MCP_CATALOG_ITEMS)
+			throw new Error("resources/templates/list exceeded the catalog item limit")
+		return response
 	}
 
 	async readResource(
@@ -1924,6 +2199,7 @@ export class McpHub {
 		} else if (!addTool && toolIndex !== -1) {
 			targetList.splice(toolIndex, 1)
 		}
+		const grants = BaseConfigSchema.parse(config.mcpServers[serverName])
 
 		// Set flag to prevent file watcher from triggering server restart
 		if (this.flagResetTimer) {
@@ -1940,8 +2216,20 @@ export class McpHub {
 			}, 600)
 		}
 
-		if (connection) {
-			connection.server.tools = await this.fetchToolsList(serverName, source)
+		if (
+			connection.type === "connected" &&
+			connection.server.status !== "disconnected" &&
+			!connection.server.disabled
+		) {
+			this.assertConnectionCurrent(connection)
+			// Apply persisted host policy immediately, even if subsequent remote discovery fails.
+			const hasWildcard = grants.alwaysAllow.includes("*")
+			connection.server.tools = connection.server.tools?.map((tool) => ({
+				...tool,
+				alwaysAllow: hasWildcard || grants.alwaysAllow.includes(tool.name),
+				enabledForPrompt: !grants.disabledTools.includes(tool.name),
+			}))
+			await this.refreshServerCatalog(connection, true)
 			await this.notifyWebviewOfServerChanges()
 		}
 	}
@@ -2040,6 +2328,11 @@ export class McpHub {
 		}
 
 		this.isDisposed = true
+		for (const attempt of this.connectionAttempts.values()) attempt.abort()
+		this.connectionAttempts.clear()
+		for (const connection of this.connectionControllers.keys()) {
+			this.cancelConnectionRequests(connection)
+		}
 
 		// Clear all debounce timers
 		for (const timer of this.configChangeDebounceTimers.values()) {
