@@ -1174,39 +1174,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				modelId: model.id,
 				model: modelInfo,
 				settings: this.options,
+				requestKind: "single-completion",
 			})
-
-			if (this.shouldUseResponsesApi(model.id)) {
-				const maxOutputTokens = resolveOptionalOutputTokenLimit({
-					model: modelInfo,
-					settings: this.options,
-					route: "openai-responses",
-				})
-				const response = await this.client.responses.create({
-					model: model.id,
-					input: [{ role: "user", content: prompt }],
-					stream: false,
-					store: false,
-					...(effectiveReasoning?.reasoning_effort !== undefined
-						? { reasoning: { effort: effectiveReasoning.reasoning_effort } }
-						: {}),
-					...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
-					...(applicability.supportsVerbosity && this.options.verbosity !== undefined
-						? { text: { verbosity: this.options.verbosity } }
-						: {}),
-				})
-				if (response.status !== "completed") {
-					const detail = response.error?.code
-						? `; code: ${response.error.code}`
-						: response.incomplete_details?.reason
-							? `; reason: ${response.incomplete_details.reason}`
-							: ""
-					throw new Error(
-						`Responses completion did not complete (status: ${response.status ?? "unknown"}${detail}).`,
-					)
-				}
-				return response.output_text || ""
-			}
 
 			const temperature =
 				applicability.fixedTemperature ?? (applicability.supportsTemperature ? model.temperature : undefined)
@@ -1215,6 +1184,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				messages: [{ role: "user", content: prompt }],
 				...(temperature !== undefined ? { temperature } : {}),
 				...(effectiveReasoning && effectiveReasoning),
+				...(applicability.supportsVerbosity && this.options.verbosity !== undefined
+					? { verbosity: this.options.verbosity }
+					: {}),
 			}
 
 			// Add max_tokens if needed

@@ -3,6 +3,10 @@
 Date: October 11, 2026 (America/New_York). Implementation starts at checkpoint
 `14fc29614911d0d3b88670135a8a5c11abb75103`. Alpha's host contract remains **VS Code 1.125.0**.
 
+The integrated protocol follow-up corrected the auxiliary completion route described below; see
+[the protocol follow-up](provider-protocol-followup-2026-10-11.md) for the reproduction, current API evidence, and validation.
+The validation totals in this note record the original settings handoff, before that follow-up.
+
 ## Scope and upstream evidence
 
 This change makes the settings editor and native provider request construction agree about per-response output caps,
@@ -133,17 +137,18 @@ Malformed routing edits suppress inapplicable controls while the existing reques
 
 ### F7: supported verbosity reaches transport
 
-Explicit supported model metadata on the native Responses route emits `text.verbosity` for task requests and native
-`completePrompt` requests. False or undeclared support, compatible/gateway routes without an implemented consumer, and
+Explicit supported model metadata on the native Responses route emits `text.verbosity` for task requests. Native
+`completePrompt` retains Chat Completions and emits the documented top-level `verbosity` field with the same capability
+gate. False or undeclared support, compatible/gateway routes without an implemented consumer, and
 VS Code LM omit it. Unset verbosity omits the control and is displayed as the provider default. Saved low/medium/high
 preferences remain intact across provider/model/route changes.
 
-Native `completePrompt` follows the same already-selected Responses route as task requests, using a plain user input and
-`store: false`. Its cap and verbosity follow the same resolver. It returns text only for a completed response; other
-statuses report the status and supplied error code or incomplete reason without including response content. This is a
-narrow integration overlap in `openai.ts` with the separate response-phase lead: imports, request construction, `getModel`,
-cap assembly, and the single-completion branch change; streaming response normalization, persisted history, and replay
-are outside this remit.
+The original handoff moved native `completePrompt` to Responses. Integrated protocol coverage exposed that this changed
+the established text-only API contract without a requirement. The follow-up restores Chat Completions, which the current
+model API still supports for text-only requests. The resolver explicitly represents the request kind, keeping task
+Responses routing and its minimum cap of 16 intact. Single completions retain positive-integer Chat Completions caps,
+plain user messages, the existing error wrapper, and no task tools or history controls. Native saved temperature remains
+suppressed on either request kind. Streaming response normalization, persisted history, and replay remain outside this remit.
 
 ## Intentional Alpha differences
 
@@ -152,15 +157,18 @@ editor. Alpha retains those provider-native controls and valid mandatory Vertex 
 architecture, Rust runtime, prompts, or configuration storage. Gateway credentials, Vertex transport, Stellar Helix
 authentication, VS Code LM host options, and all built-in capabilities remain native extension concerns.
 
-This remit implements verbosity only on Alpha's supported Responses consumer. It does not assume that every compatible
-server accepts the OpenAI Chat Completions verbosity field. It does not manufacture a catalog/default verbosity value
-where Alpha has no verified declaration; unset values use the server's default.
+Verbosity reaches Alpha's supported native Responses task consumer and native Chat Completions text-only consumer. The
+native endpoint and exact model route eligibility remain required for both. This does not assume that every compatible
+server accepts the OpenAI Chat Completions verbosity field or manufacture a catalog/default verbosity value where Alpha
+has no verified declaration; unset values use the server's default.
 
 ## Validation
 
 Focused deterministic request regressions were run before request changes: 52 failures in 109 tests reproduced negative
 sentinels, invalid caps, unsupported temperatures, missing non-streaming sampling, dead verbosity, and the mismatched
-native single-completion route. A second Vertex-focused baseline reproduced mandatory cap and sampling boundary defects.
+native single-completion route under the original proposed Responses behavior. Those single-completion expectations were
+superseded by the verified existing Chat Completions contract in the protocol follow-up; the original integrated protocol
+assertions remain unchanged. A second Vertex-focused baseline reproduced mandatory cap and sampling boundary defects.
 No live provider calls were used for these regressions.
 
 Final checks ran in the isolated worktree with Node **24.21.0** and pnpm **11.24.0**. The frozen dependency install and

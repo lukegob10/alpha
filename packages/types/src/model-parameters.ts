@@ -51,23 +51,28 @@ export function resolveModelParameterApplicability({
 	modelId,
 	model,
 	settings = {},
+	requestKind = "task",
 }: {
 	provider?: string
 	modelId: string
 	model?: ModelInfo
 	settings?: ProviderSettings
+	/** Auxiliary text completions retain their established Chat Completions route. */
+	requestKind?: "task" | "single-completion"
 }): ModelParameterApplicability {
 	const selectedProvider = provider ?? settings.apiProvider ?? "vertex"
 	let route: ModelParameterRoute = "unsupported"
 	let requestModelId = modelId
+	let hasNativeOpenAiRoute = false
 	if (selectedProvider === "openai") {
-		route = usesOpenAiResponsesApi(modelId, settings) ? "openai-responses" : "openai-chat-completions"
+		hasNativeOpenAiRoute = usesOpenAiResponsesApi(modelId, settings)
+		route = hasNativeOpenAiRoute && requestKind === "task" ? "openai-responses" : "openai-chat-completions"
 	} else if (selectedProvider === "stellar") {
-		route =
+		hasNativeOpenAiRoute = Boolean(
 			settings.stellarBaseUrl &&
-			usesOpenAiResponsesApi(modelId, { ...settings, openAiBaseUrl: settings.stellarBaseUrl })
-				? "openai-responses"
-				: "openai-chat-completions"
+				usesOpenAiResponsesApi(modelId, { ...settings, openAiBaseUrl: settings.stellarBaseUrl }),
+		)
+		route = hasNativeOpenAiRoute && requestKind === "task" ? "openai-responses" : "openai-chat-completions"
 	} else if (selectedProvider === "vertex") {
 		const family = modelId.trim().toLowerCase()
 		route = family.includes("claude")
@@ -94,8 +99,11 @@ export function resolveModelParameterApplicability({
 	const consumesTemperature =
 		route === "vertex-anthropic" ||
 		route === "vertex-gemini" ||
-		(route === "openai-chat-completions" && !usesOpenAiReasoningFamilyChat(requestModelId))
-	const hasTemperatureCapability = supportsModelTemperature(model, route === "openai-chat-completions")
+		(route === "openai-chat-completions" && !hasNativeOpenAiRoute && !usesOpenAiReasoningFamilyChat(requestModelId))
+	const hasTemperatureCapability = supportsModelTemperature(
+		model,
+		route === "openai-chat-completions" && !hasNativeOpenAiRoute,
+	)
 	const hasActiveReasoningBudget =
 		model?.requiredReasoningBudget === true ||
 		(model?.supportsReasoningBudget === true && settings.enableReasoningEffort === true)
@@ -105,7 +113,9 @@ export function resolveModelParameterApplicability({
 		route,
 		supportsTemperature: consumesTemperature && hasTemperatureCapability && !requiresFixedTemperature,
 		...(requiresFixedTemperature ? { fixedTemperature: 1 } : {}),
-		supportsVerbosity: route === "openai-responses" && model?.supportsVerbosity === true,
+		// Native text-only Chat Completions consumes top-level verbosity; task
+		// Responses consumes text.verbosity. Gate both by the same model metadata.
+		supportsVerbosity: hasNativeOpenAiRoute && model?.supportsVerbosity === true,
 	}
 }
 

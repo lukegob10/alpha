@@ -98,6 +98,68 @@ describe("model parameter applicability", () => {
 			supportsVerbosity: true,
 		})
 	})
+	it.each(["openai", "stellar"])("keeps %s text-only completions on Chat Completions", (provider) => {
+		const settings: ProviderSettings = {
+			stellarBaseUrl: "https://api.openai.com/v1",
+			modelTemperature: 0.8,
+			verbosity: "high",
+			includeMaxTokens: true,
+			modelMaxTokens: 1,
+		}
+		const saved = structuredClone(settings)
+		const applicability = resolveModelParameterApplicability({
+			provider,
+			modelId: "gpt-6.1-sol",
+			model,
+			settings,
+			requestKind: "single-completion",
+		})
+		expect(applicability).toEqual({
+			route: "openai-chat-completions",
+			supportsTemperature: false,
+			supportsVerbosity: true,
+		})
+		expect(resolveOptionalOutputTokenLimit({ model, settings, route: applicability.route })).toBe(1)
+		expect(settings).toEqual(saved)
+		expect(resolveModelParameterApplicability({ provider, modelId: "gpt-6.1-sol", model, settings }).route).toBe(
+			"openai-responses",
+		)
+	})
+	it.each([false, undefined])("withholds undeclared text-only native verbosity for %s", (supportsVerbosity) => {
+		expect(
+			resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: "gpt-6.1-sol",
+				model: { ...model, supportsVerbosity },
+				requestKind: "single-completion",
+			}),
+		).toEqual({ route: "openai-chat-completions", supportsTemperature: false, supportsVerbosity: false })
+	})
+	it.each([
+		{ openAiBaseUrl: "https://gateway.example/v1" },
+		{ openAiUseAzure: true },
+		{ openAiR1FormatEnabled: true },
+	])("keeps text-only compatible sampling and omits native verbosity for %j", (settings) => {
+		expect(
+			resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: "gpt-6.1-sol",
+				model: { ...model, supportsTemperature: undefined },
+				settings,
+				requestKind: "single-completion",
+			}),
+		).toEqual({ route: "openai-chat-completions", supportsTemperature: true, supportsVerbosity: false })
+	})
+	it("does not infer text-only native verbosity from an unknown model name", () => {
+		expect(
+			resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: "gpt-6.1-sol-preview",
+				model,
+				requestKind: "single-completion",
+			}),
+		).toEqual({ route: "openai-chat-completions", supportsTemperature: true, supportsVerbosity: false })
+	})
 	it.each([
 		{ openAiBaseUrl: "https://gateway.example/v1" },
 		{ openAiUseAzure: true },

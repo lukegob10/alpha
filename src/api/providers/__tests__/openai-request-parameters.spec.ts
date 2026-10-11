@@ -356,48 +356,99 @@ describe("single prompt parameter routes", () => {
 		expect(mocks.chatCreate.mock.calls[0][0]).toHaveProperty("temperature", 0.8)
 	})
 
-	it("uses the native Responses transport with verbosity and a positive cap for a single prompt", async () => {
-		const result = await createHandler({
-			openAiModelId: "gpt-5.5",
-			openAiBaseUrl: "https://api.openai.com/v1",
-			modelTemperature: 0.8,
-			verbosity: "medium",
-			includeMaxTokens: true,
-			modelMaxTokens: 4096,
-			openAiCustomModelInfo: modelInfo({ supportsTemperature: true, supportsVerbosity: true }),
-		}).completePrompt("hello")
-		expect(result).toBe("answer")
-		expect(mocks.chatCreate).not.toHaveBeenCalled()
-		expect(mocks.responsesCreate.mock.calls[0][0]).toMatchObject({
-			model: "gpt-5.5",
-			input: [{ role: "user", content: "hello" }],
-			stream: false,
-			store: false,
-			max_output_tokens: 4096,
-			text: { verbosity: "medium" },
-		})
-		expect(mocks.responsesCreate.mock.calls[0][0]).not.toHaveProperty("temperature")
-	})
+	it.each(["low", "medium", "high"] as const)(
+		"uses native text-only Chat Completions with supported verbosity=%s and a positive cap",
+		async (verbosity) => {
+			const result = await createHandler({
+				openAiModelId: "gpt-6.1-sol",
+				openAiBaseUrl: "https://api.openai.com/v1",
+				modelTemperature: 0.8,
+				verbosity,
+				includeMaxTokens: true,
+				modelMaxTokens: 4096,
+				openAiCustomModelInfo: modelInfo({ supportsTemperature: true, supportsVerbosity: true }),
+			}).completePrompt("hello")
+			expect(result).toBe("answer")
+			expect(mocks.responsesCreate).not.toHaveBeenCalled()
+			expect(mocks.chatCreate).toHaveBeenCalledOnce()
+			const [request] = mocks.chatCreate.mock.calls[0]
+			expect(request).toMatchObject({
+				model: "gpt-6.1-sol",
+				messages: [{ role: "user", content: "hello" }],
+				max_completion_tokens: 4096,
+				verbosity,
+			})
+			for (const parameter of ["temperature", "tools", "text", "max_output_tokens"]) {
+				expect(request).not.toHaveProperty(parameter)
+			}
+		},
+	)
 
 	it.each([
-		{
-			status: "incomplete",
-			incomplete_details: { reason: "max_output_tokens" },
-			expected: /status: incomplete; reason: max_output_tokens/,
-		},
-		{
-			status: "failed",
-			error: { code: "server_error", message: "private provider error content" },
-			expected: /status: failed; code: server_error/,
-		},
-		{ status: "in_progress", expected: /status: in_progress/ },
-		{ status: undefined, expected: /status: unknown/ },
-	])(
-		"rejects a native single prompt response with status $status without changing saved parameters",
-		async (outcome) => {
+		{ support: false, verbosity: "high" as const },
+		{ support: undefined, verbosity: "high" as const },
+		{ support: true, verbosity: undefined },
+	])("omits inapplicable native single-prompt verbosity ($support, $verbosity)", async ({ support, verbosity }) => {
+		await createHandler({
+			openAiModelId: "gpt-6.1-sol",
+			openAiBaseUrl: "https://api.openai.com/v1",
+			verbosity,
+			openAiCustomModelInfo: modelInfo({ supportsVerbosity: support }),
+		}).completePrompt("hello")
+		expect(mocks.responsesCreate).not.toHaveBeenCalled()
+		expect(mocks.chatCreate.mock.calls[0][0]).not.toHaveProperty("verbosity")
+	})
+
+	describe.each([
+		{ name: "native", modelId: "gpt-6.1-sol", baseUrl: "https://api.openai.com/v1" },
+		{ name: "compatible", modelId: "compatible-model", baseUrl: "https://gateway.example/v1" },
+	])("$name single-prompt output limits and failures", ({ modelId, baseUrl }) => {
+		it.each([
+			{ include: true, cap: 1024, model: 8192, expected: 1024 },
+			{ include: true, cap: undefined, model: 8192, expected: 8192 },
+			{ include: true, cap: -1, model: 8192, expected: undefined },
+			{ include: true, cap: undefined, model: -1, expected: undefined },
+			{ include: true, cap: undefined, model: undefined, expected: undefined },
+			{ include: false, cap: 1024, model: 8192, expected: undefined },
+			{ include: undefined, cap: 1024, model: 8192, expected: undefined },
+			{ include: false, cap: 0, model: 8192, expected: undefined },
+		])("include=$include cap=$cap model=$model", async ({ include, cap, model, expected }) => {
+			await createHandler({
+				openAiModelId: modelId,
+				openAiBaseUrl: baseUrl,
+				includeMaxTokens: include,
+				modelMaxTokens: cap,
+				openAiCustomModelInfo: modelInfo({ maxTokens: model }),
+			}).completePrompt("hello")
+			expect(mocks.responsesCreate).not.toHaveBeenCalled()
+			const [request] = mocks.chatCreate.mock.calls[0]
+			if (expected === undefined) {
+				expect(request).not.toHaveProperty("max_completion_tokens")
+			} else {
+				expect(request).toHaveProperty("max_completion_tokens", expected)
+			}
+		})
+
+		it.each([0, -2, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+			"rejects invalid single-prompt cap %s before transport",
+			async (cap) => {
+				await expect(
+					createHandler({
+						openAiModelId: modelId,
+						openAiBaseUrl: baseUrl,
+						includeMaxTokens: true,
+						modelMaxTokens: cap,
+					}).completePrompt("hello"),
+				).rejects.toThrow(/output|token/i)
+				expect(mocks.chatCreate).not.toHaveBeenCalled()
+				expect(mocks.responsesCreate).not.toHaveBeenCalled()
+			},
+		)
+
+		it("preserves SDK failure advice and saved parameters through the text-only request", async () => {
 			const savedOptions: ApiHandlerOptions = {
-				openAiModelId: "gpt-5.5",
-				openAiBaseUrl: "https://api.openai.com/v1",
+				openAiModelId: modelId,
+				openAiBaseUrl: baseUrl,
 				modelTemperature: 0.8,
 				verbosity: "high",
 				includeMaxTokens: true,
@@ -407,52 +458,42 @@ describe("single prompt parameter routes", () => {
 			const savedSnapshot = structuredClone(savedOptions)
 			const handler = createHandler(savedOptions)
 			const modelBefore = handler.getModel()
-			mocks.responsesCreate.mockResolvedValueOnce({
-				id: "response-id",
-				output_text: "private partial output",
-				...outcome,
+			mocks.chatCreate.mockRejectedValueOnce(
+				Object.assign(new Error("Rate limited"), {
+					status: 429,
+					code: "rate_limit_exceeded",
+					headers: { "retry-after": "60" },
+				}),
+			)
+			await expect(handler.completePrompt("hello")).rejects.toMatchObject({
+				status: 429,
+				code: "rate_limit_exceeded",
+				retryAfterMs: 60_000,
+				message: "OpenAI completion error: Rate limited",
 			})
-
-			const completion = handler.completePrompt("private prompt")
-			await expect(completion).rejects.toThrow(outcome.expected)
-			const failure = await completion.catch((error: unknown) => error)
-			expect(failure).toMatchObject({
-				message: expect.not.stringMatching(
-					/private provider error content|private partial output|private prompt/,
-				),
-			})
-			expect(mocks.responsesCreate).toHaveBeenCalledTimes(1)
-			expect(mocks.chatCreate).not.toHaveBeenCalled()
+			expect(mocks.chatCreate).toHaveBeenCalledOnce()
+			expect(mocks.responsesCreate).not.toHaveBeenCalled()
 			expect(handler.getModel()).toEqual(modelBefore)
 			expect(savedOptions).toEqual(savedSnapshot)
-		},
-	)
+		})
+	})
 
-	it.each(["chat", "responses"])("omits the server-default cap for single prompt %s", async (route) => {
+	it.each([1, 15, 16])("keeps positive text-only caps below the Responses minimum (%s)", async (cap) => {
 		await createHandler({
-			...(route === "responses" ? { openAiModelId: "gpt-5.5", openAiBaseUrl: "https://api.openai.com/v1" } : {}),
+			openAiModelId: "gpt-6.1-sol",
+			openAiBaseUrl: "https://api.openai.com/v1",
 			includeMaxTokens: true,
-			modelMaxTokens: -1,
+			modelMaxTokens: cap,
 		}).completePrompt("hello")
-		const create = route === "responses" ? mocks.responsesCreate : mocks.chatCreate
-		expect(create).toHaveBeenCalledTimes(1)
-		const [request] = create.mock.calls[0]
-		expect(request).not.toHaveProperty(route === "responses" ? "max_output_tokens" : "max_completion_tokens")
+		expect(mocks.responsesCreate).not.toHaveBeenCalled()
+		expect(mocks.chatCreate.mock.calls[0][0]).toHaveProperty("max_completion_tokens", cap)
 	})
 })
 
-describe.each(["stream", "response", "single-prompt"])("output-cap transport minimum on %s", (surface) => {
-	async function run(handler: OpenAiHandler) {
-		if (surface === "single-prompt") {
-			await handler.completePrompt("hello")
-		} else {
-			await consumeTask(handler)
-		}
-	}
-
+describe.each(["stream", "response"])("output-cap task transport minimum on %s", (surface) => {
 	it("rejects native Responses cap 15 before transport", async () => {
 		await expect(
-			run(
+			consumeTask(
 				createHandler({
 					openAiModelId: "gpt-5.4",
 					openAiBaseUrl: "https://api.openai.com/v1",
@@ -466,7 +507,7 @@ describe.each(["stream", "response", "single-prompt"])("output-cap transport min
 	})
 
 	it("accepts native Responses cap 16", async () => {
-		await run(
+		await consumeTask(
 			createHandler({
 				openAiModelId: "gpt-5.4",
 				openAiBaseUrl: "https://api.openai.com/v1",
@@ -479,7 +520,7 @@ describe.each(["stream", "response", "single-prompt"])("output-cap transport min
 	})
 
 	it("preserves compatible Chat Completions cap 1", async () => {
-		await run(
+		await consumeTask(
 			createHandler({ openAiStreamingEnabled: surface === "stream", includeMaxTokens: true, modelMaxTokens: 1 }),
 		)
 		expect(mocks.chatCreate.mock.calls[0][0]).toHaveProperty("max_completion_tokens", 1)
