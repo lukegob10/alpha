@@ -42,6 +42,7 @@ describe("AlphaProvider.createTask start control", () => {
 
 	const createProvider = () =>
 		Object.assign(Object.create(AlphaProvider.prototype), {
+			context: { secrets: {} },
 			taskStack: [],
 			taskCreationQueue: Promise.resolve(),
 			createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,

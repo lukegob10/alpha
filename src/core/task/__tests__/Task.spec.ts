@@ -98,11 +98,43 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
+function createStorageLstatMock(actualLstat: typeof import("node:fs/promises").lstat) {
+	const virtualStorageRoots = [
+		path.resolve(os.tmpdir(), "test-storage"),
+		path.resolve("/test/storage"),
+		path.resolve("/mock/storage/path"),
+	]
+	const isWithin = (root: string, candidate: string) => {
+		const relativePath = path.relative(root, candidate)
+		return (
+			relativePath === "" ||
+			(!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`))
+		)
+	}
+	return vi.fn().mockImplementation((filePath, options) => {
+		if (
+			typeof filePath === "string" &&
+			virtualStorageRoots.some((root) => isWithin(root, path.resolve(filePath)))
+		) {
+			return Promise.reject(
+				Object.assign(new Error("Virtual storage path does not exist"), {
+					code: "ENOENT",
+					path: filePath,
+					syscall: "lstat",
+				}),
+			)
+		}
+		return actualLstat(filePath, options)
+	})
+}
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	const mockFunctions = {
 		mkdir: vi.fn().mockResolvedValue(undefined),
 		writeFile: vi.fn().mockResolvedValue(undefined),
+		// Virtual storage stays absent regardless of host leftovers; isolated physical fixtures use real metadata.
+		lstat: createStorageLstatMock(actual.lstat),
 		readFile: vi.fn().mockImplementation((filePath) => {
 			if (filePath.includes("ui_messages.json")) {
 				return Promise.resolve(JSON.stringify(mockMessages))
@@ -233,15 +265,19 @@ vi.mock("../../condense", async (importOriginal) => {
 		}),
 	}
 })
-// Mock storagePathManager to prevent dynamic import issues.
-vi.mock("../../../utils/storage", () => ({
-	getTaskDirectoryPath: vi
-		.fn()
-		.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),
-	getSettingsDirectoryPath: vi
-		.fn()
-		.mockImplementation((globalStoragePath) => Promise.resolve(`${globalStoragePath}/settings`)),
-}))
+// Keep write paths virtual and expose only the validated read-only lookup needed for absent goal sidecars.
+vi.mock("../../../utils/storage", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../utils/storage")>()
+	return {
+		resolveExistingTaskDirectoryPathReadOnly: actual.resolveExistingTaskDirectoryPathReadOnly,
+		getTaskDirectoryPath: vi
+			.fn()
+			.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),
+		getSettingsDirectoryPath: vi
+			.fn()
+			.mockImplementation((globalStoragePath) => Promise.resolve(`${globalStoragePath}/settings`)),
+	}
+})
 
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockImplementation((filePath) => {
@@ -271,7 +307,7 @@ describe("Alpha", () => {
 	let mockOutputChannel: any
 	let mockExtensionContext: vscode.ExtensionContext
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		if (!TelemetryService.hasInstance()) {
 			TelemetryService.createInstance([])
 		}
@@ -392,6 +428,17 @@ describe("Alpha", () => {
 				},
 			],
 		}))
+		// Provider bootstrap owns lock timers; settle it before tests take control of the clock.
+		await Promise.allSettled([
+			mockProvider.agentControlStoreReady,
+			mockProvider.taskHistoryStoreReady,
+			mockProvider.mcpHubInitialization,
+		])
+		mockProvider.postMessageToWebview.mockClear()
+	})
+
+	afterEach(async () => {
+		await mockProvider.dispose()
 	})
 
 	it("keeps the working handler and configuration when a legacy provider is rejected", () => {
@@ -1098,71 +1145,84 @@ describe("Alpha", () => {
 						task: "test task",
 					})
 
-					const userContent = [
-						{
-							type: "text",
-							text: "Regular text with 'some/path' (see below for file content)",
-						} as const,
-						{
-							type: "text",
-							text: "<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
-						} as const,
-						{
-							type: "tool_result",
-							tool_use_id: "test-id",
-							content: [
-								{
-									type: "text",
-									text: "<user_message>Check 'some/path' (see below for file content)</user_message>",
-								},
-							],
-						} as Anthropic.ToolResultBlockParam,
-						{
-							type: "tool_result",
-							tool_use_id: "test-id-2",
-							content: [
-								{
-									type: "text",
-									text: "Regular tool result with 'path' (see below for file content)",
-								},
-							],
-						} as Anthropic.ToolResultBlockParam,
-					]
+					try {
+						const userContent = [
+							{
+								type: "text",
+								text: "Regular text with 'some/path' (see below for file content)",
+							} as const,
+							{
+								type: "text",
+								text: "<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
+							} as const,
+							{
+								type: "tool_result",
+								tool_use_id: "test-id",
+								content: [
+									{
+										type: "text",
+										text: "<user_message>Check 'some/path' (see below for file content)</user_message>",
+									},
+								],
+							} as Anthropic.ToolResultBlockParam,
+							{
+								type: "tool_result",
+								tool_use_id: "test-id-2",
+								content: [
+									{
+										type: "text",
+										text: "Regular tool result with 'path' (see below for file content)",
+									},
+								],
+							} as Anthropic.ToolResultBlockParam,
+						]
 
-					const { content: processedContent } = await processUserContentMentions({
-						userContent,
-						cwd: alphaTask.cwd,
-						fileContextTracker: alphaTask.fileContextTracker,
-					})
+						const { content: processedContent } = await processUserContentMentions({
+							userContent,
+							cwd: alphaTask.cwd,
+							fileContextTracker: alphaTask.fileContextTracker,
+						})
 
-					// Regular text should not be processed
-					expect((processedContent[0] as Anthropic.TextBlockParam).text).toBe(
-						"Regular text with 'some/path' (see below for file content)",
-					)
+						// Regular text should not be processed
+						expect((processedContent[0] as Anthropic.TextBlockParam).text).toBe(
+							"Regular text with 'some/path' (see below for file content)",
+						)
 
-					// Text within user_message tags should be processed
-					expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain("processed:")
-					expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain(
-						"<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
-					)
+						// Text within user_message tags should be processed
+						expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain("processed:")
+						expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain(
+							"<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
+						)
 
-					// user_message tag content should be processed
-					const toolResult1 = processedContent[2] as Anthropic.ToolResultBlockParam
-					const content1 = Array.isArray(toolResult1.content) ? toolResult1.content[0] : toolResult1.content
-					expect((content1 as Anthropic.TextBlockParam).text).toContain("processed:")
-					expect((content1 as Anthropic.TextBlockParam).text).toContain(
-						"<user_message>Check 'some/path' (see below for file content)</user_message>",
-					)
+						// user_message tag content should be processed
+						const toolResult1 = processedContent[2] as Anthropic.ToolResultBlockParam
+						const content1 = Array.isArray(toolResult1.content)
+							? toolResult1.content[0]
+							: toolResult1.content
+						expect((content1 as Anthropic.TextBlockParam).text).toContain("processed:")
+						expect((content1 as Anthropic.TextBlockParam).text).toContain(
+							"<user_message>Check 'some/path' (see below for file content)</user_message>",
+						)
 
-					// Regular tool result should not be processed
-					const toolResult2 = processedContent[3] as Anthropic.ToolResultBlockParam
-					const content2 = Array.isArray(toolResult2.content) ? toolResult2.content[0] : toolResult2.content
-					expect((content2 as Anthropic.TextBlockParam).text).toBe(
-						"Regular tool result with 'path' (see below for file content)",
-					)
-
-					await alphaTask.abortTask(true)
-					await task.catch(() => {})
+						// Regular tool result should not be processed
+						const toolResult2 = processedContent[3] as Anthropic.ToolResultBlockParam
+						const content2 = Array.isArray(toolResult2.content)
+							? toolResult2.content[0]
+							: toolResult2.content
+						expect((content2 as Anthropic.TextBlockParam).text).toBe(
+							"Regular tool result with 'path' (see below for file content)",
+						)
+					} finally {
+						try {
+							await alphaTask.abortTask(true)
+						} finally {
+							try {
+								await task.catch(() => {})
+							} finally {
+								await alphaTask.waitForTermination()
+							}
+						}
+					}
 				})
 			})
 		})
@@ -3757,6 +3817,19 @@ describe("Alpha", () => {
 	})
 
 	describe("v2.0.9 root task loop", () => {
+		const loopStorageParent = path.resolve(os.tmpdir())
+		const loopStoragePrefix = "alpha-task-loop-"
+		let loopStoragePath: string | undefined
+		const startedTaskLoops = new Set<{ task: Task; run: Promise<void> }>()
+		const trackTaskLoop = (task: Task) => {
+			const initiateTaskLoop = task["initiateTaskLoop"].bind(task)
+			task["initiateTaskLoop"] = (...args) => {
+				const run = initiateTaskLoop(...args)
+				startedTaskLoops.add({ task, run })
+				void run.catch(() => undefined)
+				return run
+			}
+		}
 		const createTask = (taskKind: "primary" | "subagent" = "primary") => {
 			const task = new Task({
 				provider: mockProvider,
@@ -3766,23 +3839,74 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", task.taskId), {
+				recursive: true,
+			})
 			markTestHandlerAsLegacyEOF(task)
 			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
 				createSnapshot()
 				onPersisted?.()
 				return true
 			})
+			trackTaskLoop(task)
 			return task
 		}
 
 		beforeEach(() => {
+			// Owned directories preserve real goal locks and absent-state/path validation; transcript/UI writes stay mocked.
+			loopStoragePath = fsSync.mkdtempSync(path.join(loopStorageParent, loopStoragePrefix))
+			Object.assign(mockExtensionContext, { globalStorageUri: { fsPath: loopStoragePath } })
 			i18n.addResourceBundle("en", "common", enCommon)
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
 			)
+		})
+
+		afterEach(async () => {
+			// Settled loops retain Task resources for follow-ups; every started fixture must be stopped and joined.
+			const runsByTask = new Map<Task, Promise<void>[]>()
+			for (const { task, run } of startedTaskLoops) {
+				const runs = runsByTask.get(task) ?? []
+				runs.push(run)
+				runsByTask.set(task, runs)
+			}
+			const settled = await Promise.allSettled(
+				[...runsByTask].map(async ([task, runs]) => {
+					const stopped = task.abortTask(true)
+					try {
+						await stopped
+					} finally {
+						try {
+							await Promise.all(runs.map((run) => run.catch(() => undefined)))
+						} finally {
+							await task.waitForTermination()
+						}
+					}
+				}),
+			)
+			const failures = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+			startedTaskLoops.clear()
+			try {
+				if (loopStoragePath) {
+					const target = path.resolve(loopStoragePath)
+					if (
+						path.dirname(target) !== loopStorageParent ||
+						!path.basename(target).startsWith(loopStoragePrefix)
+					) {
+						throw new Error("Root loop fixture cleanup escaped its owned temporary directory")
+					}
+					fsSync.rmSync(target, { recursive: true, force: true })
+					loopStoragePath = undefined
+				}
+			} catch (error) {
+				failures.push(error)
+			}
+			if (failures.length === 1) throw failures[0]
+			if (failures.length > 1) throw new AggregateError(failures, "Root loop fixture cleanup failed")
 		})
 
 		const deferred = <T = void>() => {
@@ -4455,6 +4579,23 @@ describe("Alpha", () => {
 			{ directory: "nested", workdir: () => "src" },
 		]
 
+		const stopEarlyReadStream = async (fixture?: Awaited<ReturnType<typeof startEarlyReadStream>>) => {
+			if (!fixture) return
+			const stopped = fixture.task.abortTask(true)
+			fixture.releaseRead()
+			fixture.releaseProvider()
+			fixture.releaseAssistantSave()
+			try {
+				await stopped
+			} finally {
+				try {
+					await fixture.run.catch(() => undefined)
+				} finally {
+					await fixture.task.waitForTermination()
+				}
+			}
+		}
+
 		it.each(earlyReadWorkdirs)(
 			"starts an audited read from $directory workdir before EOF and commits after durable history",
 			async ({ workdir }) => {
@@ -4545,13 +4686,7 @@ describe("Alpha", () => {
 					expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
 					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
 				} finally {
-					fixture.releaseRead()
-					fixture.releaseProvider()
-					fixture.releaseAssistantSave()
-					await Promise.race([
-						fixture.run.catch(() => undefined),
-						new Promise((resolve) => setTimeout(resolve, 500)),
-					])
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4559,10 +4694,11 @@ describe("Alpha", () => {
 		it.each(earlyReadWorkdirs)(
 			"measures read overlap for $directory workdir on the same controlled stream",
 			async ({ directory, workdir }) => {
+				let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
 				vi.useFakeTimers()
 				try {
 					const started = Date.now()
-					const fixture = await startEarlyReadStream({
+					fixture = await startEarlyReadStream({
 						workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
@@ -4580,6 +4716,7 @@ describe("Alpha", () => {
 					expect(elapsedMs).toBe(400)
 				} finally {
 					vi.useRealTimers()
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4587,9 +4724,10 @@ describe("Alpha", () => {
 		it.each(["../outside", "../path-sibling"])(
 			"withholds a read from escaping workdir %s until ordinary staging",
 			async (workdir) => {
+				let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
 				vi.useFakeTimers()
 				try {
-					const fixture = await startEarlyReadStream({
+					fixture = await startEarlyReadStream({
 						workdir: () => workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
@@ -4608,6 +4746,7 @@ describe("Alpha", () => {
 					)
 				} finally {
 					vi.useRealTimers()
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4712,13 +4851,7 @@ describe("Alpha", () => {
 					),
 				).toHaveLength(1)
 			} finally {
-				fixture.releaseRead()
-				fixture.releaseProvider()
-				fixture.releaseAssistantSave()
-				await Promise.race([
-					fixture.run.catch(() => undefined),
-					new Promise((resolve) => setTimeout(resolve, 500)),
-				])
+				await stopEarlyReadStream(fixture)
 			}
 		})
 
@@ -5624,6 +5757,12 @@ describe("Alpha", () => {
 			const requestStep = vi
 				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
+					task.apiConversationHistory.push({
+						role: "assistant",
+						content: [{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "README.md" } }],
+						ts: Date.now(),
+					})
+					task.assistantMessageSavedToHistory = true
 					task.userMessageContent = [toolResult]
 					return false
 				})
@@ -7020,6 +7159,10 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", child.taskId), {
+				recursive: true,
+			})
+			trackTaskLoop(child)
 			vi.spyOn(child as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(child as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
@@ -7873,6 +8016,9 @@ describe("Alpha", () => {
 	})
 
 	describe("design handoff persistence", () => {
+		const planStorageParent = path.resolve(os.tmpdir())
+		const planStoragePrefix = "alpha-task-plan-"
+		let planStoragePath: string | undefined
 		const createPlanTask = (overrides: Record<string, unknown> = {}) =>
 			new Task({
 				provider: mockProvider,
@@ -7892,9 +8038,21 @@ describe("Alpha", () => {
 		beforeEach(() => {
 			mockProvider.updateTaskHistory.mockClear()
 			mockProvider.updateTaskHistory.mockResolvedValue([])
+			planStoragePath = fsSync.mkdtempSync(path.join(planStorageParent, planStoragePrefix))
+			Object.assign(mockExtensionContext, { globalStorageUri: { fsPath: planStoragePath } })
 			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", "primary-plan-task"), {
 				recursive: true,
 			})
+		})
+
+		afterEach(() => {
+			if (!planStoragePath) return
+			const target = path.resolve(planStoragePath)
+			if (path.dirname(target) !== planStorageParent || !path.basename(target).startsWith(planStoragePrefix)) {
+				throw new Error("Plan fixture cleanup escaped its owned temporary directory")
+			}
+			fsSync.rmSync(target, { recursive: true, force: true })
+			planStoragePath = undefined
 		})
 
 		it("persists a complete plan body from the parsed completion and restores the latest revision", async () => {
@@ -7993,6 +8151,7 @@ describe("Alpha", () => {
 				parentTask: parent,
 				rootTask: parent,
 			})
+			await child.captureGoalAccountingBinding()
 			await child.presentCompletionResult(secondPlan)
 
 			expect(parent.designHandoff).toEqual(persisted)

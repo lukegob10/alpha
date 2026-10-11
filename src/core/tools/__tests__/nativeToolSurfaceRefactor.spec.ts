@@ -139,6 +139,9 @@ describe("native tool-surface refactor contract", () => {
 				),
 			).sort()
 			const expected = [
+				"create_goal",
+				"get_goal",
+				"update_goal",
 				"list_tickets",
 				"read_ticket",
 				"create_ticket",
@@ -185,6 +188,7 @@ describe("native tool-surface refactor contract", () => {
 			})
 			expect(result.allowedFunctionNames?.slice().sort()).toEqual(
 				[
+					"get_goal",
 					"list_tickets",
 					"read_ticket",
 					"request_user_input",
@@ -198,6 +202,16 @@ describe("native tool-surface refactor contract", () => {
 					"interrupt_agent",
 				].sort(),
 			)
+			expect(result.surface?.isCallable("get_goal")).toBe(true)
+			expect(result.surface?.resolve("get_goal")).toMatchObject({
+				name: "get_goal",
+				capabilities: { sideEffects: "none", requiresApproval: false },
+			})
+			for (const name of ["create_goal", "update_goal"]) {
+				expect(result.allowedFunctionNames, name).not.toContain(name)
+				expect(result.surface?.isCallable(name), name).toBe(false)
+				expect(result.surface?.resolve(name), name).toBeUndefined()
+			}
 			expect(result.allowedFunctionNames).not.toContain("codebase_search")
 			for (const legacyName of ["read_file", "list_files", "search_files"])
 				expect(result.allowedFunctionNames, legacyName).not.toContain(legacyName)
@@ -290,8 +304,11 @@ describe("native tool-surface refactor contract", () => {
 			)
 
 			expect(names).toContain("exec_command")
+			expect(names).toContain("get_goal")
 			expect(names).toEqual(expect.arrayContaining(["list_tickets", "read_ticket"]))
 			for (const name of [
+				"create_goal",
+				"update_goal",
 				"manage_command",
 				"ask_followup_question",
 				"attempt_completion",
@@ -445,7 +462,17 @@ describe("native tool-surface refactor contract", () => {
 			expect(TOOL_DISPLAY_NAMES.shell).toBe("run commands")
 		})
 
-		it("defines the locked command, edit, and managed-agent groups", () => {
+		it("defines the locked read, command, edit, and managed-agent groups", () => {
+			expect(TOOL_GROUPS.read.tools).toEqual([
+				"get_goal",
+				"read_file",
+				"view_image",
+				"search_files",
+				"list_files",
+				"codebase_search",
+				"list_tickets",
+				"read_ticket",
+			])
 			expect(TOOL_GROUPS.command.tools).toEqual(["exec_command", "manage_command", "write_stdin"])
 			expect(TOOL_GROUPS.edit.tools).toEqual([
 				"edit",
@@ -453,6 +480,8 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"create_goal",
+				"update_goal",
 			])
 			expect(TOOL_GROUPS.edit.customTools).toEqual(["apply_patch"])
 			expect(TOOL_GROUPS.agents.tools).toEqual([
