@@ -433,15 +433,31 @@ describe("scheduled task setup", () => {
 		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
 	})
 
-	it("keeps local edits when state refreshes and disables a renamed profile", () => {
-		state.scheduledTasks = [{ ...saved, apiConfig }]
+	it("keeps local edits and the stable-ID selection when a profile is renamed", () => {
+		const reasoningPreference = { kind: "effort", effort: "high" } as const
+		const autoApproval = { approvalMode: "auto" as const, deniedCommands: ["rm"] }
+		state.scheduledTasks = [{ ...saved, apiConfig, reasoningPreference, autoApproval }]
 		const view = render(<ScheduledTasksView onDone={() => {}} />)
 		input("Prompt", "Unsaved edits")
 		state = { ...state, listApiConfigMeta: [{ ...apiConfig, name: "Renamed", apiProvider: "openai" }] }
 		view.rerender(<ScheduledTasksView onDone={() => {}} />)
 		expect(screen.getByLabelText("Prompt")).toHaveValue("Unsaved edits")
+		expect(screen.getByRole("combobox", { name: /^Profile/ })).toHaveValue(apiConfig.id)
+		expect(screen.getByRole("option", { name: "Renamed" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)).toMatchObject({
+			type: "updateScheduledTask",
+			scheduledTaskUpdate: { apiConfig, prompt: "Unsaved edits", reasoningPreference, autoApproval },
+		})
+	})
+
+	it("keeps a missing profile unavailable when another profile reuses its name", () => {
+		state.scheduledTasks = [{ ...saved, apiConfig }]
+		state.listApiConfigMeta = [{ ...apiConfig, id: "different-id", apiProvider: "openai" }]
+		render(<ScheduledTasksView onDone={() => {}} />)
 		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
-		expect(screen.getByRole("status")).toHaveTextContent("Internal models")
+		expect(screen.getByRole("status")).toHaveTextContent(apiConfig.name)
 	})
 
 	it("shows interval units and hides repetition for a one-time schedule", () => {

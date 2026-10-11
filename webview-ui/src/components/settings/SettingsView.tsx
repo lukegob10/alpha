@@ -36,6 +36,9 @@ import {
 	type ProviderSettings,
 	type ExperimentId,
 	type TelemetrySetting,
+	type ProviderProfileRenameRequest,
+	type ProviderProfileRenameResult,
+	providerProfileRenameResultSchema,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
@@ -130,6 +133,31 @@ type SettingsViewProps = {
 	targetSection?: string
 }
 
+type ConfirmedProfileRename = Pick<
+	Extract<ProviderProfileRenameResult, { status: "success" }>,
+	"id" | "oldName" | "newName"
+> & { requestedName?: string }
+
+function getCurrentProfileId(
+	state: Pick<SettingsCachedState, "currentApiConfigName" | "listApiConfigMeta">,
+	rename?: ConfirmedProfileRename,
+): string | undefined {
+	const profile = state.listApiConfigMeta?.find(({ name }) => name === state.currentApiConfigName)
+	if (profile) return profile.id
+
+	// A name projection and its metadata can arrive on either side of the rename acknowledgement.
+	if (
+		rename &&
+		(state.currentApiConfigName === rename.oldName ||
+			state.currentApiConfigName === rename.newName ||
+			(rename.requestedName !== undefined && state.currentApiConfigName === rename.requestedName)) &&
+		state.listApiConfigMeta?.some(({ id }) => id === rename.id)
+	) {
+		return rename.id
+	}
+	return undefined
+}
+
 const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, targetSection }, ref) => {
 	const { t } = useAppTranslation()
 
@@ -138,6 +166,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	const [isDiscardDialogShow, setDiscardDialogShow] = useState(false)
 	const [isChangeDetected, setChangeDetected] = useState(false)
+	const [isProfileRenaming, setProfileRenaming] = useState(false)
+	const [confirmedProfileRename, setConfirmedProfileRename] = useState<ConfirmedProfileRename>()
 	const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined)
 	const [activeTab, setActiveTab] = useState<SectionName>(
 		targetSection && sectionNames.includes(targetSection as SectionName)
@@ -151,6 +181,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const contentRef = useRef<HTMLDivElement | null>(null)
 
 	const prevApiConfigName = useRef(currentApiConfigName)
+	const prevApiConfigId = useRef(getCurrentProfileId(extensionState))
+	const pendingProfileRename = useRef<
+		ProviderProfileRenameRequest & { oldName: string; resolve: (error?: string) => void }
+	>()
 	const prevSettingsImportedAt = useRef(settingsImportedAt)
 	const initializedFromHydration = useRef(didHydrateState)
 	const latestExtensionState = useRef(extensionState)
@@ -234,6 +268,123 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
+	const currentApiConfigId = getCurrentProfileId(
+		extensionState,
+		pendingProfileRename.current ?? confirmedProfileRename,
+	)
+	const effectiveApiConfigName =
+		confirmedProfileRename &&
+		confirmedProfileRename.id === currentApiConfigId &&
+		(currentApiConfigName === confirmedProfileRename.oldName ||
+			currentApiConfigName === confirmedProfileRename.newName ||
+			(confirmedProfileRename.requestedName !== undefined &&
+				currentApiConfigName === confirmedProfileRename.requestedName))
+			? confirmedProfileRename.newName
+			: currentApiConfigName
+	const effectiveApiConfigMeta = useMemo(
+		() =>
+			listApiConfigMeta?.map((profile) =>
+				profile.id === currentApiConfigId && effectiveApiConfigName
+					? { ...profile, name: effectiveApiConfigName }
+					: profile,
+			),
+		[listApiConfigMeta, currentApiConfigId, effectiveApiConfigName],
+	)
+	const isProfileNameAwaitingRefresh = Boolean(
+		confirmedProfileRename &&
+			confirmedProfileRename.id === currentApiConfigId &&
+			(currentApiConfigName !== effectiveApiConfigName ||
+				listApiConfigMeta?.find(({ id }) => id === currentApiConfigId)?.name !== effectiveApiConfigName),
+	)
+	const areProfileActionsDisabled = isProfileRenaming || isProfileNameAwaitingRefresh
+
+	const cancelPendingProfileRename = useCallback((error: string) => {
+		const pending = pendingProfileRename.current
+		pendingProfileRename.current = undefined
+		setProfileRenaming(false)
+		pending?.resolve(error)
+	}, [])
+
+	useEffect(() => {
+		const receive = (event: MessageEvent) => {
+			if (event.data?.type !== "apiConfigurationRenamed") return
+			const response = providerProfileRenameResultSchema.safeParse(event.data.apiConfigurationRenameResult)
+			const pending = pendingProfileRename.current
+			if (!response.success || !pending || response.data.requestId !== pending.requestId) return
+
+			pendingProfileRename.current = undefined
+			setProfileRenaming(false)
+			if (response.data.status === "error") {
+				if (response.data.profile?.id === pending.id) {
+					const confirmed = {
+						id: pending.id,
+						oldName: pending.oldName,
+						newName: response.data.profile.name,
+						requestedName: pending.newName,
+					}
+					if (getCurrentProfileId(latestExtensionState.current, confirmed) === pending.id) {
+						setConfirmedProfileRename(confirmed)
+					}
+				}
+				pending.resolve(t(`settings:providers.renameErrors.${response.data.error}`))
+				return
+			}
+			if (response.data.id !== pending.id) {
+				pending.resolve(t("settings:providers.renameErrors.invalid"))
+				return
+			}
+			if (
+				getCurrentProfileId(latestExtensionState.current, {
+					id: pending.id,
+					oldName: pending.oldName,
+					newName: response.data.newName,
+					requestedName: pending.newName,
+				}) !== pending.id
+			) {
+				pending.resolve(t("settings:providers.renameErrors.cancelled"))
+				return
+			}
+			setConfirmedProfileRename({
+				id: pending.id,
+				oldName: pending.oldName,
+				newName: response.data.newName,
+				requestedName: pending.newName,
+			})
+			pending.resolve()
+		}
+		window.addEventListener("message", receive)
+		return () => window.removeEventListener("message", receive)
+	}, [t])
+
+	useEffect(
+		() => () => {
+			pendingProfileRename.current?.resolve()
+			pendingProfileRename.current = undefined
+		},
+		[],
+	)
+
+	const renameApiConfiguration = (oldName: string, newName: string): Promise<string | undefined> => {
+		const id = getCurrentProfileId(latestExtensionState.current, confirmedProfileRename)
+		if (!id) return Promise.resolve(t("settings:providers.renameErrors.notFound"))
+		if (isProfileNameAwaitingRefresh) return Promise.resolve(t("settings:providers.profileRefreshPending"))
+		if (pendingProfileRename.current) return Promise.resolve(t("settings:providers.renameErrors.pending"))
+
+		const request: ProviderProfileRenameRequest = { requestId: crypto.randomUUID(), id, newName }
+		setProfileRenaming(true)
+		return new Promise((resolve) => {
+			pendingProfileRename.current = {
+				...request,
+				oldName: latestExtensionState.current.currentApiConfigName ?? oldName,
+				resolve,
+			}
+			try {
+				vscode.postMessage({ type: "renameApiConfiguration", apiConfigurationRename: request })
+			} catch {
+				cancelPendingProfileRename(t("settings:providers.renameErrors.saveFailed"))
+			}
+		})
+	}
 
 	// Hydrate the edit buffer exactly once. Subsequent live state pushes must not
 	// overwrite unsaved fields in cachedState.
@@ -247,25 +398,31 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
 		prevApiConfigName.current = latestExtensionState.current.currentApiConfigName
+		prevApiConfigId.current = getCurrentProfileId(latestExtensionState.current)
 		prevSettingsImportedAt.current = latestExtensionState.current.settingsImportedAt
 		initializedFromHydration.current = true
 		setChangeDetected(false)
 	}, [didHydrateState])
 
 	useEffect(() => {
-		// Update only when currentApiConfigName is changed.
-		// Expected to be triggered by loadApiConfiguration/upsertApiConfiguration.
-		if (prevApiConfigName.current === currentApiConfigName) {
+		// Names are editable metadata; only a profile selection replaces the edit buffer.
+		const sameName = prevApiConfigName.current === currentApiConfigName
+		const sameProfile =
+			prevApiConfigId.current && currentApiConfigId ? prevApiConfigId.current === currentApiConfigId : sameName
+		prevApiConfigName.current = currentApiConfigName
+		prevApiConfigId.current = currentApiConfigId ?? (sameName ? prevApiConfigId.current : undefined)
+		if (sameProfile) {
 			return
 		}
 
+		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
+		setConfirmedProfileRename(undefined)
 		setCachedState({
 			...withManagedAgentSettingsDefaults(latestExtensionState.current),
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
-		prevApiConfigName.current = currentApiConfigName
 		setChangeDetected(false)
-	}, [currentApiConfigName])
+	}, [currentApiConfigName, currentApiConfigId, cancelPendingProfileRename, t])
 
 	// Bust the cache when settings are imported.
 	useEffect(() => {
@@ -274,12 +431,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		}
 
 		prevSettingsImportedAt.current = settingsImportedAt
+		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
+		setConfirmedProfileRename(undefined)
 		setCachedState({
 			...withManagedAgentSettingsDefaults(latestExtensionState.current),
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
 		setChangeDetected(false)
-	}, [settingsImportedAt])
+	}, [settingsImportedAt, cancelPendingProfileRename, t])
 
 	const setCachedStateField = useCallback(
 		<K extends keyof SettingsCachedState>(field: K, value: SettingsCachedState[K]) => {
@@ -399,7 +558,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const isSettingValid = !settingsErrorMessage
 
 	const handleSubmit = () => {
-		if (isSettingValid) {
+		if (isSettingValid && !pendingProfileRename.current) {
 			vscode.postMessage({
 				type: "updateSettings",
 				updatedSettings: {
@@ -479,7 +638,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			// These have more complex logic so they aren't (yet) handled
 			// by the `updateSettings` message.
-			vscode.postMessage({ type: "upsertApiConfiguration", text: currentApiConfigName, apiConfiguration })
+			vscode.postMessage({ type: "upsertApiConfiguration", text: effectiveApiConfigName, apiConfiguration })
 			vscode.postMessage({ type: "telemetrySetting", text: telemetrySetting })
 			vscode.postMessage({ type: "debugSetting", bool: cachedState.debug })
 			if (terminalInheritEnv !== undefined && terminalInheritEnv !== terminalInheritEnvInitial.current) {
@@ -705,30 +864,27 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 					<Section>
 						<ApiConfigManager
-							currentApiConfigName={currentApiConfigName}
-							listApiConfigMeta={listApiConfigMeta}
-							onSelectConfig={(configName: string) =>
+							currentApiConfigName={effectiveApiConfigName}
+							listApiConfigMeta={effectiveApiConfigMeta}
+							profileActionsDisabled={areProfileActionsDisabled}
+							onSelectConfig={(configName: string) => {
+								if (pendingProfileRename.current || isProfileNameAwaitingRefresh) return
 								checkUnsaveChanges(() =>
 									vscode.postMessage({ type: "loadApiConfiguration", text: configName }),
 								)
-							}
-							onDeleteConfig={(configName: string) =>
+							}}
+							onDeleteConfig={(configName: string) => {
+								if (pendingProfileRename.current || isProfileNameAwaitingRefresh) return
 								checkUnsaveChanges(() =>
 									vscode.postMessage({
 										type: "deleteApiConfiguration",
 										text: configName,
 									}),
 								)
-							}
-							onRenameConfig={(oldName: string, newName: string) => {
-								vscode.postMessage({
-									type: "renameApiConfiguration",
-									values: { oldName, newName },
-									apiConfiguration,
-								})
-								prevApiConfigName.current = newName
 							}}
+							onRenameConfig={renameApiConfiguration}
 							onUpsertConfig={(configName: string) => {
+								if (pendingProfileRename.current || isProfileNameAwaitingRefresh) return
 								const hadUnsavedChanges = isChangeDetected
 								checkUnsaveChanges(() =>
 									vscode.postMessage({
@@ -741,6 +897,11 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								)
 							}}
 						/>
+						{isProfileNameAwaitingRefresh && (
+							<p role="status" className="text-vscode-descriptionForeground text-sm">
+								{t("settings:providers.profileRefreshPending")}
+							</p>
+						)}
 						<ApiOptions
 							uriScheme={uriScheme}
 							apiConfiguration={apiConfiguration}
@@ -955,17 +1116,19 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					)}
 					<StandardTooltip
 						content={
-							!isSettingValid
-								? settingsErrorMessage
-								: isChangeDetected
-									? t("settings:header.saveButtonTooltip")
-									: t("settings:header.nothingChangedTooltip")
+							isProfileRenaming
+								? t("settings:providers.renameErrors.pending")
+								: !isSettingValid
+									? settingsErrorMessage
+									: isChangeDetected
+										? t("settings:header.saveButtonTooltip")
+										: t("settings:header.nothingChangedTooltip")
 						}>
 						<Button
 							variant={isSettingValid ? "primary" : "secondary"}
 							className={!isSettingValid ? "!border-vscode-errorForeground" : ""}
 							onClick={handleSubmit}
-							disabled={!isChangeDetected || !isSettingValid}
+							disabled={!isChangeDetected || !isSettingValid || isProfileRenaming}
 							data-testid="save-button">
 							{t("settings:common.save")}
 						</Button>

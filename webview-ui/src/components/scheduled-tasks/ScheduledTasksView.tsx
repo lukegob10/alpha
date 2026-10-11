@@ -206,9 +206,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const handledTargetId = useRef<string>()
 	const hydratedDefaultTask = useRef(false)
 	const reasoningRequestSequence = useRef(0)
-	const availableProfile = listApiConfigMeta.find(
-		(profile) => profile.id === apiConfig?.id && profile.name === apiConfig.name,
-	)
+	const availableProfile = listApiConfigMeta.find((profile) => profile.id === apiConfig?.id)
 	const availableProfileKey = availableProfile
 		? [availableProfile.id, availableProfile.name, availableProfile.apiProvider, availableProfile.modelId].join(
 				"\u0000",

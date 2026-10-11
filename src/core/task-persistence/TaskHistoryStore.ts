@@ -7,7 +7,7 @@ import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
-import { getStorageBasePath } from "../../utils/storage"
+import { getStorageBasePath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
 /**
  * Index file format for fast startup reads.
@@ -24,6 +24,11 @@ interface HistoryIndex {
  * lease so sibling views cannot contend with each other for `_index.json`.
  */
 const indexWriteQueues = new Map<string, Promise<void>>()
+
+function isStoredHistoryItem(value: unknown): value is HistoryItem {
+	// Validation proves the known fields; keep the raw representation and unknown metadata for a name-only edit.
+	return historyItemSchema.safeParse(value).success
+}
 
 /**
  * TaskHistoryStore encapsulates all task history persistence logic.
@@ -208,6 +213,73 @@ export class TaskHistoryStore {
 			}
 
 			return all
+		})
+	}
+
+	/** Patch only matching profile names under the history lock, preserving newer task metadata. */
+	async renameProviderProfile(oldName: string, newName: string): Promise<HistoryItem[]> {
+		return this.withLock(async () => {
+			if (oldName === newName) return []
+			const changed: HistoryItem[] = []
+			let failed = false
+			let failure: unknown
+			try {
+				for (const [taskId, cached] of this.cache) {
+					if (cached.apiConfigName !== oldName) continue
+					// Missing or unreadable durable history must never be recreated from a stale cache.
+					const taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
+					const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+					const fileStats = await fs.lstat(filePath)
+					if (!fileStats.isFile() || fileStats.isSymbolicLink()) {
+						throw new Error("Task history is not a regular file during provider profile rename")
+					}
+					const expectedContent = await fs.readFile(filePath, "utf8")
+					const current: unknown = JSON.parse(expectedContent)
+					if (!isStoredHistoryItem(current) || current.id !== taskId) {
+						throw new Error("Task history identity is invalid during provider profile rename")
+					}
+					if (current.apiConfigName !== oldName) {
+						this.cache.set(taskId, current)
+						continue
+					}
+					const renamed = { ...current, apiConfigName: newName }
+					await safeWriteJson(filePath, renamed, {
+						prettyPrint: true,
+						atomicReplace: true,
+						commitTempFile: (temporaryPath, destinationPath) => {
+							// The advisory write lease is held here. Fence a sibling save that won it first,
+							// then perform the small metadata-file replacement without an async gap.
+							const destinationStats = fsSync.lstatSync(destinationPath)
+							if (!destinationStats.isFile() || destinationStats.isSymbolicLink()) {
+								throw new Error("Task history is not a regular file during provider profile rename")
+							}
+							if (fsSync.readFileSync(destinationPath, "utf8") !== expectedContent) {
+								throw new Error("Task history changed during provider profile rename")
+							}
+							fsSync.renameSync(temporaryPath, destinationPath)
+						},
+					})
+					this.cache.set(taskId, renamed)
+					changed.push(renamed)
+				}
+			} catch (error) {
+				failed = true
+				failure = error
+			}
+			if (changed.length > 0) {
+				// Retain successful canonical writes even if a later file or compatibility write rejects.
+				this.scheduleIndexWrite()
+				if (this.onWrite) {
+					try {
+						await this.onWrite(this.getAll())
+					} catch (error) {
+						if (!failed) failure = error
+						failed = true
+					}
+				}
+			}
+			if (failed) throw failure
+			return changed
 		})
 	}
 

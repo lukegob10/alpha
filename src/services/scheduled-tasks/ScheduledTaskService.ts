@@ -525,7 +525,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 				.catch(() => {
 					throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
 				})
-			if (profile.name !== selectedProfile.data.name || !profile.apiProvider) {
+			// The captured name is a display snapshot; the stable ID remains authoritative after a rename.
+			if (!profile.apiProvider) {
 				throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
 			}
 			const { name, id: _id, ...apiConfiguration } = profile

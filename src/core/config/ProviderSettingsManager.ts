@@ -12,6 +12,7 @@ import {
 	persistedProviderSettingsWithIdSchema,
 	isProviderName,
 	isRetiredProvider,
+	type ProviderProfileRenameErrorCode,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -43,9 +44,28 @@ export const providerProfilesSchema = z.object({
 
 export type ProviderProfiles = z.infer<typeof providerProfilesSchema>
 
+export class ProviderProfileRenameError extends Error {
+	constructor(
+		public readonly code: ProviderProfileRenameErrorCode,
+		public readonly profile?: { id: string; name: string },
+	) {
+		super("Failed to rename provider profile")
+		this.name = "ProviderProfileRenameError"
+	}
+}
+
+export interface ProviderProfileRename {
+	id: string
+	oldName: string
+	newName: string
+	isActive: boolean
+	entries: ProviderSettingsEntry[]
+}
+
 export class ProviderSettingsManager {
 	// Keep the existing SecretStorage namespace so a source rename cannot orphan saved profiles.
 	private static readonly SCOPE_PREFIX = "roo_cline_config_"
+	private static readonly storageLocks = new WeakMap<ExtensionContext["secrets"], Promise<void>>()
 	private readonly defaultConfigId = this.generateId()
 
 	private readonly defaultModeApiConfigs: Record<string, string> = Object.fromEntries(
@@ -78,11 +98,17 @@ export class ProviderSettingsManager {
 		return Math.random().toString(36).substring(2, 15)
 	}
 
-	// Synchronize readConfig/writeConfig operations to avoid data loss.
-	private _lock = Promise.resolve()
+	// Sidebar and editor views share SecretStorage; serialize their read-modify-write operations together.
 	private lock<T>(cb: () => Promise<T>) {
-		const next = this._lock.then(cb)
-		this._lock = next.catch(() => {}) as Promise<void>
+		const previous = ProviderSettingsManager.storageLocks.get(this.context.secrets) ?? Promise.resolve()
+		const next = previous.then(cb)
+		ProviderSettingsManager.storageLocks.set(
+			this.context.secrets,
+			next.then(
+				() => undefined,
+				() => undefined,
+			),
+		)
 		return next
 	}
 
@@ -325,15 +351,73 @@ export class ProviderSettingsManager {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
 
-				return Object.entries(providerProfiles.apiConfigs).map(([name, apiConfig]) => ({
-					name,
-					id: apiConfig.id || "",
-					apiProvider: apiConfig.apiProvider,
-					modelId: this.cleanModelId(getModelId(apiConfig)),
-				}))
+				return this.profileEntries(providerProfiles)
 			})
 		} catch (error) {
 			throw new Error(`Failed to list configs: ${error}`)
+		}
+	}
+
+	private profileEntries(providerProfiles: ProviderProfiles): ProviderSettingsEntry[] {
+		return Object.entries(providerProfiles.apiConfigs).map(([name, apiConfig]) => ({
+			name,
+			id: apiConfig.id || "",
+			apiProvider: apiConfig.apiProvider,
+			modelId: this.cleanModelId(getModelId(apiConfig)),
+		}))
+	}
+
+	/** Rename only persisted identity metadata; provider settings never come from the UI edit buffer. */
+	public async renameProfile(
+		params: { id: string } | { name: string },
+		newName: string,
+		options: { expectedName?: string } = {},
+	): Promise<ProviderProfileRename> {
+		try {
+			return await this.lock(async () => {
+				const name = newName.trim()
+				if (!name) throw new ProviderProfileRenameError("invalid")
+				const providerProfiles = await this.load()
+				const entries = Object.entries(providerProfiles.apiConfigs)
+				const entry = entries.find(([existingName, config]) =>
+					"id" in params ? config.id === params.id : existingName === params.name,
+				)
+				if (!entry) throw new ProviderProfileRenameError("notFound")
+				const [oldName, config] = entry
+				const id = config.id
+				if (!id) throw new ProviderProfileRenameError("notFound")
+				if (options.expectedName !== undefined && oldName !== options.expectedName) {
+					throw new ProviderProfileRenameError("invalid")
+				}
+				if (
+					entries.some(
+						([existingName]) =>
+							existingName !== oldName && existingName.toLowerCase() === name.toLowerCase(),
+					)
+				) {
+					throw new ProviderProfileRenameError("nameInUse")
+				}
+				const isActive = providerProfiles.currentApiConfigName === oldName
+				const renamed = {
+					...providerProfiles,
+					currentApiConfigName: isActive ? name : providerProfiles.currentApiConfigName,
+					// Object.fromEntries retains arbitrary display names such as __proto__ as own data keys.
+					apiConfigs: Object.fromEntries(
+						entries.map(([key, value]) => [key === oldName ? name : key, value]),
+					),
+				}
+				if (name !== oldName) {
+					try {
+						await this.store(renamed)
+					} catch {
+						throw new ProviderProfileRenameError("saveFailed", { id, name: oldName })
+					}
+				}
+				return { id, oldName, newName: name, isActive, entries: this.profileEntries(renamed) }
+			})
+		} catch (error) {
+			if (error instanceof ProviderProfileRenameError) throw error
+			throw new ProviderProfileRenameError("saveFailed")
 		}
 	}
 
@@ -347,7 +431,9 @@ export class ProviderSettingsManager {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
 				// Preserve the existing ID if this is an update to an existing config.
-				const existingId = providerProfiles.apiConfigs[name]?.id
+				const existingId = Object.hasOwn(providerProfiles.apiConfigs, name)
+					? providerProfiles.apiConfigs[name]?.id
+					: undefined
 				const id = config.id || existingId || this.generateId()
 
 				// For active providers, filter out settings from other providers.
@@ -365,7 +451,10 @@ export class ProviderSettingsManager {
 					: typeof providerValue === "string" && isRetiredProvider(providerValue)
 						? providerSettingsWithIdSchema.passthrough().parse(config)
 						: discriminatedProviderSettingsWithIdSchema.parse(config)
-				providerProfiles.apiConfigs[name] = { ...filteredConfig, id } as ProviderSettingsWithId
+				providerProfiles.apiConfigs = {
+					...providerProfiles.apiConfigs,
+					[name]: { ...filteredConfig, id } as ProviderSettingsWithId,
+				}
 				await this.store(providerProfiles)
 				return id
 			})
@@ -386,7 +475,7 @@ export class ProviderSettingsManager {
 				if ("name" in params) {
 					name = params.name
 
-					if (!providerProfiles.apiConfigs[name]) {
+					if (!Object.hasOwn(providerProfiles.apiConfigs, name)) {
 						throw new Error(`Config with name '${name}' not found`)
 					}
 
@@ -441,7 +530,7 @@ export class ProviderSettingsManager {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
 
-				if (!providerProfiles.apiConfigs[name]) {
+				if (!Object.hasOwn(providerProfiles.apiConfigs, name)) {
 					throw new Error(`Config '${name}' not found`)
 				}
 
@@ -464,7 +553,7 @@ export class ProviderSettingsManager {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
-				return name in providerProfiles.apiConfigs
+				return Object.hasOwn(providerProfiles.apiConfigs, name)
 			})
 		} catch (error) {
 			throw new Error(`Failed to check config existence: ${error}`)
@@ -587,7 +676,11 @@ export class ProviderSettingsManager {
 
 			const providerProfiles = providerProfilesSchema
 				.extend({
-					apiConfigs: z.record(z.string(), z.any()),
+					// Zod record parsing omits __proto__. Profile display names are data keys, so
+					// validate the record shape here and its values below without discarding that name.
+					apiConfigs: z.custom<Record<string, unknown>>(
+						(value) => typeof value === "object" && value !== null && !Array.isArray(value),
+					),
 				})
 				.parse(JSON.parse(content))
 

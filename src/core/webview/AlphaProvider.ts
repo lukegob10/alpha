@@ -169,7 +169,11 @@ import { assertSupportedApiProvider } from "../../shared/api"
 import { buildApiHandler } from "../../api"
 
 import { ContextProxy } from "../config/ContextProxy"
-import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
+import {
+	ProviderSettingsManager,
+	ProviderProfileRenameError,
+	type ProviderProfileRename,
+} from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task, getSubagentAllowedToolNames } from "../task/Task"
 import { WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
@@ -461,6 +465,7 @@ export class AlphaProvider
 	public static readonly tabPanelId = `${Package.name}.TabPanelProvider`
 	private static activeInstances: Set<AlphaProvider> = new Set()
 	private static focusedInstance?: AlphaProvider
+	private static readonly configurationQueues = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
 	private disposables: vscode.Disposable[] = []
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
@@ -568,12 +573,21 @@ export class AlphaProvider
 	/** Latest task open wins. Older navigations must not focus or publish over it. */
 	private taskNavigationGeneration = 0
 	private readonly publishedTaskTranscriptRevisions = new Map<string, number>()
-	private configurationQueue: Promise<unknown> = Promise.resolve()
+	private get configurationQueue(): Promise<void> {
+		return AlphaProvider.configurationQueues.get(this.context.secrets) ?? Promise.resolve()
+	}
 	private draftReasoningCache?: { key: string; state: Promise<TaskReasoningProjection> }
 
 	private enqueueConfiguration<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.configurationQueue.then(operation)
-		this.configurationQueue = result.catch(() => undefined)
+		// Persisted identity and its projections must finish together across sibling views.
+		AlphaProvider.configurationQueues.set(
+			this.context.secrets,
+			result.then(
+				() => undefined,
+				() => undefined,
+			),
+		)
 		return result
 	}
 
@@ -2254,6 +2268,100 @@ export class AlphaProvider
 
 	public hasProviderProfileEntry(name: string): boolean {
 		return !!this.getProviderProfileEntry(name)
+	}
+
+	/** A profile rename updates identity projections without activating or replacing any task configuration. */
+	async renameProviderProfile(
+		params: { id: string } | { name: string },
+		newName: string,
+	): Promise<ProviderProfileRename> {
+		return this.enqueueConfiguration(async () => {
+			const peers = this.getHostProviders()
+			for (const peer of peers) await peer.taskHistoryStoreReady
+			const renamed = await this.providerSettingsManager.renameProfile(params, newName)
+			try {
+				await this.projectProviderProfileRename(renamed, peers)
+				return renamed
+			} catch {
+				this.log("[ProviderProfileRename] projection_failed")
+			}
+
+			if (renamed.oldName !== renamed.newName) {
+				let reverted: ProviderProfileRename | undefined
+				try {
+					// Do not compensate over a newer rename; the manager checks ownership inside its write lock.
+					reverted = await this.providerSettingsManager.renameProfile({ id: renamed.id }, renamed.oldName, {
+						expectedName: renamed.newName,
+					})
+				} catch {
+					this.log("[ProviderProfileRename] rollback_failed")
+				}
+				if (reverted) {
+					try {
+						await this.projectProviderProfileRename(reverted, peers)
+					} catch {
+						this.log("[ProviderProfileRename] rollback_projection_failed")
+					}
+					throw new ProviderProfileRenameError("saveFailed", { id: reverted.id, name: reverted.newName })
+				}
+			}
+
+			// SecretStorage committed the rename and compensation could not restore it. Acknowledge that
+			// committed identity so a retry cannot pretend the old name is still authoritative.
+			let committed = renamed
+			try {
+				const entries = await this.providerSettingsManager.listConfig()
+				const profile = entries.find(({ id }) => id === renamed.id)
+				if (!profile) throw new ProviderProfileRenameError("notFound")
+				committed = {
+					...renamed,
+					newName: profile.name,
+					entries,
+				}
+			} catch {
+				this.log("[ProviderProfileRename] committed_identity_refresh_failed")
+			}
+			try {
+				await this.projectProviderProfileRename(committed, peers)
+			} catch {
+				this.log("[ProviderProfileRename] committed_projection_failed")
+			}
+			if (renamed.newName !== committed.newName) {
+				try {
+					await this.projectProviderProfileRename({ ...committed, oldName: renamed.newName }, peers)
+				} catch {
+					this.log("[ProviderProfileRename] committed_alias_projection_failed")
+				}
+			}
+			return committed
+		})
+	}
+
+	private async projectProviderProfileRename(renamed: ProviderProfileRename, peers: AlphaProvider[]): Promise<void> {
+		let failed = false
+		const apply = async (effect: () => Promise<unknown>) => {
+			try {
+				await effect()
+			} catch {
+				failed = true
+			}
+		}
+		for (const peer of peers) {
+			await apply(() => peer.contextProxy.setValue("listApiConfigMeta", renamed.entries))
+			if (peer.contextProxy.getValue("currentApiConfigName") === renamed.oldName) {
+				await apply(() => peer.contextProxy.setValue("currentApiConfigName", renamed.newName))
+			}
+		}
+		for (const taskId of this.taskSessions.getLiveTaskIds()) {
+			const task = this.taskSessions.getTask(taskId)
+			if (task?.taskApiConfigName === renamed.oldName) task.setTaskApiConfigName(renamed.newName)
+		}
+		for (const peer of peers) {
+			await apply(() => peer.taskHistoryStore.renameProviderProfile(renamed.oldName, renamed.newName))
+			await apply(() => peer.postStateToWebview())
+		}
+		// Compensation must still repair later name references when an earlier derived-store write rejects.
+		if (failed) throw new ProviderProfileRenameError("saveFailed")
 	}
 
 	async upsertProviderProfile(

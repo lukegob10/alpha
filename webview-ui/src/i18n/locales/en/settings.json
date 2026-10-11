@@ -362,6 +362,15 @@
 		"enterNewName": "Enter new name",
 		"addProfile": "Add Profile",
 		"renameProfile": "Rename Profile",
+		"profileRefreshPending": "Waiting for updated profile names. You can save your settings edits while profiles refresh.",
+		"renameErrors": {
+			"invalid": "The profile rename request was invalid. Please try again.",
+			"notFound": "This saved profile could not be found. Refresh the profiles and try again.",
+			"nameInUse": "A profile with this name already exists.",
+			"saveFailed": "Could not save the profile name. Your settings edits are still unsaved. Please try again.",
+			"pending": "The profile name is being saved. Please wait for it to finish.",
+			"cancelled": "The selected profile changed while its name was being saved. Please try again."
+		},
 		"newProfile": "New Configuration Profile",
 		"enterProfileName": "Enter profile name",
 		"createProfile": "Create Profile",

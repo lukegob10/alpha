@@ -352,6 +352,421 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 		}
 	})
 
+	describe("renameProviderProfile", () => {
+		const savedSettings = {
+			apiProvider: "openai" as const,
+			openAiBaseUrl: "https://saved.example/v1",
+			openAiApiKey: "saved-test-key",
+			openAiModelId: "saved-model",
+		}
+		const history = (id: string, apiConfigName = "saved"): HistoryItem => ({
+			id,
+			number: 1,
+			ts: 1,
+			task: "Keep task profile identity",
+			tokensIn: 10,
+			tokensOut: 20,
+			totalCost: 0,
+			apiConfigName,
+		})
+		const taskFixture = (taskId: string, initialName = "saved") => {
+			let name: string | undefined = initialName
+			return {
+				taskId,
+				apiConfiguration: savedSettings,
+				api: { identity: taskId },
+				get taskApiConfigName() {
+					return name
+				},
+				getTaskApiConfigName: vi.fn(async () => name),
+				setTaskApiConfigName: vi.fn((value: string | undefined) => {
+					name = value
+				}),
+				updateApiConfiguration: vi.fn(),
+				abortTask: vi.fn().mockResolvedValue(undefined),
+				emit: vi.fn(),
+				saveAlphaMessages: vi.fn(),
+				clineMessages: [],
+				apiConversationHistory: [],
+			}
+		}
+		const patchStoredNames = async (owner: AlphaProvider, oldName: string, newName: string) => {
+			const changed: HistoryItem[] = []
+			if (oldName === newName) return changed
+			for (const item of owner.taskHistoryStore.getAll()) {
+				if (item.apiConfigName !== oldName) continue
+				const updated = { ...item, apiConfigName: newName }
+				await owner.taskHistoryStore.upsert(updated)
+				changed.push(updated)
+			}
+			return changed
+		}
+		const createSibling = async () => {
+			const peerProxy = new ContextProxy(mockContext)
+			await peerProxy.initialize()
+			const peer = new AlphaProvider(mockContext, mockOutputChannel, "editor", peerProxy)
+			await (peer as any).taskHistoryStoreReady
+			vi.spyOn(peer, "postStateToWebview").mockResolvedValue(undefined)
+			vi.spyOn(peer.taskHistoryStore, "renameProviderProfile").mockImplementation((oldName, newName) =>
+				patchStoredNames(peer, oldName, newName),
+			)
+			return peer
+		}
+		let patchHistory: (oldName: string, newName: string) => Promise<HistoryItem[]>
+
+		beforeEach(async () => {
+			await provider.providerSettingsManager.initialize()
+			await provider.providerSettingsManager.saveConfig("saved", { id: "saved-id", ...savedSettings })
+			await provider.providerSettingsManager.saveConfig("other", {
+				id: "other-id",
+				apiProvider: "vscode-lm",
+			})
+			await provider.providerSettingsManager.activateProfile({ id: "saved-id" })
+			await provider.providerSettingsManager.setModeConfig("code", "saved-id")
+			await provider.contextProxy.setProviderSettings(savedSettings)
+			await provider.contextProxy.setValues({
+				currentApiConfigName: "saved",
+				listApiConfigMeta: await provider.providerSettingsManager.listConfig(),
+				subagentDefaultApiConfigId: "saved-id",
+				subagentApiConfigByRole: { explore: "saved-id", review: "other-id", worker: "saved-id" },
+			})
+			vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			// This file's filesystem is mocked. The real history API is covered with durable files and
+			// commit races in TaskHistoryStore.spec.ts; retain name-only cache writes at this adapter boundary.
+			patchHistory = (oldName, newName) => patchStoredNames(provider, oldName, newName)
+			vi.spyOn(provider.taskHistoryStore, "renameProviderProfile").mockImplementation(patchHistory)
+		})
+
+		it("renames foreground, background and saved task identity without changing handlers, settings, secrets or child routes", async () => {
+			const foreground = taskFixture("foreground")
+			const background = taskFixture("background")
+			const unrelated = taskFixture("unrelated", "other")
+			await provider.addTaskToStack(background as unknown as Task, { focus: false })
+			await provider.addTaskToStack(unrelated as unknown as Task, { focus: false })
+			await provider.addTaskToStack(foreground as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(foreground.taskId))
+			await provider.taskHistoryStore.upsert(history(background.taskId))
+			await provider.taskHistoryStore.upsert(history("saved-only"))
+			await provider.taskHistoryStore.upsert(history(unrelated.taskId, "other"))
+			const before = provider.contextProxy.getValues()
+			const setSettings = vi.spyOn(provider.contextProxy, "setProviderSettings")
+			const activate = vi.spyOn(provider.providerSettingsManager, "activateProfile")
+			vi.mocked(mockContext.globalState.update).mockClear()
+
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).resolves.toMatchObject({
+				id: "saved-id",
+				oldName: "saved",
+				newName: "renamed",
+			})
+			expect(provider.contextProxy.getValues()).toEqual({
+				...before,
+				currentApiConfigName: "renamed",
+				listApiConfigMeta: await provider.providerSettingsManager.listConfig(),
+			})
+			expect(await provider.providerSettingsManager.getModeConfigId("code")).toBe("saved-id")
+			expect(setSettings).not.toHaveBeenCalled()
+			expect(activate).not.toHaveBeenCalled()
+			for (const task of [foreground, background]) {
+				expect(task.taskApiConfigName).toBe("renamed")
+				expect(task.apiConfiguration).toBe(savedSettings)
+				expect(task.api).toEqual({ identity: task.taskId })
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+			}
+			expect(unrelated.taskApiConfigName).toBe("other")
+			expect(unrelated.setTaskApiConfigName).not.toHaveBeenCalled()
+			for (const id of ["foreground", "background", "saved-only"]) {
+				expect(provider.taskHistoryStore.get(id)?.apiConfigName).toBe("renamed")
+			}
+			expect(provider.taskHistoryStore.get("unrelated")?.apiConfigName).toBe("other")
+			expect(JSON.stringify(vi.mocked(mockContext.globalState.update).mock.calls)).not.toContain("saved-test-key")
+		})
+
+		it("renames an inactive profile without selecting it or rebuilding any current or background task", async () => {
+			await provider.providerSettingsManager.activateProfile({ id: "other-id" })
+			await provider.contextProxy.setValue("currentApiConfigName", "other")
+			const current = taskFixture("current", "other")
+			const background = taskFixture("background")
+			await provider.addTaskToStack(background as unknown as Task, { focus: false })
+			await provider.addTaskToStack(current as unknown as Task)
+			await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("other")
+			expect(current.taskApiConfigName).toBe("other")
+			expect(background.taskApiConfigName).toBe("renamed")
+			expect(current.updateApiConfiguration).not.toHaveBeenCalled()
+			expect(background.updateApiConfiguration).not.toHaveBeenCalled()
+		})
+
+		it("updates a sibling view's owned background task through the shared session registry", async () => {
+			const peer = await createSibling()
+			try {
+				const task = taskFixture("peer-owned-background")
+				await peer.addTaskToStack(task as unknown as Task, { focus: false })
+				await peer.taskHistoryStore.upsert(history(task.taskId))
+				const setSettings = vi.spyOn(peer.contextProxy, "setProviderSettings")
+				expect(provider.getLiveTask(task.taskId)).toBe(task)
+				expect(provider.getTaskOwner(task.taskId)).toBe(peer)
+				await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+				expect(task.taskApiConfigName).toBe("renamed")
+				expect(task.apiConfiguration).toBe(savedSettings)
+				expect(task.api).toEqual({ identity: task.taskId })
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+				expect(setSettings).not.toHaveBeenCalled()
+				expect(peer.contextProxy.getValue("currentApiConfigName")).toBe("renamed")
+				expect(peer.contextProxy.getValue("listApiConfigMeta")).toEqual(
+					await peer.providerSettingsManager.listConfig(),
+				)
+				expect(peer.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("renamed")
+				expect(peer.postStateToWebview).toHaveBeenCalledOnce()
+			} finally {
+				await peer.dispose()
+			}
+		})
+
+		it("serializes a sibling rename through the first rename's held identity projection", async () => {
+			const peer = await createSibling()
+			try {
+				const task = taskFixture("peer-owned-background")
+				await peer.addTaskToStack(task as unknown as Task, { focus: false })
+				await peer.taskHistoryStore.upsert(history(task.taskId))
+				let release!: () => void
+				let enter!: () => void
+				const held = new Promise<void>((resolve) => (release = resolve))
+				const started = new Promise<void>((resolve) => (enter = resolve))
+				const setValue = provider.contextProxy.setValue.bind(provider.contextProxy)
+				vi.spyOn(provider.contextProxy, "setValue").mockImplementationOnce(async (key, value) => {
+					enter()
+					await held
+					return setValue(key, value)
+				})
+				const first = provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+				await started
+				const rename = vi.spyOn(peer.providerSettingsManager, "renameProfile")
+				const second = peer.renameProviderProfile({ id: "saved-id" }, "newer")
+				let startedWhileHeld: number
+				try {
+					// One scheduler checkpoint drains runnable work while the first projection is held.
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					startedWhileHeld = rename.mock.calls.length
+				} finally {
+					release()
+				}
+				await first
+				await second
+				expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("newer")
+				expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("newer")
+				expect(peer.contextProxy.getValue("currentApiConfigName")).toBe("newer")
+				expect(task.taskApiConfigName).toBe("newer")
+				expect(peer.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("newer")
+				expect(task.apiConfiguration).toBe(savedSettings)
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+				expect(startedWhileHeld).toBe(0)
+			} finally {
+				await peer.dispose()
+			}
+		})
+
+		it("finishes the name-only rename before a queued activation applies its selected provider", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			let release!: () => void
+			let enter!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const started = new Promise<void>((resolve) => (enter = resolve))
+			const store = vi.mocked(mockContext.secrets.store).getMockImplementation()!
+			vi.mocked(mockContext.secrets.store).mockImplementationOnce(async (key, value) => {
+				enter()
+				await held
+				return store(key, value)
+			})
+			const activate = vi.spyOn(provider.providerSettingsManager, "activateProfile")
+			const setSettings = vi.spyOn(provider.contextProxy, "setProviderSettings")
+			const rename = provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+			await started
+			const activation = provider.activateProviderProfile({ id: "other-id" })
+			try {
+				await Promise.resolve()
+				await Promise.resolve()
+				expect(activate).not.toHaveBeenCalled()
+				expect(setSettings).not.toHaveBeenCalled()
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+			} finally {
+				release()
+			}
+			await rename
+			await activation
+			expect(task.setTaskApiConfigName.mock.calls.map(([name]) => name)).toEqual(["renamed", "other"])
+			expect(task.updateApiConfiguration).toHaveBeenCalledOnce()
+			expect(setSettings).toHaveBeenCalledOnce()
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("other")
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("renamed")
+			expect((await provider.providerSettingsManager.getProfile({ id: "other-id" })).name).toBe("other")
+		})
+
+		it.each([
+			[{ id: "missing" }, "renamed", "notFound"],
+			[{ id: "saved-id" }, "OTHER", "nameInUse"],
+		] as const)("rejects %j -> %s as %s before projecting state", async (target, newName, code) => {
+			await expect(provider.renameProviderProfile(target, newName)).rejects.toMatchObject({ code })
+			expect(provider.postStateToWebview).not.toHaveBeenCalled()
+			expect(provider.taskHistoryStore.renameProviderProfile).not.toHaveBeenCalled()
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("saved")
+		})
+
+		it("leaves identity unchanged after primary storage rejection and allows a later rename retry", async () => {
+			vi.mocked(mockContext.secrets.store).mockRejectedValueOnce(new Error("private secret storage path"))
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).rejects.toMatchObject({
+				code: "saveFailed",
+			})
+			expect(provider.postStateToWebview).not.toHaveBeenCalled()
+			expect(provider.taskHistoryStore.renameProviderProfile).not.toHaveBeenCalled()
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("saved")
+			await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("renamed")
+		})
+
+		it("compensates a metadata write failure by ID and restores names before a successful retry", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			vi.mocked(mockContext.globalState.update).mockRejectedValueOnce(new Error("private memento storage path"))
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).rejects.toMatchObject({
+				code: "saveFailed",
+			})
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("saved")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("saved")
+			expect(task.taskApiConfigName).toBe("saved")
+			expect(provider.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("saved")
+			expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+			await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+			expect(task.taskApiConfigName).toBe("renamed")
+		})
+
+		it("repairs name references after repeated projection failures while retaining task settings and later history fields", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			vi.mocked(provider.taskHistoryStore.renameProviderProfile).mockImplementationOnce(
+				async (oldName, newName) => {
+					const changed = await patchHistory(oldName, newName)
+					await provider.taskHistoryStore.upsert({
+						...provider.taskHistoryStore.get(task.taskId)!,
+						tokensIn: 777,
+					})
+					throw new Error(`private history storage failure ${changed.length}`)
+				},
+			)
+			const update = vi.mocked(mockContext.globalState.update).getMockImplementation()!
+			vi.mocked(mockContext.globalState.update).mockImplementationOnce(update).mockImplementationOnce(update)
+			vi.mocked(mockContext.globalState.update).mockRejectedValueOnce(new Error("inverse metadata rejected"))
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).rejects.toMatchObject({
+				code: "saveFailed",
+			})
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("saved")
+			expect(task.taskApiConfigName).toBe("saved")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("saved")
+			expect(provider.taskHistoryStore.get(task.taskId)).toMatchObject({ apiConfigName: "saved", tokensIn: 777 })
+			expect(provider.postStateToWebview).toHaveBeenCalledTimes(2)
+			expect(task.apiConfiguration).toBe(savedSettings)
+		})
+
+		it("returns committed metadata identity despite a legacy name field when the inverse secret write rejects", async () => {
+			const profilesKey = "roo_cline_config_api_config"
+			const persisted = JSON.parse((await mockContext.secrets.get(profilesKey))!)
+			persisted.apiConfigs.saved.name = "legacy-profile-field"
+			await mockContext.secrets.store(profilesKey, JSON.stringify(persisted))
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			const store = vi.mocked(mockContext.secrets.store)
+			store
+				.mockImplementationOnce(store.getMockImplementation()!)
+				.mockRejectedValueOnce(new Error("inverse write rejected"))
+			vi.mocked(mockContext.globalState.update).mockRejectedValueOnce(new Error("first metadata write rejected"))
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).resolves.toMatchObject({
+				oldName: "saved",
+				newName: "renamed",
+			})
+			expect(
+				(await provider.providerSettingsManager.listConfig()).find(({ id }) => id === "saved-id")?.name,
+			).toBe("renamed")
+			expect(JSON.parse((await mockContext.secrets.get(profilesKey))!).apiConfigs.renamed.name).toBe(
+				"legacy-profile-field",
+			)
+			expect(task.taskApiConfigName).toBe("renamed")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("renamed")
+			expect(provider.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("renamed")
+			expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+		})
+
+		it("exposes the authoritative reverted name after the forward state was published and inverse state delivery fails", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			const observed: string[] = []
+			vi.mocked(provider.postStateToWebview)
+				.mockImplementationOnce(async () => {
+					observed.push(provider.contextProxy.getValue("currentApiConfigName") ?? "")
+				})
+				.mockRejectedValueOnce(new Error("inverse state delivery rejected"))
+			vi.mocked(provider.taskHistoryStore.renameProviderProfile).mockImplementationOnce(
+				async (oldName, newName) => {
+					await patchHistory(oldName, newName)
+					throw new Error("history compatibility projection rejected")
+				},
+			)
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).rejects.toMatchObject({
+				code: "saveFailed",
+				profile: { id: "saved-id", name: "saved" },
+			})
+			expect(observed).toEqual(["renamed"])
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("saved")
+			expect(task.taskApiConfigName).toBe("saved")
+			expect(provider.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("saved")
+		})
+
+		it("does not compensate over a newer persisted rename and reports its latest committed identity", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			vi.mocked(mockContext.globalState.update).mockImplementationOnce(async () => {
+				await provider.providerSettingsManager.renameProfile({ id: "saved-id" }, "external")
+				throw new Error("external metadata update rejected")
+			})
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).resolves.toMatchObject({
+				id: "saved-id",
+				newName: "external",
+			})
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("external")
+			expect(task.taskApiConfigName).toBe("external")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("external")
+			expect(provider.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("external")
+		})
+
+		it("repairs the intermediate name after a newer rename even when every metadata and state projection rejects", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			const update = vi.mocked(mockContext.globalState.update).getMockImplementation()!
+			vi.mocked(mockContext.globalState.update).mockImplementationOnce(async () => {
+				await provider.providerSettingsManager.renameProfile({ id: "saved-id" }, "external")
+				throw new Error("metadata rejection after external rename")
+			})
+			vi.mocked(mockContext.globalState.update).mockImplementation(async (key, value) => {
+				if (key === "listApiConfigMeta") throw new Error("metadata unavailable")
+				return update(key, value)
+			})
+			vi.mocked(provider.postStateToWebview).mockRejectedValue(new Error("state projection unavailable"))
+			await expect(provider.renameProviderProfile({ id: "saved-id" }, "renamed")).resolves.toMatchObject({
+				newName: "external",
+			})
+			expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("external")
+			expect(task.taskApiConfigName).toBe("external")
+			expect(provider.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("external")
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("external")
+		})
+	})
+
 	describe("activateProviderProfile", () => {
 		beforeEach(async () => {
 			await provider.resolveWebviewView(mockWebviewView)

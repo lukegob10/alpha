@@ -1,6 +1,6 @@
 // npx vitest src/components/settings/__tests__/ApiConfigManager.spec.tsx
 
-import { render, screen, fireEvent, within } from "@/utils/test-utils"
+import { render, screen, fireEvent, within, act } from "@/utils/test-utils"
 
 import ApiConfigManager from "../ApiConfigManager"
 
@@ -94,9 +94,10 @@ vitest.mock("@/components/ui", () => ({
 			{children}
 		</option>
 	),
-	SearchableSelect: ({ value, onValueChange, options, placeholder, "data-testid": dataTestId }: any) => (
+	SearchableSelect: ({ value, onValueChange, options, placeholder, disabled, "data-testid": dataTestId }: any) => (
 		<select
 			value={value}
+			disabled={disabled}
 			onChange={(e) => {
 				if (onValueChange) onValueChange(e.target.value)
 			}}
@@ -241,6 +242,101 @@ describe("ApiConfigManager", () => {
 		const errorMessage = within(renameForm).getByTestId("error-message")
 		expect(errorMessage).toHaveTextContent("settings:providers.nameExists")
 		expect(mockOnRenameConfig).not.toHaveBeenCalled()
+	})
+
+	it("waits for rename acknowledgement, retains a failed name, and allows retry", async () => {
+		let completeRename!: (error?: string) => void
+		const onRenameConfig = vitest.fn(() => new Promise<string | undefined>((resolve) => (completeRename = resolve)))
+		render(<ApiConfigManager {...defaultProps} onRenameConfig={onRenameConfig} />)
+		fireEvent.click(screen.getByTestId("rename-profile-button"))
+		fireEvent.input(screen.getByDisplayValue("Default Config"), { target: { value: "New Name" } })
+		fireEvent.click(screen.getByTestId("save-rename-button"))
+
+		expect(screen.getByDisplayValue("New Name")).toBeInTheDocument()
+		expect(screen.getByTestId("save-rename-button")).toBeDisabled()
+		expect(screen.getByTestId("cancel-rename-button")).toBeDisabled()
+		fireEvent.keyDown(screen.getByDisplayValue("New Name"), { key: "Enter" })
+		expect(onRenameConfig).toHaveBeenCalledTimes(1)
+
+		await act(async () => completeRename("Could not save the profile name"))
+		expect(within(getRenameForm()).getByTestId("error-message")).toHaveTextContent(
+			"Could not save the profile name",
+		)
+		expect(screen.getByDisplayValue("New Name")).toBeInTheDocument()
+		expect(screen.getByTestId("save-rename-button")).toBeEnabled()
+		fireEvent.click(screen.getByTestId("save-rename-button"))
+		expect(onRenameConfig).toHaveBeenCalledTimes(2)
+		await act(async () => completeRename())
+		expect(screen.queryByTestId("rename-form")).not.toBeInTheDocument()
+	})
+
+	it("keeps an acknowledged rename pending through a same-profile name refresh", async () => {
+		let completeRename!: (error?: string) => void
+		const onRenameConfig = vitest.fn(() => new Promise<string | undefined>((resolve) => (completeRename = resolve)))
+		const { rerender } = render(<ApiConfigManager {...defaultProps} onRenameConfig={onRenameConfig} />)
+		fireEvent.click(screen.getByTestId("rename-profile-button"))
+		fireEvent.input(screen.getByDisplayValue("Default Config"), { target: { value: "New Name" } })
+		fireEvent.click(screen.getByTestId("save-rename-button"))
+		rerender(
+			<ApiConfigManager
+				{...defaultProps}
+				onRenameConfig={onRenameConfig}
+				currentApiConfigName="New Name"
+				listApiConfigMeta={[
+					{ id: "default", name: "New Name" },
+					{ id: "another", name: "Another Config" },
+				]}
+			/>,
+		)
+
+		expect(screen.getByTestId("rename-form")).toBeInTheDocument()
+		expect(screen.getByTestId("save-rename-button")).toBeDisabled()
+		await act(async () => completeRename())
+		expect(screen.queryByTestId("rename-form")).not.toBeInTheDocument()
+		expect(screen.getByTestId("select-component")).toHaveValue("New Name")
+	})
+
+	it("ignores a delayed rename error after the current profile ID changes", async () => {
+		let completeRename!: (error?: string) => void
+		const onRenameConfig = vitest.fn(() => new Promise<string | undefined>((resolve) => (completeRename = resolve)))
+		const { rerender } = render(<ApiConfigManager {...defaultProps} onRenameConfig={onRenameConfig} />)
+		fireEvent.click(screen.getByTestId("rename-profile-button"))
+		fireEvent.input(screen.getByDisplayValue("Default Config"), { target: { value: "New Name" } })
+		fireEvent.click(screen.getByTestId("save-rename-button"))
+		rerender(
+			<ApiConfigManager
+				{...defaultProps}
+				onRenameConfig={onRenameConfig}
+				listApiConfigMeta={[{ id: "replacement", name: "Default Config" }]}
+			/>,
+		)
+		await act(async () => completeRename("Stale error"))
+
+		expect(screen.queryByTestId("rename-form")).not.toBeInTheDocument()
+		expect(screen.queryByText("Stale error")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("rename-profile-button"))
+		expect(screen.getByDisplayValue("Default Config")).toBeInTheDocument()
+		expect(screen.getByTestId("save-rename-button")).toBeEnabled()
+	})
+
+	it("blocks profile actions when the settings view owns a pending rename after remount", () => {
+		render(<ApiConfigManager {...defaultProps} profileActionsDisabled />)
+		for (const action of [
+			"select-component",
+			"add-profile-button",
+			"rename-profile-button",
+			"delete-profile-button",
+		]) {
+			expect(screen.getByTestId(action)).toBeDisabled()
+		}
+		fireEvent.change(screen.getByTestId("select-component"), { target: { value: "Another Config" } })
+		fireEvent.click(screen.getByTestId("add-profile-button"))
+		fireEvent.click(screen.getByTestId("rename-profile-button"))
+		fireEvent.click(screen.getByTestId("delete-profile-button"))
+		expect(mockOnSelectConfig).not.toHaveBeenCalled()
+		expect(mockOnDeleteConfig).not.toHaveBeenCalled()
+		expect(mockOnRenameConfig).not.toHaveBeenCalled()
+		expect(mockOnUpsertConfig).not.toHaveBeenCalled()
 	})
 
 	it("prevents renaming to empty name", () => {

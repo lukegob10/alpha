@@ -1,7 +1,8 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
+import { providerProfileRenameRequestSchema, type ProviderProfileRenameResult } from "@alpha-code/types"
 
 import SettingsView from "../SettingsView"
 import { vscode } from "@src/utils/vscode"
@@ -208,16 +209,49 @@ vi.mock("../common/Tab", () => ({
 
 // Mock child components that are complex
 vi.mock("../ApiConfigManager", () => ({
-	default: vi.fn(({ onDeleteConfig, onUpsertConfig }: any) => (
-		<div data-testid="api-config-manager">
-			<button data-testid="delete-profile" onClick={() => onDeleteConfig("default")}>
-				Delete profile
-			</button>
-			<button data-testid="create-profile" onClick={() => onUpsertConfig("new-profile")}>
-				Create profile
-			</button>
-		</div>
-	)),
+	default: vi.fn(
+		({
+			currentApiConfigName,
+			onSelectConfig,
+			onDeleteConfig,
+			onUpsertConfig,
+			onRenameConfig,
+			profileActionsDisabled,
+		}: any) => (
+			<div data-testid="api-config-manager">
+				<span data-testid="current-profile-name">{currentApiConfigName}</span>
+				<button
+					data-testid="rename-profile"
+					disabled={profileActionsDisabled}
+					onClick={() =>
+						onRenameConfig(
+							currentApiConfigName,
+							currentApiConfigName === "renamed" ? "third-name" : "renamed",
+						)
+					}>
+					Rename profile
+				</button>
+				<button
+					data-testid="select-profile"
+					disabled={profileActionsDisabled}
+					onClick={() => onSelectConfig("other")}>
+					Select profile
+				</button>
+				<button
+					data-testid="delete-profile"
+					disabled={profileActionsDisabled}
+					onClick={() => onDeleteConfig("default")}>
+					Delete profile
+				</button>
+				<button
+					data-testid="create-profile"
+					disabled={profileActionsDisabled}
+					onClick={() => onUpsertConfig("new-profile")}>
+					Create profile
+				</button>
+			</div>
+		),
+	),
 }))
 
 vi.mock("../ApiOptions", () => ({
@@ -537,6 +571,481 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				apiConfiguration: expect.objectContaining({ apiModelId: "buffered-model" }),
 			}),
 		)
+	})
+
+	it("renames only the persisted profile identity while provider edits stay buffered", async () => {
+		const liveState = {
+			...defaultExtensionState,
+			listApiConfigMeta: [{ id: "profile-a", name: "default" }],
+			apiConfiguration: {
+				apiProvider: "openai",
+				openAiBaseUrl: "https://saved.example/v1",
+				openAiApiKey: "saved-key",
+				openAiModelId: "saved-model",
+			},
+		}
+		;(useExtensionState as any).mockReturnValue(liveState)
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<div data-testid="api-options">
+				<span data-testid="cached-provider">{apiConfiguration.apiProvider}</span>
+				<span data-testid="cached-endpoint">{apiConfiguration.openAiBaseUrl}</span>
+				<span data-testid="cached-key">{apiConfiguration.openAiApiKey}</span>
+				<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
+				<button
+					onClick={() => {
+						setApiConfigurationField("apiProvider", "stellar")
+						setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
+						setApiConfigurationField("openAiApiKey", "buffered-key")
+						setApiConfigurationField("openAiModelId", "buffered-model")
+					}}>
+					Edit provider settings
+				</button>
+			</div>
+		))
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} />
+			</QueryClientProvider>,
+		)
+		await waitFor(() => expect(screen.getByText("Edit provider settings")).toBeInTheDocument())
+		fireEvent.click(screen.getByText("Edit provider settings"))
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("rename-profile"))
+
+		expect(mockPostMessage).toHaveBeenCalledExactlyOnceWith({
+			type: "renameApiConfiguration",
+			apiConfigurationRename: { requestId: expect.any(String), id: "profile-a", newName: "renamed" },
+		})
+		expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+		expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
+		expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
+		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+		expect(liveState.apiConfiguration).toEqual({
+			apiProvider: "openai",
+			openAiBaseUrl: "https://saved.example/v1",
+			openAiApiKey: "saved-key",
+			openAiModelId: "saved-model",
+		})
+	})
+
+	describe("profile rename edit-buffer lifecycle", () => {
+		const setupDirtyProfile = (omitSavedSecret = false) => {
+			const savedProvider = {
+				apiProvider: "openai",
+				openAiBaseUrl: "https://saved.example/v1",
+				openAiApiKey: omitSavedSecret ? undefined : "saved-key",
+				openAiModelId: "saved-model",
+			}
+			let liveState = {
+				...defaultExtensionState,
+				settingsImportedAt: undefined as number | undefined,
+				listApiConfigMeta: [{ id: "profile-a", name: "default" }],
+				apiConfiguration: savedProvider,
+			}
+			;(useExtensionState as any).mockImplementation(() => liveState)
+			vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+				<div data-testid="api-options">
+					<span data-testid="cached-provider">{apiConfiguration.apiProvider}</span>
+					<span data-testid="cached-endpoint">{apiConfiguration.openAiBaseUrl}</span>
+					<span data-testid="cached-key">{apiConfiguration.openAiApiKey}</span>
+					<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
+					<button
+						onClick={() => {
+							setApiConfigurationField("apiProvider", "stellar")
+							setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
+							setApiConfigurationField("openAiApiKey", "buffered-key")
+							setApiConfigurationField("openAiModelId", "buffered-model")
+						}}>
+						Edit provider settings
+					</button>
+				</div>
+			))
+			vi.mocked(NotificationSettings).mockImplementation(({ soundEnabled, setCachedStateField }) => (
+				<div>
+					<span data-testid="cached-sound">{String(soundEnabled)}</span>
+					<button onClick={() => setCachedStateField("soundEnabled", true)}>Enable sound</button>
+				</div>
+			))
+			const onDone = vi.fn()
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={() => onDone()} />
+				</QueryClientProvider>
+			)
+			const result = render(view())
+			fireEvent.click(screen.getByText("Edit provider settings"))
+			fireEvent.click(screen.getByTestId("tab-notifications"))
+			fireEvent.click(screen.getByText("Enable sound"))
+			fireEvent.click(screen.getByTestId("tab-providers"))
+			mockPostMessage.mockClear()
+			const rename = () => {
+				fireEvent.click(screen.getByTestId("rename-profile"))
+				const message = mockPostMessage.mock.calls.findLast(
+					([message]) => message.type === "renameApiConfiguration",
+				)
+				return providerProfileRenameRequestSchema.parse(message?.[0].apiConfigurationRename)
+			}
+			const respond = async (response: ProviderProfileRenameResult) => {
+				await act(async () => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "apiConfigurationRenamed", apiConfigurationRenameResult: response },
+						}),
+					)
+				})
+			}
+			const refresh = (updates: Partial<typeof liveState>) => {
+				liveState = { ...liveState, ...updates }
+				result.rerender(view())
+			}
+			const expectDraft = () => {
+				expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+				expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
+				expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
+				expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+				fireEvent.click(screen.getByTestId("tab-notifications"))
+				expect(screen.getByTestId("cached-sound")).toHaveTextContent("true")
+				fireEvent.click(screen.getByTestId("tab-providers"))
+			}
+			return { ...result, onDone, rename, respond, refresh, expectDraft, savedProvider }
+		}
+
+		it.each(["response-first", "refresh-first"] as const)(
+			"keeps all drafts and saves to the renamed profile with %s delivery",
+			async (order) => {
+				const test = setupDirtyProfile(order === "response-first")
+				const request = test.rename()
+				expect(screen.getByTestId("save-button")).toBeDisabled()
+				fireEvent.click(screen.getByTestId("save-button"))
+				expect(mockPostMessage).toHaveBeenCalledOnce()
+				const response: ProviderProfileRenameResult = {
+					requestId: request.requestId,
+					status: "success",
+					id: request.id,
+					oldName: "default",
+					newName: "renamed",
+				}
+				const refresh = () =>
+					test.refresh({
+						currentApiConfigName: "renamed",
+						listApiConfigMeta: [{ id: "profile-a", name: "renamed" }],
+						apiConfiguration: { ...test.savedProvider, openAiModelId: "refreshed-saved-model" },
+					})
+				if (order === "response-first") {
+					await test.respond(response)
+					// Save must target the committed name even before its state projection arrives.
+					expect(screen.getByTestId("current-profile-name")).toHaveTextContent("renamed")
+					test.expectDraft()
+					fireEvent.click(screen.getByTestId("save-button"))
+				} else {
+					refresh()
+					test.expectDraft()
+					expect(screen.getByTestId("save-button")).toBeDisabled()
+					await test.respond(response)
+					fireEvent.click(screen.getByTestId("save-button"))
+				}
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "upsertApiConfiguration",
+					text: "renamed",
+					apiConfiguration: expect.objectContaining({
+						apiProvider: "stellar",
+						openAiBaseUrl: "https://buffered.example/v1",
+						openAiApiKey: "buffered-key",
+						openAiModelId: "buffered-model",
+					}),
+				})
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "updateSettings",
+						updatedSettings: expect.objectContaining({ soundEnabled: true }),
+					}),
+				)
+			},
+		)
+
+		it("ignores unrelated acknowledgements and retries after a failed rename without losing drafts", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			await test.respond({ requestId: "unrelated", status: "error", error: "saveFailed" })
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			test.expectDraft()
+			await test.respond({ requestId: request.requestId, status: "error", error: "saveFailed" })
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			test.expectDraft()
+			const retry = test.rename()
+			expect(retry.requestId).not.toBe(request.requestId)
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "stale-name",
+			})
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			await test.respond({ requestId: retry.requestId, status: "error", error: "nameInUse" })
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			test.expectDraft()
+		})
+
+		it("discards against the latest saved settings after a successful dirty rename", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			test.refresh({
+				currentApiConfigName: "renamed",
+				listApiConfigMeta: [{ id: "profile-a", name: "renamed" }],
+				apiConfiguration: {
+					...test.savedProvider,
+					openAiModelId: "latest-saved-model",
+					openAiApiKey: "latest-saved-key",
+				},
+				soundEnabled: false,
+			})
+			test.expectDraft()
+			fireEvent.click(screen.getByText("settings:common.done"))
+			expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+			expect(test.onDone).toHaveBeenCalledOnce()
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("latest-saved-model")
+			expect(screen.getByTestId("cached-key")).toHaveTextContent("latest-saved-key")
+			fireEvent.click(screen.getByTestId("tab-notifications"))
+			expect(screen.getByTestId("cached-sound")).toHaveTextContent("false")
+			expect(mockPostMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration" }),
+			)
+		})
+
+		it("adopts an external same-ID rename as the later Save target while preserving drafts", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			test.refresh({
+				currentApiConfigName: "external-name",
+				listApiConfigMeta: [{ id: "profile-a", name: "external-name" }],
+			})
+			test.expectDraft()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration", text: "external-name" }),
+			)
+		})
+
+		it("resets on a same-name different-ID selection and ignores its old pending rename", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.refresh({
+				listApiConfigMeta: [{ id: "profile-b", name: "default" }],
+				apiConfiguration: { ...test.savedProvider, openAiModelId: "selected-model" },
+			})
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("selected-model")
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			fireEvent.click(screen.getByText("Edit provider settings"))
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			const nextRename = test.rename()
+			expect(nextRename.id).toBe("profile-b")
+		})
+
+		it("resets drafts on settings import and releases a pending rename", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.refresh({
+				settingsImportedAt: 123,
+				apiConfiguration: { ...test.savedProvider, openAiModelId: "imported-model" },
+			})
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("imported-model")
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			fireEvent.click(screen.getByText("Edit provider settings"))
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+		})
+
+		it("blocks profile actions across tab remounts while a rename is pending", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.expectDraft()
+			for (const action of ["rename-profile", "select-profile", "delete-profile", "create-profile"]) {
+				expect(screen.getByTestId(action)).toBeDisabled()
+				fireEvent.click(screen.getByTestId(action))
+			}
+			expect(mockPostMessage).toHaveBeenCalledOnce()
+			await test.respond({ requestId: request.requestId, status: "error", error: "saveFailed" })
+			expect(screen.getByTestId("rename-profile")).toBeEnabled()
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+		})
+
+		it("uses a correlated committed name even when recovery reports a newer external rename", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "committed-other-name",
+			})
+			test.expectDraft()
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("committed-other-name")
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration", text: "committed-other-name" }),
+			)
+		})
+
+		it("waits for profile-name convergence before another rename can begin", async () => {
+			const test = setupDirtyProfile()
+			const first = test.rename()
+			await test.respond({
+				requestId: first.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("renamed")
+			expect(screen.getByText("settings:providers.profileRefreshPending")).toBeInTheDocument()
+			for (const action of ["rename-profile", "select-profile", "delete-profile", "create-profile"]) {
+				expect(screen.getByTestId(action)).toBeDisabled()
+				fireEvent.click(screen.getByTestId(action))
+			}
+			expect(mockPostMessage).toHaveBeenCalledOnce()
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			test.expectDraft()
+			test.refresh({ currentApiConfigName: "renamed", listApiConfigMeta: [{ id: "profile-a", name: "renamed" }] })
+			expect(screen.getByTestId("rename-profile")).toBeEnabled()
+			const second = test.rename()
+			expect(second.newName).toBe("third-name")
+			await test.respond({
+				requestId: second.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "renamed",
+				newName: "third-name",
+			})
+			// An older projection of the first rename cannot recreate its now-stale name on Save.
+			test.refresh({ currentApiConfigName: "renamed", listApiConfigMeta: [{ id: "profile-a", name: "renamed" }] })
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("third-name")
+			test.expectDraft()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration", text: "third-name" }),
+			)
+		})
+
+		it("reconciles a newer committed name after the requested name was already projected", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.refresh({ currentApiConfigName: "renamed", listApiConfigMeta: [{ id: "profile-a", name: "renamed" }] })
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "committed-other-name",
+			})
+			test.expectDraft()
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("committed-other-name")
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration", text: "committed-other-name" }),
+			)
+		})
+
+		it("targets the reverted saved name after a failed rename without discarding drafts", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.refresh({ currentApiConfigName: "renamed", listApiConfigMeta: [{ id: "profile-a", name: "renamed" }] })
+			await test.respond({
+				requestId: request.requestId,
+				status: "error",
+				error: "saveFailed",
+				profile: { id: "profile-a", name: "default" },
+			})
+			test.expectDraft()
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration", text: "default" }),
+			)
+		})
+
+		it("preserves drafts when the renamed name arrives before matching metadata", async () => {
+			const test = setupDirtyProfile()
+			const request = test.rename()
+			test.refresh({ currentApiConfigName: "renamed" })
+			test.expectDraft()
+			await test.respond({
+				requestId: request.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "renamed",
+			})
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			test.refresh({ currentApiConfigName: "default" })
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("renamed")
+			test.expectDraft()
+		})
+
+		it("keeps dirty edits when a profile ID is missing and sends no rename mutation", async () => {
+			const test = setupDirtyProfile()
+			test.refresh({ listApiConfigMeta: [] })
+			await act(async () => fireEvent.click(screen.getByTestId("rename-profile")))
+			expect(mockPostMessage).not.toHaveBeenCalled()
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			test.expectDraft()
+		})
+
+		it("releases the request on unmount and ignores its late result in a new settings view", async () => {
+			const first = setupDirtyProfile()
+			const oldRequest = first.rename()
+			first.unmount()
+			const next = setupDirtyProfile()
+			const newRequest = next.rename()
+			await next.respond({
+				requestId: oldRequest.requestId,
+				status: "success",
+				id: "profile-a",
+				oldName: "default",
+				newName: "old-result",
+			})
+			expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			await next.respond({ requestId: newRequest.requestId, status: "error", error: "saveFailed" })
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			next.expectDraft()
+		})
 	})
 
 	it("keeps dirty cached edits across a live refresh and discards against the latest state", async () => {

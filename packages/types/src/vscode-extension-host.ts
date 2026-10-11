@@ -22,6 +22,7 @@ export interface TaskReasoningResponse {
 
 import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
+import type { ProviderProfileRenameRequest, ProviderProfileRenameResult } from "./provider-profile-rename.js"
 import type { HistoryItem } from "./history.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
@@ -399,6 +400,7 @@ export interface ExtensionMessage {
 		| "scheduledTasksUpdated"
 		| "scheduledTaskSkills"
 		| "taskReasoningUpdated"
+		| "apiConfigurationRenamed"
 		| "taskApprovalModeUpdated"
 		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
@@ -419,6 +421,7 @@ export interface ExtensionMessage {
 	scheduledTaskState?: ScheduledTaskState
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	taskReasoningResponse?: TaskReasoningResponse
+	apiConfigurationRenameResult?: ProviderProfileRenameResult
 	taskApprovalModeUpdateResult?: TaskApprovalModeUpdateResult
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
@@ -1096,6 +1099,16 @@ export type WebviewMessage =
 			type: "setTaskApprovalMode"
 			taskApprovalModeUpdate: TaskApprovalModeUpdate
 	  })
+	| (Omit<WebviewMessageBase, "type" | "values" | "apiConfiguration"> & {
+			type: "renameApiConfiguration"
+			apiConfigurationRename: ProviderProfileRenameRequest
+	  })
+	| (Omit<WebviewMessageBase, "type" | "values"> & {
+			type: "renameApiConfiguration"
+			/** Older webviews identify the persisted profile by name; their edit buffer is ignored. */
+			values: { oldName: string; newName: string }
+			apiConfigurationRename?: never
+	  })
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
 			z.infer<typeof sendAndSteerMessageSchema> & { clientSubmittedAt?: number })
@@ -1111,6 +1124,7 @@ export type WebviewMessage =
 				| "sendAndSteer"
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
+				| "renameApiConfiguration"
 				| "startDebuggingTask"
 				| "incidentDashboardRequestTurnDetail"
 				| "startDebuggingTurn"

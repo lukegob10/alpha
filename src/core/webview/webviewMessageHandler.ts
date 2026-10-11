@@ -36,6 +36,8 @@ import {
 	sendAndSteerMessageSchema,
 	webviewFocusChangedMessageSchema,
 	subagentAgentTypesSchema,
+	providerProfileRenameRequestSchema,
+	type ProviderProfileRenameResult,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -44,6 +46,7 @@ import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
 import { AlphaProvider } from "./AlphaProvider"
+import { ProviderProfileRenameError } from "../config/ProviderSettingsManager"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
@@ -2058,36 +2061,89 @@ export const webviewMessageHandler = async (
 				await provider.upsertProviderProfile(message.text, message.apiConfiguration)
 			}
 			break
-		case "renameApiConfiguration":
-			if (message.values && message.apiConfiguration) {
+		case "renameApiConfiguration": {
+			const modern = "apiConfigurationRename" in message
+			const payload: unknown = modern ? message.apiConfigurationRename : undefined
+			const requestId =
+				payload &&
+				typeof payload === "object" &&
+				"requestId" in payload &&
+				typeof payload.requestId === "string"
+					? payload.requestId
+					: undefined
+			const canAcknowledge = requestId !== undefined && requestId.length > 0 && requestId.length <= 128
+			const acknowledge = async (result: ProviderProfileRenameResult) => {
 				try {
-					const { oldName, newName } = message.values
-
-					if (oldName === newName) {
-						break
+					await provider.postMessageToWebview({
+						type: "apiConfigurationRenamed",
+						apiConfigurationRenameResult: result,
+					})
+				} catch {
+					// Delivery failure cannot turn a committed rename into a persistence failure or a second result.
+					provider.log("[ProviderProfileRename] acknowledgement_failed")
+				}
+			}
+			let target: { id: string } | { name: string }
+			let newName: string
+			if (modern) {
+				const parsed = providerProfileRenameRequestSchema.safeParse(payload)
+				if (!parsed.success) {
+					if (canAcknowledge) {
+						await acknowledge({ requestId, status: "error", error: "invalid" })
 					}
-
-					// Load the old configuration to get its ID.
-					const { id } = await provider.providerSettingsManager.getProfile({ name: oldName })
-
-					// Create a new configuration with the new name and old ID.
-					await provider.providerSettingsManager.saveConfig(newName, { ...message.apiConfiguration, id })
-
-					// Delete the old configuration.
-					await provider.providerSettingsManager.deleteConfig(oldName)
-
-					// Re-activate to update the global settings related to the
-					// currently activated provider profile.
-					await provider.activateProviderProfile({ name: newName })
-				} catch (error) {
-					provider.log(
-						`Error rename api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-					)
-
+					break
+				}
+				target = { id: parsed.data.id }
+				newName = parsed.data.newName
+			} else {
+				const values: unknown = "values" in message ? message.values : undefined
+				if (
+					!values ||
+					typeof values !== "object" ||
+					!("oldName" in values) ||
+					!("newName" in values) ||
+					typeof values.oldName !== "string" ||
+					!values.oldName ||
+					typeof values.newName !== "string" ||
+					!values.newName.trim()
+				) {
+					break
+				}
+				// Historical webviews sent their edit buffer alongside these names. It has no rename authority.
+				target = { name: values.oldName }
+				newName = values.newName.trim()
+			}
+			let result: ProviderProfileRenameResult | undefined
+			try {
+				const renamed = await provider.renameProviderProfile(target, newName)
+				if (canAcknowledge) {
+					result = {
+						requestId,
+						status: "success",
+						id: renamed.id,
+						oldName: renamed.oldName,
+						newName: renamed.newName,
+					}
+				}
+			} catch (error) {
+				const code = error instanceof ProviderProfileRenameError ? error.code : "saveFailed"
+				provider.log(`[ProviderProfileRename] ${code}`)
+				if (canAcknowledge) {
+					result = {
+						requestId,
+						status: "error",
+						error: code,
+						...(error instanceof ProviderProfileRenameError && error.profile
+							? { profile: error.profile }
+							: {}),
+					}
+				} else {
 					vscode.window.showErrorMessage(t("common:errors.rename_api_config"))
 				}
 			}
+			if (result) await acknowledge(result)
 			break
+		}
 		case "loadApiConfiguration":
 			if (message.text) {
 				try {

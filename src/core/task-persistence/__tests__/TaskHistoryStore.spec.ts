@@ -8,7 +8,7 @@ import type { HistoryItem } from "@alpha-code/types"
 
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
-import { safeWriteJson } from "../../../utils/safeWriteJson"
+import { safeWriteJson, type SafeWriteJsonOptions } from "../../../utils/safeWriteJson"
 
 const { mockUnlink, mockSafeWriteJson } = vi.hoisted(() => ({
 	mockUnlink: vi.fn(),
@@ -21,9 +21,13 @@ vi.mock("fs/promises", async (importOriginal) => {
 	return { ...actual, unlink: mockUnlink }
 })
 
-vi.mock("../../../utils/storage", () => ({
-	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
-}))
+vi.mock("../../../utils/storage", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../utils/storage")>()
+	return {
+		...actual,
+		getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
+	}
+})
 
 // Mock safeWriteJson to use plain fs writes in tests (avoids proper-lockfile issues)
 vi.mock("../../../utils/safeWriteJson", () => ({
@@ -51,10 +55,22 @@ describe("TaskHistoryStore", () => {
 	beforeEach(async () => {
 		mockUnlink.mockClear()
 		mockSafeWriteJson.mockReset()
-		mockSafeWriteJson.mockImplementation(async (filePath: string, data: any) => {
-			await fs.mkdir(path.dirname(filePath), { recursive: true })
-			await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
-		})
+		mockSafeWriteJson.mockImplementation(
+			async (filePath: string, data: unknown, options?: SafeWriteJsonOptions) => {
+				await fs.mkdir(path.dirname(filePath), { recursive: true })
+				if (options?.commitTempFile) {
+					const temporaryPath = `${filePath}.test.tmp`
+					await fs.writeFile(temporaryPath, JSON.stringify(data, null, "\t"), "utf8")
+					try {
+						await options.commitTempFile(temporaryPath, filePath)
+					} finally {
+						await fs.rm(temporaryPath, { force: true })
+					}
+					return
+				}
+				await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
+			},
+		)
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "task-history-test-"))
 		store = new TaskHistoryStore(tmpDir)
 	})
@@ -130,6 +146,204 @@ describe("TaskHistoryStore", () => {
 			const item = makeHistoryItem({ id: "task-get" })
 			await store.upsert(item)
 			expect(store.get("task-get")).toMatchObject({ id: "task-get" })
+		})
+	})
+
+	describe("renameProviderProfile()", () => {
+		it("patches matching saved names while preserving unrelated tasks and all task metadata", async () => {
+			await store.initialize()
+			const matching = makeHistoryItem({ id: "matching", apiConfigName: "saved", tokensIn: 42, status: "active" })
+			const unrelated = makeHistoryItem({ id: "unrelated", apiConfigName: "other" })
+			await store.upsert(matching)
+			await store.upsert(unrelated)
+			await expect(store.renameProviderProfile("saved", "renamed")).resolves.toEqual([
+				{ ...matching, apiConfigName: "renamed" },
+			])
+			expect(store.get("unrelated")).toEqual(unrelated)
+			const file = path.join(tmpDir, "tasks", matching.id, GlobalFileNames.historyItem)
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ ...matching, apiConfigName: "renamed" })
+			await expect(store.renameProviderProfile("saved", "renamed")).resolves.toEqual([])
+		})
+
+		it("reads the latest sibling edit instead of overwriting newer usage, lifecycle or profile selection", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "latest", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			await fs.writeFile(file, JSON.stringify({ ...item, tokensIn: 900, status: "completed" }))
+			await store.renameProviderProfile("saved", "renamed")
+			expect(store.get(item.id)).toMatchObject({ apiConfigName: "renamed", tokensIn: 900, status: "completed" })
+			await fs.writeFile(file, JSON.stringify({ ...item, apiConfigName: "other", tokensOut: 123 }))
+			await store.renameProviderProfile("renamed", "saved")
+			expect(store.get(item.id)).toMatchObject({ apiConfigName: "other", tokensOut: 123 })
+		})
+
+		it("preserves unknown top-level and nested history fields without normalizing unrelated values", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "compatible", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			const raw = {
+				...item,
+				diagnosticIncidentId: "  preserved-display-identity  ",
+				reasoningPreference: { kind: "effort", effort: "high", futureField: { keep: true } },
+				futureMetadata: { nested: { version: 2 } },
+			}
+			await fs.writeFile(file, JSON.stringify(raw))
+			await store.renameProviderProfile("saved", "renamed")
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ ...raw, apiConfigName: "renamed" })
+		})
+
+		it("rejects a durable history record belonging to a different task identity without changing it", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "expected", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			const external = { ...item, id: "different-task" }
+			await fs.writeFile(file, JSON.stringify(external))
+			mockSafeWriteJson.mockClear()
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("identity is invalid")
+			expect(mockSafeWriteJson).not.toHaveBeenCalled()
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual(external)
+		})
+
+		it.each(["../outside", "..\\outside", "/absolute", "C:\\absolute"])(
+			"rejects path-shaped cached task identity %j before reading or writing a task file",
+			async (id) => {
+				await store.initialize()
+				// Simulate legacy cached metadata without letting the baseline upsert path touch that location.
+				mockSafeWriteJson.mockResolvedValueOnce(undefined)
+				await store.upsert(makeHistoryItem({ id, apiConfigName: "saved" }))
+				mockSafeWriteJson.mockClear()
+				const read = vi.spyOn(fs, "readFile")
+				try {
+					await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("Invalid task ID")
+					expect(read).not.toHaveBeenCalled()
+					expect(mockSafeWriteJson).not.toHaveBeenCalled()
+				} finally {
+					read.mockRestore()
+				}
+			},
+		)
+
+		it("rejects a linked task directory without reading or changing its external history", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "linked", apiConfigName: "saved" })
+			const outside = path.join(tmpDir, "outside")
+			await fs.mkdir(outside)
+			const outsideFile = path.join(outside, GlobalFileNames.historyItem)
+			const content = JSON.stringify(item)
+			await fs.writeFile(outsideFile, content)
+			await fs.symlink(outside, path.join(tmpDir, "tasks", item.id), "junction")
+			mockSafeWriteJson.mockResolvedValueOnce(undefined)
+			await store.upsert(item)
+			mockSafeWriteJson.mockClear()
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("not a regular directory")
+			expect(mockSafeWriteJson).not.toHaveBeenCalled()
+			expect(await fs.readFile(outsideFile, "utf8")).toBe(content)
+		})
+
+		it("rejects a history file replaced by a directory without attempting a provider-name write", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "directory-file", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			await fs.unlink(file)
+			await fs.mkdir(file)
+			mockSafeWriteJson.mockClear()
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("not a regular file")
+			expect(mockSafeWriteJson).not.toHaveBeenCalled()
+			expect((await fs.stat(file)).isDirectory()).toBe(true)
+		})
+
+		it("serializes behind an in-flight task save and patches its latest metadata", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "serial", apiConfigName: "saved" })
+			await store.upsert(item)
+			let release!: () => void
+			let enter!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const started = new Promise<void>((resolve) => (enter = resolve))
+			const write = mockSafeWriteJson.getMockImplementation()!
+			mockSafeWriteJson.mockImplementationOnce(async (file: string, value: unknown) => {
+				enter()
+				await held
+				await write(file, value)
+			})
+			const save = store.upsert({ ...item, tokensIn: 321, status: "completed" })
+			await started
+			const rename = store.renameProviderProfile("saved", "renamed")
+			release()
+			await save
+			await rename
+			expect(store.get(item.id)).toMatchObject({ apiConfigName: "renamed", tokensIn: 321, status: "completed" })
+		})
+
+		it.each(["changed", "deleted"])("rejects durable history %s between the read and commit", async (change) => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "fenced", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			const write = mockSafeWriteJson.getMockImplementation()!
+			const external = { ...item, apiConfigName: "other", tokensIn: 456, status: "completed" }
+			mockSafeWriteJson.mockImplementationOnce(
+				async (destination: string, value: unknown, options?: SafeWriteJsonOptions) => {
+					if (change === "deleted") await fs.unlink(file)
+					else await fs.writeFile(file, JSON.stringify(external))
+					await write(destination, value, options)
+				},
+			)
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow()
+			if (change === "deleted") await expect(fs.readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+			else expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual(external)
+		})
+
+		it("rejects missing durable history instead of recreating a deleted task from cache", async () => {
+			await store.initialize()
+			const item = makeHistoryItem({ id: "deleted", apiConfigName: "saved" })
+			await store.upsert(item)
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			await fs.unlink(file)
+			mockSafeWriteJson.mockClear()
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow()
+			expect(mockSafeWriteJson).not.toHaveBeenCalled()
+			await expect(fs.readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+		})
+
+		it("retains partial canonical writes so a name-only compensation repairs them without losing later edits", async () => {
+			await store.initialize()
+			const first = makeHistoryItem({ id: "first", apiConfigName: "saved" })
+			const second = makeHistoryItem({ id: "second", apiConfigName: "saved" })
+			await store.upsert(first)
+			await store.upsert(second)
+			const write = mockSafeWriteJson.getMockImplementation()!
+			mockSafeWriteJson.mockImplementationOnce(write).mockRejectedValueOnce(new Error("write rejected"))
+			await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("write rejected")
+			expect(store.get(first.id)?.apiConfigName).toBe("renamed")
+			expect(store.get(second.id)?.apiConfigName).toBe("saved")
+			await store.upsert({ ...store.get(first.id)!, tokensIn: 888 })
+			await store.renameProviderProfile("renamed", "saved")
+			expect(store.get(first.id)).toMatchObject({ apiConfigName: "saved", tokensIn: 888 })
+		})
+
+		it("exposes compatibility-write rejection after a canonical commit and permits name-only compensation", async () => {
+			const onWrite = vi.fn(async () => undefined)
+			const linked = new TaskHistoryStore(path.join(tmpDir, "linked"), { onWrite })
+			try {
+				await linked.initialize()
+				const item = makeHistoryItem({ id: "linked", apiConfigName: "saved" })
+				await linked.upsert(item)
+				onWrite.mockRejectedValueOnce(new Error("compatibility write rejected"))
+				await expect(linked.renameProviderProfile("saved", "renamed")).rejects.toThrow(
+					"compatibility write rejected",
+				)
+				expect(linked.get(item.id)?.apiConfigName).toBe("renamed")
+				await linked.renameProviderProfile("renamed", "saved")
+				expect(linked.get(item.id)).toEqual(item)
+			} finally {
+				linked.dispose()
+				await linked.flushIndex()
+			}
 		})
 	})
 
