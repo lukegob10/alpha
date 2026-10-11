@@ -118,6 +118,43 @@ export async function exerciseRenderedAcceptance(
 		assert.equal(detail?.nonce, nonce)
 		assert.equal(detail?.stage, stage)
 		if (stage === "settings-edit") {
+			await check(
+				"!!d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')&&!!d.querySelector('[data-testid=save-button]')",
+			)
+			const originalTab = await evaluate<string>(
+				"d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]').getAttribute('data-testid')",
+			)
+			const originalSaveDisabled = await evaluate<boolean>(
+				"d.querySelector('[data-testid=save-button]').disabled",
+			)
+			try {
+				await activate('[data-testid="settings-tab-list"] [data-testid="tab-agents"]')
+				const basicControls = [
+					["agents-concurrency", "input", "Maximum concurrent managed agents"],
+					["agents-delegation-policy", "select", "Delegation policy"],
+					["agents-default-profile", "select", "Default child model/API profile"],
+				]
+				await check(
+					`(${JSON.stringify(basicControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
+				)
+				await capture("settings-agents-basic")
+				await activate(
+					'[data-testid="settings-content"] details[data-agents-advanced] > summary',
+					"Advanced agent settings",
+				)
+				await check(
+					"!!d.querySelector('[data-testid=settings-content] details[data-agents-advanced][open] input[id=agents-depth]')&&[...d.querySelector('[data-testid=settings-content] input[id=agents-timeout-review]').labels].some(l=>l.textContent.trim()==='Review timeout per run (seconds)')",
+				)
+				await evaluate(
+					"(()=>{d.querySelector('[data-testid=settings-content] input[id=agents-depth]').scrollIntoView({block:'center'});return true})()",
+				)
+				await capture("settings-agents-advanced")
+			} finally {
+				await activate(`[data-testid="settings-tab-list"] [data-testid=${JSON.stringify(originalTab)}]`)
+			}
+			await check(
+				`d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')?.getAttribute('data-testid')===${JSON.stringify(originalTab)}&&d.querySelector('[data-testid=save-button]').disabled===${originalSaveDisabled}`,
+			)
 			await activate('[data-testid="tab-terminal"]')
 			await check(`${outputPreview}?.textContent?.includes('Medium (10KB)')`)
 			await click(outputPreview)
