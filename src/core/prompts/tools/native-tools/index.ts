@@ -25,6 +25,7 @@ import runSlashCommand from "./run_slash_command"
 import skill from "./skill"
 import searchFiles from "./search_files"
 import updatePlan from "./update_plan"
+import { goalTools } from "./goals"
 
 export { getMcpServerTools } from "./mcp_server"
 export { convertOpenAIToolToAnthropic, convertOpenAIToolsToAnthropic } from "./converters"
@@ -101,6 +102,9 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 
 	return [
 		...ticketTools,
+		...(taskKind === "primary" && crossTaskRole !== "child"
+			? goalTools.filter((tool) => !planMode || tool.function.name === "get_goal")
+			: []),
 		...(mcpResourcesAvailable ? mcpResourceTools : []),
 		...(includeLegacyMcpResource ? [accessMcpResource] : []),
 		applyPatch,

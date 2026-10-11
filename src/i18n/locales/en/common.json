@@ -1,4 +1,31 @@
 {
+	"goals": {
+		"title": "Task Goal",
+		"create": "Create goal",
+		"view": "Inspect goal",
+		"pause": "Pause goal",
+		"resume": "Resume goal",
+		"clear": "Clear goal",
+		"noTask": "Open an Alpha task before managing its goal.",
+		"createDescription": "Create an explicit goal with up to {{limit}} automatic continuations. Tool permissions still apply.",
+		"objectivePrompt": "What objective should Alpha keep working toward?",
+		"invalidObjective": "Enter an objective of 1 to 4,000 characters.",
+		"budgetPrompt": "Optional total goal token budget. Leave blank for no token budget. Automatic continuations remain bounded.",
+		"invalidBudget": "Enter a positive whole number of tokens, or leave blank.",
+		"noBudget": "No token budget",
+		"summary": "{{status}} · {{tokens}} tokens used · {{remaining}} remaining · {{seconds}} seconds · {{continuations}}/{{limit}} automatic continuations",
+		"recoveryDeferred": "Recovered goals require an explicit Resume before automatic continuation.",
+		"taskUnavailable": "This task is stopped or was replaced. Reopen it from task history before resuming its goal.",
+		"updateFailed": "The goal could not be changed. Reopen the task and inspect its goal; check task storage access if the problem continues.",
+		"status": {
+			"active": "Active",
+			"paused": "Paused",
+			"blocked": "Blocked",
+			"complete": "Complete",
+			"budget_limited": "Budget reached",
+			"usage_limited": "Usage limit reached"
+		}
+	},
 	"extension": {
 		"name": "Alpha",
 		"description": "A whole dev team of AI agents in your editor."

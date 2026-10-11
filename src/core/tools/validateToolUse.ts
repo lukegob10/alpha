@@ -13,6 +13,7 @@ import { parseMcpToolName } from "../../utils/mcp-name"
 const executableNativeToolNames: readonly string[] = validToolNames
 
 const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+	"get_goal",
 	"list_tickets",
 	"read_ticket",
 	"read_file",

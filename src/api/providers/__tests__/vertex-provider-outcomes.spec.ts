@@ -1,6 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 
 import { collectAgentResponse } from "../../../core/agent/AgentResponseAccumulator"
+import { goalResponseTokens } from "../../../core/agent/GoalStepAccounting"
 import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 import { AnthropicVertexHandler } from "../anthropic-vertex"
 import { VertexHandler } from "../vertex"
@@ -94,10 +95,58 @@ describe("Vertex provider terminal outcomes", () => {
 		expect(response.text).toBe("The answer was cut off")
 		expect(response.outcome).toMatchObject({ status: "incomplete", reason: expect.stringMatching(/token limit/i) })
 		expect(chunks).toContainEqual(
-			expect.objectContaining({ type: "usage", inputTokens: 11, outputTokens: 17, reasoningTokens: 3 }),
+			expect.objectContaining({ type: "usage", inputTokens: 11, outputTokens: 20, reasoningTokens: 3 }),
 		)
 		expect(chunks.filter((chunk) => chunk.type === "outcome")).toHaveLength(1)
 	})
+
+	it.each([true, false])(
+		"Gemini includes thoughts in canonical output exactly once with streaming=%s",
+		async (streaming) => {
+			const result = {
+				candidates: [{ content: { parts: [{ text: "Cleanup verified" }] }, finishReason: "STOP" }],
+				usageMetadata: {
+					promptTokenCount: 110,
+					cachedContentTokenCount: 10,
+					candidatesTokenCount: 170,
+					thoughtsTokenCount: 30,
+					totalTokenCount: 310,
+				},
+			}
+			geminiStream.mockResolvedValue(
+				fixtureStream([
+					{
+						usageMetadata: {
+							promptTokenCount: 110,
+							candidatesTokenCount: 80,
+							thoughtsTokenCount: 15,
+						},
+					},
+					result,
+				]),
+			)
+			geminiResponse.mockResolvedValue(result)
+			const handler = gemini(streaming)
+			const model = handler.getModel()
+			vi.spyOn(handler, "getModel").mockReturnValue({
+				...model,
+				info: { ...model.info, tiers: undefined, inputPrice: 2, outputPrice: 4, cacheReadsPrice: 1 },
+			})
+			const { chunks, response } = await collect(handler.createMessage("System", messages, metadata))
+			const usage = chunks.filter((chunk) => chunk.type === "usage")
+			expect(usage).toEqual([
+				expect.objectContaining({
+					inputTokens: 110,
+					outputTokens: 200,
+					reasoningTokens: 30,
+					cacheReadTokens: 10,
+				}),
+			])
+			expect(usage[0]?.totalCost).toBeCloseTo(0.00101, 10)
+			expect(goalResponseTokens(response)).toBe(300)
+			expect(response.outcome?.status).toBe("completed")
+		},
+	)
 
 	it.each([
 		{ label: "text", block: { type: "text", text: "A partial answer" }, semantic: true },

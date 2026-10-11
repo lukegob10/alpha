@@ -25,6 +25,10 @@ import { SUBAGENT_CALLSIGNS, SubagentNicknameRegistry } from "../../agent/Subage
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
 import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
 import { getSkillsCatalogSection, type SkillCatalogEntry } from "../../prompts/sections/skills"
+import { GoalController } from "../../agent/goals/GoalController"
+import type { GoalAccountingBinding } from "../../agent/GoalStepAccounting"
+import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
+import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -251,6 +255,98 @@ describe("AlphaProvider root lifecycle ownership", () => {
 })
 
 describe("AlphaProvider bounded sub-agent preparation", () => {
+	it.each(["budget_limited", "paused", "complete", "replacement"] as const)(
+		"retains the invoking goal owner through queued launch after %s",
+		async (stop) => {
+			const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-goal-spawn-"))
+			try {
+				const provider = makeProviderHarness()
+				Reflect.set(provider, "context", { globalStorageUri: { fsPath: storagePath } })
+				const controller = new GoalController({
+					taskId: "parent-1",
+					store: new TaskGoalStore(storagePath, "parent-1"),
+				})
+				const goal = await controller.create({ objective: "Original objective", tokenBudget: 100 }, "user")
+				const binding: GoalAccountingBinding = {
+					controller,
+					goalId: goal.goalId,
+					goalTaskId: goal.taskId,
+					controlVersion: goal.controlVersion,
+					requestGeneration: controller.getRequestGeneration(),
+				}
+				const captured: Promise<GoalAccountingBinding | undefined> = Promise.resolve(binding)
+				const parent = Object.assign(makeParent(), { captureGoalAccountingBinding: vi.fn(() => captured) })
+				const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+					{ objective: "Inspect the parser", agent_kind: "review" },
+				])
+				await expect(
+					new GoalAccountingBindingStore(storagePath, prepared.envelopes[0]!.id).read(),
+				).resolves.toMatchObject({
+					owner: { goalTaskId: parent.taskId, goalId: goal.goalId, controlVersion: goal.controlVersion },
+				})
+				if (stop === "budget_limited") await controller.recordUsage("response-usage", 100, 0, goal.goalId)
+				else await controller.updateStatus(stop === "paused" ? "paused" : "complete")
+				if (stop === "replacement") await controller.create({ objective: "Replacement objective" }, "user")
+				// Simulate the invoking root step being released before queued work launches.
+				parent.captureGoalAccountingBinding.mockReturnValue(Promise.resolve(undefined))
+				const create = vi
+					.spyOn(provider, "createTask")
+					.mockImplementation(async (_text, _images, _parent, options) => {
+						expect(options?.goalAccountingBinding).toBe(captured)
+						const owner = await options?.goalAccountingBinding
+						expect(owner?.goalId).toBe(goal.goalId)
+						expect(owner?.controller.isRequestCurrent(goal.goalId, binding.requestGeneration)).toBe(false)
+						const emitter = new EventEmitter()
+						return Object.assign(emitter, {
+							taskId: options?.taskId,
+							taskKind: "subagent",
+							rootTaskId: parent.taskId,
+							clineMessages: [
+								{ type: "say", say: "completion_result", text: "Retained owner inspected." },
+							],
+							getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0, totalCost: 0 }),
+							persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+							finalizeSubagentHistory: vi.fn(async () => undefined),
+							cancelCurrentRequest: vi.fn(),
+							abortTask: vi.fn(async () => undefined),
+							start: () => emitter.emit(AlphaCodeEventName.TaskCompleted, options?.taskId, {}),
+						}) as unknown as Task
+					})
+				Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+				await Reflect.get(provider, "runSubagentEnvelope").call(
+					provider,
+					prepared.envelopes[0],
+					new AbortController().signal,
+				)
+				expect(create).toHaveBeenCalledOnce()
+				expect(parent.captureGoalAccountingBinding).toHaveBeenCalledOnce()
+			} finally {
+				await fs.rm(storagePath, { recursive: true, force: true })
+			}
+		},
+	)
+
+	it("persists a no-goal owner before a queued child can adopt a future root objective", async () => {
+		const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-goal-spawn-"))
+		try {
+			const provider = makeProviderHarness()
+			Reflect.set(provider, "context", { globalStorageUri: { fsPath: storagePath } })
+			const parent = Object.assign(makeParent(), {
+				captureGoalAccountingBinding: vi.fn(async () => undefined),
+			})
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+				{ objective: "Inspect the parser", agent_kind: "review" },
+			])
+			await expect(
+				new GoalAccountingBindingStore(storagePath, prepared.envelopes[0]!.id).read(),
+			).resolves.toMatchObject({
+				owner: null,
+			})
+		} finally {
+			await fs.rm(storagePath, { recursive: true, force: true })
+		}
+	})
+
 	it.each(["auto", "bypass"] as const)(
 		"keeps an Ask task's child authority below the global %s setting",
 		async (approvalMode) => {
@@ -2519,6 +2615,9 @@ If complete, use attempt_completion.
 		])
 		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
 		const taskId = prepared.envelopes[0].id
+		const goalAccountingBinding = Promise.resolve(undefined)
+		const admissionOrder: string[] = []
+		;(provider as any).subagentDescriptors.get(taskId).goalAccountingBinding = goalAccountingBinding
 		prepared.group.agents[0].startedAt = 200
 		;(provider as any).__historyItems.set(taskId, {
 			id: taskId,
@@ -2559,10 +2658,14 @@ If complete, use attempt_completion.
 				taskId,
 				clineMessages: [{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" }],
 				getTokenUsage: () => ({ totalTokensIn: 15, totalTokensOut: 8 }),
+				readmitGoalAccountingBinding: vi.fn(async () => {
+					admissionOrder.push("admitted")
+				}),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
 				cancelCurrentRequest: vi.fn(),
 				abortTask: vi.fn(async () => undefined),
 				resumeSubagentFollowup: vi.fn(async (instruction: string, onPersisted?: () => Promise<void>) => {
+					admissionOrder.push("resumed")
 					expect(instruction).toBe("Check one more edge case")
 					await provider.deliverAgentMessages(
 						{ taskId, taskKind: "subagent", rootTaskId: parent.taskId } as any,
@@ -2591,6 +2694,8 @@ If complete, use attempt_completion.
 		const result = await (provider as any).runSubagentEnvelope(prepared.envelopes[0], new AbortController().signal)
 
 		expect(result).toMatchObject({ status: "completed", summary: "Current follow-up report" })
+		expect(child.readmitGoalAccountingBinding).toHaveBeenCalledWith(goalAccountingBinding, parent)
+		expect(admissionOrder).toEqual(["admitted", "resumed"])
 		expect(result.summary).not.toContain("Initial retained report")
 		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith("completed", "Current follow-up report", "completed")
 		expect(
@@ -3472,6 +3577,7 @@ If complete, use attempt_completion.
 			owner,
 			expect.objectContaining({ taskId: child.taskId }),
 			"First follow-up",
+			undefined,
 		)
 		expect(start).toHaveBeenCalledOnce()
 		expect(start.mock.calls[0][0]).toBe(owner)

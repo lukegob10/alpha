@@ -17,6 +17,9 @@ export type ToolGroup = z.infer<typeof toolGroupsSchema>
  */
 
 export const toolNames = [
+	"create_goal",
+	"get_goal",
+	"update_goal",
 	"list_tickets",
 	"read_ticket",
 	"create_ticket",

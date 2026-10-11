@@ -1,4 +1,13 @@
 {
+	"goals": {
+		"approval": "Goal approval",
+		"createApproval": "Create this goal and keep working toward it?",
+		"pauseApproval": "Pause this goal?",
+		"noBudget": "No token budget requested.",
+		"budget": "Goal token budget: {{tokens}}",
+		"continuationLimit": "Up to {{limit}} automatic continuations per explicit run. Existing tool permissions still apply.",
+		"invalidApproval": "Goal approval details are unavailable. Reject this request and ask Alpha to submit it again."
+	},
 	"messageActions": {
 		"copy": "Copy",
 		"copied": "Copied",

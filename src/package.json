@@ -72,6 +72,11 @@
 		},
 		"commands": [
 			{
+				"command": "alpha.manageGoal",
+				"title": "%command.manageGoal.title%",
+				"category": "%configuration.title%"
+			},
+			{
 				"command": "alpha.previewHtmlDocument",
 				"title": "%command.previewHtmlDocument.title%",
 				"category": "Alpha"

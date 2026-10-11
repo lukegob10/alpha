@@ -179,6 +179,7 @@ export const toolParamNames = [
 	"agent_type",
 	"fork_turns",
 	"objective",
+	"token_budget",
 	"agent_kind",
 	"write_scope",
 	"expected_output",
@@ -199,6 +200,9 @@ export type ToolParamName = (typeof toolParamNames)[number]
  * Tools not listed here will fall back to `any` for backward compatibility.
  */
 export type NativeToolArgs = BrowserToolArgs & {
+	create_goal: { objective: string; token_budget?: number }
+	get_goal: Record<string, never>
+	update_goal: { status: "complete" | "blocked" | "paused" }
 	read_diagnostic_evidence: Record<string, never>
 	access_mcp_resource: { server_name: string; uri: string }
 	list_mcp_resources: { server?: string; cursor?: string }
@@ -496,6 +500,9 @@ export type ToolGroupConfig = {
 }
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
+	create_goal: "create a persistent goal",
+	get_goal: "read the current goal",
+	update_goal: "update goal status",
 	shell: "run commands",
 	exec_command: "run commands",
 	execute_command: "run commands",
@@ -571,6 +578,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	read: {
 		tools: [
+			"get_goal",
 			"read_file",
 			"view_image",
 			"search_files",
@@ -581,7 +589,15 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		],
 	},
 	edit: {
-		tools: ["edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"],
+		tools: [
+			"edit",
+			"write_to_file",
+			"create_ticket",
+			"update_ticket",
+			"delete_ticket",
+			"create_goal",
+			"update_goal",
+		],
 		customTools: ["apply_patch"],
 	},
 	command: {

@@ -53,6 +53,7 @@ export const commandIds = [
 	"nextTaskNeedingInput",
 	"focusPanel",
 	"toggleAutoApprove",
+	"manageGoal",
 ] as const
 
 export type CommandId = (typeof commandIds)[number]

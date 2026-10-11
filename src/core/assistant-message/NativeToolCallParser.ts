@@ -1505,6 +1505,13 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "create_goal":
+				case "get_goal":
+				case "update_goal":
+					// Keep all fields for the goal handler's strict argument validation.
+					if (this.isArgumentObject(args)) nativeArgs = args as NativeArgsFor<TName>
+					break
+
 				case "list_tickets":
 				case "read_ticket":
 				case "create_ticket":

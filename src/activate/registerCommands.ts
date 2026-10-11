@@ -13,6 +13,7 @@ import { handleNewTask } from "./handleTask"
 import { CodeIndexManager } from "../services/code-index/manager"
 import { importSettingsWithFeedback } from "../core/config/importExport"
 import { t } from "../i18n"
+import { manageTaskGoal } from "./goalCommands"
 
 /**
  * Helper to get the visible AlphaProvider instance or log if not found.
@@ -141,6 +142,10 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		visibleProvider.postMessageToWebview({ type: "action", action: "marketplaceButtonClicked" })
 	},
 	newTask: handleNewTask,
+	manageGoal: async (surface?: string) => {
+		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
+		if (visibleProvider) await manageTaskGoal(visibleProvider)
+	},
 	setCustomStoragePath: async () => {
 		const { promptForCustomStoragePath } = await import("../utils/storage")
 		await promptForCustomStoragePath()

@@ -87,6 +87,7 @@ import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
+import { GoalApproval } from "./GoalApproval"
 import { ActivityStep } from "./ActivityStep"
 import { MessageActions } from "./MessageActions"
 
@@ -726,6 +727,8 @@ const ChatRowContentInner = ({
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
+			case "goal":
+				return <GoalApproval activity={tool.goalActivity} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context

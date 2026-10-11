@@ -1,5 +1,7 @@
 import { executeTicketTool } from "./TicketTools"
 import { ticketTools } from "../prompts/tools/native-tools/tickets"
+import { goalTools } from "../prompts/tools/native-tools/goals"
+import { executeGoalTool } from "./GoalTools"
 import type OpenAI from "openai"
 import { randomUUID } from "crypto"
 import { t } from "../../i18n"
@@ -212,6 +214,8 @@ const WORKSPACE_TOOLS = new Set([
 const CHECKPOINT_TOOLS = new Set(["write_to_file", "apply_diff", "edit", "search_replace", "edit_file", "apply_patch"])
 
 const TASK_TOOLS = new Set([
+	"create_goal",
+	"update_goal",
 	"update_plan",
 	"new_task",
 	"delegate_task",
@@ -616,6 +620,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
 		requiresApproval:
+			name !== "get_goal" &&
 			name !== "read_diagnostic_evidence" &&
 			name !== "report_progress" &&
 			name !== "list_tickets" &&
@@ -841,6 +846,20 @@ export class ToolRegistry {
 					capabilities: getToolCapabilities(name),
 					maxOutputChars: 100000,
 					execute: executeTicketTool,
+				})
+		}
+		for (const schema of goalTools) {
+			const name = schema.function.name
+			if (schemas.has(name))
+				this.register({
+					name,
+					aliases: [],
+					schema,
+					capabilities: getToolCapabilities(name),
+					statusSource: "handler",
+					// A valid 4,000-character objective can require six JSON characters per code point.
+					maxOutputChars: 30000,
+					execute: executeGoalTool,
 				})
 		}
 		this.registerBuiltIn("access_mcp_resource", accessMcpResourceTool, schemas)

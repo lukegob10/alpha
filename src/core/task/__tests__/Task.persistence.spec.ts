@@ -110,6 +110,17 @@ const {
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
 
+// Transcript lifecycle fixtures have no goal sidecar. Goal persistence and
+// recovery use the real store in the focused goal tests.
+vi.mock("../../task-persistence/TaskGoalStore", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../task-persistence/TaskGoalStore")>()),
+	TaskGoalStore: class {
+		async read() {
+			return { schemaVersion: 1, taskId: "test-id", usageReceipts: [] }
+		}
+	},
+}))
+
 vi.mock("delay", () => ({
 	__esModule: true,
 	default: vi.fn().mockResolvedValue(undefined),

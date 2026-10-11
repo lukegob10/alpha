@@ -3,6 +3,7 @@ import * as fs from "fs/promises"
 import crypto from "crypto"
 
 import { Anthropic } from "@anthropic-ai/sdk"
+import type { TaskGoalUsageReceipt } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../utils/fs"
 
@@ -39,6 +40,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	agent_message_id?: string
 	/** Host-owned source of a hook continuation; retained in the canonical transcript across reload. */
 	hook_prompt?: CompletionHookPromptProvenance
+	/** Goal usage persisted before charging its owner; replay closes a crash between the two writes. */
+	goal_usage_receipts?: TaskGoalUsageReceipt[]
 	ts?: number
 	isSummary?: boolean
 	/** Legacy response receipt (or standalone reasoning ID); never an assistant output-message ID. */

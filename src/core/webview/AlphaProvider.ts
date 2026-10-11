@@ -214,6 +214,8 @@ import {
 	type InternalTaskPolicy,
 } from "../agent/InternalTaskEnvelope"
 import { SubagentNicknameRegistry } from "../agent/SubagentNicknameRegistry"
+import type { GoalAccountingBinding } from "../agent/GoalStepAccounting"
+import { GoalAccountingBindingStore } from "../agent/goals/GoalAccountingBindingStore"
 import {
 	captureSubagentContext,
 	finalizeSubagentContextManifestAuthorization,
@@ -394,6 +396,7 @@ const managedAgentUsage = (value: unknown, fallbackDurationMs = 0): SubagentUsag
 type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
 
 type ManagedCreateTaskOptions = CreateTaskOptions & {
+	goalAccountingBinding?: Promise<GoalAccountingBinding | undefined>
 	subagentInitialContext?: string
 	subagentFrozenInstructions?: string
 	subagentHistoryFork?: SubagentHistoryFork
@@ -497,6 +500,8 @@ export class AlphaProvider
 		string,
 		{
 			parent: Task
+			/** Captured at the invoking effect, before asynchronous worktree/launch preparation. */
+			goalAccountingBinding?: Promise<GoalAccountingBinding | undefined>
 			groupId: string
 			nickname: string
 			role: "explore" | "review" | "worker"
@@ -1537,6 +1542,7 @@ export class AlphaProvider
 			startTask?: boolean
 			preserveExisting?: boolean
 			background?: boolean
+			goalAccountingBinding?: Promise<GoalAccountingBinding | undefined>
 			/** The caller publishes the transcript after its own acknowledgement. */
 			deferTranscript?: boolean
 			subagentRuntime?: Pick<
@@ -1747,6 +1753,7 @@ export class AlphaProvider
 			experiments,
 			rootTask: historyItem.rootTask,
 			parentTask: historyItem.parentTask,
+			goalAccountingBinding: options?.goalAccountingBinding,
 			taskNumber: historyItem.number,
 			workspacePath: restoredWorkspacePath,
 			historyWorkspacePath: options?.subagentRuntime?.historyWorkspacePath,
@@ -6765,10 +6772,13 @@ export class AlphaProvider
 		parent: Task,
 		drafts: unknown,
 		toolCallId?: string,
+		goalAccountingBinding = parent.captureGoalAccountingBinding?.(),
 	): Promise<PreparedSubagentGroup> {
 		await this.taskHistoryStoreReady
+		await goalAccountingBinding
 		const owner = this.getTaskOwner(parent.taskId)
-		if (owner && owner !== this) return owner.prepareSubagentGroup(parent, drafts, toolCallId)
+		if (owner && owner !== this)
+			return owner.prepareSubagentGroup(parent, drafts, toolCallId, goalAccountingBinding)
 		const invocation = parent.getSubagentInvocationContext?.()
 		const invokingApprovalMode = parent.getStepApprovalMode?.()
 		const parentHistory =
@@ -7119,9 +7129,18 @@ export class AlphaProvider
 			}),
 		)
 
+		const childIds = normalizedDrafts.map(() => crypto.randomUUID())
+		if (goalAccountingBinding) {
+			await runReserved(async () => {
+				const binding = await goalAccountingBinding
+				for (const id of childIds) {
+					await new GoalAccountingBindingStore(this.context.globalStorageUri.fsPath, id).save(binding)
+				}
+			})
+		}
 		const envelopes = runReservedSync(() =>
 			normalizedDrafts.map((draft, index) => {
-				const id = crypto.randomUUID()
+				const id = childIds[index]
 				const modelRoute = routes[index]
 				const capturedContext = capturedContexts[index]
 				const orchestration = orchestrations[index]
@@ -7164,6 +7183,7 @@ export class AlphaProvider
 
 				this.subagentDescriptors.set(id, {
 					parent,
+					goalAccountingBinding,
 					groupId,
 					nickname: nicknames[index],
 					role: draft.agent_kind,
@@ -9182,6 +9202,8 @@ export class AlphaProvider
 		record: AgentRecord,
 		instruction: string,
 	): Promise<unknown> {
+		const goalAccountingBinding = parent.captureGoalAccountingBinding?.()
+		await goalAccountingBinding
 		this.assertAgentHasRetainedTask(record)
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		await this.synchronizeParentVerificationObligations(parent)
@@ -9214,7 +9236,12 @@ export class AlphaProvider
 				`Open the immediate parent ${record.parentPath} before starting a follow-up for ${record.path}`,
 			)
 		}
-		const prepared = await this.restorePreparedSubagentForFollowup(owner, record, instruction)
+		const prepared = await this.restorePreparedSubagentForFollowup(
+			owner,
+			record,
+			instruction,
+			goalAccountingBinding,
+		)
 		if (parent.abort || owner.abort || owner.getTaskLifetimeCancellationSignal().aborted)
 			throw new Error("Follow-up admission was cancelled before launch")
 		const descriptor = this.subagentDescriptors.get(record.taskId)
@@ -9222,6 +9249,7 @@ export class AlphaProvider
 		this.assertRetainedAgentRelaunchCapacity(record, prepared, descriptor.contextManifest)
 		const previousGroup = structuredClone(prepared.group)
 		const previousInstruction = descriptor.pendingFollowup
+		const previousGoalBinding = descriptor.goalAccountingBinding
 		const publicationKey = `${prepared.group.groupId}:${record.taskId}`
 		const wasPublished = this.publishedSubagentResults.has(publicationKey)
 		const previousRunId = this.asyncSubagentRunManager.getEvents(record.taskId).at(-1)?.runId
@@ -9229,6 +9257,7 @@ export class AlphaProvider
 		let admitted = false
 		try {
 			descriptor.pendingFollowup = instruction
+			descriptor.goalAccountingBinding = goalAccountingBinding
 			const restartedAt = Date.now()
 			prepared.group.executionMode = "async"
 			prepared.group.status = "pending"
@@ -9295,6 +9324,7 @@ export class AlphaProvider
 			if (rolledBack) {
 				prepared.group = previousGroup
 				descriptor.pendingFollowup = previousInstruction
+				descriptor.goalAccountingBinding = previousGoalBinding
 				if (wasPublished) this.publishedSubagentResults.add(publicationKey)
 				this.retainCompletedSubagentGroup(prepared.group.groupId)
 				if (admitted) {
@@ -9961,7 +9991,9 @@ export class AlphaProvider
 		parent: Task,
 		record: AgentRecord,
 		instruction: string,
+		goalAccountingBinding = parent.captureGoalAccountingBinding?.(),
 	): Promise<PreparedSubagentGroup> {
+		await goalAccountingBinding
 		if (record.groupId) {
 			const retained = this.preparedSubagentGroups.get(record.groupId)
 			if (retained) {
@@ -10119,6 +10151,7 @@ export class AlphaProvider
 		this.preparedSubagentGroups.set(group.groupId, prepared)
 		this.subagentDescriptors.set(record.taskId, {
 			parent,
+			goalAccountingBinding,
 			groupId: group.groupId,
 			nickname: agent.nickname,
 			role: agent.role,
@@ -10454,7 +10487,7 @@ export class AlphaProvider
 		}
 		descriptor.contextManifest = structuredClone(finalizedManifest.data)
 
-		const { parent, groupId, nickname, role, modelRoute } = descriptor
+		const { parent, groupId, nickname, role, modelRoute, goalAccountingBinding } = descriptor
 		const startedAt =
 			this.preparedSubagentGroups.get(groupId)?.group.agents.find((agent) => agent.taskId === envelope.id)
 				?.startedAt ?? Date.now()
@@ -10535,6 +10568,7 @@ export class AlphaProvider
 						startTask: false,
 						preserveExisting: true,
 						background: true,
+						goalAccountingBinding,
 						subagentRuntime: {
 							workspacePath: descriptor.managedWorktree?.workspacePath ?? parent.cwd,
 							historyWorkspacePath: parent.historyWorkspacePath,
@@ -10545,9 +10579,11 @@ export class AlphaProvider
 						},
 					},
 				)
+				if (goalAccountingBinding) await child.readmitGoalAccountingBinding?.(goalAccountingBinding, parent)
 			} else {
 				child = await this.createTask(prompt, undefined, parent, {
 					taskId: envelope.id,
+					goalAccountingBinding,
 					background: true,
 					preserveExisting: true,
 					startTask: false,

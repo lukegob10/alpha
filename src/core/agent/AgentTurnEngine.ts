@@ -65,6 +65,10 @@ interface AgentTurnHostBase<TInput, TStep> {
 	/** Release process-local step state after every path through the staged transaction. */
 	releaseStep?(sample: AgentTurnSample<TStep>, step: number): Promise<void> | void
 	shouldAbort(): boolean
+	/** Host-admitted idle work uses the same sequencer after the prior turn has drained. */
+	selectIdleContinuation?(outcome: Extract<AgentTurnOutcome, { status: "completed" }>): Promise<TInput | undefined>
+	/** Rechecked after admission so user input, pause, and cancellation win asynchronous races. */
+	canContinueWhenIdle?(): boolean
 	/** Hosts can retain an explicit completion contract or pending user continuation. */
 	canCompleteWithoutTools?(response: AgentResponse, step: number): boolean
 	onStepComplete?(
@@ -182,11 +186,40 @@ function terminalOutcome(
  * visible text and no pending tool calls.
  */
 export class AgentTurnEngine<TInput, TStep = unknown> {
+	private running = false
+	private readonly consideredIdleOutcomes = new WeakSet<object>()
+
 	constructor(private readonly host: AgentTurnHostAdapter<TInput, TStep>) {}
 
 	async run(initialInput: TInput): Promise<AgentTurnOutcome> {
-		if (this.host.sampleStep) return this.runStaged(initialInput)
-		return this.runLegacy(initialInput)
+		if (this.running) return terminalOutcome("failed", 0, undefined, "Agent turn is already running.")
+		this.running = true
+		try {
+			return this.host.sampleStep ? await this.runStaged(initialInput) : await this.runLegacy(initialInput)
+		} finally {
+			this.running = false
+		}
+	}
+
+	/**
+	 * Admit at most one automatic continuation for a completed turn. The Task
+	 * adapter calls this only after its terminal journal and persistence drain;
+	 * the returned input starts a new turn through run(), never a second loop.
+	 */
+	async continueIfIdle(outcome: AgentTurnOutcome): Promise<TInput | undefined> {
+		if (
+			outcome.status !== "completed" ||
+			this.running ||
+			this.consideredIdleOutcomes.has(outcome) ||
+			this.host.shouldAbort() ||
+			!(this.host.canContinueWhenIdle?.() ?? true)
+		) {
+			return undefined
+		}
+		this.consideredIdleOutcomes.add(outcome)
+		const input = await this.host.selectIdleContinuation?.(outcome)
+		if (this.running || this.host.shouldAbort() || !(this.host.canContinueWhenIdle?.() ?? true)) return undefined
+		return input
 	}
 
 	private async runLegacy(initialInput: TInput): Promise<AgentTurnOutcome> {

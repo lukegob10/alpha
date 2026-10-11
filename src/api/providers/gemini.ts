@@ -896,9 +896,11 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 					if (result.usageMetadata) {
 						const inputTokens = result.usageMetadata.promptTokenCount ?? 0
-						const outputTokens = result.usageMetadata.candidatesTokenCount ?? 0
+						const candidateTokens = result.usageMetadata.candidatesTokenCount ?? 0
 						const cacheReadTokens = result.usageMetadata.cachedContentTokenCount
 						const reasoningTokens = result.usageMetadata.thoughtsTokenCount
+						// Gemini reports candidates and thoughts separately; canonical output includes both.
+						const outputTokens = candidateTokens + (reasoningTokens ?? 0)
 
 						yield {
 							type: "usage",
@@ -909,7 +911,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 							totalCost: this.calculateCost({
 								info,
 								inputTokens,
-								outputTokens,
+								outputTokens: candidateTokens,
 								cacheReadTokens,
 								reasoningTokens,
 							}),
@@ -1070,9 +1072,10 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 				if (lastUsageMetadata) {
 					const inputTokens = lastUsageMetadata.promptTokenCount ?? 0
-					const outputTokens = lastUsageMetadata.candidatesTokenCount ?? 0
+					const candidateTokens = lastUsageMetadata.candidatesTokenCount ?? 0
 					const cacheReadTokens = lastUsageMetadata.cachedContentTokenCount
 					const reasoningTokens = lastUsageMetadata.thoughtsTokenCount
+					const outputTokens = candidateTokens + (reasoningTokens ?? 0)
 
 					yield {
 						type: "usage",
@@ -1083,7 +1086,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 						totalCost: this.calculateCost({
 							info,
 							inputTokens,
-							outputTokens,
+							outputTokens: candidateTokens,
 							cacheReadTokens,
 							reasoningTokens,
 						}),

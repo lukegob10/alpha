@@ -1213,6 +1213,7 @@ export interface LanguageModelChatSelector {
 
 export interface AlphaSayTool {
 	ticketActivity?: TicketActivity
+	goalActivity?: import("./goal-tool-approval.js").GoalToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1233,6 +1234,7 @@ export interface AlphaSayTool {
 		| "imageGenerated"
 		| "runSlashCommand"
 		| "ticket"
+		| "goal"
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"

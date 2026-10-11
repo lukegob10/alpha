@@ -74,6 +74,11 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 
 			task.consecutiveMistakeCount = 0
 
+			if (await task.completeGoalTurn?.(result)) {
+				pushToolResult(JSON.stringify({ status: "success", goalContinues: true }))
+				return
+			}
+
 			await task.presentCompletionResult(result, undefined, false)
 			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
 

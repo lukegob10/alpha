@@ -31,6 +31,7 @@
 	"command.nextTask.title": "Next Task",
 	"command.nextTaskNeedingInput.title": "Next Task Needing Your Input",
 	"command.toggleAutoApprove.title": "Toggle Auto-Approve",
+	"command.manageGoal.title": "Manage Task Goal",
 	"configuration.title": "Alpha",
 	"commands.allowedCommands.description": "Executable and complete argument prefixes allowed without a prompt in Ask mode. Arguments match case-sensitively. Auto already grants command approval; matching deny rules always take precedence.",
 	"commands.deniedCommands.description": "Executable and complete argument prefixes denied without asking for approval. Arguments match case-sensitively. Any matching deny rule takes precedence over allowed commands. Add * to deny all commands.",
