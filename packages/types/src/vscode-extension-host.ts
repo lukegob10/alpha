@@ -23,6 +23,7 @@ export interface TaskReasoningResponse {
 import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
 import type { ProviderProfileRenameRequest, ProviderProfileRenameResult } from "./provider-profile-rename.js"
+import type { ProviderProfileSaveId, ProviderProfileSaveResult } from "./provider-profile-save.js"
 import type { HistoryItem } from "./history.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
@@ -401,6 +402,7 @@ export interface ExtensionMessage {
 		| "scheduledTaskSkills"
 		| "taskReasoningUpdated"
 		| "apiConfigurationRenamed"
+		| "apiConfigurationSaved"
 		| "taskApprovalModeUpdated"
 		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
@@ -422,6 +424,7 @@ export interface ExtensionMessage {
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	taskReasoningResponse?: TaskReasoningResponse
 	apiConfigurationRenameResult?: ProviderProfileRenameResult
+	apiConfigurationSaveResult?: ProviderProfileSaveResult
 	taskApprovalModeUpdateResult?: TaskApprovalModeUpdateResult
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
@@ -1109,6 +1112,19 @@ export type WebviewMessage =
 			values: { oldName: string; newName: string }
 			apiConfigurationRename?: never
 	  })
+	| (Omit<WebviewMessageBase, "type" | "apiConfiguration"> & {
+			type: "upsertApiConfiguration"
+			requestId: string
+			/** Resolve the saved name by ID inside the host's configuration queue. */
+			apiConfigurationId: ProviderProfileSaveId
+			apiConfiguration: ProviderSettings
+	  })
+	| (Omit<WebviewMessageBase, "type" | "requestId"> & {
+			type: "upsertApiConfiguration"
+			/** Creation and historical webviews retain the name-based contract. */
+			apiConfigurationId?: never
+			requestId?: never
+	  })
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
 			z.infer<typeof sendAndSteerMessageSchema> & { clientSubmittedAt?: number })
@@ -1125,6 +1141,7 @@ export type WebviewMessage =
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
 				| "renameApiConfiguration"
+				| "upsertApiConfiguration"
 				| "startDebuggingTask"
 				| "incidentDashboardRequestTurnDetail"
 				| "startDebuggingTurn"

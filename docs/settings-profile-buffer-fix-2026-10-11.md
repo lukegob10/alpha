@@ -3,6 +3,8 @@
 Date: **October 11, 2026 (America/New_York)**. Scope: finding F2 in
 [`settings-review-2026-10-10-codex-alignment.md`](settings-review-2026-10-10-codex-alignment.md).
 Implementation starts from Alpha checkpoint `14fc29614911d0d3b88670135a8a5c11abb75103`.
+The initial rename change was committed as `1435cd18` (`fix(settings): rename saved profiles without applying drafts`).
+The follow-up described below builds on that commit and reuses the same three subagents.
 
 The user authorized implementation and concurrent subagents. This work used **three collaboration subagents**:
 `contract_review` for the current upstream contract/design note and independent review, `host_rename` for manager/host
@@ -46,6 +48,12 @@ apply the requested discrete edits and atomically persist only a changed documen
 assert that unrelated legacy profile fields survive those writes. Alpha likewise preserves saved profile contents during
 rename and requires explicit Save for buffered provider fields.
 
+The follow-up reread `ConfigManager::apply_edits`, `ConfigValueWriteParams`, and
+`config_value_write_rejects_version_conflict` at this same pinned commit. Upstream validates the configured write target
+and optional expected version before committing. Alpha translates the target invariant into its native stable profile
+ID and shared queues; it does not add a file-version protocol or change the existing semantics of an explicit provider
+configuration Save.
+
 ## Rename contract
 
 - The current webview sends `renameApiConfiguration` with `apiConfigurationRename: { requestId, id, newName }`. It does not
@@ -78,8 +86,62 @@ rename and requires explicit Save for buffered provider fields.
   fields and the dirty flag even when a host-state refresh arrives before the correlated result. A different profile ID
   is a real selection change. Pending rename blocks Save and competing profile actions. After a result, further profile
   actions remain blocked until the live current name and same-ID metadata match the confirmed name; ordinary Save is
-  available and uses that confirmed target while metadata catches up. Failed rename preserves the draft and uses the
-  authoritative saved name when supplied for retry or explicit Save.
+  available and carries the edit buffer's stable ID plus that confirmed display name while metadata catches up. Failed
+  rename preserves the draft and uses the authoritative saved name when supplied for display or retry.
+
+## Existing-profile Save after a queued rename
+
+Independent review after `1435cd18` found a second F2 commit-order failure. An editor could keep a dirty buffer for profile
+`A` while a sidebar renamed that same ID to `B`. Save waited behind the shared configuration queue, but then used stale
+display name `A` to create another entry. The controlled two-view baseline produced four saved profiles where three
+should remain. Serializing operations therefore also requires resolving the edited identity at the write boundary.
+
+- Existing-profile Save sends `upsertApiConfiguration` with `requestId`, `apiConfigurationId`, and the buffered
+  `apiConfiguration`. `text` is optional display metadata and cannot select the saved entry. Presence of either modern
+  identity/correlation field selects the modern branch. Invalid, missing, or malformed modern fields never fall through
+  to name-based creation. A bounded usable request ID can receive an `invalid` result; missing correlation does not
+  mutate the profile.
+- `ProviderSettingsManager.saveConfig({ id }, draft)` resolves the current persisted map key inside the shared manager
+  lock, writes that one entry, and returns canonical `{ id, name }` from the same mutation. An embedded `draft.id` cannot
+  override the target. The original draft container is validated before adding that authoritative ID; malformed
+  string, array, number, Date, null, undefined, or boolean inputs cannot become an empty saved profile through object
+  spread. This container check does not strip or transform legacy fields. Unknown or deleted IDs fail closed, including
+  when another ID now owns the old display name. The name-based overload keeps creation, imported IDs, default
+  initialization, public API calls, and historical webviews compatible.
+- `AlphaProvider` resolves the ID-targeted Save inside the existing shared configuration queue and uses the returned
+  canonical name for current-profile activation, mode mappings, and sticky task references. Save/upsert and activation
+  wait for all started projection writes before propagating a failure. `ContextProxy.setValues` does the same for its
+  inner provider/global/secret batch. This prevents a late owned write from crossing the queue boundary and overwriting
+  a subsequent retry or rename. Rejection is detected by status, including when its reason is falsy; these fences do not
+  add rollback or a transaction engine.
+- The UI captures profile ID and name with the edit buffer. A known ID survives missing metadata and same-ID name
+  refreshes; a real selection replaces identity and fields together. Discard only retains a prior unresolved ID for the
+  same captured name or confirmed rename aliases. Import or Discard into another unresolved profile cannot borrow the
+  old ID or silently degrade to creation: Save waits for that profile's identity. Initial legacy/default buffers and
+  explicit profile creation retain their name-based route.
+
+The user explicitly authorized a bounded correlated Save acknowledgement after review also reproduced eager dirty-state
+clearing on rejected or unacknowledged Save. `apiConfigurationSaved` returns a strict
+`apiConfigurationSaveResult`: success carries `requestId`, `id`, and canonical `name`; error carries `requestId` and
+`invalid`, `notFound`, or `saveFailed`. Results contain no provider configuration or credentials.
+
+Modern Save keeps the draft dirty until matching success for its submitted buffer snapshot. The success handler compares
+that snapshot inside React's state update queue, so even an edit queued in the same event batch remains dirty. A different
+request, profile ID, or replaced buffer cannot clear the current edits. Errors preserve fields and dirty state. Pending
+Save blocks another Save and local profile actions while inputs remain editable. Save results do not overlay profile
+names, so a delayed success cannot regress a newer same-ID rename projection.
+
+One owned 30-second timeout releases the pending UI operation, preserves the draft, and permits explicit retry. It does
+not cancel or roll back a host write, and it does not automatically resubmit. Matching completion, selection, import,
+hydration, Discard, and unmount clear the pending request and timer; late or duplicate replies are ignored.
+
+Modern success means the primary profile write and the established queued Save path completed normally. A propagated
+activation, projection, or state error may occur after that primary write committed and then return `saveFailed`; it is
+not proof that storage stayed unchanged. The draft remains available and retry targets the same saved ID. Existing
+best-effort sticky-history error handling remains in place, so success does not newly guarantee every derived history
+write. Other settings messages retain their independent completion semantics. Acknowledgement delivery is a separate
+stage: a rejecting adapter is logged without changing the chosen result, saving again, or sending a contradictory second
+result. Timeout or missing delivery likewise does not prove that persistence failed.
 
 ## Compatibility and failure boundaries
 
@@ -139,11 +201,15 @@ snapshots remain immutable; rename updates reload-facing sticky task names witho
 
 ## Changed-file manifest
 
+This manifest covers the initial commit and its follow-up source change.
+
 - Shared contract: `packages/types/src/provider-profile-rename.ts`,
-  `packages/types/src/__tests__/provider-profile-rename.spec.ts`, `packages/types/src/index.ts`, and
+  `packages/types/src/__tests__/provider-profile-rename.spec.ts`, `packages/types/src/provider-profile-save.ts`,
+  `packages/types/src/__tests__/provider-profile-save.spec.ts`, `packages/types/src/index.ts`, and
   `packages/types/src/vscode-extension-host.ts`.
 - Profile persistence and host projection: `src/core/config/ProviderSettingsManager.ts` and
   `src/core/config/__tests__/ProviderSettingsManager.renameProfile.spec.ts`;
+  `src/core/config/ContextProxy.ts` and `src/core/config/__tests__/ContextProxy.spec.ts`;
   `src/core/task-persistence/TaskHistoryStore.ts` and `src/core/task-persistence/__tests__/TaskHistoryStore.spec.ts`;
   `src/core/webview/AlphaProvider.ts` and `src/core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts`;
   `src/core/webview/webviewMessageHandler.ts` and `src/core/webview/__tests__/webviewMessageHandler.spec.ts`; and the shared-queue fixture in
@@ -161,6 +227,10 @@ snapshots remain immutable; rename updates reload-facing sticky task names witho
   unchanged as design history.
 
 ## Regression and validation record
+
+### Initial rename commit
+
+The following checks record the implementation committed as `1435cd18`. Follow-up checks are recorded separately below.
 
 The required observable cases are dirty rename followed by explicit Save; refresh/result ordering; matching and stale
 request IDs; retry after error; active and inactive profiles; collision; missing ID; same-name no-op; SecretStorage
@@ -223,12 +293,66 @@ pnpm --dir src exec eslint core/config/ProviderSettingsManager.ts core/config/__
 pnpm --dir src exec eslint core/webview/AlphaProvider.ts core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts
 ```
 
-The final independent review covered manager serialization, preserved stored secrets/legacy fields, strict wire parsing,
+The initial independent review covered manager serialization, preserved stored secrets/legacy fields, strict wire parsing,
 metadata-only host projection, compensation ownership, concurrent history preservation, correlated authoritative-name
 recovery, and edit-buffer/dirty-state behavior. The review found and resolved missing history identity/raw-field and path
 checks, the skipped intermediate-name repair after a failed reconciliation stage, and incomplete lock/queue ownership
-across sibling views. The final controlled regressions and affected package checks pass, and no unresolved implementation
-finding remains in the reviewed F2 changes. No upstream tests or live provider calls were executed for this source review.
+across sibling views. Those controlled regressions and affected package checks passed. The subsequent independent review
+found the queued Save and completion failures recorded below. No upstream tests or live provider calls were executed for
+this source review.
+
+### Follow-up Save identity and acknowledgement
+
+The follow-up first reproduced each failure with controlled boundaries:
+
+- `pnpm --dir src test core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts --maxWorkers=2 -t 'saves a stale sibling draft by stable ID'`:
+  1 failed, 28 skipped; the stale queued Save recreated the old name, leaving four profiles instead of three.
+- `pnpm --dir webview-ui test src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx --maxWorkers=2 -t 'saves a stale editor name by its captured profile ID exactly once'`:
+  1 failed, 35 skipped; Save omitted the buffer's stable ID.
+- `pnpm --dir webview-ui test src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx --maxWorkers=2 -t 'keeps modern edits dirty until the extension acknowledges Save'`:
+  1 failed, 40 skipped; Done closed without an unsaved-changes prompt before Save was acknowledged.
+- `pnpm --dir src test core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts core/config/__tests__/ContextProxy.spec.ts --maxWorkers=2 -t 'settles all started|waits for all provider-setting writes'`:
+  4 failed, 71 skipped across 2 files; Save, activation, and the inner settings batch completed early while an owned write
+  was held. After the completion fences, the same command passed all 4 selected tests with 71 skipped.
+- `pnpm --dir src test core/config/__tests__/ProviderSettingsManager.renameProfile.spec.ts core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts --maxWorkers=2 -t 'malformed .* draft container'`:
+  11 failed, 60 skipped across 2 files. Seven manager container cases and four real modern handler/provider cases showed
+  that malformed input was converted into an empty configuration before validation, clearing saved profile fields.
+
+Executed follow-up checks:
+
+| Executed check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Result                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm --dir src test core/config/__tests__/ProviderSettingsManager.renameProfile.spec.ts core/config/__tests__/ProviderSettingsManager.spec.ts core/config/__tests__/ContextProxy.spec.ts core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts core/webview/__tests__/webviewMessageHandler.spec.ts core/webview/__tests__/AlphaProvider.reasoning-preference.spec.ts core/webview/__tests__/AlphaProvider.apiHandlerRebuild.spec.ts core/webview/__tests__/AlphaProvider.spec.ts --maxWorkers=2` | Passed, 486 tests; 6 skipped across 8 files after the original-container guard.                                                |
+| `pnpm --dir webview-ui test src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx src/components/settings/__tests__/ApiConfigManager.spec.tsx src/components/settings/__tests__/SettingsView.spec.tsx src/components/settings/__tests__/SettingsView.change-detection.spec.tsx --maxWorkers=2`                                                                                                                                                                                         | Passed, 103 tests across 4 files.                                                                                              |
+| `pnpm --dir webview-ui test src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx --maxWorkers=2`                                                                                                                                                                                                                                                                                                                                                                                      | Passed, 61 tests in the owning suite after the inference-only test-table correction; repeats coverage within the 103-test run. |
+| `pnpm --filter @alpha-code/types test src/__tests__/provider-profile-save.spec.ts src/__tests__/provider-profile-rename.spec.ts --maxWorkers=2`                                                                                                                                                                                                                                                                                                                                                          | Passed, 34 tests across 2 files: 20 Save and 14 rename.                                                                        |
+| `pnpm --dir webview-ui test src/components/welcome/__tests__/WelcomeViewProvider.spec.tsx --maxWorkers=2`                                                                                                                                                                                                                                                                                                                                                                                                | Passed, 6 tests; 2 skipped in 1 file. This checks the retained initial creation route.                                         |
+
+The distinct follow-up suites total **629 passing tests and 8 skipped tests across 15 files**. The 61-test buffer rerun
+repeats coverage. These follow-up suites also overlap the initial validation record and are not added to its historical
+445-test total. The strengthened same-event edit cases are concurrency coverage; they are not claimed as an additional
+failing baseline.
+
+Additional executed follow-up checks:
+
+- `pnpm --dir src check-types`: passed with ordinary workspace settings after the final host changes.
+- `pnpm --dir webview-ui check-types`: passed after the final test-table typing correction.
+- `pnpm --filter @alpha-code/types build`, `pnpm --filter @alpha-code/types check-types`, and
+  `pnpm --filter @alpha-code/types lint`: passed.
+- Focused host ESLint, touched-file Prettier, and `git diff --check`: passed for the eight follow-up host files, with the
+  three files changed by the original-container guard checked again afterward.
+- `pnpm --dir webview-ui exec eslint src/components/settings/SettingsView.tsx src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx --max-warnings=0`:
+  passed.
+- Touched-file Prettier over the four shared-contract and three UI follow-up files: passed.
+
+The final independent review covered target resolution under both queues, malformed modern requests, deleted or replaced
+IDs, draft identity override, captured buffer ownership across selection/import/Discard, correlated completion, timer
+cleanup, edit-after-submit behavior, and delayed success after a newer rename. The review found and resolved the
+unresolved-profile Discard fallback, first-ID adoption provenance, stale acknowledgement name overlay, and early outer
+and inner batch rejection. The last malformed-container check also found and resolved validation after the identity
+overlay, which could clear saved fields. No unresolved F2 implementation gap remained in that review. Primary-write
+partial completion, best-effort sticky history, and result-delivery limits retain the explicit semantics above;
+integration gates remain separate.
 
 The exact VS Code 1.125.0 gate, `pnpm --filter @alpha-code/vscode-e2e test:smoke:1250`, is deferred to the parent integration
 run. Repository-wide checks, bundling, packaging, managed-agent certification, and live Copilot/profile access are also

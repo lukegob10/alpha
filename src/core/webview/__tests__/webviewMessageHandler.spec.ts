@@ -30,7 +30,11 @@ import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
-import { ProviderSettingsManager, ProviderProfileRenameError } from "../../config/ProviderSettingsManager"
+import {
+	ProviderSettingsManager,
+	ProviderProfileRenameError,
+	ProviderProfileSaveError,
+} from "../../config/ProviderSettingsManager"
 
 const mockGetCommands = vi.mocked(getCommands)
 
@@ -65,6 +69,7 @@ const mockAlphaProvider = {
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
 	renameProviderProfile: vi.fn(),
+	upsertProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
 	postTaskQueueToWebview: vi.fn(async () => undefined),
 	getCurrentTask: vi.fn(),
@@ -88,6 +93,169 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("provider profile Save messages", () => {
+	const draft = { apiProvider: "openai" as const, openAiModelId: "explicit-save-model" }
+	const saved = { id: "profile-id", name: "current-name" }
+	const upsert = vi.fn(async (_target: { id: string }, _draft: typeof draft) => saved)
+	const modernHost = { ...mockAlphaProvider, upsertProviderProfile: upsert } as unknown as AlphaProvider
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.upsertProviderProfile).mockResolvedValue("profile-id")
+		upsert.mockReset().mockResolvedValue(saved)
+	})
+
+	it("routes a modern Save by stable ID and ignores its stale display name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "save-1",
+			apiConfigurationId: "profile-id",
+			text: "stale-name",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledExactlyOnceWith({ id: "profile-id" }, draft)
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "save-1", status: "success", ...saved },
+		})
+	})
+
+	it("accepts an ID-targeted Save without a display name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "save-2",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledExactlyOnceWith({ id: "profile-id" }, draft)
+	})
+
+	it("acknowledges success only after the queued Save operation finishes", async () => {
+		let complete!: (value: typeof saved) => void
+		upsert.mockImplementationOnce(() => new Promise((resolve) => (complete = resolve)))
+		const pending = webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "held-save",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(modernHost.postMessageToWebview).not.toHaveBeenCalled()
+		complete(saved)
+		await pending
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "held-save", status: "success", ...saved },
+		})
+	})
+
+	it.each([undefined, null, "", 42, {}, []])(
+		"rejects property-present malformed Save identity %j without falling back to its legacy name",
+		async (apiConfigurationId) => {
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId: "invalid-save",
+				apiConfigurationId,
+				text: "legacy-name",
+				apiConfiguration: draft,
+			} as unknown as WebviewMessage)
+			expect(mockAlphaProvider.upsertProviderProfile).not.toHaveBeenCalled()
+			expect(upsert).not.toHaveBeenCalled()
+			expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: { requestId: "invalid-save", status: "error", error: "invalid" },
+			})
+		},
+	)
+
+	it("keeps legacy absent-ID Save and creation routed by name", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "upsertApiConfiguration",
+			text: "created-profile",
+			apiConfiguration: draft,
+		})
+		expect(mockAlphaProvider.upsertProviderProfile).toHaveBeenCalledExactlyOnceWith("created-profile", draft)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("safely ignores a stale modern Save lacking its draft", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "missing-draft",
+			apiConfigurationId: "profile-id",
+			text: "legacy-name",
+		} as unknown as WebviewMessage)
+		expect(mockAlphaProvider.upsertProviderProfile).not.toHaveBeenCalled()
+		expect(upsert).not.toHaveBeenCalled()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "missing-draft", status: "error", error: "invalid" },
+		})
+	})
+
+	it.each([undefined, "", "x".repeat(129), 42])(
+		"does not mutate an ID-targeted packet with malformed correlation %j",
+		async (requestId) => {
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId,
+				apiConfigurationId: "profile-id",
+				text: "stale-name",
+				apiConfiguration: draft,
+			} as unknown as WebviewMessage)
+			expect(upsert).not.toHaveBeenCalled()
+			expect(modernHost.postMessageToWebview).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rejects a requestId-only packet instead of falling back to its legacy name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "missing-id",
+			text: "legacy-name",
+			apiConfiguration: draft,
+		} as unknown as WebviewMessage)
+		expect(upsert).not.toHaveBeenCalled()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "missing-id", status: "error", error: "invalid" },
+		})
+	})
+
+	it.each(["notFound", "invalid", "saveFailed"] as const)(
+		"acknowledges the safe queued failure %s",
+		async (error) => {
+			upsert.mockRejectedValueOnce(new ProviderProfileSaveError(error))
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId: "failed-save",
+				apiConfigurationId: "profile-id",
+				apiConfiguration: draft,
+			})
+			expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: { requestId: "failed-save", status: "error", error },
+			})
+		},
+	)
+
+	it("does not retry or send a contradictory failure when success acknowledgement delivery rejects", async () => {
+		vi.mocked(modernHost.postMessageToWebview).mockRejectedValueOnce(new Error("private transport failure"))
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "delivered-save",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledOnce()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "delivered-save", status: "success", ...saved },
+		})
+		expect(modernHost.log).toHaveBeenCalledWith("[ProviderProfileSave] acknowledgement_failed")
+		expect(JSON.stringify(vi.mocked(modernHost.log).mock.calls)).not.toContain("private transport failure")
+	})
+})
 
 describe("persisted provider profile rename messages", () => {
 	const renamed = { id: "profile-id", oldName: "saved", newName: "renamed", isActive: true, entries: [] }

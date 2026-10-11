@@ -37,7 +37,9 @@ import {
 	webviewFocusChangedMessageSchema,
 	subagentAgentTypesSchema,
 	providerProfileRenameRequestSchema,
+	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
+	type ProviderProfileSaveResult,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -46,7 +48,7 @@ import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
 import { AlphaProvider } from "./AlphaProvider"
-import { ProviderProfileRenameError } from "../config/ProviderSettingsManager"
+import { ProviderProfileRenameError, ProviderProfileSaveError } from "../config/ProviderSettingsManager"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
@@ -2056,11 +2058,41 @@ export const webviewMessageHandler = async (
 				}
 			}
 			break
-		case "upsertApiConfiguration":
-			if (message.text && message.apiConfiguration) {
-				await provider.upsertProviderProfile(message.text, message.apiConfiguration)
+		case "upsertApiConfiguration": {
+			if (!("apiConfigurationId" in message) && !("requestId" in message)) {
+				if (message.text && message.apiConfiguration) {
+					await provider.upsertProviderProfile(message.text, message.apiConfiguration)
+				}
+				break
+			}
+			const requestId: unknown = message.requestId
+			const canAcknowledge = typeof requestId === "string" && requestId.length > 0 && requestId.length <= 128
+			const parsed = providerProfileSaveRequestSchema.safeParse({ requestId, id: message.apiConfigurationId })
+			let result: ProviderProfileSaveResult
+			if (!parsed.success || !message.apiConfiguration) {
+				if (!canAcknowledge) break
+				result = { requestId, status: "error", error: "invalid" }
+			} else {
+				try {
+					const saved = await provider.upsertProviderProfile({ id: parsed.data.id }, message.apiConfiguration)
+					result = { requestId: parsed.data.requestId, status: "success", id: saved.id, name: saved.name }
+				} catch (error) {
+					const code = error instanceof ProviderProfileSaveError ? error.code : "saveFailed"
+					provider.log(`[ProviderProfileSave] ${code}`)
+					result = { requestId: parsed.data.requestId, status: "error", error: code }
+				}
+			}
+			try {
+				await provider.postMessageToWebview({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: result,
+				})
+			} catch {
+				// Delivery cannot change the already-chosen Save outcome or trigger a second mutation or result.
+				provider.log("[ProviderProfileSave] acknowledgement_failed")
 			}
 			break
+		}
 		case "renameApiConfiguration": {
 			const modern = "apiConfigurationRename" in message
 			const payload: unknown = modern ? message.apiConfigurationRename : undefined

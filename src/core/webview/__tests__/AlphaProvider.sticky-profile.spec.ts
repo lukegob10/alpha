@@ -3,9 +3,10 @@
 import * as vscode from "vscode"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { AlphaProvider } from "../AlphaProvider"
+import { webviewMessageHandler } from "../webviewMessageHandler"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task } from "../../task/Task"
-import type { HistoryItem } from "@alpha-code/types"
+import type { HistoryItem, WebviewMessage } from "@alpha-code/types"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 
 vi.mock("vscode", () => ({
@@ -563,6 +564,386 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			} finally {
 				await peer.dispose()
 			}
+		})
+
+		it("saves a stale sibling draft by stable ID after the rename's held projection without recreating the old name", async () => {
+			const peer = await createSibling()
+			try {
+				const task = taskFixture("peer-current")
+				await peer.addTaskToStack(task as unknown as Task)
+				await peer.taskHistoryStore.upsert(history(task.taskId))
+				const before = await provider.providerSettingsManager.listConfig()
+				let release!: () => void
+				let enter!: () => void
+				const held = new Promise<void>((resolve) => (release = resolve))
+				const started = new Promise<void>((resolve) => (enter = resolve))
+				const setValue = provider.contextProxy.setValue.bind(provider.contextProxy)
+				vi.spyOn(provider.contextProxy, "setValue").mockImplementationOnce(async (key, value) => {
+					enter()
+					await held
+					return setValue(key, value)
+				})
+				const rename = provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+				await started
+				const saveConfig = vi.spyOn(peer.providerSettingsManager, "saveConfig")
+				const acknowledgement = vi.spyOn(peer, "postMessageToWebview").mockResolvedValue(undefined)
+				const draft = {
+					...savedSettings,
+					id: "other-id",
+					openAiBaseUrl: "https://explicit-save.example/v1",
+					openAiApiKey: "explicit-save-test-key",
+					openAiModelId: "explicit-save-model",
+				}
+				const save = webviewMessageHandler(peer, {
+					type: "upsertApiConfiguration",
+					requestId: "stale-save",
+					text: "saved",
+					apiConfigurationId: "saved-id",
+					apiConfiguration: draft,
+				})
+				try {
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					expect(saveConfig).not.toHaveBeenCalled()
+				} finally {
+					release()
+				}
+				await rename
+				await save
+				const after = await peer.providerSettingsManager.listConfig()
+				expect(after).toHaveLength(before.length)
+				expect(after.filter(({ id }) => id === "saved-id").map(({ name }) => name)).toEqual(["renamed"])
+				expect(after.some(({ name }) => name === "saved")).toBe(false)
+				expect(await peer.providerSettingsManager.getProfile({ id: "saved-id" })).toMatchObject({
+					...draft,
+					id: "saved-id",
+					name: "renamed",
+				})
+				expect(saveConfig).toHaveBeenCalledExactlyOnceWith({ id: "saved-id" }, draft)
+				expect(acknowledgement).toHaveBeenCalledExactlyOnceWith({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: {
+						requestId: "stale-save",
+						status: "success",
+						id: "saved-id",
+						name: "renamed",
+					},
+				})
+				expect(peer.contextProxy.getValue("currentApiConfigName")).toBe("renamed")
+				expect(task.taskApiConfigName).toBe("renamed")
+				expect(peer.taskHistoryStore.get(task.taskId)?.apiConfigName).toBe("renamed")
+				expect(task.updateApiConfiguration).toHaveBeenCalledExactlyOnceWith(draft)
+				expect(await peer.providerSettingsManager.getModeConfigId("code")).toBe("saved-id")
+			} finally {
+				await peer.dispose()
+			}
+		})
+
+		it.each(["unknown", "deleted"])(
+			"rejects a modern Save targeting an %s ID without provider, history or activation projections",
+			async (state) => {
+				const task = taskFixture("foreground")
+				await provider.addTaskToStack(task as unknown as Task)
+				await provider.taskHistoryStore.upsert(history(task.taskId))
+				if (state === "deleted") {
+					await provider.providerSettingsManager.deleteConfig("saved")
+					await provider.providerSettingsManager.saveConfig("saved", {
+						id: "replacement-id",
+						apiProvider: "vscode-lm",
+					})
+				}
+				const before = await provider.providerSettingsManager.listConfig()
+				const contextBefore = provider.contextProxy.getValues()
+				const historyBefore = provider.taskHistoryStore.getAll()
+				const setSettings = vi.spyOn(provider.contextProxy, "setProviderSettings")
+				const setMode = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+				const activate = vi.spyOn(provider.providerSettingsManager, "activateProfile")
+				const historyWrite = vi.spyOn(provider.taskHistoryStore, "upsert")
+				const acknowledgement = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+				vi.mocked(mockContext.secrets.store).mockClear()
+				vi.mocked(mockContext.globalState.update).mockClear()
+				await webviewMessageHandler(provider, {
+					type: "upsertApiConfiguration",
+					requestId: `missing-save-${state}`,
+					apiConfigurationId: state === "unknown" ? "missing-id" : "saved-id",
+					text: "saved",
+					apiConfiguration: { ...savedSettings, openAiModelId: "must-not-save" },
+				})
+				expect(await provider.providerSettingsManager.listConfig()).toEqual(before)
+				expect(provider.contextProxy.getValues()).toEqual(contextBefore)
+				expect(provider.taskHistoryStore.getAll()).toEqual(historyBefore)
+				expect(mockContext.secrets.store).not.toHaveBeenCalled()
+				expect(mockContext.globalState.update).not.toHaveBeenCalled()
+				expect(setSettings).not.toHaveBeenCalled()
+				expect(setMode).not.toHaveBeenCalled()
+				expect(activate).not.toHaveBeenCalled()
+				expect(historyWrite).not.toHaveBeenCalled()
+				expect(task.setTaskApiConfigName).not.toHaveBeenCalled()
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+				expect(provider.postStateToWebview).not.toHaveBeenCalled()
+				expect(acknowledgement).toHaveBeenCalledExactlyOnceWith({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: {
+						requestId: `missing-save-${state}`,
+						status: "error",
+						error: "notFound",
+					},
+				})
+			},
+		)
+
+		it.each([
+			["string", "malformed-draft"],
+			["array", []],
+			["number", 42],
+			["date", new Date("2026-10-11T00:00:00Z")],
+		])(
+			"acknowledges a malformed %s draft container as invalid without saving or activating",
+			async (kind, draft) => {
+				const task = taskFixture("foreground")
+				await provider.addTaskToStack(task as unknown as Task)
+				await provider.taskHistoryStore.upsert(history(task.taskId))
+				const before = await provider.providerSettingsManager.getProfile({ id: "saved-id" })
+				const contextBefore = provider.contextProxy.getValues()
+				const setSettings = vi.spyOn(provider.contextProxy, "setProviderSettings")
+				const setMode = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+				const historyWrite = vi.spyOn(provider.taskHistoryStore, "upsert")
+				const acknowledgement = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+				vi.mocked(mockContext.secrets.store).mockClear()
+				vi.mocked(mockContext.globalState.update).mockClear()
+
+				await webviewMessageHandler(provider, {
+					type: "upsertApiConfiguration",
+					requestId: `malformed-container-${kind}`,
+					apiConfigurationId: "saved-id",
+					text: "stale-name",
+					apiConfiguration: draft,
+				} as unknown as WebviewMessage)
+
+				expect(await provider.providerSettingsManager.getProfile({ id: "saved-id" })).toEqual(before)
+				expect(provider.contextProxy.getValues()).toEqual(contextBefore)
+				expect(mockContext.secrets.store).not.toHaveBeenCalled()
+				expect(mockContext.globalState.update).not.toHaveBeenCalled()
+				expect(setSettings).not.toHaveBeenCalled()
+				expect(setMode).not.toHaveBeenCalled()
+				expect(historyWrite).not.toHaveBeenCalled()
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+				expect(task.setTaskApiConfigName).not.toHaveBeenCalled()
+				expect(provider.postStateToWebview).not.toHaveBeenCalled()
+				expect(acknowledgement).toHaveBeenCalledExactlyOnceWith({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: {
+						requestId: `malformed-container-${kind}`,
+						status: "error",
+						error: "invalid",
+					},
+				})
+			},
+		)
+
+		it("acknowledges a rejected primary Save without changing the task and allows a stable-ID retry", async () => {
+			const task = taskFixture("foreground")
+			await provider.addTaskToStack(task as unknown as Task)
+			await provider.taskHistoryStore.upsert(history(task.taskId))
+			const before = await provider.providerSettingsManager.getProfile({ id: "saved-id" })
+			const contextBefore = provider.contextProxy.getValues()
+			const acknowledgement = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+			const draft = { ...savedSettings, openAiModelId: "retry-model" }
+			vi.mocked(mockContext.secrets.store).mockRejectedValueOnce(new Error("private storage failure"))
+
+			await webviewMessageHandler(provider, {
+				type: "upsertApiConfiguration",
+				requestId: "failed-primary-save",
+				apiConfigurationId: "saved-id",
+				text: "saved",
+				apiConfiguration: draft,
+			})
+
+			expect(await provider.providerSettingsManager.getProfile({ id: "saved-id" })).toEqual(before)
+			expect(provider.contextProxy.getValues()).toEqual(contextBefore)
+			expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+			expect(task.setTaskApiConfigName).not.toHaveBeenCalled()
+			expect(provider.postStateToWebview).not.toHaveBeenCalled()
+			expect(acknowledgement).toHaveBeenLastCalledWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: { requestId: "failed-primary-save", status: "error", error: "saveFailed" },
+			})
+
+			await webviewMessageHandler(provider, {
+				type: "upsertApiConfiguration",
+				requestId: "primary-save-retry",
+				apiConfigurationId: "saved-id",
+				apiConfiguration: draft,
+			})
+			expect(await provider.providerSettingsManager.getProfile({ id: "saved-id" })).toMatchObject(draft)
+			expect(task.updateApiConfiguration).toHaveBeenCalledExactlyOnceWith(draft)
+			expect(acknowledgement).toHaveBeenLastCalledWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: {
+					requestId: "primary-save-retry",
+					status: "success",
+					id: "saved-id",
+					name: "saved",
+				},
+			})
+		})
+
+		it("reports failed Save completion after a committed write and retries the same renamed ID without creating another profile", async () => {
+			await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+			const before = await provider.providerSettingsManager.listConfig()
+			const draft = { ...savedSettings, openAiModelId: "committed-model" }
+			const acknowledgement = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+			vi.mocked(provider.postStateToWebview).mockRejectedValueOnce(new Error("private projection failure"))
+
+			await webviewMessageHandler(provider, {
+				type: "upsertApiConfiguration",
+				requestId: "failed-save-completion",
+				apiConfigurationId: "saved-id",
+				text: "saved",
+				apiConfiguration: draft,
+			})
+			expect(await provider.providerSettingsManager.getProfile({ id: "saved-id" })).toMatchObject({
+				...draft,
+				name: "renamed",
+			})
+			expect(acknowledgement).toHaveBeenLastCalledWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: {
+					requestId: "failed-save-completion",
+					status: "error",
+					error: "saveFailed",
+				},
+			})
+
+			await webviewMessageHandler(provider, {
+				type: "upsertApiConfiguration",
+				requestId: "save-completion-retry",
+				apiConfigurationId: "saved-id",
+				text: "saved",
+				apiConfiguration: draft,
+			})
+			const after = await provider.providerSettingsManager.listConfig()
+			expect(after).toHaveLength(before.length)
+			expect(after.filter(({ id }) => id === "saved-id")).toEqual([expect.objectContaining({ name: "renamed" })])
+			expect(after.some(({ name }) => name === "saved")).toBe(false)
+			expect(acknowledgement).toHaveBeenLastCalledWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: {
+					requestId: "save-completion-retry",
+					status: "success",
+					id: "saved-id",
+					name: "renamed",
+				},
+			})
+		})
+
+		it.each(["metadata", "provider-setting"])(
+			"settles all started Save writes after a rejected %s write before acknowledging or renaming",
+			async (stage) => {
+				const task = taskFixture("foreground")
+				await provider.addTaskToStack(task as unknown as Task)
+				await provider.taskHistoryStore.upsert(history(task.taskId))
+				let release!: () => void
+				let enter!: () => void
+				const held = new Promise<void>((resolve) => (release = resolve))
+				const started = new Promise<void>((resolve) => (enter = resolve))
+				const update = vi.mocked(mockContext.globalState.update).getMockImplementation()!
+				const failedKey = stage === "metadata" ? "listApiConfigMeta" : "openAiBaseUrl"
+				let rejectOnce = true
+				vi.mocked(mockContext.globalState.update).mockImplementation(async (key, value) => {
+					if (key === failedKey && rejectOnce) {
+						rejectOnce = false
+						throw new Error("private projection failure")
+					}
+					if (key === "openAiModelId") {
+						enter()
+						await held
+					}
+					return update(key, value)
+				})
+				const acknowledgement = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+				const renameProfile = vi.spyOn(provider.providerSettingsManager, "renameProfile")
+				const save = webviewMessageHandler(provider, {
+					type: "upsertApiConfiguration",
+					requestId: `held-save-${stage}`,
+					apiConfigurationId: "saved-id",
+					apiConfiguration: { ...savedSettings, openAiModelId: "held-save-model" },
+				})
+				await started
+				const rename = provider.renameProviderProfile({ id: "saved-id" }, "renamed")
+				let acknowledgementsWhileHeld: number
+				let renamesWhileHeld: number
+				try {
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					acknowledgementsWhileHeld = acknowledgement.mock.calls.length
+					renamesWhileHeld = renameProfile.mock.calls.length
+				} finally {
+					release()
+				}
+				await save
+				await rename
+				expect(acknowledgementsWhileHeld).toBe(0)
+				expect(renamesWhileHeld).toBe(0)
+				expect(acknowledgement).toHaveBeenCalledExactlyOnceWith({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: {
+						requestId: `held-save-${stage}`,
+						status: "error",
+						error: "saveFailed",
+					},
+				})
+				expect((await provider.providerSettingsManager.getProfile({ id: "saved-id" })).name).toBe("renamed")
+				expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("renamed")
+				expect(task.taskApiConfigName).toBe("renamed")
+				expect(task.updateApiConfiguration).not.toHaveBeenCalled()
+			},
+		)
+
+		it("settles all started activation writes after rejection before the next queued rename", async () => {
+			let release!: () => void
+			let enter!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const started = new Promise<void>((resolve) => (enter = resolve))
+			const update = vi.mocked(mockContext.globalState.update).getMockImplementation()!
+			let rejectOnce = true
+			vi.mocked(mockContext.globalState.update).mockImplementation(async (key, value) => {
+				if (key === "listApiConfigMeta" && rejectOnce) {
+					rejectOnce = false
+					throw new Error("private projection failure")
+				}
+				if (key === "apiProvider") {
+					enter()
+					await held
+				}
+				return update(key, value)
+			})
+			const renameProfile = vi.spyOn(provider.providerSettingsManager, "renameProfile")
+			let activationSettled = false
+			const activation = provider.activateProviderProfile({ id: "other-id" }).then(
+				() => {
+					activationSettled = true
+					return undefined
+				},
+				(error: unknown) => {
+					activationSettled = true
+					return error
+				},
+			)
+			await started
+			const rename = provider.renameProviderProfile({ id: "other-id" }, "activated-renamed")
+			let settledWhileHeld: boolean
+			let renamesWhileHeld: number
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				settledWhileHeld = activationSettled
+				renamesWhileHeld = renameProfile.mock.calls.length
+			} finally {
+				release()
+			}
+			expect(await activation).toBeInstanceOf(Error)
+			await rename
+			expect(settledWhileHeld).toBe(false)
+			expect(renamesWhileHeld).toBe(0)
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("activated-renamed")
 		})
 
 		it("finishes the name-only rename before a queued activation applies its selected provider", async () => {

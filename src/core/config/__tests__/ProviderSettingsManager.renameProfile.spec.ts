@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "vscode"
+import type { ProviderSettingsWithId } from "@alpha-code/types"
 
 import { ProviderSettingsManager } from "../ProviderSettingsManager"
 
@@ -237,5 +238,116 @@ describe("ProviderSettingsManager persisted profile rename", () => {
 		})
 		expect(JSON.parse(stored).apiConfigs.other).toEqual(profileFixture().apiConfigs.other)
 		expect(JSON.parse(stored).apiConfigs).not.toHaveProperty("saved")
+	})
+
+	describe("ID-targeted Save", () => {
+		it.each([
+			["string", "malformed-draft"],
+			["array", []],
+			["number", 42],
+			["date", new Date("2026-10-11T00:00:00Z")],
+			["null", null],
+			["undefined", undefined],
+			["boolean", true],
+		])("rejects a malformed %s draft container before any profile write", async (_kind, draft) => {
+			const before = stored
+			await expect(
+				manager.saveConfig({ id: "profile-id" }, draft as unknown as ProviderSettingsWithId),
+			).rejects.toMatchObject({ code: "invalid" })
+			expect(stored).toBe(before)
+			expect(secrets.store).not.toHaveBeenCalled()
+			expect(await manager.getProfile({ id: "profile-id" })).toMatchObject(savedProfile)
+		})
+
+		it("updates the latest canonical name atomically and keeps the target ID despite another profile's draft ID", async () => {
+			await manager.renameProfile({ id: "profile-id" }, "renamed")
+			secrets.store.mockClear()
+			await expect(
+				manager.saveConfig(
+					{ id: "profile-id" },
+					{
+						...savedProfile,
+						id: "other-id",
+						apiProvider: "openai",
+						openAiModelId: "explicit-save",
+					},
+				),
+			).resolves.toEqual({ id: "profile-id", name: "renamed" })
+			expect(secrets.store).toHaveBeenCalledOnce()
+			expect(JSON.parse(stored).apiConfigs.renamed).toMatchObject({
+				id: "profile-id",
+				openAiModelId: "explicit-save",
+			})
+			expect(JSON.parse(stored).apiConfigs.other).toEqual(profileFixture().apiConfigs.other)
+			expect(Object.keys(JSON.parse(stored).apiConfigs)).toEqual(["renamed", "other"])
+			expect(JSON.parse(stored).modeApiConfigs).toEqual(profileFixture().modeApiConfigs)
+		})
+
+		it("rejects an unknown target without creating a profile or writing storage", async () => {
+			const before = stored
+			await expect(manager.saveConfig({ id: "missing-id" }, { apiProvider: "openai" })).rejects.toMatchObject({
+				code: "notFound",
+			})
+			expect(stored).toBe(before)
+			expect(secrets.store).not.toHaveBeenCalled()
+		})
+
+		it("rejects a deleted ID when its former name is now owned by another saved profile", async () => {
+			await manager.deleteConfig("saved")
+			await manager.saveConfig("saved", { id: "replacement-id", apiProvider: "vscode-lm" })
+			secrets.store.mockClear()
+			const before = stored
+			await expect(
+				manager.saveConfig({ id: "profile-id" }, { ...savedProfile, apiProvider: "openai" }),
+			).rejects.toMatchObject({ code: "notFound" })
+			expect(stored).toBe(before)
+			expect(secrets.store).not.toHaveBeenCalled()
+		})
+
+		it("resolves the ID after an in-flight rename instead of updating the stale name", async () => {
+			const started = deferred()
+			const complete = deferred()
+			secrets.store.mockImplementationOnce(async (_key: string, content: string) => {
+				started.resolve()
+				await complete.promise
+				stored = content
+			})
+			const rename = manager.renameProfile({ id: "profile-id" }, "renamed")
+			await started.promise
+			const save = manager.saveConfig(
+				{ id: "profile-id" },
+				{
+					...savedProfile,
+					apiProvider: "openai",
+					openAiModelId: "queued-save",
+				},
+			)
+			complete.resolve()
+			await rename
+			await expect(save).resolves.toEqual({ id: "profile-id", name: "renamed" })
+			expect(JSON.parse(stored).apiConfigs.renamed).toMatchObject({
+				id: "profile-id",
+				openAiModelId: "queued-save",
+			})
+			expect(JSON.parse(stored).apiConfigs).not.toHaveProperty("saved")
+		})
+
+		it("keeps the default fallback unchanged when a targeted Save fails in storage", async () => {
+			secrets.get.mockResolvedValue(undefined)
+			const before = await manager.getProfile({ name: "default" })
+			secrets.store.mockRejectedValueOnce(new Error("private storage failure"))
+			await expect(
+				manager.saveConfig({ id: before.id! }, { apiProvider: "openai", openAiModelId: "failed-save" }),
+			).rejects.toMatchObject({ code: "saveFailed", message: "Failed to save provider profile" })
+			expect(await manager.getProfile({ name: "default" })).toEqual(before)
+		})
+
+		it("keeps legacy name creation, imported IDs and string results compatible", async () => {
+			await expect(manager.saveConfig("created", { id: "imported-id", apiProvider: "vscode-lm" })).resolves.toBe(
+				"imported-id",
+			)
+			await expect(manager.saveConfig("created", { apiProvider: "vscode-lm" })).resolves.toBe("imported-id")
+			expect((await manager.getProfile({ name: "created" })).id).toBe("imported-id")
+		})
 	})
 })

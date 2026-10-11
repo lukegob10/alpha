@@ -399,6 +399,42 @@ describe("ContextProxy", () => {
 	})
 
 	describe("setProviderSettings", () => {
+		it("waits for all provider-setting writes before rejecting a failed setValues batch", async () => {
+			let release!: () => void
+			let enter!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const started = new Promise<void>((resolve) => (enter = resolve))
+			const failure = new Error("storage rejection")
+			mockGlobalState.update.mockRejectedValueOnce(failure)
+			mockSecrets.store.mockImplementationOnce(async () => {
+				enter()
+				await held
+			})
+			let settled = false
+			const update = proxy.setProviderSettings({ apiModelId: "updated-model", openAiApiKey: "updated-key" }).then(
+				() => {
+					settled = true
+					return undefined
+				},
+				(error: unknown) => {
+					settled = true
+					return error
+				},
+			)
+			await started
+			let settledWhileHeld: boolean
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				settledWhileHeld = settled
+			} finally {
+				release()
+			}
+			expect(await update).toBe(failure)
+			expect(settledWhileHeld).toBe(false)
+			expect(mockGlobalState.update).toHaveBeenCalledWith("apiModelId", "updated-model")
+			expect(mockSecrets.store).toHaveBeenCalledWith("openAiApiKey", "updated-key")
+		})
+
 		it("should clear old API configuration values and set new ones", async () => {
 			// Set up initial API configuration values
 			await proxy.updateGlobalState("apiModelId", "old-model")

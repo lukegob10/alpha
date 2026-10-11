@@ -172,7 +172,9 @@ import { ContextProxy } from "../config/ContextProxy"
 import {
 	ProviderSettingsManager,
 	ProviderProfileRenameError,
+	ProviderProfileSaveError,
 	type ProviderProfileRename,
+	type ProviderProfileSaved,
 } from "../config/ProviderSettingsManager"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task, getSubagentAllowedToolNames } from "../task/Task"
@@ -2364,30 +2366,43 @@ export class AlphaProvider
 		if (failed) throw new ProviderProfileRenameError("saveFailed")
 	}
 
-	async upsertProviderProfile(
+	upsertProviderProfile(
+		target: { id: string },
+		providerSettings: ProviderSettings,
+		activate?: boolean,
+	): Promise<ProviderProfileSaved>
+	upsertProviderProfile(
 		name: string,
 		providerSettings: ProviderSettings,
+		activate?: boolean,
+	): Promise<string | undefined>
+	async upsertProviderProfile(
+		target: string | { id: string },
+		providerSettings: ProviderSettings,
 		activate: boolean = true,
-	): Promise<string | undefined> {
+	): Promise<string | ProviderProfileSaved | undefined> {
 		const task = this.getCurrentTask()
 		return this.enqueueConfiguration(() =>
-			this.upsertProviderProfileWithinQueue(name, providerSettings, activate, task),
+			this.upsertProviderProfileWithinQueue(target, providerSettings, activate, task),
 		)
 	}
 
 	private async upsertProviderProfileWithinQueue(
-		name: string,
+		target: string | { id: string },
 		providerSettings: ProviderSettings,
 		activate: boolean,
 		task: Task | undefined,
-	): Promise<string | undefined> {
+	): Promise<string | ProviderProfileSaved | undefined> {
 		try {
 			// TODO: Do we need to be calling `activateProfile`? It's not
 			// clear to me what the source of truth should be; in some cases
 			// we rely on the `ContextProxy`'s data store and in other cases
 			// we rely on the `ProviderSettingsManager`'s data store. It might
 			// be simpler to unify these two.
-			const id = await this.providerSettingsManager.saveConfig(name, providerSettings)
+			const { id, name } =
+				typeof target === "string"
+					? { id: await this.providerSettingsManager.saveConfig(target, providerSettings), name: target }
+					: await this.providerSettingsManager.saveConfig(target, providerSettings)
 
 			if (activate) {
 				const { mode } = await this.getState()
@@ -2402,7 +2417,7 @@ export class AlphaProvider
 				// this.contextProxy.setValues({ ...providerSettings, listApiConfigMeta: ..., currentApiConfigName: ... })
 				// We should probably switch to that and verify that it works.
 				// I left the original implementation in just to be safe.
-				await Promise.all([
+				await this.awaitConfigurationWrites([
 					this.updateGlobalState("listApiConfigMeta", await this.providerSettingsManager.listConfig()),
 					this.updateGlobalState("currentApiConfigName", name),
 					this.providerSettingsManager.setModeConfig(mode, id),
@@ -2420,15 +2435,24 @@ export class AlphaProvider
 			}
 
 			await this.postStateToWebview()
-			return id
+			return typeof target === "string" ? id : { id, name }
 		} catch (error) {
-			this.log(
-				`Error create new api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-			)
+			this.log("Error create new api configuration")
+			if (typeof target !== "string") {
+				if (error instanceof ProviderProfileSaveError) throw error
+				throw new ProviderProfileSaveError("saveFailed")
+			}
 
 			vscode.window.showErrorMessage(t("common:errors.create_api_config"))
 			return undefined
 		}
+	}
+
+	private async awaitConfigurationWrites(writes: Promise<unknown>[]): Promise<void> {
+		// A failure must not release the shared configuration queue while an owned write is still pending.
+		const outcomes = await Promise.allSettled(writes)
+		const failure = outcomes.find((outcome) => outcome.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
 	}
 
 	async deleteProviderProfile(profileToDelete: ProviderSettingsEntry) {
@@ -2534,7 +2558,7 @@ export class AlphaProvider
 		const notifyWebview = options?.notifyWebview ?? true
 
 		// See `upsertProviderProfile` for a description of what this is doing.
-		await Promise.all([
+		await this.awaitConfigurationWrites([
 			this.contextProxy.setValue("listApiConfigMeta", await this.providerSettingsManager.listConfig()),
 			this.contextProxy.setValue("currentApiConfigName", name),
 			this.contextProxy.setProviderSettings(providerSettings),

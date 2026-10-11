@@ -363,6 +363,14 @@
 		"addProfile": "Add Profile",
 		"renameProfile": "Rename Profile",
 		"profileRefreshPending": "Waiting for updated profile names. You can save your settings edits while profiles refresh.",
+		"profileIdentityPending": "Waiting for the selected profile to load before saving.",
+		"profileSavePending": "Saving profile…",
+		"saveErrors": {
+			"invalid": "Unable to save this profile. Your edits have been kept. Refresh the profiles and try again.",
+			"notFound": "This saved profile no longer exists. Your edits have been kept. Select or create a profile before saving.",
+			"saveFailed": "Unable to complete saving this profile. Your edits have been kept. Please try again.",
+			"timeout": "Saving took longer than expected. Your edits have been kept. Please try again."
+		},
 		"renameErrors": {
 			"invalid": "The profile rename request was invalid. Please try again.",
 			"notFound": "This saved profile could not be found. Refresh the profiles and try again.",
