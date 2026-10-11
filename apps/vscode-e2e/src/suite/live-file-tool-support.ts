@@ -15,7 +15,11 @@ import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestRoot } from "../testProfile"
-import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
+import {
+	assertLiveFileToolBoundary,
+	createCompletionReviewAcknowledger,
+	withBoundedFixtureCleanup,
+} from "./proportional-context-support"
 import { waitFor } from "./utils"
 
 export interface LiveTask {
@@ -176,24 +180,7 @@ export async function runLiveCase(
 				() => {
 					if (budget.failure) throw budget.failure
 					assert.equal(budget.exhausted, false, "Live request budget exhausted")
-					const ask = task?.taskAsk
-					if (ask && !ask.partial && !task?.didComplete) {
-						if (ask.ask === "tool" && ask.text) {
-							const approval = record(JSON.parse(ask.text))
-							assert.notEqual(
-								approval.isOutsideWorkspace,
-								true,
-								"Fixture requested outside-workspace access",
-							)
-						}
-						// Auto-approval is asynchronous. Observing its transient prompt does not
-						// mean the task needs user intervention; keep the overall bounded wait.
-						const autoApprovalPending =
-							ask.ask === "tool" ||
-							((ask.ask === "command" || ask.ask === "command_output") && options.commands?.length)
-						if (!autoApprovalPending)
-							assert.equal(ask.ask, "completion_result", `Unexpected boundary: ${ask.ask}`)
-					}
+					assertLiveFileToolBoundary(task, options.commands)
 					acknowledge(task)
 					return completed > 0
 				},

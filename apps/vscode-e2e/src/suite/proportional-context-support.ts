@@ -1,3 +1,34 @@
+import { strict as assert } from "node:assert"
+import type { AlphaMessage } from "@alpha-code/types"
+
+/** Inspect surfaced task review state rather than transient transcript messages. */
+export function assertLiveFileToolBoundary(
+	task:
+		| {
+				didComplete?: boolean
+				abort?: boolean
+				taskAsk?: Pick<AlphaMessage, "ask" | "partial" | "isAnswered" | "text">
+		  }
+		| undefined,
+	commands?: readonly string[],
+): void {
+	const ask = task?.taskAsk
+	if (!ask || ask.partial || ask.isAnswered || task?.didComplete || task?.abort) return
+	if (ask.ask === "tool" && ask.text) {
+		const approval: unknown = JSON.parse(ask.text)
+		assert.ok(approval && typeof approval === "object" && !Array.isArray(approval))
+		assert.notEqual(
+			(approval as Record<string, unknown>).isOutsideWorkspace,
+			true,
+			"Fixture requested outside-workspace access",
+		)
+	}
+	// Task.taskAsk projects blocking review only after automatic decisions settle.
+	// Command output remains a nonblocking notification for opted-in commands.
+	if (ask.ask === "command_output" && commands?.length) return
+	assert.equal(ask.ask, "completion_result", `Unexpected boundary: ${ask.ask}`)
+}
+
 /** Execute every owned cleanup, keeping the original failure first if cleanup also fails. */
 export async function withFixtureCleanup<T>(
 	operation: () => Promise<T>,
