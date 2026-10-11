@@ -42,7 +42,7 @@ const makeProviderHarness = (
 				developerInstructions?: string
 			}
 		>
-		subagentApiConfigByRole?: { explore?: string; review?: string }
+		subagentApiConfigByRole?: { explore?: string; review?: string; worker?: string }
 		maxConcurrentSubagents?: number
 		subagentDelegationPolicy?: "explicit-only" | "proactive"
 		subagentMaxDepth?: number
@@ -352,19 +352,113 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			role: "explore",
 			modelRoute: {
 				source: "spawn",
-				profileName: "Parent",
+				profileName: "Research profile",
 				modelId: "spawn-model",
 				requestedModelId: "spawn-model",
 				requestedReasoningEffort: "high",
 			},
 		})
-		expect(prepared.group.agents[0].modelRoute?.profileId).not.toBe("research-profile")
+		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("research-profile")
 		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
 		expect(descriptor.inheritedInstructions).toContain("Cite the inspected source paths.")
 		expect(descriptor.contextManifest.instructions.sources).toEqual(
 			expect.arrayContaining([expect.objectContaining({ kind: "agent-type" })]),
 		)
 	})
+
+	it.each(["none", "all", "1"] as const)(
+		"applies a configured named type route and model for a %s history selection without widening Ask authority",
+		async (forkTurns) => {
+			const provider = makeProviderHarness(
+				2,
+				{
+					approvalMode: "bypass",
+					subagentDefaultApiConfigId: "default-profile",
+					subagentApiConfigByRole: { review: "role-profile" },
+					subagentAgentTypes: {
+						auditor: {
+							description: "Reviews independent evidence",
+							role: "review",
+							apiConfigId: "type-profile",
+							model: "configured-type-model",
+							reasoningEffort: "medium",
+						},
+					},
+				},
+				[
+					{ id: "default-profile", name: "Default", apiProvider: "openai", openAiModelId: "default-model" },
+					{ id: "role-profile", name: "Reviewer", apiProvider: "openai", openAiModelId: "role-model" },
+					{
+						id: "type-profile",
+						name: "Auditor",
+						apiProvider: "vertex",
+						apiModelId: "profile-model",
+						vertexJsonCredentials: "type-secret",
+					},
+				],
+			)
+			const parent = Object.assign(makeParent(), { getStepApprovalMode: vi.fn(() => "ask") })
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "audit_route",
+				message: "Inspect the configured route",
+				agent_type: "auditor",
+				fork_turns: forkTurns,
+			})
+			const route = prepared.group.agents[0].modelRoute
+			expect(route).toMatchObject({
+				profileId: "type-profile",
+				profileName: "Auditor",
+				provider: "vertex",
+				modelId: "configured-type-model",
+				requestedReasoningEffort: "medium",
+			})
+			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
+			expect(descriptor.modelRoute.apiConfiguration).toMatchObject({
+				apiProvider: "vertex",
+				apiModelId: "configured-type-model",
+				vertexJsonCredentials: "type-secret",
+				reasoningEffort: "medium",
+			})
+			expect(prepared.requiresExplicitApproval).toBe(true)
+			expect(descriptor.contextManifest.runtimePolicy).toMatchObject({
+				mutate: false,
+				execute: false,
+				autoApproval: { alwaysAllowWrite: false, alwaysAllowExecute: false, alwaysAllowSubagents: false },
+			})
+			expect(JSON.stringify(prepared.group)).not.toContain("type-secret")
+		},
+	)
+
+	it.each([
+		["model", "spawn-model", "medium"],
+		["effort", "configured-model", "high"],
+	] as const)(
+		"allows a spawn %s override while retaining the other named type default",
+		async (override, model, effort) => {
+			const provider = makeProviderHarness(2, {
+				subagentAgentTypes: {
+					researcher: {
+						description: "Inspects code",
+						role: "review",
+						model: "configured-model",
+						reasoningEffort: "medium",
+					},
+				},
+			})
+			const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+				task_name: "typed_override",
+				message: "Inspect the effective model settings",
+				agent_type: "researcher",
+				fork_turns: "none",
+				...(override === "model" ? { model } : { reasoning_effort: effort }),
+			})
+			expect(prepared.group.agents[0].modelRoute).toMatchObject({
+				provider: "openai",
+				modelId: model,
+				requestedReasoningEffort: effort,
+			})
+		},
+	)
 
 	it("rejects an unconfigured named agent type before reserving capacity", async () => {
 		const provider = makeProviderHarness()
@@ -949,6 +1043,55 @@ If complete, use attempt_completion.
 		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
 		expect(parent.getTaskMode).not.toHaveBeenCalled()
 		expect(parent.getTaskApiConfigName).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		{ apiProvider: "vertex", apiModelId: "other-provider-model" },
+		{ apiProvider: "openai", openAiModelId: "other-model" },
+		{ apiProvider: "openai", openAiModelId: "alpha-model" },
+	])("rebuilds forked history for a configured route change: %j", async (childConfiguration) => {
+		const provider = makeProviderHarness(2, { subagentApiConfigByRole: { review: "different-route" } }, [
+			{ id: "different-route", name: "Configured child", ...childConfiguration },
+		])
+		const parent = makeParent()
+		Object.assign(parent, {
+			getSubagentInvocationContext: vi.fn(() => ({
+				mode: "code",
+				apiConfiguration: structuredClone(parent.apiConfiguration),
+				apiConfigName: "Parent",
+				modelRoute: {
+					source: "parent",
+					resolution: "selected",
+					provider: "openai",
+					modelId: "alpha-model",
+					profileId: "parent-route",
+					profileName: "Parent",
+				},
+				history: [
+					{ role: "user", content: "Inspect the requested change" },
+					{
+						role: "assistant",
+						content: "Portable final response",
+						phase: "final_answer",
+						vscodeLmStatefulMarker: "parent-state",
+						previous_response_id: "parent-response-chain",
+						internal_chat_message_metadata_passthrough: { content_item_kinds: ["model-specific"] },
+					},
+				],
+				finalAssistantMessageIndexes: [1],
+				instructions: { effectiveText: "Captured instructions", sources: [] },
+			})),
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect forked history", agent_kind: "review", fork_turns: "all" },
+		])
+		const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
+		expect(descriptor.historyFork).toMatchObject({ kind: "native", requiresContextRebuild: true })
+		expect(descriptor.historyFork.messages).toEqual([
+			{ role: "user", content: "Inspect the requested change", input_origin: "agent" },
+			{ role: "assistant", content: "Portable final response", input_origin: "agent", phase: "final_answer" },
+		])
+		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("different-route")
 	})
 
 	it("does not replace an explicitly unnamed invoking profile with a live profile name", async () => {
@@ -1633,7 +1776,7 @@ If complete, use attempt_completion.
 		).rejects.toThrow('Sub-agent task_name "backend_review" is already in use')
 	})
 
-	it("ignores persisted role and default profiles and inherits the parent route", async () => {
+	it("applies saved role profiles without mutating the parent route or exposing credentials", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -1666,16 +1809,62 @@ If complete, use attempt_completion.
 		])
 
 		expect(prepared.envelopes.map((envelope) => envelope.modelRoute)).toEqual([
-			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
-			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
+			expect.objectContaining({ provider: "openai", model: "fast/model" }),
+			expect.objectContaining({ provider: "vertex", model: "review-model" }),
 		])
 		expect(prepared.group.agents.map((agent) => agent.modelRoute)).toEqual([
-			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
-			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
+			expect.objectContaining({ source: "role", profileName: "Fast Explorer", modelId: "fast/model" }),
+			expect.objectContaining({ source: "role", profileName: "Deep Reviewer", modelId: "review-model" }),
 		])
 		expect(JSON.stringify(prepared.group)).not.toContain("secret")
 		expect(parent.apiConfiguration).toEqual(originalParentConfiguration)
 	})
+
+	it.each(["explore", "review"] as const)(
+		"uses the configured default profile for an unrouted %s role",
+		async (role) => {
+			const provider = makeProviderHarness(2, { subagentDefaultApiConfigId: "default-id" }, [
+				{ id: "default-id", name: "Default child", apiProvider: "openai", openAiModelId: "default-model" },
+			])
+			const prepared = await provider.prepareSubagentGroup(makeParent() as any, [
+				{ objective: "Inspect the configured default", agent_kind: role },
+			])
+			expect(prepared.group.agents[0].modelRoute).toMatchObject({
+				source: "default",
+				profileId: "default-id",
+				profileName: "Default child",
+				modelId: "default-model",
+			})
+		},
+	)
+
+	it.each([
+		["missing-id", "missing"],
+		["unconfigured-id", "unconfigured"],
+	] as const)(
+		"records the %s role profile fallback instead of silently selecting another saved route",
+		async (profileId, reason) => {
+			const provider = makeProviderHarness(
+				2,
+				{ subagentDefaultApiConfigId: "default-id", subagentApiConfigByRole: { review: profileId } },
+				[
+					{ id: "default-id", name: "Default child", apiProvider: "openai", openAiModelId: "default-model" },
+					{ id: "unconfigured-id", name: "Incomplete" },
+				],
+			)
+			const prepared = await provider.prepareSubagentGroup(makeParent() as any, [
+				{ objective: "Inspect the unavailable profile", agent_kind: "review" },
+			])
+			expect(prepared.group.agents[0].modelRoute).toMatchObject({
+				source: "role",
+				resolution: "fallback",
+				requestedProfileId: profileId,
+				fallbackReason: reason,
+				profileName: "Parent",
+				modelId: "alpha-model",
+			})
+		},
+	)
 
 	it("ignores stale role routes when restoring a manifest-less child", async () => {
 		const provider = makeProviderHarness(
@@ -1707,6 +1896,162 @@ If complete, use attempt_completion.
 		expect(restored.apiConfiguration).toMatchObject({ apiProvider: "openai", openAiModelId: "alpha-model" })
 	})
 
+	it("restores a historical child profile without applying today's role or default routes", async () => {
+		const provider = makeProviderHarness(
+			2,
+			{ subagentDefaultApiConfigId: "new-default", subagentApiConfigByRole: { explore: "new-role" } },
+			[
+				{
+					id: "historical-id",
+					name: "Historical child",
+					apiProvider: "vertex",
+					apiModelId: "historical-model",
+				},
+				{ id: "new-default", name: "New default", apiProvider: "openai", openAiModelId: "new-default-model" },
+				{ id: "new-role", name: "New explorer", apiProvider: "openai", openAiModelId: "new-role-model" },
+			],
+		)
+		const restored = await (provider as any).restoreCapturedSubagentModelRoute(
+			makeParent(),
+			"explore",
+			{ id: "historical-child", apiConfigName: "Historical child" },
+			undefined,
+		)
+		expect(restored.route).toMatchObject({
+			profileId: "historical-id",
+			profileName: "Historical child",
+			provider: "vertex",
+			modelId: "historical-model",
+		})
+		expect(restored.apiConfiguration).toMatchObject({ apiProvider: "vertex", apiModelId: "historical-model" })
+	})
+
+	it("fails closed when a known historical child profile has been deleted", async () => {
+		const provider = makeProviderHarness(2, { subagentDefaultApiConfigId: "new-default" })
+		await expect(
+			(provider as any).restoreCapturedSubagentModelRoute(
+				makeParent(),
+				"review",
+				{ id: "historical-child", apiConfigName: "Deleted child profile" },
+				undefined,
+			),
+		).rejects.toThrow("Cannot resume child")
+	})
+
+	it.each(["manifest", "history"] as const)(
+		"restores a captured route by stable ID from %s despite changed routing settings",
+		async (source) => {
+			const profiles = [
+				{ id: "captured-id", name: "Captured child", apiProvider: "vertex", apiModelId: "profile-model" },
+				{
+					id: "replacement-id",
+					name: "Replacement",
+					apiProvider: "openai",
+					openAiModelId: "replacement-model",
+				},
+			]
+			const settings = { subagentApiConfigByRole: { review: "captured-id" } }
+			const provider = makeProviderHarness(2, settings, profiles)
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "captured_route",
+				message: "Inspect captured settings",
+				agent_type: "review",
+				model: "captured-model",
+				reasoning_effort: "high",
+			})
+			const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+			settings.subagentApiConfigByRole.review = "replacement-id"
+			profiles[0].name = "Renamed captured child"
+			profiles[0].apiModelId = "changed-profile-model"
+			const restored = await (provider as any).restoreCapturedSubagentModelRoute(
+				parent,
+				"review",
+				{
+					id: prepared.envelopes[0].id,
+					apiConfigName: "Captured child",
+					...(source === "history" ? { subagentModelRoute: manifest.modelRoute } : {}),
+				},
+				source === "manifest" ? manifest : undefined,
+			)
+			expect(restored.apiConfigName).toBe("Renamed captured child")
+			expect(restored.route).toMatchObject({
+				profileId: "captured-id",
+				provider: "vertex",
+				modelId: "captured-model",
+			})
+			expect(restored.apiConfiguration).toMatchObject({
+				apiProvider: "vertex",
+				apiModelId: "captured-model",
+				reasoningEffort: "high",
+			})
+		},
+	)
+
+	it.each([
+		{ apiProvider: "openai", openAiModelId: "other-model" },
+		{ apiProvider: "vertex", apiModelId: "captured-model" },
+	])("rejects captured profile drift on reload: %j", async (changedConfiguration) => {
+		const profiles: Array<Record<string, unknown>> = [
+			{ id: "captured-id", name: "Captured child", apiProvider: "openai", openAiModelId: "captured-model" },
+		]
+		const provider = makeProviderHarness(2, { subagentDefaultApiConfigId: "captured-id" }, profiles)
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect captured route", agent_kind: "review" },
+		])
+		const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+		Object.assign(profiles[0], changedConfiguration)
+		await expect(
+			(provider as any).restoreCapturedSubagentModelRoute(
+				parent,
+				"review",
+				{ id: prepared.envelopes[0].id },
+				manifest,
+			),
+		).rejects.toThrow("Cannot resume child: captured")
+	})
+
+	it("captures configured Worker routing before an awaited workspace-scope check", async () => {
+		const settings = { subagentApiConfigByRole: { worker: "captured-worker" } }
+		const provider = makeProviderHarness(2, settings, [
+			{ id: "captured-worker", name: "Captured Worker", apiProvider: "openai", openAiModelId: "captured-model" },
+			{ id: "later-worker", name: "Later Worker", apiProvider: "openai", openAiModelId: "later-model" },
+		])
+		const parent = makeParent()
+		let entered!: () => void
+		const checkingScope = new Promise<void>((resolve) => (entered = resolve))
+		let release!: () => void
+		const pendingScope = new Promise<void>((resolve) => (release = resolve))
+		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockImplementation(async () => {
+			entered()
+			await pendingScope
+			return {
+				gitRoot: parent.cwd,
+				logicalWorkspace: parent.cwd,
+				logicalWorkspaceFromRoot: "",
+				writeScope: ["."],
+				gitRelativeScope: ["."],
+				fileWriteScope: [],
+				gitRelativeFileScope: [],
+			}
+		})
+		const preparing = provider.prepareSubagentGroup(parent as any, {
+			task_name: "frozen_worker_route",
+			message: "Inspect the captured Worker route",
+			fork_turns: "none",
+		})
+		await checkingScope
+		settings.subagentApiConfigByRole.worker = "later-worker"
+		release()
+		const prepared = await preparing
+		expect(prepared.group.agents[0].modelRoute).toMatchObject({
+			source: "role",
+			profileId: "captured-worker",
+			modelId: "captured-model",
+		})
+	})
+
 	it("clears deleted profile references without disturbing another role", async () => {
 		const settings = {
 			subagentDefaultApiConfigId: "deleted-id",
@@ -1722,7 +2067,7 @@ If complete, use attempt_completion.
 		})
 	})
 
-	it("launches concurrent children with inherited parent configuration despite saved role routes", async () => {
+	it("launches concurrent children with their captured saved role routes", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{ subagentApiConfigByRole: { explore: "explore-id", review: "review-id" } },
@@ -1798,14 +2143,18 @@ If complete, use attempt_completion.
 		expect(result.status).toBe("completed")
 		expect(launchOptions).toHaveLength(2)
 		expect(launchOptions.find((options) => options.subagentRole === "explore")).toMatchObject({
-			taskApiConfigName: "Parent",
-			apiConfiguration: { openAiModelId: "alpha-model" },
-			subagentModelRoute: { source: "parent", modelId: "alpha-model" },
+			taskApiConfigName: "Fast Explorer",
+			apiConfiguration: { apiProvider: "openai", openAiModelId: "fast/model", openAiApiKey: "explore-secret" },
+			subagentModelRoute: { source: "role", modelId: "fast/model" },
 		})
 		expect(launchOptions.find((options) => options.subagentRole === "review")).toMatchObject({
-			taskApiConfigName: "Parent",
-			apiConfiguration: { openAiModelId: "alpha-model" },
-			subagentModelRoute: { source: "parent", modelId: "alpha-model" },
+			taskApiConfigName: "Deep Reviewer",
+			apiConfiguration: {
+				apiProvider: "vertex",
+				apiModelId: "review-model",
+				vertexJsonCredentials: "review-secret",
+			},
+			subagentModelRoute: { source: "role", modelId: "review-model" },
 		})
 		expect(parent.apiConfiguration).toEqual(parentSnapshot)
 	})

@@ -6779,6 +6779,9 @@ export class AlphaProvider
 		const parentMode = invocation?.mode ?? (await parent.getTaskMode())
 		const parentAuthority = this.getParentDelegationAuthority(parent)
 		const settings = this.contextProxy.getValues()
+		// Route preferences belong to this preparation, including time spent awaiting Worker scope validation.
+		const defaultProfileId = settings.subagentDefaultApiConfigId
+		const profileByRole = { ...settings.subagentApiConfigByRole }
 		const spawnRequest: SpawnAgentRequest | undefined = Array.isArray(drafts)
 			? undefined
 			: normalizeSpawnAgentRequest(drafts)
@@ -7002,11 +7005,16 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
+						defaultProfileId,
+						profileByRole: typeDefinition?.apiConfigId
+							? { ...profileByRole, [draft.agent_kind]: typeDefinition.apiConfigId }
+							: profileByRole,
 						profileLoader: this.providerSettingsManager,
 						...(spawnRequest?.source === "codex-v2"
 							? {
-									requestedModelId: spawnRequest.model,
-									requestedReasoningEffort: spawnRequest.reasoning_effort,
+									requestedModelId: spawnRequest.model ?? typeDefinition?.model,
+									requestedReasoningEffort:
+										spawnRequest.reasoning_effort ?? typeDefinition?.reasoningEffort,
 								}
 							: {}),
 					}),
@@ -9852,7 +9860,33 @@ export class AlphaProvider
 		historyItem: HistoryItem,
 		manifest: SubagentContextManifest | undefined,
 	): Promise<ResolvedSubagentModelRoute> {
-		if (!manifest) {
+		const capturedRoute = manifest?.modelRoute ?? historyItem.subagentModelRoute
+		if (!capturedRoute) {
+			// Historical children may predate manifests while retaining their own sticky profile.
+			// Today's delegation routes must never replace that historical selection.
+			if (historyItem.apiConfigName?.trim()) {
+				try {
+					const { id, name, ...settings } = await this.providerSettingsManager.getProfile({
+						name: historyItem.apiConfigName,
+					})
+					const apiConfiguration = snapshotProviderSettings(settings)
+					if (!apiConfiguration.apiProvider) throw new Error("Historical child profile is unconfigured")
+					return {
+						apiConfiguration,
+						apiConfigName: name,
+						route: {
+							source: "parent",
+							resolution: "selected",
+							profileId: id,
+							profileName: name,
+							provider: apiConfiguration.apiProvider,
+							modelId: getSubagentRouteModelId(apiConfiguration),
+						},
+					}
+				} catch {
+					throw new Error("Cannot resume child: historical child profile is unavailable or unconfigured")
+				}
+			}
 			const parentApiConfigName = await parent.getTaskApiConfigName()
 			return resolveSubagentModelRoute({
 				role,
@@ -9862,7 +9896,6 @@ export class AlphaProvider
 			})
 		}
 
-		const capturedRoute = manifest.modelRoute
 		let apiConfiguration: ProviderSettings
 		let apiConfigName = historyItem.apiConfigName ?? capturedRoute.profileName
 		if (capturedRoute.profileId) {
@@ -9959,6 +9992,7 @@ export class AlphaProvider
 			({
 				id: record.taskId,
 				apiConfigName: agent.modelRoute?.profileName,
+				subagentModelRoute: agent.modelRoute,
 			} as HistoryItem)
 		const retainedContextManifest = childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest
 		if (retainedContextManifest && !isValidSubagentContextManifest(retainedContextManifest)) {

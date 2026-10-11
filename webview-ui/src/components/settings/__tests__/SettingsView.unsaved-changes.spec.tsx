@@ -735,9 +735,22 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 	it("preserves named agent definitions when saving another buffered setting", async () => {
 		const definitions = {
-			reviewer: { description: "Review changes", model: "gpt-6", reasoningEffort: "low" as const },
+			reviewer: {
+				description: "Review changes",
+				model: "gpt-6",
+				reasoningEffort: "low" as const,
+				apiConfigId: "review-profile",
+				developerInstructions: "Preserve existing public interfaces.",
+			},
 		}
-		const liveState = { ...defaultExtensionState, soundEnabled: false, subagentAgentTypes: definitions }
+		const profileRoutes = { review: "review-profile" }
+		const liveState = {
+			...defaultExtensionState,
+			soundEnabled: false,
+			subagentAgentTypes: definitions,
+			subagentApiConfigByRole: profileRoutes,
+			subagentDefaultApiConfigId: "default-child-profile",
+		}
 		;(useExtensionState as any).mockReturnValue(liveState)
 		vi.mocked(NotificationSettings).mockImplementation(({ soundEnabled, setCachedStateField }) => (
 			<button onClick={() => setCachedStateField("soundEnabled", !soundEnabled)}>Change sound</button>
@@ -755,7 +768,12 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(mockPostMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
-				updatedSettings: expect.objectContaining({ soundEnabled: true, subagentAgentTypes: definitions }),
+				updatedSettings: expect.objectContaining({
+					soundEnabled: true,
+					subagentAgentTypes: definitions,
+					subagentApiConfigByRole: profileRoutes,
+					subagentDefaultApiConfigId: "default-child-profile",
+				}),
 			}),
 		)
 	})

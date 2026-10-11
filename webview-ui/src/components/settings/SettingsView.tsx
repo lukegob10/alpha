@@ -29,6 +29,7 @@ import {
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
+	Bot,
 } from "lucide-react"
 
 import {
@@ -66,6 +67,8 @@ import { SectionHeader } from "./SectionHeader"
 import ApiConfigManager from "./ApiConfigManager"
 import ApiOptions from "./ApiOptions"
 import { AutoApproveSettings } from "./AutoApproveSettings"
+import { AgentsSettings } from "./AgentsSettings"
+import { getManagedAgentSettingsError } from "./agents-settings-validation"
 import { CheckpointSettings } from "./CheckpointSettings"
 import { NotificationSettings } from "./NotificationSettings"
 import { ContextManagementSettings } from "./ContextManagementSettings"
@@ -103,6 +106,7 @@ export interface SettingsViewRef {
 export const sectionNames = [
 	"providers",
 	"autoApprove",
+	"agents",
 	"slashCommands",
 	"skills",
 	"checkpoints",
@@ -390,7 +394,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const isSettingValid = !errorMessage
+	const managedAgentSettingsError = getManagedAgentSettingsError(cachedState)
+	const settingsErrorMessage = errorMessage ?? (managedAgentSettingsError ? t(managedAgentSettingsError) : undefined)
+	const isSettingValid = !settingsErrorMessage
 
 	const handleSubmit = () => {
 		if (isSettingValid) {
@@ -423,11 +429,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
 					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
 					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
-					subagentApiConfigByRole: {
-						explore: subagentApiConfigByRole?.explore ?? "",
-						review: subagentApiConfigByRole?.review ?? "",
-						worker: subagentApiConfigByRole?.worker ?? "",
-					},
+					...(subagentApiConfigByRole !== undefined ? { subagentApiConfigByRole } : {}),
 					...toManagedAgentSettingsSavePayload(cachedState),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
@@ -574,6 +576,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "skills", icon: GraduationCap },
 			{ id: "slashCommands", icon: SquareSlash },
 			{ id: "autoApprove", icon: CheckCheck },
+			{ id: "agents", icon: Bot },
 			{ id: "mcp", icon: Server },
 			{ id: "checkpoints", icon: GitCommitVertical },
 			{ id: "notifications", icon: Bell },
@@ -677,6 +680,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				setTimeout(() => {
 					const element = document.querySelector(`[data-setting-id="${settingId}"]`)
 					if (element) {
+						const advancedSettings = element.closest<HTMLDetailsElement>("details[data-agents-advanced]")
+						if (advancedSettings) advancedSettings.open = true
 						element.scrollIntoView({ behavior: "smooth", block: "center" })
 
 						// Add highlight animation
@@ -767,6 +772,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					allowedMaxCost={allowedMaxCost ?? undefined}
 					deniedCommands={deniedCommands}
 					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Agents Section */}
+			{section === "agents" && (
+				<AgentsSettings
+					values={cachedState}
+					setCachedStateField={setCachedStateField}
+					listApiConfigMeta={listApiConfigMeta}
 				/>
 			)}
 
@@ -942,7 +956,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					<StandardTooltip
 						content={
 							!isSettingValid
-								? errorMessage
+								? settingsErrorMessage
 								: isChangeDetected
 									? t("settings:header.saveButtonTooltip")
 									: t("settings:header.nothingChangedTooltip")

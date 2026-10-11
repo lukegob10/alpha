@@ -32,6 +32,7 @@
 		"worktrees": "Worktrees",
 		"skills": "Skills",
 		"autoApprove": "Auto-Approve",
+		"agents": "Agents",
 		"checkpoints": "Checkpoints",
 		"notifications": "Notifications",
 		"contextManagement": "Context",
@@ -257,9 +258,9 @@
 			"ask": "Ask",
 			"auto": "Auto",
 			"bypass": "Full Access",
-			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, sub-agent launches, tickets, MCP, and outside paths. A saved command prefix can allow matching commands.",
-			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, and Alpha Tickets for the current project. Ask for outside or protected changes, sub-agent launches, and MCP. Command deny rules still apply.",
-			"bypassDescription": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, managed-agent launches, Alpha Tickets, and outside paths. Saved command prefixes can allow matching commands; MCP tools ask unless enabled below for an individually granted tool.",
+			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, Alpha Tickets for the current project, and eligible bounded managed-agent launches. Agents settings separately control explicit-only or proactive delegation; child authority stays within the parent's policy. Ask for outside changes, protected changes unless enabled below, and MCP without an enabled saved tool grant. Command deny rules still apply.",
+			"bypassDescription": "Also auto-approve outside paths, protected files, valid MCP tool calls, and follow-up suggestions. Command deny rules still apply. Managed-agent delegation policy and inherited child authority still apply."
 		},
 		"bypassWarning": {
 			"title": "Enable Full Access?",
@@ -293,8 +294,9 @@
 			}
 		},
 		"mcp": {
-			"label": "MCP",
-			"description": "Enable auto-approval of individual MCP tools in the MCP Servers view (requires both this setting and the tool's individual \"Always allow\" checkbox)"
+			"label": "Enable saved MCP tool grants",
+			"description": "In Ask or Auto, auto-approval requires both this setting and the exact tool's individual \"Always allow\" grant in the MCP Servers view. Tool annotations do not grant approval.",
+			"bypassDescription": "Full Access auto-approves valid MCP tool calls regardless of saved tool grants. Choose Ask or Auto to use individual grants and approval prompts."
 		},
 		"modeSwitch": {
 			"label": "Mode",
@@ -321,9 +323,9 @@
 			"label": "Command rules",
 			"description": "Auto approves commands run from the workspace. Detected outside or unresolved write paths ask for review; deny rules still block commands. Path checks are not an OS sandbox. Saved rules persist across projects.",
 			"allowedCommands": "Allowed command prefixes",
-			"allowedCommandsDescription": "Add a prefix to allow matching commands in Ask or to override a broader deny rule. Auto already approves commands run from the workspace. Detected outside-root writes and unresolved write paths still require approval. Saved rules apply globally.",
+			"allowedCommandsDescription": "Saved command prefixes allow matching commands in Ask. Auto and Full Access already allow wildcard command execution, so this list does not narrow those modes. Command deny rules still apply. In Ask and Auto, protected changes and outside or unresolved write paths may still require approval. Saved rules apply globally.",
 			"deniedCommands": "Denied Commands",
-			"deniedCommandsDescription": "Command prefixes that will be automatically denied without asking for approval. In case of conflicts with allowed commands, the longest prefix match takes precedence. Add * to deny all commands.",
+			"deniedCommandsDescription": "Command deny rules remain active in every approval mode. Add * to deny all commands.",
 			"commandPlaceholder": "Enter command prefix (e.g., 'git ')",
 			"deniedCommandPlaceholder": "Enter command prefix to deny (e.g., 'rm -rf')",
 			"addButton": "Add",
@@ -333,15 +335,15 @@
 			"pathApprovalUnresolved": "Some write paths could not be resolved."
 		},
 		"apiRequestLimit": {
-			"title": "Max Count",
+			"title": "Requests between confirmations",
 			"unlimited": "Unlimited"
 		},
 		"apiCostLimit": {
-			"title": "Max Cost",
+			"title": "Reported API cost between confirmations",
 			"unlimited": "Unlimited"
 		},
 		"maxLimits": {
-			"description": "Automatically make requests up to these limits before asking for approval to continue."
+			"description": "Each task uses these confirmation checkpoints. Blank values (or 0 cost) mean unlimited. Alpha asks before another model request after the request count or reported API cost exceeds its allowance; confirming resets both. Cost is checked after usage is reported and may exceed the amount before confirmation."
 		},
 		"toggleAriaLabel": "Toggle auto-approval",
 		"disabledAriaLabel": "Auto-approval disabled - select options first",
