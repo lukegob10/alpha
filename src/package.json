@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.1.10",
+	"version": "3.1.11",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -71,6 +71,11 @@
 			]
 		},
 		"commands": [
+			{
+				"command": "alpha.manageGoal",
+				"title": "%command.manageGoal.title%",
+				"category": "%configuration.title%"
+			},
 			{
 				"command": "alpha.previewHtmlDocument",
 				"title": "%command.previewHtmlDocument.title%",

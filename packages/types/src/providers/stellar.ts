@@ -16,3 +16,8 @@ export const stellarModels = {
 		description: "Meta Llama 3.3 70B Instruct hosted on the internal Stellar model gateway.",
 	},
 } as const satisfies Record<string, ModelInfo>
+
+/** Preserve the gateway's legacy fallback consistently in the editor and adapter. */
+export function resolveStellarModelInfo(modelId: string): ModelInfo {
+	return stellarModels[modelId as StellarModelId] ?? stellarModels[stellarDefaultModelId]
+}

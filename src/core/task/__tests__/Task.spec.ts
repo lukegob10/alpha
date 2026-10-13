@@ -12,6 +12,7 @@ import {
 	AlphaCodeEventName,
 	getApiProtocol,
 	alphaMessageSchema,
+	type AlphaMessage,
 	type AlphaAsk,
 	type ApprovalMode,
 	type GlobalState,
@@ -19,6 +20,7 @@ import {
 	type ModelInfo,
 	type ToolApprovalDecision,
 	type ToolApprovalRequest,
+	type SubagentGroupState,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -48,6 +50,7 @@ import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../../a
 import * as contextManagement from "../../context-management"
 import type { AgentMessage } from "../../task-persistence/AgentMessageInbox"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import * as taskPersistence from "../../task-persistence"
 import i18n from "../../../i18n"
 import enCommon from "../../../i18n/locales/en/common.json"
 
@@ -98,11 +101,68 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
+function isVirtualTaskStoragePath(filePath: string): boolean {
+	const virtualStorageRoots = [
+		path.resolve(os.tmpdir(), "test-storage"),
+		path.resolve("/test/storage"),
+		path.resolve("/mock/storage/path"),
+	]
+	const candidate = path.resolve(filePath)
+	return virtualStorageRoots.some((root) => {
+		const relativePath = path.relative(root, candidate)
+		return (
+			relativePath === "" ||
+			(!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`))
+		)
+	})
+}
+
+function createStorageLstatMock(actualLstat: typeof import("node:fs/promises").lstat) {
+	return vi.fn().mockImplementation((filePath, options) => {
+		if (typeof filePath === "string" && isVirtualTaskStoragePath(filePath)) {
+			return Promise.reject(
+				Object.assign(new Error("Virtual storage path does not exist"), {
+					code: "ENOENT",
+					path: filePath,
+					syscall: "lstat",
+				}),
+			)
+		}
+		return actualLstat(filePath, options)
+	})
+}
+
+// Constructor goal-owner writes share the virtual filesystem boundary and must not leave real lock retries behind.
+// Physical task-loop and goal fixtures retain the actual durable store.
+vi.mock("../../agent/goals/GoalAccountingBindingStore", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../agent/goals/GoalAccountingBindingStore")>()
+	return {
+		...actual,
+		GoalAccountingBindingStore: class extends actual.GoalAccountingBindingStore {
+			constructor(
+				private readonly fixtureStoragePath: string,
+				taskId: string,
+			) {
+				super(fixtureStoragePath, taskId)
+			}
+
+			override async save(
+				...args: Parameters<typeof actual.GoalAccountingBindingStore.prototype.save>
+			): Promise<void> {
+				if (isVirtualTaskStoragePath(this.fixtureStoragePath)) return
+				await super.save(...args)
+			}
+		},
+	}
+})
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	const mockFunctions = {
 		mkdir: vi.fn().mockResolvedValue(undefined),
 		writeFile: vi.fn().mockResolvedValue(undefined),
+		// Virtual storage stays absent regardless of host leftovers; isolated physical fixtures use real metadata.
+		lstat: createStorageLstatMock(actual.lstat),
 		readFile: vi.fn().mockImplementation((filePath) => {
 			if (filePath.includes("ui_messages.json")) {
 				return Promise.resolve(JSON.stringify(mockMessages))
@@ -233,15 +293,19 @@ vi.mock("../../condense", async (importOriginal) => {
 		}),
 	}
 })
-// Mock storagePathManager to prevent dynamic import issues.
-vi.mock("../../../utils/storage", () => ({
-	getTaskDirectoryPath: vi
-		.fn()
-		.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),
-	getSettingsDirectoryPath: vi
-		.fn()
-		.mockImplementation((globalStoragePath) => Promise.resolve(`${globalStoragePath}/settings`)),
-}))
+// Keep write paths virtual and expose only the validated read-only lookup needed for absent goal sidecars.
+vi.mock("../../../utils/storage", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../utils/storage")>()
+	return {
+		resolveExistingTaskDirectoryPathReadOnly: actual.resolveExistingTaskDirectoryPathReadOnly,
+		getTaskDirectoryPath: vi
+			.fn()
+			.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),
+		getSettingsDirectoryPath: vi
+			.fn()
+			.mockImplementation((globalStoragePath) => Promise.resolve(`${globalStoragePath}/settings`)),
+	}
+})
 
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockImplementation((filePath) => {
@@ -271,7 +335,7 @@ describe("Alpha", () => {
 	let mockOutputChannel: any
 	let mockExtensionContext: vscode.ExtensionContext
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		if (!TelemetryService.hasInstance()) {
 			TelemetryService.createInstance([])
 		}
@@ -392,6 +456,17 @@ describe("Alpha", () => {
 				},
 			],
 		}))
+		// Provider bootstrap owns lock timers; settle it before tests take control of the clock.
+		await Promise.allSettled([
+			mockProvider.agentControlStoreReady,
+			mockProvider.taskHistoryStoreReady,
+			mockProvider.mcpHubInitialization,
+		])
+		mockProvider.postMessageToWebview.mockClear()
+	})
+
+	afterEach(async () => {
+		await mockProvider.dispose()
 	})
 
 	it("keeps the working handler and configuration when a legacy provider is rejected", () => {
@@ -1098,71 +1173,84 @@ describe("Alpha", () => {
 						task: "test task",
 					})
 
-					const userContent = [
-						{
-							type: "text",
-							text: "Regular text with 'some/path' (see below for file content)",
-						} as const,
-						{
-							type: "text",
-							text: "<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
-						} as const,
-						{
-							type: "tool_result",
-							tool_use_id: "test-id",
-							content: [
-								{
-									type: "text",
-									text: "<user_message>Check 'some/path' (see below for file content)</user_message>",
-								},
-							],
-						} as Anthropic.ToolResultBlockParam,
-						{
-							type: "tool_result",
-							tool_use_id: "test-id-2",
-							content: [
-								{
-									type: "text",
-									text: "Regular tool result with 'path' (see below for file content)",
-								},
-							],
-						} as Anthropic.ToolResultBlockParam,
-					]
+					try {
+						const userContent = [
+							{
+								type: "text",
+								text: "Regular text with 'some/path' (see below for file content)",
+							} as const,
+							{
+								type: "text",
+								text: "<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
+							} as const,
+							{
+								type: "tool_result",
+								tool_use_id: "test-id",
+								content: [
+									{
+										type: "text",
+										text: "<user_message>Check 'some/path' (see below for file content)</user_message>",
+									},
+								],
+							} as Anthropic.ToolResultBlockParam,
+							{
+								type: "tool_result",
+								tool_use_id: "test-id-2",
+								content: [
+									{
+										type: "text",
+										text: "Regular tool result with 'path' (see below for file content)",
+									},
+								],
+							} as Anthropic.ToolResultBlockParam,
+						]
 
-					const { content: processedContent } = await processUserContentMentions({
-						userContent,
-						cwd: alphaTask.cwd,
-						fileContextTracker: alphaTask.fileContextTracker,
-					})
+						const { content: processedContent } = await processUserContentMentions({
+							userContent,
+							cwd: alphaTask.cwd,
+							fileContextTracker: alphaTask.fileContextTracker,
+						})
 
-					// Regular text should not be processed
-					expect((processedContent[0] as Anthropic.TextBlockParam).text).toBe(
-						"Regular text with 'some/path' (see below for file content)",
-					)
+						// Regular text should not be processed
+						expect((processedContent[0] as Anthropic.TextBlockParam).text).toBe(
+							"Regular text with 'some/path' (see below for file content)",
+						)
 
-					// Text within user_message tags should be processed
-					expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain("processed:")
-					expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain(
-						"<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
-					)
+						// Text within user_message tags should be processed
+						expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain("processed:")
+						expect((processedContent[1] as Anthropic.TextBlockParam).text).toContain(
+							"<user_message>Text with 'some/path' (see below for file content) in user_message tags</user_message>",
+						)
 
-					// user_message tag content should be processed
-					const toolResult1 = processedContent[2] as Anthropic.ToolResultBlockParam
-					const content1 = Array.isArray(toolResult1.content) ? toolResult1.content[0] : toolResult1.content
-					expect((content1 as Anthropic.TextBlockParam).text).toContain("processed:")
-					expect((content1 as Anthropic.TextBlockParam).text).toContain(
-						"<user_message>Check 'some/path' (see below for file content)</user_message>",
-					)
+						// user_message tag content should be processed
+						const toolResult1 = processedContent[2] as Anthropic.ToolResultBlockParam
+						const content1 = Array.isArray(toolResult1.content)
+							? toolResult1.content[0]
+							: toolResult1.content
+						expect((content1 as Anthropic.TextBlockParam).text).toContain("processed:")
+						expect((content1 as Anthropic.TextBlockParam).text).toContain(
+							"<user_message>Check 'some/path' (see below for file content)</user_message>",
+						)
 
-					// Regular tool result should not be processed
-					const toolResult2 = processedContent[3] as Anthropic.ToolResultBlockParam
-					const content2 = Array.isArray(toolResult2.content) ? toolResult2.content[0] : toolResult2.content
-					expect((content2 as Anthropic.TextBlockParam).text).toBe(
-						"Regular tool result with 'path' (see below for file content)",
-					)
-
-					await alphaTask.abortTask(true)
-					await task.catch(() => {})
+						// Regular tool result should not be processed
+						const toolResult2 = processedContent[3] as Anthropic.ToolResultBlockParam
+						const content2 = Array.isArray(toolResult2.content)
+							? toolResult2.content[0]
+							: toolResult2.content
+						expect((content2 as Anthropic.TextBlockParam).text).toBe(
+							"Regular tool result with 'path' (see below for file content)",
+						)
+					} finally {
+						try {
+							await alphaTask.abortTask(true)
+						} finally {
+							try {
+								await task.catch(() => {})
+							} finally {
+								await alphaTask.waitForTermination()
+							}
+						}
+					}
 				})
 			})
 		})
@@ -1543,67 +1631,79 @@ describe("Alpha", () => {
 				])
 			})
 
-			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "persist an owned native wait result",
-					startTask: false,
-				})
-				task.apiConversationHistory = [
-					{
-						role: "assistant",
-						content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
-						ts: 1,
-					},
-				] as any
-				task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
-				task.stageWaitAgentNotifications("claim-native-wait", [
-					{
-						eventId: "wait-event",
-						sequence: 1,
-						senderTaskId: "child",
-						senderPath: "/root/child",
-						recipientTaskId: task.taskId,
-						recipientPath: "/root",
-						rootTaskId: task.taskId,
-						kind: "result",
-						name: "agent_completed",
-						payload: { summary: "Child done" },
-						createdAt: 1,
-					},
-				])
-				let releaseSave!: (saved: boolean) => void
-				const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
-				vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
-				const toolResult = {
-					role: "user" as const,
-					content: [
+			it.each([true, false])(
+				"acknowledges a native wait claim only after its matching tool result and unchanged notification are durably saved (%s)",
+				async (matchingBody) => {
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "persist an owned native wait result",
+						startTask: false,
+					})
+					task.apiConversationHistory = [
 						{
-							type: "tool_result" as const,
-							tool_use_id: "call-wait",
-							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-native-wait" }),
+							role: "assistant",
+							content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
+							ts: 1,
 						},
+					] as any
+					task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
+					task.stageWaitAgentNotifications("claim-native-wait", [
 						{
-							type: "text" as const,
-							text: JSON.stringify({
-								source: "managed_agent_notification",
-								eventId: "wait-event",
-								senderPath: "/root/child",
-								payload: { summary: "Child done" },
-							}),
+							eventId: "wait-event",
+							sequence: 1,
+							senderTaskId: "child",
+							senderPath: "/root/child",
+							recipientTaskId: task.taskId,
+							recipientPath: "/root",
+							rootTaskId: task.taskId,
+							kind: "result",
+							name: "agent_completed",
+							payload: { summary: "Child done" },
+							createdAt: 1,
 						},
-					],
-				}
+					])
+					let releaseSave!: (saved: boolean) => void
+					const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
+					vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
+					const notification = JSON.parse(
+						task["stagedWaitAgentNotifications"].get("claim-native-wait")![0].text,
+					)
+					if (!matchingBody)
+						notification.payload.summary = "Unrelated prose with matching notification headers"
+					const toolResult = {
+						role: "user" as const,
+						content: [
+							{
+								type: "tool_result" as const,
+								tool_use_id: "call-wait",
+								content: JSON.stringify({
+									source: "managed_agent_mailbox",
+									claimId: "claim-native-wait",
+								}),
+							},
+							{
+								type: "text" as const,
+								text: JSON.stringify(notification),
+							},
+						],
+					}
 
-				const persisting = (task as any).addToApiConversationHistory(toolResult)
-				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-native-wait")
-				releaseSave(true)
-				await expect(persisting).resolves.toBe(true)
+					const persisting = (task as any).addToApiConversationHistory(toolResult)
+					expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-native-wait")
+					releaseSave(true)
+					await expect(persisting).resolves.toBe(true)
 
-				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
-				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
-			})
+					if (matchingBody) {
+						expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
+						expect(task.hasRetainedWaitAgentResultClaim("claim-native-wait")).toBe(false)
+					} else {
+						expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+						expect(task.hasRetainedWaitAgentResultClaim("claim-native-wait")).toBe(true)
+						expect(task.hasDurablyPersistedWaitAgentClaim("claim-native-wait")).toBe(false)
+					}
+				},
+			)
 
 			it("does not ACK a wait receipt if its child notification is missing from the saved message", async () => {
 				const task = new Task({
@@ -1724,7 +1824,7 @@ describe("Alpha", () => {
 						},
 						{
 							type: "text" as const,
-							text: JSON.stringify({ source: "managed_agent_notification", eventId: "retry-event" }),
+							text: task["stagedWaitAgentNotifications"].get("claim-retry")![0].text,
 						},
 					],
 				}
@@ -2739,7 +2839,8 @@ describe("Alpha", () => {
 			})
 			await task.resumeWithEditedMessage("Replacement", images)
 			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
-			expect(overwrite).toHaveBeenCalledWith(prefix)
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toEqual(prefix)
 			expect(loop).toHaveBeenCalledWith(
 				[
 					{ type: "text", text: "<user_message>\nReplacement\n</user_message>" },
@@ -3312,30 +3413,65 @@ describe("Alpha", () => {
 			expect(newerController.signal.aborted).toBe(false)
 		})
 
-		it("merges steered content with the interrupted user turn", async () => {
+		it.each([true, false])("keeps separate steering inputs atomic when saving succeeds=%s", async (saved) => {
 			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "initial task",
 				startTask: false,
 			})
-			task.apiConversationHistory = [
-				{
+			const prefix: ApiMessage = { role: "assistant", content: "Ready", ts: 1 }
+			const original: ApiMessage = {
+				role: "user",
+				content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
+				input_origin: "human",
+				queued_message_ids: ["original-input"],
+				ts: 2,
+			}
+			task.apiConversationHistory = [prefix]
+			let attemptedHistory: ApiMessage[] = []
+			const save = vi.spyOn(task as any, "saveApiConversationHistory").mockImplementation(async () => {
+				attemptedHistory = structuredClone(task.apiConversationHistory)
+				return saved
+			})
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+			const acknowledge = vi.spyOn(task.messageQueueService, "acknowledgeMessages")
+			const capture = { details: "", commit: vi.fn(), release: vi.fn() }
+			const onPersisted = vi.fn()
+			const steer = task["buildUserMessageContent"]("steered context", [])
+			const persist = task["persistUserContentWithEnvironment"](
+				steer,
+				capture,
+				undefined,
+				onPersisted,
+				undefined,
+				["steering-input"],
+				"human",
+				[original],
+			)
+			if (saved) {
+				await persist
+				expect(task.apiConversationHistory).toEqual(attemptedHistory)
+				expect(acknowledge).toHaveBeenCalledWith(["original-input", "steering-input"])
+			} else {
+				await expect(persist).rejects.toThrow("Failed to persist the user turn")
+				expect(task.apiConversationHistory).toEqual([prefix])
+				expect(acknowledge).not.toHaveBeenCalled()
+			}
+			expect(attemptedHistory).toEqual([
+				prefix,
+				original,
+				expect.objectContaining({
 					role: "user",
-					content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
-				} as any,
-			]
-
-			const mergedContent = [
-				...(task as any).takeLastApiUserMessageContent(),
-				...(task as any).buildUserMessageContent("steered context", []),
-			]
-
-			expect(mergedContent).toEqual([
-				{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
-				{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
+					content: steer,
+					input_origin: "human",
+					queued_message_ids: ["steering-input"],
+				}),
 			])
-			expect(task.apiConversationHistory).toEqual([])
+			expect(save).toHaveBeenCalledOnce()
+			expect(onPersisted).toHaveBeenCalledTimes(saved ? 1 : 0)
+			expect(capture.commit).toHaveBeenCalledTimes(saved ? 1 : 0)
+			expect(capture.release).toHaveBeenCalledOnce()
 		})
 	})
 
@@ -3720,7 +3856,119 @@ describe("Alpha", () => {
 		})
 	})
 
+	describe("token usage timer ownership", () => {
+		let task: Task
+		beforeEach(() => {
+			vi.useFakeTimers()
+			task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Publish final usage without retaining timers",
+				startTask: false,
+			})
+		})
+		afterEach(() => {
+			task.dispose()
+			vi.useRealTimers()
+		})
+		const usage = (tokens: number) => ({
+			totalTokensIn: tokens,
+			totalTokensOut: tokens / 10,
+			totalCost: tokens / 1_000,
+			contextTokens: tokens,
+		})
+
+		it("publishes the latest final usage once without scheduling a timeout", async () => {
+			const latest = usage(100)
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(latest)
+			task.toolUsage = { read_file: { attempts: 2, failures: 1 } }
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+
+			task.emitFinalTokenUsageUpdate()
+			task.emitFinalTokenUsageUpdate()
+
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, latest, task.toolUsage)
+			expect(vi.getTimerCount()).toBe(0)
+			await vi.runAllTimersAsync()
+			expect(updated).toHaveBeenCalledOnce()
+		})
+
+		it("cancels pending throttled usage before publishing the current terminal payload", async () => {
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+			task["debouncedEmitTokenUsage"](usage(100), {})
+			task["debouncedEmitTokenUsage"](usage(200), {})
+			expect(vi.getTimerCount()).toBe(1)
+			updated.mockClear()
+			const latest = usage(300)
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(latest)
+			task.toolUsage = { read_file: { attempts: 3, failures: 0 } }
+
+			task.emitFinalTokenUsageUpdate()
+
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, latest, task.toolUsage)
+			expect(vi.getTimerCount()).toBe(0)
+			await vi.advanceTimersByTimeAsync(2_000)
+			expect(updated).toHaveBeenCalledOnce()
+		})
+
+		it.each(["pending", "final"] as const)(
+			"disposes %s usage timers without a later task event",
+			async (boundary) => {
+				vi.spyOn(task, "getTokenUsage").mockReturnValue(usage(300))
+				task["debouncedEmitTokenUsage"](usage(100), {})
+				task["debouncedEmitTokenUsage"](usage(200), {})
+				if (boundary === "final") task.emitFinalTokenUsageUpdate()
+				const emit = vi.spyOn(task, "emit")
+
+				task.dispose()
+
+				expect(vi.getTimerCount()).toBe(0)
+				await vi.advanceTimersByTimeAsync(2_000)
+				expect(emit).not.toHaveBeenCalledWith(
+					AlphaCodeEventName.TaskTokenUsageUpdated,
+					task.taskId,
+					expect.anything(),
+					expect.anything(),
+				)
+			},
+		)
+
+		it("retains normal usage throttling after a final emission", async () => {
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(usage(100))
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+			task.emitFinalTokenUsageUpdate()
+			updated.mockClear()
+
+			task["debouncedEmitTokenUsage"](usage(200), {})
+			task["debouncedEmitTokenUsage"](usage(300), {})
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, usage(200), {})
+			expect(vi.getTimerCount()).toBe(1)
+			await vi.advanceTimersByTimeAsync(1_999)
+			expect(updated).toHaveBeenCalledOnce()
+			await vi.advanceTimersByTimeAsync(1)
+			expect(updated).toHaveBeenLastCalledWith(task.taskId, usage(300), {})
+			expect(updated).toHaveBeenCalledTimes(2)
+			expect(vi.getTimerCount()).toBe(0)
+		})
+	})
+
 	describe("v2.0.9 root task loop", () => {
+		const loopStorageParent = path.resolve(os.tmpdir())
+		const loopStoragePrefix = "alpha-task-loop-"
+		let loopStoragePath: string | undefined
+		const startedTaskLoops = new Set<{ task: Task; run: Promise<void> }>()
+		const trackTaskLoop = (task: Task) => {
+			const initiateTaskLoop = task["initiateTaskLoop"].bind(task)
+			task["initiateTaskLoop"] = (...args) => {
+				const run = initiateTaskLoop(...args)
+				startedTaskLoops.add({ task, run })
+				void run.catch(() => undefined)
+				return run
+			}
+		}
 		const createTask = (taskKind: "primary" | "subagent" = "primary") => {
 			const task = new Task({
 				provider: mockProvider,
@@ -3730,23 +3978,74 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", task.taskId), {
+				recursive: true,
+			})
 			markTestHandlerAsLegacyEOF(task)
 			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
 				createSnapshot()
 				onPersisted?.()
 				return true
 			})
+			trackTaskLoop(task)
 			return task
 		}
 
 		beforeEach(() => {
+			// Owned directories preserve real goal locks and absent-state/path validation; transcript/UI writes stay mocked.
+			loopStoragePath = fsSync.mkdtempSync(path.join(loopStorageParent, loopStoragePrefix))
+			Object.assign(mockExtensionContext, { globalStorageUri: { fsPath: loopStoragePath } })
 			i18n.addResourceBundle("en", "common", enCommon)
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
 			)
+		})
+
+		afterEach(async () => {
+			// Settled loops retain Task resources for follow-ups; every started fixture must be stopped and joined.
+			const runsByTask = new Map<Task, Promise<void>[]>()
+			for (const { task, run } of startedTaskLoops) {
+				const runs = runsByTask.get(task) ?? []
+				runs.push(run)
+				runsByTask.set(task, runs)
+			}
+			const settled = await Promise.allSettled(
+				[...runsByTask].map(async ([task, runs]) => {
+					const stopped = task.abortTask(true)
+					try {
+						await stopped
+					} finally {
+						try {
+							await Promise.all(runs.map((run) => run.catch(() => undefined)))
+						} finally {
+							await task.waitForTermination()
+						}
+					}
+				}),
+			)
+			const failures = settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+			startedTaskLoops.clear()
+			try {
+				if (loopStoragePath) {
+					const target = path.resolve(loopStoragePath)
+					if (
+						path.dirname(target) !== loopStorageParent ||
+						!path.basename(target).startsWith(loopStoragePrefix)
+					) {
+						throw new Error("Root loop fixture cleanup escaped its owned temporary directory")
+					}
+					fsSync.rmSync(target, { recursive: true, force: true })
+					loopStoragePath = undefined
+				}
+			} catch (error) {
+				failures.push(error)
+			}
+			if (failures.length === 1) throw failures[0]
+			if (failures.length > 1) throw new AggregateError(failures, "Root loop fixture cleanup failed")
 		})
 
 		const deferred = <T = void>() => {
@@ -3850,13 +4149,23 @@ describe("Alpha", () => {
 				expect((task as any).buildCleanConversationHistory(task.apiConversationHistory)[0]).not.toHaveProperty(
 					"agent_message_id",
 				)
-				// Human steering must preserve the receipt instead of merging away its identity.
-				expect((task as any).takeLastApiUserMessageContent()).toEqual([])
-				expect(task.apiConversationHistory).toHaveLength(1)
+				// Human steering retains the complete agent envelope and its delivery receipt.
+				const delivered = structuredClone(task.apiConversationHistory[0])
+				await task["persistUserContentWithEnvironment"](
+					task["buildUserMessageContent"]("Human steering", []),
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					[],
+					"human",
+				)
+				expect(task.apiConversationHistory[0]).toEqual(delivered)
+				expect(task.apiConversationHistory[1]).toMatchObject({ role: "user", input_origin: "human" })
 				// Replay after a crash between transcript persistence and inbox ACK.
 				await task.receiveAgentMessage(message)
 				await (task as any).deliverAgentMessages()
-				expect(task.apiConversationHistory).toHaveLength(1)
+				expect(task.apiConversationHistory).toHaveLength(2)
 			},
 		)
 
@@ -3905,6 +4214,135 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 			expect(request).toHaveBeenCalledTimes(2)
 			expect(request.mock.calls[1][0]).toEqual([])
+		})
+
+		it.each(["commentary", "reasoning"] as const)(
+			"continues after %s to read automatic child reports without calling wait_agent",
+			async (phase) => {
+				const task = createTask()
+				let resultPending = false
+				mockProvider.hasPendingAgentResultNotifications = vi.fn(() => resultPending)
+				mockProvider.deliverAgentMessages = vi.fn(async (_recipient, persist) => {
+					await persist({
+						id: "automatic-turn-result",
+						senderTaskId: "child",
+						text: "Follow-up finished",
+						notification: {
+							eventId: "automatic-turn-result",
+							sequence: 1,
+							rootTaskId: task.taskId,
+							senderTaskId: "child",
+							senderPath: "/root/child",
+							recipientTaskId: task.taskId,
+							recipientPath: "/root",
+							kind: "result",
+							name: "agent_completed",
+							payload: { taskId: "child", status: "completed", summary: "Follow-up finished" },
+							createdAt: 1,
+						},
+					})
+					resultPending = false
+				})
+				const request = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						resultPending = true
+						return {
+							status: "completed",
+							response: createAgentResponse(
+								phase === "reasoning"
+									? [{ type: "reasoning", text: "Thinking about the review" }]
+									: [{ type: "text", text: "Checking the review", phase: "commentary" }],
+							),
+						}
+					})
+					.mockImplementationOnce(async () => {
+						await task["deliverAgentMessages"]()
+						return true
+					})
+				await task["initiateTaskLoop"]([{ type: "text", text: "start" }])
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1][0]).toEqual([])
+				expect(task.apiConversationHistory).toEqual([
+					expect.objectContaining({
+						input_origin: "agent",
+						agent_message_id: "automatic-turn-result",
+					}),
+				])
+				expect(JSON.parse((task.apiConversationHistory[0].content[0] as { text: string }).text)).toMatchObject({
+					source: "managed_agent_notification",
+					eventId: "automatic-turn-result",
+					payload: { summary: "Follow-up finished" },
+				})
+			},
+		)
+
+		it.each(["final_answer", undefined] as const)(
+			"retains passive child reports after a %s answer without another model request",
+			async (phase) => {
+				const task = createTask()
+				mockProvider.hasPendingAgentResultNotifications = vi.fn(() => true)
+				const delivery = vi.fn(async () => undefined)
+				mockProvider.deliverAgentMessages = delivery
+				const request = vi.spyOn(task, "runAgentRequests").mockResolvedValue({
+					status: "completed",
+					response: createAgentResponse([
+						{ type: "text", text: "Review complete", ...(phase ? { phase } : {}) },
+					]),
+				})
+				await task["initiateTaskLoop"]([{ type: "text", text: "start" }])
+				expect(request).toHaveBeenCalledOnce()
+				expect(delivery).not.toHaveBeenCalled()
+				expect(task.isCompleted()).toBe(true)
+				expect(mockProvider.getParentCompletionDecision).toHaveBeenCalledWith(task, {
+					deferResultNotifications: true,
+				})
+			},
+		)
+
+		it("deduplicates an automatic result across a later native wait receipt", async () => {
+			const task = createTask()
+			const acknowledge = vi.spyOn(mockProvider, "acknowledgeWaitAgentResults").mockResolvedValue(undefined)
+			const notification = {
+				eventId: "automatic-before-wait",
+				sequence: 1,
+				createdAt: 1,
+				rootTaskId: task.taskId,
+				senderTaskId: "child",
+				senderPath: "/root/child",
+				recipientTaskId: task.taskId,
+				recipientPath: "/root",
+				kind: "result" as const,
+				name: "agent_completed",
+				payload: { status: "completed", summary: "Only one body" },
+			}
+			await task.receiveAgentMessage({
+				id: notification.eventId,
+				senderTaskId: "child",
+				text: "Only one body",
+				notification,
+			})
+			await task["deliverAgentMessages"]()
+			task.apiConversationHistory.push({
+				role: "assistant",
+				content: [{ type: "tool_use", id: "wait-after-auto", name: "wait_agent", input: {} }],
+			})
+			task.retainWaitAgentResultClaim("wait-after-auto", "claim-after-auto")
+			task.stageWaitAgentNotifications("claim-after-auto", [notification])
+			task.pushToolResultToUserContent({
+				type: "tool_result",
+				tool_use_id: "wait-after-auto",
+				content: JSON.stringify({
+					source: "managed_agent_mailbox",
+					claimId: "claim-after-auto",
+					eventCount: 1,
+				}),
+			})
+			expect(task.userMessageContent.map((block) => block.type)).toEqual(["tool_result"])
+			task["assistantMessageSavedToHistory"] = true
+			await expect(task.flushPendingToolResultsToHistory()).resolves.toBe(true)
+			expect(acknowledge).toHaveBeenCalledWith(task, "claim-after-auto")
+			expect(JSON.stringify(task.apiConversationHistory).match(/Only one body/g)).toHaveLength(1)
 		})
 
 		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
@@ -4017,6 +4455,9 @@ describe("Alpha", () => {
 			expect(JSON.stringify(task.apiConversationHistory)).toContain("STEERING_MESSAGE")
 		})
 
+		// Keep the existing watchdog live while the scenario clock is frozen.
+		const controlledSignalSetTimeout = setTimeout
+		const controlledSignalClearTimeout = clearTimeout
 		const waitForControlledSignal = async <T>(
 			name: string,
 			promise: Promise<T>,
@@ -4027,11 +4468,14 @@ describe("Alpha", () => {
 				return await Promise.race([
 					promise,
 					new Promise<T>((_resolve, reject) => {
-						timer = setTimeout(() => reject(new Error(`${name} timed out: ${state()}`)), 4000)
+						timer = controlledSignalSetTimeout(
+							() => reject(new Error(`${name} timed out: ${state()}`)),
+							4000,
+						)
 					}),
 				])
 			} finally {
-				if (timer) clearTimeout(timer)
+				if (timer) controlledSignalClearTimeout(timer)
 			}
 		}
 
@@ -4052,6 +4496,9 @@ describe("Alpha", () => {
 			}
 			const events: AgentTurnEvent[] = []
 			const eventOrder: string[] = []
+			let readTimer: ReturnType<typeof setTimeout> | undefined
+			let providerTimer: ReturnType<typeof setTimeout> | undefined
+			let assistantSaveTimer: ReturnType<typeof setTimeout> | undefined
 			const lifecyclePublications: Array<{ type: string; durable: boolean }> = []
 			let lifecycleSnapshot: any
 			let sequence = 0
@@ -4101,7 +4548,9 @@ describe("Alpha", () => {
 							readEffectCount += 1
 							eventOrder.push("read_started")
 							readStarted.resolve()
-							if (scenario.timing) setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+							if (scenario.timing) {
+								readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+							}
 							await releaseRead.promise
 							callbacks.pushToolResult("directory listing")
 							eventOrder.push("read_result_ready")
@@ -4244,8 +4693,13 @@ describe("Alpha", () => {
 					initialAssistantCount
 				) {
 					assistantSaveStarted.resolve()
-					if (scenario.timing)
-						setTimeout(() => releaseAssistantSave.resolve(), scenario.timing.assistantSaveMs)
+					// The delay models the first assistant receipt; later result saves retain the released gate.
+					if (scenario.timing && assistantSaveTimer === undefined) {
+						assistantSaveTimer = setTimeout(
+							() => releaseAssistantSave.resolve(),
+							scenario.timing.assistantSaveMs,
+						)
+					}
 					await releaseAssistantSave.promise
 					persistedAssistantHistory.push(structuredClone(task.apiConversationHistory))
 					eventOrder.push("assistant_saved")
@@ -4308,7 +4762,9 @@ describe("Alpha", () => {
 					}
 					yield { type: "tool_call_end", id: acceptedCallId }
 					providerTailReached.resolve()
-					if (scenario.timing) setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
+					if (scenario.timing) {
+						providerTimer = setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
+					}
 					await releaseProvider.promise
 					if (scenario.barrier) {
 						yield {
@@ -4352,8 +4808,10 @@ describe("Alpha", () => {
 			)
 			const run = task.runAgentRequests([{ type: "text", text: "Inspect this directory." }], false)
 			let runCompletion: unknown
+			let runCompletedAt: number | undefined
 			void run.then(
 				(result) => {
+					runCompletedAt = Date.now()
 					runCompletion =
 						typeof result === "boolean"
 							? { value: result }
@@ -4370,6 +4828,11 @@ describe("Alpha", () => {
 				restoreMismatchSpy: () => mismatchFinishSpy?.mockRestore(),
 				events,
 				eventOrder,
+				clearTimingTimers: () => {
+					if (readTimer !== undefined) clearTimeout(readTimer)
+					if (providerTimer !== undefined) clearTimeout(providerTimer)
+					if (assistantSaveTimer !== undefined) clearTimeout(assistantSaveTimer)
+				},
 				lifecycleSnapshot: () => lifecycleSnapshot,
 				debugState: () =>
 					JSON.stringify({
@@ -4393,6 +4856,7 @@ describe("Alpha", () => {
 				readEffectCount: () => readEffectCount,
 				providerReachedEof: () => providerReachedEof,
 				runCompletion: () => runCompletion,
+				runCompletedAt: () => runCompletedAt,
 				assistantSaveStarted: assistantSaveStarted.promise,
 				readStarted: readStarted.promise,
 				readResultReady: readResultReady.promise,
@@ -4408,6 +4872,23 @@ describe("Alpha", () => {
 			{ directory: "absolute", workdir: (cwd: string) => cwd },
 			{ directory: "nested", workdir: () => "src" },
 		]
+
+		const stopEarlyReadStream = async (fixture?: Awaited<ReturnType<typeof startEarlyReadStream>>) => {
+			if (!fixture) return
+			const stopped = fixture.task.abortTask(true)
+			fixture.releaseRead()
+			fixture.releaseProvider()
+			fixture.releaseAssistantSave()
+			try {
+				await stopped
+			} finally {
+				try {
+					await fixture.run.catch(() => undefined)
+				} finally {
+					await fixture.task.waitForTermination()
+				}
+			}
+		}
 
 		it.each(earlyReadWorkdirs)(
 			"starts an audited read from $directory workdir before EOF and commits after durable history",
@@ -4499,13 +4980,7 @@ describe("Alpha", () => {
 					expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
 					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
 				} finally {
-					fixture.releaseRead()
-					fixture.releaseProvider()
-					fixture.releaseAssistantSave()
-					await Promise.race([
-						fixture.run.catch(() => undefined),
-						new Promise((resolve) => setTimeout(resolve, 500)),
-					])
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4513,16 +4988,33 @@ describe("Alpha", () => {
 		it.each(earlyReadWorkdirs)(
 			"measures read overlap for $directory workdir on the same controlled stream",
 			async ({ directory, workdir }) => {
+				let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
 				vi.useFakeTimers()
 				try {
 					const started = Date.now()
-					const fixture = await startEarlyReadStream({
+					fixture = await startEarlyReadStream({
 						workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
-					await vi.runAllTimersAsync()
-					const result = await fixture.run
-					const elapsedMs = Date.now() - started
+					// Cold request setup settles while fake time is frozen, before the controlled workload advances.
+					await waitForControlledSignal(
+						"timed read and provider tail",
+						Promise.all([fixture.readStarted, fixture.providerTailReached]),
+						fixture.debugState,
+					)
+					expect(Date.now()).toBe(started)
+					await vi.advanceTimersByTimeAsync(300)
+					await waitForControlledSignal(
+						"timed assistant save",
+						fixture.assistantSaveStarted,
+						fixture.debugState,
+					)
+					expect(Date.now()).toBe(started + 300)
+					await vi.advanceTimersByTimeAsync(100)
+					const result = await waitForControlledSignal("timed task run", fixture.run, fixture.debugState)
+					const completedAt = fixture.runCompletedAt()
+					expect(completedAt).toBeDefined()
+					const elapsedMs = completedAt! - started
 					const readStartedBeforeEof =
 						fixture.eventOrder.indexOf("read_started") < fixture.eventOrder.indexOf("provider_eof")
 					console.info(JSON.stringify({ directory, elapsedMs, readStartedBeforeEof }))
@@ -4532,8 +5024,20 @@ describe("Alpha", () => {
 					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
 					expect(readStartedBeforeEof).toBe(true)
 					expect(elapsedMs).toBe(400)
+					expect(
+						await waitForControlledSignal(
+							"timed result flush",
+							fixture.task.flushPendingToolResultsToHistory(),
+							fixture.debugState,
+						),
+					).toBe(true)
+					expect(vi.getTimerCount()).toBe(0)
+					await vi.runAllTimersAsync()
+					expect(Date.now()).toBe(completedAt)
 				} finally {
+					fixture?.clearTimingTimers()
 					vi.useRealTimers()
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4541,14 +5045,20 @@ describe("Alpha", () => {
 		it.each(["../outside", "../path-sibling"])(
 			"withholds a read from escaping workdir %s until ordinary staging",
 			async (workdir) => {
+				let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
 				vi.useFakeTimers()
 				try {
-					const fixture = await startEarlyReadStream({
+					fixture = await startEarlyReadStream({
 						workdir: () => workdir,
 						timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
 					})
+					await waitForControlledSignal(
+						"escaping provider tail",
+						fixture.providerTailReached,
+						fixture.debugState,
+					)
 					await vi.runAllTimersAsync()
-					await fixture.run
+					await waitForControlledSignal("escaping task run", fixture.run, fixture.debugState)
 					expect(fixture.readEffectCount()).toBe(0)
 					expect(fixture.eventOrder).not.toContain("read_started")
 					expect(fixture.task.userMessageContent).toEqual(
@@ -4561,7 +5071,9 @@ describe("Alpha", () => {
 						]),
 					)
 				} finally {
+					fixture?.clearTimingTimers()
 					vi.useRealTimers()
+					await stopEarlyReadStream(fixture)
 				}
 			},
 		)
@@ -4666,13 +5178,7 @@ describe("Alpha", () => {
 					),
 				).toHaveLength(1)
 			} finally {
-				fixture.releaseRead()
-				fixture.releaseProvider()
-				fixture.releaseAssistantSave()
-				await Promise.race([
-					fixture.run.catch(() => undefined),
-					new Promise((resolve) => setTimeout(resolve, 500)),
-				])
+				await stopEarlyReadStream(fixture)
 			}
 		})
 
@@ -5214,6 +5720,69 @@ describe("Alpha", () => {
 			},
 		)
 
+		it.each([false, true])(
+			"persists fresh steering during manual retry publication without replay (split=%s)",
+			async (split) => {
+				const task = createTask()
+				const initial = "Inspect the parser in this chat."
+				const original = "Create a new independent task for the parser review."
+				const steer = "Do not create a new task. Stay in this chat."
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "say").mockImplementation(async (type) => {
+					if (type === "api_req_retried") await task.steerUserMessageDurably(steer, [], "retry-steering")
+				})
+				if (split) {
+					vi.mocked(captureEnvironmentDetails).mockImplementationOnce(async () => {
+						await task.steerUserMessageDurably(original, [], "initial-steering")
+						return { details: "", commit: vi.fn(), release: vi.fn() }
+					})
+				}
+				let retriedHistory: ApiMessage[] = []
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("Manual retry required"), { firstChunkFailure: true })
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							retriedHistory = structuredClone(task.apiConversationHistory)
+							yield { type: "text", text: "Continuing in this chat." }
+						})(),
+					)
+
+				await expect(
+					task.runAgentRequests(task["buildUserMessageContent"](split ? initial : original, []), false),
+				).resolves.toMatchObject({
+					status: "completed",
+				})
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(task["getUserRequestTextForCatalog"]()).toBe(steer)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(initial)),
+				).toHaveLength(split ? 1 : 0)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(original)),
+				).toHaveLength(1)
+				expect(
+					retriedHistory.filter((message) => JSON.stringify(message.content).includes(steer)),
+				).toHaveLength(1)
+				expect(retriedHistory.at(-1)).toMatchObject({
+					input_origin: "human",
+					queued_message_ids: ["retry-steering"],
+				})
+				expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
+			},
+		)
+
 		it.each([undefined, false, true])(
 			"bounds first-chunk recovery with retryable=%s and keeps manual recovery available",
 			async (retryable) => {
@@ -5515,6 +6084,12 @@ describe("Alpha", () => {
 			const requestStep = vi
 				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
+					task.apiConversationHistory.push({
+						role: "assistant",
+						content: [{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "README.md" } }],
+						ts: Date.now(),
+					})
+					task.assistantMessageSavedToHistory = true
 					task.userMessageContent = [toolResult]
 					return false
 				})
@@ -6911,6 +7486,10 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", child.taskId), {
+				recursive: true,
+			})
+			trackTaskLoop(child)
 			vi.spyOn(child as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(child as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
@@ -7597,7 +8176,7 @@ describe("Alpha", () => {
 				await readBarrier
 				return savedApi
 			})
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
@@ -7631,7 +8210,7 @@ describe("Alpha", () => {
 				.mockResolvedValue([{ role: "user", content: "saved", ts: 1 }])
 			if (phase === "ui") uiRead.mockRejectedValue(failure)
 			else apiRead.mockRejectedValue(failure)
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask")
 			await expect((task as any).resumeTaskFromHistory()).rejects.toBe(failure)
@@ -7650,7 +8229,7 @@ describe("Alpha", () => {
 				task.abandoned = true
 				return [{ role: "user", content: "saved", ts: 1 }]
 			})
-			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(true)
 			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
@@ -7708,7 +8287,9 @@ describe("Alpha", () => {
 				await task["resumeTaskFromHistory"]()
 				expect(continueLoop).toHaveBeenCalledOnce()
 				const content = continueLoop.mock.calls[0][0] as Array<{ type: string }>
-				expect(content.filter((block) => block.type === "tool_result")).toEqual(receipts)
+				expect(content.filter((block) => block.type === "tool_result")).toEqual([])
+				expect(task.apiConversationHistory.at(-1)?.content).toEqual(receipts)
+				expect(task.apiConversationHistory).toEqual(original)
 				expect(savedApiHistory).toEqual(original)
 			},
 		)
@@ -7761,7 +8342,160 @@ describe("Alpha", () => {
 		})
 	})
 
+	describe("upsertSubagentGroup durable publication", () => {
+		function fixture(operation: "create" | "update") {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Persist managed group cards",
+				taskId: "group-parent",
+				taskApiConfigName: "default",
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			const group: SubagentGroupState = {
+				groupId: "target-group",
+				parentTaskId: task.taskId,
+				status: "running",
+				createdAt: 1,
+				agents: [
+					{
+						taskId: "child",
+						nickname: "Child",
+						role: "review",
+						objective: "Review communication",
+						status: "running",
+						usage: { inputTokens: 0, outputTokens: 0, cost: 0, durationMs: 0 },
+					},
+				],
+			}
+			const sibling: AlphaMessage = {
+				ts: group.createdAt,
+				type: "say",
+				say: "subagent_group",
+				text: "Sibling card",
+				subagentGroup: { ...structuredClone(group), groupId: "sibling-group" },
+			}
+			const original: AlphaMessage = {
+				ts: 10,
+				type: "say",
+				say: "subagent_group",
+				text: "Retained card text",
+				images: ["data:image/png;base64,aA=="],
+				partial: false,
+				subagentGroup: structuredClone(group),
+			}
+			task.clineMessages = [
+				{ ts: group.createdAt, type: "say", say: "text", text: "Unrelated message at the same timestamp" },
+				sibling,
+				...(operation === "update" ? [original] : []),
+			]
+			const baseline = structuredClone(task.clineMessages)
+			const nextGroup: SubagentGroupState = {
+				...group,
+				status: "completed",
+				completedAt: 20,
+				agents: group.agents.map((agent) => ({ ...agent, status: "completed" })),
+			}
+			const expected: AlphaMessage = {
+				...(operation === "update"
+					? original
+					: { ts: group.createdAt, type: "say" as const, say: "subagent_group" as const }),
+				subagentGroup: nextGroup,
+			}
+			const projection = vi.fn(async () => undefined)
+			mockProvider.postTaskMessageToWebview = projection
+			const messageEvents = vi.fn()
+			task.on(AlphaCodeEventName.Message, messageEvents)
+			const releaseReview = vi.fn()
+			Reflect.set(task, "subagentReviewBarrier", { promise: new Promise<void>(() => {}), resolve: releaseReview })
+			return { task, nextGroup, baseline, sibling, original, expected, projection, messageEvents, releaseReview }
+		}
+
+		it.each(["create", "update"] as const)(
+			"keeps memory, UI, and the review barrier unchanged when %s persistence fails",
+			async (operation) => {
+				const { task, nextGroup, baseline, sibling, original, projection, messageEvents, releaseReview } =
+					fixture(operation)
+				const save = vi
+					.spyOn(taskPersistence, "saveTaskMessages")
+					.mockRejectedValue(new Error("Transcript storage unavailable"))
+				try {
+					await expect(task.upsertSubagentGroup(nextGroup)).rejects.toThrow(
+						"Unable to persist the sub-agent group",
+					)
+					expect(save).toHaveBeenCalledTimes(3)
+					expect(task.clineMessages).toEqual(baseline)
+					expect(task.clineMessages[1]).toBe(sibling)
+					if (operation === "update") expect(task.clineMessages[2]).toBe(original)
+					expect(projection).not.toHaveBeenCalled()
+					expect(messageEvents).not.toHaveBeenCalled()
+					expect(releaseReview).not.toHaveBeenCalled()
+				} finally {
+					save.mockRestore()
+				}
+			},
+		)
+
+		it.each(["create", "update"] as const)(
+			"commits %s before publishing while preserving existing fields and sibling cards",
+			async (operation) => {
+				const { task, nextGroup, baseline, sibling, expected, projection, messageEvents, releaseReview } =
+					fixture(operation)
+				let enterSave!: () => void
+				const saveEntered = new Promise<void>((resolve) => (enterSave = resolve))
+				let releaseSave!: () => void
+				const saveBarrier = new Promise<void>((resolve) => (releaseSave = resolve))
+				let snapshot: AlphaMessage[] | undefined
+				let saved = false
+				const projectionObservations: Array<{ saved: boolean; message: AlphaMessage | undefined }> = []
+				const save = vi
+					.spyOn(taskPersistence, "saveTaskMessages")
+					.mockImplementationOnce(async ({ messages }) => {
+						snapshot = structuredClone(messages)
+						enterSave()
+						await saveBarrier
+						saved = true
+					})
+				projection.mockImplementation(async () => {
+					projectionObservations.push({ saved, message: structuredClone(task.clineMessages[2]) })
+				})
+				const committing = task.upsertSubagentGroup(nextGroup)
+				try {
+					await saveEntered
+					expect(snapshot).toEqual([...baseline.slice(0, 2), expected])
+					expect(task.clineMessages).toEqual(baseline)
+					expect(projection).not.toHaveBeenCalled()
+					expect(messageEvents).not.toHaveBeenCalled()
+					expect(releaseReview).not.toHaveBeenCalled()
+					releaseSave()
+					await committing
+					expect(task.clineMessages).toEqual(snapshot)
+					expect(task.clineMessages[1]).toBe(sibling)
+					expect(projectionObservations).toEqual([{ saved: true, message: expected }])
+					expect(projection).toHaveBeenCalledExactlyOnceWith(
+						operation === "create" ? "messageCreated" : "messageUpdated",
+						task.taskId,
+						expected,
+					)
+					expect(messageEvents).toHaveBeenCalledExactlyOnceWith({
+						action: operation === "create" ? "created" : "updated",
+						message: expected,
+					})
+					expect(releaseReview).toHaveBeenCalledOnce()
+				} finally {
+					releaseSave()
+					await committing
+					save.mockRestore()
+				}
+			},
+		)
+	})
+
 	describe("design handoff persistence", () => {
+		const planStorageParent = path.resolve(os.tmpdir())
+		const planStoragePrefix = "alpha-task-plan-"
+		let planStoragePath: string | undefined
 		const createPlanTask = (overrides: Record<string, unknown> = {}) =>
 			new Task({
 				provider: mockProvider,
@@ -7781,9 +8515,21 @@ describe("Alpha", () => {
 		beforeEach(() => {
 			mockProvider.updateTaskHistory.mockClear()
 			mockProvider.updateTaskHistory.mockResolvedValue([])
+			planStoragePath = fsSync.mkdtempSync(path.join(planStorageParent, planStoragePrefix))
+			Object.assign(mockExtensionContext, { globalStorageUri: { fsPath: planStoragePath } })
 			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", "primary-plan-task"), {
 				recursive: true,
 			})
+		})
+
+		afterEach(() => {
+			if (!planStoragePath) return
+			const target = path.resolve(planStoragePath)
+			if (path.dirname(target) !== planStorageParent || !path.basename(target).startsWith(planStoragePrefix)) {
+				throw new Error("Plan fixture cleanup escaped its owned temporary directory")
+			}
+			fsSync.rmSync(target, { recursive: true, force: true })
+			planStoragePath = undefined
 		})
 
 		it("persists a complete plan body from the parsed completion and restores the latest revision", async () => {
@@ -7882,6 +8628,7 @@ describe("Alpha", () => {
 				parentTask: parent,
 				rootTask: parent,
 			})
+			await child.captureGoalAccountingBinding()
 			await child.presentCompletionResult(secondPlan)
 
 			expect(parent.designHandoff).toEqual(persisted)
@@ -8219,6 +8966,29 @@ describe("Task typed tool approval bridge", () => {
 		).resolves.toEqual({ decision: "deny" })
 	})
 
+	it("persists separately approved argument casing and avoids duplicate exact rules", async () => {
+		const allowedCommands = ["node scripts/check.js"]
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getValue: vi.fn((key: string) => (key === "allowedCommands" ? allowedCommands : undefined)),
+			setValue: vi.fn(async (_key: string, value: string[]) => {
+				allowedCommands.splice(0, allowedCommands.length, ...value)
+			}),
+			getState: vi.fn().mockResolvedValue({}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			log: vi.fn(),
+		} as unknown as AlphaProvider
+		const task = createTask({ provider, taskApprovalMode: "ask" })
+
+		await expect(task.persistCommandApprovalPrefix("node Scripts/check.js")).resolves.toBe(true)
+		await expect(task.persistCommandApprovalPrefix("node Scripts/check.js")).resolves.toBe(true)
+		expect(provider.setValue).toHaveBeenCalledExactlyOnceWith("allowedCommands", [
+			"node scripts/check.js",
+			"node Scripts/check.js",
+		])
+	})
+
 	const runApprovalTool = async (task: Task, askType: AlphaAsk, reviewMessage = "Perform the reviewed action") => {
 		const executeEffect = vi.fn()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
@@ -8385,6 +9155,129 @@ describe("Task typed tool approval bridge", () => {
 			isAnswered: true,
 		})
 		expect(task.clineMessages.at(-1)?.isAnswered).toBe(true)
+	})
+
+	it("evaluates the original worker command while publishing only redacted private paths", async () => {
+		const privateWorkspace = path.resolve("private-command-policy", "worker")
+		const command = `rm "${path.join(privateWorkspace, "build")}"`
+		const publishedMessages: unknown[] = []
+		let task: Task
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getState: vi.fn().mockResolvedValue({
+				approvalMode: "auto",
+				allowedCommands: ["*"],
+				deniedCommands: [command],
+			}),
+			postTaskMessageToWebview: vi.fn(async (...args: unknown[]) => {
+				const message = { ...(args[2] as { isAnswered?: boolean }) }
+				publishedMessages.push(message)
+				if (!message.isAnswered) task.handleWebviewAskResponse("noButtonClicked")
+			}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			clearSubagentApproval: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		task = createTask({ provider, taskApprovalMode: "auto" })
+		vi.spyOn(task, "cwd", "get").mockReturnValue(privateWorkspace)
+		Object.assign(task, {
+			taskKind: "subagent",
+			subagentRole: "worker",
+			subagentPrivateWorkspaceRoot: path.dirname(privateWorkspace),
+		})
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: command,
+			requiresExplicitApproval: false,
+		})
+
+		await expect(
+			task.ask("command", command, undefined, undefined, undefined, false, approval),
+		).resolves.toMatchObject({
+			response: "noButtonClicked",
+		})
+		expect(publishedMessages).toHaveLength(1)
+		expect(publishedMessages[0]).toMatchObject({ type: "ask", ask: "command", isAnswered: true })
+		expect(JSON.stringify(task.clineMessages)).not.toContain(privateWorkspace)
+		expect(task.clineMessages.at(-1)?.text).toContain(`.${path.sep}build`)
+	})
+
+	it.each([
+		{
+			command: "git $arguments",
+			mode: "auto" as const,
+			advanceStep: false,
+			allowedPrefixes: ["git"],
+			deniedPrefixes: ["git status"],
+		},
+		{
+			command: "git diff",
+			mode: "ask" as const,
+			advanceStep: false,
+			allowedPrefixes: ["git status"],
+			deniedPrefixes: [],
+		},
+		{
+			command: "git $arguments",
+			mode: "auto" as const,
+			advanceStep: true,
+			allowedPrefixes: ["git"],
+			deniedPrefixes: ["git status"],
+		},
+	])("keeps the admitted command ceiling when live rules widen: $command, advance=$advanceStep", async (scenario) => {
+		const publishedMessages: unknown[] = []
+		let task: Task
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getState: vi.fn().mockResolvedValue({
+				approvalMode: scenario.mode,
+				allowedCommands: ["git"],
+				deniedCommands: [],
+			}),
+			postTaskMessageToWebview: vi.fn(async (...args: unknown[]) => {
+				const message = args[2] as { isAnswered?: boolean }
+				publishedMessages.push(message)
+				if (!message.isAnswered) task.handleWebviewAskResponse("noButtonClicked")
+			}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		task = createTask({ provider, taskApprovalMode: scenario.mode })
+		Object.assign(task, {
+			currentAgentStep: {
+				snapshot: {
+					context: { policy: { approval: { mode: scenario.mode }, execution: { command: scenario } } },
+				},
+			},
+		})
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: scenario.command,
+			requiresExplicitApproval: false,
+		})
+
+		const asking = task.ask("command", scenario.command, undefined, undefined, undefined, false, approval)
+		if (scenario.advanceStep) {
+			// getState has yielded; later step admission must not change this pending ask's ceiling.
+			Object.assign(task, {
+				currentAgentStep: {
+					snapshot: {
+						context: {
+							policy: {
+								approval: { mode: scenario.mode },
+								execution: { command: { allowedPrefixes: ["*"], deniedPrefixes: [] } },
+							},
+						},
+					},
+				},
+			})
+		}
+		await expect(asking).resolves.toMatchObject({ response: "noButtonClicked" })
+		expect(publishedMessages).toHaveLength(1)
+		expect(publishedMessages[0]).toMatchObject({ type: "ask", ask: "command", text: scenario.command })
+		expect(publishedMessages[0]).not.toHaveProperty("isAnswered", true)
 	})
 
 	it.each([

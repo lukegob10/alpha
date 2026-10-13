@@ -34,6 +34,17 @@ export function* lifecycleResponseItems(
 				if (covered.has(index + 1) || publishedIds.has(`${stepId}:item-${index + 1}`)) break
 				if (next.type !== responseItem.type || (next.type !== "text" && next.type !== "reasoning")) break
 				if (
+					next.type === "text" &&
+					responseItem.type === "text" &&
+					((responseItem.phase !== undefined &&
+						responseItem.id === undefined &&
+						responseItem.outputIndex === undefined) ||
+						next.id !== responseItem.id ||
+						next.phase !== responseItem.phase ||
+						next.outputIndex !== responseItem.outputIndex)
+				)
+					break
+				if (
 					next.type === "reasoning" &&
 					responseItem.type === "reasoning" &&
 					next.signature !== responseItem.signature

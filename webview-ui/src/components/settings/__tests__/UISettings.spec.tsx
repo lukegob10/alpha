@@ -6,9 +6,30 @@ describe("UISettings", () => {
 	const defaultProps = {
 		reasoningBlockCollapsed: true,
 		enterBehavior: "send" as const,
+		autoSteer: false,
 		maxConcurrentTasks: 3,
 		setCachedStateField: vi.fn(),
 	}
+
+	it("renders automatic steering disabled unless explicitly enabled", () => {
+		const { getByTestId, rerender } = render(<UISettings {...defaultProps} />)
+		const checkbox = getByTestId("auto-steer-checkbox") as HTMLInputElement
+		expect(checkbox.checked).toBe(false)
+
+		rerender(<UISettings {...defaultProps} autoSteer={true} />)
+		expect(checkbox.checked).toBe(true)
+	})
+
+	it("buffers the automatic steering choice", async () => {
+		const setCachedStateField = vi.fn()
+		const { getByTestId } = render(<UISettings {...defaultProps} setCachedStateField={setCachedStateField} />)
+
+		fireEvent.click(getByTestId("auto-steer-checkbox"))
+
+		await waitFor(() => {
+			expect(setCachedStateField).toHaveBeenCalledWith("autoSteer", true)
+		})
+	})
 
 	it("renders the collapse thinking checkbox", () => {
 		const { getByTestId } = render(<UISettings {...defaultProps} />)

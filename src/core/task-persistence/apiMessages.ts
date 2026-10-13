@@ -3,12 +3,15 @@ import * as fs from "fs/promises"
 import crypto from "crypto"
 
 import { Anthropic } from "@anthropic-ai/sdk"
+import type { TaskGoalUsageReceipt } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../utils/fs"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
+import type { AgentResponseItem, AgentResponseOutcome } from "../agent/AgentResponse"
+import type { AssistantMessagePhase } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
 import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
 import {
@@ -37,9 +40,19 @@ export type ApiMessage = Anthropic.MessageParam & {
 	agent_message_id?: string
 	/** Host-owned source of a hook continuation; retained in the canonical transcript across reload. */
 	hook_prompt?: CompletionHookPromptProvenance
+	/** Goal usage persisted before charging its owner; replay closes a crash between the two writes. */
+	goal_usage_receipts?: TaskGoalUsageReceipt[]
 	ts?: number
 	isSummary?: boolean
+	/** Legacy response receipt (or standalone reasoning ID); never an assistant output-message ID. */
 	id?: string
+	/** Optional original assistant message identity for a single-message envelope. */
+	messageId?: string
+	/** Original assistant message classification; absent for legacy or unsupported providers. */
+	phase?: AssistantMessagePhase
+	/** Ordered canonical response evidence retained across persistence and context projection. */
+	agentResponseItems?: AgentResponseItem[]
+	agentResponseOutcome?: AgentResponseOutcome
 	// For reasoning items stored in API history
 	type?: "reasoning"
 	summary?: any[]

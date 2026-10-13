@@ -111,12 +111,15 @@ function customMode(groups: ModeConfig["groups"]): ModeConfig {
 async function invokeDescriptor(descriptor: ToolDescriptor, value: unknown = "fixture") {
 	const result: unknown[] = []
 	const callbacks = {
+		askApproval: async () => true,
+		handleError: vi.fn(),
 		pushToolResult: (value: unknown) => {
 			result.push(value)
 		},
 	} as ToolCallbacks
 	const context = {
 		task: { getTaskMode: async () => "code" } as unknown as Task,
+		mode: "code",
 		call: { id: "custom-call", nativeArgs: { value } },
 		callbacks,
 	} as unknown as ToolExecutionContext
@@ -282,7 +285,7 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		const available = await capture(options)
 		expect(available).not.toBe(first)
 		expect(available.isCallable("read_page")).toBe(true)
-		expect(available.isCallable("codebase_search")).toBe(false)
+		expect(available.isCallable("codebase_search")).toBe(true)
 		expect(available.isCallable("exec_command")).toBe(true)
 
 		testState.browserToolNames = ["open_browser_page"]
@@ -290,6 +293,69 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		expect(browserRemoved).not.toBe(available)
 		expect(browserRemoved.isCallable("read_page")).toBe(false)
 	})
+
+	it.each(["openai", "vertex", "vscode-lm"] as const)(
+		"exposes configured hybrid search on Code and Plan for %s without hiding command inspection",
+		async (apiProvider) => {
+			const { options } = createFixture()
+			testState.codeIndex = { isFeatureEnabled: true, isFeatureConfigured: true, isInitialized: true }
+			for (const mode of ["code", "architect"]) {
+				const surface = await capture({
+					...options,
+					mode,
+					apiConfiguration: { apiProvider },
+					includeAllToolsWithRestrictions: apiProvider === "vertex",
+				})
+				expect(surface.schemas).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ function: expect.objectContaining({ name: "codebase_search" }) }),
+					]),
+				)
+				expect(surface.isCallable("codebase_search")).toBe(true)
+				expect(surface.resolve("codebase_search")?.capabilities).toMatchObject({
+					concurrency: "serial",
+					sideEffects: "none",
+					requiresApproval: true,
+				})
+				expect(surface.isCallable("exec_command")).toBe(true)
+			}
+		},
+	)
+
+	it.each(["isFeatureEnabled", "isFeatureConfigured", "isInitialized"] as const)(
+		"removes hybrid search when %s changes without mutating the captured step",
+		async (flag) => {
+			const { options } = createFixture()
+			testState.codeIndex = { isFeatureEnabled: true, isFeatureConfigured: true, isInitialized: true }
+			const ready = await capture(options)
+			expect(ready.isCallable("codebase_search")).toBe(true)
+			testState.codeIndex[flag] = false
+			const unavailable = await capture(options)
+			expect(unavailable).not.toBe(ready)
+			expect(unavailable.isCallable("codebase_search")).toBe(false)
+			expect(unavailable.isCallable("exec_command")).toBe(true)
+			expect(ready.isCallable("codebase_search")).toBe(true)
+		},
+	)
+
+	it.each(["disabled", "child-scope"] as const)(
+		"retains hybrid-search policy restrictions in a provider superset (%s)",
+		async (restriction) => {
+			const { options } = createFixture()
+			testState.codeIndex = { isFeatureEnabled: true, isFeatureConfigured: true, isInitialized: true }
+			const surface = await capture({
+				...options,
+				includeAllToolsWithRestrictions: true,
+				...(restriction === "disabled"
+					? { disabledTools: ["codebase_search"] }
+					: { taskKind: "subagent", allowedToolNames: ["exec_command"] }),
+			})
+			expect(surface.registry.getSchema("codebase_search")).toBeDefined()
+			expect(surface.isCallable("codebase_search")).toBe(false)
+			expect(surface.allowedFunctionNames).not.toContain("codebase_search")
+			expect(surface.isCallable("exec_command")).toBe(true)
+		},
+	)
 
 	it("replaces custom schemas and executables without mutating the old registry descriptor", async () => {
 		const name = "fixture_custom_tool"

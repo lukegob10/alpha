@@ -40,6 +40,19 @@ describe("mode-validator", () => {
 		})
 
 		describe("architect mode", () => {
+			it("allows artifact reads without granting session control", () => {
+				expect(
+					isToolAllowedForMode("write_stdin", architectMode, [], undefined, { artifact_id: "cmd-1.txt" }),
+				).toBe(true)
+				for (const args of [
+					{},
+					{ session_id: 1 },
+					{ artifact_id: "cmd-1.txt", chars: "" },
+					{ artifact_id: "cmd-1.txt", session_id: 1 },
+				]) {
+					expect(isToolAllowedForMode("write_stdin", architectMode, [], undefined, args)).toBe(false)
+				}
+			})
 			it("allows only read-only planning, conservative commands, and managed-agent tools", () => {
 				const planManagedAgentTools = [
 					"spawn_agent",
@@ -51,7 +64,7 @@ describe("mode-validator", () => {
 				]
 				const architectTools = [
 					...TOOL_GROUPS.read.tools,
-					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command" && tool !== "write_stdin"),
+					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command"),
 					...planManagedAgentTools,
 					"list_tasks",
 					"wait_task",

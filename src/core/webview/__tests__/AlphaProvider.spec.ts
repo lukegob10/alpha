@@ -594,7 +594,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the v3.1.10 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.1.10-task-lock-recovery"
+		const announcementId = "october-2026-v3.1.11-agent-communication-and-chat"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1553,6 +1553,12 @@ describe("AlphaProvider", () => {
 		expect(state).toHaveProperty("soundEnabled")
 		expect(state).toHaveProperty("ttsEnabled")
 		expect(state).toHaveProperty("writeDelayMs")
+	})
+
+	test.each([undefined, false, true])("projects the automatic steering preference %s", async (autoSteer) => {
+		await provider.contextProxy.setValue("autoSteer", autoSteer)
+		expect((await provider.getState()).autoSteer).toBe(autoSteer === true)
+		expect((await provider.getStateToPostToWebview()).autoSteer).toBe(autoSteer === true)
 	})
 
 	test("preserves leftover chips instead of deriving an inferred Ask grant", async () => {

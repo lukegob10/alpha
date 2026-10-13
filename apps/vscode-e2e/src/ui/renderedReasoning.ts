@@ -98,8 +98,14 @@ export async function exerciseRenderedReasoning(
 					"hotkeys-new",
 					"hotkeys-editor-next",
 					"hotkeys-editor-previous",
+					"steering-enable-settings",
+					"hotkeys-editor-auto-steer",
 				]
 			: []),
+		"activity-edge",
+		"activity-edge-light",
+		"activity-edge-contrast",
+		"activity-edge-stopped",
 	]
 	try {
 		for (const stage of stages) {
@@ -119,6 +125,140 @@ export async function exerciseRenderedReasoning(
 				Date.now() + 60_000,
 				`reasoning_${stage}_timeout`,
 			)
+			if (stage.startsWith("activity-edge")) {
+				sessionId = initialSession
+				if (stage === "activity-edge" && (await evaluate("!!d.querySelector('[data-testid=tab-ui]')"))) {
+					await focus(".glass-header button:has(.lucide-arrow-left)")
+					await key("Enter", "Enter", 13)
+				}
+				await check("d.body.innerText.includes('Activity chip fixture')")
+				if (stage === "activity-edge-stopped") {
+					await check(
+						"!!d.querySelector('.activity-trace-toggle')&&!d.querySelector('.activity-trace-toggle[data-active=true],.activity-step-toggle--active')",
+					)
+					assert.equal(await evaluate("!!d.querySelector('.activity-trace-toggle[aria-busy=true]')"), false)
+					await capture(stage)
+				} else {
+					const media = (value: string) =>
+						cdp.request(
+							"Emulation.setEmulatedMedia",
+							{
+								features: [{ name: "prefers-reduced-motion", value }],
+							},
+							sessionId,
+						)
+					const trace = ".activity-trace-toggle[data-active=true]"
+					const reasoning = "button.activity-row-header:has(.lucide-lightbulb)"
+					try {
+						await media("no-preference")
+						await check(`!!d.querySelector('${trace}')`)
+						const animation = `d.defaultView.getComputedStyle(d.querySelector('${trace}'),'::before')`
+						await check(`${animation}.animationName==='activity-edge-trace'`)
+						assert.match(await evaluate<string>(`${animation}.maskComposite`), /^exclude(?:,\s*exclude)*$/)
+						assert.equal(await evaluate(`${animation}.boxShadow`), "none")
+						const angle = await evaluate<string>(`${animation}.getPropertyValue('--activity-edge-angle')`)
+						await check(`${animation}.getPropertyValue('--activity-edge-angle')!==${JSON.stringify(angle)}`)
+						await capture(`${stage}-collapsed`)
+						await media("reduce")
+						await check(`${animation}.animationName==='none'`)
+						assert.equal(await evaluate(`d.querySelector('${trace}').getAttribute('aria-busy')`), "true")
+						await capture(`${stage}-reduced-motion`)
+						await media("no-preference")
+						const traceId = await evaluate<string>(`d.querySelector('${trace}').dataset.activityTraceId`)
+						const traceButton = `.activity-trace-toggle[data-activity-trace-id='${traceId}']`
+						const requestTrace = `.activity-trace-toggle:not([data-activity-trace-id='${traceId}'])`
+						await focus(trace)
+						await key("Enter", "Enter", 13)
+						await check(
+							`d.querySelector("${traceButton}")?.getAttribute('aria-expanded')==='true'&&d.querySelector("${traceButton}")?.getAttribute('data-active')===null`,
+						)
+						await focus(requestTrace)
+						await key("Enter", "Enter", 13)
+						await check(`!!d.querySelector('${reasoning}')`)
+						const surface = "d.querySelector('.app-shell')"
+						const originalWidth = await evaluate<string>(`${surface}.style.maxWidth`)
+						try {
+							await evaluate(`${surface}.style.maxWidth='320px'`)
+							const positions = await evaluate<{
+								thinkingLabel: number
+								apiLabel: number
+								thinkingIcon: number
+								apiIcon: number
+								width: number
+								overflow: boolean
+							}>(`(()=>{
+								const summaries=[...d.querySelectorAll('.activity-row-summary')];
+								const thinking=summaries.find(e=>e.querySelector(':scope > span')?.textContent==='Thinking');
+								const api=summaries.find(e=>e.querySelector(':scope > span')?.textContent?.startsWith('API Request'));
+								const bounds=${surface}.getBoundingClientRect();
+								return {thinkingLabel:thinking.querySelector(':scope > span').getBoundingClientRect().left,
+									apiLabel:api.querySelector(':scope > span').getBoundingClientRect().left,
+									thinkingIcon:thinking.firstElementChild.getBoundingClientRect().left,
+									apiIcon:api.firstElementChild.getBoundingClientRect().left,
+									width:bounds.width,
+									overflow:[thinking,api].some(e=>e.getBoundingClientRect().right>bounds.right+1)};
+							})()`)
+							assert.ok(
+								Math.abs(positions.thinkingLabel - positions.apiLabel) <= 0.5,
+								"Activity labels must align",
+							)
+							assert.ok(
+								Math.abs(positions.thinkingIcon - positions.apiIcon) <= 0.5,
+								"Activity icons must align",
+							)
+							assert.equal(positions.overflow, false)
+							assert.ok(positions.width > 0 && positions.width <= 320)
+							assert.ok(positions.thinkingLabel > 0 && positions.apiLabel > 0)
+							await fs.writeFile(
+								path.join(directory, `ui-${stage}-alignment.json`),
+								JSON.stringify(positions),
+							)
+							await capture(`${stage}-expanded`)
+						} finally {
+							await evaluate(`${surface}.style.maxWidth=${JSON.stringify(originalWidth)}`)
+						}
+						await focus(reasoning)
+						await key("Enter", "Enter", 13)
+						await check(
+							"!d.querySelector('.activity-step-toggle--active')&&d.body.innerText.includes('Checking activity chip alignment.')",
+						)
+						await focus(reasoning)
+						await key("Enter", "Enter", 13)
+						await focus(requestTrace)
+						await key("Enter", "Enter", 13)
+						await focus(traceButton)
+						await key("Enter", "Enter", 13)
+						await check(`!!d.querySelector('${trace}')`)
+					} finally {
+						await cdp.request("Emulation.setEmulatedMedia", { features: [] }, sessionId)
+					}
+				}
+				await writeJsonAtomically(
+					path.join(directory, `ui-done-${stage}.json`),
+					{ nonce, stage, status: "passed" },
+					{ rename: fs.link },
+				)
+				continue
+			}
+			if (stage === "steering-enable-settings") {
+				sessionId = initialSession
+				await focus('[data-testid="tab-ui"]')
+				await key("Enter", "Enter", 13)
+				await focus('[data-testid="auto-steer-checkbox"]')
+				assert.equal(await evaluate("d.querySelector('[data-testid=auto-steer-checkbox]').checked"), false)
+				await key(" ", "Space", 32)
+				await check("d.querySelector('[data-testid=auto-steer-checkbox]').checked===true")
+				await capture(stage)
+				await focus('[data-testid="save-button"]')
+				await key("Enter", "Enter", 13)
+				await check("d.querySelector('[data-testid=save-button]').disabled===true")
+				await writeJsonAtomically(
+					path.join(directory, `ui-done-${stage}.json`),
+					{ nonce, stage, status: "passed" },
+					{ rename: fs.link },
+				)
+				continue
+			}
 			if (stage.startsWith("hotkeys-")) {
 				if (stage.startsWith("hotkeys-editor-")) {
 					assert.ok(editorSession)
@@ -127,23 +267,24 @@ export async function exerciseRenderedReasoning(
 					sessionId = initialSession
 				}
 				await focus("textarea")
-				if (stage === "hotkeys-queue" || stage === "hotkeys-steer") {
+				if (stage === "hotkeys-queue" || stage === "hotkeys-steer" || stage === "hotkeys-editor-auto-steer") {
 					await cdp.request(
 						"Input.insertText",
 						{
 							text:
 								stage === "hotkeys-queue"
 									? "Windows queue instruction."
-									: "Windows steering instruction.",
+									: stage === "hotkeys-steer"
+										? "Windows steering instruction."
+										: "Windows auto-steer instruction.",
 						},
 						workbenchSession,
 					)
-					if (stage === "hotkeys-queue") {
-						await focus(
-							'button[aria-label="Add message to queue (will be sent after current task completes)"]',
-						)
-						await key(" ", "Space", 32)
-					} else await key("Enter", "Enter", 13)
+					const submissionLabel =
+						stage === "hotkeys-editor-auto-steer" ? "Press Enter to send and steer" : "Press Enter to queue"
+					await check(`!!d.querySelector('button[aria-label=${JSON.stringify(submissionLabel)}]')`)
+					if (stage === "hotkeys-steer") await key("s", "KeyS", 83, 3)
+					else await key("Enter", "Enter", 13)
 					await check("d.querySelector('textarea').value===''")
 				} else if (stage.endsWith("previous") || stage.endsWith("next")) {
 					const previous = stage.endsWith("previous")

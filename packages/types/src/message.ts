@@ -13,7 +13,7 @@ import {
 	subagentVerificationSchema,
 } from "./subagent.js"
 import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
-import { asyncUserInputDataSchema } from "./followup.js"
+import { asyncUserInputDataSchema, userInputResponseDataSchema } from "./followup.js"
 
 /**
  * AlphaAsk
@@ -515,6 +515,8 @@ export const alphaMessageSchema = z
 		toolApprovalRequest: toolApprovalPromptSchema.optional(),
 		/** Typed, nonblocking question card emitted by request_user_input_async. */
 		asyncUserInput: asyncUserInputDataSchema.optional(),
+		/** Presentation receipt for native question answers; the feedback text remains the readable transcript. */
+		userInputResponse: userInputResponseDataSchema.optional(),
 		ts: z.number(),
 		type: z.union([z.literal("ask"), z.literal("say")]),
 		ask: alphaAskSchema.optional(),
@@ -560,6 +562,13 @@ export const alphaMessageSchema = z
 				code: "custom",
 				message: "Async user input cards require a typed question payload and cannot be attached elsewhere.",
 				path: ["asyncUserInput"],
+			})
+		}
+		if (message.userInputResponse !== undefined && !(message.type === "say" && message.say === "user_feedback")) {
+			context.addIssue({
+				code: "custom",
+				message: "User input responses can only be attached to user feedback.",
+				path: ["userInputResponse"],
 			})
 		}
 		if (

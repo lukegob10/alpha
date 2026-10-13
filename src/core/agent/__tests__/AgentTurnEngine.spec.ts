@@ -81,6 +81,118 @@ describe("AgentResponseAccumulator", () => {
 })
 
 describe("AgentTurnEngine", () => {
+	it("runs pending tools and the follow-up step even when assistant text declares a final answer", async () => {
+		const firstResponse = await collectAgentResponse(
+			(async function* () {
+				yield {
+					type: "text",
+					text: "Candidate answer.",
+					id: "candidate",
+					phase: "final_answer",
+					outputIndex: 0,
+				} as const
+				yield {
+					type: "tool_call",
+					id: "read",
+					name: "read_file",
+					arguments: '{"path":"a.ts"}',
+					outputIndex: 1,
+				} as const
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+			})(),
+		)
+		const finalResponse = await collectAgentResponse(
+			(async function* () {
+				yield { type: "text", text: "Verified answer." } as const
+			})(),
+		)
+		const performedCalls: string[] = []
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async (input) => ({ response: input === "first" ? firstResponse : finalResponse })),
+			commitResponse: vi.fn(),
+			executeEffects: async ({ response }) => {
+				performedCalls.push(...response.toolCalls.map((call) => call.id))
+			},
+			selectContinuation: async (_sample, step) => ({ nextInput: step === 1 ? "tool-result" : "complete" }),
+			releaseStep: vi.fn(),
+		}
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "host",
+			response: finalResponse,
+		})
+		expect(performedCalls).toEqual(["read"])
+		expect(host.sampleStep).toHaveBeenNthCalledWith(2, "tool-result")
+		expect(host.commitResponse).toHaveBeenCalledTimes(2)
+		expect(host.releaseStep).toHaveBeenCalledTimes(2)
+	})
+
+	it.each([
+		["failed", "failed"],
+		["cancelled", "aborted"],
+		["incomplete", "incomplete"],
+	] as const)("preserves a %s outcome after final-answer text and accepted calls", async (providerStatus, status) => {
+		const response = await collectAgentResponse(
+			(async function* () {
+				yield {
+					type: "text",
+					text: "Candidate answer.",
+					id: "candidate",
+					phase: "final_answer",
+					outputIndex: 0,
+				} as const
+				yield { type: "tool_call", id: "read", name: "read_file", arguments: "{}", outputIndex: 1 } as const
+				yield createApiStreamOutcome({
+					status: providerStatus,
+					semanticOutputObserved: true,
+					reason: "Interrupted",
+				})
+			})(),
+		)
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async () => ({ response })),
+			commitResponse: vi.fn(),
+			executeEffects: vi.fn(),
+			selectContinuation: vi.fn(async () => ({ nextInput: "complete" as const })),
+			releaseStep: vi.fn(),
+		}
+
+		expect(await new AgentTurnEngine(host).run("first")).toMatchObject({ status, steps: 1, response })
+		expect(response.toolCalls).toHaveLength(1)
+		expect(host.commitResponse).toHaveBeenCalledOnce()
+		expect(host.executeEffects).not.toHaveBeenCalled()
+		expect(host.selectContinuation).not.toHaveBeenCalled()
+		expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
+
+	it("does not complete empty text solely because its phase is final_answer", async () => {
+		const emptyFinal = await collectAgentResponse(
+			(async function* () {
+				yield { type: "text", text: "", phase: "final_answer", id: "empty" } as const
+			})(),
+		)
+		const finalResponse = { ...emptyResponse(), text: "Visible answer." }
+		const host: AgentTurnHost<string> = {
+			shouldAbort: () => false,
+			runStep: vi
+				.fn()
+				.mockResolvedValueOnce({ response: emptyFinal, nextInput: "second" })
+				.mockResolvedValueOnce({ response: finalResponse, nextInput: "unused" }),
+		}
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "assistant",
+			response: finalResponse,
+		})
+		expect(host.runStep).toHaveBeenNthCalledWith(2, "second")
+	})
+
 	it("does not run effects or complete when a successful stream hides malformed tool arguments", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {
@@ -198,10 +310,10 @@ describe("AgentTurnEngine", () => {
 		expect(host.runStep).toHaveBeenCalledOnce()
 	})
 
-	it("continues after a normally completed response explicitly requires another model step", async () => {
+	it("continues after a normally completed response requires another step despite final-answer text", async () => {
 		const firstResponse = await collectAgentResponse(
 			(async function* () {
-				yield { type: "text", text: "Intermediate progress." } as const
+				yield { type: "text", text: "Intermediate answer.", phase: "final_answer", id: "intermediate" } as const
 				yield createApiStreamOutcome({
 					status: "completed",
 					terminal: true,

@@ -12,6 +12,104 @@ const normalizeToolCallId = (id: string): string =>
 		.padEnd(9, "0")
 
 describe("convertToOpenAiMessages", () => {
+	it("preserves known source text boundaries without unsupported phase fields on Chat wire", () => {
+		const anthropicMessages = [
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "Checking", id: "progress", phase: "commentary", outputIndex: 0 },
+					{ type: "text" as const, text: "Again", id: "other", phase: "commentary", outputIndex: 1 },
+					{ type: "text" as const, text: "Partial", id: "partial", phase: "partial_answer", outputIndex: 2 },
+					{ type: "text" as const, text: "Answer", id: "answer", phase: "final_answer", outputIndex: 3 },
+				],
+			},
+		]
+		const snapshot = structuredClone(anthropicMessages)
+		expect(convertToOpenAiMessages(anthropicMessages)).toEqual([
+			{ role: "assistant", content: "Checking" },
+			{ role: "assistant", content: "Again" },
+			{ role: "assistant", content: "Partial" },
+			{ role: "assistant", content: "Answer" },
+		])
+		expect(anthropicMessages).toEqual(snapshot)
+	})
+	it("concatenates identified fragments exactly and keeps phase-only messages separate", () => {
+		const anthropicMessages = [
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "Hello ", id: "message", phase: "commentary", outputIndex: 0 },
+					{ type: "text" as const, text: "world", id: "message", phase: "commentary", outputIndex: 0 },
+					{ type: "text" as const, text: "First", phase: "commentary" },
+					{ type: "text" as const, text: "Second", phase: "commentary" },
+				],
+			},
+		]
+		expect(convertToOpenAiMessages(anthropicMessages)).toEqual([
+			{ role: "assistant", content: "Hello world" },
+			{ role: "assistant", content: "First" },
+			{ role: "assistant", content: "Second" },
+		])
+	})
+	it("keeps tool results adjacent and provider reasoning on exactly one fallback envelope", () => {
+		const anthropicMessages = [
+			{
+				role: "assistant" as const,
+				reasoning_details: [{ type: "reasoning.encrypted", data: "opaque", format: "provider-native" }],
+				content: [
+					{ type: "text" as const, text: "One", id: "message" },
+					{ type: "tool_use" as const, id: "tool", name: "read_file", input: { path: "README.md" } },
+					{ type: "text" as const, text: "Two", id: "message" },
+					{ type: "text" as const, text: "", id: "terminal", phase: "final_answer" },
+				],
+			},
+			{
+				role: "user" as const,
+				content: [{ type: "tool_result" as const, tool_use_id: "tool", content: "Result" }],
+			},
+		]
+		const projected = convertToOpenAiMessages(anthropicMessages)
+		expect(projected).toEqual([
+			{ role: "assistant", content: "One" },
+			{ role: "assistant", content: "Two" },
+			{
+				role: "assistant",
+				content: "",
+				reasoning_details: anthropicMessages[0].reasoning_details,
+				tool_calls: [
+					{
+						id: "tool",
+						type: "function",
+						function: { name: "read_file", arguments: '{"path":"README.md"}' },
+					},
+				],
+			},
+			{ role: "tool", tool_call_id: "tool", content: "Result" },
+		])
+	})
+	it("preserves phase-less indexed messages while legacy unmarked text retains its projection", () => {
+		const anthropicMessages = [
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "First", outputIndex: 0 },
+					{ type: "text" as const, text: "Second", outputIndex: 1 },
+				],
+			},
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "Legacy" },
+					{ type: "text" as const, text: "text" },
+				],
+			},
+		]
+		expect(convertToOpenAiMessages(anthropicMessages)).toEqual([
+			{ role: "assistant", content: "First" },
+			{ role: "assistant", content: "Second" },
+			{ role: "assistant", content: "Legacy\ntext" },
+		])
+	})
 	it("should convert simple text messages", () => {
 		const anthropicMessages: Anthropic.Messages.MessageParam[] = [
 			{

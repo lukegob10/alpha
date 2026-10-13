@@ -20,9 +20,10 @@ interface ApiConfigManagerProps {
 	currentApiConfigName?: string
 	listApiConfigMeta?: ProviderSettingsEntry[]
 	organizationAllowList?: OrganizationAllowList
+	profileActionsDisabled?: boolean
 	onSelectConfig: (configName: string) => void
 	onDeleteConfig: (configName: string) => void
-	onRenameConfig: (oldName: string, newName: string) => void
+	onRenameConfig: (oldName: string, newName: string) => void | Promise<string | undefined>
 	onUpsertConfig: (configName: string) => void
 }
 
@@ -30,6 +31,7 @@ const ApiConfigManager = ({
 	currentApiConfigName = "",
 	listApiConfigMeta = [],
 	organizationAllowList,
+	profileActionsDisabled = false,
 	onSelectConfig,
 	onDeleteConfig,
 	onRenameConfig,
@@ -38,12 +40,16 @@ const ApiConfigManager = ({
 	const { t } = useAppTranslation()
 
 	const [isRenaming, setIsRenaming] = useState(false)
+	const [isRenameSaving, setIsRenameSaving] = useState(false)
 	const [isCreating, setIsCreating] = useState(false)
 	const [inputValue, setInputValue] = useState("")
 	const [newProfileName, setNewProfileName] = useState("")
 	const [error, setError] = useState<string | null>(null)
 	const inputRef = useRef<any>(null)
 	const newProfileInputRef = useRef<any>(null)
+	const renameAttempt = useRef(0)
+	const currentProfileId = listApiConfigMeta.find(({ name }) => name === currentApiConfigName)?.id
+	const previousProfile = useRef({ id: currentProfileId, name: currentApiConfigName })
 
 	// Check if a profile is valid based on the organization allow list
 	const isProfileValid = (profile: ProviderSettingsEntry): boolean => {
@@ -91,6 +97,8 @@ const ApiConfigManager = ({
 	}
 
 	const resetRenameState = () => {
+		renameAttempt.current++
+		setIsRenameSaving(false)
 		setIsRenaming(false)
 		setInputValue("")
 		setError(null)
@@ -112,33 +120,52 @@ const ApiConfigManager = ({
 		}
 	}, [isCreating])
 
-	// Reset state when current profile changes.
+	// A name refresh for the same profile must not hide a pending acknowledgement or retry.
 	useEffect(() => {
+		const previous = previousProfile.current
+		const sameName = previous.name === currentApiConfigName
+		const sameProfile = previous.id && currentProfileId ? previous.id === currentProfileId : sameName
+		previousProfile.current = {
+			id: currentProfileId ?? (sameName ? previous.id : undefined),
+			name: currentApiConfigName,
+		}
+		if (sameProfile) return
 		resetCreateState()
 		resetRenameState()
-	}, [currentApiConfigName])
+	}, [currentApiConfigName, currentProfileId])
+
+	useEffect(
+		() => () => {
+			renameAttempt.current++
+		},
+		[],
+	)
 
 	const handleSelectConfig = (configName: string) => {
-		if (!configName) return
+		if (!configName || profileActionsDisabled) return
 		onSelectConfig(configName)
 	}
 
 	const handleAdd = () => {
+		if (profileActionsDisabled) return
 		resetCreateState()
 		setIsCreating(true)
 	}
 
 	const handleStartRename = () => {
+		if (profileActionsDisabled) return
 		setIsRenaming(true)
 		setInputValue(currentApiConfigName || "")
 		setError(null)
 	}
 
 	const handleCancel = () => {
+		if (isRenameSaving || profileActionsDisabled) return
 		resetRenameState()
 	}
 
 	const handleSave = () => {
+		if (isRenameSaving || profileActionsDisabled) return
 		const trimmedValue = inputValue.trim()
 		const error = validateName(trimmedValue, false)
 
@@ -152,13 +179,35 @@ const ApiConfigManager = ({
 				resetRenameState()
 				return
 			}
-			onRenameConfig(currentApiConfigName, trimmedValue)
+			const attempt = ++renameAttempt.current
+			setError(null)
+			const result = onRenameConfig(currentApiConfigName, trimmedValue)
+			if (result) {
+				setIsRenameSaving(true)
+				void result
+					.then((error) => {
+						if (renameAttempt.current !== attempt) return
+						setIsRenameSaving(false)
+						if (error) {
+							setError(error)
+						} else {
+							resetRenameState()
+						}
+					})
+					.catch(() => {
+						if (renameAttempt.current !== attempt) return
+						setIsRenameSaving(false)
+						setError(t("settings:providers.renameErrors.saveFailed"))
+					})
+				return
+			}
 		}
 
 		resetRenameState()
 	}
 
 	const handleNewProfileSave = () => {
+		if (profileActionsDisabled) return
 		const trimmedValue = newProfileName.trim()
 		const error = validateName(trimmedValue, true)
 
@@ -172,7 +221,8 @@ const ApiConfigManager = ({
 	}
 
 	const handleDelete = () => {
-		if (!currentApiConfigName || !listApiConfigMeta || listApiConfigMeta.length <= 1) return
+		if (profileActionsDisabled || !currentApiConfigName || !listApiConfigMeta || listApiConfigMeta.length <= 1)
+			return
 
 		// Let the extension handle both deletion and selection.
 		onDeleteConfig(currentApiConfigName)
@@ -185,11 +235,12 @@ const ApiConfigManager = ({
 			<label className="block font-medium mb-1">{t("settings:providers.configProfile")}</label>
 
 			{isRenaming ? (
-				<div data-testid="rename-form">
+				<div data-testid="rename-form" aria-busy={isRenameSaving || profileActionsDisabled}>
 					<div className="flex items-center gap-1">
 						<VSCodeTextField
 							ref={inputRef}
 							value={inputValue}
+							disabled={isRenameSaving || profileActionsDisabled}
 							onInput={(e: unknown) => {
 								const target = e as { target: { value: string } }
 								setInputValue(target.target.value)
@@ -209,7 +260,7 @@ const ApiConfigManager = ({
 							<Button
 								variant="ghost"
 								size="icon"
-								disabled={!inputValue.trim()}
+								disabled={!inputValue.trim() || isRenameSaving || profileActionsDisabled}
 								onClick={handleSave}
 								data-testid="save-rename-button">
 								<span className="codicon codicon-check" />
@@ -220,13 +271,17 @@ const ApiConfigManager = ({
 								variant="ghost"
 								size="icon"
 								onClick={handleCancel}
+								disabled={isRenameSaving || profileActionsDisabled}
 								data-testid="cancel-rename-button">
 								<span className="codicon codicon-close" />
 							</Button>
 						</StandardTooltip>
 					</div>
 					{error && (
-						<div className="text-vscode-descriptionForeground text-sm mt-1" data-testid="error-message">
+						<div
+							role="alert"
+							className="text-vscode-descriptionForeground text-sm mt-1"
+							data-testid="error-message">
 							{error}
 						</div>
 					)}
@@ -236,6 +291,7 @@ const ApiConfigManager = ({
 					<div className="flex items-center gap-1">
 						<SearchableSelect
 							value={currentApiConfigName}
+							disabled={profileActionsDisabled}
 							onValueChange={handleSelectConfig}
 							options={listApiConfigMeta.map((config) => {
 								const valid = isProfileValid(config)
@@ -259,7 +315,12 @@ const ApiConfigManager = ({
 							data-testid="select-component"
 						/>
 						<StandardTooltip content={t("settings:providers.addProfile")}>
-							<Button variant="ghost" size="icon" onClick={handleAdd} data-testid="add-profile-button">
+							<Button
+								variant="ghost"
+								size="icon"
+								onClick={handleAdd}
+								disabled={profileActionsDisabled}
+								data-testid="add-profile-button">
 								<span className="codicon codicon-add" />
 							</Button>
 						</StandardTooltip>
@@ -270,6 +331,7 @@ const ApiConfigManager = ({
 										variant="ghost"
 										size="icon"
 										onClick={handleStartRename}
+										disabled={profileActionsDisabled}
 										data-testid="rename-profile-button">
 										<span className="codicon codicon-edit" />
 									</Button>
@@ -285,7 +347,7 @@ const ApiConfigManager = ({
 										size="icon"
 										onClick={handleDelete}
 										data-testid="delete-profile-button"
-										disabled={isOnlyProfile}>
+										disabled={isOnlyProfile || profileActionsDisabled}>
 										<span className="codicon codicon-trash" />
 									</Button>
 								</StandardTooltip>

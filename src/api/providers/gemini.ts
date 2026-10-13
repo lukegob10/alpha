@@ -16,11 +16,13 @@ import {
 	vertexDefaultModelId,
 	vertexModels,
 	ApiProviderError,
+	resolveModelParameterApplicability,
+	validateOptionalOutputTokenLimit,
 } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
 
-import type { ApiHandlerOptions } from "../../shared/api"
+import { DEFAULT_HYBRID_REASONING_MODEL_MAX_TOKENS, type ApiHandlerOptions } from "../../shared/api"
 
 import { convertAnthropicMessagesToGemini } from "../transform/gemini-format"
 import { t } from "i18next"
@@ -652,6 +654,20 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		}
 	}
 
+	private resolveMaxOutputTokens(
+		info: ModelInfo,
+		maxTokens: number | undefined,
+		thinkingConfig: GenerateContentConfig["thinkingConfig"],
+	): number | undefined {
+		// Budget models consume their configured cap; other models ignore stale budget preferences.
+		const isHybridReasoningModel = info.supportsReasoningBudget || info.requiredReasoningBudget
+		return isHybridReasoningModel
+			? (validateOptionalOutputTokenLimit(this.options.modelMaxTokens) ??
+					validateOptionalOutputTokenLimit(maxTokens) ??
+					(thinkingConfig ? DEFAULT_HYBRID_REASONING_MODEL_MAX_TOKENS : undefined))
+			: validateOptionalOutputTokenLimit(maxTokens)
+	}
+
 	async *createMessage(
 		systemInstruction: string,
 		messages: Anthropic.Messages.MessageParam[],
@@ -666,14 +682,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		this.lastThoughtSignature = undefined
 		this.lastResponseId = undefined
 
-		// For hybrid/budget reasoning models (e.g. Gemini 2.5 Pro), respect user-configured
-		// modelMaxTokens so the ThinkingBudget slider can control the cap. For effort-only or
-		// standard models (like gemini-3-pro-preview), ignore any stale modelMaxTokens and
-		// default to the model's computed maxTokens from getModelMaxOutputTokens.
-		const isHybridReasoningModel = info.supportsReasoningBudget || info.requiredReasoningBudget
-		const maxOutputTokens = isHybridReasoningModel
-			? (this.options.modelMaxTokens ?? maxTokens ?? undefined)
-			: (maxTokens ?? undefined)
+		const maxOutputTokens = this.resolveMaxOutputTokens(info, maxTokens, thinkingConfig)
 
 		// Gemini 3 validates thought signatures for tool/function calling steps.
 		// We must round-trip the signature when tools are in use, even if the user chose
@@ -712,21 +721,21 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			},
 		]
 
-		// Determine temperature respecting model capabilities and defaults:
-		// - If supportsTemperature is explicitly false, ignore user overrides
-		//   and pin to the model's defaultTemperature (or omit if undefined).
-		// - Otherwise, allow the user setting to override, falling back to model default,
-		//   then to 1 for Gemini provider default.
-		const supportsTemperature = info.supportsTemperature !== false
-		const temperatureConfig: number | undefined = supportsTemperature
+		const { supportsTemperature } = resolveModelParameterApplicability({
+			provider: "vertex",
+			modelId: model,
+			model: info,
+			settings: this.options,
+		})
+		const temperatureConfig = supportsTemperature
 			? (this.options.modelTemperature ?? info.defaultTemperature ?? 1)
-			: info.defaultTemperature
+			: undefined
 
 		const config: GenerateContentConfig = {
 			systemInstruction: systemInstructions,
 			thinkingConfig,
 			maxOutputTokens,
-			temperature: temperatureConfig,
+			...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
 			...(tools.length > 0 ? { tools } : {}),
 		}
 
@@ -887,9 +896,11 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 					if (result.usageMetadata) {
 						const inputTokens = result.usageMetadata.promptTokenCount ?? 0
-						const outputTokens = result.usageMetadata.candidatesTokenCount ?? 0
+						const candidateTokens = result.usageMetadata.candidatesTokenCount ?? 0
 						const cacheReadTokens = result.usageMetadata.cachedContentTokenCount
 						const reasoningTokens = result.usageMetadata.thoughtsTokenCount
+						// Gemini reports candidates and thoughts separately; canonical output includes both.
+						const outputTokens = candidateTokens + (reasoningTokens ?? 0)
 
 						yield {
 							type: "usage",
@@ -900,7 +911,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 							totalCost: this.calculateCost({
 								info,
 								inputTokens,
-								outputTokens,
+								outputTokens: candidateTokens,
 								cacheReadTokens,
 								reasoningTokens,
 							}),
@@ -1061,9 +1072,10 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 				if (lastUsageMetadata) {
 					const inputTokens = lastUsageMetadata.promptTokenCount ?? 0
-					const outputTokens = lastUsageMetadata.candidatesTokenCount ?? 0
+					const candidateTokens = lastUsageMetadata.candidatesTokenCount ?? 0
 					const cacheReadTokens = lastUsageMetadata.cachedContentTokenCount
 					const reasoningTokens = lastUsageMetadata.thoughtsTokenCount
+					const outputTokens = candidateTokens + (reasoningTokens ?? 0)
 
 					yield {
 						type: "usage",
@@ -1074,7 +1086,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 						totalCost: this.calculateCost({
 							info,
 							inputTokens,
-							outputTokens,
+							outputTokens: candidateTokens,
 							cacheReadTokens,
 							reasoningTokens,
 						}),
@@ -1196,7 +1208,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 	}
 
 	async completePrompt(prompt: string): Promise<string> {
-		const { id: model, info } = this.getModel()
+		const { id: model, info, maxTokens, reasoning: thinkingConfig } = this.getModel()
+		const maxOutputTokens = this.resolveMaxOutputTokens(info, maxTokens, thinkingConfig)
 		let didRetryForGatewayAuth = false
 		const requestTimeoutMs = getApiRequestTimeout()
 
@@ -1204,10 +1217,15 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			const requestContext = await this.getRequestContext(model)
 			const requestAbortController = requestTimeoutMs ? new AbortController() : undefined
 
-			const supportsTemperature = info.supportsTemperature !== false
-			const temperatureConfig: number | undefined = supportsTemperature
+			const { supportsTemperature } = resolveModelParameterApplicability({
+				provider: "vertex",
+				modelId: model,
+				model: info,
+				settings: this.options,
+			})
+			const temperatureConfig = supportsTemperature
 				? (this.options.modelTemperature ?? info.defaultTemperature ?? 1)
-				: info.defaultTemperature
+				: undefined
 
 			const promptConfig: GenerateContentConfig = {
 				httpOptions: this.mergeHttpOptions(
@@ -1215,7 +1233,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
 				),
 				...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),
-				temperature: temperatureConfig,
+				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+				...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
 			}
 
 			const request = {

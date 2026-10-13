@@ -2,7 +2,11 @@ import { z } from "zod"
 
 import { subagentContextManifestSchema } from "./subagent-context.js"
 import { parentVerificationObligationSchema } from "./subagent.js"
-import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
+import {
+	subagentManifestOrchestrationSchema,
+	subagentStopReasonSchema,
+	subagentUsageSchema,
+} from "./subagent-orchestration.js"
 
 /** Durable lifecycle states shared by the agent registry and its consumers. */
 export const agentLifecycleStatusSchema = z.enum([
@@ -82,6 +86,8 @@ export const agentRecordSchema = z.object({
 	runtimeOwnerId: agentRuntimeOwnerIdSchema.optional(),
 	snapshot: agentRuntimeSnapshotSchema.optional(),
 	terminalResult: agentTerminalResultMetadataSchema.optional(),
+	/** Committed instruction awaiting launch; retained across admission rollback and reload. */
+	pendingFollowupEventId: z.string().min(1).optional(),
 })
 export type AgentRecord = z.infer<typeof agentRecordSchema>
 
@@ -93,6 +99,12 @@ export const closedAgentTombstoneSchema = z.object({
 	status: z.union([terminalAgentLifecycleStatusSchema, z.literal("interrupted")]),
 	stopReason: subagentStopReasonSchema.optional(),
 	closedAt: z.number(),
+	/** Cumulative task contribution retained when runtime capacity is released. */
+	budgetUsage: z
+		.object({ tokens: z.number().finite().nonnegative(), cost: z.number().finite().nonnegative() })
+		.optional(),
+	/** Frozen root ceilings must outlive deletion of a closed child's task history. */
+	orchestration: subagentManifestOrchestrationSchema.optional(),
 })
 export type ClosedAgentTombstone = z.infer<typeof closedAgentTombstoneSchema>
 

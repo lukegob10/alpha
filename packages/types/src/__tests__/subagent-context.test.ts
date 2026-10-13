@@ -3,6 +3,8 @@ import {
 	historyItemSchema,
 	isSubagentForkTurns,
 	subagentContextManifestSchema,
+	subagentAutoApprovalPolicySchema,
+	subagentCommandApprovalPolicySchema,
 	subagentForkTurnsSchema,
 	type SubagentContextManifest,
 } from "../index.js"
@@ -50,6 +52,64 @@ function makeManifest(override: Partial<SubagentContextManifest> = {}): Subagent
 }
 
 describe("explicit sub-agent context contracts", () => {
+	it("retains legacy hashed command policies exactly on reload", () => {
+		const legacy = {
+			algorithm: "sha256-salted-prefix-v1",
+			salt: digest("1"),
+			allowAll: true,
+			denyAll: false,
+			allowed: [],
+			denied: [{ prefixLength: 8, digest: digest("2") }],
+		}
+		expect(subagentCommandApprovalPolicySchema.parse(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy)
+	})
+
+	it("supports frozen argv policies alongside legacy ancestor ceilings", () => {
+		const tokenPolicy = {
+			algorithm: "sha256-salted-argv-v2",
+			platform: "win32",
+			salt: digest("1"),
+			allowAll: false,
+			denyAll: false,
+			unresolvedDenyRules: false,
+			allowed: [{ tokenCount: 2, digest: digest("2") }],
+			denied: [{ tokenCount: 1, digest: digest("3") }],
+		}
+		const legacy = {
+			algorithm: "sha256-salted-prefix-v1",
+			salt: digest("4"),
+			allowAll: true,
+			denyAll: false,
+			allowed: [],
+			denied: [{ prefixLength: 8, digest: digest("5") }],
+		}
+		const captured = {
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: false,
+			alwaysAllowWrite: false,
+			alwaysAllowWriteOutsideWorkspace: false,
+			alwaysAllowWriteProtected: false,
+			alwaysAllowExecute: true,
+			alwaysAllowSubagents: false,
+			commandApproval: tokenPolicy,
+			commandApprovalCeilings: [legacy, tokenPolicy],
+		}
+		expect(subagentAutoApprovalPolicySchema.parse(JSON.parse(JSON.stringify(captured)))).toEqual(captured)
+		expect(subagentCommandApprovalPolicySchema.safeParse({ ...tokenPolicy, platform: undefined }).success).toBe(
+			false,
+		)
+		expect(
+			subagentCommandApprovalPolicySchema.safeParse({
+				...tokenPolicy,
+				allowed: [{ prefixLength: 2, digest: digest("2") }],
+			}).success,
+		).toBe(false)
+		expect(
+			subagentCommandApprovalPolicySchema.safeParse({ ...legacy, algorithm: "sha256-salted-unknown-v3" }).success,
+		).toBe(false)
+	})
+
 	it.each(["none", "all", "1", "42", "9007199254740991"])("accepts canonical fork_turns %j", (value) => {
 		expect(subagentForkTurnsSchema.parse(value)).toBe(value)
 		expect(isSubagentForkTurns(value)).toBe(true)
@@ -114,6 +174,42 @@ describe("explicit sub-agent context contracts", () => {
 					...manifest.selectedUserTurns,
 					refs: [{ ...manifest.selectedUserTurns.refs[0], body: "secret parent conversation" }],
 				},
+			}).success,
+		).toBe(false)
+	})
+
+	it.each([true, false])(
+		"round-trips captured skill invocation policy %j in saved history",
+		(allowImplicitInvocation) => {
+			const original = makeManifest()
+			const manifest = subagentContextManifestSchema.parse({
+				...original,
+				skills: [{ ...original.skills[0], allowImplicitInvocation }],
+			})
+			const history = historyItemSchema.parse({
+				id: "child-with-policy",
+				number: 1,
+				ts: 1,
+				task: "Use a captured skill",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				subagentContextManifest: JSON.parse(JSON.stringify(manifest)),
+			})
+			expect(history.subagentContextManifest?.skills).toEqual(manifest.skills)
+			expect(manifest.skills[0]?.allowImplicitInvocation).toBe(allowImplicitInvocation)
+			expect(subagentContextManifestSchema.parse(original).skills[0]).not.toHaveProperty(
+				"allowImplicitInvocation",
+			)
+		},
+	)
+
+	it.each(["false", 0, null, []])("rejects invalid captured invocation policy %j", (allowImplicitInvocation) => {
+		const original = makeManifest()
+		expect(
+			subagentContextManifestSchema.safeParse({
+				...original,
+				skills: [{ ...original.skills[0], allowImplicitInvocation }],
 			}).success,
 		).toBe(false)
 	})

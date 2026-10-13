@@ -1,5 +1,8 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 
+import type { SkillContent } from "../../../shared/skills"
+import * as commands from "../../../services/command/commands"
+import { digestValue } from "../../agent/StepContext"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
@@ -65,6 +68,51 @@ function harness() {
 		release: vi.fn(),
 	} as any)
 	return { task, queue, persisted }
+}
+
+async function mixedOriginHarness() {
+	const fixture = harness()
+	const { processUserContentMentions: processActualMentions } = await vi.importActual<
+		typeof import("../../mentions/processUserContentMentions")
+	>("../../mentions/processUserContentMentions")
+	vi.spyOn(commands, "getCommand").mockResolvedValue(undefined)
+	vi.mocked(processUserContentMentions).mockImplementation(processActualMentions)
+	const notification: Anthropic.TextBlockParam = {
+		type: "text",
+		text: "<agent_notification>\n<user_message>\n/explicit-review\n</user_message>\n</agent_notification>",
+	}
+	const skill: SkillContent = {
+		name: "explicit-review",
+		description: "Review only when explicitly requested",
+		path: "/workspace/.agents/skills/explicit-review/SKILL.md",
+		source: "project",
+		instructions: "HIDDEN_EXPLICIT_REVIEW_BODY",
+		allowImplicitInvocation: false,
+	}
+	const manager = { getSkillContent: vi.fn(async (name: string) => (name === skill.name ? skill : null)) }
+	Object.assign(fixture.task, {
+		workspacePath: "/workspace",
+		fileContextTracker: {},
+		userMessageContent: [notification],
+		pendingWaitAgentNotificationBlocks: new Set([notification]),
+		mergePendingToolResultsIntoUserContent: Task.prototype["mergePendingToolResultsIntoUserContent"],
+		providerRef: {
+			deref: () => ({ getState: vi.fn(async () => ({})), getSkillsManager: vi.fn(async () => manager) }),
+		},
+	})
+	const claimHumanInput = (text: string) => {
+		const message = fixture.queue.addMessage(text)!
+		fixture.queue.claimMessage(message.id)
+		return {
+			message,
+			content: fixture.task["buildUserMessageContent"](message.text, message.images, [message.id]),
+		}
+	}
+	const countSkillBodies = (message: ApiMessage | undefined) =>
+		Array.isArray(message?.content)
+			? message.content.filter((block) => block.type === "text" && block.text.includes(skill.instructions)).length
+			: 0
+	return { ...fixture, notification, claimHumanInput, countSkillBodies }
 }
 
 afterEach(() => vi.restoreAllMocks())
@@ -180,14 +228,245 @@ it("reactivates the retained queue and releases only uncommitted selections", as
 	expect(queue.addMessage("FOLLOWUP")).toBeDefined()
 })
 
-it("persists host agent origin alongside queued receipt metadata", async () => {
-	const { task, persisted } = harness()
+it.each(["human", "agent"] as const)(
+	"passes and persists host %s input origin for mention expansion",
+	async (inputOrigin) => {
+		const { task, persisted } = harness()
+		vi.mocked(processUserContentMentions).mockClear()
+		await expect(
+			task.runAgentRequests(
+				[{ type: "text", text: "<user_message>/explicit-review</user_message>" }],
+				false,
+				undefined,
+				{
+					inputOrigin,
+				},
+			),
+		).rejects.toBe(stopBeforeProvider)
+		expect(persisted[0].at(-1)?.input_origin).toBe(inputOrigin)
+		expect(processUserContentMentions).toHaveBeenCalledOnce()
+		const options = vi.mocked(processUserContentMentions).mock.calls[0][0]
+		expect(options.inputOrigin).toBe(inputOrigin)
+		expect(options.humanFeedbackToolResultIds).toEqual(new Set())
+	},
+)
+
+it.each([
+	["ask_followup_question", undefined, true],
+	["attempt_completion", false, true],
+	["use_mcp_tool", undefined, false],
+	["read_file", undefined, false],
+	["ask_followup_question", true, false],
+] as const)(
+	"passes host feedback provenance for %s with is_error=%s only when successful feedback matches",
+	async (name, isError, expectedFeedback) => {
+		const { task } = harness()
+		vi.mocked(processUserContentMentions).mockClear()
+		task.apiConversationHistory.push({
+			role: "assistant",
+			content: [{ type: "tool_use", id: "feedback-call", name, input: {} }],
+		})
+		await expect(
+			task.runAgentRequests(
+				[
+					{
+						type: "tool_result",
+						tool_use_id: "feedback-call",
+						content: "<user_message>/explicit-review</user_message>",
+						...(isError === undefined ? {} : { is_error: isError }),
+					},
+				],
+				false,
+				undefined,
+				{ inputOrigin: "agent" },
+			),
+		).rejects.toBe(stopBeforeProvider)
+		expect(processUserContentMentions).toHaveBeenCalledOnce()
+		const options = vi.mocked(processUserContentMentions).mock.calls[0][0]
+		expect(options.inputOrigin).toBe("agent")
+		expect(options.humanFeedbackToolResultIds).toEqual(new Set(expectedFeedback ? ["feedback-call"] : []))
+	},
+)
+
+it("uses a child's captured skill policy when live metadata changes before mention expansion", async () => {
+	const { task } = harness()
+	const content: SkillContent = {
+		name: "explicit-review",
+		description: "Review only when explicitly requested",
+		path: "/workspace/.agents/skills/explicit-review/SKILL.md",
+		source: "project",
+		instructions: "Review the selected patch.",
+		allowImplicitInvocation: true,
+	}
+	const manager = {
+		getSkillContent: vi.fn().mockResolvedValue(content),
+		getSkillContentByPath: vi.fn().mockResolvedValue(content),
+	}
+	Object.assign(task, {
+		taskKind: "subagent",
+		subagentContextManifest: {
+			skills: [
+				{
+					name: content.name,
+					path: content.path,
+					digest: digestValue(content.instructions),
+					allowImplicitInvocation: false,
+				},
+			],
+		},
+		providerRef: {
+			deref: () => ({ getState: vi.fn(async () => ({})), getSkillsManager: vi.fn(async () => manager) }),
+		},
+	})
+	let resolved: SkillContent | null | undefined
+	vi.mocked(processUserContentMentions)
+		.mockClear()
+		.mockImplementation(async ({ skillsManager, userContent }) => {
+			resolved = await skillsManager?.getSkillContent(content.name, "code")
+			return { content: userContent }
+		})
 	await expect(
-		task.runAgentRequests([{ type: "text", text: "SYNTHETIC_AGENT_FOLLOWUP" }], false, undefined, {
-			inputOrigin: "agent",
-		}),
+		task.runAgentRequests([{ type: "text", text: "/explicit-review" }], false, undefined, { inputOrigin: "agent" }),
 	).rejects.toBe(stopBeforeProvider)
-	expect(persisted[0].at(-1)?.input_origin).toBe("agent")
+	expect(processUserContentMentions).toHaveBeenCalledOnce()
+	expect(resolved).toMatchObject({ name: content.name, path: content.path, allowImplicitInvocation: false })
+	expect(manager.getSkillContentByPath).toHaveBeenCalledExactlyOnceWith(content.name, content.path)
+	expect(manager.getSkillContent).not.toHaveBeenCalled()
+	expect(content.allowImplicitInvocation).toBe(true)
+})
+
+it.each([
+	["Keep working", 0],
+	["/explicit-review", 1],
+] as const)("keeps wait notification origin separate from queued human %s", async (humanText, expectedBodies) => {
+	const { task, queue, persisted, notification, claimHumanInput, countSkillBodies } = await mixedOriginHarness()
+	const { message, content } = claimHumanInput(humanText)
+	await expect(task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	const saved = persisted[0].at(-1)
+	expect(saved?.queued_message_ids).toEqual([message.id])
+	expect(countSkillBodies(saved)).toBe(expectedBodies)
+	expect(saved?.content).toContainEqual(notification)
+	expect(task["pendingWaitAgentNotificationBlocks"].has(notification)).toBe(false)
+	expect(task.userMessageContent).not.toContain(notification)
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	const next = claimHumanInput("Keep working")
+	await expect(task.runAgentRequests(next.content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	expect(persisted[1].at(-1)?.content).not.toContainEqual(notification)
+	expect(countSkillBodies(persisted[1].at(-1))).toBe(0)
+})
+
+it("retains agent notification origin across acknowledged input and a fresh queued human boundary", async () => {
+	const { task, queue, persisted, notification, claimHumanInput, countSkillBodies } = await mixedOriginHarness()
+	const first = claimHumanInput("Keep working")
+	await expect(task.runAgentRequests(first.content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	expect(countSkillBodies(persisted[0].at(-1))).toBe(0)
+	expect(task["pendingWaitAgentNotificationBlocks"].has(notification)).toBe(false)
+	expect(task.userMessageContent).not.toContain(notification)
+	const second = claimHumanInput("/explicit-review")
+	await expect(
+		task.runAgentRequests([notification, ...second.content], false, undefined, { inputOrigin: "agent" }),
+	).rejects.toBe(stopBeforeProvider)
+	const saved = persisted[1].at(-1)
+	expect(saved?.queued_message_ids).toEqual([second.message.id])
+	expect(countSkillBodies(saved)).toBe(1)
+	expect(saved?.content).toContainEqual(notification)
+	expect(queue.getClaimedMessageIds()).toEqual([])
+})
+
+it("retains explicit human block origin when acknowledged queued input is prepared again", async () => {
+	const { task, queue, persisted, claimHumanInput, countSkillBodies } = await mixedOriginHarness()
+	const { content } = claimHumanInput("/explicit-review")
+	await expect(task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	expect(countSkillBodies(persisted[0].at(-1))).toBe(1)
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	await expect(task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	expect(persisted[1].at(-1)?.queued_message_ids).toBeUndefined()
+	expect(countSkillBodies(persisted[1].at(-1))).toBe(1)
+})
+
+it("retains a parsed notification and human queue receipt until transcript persistence succeeds", async () => {
+	const { task, queue, persisted, notification, claimHumanInput, countSkillBodies } = await mixedOriginHarness()
+	const { message, content } = claimHumanInput("Keep working")
+	vi.mocked(task["addToApiConversationHistory"]).mockImplementationOnce(async (message) => {
+		task.apiConversationHistory.push(message)
+		return false
+	})
+	await expect(task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })).rejects.toThrow(
+		"Failed to persist the user turn",
+	)
+	expect(task["pendingWaitAgentNotificationBlocks"].has(notification)).toBe(true)
+	expect(task.userMessageContent).toContain(notification)
+	expect(queue.getClaimedMessageIds()).toEqual([message.id])
+	expect(task.apiConversationHistory).toEqual([])
+	await expect(task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })).rejects.toBe(
+		stopBeforeProvider,
+	)
+	expect(countSkillBodies(persisted[0].at(-1))).toBe(0)
+	expect(task["pendingWaitAgentNotificationBlocks"].has(notification)).toBe(false)
+	expect(task.userMessageContent).not.toContain(notification)
+	expect(queue.getClaimedMessageIds()).toEqual([])
+})
+
+it("acknowledges only the original parsed notification snapshot when delivery changes during save", async () => {
+	const { task, persisted, notification, claimHumanInput } = await mixedOriginHarness()
+	const { content } = claimHumanInput("Keep working")
+	let markSaving!: () => void
+	const saving = new Promise<void>((resolve) => {
+		markSaving = resolve
+	})
+	let finishSave!: () => void
+	const saveBarrier = new Promise<void>((resolve) => {
+		finishSave = resolve
+	})
+	const save = vi.mocked(task["addToApiConversationHistory"]).getMockImplementation()!
+	vi.mocked(task["addToApiConversationHistory"]).mockImplementationOnce(async (message, reasoning, onPersisted) => {
+		const saved = await save(message, reasoning)
+		markSaving()
+		await saveBarrier
+		onPersisted?.()
+		return saved
+	})
+	const running = task.runAgentRequests(content, false, undefined, { inputOrigin: "agent" })
+	const stopped = running.then(
+		() => ({ status: "fulfilled" as const }),
+		(error: unknown) => ({ status: "rejected" as const, error }),
+	)
+	const laterNotification: Anthropic.TextBlockParam = {
+		type: "text",
+		text: "<agent_notification id='later'>\n<user_message>\n/explicit-review\n</user_message>\n</agent_notification>",
+	}
+	try {
+		await Promise.race([
+			saving,
+			stopped.then((result) => {
+				if (result.status === "rejected") throw result.error
+				throw new Error("Agent request completed before entering the save barrier")
+			}),
+		])
+		task.userMessageContent.push(laterNotification)
+		task["pendingWaitAgentNotificationBlocks"].add(laterNotification)
+		// A mutable raw input array may gain a delivery after its prepared replacement has already been saved.
+		vi.mocked(processUserContentMentions).mock.calls.at(-1)![0].userContent.push(laterNotification)
+	} finally {
+		finishSave()
+	}
+	const result = await stopped
+	if (result.status === "fulfilled") throw new Error("Agent request did not reject at the fixture provider boundary")
+	expect(result.error).toBe(stopBeforeProvider)
+	expect(persisted[0].at(-1)?.content).toContainEqual(notification)
+	expect(persisted[0].at(-1)?.content).not.toContainEqual(laterNotification)
+	expect(task.userMessageContent).toEqual([laterNotification])
+	expect(task["pendingWaitAgentNotificationBlocks"]).toEqual(new Set([laterNotification]))
 })
 
 it("keeps passive host sends durable while a live turn owns the input boundary", async () => {

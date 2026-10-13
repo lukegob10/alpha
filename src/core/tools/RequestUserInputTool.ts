@@ -1,4 +1,9 @@
-import type { FollowUpData, RequestUserInputAnswerMap, RequestUserInputQuestion } from "@alpha-code/types"
+import type {
+	FollowUpData,
+	RequestUserInputAnswerMap,
+	RequestUserInputQuestion,
+	UserInputResponseData,
+} from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse } from "../../shared/tools"
@@ -33,6 +38,7 @@ function validateQuestions(questions: unknown): asserts questions is RequestUser
 		if (!Array.isArray(record.options) || record.options.length < 2 || record.options.length > 3) {
 			throw new Error(`request_user_input question ${record.id} requires two or three options.`)
 		}
+		const labels = new Set<string>()
 		for (const option of record.options) {
 			const optionRecord = option as Record<string, unknown> | undefined
 			const label = optionRecord?.label
@@ -49,6 +55,11 @@ function validateQuestions(questions: unknown): asserts questions is RequestUser
 			) {
 				throw new Error(`request_user_input question ${record.id} options require a label and description.`)
 			}
+			const normalizedLabel = label.trim()
+			if (labels.has(normalizedLabel)) {
+				throw new Error(`request_user_input question ${record.id} options must have unique labels.`)
+			}
+			labels.add(normalizedLabel)
 		}
 	}
 }
@@ -91,6 +102,9 @@ function parseAnswersResponse(
 	if (typeof parsed === "string" && questions.length === 1 && parsed.trim()) {
 		return { [questions[0]!.id]: { answers: [parsed.trim()] } }
 	}
+	if (questions.length === 1 && (parsed === null || typeof parsed === "number" || typeof parsed === "boolean")) {
+		return { [questions[0]!.id]: { answers: [text.trim()] } }
+	}
 
 	if (!isRecord(parsed) || Object.keys(parsed).length !== 1 || !Object.hasOwn(parsed, "answers")) {
 		throw new Error("request_user_input response must contain one answers object keyed by question id.")
@@ -126,8 +140,8 @@ function parseAnswersResponse(
 	return answers
 }
 
-function formatAnswerFeedback(questions: RequestUserInputQuestion[], answers: RequestUserInputAnswerMap): string {
-	return questions.map((question) => `${question.header}: ${answers[question.id]!.answers.join(", ")}`).join("\n")
+function formatAnswerFeedback(response: UserInputResponseData): string {
+	return response.questions.map(({ question, answers }) => `${question}\n${answers.join("\n")}`).join("\n\n")
 }
 
 function isCancellation(task: Task, signal?: AbortSignal): boolean {
@@ -204,11 +218,17 @@ export class RequestUserInputTool extends BaseTool<"request_user_input"> {
 				return
 			}
 
-			const feedback =
-				params.questions.length === 1
-					? answers[params.questions[0]!.id]!.answers.join("\n")
-					: formatAnswerFeedback(params.questions, answers)
-			await task.say("user_feedback", feedback, answer.images)
+			const userInputResponse: UserInputResponseData = {
+				questions: params.questions.map(({ id, header, question }) => ({
+					header,
+					question,
+					answers: [...answers[id]!.answers],
+				})),
+			}
+			const feedback = formatAnswerFeedback(userInputResponse)
+			await task.say("user_feedback", feedback, answer.images, undefined, undefined, undefined, {
+				userInputResponse,
+			})
 			if (isCancellation(task, signal)) {
 				setResultMetadata?.({ status: "cancelled" })
 				pushToolResult(JSON.stringify({ answers: {} }))

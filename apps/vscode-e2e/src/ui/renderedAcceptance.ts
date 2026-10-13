@@ -4,6 +4,159 @@ import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
+const RENDERED_CONTROL_TIMEOUT_MS = 15_000
+
+interface RenderedControlPosition {
+	x: number
+	y: number
+	width: number
+	height: number
+}
+
+export function createRenderedAcceptanceControls(
+	cdp: Pick<CdpConnection, "request">,
+	sessionId: string,
+	signal?: AbortSignal,
+) {
+	const ensureActive = (deadline: number) => {
+		signal?.throwIfAborted()
+		if (Date.now() >= deadline) throw new Error("rendered_control_timeout")
+	}
+	const settle = async <T>(operation: () => Promise<T>, deadline: number): Promise<T> => {
+		ensureActive(deadline)
+		let timer: ReturnType<typeof setTimeout> | undefined
+		let aborted: (() => void) | undefined
+		try {
+			const interrupted = new Promise<never>((_, reject) => {
+				aborted = () => reject(signal?.reason)
+				signal?.addEventListener("abort", aborted, { once: true })
+				timer = setTimeout(() => reject(new Error("rendered_control_timeout")), deadline - Date.now())
+			})
+			// Attach both race handlers before dispatch; a late transport rejection remains handled after interruption.
+			const pending = Promise.resolve().then(() => {
+				ensureActive(deadline)
+				return operation()
+			})
+			const value = await Promise.race([pending, interrupted])
+			ensureActive(deadline)
+			return value
+		} catch (error) {
+			ensureActive(deadline)
+			throw error
+		} finally {
+			if (timer !== undefined) clearTimeout(timer)
+			if (aborted) signal?.removeEventListener("abort", aborted)
+		}
+	}
+	const evaluate = async <T>(expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS): Promise<T> => {
+		const value = await settle(
+			() =>
+				cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
+					"Runtime.evaluate",
+					{
+						expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
+						returnByValue: true,
+						awaitPromise: true,
+					},
+					sessionId,
+				),
+			deadline,
+		)
+		ensureActive(deadline)
+		assert.equal(value.exceptionDetails, undefined)
+		return value.result.value
+	}
+	const check = (expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		settle(
+			() => waitUntil(() => evaluate<boolean>(expression, deadline), deadline, "rendered_control_timeout"),
+			deadline,
+		)
+	const click = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
+		ensureActive(deadline)
+		await evaluate(
+			`(()=>{const e=${element};e?.scrollIntoView({block:'center',behavior:'instant'});return true})()`,
+			deadline,
+		)
+		const samePosition = (left: RenderedControlPosition, right: RenderedControlPosition) =>
+			left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+		const waitForPosition = async (): Promise<RenderedControlPosition> => {
+			let previous: RenderedControlPosition | undefined
+			while (true) {
+				ensureActive(deadline)
+				// Resolve the current node on each rendering frame; portals can change geometry or document ownership.
+				const current = await evaluate<RenderedControlPosition | null>(
+					`new Promise(resolve=>d.defaultView.requestAnimationFrame(()=>{
+						const frame=document.getElementById('active-frame');
+						if(!frame||frame.contentDocument!==d){resolve(null);return}
+						const e=${element},w=d.defaultView;
+						if(!e?.isConnected||e.disabled||e.getAttribute('aria-disabled')==='true'){resolve(null);return}
+						for(let node=e;node;node=node.parentElement){
+							const style=w.getComputedStyle(node);
+							if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0){resolve(null);return}
+							if((node.getAnimations?.()??[]).some(a=>a.playState==='running'&&Number.isFinite(a.effect?.getComputedTiming().endTime))){resolve(null);return}
+						}
+						const r=e.getBoundingClientRect(),f=frame.getBoundingClientRect();
+						const localX=r.x+r.width/2,localY=r.y+r.height/2,x=f.x+localX,y=f.y+localY;
+						if(r.width<=0||r.height<=0||![x,y,r.width,r.height].every(Number.isFinite)||!e.contains(d.elementFromPoint(localX,localY))||document.elementFromPoint(x,y)!==frame){resolve(null);return}
+						resolve({x,y,width:r.width,height:r.height});
+					}))`,
+					deadline,
+				)
+				ensureActive(deadline)
+				if (current && previous && samePosition(current, previous)) return current
+				previous = current ?? undefined
+			}
+		}
+		let position = await waitForPosition()
+		while (true) {
+			ensureActive(deadline)
+			await settle(
+				() =>
+					cdp.request(
+						"Input.dispatchMouseEvent",
+						{ type: "mouseMoved", x: position.x, y: position.y },
+						sessionId,
+					),
+				deadline,
+			)
+			const afterMove = await waitForPosition()
+			if (samePosition(position, afterMove)) break
+			position = afterMove
+		}
+		ensureActive(deadline)
+		let pressAttempted = false
+		try {
+			await settle(() => {
+				pressAttempted = true
+				return cdp.request(
+					"Input.dispatchMouseEvent",
+					{
+						type: "mousePressed",
+						x: position.x,
+						y: position.y,
+						button: "left",
+						buttons: 1,
+						clickCount: 1,
+					},
+					sessionId,
+				)
+			}, deadline)
+			ensureActive(deadline)
+		} finally {
+			// A release alone can activate a Radix option when cancellation prevented the press.
+			if (pressAttempted) {
+				await cdp.request(
+					"Input.dispatchMouseEvent",
+					{ type: "mouseReleased", x: position.x, y: position.y, button: "left", buttons: 0, clickCount: 1 },
+					sessionId,
+				)
+			}
+		}
+		ensureActive(deadline)
+	}
+	return { evaluate, check, click }
+}
+
 /** Drives rendered controls only; the existing EH fixture verifies authoritative settings, files and task state. */
 export async function exerciseRenderedAcceptance(
 	cdp: CdpConnection,
@@ -14,22 +167,11 @@ export async function exerciseRenderedAcceptance(
 	signal?: AbortSignal,
 ) {
 	await cdp.request("Page.bringToFront", {}, workbenchSession)
-	const evaluate = async <T>(expression: string): Promise<T> => {
-		signal?.throwIfAborted()
-		const value = await cdp.request<{ result: { value: T }; exceptionDetails?: unknown }>(
-			"Runtime.evaluate",
-			{
-				expression: `(()=>{const d=document.getElementById('active-frame').contentDocument;return (${expression})})()`,
-				returnByValue: true,
-			},
-			sessionId,
-		)
-		assert.equal(value.exceptionDetails, undefined)
-		return value.result.value
-	}
-	const check = async (expression: string) => {
+	const controls = createRenderedAcceptanceControls(cdp, sessionId, signal)
+	const { evaluate } = controls
+	const retainFailure = async (expression: string, operation: () => Promise<void>) => {
 		try {
-			await waitUntil(() => evaluate<boolean>(expression), Date.now() + 15000, "rendered_control_timeout")
+			await operation()
 		} catch (error) {
 			const screenshot = await cdp.request<{ data: string }>(
 				"Page.captureScreenshot",
@@ -53,28 +195,17 @@ export async function exerciseRenderedAcceptance(
 			throw error
 		}
 	}
+	const check = (expression: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		retainFailure(expression, () => controls.check(expression, deadline))
+	const click = (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
+		retainFailure(element, () => controls.click(element, deadline))
 	const outputPreview =
 		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
-	const click = async (element: string) => {
-		const position = await evaluate<{ x: number; y: number }>(
-			`(()=>{const e=${element};e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();const f=document.getElementById('active-frame').getBoundingClientRect();return {x:f.x+r.x+r.width/2,y:f.y+r.y+r.height/2}})()`,
-		)
-		await cdp.request("Input.dispatchMouseEvent", { type: "mouseMoved", ...position }, sessionId)
-		await cdp.request(
-			"Input.dispatchMouseEvent",
-			{ type: "mousePressed", ...position, button: "left", buttons: 1, clickCount: 1 },
-			sessionId,
-		)
-		await cdp.request(
-			"Input.dispatchMouseEvent",
-			{ type: "mouseReleased", ...position, button: "left", buttons: 0, clickCount: 1 },
-			sessionId,
-		)
-	}
 	const activate = async (selector: string, label?: string, prefix = false) => {
 		const find = `[...d.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.getBoundingClientRect().width>0&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'${label === undefined ? "" : `&&(e.getAttribute('aria-label')??e.textContent).trim().${prefix ? "startsWith" : "includes"}(${JSON.stringify(label)})`})`
-		await check(`!!(${find})`)
-		await click(find)
+		const deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS
+		await check(`!!(${find})`, deadline)
+		await click(find, deadline)
 	}
 	const completed: string[] = []
 	const capture = async (name: string) => {
@@ -118,6 +249,43 @@ export async function exerciseRenderedAcceptance(
 		assert.equal(detail?.nonce, nonce)
 		assert.equal(detail?.stage, stage)
 		if (stage === "settings-edit") {
+			await check(
+				"!!d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')&&!!d.querySelector('[data-testid=save-button]')",
+			)
+			const originalTab = await evaluate<string>(
+				"d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]').getAttribute('data-testid')",
+			)
+			const originalSaveDisabled = await evaluate<boolean>(
+				"d.querySelector('[data-testid=save-button]').disabled",
+			)
+			try {
+				await activate('[data-testid="settings-tab-list"] [data-testid="tab-agents"]')
+				const basicControls = [
+					["agents-concurrency", "input", "Maximum concurrent managed agents"],
+					["agents-delegation-policy", "select", "Delegation policy"],
+					["agents-default-profile", "select", "Default child model/API profile"],
+				]
+				await check(
+					`(${JSON.stringify(basicControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
+				)
+				await capture("settings-agents-basic")
+				await activate(
+					'[data-testid="settings-content"] details[data-agents-advanced] > summary',
+					"Advanced agent settings",
+				)
+				await check(
+					"!!d.querySelector('[data-testid=settings-content] details[data-agents-advanced][open] input[id=agents-depth]')&&[...d.querySelector('[data-testid=settings-content] input[id=agents-timeout-review]').labels].some(l=>l.textContent.trim()==='Review timeout per run (seconds)')",
+				)
+				await evaluate(
+					"(()=>{d.querySelector('[data-testid=settings-content] input[id=agents-depth]').scrollIntoView({block:'center'});return true})()",
+				)
+				await capture("settings-agents-advanced")
+			} finally {
+				await activate(`[data-testid="settings-tab-list"] [data-testid=${JSON.stringify(originalTab)}]`)
+			}
+			await check(
+				`d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')?.getAttribute('data-testid')===${JSON.stringify(originalTab)}&&d.querySelector('[data-testid=save-button]').disabled===${originalSaveDisabled}`,
+			)
 			await activate('[data-testid="tab-terminal"]')
 			await check(`${outputPreview}?.textContent?.includes('Medium (10KB)')`)
 			await click(outputPreview)

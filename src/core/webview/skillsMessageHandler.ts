@@ -100,7 +100,10 @@ export async function handleDeleteSkill(
 			throw new Error(t("skills:errors.manager_unavailable"))
 		}
 
-		await skillsManager.deleteSkill(skillName, source, skillMode)
+		await skillsManager.deleteSkill(skillName, source, skillMode, {
+			path: message.skillPath,
+			modeSlugs: message.skillModeSlugs,
+		})
 
 		// Send updated skills list
 		const skills = skillsManager.getSkillsMetadata()
@@ -179,7 +182,11 @@ export async function handleUpdateSkillModes(
 			throw new Error(t("skills:errors.manager_unavailable"))
 		}
 
-		await skillsManager.updateSkillModes(skillName, source, newModeSlugs)
+		await skillsManager.updateSkillModes(skillName, source, newModeSlugs, {
+			path: message.skillPath,
+			modeSlugs: message.skillModeSlugs,
+			mode: message.skillMode,
+		})
 
 		// Send updated skills list
 		const skills = skillsManager.getSkillsMetadata()
@@ -210,8 +217,11 @@ export async function handleOpenSkillFile(provider: AlphaProvider, message: Webv
 			throw new Error(t("skills:errors.manager_unavailable"))
 		}
 
-		// Find skill by name and source (skills may have modeSlugs arrays now)
-		const skill = skillsManager.findSkillByNameAndSource(skillName, source)
+		const skill = skillsManager.findSkillByNameAndSource(skillName, source, {
+			path: message.skillPath,
+			modeSlugs: message.skillModeSlugs,
+			mode: message.skillMode,
+		})
 		if (!skill) {
 			throw new Error(t("skills:errors.skill_not_found", { name: skillName }))
 		}

@@ -19,6 +19,7 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 	async execute(params: CodebaseSearchParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { askApproval, handleError, pushToolResult } = callbacks
 		const { query, path: directoryPrefix } = params
+		callbacks.signal?.throwIfAborted()
 
 		const workspacePath = task.cwd && task.cwd.trim() !== "" ? task.cwd : getWorkspacePath()
 
@@ -42,7 +43,9 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 		}
 
 		const didApprove = await askApproval("tool", JSON.stringify(sharedMessageProps))
+		callbacks.signal?.throwIfAborted()
 		if (!didApprove) {
+			callbacks.setResultMetadata?.({ status: "denied" })
 			pushToolResult(formatResponse.toolDenied())
 			return
 		}
@@ -68,7 +71,8 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 				throw new Error(t("embeddings:searchNotConfigured"))
 			}
 
-			const search = await manager.searchIndexWithDiagnostics(query, directoryPrefix)
+			const search = await manager.searchIndexWithDiagnostics(query, directoryPrefix, callbacks.signal)
+			callbacks.signal?.throwIfAborted()
 			const jsonResult: CodebaseSearchResult = {
 				query,
 				results: [],
@@ -103,9 +107,9 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 			].some((status) => status && status !== "complete")
 			const incompleteIndex = search.diagnostics.indexFreshness && search.diagnostics.indexFreshness !== "current"
 			const coverage = partial
-				? "Search coverage is partial because a retrieval channel timed out or failed. Use read_file or search_files to verify missing evidence.\n"
+				? `${t("embeddings:searchPartialCoverage")}\n`
 				: incompleteIndex
-					? "The code index is incomplete. Semantic coverage of recent changes may lag; use read_file or search_files to verify missing evidence.\n"
+					? `${t("embeddings:searchIncompleteIndex")}\n`
 					: ""
 			if (jsonResult.results.length === 0) {
 				pushToolResult(`${coverage}No relevant code snippets found for the query: "${query}"`)
@@ -127,7 +131,8 @@ Code Chunk: ${result.codeChunk}
 	.join("\n")}`
 
 			pushToolResult(output)
-		} catch (error: any) {
+		} catch (error) {
+			callbacks.signal?.throwIfAborted()
 			await handleError("codebase_search", error)
 		}
 	}

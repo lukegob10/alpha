@@ -122,6 +122,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 		string,
 		{ alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>>; task: ScheduledTask; run: ScheduledTaskRun }
 	>()
+	private readonly pendingRunCompletions = new Map<
+		string,
+		{ task: ScheduledTask; run: ScheduledTaskRun; inFlight?: Promise<void> }
+	>()
 	private queue: Array<{ task: ScheduledTask; run: ScheduledTaskRun }> = []
 	private processing = false
 
@@ -199,7 +203,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.stopWatching = undefined
 		for (const controller of this.commandControllers) controller.abort()
 		this.commandControllers.clear()
-		for (const { alphaTask } of this.activeAlphaTasks.values()) {
+		for (const { alphaTask, run } of this.activeAlphaTasks.values()) {
+			if (this.pendingRunCompletions.has(run.id)) continue
 			void alphaTask.abortTask().catch((error) => {
 				this.outputChannel.appendLine(
 					`[ScheduledTaskService] Could not abort task ${alphaTask.taskId}: ${String(error)}`,
@@ -207,6 +212,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			})
 		}
 		this.activeAlphaTasks.clear()
+		this.pendingRunCompletions.clear()
 		this.provider.off(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.off(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
 		this.workspaceListener?.dispose()
@@ -363,8 +369,14 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	private async tick(): Promise<void> {
 		try {
+			if (this.disposed) return
+			for (const pending of this.pendingRunCompletions.values()) {
+				if (this.disposed) return
+				await this.finishRun(pending.task, pending.run)
+			}
 			await this.refreshState()
 			await this.recoverInterruptedRuns()
+			if (this.disposed) return
 			const now = Date.now()
 			for (const task of this.store.getState().tasks) {
 				if (task.workspace && task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= now) {
@@ -489,7 +501,12 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 		if (!(await this.store.projectRunStatus(startedRun))) return
 		await this.broadcast()
-		await this.notifyBeforeRun(task, startedRun)
+		// Informational toasts settle on dismissal; admission must not wait for them.
+		void this.notifyBeforeRun(task, startedRun).catch((error) => {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not notify start of run ${run.id}: ${String(error)}`,
+			)
+		})
 
 		if (execution.type === "command") {
 			await this.startCommandRun(task, startedRun, execution)
@@ -508,7 +525,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 				.catch(() => {
 					throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
 				})
-			if (profile.name !== selectedProfile.data.name || !profile.apiProvider) {
+			// The captured name is a display snapshot; the stable ID remains authoritative after a rename.
+			if (!profile.apiProvider) {
 				throw new Error(t("scheduledTasks:profileUnavailable", { name: selectedProfile.data.name }))
 			}
 			const { name, id: _id, ...apiConfiguration } = profile
@@ -776,15 +794,64 @@ export class ScheduledTaskService implements vscode.Disposable {
 	): Promise<void> {
 		const active = this.activeAlphaTasks.get(alphaTaskId)
 		if (!active) return
-		this.activeAlphaTasks.delete(alphaTaskId)
-		await this.finishRun(active.task, { ...active.run, status, summary, finishedAt: Date.now() })
+		await this.finishRun(active.task, { ...active.run, alphaTaskId, status, summary, finishedAt: Date.now() })
 	}
 
-	private async finishRun(_task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
-		const completed = await this.store.completeRun(run)
+	private async finishRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
+		// A terminal event may be delivered only once. Preserve its first outcome
+		// while duplicate events and tick retries join the same persistence attempt.
+		let pending = this.pendingRunCompletions.get(run.id)
+		if (!pending) {
+			pending = { task, run }
+			// Aborted commands can settle after disposal. Permit their best-effort
+			// terminal write without retaining work that no future tick can retry.
+			if (!this.disposed) this.pendingRunCompletions.set(run.id, pending)
+		}
+		if (!pending.inFlight) {
+			const completion = pending
+			pending.inFlight = this.persistRunCompletion(completion.run).finally(() => {
+				completion.inFlight = undefined
+			})
+		}
+		await pending.inFlight
+	}
+
+	private async persistRunCompletion(run: ScheduledTaskRun): Promise<void> {
+		let completed: Awaited<ReturnType<ScheduledTaskStore["completeRun"]>>
+		try {
+			completed = await this.store.completeRun(run)
+		} catch (error) {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not finalize run ${run.id}${this.disposed ? "" : "; will retry"}: ${String(error)}`,
+			)
+			return
+		}
+		this.pendingRunCompletions.delete(run.id)
+		if (run.alphaTaskId && this.activeAlphaTasks.get(run.alphaTaskId)?.run.id === run.id) {
+			this.activeAlphaTasks.delete(run.alphaTaskId)
+		}
 		if (!completed) return
-		await this.broadcast()
-		await this.notifyRunFinished(completed.task, completed.run)
+		// Completion is durable before advisory UI work starts. An open toast
+		// must not hold tick retries, queue admission, or terminal event settlement.
+		void this.presentRunCompletion(completed.task, completed.run)
+	}
+
+	private async presentRunCompletion(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
+		try {
+			await this.broadcast()
+		} catch (error) {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not update the view after completing run ${run.id}: ${String(error)}`,
+			)
+		}
+		if (this.disposed) return
+		try {
+			await this.notifyRunFinished(task, run)
+		} catch (error) {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not notify completion of run ${run.id}: ${String(error)}`,
+			)
+		}
 	}
 
 	private async recoverInterruptedRuns(): Promise<void> {
@@ -860,14 +927,14 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	private async notifyBeforeRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
-		if (task.notificationPreference !== "before_run") {
+		if (this.disposed || task.notificationPreference !== "before_run") {
 			return
 		}
 		const choice = await vscode.window.showInformationMessage(
 			`Scheduled task "${task.name}" started in the background.`,
 			"Review",
 		)
-		if (choice === "Review") {
+		if (!this.disposed && choice === "Review") {
 			await this.openScheduledTask(task.id, run.id)
 		}
 	}

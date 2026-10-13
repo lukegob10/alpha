@@ -144,7 +144,7 @@ describe("native tool production dispatch contract", () => {
 		const surface = createTaskToolSurface({ registry, schemas, mode })
 		const names = schemas.flatMap((schema) => (schema.type === "function" ? [schema.function.name] : []))
 
-		for (const name of ["read_file", "list_files", "search_files", "codebase_search"]) {
+		for (const name of ["read_file", "list_files", "search_files"]) {
 			expect(names, name).not.toContain(name)
 			expect(registry.resolve(name), name).toBeUndefined()
 			expect(surface.resolve(name), name).toBeUndefined()

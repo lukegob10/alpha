@@ -56,7 +56,8 @@ describe("Task retained sub-agent follow-up", () => {
 
 		expect(ask).not.toHaveBeenCalled()
 		expect((task as any).say).toHaveBeenCalledWith("user_feedback", "Check the edge case next")
-		expect(overwriteApiConversationHistory).toHaveBeenCalled()
+		expect(overwriteApiConversationHistory).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toHaveLength(2)
 		expect(initiateTaskLoop).toHaveBeenCalledWith(
 			[
 				{
@@ -86,6 +87,13 @@ describe("Task retained sub-agent follow-up", () => {
 			role: "assistant",
 			content: [{ type: "tool_use", id: waitId, name: "wait_agent", input: { timeout_ms: 300_000 } }],
 		}
+		const committedUserMessage = {
+			role: "user",
+			content: [
+				{ type: "tool_result", tool_use_id: waitId, content: '{"cancelled":true}' },
+				{ type: "text", text: persistedSteering },
+			],
+		}
 		const task = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-1",
 			taskKind: "subagent",
@@ -103,13 +111,7 @@ describe("Task retained sub-agent follow-up", () => {
 			getSavedApiConversationHistory: vi.fn(async () => [
 				initialUserMessage,
 				interruptedAssistantMessage,
-				{
-					role: "user",
-					content: [
-						{ type: "tool_result", tool_use_id: waitId, content: '{"cancelled":true}' },
-						{ type: "text", text: persistedSteering },
-					],
-				},
+				committedUserMessage,
 			]),
 			say: vi.fn(async () => undefined),
 			overwriteApiConversationHistory,
@@ -119,13 +121,14 @@ describe("Task retained sub-agent follow-up", () => {
 
 		await (task as any).resumeTaskFromHistory("SECOND_RUN", onFollowupPersisted)
 
-		expect(overwriteApiConversationHistory).toHaveBeenCalledWith([initialUserMessage, interruptedAssistantMessage])
+		expect(overwriteApiConversationHistory).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toEqual([
+			initialUserMessage,
+			interruptedAssistantMessage,
+			committedUserMessage,
+		])
 		expect(initiateTaskLoop).toHaveBeenCalledWith(
-			[
-				{ type: "tool_result", tool_use_id: waitId, content: '{"cancelled":true}' },
-				{ type: "text", text: persistedSteering },
-				{ type: "text", text: "<user_message>\nSECOND_RUN\n</user_message>" },
-			],
+			[{ type: "text", text: "<user_message>\nSECOND_RUN\n</user_message>" }],
 			onFollowupPersisted,
 			expect.objectContaining({
 				deferTaskStartedUntilInitialUserContentPersisted: false,

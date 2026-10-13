@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { assistantMessageMetadataSchema, assistantMessagePhaseSchema } from "./agent-response.js"
 
 /**
  * The lifecycle contract intentionally uses opaque, non-empty identifiers.
@@ -118,6 +119,11 @@ export const agentLifecycleAssistantTextItemSchema = z
 		...lifecycleItemBaseFields,
 		type: z.literal("assistant_text"),
 		text: z.string(),
+		/** Original provider message identity, distinct from the lifecycle item's ID. */
+		messageId: assistantMessageMetadataSchema.shape.id,
+		/** Message phase never substitutes for explicit turn status. */
+		phase: assistantMessagePhaseSchema.optional(),
+		outputIndex: assistantMessageMetadataSchema.shape.outputIndex,
 	})
 	.strict()
 

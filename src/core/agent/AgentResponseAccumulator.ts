@@ -1,3 +1,5 @@
+import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+
 import type { ApiStreamChunk } from "../../api/transform/stream"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import {
@@ -34,6 +36,11 @@ interface ToolSlot {
 }
 
 type OrderedResponseEntry = AgentResponseItem | ToolSlot
+
+interface TextMessageState {
+	metadata: AssistantMessageMetadata
+	items: Set<Extract<AgentResponseItem, { type: "text" }>>
+}
 
 type ParsedArguments = { ok: true; value: unknown } | { ok: false }
 
@@ -86,6 +93,11 @@ export class AgentResponseAccumulator {
 	private readonly emittedToolIds = new Set<string>()
 	private readonly emittedNormalizedToolIds = new Map<string, string>()
 	private readonly completedToolCallIds = new Set<string>()
+	private readonly outputIndexes = new Map<AgentResponseItem, number>()
+	private readonly textMessagesById = new Map<string, TextMessageState>()
+	private readonly textMessagesByIndex = new Map<number, TextMessageState>()
+	private readonly opaqueReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
+	private readonly latestReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private lastReasoningItem: Extract<AgentResponseItem, { type: "reasoning" }> | undefined
 	private nextToolOrder = 0
 	private nextSyntheticId = 0
@@ -104,24 +116,67 @@ export class AgentResponseAccumulator {
 		}
 
 		switch (chunk.type) {
-			case "text":
-				return this.emit({ type: "text", text: chunk.text }, onItem)
+			case "text": {
+				const metadata = normalizeAssistantMessageMetadata(chunk)
+				const message = this.reconcileTextMessage(metadata)
+				const item: Extract<AgentResponseItem, { type: "text" }> = {
+					type: "text",
+					text: chunk.text,
+					...(message?.metadata ?? metadata),
+				}
+				message?.items.add(item)
+				return this.emit(item, onItem, true, item.outputIndex)
+			}
+
+			case "message_metadata":
+				this.reconcileTextMessage(normalizeAssistantMessageMetadata(chunk))
+				return
 
 			case "reasoning": {
 				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
 					type: "reasoning",
 					text: chunk.text,
 					...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
+					...(chunk.encryptedContent !== undefined ? { encryptedContent: chunk.encryptedContent } : {}),
+					...(chunk.redactedData !== undefined ? { redactedData: chunk.redactedData } : {}),
+					// Opaque items are already indivisible; plaintext deltas also need
+					// their source boundary when history groups them into signed blocks.
+					...(chunk.outputIndex !== undefined && chunk.encryptedContent === undefined
+						? { outputIndex: chunk.outputIndex }
+						: {}),
+					...(chunk.id !== undefined ? { id: chunk.id } : {}),
+					...(chunk.summary !== undefined ? { summary: structuredClone(chunk.summary) } : {}),
+				}
+				if (chunk.encryptedContent !== undefined && chunk.outputIndex !== undefined) {
+					const previous = this.opaqueReasoningItems.get(chunk.outputIndex)
+					if (previous) {
+						// Completion can supply opaque state omitted by the streamed item.
+						// Reconcile the same source position instead of appending another item.
+						Object.assign(previous, item)
+						return
+					}
+					this.opaqueReasoningItems.set(chunk.outputIndex, item)
 				}
 				this.lastReasoningItem = item
-				return this.emit(item, onItem)
+				if (chunk.outputIndex !== undefined) this.latestReasoningItems.set(chunk.outputIndex, item)
+				return this.emit(item, onItem, true, chunk.outputIndex)
 			}
 
 			case "thinking_complete": {
-				if (this.lastReasoningItem) {
+				const item =
+					chunk.outputIndex === undefined
+						? this.lastReasoningItem
+						: this.latestReasoningItems.get(chunk.outputIndex)
+				if (item) {
 					// Keep an empty signature too: an explicitly supplied signature is
 					// different from a provider which did not report one.
-					this.lastReasoningItem.signature = chunk.signature
+					item.signature = chunk.signature
+				} else {
+					// A valid signed block can have no visible reasoning at all.
+					return this.add(
+						{ type: "reasoning", text: "", signature: chunk.signature, outputIndex: chunk.outputIndex },
+						onItem,
+					)
 				}
 				return
 			}
@@ -180,10 +235,14 @@ export class AgentResponseAccumulator {
 				const id = asString(chunk.id)
 				let pending = id ? this.pendingTools.get(id) : undefined
 				if (!pending) {
-					pending = this.createPending(id || this.createSyntheticId(), chunk.name, undefined, !id)
+					pending = this.createPending(id || this.createSyntheticId(), chunk.name, chunk.outputIndex, !id)
 				} else if (!pending.name && chunk.name) {
 					pending.name = chunk.name
 					pending.preflightAnnounced = false
+				}
+				if (chunk.outputIndex !== undefined) {
+					pending.index = chunk.outputIndex
+					this.pendingToolIndexes.set(chunk.outputIndex, pending.id)
 				}
 
 				const incomingArguments = asString(chunk.arguments)
@@ -313,6 +372,54 @@ export class AgentResponseAccumulator {
 		this.responseOutcome = outcome
 	}
 
+	private reconcileTextMessage(metadata: AssistantMessageMetadata): TextMessageState | undefined {
+		if (metadata.id === undefined && metadata.outputIndex === undefined) return undefined
+		const byId = metadata.id === undefined ? undefined : this.textMessagesById.get(metadata.id)
+		const byIndex =
+			metadata.outputIndex === undefined ? undefined : this.textMessagesByIndex.get(metadata.outputIndex)
+		const compatibleIdentity = (left: AssistantMessageMetadata, right: AssistantMessageMetadata) =>
+			(left.id === undefined || right.id === undefined || left.id === right.id) &&
+			(left.outputIndex === undefined ||
+				right.outputIndex === undefined ||
+				left.outputIndex === right.outputIndex)
+		// Conflicting provider identity cannot safely retag already displayed text.
+		if (
+			(byId && !compatibleIdentity(byId.metadata, metadata)) ||
+			(byIndex && !compatibleIdentity(byIndex.metadata, metadata)) ||
+			(byId && byIndex && !compatibleIdentity(byId.metadata, byIndex.metadata))
+		) {
+			return undefined
+		}
+
+		const message: TextMessageState = byIndex ?? byId ?? { metadata: {}, items: new Set() }
+		const previous = message.metadata
+		const merged = byId !== undefined && byIndex !== undefined && byId !== byIndex
+		if (merged) {
+			for (const item of byId.items) message.items.add(item)
+		}
+		message.metadata = { ...(merged ? byId.metadata : {}), ...previous, ...metadata }
+		if (message.metadata.id !== undefined) this.textMessagesById.set(message.metadata.id, message)
+		if (message.metadata.outputIndex !== undefined) {
+			this.textMessagesByIndex.set(message.metadata.outputIndex, message)
+		}
+		if (
+			merged ||
+			previous.id !== message.metadata.id ||
+			previous.phase !== message.metadata.phase ||
+			previous.outputIndex !== message.metadata.outputIndex
+		) {
+			// Late completion metadata enriches the same fragments. It is not a new
+			// visible message and does not produce another onItem notification.
+			for (const item of message.items) {
+				Object.assign(item, message.metadata)
+				if (message.metadata.outputIndex !== undefined) {
+					this.outputIndexes.set(item, message.metadata.outputIndex)
+				}
+			}
+		}
+		return message
+	}
+
 	private async flushPendingTools(
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<AgentResponse> {
@@ -352,9 +459,21 @@ export class AgentResponseAccumulator {
 			}
 		}
 		orderedItems.push(...toolItems.slice(nextToolItem))
+		// Some Responses items arrive only with the final response, after later
+		// text deltas or tool receipts. Sort source-positioned items within their
+		// existing slots; providers without positions retain arrival ordering.
+		const positionedItems = orderedItems
+			.filter((item) => this.outputIndexes.has(item))
+			.sort((left, right) => this.outputIndexes.get(left)! - this.outputIndexes.get(right)!)
+		let nextPositionedItem = 0
+		const reconciledItems = orderedItems.map((item) =>
+			this.outputIndexes.has(item) ? positionedItems[nextPositionedItem++]! : item,
+		)
 		this.pendingTools.clear()
 		this.pendingToolIndexes.clear()
-		return createAgentResponse(orderedItems, this.responseOutcome)
+		this.textMessagesById.clear()
+		this.textMessagesByIndex.clear()
+		return createAgentResponse(reconciledItems, this.responseOutcome)
 	}
 
 	private createPending(id: string, name: string, index?: number, syntheticId = false): PendingToolCall {
@@ -652,14 +771,18 @@ export class AgentResponseAccumulator {
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<void> {
 		this.flushedToolItems.set(pending.id, item)
-		await this.emit(item, onItem, false)
+		await this.emit(item, onItem, false, pending.index)
 	}
 
 	private async emit(
 		item: AgentResponseItem,
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 		recordOrder = true,
+		outputIndex?: number,
 	) {
+		if (outputIndex !== undefined && Number.isSafeInteger(outputIndex) && outputIndex >= 0) {
+			this.outputIndexes.set(item, outputIndex)
+		}
 		if (recordOrder) this.orderedEntries.push(item)
 		await onItem?.(item)
 	}

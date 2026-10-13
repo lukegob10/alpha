@@ -6,6 +6,10 @@ import {
 	taskDesignHandoffSchema,
 	MAX_DESIGN_HANDOFF_CHARS,
 	type TaskDesignHandoff,
+	type TaskGoal,
+	type TaskGoalCreateInput,
+	type TaskGoalResumeInput,
+	taskGoalUsageReceiptsSchema,
 	type TaskWorkContext,
 	type TaskWorkPlan,
 	type AgentMailboxEntry,
@@ -18,6 +22,7 @@ import {
 	toolApprovalDecisionSchema,
 	toolApprovalRequestSchema,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
+	normalizeAssistantMessageMetadata,
 } from "@alpha-code/types"
 import {
 	captureAcceptanceChecks,
@@ -39,7 +44,18 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import { AskIgnoredError } from "./AskIgnoredError"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
+import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
+import { TaskGoalStore } from "../task-persistence/TaskGoalStore"
+import { GoalController } from "../agent/goals/GoalController"
+import { GoalAccountingBindingStore } from "../agent/goals/GoalAccountingBindingStore"
+import {
+	accountGoalResponse,
+	finishGoalStep,
+	goalResponseTokens,
+	type GoalStepAccounting,
+	type GoalAccountingBinding,
+} from "../agent/GoalStepAccounting"
 import {
 	readCompletionHookConfig,
 	runCompletionHooks,
@@ -116,6 +132,7 @@ import {
 	type AlphaApiReqInfo,
 	type FollowUpData,
 	type AsyncUserInputData,
+	type UserInputResponseData,
 	AlphaCodeEventName,
 	TaskStatus,
 	TodoItem,
@@ -155,6 +172,7 @@ import { resolveTaskReasoning } from "../agent/TaskReasoning"
 import {
 	ApiStreamDeadlineError,
 	createLinkedAbortController,
+	createApiStreamOutcome,
 	ApiStream,
 	GroundingSource,
 	type ApiStreamChunk,
@@ -175,7 +193,13 @@ import { formatLanguage } from "../../shared/language"
 import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../shared/getApiMetrics"
 import { AlphaAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
-import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
+import {
+	DiffStrategy,
+	type ToolUse,
+	type ToolParamName,
+	toolParamNames,
+	isCommandArtifactRead,
+} from "../../shared/tools"
 import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
 import {
 	ensureProposedPlanBlock,
@@ -202,6 +226,7 @@ import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/
 import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
 import { getCommandShell } from "../../utils/shell"
+import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 import { getTaskDirectoryPath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
@@ -218,6 +243,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
+import { extractApplyPatchCommand } from "../tools/apply-patch/invocation"
 import { classifyCommandRead } from "../tools/ParallelCommandRead"
 import { isPathWithinRoot } from "../tools/pathSafety"
 import { isPathAllowed } from "../agent/ToolPolicy"
@@ -262,6 +288,7 @@ import {
 	type ToolSchedulerResult,
 } from "../agent/ToolScheduler"
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
+import type { ToolPolicyInput } from "../agent/ToolPolicy"
 import type { AgentTurnEvent, AgentTurnEventIdentity } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
 import {
@@ -307,6 +334,10 @@ import {
 
 import { processUserContentMentions } from "../mentions/processUserContentMentions"
 import {
+	getHumanFeedbackToolResultIds,
+	getSkillLookupForCapturedCatalog,
+} from "../../services/skills/skillInvocationProvenance"
+import {
 	countContextTokens,
 	createTokenCountContext,
 	getMessagesSinceLastSummary,
@@ -333,6 +364,7 @@ import { createAgentResponse } from "../agent/AgentResponse"
 import {
 	buildCanonicalAnthropicAssistantHistoryContent,
 	buildCanonicalAssistantHistoryContent,
+	isCanonicalEncryptedReasoningHistoryItem,
 } from "../task-persistence/canonicalAssistantHistory"
 import { lifecycleResponseItems } from "../agent/lifecycle/responseItems"
 import {
@@ -621,6 +653,11 @@ interface PendingSpawnedSubagentResult {
 	block: Anthropic.Messages.TextBlockParam
 }
 
+interface GoalInputAdmission {
+	isStillCurrent(): boolean
+	canWake(): Promise<boolean>
+}
+
 export interface TaskOptions extends CreateTaskOptions {
 	provider: AlphaProvider
 	apiConfiguration: ProviderSettings
@@ -634,6 +671,8 @@ export interface TaskOptions extends CreateTaskOptions {
 	startTask?: boolean
 	rootTask?: Task
 	parentTask?: Task
+	/** Captured at effect admission, before deferred launch outlives the invoking goal step. */
+	goalAccountingBinding?: Promise<GoalAccountingBinding | undefined>
 	taskNumber?: number
 	onCreated?: (task: Task) => void
 	initialTodos?: TodoItem[]
@@ -693,7 +732,7 @@ export function getSubagentAllowedToolNames(
 	const tools: ToolName[] =
 		role === "worker"
 			? ["apply_patch", "exec_command", "manage_command", "write_stdin", "send_message", "attempt_completion"]
-			: ["exec_command", "send_message", "attempt_completion"]
+			: ["exec_command", "write_stdin", "send_message", "attempt_completion"]
 	if (hasInheritedSkills) tools.splice(tools.length - 1, 0, "skill")
 	if (allowDelegation) {
 		tools.splice(
@@ -857,6 +896,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private providerTranscriptCommitReceipt?: ProviderTranscriptCommitReceipt
 	private providerTranscriptSidecarFailure?: ProviderTranscriptStoreError
 	private apiConversationHistoryFailureGeneration = 0
+	/** A staged resume repair is retired by its transcript receipt, independently of input admission. */
+	private pendingResumeHistoryRepair?: { message: ApiMessage; persisted: boolean }
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
@@ -891,6 +932,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onPersisted?: () => Promise<void> | void
 	}
 	private queuedInputBlockReceipts = new WeakMap<object, readonly string[]>()
+	private inputBlockOrigins = new WeakMap<object, "human" | "agent">()
 	private queuedToolResultReceipts = new Map<
 		string,
 		{ ids: readonly string[]; content: Anthropic.Messages.ContentBlockParam[] }
@@ -903,12 +945,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
 	private readonly stagedWaitAgentNotifications = new Map<string, Anthropic.TextBlockParam[]>()
-	private readonly waitAgentClaimEventIds = new Map<string, Set<string>>()
+	private readonly waitAgentClaimEntries = new Map<string, readonly AgentMailboxEntry[]>()
 	private readonly durableWaitAgentClaimIds = new Set<string>()
 	private readonly pendingWaitAgentNotificationBlocks = new Set<Anthropic.TextBlockParam>()
+	/** A final answer fences passive result mail until the next authorized turn. */
+	private deferAgentResultNotifications = false
 	private persistedToolResultIds = new Set<string>()
 	private steerMessageAwaitingPersistence = false
 	private isAgentTurnEngineActive = false
+	private goalController?: GoalController
+	/** Children retain the root goal identity present when they were created. */
+	private inheritedGoalBinding?: Promise<GoalAccountingBinding | undefined>
+	private goalChildRequiresAdmission = false
+	private activeGoalStep?: GoalStepAccounting
+	private goalTurnCompletionText?: string
+	private goalWakePromise?: Promise<void>
+	private goalShutdownPromise?: Promise<void>
+	private goalSteeringGeneration = 0
+	private goalHostAdmission?: GoalInputAdmission
+	private goalAskAdmission?: { text: string; admission: GoalInputAdmission }
+	private goalRequestAdmissionRevoked = false
 	private externalMutationLease?: { label: string; token: symbol }
 	private deferredAskResponse?:
 		| {
@@ -1358,6 +1414,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (notifications && hasWaitReceipt && !toolResult.is_error) {
 			this.userMessageContent.push(...notifications)
 			for (const notification of notifications) this.pendingWaitAgentNotificationBlocks.add(notification)
+			this.captureInputBlockOrigins(notifications, "agent")
 			this.stagedWaitAgentNotifications.delete(claimId!)
 		} else if (claimId) {
 			// A cancellation/error receipt did not deliver the claim; retry it from the mailbox.
@@ -1371,28 +1428,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!claimId || entries.length === 0) throw new Error("Agent notifications require a nonempty mailbox claim")
 		if (this.stagedWaitAgentNotifications.has(claimId)) return
 		const ordered = [...entries].sort((left, right) => left.sequence - right.sequence)
-		this.waitAgentClaimEventIds.set(claimId, new Set(ordered.map((entry) => entry.eventId)))
+		this.waitAgentClaimEntries.set(claimId, structuredClone(ordered))
+		const deliveredEventIds = getPersistedAgentNotificationIds(this.apiConversationHistory, ordered, (text) =>
+			redactTaskPrivatePaths(this, text),
+		)
 		this.stagedWaitAgentNotifications.set(
 			claimId,
-			ordered.map((entry) => ({
-				type: "text",
-				text: redactTaskPrivatePaths(
-					this,
-					JSON.stringify({
-						source: "managed_agent_notification",
-						eventId: entry.eventId,
-						sequence: entry.sequence,
-						createdAt: entry.createdAt,
-						senderTaskId: entry.senderTaskId,
-						senderPath: entry.senderPath,
-						recipientTaskId: entry.recipientTaskId,
-						recipientPath: entry.recipientPath,
-						kind: entry.kind,
-						name: entry.name,
-						payload: entry.payload,
-					}),
-				),
-			})),
+			ordered
+				.filter((entry) => !deliveredEventIds.has(entry.eventId))
+				.map((entry) => ({
+					type: "text",
+					text: redactTaskPrivatePaths(this, serializeAgentNotification(entry)),
+				})),
 		)
 	}
 
@@ -1420,7 +1467,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public forgetWaitAgentResultClaim(claimId: string): void {
 		this.stagedWaitAgentNotifications.delete(claimId)
-		this.waitAgentClaimEventIds.delete(claimId)
+		this.waitAgentClaimEntries.delete(claimId)
 		this.durableWaitAgentClaimIds.delete(claimId)
 		for (const [toolCallId, retainedClaimId] of this.pendingWaitAgentResultClaims) {
 			if (retainedClaimId === claimId) this.pendingWaitAgentResultClaims.delete(toolCallId)
@@ -1430,22 +1477,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private waitAgentClaimsPersistedBy(message: Anthropic.MessageParam): string[] {
 		if (message.role !== "user" || !Array.isArray(message.content)) return []
 		const persistedClaimIds = new Set<string>()
-		const persistedEventIds = new Set<string>()
 		for (const block of message.content) {
-			if (block.type !== "text") continue
-			try {
-				const notification = JSON.parse(block.text) as { source?: unknown; eventId?: unknown }
-				if (notification.source === "managed_agent_notification" && typeof notification.eventId === "string") {
-					persistedEventIds.add(notification.eventId)
-				}
-			} catch {
-				// Ordinary user text is not an agent notification.
-			}
-		}
-		for (const block of message.content) {
-			if (block.type !== "tool_result") continue
+			if (block.type !== "tool_result" || block.is_error) continue
 			const retainedClaimId = this.pendingWaitAgentResultClaims.get(sanitizeToolUseId(block.tool_use_id))
 			if (!retainedClaimId) continue
+			const expectedEntries = this.waitAgentClaimEntries.get(retainedClaimId)
+			const persistedEventIds = getPersistedAgentNotificationIds(
+				this.apiConversationHistory,
+				expectedEntries,
+				(text) => redactTaskPrivatePaths(this, text),
+			)
 			const textParts =
 				typeof block.content === "string"
 					? [block.content]
@@ -1453,12 +1494,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			for (const text of textParts) {
 				try {
 					const receipt = JSON.parse(text) as { source?: unknown; claimId?: unknown }
-					const expectedEventIds = this.waitAgentClaimEventIds.get(retainedClaimId)
 					if (
 						receipt.source === "managed_agent_mailbox" &&
 						receipt.claimId === retainedClaimId &&
-						expectedEventIds?.size &&
-						[...expectedEventIds].every((eventId) => persistedEventIds.has(eventId))
+						expectedEntries?.length &&
+						expectedEntries.every((entry) => persistedEventIds.has(entry.eventId))
 					) {
 						persistedClaimIds.add(retainedClaimId)
 						break
@@ -1647,6 +1687,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		startTask = true,
 		rootTask,
 		parentTask,
+		goalAccountingBinding,
 		taskNumber = -1,
 		onCreated,
 		initialTodos,
@@ -1832,6 +1873,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.rootTask = rootTask
 		this.parentTask = parentTask
+		this.goalController = new GoalController({
+			taskId: this.taskId,
+			store: new TaskGoalStore(this.globalStoragePath, this.taskId),
+		})
+		if (rootTask || parentTask || this.parentTaskId) {
+			const ownerTask = rootTask ?? parentTask
+			this.goalChildRequiresAdmission = ownerTask === undefined
+			this.inheritedGoalBinding = this.loadInheritedGoalBinding(
+				ownerTask,
+				goalAccountingBinding ?? ownerTask?.captureGoalAccountingBinding() ?? Promise.resolve(undefined),
+				historyItem !== undefined,
+				goalAccountingBinding !== undefined,
+			)
+			void this.inheritedGoalBinding.catch(() => undefined)
+		}
 		this.taskNumber = taskNumber
 		this.initialStatus = initialStatus
 		this.taskApprovalMode = historyItem?.approvalMode ?? taskApprovalMode
@@ -1864,6 +1920,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.messageQueueStateChangedHandler = () => {
 			const currentMessageCount = this.messageQueueService.messages.length
 			if (currentMessageCount > queuedMessageCount) {
+				this.invalidateGoalContinuation()
 				// A new user-authored instruction breaks a sequence of model mistakes.
 				// Do not let a stale error pre-empt the queued guidance with the
 				// mistake-limit dialog before the model can act on it.
@@ -1901,18 +1958,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// - trailing: true - Emit final state when updates stop
 		// - maxWait        - Ensures at most one emit per interval during rapid updates (throttle behavior)
 		this.debouncedEmitTokenUsage = debounce(
-			(tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
-				const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
-				const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
-
-				if (tokenChanged || toolChanged) {
-					this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
-					this.tokenUsageSnapshot = tokenUsage
-					this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
-					// Deep copy tool usage for snapshot
-					this.toolUsageSnapshot = JSON.parse(JSON.stringify(toolUsage))
-				}
-			},
+			(tokenUsage: TokenUsage, toolUsage: ToolUsage) => this.publishTokenUsageUpdate(tokenUsage, toolUsage),
 			this.TOKEN_USAGE_EMIT_INTERVAL_MS,
 			{ leading: true, trailing: true, maxWait: this.TOKEN_USAGE_EMIT_INTERVAL_MS },
 		)
@@ -1961,11 +2007,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * joining the loop from inside abort would deadlock.
 	 */
 	public async waitForTermination(): Promise<void> {
-		if (this.taskTerminationPromise) {
-			await this.taskTerminationPromise
-			return
+		try {
+			if (this.taskTerminationPromise) {
+				await this.taskTerminationPromise
+				return
+			}
+			await this.waitForOwnedLifecycle()
+		} finally {
+			await this.goalShutdownPromise
 		}
-		await this.waitForOwnedLifecycle()
 	}
 
 	private async waitForOwnedLifecycle(): Promise<void> {
@@ -2336,6 +2386,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return state ? { ...state, approvalMode } : undefined
 	}
 
+	/** Copy command authority before asynchronous request preparation can observe changed settings. */
+	private captureToolExecutionPolicy(state?: TaskRequestState): NonNullable<ToolPolicyInput["execution"]> {
+		return Object.freeze({
+			workspaceRoots: Object.freeze([this.cwd]),
+			...(this.taskKind === "primary" ? { outsideWorkspace: "approval" as const } : {}),
+			command: Object.freeze({
+				allowedPrefixes: Object.freeze([...(state?.allowedCommands ?? [])]),
+				deniedPrefixes: Object.freeze([...(state?.deniedCommands ?? [])]),
+			}),
+		})
+	}
+
 	/**
 	 * Update only this task's policy for subsequently admitted steps. Existing
 	 * StepContext and unresolved asks retain the policy under which they were admitted.
@@ -2463,6 +2525,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (message.role === "assistant") {
+			const canonicalEncryptedReasoningProjected =
+				Array.isArray(message.content) && message.content.some(isCanonicalEncryptedReasoningHistoryItem)
 			const responseId = handler.getResponseId?.()
 			const reasoningData = handler.getEncryptedContent?.()
 			const encryptedReasoningItems = (handler.getReasoningItems?.() ?? []).filter(
@@ -2518,6 +2582,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Skip if reasoning_details already contains the reasoning (to avoid duplication)
 			if (
 				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
 				isAnthropicProtocol &&
 				reasoning &&
 				thoughtSignature &&
@@ -2542,7 +2607,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (!messageWithTs.content) {
 					messageWithTs.content = [thinkingBlock]
 				}
-			} else if (!canonicalAnthropicThinkingProjected && reasoning && !reasoningDetails) {
+			} else if (
+				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
+				reasoning &&
+				!reasoningDetails
+			) {
 				// Other providers (non-Anthropic): Store as generic reasoning block
 				const reasoningBlock = {
 					type: "reasoning",
@@ -2560,7 +2630,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (!messageWithTs.content) {
 					messageWithTs.content = [reasoningBlock]
 				}
-			} else if (!canonicalAnthropicThinkingProjected && encryptedReasoningBlocks.length > 0) {
+			} else if (
+				!canonicalAnthropicThinkingProjected &&
+				!canonicalEncryptedReasoningProjected &&
+				encryptedReasoningBlocks.length > 0
+			) {
 				// OpenAI Native encrypted reasoning
 				if (typeof messageWithTs.content === "string") {
 					messageWithTs.content = [
@@ -2597,41 +2671,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			this.apiConversationHistory.push(messageWithTs)
 		} else {
-			// For user messages, validate tool_result IDs ONLY when the immediately previous *effective* message
-			// is an assistant message.
-			//
-			// If the previous effective message is also a user message (e.g., summary + a new user message),
-			// validating against any earlier assistant message can incorrectly inject placeholder tool_results.
-			const effectiveHistoryForValidation = getEffectiveApiHistory(this.apiConversationHistory)
-			const lastEffective = effectiveHistoryForValidation[effectiveHistoryForValidation.length - 1]
-			const historyForValidation = lastEffective?.role === "assistant" ? effectiveHistoryForValidation : []
-
-			// If the previous effective message is NOT an assistant, convert tool_result blocks to text blocks.
-			// This prevents orphaned tool_results from being filtered out by getEffectiveApiHistory.
-			// This can happen when condensing occurs after the assistant sends tool_uses but before
-			// the user responds - the tool_use blocks get condensed away, leaving orphaned tool_results.
-			let messageToAdd = message
-			if (lastEffective?.role !== "assistant" && Array.isArray(message.content)) {
-				messageToAdd = {
-					...message,
-					content: message.content.map((block) =>
-						block.type === "tool_result"
-							? {
-									type: "text" as const,
-									text: `Tool result:\n${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`,
-								}
-							: block,
-					),
-				}
-			}
-
-			const validatedMessage = validateAndFixToolResultIds(messageToAdd, historyForValidation)
-			const messageWithTs = {
-				...validatedMessage,
-				ts: Date.now(),
-				...(hookPrompt ? { hook_prompt: hookPrompt } : {}),
-			}
-			this.apiConversationHistory.push(messageWithTs)
+			this.stageApiUserMessage({ ...message, ...(hookPrompt ? { hook_prompt: hookPrompt } : {}) })
 		}
 
 		const saved = await this.saveApiConversationHistory()
@@ -2644,25 +2684,84 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return saved
 	}
 
+	/** Stage each input envelope before the shared transcript save, preserving its own provenance. */
+	private stageApiUserMessage(message: ApiMessage): ApiMessage {
+		// For user messages, validate tool_result IDs ONLY when the immediately previous *effective* message
+		// is an assistant message.
+		//
+		// If the previous effective message is also a user message (e.g., summary + a new user message),
+		// validating against any earlier assistant message can incorrectly inject placeholder tool_results.
+		const effectiveHistoryForValidation = getEffectiveApiHistory(this.apiConversationHistory)
+		const lastEffective = effectiveHistoryForValidation[effectiveHistoryForValidation.length - 1]
+		const historyForValidation = lastEffective?.role === "assistant" ? effectiveHistoryForValidation : []
+
+		// If the previous effective message is NOT an assistant, convert tool_result blocks to text blocks.
+		// This prevents orphaned tool_results from being filtered out by getEffectiveApiHistory.
+		// This can happen when condensing occurs after the assistant sends tool_uses but before
+		// the user responds - the tool_use blocks get condensed away, leaving orphaned tool_results.
+		let messageToAdd = message
+		if (lastEffective?.role !== "assistant" && Array.isArray(message.content)) {
+			messageToAdd = {
+				...message,
+				content: message.content.map((block) =>
+					block.type === "tool_result"
+						? {
+								type: "text" as const,
+								text: `Tool result:\n${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`,
+							}
+						: block,
+				),
+			}
+		}
+
+		const validatedMessage = validateAndFixToolResultIds(messageToAdd, historyForValidation)
+		const messageWithTs = {
+			...validatedMessage,
+			ts: message.ts ?? Date.now(),
+		}
+		this.apiConversationHistory.push(messageWithTs)
+		return messageWithTs
+	}
+
 	private async persistUserContentWithEnvironment(
 		content: Anthropic.Messages.ContentBlockParam[],
 		capture: EnvironmentCapture | undefined,
 		signal: AbortSignal | undefined,
-		onPersisted?: () => void,
+		onPersisted?: () => Promise<void> | void,
 		hookPrompt?: CompletionHookPromptProvenance,
 		queuedMessageIds: readonly string[] = [],
 		inputOrigin?: "human" | "agent",
+		precedingMessages: readonly ApiMessage[] = [],
 	): Promise<void> {
 		let persisted = false
-		let stagedMessage: ApiMessage | undefined
+		const stagedMessages: ApiMessage[] = []
+		const acknowledgedQueueIds = [
+			...new Set([
+				...precedingMessages.flatMap((message) => message.queued_message_ids ?? []),
+				...queuedMessageIds,
+			]),
+		]
+		let acknowledgment: Promise<void> | undefined
+		const resumeHistoryRepair =
+			this.pendingResumeHistoryRepair &&
+			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
+				? this.pendingResumeHistoryRepair
+				: undefined
 		const acknowledge = () => {
 			if (persisted) return
 			persisted = true
-			onPersisted?.()
+			if (resumeHistoryRepair) resumeHistoryRepair.persisted = true
 			capture?.commit()
+			acknowledgment = (async () => {
+				await onPersisted?.()
+			})()
+			// The transcript callback cannot await admission, but its caller joins it
+			// before independent queue deletion. Observe early rejection until then.
+			void acknowledgment.catch(() => undefined)
 		}
 		try {
 			this.throwIfStepInterrupted(signal)
+			for (const message of precedingMessages) stagedMessages.push(this.stageApiUserMessage(message))
 			const previousMessage = this.apiConversationHistory.at(-1)
 			// addToApiConversationHistory stages its user message synchronously before
 			// awaiting the save. Keep that exact identity for rollback, not an index.
@@ -2679,22 +2778,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				hookPrompt,
 			)
 			const latest = this.apiConversationHistory.at(-1)
-			if (latest !== previousMessage) stagedMessage = latest
+			if (latest && latest !== previousMessage) stagedMessages.push(latest)
 			if ((await save) || (await this.retrySaveApiConversationHistory(acknowledge, signal))) acknowledge()
 			if (!persisted)
 				throw new TaskPersistenceError("Failed to persist the user turn before starting the provider request")
-			if (queuedMessageIds.length) {
-				this.messageQueueService.acknowledgeMessages(queuedMessageIds)
+			await acknowledgment
+			if (acknowledgedQueueIds.length) {
+				this.messageQueueService.acknowledgeMessages(acknowledgedQueueIds)
 				await this.messageQueueService.flush()
 				for (const [callId, reply] of this.queuedToolResultReceipts ?? []) {
-					if (reply.ids.every((id) => queuedMessageIds.includes(id)))
+					if (reply.ids.every((id) => acknowledgedQueueIds.includes(id)))
 						this.queuedToolResultReceipts.delete(callId)
 				}
 			}
 		} catch (error) {
-			if (!persisted && stagedMessage) {
-				const index = this.apiConversationHistory.indexOf(stagedMessage)
-				if (index >= 0) this.apiConversationHistory.splice(index, 1)
+			if (!persisted) {
+				for (const stagedMessage of stagedMessages) {
+					const index = this.apiConversationHistory.indexOf(stagedMessage)
+					if (index >= 0) this.apiConversationHistory.splice(index, 1)
+				}
 			}
 			throw error
 		} finally {
@@ -2767,6 +2869,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!ids.length) return
 		this.queuedInputBlockReceipts ??= new WeakMap()
 		for (const block of content) this.queuedInputBlockReceipts.set(block, ids)
+	}
+
+	/** Admission origin outlives consumable queue receipts and notification ACK markers. */
+	private captureInputBlockOrigins(
+		content: readonly Anthropic.Messages.ContentBlockParam[],
+		fallback: "human" | "agent",
+	): void {
+		this.inputBlockOrigins ??= new WeakMap()
+		const claimedIds = new Set(this.messageQueueService?.getClaimedMessageIds?.() ?? [])
+		for (const block of content) {
+			if (block.type === "text" && this.pendingWaitAgentNotificationBlocks?.has(block)) {
+				this.inputBlockOrigins.set(block, "agent")
+			} else if (!this.inputBlockOrigins.has(block)) {
+				const humanReceipt = this.queuedInputBlockReceipts?.get(block)?.some((id) => claimedIds.has(id))
+				this.inputBlockOrigins.set(block, humanReceipt ? "human" : fallback)
+			}
+		}
 	}
 
 	/** A queued tool reply belongs to its actual terminal result, not the next unrelated user message. */
@@ -2902,30 +3021,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
-	private takeLastApiUserMessageContent(): Anthropic.Messages.ContentBlockParam[] {
-		const lastMessage = this.apiConversationHistory.at(-1)
-
-		// Steering starts a new user boundary after a summary or truncation marker.
-		// Extracting just its content would erase the metadata that hides old history.
-		if (
-			lastMessage?.role !== "user" ||
-			lastMessage.isSummary ||
-			lastMessage.isTruncationMarker ||
-			lastMessage.agent_message_id ||
-			lastMessage.queued_message_ids?.length
-		) {
-			return []
-		}
-
-		this.apiConversationHistory.pop()
-
-		if (Array.isArray(lastMessage.content)) {
-			return lastMessage.content as Anthropic.Messages.ContentBlockParam[]
-		}
-
-		return [{ type: "text", text: lastMessage.content }]
-	}
-
 	// NOTE: We intentionally do NOT mutate stored messages to merge consecutive user turns.
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
@@ -3017,6 +3112,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Save the user message with tool_result blocks
 		const pendingContent = [...this.userMessageContent]
 		const content = this.includeQueuedToolReplyContent(pendingContent)
+		this.captureInputBlockOrigins(content, "agent")
 		const queuedMessageIds = this.getQueuedInputReceipts(content)
 		const userMessage: ApiMessage = {
 			role: "user",
@@ -3041,9 +3137,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const saved = await this.saveApiConversationHistory()
 
 		if (saved) {
-			this.messageQueueService?.acknowledgeMessages?.(queuedMessageIds)
-			await this.messageQueueService?.flush?.()
-			await this.settlePersistedWaitAgentResultClaims(userMessageWithTs as ApiMessage)
+			// Retire the durable snapshot before fallible queue/mailbox settlement.
+			// A failed acknowledgment must not stage already saved results again.
 			for (const block of pendingContent) {
 				if (block.type === "text") this.pendingWaitAgentNotificationBlocks.delete(block)
 			}
@@ -3060,6 +3155,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const persisted = new Set(pendingContent)
 				this.userMessageContent = this.userMessageContent.filter((block) => !persisted.has(block))
 			}
+			this.messageQueueService?.acknowledgeMessages?.(queuedMessageIds)
+			await this.messageQueueService?.flush?.()
+			await this.settlePersistedWaitAgentResultClaims(userMessageWithTs as ApiMessage)
 		} else {
 			const appendedIndex = this.apiConversationHistory.indexOf(userMessageWithTs as ApiMessage)
 			if (appendedIndex >= 0) this.apiConversationHistory.splice(appendedIndex, 1)
@@ -3113,16 +3211,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: status === "failed"
 					? "Tool call was not executed because the provider response failed."
 					: "Tool call was not executed because the provider response was incomplete."
+		const effectStartedCallIds = this.getCurrentEffectStartedToolCallIds()
+		const terminalReceiptContent = (toolUseId: string): string => {
+			if (earlyExecutedReadCallIds.has(toolUseId)) {
+				return status === "cancelled"
+					? "The read completed before cancellation, but its result was withheld because the provider response was cancelled."
+					: "The read completed, but its result was withheld because the provider response did not complete."
+			}
+			if (status === "cancelled" && effectStartedCallIds.has(toolUseId)) {
+				return "The tool effect may have started before cancellation. Its outcome is unknown; verify the current state before retrying."
+			}
+			return receiptContent
+		}
 		const expectedToolResultIds = new Set<string>()
 
 		for (const [index, toolCall] of toolCalls.entries()) {
 			const toolUseId = normalizedToolUseIds[index]!
 			if (historyToolResultIds.has(toolUseId) || pendingToolResultIds.has(toolUseId)) continue
-			const callReceiptContent = earlyExecutedReadCallIds.has(toolUseId)
-				? status === "cancelled"
-					? "The read completed before cancellation, but its result was withheld because the provider response was cancelled."
-					: "The read completed, but its result was withheld because the provider response did not complete."
-				: receiptContent
+			const callReceiptContent = terminalReceiptContent(toolUseId)
 			expectedToolResultIds.add(toolUseId)
 			this.pushToolResultToUserContent({
 				type: "tool_result",
@@ -3155,11 +3261,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const resultStatus = status === "cancelled" ? "cancelled" : "error"
 		for (const toolUseId of normalizedToolUseIds) {
 			const callResultStatus = earlyExecutedReadCallIds.has(toolUseId) ? "error" : resultStatus
-			const callReceiptContent = earlyExecutedReadCallIds.has(toolUseId)
-				? status === "cancelled"
-					? "The read completed before cancellation, but its result was withheld because the provider response was cancelled."
-					: "The read completed, but its result was withheld because the provider response did not complete."
-				: receiptContent
+			const callReceiptContent = terminalReceiptContent(toolUseId)
 			await this.publishCanonicalLifecycleToolResult(
 				{
 					callId: toolUseId,
@@ -3170,6 +3272,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 		}
 		return persisted
+	}
+
+	private getCurrentEffectStartedToolCallIds(): ReadonlySet<string> {
+		const lifecycle = this.getCanonicalLifecycleSnapshot()
+		return new Set(
+			lifecycle !== undefined && lifecycle.runId === this.agentRunId && lifecycle.turnId === this.agentTurnId
+				? lifecycle.effectStartedToolCallIds
+				: [],
+		)
+	}
+
+	private getCompletedEarlyReadCallIds(dispatches: readonly EarlyReadonlyDispatch[]): ReadonlySet<string> {
+		const effectStartedCallIds = this.getCurrentEffectStartedToolCallIds()
+		// A settled scheduler can contain a cancellation or denial before approval.
+		// Only a successful read, or a failed read with a durable effect start, ran.
+		return new Set(
+			dispatches
+				.filter((dispatch) =>
+					dispatch.outcome?.results.some(
+						(result) =>
+							sanitizeToolUseId(result.callId) === sanitizeToolUseId(dispatch.call.id) &&
+							(result.status === "success" ||
+								(result.status === "error" &&
+									effectStartedCallIds.has(sanitizeToolUseId(result.callId)))),
+					),
+				)
+				.map((dispatch) => sanitizeToolUseId(dispatch.call.id)),
+		)
 	}
 
 	/**
@@ -3190,7 +3320,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		error?: Error
 	}> {
 		const assistantContent = buildCanonicalAssistantHistoryContent(response)
-		const hasAssistantBoundary = assistantContent.length > 0 || response.reasoning.length > 0
+		// A sealed empty reasoning block still owns provider state needed on replay.
+		const hasAssistantBoundary =
+			assistantContent.length > 0 ||
+			response.reasoning.length > 0 ||
+			response.items.some((item) => item.type === "reasoning" && item.signature !== undefined)
 		let assistantPersisted = !hasAssistantBoundary
 
 		if (hasAssistantBoundary) {
@@ -3214,9 +3348,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			): dispatch is EarlyReadonlyDispatch & { scheduler: ToolScheduler; outcome: ToolSchedulerOutcome } =>
 				dispatch.scheduler !== undefined && dispatch.outcome !== undefined,
 		)
-		const earlyExecutedReadCallIds = new Set(
-			completedEarlyReads.map((dispatch) => sanitizeToolUseId(dispatch.call.id)),
-		)
+		const earlyExecutedReadCallIds = this.getCompletedEarlyReadCallIds(completedEarlyReads)
 		for (const dispatch of completedEarlyReads) dispatch.scheduler.discardDeferredResults()
 
 		const receiptsPersisted =
@@ -3299,6 +3431,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Capture the intended legacy snapshot before entering the queue. Each
 		// caller therefore commits the history state it observed, while calls made
 		// after a later mutation remain ordered behind it and cannot race a write.
+		const resumeHistoryRepair =
+			this.pendingResumeHistoryRepair &&
+			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
+				? this.pendingResumeHistoryRepair
+				: undefined
 		const messages = structuredClone(this.apiConversationHistory)
 		const failureGeneration = this.apiConversationHistoryFailureGeneration
 
@@ -3346,6 +3483,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (failureGeneration !== this.apiConversationHistoryFailureGeneration) return false
 				this.providerTranscriptCommitReceipt = receipt
 				this.providerTranscriptSidecarFailure = undefined
+				if (resumeHistoryRepair) resumeHistoryRepair.persisted = true
 				this.providerRef.deref()?.retryIndependentTaskCompletionsForParent?.(this.taskId)
 				return true
 			} catch (error) {
@@ -3527,6 +3665,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		response?: AgentResponse,
 	): Promise<boolean> {
 		let canonicalAnthropicThinkingProjected = false
+		const goalStep = this.activeGoalStep
+		if (goalStep && this.currentAgentStep?.snapshot.context.mode.slug === "architect") {
+			goalStep.responseAccounted = true
+			goalStep.finished = true
+		}
+		if (goalStep && response && this.currentAgentStep?.snapshot.context.mode.slug !== "architect") {
+			const stepId = this.currentAgentStep?.stepId
+			if (stepId) {
+				goalStep.eventId = `goal-step:${crypto
+					.createHash("sha256")
+					.update(this.taskId)
+					.update(stepId)
+					.update(this.currentAgentStep?.attemptId ?? "")
+					.digest("hex")}`
+			}
+			goalStep.responseAccounted = false
+			goalStep.inputIncludesCache = this.currentAgentStep?.snapshot.context.provider.apiProtocol !== "anthropic"
+			goalStep.usageReceipt = {
+				goalTaskId: goalStep.goalTaskId,
+				goalId: goalStep.goalId,
+				eventId: `${goalStep.eventId}:usage`,
+				tokens: goalResponseTokens(response, goalStep.inputIncludesCache),
+				timeMs: goalStep.accountElapsed
+					? Math.max(0, Date.now() - goalStep.startedAt - (goalStep.elapsedChargedMs ?? 0))
+					: 0,
+			}
+			;(message as ApiMessage).goal_usage_receipts = [goalStep.usageReceipt]
+		}
 		if (response) {
 			const canonicalMessage = message as Anthropic.MessageParam & {
 				agentResponseItems?: AgentResponseItem[]
@@ -3566,6 +3732,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.assistantMessageSavedToHistory = true
 		if (response) await this.publishCanonicalLifecycleResponseItems(response, this.currentAgentStep)
 		await this.publishCanonicalLifecyclePendingToolResults(response, this.currentAgentStep)
+		if (response) await accountGoalResponse(goalStep, response)
 		return true
 	}
 
@@ -4260,7 +4427,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				case "text":
 					await this.enqueueCanonicalLifecycleEvent(
 						"item_added",
-						{ item: { itemId, stepId: step.stepId, type: "assistant_text", text: responseItem.text } },
+						{
+							item: {
+								itemId,
+								stepId: step.stepId,
+								type: "assistant_text",
+								text: responseItem.text,
+								...(responseItem.id !== undefined ? { messageId: responseItem.id } : {}),
+								...(responseItem.phase !== undefined ? { phase: responseItem.phase } : {}),
+								...(responseItem.outputIndex !== undefined
+									? { outputIndex: responseItem.outputIndex }
+									: {}),
+							},
+						},
 						step.stepId,
 					)
 					break
@@ -4668,22 +4847,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async finishCanonicalLifecycleCancellation(reason: string): Promise<void> {
-		if (!this.providerRef.deref()) return
+		if (!this.providerRef.deref() || !this.isCurrentApiConversationHistoryOwner()) return
 		// An accepted call can still be queued behind a delayed journal append when
 		// cancellation wins. Replay only after every Task-owned publication has
 		// settled so recovery sees the complete set that needs terminal receipts.
 		await this.canonicalLifecycleQueue
+		if (!this.isCurrentApiConversationHistoryOwner()) return
 		try {
 			await this.replayCanonicalLifecycle()
 		} catch (error) {
 			console.error(`[Task#${this.taskId}] Failed to replay lifecycle before cancellation:`, error)
 		}
+		if (!this.isCurrentApiConversationHistoryOwner()) return
 		const snapshot = this.getCanonicalLifecycleSnapshot()
 		if (!snapshot || snapshot.status !== "in_progress") return
 		this.agentRunId = snapshot.runId
 		this.agentTurnId = snapshot.turnId
 		let stagedRecoveryResult = false
 		for (const approval of snapshot.items) {
+			if (!this.isCurrentApiConversationHistoryOwner()) return
 			if (approval.type !== "approval" || approval.status !== "requested") continue
 			await this.enqueueCanonicalLifecycleEvent(
 				"approval_resolved",
@@ -4695,9 +4877,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					},
 				},
 				approval.stepId,
+				() => this.isCurrentApiConversationHistoryOwner(),
 			)
 		}
 		for (const toolCallId of snapshot.acceptedToolCallIds) {
+			if (!this.isCurrentApiConversationHistoryOwner()) return
 			if (snapshot.terminalToolCallIds.includes(toolCallId)) continue
 			const callItem = snapshot.items.find((item) => item.type === "tool_call" && item.toolCallId === toolCallId)
 			if (!callItem || callItem.type !== "tool_call") continue
@@ -4728,12 +4912,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					},
 				},
 				stepId,
+				() => this.isCurrentApiConversationHistoryOwner(),
 			)
 		}
-		if (stagedRecoveryResult && !(await this.flushPendingToolResultsToHistory({ allowAborted: true }))) {
-			throw new Error("Recovery tool-result receipts could not be durably saved during task termination.")
+		if (!this.isCurrentApiConversationHistoryOwner()) return
+		if (stagedRecoveryResult) {
+			const persisted = await this.flushPendingToolResultsToHistory({ allowAborted: true })
+			if (!this.isCurrentApiConversationHistoryOwner()) return
+			if (!persisted) {
+				throw new Error("Recovery tool-result receipts could not be durably saved during task termination.")
+			}
 		}
-		await this.enqueueCanonicalLifecycleEvent("turn_terminal", { status: "interrupted", reason })
+		await this.enqueueCanonicalLifecycleEvent("turn_terminal", { status: "interrupted", reason }, undefined, () =>
+			this.isCurrentApiConversationHistoryOwner(),
+		)
 	}
 
 	private async publishCanonicalLifecycleSchedulerEvent(event: AgentTurnEvent): Promise<void> {
@@ -5198,14 +5390,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	public async overwriteAlphaMessages(newMessages: AlphaMessage[]) {
+	public async overwriteAlphaMessages(newMessages: AlphaMessage[]): Promise<boolean> {
 		this.reasoningSummaries?.dispose()
 		this.reasoningSummaries = undefined
 		this.invalidateBackgroundUsageDrain("UI transcript was replaced")
 		this.clineMessages = newMessages
 		this.alphaMessagesHydrated = true
 		restoreTodoListForTask(this)
-		await this.saveAlphaMessages()
+		return this.saveAlphaMessages()
 	}
 
 	private async updateAlphaMessage(message: AlphaMessage) {
@@ -5682,6 +5874,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				...formatResponse.imageBlocks(images),
 			]
 			this.bindQueuedInputBlocks(feedback, queuedMessageIds ?? [])
+			this.captureInputBlockOrigins(feedback, "human")
 			currentUserContent.push(...feedback)
 
 			await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
@@ -5725,6 +5918,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		const taskApprovalMode = this.getStepApprovalMode()
+		const commandPolicy = this.currentAgentStep?.snapshot.context.policy.execution?.command
+		// Policy compares execution text; private-path redaction belongs only to presentation.
+		const commandForApproval = type === "command" ? text : undefined
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
 		const alphaToolApprovalRequest: ToolApprovalPrompt | undefined = toolApprovalRequest
 			? {
@@ -5772,13 +5968,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? ({ decision: "ask" } as const)
 				: await checkAutoApprovalWithInheritedPolicy({
 						state: taskApprovalState,
+						commandPolicy,
 						inheritedState:
 							this.taskKind === "subagent"
 								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
 									disabledSubagentAutoApprovalPolicy)
 								: undefined,
 						ask: type,
-						text,
+						text: type === "command" ? commandForApproval : text,
 						isProtected,
 						requiresExplicitApproval,
 					})
@@ -6170,7 +6367,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					.filter((command): command is string => typeof command === "string")
 					.map((command) => command.trim())
 			: []
-		if (!allowedCommands.some((command) => command.toLowerCase() === amendment.data.prefix.toLowerCase())) {
+		if (!allowedCommands.includes(amendment.data.prefix)) {
 			await provider.setValue("allowedCommands", [...allowedCommands.filter(Boolean), amendment.data.prefix])
 		}
 
@@ -6353,6 +6550,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	): boolean {
 		if (expectedAskTs !== undefined && this.activeAsk?.ts !== expectedAskTs) return false
 		if (this.askResponse !== undefined || this.deferredAskResponse !== undefined) return false
+		this.goalAskAdmission = undefined
+		this.invalidateGoalContinuation()
 		if (queuedMessageIds?.length && this.activeAsk) this.activeAsk.queuedMessageIds = [...queuedMessageIds]
 		// An Apply/Discard lease wins the single-threaded race with a user reply.
 		// Resume the ask only after the artifact, ledger, and transcript projection settle.
@@ -6466,6 +6665,575 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public canMutateWorkspace(): boolean {
 		return !this.abort && !this.didComplete && !this.didEmitTaskCompleted
+	}
+
+	public async getGoal(): Promise<TaskGoal | undefined> {
+		return this.goalController?.get()
+	}
+
+	private invalidateGoalContinuation(): void {
+		this.goalSteeringGeneration = (this.goalSteeringGeneration ?? 0) + 1
+		this.goalHostAdmission = undefined
+		this.goalController?.invalidateContinuation()
+	}
+
+	private consumeGoalAskAdmission(text: string | undefined): GoalInputAdmission | undefined {
+		const pending = this.goalAskAdmission
+		this.goalAskAdmission = undefined
+		return pending && pending.text === text ? pending.admission : undefined
+	}
+
+	private assertGoalMutationAllowed(signal?: AbortSignal): void {
+		if (this.taskKind !== "primary" || this.parentTaskId || this.orchestrationParentTaskId) {
+			throw new Error("Goals belong to primary tasks only.")
+		}
+		if (this.abort || this.abandoned || this.taskCancellationController?.signal.aborted || signal?.aborted) {
+			throw new Error("The task is stopped. Reopen it from history before changing its goal.")
+		}
+	}
+
+	private goalMutationStillAllowed(source: "user" | "tool", signal?: AbortSignal): boolean {
+		return (
+			this.taskKind === "primary" &&
+			!this.parentTaskId &&
+			!this.orchestrationParentTaskId &&
+			!this.abort &&
+			!this.abandoned &&
+			!this.taskCancellationController?.signal.aborted &&
+			!signal?.aborted &&
+			this.isCurrentApiConversationHistoryOwner() &&
+			(source === "user" || this.taskMode === "code")
+		)
+	}
+
+	public async createGoal(
+		input: TaskGoalCreateInput,
+		authority: {
+			source: "user" | "tool"
+			approved: true
+			expectedGoalId?: string | null
+			expectedVersion?: number
+			expectedControlVersion?: number
+		},
+		signal?: AbortSignal,
+	): Promise<TaskGoal> {
+		this.assertGoalMutationAllowed(signal)
+		if (authority.approved !== true) throw new Error("Creating a goal requires explicit user approval.")
+		if (authority.source === "tool" && (await this.getTaskMode()) !== "code") {
+			throw new Error("Goal tools cannot change goals in Plan mode.")
+		}
+		this.assertGoalMutationAllowed(signal)
+		if (!this.goalController) throw new Error("Goal persistence is unavailable.")
+		const goal = await this.goalController.create(
+			input,
+			authority.source === "user" ? "user" : "tool-approved",
+			authority.expectedGoalId === undefined
+				? undefined
+				: {
+						goalId: authority.expectedGoalId,
+						version: authority.expectedVersion,
+						controlVersion: authority.expectedControlVersion,
+					},
+			() => this.goalMutationStillAllowed(authority.source, signal),
+		)
+		this.invalidateGoalContinuation()
+		if (this.abort || this.abandoned || signal?.aborted) {
+			await this.goalController.systemStop(
+				"paused",
+				{ goalId: goal.goalId, controlVersion: goal.controlVersion },
+				() => this.isCurrentApiConversationHistoryOwner(),
+			)
+			this.assertGoalMutationAllowed(signal)
+		}
+		if (authority.source === "user") await this.wakeGoalFromHost(goal)
+		return goal
+	}
+
+	public async updateGoalStatus(
+		status: "complete" | "blocked" | "paused",
+		authority: {
+			source: "user" | "tool"
+			approved?: true
+			expectedGoalId?: string
+			expectedVersion?: number
+			expectedControlVersion?: number
+		},
+		signal?: AbortSignal,
+	): Promise<TaskGoal> {
+		this.assertGoalMutationAllowed(signal)
+		if (status === "paused" && authority.source === "tool" && authority.approved !== true) {
+			throw new Error("Pausing a goal requires explicit user approval.")
+		}
+		if (authority.source === "tool" && (await this.getTaskMode()) !== "code") {
+			throw new Error("Goal tools cannot change goals in Plan mode.")
+		}
+		this.assertGoalMutationAllowed(signal)
+		if (!this.goalController) throw new Error("Goal persistence is unavailable.")
+		if (status === "complete") {
+			const decision = await this.waitForCompletionGateDecision()
+			if (!decision.allowed) throw new Error(decision.message ?? "Goal completion still has pending work.")
+			this.assertGoalMutationAllowed(signal)
+		}
+		const goal = await this.goalController.updateStatus(
+			status,
+			authority.expectedGoalId
+				? {
+						goalId: authority.expectedGoalId,
+						version: authority.expectedVersion,
+						controlVersion: authority.expectedControlVersion,
+					}
+				: undefined,
+			() => this.goalMutationStillAllowed(authority.source, signal),
+		)
+		this.invalidateGoalContinuation()
+		return goal
+	}
+
+	public async pauseGoal(expectedGoalId?: string, expectedControlVersion?: number): Promise<TaskGoal | undefined> {
+		this.assertGoalMutationAllowed()
+		if (!this.goalController) throw new Error("Goal persistence is unavailable.")
+		const goal = await this.goalController.pause(
+			undefined,
+			expectedGoalId ? { goalId: expectedGoalId, controlVersion: expectedControlVersion } : undefined,
+			() => this.goalMutationStillAllowed("user"),
+		)
+		if (goal?.status === "paused") this.invalidateGoalContinuation()
+		return goal
+	}
+
+	public async resumeGoal(
+		input?: TaskGoalResumeInput,
+		expectedGoalId?: string,
+		expectedControlVersion?: number,
+	): Promise<TaskGoal> {
+		this.assertGoalMutationAllowed()
+		if (this.isPaused) throw new Error("Resume the task before resuming its goal.")
+		if (!this.goalController) throw new Error("Goal persistence is unavailable.")
+		const goal = await this.goalController.resume(
+			input,
+			expectedGoalId ? { goalId: expectedGoalId, controlVersion: expectedControlVersion } : undefined,
+			() => this.goalMutationStillAllowed("user") && !this.isPaused,
+		)
+		this.invalidateGoalContinuation()
+		if (this.abort || this.abandoned) {
+			await this.goalController.systemStop(
+				"paused",
+				{ goalId: goal.goalId, controlVersion: goal.controlVersion },
+				() => this.isCurrentApiConversationHistoryOwner(),
+			)
+			this.assertGoalMutationAllowed()
+		}
+		await this.wakeGoalFromHost(goal)
+		return goal
+	}
+
+	public async clearGoal(expectedGoalId?: string, expectedControlVersion?: number): Promise<void> {
+		this.assertGoalMutationAllowed()
+		await this.goalController?.clear(
+			expectedGoalId ? { goalId: expectedGoalId, controlVersion: expectedControlVersion } : undefined,
+			() => this.goalMutationStillAllowed("user"),
+		)
+		this.invalidateGoalContinuation()
+	}
+
+	/** Goal progress can end a turn without publishing TaskCompleted. */
+	public async completeGoalTurn(text: string): Promise<boolean> {
+		const goal = await this.getGoal()
+		if (
+			!goal ||
+			goal.recoveryDeferred ||
+			(goal.status !== "active" && goal.status !== "budget_limited") ||
+			this.taskKind !== "primary" ||
+			(await this.getTaskMode()) !== "code" ||
+			this.abort ||
+			this.hasGoalPendingInput()
+		) {
+			return false
+		}
+		await this.say("text", text, undefined, false)
+		if (this.abort || this.hasGoalPendingInput()) return false
+		this.goalTurnCompletionText = text
+		this.deferAgentResultNotifications = true
+		return true
+	}
+
+	private hasGoalPendingInput(): boolean {
+		return Boolean(
+			this.pendingSteerMessage ||
+				this.steerMessageAwaitingPersistence ||
+				this.messageQueueService?.hasUnconsumedInput() ||
+				this.hasPendingAgentMessages() ||
+				this.activeAsk ||
+				this.externalMutationLease ||
+				this.pendingTurnSuspension,
+		)
+	}
+
+	private isGoalIdleBoundary(): boolean {
+		return (
+			this.taskKind === "primary" &&
+			!this.abort &&
+			!this.abandoned &&
+			!this.didComplete &&
+			!this.isPaused &&
+			!this.isStreaming &&
+			!this.isAgentTurnEngineActive &&
+			!this.contextCondenseAbortController &&
+			!this.postTurnCompactionAbortController &&
+			!this.taskCancellationController?.signal.aborted &&
+			!this.hasGoalPendingInput()
+		)
+	}
+
+	private async admitGoalContinuation(): Promise<TaskGoal | undefined> {
+		if (!this.goalController || !this.isGoalIdleBoundary()) return undefined
+		const mode = await this.getTaskMode()
+		const boundary = {
+			isIdle: this.isGoalIdleBoundary(),
+			hasPendingInput: this.hasGoalPendingInput(),
+			isPaused: this.isPaused,
+			isCancelled: this.abort || this.abandoned,
+			mode: mode === "code" ? ("code" as const) : ("architect" as const),
+			signal: this.taskCancellationController?.signal,
+			isStillAdmissible: () =>
+				this.isCurrentApiConversationHistoryOwner() && this.isGoalIdleBoundary() && this.taskMode === "code",
+		}
+		const reservation = await this.goalController.reserveContinuation(boundary)
+		if (!reservation) return undefined
+		return this.goalController.consumeContinuation(reservation, boundary)
+	}
+
+	private goalContinuationText(goal: TaskGoal): string {
+		return `Continue the explicitly requested goal. Use update_goal when the objective is complete or blocked.\n${JSON.stringify(
+			{
+				objective: goal.objective,
+				tokenBudget: goal.tokenBudget,
+				tokensUsed: goal.tokensUsed,
+				continuationsRemaining: goal.maxContinuations - goal.continuationCount,
+			},
+		)}`
+	}
+
+	private goalInputAdmission(goal: TaskGoal): GoalInputAdmission {
+		const steeringGeneration = this.goalSteeringGeneration
+		const controller = this.goalController
+		const requestGeneration = controller?.getRequestGeneration()
+		const isStillCurrent = () =>
+			this.goalSteeringGeneration === steeringGeneration &&
+			this.goalMutationStillAllowed("user") &&
+			!this.abort &&
+			!this.abandoned &&
+			!this.isPaused &&
+			!this.hasGoalPendingInput() &&
+			this.taskMode === "code" &&
+			!!controller &&
+			requestGeneration !== undefined &&
+			controller.isRequestCurrent(goal.goalId, requestGeneration)
+		return {
+			isStillCurrent,
+			canWake: async () => {
+				const current = await controller?.get()
+				return (
+					isStillCurrent() &&
+					current?.goalId === goal.goalId &&
+					current.controlVersion === goal.controlVersion &&
+					current.status === "active" &&
+					!current.recoveryDeferred
+				)
+			},
+		}
+	}
+
+	/** Explicit host creation/resume reuses the existing retained-task input path. */
+	private wakeGoalFromHost(goal: TaskGoal): Promise<void> {
+		if (this.goalWakePromise) return this.goalWakePromise.then(() => this.wakeGoalFromHost(goal))
+		let steeringGeneration = this.goalSteeringGeneration
+		const isStillAdmissible = () =>
+			steeringGeneration === this.goalSteeringGeneration &&
+			this.goalMutationStillAllowed("user") &&
+			!this.isPaused
+		const canWake = async () => {
+			if (!isStillAdmissible() || (await this.getTaskMode()) !== "code") return false
+			const current = await this.getGoal()
+			return (
+				isStillAdmissible() &&
+				this.taskMode === "code" &&
+				current?.goalId === goal.goalId &&
+				current.controlVersion === goal.controlVersion &&
+				current.status === "active" &&
+				!current.recoveryDeferred
+			)
+		}
+		const wake = Promise.resolve().then(async () => {
+			if (!(await canWake())) return
+			const goalAdmission = { isStillCurrent: isStillAdmissible, canWake }
+			const text = this.goalContinuationText(goal)
+			if (this.activeAsk?.type === "resume_task" || this.activeAsk?.type === "resume_completed_task") {
+				// The persisted goal supplies recovery evidence for this host reply.
+				// Select the existing ask synchronously so a later pause cannot leave
+				// synthetic goal input waiting in the human-message queue.
+				if (
+					!this.messageQueueService.hasUnconsumedInput() &&
+					!this.pendingSteerMessage &&
+					!this.hasPendingAgentMessages()
+				) {
+					if (this.handleWebviewAskResponse("messageResponse", text)) {
+						steeringGeneration = this.goalSteeringGeneration
+						this.goalHostAdmission = goalAdmission
+						this.goalAskAdmission = { text, admission: goalAdmission }
+					}
+				}
+				return
+			}
+			if (this.ownedLifecyclePromise || this.isTaskLoopActive || this.isAgentTurnEngineActive || this.isStreaming)
+				return
+			if (this.hasGoalPendingInput()) {
+				await this.wakeQueuedInputWhenIdle()
+				return
+			}
+			if (this.didComplete) {
+				this.goalHostAdmission = goalAdmission
+				await this.resumeCompletedTaskFollowup(text, [], "agent", undefined, isStillAdmissible, canWake)
+				return
+			}
+			if (!this._started && !this.isInitialized && this.apiConversationHistory.length === 0) {
+				this._started = true
+				this.goalHostAdmission = goalAdmission
+				this.ownBackgroundLifecycle("start", this.startTask(text, undefined, goalAdmission))
+				return
+			}
+			await this.prepareForRetainedLifecycle()
+			if (!(await canWake()) || this.hasGoalPendingInput()) return
+			this._started = true
+			this.goalHostAdmission = goalAdmission
+			this.ownBackgroundLifecycle(
+				"resume",
+				this.resumeTaskFromHistory(text, undefined, undefined, {
+					inputOrigin: "agent",
+					reuseRetainedHistory: true,
+					goalAdmission,
+				}),
+			)
+		})
+		this.goalWakePromise = wake
+		void wake
+			.finally(() => {
+				if (this.goalWakePromise === wake) this.goalWakePromise = undefined
+			})
+			.catch(() => undefined)
+		return wake
+	}
+
+	private async loadInheritedGoalBinding(
+		ownerTask: Task | undefined,
+		captured: Promise<GoalAccountingBinding | undefined>,
+		isReload: boolean,
+		explicitEffectAdmission = false,
+	): Promise<GoalAccountingBinding | undefined> {
+		const store = new GoalAccountingBindingStore(this.globalStoragePath, this.taskId)
+		void captured.catch(() => undefined)
+		const saved = await store.read()
+		if (saved?.owner === null) {
+			if (explicitEffectAdmission && (await captured))
+				throw new TaskPersistenceError("A child created without a goal cannot acquire a later goal owner.")
+			return undefined
+		}
+		const binding = await captured
+		const ownerTaskId = this.rootTaskId ?? ownerTask?.rootTaskId ?? ownerTask?.taskId ?? this.parentTaskId
+		const controller =
+			binding?.controller ??
+			ownerTask?.rootTask?.goalController ??
+			ownerTask?.goalController ??
+			(ownerTaskId
+				? new GoalController({
+						taskId: ownerTaskId,
+						store: new TaskGoalStore(this.globalStoragePath, ownerTaskId),
+					})
+				: undefined)
+		if (saved) {
+			if (!saved.owner) return undefined
+			if (saved.owner.goalTaskId !== ownerTaskId || !controller)
+				throw new TaskPersistenceError("Saved child goal owner does not match its parent.")
+			if (
+				!saved.owner.drainOnly &&
+				explicitEffectAdmission &&
+				binding &&
+				binding.goalTaskId === saved.owner.goalTaskId &&
+				binding.goalId === saved.owner.goalId &&
+				binding.controller.isRequestCurrent(binding.goalId, binding.requestGeneration)
+			)
+				return binding
+			return {
+				...saved.owner,
+				controller,
+				requestGeneration:
+					!saved.owner.drainOnly &&
+					binding?.goalId === saved.owner.goalId &&
+					binding.controlVersion === saved.owner.controlVersion
+						? binding.requestGeneration
+						: -1,
+			}
+		}
+		if (isReload) {
+			// Older saved children without admission metadata may carry canonical
+			// usage receipts. Preserve their owner for late drain, without inventing
+			// fresh request authority from the parent's current objective.
+			const history = await this.getSavedApiConversationHistory({ hydrateOnly: true })
+			const original = history.flatMap((message) => message.goal_usage_receipts ?? []).at(0)
+			if (original && original.goalTaskId === ownerTaskId && controller) {
+				const owner = {
+					goalTaskId: original.goalTaskId,
+					goalId: original.goalId,
+					controlVersion: 1,
+					drainOnly: true,
+				}
+				await store.save(owner)
+				return { ...owner, controller, requestGeneration: -1 }
+			}
+			await store.save(undefined)
+			if (binding && explicitEffectAdmission)
+				throw new TaskPersistenceError(
+					"A saved child without goal admission cannot acquire a later goal owner.",
+				)
+			return undefined
+		}
+		await store.save(binding)
+		return binding
+	}
+
+	public async captureGoalAccountingBinding(): Promise<GoalAccountingBinding | undefined> {
+		if (this.inheritedGoalBinding) return this.inheritedGoalBinding
+		if (this.activeGoalStep) {
+			const { controller, goalId, goalTaskId, controlVersion, requestGeneration } = this.activeGoalStep
+			return { controller, goalId, goalTaskId, controlVersion, requestGeneration }
+		}
+		const goal = await this.goalController?.get()
+		const requestGeneration = this.goalController?.getRequestGeneration()
+		return this.goalController &&
+			goal &&
+			requestGeneration !== undefined &&
+			goal.status === "active" &&
+			!goal.recoveryDeferred &&
+			this.goalController.isRequestCurrent(goal.goalId, requestGeneration)
+			? {
+					controller: this.goalController,
+					goalId: goal.goalId,
+					goalTaskId: this.taskId,
+					controlVersion: goal.controlVersion,
+					requestGeneration,
+				}
+			: undefined
+	}
+
+	/** Only an explicit managed followup may renew a live child's original owner lease. */
+	public async readmitGoalAccountingBinding(
+		captured: Promise<GoalAccountingBinding | undefined>,
+		parent: Task,
+	): Promise<void> {
+		if (
+			!this.parentTaskId ||
+			this.parentTaskId !== parent.taskId ||
+			(this.rootTaskId && this.rootTaskId !== (parent.rootTaskId ?? parent.taskId)) ||
+			this.abort ||
+			this.abandoned ||
+			this.taskCancellationController?.signal.aborted ||
+			this.isTaskLoopActive ||
+			this.isAgentTurnEngineActive ||
+			this.isStreaming ||
+			!this.isCurrentApiConversationHistoryOwner()
+		)
+			throw new Error("The saved child cannot accept goal admission while running or stopped.")
+		const binding = await this.loadInheritedGoalBinding(parent.rootTask ?? parent, captured, true, true)
+		if (
+			this.abort ||
+			this.abandoned ||
+			this.taskCancellationController?.signal.aborted ||
+			this.isTaskLoopActive ||
+			this.isAgentTurnEngineActive ||
+			this.isStreaming ||
+			!this.isCurrentApiConversationHistoryOwner() ||
+			(binding && !binding.controller.isRequestCurrent(binding.goalId, binding.requestGeneration))
+		)
+			throw new Error("The child's original goal admission stopped or changed.")
+		this.inheritedGoalBinding = Promise.resolve(binding)
+		this.goalChildRequiresAdmission = false
+	}
+
+	private async beginGoalStep(): Promise<GoalStepAccounting | undefined> {
+		if (!this.goalController && !this.inheritedGoalBinding) return undefined
+		const binding = await this.captureGoalAccountingBinding()
+		if (!binding) return undefined
+		if (!binding.controller.isRequestCurrent(binding.goalId, binding.requestGeneration)) return undefined
+		const executionMode = (await this.getTaskMode()) === "code" ? "code" : "architect"
+		return {
+			...binding,
+			eventId: `goal-step:${crypto.randomUUID()}`,
+			startedAt: Date.now(),
+			executionMode,
+			accountElapsed: binding.goalTaskId === this.taskId && executionMode === "code",
+		}
+	}
+
+	private async settleGoalStep(step: GoalStepAccounting | undefined): Promise<void> {
+		if (
+			!step ||
+			step.executionMode === "architect" ||
+			step.finished ||
+			!this.isCurrentApiConversationHistoryOwner()
+		) {
+			return
+		}
+		step.elapsedReceipt ??= {
+			goalTaskId: step.goalTaskId,
+			goalId: step.goalId,
+			eventId: `${step.eventId}:elapsed`,
+			tokens: 0,
+			timeMs: step.accountElapsed ? Math.max(0, Date.now() - step.startedAt - (step.elapsedChargedMs ?? 0)) : 0,
+		}
+		const receipt = step.elapsedReceipt
+		const message = [...(this.apiConversationHistory ?? [])]
+			.reverse()
+			.find((candidate) =>
+				candidate.goal_usage_receipts?.some((entry) => entry.eventId === step.usageReceipt?.eventId),
+			)
+		if (message && !message.goal_usage_receipts?.some((entry) => entry.eventId === receipt.eventId)) {
+			message.goal_usage_receipts = [...(message.goal_usage_receipts ?? []), receipt]
+			const persisted = await this.saveApiConversationHistory()
+			if (!this.isCurrentApiConversationHistoryOwner()) return
+			if (!persisted) {
+				throw new TaskPersistenceError("Goal elapsed usage could not be durably saved.")
+			}
+		}
+		await finishGoalStep(step)
+	}
+
+	/** Replay bills only host-validated receipts, without granting any continuation authority. */
+	private async reconcileGoalUsageFromHistory(): Promise<void> {
+		const root = this.rootTask ?? this.parentTask ?? (this.taskKind === "primary" ? this : undefined)
+		const binding = await this.inheritedGoalBinding
+		const isChild = Boolean(this.rootTask || this.parentTask || this.parentTaskId || this.taskKind === "subagent")
+		if (isChild && !binding) {
+			if (this.apiConversationHistory.some((message) => message.goal_usage_receipts?.length))
+				throw new TaskPersistenceError("Saved child receipts have no admitted goal owner.")
+			return
+		}
+		const controller = binding?.controller ?? root?.goalController
+		const goalTaskId = binding?.goalTaskId ?? root?.taskId
+		if (!controller) return
+		for (const message of this.apiConversationHistory) {
+			if (!message.goal_usage_receipts) continue
+			const receipts = taskGoalUsageReceiptsSchema.parse(message.goal_usage_receipts)
+			for (const receipt of receipts) {
+				if (
+					message.role !== "assistant" ||
+					receipt.goalTaskId !== goalTaskId ||
+					(binding && receipt.goalId !== binding.goalId)
+				) {
+					throw new TaskPersistenceError("Goal usage receipt belongs to another task.")
+				}
+				await controller.recordUsage(receipt.eventId, receipt.tokens, receipt.timeMs, receipt.goalId)
+			}
+		}
 	}
 
 	public hasToolResultForCall(callId: string): boolean {
@@ -6617,6 +7385,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async commitTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
 		if (this.didEmitTaskCompleted) return false
+		const goalSteeringGeneration = this.goalSteeringGeneration ?? 0
+		const goalRequestGeneration = this.goalController?.getRequestGeneration()
+		const activeGoal = await this.getGoal()
+		if (activeGoal?.status === "active" && !activeGoal.recoveryDeferred && (await this.getTaskMode()) === "code") {
+			return false
+		}
+		if (
+			this.didEmitTaskCompleted ||
+			goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
+			goalRequestGeneration !== this.goalController?.getRequestGeneration()
+		)
+			return false
 
 		// Reserve the transition before awaiting the persistence barrier so concurrent
 		// acceptance paths cannot publish the same completion twice.
@@ -6656,7 +7436,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// User guidance wins any race with the asynchronous persistence barriers
 			// above. No await occurs between this check and markCompleted().
-			if (this.messageQueueService.hasUnconsumedInput() || this.hasPendingAgentMessages()) {
+			if (
+				this.messageQueueService.hasUnconsumedInput() ||
+				this.hasPendingAgentMessages() ||
+				goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
+				goalRequestGeneration !== this.goalController?.getRequestGeneration()
+			) {
 				if (stagedToolCallId) await this.rollbackPersistedToolResult(stagedToolCallId)
 				if (preparedPrimaryLifecycle) {
 					await this.providerRef.deref()?.rollbackTaskCompletionLifecycle(this.taskId)
@@ -6745,7 +7530,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
 						)
 					: []
-			const decision = await provider.getParentCompletionDecision(this)
+			const decision = await provider.getParentCompletionDecision(this, {
+				deferResultNotifications: this.deferAgentResultNotifications,
+			})
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
 			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
@@ -7209,6 +7996,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
+	/** Terminal attempt observation only; no process or verification was admitted. */
+	private recordDeniedCommandAttempt(toolCallId: string, command: string): void {
+		if (this.abort || this.didComplete || this.commandExecutionEvidence.has(toolCallId)) return
+		if (this.getCurrentEffectStartedToolCallIds().has(sanitizeToolUseId(toolCallId))) return
+		for (const [id, evidence] of this.commandExecutionEvidence) {
+			if (this.commandExecutionEvidence.size < 128) break
+			// Diagnostic attempts must not displace pending receipts or live verification inputs.
+			if (
+				evidence.status !== "running" &&
+				!evidence.acceptanceChecks?.length &&
+				!evidence.verificationChangeSetIds?.length &&
+				!Object.keys(evidence.verificationVersions ?? {}).length &&
+				!evidence.verificationDiagnostics?.length
+			) {
+				this.commandExecutionEvidence.delete(id)
+			}
+		}
+		if (this.commandExecutionEvidence.size >= 128) return
+		const observedAt = Date.now()
+		this.commandExecutionEvidence.set(toolCallId, {
+			toolCallId,
+			// This is a diagnostic attempt identity, never a process or command-session ID.
+			executionId: `denied:${toolCallId}`,
+			status: "denied",
+			command,
+			startedAt: observedAt,
+			completedAt: observedAt,
+		})
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+	}
+
 	private async prepareCommandEvidenceSlot(toolCallId: string): Promise<void> {
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {
@@ -7441,31 +8259,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async upsertSubagentGroup(group: SubagentGroupState): Promise<void> {
-		const existing = this.clineMessages.find(
-			(message) => message.say === "subagent_group" && message.subagentGroup?.groupId === group.groupId,
+		const snapshot = structuredClone(group)
+		const committed = await this.commitAlphaMessageMutation(
+			snapshot.createdAt,
+			"the sub-agent group",
+			(message) => ({
+				...(message ?? { ts: snapshot.createdAt, type: "say" as const, say: "subagent_group" as const }),
+				subagentGroup: snapshot,
+			}),
+			undefined,
+			(message) =>
+				message.type === "say" &&
+				message.say === "subagent_group" &&
+				message.subagentGroup?.groupId === snapshot.groupId,
 		)
-
-		if (existing) {
-			existing.subagentGroup = structuredClone(group)
-			this.releaseSubagentReviewBarrierIfSettled()
-			await this.saveAlphaMessages()
-			await this.updateAlphaMessage(existing)
-			return
-		}
-
-		await this.addToAlphaMessages({
-			ts: group.createdAt,
-			type: "say",
-			say: "subagent_group",
-			subagentGroup: structuredClone(group),
-		})
+		if (!committed) throw new Error("Unable to stage the sub-agent group.")
 		this.releaseSubagentReviewBarrierIfSettled()
+		if (committed.created) await this.publishAlphaMessageCreated(committed.message)
+		else await this.updateAlphaMessage(committed.message)
 	}
 
 	private getPendingSpawnedSubagentResults(): PendingSpawnedSubagentResult[] {
-		// Phase 3: asynchronous terminal results are consumed only through the
-		// native wait_agent mailbox path. Keep this compatibility seam inert so
-		// the legacy request loop never fabricates a user-authored result block.
+		// Lifecycle projections are not input receipts. Automatic delivery consumes
+		// the durable mailbox at the same safe boundary as ordinary agent messages.
+		// Keep the legacy synthetic-human-result seam inert.
 		return []
 	}
 
@@ -7543,9 +8360,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.subagentContextManifest?.runtimePolicy.delegate === true,
 		)
 		const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
-		const hardCeiling = execute
-			? roleCeiling
-			: roleCeiling.filter((tool) => tool !== "manage_command" && tool !== "write_stdin")
+		const hardCeiling = execute ? roleCeiling : roleCeiling.filter((tool) => tool !== "manage_command")
 		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
 		if (!capturedGrant) return hardCeiling
 		// Preserve equivalent renamed capabilities in saved manifests. An artifact-read
@@ -7624,6 +8439,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const allowed = this.getTaskAllowedToolNames()
 		if (allowed && !(allowed as readonly string[]).includes(toolName)) {
 			return `Tool "${toolName}" is not allowed for this parent-managed ${this.subagentRole === "worker" ? "editing worker" : "read-only sub-agent"}.`
+		}
+		if (this.taskKind === "subagent" && toolName === "write_stdin" && params) {
+			const role = this.subagentRole ?? this.subagentContextManifest?.runtimePolicy.role ?? "review"
+			const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
+			if (!execute && !isCommandArtifactRead(params)) {
+				return "This read-only sub-agent may read command artifacts but cannot control command sessions."
+			}
 		}
 
 		if (this.subagentRole === "worker" && this.isWorkerEditTool(toolName) && params) {
@@ -8113,6 +8935,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (text.length === 0 && images.length === 0) {
 			return
 		}
+		this.invalidateGoalContinuation()
 
 		const originatingAsk = this.activeAsk
 		const provider = this.providerRef.deref()
@@ -8211,6 +9034,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async steerUserMessageDurably(text: string, images: string[] = [], receiptId?: string): Promise<void> {
+		this.invalidateGoalContinuation()
 		return this.enqueueDurableSteer(async () => {
 			text = (text ?? "").trim()
 			await this.messageQueueService.ready
@@ -8315,6 +9139,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 	}
 
+	private shouldDeferAgentResultNotifications(response: AgentResponse): boolean {
+		if (response.toolCalls.length > 0) return false
+		const textItems = response.items.filter(
+			(item): item is Extract<AgentResponseItem, { type: "text" }> =>
+				item.type === "text" && item.text.trim().length > 0,
+		)
+		if (textItems.some((item) => item.phase === "final_answer")) return true
+		return (
+			response.outcome?.requiresContinuation !== true &&
+			response.text.trim().length > 0 &&
+			!textItems.some((item) => item.phase === "commentary")
+		)
+	}
+
 	private pendingAgentMessageDecision(): CompletionGateDecision {
 		return {
 			allowed: false,
@@ -8343,7 +9181,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const persist = async (message: AgentMessage) => {
 			if (this.abort) throw new Error("Agent message delivery was cancelled")
 			// A crash between transcript commit and mailbox ACK must not duplicate input.
-			if (this.apiConversationHistory.some((entry) => entry.agent_message_id === message.id)) {
+			if (
+				getPersistedAgentNotificationIds(
+					this.apiConversationHistory,
+					message.notification ? [message.notification] : [],
+					(text) => redactTaskPrivatePaths(this, text),
+				).has(message.id)
+			) {
 				if (!(await this.saveApiConversationHistory())) throw new Error("Agent message receipt is not durable")
 				return
 			}
@@ -8354,7 +9198,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				content: [
 					{
 						type: "text",
-						text: `<agent_message>\n${JSON.stringify({ sender_task_id: message.senderTaskId, message: message.text })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`,
+						text: message.notification
+							? redactTaskPrivatePaths(this, serializeAgentNotification(message.notification))
+							: `<agent_message>\n${JSON.stringify({ sender_task_id: message.senderTaskId, message: message.text })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`,
 					},
 				],
 			}
@@ -8466,6 +9312,50 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.taskKind === "subagent" && this.didComplete && !this.isTaskLoopActive && !this.isStreaming
 	}
 
+	/** Persist agent guidance before interrupting an active independent task. */
+	public async steerAgentMessage(message: AgentMessage): Promise<"steered" | "buffered"> {
+		if (this.abort || this.abandoned || this.didComplete) {
+			throw new Error("The task cannot accept a steering message")
+		}
+		await this.admitAgentMessage(() => this.receiveAgentMessage(message))
+
+		// Admission may race a human response, approval, stop, or completion. Keep
+		// accepted guidance in the existing inbox for the next authorized boundary.
+		if (
+			this.abort ||
+			this.abandoned ||
+			this.didComplete ||
+			this.isPaused ||
+			this.activeAsk ||
+			this.activeToolApprovalRequest ||
+			this.contextCondenseAbortController ||
+			this.pendingSteerMessage ||
+			this.steerMessageAwaitingPersistence ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse !== undefined ||
+			!this.isTurnActive()
+		) {
+			return "buffered"
+		}
+
+		this.invalidateGoalContinuation()
+		this.cancelAutoApprovalTimeout()
+		// The interruption marker carries no parent guidance. The actual input and
+		// receipt are delivered once from the durable inbox between logical steps.
+		this.pendingSteerMessage = {
+			text: "Continue with the pending agent messages.",
+			images: [],
+			inputOrigin: "agent",
+		}
+		this.steerMessageAwaitingPersistence = true
+		const interrupt = new SteerRequestInterruptError()
+		this.agentWaitAbortController?.abort(interrupt)
+		this.postTurnCompactionAbortController?.abort(interrupt)
+		this.stepInterruptionController?.abort(interrupt)
+		this.currentRequestAbortController?.abort(interrupt)
+		return "steered"
+	}
+
 	public async steerUserMessage(
 		text: string,
 		images?: string[],
@@ -8478,6 +9368,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (text.length === 0 && images.length === 0) {
 			return
 		}
+		this.invalidateGoalContinuation()
 		if (this.abort || this.didComplete) {
 			throw new Error("The task cannot accept a steering message")
 		}
@@ -8777,6 +9668,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const pendingState = this.providerRef.deref()?.getState()
 		const state = pendingState ? await waitForContextPreparation(pendingState) : undefined
 		assertWithinBudget()
+		const capturedExecution = this.captureToolExecutionPolicy(state)
 		const mode = await waitForContextPreparation(this.getTaskMode())
 		let instructionFragments: readonly ApiInstructionFragment[] | undefined
 		const systemPrompt = await waitForContextPreparation(
@@ -8802,6 +9694,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: state?.disabledTools,
+					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
 					includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -8995,6 +9888,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: {
 			isNonInteractive?: boolean
 			asyncUserInput?: AsyncUserInputData
+			userInputResponse?: UserInputResponseData
 			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
@@ -9012,10 +9906,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if ((type === "async_user_input") !== (options.asyncUserInput !== undefined)) {
 			throw new Error("Async user input messages require their typed question payload.")
 		}
+		if (options.userInputResponse !== undefined && type !== "user_feedback") {
+			throw new Error("User input responses can only be attached to user feedback.")
+		}
 		if (this.abort) {
 			throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
+		const userInputResponse =
+			options.userInputResponse === undefined
+				? undefined
+				: {
+						questions: options.userInputResponse.questions.map(({ header, question, answers }) => ({
+							...(header === undefined ? {} : { header: redactTaskPrivatePaths(this, header) }),
+							question: redactTaskPrivatePaths(this, question),
+							answers: answers.map((answer) => redactTaskPrivatePaths(this, answer)),
+						})),
+					}
 		const queuedMessageIds =
 			options.feedbackSource !== "automatic" && options.queuedMessageIds?.length
 				? [...options.queuedMessageIds]
@@ -9072,7 +9979,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					"the retried user feedback",
 					(message) =>
 						!this.abort && !this.abandoned && !isFeedbackConsumed() && isSameFeedback(message)
-							? { ...message, text, images, queuedMessageIds }
+							? { ...message, text, images, queuedMessageIds, userInputResponse }
 							: undefined,
 					undefined,
 					isSameFeedback,
@@ -9106,6 +10013,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = partial
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					lastMessage.userInputResponse = userInputResponse
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 					await this.updateAlphaMessage(lastMessage).catch((error) => {
 						console.error(`[Task#${this.taskId}] Failed to update partial message:`, error)
@@ -9130,6 +10038,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							userInputResponse,
 							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
@@ -9150,6 +10059,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = false
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					lastMessage.userInputResponse = userInputResponse
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 
 					// Instead of streaming partialMessage events, we do a save
@@ -9179,6 +10089,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							userInputResponse,
 							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
@@ -9209,6 +10120,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					contextCondense,
 					contextTruncation,
 					asyncUserInput: options.asyncUserInput,
+					userInputResponse,
 					...(queuedMessageIds ? { queuedMessageIds } : {}),
 					...(options.commandExecutionId ? { commandExecutionId: options.commandExecutionId } : {}),
 				},
@@ -9375,7 +10287,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async startTask(task?: string, images?: string[]): Promise<void> {
+	private async startTask(task?: string, images?: string[], goalAdmission?: GoalInputAdmission): Promise<void> {
 		try {
 			// `conversationHistory` (for API) and `clineMessages` (for webview)
 			// need to be in sync.
@@ -9426,6 +10338,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.isInitialized = true
 
 			const imageBlocks: Anthropic.ImageBlockParam[] = formatResponse.imageBlocks(images)
+			if (goalAdmission && (!(await goalAdmission.canWake()) || !goalAdmission.isStillCurrent())) return
 
 			// Task starting
 			await this.initiateTaskLoop(
@@ -9441,8 +10354,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				],
 				undefined,
 				{
+					goalAdmission,
 					inputOrigin:
-						this.taskKind === "subagent" || this.parentTaskId || this.orchestrationParentTaskId
+						goalAdmission ||
+						this.taskKind === "subagent" ||
+						this.parentTaskId ||
+						this.orchestrationParentTaskId
 							? "agent"
 							: "human",
 				},
@@ -9499,6 +10416,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		images: string[] = [],
 		inputOrigin: "human" | "agent" = "human",
 		queuedMessageIds?: string[],
+		isStillAdmissible?: () => boolean,
+		isGoalStillActive?: () => Promise<boolean>,
 	): Promise<void> {
 		const instruction = text.trim()
 		if (this.taskKind !== "primary") throw new Error("Only a primary task can be resumed from the composer")
@@ -9535,6 +10454,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// necessarily returned. Join that owned lifecycle so the new turn cannot
 			// overlap the preceding terminal write.
 			await this.waitForOwnedLifecycle()
+			if ((isGoalStillActive && !(await isGoalStillActive())) || (isStillAdmissible && !isStillAdmissible())) {
+				this.steerMessageAwaitingPersistence = false
+				return
+			}
 			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
 			if (!this.didComplete) throw new Error("The task has not completed")
 			if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
@@ -9542,6 +10465,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			await this.prepareForRetainedLifecycle(queuedMessageIds)
 			await this.messageQueueService.flush()
+			if ((isGoalStillActive && !(await isGoalStillActive())) || (isStillAdmissible && !isStillAdmissible())) {
+				this.steerMessageAwaitingPersistence = false
+				return
+			}
 			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
 
 			completionStateReset = true
@@ -9579,6 +10506,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					reuseRetainedHistory: true,
 					inputOrigin,
 					queuedMessageIds,
+					goalAdmission: this.goalHostAdmission,
 				},
 			)
 			this.ownBackgroundLifecycle("resume", lifecycle)
@@ -9648,6 +10576,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			reuseRetainedHistory?: boolean
 			queuedMessageIds?: string[]
 			inputOrigin?: "human" | "agent"
+			goalAdmission?: GoalInputAdmission
 		} = {},
 	) {
 		try {
@@ -9721,6 +10650,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const savedApiHistory = await savedApiHistoryPromise
 			if (this.abort || this.abandoned) return
 			this.apiConversationHistory = savedApiHistory
+			await this.reconcileGoalUsageFromHistory()
 			await this.recoverIncompleteCanonicalToolCallsForResume()
 			const lifecycleSnapshot = this.getCanonicalLifecycleSnapshot()
 			const recoveredToolResult = (toolCallId: string): Anthropic.ToolResultBlockParam => {
@@ -9782,6 +10712,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			let responseText: string | undefined
 			let responseImages: string[] | undefined
 			let responseQueuedMessageIds: string[] | undefined
+			let responseGoalAdmission: GoalInputAdmission | undefined
 			if (hasDirectFollowup) {
 				responseText = followupText
 				responseImages = followupImages
@@ -9811,6 +10742,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const askType: AlphaAsk = completedHistory ? "resume_completed_task" : "resume_task"
 				const { response, text, images, queuedMessageIds } = await this.ask(askType) // Calls `postStateToWebview`.
+				responseGoalAdmission = this.consumeGoalAskAdmission(text)
 
 				if (response === "messageResponse") {
 					await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
@@ -9820,51 +10752,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			// Make sure that the api conversation history can be resumed by the API,
-			// even if it goes out of sync with task messages.
+			// Keep committed messages in their original envelopes. Replaying an old
+			// user tail as new input would lose receipts/provenance and could let an
+			// earlier instruction override the fresh follow-up.
 			const existingApiConversationHistory: ApiMessage[] = this.apiConversationHistory
-
-			// Tool blocks are always preserved; native tool calling only.
-
-			// if the last message is an assistant message, we need to check if there's tool use since every tool use has to have a tool response
-			// if there's no tool use and only a text block, then we can just add a user message
-			// (note this isn't relevant anymore since we use custom tool prompts instead of tool use blocks, but this is here for legacy purposes in case users resume old tasks)
-
-			// if the last message is a user message, we can need to get the assistant message before it to see if it made tool calls, and if so, fill in the remaining tool responses with 'interrupted'
-
-			let modifiedOldUserContent: Anthropic.Messages.ContentBlockParam[] // either the last message if its user message, or the user message before the last (assistant) message
-			let modifiedApiConversationHistory: ApiMessage[] // need to remove the last user message to replace with new modified user message
+			let modifiedApiConversationHistory = existingApiConversationHistory
+			const newUserContent: Anthropic.Messages.ContentBlockParam[] = []
 			if (existingApiConversationHistory.length > 0) {
 				const lastMessage = existingApiConversationHistory[existingApiConversationHistory.length - 1]
 
-				if (lastMessage.isSummary || lastMessage.agent_message_id) {
-					// Agent delivery receipts must also survive resume without merging into a new user message.
-					// IMPORTANT: If the last message is a condensation summary, we must preserve it
-					// intact. The summary message carries critical metadata (isSummary, condenseId)
-					// that getEffectiveApiHistory() uses to filter out condensed messages.
-					// Removing or merging it would destroy this metadata, causing all condensed
-					// messages to become "orphaned" and restored to active status — effectively
-					// undoing the condensation and sending the full history to the API.
-					// See: https://github.com/AlphaInc/Alpha/issues/11487
-					modifiedApiConversationHistory = [...existingApiConversationHistory]
-					modifiedOldUserContent = []
+				if (lastMessage.isSummary || lastMessage.isTruncationMarker || lastMessage.agent_message_id) {
+					// Compaction boundaries and delivery receipts retain their identity.
 				} else if (lastMessage.role === "assistant") {
 					const content = Array.isArray(lastMessage.content)
 						? lastMessage.content
 						: [{ type: "text", text: lastMessage.content }]
-					const hasToolUse = content.some((block) => getToolCallId(block) !== undefined)
-
-					if (hasToolUse) {
-						const toolUseBlocks = content.filter((block) => getToolCallId(block) !== undefined)
-						const toolResponses: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((block) =>
-							recoveredToolResult(getToolCallId(block)!),
-						)
-						modifiedApiConversationHistory = [...existingApiConversationHistory] // no changes
-						modifiedOldUserContent = [...toolResponses]
-					} else {
-						modifiedApiConversationHistory = [...existingApiConversationHistory]
-						modifiedOldUserContent = []
-					}
+					newUserContent.push(
+						...content
+							.filter((block) => getToolCallId(block) !== undefined)
+							.map((block) => recoveredToolResult(getToolCallId(block)!)),
+					)
 				} else if (lastMessage.role === "user") {
 					const previousAssistantMessage: ApiMessage | undefined =
 						existingApiConversationHistory[existingApiConversationHistory.length - 2]
@@ -9895,54 +10802,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								)
 								.map((toolUse) => recoveredToolResult(getToolCallId(toolUse)!))
 
-							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1) // removes the last user message
-							modifiedOldUserContent = [...existingUserContent, ...missingToolResponses]
-						} else {
-							modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1)
-							modifiedOldUserContent = [...existingUserContent]
+							if (missingToolResponses.length > 0) {
+								modifiedApiConversationHistory = [...existingApiConversationHistory]
+								modifiedApiConversationHistory[modifiedApiConversationHistory.length - 1] = {
+									...lastMessage,
+									content: [...existingUserContent, ...missingToolResponses],
+								}
+							}
 						}
-					} else {
-						modifiedApiConversationHistory = existingApiConversationHistory.slice(0, -1)
-						modifiedOldUserContent = [...existingUserContent]
 					}
 				} else {
 					throw new Error("Unexpected: Last message is not a user or assistant message")
 				}
-			} else if (hasDirectFollowup) {
-				// Editing the opening prompt intentionally removes the entire old request.
-				modifiedApiConversationHistory = []
-				modifiedOldUserContent = []
-			} else {
+			} else if (!hasDirectFollowup) {
 				throw new Error("Unexpected: No existing API conversation history")
 			}
-
-			let newUserContent: Anthropic.Messages.ContentBlockParam[] = [...modifiedOldUserContent]
-
-			const agoText = ((): string => {
-				const timestamp = lastAlphaMessage?.ts ?? Date.now()
-				const now = Date.now()
-				const diff = now - timestamp
-				const minutes = Math.floor(diff / 60000)
-				const hours = Math.floor(minutes / 60)
-				const days = Math.floor(hours / 24)
-
-				if (days > 0) {
-					return `${days} day${days > 1 ? "s" : ""} ago`
-				}
-				if (hours > 0) {
-					return `${hours} hour${hours > 1 ? "s" : ""} ago`
-				}
-				if (minutes > 0) {
-					return `${minutes} minute${minutes > 1 ? "s" : ""} ago`
-				}
-				return "just now"
-			})()
 
 			if (responseText) {
 				newUserContent.push({
 					type: "text",
 					text:
-						options.inputOrigin === "agent"
+						options.inputOrigin === "agent" || responseGoalAdmission
 							? `<agent_message>\n${responseText}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`
 							: `<user_message>\n${responseText}\n</user_message>`,
 				})
@@ -9963,38 +10843,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 			}
 
-			let resumedUserContentPersisted = false
-			const onResumedUserContentPersisted = useRetainedHistory
-				? async () => {
-						resumedUserContentPersisted = true
-						await onSubagentSteeringPersisted?.()
-					}
-				: onSubagentSteeringPersisted
-			if (useRetainedHistory) {
-				// The next task-loop boundary persists this repaired prefix together
-				// with the follow-up. Avoid a redundant full-transcript write (and an
-				// interim assistant-tool-use without its user result) on long threads.
-				this.apiConversationHistory = modifiedApiConversationHistory
-			} else if (!(await this.overwriteApiConversationHistory(modifiedApiConversationHistory))) {
-				throw new Error("Unable to persist resumed conversation history before continuing.")
-			}
+			const historyRepair =
+				modifiedApiConversationHistory !== existingApiConversationHistory
+					? { message: modifiedApiConversationHistory.at(-1)!, persisted: false }
+					: undefined
+			if (historyRepair) this.pendingResumeHistoryRepair = historyRepair
+			// Stage additive legacy repairs for the same save as the new input. Never
+			// write a shortened prefix while preparation or cancellation can still fail.
+			this.apiConversationHistory = modifiedApiConversationHistory
 
 			// Task resuming from history item.
 			try {
+				const goalAdmission = options.goalAdmission ?? responseGoalAdmission ?? this.goalHostAdmission
+				if (goalAdmission && (!(await goalAdmission.canWake()) || !goalAdmission.isStillCurrent())) return
+				const inputOrigin: "human" | "agent" = responseGoalAdmission
+					? "agent"
+					: responseText || responseImages?.length
+						? (options.inputOrigin ?? "human")
+						: "agent"
 				const loopOptions = {
 					deferTaskStartedUntilInitialUserContentPersisted:
 						options.deferTaskStartedUntilInitialUserContentPersisted === true,
 					includeInitialFileDetails: !useRetainedHistory,
-					inputOrigin: options.inputOrigin ?? "human",
+					inputOrigin,
+					goalAdmission,
 				}
-				if (options.deferTaskStartedUntilInitialUserContentPersisted) {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
-				} else {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
-				}
+				await this.initiateTaskLoop(newUserContent, onSubagentSteeringPersisted, loopOptions)
 			} finally {
-				if (useRetainedHistory && !resumedUserContentPersisted) {
-					this.apiConversationHistory = existingApiConversationHistory
+				if (historyRepair && this.pendingResumeHistoryRepair === historyRepair) {
+					if (!historyRepair.persisted) this.apiConversationHistory = existingApiConversationHistory
+					this.pendingResumeHistoryRepair = undefined
 				}
 			}
 		} catch (error) {
@@ -10027,18 +10905,47 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	/**
-	 * Force emit a final token usage update, ignoring throttle.
-	 * Called before task completion or abort to ensure final stats are captured.
-	 * Triggers the debounce with current values and immediately flushes to ensure emit.
-	 */
+	private publishTokenUsageUpdate(tokenUsage: TokenUsage, toolUsage: ToolUsage): void {
+		const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
+		const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
+
+		if (tokenChanged || toolChanged) {
+			this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
+			this.tokenUsageSnapshot = tokenUsage
+			this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
+			// Deep copy tool usage for snapshot
+			this.toolUsageSnapshot = JSON.parse(JSON.stringify(toolUsage))
+		}
+	}
+
+	/** Publish final usage immediately without retaining a debounce timer after completion or abort. */
 	public emitFinalTokenUsageUpdate(): void {
-		const tokenUsage = this.getTokenUsage()
-		this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
-		this.debouncedEmitTokenUsage.flush()
+		this.debouncedEmitTokenUsage.cancel()
+		this.publishTokenUsageUpdate(this.getTokenUsage(), this.toolUsage)
+	}
+
+	/** Stop fences idle work immediately, then durably pauses only this Task owner's goal. */
+	private stopGoalForTaskCancellation(): Promise<void> {
+		this.invalidateGoalContinuation()
+		this.goalController?.invalidateRequests()
+		if (this.goalShutdownPromise) return this.goalShutdownPromise
+		const shutdown = (async () => {
+			if (!this.goalController || !this.isCurrentApiConversationHistoryOwner()) return
+			const goal = await this.goalController.get()
+			if (!goal || !this.isCurrentApiConversationHistoryOwner()) return
+			await this.goalController.systemStop(
+				"paused",
+				{ goalId: goal.goalId, controlVersion: goal.controlVersion },
+				() => this.isCurrentApiConversationHistoryOwner(),
+			)
+		})()
+		this.goalShutdownPromise = shutdown
+		void shutdown.catch(() => undefined)
+		return shutdown
 	}
 
 	public abortTask(isAbandoned = false): Promise<void> {
+		void this.stopGoalForTaskCancellation()
 		this.reasoningSummaries?.dispose()
 		if (isAbandoned) {
 			this.abandoned = true
@@ -10074,6 +10981,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		try {
 			await this.waitForOwnedLifecycle()
+		} catch (error) {
+			captureFailure(error)
+		}
+		try {
+			await this.goalShutdownPromise
 		} catch (error) {
 			captureFailure(error)
 		}
@@ -10123,9 +11035,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.cancelCurrentRequest()
 		let cleanupError: unknown
 		try {
-			await this.flushApiConversationHistoryPersistence()
+			await this.goalShutdownPromise
 		} catch (error) {
 			cleanupError = error
+		}
+		try {
+			await this.flushApiConversationHistoryPersistence()
+		} catch (error) {
+			cleanupError ??= error
 		}
 		// Invalidate preview work before awaiting cleanup. A delayed webview
 		// response must not resume against state that abort cleanup is about to
@@ -10186,6 +11103,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public dispose(): void {
+		this.debouncedEmitTokenUsage.cancel()
+		void this.stopGoalForTaskCancellation().catch((error) => {
+			console.error(`[Task#${this.taskId}] Goal pause could not be persisted during disposal:`, error)
+		})
 		this.toolInputContext?.disable()
 		clearTaskSessionApprovalGrants(this.taskId)
 		this.reasoningDisposed = true
@@ -10346,9 +11267,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			deferTaskStartedUntilInitialUserContentPersisted?: boolean
 			includeInitialFileDetails?: boolean
 			inputOrigin?: "human" | "agent"
+			goalAdmission?: GoalInputAdmission
 		} = {},
 	): Promise<void> {
 		if (this.contextCondenseAbortController) throw new Error("Context compaction is in progress")
+		if (
+			options.goalAdmission &&
+			(!(await options.goalAdmission.canWake()) || !options.goalAdmission.isStillCurrent())
+		)
+			return
 		// Kicks off the checkpoints initialization process in the background.
 		if (userContent.length > 0) {
 			this.toolRepetitionDetector?.resetProgress()
@@ -10390,6 +11317,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			: onInitialUserContentPersisted
 
 		type TaskTurnInput = {
+			goalAdmission?: GoalInputAdmission
 			userContent: Anthropic.Messages.ContentBlockParam[]
 			inputOrigin?: "human" | "agent"
 			includeFileDetails: boolean
@@ -10400,14 +11328,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		type TaskTurnStep = {
 			result: TaskStepExecutionResult
 			legacyDidEndLoop: boolean
+			goalAccounting?: GoalStepAccounting
 		}
 		let recoveryExplanationPublished = false
 		let activeStep: TaskTurnStep | undefined
 		let acceptedToolCallCount = 0
 		let acceptedToolCallIds = new Set<string>()
+		let goalWasActiveThisTurn = false
+		let goalOwnerAtTurn: { goalId: string; controlVersion: number } | undefined
 
 		const host: AgentTurnStagedHost<TaskTurnInput, TaskTurnStep> = {
 			shouldAbort: () => this.abort,
+			canContinueWhenIdle: () => this.isGoalIdleBoundary(),
+			selectIdleContinuation: async () => {
+				const goal = await this.admitGoalContinuation()
+				return goal
+					? {
+							userContent: [{ type: "text", text: this.goalContinuationText(goal) }],
+							inputOrigin: "agent",
+							includeFileDetails: false,
+							goalAdmission: this.goalInputAdmission(goal),
+						}
+					: undefined
+			},
 			canCompleteWithoutTools: () => {
 				// Text is a completion candidate; the shared durable gate below decides
 				// whether primary and managed-child work can actually finish.
@@ -10418,9 +11361,89 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			sampleStep: async (input) => {
+				this.deferAgentResultNotifications = false
 				// Legacy hosts may return without entering the request loop.
 				this.recoveryAttemptMessageStart = this.clineMessages.length
 				recoveryExplanationPublished = false
+				this.goalTurnCompletionText = undefined
+				const inheritedGoal = await this.inheritedGoalBinding
+				if (this.goalChildRequiresAdmission) {
+					const result: TaskStepExecutionResult = {
+						status: "incomplete",
+						reason: "Reopen this saved child through its parent before continuing.",
+					}
+					activeStep = { result, legacyDidEndLoop: false }
+					return {
+						response: createAgentResponse([]),
+						status: result.status,
+						reason: result.reason,
+						step: activeStep,
+					}
+				}
+				if (inheritedGoal) {
+					const owner = await inheritedGoal.controller.get()
+					if (
+						owner?.goalId !== inheritedGoal.goalId ||
+						owner.controlVersion !== inheritedGoal.controlVersion ||
+						owner.status !== "active" ||
+						owner.recoveryDeferred ||
+						!inheritedGoal.controller.isRequestCurrent(
+							inheritedGoal.goalId,
+							inheritedGoal.requestGeneration,
+						)
+					) {
+						const result: TaskStepExecutionResult = {
+							status:
+								owner?.status === "budget_limited" || owner?.status === "usage_limited"
+									? "exhausted"
+									: "incomplete",
+							reason: "The owning goal stopped or changed before this child request.",
+						}
+						activeStep = { result, legacyDidEndLoop: false }
+						return {
+							response: createAgentResponse([]),
+							status: result.status,
+							reason: result.reason,
+							step: activeStep,
+						}
+					}
+				}
+				const goalAccounting = await this.beginGoalStep()
+				if (
+					input.goalAdmission &&
+					(!(await input.goalAdmission.canWake()) || !input.goalAdmission.isStillCurrent())
+				) {
+					this.goalRequestAdmissionRevoked = true
+					const result: TaskStepExecutionResult = {
+						status: "incomplete",
+						reason: "Goal input was superseded before sampling.",
+					}
+					activeStep = { result, legacyDidEndLoop: false }
+					return {
+						response: createAgentResponse([]),
+						status: result.status,
+						reason: result.reason,
+						step: activeStep,
+					}
+				}
+				if (
+					inheritedGoal &&
+					!inheritedGoal.controller.isRequestCurrent(inheritedGoal.goalId, inheritedGoal.requestGeneration)
+				) {
+					const result: TaskStepExecutionResult = {
+						status: "incomplete",
+						reason: "The owning goal request admission was revoked.",
+					}
+					activeStep = { result, legacyDidEndLoop: false }
+					return {
+						response: createAgentResponse([]),
+						status: result.status,
+						reason: result.reason,
+						step: activeStep,
+					}
+				}
+				this.activeGoalStep = goalAccounting
+				this.goalHostAdmission = input.goalAdmission ?? this.goalHostAdmission
 				const rawStepResult = await this.runAgentRequests(
 					input.userContent,
 					input.includeFileDetails,
@@ -10434,7 +11457,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const result: TaskStepExecutionResult =
 					typeof rawStepResult === "boolean" ? { status: "completed" } : rawStepResult
 				const response = result.response ?? this.currentAgentResponse ?? this.buildCurrentAgentResponse()
-				activeStep = { result, legacyDidEndLoop }
+				const sampledMode = this.currentAgentStep?.snapshot.context.mode.slug ?? (await this.getTaskMode())
+				if (goalAccounting) {
+					goalAccounting.executionMode = sampledMode === "code" ? "code" : "architect"
+					goalAccounting.accountElapsed = goalAccounting.goalTaskId === this.taskId && sampledMode === "code"
+				}
+				if (goalAccounting && sampledMode !== "code") {
+					goalAccounting.responseAccounted = true
+					goalAccounting.finished = true
+				}
+				goalWasActiveThisTurn = Boolean(goalAccounting && sampledMode === "code")
+				if (goalAccounting && sampledMode === "code" && goalAccounting.goalTaskId === this.taskId)
+					goalOwnerAtTurn ??= { goalId: goalAccounting.goalId, controlVersion: goalAccounting.controlVersion }
+				activeStep = { result, legacyDidEndLoop, goalAccounting }
 				return { response, status: result.status, reason: result.reason, error: result.error, step: activeStep }
 			},
 			commitResponse: async (sample) => {
@@ -10490,7 +11525,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			},
 			onStepComplete: async (response) => {
+				const ownershipLostResult = {
+					status: "aborted" as const,
+					reason: "The task no longer owns its provider transcript.",
+				}
+				if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
 				const stepResult = activeStep?.result ?? { status: "completed" as const }
+				await accountGoalResponse(activeStep?.goalAccounting, response)
+				if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
 				await this.publishCanonicalLifecycleStepStatus(
 					this.currentAgentStep,
 					stepResult.status,
@@ -10527,6 +11569,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					recoveryExplanationPublished = true
 					return { status: terminalStatus, reason: terminalReason, error: stepResult.error }
 				}
+				const goalStep = activeStep?.goalAccounting
+				const stepGoal = await goalStep?.controller.get()
+				if (stepGoal && stepGoal.goalId === goalStep?.goalId && stepGoal.status !== "active") {
+					if (stepGoal.status === "budget_limited" || stepGoal.status === "usage_limited") {
+						if (!(await this.flushPendingToolResultsToHistory()))
+							return { status: "failed", reason: "Goal tool results could not be durably saved." }
+						return { status: "exhausted", reason: "The goal reached its configured work limit." }
+					}
+					if (stepGoal.status === "paused" || stepGoal.status === "blocked") {
+						if (!(await this.flushPendingToolResultsToHistory()))
+							return { status: "failed", reason: "Goal tool results could not be durably saved." }
+						return { status: "incomplete", reason: "The goal is paused or blocked." }
+					}
+				}
 				const hasVisiblePrimaryText =
 					this.taskKind === "primary" && response.toolCalls.length === 0 && response.text.trim().length > 0
 				const hasErrorToolResult = this.userMessageContent.some(
@@ -10557,12 +11613,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						error: stepResult.error,
 					}
 				}
+				if (this.goalTurnCompletionText !== undefined && !this.hasGoalPendingInput()) {
+					if (!(await this.flushPendingToolResultsToHistory())) {
+						return {
+							nextInput: "complete",
+							status: "failed",
+							reason: "Goal turn receipts could not be saved.",
+						}
+					}
+					return { nextInput: "complete", status: "completed" }
+				}
 
 				const providerRequiresContinuation = sample.response.outcome?.requiresContinuation === true
+				this.deferAgentResultNotifications = this.shouldDeferAgentResultNotifications(sample.response)
+				const hasPendingResultNotifications =
+					!this.deferAgentResultNotifications &&
+					this.providerRef.deref()?.hasPendingAgentResultNotifications?.(this) === true
 				let requiresContinuation =
 					providerRequiresContinuation ||
 					this.userMessageContent.length > 0 ||
 					this.hasPendingAgentMessages() ||
+					hasPendingResultNotifications ||
 					this.pendingSteerMessage !== undefined
 				let nextUserContent: Anthropic.Messages.ContentBlockParam[]
 
@@ -10571,7 +11642,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (this.pendingSteerMessage !== undefined) {
 					// runAgentRequests consumes durable steering before the next API request.
 					nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
-				} else if (this.hasPendingAgentMessages()) {
+				} else if (this.hasPendingAgentMessages() || hasPendingResultNotifications) {
 					nextUserContent = []
 				} else {
 					const isVisibleResponse =
@@ -10615,9 +11686,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					...(requiresContinuation ? { requiresContinuation: true } : {}),
 				}
 			},
-			releaseStep: (sample) => {
+			releaseStep: async (sample) => {
 				sample.step?.result.transaction?.release()
-				if (activeStep === sample.step) activeStep = undefined
+				try {
+					await this.settleGoalStep(sample.step?.goalAccounting)
+				} finally {
+					if (this.activeGoalStep === sample.step?.goalAccounting) this.activeGoalStep = undefined
+					if (activeStep === sample.step) activeStep = undefined
+				}
 			},
 		}
 
@@ -10628,9 +11704,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
 			this.isAgentTurnEngineActive = true
+			this.goalTurnCompletionText = undefined
+			this.goalRequestAdmissionRevoked = false
 			acceptedToolCallCount = 0
 			acceptedToolCallIds = new Set()
 			try {
+				const initialGoal = await this.getGoal()
+				goalWasActiveThisTurn = Boolean(
+					initialGoal?.status === "active" &&
+						!initialGoal.recoveryDeferred &&
+						(await this.getTaskMode()) === "code",
+				)
+				goalOwnerAtTurn =
+					goalWasActiveThisTurn && initialGoal
+						? { goalId: initialGoal.goalId, controlVersion: initialGoal.controlVersion }
+						: undefined
 				await this.beginCanonicalLifecycleTurn()
 				const lifecycle = this.getCanonicalLifecycleSnapshot()
 				if (lifecycle && lifecycle.runId === this.agentRunId && lifecycle.turnId === this.agentTurnId) {
@@ -10638,6 +11726,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					acceptedToolCallCount = acceptedToolCallIds.size
 				}
 				const outcome = await engine.run(input)
+				if (!this.isCurrentApiConversationHistoryOwner()) return outcome
 				if (shouldCompactAfterTurn(outcome) && !this.abort) {
 					await this.maybeCompactAfterTurn()
 				}
@@ -10659,9 +11748,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				await this.finishCanonicalLifecycleTurn(outcome)
 				await this.flushAgentTurnEvents()
+				if (
+					goalWasActiveThisTurn &&
+					goalOwnerAtTurn &&
+					!this.goalRequestAdmissionRevoked &&
+					(outcome.status === "failed" || outcome.status === "incomplete" || outcome.status === "exhausted")
+				) {
+					const usageLimited = outcome.response?.items.some(
+						(item) =>
+							item.type === "error" &&
+							(item.code === "usage_limit_exceeded" || item.code === "insufficient_quota"),
+					)
+					await this.goalController?.systemStop(
+						usageLimited ? "usage_limited" : "blocked",
+						goalOwnerAtTurn,
+						() => this.isCurrentApiConversationHistoryOwner(),
+					)
+				}
 				return outcome
 			} finally {
-				this.isAgentTurnEngineActive = wasAgentTurnEngineActive
+				try {
+					await this.settleGoalStep(this.activeGoalStep)
+				} finally {
+					this.activeGoalStep = undefined
+					this.isAgentTurnEngineActive = wasAgentTurnEngineActive
+				}
 			}
 		}
 
@@ -10671,6 +11782,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			error?: unknown,
 			toolCallCount = acceptedToolCallCount,
 		): Promise<void> => {
+			if (!this.isCurrentApiConversationHistoryOwner()) return
 			if (status === "completed" || status === "aborted") {
 				await this.appendAgentTurnEvent({
 					type: "task_completed",
@@ -10691,6 +11803,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		let nextTurnInput: TaskTurnInput = {
+			goalAdmission: options.goalAdmission,
 			userContent,
 			inputOrigin: options.inputOrigin,
 			includeFileDetails: options.includeInitialFileDetails ?? true,
@@ -10806,6 +11919,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			const feedbackText = recovery.text ?? ""
+			const goalAdmission = this.consumeGoalAskAdmission(recovery.text)
 			// This resumes inside the same loop, bypassing its initial reset. A user
 			// retry needs a fresh progress window before the next tool is observed.
 			this.toolRepetitionDetector?.resetProgress()
@@ -10817,6 +11931,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					queuedMessageIds: recovery.queuedMessageIds,
 				})
 				return {
+					goalAdmission,
+					inputOrigin: goalAdmission ? "agent" : "human",
 					userContent: this.buildUserMessageContent(feedbackText, feedbackImages, recovery.queuedMessageIds),
 					includeFileDetails: false,
 				}
@@ -10833,9 +11949,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		while (!this.abort && !this.didComplete) {
 			try {
 				const outcome = await runAgentTurn(nextTurnInput)
+				const goalCompletionText = this.goalTurnCompletionText
 				if (
+					outcome.status === "incomplete" &&
+					this.goalRequestAdmissionRevoked &&
+					!this.abort &&
+					!this.didComplete &&
+					(this.pendingSteerMessage || this.messageQueueService.messages.length > 0)
+				) {
+					const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
+					if (queued)
+						await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
+							queuedMessageIds: [queued.id],
+						})
+					nextTurnInput = {
+						userContent: queued
+							? this.buildUserMessageContent(queued.text, queued.images, [queued.id])
+							: [],
+						inputOrigin: "human",
+						includeFileDetails: false,
+					}
+					continue
+				}
+				const completedBoundary =
 					outcome.status === "completed" &&
-					outcome.completionReason === "assistant" &&
+					(outcome.completionReason === "assistant" || goalCompletionText !== undefined)
+				if (
+					completedBoundary &&
 					!this.abort &&
 					!this.didComplete &&
 					(this.pendingSteerMessage || this.messageQueueService.messages.length > 0)
@@ -10855,12 +11995,74 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					continue
 				}
 
-				if (
-					outcome.status !== "completed" ||
-					outcome.completionReason !== "assistant" ||
-					this.abort ||
-					this.didComplete
-				) {
+				if (completedBoundary && !this.abort && !this.didComplete) {
+					const goalContinuation = await engine.continueIfIdle(outcome)
+					if (
+						this.abort ||
+						this.abandoned ||
+						this.didComplete ||
+						this.getTaskLifetimeCancellationSignal().aborted ||
+						!this.isCurrentApiConversationHistoryOwner()
+					) {
+						await appendTaskTerminalEvent(
+							this.abort ? "aborted" : this.didComplete ? "completed" : "aborted",
+						)
+						return
+					}
+					if (goalContinuation) {
+						nextTurnInput = goalContinuation
+						continue
+					}
+					// Admission can await storage. A user input arriving in that window
+					// must enter the next sample before any retained automatic input.
+					if (this.pendingSteerMessage || this.messageQueueService.messages.length > 0) {
+						const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
+						if (queued) {
+							await this.say(
+								"user_feedback",
+								queued.text,
+								queued.images,
+								undefined,
+								undefined,
+								undefined,
+								{
+									queuedMessageIds: [queued.id],
+								},
+							)
+						}
+						nextTurnInput = {
+							userContent: queued
+								? this.buildUserMessageContent(queued.text, queued.images, [queued.id])
+								: [],
+							inputOrigin: "human",
+							includeFileDetails: false,
+						}
+						continue
+					}
+					const goal = await this.getGoal()
+					if (
+						goal &&
+						(goalWasActiveThisTurn || goalCompletionText !== undefined) &&
+						(goal.status === "budget_limited" ||
+							goal.status === "usage_limited" ||
+							goal.status === "paused" ||
+							goal.status === "blocked")
+					) {
+						const limited = goal.status === "budget_limited" || goal.status === "usage_limited"
+						const recovery = await waitForPrimaryTurnRecovery({
+							status: limited ? "exhausted" : "incomplete",
+						})
+						if (recovery) {
+							if (isSupersededRecovery(recovery)) return
+							nextTurnInput = recovery
+							continue
+						}
+						await appendTaskTerminalEvent(this.abort ? "aborted" : limited ? "exhausted" : "incomplete")
+						return
+					}
+				}
+
+				if (outcome.status !== "completed" || !completedBoundary || this.abort || this.didComplete) {
 					const terminalStatus = this.abort ? "aborted" : outcome.status
 					const terminalReason = "reason" in outcome ? outcome.reason : undefined
 					const terminalError = "error" in outcome ? outcome.error : undefined
@@ -10890,6 +12092,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 					return
 				}
+				const completionText = goalCompletionText ?? outcome.response.text
 
 				// Text-only provider completions participate in the exact same durable
 				// descendant/verification gate as attempt_completion. Do this before
@@ -10916,7 +12119,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					continue
 				}
 
-				const hookOutcome = await this.evaluateCompletionHooks(outcome.response.text)
+				const hookOutcome = await this.evaluateCompletionHooks(completionText)
 				if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) return
 				if (hookOutcome.prompt) {
 					nextTurnInput = {
@@ -10930,7 +12133,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				// Both task kinds publish through the same verified completion transition.
 				// The visible answer does not require a user acknowledgement to finalize.
-				await this.presentCompletionResult(outcome.response.text)
+				await this.presentCompletionResult(completionText)
 				if (this.abort || this.didComplete) {
 					await appendTaskTerminalEvent(
 						this.abort ? "aborted" : "completed",
@@ -10993,7 +12196,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					try {
-						if (await this.returnCompletionToLegacyParent(outcome.response.text)) {
+						if (await this.returnCompletionToLegacyParent(completionText)) {
 							await appendTaskTerminalEvent("completed", undefined, undefined, acceptedToolCallCount)
 							return
 						}
@@ -11023,6 +12226,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					if (this.taskKind === "subagent") this.subagentCompletionOutcome = "completed"
+					const completionGoalSteeringGeneration = this.goalSteeringGeneration ?? 0
 					const finalized = await this.finalizeTaskCompletion()
 					if (!finalized) {
 						if (this.abort || this.didComplete) {
@@ -11053,6 +12257,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									[concurrentFeedback.id],
 								),
 								includeFileDetails: false,
+							}
+							continue
+						}
+
+						const goal = await this.getGoal()
+						if (
+							completionGoalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) &&
+							goal?.status === "active" &&
+							!goal.recoveryDeferred &&
+							(await this.getTaskMode()) === "code" &&
+							this.isGoalIdleBoundary()
+						) {
+							// A new explicit host goal superseded terminal completion after
+							// the prior idle check. Enter it through this same drained loop.
+							nextTurnInput = {
+								userContent: [{ type: "text", text: this.goalContinuationText(goal) }],
+								inputOrigin: "agent",
+								includeFileDetails: false,
+								goalAdmission: this.goalInputAdmission(goal),
 							}
 							continue
 						}
@@ -11144,6 +12367,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		interface StackItem {
 			userContent: Anthropic.Messages.ContentBlockParam[]
+			/** Inputs interrupted before commit retain their chronological origin and receipts. */
+			precedingMessages?: Array<ApiMessage & { content: Anthropic.Messages.ContentBlockParam[] }>
 			inputOrigin?: "human" | "agent"
 			queuedMessageIds?: string[]
 			includeFileDetails: boolean
@@ -11155,10 +12380,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			/** Category-local counters keep transport/context/empty retries independent. */
 			retryAttempts?: TaskRetryAttempts
 			userMessageWasRemoved?: boolean // Track if user message was removed due to empty response
-			steeringPersistence?: {
-				onPersisted?: () => Promise<void> | void
-			}
+			steeringPersistence?: Array<() => Promise<void> | void>
 		}
+		const mergeSteeringPersistence = (item: StackItem, onPersisted?: () => Promise<void> | void) => [
+			...(item.steeringPersistence ?? []),
+			...(onPersisted ? [onPersisted] : []),
+		]
 
 		const stack: StackItem[] = [
 			{
@@ -11166,11 +12393,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				queuedMessageIds: [...(options.queuedMessageIds ?? this.getQueuedInputReceipts(userContent))],
 				inputOrigin: options.inputOrigin,
 				includeFileDetails,
-				hookPrompt: options.hookPrompt,
+				hookPrompt: options.hookPrompt ?? this.pendingCompletionHookPrompt,
 				retryAttempt: 0,
-				...(onInitialUserContentPersisted
-					? { steeringPersistence: { onPersisted: onInitialUserContentPersisted } }
-					: {}),
+				...(onInitialUserContentPersisted ? { steeringPersistence: [onInitialUserContentPersisted] } : {}),
 			},
 		]
 		const wasTaskLoopActive = this.isTaskLoopActive
@@ -11201,9 +12426,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// A recovered attempt must not hide a later failure, including one
 				// before the next provider request has started.
 				this.recoveryAttemptMessageStart = this.clineMessages.length
-				const currentUserContent = this.includeQueuedToolReplyContent(
-					this.mergePendingToolResultsIntoUserContent(currentItem.userContent),
-				)
+				const precedingMessages = currentItem.precedingMessages ?? []
+				// Capture each source before merging host deliveries or promoting the envelope's display origin.
+				this.captureInputBlockOrigins(currentItem.userContent, currentItem.inputOrigin ?? "human")
+				for (const message of precedingMessages) {
+					this.captureInputBlockOrigins(message.content, message.input_origin ?? "agent")
+				}
+				const firstPrecedingMessage = precedingMessages[0]
+				if (firstPrecedingMessage) {
+					// Pending results belong before the fresh steer. Reconcile them once
+					// with their original input, rather than duplicating them in both envelopes.
+					firstPrecedingMessage.content = this.includeQueuedToolReplyContent(
+						this.mergePendingToolResultsIntoUserContent(firstPrecedingMessage.content),
+					)
+					firstPrecedingMessage.queued_message_ids = [
+						...new Set([
+							...(firstPrecedingMessage.queued_message_ids ?? []),
+							...this.getQueuedInputReceipts(firstPrecedingMessage.content),
+						]),
+					]
+				}
+				const currentUserContent = firstPrecedingMessage
+					? currentItem.userContent
+					: this.includeQueuedToolReplyContent(
+							this.mergePendingToolResultsIntoUserContent(currentItem.userContent),
+						)
+				this.captureInputBlockOrigins(currentUserContent, "agent")
+				if (firstPrecedingMessage) this.captureInputBlockOrigins(firstPrecedingMessage.content, "agent")
 				currentItem.queuedMessageIds = [
 					...new Set([
 						...(currentItem.queuedMessageIds ?? []),
@@ -11224,22 +12473,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// accepted. Reset again at durable consumption time so this exact
 					// guidance reaches the next model request.
 					this.resetMistakeRecoveryState()
+					const hasUncommittedInput =
+						(currentItem.retryAttempt ?? 0) === 0 || currentItem.userMessageWasRemoved
 					stack.push({
-						queuedMessageIds: currentItem.queuedMessageIds,
-						userContent: [
-							...currentUserContent,
-							...this.buildUserMessageContent(
-								pendingSteer.text,
-								pendingSteer.images,
-								pendingSteer.queuedMessageIds,
-							),
+						precedingMessages: [
+							...precedingMessages,
+							...(hasUncommittedInput && currentUserContent.length
+								? [
+										{
+											role: "user" as const,
+											content: currentUserContent,
+											input_origin: currentItem.inputOrigin,
+											queued_message_ids: currentItem.queuedMessageIds,
+											...(currentItem.hookPrompt ? { hook_prompt: currentItem.hookPrompt } : {}),
+										},
+									]
+								: []),
 						],
+						queuedMessageIds: pendingSteer.queuedMessageIds,
+						userContent: this.buildUserMessageContent(
+							pendingSteer.text,
+							pendingSteer.images,
+							pendingSteer.queuedMessageIds,
+						),
 						includeFileDetails: currentIncludeFileDetails,
-						retryAttempt: currentItem.retryAttempt,
-						retryAttempts: currentItem.retryAttempts,
-						userMessageWasRemoved: currentItem.userMessageWasRemoved,
+						// A fresh instruction must cross its own save fence even when it
+						// arrives while publishing a retry of an already committed input.
+						retryAttempt: 0,
 						inputOrigin: pendingSteer.inputOrigin,
-						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+						steeringPersistence: mergeSteeringPersistence(currentItem, pendingSteer.onPersisted),
 					})
 					continue
 				}
@@ -11264,6 +12526,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					]),
 				]
 				if (currentItem.queuedMessageIds.length) currentItem.inputOrigin = "human"
+				this.captureInputBlockOrigins(currentUserContent, "agent")
 
 				// Determine API protocol based on provider and model
 				const modelId = getModelId(this.apiConfiguration)
@@ -11278,21 +12541,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
 				const currentMode = await this.getTaskMode()
 
-				const { content: parsedUserContent, mode: slashCommandMode } = await processUserContentMentions({
-					userContent: currentUserContent,
-					cwd: this.cwd,
-					fileContextTracker: this.fileContextTracker,
-					alphaIgnoreController: this.alphaIgnoreController,
-					showRooIgnoredFiles,
-					includeDiagnosticMessages,
-					maxDiagnosticMessages,
-					skillsManager: await provider?.getSkillsManager(this),
-					currentMode,
-					signal: this.getTaskCancellationSignal(),
-					onTicketActivity: async (activity) => {
-						await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
-					},
-				})
+				const messagesToPrepare = [
+					...precedingMessages,
+					{ role: "user" as const, content: currentUserContent, input_origin: currentItem.inputOrigin },
+				]
+				// Parsing replaces block identities; later deliveries must not enter this save's acknowledgment.
+				const inputBlocksToAcknowledge = messagesToPrepare.flatMap((message) => message.content)
+				const preparedMessages: typeof messagesToPrepare = []
+				let slashCommandMode: string | undefined
+				const skillsManager = await provider?.getSkillsManager(this)
+				const invocationSkills =
+					this.taskKind === "subagent"
+						? getSkillLookupForCapturedCatalog(skillsManager, this.subagentContextManifest?.skills ?? [])
+						: skillsManager
+				for (const message of messagesToPrepare) {
+					const prepared = await processUserContentMentions({
+						userContent: message.content,
+						cwd: this.cwd,
+						fileContextTracker: this.fileContextTracker,
+						alphaIgnoreController: this.alphaIgnoreController,
+						showRooIgnoredFiles,
+						includeDiagnosticMessages,
+						maxDiagnosticMessages,
+						skillsManager: invocationSkills,
+						inputOrigin: message.input_origin ?? currentItem.inputOrigin,
+						inputBlockOrigins: new Map(
+							message.content.map((block) => [block, this.inputBlockOrigins.get(block) ?? "agent"]),
+						),
+						humanFeedbackToolResultIds: getHumanFeedbackToolResultIds(
+							this.apiConversationHistory,
+							message.content,
+						),
+						currentMode,
+						signal: this.getTaskCancellationSignal(),
+						onTicketActivity: async (activity) => {
+							await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
+						},
+					})
+					for (const [block, origin] of prepared.blockOrigins ?? []) {
+						if (!this.inputBlockOrigins.has(block) || origin === "agent") {
+							this.inputBlockOrigins.set(block, origin)
+						}
+					}
+					slashCommandMode ??= prepared.mode
+					preparedMessages.push({ ...message, content: prepared.content })
+				}
+				const parsedUserContent = preparedMessages.pop()!.content
 
 				// Switch mode if specified in a slash command's frontmatter
 				if (slashCommandMode && provider) {
@@ -11327,7 +12621,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// 2. The original userContent was not empty (empty signals delegation resume where
 				//    the user message with tool_result and env details is already in history), OR
 				// 3. The message was removed in a previous iteration (userMessageWasRemoved === true)
-				// This prevents consecutive user messages while allowing re-add when needed
+				// A committed retry reuses its saved input; fresh steering starts at attempt zero.
 				const isEmptyUserContent = currentUserContent.length === 0 && pendingSpawnedSubagentResults.length === 0
 				const shouldAddUserMessage =
 					((currentItem.retryAttempt ?? 0) === 0 && !isEmptyUserContent) || currentItem.userMessageWasRemoved
@@ -11346,18 +12640,39 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							finalUserContent,
 							capture,
 							stepInterruptionSignal,
-							() => {
+							async () => {
 								historyPersisted = true
+								if (this.userMessageContent?.length) {
+									this.acknowledgePersistedUserMessageContent([
+										...inputBlocksToAcknowledge,
+										...preparedMessages.flatMap((message) => message.content),
+										...finalUserContent,
+									])
+								}
+								this.pendingCompletionHookPrompt = undefined
+								if (currentItem.steeringPersistence) {
+									// One transcript commit acknowledges original admission and
+									// fresh steering. Consume each callback once, even if another fails.
+									const failures: unknown[] = []
+									for (const onPersisted of currentItem.steeringPersistence.splice(0)) {
+										try {
+											await onPersisted()
+										} catch (error) {
+											failures.push(error)
+										}
+									}
+									this.steerMessageAwaitingPersistence = false
+									if (failures.length === 1) throw failures[0]
+									if (failures.length > 1) {
+										throw new AggregateError(failures, "Failed to acknowledge committed input")
+									}
+								}
 							},
-							currentItem.hookPrompt ?? this.pendingCompletionHookPrompt,
+							currentItem.hookPrompt,
 							currentItem.queuedMessageIds,
 							currentItem.inputOrigin,
+							preparedMessages,
 						)
-						this.pendingCompletionHookPrompt = undefined
-						if (currentItem.steeringPersistence) {
-							await currentItem.steeringPersistence.onPersisted?.()
-							this.steerMessageAwaitingPersistence = false
-						}
 						await this.markSpawnedSubagentResultsDelivered(
 							pendingSpawnedSubagentResults.map(({ taskId }) => taskId),
 						)
@@ -11447,18 +12762,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 					this.resetMistakeRecoveryState()
 					stack.push({
-						queuedMessageIds: currentItem.queuedMessageIds,
-						userContent: [
-							...this.takeLastApiUserMessageContent(),
-							...this.buildUserMessageContent(
-								pendingSteer.text,
-								pendingSteer.images,
-								pendingSteer.queuedMessageIds,
-							),
-						],
+						queuedMessageIds: pendingSteer.queuedMessageIds,
+						userContent: this.buildUserMessageContent(
+							pendingSteer.text,
+							pendingSteer.images,
+							pendingSteer.queuedMessageIds,
+						),
 						includeFileDetails: false,
 						inputOrigin: pendingSteer.inputOrigin,
-						steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+						steeringPersistence: mergeSteeringPersistence(currentItem, pendingSteer.onPersisted),
 					})
 					continue
 				}
@@ -11484,6 +12796,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 
 				const lastApiReqIndex = findLastIndex(this.clineMessages, (m) => m.say === "api_req_started")
+				const taskWasCancelled = () =>
+					this.abort || this.abandoned || this.getTaskLifetimeCancellationSignal().aborted
+				let recoverCancelledResponse: (() => Promise<TaskStepExecutionResult>) | undefined
 
 				try {
 					let cacheWriteTokens = 0
@@ -11594,7 +12909,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.currentRequestSignal = undefined
 					this.currentAssistantResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
-					this.acknowledgePersistedUserMessageContent(finalUserContent)
 					this.userMessageContentReady = false
 					this.didRejectTool = false
 					this.assistantMessageSavedToHistory = false
@@ -11715,6 +13029,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						)
 						earlyReadDispatchTail = settled
 					}
+					let cancelledResponsePromise: Promise<TaskStepExecutionResult> | undefined
+					const cancelResponseBeforeCommit = (): Promise<TaskStepExecutionResult> => {
+						cancelledResponsePromise ??= (async () => {
+							recoverCancelledResponse = undefined
+							earlyReadLaneClosed = true
+							const ownershipLostResult: TaskStepExecutionResult = {
+								status: "aborted",
+								reason: "The task no longer owns its provider transcript.",
+								response: canonicalResponse,
+							}
+							if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
+							// Cancellation disables the background usage drain. Project only
+							// the usage already captured by this request before its final emission.
+							updateApiReqMsg("user_cancelled")
+							this.emitFinalTokenUsageUpdate()
+							await earlyReadDispatchTail
+							if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
+							const reason = "The provider request was cancelled."
+							const outcome = { status: "cancelled" as const, reason, retryable: false }
+							// finish() is cached. A cancellation arriving during finalization
+							// changes the outcome while preserving the finalized provider items.
+							canonicalResponse = canonicalResponse
+								? createAgentResponse(canonicalResponse.items, outcome)
+								: await responseAccumulator.finish(undefined, outcome)
+							if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
+							await this.applyCanonicalAgentResponse(canonicalResponse)
+							if (!this.isCurrentApiConversationHistoryOwner()) return ownershipLostResult
+							const persistence = await this.persistTerminalCanonicalResponse(
+								canonicalResponse,
+								"cancelled",
+								reason,
+								earlyReadDispatches,
+							)
+							if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) {
+								this.abortReason ??= "user_cancelled"
+							}
+							return {
+								status: "aborted",
+								reason: persistence.reason,
+								...(persistence.error ? { error: persistence.error } : {}),
+								response: canonicalResponse,
+							}
+						})()
+						return cancelledResponsePromise
+					}
+					recoverCancelledResponse = cancelResponseBeforeCommit
 					this.isStreaming = true
 
 					try {
@@ -11858,6 +13218,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 							switch (chunk.type) {
 								case "reasoning": {
+									if (!chunk.text) break
 									reasoningMessage += chunk.text
 									// Only apply formatting if the message contains sentence-ending punctuation followed by **
 									let formattedReasoning = reasoningMessage
@@ -11977,7 +13338,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							if (this.abort) {
 								console.log(`aborting stream, this.abandoned = ${this.abandoned}`)
 
-								if (!this.abandoned) {
+								if (!this.abandoned && this.isCurrentApiConversationHistoryOwner()) {
 									// Only need to gracefully abort if this instance
 									// isn't abandoned (sometimes OpenRouter stream
 									// hangs, in which case this would affect future
@@ -12198,6 +13559,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							})
 						}
 					} catch (error) {
+						if (taskWasCancelled() && !this.isCurrentApiConversationHistoryOwner()) {
+							return await cancelResponseBeforeCommit()
+						}
 						// Abandoned happens when extension is no longer waiting for the
 						// Alpha instance to finish aborting (error is thrown here when
 						// any function in the for loop throws due to this.abort).
@@ -12210,18 +13574,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 
 								stack.push({
-									queuedMessageIds: currentItem.queuedMessageIds,
-									userContent: [
-										...this.takeLastApiUserMessageContent(),
-										...this.buildUserMessageContent(
-											pendingSteer.text,
-											pendingSteer.images,
-											pendingSteer.queuedMessageIds,
-										),
-									],
+									queuedMessageIds: pendingSteer.queuedMessageIds,
+									userContent: this.buildUserMessageContent(
+										pendingSteer.text,
+										pendingSteer.images,
+										pendingSteer.queuedMessageIds,
+									),
 									includeFileDetails: false,
 									inputOrigin: pendingSteer.inputOrigin,
-									steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+									steeringPersistence: mergeSteeringPersistence(
+										currentItem,
+										pendingSteer.onPersisted,
+									),
 								})
 
 								continue
@@ -12293,7 +13657,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									reason: terminalReason,
 									retryable: terminalRetryable,
 								})
+								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 								await this.applyCanonicalAgentResponse(canonicalResponse)
+								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
+								recoverCancelledResponse = undefined
 								const persistence = await this.persistTerminalCanonicalResponse(
 									canonicalResponse,
 									terminalStatus,
@@ -12443,18 +13810,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 									this.resetMistakeRecoveryState()
 									stack.push({
-										queuedMessageIds: currentItem.queuedMessageIds,
-										userContent: [
-											...this.takeLastApiUserMessageContent(),
-											...this.buildUserMessageContent(
-												pendingSteer.text,
-												pendingSteer.images,
-												pendingSteer.queuedMessageIds,
-											),
-										],
+										queuedMessageIds: pendingSteer.queuedMessageIds,
+										userContent: this.buildUserMessageContent(
+											pendingSteer.text,
+											pendingSteer.images,
+											pendingSteer.queuedMessageIds,
+										),
 										includeFileDetails: false,
 										inputOrigin: pendingSteer.inputOrigin,
-										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+										steeringPersistence: mergeSteeringPersistence(
+											currentItem,
+											pendingSteer.onPersisted,
+										),
 									})
 									continue
 								}
@@ -12485,10 +13852,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.isStreaming = false
 					}
 
-					// Need to call here in case the stream was aborted.
-					if (this.abort || this.abandoned) {
-						throw new Error(`[Task#runAgentRequests] task ${this.taskId}.${this.instanceId} aborted`)
-					}
+					// The joined producer owns this assistant boundary until external
+					// termination permits a replacement Task to claim transcript ownership.
+					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 
 					this.didCompleteReadingStream = true
 
@@ -12548,6 +13914,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// NativeToolCallParser above is retained only for incremental UI
 					// preview; never use its repaired/partial state to decide effects.
 					await earlyReadDispatchTail
+					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 					const missingTerminalOutcome =
 						semanticOutputObserved &&
 						streamRequiresTerminalOutcome &&
@@ -12577,6 +13944,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 							: undefined,
 					)
+					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 					const reservationSurface = streamedToolCallReservationSurface
 					const orderedToolCallReservations = streamedToolCallReservationOrder.map(
 						(id) => streamedToolCallReservations.get(id)!,
@@ -12617,6 +13985,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}) ||
 							streamToolSurface !== this.currentTaskToolSurface)
 					await this.applyCanonicalAgentResponse(canonicalResponse)
+					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 					assistantMessage = canonicalResponse.text
 					reasoningMessage = canonicalResponse.reasoning
 					pendingGroundingSources = canonicalResponse.items.flatMap((item) =>
@@ -12642,11 +14011,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (lastReasoningIndex !== -1 && this.clineMessages[lastReasoningIndex].partial) {
 							this.clineMessages[lastReasoningIndex].partial = false
 							await this.updateAlphaMessage(this.clineMessages[lastReasoningIndex])
+							if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 							this.summarizeReasoning(this.clineMessages[lastReasoningIndex])
 						}
 					}
 
 					await this.saveAlphaMessages()
+					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 
 					// No legacy text-stream tool parser state to reset.
 
@@ -12671,6 +14042,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					let settleEarlyReadBeforeBarrierRejection = false
 
 					const commitResponse = async (): Promise<TaskStepExecutionResult> => {
+						if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 						if (hasTextContent || hasToolUses) {
 							// Reset counter when we get a successful response with content
 							this.consecutiveNoAssistantMessagesCount = 0
@@ -12681,9 +14053,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								)
 								const sourcesText = `${t("common:gemini.sources")} ${citationLinks.join(", ")}`
 
-								await this.say("text", sourcesText, undefined, false, undefined, undefined, {
-									isNonInteractive: true,
-								})
+								try {
+									await this.say("text", sourcesText, undefined, false, undefined, undefined, {
+										isNonInteractive: true,
+									})
+								} catch (error) {
+									if (taskWasCancelled()) return await cancelResponseBeforeCommit()
+									throw error
+								}
+								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 							}
 
 							const assistantContent = buildCanonicalAssistantHistoryContent(canonicalResponse!)
@@ -12746,6 +14124,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							// This is critical for new_task: when it triggers delegation, flushPendingToolResultsToHistory()
 							// will save the user message with tool_results. The assistant message must already be in history
 							// so that tool_result blocks appear AFTER their corresponding tool_use blocks.
+							if (taskWasCancelled()) return await cancelResponseBeforeCommit()
+							recoverCancelledResponse = undefined
 							const assistantResponsePersisted = await this.persistAssistantResponseBeforeEffects(
 								{ role: "assistant", content: assistantContent },
 								reasoningMessage || undefined,
@@ -12835,9 +14215,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const terminalToolResultsPersisted = await this.persistUnexecutedTerminalToolResults(
 								canonicalResponse,
 								terminalReceiptStatus,
-								new Set(
-									completedEarlyReadDispatches.map((dispatch) => sanitizeToolUseId(dispatch.call.id)),
-								),
+								this.getCompletedEarlyReadCallIds(completedEarlyReadDispatches),
 							)
 							const terminalReceiptPersistenceFailed =
 								(canonicalResponse?.toolCalls.length ?? 0) > 0 && !terminalToolResultsPersisted
@@ -13246,18 +14624,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
 									this.resetMistakeRecoveryState()
 									stack.push({
-										queuedMessageIds: currentItem.queuedMessageIds,
-										userContent: [
-											...this.takeLastApiUserMessageContent(),
-											...this.buildUserMessageContent(
-												pendingSteer.text,
-												pendingSteer.images,
-												pendingSteer.queuedMessageIds,
-											),
-										],
+										queuedMessageIds: pendingSteer.queuedMessageIds,
+										userContent: this.buildUserMessageContent(
+											pendingSteer.text,
+											pendingSteer.images,
+											pendingSteer.queuedMessageIds,
+										),
 										includeFileDetails: false,
 										inputOrigin: pendingSteer.inputOrigin,
-										steeringPersistence: { onPersisted: pendingSteer.onPersisted },
+										steeringPersistence: mergeSteeringPersistence(
+											currentItem,
+											pendingSteer.onPersisted,
+										),
 									})
 									continue
 								}
@@ -13373,6 +14751,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						response: this.currentAgentResponse,
 					}
 				} catch (error) {
+					if (taskWasCancelled() && recoverCancelledResponse) {
+						return await recoverCancelledResponse()
+					}
 					// This should never happen since the only thing that can throw an
 					// error is the attemptApiRequest, which is wrapped in a try catch
 					// that sends an ask where if noButtonClicked, will clear current
@@ -13757,6 +15138,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const pendingState = this.providerRef.deref()?.getState()
 			const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
 			assertRecoveryWithinBudget()
+			const capturedExecution = this.captureToolExecutionPolicy(state)
 			const mode = await waitForBoundedRecovery(this.getTaskMode())
 			assertRecoveryWithinBudget()
 
@@ -13809,6 +15191,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							experiments: state?.experiments,
 							apiConfiguration,
 							disabledTools: state?.disabledTools,
+							execution: capturedExecution,
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
 							includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -14186,6 +15569,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: TaskRequestOptions,
 		capturedProvider: CapturedTaskProvider,
 	): ApiStream {
+		const goalStep = this.activeGoalStep
+		const goalAdmission = this.goalHostAdmission
 		const stepInterruptionSignal = options.interruptionSignal
 		this.throwIfStepInterrupted(stepInterruptionSignal)
 		throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
@@ -14204,6 +15589,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const pendingState = options.state === undefined ? this.providerRef.deref()?.getState() : undefined
 		const state = options.state ?? (pendingState ? await waitForBoundedPreflight(pendingState) : undefined)
 		assertPreflightWithinBudget()
+		const capturedExecution =
+			retainedStep?.surface?.policy.execution ??
+			retainedStep?.snapshot.context.policy.execution ??
+			this.captureToolExecutionPolicy(state)
 		const capturedApprovalMode =
 			retainedStep?.snapshot.context.policy.approval.mode ?? this.captureTaskApprovalMode(state)
 		const capturedApprovalFlags = deriveAutoApprovalFlags(capturedApprovalMode, {
@@ -14225,6 +15614,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			autoCondenseContextScope === "after-prefix" ? this.getCompactionWindowPrefillTokens() : undefined
 		const mode = retainedStep?.snapshot.context.mode.slug ?? (await waitForBoundedPreflight(this.getTaskMode()))
 		assertPreflightWithinBudget()
+		if (goalStep) {
+			goalStep.executionMode = mode === "code" ? "code" : "architect"
+			goalStep.accountElapsed = goalStep.goalTaskId === this.taskId && mode === "code"
+			if (mode !== "code") {
+				goalStep.responseAccounted = true
+				goalStep.finished = true
+			}
+		}
 		const capturedDesignHandoff =
 			this.taskKind === "primary" && mode === defaultModeSlug ? structuredClone(this.designHandoff) : undefined
 		const { apiHandler: requestHandler } = capturedProvider
@@ -14397,6 +15794,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									experiments: state?.experiments,
 									apiConfiguration,
 									disabledTools: state?.disabledTools,
+									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
 									includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
@@ -14688,6 +16086,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: state?.disabledTools,
+					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
 					includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
@@ -14880,6 +16279,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error("Request cancelled by user")
 		}
 
+		if (goalStep && this.currentAgentStep?.snapshot.context.mode.slug !== "architect") {
+			try {
+				await goalStep.controller.get()
+			} catch (error) {
+				clearRequestOwnership()
+				throw error
+			}
+		}
+		if (
+			(goalStep &&
+				this.currentAgentStep?.snapshot.context.mode.slug !== "architect" &&
+				!goalStep.controller.isRequestCurrent(goalStep.goalId, goalStep.requestGeneration)) ||
+			(goalAdmission && !goalAdmission.isStillCurrent())
+		) {
+			clearRequestOwnership()
+			this.goalRequestAdmissionRevoked = true
+			yield createApiStreamOutcome({
+				status: "incomplete",
+				reason: "Goal request admission was revoked before provider execution.",
+			})
+			return
+		}
 		let stream: ApiStream
 		try {
 			if (this.performanceRequestPending && this.performanceSubmissionStartedAt !== undefined) {
@@ -15321,8 +16742,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const cleanConversationHistory: (Anthropic.Messages.MessageParam | ReasoningItemForRequest)[] = []
+		const projectAssistantContent = (
+			content: Anthropic.Messages.ContentBlockParam[],
+		): Anthropic.Messages.MessageParam["content"] => {
+			if (content.length === 0) return ""
+			const first = content[0]
+			// Flatten only legacy unmarked text. A source message ID/phase/index
+			// belongs to the block and would be discarded by string conversion.
+			if (
+				content.length === 1 &&
+				first.type === "text" &&
+				Object.keys(normalizeAssistantMessageMetadata(first)).length === 0
+			) {
+				return first.text
+			}
+			return content
+		}
 
 		for (const msg of messages) {
+			const sourceMetadata =
+				msg.role === "assistant"
+					? normalizeAssistantMessageMetadata({ id: msg.messageId, phase: msg.phase })
+					: {}
+			const assistantSourceMetadata = {
+				...(sourceMetadata.id !== undefined ? { messageId: sourceMetadata.id } : {}),
+				...(sourceMetadata.phase !== undefined ? { phase: sourceMetadata.phase } : {}),
+			}
 			const persistedVscodeLmMarker = (msg as ApiMessage & { vscodeLmStatefulMarker?: unknown })
 				.vscodeLmStatefulMarker
 			const vscodeLmMetadata =
@@ -15363,20 +16808,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const msgWithDetails = msg
 				if (msgWithDetails.reasoning_details && Array.isArray(msgWithDetails.reasoning_details)) {
 					// Build the assistant message with reasoning_details
-					let assistantContent: Anthropic.Messages.MessageParam["content"]
-
-					if (contentArray.length === 0) {
-						assistantContent = ""
-					} else if (contentArray.length === 1 && contentArray[0].type === "text") {
-						assistantContent = (contentArray[0] as Anthropic.Messages.TextBlockParam).text
-					} else {
-						assistantContent = contentArray
-					}
+					const assistantContent = projectAssistantContent(contentArray)
 
 					// Create message with reasoning_details property
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 						reasoning_details: msgWithDetails.reasoning_details,
 					} as any)
@@ -15409,20 +16847,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					// Send assistant message without reasoning
-					let assistantContent: Anthropic.Messages.MessageParam["content"]
 					const remainingContent = contentArray.slice(encryptedReasoningPrefixLength)
-
-					if (remainingContent.length === 0) {
-						assistantContent = ""
-					} else if (remainingContent.length === 1 && remainingContent[0].type === "text") {
-						assistantContent = (remainingContent[0] as Anthropic.Messages.TextBlockParam).text
-					} else {
-						assistantContent = remainingContent
-					}
+					const assistantContent = projectAssistantContent(remainingContent)
 
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 					} as Anthropic.Messages.MessageParam)
 
@@ -15439,18 +16870,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						assistantContent = contentArray
 					} else {
 						// Strip reasoning out - stored for history only, not sent back to API
-						if (rest.length === 0) {
-							assistantContent = ""
-						} else if (rest.length === 1 && rest[0].type === "text") {
-							assistantContent = (rest[0] as Anthropic.Messages.TextBlockParam).text
-						} else {
-							assistantContent = rest
-						}
+						assistantContent = projectAssistantContent(rest)
 					}
 
 					cleanConversationHistory.push({
 						role: "assistant",
 						content: assistantContent,
+						...assistantSourceMetadata,
 						...vscodeLmMetadata,
 					} as Anthropic.Messages.MessageParam)
 
@@ -15463,6 +16889,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cleanConversationHistory.push({
 					role: msg.role,
 					content: msg.content as Anthropic.Messages.ContentBlockParam[] | string,
+					...assistantSourceMetadata,
 					...vscodeLmMetadata,
 				} as Anthropic.Messages.MessageParam)
 			}
@@ -15619,10 +17046,41 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			args !== null && typeof args === "object" && !Array.isArray(args)
 				? (args as Record<string, unknown>)
 				: undefined
+		if (
+			canonicalName === "exec_command" &&
+			status === "denied" &&
+			result?.status === "denied" &&
+			canonicalizeToolName(result.name) === "exec_command" &&
+			result.callId &&
+			failure?.effectsStarted === "no" &&
+			failure.outcome === "known" &&
+			(failure.reason === "policy_denied" || failure.reason === "approval_denied")
+		) {
+			const command =
+				typeof argumentRecord?.command === "string"
+					? argumentRecord.command
+					: typeof argumentRecord?.cmd === "string"
+						? argumentRecord.cmd
+						: undefined
+			const conflictingCommands =
+				typeof argumentRecord?.command === "string" &&
+				typeof argumentRecord.cmd === "string" &&
+				argumentRecord.command !== argumentRecord.cmd
+			if (command && !conflictingCommands) {
+				const canonicalCommand = unescapeHtmlEntities(command)
+				const deniedBeforeInterception =
+					failure.reason === "policy_denied" && failure.affectedScope.kind === "capability"
+				// Command-rule capability denials precede interception; effective patch denials stay out.
+				if (extractApplyPatchCommand(canonicalCommand)?.kind !== "patch" || deniedBeforeInterception) {
+					this.recordDeniedCommandAttempt(result.callId, canonicalCommand)
+				}
+			}
+		}
 		const commandRead =
-			canonicalName === "manage_command" &&
-			(argumentRecord?.action === "read" ||
-				(name === "read_command_output" && Object.hasOwn(argumentRecord ?? {}, "artifact_id")))
+			(canonicalName === "write_stdin" && isCommandArtifactRead(argumentRecord)) ||
+			(canonicalName === "manage_command" &&
+				(argumentRecord?.action === "read" ||
+					(name === "read_command_output" && Object.hasOwn(argumentRecord ?? {}, "artifact_id"))))
 		const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
 		const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
 			changeSetId,

@@ -97,6 +97,100 @@ class BoundaryAI {
 	}
 }
 
+function resultFor(history: unknown, callId: string): Record<string, unknown> {
+	assert.ok(Array.isArray(history), "Provider history must be an array")
+	const matches: Record<string, unknown>[] = []
+	const messages: unknown[] = history
+	for (const message of messages) {
+		if (!message || typeof message !== "object" || !("content" in message)) continue
+		if (!Array.isArray(message.content)) continue
+		const content: unknown[] = message.content
+		for (const block of content) {
+			if (
+				block &&
+				typeof block === "object" &&
+				"type" in block &&
+				block.type === "tool_result" &&
+				"tool_use_id" in block &&
+				block.tool_use_id === callId
+			) {
+				matches.push(block as Record<string, unknown>)
+			}
+		}
+	}
+	assert.equal(matches.length, 1, `Expected exactly one result for ${callId}`)
+	return matches[0]!
+}
+
+function processExitCode(result: Record<string, unknown>): number {
+	assert.ok(typeof result.content === "string", "Native command receipts must contain formatted output")
+	const match = /^Process exited with code (-?\d+)$/m.exec(result.content)
+	assert.ok(match, "The inspection must finish with an explicit process exit code")
+	return Number(match[1])
+}
+
+class ReadRecoveryAI {
+	readonly id = "core-missing-file-recovery"
+	constructor(
+		private readonly fixture: string,
+		observation: Observation,
+		private readonly resolveTask: (id: string) => BoundaryTask,
+	) {
+		observations.set(this, observation)
+	}
+	get removeFromCache() {
+		return observations.get(this)!.removeFromCache
+	}
+	set removeFromCache(value: (() => void) | undefined) {
+		observations.get(this)!.removeFromCache = value
+	}
+	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
+		const observation = observations.get(this)!
+		assert.ok(metadata?.taskId)
+		observation.task = this.resolveTask(metadata.taskId)
+		const request = ++observation.requests
+		assert.ok(request <= 3, "Read recovery permits one failed read, one corrected read, and a final answer")
+		if (request > 1) {
+			assert.deepEqual(inspectToolTransactions(messages).errors, [])
+			const missing = resultFor(messages, "missing-workflow-read")
+			assert.notEqual(missing.is_error, true)
+			assert.equal(processExitCode(missing), 1)
+			assert.ok(
+				JSON.stringify(missing.content).includes("ENOENT"),
+				"The first inspection must reach the filesystem",
+			)
+		}
+		if (request === 3) {
+			const result = resultFor(messages, "corrected-workflow-read")
+			assert.notEqual(result.is_error, true)
+			assert.equal(processExitCode(result), 0)
+			assert.ok(JSON.stringify(result.content).includes("WORKFLOW_RECOVERY_ANSWER=42"))
+			yield { type: "text" as const, text: "The corrected file contains WORKFLOW_RECOVERY_ANSWER=42." }
+			return
+		}
+		yield {
+			type: "tool_call" as const,
+			id: request === 1 ? "missing-workflow-read" : "corrected-workflow-read",
+			name: "exec_command",
+			arguments: JSON.stringify({
+				cmd: `node -e "console.log(require('fs').readFileSync('${request === 1 ? "missing.txt" : "answer.txt"}','utf8'))"`,
+				workdir: this.fixture,
+				yield_time_ms: 10_000,
+				max_output_tokens: 1000,
+			}),
+		}
+	}
+	getModel() {
+		return { id: this.id, info: { contextWindow: 128_000, maxTokens: 8192, supportsPromptCache: false } }
+	}
+	async countTokens() {
+		return 1
+	}
+	async completePrompt() {
+		return ""
+	}
+}
+
 suite("Core response boundary contracts", function () {
 	this.timeout(120_000)
 	for (const scenario of ["continuation", "malformed-call", "incomplete-output"] as const) {
@@ -268,4 +362,104 @@ suite("Core response boundary contracts", function () {
 			])
 		})
 	}
+})
+
+suite("Coding workflow tool recovery", function () {
+	this.timeout(120_000)
+	test("a missing file can be corrected without losing its failed receipt or requiring user confirmation", async () => {
+		assert.equal(vscode.version, "1.125.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
+		assert.ok(workspace && artifacts)
+		const fixture = await fs.mkdtemp(path.join(workspace, ".alpha-read-recovery-"))
+		const provider = (globalThis.api as unknown as { sidebarProvider: BoundaryProvider }).sidebarProvider
+		const configuration = globalThis.api.getConfiguration()
+		const observation: Observation = { requests: 0 }
+		const scripted = new ReadRecoveryAI(fixture, observation, (id) => {
+			const task = provider.getLiveTask(id)
+			assert.ok(task)
+			return task
+		})
+		let completions = 0
+		const onCompleted = (id: string) => {
+			if (id === observation.task?.taskId) completions++
+		}
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		await withBoundedFixtureCleanup(async () => {
+			await fs.writeFile(path.join(fixture, "answer.txt"), "WORKFLOW_RECOVERY_ANSWER=42\n", { flag: "wx" })
+			await globalThis.api.startNewTask({
+				text: "Read the answer file. If the initial path is missing, correct it and report the value.",
+				configuration: {
+					...configuration,
+					apiProvider: "fake-ai",
+					fakeAi: scripted,
+					mode: "code",
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowExecute: true,
+					allowedCommands: ["node"],
+					enableCheckpoints: false,
+					requestDelaySeconds: 0,
+					writeDelayMs: 0,
+				},
+			})
+			await waitFor(() => completions === 1, { description: "corrected read completes", timeout: 30_000 })
+			const task = observation.task!
+			await task.waitForTermination()
+			await task.flushApiConversationHistoryPersistence()
+			const { taskDirPath } = await provider.getTaskWithId(task.taskId)
+			const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
+			const events = await readBoundedJson(path.join(taskDirPath, "agent_lifecycle_events.jsonl"), true)
+			const transactions = inspectToolTransactions(history)
+			const lifecycle = inspectTaskLifecycle(events, task.taskId)
+			const state = await provider.getStateToPostToWebview()
+			const snapshot = state.agentLifecycleSnapshots?.[task.taskId]
+			const failedRead = resultFor(history, "missing-workflow-read")
+			const correctedRead = resultFor(history, "corrected-workflow-read")
+			await fs.writeFile(
+				path.join(artifacts, "core-read-recovery.json"),
+				JSON.stringify({
+					hostVersion: vscode.version,
+					provider: "scripted",
+					requests: observation.requests,
+					completions,
+					failedReadExitCode: processExitCode(failedRead),
+					correctedReadExitCode: processExitCode(correctedRead),
+					transactions,
+					lifecycle,
+					canonicalStatus: snapshot?.status,
+				}),
+				{ flag: "wx" },
+			)
+			assert.equal(observation.requests, 3)
+			assert.equal(completions, 1)
+			assert.equal(task.didComplete, true)
+			assert.notEqual(failedRead.is_error, true)
+			assert.equal(processExitCode(failedRead), 1)
+			assert.ok(JSON.stringify(failedRead.content).includes("ENOENT"))
+			assert.notEqual(correctedRead.is_error, true)
+			assert.equal(processExitCode(correctedRead), 0)
+			assert.ok(JSON.stringify(correctedRead.content).includes("WORKFLOW_RECOVERY_ANSWER=42"))
+			assert.deepEqual(transactions, { callCount: 2, resultCount: 2, errors: [] })
+			assert.deepEqual(lifecycle, { completedTurns: 1, cancelledTurns: 0, failedTurns: 0, errors: [] })
+			assert.equal(snapshot?.status, "completed")
+			assert.deepEqual(snapshot?.terminalToolCallIds, ["missing-workflow-read", "corrected-workflow-read"])
+			assert.equal(task.getActiveAskTimestamp(), undefined)
+			assert.ok(
+				!task.clineMessages.some(
+					(message) =>
+						message.ask === "api_req_failed" ||
+						message.ask === "resume_task" ||
+						message.ask === "completion_result",
+				),
+			)
+		}, [
+			() => globalThis.api.clearCurrentTask(),
+			() => globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
+			() => scripted.removeFromCache?.(),
+			() => globalThis.api.setConfiguration(configuration),
+			() => fs.rm(fixture, { recursive: true, force: true }),
+		])
+	})
 })

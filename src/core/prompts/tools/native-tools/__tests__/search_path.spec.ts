@@ -58,7 +58,8 @@ describe("native file inspection surface", () => {
 		const names = tools.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
 
 		expect(names).toContain("exec_command")
-		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+		expect(names).toContain("codebase_search")
+		for (const legacyName of ["read_file", "list_files", "search_files"])
 			expect(names, legacyName).not.toContain(legacyName)
 	})
 

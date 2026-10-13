@@ -16,6 +16,8 @@ export type SerializedCustomToolParameters = z.core.JSONSchema.JSONSchema
 export interface CustomToolContext {
 	mode: string
 	task: TaskLike
+	/** Cooperatively stop work when the invoking task or tool batch is cancelled. */
+	signal?: AbortSignal
 }
 
 /**

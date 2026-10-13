@@ -69,12 +69,50 @@ type ScriptedToolCall = {
 	arguments: Record<string, unknown>
 }
 
+type ManagedNotification = {
+	source?: string
+	eventId?: string
+	sequence?: number
+	senderPath?: string
+	kind?: string
+	payload?: { taskId?: string }
+}
+
+function managedNotifications(content: unknown): ManagedNotification[] {
+	if (!Array.isArray(content)) return []
+	return content.flatMap((block: { type?: string; text?: string }) => {
+		if (block.type !== "text" || typeof block.text !== "string") return []
+		try {
+			const value = JSON.parse(block.text) as ManagedNotification | null
+			return value?.source === "managed_agent_notification" ? [value] : []
+		} catch {
+			return []
+		}
+	})
+}
+
+function managedWaitReceipt(content: unknown, claimId: unknown): string | undefined {
+	if (!Array.isArray(content)) return
+	for (const block of content as Array<{ type?: string; content?: unknown }>) {
+		if (block.type !== "tool_result" || typeof block.content !== "string") continue
+		try {
+			const receipt = JSON.parse(block.content) as { source?: string; claimId?: unknown }
+			if (receipt?.source === "managed_agent_mailbox" && receipt.claimId === claimId) return block.content
+		} catch {
+			// Other tool output is not a managed-agent wait receipt.
+		}
+	}
+}
+
+type ManagedAgentHistory = Awaited<ReturnType<ManagedAgentHostProvider["getTaskWithId"]>>["apiConversationHistory"]
+
 class ManagedAgentScriptedAI {
 	readonly id = `managed-agent-e2e-${Date.now()}`
 	observedMailboxClaims = 0
 	observedSteeringMessage = false
 	observedInterruptResult = false
 	observedCompletionGateRecovery = false
+	observedAutomaticResultDelivery = false
 	heldReviewTaskId?: string
 	heldInterruptCall = false
 	removeFromCache?: () => void
@@ -100,6 +138,8 @@ class ManagedAgentScriptedAI {
 		this.releaseInterruptGate = resolve
 	})
 	heldDiscardTaskId?: string
+
+	constructor(private readonly getTaskHistory: (taskId: string) => Promise<ManagedAgentHistory>) {}
 
 	releaseDiscard(): void {
 		this.releaseDiscardGate?.()
@@ -169,6 +209,44 @@ class ManagedAgentScriptedAI {
 			assert.ok(["pending", "running"].includes(String(interrupt?.previous_status)))
 			this.observedInterruptResult = true
 		}
+		const notifications = messages.flatMap((message) => {
+			const input = message as { content?: unknown }
+			const entries = managedNotifications(input.content)
+			for (const entry of entries) {
+				if (role === "root" && entry.kind === "result" && typeof entry.payload?.taskId === "string") {
+					this.terminalTaskIds.add(entry.payload.taskId)
+				}
+			}
+			return entries
+		})
+		assert.equal(
+			new Set(notifications.map(({ eventId }) => eventId)).size,
+			notifications.length,
+			"Wait and automatic delivery must not duplicate managed notifications in provider history",
+		)
+		// Provider request shaping merges adjacent user messages and omits host receipt metadata.
+		// Ownership and provenance belong to the canonical persisted messages; bodies must also reach the model.
+		const history = await this.getTaskHistory(taskId)
+		const modelNotificationsById = new Map(notifications.map((entry) => [entry.eventId, entry]))
+		for (const message of history) {
+			for (const entry of managedNotifications(message.content)) {
+				if (
+					entry.kind !== "result" ||
+					!message.agent_message_id ||
+					message.agent_message_id !== entry.eventId ||
+					!modelNotificationsById.has(entry.eventId)
+				)
+					continue
+				assert.equal(message.role, "user")
+				assert.equal(message.input_origin, "agent", "Automatic child reports must retain agent provenance")
+				assert.deepStrictEqual(
+					modelNotificationsById.get(entry.eventId),
+					entry,
+					"The persisted automatic child report must reach the model unchanged",
+				)
+				this.observedAutomaticResultDelivery = true
+			}
+		}
 		const waitResult: unknown = previousCall?.name === "wait_agent" ? JSON.parse(priorResult ?? "null") : undefined
 		if (waitResult && typeof waitResult === "object" && "claimId" in waitResult) {
 			this.observedMailboxClaims++
@@ -176,44 +254,46 @@ class ManagedAgentScriptedAI {
 			assert.equal("events" in summary, false, "wait_agent must not return raw mailbox entries")
 			assert.ok(typeof summary.eventCount === "number" && summary.eventCount > 0 && summary.eventCount <= 16)
 			assert.ok(Array.isArray(summary.updatedAgents) && summary.updatedAgents.length <= 16)
-			const latestContent = (messages.at(-1) as { content?: unknown } | undefined)?.content
-			assert.ok(Array.isArray(latestContent), "wait notifications must reach the next model input")
-			const notifications = latestContent.flatMap((block: { type?: string; text?: string }) => {
-				if (block.type !== "text" || typeof block.text !== "string") return []
-				try {
-					const value = JSON.parse(block.text) as {
-						source?: string
-						eventId?: string
-						sequence?: number
-						senderPath?: string
-						kind?: string
-						payload?: { taskId?: string }
-					}
-					return value.source === "managed_agent_notification" ? [value] : []
-				} catch {
-					return []
-				}
-			})
-			assert.equal(notifications.length, summary.eventCount)
+			const receiptMessage = history.find(
+				(message) => managedWaitReceipt(message.content, waitResult.claimId) !== undefined,
+			)
+			assert.ok(receiptMessage, "The wait receipt and its notifications must be persisted together")
+			assert.equal(receiptMessage.role, "user")
+			assert.equal(receiptMessage.input_origin, "agent", "Wait notifications must retain agent provenance")
+			const modelReceipt = messages
+				.map((message) => managedWaitReceipt((message as { content?: unknown }).content, waitResult.claimId))
+				.find((receipt) => receipt !== undefined)
+			assert.equal(
+				modelReceipt,
+				managedWaitReceipt(receiptMessage.content, waitResult.claimId),
+				"The persisted wait receipt must reach the model unchanged",
+			)
+			const waitNotifications = managedNotifications(receiptMessage.content)
+			assert.equal(waitNotifications.length, summary.eventCount)
 			assert.ok(
-				notifications.every(
+				waitNotifications.every(
 					(entry: { eventId?: string; senderPath?: string }) => entry.eventId && entry.senderPath,
 				),
 			)
 			assert.deepEqual(
-				notifications.map((entry: { sequence?: number }) => entry.sequence),
-				[...notifications]
+				waitNotifications.map((entry: { sequence?: number }) => entry.sequence),
+				[...waitNotifications]
 					.map((entry: { sequence?: number }) => entry.sequence)
 					.sort((left, right) => (left ?? 0) - (right ?? 0)),
 			)
-			if (role === "root") {
-				for (const notification of notifications) {
-					const value = notification as { kind?: string; payload?: { taskId?: unknown } }
-					if (value.kind === "result" && typeof value.payload?.taskId === "string") {
-						this.terminalTaskIds.add(value.payload.taskId)
-					}
-				}
+			for (const entry of waitNotifications) {
+				assert.deepStrictEqual(
+					modelNotificationsById.get(entry.eventId),
+					entry,
+					"Every claimed notification must reach the model unchanged",
+				)
 			}
+			const claimedEventIds = new Set(waitNotifications.map(({ eventId }) => eventId))
+			assert.deepEqual(
+				notifications.filter(({ eventId }) => claimedEventIds.has(eventId)).map(({ eventId }) => eventId),
+				waitNotifications.map(({ eventId }) => eventId),
+				"Claimed notifications must preserve their order in the model input",
+			)
 		}
 		if (waitResult && typeof waitResult === "object" && "timedOut" in waitResult && waitResult.timedOut === true) {
 			// Handler success means the bounded wait finished, not that the child
@@ -516,6 +596,8 @@ interface ManagedAgentHostProvider {
 		apiConversationHistory: Array<{
 			role: string
 			content: string | Array<{ type: string; name?: string; text?: string }>
+			input_origin?: string
+			agent_message_id?: string
 		}>
 	}>
 	getStateToPostToWebview(): Promise<{
@@ -714,7 +796,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 		}
 
-		const scriptedAI = new ManagedAgentScriptedAI()
+		const scriptedAI = new ManagedAgentScriptedAI(async (taskId) => {
+			const { apiConversationHistory } = await provider.getTaskWithId(taskId)
+			return apiConversationHistory
+		})
 		const configuration: AlphaCodeSettings = {
 			apiProvider: "fake-ai",
 			fakeAi: scriptedAI,
@@ -1072,6 +1157,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.equal(completedRoot?.queueCount, 0)
 			assert.deepStrictEqual(toolFailures, [], "The scripted scenario emitted tool failures")
 			assert.ok(scriptedAI.observedMailboxClaims > 0, "The scenario never delivered a mailbox claim")
+			assert.equal(scriptedAI.observedAutomaticResultDelivery, true, "Child reports must arrive without waiting")
 			assert.equal(scriptedAI.observedSteeringMessage, true)
 			assert.equal(scriptedAI.observedInterruptResult, true)
 			assert.equal(
@@ -1116,6 +1202,16 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(completionCounts.get(taskId), 1, "Child completion must be published once")
 				assert.equal(completionPromptTasks.has(taskId), false, "Child review belongs to the parent")
 				const { apiConversationHistory } = await provider.getTaskWithId(taskId)
+				const parentHistory = (
+					await provider.getTaskWithId(taskId === nestedTaskId ? outerTaskId : rootTaskId!)
+				).apiConversationHistory
+				assert.equal(
+					parentHistory
+						.flatMap((message) => managedNotifications(message.content))
+						.filter((entry) => entry.kind === "result" && entry.payload?.taskId === taskId).length,
+					1,
+					"Each completed child report must reach its immediate parent once",
+				)
 				const expectedAnswerCount = taskId === outerTaskId && scriptedAI.observedCompletionGateRecovery ? 2 : 1
 				assert.equal(
 					apiConversationHistory.filter(

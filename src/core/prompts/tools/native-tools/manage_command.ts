@@ -10,7 +10,7 @@ import {
 	READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES,
 } from "../../../tools/commandOutputContract"
 
-export default {
+const manageCommand = {
 	type: "function",
 	function: {
 		name: "manage_command",
@@ -70,42 +70,60 @@ export default {
 	},
 } satisfies OpenAI.Chat.ChatCompletionTool
 
-export function createWriteStdinTool(): OpenAI.Chat.ChatCompletionTool {
+export default manageCommand
+
+export function createWriteStdinTool(artifactOnly = false): OpenAI.Chat.ChatCompletionTool {
+	const artifactProperties = {
+		artifact_id: {
+			...manageCommand.function.parameters.properties.artifact_id,
+			description:
+				"Persisted output artifact returned by exec_command. Supply this instead of session_id to read output.",
+		},
+		search: manageCommand.function.parameters.properties.search,
+		offset: manageCommand.function.parameters.properties.offset,
+		limit: manageCommand.function.parameters.properties.limit,
+	}
+	const sessionProperties = {
+		session_id: {
+			type: "integer",
+			minimum: 1,
+			description: "Numeric session identifier returned by exec_command. Supply this instead of artifact_id.",
+		},
+		chars: {
+			type: "string",
+			maxLength: 16_384,
+			description: "Literal terminal input. Defaults to empty, which polls without writing. Session calls only.",
+		},
+		yield_time_ms: {
+			type: "integer",
+			minimum: 0,
+			maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
+			description:
+				"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Returns early on new output, completion, or cancellation. Session calls only.",
+		},
+		max_output_tokens: {
+			type: "integer",
+			minimum: 0,
+			maximum: 100_000,
+			description:
+				"Approximate maximum session result size in tokens. Defaults to 10000. Use limit for artifacts.",
+		},
+	}
 	return {
 		type: "function",
 		function: {
 			name: "write_stdin",
 			strict: false,
-			description:
-				"Write characters to an existing task command session and return recent output. Use the numeric session_id returned by exec_command. Omit chars or pass an empty string to poll; non-empty input is supported only by interactive terminal providers. A session belongs to the current task and cannot control another task's command.",
+			description: artifactOnly
+				? "Read persisted command output belonging to this task using the artifact_id returned by exec_command. Supports bounded search and pagination. Plan mode permits artifact reads only."
+				: "Write characters to an existing task command session and return recent output, or read persisted output belonging to this task. Supply exactly one target: numeric session_id for session controls, or artifact_id with optional search, offset, and limit for an artifact read. For sessions, omit chars or pass an empty string to poll; non-empty input requires an interactive terminal provider. Sessions and artifacts belong to the current task.",
 			parameters: {
 				type: "object",
 				properties: {
-					session_id: {
-						type: "integer",
-						minimum: 1,
-						description: "Numeric session identifier returned by exec_command.",
-					},
-					chars: {
-						type: "string",
-						maxLength: 16_384,
-						description: "Literal terminal input. Defaults to empty, which polls without writing.",
-					},
-					yield_time_ms: {
-						type: "integer",
-						minimum: 0,
-						maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
-						description:
-							"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Returns early on new output, completion, or cancellation.",
-					},
-					max_output_tokens: {
-						type: "integer",
-						minimum: 0,
-						maximum: 100_000,
-						description: "Approximate maximum tool result size in tokens. Defaults to 10000.",
-					},
+					...(!artifactOnly ? sessionProperties : {}),
+					...artifactProperties,
 				},
-				required: ["session_id"],
+				required: artifactOnly ? ["artifact_id"] : [],
 				additionalProperties: false,
 			},
 		},

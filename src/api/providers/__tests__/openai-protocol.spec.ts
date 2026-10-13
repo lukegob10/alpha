@@ -115,7 +115,11 @@ describe("native OpenAI protocol capabilities", () => {
 			failure = error
 		}
 		expect(failure).toMatchObject({ status: 429, retryAfterMs: 60_000 })
-		expect(chunks).toContainEqual({ type: "text", text: "Partial answer" })
+		expect(chunks).toContainEqual({
+			type: "text",
+			text: "Partial answer",
+			...(responses ? { outputIndex: 0 } : {}),
+		})
 		const retryAfterMs = (failure as { retryAfterMs: number }).retryAfterMs
 		expect(
 			new AgentRetryPolicy().decide({
@@ -169,6 +173,57 @@ describe("native OpenAI protocol capabilities", () => {
 			message: "OpenAI completion error: Rate limited",
 		})
 		expect(chatCreate).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{ endpoint: "native", openAiBaseUrl: "https://api.openai.com/v1" },
+		{ endpoint: "compatible", openAiBaseUrl: "https://compatible.example/v1" },
+	])("retains single-prompt retry advice from $endpoint SDK requests", async ({ openAiBaseUrl }) => {
+		const settings: ApiHandlerOptions = {
+			...options,
+			openAiBaseUrl,
+			modelTemperature: 0.8,
+			verbosity: "high",
+		}
+		const savedSettings = structuredClone(settings)
+		chatCreate.mockRejectedValueOnce(
+			Object.assign(new Error("Rate limited"), {
+				status: 429,
+				headers: new Headers({ "retry-after": "60" }),
+			}),
+		)
+
+		await expect(new OpenAiHandler(settings).completePrompt("fixture")).rejects.toMatchObject({
+			status: 429,
+			retryAfterMs: 60_000,
+			message: "OpenAI completion error: Rate limited",
+		})
+		expect(chatCreate).toHaveBeenCalledOnce()
+		expect(responsesCreate).not.toHaveBeenCalled()
+		expect(settings).toEqual(savedSettings)
+	})
+
+	it.each([
+		{ endpoint: "native", openAiBaseUrl: "https://api.openai.com/v1" },
+		{ endpoint: "compatible", openAiBaseUrl: "https://compatible.example/v1" },
+	])("preserves SDK abort metadata on $endpoint single-prompt errors", async ({ openAiBaseUrl }) => {
+		const abort = Object.assign(new Error("Operation stopped"), {
+			name: "AbortError",
+			code: "ABORT_ERR",
+			retryable: false,
+			retryAfterMs: 1250,
+		})
+		chatCreate.mockRejectedValueOnce(abort)
+
+		await expect(new OpenAiHandler({ ...options, openAiBaseUrl }).completePrompt("fixture")).rejects.toMatchObject({
+			name: "AbortError",
+			code: "ABORT_ERR",
+			retryable: false,
+			retryAfterMs: 1250,
+			message: "OpenAI completion error: Operation stopped",
+		})
+		expect(chatCreate).toHaveBeenCalledOnce()
+		expect(responsesCreate).not.toHaveBeenCalled()
 	})
 
 	it("selects Responses independently of the model's freeform patch capability", async () => {
@@ -272,5 +327,80 @@ describe("native OpenAI protocol capabilities", () => {
 		expect(await provider.completePrompt("Summarize this task")).toBe("Done.")
 		expect(chatCreate).toHaveBeenCalledOnce()
 		expect(responsesCreate).not.toHaveBeenCalled()
+	})
+
+	it("keeps task Responses and text-only Chat Completions distinct for the same saved native profile", async () => {
+		const settings: ApiHandlerOptions = {
+			...options,
+			modelTemperature: 0.8,
+			verbosity: "high",
+			includeMaxTokens: true,
+			modelMaxTokens: 2048,
+			openAiCustomModelInfo: {
+				contextWindow: 128_000,
+				supportsPromptCache: false,
+				supportsTemperature: true,
+				supportsVerbosity: true,
+			},
+		}
+		const savedSettings = structuredClone(settings)
+		const provider = new OpenAiHandler(settings)
+		for await (const _chunk of provider.createMessage("system", [], { taskId: "protocol", tools })) {
+			// A task uses its captured tool surface and the established Responses route.
+		}
+
+		expect(await provider.completePrompt("Summarize this task")).toBe("Done.")
+		expect(responsesCreate).toHaveBeenCalledOnce()
+		expect(chatCreate).toHaveBeenCalledOnce()
+		const [taskRequest] = responsesCreate.mock.calls[0]
+		expect(taskRequest).toMatchObject({ max_output_tokens: 2048, text: { verbosity: "high" } })
+		expect(taskRequest.tools).toHaveLength(tools.length)
+		expect(taskRequest).not.toHaveProperty("temperature")
+		const [promptRequest, requestOptions] = chatCreate.mock.calls[0]
+		expect(promptRequest).toMatchObject({
+			model: "gpt-6.1-sol",
+			messages: [{ role: "user", content: "Summarize this task" }],
+			max_completion_tokens: 2048,
+			verbosity: "high",
+		})
+		for (const field of ["temperature", "input", "tools", "tool_choice", "text", "max_output_tokens"]) {
+			expect(promptRequest).not.toHaveProperty(field)
+		}
+		expect(promptRequest.stream).not.toBe(true)
+		expect(requestOptions).toEqual({})
+		expect(settings).toEqual(savedSettings)
+	})
+
+	it("keeps compatible single prompts text-only with supported sampling and retained verbosity preferences", async () => {
+		const settings: ApiHandlerOptions = {
+			...options,
+			openAiBaseUrl: "https://compatible.example/v1",
+			openAiStreamingEnabled: true,
+			modelTemperature: 0.8,
+			verbosity: "high",
+			includeMaxTokens: true,
+			modelMaxTokens: -1,
+			openAiCustomModelInfo: {
+				contextWindow: 128_000,
+				supportsPromptCache: false,
+				supportsTemperature: true,
+				supportsVerbosity: true,
+			},
+		}
+		const savedSettings = structuredClone(settings)
+		expect(await new OpenAiHandler(settings).completePrompt("Summarize this task")).toBe("Done.")
+		expect(chatCreate).toHaveBeenCalledOnce()
+		expect(responsesCreate).not.toHaveBeenCalled()
+		const [request] = chatCreate.mock.calls[0]
+		expect(request).toMatchObject({
+			model: "gpt-6.1-sol",
+			messages: [{ role: "user", content: "Summarize this task" }],
+			temperature: 0.8,
+		})
+		for (const field of ["verbosity", "text", "tools", "input", "max_completion_tokens", "max_output_tokens"]) {
+			expect(request).not.toHaveProperty(field)
+		}
+		expect(request.stream).not.toBe(true)
+		expect(settings).toEqual(savedSettings)
 	})
 })

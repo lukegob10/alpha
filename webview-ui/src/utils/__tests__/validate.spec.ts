@@ -1,4 +1,4 @@
-import type { OrganizationAllowList, ProviderSettings } from "@alpha-code/types"
+import { type OrganizationAllowList, type ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
 vi.mock("i18next", () => ({
 	default: {
@@ -6,7 +6,11 @@ vi.mock("i18next", () => ({
 	},
 }))
 
-import { getModelValidationError, validateApiConfigurationExcludingModelErrors } from "../validate"
+import {
+	getModelValidationError,
+	validateApiConfiguration,
+	validateApiConfigurationExcludingModelErrors,
+} from "../validate"
 
 describe("provider configuration validation", () => {
 	const allowAll: OrganizationAllowList = { allowAll: true, providers: {} }
@@ -21,6 +25,66 @@ describe("provider configuration validation", () => {
 
 		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBeUndefined()
 		expect(getModelValidationError(configuration, undefined, allowAll)).toBeUndefined()
+	})
+
+	it.each<[boolean | undefined, number, string | undefined]>([
+		[true, 512, undefined],
+		[true, -1, undefined],
+		[true, 0, "settings:validation.outputTokenLimit"],
+		[true, 1.5, "settings:validation.outputTokenLimit"],
+		[true, -2, "settings:validation.outputTokenLimit"],
+		[true, Number.POSITIVE_INFINITY, "settings:validation.outputTokenLimit"],
+		[false, 0, undefined],
+		[undefined, 0, undefined],
+	])("validates the emitted cap when inclusion=%s and limit=%s", (includeMaxTokens, maxTokens, expected) => {
+		const configuration: ProviderSettings = {
+			apiProvider: "openai",
+			openAiBaseUrl: "https://api.example.com/v1",
+			openAiApiKey: "test-key",
+			openAiModelId: "model-a",
+			includeMaxTokens,
+			openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, maxTokens },
+		}
+		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBe(expected)
+		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBe(expected)
+		expect(configuration.openAiCustomModelInfo?.maxTokens).toBe(maxTokens)
+	})
+
+	it("validates the effective override without rejecting an inert saved model cap", () => {
+		const configuration: ProviderSettings = {
+			apiProvider: "openai",
+			openAiBaseUrl: "https://api.example.com/v1",
+			openAiApiKey: "test-key",
+			openAiModelId: "model-a",
+			includeMaxTokens: true,
+			openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, maxTokens: 0 },
+			modelMaxTokens: 256,
+		}
+		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBeUndefined()
+		expect(
+			validateApiConfigurationExcludingModelErrors({ ...configuration, modelMaxTokens: -1 }, undefined, allowAll),
+		).toBeUndefined()
+		expect(
+			validateApiConfigurationExcludingModelErrors({ ...configuration, modelMaxTokens: 0 }, undefined, allowAll),
+		).toBe("settings:validation.outputTokenLimit")
+	})
+
+	it.each<[boolean | undefined, number, string | undefined]>([
+		[true, 15, "settings:validation.responsesOutputTokenLimit"],
+		[true, 16, undefined],
+		[false, 15, undefined],
+		[undefined, 15, undefined],
+	])("validates the Responses minimum only when inclusion=%s and cap=%s", (includeMaxTokens, maxTokens, expected) => {
+		const configuration: ProviderSettings = {
+			apiProvider: "openai",
+			openAiBaseUrl: "https://api.openai.com/v1",
+			openAiApiKey: "test-key",
+			openAiModelId: "gpt-5.4",
+			includeMaxTokens,
+			openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, maxTokens },
+		}
+		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBe(expected)
+		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBe(expected)
 	})
 
 	it("requires the OpenAI Compatible base URL, key, and model", () => {

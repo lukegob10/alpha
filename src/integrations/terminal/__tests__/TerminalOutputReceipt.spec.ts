@@ -71,6 +71,7 @@ describe("terminal output receipts", () => {
 
 		const receipt = process.captureUnretrievedOutput()
 		expect(receipt.output).toBe("A")
+		expect(receipt.hasMoreOutput).toBe(false)
 		expect((process as any).lastRetrievedIndex).toBe(0)
 		;(process as any).fullOutput += "B"
 		receipt.commit()
@@ -112,6 +113,7 @@ describe("terminal output receipts", () => {
 
 		expect(first.output).toBe("output")
 		expect(overlapping.output).toBe("")
+		expect(overlapping.hasMoreOutput).toBe(true)
 		overlapping.commit()
 		first.release()
 
@@ -127,6 +129,7 @@ describe("terminal output receipts", () => {
 
 		const empty = process.captureUnretrievedOutput(0)
 		expect(empty.output).toBe("")
+		expect(empty.hasMoreOutput).toBe(true)
 		;(process as any).fullOutput += " later"
 		empty.commit()
 
@@ -135,19 +138,24 @@ describe("terminal output receipts", () => {
 		receipt.release()
 	})
 
-	it("caps raw output and preserves the remainder for a later receipt", () => {
-		const process = makeExecaProcess()
+	it.each([
+		["VS Code", makeVscodeProcess],
+		["Execa", makeExecaProcess],
+	])("reports the reserved tail before committing a bounded %s receipt", (_name, createProcess) => {
+		const process = createProcess()
 		const output = "x".repeat(50_003)
 		;(process as any).fullOutput = output
 		process.emit("completed")
 
 		const first = process.captureUnretrievedOutput(50_000)
 		expect(first.output).toHaveLength(50_000)
+		expect(first.hasMoreOutput).toBe(true)
 		expect((process as any).lastRetrievedIndex).toBe(0)
 		first.commit()
 
 		const remainder = process.captureUnretrievedOutput(50_000)
 		expect(remainder.output).toBe("x".repeat(3))
+		expect(remainder.hasMoreOutput).toBe(false)
 		remainder.commit()
 	})
 

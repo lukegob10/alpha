@@ -1,0 +1,97 @@
+{
+	"title": "Agents",
+	"description": "Configure bounded managed agents that inherit task permissions and workspace scope.",
+	"timing": "Limits are captured when a root task first prepares managed agents and stay fixed for that tree, including reloads. Save applies new limits to later trees. Explicit only can narrow delegation for an open task; Proactive cannot widen a task's frozen explicit-only policy. New child launches capture their model/API profile; existing children keep their captured route.",
+	"concurrency": {
+		"label": "Maximum concurrent managed agents",
+		"description": "Live children across one root task and all nested descendants, excluding the root itself. Default: {{default}}; range: {{min}}–{{max}} agents. The separate maximum concurrent tasks setting can further restrict capacity.",
+		"taskCapacity": "Configured extension task capacity: {{capacity}} tasks, including root tasks, foreground and background sessions, and managed children. Available child slots depend on running tasks and the root tree's captured limit."
+	},
+	"delegation": {
+		"label": "Delegation policy",
+		"explicitOnly": "Explicit requests only (default)",
+		"proactive": "Proactive delegation",
+		"description": "Explicit only tells the agent to wait for your request to delegate; Proactive lets it choose delegation. Launch approval still follows Ask, Auto, or Full Access, and children keep the parent's bounded authority."
+	},
+	"defaultProfile": {
+		"label": "Default child model/API profile",
+		"description": "Uses the provider, model, and reasoning settings from this profile unless a role, named type, or launch override selects another route. Model/API profiles do not grant tool or approval authority.",
+		"inherit": "Inherit the parent's model/API profile"
+	},
+	"profile": {
+		"missingOption": "Unavailable profile ({{id}})",
+		"missingWarning": "The saved profile is unavailable. New launches fall back to the parent's profile. Choose another profile or inheritance to replace the saved reference.",
+		"unconfiguredWarning": "This profile has no configured provider. New launches fall back to the parent's profile."
+	},
+	"advanced": {
+		"title": "Advanced agent settings"
+	},
+	"depth": {
+		"label": "Maximum managed-agent depth",
+		"description": "Nesting within one root tree. Direct children have depth 1. Default: {{default}}; range: {{min}}–{{max}}. A larger limit does not grant delegation or write authority."
+	},
+	"timeouts": {
+		"title": "Role timeouts",
+		"label": "{{role}} timeout per run (seconds)",
+		"description": "Wall-clock timeout for each active child run in this role, starting after a slot is acquired. Follow-up runs reuse the frozen duration. Measured in seconds and saved as milliseconds. Range: {{min}}–{{max}} seconds; defaults: Explore {{explore}}, Review {{review}}, Worker {{worker}}."
+	},
+	"roles": {
+		"default": "Default (resolved from the parent)",
+		"explore": "Explore",
+		"review": "Review",
+		"worker": "Worker"
+	},
+	"inputTokens": {
+		"label": "Input-token limit per child",
+		"description": "Cumulative provider-reported input tokens for one child, including repeated context across requests. Default: {{default}}; range: {{min}}–{{max}} tokens."
+	},
+	"outputTokens": {
+		"label": "Output-token limit per child",
+		"description": "Cumulative provider-reported output tokens for one child across requests. Default: {{default}}; range: {{min}}–{{max}} tokens."
+	},
+	"rootTokens": {
+		"label": "Token budget for one managed-agent tree",
+		"description": "Aggregate input plus output tokens for all children and descendants, including completed agents. Excludes the root's own requests. Leave blank for no optional tree budget; range: {{min}}–{{max}} tokens.",
+		"placeholder": "No optional tree budget"
+	},
+	"rootCost": {
+		"label": "Cost budget for one managed-agent tree (USD)",
+		"description": "Aggregate provider-reported child cost for one root tree, including completed descendants. Excludes the root's own requests. Leave blank for no optional tree budget; otherwise use a positive amount.",
+		"placeholder": "No optional tree budget"
+	},
+	"budgetTiming": "Token and cost limits stop agents when reported usage reaches a limit. Usage arrives after a provider request, so an in-flight request can exceed the remaining amount. Cost enforcement depends on provider cost reporting; these are not prepaid spending caps.",
+	"roleProfiles": {
+		"title": "Model/API profiles by role",
+		"label": "{{role}} model/API profile",
+		"inherit": "Use the default child profile, then the parent",
+		"description": "A role profile overrides the default child profile. Explore and Review remain read-only; Worker can edit only within authority inherited from a Code parent."
+	},
+	"types": {
+		"title": "Named agent types",
+		"description": "Define named types for agent launches. A type profile overrides role and default profiles. Existing model, reasoning, and instruction overrides are preserved when routing is edited. Up to 24 types are supported.",
+		"name": "New agent type name",
+		"nameHint": "Use a lowercase letter first, then lowercase letters, digits, underscores, or hyphens; maximum 64 characters.",
+		"newDescription": "New agent type description",
+		"add": "Add agent type",
+		"descriptionLabel": "{{name}} description",
+		"roleLabel": "{{name}} role",
+		"profileLabel": "{{name}} model/API profile",
+		"inherit": "Use the role profile, then the default child profile",
+		"remove": "Remove {{name}}",
+		"modelOverride": "Saved model override: {{model}}",
+		"reasoningOverride": "Saved reasoning override: {{effort}}",
+		"instructionsOverride": "This type has saved developer instructions.",
+		"empty": "No named agent types configured."
+	},
+	"validation": {
+		"concurrency": "Choose a whole number from 1 to 16 for concurrent managed agents.",
+		"delegationPolicy": "Choose Explicit requests only or Proactive delegation.",
+		"depth": "Choose a whole number from 1 to 5 for managed-agent depth.",
+		"timeout": "Use 10 to 3,600 seconds, with no more than three decimal places, for each role timeout.",
+		"childTokens": "Choose a whole number from 1 to 10,000,000 for each child token limit.",
+		"rootTokens": "Leave the tree token budget blank or choose a whole number from 1 to 10,000,000.",
+		"rootCost": "Leave the tree cost budget blank or enter a finite amount greater than zero.",
+		"agentTypes": "Use at most 24 valid agent types. Each needs a lowercase type name (up to 64 characters), a description of 1–500 characters, a supported role, and valid saved overrides.",
+		"newType": "Enter a unique valid type name and a description of 1–500 characters before adding it."
+	}
+}

@@ -190,10 +190,9 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 	const taskSessions = new TaskSessionRegistry()
 	Object.assign(provider, {
 		contextProxy,
-		configurationQueue: Promise.resolve(),
 		taskStack: tasks,
 		newTaskDraftMode: "code",
-		context: { workspaceState: { get: vi.fn(() => undefined) } },
+		context: { secrets: {}, workspaceState: { get: vi.fn(() => undefined) } },
 		getLiveTask: vi.fn((taskId: string) => taskMap.get(taskId)),
 		getCurrentTask: vi.fn(() => tasks[0]),
 		getProviderSettingsSnapshot: vi.fn(() => ({ ...baseConfiguration })),

@@ -26,7 +26,7 @@ afterEach(() => {
 })
 
 describe("NOR-30 captured tool execution: custom and MCP tools", () => {
-	it("executes a registered custom tool through the captured surface and preserves the task lane mode", async () => {
+	it("executes a registered custom tool through the captured surface and preserves the scheduler mode", async () => {
 		const execute = vi.fn(async (args: { value: string }, context: { mode: string; task: unknown }) => {
 			return `custom:${args.value}:${context.mode}`
 		})
@@ -50,12 +50,15 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		)
 
 		expect(surface.resolve(definition.name)?.name).toBe(definition.name)
-		expect(execute).toHaveBeenCalledWith({ value: "hello" }, { mode: "ask", task: harness.task })
+		expect(execute).toHaveBeenCalledWith(
+			{ value: "hello" },
+			{ mode: "code", task: harness.task, signal: expect.any(AbortSignal) },
+		)
 		expect(outcome.results[0]).toMatchObject({ callId: "custom-1", name: definition.name, status: "success" })
-		expect(outcome.results[0].content).toBe("custom:hello:ask")
+		expect(outcome.results[0].content).toBe("custom:hello:code")
 		expect(harness.host.recordToolUsage).toHaveBeenCalledWith(definition.name)
 		expect(toolResults(harness)).toHaveLength(1)
-		expect(toolResults(harness)[0]).toMatchObject({ tool_use_id: "custom-1", content: "custom:hello:ask" })
+		expect(toolResults(harness)[0]).toMatchObject({ tool_use_id: "custom-1", content: "custom:hello:code" })
 	})
 
 	it("turns a custom leaf failure into one structured error result", async () => {

@@ -5,14 +5,13 @@ import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
 
 import type {
 	AlphaMessage,
-	FollowUpData,
 	RequestUserInputAnswerMap,
 	SuggestionItem,
 	AlphaApiReqInfo,
 	AlphaAskUseMcpServer,
 	AlphaSayTool,
 } from "@alpha-code/types"
-import { codebaseSearchResultSchema } from "@alpha-code/types"
+import { codebaseSearchResultSchema, followUpDataSchema, userInputResponseDataSchema } from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
 import { parseProposedPlan } from "@alpha/plan-mode"
@@ -41,6 +40,7 @@ import WarningRow from "./WarningRow"
 import McpResourceRow from "../mcp/McpResourceRow"
 
 import { UserMessageText } from "./UserMessageText"
+import { UserInputReceipt } from "./UserInputReceipt"
 import { CheckpointSaved } from "./checkpoints/CheckpointSaved"
 import { FollowUpSuggest } from "./FollowUpSuggest"
 import { RequestUserInputForm } from "./RequestUserInputForm"
@@ -87,6 +87,7 @@ import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
+import { GoalApproval } from "./GoalApproval"
 import { ActivityStep } from "./ActivityStep"
 import { MessageActions } from "./MessageActions"
 
@@ -149,8 +150,8 @@ interface ChatRowProps {
 	messageActionsDisabled?: boolean
 	onToggleExpand: (ts: number) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
-	onRequestUserInputSubmit?: (answers: RequestUserInputAnswerMap) => void
-	onRequestUserInputCancel?: () => void
+	onRequestUserInputSubmit?: (answers: RequestUserInputAnswerMap, askMessageTs: number) => boolean | void
+	onRequestUserInputCancel?: (askMessageTs: number) => void
 	onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
 	isAsyncUserInputAnswered?: boolean
 	isAsyncUserInputPending?: boolean
@@ -563,10 +564,21 @@ const ChatRowContentInner = ({
 
 	const followUpData = useMemo(() => {
 		if (message.type === "ask" && message.ask === "followup" && !message.partial) {
-			return safeJsonParse<FollowUpData>(message.text)
+			const parsed = followUpDataSchema.safeParse(safeJsonParse<unknown>(message.text))
+			return parsed.success ? parsed.data : null
 		}
 		return null
 	}, [message.type, message.ask, message.partial, message.text])
+	const userInputResponse = useMemo(() => {
+		if (message.type !== "say" || message.say !== "user_feedback" || !message.userInputResponse) return null
+		const parsed = userInputResponseDataSchema.safeParse(message.userInputResponse)
+		if (!parsed.success) return null
+		const feedback = parsed.data.questions
+			.map(({ question, answers }) => `${question}\n${answers.join("\n")}`)
+			.join("\n\n")
+		// The visible transcript must always reflect actual user text, including edited or older records.
+		return feedback === message.text ? parsed.data : null
+	}, [message.type, message.say, message.text, message.userInputResponse])
 	const renderError = (props: React.ComponentProps<typeof ErrorRow>) => (
 		<ActivityStep
 			{...activityProps}
@@ -726,6 +738,8 @@ const ChatRowContentInner = ({
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
+			case "goal":
+				return <GoalApproval activity={tool.goalActivity} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -1337,24 +1351,23 @@ const ChatRowContentInner = ({
 					return (
 						<>
 							<div
-								className={`group text-sm transition-opacity ${
+								className={`activity-row-header group flex min-w-0 items-center gap-2 py-1 text-sm transition-opacity ${
 									isApiRequestInProgress ? "opacity-100" : "opacity-40 hover:opacity-100"
 								}`}
 								style={{
-									...headerStyle,
 									marginBottom:
 										((cost === null || cost === undefined) && apiRequestFailedMessage) ||
 										apiReqStreamingFailedMessage
 											? 10
 											: 0,
-									justifyContent: "space-between",
 								}}>
-								<div style={{ display: "flex", alignItems: "center", gap: "10px", flexGrow: 1 }}>
-									{icon}
+								<span aria-hidden="true" className="activity-row-disclosure size-3.5 shrink-0" />
+								<div className="activity-row-summary flex min-w-0 flex-1 items-center gap-2 [&>span]:truncate">
+									<div className="flex size-4 shrink-0 items-center justify-center">{icon}</div>
 									{title}
 								</div>
 								<div
-									className="text-xs text-vscode-dropdown-foreground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
+									className="shrink-0 text-xs text-vscode-dropdown-foreground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
 									style={{ opacity: cost !== null && cost !== undefined && cost > 0 ? 1 : 0 }}>
 									${Number(cost || 0)?.toFixed(4)}
 								</div>
@@ -1445,15 +1458,12 @@ const ChatRowContentInner = ({
 					if (!isCompletionWait && waitSeconds === undefined) return null
 
 					return (
-						<div
-							className={`group text-sm transition-opacity opacity-100`}
-							style={{
-								...headerStyle,
-								marginBottom: 0,
-								justifyContent: "space-between",
-							}}>
-							<div style={{ display: "flex", alignItems: "center", gap: "10px", flexGrow: 1 }}>
-								<ProgressIndicator />
+						<div className="activity-row-header group flex min-w-0 items-center gap-2 py-1 text-sm transition-opacity opacity-100">
+							<span aria-hidden="true" className="activity-row-disclosure size-3.5 shrink-0" />
+							<div className="activity-row-summary flex min-w-0 flex-1 items-center gap-2 [&>span]:truncate">
+								<div className="flex size-4 shrink-0 items-center justify-center">
+									<ProgressIndicator />
+								</div>
 								<span style={{ color: normalColor }}>
 									{t(
 										isCompletionWait
@@ -1463,7 +1473,7 @@ const ChatRowContentInner = ({
 								</span>
 							</div>
 							{waitSeconds !== undefined && !isCompletionWait ? (
-								<span className="text-xs font-light text-vscode-descriptionForeground">
+								<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">
 									{waitSeconds}s
 								</span>
 							) : null}
@@ -1501,7 +1511,9 @@ const ChatRowContentInner = ({
 									"min-w-0 overflow-hidden whitespace-pre-wrap",
 									isEditing
 										? "w-full rounded-xl bg-vscode-editor-background text-vscode-editor-foreground"
-										: "user-message cursor-text px-4 py-3",
+										: userInputResponse
+											? "w-full rounded-lg border border-vscode-panel-border bg-vscode-editor-background px-4 py-3"
+											: "user-message cursor-text px-4 py-3",
 								)}>
 								{isEditing ? (
 									<div className="flex flex-col gap-2">
@@ -1523,6 +1535,8 @@ const ChatRowContentInner = ({
 											onCancel={handleCancelEdit}
 										/>
 									</div>
+								) : userInputResponse ? (
+									<UserInputReceipt response={userInputResponse} />
 								) : (
 									<UserMessageText
 										text={message.text}
@@ -2055,7 +2069,7 @@ const ChatRowContentInner = ({
 				case "followup":
 					return (
 						<>
-							{title && (
+							{title && !(followUpData?.requestUserInput && isFollowUpAnswered) && (
 								<div style={headerStyle}>
 									{icon}
 									{title}
@@ -2064,9 +2078,14 @@ const ChatRowContentInner = ({
 							<div className="flex flex-col gap-2 ml-6">
 								{followUpData?.requestUserInput ? (
 									<RequestUserInputForm
+										key={`${currentTaskId}:${message.ts}`}
 										request={followUpData.requestUserInput}
-										onSubmit={(answers) => onRequestUserInputSubmit?.(answers)}
-										onCancel={onRequestUserInputCancel}
+										onSubmit={(answers) => onRequestUserInputSubmit?.(answers, message.ts)}
+										onCancel={
+											onRequestUserInputCancel
+												? () => onRequestUserInputCancel(message.ts)
+												: undefined
+										}
 										onInteraction={onFollowUpUnmount}
 										isAnswered={isFollowUpAnswered}
 									/>

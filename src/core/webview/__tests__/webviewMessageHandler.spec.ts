@@ -22,6 +22,7 @@ vi.mock("../diagnosticsHandler", () => ({
 }))
 
 import type { WebviewMessage } from "@alpha-code/types"
+import type { ExtensionContext } from "vscode"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import * as todoTools from "../../tools/UpdateTodoListTool"
@@ -29,6 +30,11 @@ import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
+import {
+	ProviderSettingsManager,
+	ProviderProfileRenameError,
+	ProviderProfileSaveError,
+} from "../../config/ProviderSettingsManager"
 
 const mockGetCommands = vi.mocked(getCommands)
 
@@ -62,6 +68,8 @@ const mockAlphaProvider = {
 	updateTaskApprovalMode: vi.fn(),
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
+	renameProviderProfile: vi.fn(),
+	upsertProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
 	postTaskQueueToWebview: vi.fn(async () => undefined),
 	getCurrentTask: vi.fn(),
@@ -85,6 +93,396 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("provider profile Save messages", () => {
+	const draft = { apiProvider: "openai" as const, openAiModelId: "explicit-save-model" }
+	const saved = { id: "profile-id", name: "current-name" }
+	const upsert = vi.fn(async (_target: { id: string }, _draft: typeof draft) => saved)
+	const modernHost = { ...mockAlphaProvider, upsertProviderProfile: upsert } as unknown as AlphaProvider
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.upsertProviderProfile).mockResolvedValue("profile-id")
+		upsert.mockReset().mockResolvedValue(saved)
+	})
+
+	it("routes a modern Save by stable ID and ignores its stale display name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "save-1",
+			apiConfigurationId: "profile-id",
+			text: "stale-name",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledExactlyOnceWith({ id: "profile-id" }, draft)
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "save-1", status: "success", ...saved },
+		})
+	})
+
+	it("accepts an ID-targeted Save without a display name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "save-2",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledExactlyOnceWith({ id: "profile-id" }, draft)
+	})
+
+	it("acknowledges success only after the queued Save operation finishes", async () => {
+		let complete!: (value: typeof saved) => void
+		upsert.mockImplementationOnce(() => new Promise((resolve) => (complete = resolve)))
+		const pending = webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "held-save",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(modernHost.postMessageToWebview).not.toHaveBeenCalled()
+		complete(saved)
+		await pending
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "held-save", status: "success", ...saved },
+		})
+	})
+
+	it.each([undefined, null, "", 42, {}, []])(
+		"rejects property-present malformed Save identity %j without falling back to its legacy name",
+		async (apiConfigurationId) => {
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId: "invalid-save",
+				apiConfigurationId,
+				text: "legacy-name",
+				apiConfiguration: draft,
+			} as unknown as WebviewMessage)
+			expect(mockAlphaProvider.upsertProviderProfile).not.toHaveBeenCalled()
+			expect(upsert).not.toHaveBeenCalled()
+			expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: { requestId: "invalid-save", status: "error", error: "invalid" },
+			})
+		},
+	)
+
+	it("keeps legacy absent-ID Save and creation routed by name", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "upsertApiConfiguration",
+			text: "created-profile",
+			apiConfiguration: draft,
+		})
+		expect(mockAlphaProvider.upsertProviderProfile).toHaveBeenCalledExactlyOnceWith("created-profile", draft)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("safely ignores a stale modern Save lacking its draft", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "missing-draft",
+			apiConfigurationId: "profile-id",
+			text: "legacy-name",
+		} as unknown as WebviewMessage)
+		expect(mockAlphaProvider.upsertProviderProfile).not.toHaveBeenCalled()
+		expect(upsert).not.toHaveBeenCalled()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "missing-draft", status: "error", error: "invalid" },
+		})
+	})
+
+	it.each([undefined, "", "x".repeat(129), 42])(
+		"does not mutate an ID-targeted packet with malformed correlation %j",
+		async (requestId) => {
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId,
+				apiConfigurationId: "profile-id",
+				text: "stale-name",
+				apiConfiguration: draft,
+			} as unknown as WebviewMessage)
+			expect(upsert).not.toHaveBeenCalled()
+			expect(modernHost.postMessageToWebview).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rejects a requestId-only packet instead of falling back to its legacy name", async () => {
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "missing-id",
+			text: "legacy-name",
+			apiConfiguration: draft,
+		} as unknown as WebviewMessage)
+		expect(upsert).not.toHaveBeenCalled()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "missing-id", status: "error", error: "invalid" },
+		})
+	})
+
+	it.each(["notFound", "invalid", "saveFailed"] as const)(
+		"acknowledges the safe queued failure %s",
+		async (error) => {
+			upsert.mockRejectedValueOnce(new ProviderProfileSaveError(error))
+			await webviewMessageHandler(modernHost, {
+				type: "upsertApiConfiguration",
+				requestId: "failed-save",
+				apiConfigurationId: "profile-id",
+				apiConfiguration: draft,
+			})
+			expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "apiConfigurationSaved",
+				apiConfigurationSaveResult: { requestId: "failed-save", status: "error", error },
+			})
+		},
+	)
+
+	it("does not retry or send a contradictory failure when success acknowledgement delivery rejects", async () => {
+		vi.mocked(modernHost.postMessageToWebview).mockRejectedValueOnce(new Error("private transport failure"))
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "delivered-save",
+			apiConfigurationId: "profile-id",
+			apiConfiguration: draft,
+		})
+		expect(upsert).toHaveBeenCalledOnce()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "delivered-save", status: "success", ...saved },
+		})
+		expect(modernHost.log).toHaveBeenCalledWith("[ProviderProfileSave] acknowledgement_failed")
+		expect(JSON.stringify(vi.mocked(modernHost.log).mock.calls)).not.toContain("private transport failure")
+	})
+})
+
+describe("persisted provider profile rename messages", () => {
+	const renamed = { id: "profile-id", oldName: "saved", newName: "renamed", isActive: true, entries: [] }
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.renameProviderProfile).mockResolvedValue(renamed)
+	})
+
+	it("routes a stable-ID name-only operation and acknowledges only after persistence completes", async () => {
+		let complete!: (result: typeof renamed) => void
+		vi.mocked(mockAlphaProvider.renameProviderProfile).mockImplementationOnce(
+			() => new Promise((resolve) => (complete = resolve)),
+		)
+		const pending = webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			apiConfigurationRename: { requestId: "rename-1", id: "profile-id", newName: " renamed " },
+		})
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		complete(renamed)
+		await pending
+		expect(mockAlphaProvider.renameProviderProfile).toHaveBeenCalledExactlyOnceWith({ id: "profile-id" }, "renamed")
+		expect(mockAlphaProvider.activateProviderProfile).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationRenamed",
+			apiConfigurationRenameResult: {
+				requestId: "rename-1",
+				status: "success",
+				id: "profile-id",
+				oldName: "saved",
+				newName: "renamed",
+			},
+		})
+	})
+
+	it("accepts a legacy name-based request but ignores all draft provider settings", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			values: { oldName: "saved", newName: "renamed" },
+			apiConfiguration: {
+				apiProvider: "openai",
+				openAiBaseUrl: "https://unsaved.example/v1",
+				openAiApiKey: "unsaved-test-key",
+				openAiModelId: "unsaved-model",
+			},
+		})
+		expect(mockAlphaProvider.renameProviderProfile).toHaveBeenCalledExactlyOnceWith({ name: "saved" }, "renamed")
+		expect(mockAlphaProvider.activateProviderProfile).not.toHaveBeenCalled()
+	})
+
+	it("accepts a legacy request without an edit buffer", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			values: { oldName: "saved", newName: "renamed" },
+		})
+		expect(mockAlphaProvider.renameProviderProfile).toHaveBeenCalledExactlyOnceWith({ name: "saved" }, "renamed")
+	})
+
+	it.each(["legacy", "modern"])(
+		"keeps persisted endpoint, key, provider and model when a dirty %s webview renames a profile",
+		async (wire) => {
+			const saved = {
+				id: "profile-id",
+				apiProvider: "openai" as const,
+				openAiBaseUrl: "https://saved.example/v1",
+				openAiApiKey: "saved-test-key",
+				openAiModelId: "saved-model",
+			}
+			let content = JSON.stringify({
+				currentApiConfigName: "saved",
+				apiConfigs: { saved },
+				modeApiConfigs: { code: "profile-id" },
+				migrations: {
+					rateLimitSecondsMigrated: true,
+					openAiHeadersMigrated: true,
+					consecutiveMistakeLimitMigrated: true,
+					todoListEnabledMigrated: true,
+					claudeCodeLegacySettingsMigrated: true,
+				},
+			})
+			const manager = new ProviderSettingsManager({
+				secrets: {
+					get: vi.fn(async () => content),
+					store: vi.fn(async (_key: string, value: string) => {
+						content = value
+					}),
+				},
+			} as unknown as ExtensionContext)
+			await manager.initialize()
+			const host = {
+				...mockAlphaProvider,
+				providerSettingsManager: manager,
+				renameProviderProfile: vi.fn((params: { id: string } | { name: string }, newName: string) =>
+					manager.renameProfile(params, newName),
+				),
+			} as unknown as AlphaProvider
+			await webviewMessageHandler(host, {
+				type: "renameApiConfiguration",
+				...(wire === "legacy"
+					? { values: { oldName: "saved", newName: "renamed" } }
+					: { apiConfigurationRename: { requestId: "dirty-modern", id: "profile-id", newName: "renamed" } }),
+				apiConfiguration: {
+					apiProvider: "vertex",
+					apiKey: "draft-test-key",
+					apiModelId: "draft-model",
+					openAiBaseUrl: "https://draft.example/v1",
+				},
+			} as unknown as WebviewMessage)
+			expect(await manager.getProfile({ id: "profile-id" })).toEqual({ name: "renamed", ...saved })
+			expect(mockAlphaProvider.activateProviderProfile).not.toHaveBeenCalled()
+			if (wire === "modern") {
+				expect(host.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+					type: "apiConfigurationRenamed",
+					apiConfigurationRenameResult: {
+						requestId: "dirty-modern",
+						status: "success",
+						id: "profile-id",
+						oldName: "saved",
+						newName: "renamed",
+					},
+				})
+			}
+		},
+	)
+
+	it.each([
+		{ requestId: "invalid", id: "profile-id", newName: "" },
+		{ requestId: "invalid", id: "", newName: "renamed" },
+		{ requestId: "invalid", id: "profile-id", newName: "renamed", openAiApiKey: "draft" },
+	])("rejects malformed modern requests without falling back to legacy values: %j", async (payload) => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			apiConfigurationRename: payload,
+			values: { oldName: "saved", newName: "renamed" },
+		} as unknown as WebviewMessage)
+		expect(mockAlphaProvider.renameProviderProfile).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationRenamed",
+			apiConfigurationRenameResult: { requestId: "invalid", status: "error", error: "invalid" },
+		})
+	})
+
+	it.each([null, undefined, {}, { oldName: "saved", newName: 123 }, { oldName: 123, newName: "renamed" }])(
+		"safely rejects malformed legacy payloads %j",
+		async (values) => {
+			await expect(
+				webviewMessageHandler(mockAlphaProvider, {
+					type: "renameApiConfiguration",
+					values,
+				} as unknown as WebviewMessage),
+			).resolves.not.toThrow()
+			expect(mockAlphaProvider.renameProviderProfile).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["notFound", "nameInUse", "saveFailed"] as const)(
+		"returns the deterministic %s failure without raw storage details",
+		async (code) => {
+			vi.mocked(mockAlphaProvider.renameProviderProfile).mockRejectedValueOnce(
+				new ProviderProfileRenameError(code),
+			)
+			await webviewMessageHandler(mockAlphaProvider, {
+				type: "renameApiConfiguration",
+				apiConfigurationRename: { requestId: "failed", id: "profile-id", newName: "renamed" },
+			})
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "apiConfigurationRenamed",
+				apiConfigurationRenameResult: { requestId: "failed", status: "error", error: code },
+			})
+		},
+	)
+
+	it("maps unexpected failures to saveFailed without logging raw error text", async () => {
+		vi.mocked(mockAlphaProvider.renameProviderProfile).mockRejectedValueOnce(new Error("private endpoint and key"))
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			apiConfigurationRename: { requestId: "failed", id: "profile-id", newName: "renamed" },
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "apiConfigurationRenamed",
+			apiConfigurationRenameResult: { requestId: "failed", status: "error", error: "saveFailed" },
+		})
+		expect(mockAlphaProvider.log).not.toHaveBeenCalledWith(expect.stringContaining("private endpoint and key"))
+	})
+
+	it("returns authoritative saved identity after compensation even if state projection failed", async () => {
+		vi.mocked(mockAlphaProvider.renameProviderProfile).mockRejectedValueOnce(
+			new ProviderProfileRenameError("saveFailed", { id: "profile-id", name: "saved" }),
+		)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "renameApiConfiguration",
+			apiConfigurationRename: { requestId: "reverted", id: "profile-id", newName: "renamed" },
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationRenamed",
+			apiConfigurationRenameResult: {
+				requestId: "reverted",
+				status: "error",
+				error: "saveFailed",
+				profile: { id: "profile-id", name: "saved" },
+			},
+		})
+	})
+
+	it("does not reclassify committed success or send a second result when acknowledgement delivery rejects", async () => {
+		vi.mocked(mockAlphaProvider.postMessageToWebview).mockRejectedValueOnce(new Error("private transport detail"))
+		await expect(
+			webviewMessageHandler(mockAlphaProvider, {
+				type: "renameApiConfiguration",
+				apiConfigurationRename: { requestId: "committed", id: "profile-id", newName: "renamed" },
+			}),
+		).resolves.not.toThrow()
+		expect(mockAlphaProvider.renameProviderProfile).toHaveBeenCalledOnce()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationRenamed",
+			apiConfigurationRenameResult: {
+				requestId: "committed",
+				status: "success",
+				id: "profile-id",
+				oldName: "saved",
+				newName: "renamed",
+			},
+		})
+		expect(mockAlphaProvider.log).toHaveBeenCalledWith("[ProviderProfileRename] acknowledgement_failed")
+		expect(mockAlphaProvider.log).not.toHaveBeenCalledWith(expect.stringContaining("private transport detail"))
+	})
+})
 
 describe("webview focus messages", () => {
 	beforeEach(() => vi.clearAllMocks())
@@ -670,6 +1068,107 @@ describe("webviewMessageHandler - Google code index settings", () => {
 			false,
 		)
 	})
+
+	it("keeps a saved Gemini key and reports validation failure without a second initialization", async () => {
+		const settings = {
+			...createVertexSettings(),
+			codebaseIndexEnabled: true,
+			codebaseIndexEmbedderProvider: "gemini",
+			codebaseIndexGeminiApiKey: "index-secret",
+		}
+		const status = {
+			systemStatus: "Error",
+			message: "HTTP 402: prepayment credits depleted",
+			workspaceEnabled: true,
+		}
+		const manager = {
+			handleSettingsChange: vi.fn().mockRejectedValue(new Error(status.message)),
+			initialize: vi.fn(),
+			isFeatureEnabled: true,
+			isFeatureConfigured: true,
+			isInitialized: false,
+			getCurrentStatus: vi.fn(() => status),
+		}
+		vi.mocked(mockAlphaProvider.contextProxy.getValue).mockReturnValue({ codebaseIndexEmbedderProvider: "gemini" })
+		vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: settings,
+		} as WebviewMessage)
+
+		expect(mockAlphaProvider.contextProxy.storeSecret).toHaveBeenCalledWith(
+			"codebaseIndexGeminiApiKey",
+			"index-secret",
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "codeIndexSettingsSaved", success: true }),
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "indexingStatusUpdate",
+			values: status,
+		})
+		expect(manager.initialize).not.toHaveBeenCalled()
+	})
+
+	it.each(["startIndexing", "toggleWorkspaceIndexing"] as const)(
+		"loads saved configuration before checking readiness when enabling via %s",
+		async (type) => {
+			const manager = {
+				isFeatureEnabled: false,
+				isFeatureConfigured: false,
+				isInitialized: false,
+				state: "Standby",
+				setWorkspaceEnabled: vi.fn().mockResolvedValue(undefined),
+				initialize: vi.fn(async () => {
+					manager.isFeatureEnabled = true
+					manager.isFeatureConfigured = true
+					manager.isInitialized = true
+				}),
+				startIndexing: vi.fn(),
+				getCurrentStatus: vi.fn(() => ({ systemStatus: "Standby", workspaceEnabled: true })),
+			}
+			vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+			await webviewMessageHandler(mockAlphaProvider, { type, bool: true })
+
+			expect(manager.setWorkspaceEnabled).toHaveBeenCalledWith(true)
+			expect(manager.initialize).toHaveBeenCalledWith(mockAlphaProvider.contextProxy)
+			expect(manager.startIndexing).toHaveBeenCalledOnce()
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "indexingStatusUpdate",
+				values: manager.getCurrentStatus(),
+			})
+		},
+	)
+
+	it.each(["startIndexing", "toggleWorkspaceIndexing"] as const)(
+		"publishes the enabled workspace and provider error when %s fails",
+		async (type) => {
+			const status = {
+				systemStatus: "Error",
+				message: "HTTP 402: prepayment credits depleted",
+				workspaceEnabled: true,
+			}
+			const manager = {
+				setWorkspaceEnabled: vi.fn().mockResolvedValue(undefined),
+				isFeatureEnabled: true,
+				isFeatureConfigured: true,
+				initialize: vi.fn().mockRejectedValue(new Error(status.message)),
+				startIndexing: vi.fn(),
+				getCurrentStatus: vi.fn(() => status),
+			}
+			vi.mocked(mockAlphaProvider.getCurrentWorkspaceCodeIndexManager).mockReturnValue(manager as never)
+
+			await webviewMessageHandler(mockAlphaProvider, { type, bool: true })
+
+			expect(manager.startIndexing).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "indexingStatusUpdate",
+				values: status,
+			})
+		},
+	)
 })
 
 describe("webviewMessageHandler - image mentions", () => {

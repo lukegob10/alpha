@@ -36,6 +36,10 @@ import {
 	sendAndSteerMessageSchema,
 	webviewFocusChangedMessageSchema,
 	subagentAgentTypesSchema,
+	providerProfileRenameRequestSchema,
+	providerProfileSaveRequestSchema,
+	type ProviderProfileRenameResult,
+	type ProviderProfileSaveResult,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -44,6 +48,7 @@ import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
 import { AlphaProvider } from "./AlphaProvider"
+import { ProviderProfileRenameError, ProviderProfileSaveError } from "../config/ProviderSettingsManager"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
@@ -2053,41 +2058,124 @@ export const webviewMessageHandler = async (
 				}
 			}
 			break
-		case "upsertApiConfiguration":
-			if (message.text && message.apiConfiguration) {
-				await provider.upsertProviderProfile(message.text, message.apiConfiguration)
+		case "upsertApiConfiguration": {
+			if (!("apiConfigurationId" in message) && !("requestId" in message)) {
+				if (message.text && message.apiConfiguration) {
+					await provider.upsertProviderProfile(message.text, message.apiConfiguration)
+				}
+				break
+			}
+			const requestId: unknown = message.requestId
+			const canAcknowledge = typeof requestId === "string" && requestId.length > 0 && requestId.length <= 128
+			const parsed = providerProfileSaveRequestSchema.safeParse({ requestId, id: message.apiConfigurationId })
+			let result: ProviderProfileSaveResult
+			if (!parsed.success || !message.apiConfiguration) {
+				if (!canAcknowledge) break
+				result = { requestId, status: "error", error: "invalid" }
+			} else {
+				try {
+					const saved = await provider.upsertProviderProfile({ id: parsed.data.id }, message.apiConfiguration)
+					result = { requestId: parsed.data.requestId, status: "success", id: saved.id, name: saved.name }
+				} catch (error) {
+					const code = error instanceof ProviderProfileSaveError ? error.code : "saveFailed"
+					provider.log(`[ProviderProfileSave] ${code}`)
+					result = { requestId: parsed.data.requestId, status: "error", error: code }
+				}
+			}
+			try {
+				await provider.postMessageToWebview({
+					type: "apiConfigurationSaved",
+					apiConfigurationSaveResult: result,
+				})
+			} catch {
+				// Delivery cannot change the already-chosen Save outcome or trigger a second mutation or result.
+				provider.log("[ProviderProfileSave] acknowledgement_failed")
 			}
 			break
-		case "renameApiConfiguration":
-			if (message.values && message.apiConfiguration) {
+		}
+		case "renameApiConfiguration": {
+			const modern = "apiConfigurationRename" in message
+			const payload: unknown = modern ? message.apiConfigurationRename : undefined
+			const requestId =
+				payload &&
+				typeof payload === "object" &&
+				"requestId" in payload &&
+				typeof payload.requestId === "string"
+					? payload.requestId
+					: undefined
+			const canAcknowledge = requestId !== undefined && requestId.length > 0 && requestId.length <= 128
+			const acknowledge = async (result: ProviderProfileRenameResult) => {
 				try {
-					const { oldName, newName } = message.values
-
-					if (oldName === newName) {
-						break
+					await provider.postMessageToWebview({
+						type: "apiConfigurationRenamed",
+						apiConfigurationRenameResult: result,
+					})
+				} catch {
+					// Delivery failure cannot turn a committed rename into a persistence failure or a second result.
+					provider.log("[ProviderProfileRename] acknowledgement_failed")
+				}
+			}
+			let target: { id: string } | { name: string }
+			let newName: string
+			if (modern) {
+				const parsed = providerProfileRenameRequestSchema.safeParse(payload)
+				if (!parsed.success) {
+					if (canAcknowledge) {
+						await acknowledge({ requestId, status: "error", error: "invalid" })
 					}
-
-					// Load the old configuration to get its ID.
-					const { id } = await provider.providerSettingsManager.getProfile({ name: oldName })
-
-					// Create a new configuration with the new name and old ID.
-					await provider.providerSettingsManager.saveConfig(newName, { ...message.apiConfiguration, id })
-
-					// Delete the old configuration.
-					await provider.providerSettingsManager.deleteConfig(oldName)
-
-					// Re-activate to update the global settings related to the
-					// currently activated provider profile.
-					await provider.activateProviderProfile({ name: newName })
-				} catch (error) {
-					provider.log(
-						`Error rename api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-					)
-
+					break
+				}
+				target = { id: parsed.data.id }
+				newName = parsed.data.newName
+			} else {
+				const values: unknown = "values" in message ? message.values : undefined
+				if (
+					!values ||
+					typeof values !== "object" ||
+					!("oldName" in values) ||
+					!("newName" in values) ||
+					typeof values.oldName !== "string" ||
+					!values.oldName ||
+					typeof values.newName !== "string" ||
+					!values.newName.trim()
+				) {
+					break
+				}
+				// Historical webviews sent their edit buffer alongside these names. It has no rename authority.
+				target = { name: values.oldName }
+				newName = values.newName.trim()
+			}
+			let result: ProviderProfileRenameResult | undefined
+			try {
+				const renamed = await provider.renameProviderProfile(target, newName)
+				if (canAcknowledge) {
+					result = {
+						requestId,
+						status: "success",
+						id: renamed.id,
+						oldName: renamed.oldName,
+						newName: renamed.newName,
+					}
+				}
+			} catch (error) {
+				const code = error instanceof ProviderProfileRenameError ? error.code : "saveFailed"
+				provider.log(`[ProviderProfileRename] ${code}`)
+				if (canAcknowledge) {
+					result = {
+						requestId,
+						status: "error",
+						error: code,
+						...(error instanceof ProviderProfileRenameError && error.profile
+							? { profile: error.profile }
+							: {}),
+					}
+				} else {
 					vscode.window.showErrorMessage(t("common:errors.rename_api_config"))
 				}
 			}
+			if (result) await acknowledge(result)
 			break
+		}
 		case "loadApiConfiguration":
 			if (message.text) {
 				try {
@@ -2630,10 +2718,7 @@ export const webviewMessageHandler = async (
 			const settings = message.codeIndexSettings
 
 			try {
-				// Check if embedder provider has changed
 				const currentConfig = getGlobalState("codebaseIndexConfig") || {}
-				const embedderProviderChanged =
-					currentConfig.codebaseIndexEmbedderProvider !== settings.codebaseIndexEmbedderProvider
 
 				// Save global state settings atomically
 				const globalStateConfig = {
@@ -2693,38 +2778,19 @@ export const webviewMessageHandler = async (
 				// Then handle validation and initialization for the current workspace
 				const currentCodeIndexManager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (currentCodeIndexManager) {
-					// If embedder provider changed, perform proactive validation
-					if (embedderProviderChanged) {
-						try {
-							// Force handleSettingsChange which will trigger validation
-							await currentCodeIndexManager.handleSettingsChange()
-						} catch (error) {
-							// Validation failed - the error state is already set by handleSettingsChange
-							provider.log(
-								`Embedder validation failed after provider change: ${error instanceof Error ? error.message : String(error)}`,
-							)
-							// Send validation error to webview
-							await provider.postMessageToWebview({
-								type: "indexingStatusUpdate",
-								values: currentCodeIndexManager.getCurrentStatus(),
-							})
-							// Exit early - don't try to start indexing with invalid configuration
-							break
-						}
-					} else {
-						// No provider change, just handle settings normally
-						try {
-							await currentCodeIndexManager.handleSettingsChange()
-						} catch (error) {
-							// Log but don't fail - settings are saved
-							provider.log(
-								`Settings change handling error: ${error instanceof Error ? error.message : String(error)}`,
-							)
-						}
+					try {
+						await currentCodeIndexManager.handleSettingsChange()
+					} catch (error) {
+						provider.log(
+							`Code index settings validation failed: ${error instanceof Error ? error.message : String(error)}`,
+						)
+						await provider.postMessageToWebview({
+							type: "indexingStatusUpdate",
+							values: currentCodeIndexManager.getCurrentStatus(),
+						})
+						// Keep the saved credentials, but leave validation retries to an explicit start or save.
+						break
 					}
-
-					// Wait a bit more to ensure everything is ready
-					await new Promise((resolve) => setTimeout(resolve, 200))
 
 					// Auto-start indexing if now enabled and configured
 					if (currentCodeIndexManager.isFeatureEnabled && currentCodeIndexManager.isFeatureConfigured) {
@@ -2823,8 +2889,8 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "startIndexing": {
+			const manager = provider.getCurrentWorkspaceCodeIndexManager()
 			try {
-				const manager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (!manager) {
 					provider.postMessageToWebview({
 						type: "indexingStatusUpdate",
@@ -2842,24 +2908,24 @@ export const webviewMessageHandler = async (
 
 				// "Start Indexing" implicitly enables the workspace
 				await manager.setWorkspaceEnabled(true)
+				// Load persisted settings before reading readiness, including newly added workspaces.
+				await manager.initialize(provider.contextProxy)
 
-				if (manager.isFeatureEnabled && manager.isFeatureConfigured) {
-					await manager.initialize(provider.contextProxy)
-
+				if (manager.isFeatureEnabled && manager.isInitialized) {
 					const currentState = manager.state
 					if (currentState === "Standby" || currentState === "Error") {
 						manager.startIndexing()
-
-						if (!manager.isInitialized) {
-							await manager.initialize(provider.contextProxy)
-							if (manager.state === "Standby" || manager.state === "Error") {
-								manager.startIndexing()
-							}
-						}
 					}
 				}
 			} catch (error) {
 				provider.log(`Error starting indexing: ${error instanceof Error ? error.message : String(error)}`)
+			} finally {
+				if (manager) {
+					await provider.postMessageToWebview({
+						type: "indexingStatusUpdate",
+						values: manager.getCurrentStatus(),
+					})
+				}
 			}
 			break
 		}
@@ -2881,28 +2947,31 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "toggleWorkspaceIndexing": {
+			const manager = provider.getCurrentWorkspaceCodeIndexManager()
 			try {
-				const manager = provider.getCurrentWorkspaceCodeIndexManager()
 				if (!manager) {
 					provider.log("Cannot toggle workspace indexing: No workspace folder open")
 					return
 				}
 				const enabled = message.bool ?? false
 				await manager.setWorkspaceEnabled(enabled)
-				if (enabled && manager.isFeatureEnabled && manager.isFeatureConfigured) {
+				if (enabled) {
 					await manager.initialize(provider.contextProxy)
-					manager.startIndexing()
-				} else if (!enabled) {
+					if (manager.isFeatureEnabled && manager.isInitialized) manager.startIndexing()
+				} else {
 					manager.stopIndexing()
 				}
-				provider.postMessageToWebview({
-					type: "indexingStatusUpdate",
-					values: manager.getCurrentStatus(),
-				})
 			} catch (error) {
 				provider.log(
 					`Error toggling workspace indexing: ${error instanceof Error ? error.message : String(error)}`,
 				)
+			} finally {
+				if (manager) {
+					await provider.postMessageToWebview({
+						type: "indexingStatusUpdate",
+						values: manager.getCurrentStatus(),
+					})
+				}
 			}
 			break
 		}

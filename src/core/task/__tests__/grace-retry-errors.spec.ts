@@ -182,7 +182,10 @@ vi.mock("../../environment/getEnvironmentDetails", () => ({
 
 vi.mock("../../ignore/AlphaIgnoreController")
 
-vi.mock("../../../utils/storage", () => ({
+// Expose validated read-only goal recovery alongside the existing virtual write paths.
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveExistingTaskDirectoryPathReadOnly: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveExistingTaskDirectoryPathReadOnly,
 	getTaskDirectoryPath: vi
 		.fn()
 		.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),

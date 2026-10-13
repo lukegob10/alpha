@@ -8,6 +8,7 @@ import { exerciseRenderedAcceptance } from "../ui/renderedAcceptance"
 import { exerciseRenderedFileReview } from "../ui/renderedFileReview"
 import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
 import { exerciseRenderedComposer } from "../ui/renderedComposer"
+import { exerciseRenderedRequestUserInput } from "../ui/renderedRequestUserInput"
 import { CdpConnection } from "../ui/cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
@@ -25,7 +26,7 @@ interface Evaluation<T> {
 export async function runRenderedUiProbe(
 	executable: string,
 	output: string,
-	mode: "probe" | "acceptance" | "reasoning" | "file-review" | "composer" = "probe",
+	mode: "probe" | "acceptance" | "reasoning" | "file-review" | "composer" | "request-user-input" = "probe",
 	signal?: AbortSignal,
 ) {
 	await fs.mkdir(output, { recursive: true })
@@ -44,15 +45,18 @@ export async function runRenderedUiProbe(
 		vscodeVersion: "1.125.0",
 		vscodeExecutablePath: executable,
 		testFile:
-			mode === "composer"
-				? "composer-ui.test"
-				: mode === "file-review"
-					? "file-review-ui.test"
-					: mode === "reasoning"
-						? "reasoning-ui.test"
-						: mode === "acceptance"
-							? "managed-agents.acceptance.test"
-							: "rendered-ui-probe.test",
+			mode === "request-user-input"
+				? "request-user-input-ui.test"
+				: mode === "composer"
+					? "composer-ui.test"
+					: mode === "file-review"
+						? "file-review-ui.test"
+						: mode === "reasoning"
+							? "reasoning-ui.test"
+							: mode === "acceptance"
+								? "managed-agents.acceptance.test"
+								: "rendered-ui-probe.test",
+		...(mode === "request-user-input" ? { requireAllTests: true } : {}),
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -86,13 +90,15 @@ export async function runRenderedUiProbe(
 							await fs.readFile(
 								path.join(
 									directory,
-									mode === "file-review"
-										? "ui-stage-file-review.json"
-										: mode === "reasoning"
-											? "ui-stage-reasoning-high.json"
-											: mode === "acceptance"
-												? "ui-stage-settings-edit.json"
-												: "ui-ready.json",
+									mode === "request-user-input"
+										? "ui-stage-input-wizard.json"
+										: mode === "file-review"
+											? "ui-stage-file-review.json"
+											: mode === "reasoning"
+												? "ui-stage-reasoning-high.json"
+												: mode === "acceptance"
+													? "ui-stage-settings-edit.json"
+													: "ui-ready.json",
 								),
 								"utf8",
 							),
@@ -147,13 +153,15 @@ export async function runRenderedUiProbe(
 			assert.ok(workbenchSession)
 			if (mode !== "probe") {
 				const stages = await (
-					mode === "composer"
-						? exerciseRenderedComposer
-						: mode === "file-review"
-							? exerciseRenderedFileReview
-							: mode === "reasoning"
-								? exerciseRenderedReasoning
-								: exerciseRenderedAcceptance
+					mode === "request-user-input"
+						? exerciseRenderedRequestUserInput
+						: mode === "composer"
+							? exerciseRenderedComposer
+							: mode === "file-review"
+								? exerciseRenderedFileReview
+								: mode === "reasoning"
+									? exerciseRenderedReasoning
+									: exerciseRenderedAcceptance
 				)(cdp, sessionId, workbenchSession, directory, nonce, combinedSignal)
 				const modelSwitchTiming =
 					mode === "reasoning"
@@ -238,7 +246,7 @@ export async function runRenderedUiProbe(
 				nonce,
 				reason: error instanceof Error ? error.message : "probe_failed",
 			}
-			if (mode === "reasoning" || mode === "file-review") abort.abort()
+			if (mode === "reasoning" || mode === "file-review" || mode === "request-user-input") abort.abort()
 		} finally {
 			cdp?.close()
 			if (

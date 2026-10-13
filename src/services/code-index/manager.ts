@@ -219,7 +219,9 @@ export class CodeIndexManager {
 		}
 
 		// 6. Determine if Core Services Need Recreation
-		const needsServiceRecreation = !this._serviceFactory || requiresRestart
+		// A factory can survive failed validation without an orchestrator or search service.
+		// Rebuild after validation or indexing failures even when the saved settings have not changed.
+		const needsServiceRecreation = !this.isInitialized || requiresRestart || this._stateManager.state === "Error"
 
 		if (needsServiceRecreation) {
 			await this._recreateServices()
@@ -362,17 +364,25 @@ export class CodeIndexManager {
 		}
 	}
 
-	public async searchIndex(query: string, directoryPrefix?: string): Promise<VectorStoreSearchResult[]> {
+	public async searchIndex(
+		query: string,
+		directoryPrefix?: string,
+		signal?: AbortSignal,
+	): Promise<VectorStoreSearchResult[]> {
 		if (!this.isFeatureEnabled) {
 			return []
 		}
 		this.assertInitialized()
-		return this._searchService!.searchIndex(query, directoryPrefix)
+		return this._searchService!.searchIndex(query, directoryPrefix, signal)
 	}
 
-	public async searchIndexWithDiagnostics(query: string, directoryPrefix?: string): Promise<CodeIndexSearchResponse> {
+	public async searchIndexWithDiagnostics(
+		query: string,
+		directoryPrefix?: string,
+		signal?: AbortSignal,
+	): Promise<CodeIndexSearchResponse> {
 		this.assertInitialized()
-		return this._searchService!.searchIndexWithDiagnostics(query, directoryPrefix)
+		return this._searchService!.searchIndexWithDiagnostics(query, directoryPrefix, signal)
 	}
 
 	/**

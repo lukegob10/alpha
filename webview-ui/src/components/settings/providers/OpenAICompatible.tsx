@@ -5,6 +5,7 @@ import { VSCodeButton, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
 import {
 	type ProviderSettings,
+	type ProviderSettingsWithId,
 	type ModelInfo,
 	type ReasoningEffortExtended,
 	type OrganizationAllowList,
@@ -13,6 +14,9 @@ import {
 	openAiModelInfoSaneDefaults,
 	openAiCustomReasoningEfforts,
 	resolveOpenAiCustomModelInfo,
+	isMaxOutputTokensIncluded,
+	validateOptionalOutputTokenLimit,
+	supportsModelTemperature,
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -25,7 +29,7 @@ import { R1FormatSetting } from "../R1FormatSetting"
 import { ThinkingBudget } from "../ThinkingBudget"
 
 type OpenAICompatibleProps = {
-	apiConfiguration: ProviderSettings
+	apiConfiguration: ProviderSettingsWithId
 	setApiConfigurationField: <K extends keyof ProviderSettings>(
 		field: K,
 		value: ProviderSettings[K],
@@ -34,6 +38,7 @@ type OpenAICompatibleProps = {
 	organizationAllowList: OrganizationAllowList
 	modelValidationError?: string
 	simplifySettings?: boolean
+	onOutputTokenLimitError?: (error: string | undefined) => void
 }
 
 export const OpenAICompatible = ({
@@ -42,12 +47,41 @@ export const OpenAICompatible = ({
 	organizationAllowList,
 	modelValidationError,
 	simplifySettings,
+	onOutputTokenLimitError,
 }: OpenAICompatibleProps) => {
 	const { t } = useAppTranslation()
 
 	const [azureApiVersionSelected, setAzureApiVersionSelected] = useState(!!apiConfiguration?.azureApiVersion)
 
 	const [openAiModels, setOpenAiModels] = useState<Record<string, ModelInfo> | null>(null)
+	const configuredOutputTokenLimit =
+		apiConfiguration.openAiCustomModelInfo?.maxTokens ?? openAiModelInfoSaneDefaults.maxTokens
+	const [outputTokenLimitInput, setOutputTokenLimitInput] = useState(
+		() => configuredOutputTokenLimit?.toString() ?? "",
+	)
+	const [isOutputTokenLimitEdited, setIsOutputTokenLimitEdited] = useState(false)
+
+	useEffect(() => {
+		setOutputTokenLimitInput(configuredOutputTokenLimit?.toString() ?? "")
+		setIsOutputTokenLimitEdited(false)
+	}, [configuredOutputTokenLimit, apiConfiguration.id, apiConfiguration.openAiModelId])
+
+	const parsedOutputTokenLimit = outputTokenLimitInput.trim() ? Number(outputTokenLimitInput) : undefined
+	let outputTokenLimitError: string | undefined
+	try {
+		validateOptionalOutputTokenLimit(parsedOutputTokenLimit)
+	} catch (error) {
+		if (!(error instanceof RangeError)) throw error
+		outputTokenLimitError = t("settings:validation.outputTokenLimit")
+	}
+
+	useEffect(() => {
+		// Saved caps are checked against the effective request in configuration validation.
+		// Only a user's uncommitted invalid draft adds a separate Save blocker here.
+		onOutputTokenLimitError?.(isOutputTokenLimitEdited ? outputTokenLimitError : undefined)
+	}, [onOutputTokenLimitError, outputTokenLimitError, isOutputTokenLimitEdited])
+
+	useEffect(() => () => onOutputTokenLimitError?.(undefined), [onOutputTokenLimitError])
 
 	const [customHeaders, setCustomHeaders] = useState<[string, string][]>(() => {
 		const headers = apiConfiguration?.openAiHeaders || {}
@@ -166,7 +200,7 @@ export const OpenAICompatible = ({
 			</Checkbox>
 			<div>
 				<Checkbox
-					checked={apiConfiguration?.includeMaxTokens ?? true}
+					checked={isMaxOutputTokensIncluded(apiConfiguration)}
 					onChange={handleInputChange("includeMaxTokens", noTransform)}>
 					{t("settings:includeMaxOutputTokens")}
 				</Checkbox>
@@ -301,40 +335,61 @@ export const OpenAICompatible = ({
 
 				<div>
 					<VSCodeTextField
-						value={
-							apiConfiguration?.openAiCustomModelInfo?.maxTokens?.toString() ||
-							openAiModelInfoSaneDefaults.maxTokens?.toString() ||
-							""
+						value={outputTokenLimitInput}
+						id="openai-output-token-limit"
+						data-testid="max-output-tokens"
+						aria-label={t("settings:providers.customModel.maxTokens.label")}
+						aria-invalid={outputTokenLimitError !== undefined}
+						aria-describedby={
+							outputTokenLimitError
+								? "openai-output-token-limit-description openai-output-token-limit-error"
+								: "openai-output-token-limit-description"
 						}
 						type="text"
 						style={{
-							borderColor: (() => {
-								const value = apiConfiguration?.openAiCustomModelInfo?.maxTokens
-
-								if (!value) {
-									return "var(--vscode-input-border)"
-								}
-
-								return value > 0 ? "var(--vscode-charts-green)" : "var(--vscode-errorForeground)"
-							})(),
+							borderColor: outputTokenLimitError
+								? "var(--vscode-errorForeground)"
+								: "var(--vscode-input-border)",
 						}}
-						onInput={handleInputChange("openAiCustomModelInfo", (e) => {
-							const value = parseInt((e.target as HTMLInputElement).value)
-
-							return {
-								...(apiConfiguration?.openAiCustomModelInfo || openAiModelInfoSaneDefaults),
-								maxTokens: isNaN(value) ? undefined : value,
+						onInput={(event) => {
+							const input = (event.target as HTMLInputElement).value
+							setOutputTokenLimitInput(input)
+							setIsOutputTokenLimitEdited(true)
+							const value = input.trim() ? Number(input) : undefined
+							try {
+								validateOptionalOutputTokenLimit(value)
+							} catch (error) {
+								if (!(error instanceof RangeError)) throw error
+								// Mark the cached edit buffer dirty without replacing its last valid cap.
+								setApiConfigurationField("openAiCustomModelInfo", {
+									...(apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults),
+								})
+								return
 							}
-						})}
+							setApiConfigurationField("openAiCustomModelInfo", {
+								...(apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults),
+								maxTokens: value,
+							})
+						}}
 						placeholder={t("settings:placeholders.numbers.maxTokens")}
 						className="w-full">
-						<label className="block font-medium mb-1">
+						<label htmlFor="openai-output-token-limit" className="block font-medium mb-1">
 							{t("settings:providers.customModel.maxTokens.label")}
 						</label>
 					</VSCodeTextField>
-					<div className="text-sm text-vscode-descriptionForeground">
+					<div
+						id="openai-output-token-limit-description"
+						className="text-sm text-vscode-descriptionForeground">
 						{t("settings:providers.customModel.maxTokens.description")}
 					</div>
+					{outputTokenLimitError && (
+						<div
+							id="openai-output-token-limit-error"
+							role="alert"
+							className="text-sm text-vscode-errorForeground">
+							{outputTokenLimitError}
+						</div>
+					)}
 				</div>
 
 				<div>
@@ -373,6 +428,23 @@ export const OpenAICompatible = ({
 					</VSCodeTextField>
 					<div className="text-sm text-vscode-descriptionForeground">
 						{t("settings:providers.customModel.contextWindow.description")}
+					</div>
+				</div>
+
+				<div>
+					<Checkbox
+						checked={supportsModelTemperature(
+							apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults,
+							true,
+						)}
+						onChange={handleInputChange("openAiCustomModelInfo", (checked) => ({
+							...(apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults),
+							supportsTemperature: checked,
+						}))}>
+						{t("settings:providers.customModel.temperatureSupport.label")}
+					</Checkbox>
+					<div className="text-sm text-vscode-descriptionForeground pt-1">
+						{t("settings:providers.customModel.temperatureSupport.description")}
 					</div>
 				</div>
 

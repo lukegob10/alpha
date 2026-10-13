@@ -1203,6 +1203,9 @@ export interface CreateAgentInput {
 export interface UpdateAgentStatusInput {
 	snapshot?: AgentRuntimeSnapshot
 	terminalResult?: AgentTerminalResultMetadata
+	pendingFollowupEventId?: string | null
+	/** A retained child may resume in its own continuation group after a blocking batch. */
+	groupId?: string
 	at?: number
 }
 
@@ -1324,6 +1327,8 @@ export interface ClaimAgentMailboxOptions {
 	afterSequence?: number
 	limit?: number
 	kinds?: AgentMailboxKind[]
+	/** Select final-result statuses without consuming ordinary lifecycle interruption. */
+	resultStatuses?: AgentLifecycleStatus[]
 	payloadTaskIds?: string[]
 	excludeSenderTaskIds?: string[]
 	channel: AgentMailboxClaimChannel
@@ -1923,10 +1928,19 @@ export class AgentControlStore {
 		if (input.terminalResult && !TERMINAL_STATUSES.has(status)) {
 			throw new Error(`Agent status ${status} cannot contain terminal result metadata`)
 		}
+		if (input.groupId !== undefined) {
+			if (status !== "pending" || record.role === "root" || !input.groupId.trim()) {
+				throw new Error("A child continuation group can only be assigned during pending admission")
+			}
+			record.groupId = input.groupId
+		}
 
 		record.status = status
 		this.claimRecordOwnership(record)
 		record.updatedAt = timestamp
+		if (input.pendingFollowupEventId === null) delete record.pendingFollowupEventId
+		else if (input.pendingFollowupEventId !== undefined)
+			record.pendingFollowupEventId = input.pendingFollowupEventId
 		if (input.snapshot) record.snapshot = clone(input.snapshot)
 		if (ACTIVE_STATUSES.has(status) && record.snapshot) {
 			delete record.snapshot.stopReason
@@ -1946,6 +1960,23 @@ export class AgentControlStore {
 				: { status: status as AgentTerminalResultMetadata["status"], completedAt: timestamp }
 		}
 		return record
+	}
+
+	/** Restore only the unlaunched admission that still owns this pending row. */
+	async rollbackAgentFollowup(previous: AgentRecord, eventId: string): Promise<boolean> {
+		return this.transact((draft) => {
+			const index = draft.agents.findIndex(
+				(record) => record.taskId === previous.taskId && record.rootTaskId === previous.rootTaskId,
+			)
+			const record = draft.agents[index]
+			if (!record || record.status !== "pending" || record.pendingFollowupEventId !== eventId) return false
+			this.assertRecordOwned(draft, record, "roll back follow-up admission")
+			if (!CLOSABLE_STATUSES.has(previous.status))
+				throw new Error("Follow-up rollback requires a terminal record")
+			// The mailbox instruction remains authoritative even though no runner started.
+			draft.agents[index] = { ...clone(previous), pendingFollowupEventId: eventId }
+			return true
+		})
 	}
 
 	async updateAgentSnapshot(
@@ -1990,6 +2021,13 @@ export class AgentControlStore {
 			.filter((record) => options.includeRoot !== false || record.role !== "root")
 			.filter((record) => !statuses || statuses.has(record.status))
 			.sort((left, right) => left.path.localeCompare(right.path) || left.createdAt - right.createdAt)
+			.map(clone)
+	}
+
+	listClosedAgents(rootTaskId: string): ClosedAgentTombstone[] {
+		this.assertInitialized()
+		return this.state.tombstones
+			.filter((record) => record.rootTaskId === rootTaskId && record.taskId !== rootTaskId)
 			.map(clone)
 	}
 
@@ -2547,7 +2585,12 @@ export class AgentControlStore {
 	}
 
 	/** Terminal and interrupted records remain queryable until this explicit close. */
-	async closeAgent(target: string, rootTaskId?: string): Promise<ClosedAgentTombstone> {
+	async closeAgent(
+		target: string,
+		rootTaskId?: string,
+		budgetUsage?: ClosedAgentTombstone["budgetUsage"],
+		orchestration?: ClosedAgentTombstone["orchestration"],
+	): Promise<ClosedAgentTombstone> {
 		return this.transact((draft) => {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
 			this.assertRecordOwned(draft, record, "close it")
@@ -2556,6 +2599,10 @@ export class AgentControlStore {
 			}
 			if (draft.agents.some((candidate) => candidate.parentTaskId === record.taskId)) {
 				throw new Error(`Agent ${record.path} cannot be closed while it has retained children`)
+			}
+			const retainedOrchestration = record.snapshot?.contextManifest?.orchestration ?? orchestration
+			if (retainedOrchestration && retainedOrchestration.ancestry.rootTaskId !== record.rootTaskId) {
+				throw new Error(`Agent ${record.path} retained orchestration from a different root`)
 			}
 
 			const tombstone: ClosedAgentTombstone = {
@@ -2566,6 +2613,20 @@ export class AgentControlStore {
 				status: record.status as ClosedAgentTombstone["status"],
 				closedAt: this.now(),
 				stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
+				budgetUsage: {
+					tokens: Math.max(
+						budgetUsage?.tokens ?? 0,
+						(record.terminalResult?.usage?.inputTokens ?? 0) +
+							(record.terminalResult?.usage?.outputTokens ?? 0),
+						(record.snapshot?.usage?.inputTokens ?? 0) + (record.snapshot?.usage?.outputTokens ?? 0),
+					),
+					cost: Math.max(
+						budgetUsage?.cost ?? 0,
+						record.terminalResult?.usage?.cost ?? 0,
+						record.snapshot?.usage?.cost ?? 0,
+					),
+				},
+				...(retainedOrchestration ? { orchestration: clone(retainedOrchestration) } : {}),
 			}
 			draft.agents = draft.agents.filter((candidate) => candidate.taskId !== record.taskId)
 			draft.tombstones.push(tombstone)
@@ -2738,36 +2799,52 @@ export class AgentControlStore {
 	}
 
 	async appendEvent(input: AppendAgentMailboxEventInput): Promise<AppendAgentMailboxEventResult> {
-		return this.transact((draft) => {
-			if (input.eventId) {
-				const existing = draft.mailbox.find((entry) => entry.eventId === input.eventId)
-				if (existing) {
-					this.assertIdempotentEvent(existing, input)
-					return { entry: clone(existing), appended: false }
-				}
-			}
+		return this.transact((draft) => this.appendMailboxEvent(draft, input))
+	}
 
-			const recipient = this.requireOpenAddress(draft, input.recipient, input.rootTaskId)
-			const sender = input.sender
-				? this.requireOwnedAddress(draft, input.sender, recipient.rootTaskId, "publish an event")
-				: undefined
-			if (!sender) this.assertTreeOwned(draft, recipient.rootTaskId, "publish an event")
-			const entry: AgentMailboxEntry = {
-				eventId: input.eventId ?? randomUUID(),
-				sequence: draft.nextSequence++,
-				rootTaskId: recipient.rootTaskId,
-				senderTaskId: sender?.taskId,
-				senderPath: sender?.path,
-				recipientTaskId: recipient.taskId,
-				recipientPath: recipient.path,
-				kind: input.kind,
-				name: input.name,
-				payload: input.payload ? clone(input.payload) : undefined,
-				createdAt: input.createdAt ?? this.now(),
-			}
-			draft.mailbox.push(entry)
-			return { entry: clone(entry), appended: true }
+	/** Decide active follow-up delivery in the same transaction as its mailbox admission. */
+	async appendEventWhileRecipientActive(
+		input: AppendAgentMailboxEventInput,
+	): Promise<AppendAgentMailboxEventResult | undefined> {
+		return this.transact((draft) => {
+			const recipient = this.requireMutableRecord(draft, input.recipient, input.rootTaskId)
+			if (recipient.status !== "pending" && recipient.status !== "running") return undefined
+			return this.appendMailboxEvent(draft, input)
 		})
+	}
+
+	private appendMailboxEvent(
+		draft: AgentControlState,
+		input: AppendAgentMailboxEventInput,
+	): AppendAgentMailboxEventResult {
+		if (input.eventId) {
+			const existing = draft.mailbox.find((entry) => entry.eventId === input.eventId)
+			if (existing) {
+				this.assertIdempotentEvent(existing, input)
+				return { entry: clone(existing), appended: false }
+			}
+		}
+
+		const recipient = this.requireOpenAddress(draft, input.recipient, input.rootTaskId)
+		const sender = input.sender
+			? this.requireOwnedAddress(draft, input.sender, recipient.rootTaskId, "publish an event")
+			: undefined
+		if (!sender) this.assertTreeOwned(draft, recipient.rootTaskId, "publish an event")
+		const entry: AgentMailboxEntry = {
+			eventId: input.eventId ?? randomUUID(),
+			sequence: draft.nextSequence++,
+			rootTaskId: recipient.rootTaskId,
+			senderTaskId: sender?.taskId,
+			senderPath: sender?.path,
+			recipientTaskId: recipient.taskId,
+			recipientPath: recipient.path,
+			kind: input.kind,
+			name: input.name,
+			payload: input.payload ? clone(input.payload) : undefined,
+			createdAt: input.createdAt ?? this.now(),
+		}
+		draft.mailbox.push(entry)
+		return { entry: clone(entry), appended: true }
 	}
 
 	getHumanReadSequence(rootTaskId: string): number {
@@ -2861,12 +2938,19 @@ export class AgentControlStore {
 			const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000))
 			const kinds = options.kinds ? new Set(options.kinds) : undefined
 			const payloadTaskIds = options.payloadTaskIds ? new Set(options.payloadTaskIds) : undefined
+			const resultStatuses = options.resultStatuses ? new Set<string>(options.resultStatuses) : undefined
 			const excludedSenders = options.excludeSenderTaskIds ? new Set(options.excludeSenderTaskIds) : undefined
 			const entries = draft.mailbox
 				.filter((entry) => entry.rootTaskId === address.rootTaskId && entry.recipientTaskId === address.taskId)
 				.filter((entry) => entry.sequence > afterSequence)
 				.filter((entry) => entry.acknowledgedAt === undefined && entry.claimId === undefined)
 				.filter((entry) => !kinds || kinds.has(entry.kind))
+				.filter(
+					(entry) =>
+						!resultStatuses ||
+						entry.kind !== "result" ||
+						(typeof entry.payload?.status === "string" && resultStatuses.has(entry.payload.status)),
+				)
 				.filter((entry) => !entry.senderTaskId || !excludedSenders?.has(entry.senderTaskId))
 				.filter(
 					(entry) =>
@@ -2978,11 +3062,9 @@ export class AgentControlStore {
 		this.assertInitialized()
 		const normalizedClaimId = claimId.trim()
 		if (!normalizedClaimId) throw new Error("A mailbox claim ID is required")
-		const address = this.persistence.withTransaction
-			? await this.transact((draft) =>
-					clone(this.requireOwnedAddress(draft, recipient, rootTaskId, "settle its mailbox claim")),
-				)
-			: this.requireAddress(this.state, recipient, rootTaskId)
+		// Pin the accepted claim's identity before any fallible persistence work.
+		// ACK/release revalidate ownership against the durable transaction below.
+		const address = this.requireAddress(this.state, recipient, rootTaskId)
 		const settlement: PendingMailboxClaimSettlement = {
 			claimId: normalizedClaimId,
 			recipientTaskId: address.taskId,

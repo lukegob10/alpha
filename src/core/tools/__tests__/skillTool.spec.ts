@@ -140,6 +140,58 @@ describe("skillTool", () => {
 		)
 	})
 
+	it("keeps explicit-only names out of implicit discovery suggestions", async () => {
+		mockSkillsManager.getSkillContent.mockResolvedValue(null)
+		mockSkillsManager.getSkillsForMode.mockReturnValue([
+			{ name: "hidden-review", allowImplicitInvocation: false },
+			{ name: "allowed-review", allowImplicitInvocation: true },
+			{ name: "debug", source: "builtin" },
+		])
+
+		await skillTool.handle(
+			mockTask as Task,
+			{ type: "tool_use", name: "skill", params: {}, partial: false, nativeArgs: { skill: "missing" } },
+			mockCallbacks,
+		)
+
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			formatResponse.toolError("Skill 'missing' not found. Available skills: allowed-review, debug"),
+		)
+		expect(mockCallbacks.askApproval).not.toHaveBeenCalled()
+	})
+
+	it.each([true, false])(
+		"keeps normal approval behavior when an explicit-only skill is approved=%s",
+		async (approved) => {
+			mockSkillsManager.getSkillContent.mockResolvedValue({
+				name: "hidden-review",
+				description: "Review on explicit request",
+				path: "/project/.agents/skills/hidden-review/SKILL.md",
+				source: "project",
+				allowImplicitInvocation: false,
+				instructions: "Explicit review instructions",
+			})
+			mockCallbacks.askApproval.mockResolvedValue(approved)
+
+			await skillTool.handle(
+				mockTask as Task,
+				{ type: "tool_use", name: "skill", params: {}, partial: false, nativeArgs: { skill: "hidden-review" } },
+				mockCallbacks,
+			)
+
+			expect(mockSkillsManager.getSkillContent).toHaveBeenCalledExactlyOnceWith("hidden-review", "code")
+			expect(mockSkillsManager.getSkillsForMode).not.toHaveBeenCalled()
+			expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+			if (approved) {
+				expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+					expect.stringContaining("Explicit review instructions"),
+				)
+			} else {
+				expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+			}
+		},
+	)
+
 	it("should successfully load a global skill", async () => {
 		const block: ToolUse<"skill"> = {
 			type: "tool_use" as const,
@@ -435,6 +487,65 @@ Follow these project-specific instructions...`,
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
 			expect.stringContaining(`Skill file: ${inherited.path}`),
 		)
+	})
+
+	it("explicitly loads a captured explicit-only skill after live metadata changes", async () => {
+		const instructions = "Explicit captured review workflow"
+		const inherited = {
+			name: "hidden-review",
+			path: "F:/workspace/.agents/skills/hidden-review/SKILL.md",
+			digest: digestValue(instructions),
+			allowImplicitInvocation: false,
+		}
+		Object.assign(mockTask, {
+			taskKind: "subagent",
+			getTaskMode: vi.fn(async () => "code"),
+			getInheritedSubagentSkill: vi.fn(() => inherited),
+			getInheritedSubagentSkillNames: vi.fn(() => [inherited.name]),
+		})
+		mockSkillsManager.getSkillContentByPath.mockResolvedValue({
+			...inherited,
+			description: "Explicit review",
+			source: "project",
+			allowImplicitInvocation: true,
+			instructions,
+		})
+
+		await skillTool.handle(
+			mockTask as Task,
+			{ type: "tool_use", name: "skill", params: {}, partial: false, nativeArgs: { skill: inherited.name } },
+			mockCallbacks,
+		)
+
+		expect(mockSkillsManager.getSkillContentByPath).toHaveBeenCalledExactlyOnceWith(inherited.name, inherited.path)
+		expect(mockSkillsManager.getSkillContent).not.toHaveBeenCalled()
+		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(instructions))
+		expect(inherited.allowImplicitInvocation).toBe(false)
+	})
+
+	it("uses captured policy for a child's suggestions even when live metadata becomes implicit", async () => {
+		const skills = [{ name: "hidden-review", allowImplicitInvocation: false }, { name: "visible-review" }]
+		Object.assign(mockTask, {
+			taskKind: "subagent",
+			getTaskMode: vi.fn(async () => "code"),
+			getInheritedSubagentSkill: vi.fn((name: string) => skills.find((skill) => skill.name === name)),
+			getInheritedSubagentSkillNames: vi.fn(() => skills.map(({ name }) => name)),
+		})
+		mockSkillsManager.getSkillsForMode.mockReturnValue([{ name: "hidden-review", allowImplicitInvocation: true }])
+
+		await skillTool.handle(
+			mockTask as Task,
+			{ type: "tool_use", name: "skill", params: {}, partial: false, nativeArgs: { skill: "missing" } },
+			mockCallbacks,
+		)
+
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			formatResponse.toolError(
+				"Skill 'missing' was not included in this child task's frozen catalog. Available skills: visible-review",
+			),
+		)
+		expect(mockSkillsManager.getSkillsForMode).not.toHaveBeenCalled()
 	})
 
 	it.each([

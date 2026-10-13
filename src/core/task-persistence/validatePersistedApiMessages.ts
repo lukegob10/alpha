@@ -1,3 +1,5 @@
+import { taskGoalUsageReceiptsSchema } from "@alpha-code/types"
+
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
 
 /**
@@ -27,6 +29,13 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		}
 		if ("hook_prompt" in candidate && !isHookPromptProvenance(candidate.hook_prompt)) {
 			return `${location} has invalid hook prompt provenance`
+		}
+		if (
+			candidate.goal_usage_receipts !== undefined &&
+			(candidate.role !== "assistant" ||
+				!taskGoalUsageReceiptsSchema.safeParse(candidate.goal_usage_receipts).success)
+		) {
+			return `${location} has invalid goal usage receipts`
 		}
 		if (candidate.reasoning_details !== undefined && !Array.isArray(candidate.reasoning_details)) {
 			return `${location} has invalid reasoning details`

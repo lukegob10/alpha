@@ -156,14 +156,18 @@ describe("sub-agent task authority", () => {
 		const child = Object.assign(Object.create(Task.prototype), { taskKind: "subagent" }) as Task
 		const allowed = child.getTaskAllowedToolNames()
 
-		expect(allowed).toEqual(["exec_command", "send_message", "attempt_completion"])
+		expect(allowed).toEqual(["exec_command", "write_stdin", "send_message", "attempt_completion"])
 		expect(child.isToolAllowedForTask("report_progress")).toBe(false)
 		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
 		expect(child.isToolAllowedForTask("read_file")).toBe(false)
 		expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
 		expect(child.isToolAllowedForTask("manage_command")).toBe(false)
-		expect(child.isToolAllowedForTask("write_stdin")).toBe(false)
+		expect(child.isToolAllowedForTask("write_stdin")).toBe(true)
+		expect(child.getTaskToolDenialReason("write_stdin", { artifact_id: "cmd-1.txt" })).toBeUndefined()
+		expect(child.getTaskToolDenialReason("write_stdin", { session_id: 1 })).toContain(
+			"cannot control command sessions",
+		)
 		expect(child.isToolAllowedForTask("delegate_task")).toBe(false)
 		expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(false)
 	})
@@ -186,7 +190,7 @@ describe("sub-agent task authority", () => {
 		},
 	)
 
-	it("removes command control tools from a Worker with narrowed execute authority", () => {
+	it("narrows a Worker's command control to artifact reads when execute authority is removed", () => {
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskKind: "subagent",
 			subagentRole: "worker",
@@ -200,7 +204,16 @@ describe("sub-agent task authority", () => {
 			},
 		}) as Task
 
-		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "send_message", "attempt_completion"])
+		expect(child.getTaskAllowedToolNames()).toEqual([
+			"exec_command",
+			"write_stdin",
+			"send_message",
+			"attempt_completion",
+		])
+		expect(child.getTaskToolDenialReason("write_stdin", { artifact_id: "cmd-1.txt" })).toBeUndefined()
+		expect(child.getTaskToolDenialReason("write_stdin", { session_id: 1, chars: "yes\n" })).toContain(
+			"cannot control command sessions",
+		)
 	})
 
 	it("grants only current tools to delegating workers", () => {

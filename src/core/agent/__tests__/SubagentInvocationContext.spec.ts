@@ -15,7 +15,7 @@ function canonicalAssistant(items: unknown, outcome?: unknown): ApiMessage {
 	return assistant({ agentResponseItems: items, ...(outcome === undefined ? {} : { agentResponseOutcome: outcome }) })
 }
 
-const finalText = [{ type: "text", text: "Final answer" }]
+const finalText = [{ type: "text" as const, text: "Final answer" }]
 
 describe("getFinalAssistantMessageIndexes", () => {
 	it("selects canonical tool-free visible responses in history order", () => {

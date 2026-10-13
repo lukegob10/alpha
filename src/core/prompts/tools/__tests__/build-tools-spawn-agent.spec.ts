@@ -156,7 +156,8 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(result.allowedFunctionNames).toEqual(
 			expect.arrayContaining(["request_user_input", "exec_command", ...orchestrationTools]),
 		)
-		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+		expect(result.allowedFunctionNames).not.toContain("codebase_search")
+		for (const legacyName of ["read_file", "list_files", "search_files"])
 			expect(result.allowedFunctionNames, legacyName).not.toContain(legacyName)
 		expect(result.surface?.allowedFunctionNames).toContain("exec_command")
 		for (const forbidden of ["new_task", "switch_mode", "update_todo_list", "write_to_file", "use_mcp_tool"]) {
@@ -199,7 +200,8 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		expect(names(result.tools as any)).toEqual(expect.arrayContaining(["exec_command", "spawn_agent"]))
-		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+		expect(names(result.tools as any)).not.toContain("codebase_search")
+		for (const legacyName of ["read_file", "list_files", "search_files"])
 			expect(names(result.tools as any), legacyName).not.toContain(legacyName)
 		expect(names(result.tools as any)).not.toEqual(
 			expect.arrayContaining(["write_to_file", "apply_diff", "use_mcp_tool"]),

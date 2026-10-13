@@ -71,4 +71,23 @@ describe("ActivityTraceToggle", () => {
 		rerender(<ActivityTraceToggle {...props} active={false} expanded={false} />)
 		expect(button).not.toHaveAttribute("aria-busy")
 	})
+
+	it("keeps a completed trace idle even if an older caller supplies active", () => {
+		render(
+			<ActivityTraceToggle
+				traceId={1}
+				kind="worked"
+				count={2}
+				durationMs={12_000}
+				active
+				expanded={false}
+				controls="row-1 row-2"
+				onToggle={vi.fn()}
+			/>,
+		)
+		const button = screen.getByRole("button", { name: "chat:activityTrace.workedFor 12s" })
+		expect(button).not.toHaveAttribute("aria-busy")
+		expect(button).not.toHaveAttribute("data-active")
+		expect(button).not.toHaveClass("activity-trace-toggle--active")
+	})
 })

@@ -421,9 +421,44 @@ describe("scheduled profiles and skills", () => {
 		},
 	)
 
-	it.each(["missing", "renamed", "unloadable"])("fails closed for a %s profile", async (failure) => {
-		if (failure === "renamed")
-			provider.providerSettingsManager.getProfile.mockResolvedValue({ ...profile, name: "Renamed" })
+	it.each(["Renamed profile", "INTERNAL MODELS"])(
+		"admits a renamed profile %s by stable ID and records its current name",
+		async (name) => {
+			const reasoningPreference = { kind: "effort", effort: "high" } as const
+			const task = await service.createTask(payload({ reasoningPreference }))
+			provider.providerSettingsManager.getProfile.mockResolvedValue({ ...profile, name })
+			const run = await runNow(task.id)
+			expect(provider.providerSettingsManager.getProfile).toHaveBeenCalledWith({ id: apiConfig.id })
+			expect(run).toMatchObject({
+				status: "running",
+				apiConfig,
+				resolvedApiConfig: { id: apiConfig.id, name },
+				prompt: task.prompt,
+				workspace: task.workspace,
+				mode: task.mode,
+				reasoningPreference,
+			})
+			expect(provider.createTask).toHaveBeenCalledWith(
+				task.prompt,
+				undefined,
+				undefined,
+				expect.objectContaining({
+					taskApiConfigName: name,
+					apiConfiguration: { apiProvider: profile.apiProvider, openAiModelId: profile.openAiModelId },
+					taskMode: task.mode,
+					taskApprovalMode: "auto",
+					workspacePath: task.workspace,
+					reasoningPreference,
+				}),
+			)
+			expect(service.getState().tasks.find((entry) => entry.id === task.id)?.apiConfig).toEqual(apiConfig)
+			expect(provider.setProviderProfile).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["missing", "unconfigured", "unloadable"])("fails closed for a %s profile", async (failure) => {
+		if (failure === "unconfigured")
+			provider.providerSettingsManager.getProfile.mockResolvedValue({ ...profile, apiProvider: undefined })
 		else provider.providerSettingsManager.getProfile.mockRejectedValue(new Error("profile unavailable"))
 		const task = await service.createTask(payload())
 		const run = await runNow(task.id)

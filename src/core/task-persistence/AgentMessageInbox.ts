@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 import { z } from "zod"
+import { agentMailboxEntrySchema } from "@alpha-code/types"
 
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { atomicWriteJson, withFileLock } from "./atomicWrite"
@@ -9,6 +10,7 @@ const messageSchema = z.object({
 	id: z.string().min(1).max(256),
 	senderTaskId: z.string().min(1).max(256),
 	text: z.string().min(1).max(64_000),
+	notification: agentMailboxEntrySchema.optional(),
 })
 export type AgentMessage = z.infer<typeof messageSchema>
 

@@ -15,6 +15,7 @@ import {
 } from "../commandOutputContract"
 import { Task } from "../../task/Task"
 import readCommandOutput from "../../prompts/tools/native-tools/read_command_output"
+import manageCommand, { createWriteStdinTool } from "../../prompts/tools/native-tools/manage_command"
 
 // Mock filesystem operations
 vi.mock("fs/promises", () => ({
@@ -758,6 +759,26 @@ describe("ReadCommandOutputTool", () => {
 	})
 
 	describe("Error handling", () => {
+		it.each([
+			{ name: "historical read_command_output", schema: readCommandOutput },
+			{ name: "manage_command", schema: manageCommand },
+			{ name: "Code write_stdin", schema: createWriteStdinTool() },
+			{ name: "Plan write_stdin", schema: createWriteStdinTool(true) },
+		])("uses the canonical artifact filename contract in $name", ({ schema }) => {
+			expect(schema).toMatchObject({
+				function: {
+					parameters: {
+						properties: {
+							artifact_id: {
+								pattern: READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN,
+								maxLength: READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH,
+							},
+						},
+					},
+				},
+			})
+		})
+
 		it("should keep artifact validation in parity with the schema and bound invalid ID errors", async () => {
 			const artifactSchema = (readCommandOutput.function.parameters as any).properties.artifact_id
 			expect(artifactSchema.pattern).toBe(READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN)
@@ -797,6 +818,18 @@ describe("ReadCommandOutputTool", () => {
 				"cmd-<script>alert()</script>.txt",
 				"cmd-.txt",
 				"invalid-format.txt",
+				"cmd-123.txt\n",
+				"cmd-123.txt\r\n",
+				"cmd-123.txt\u2028",
+				"cmd-123.txt/other",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt\n",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt\\other",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt:stream",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt/../cmd-123.txt",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c1.txt",
+				"cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10x.txt",
+				"cmd-f5a8b79e-1f3a-3d2c-a3df-9a7d6b8e2c10.txt",
+				"cmd-f5a8b79e-1f3a-4d2c-73df-9a7d6b8e2c10.txt",
 			]
 
 			for (const invalidId of invalidIds) {
@@ -813,24 +846,29 @@ describe("ReadCommandOutputTool", () => {
 					"error",
 					expect.stringContaining("Invalid artifact_id format"),
 				)
+				expect(fs.access).not.toHaveBeenCalled()
+				expect(new RegExp(READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN).test(invalidId)).toBe(false)
 			}
 		})
 
-		it("should accept valid artifact_id format", async () => {
-			const validId = "cmd-1706119234567.txt"
-			const content = "Test"
-			const buffer = Buffer.from(content)
+		it.each(["cmd-1706119234567.txt", "cmd-f5a8b79e-1f3a-4d2c-a3df-9a7d6b8e2c10.txt"])(
+			"accepts existing artifact filename %s",
+			async (validId) => {
+				const content = "Test"
+				const buffer = Buffer.from(content)
 
-			mockFileHandle.read.mockImplementation((buf: Buffer) => {
-				buffer.copy(buf)
-				return Promise.resolve({ bytesRead: buffer.length })
-			})
+				mockFileHandle.read.mockImplementation((buf: Buffer) => {
+					buffer.copy(buf)
+					return Promise.resolve({ bytesRead: buffer.length })
+				})
 
-			await tool.execute({ artifact_id: validId }, mockTask, mockCallbacks)
+				await tool.execute({ artifact_id: validId }, mockTask, mockCallbacks)
 
-			expect(mockTask.consecutiveMistakeCount).toBe(0)
-			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
-		})
+				expect(mockTask.consecutiveMistakeCount).toBe(0)
+				expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+				expect(new RegExp(READ_COMMAND_OUTPUT_ARTIFACT_ID_PATTERN).test(validId)).toBe(true)
+			},
+		)
 
 		it("should handle invalid offset gracefully", async () => {
 			const artifactId = "cmd-1706119234567.txt"

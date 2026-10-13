@@ -39,7 +39,8 @@ export function ActivityTraceToggle({
 	onToggle,
 }: ActivityTraceToggleProps) {
 	const { t } = useAppTranslation()
-	const isAnimating = active && !expanded && kind !== "worked"
+	const isActive = active && kind !== "worked"
+	const isAnimating = isActive && !expanded
 	const label =
 		kind === "worked"
 			? t("chat:activityTrace.workedFor", { duration: formatWorkedDuration(durationMs ?? 0) })
@@ -53,16 +54,16 @@ export function ActivityTraceToggle({
 				type="button"
 				data-activity-trace-id={traceId}
 				data-active={isAnimating ? "true" : undefined}
-				aria-busy={active || undefined}
+				aria-busy={isActive || undefined}
 				aria-expanded={expanded}
 				aria-controls={controls}
 				onClick={onToggle}
 				className={cn(
-					"activity-trace-toggle flex max-w-full items-center gap-1 rounded-md py-1.5 text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder",
+					"activity-trace-toggle flex max-w-full items-center gap-2 rounded-lg py-1.5 text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder",
 					isAnimating && "activity-trace-toggle--active",
 				)}>
-				<span>{label}</span>
-				{kind !== "worked" && <span className="text-xs tabular-nums opacity-70">{count}</span>}
+				<span className="min-w-0 truncate">{label}</span>
+				{kind !== "worked" && <span className="shrink-0 text-xs tabular-nums opacity-70">{count}</span>}
 				<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0", expanded && "rotate-90")} />
 			</button>
 		</div>

@@ -22,6 +22,7 @@ export function ActivityStep({
 	onToggleExpand,
 }: ActivityStepProps) {
 	const detailsId = useId()
+	const isAnimating = active && !isExpanded
 	return (
 		<div>
 			<button
@@ -30,16 +31,21 @@ export function ActivityStep({
 				aria-busy={active || undefined}
 				aria-controls={detailsId}
 				onClick={onToggleExpand}
-				className="flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
+				className="activity-row-header flex w-full min-w-0 items-center gap-2 rounded-md py-1 text-left text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
 				<ChevronRight
 					aria-hidden="true"
-					className={cn("size-3.5 shrink-0", description && "mt-0.5 self-start", isExpanded && "rotate-90")}
+					className={cn(
+						"activity-row-disclosure size-3.5 shrink-0",
+						description && "mt-0.5 self-start",
+						isExpanded && "rotate-90",
+					)}
 				/>
 				<span className="min-w-0 flex-1">
 					<span
 						className={cn(
-							"flex min-w-0 items-center gap-2 [&>span]:truncate",
-							active && "activity-step-toggle w-fit max-w-full rounded-md activity-step-toggle--active",
+							"activity-row-summary flex min-w-0 items-center gap-2 [&>span]:truncate",
+							isAnimating &&
+								"activity-step-toggle w-fit max-w-full rounded-md activity-step-toggle--active",
 						)}>
 						{summary}
 					</span>

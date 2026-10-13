@@ -75,7 +75,9 @@ describe("bounded command results", () => {
 			.split("\nOutput truncated.")[0]
 		expect(artifactOutput.length).toBeLessThanOrEqual(350)
 		expect(artifact).toContain("[output truncated]")
-		expect(artifact).toContain("Read artifact cmd-output.txt with read_command_output")
+		expect(artifact).toContain(
+			'Read artifact cmd-output.txt with write_stdin using {"artifact_id":"cmd-output.txt"}.',
+		)
 	})
 
 	it("preserves the complete Codex header under a small output cap", () => {

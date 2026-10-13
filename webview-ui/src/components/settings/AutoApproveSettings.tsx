@@ -89,6 +89,7 @@ export const AutoApproveSettings = ({
 	const [bypassWarningOpen, setBypassWarningOpen] = useState(false)
 	const allowedCommandInputId = useId()
 	const deniedCommandInputId = useId()
+	const mcpPolicyDescriptionId = useId()
 	const mode = migrateApprovalMode({
 		approvalMode,
 		autoApprovalEnabled,
@@ -101,6 +102,7 @@ export const AutoApproveSettings = ({
 		alwaysAllowSubagents,
 		allowedCommands,
 	})
+	const mcpApprovalOverridden = mode === "bypass"
 
 	const applyMode = (next: ApprovalMode, acknowledged = approvalModeBypassAcknowledged === true) => {
 		const settings = settingsForApprovalMode(next, {
@@ -318,11 +320,30 @@ export const AutoApproveSettings = ({
 					</summary>
 					<div className="mt-2">
 						<VSCodeCheckbox
-							checked={alwaysAllowMcp}
-							onChange={(e: any) => setCachedStateField("alwaysAllowMcp", e.target.checked)}
+							checked={mcpApprovalOverridden || alwaysAllowMcp === true}
+							disabled={mcpApprovalOverridden}
+							aria-describedby={mcpPolicyDescriptionId}
+							onChange={(event) => {
+								const target = event.target
+								if (
+									!mcpApprovalOverridden &&
+									target !== null &&
+									"checked" in target &&
+									typeof target.checked === "boolean"
+								) {
+									setCachedStateField("alwaysAllowMcp", target.checked)
+								}
+							}}
 							data-testid="always-allow-mcp-checkbox">
 							<span className="font-medium">{t("settings:autoApprove.mcp.label")}</span>
 						</VSCodeCheckbox>
+						<p id={mcpPolicyDescriptionId} className="text-vscode-descriptionForeground text-sm mt-1 mb-0">
+							{t(
+								mcpApprovalOverridden
+									? "settings:autoApprove.mcp.bypassDescription"
+									: "settings:autoApprove.mcp.description",
+							)}
+						</p>
 					</div>
 				</details>
 			</Section>

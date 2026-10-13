@@ -75,10 +75,60 @@ describe("ToolPolicy", () => {
 		expect(resolveCommandTimeoutMs(snapshot, 0, "npm test")).toBe(0)
 	})
 
-	it("applies longest-prefix command denial", () => {
+	it("applies token-prefix command denial", () => {
 		const snapshot = policy()
 
 		expect(isCommandDeniedByPolicy(snapshot, "git push origin main")).toBe(true)
 		expect(isCommandDeniedByPolicy(snapshot, "git diff")).toBe(false)
+	})
+
+	it.each([
+		["git-impostor push", false],
+		["git push-extra origin main", false],
+		['"git" "push" origin main', true],
+		["git status && git push origin main", true],
+		["git status | git push origin main", true],
+		["git status\n git push origin main", true],
+	])("uses the shared decision for captured denial of %s", (command, denied) => {
+		expect(isCommandDeniedByPolicy(policy(), command)).toBe(denied)
+	})
+
+	it("keeps a captured denial authoritative over a more specific allow", () => {
+		const snapshot = createToolPolicySnapshot({
+			visibleTools: ["execute_command"],
+			execution: {
+				command: { allowedPrefixes: ["git push --dry-run"], deniedPrefixes: ["git push"] },
+			},
+		})
+		expect(isCommandDeniedByPolicy(snapshot, "git push --dry-run origin main")).toBe(true)
+	})
+
+	it("captures literal command rules without applying tool aliases or retaining mutable arrays", () => {
+		const allowedPrefixes = ["execute_command", "git STATUS"]
+		const deniedPrefixes = ["write_file"]
+		const timeoutAllowlist = ["execute_command"]
+		const snapshot = createToolPolicySnapshot({
+			visibleTools: ["execute_command"],
+			execution: { command: { allowedPrefixes, deniedPrefixes, timeoutAllowlist } },
+		})
+		allowedPrefixes.push("rm")
+		deniedPrefixes.length = 0
+		timeoutAllowlist.push("*")
+
+		expect(snapshot.execution.command.allowedPrefixes).toEqual(["execute_command", "git STATUS"])
+		expect(snapshot.execution.command.deniedPrefixes).toEqual(["write_file"])
+		expect(snapshot.execution.command.timeoutAllowlist).toEqual(["execute_command"])
+		expect(Object.isFrozen(snapshot.execution.command.allowedPrefixes)).toBe(true)
+	})
+
+	it.each([
+		["npm test-extra", 20_000],
+		["npm-impostor test", 20_000],
+		["npm test && rm build", 20_000],
+		["npm test &&", 20_000],
+		['"npm" "test" --run', 0],
+		["npm test && npm test --run", 0],
+	])("enforces token boundaries and the entire chain for timeout exemption of %s", (command, timeout) => {
+		expect(resolveCommandTimeoutMs(policy(), 0, command)).toBe(timeout)
 	})
 })

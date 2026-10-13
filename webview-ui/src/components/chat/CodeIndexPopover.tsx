@@ -409,9 +409,8 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		return () => window.removeEventListener("message", handleMessage)
 	}, [open])
 
-	// Use a ref to capture current settings for the save handler
-	const currentSettingsRef = useRef(currentSettings)
-	currentSettingsRef.current = currentSettings
+	// Acknowledgements apply to the submitted snapshot, not edits made while saving.
+	const pendingSettingsRef = useRef<LocalCodeIndexSettings>()
 
 	// Listen for indexing status updates and save responses
 	useEffect(() => {
@@ -432,20 +431,31 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 				}
 			} else if (event.data.type === "codeIndexSettingsSaved") {
 				if (event.data.success) {
-					setSaveStatus("saved")
-					// Update initial settings to match current settings after successful save
-					// This ensures hasUnsavedChanges becomes false
-					const savedSettings = redactSavedSecrets({ ...currentSettingsRef.current })
+					const submittedSettings = pendingSettingsRef.current
+					if (!submittedSettings) return
+					pendingSettingsRef.current = undefined
+					const savedSettings = redactSavedSecrets(submittedSettings)
 					setInitialSettings(savedSettings)
-					// Also update current settings to maintain consistency
-					setCurrentSettings(savedSettings)
-					// Request secret status to ensure we have the latest state
-					// This is important to maintain placeholder display after save
-
+					setCurrentSettings((current) => ({
+						...current,
+						...Object.fromEntries(
+							Object.entries(savedSettings).filter(([key]) => {
+								const field = key as keyof LocalCodeIndexSettings
+								return current[field] === submittedSettings[field]
+							}),
+						),
+					}))
+					setSavedSecretStatus((previous) => {
+						const next = { ...previous }
+						for (const field of Object.keys(secretStatusKeyByField) as SecretField[]) {
+							if (submittedSettings[field]) next[field] = true
+						}
+						return next
+					})
 					vscode.postMessage({ type: "requestCodeIndexSecretStatus" })
-
 					setSaveStatus("idle")
 				} else {
+					pendingSettingsRef.current = undefined
 					setSaveStatus("error")
 					setSaveError(event.data.error || t("settings:codeIndex.saveError"))
 				}
@@ -603,6 +613,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 		setSaveStatus("saving")
 		setSaveError(null)
+		pendingSettingsRef.current = { ...currentSettings }
 
 		// Prepare settings to save
 		const settingsToSave: any = {}
@@ -1097,6 +1108,14 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												)}
 												className="w-full"
 											/>
+											{hasSavedSecret("codebaseIndexGeminiApiKey") &&
+												!currentSettings.codebaseIndexGeminiApiKey && (
+													<p
+														role="status"
+														className="text-xs text-vscode-descriptionForeground m-0">
+														{t("settings:codeIndex.geminiApiKeySaved")}
+													</p>
+												)}
 											{formErrors.codebaseIndexGeminiApiKey && (
 												<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
 													{formErrors.codebaseIndexGeminiApiKey}

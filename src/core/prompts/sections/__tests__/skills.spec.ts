@@ -4,6 +4,7 @@ import {
 	getSkillsSection,
 	getSkillsSectionParts,
 } from "../skills"
+import type { SkillMetadata } from "../../../../shared/skills"
 
 const pdfSkill = {
 	name: "pdf-processing",
@@ -39,6 +40,24 @@ describe("getSkillsSection", () => {
 		await expect(getSkillsSection({ getSkillsForMode: vi.fn() }, undefined)).resolves.toBe("")
 	})
 
+	it("omits explicit-only portable skills while retaining allowed, legacy, and built-in entries", async () => {
+		const skills: SkillMetadata[] = [
+			{ ...pdfSkill, name: "explicit-review", allowImplicitInvocation: false },
+			{ ...pdfSkill, allowImplicitInvocation: true },
+			{ ...pdfSkill, name: "legacy-skill" },
+			{ ...pdfSkill, name: "debug", source: "builtin" as const },
+		]
+		const manager = { getSkillsForMode: vi.fn(() => skills) }
+		const result = await getSkillsSection(manager, "code")
+
+		expect(manager.getSkillsForMode).toHaveBeenCalledExactlyOnceWith("code")
+		expect(result).not.toContain("explicit-review")
+		expect(result).toContain("<name>pdf-processing</name>")
+		expect(result).toContain("<name>legacy-skill</name>")
+		expect(result).toContain("<name>debug</name>")
+		expect(skills[0].allowImplicitInvocation).toBe(false)
+	})
+
 	it("omits the pre-response skill-applicability ritual", async () => {
 		const result = await getSkillsSection(mockSkillsManager(), "code")
 
@@ -71,6 +90,32 @@ describe("getSkillsCatalogSection", () => {
 	it("returns an empty section when the catalog or mode is missing", () => {
 		expect(getSkillsCatalogSection([], "code")).toBe("")
 		expect(getSkillsCatalogSection([pdfSkill], undefined)).toBe("")
+	})
+
+	it("returns empty parts and guidance when every captured skill requires explicit invocation", () => {
+		const explicitOnly = [{ ...pdfSkill, allowImplicitInvocation: false }]
+		expect(getSkillsCatalogSection(explicitOnly, "code")).toBe("")
+		expect(getSkillsCatalogSectionParts(explicitOnly, "code")).toEqual({ catalog: "", guidance: "" })
+	})
+
+	it.each([true, undefined])("keeps the captured catalog when implicit policy is %s", (allowImplicitInvocation) => {
+		const skill = { ...pdfSkill, allowImplicitInvocation }
+		expect(getSkillsCatalogSectionParts([skill], "code").catalog).toContain("<name>pdf-processing</name>")
+	})
+
+	it("filters captured metadata without exposing a hidden skill's name, description, or path", () => {
+		const hidden = {
+			name: "explicit-secret",
+			description: "HIDDEN_DESCRIPTION",
+			path: "/HIDDEN_PATH/SKILL.md",
+			allowImplicitInvocation: false,
+		}
+		const parts = getSkillsCatalogSectionParts([pdfSkill, hidden], "code")
+		expect(parts.catalog).toContain("<name>pdf-processing</name>")
+		for (const value of [hidden.name, hidden.description, hidden.path]) {
+			expect(parts.catalog).not.toContain(value)
+			expect(parts.guidance).not.toContain(value)
+		}
 	})
 
 	it("escapes XML special characters in name, description, and location", () => {

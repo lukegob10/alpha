@@ -5,6 +5,17 @@ import {
 	getSubagentCommandDecision,
 } from "../commands"
 
+function withPlatform(platform: NodeJS.Platform, run: () => void): void {
+	const original = Object.getOwnPropertyDescriptor(process, "platform")
+	if (!original) throw new Error("The test requires Node's platform descriptor")
+	Object.defineProperty(process, "platform", { value: platform, configurable: true })
+	try {
+		run()
+	} finally {
+		Object.defineProperty(process, "platform", original)
+	}
+}
+
 describe("containsDangerousSubstitution", () => {
 	describe("zsh array assignments (should NOT be flagged)", () => {
 		it("should return false for files=(a b c)", () => {
@@ -100,7 +111,7 @@ describe("plaintext-free inherited command approval", () => {
 		expect(getSubagentCommandDecision("env rm -rf .", policy)).toBe("auto_deny")
 	})
 
-	it("preserves longest-prefix and chain decisions without persisting command text", () => {
+	it("preserves token-prefix and chain decisions without persisting command text", () => {
 		const allowed = ["git", "git push --dry-run", "mycli --token hunter2"]
 		const denied = ["git push", "curl -u user:password"]
 		const policy = createSubagentCommandApprovalPolicy(allowed, denied, "8".repeat(64))
@@ -126,12 +137,13 @@ describe("plaintext-free inherited command approval", () => {
 		expect(getSubagentCommandDecision('echo "${var@P}"', policy)).toBe("ask_user")
 	})
 
-	it("preserves configured prefix whitespace semantics", () => {
+	it("parses configured token whitespace without turning a padded wildcard into a grant", () => {
 		const allowed = [" git", " * "]
 		const policy = createSubagentCommandApprovalPolicy(allowed, [], "a".repeat(64))
 
 		expect(getSubagentCommandDecision("git status", policy)).toBe(getCommandDecision("git status", allowed, []))
-		expect(getSubagentCommandDecision("git status", policy)).toBe("ask_user")
+		expect(getSubagentCommandDecision("git status", policy)).toBe("auto_approve")
+		expect(getSubagentCommandDecision("pnpm test", policy)).toBe("ask_user")
 	})
 })
 
@@ -184,8 +196,13 @@ describe("getCommandDecision — integration with dangerous substitution checks"
 
 	it("requires every executable in a bounded read pipeline to be allowed", () => {
 		const command = "rg -n -i -m 20 'active ticket|ticket.*active|active' ledger.txt | cut -c 1-240"
-		expect(getCommandDecision(command, ["node", "rg"])).toBe("ask_user")
-		expect(getCommandDecision(command, ["node", "rg", "cut"])).toBe("auto_approve")
+		withPlatform("linux", () => {
+			expect(getCommandDecision(command, ["node", "rg"])).toBe("ask_user")
+			expect(getCommandDecision(command, ["node", "rg", "cut"])).toBe("auto_approve")
+		})
+		withPlatform("win32", () => {
+			expect(getCommandDecision(command, ["node", "rg", "cut"])).toBe("ask_user")
+		})
 	})
 
 	it("should auto-approve the complex node -e one-liner when node is allowed", () => {
@@ -244,7 +261,9 @@ describe("getCommandDecision — integration with dangerous substitution checks"
 
 	it("preserves approval for literal dollar-prefixed executable names", () => {
 		expect(getCommandDecision("'$cmd' victim", ["*"], ["rm"])).toBe("auto_approve")
-		expect(getCommandDecision("\\$cmd victim", ["*"], ["rm"])).toBe("auto_approve")
+		expect(getCommandDecision("\\$cmd victim", ["*"], ["rm"])).toBe(
+			process.platform === "win32" ? "ask_user" : "auto_approve",
+		)
 	})
 
 	it("applies substitution and executable-variable checks to hashed inherited policy", () => {

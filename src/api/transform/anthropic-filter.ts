@@ -30,8 +30,24 @@ export function filterNonAnthropicBlocks(
 ): Anthropic.Messages.MessageParam[] {
 	return normalizeToolHistory(messages)
 		.map((message) => {
+			// Source message metadata stays in Alpha's transcript. Anthropic does
+			// not accept Responses phases, message IDs, or canonical evidence.
+			const {
+				id: _messageId,
+				messageId: _sourceMessageId,
+				phase: _phase,
+				agentResponseItems: _responseItems,
+				agentResponseOutcome: _responseOutcome,
+				...wireMessage
+			} = message as Anthropic.Messages.MessageParam & {
+				id?: unknown
+				messageId?: unknown
+				phase?: unknown
+				agentResponseItems?: unknown
+				agentResponseOutcome?: unknown
+			}
 			if (typeof message.content === "string") {
-				return message
+				return wireMessage
 			}
 
 			const filteredContent = message.content
@@ -41,6 +57,19 @@ export function filterNonAnthropicBlocks(
 					return VALID_ANTHROPIC_BLOCK_TYPES.has(blockType)
 				})
 				.map((block) => {
+					if (block.type === "text") {
+						const {
+							id: _id,
+							phase: _phase,
+							outputIndex: _outputIndex,
+							...fields
+						} = block as Anthropic.TextBlockParam & {
+							id?: unknown
+							phase?: unknown
+							outputIndex?: unknown
+						}
+						return fields
+					}
 					if (block.type !== "tool_use") return block
 					const {
 						tool_call_id: _legacyId,
@@ -61,7 +90,7 @@ export function filterNonAnthropicBlocks(
 			}
 
 			return {
-				...message,
+				...wireMessage,
 				content: filteredContent,
 			}
 		})

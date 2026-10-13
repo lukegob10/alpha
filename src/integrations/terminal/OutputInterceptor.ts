@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 
 import { TerminalOutputPreviewSize, TERMINAL_PREVIEW_BYTES, PersistedCommandOutput } from "@alpha-code/types"
+import { getCommandArtifactExecutionId } from "../../core/tools/commandOutputContract"
 
 /**
  * Configuration options for creating an OutputInterceptor instance.
@@ -23,7 +24,7 @@ export interface OutputInterceptorOptions {
  * OutputInterceptor buffers terminal command output and spills to disk when threshold exceeded.
  *
  * This implements a "persisted output" pattern where large command outputs are saved to disk
- * files, with only a preview shown to the LLM. The LLM can then use the `manage_command` read action
+ * files, with only a preview shown to the LLM. The LLM can then use the `write_stdin` artifact branch
  * to retrieve full contents or search through the output.
  *
  * The interceptor uses a **head/tail buffer** strategy (inspired by Codex):
@@ -375,7 +376,7 @@ export class OutputInterceptor {
 	/**
 	 * Remove all command output artifact files from a directory.
 	 *
-	 * Deletes all files matching the pattern `cmd-*.txt` in the specified directory.
+	 * Deletes only recognized numeric and UUID command artifact filenames in the specified directory.
 	 * This is typically called when a task is cleaned up or reset.
 	 *
 	 * @param storageDir - The directory containing artifact files to clean
@@ -389,7 +390,7 @@ export class OutputInterceptor {
 		try {
 			const files = await fs.promises.readdir(storageDir)
 			for (const file of files) {
-				if (file.startsWith("cmd-")) {
+				if (getCommandArtifactExecutionId(file) !== undefined) {
 					await fs.promises.unlink(path.join(storageDir, file)).catch(() => {})
 				}
 			}
@@ -406,6 +407,8 @@ export class OutputInterceptor {
 	 *
 	 * @param storageDir - The directory containing artifact files
 	 * @param executionIds - Set of execution IDs to preserve (files NOT in this set are deleted)
+	 * @param candidates - Optional pre-rewind execution IDs; untracked or newer output is preserved
+	 * @param canRemove - Synchronous owner check repeated immediately before each unlink
 	 *
 	 * @example
 	 * ```typescript
@@ -414,12 +417,22 @@ export class OutputInterceptor {
 	 * await OutputInterceptor.cleanupByIds('/path/to/command-output', keepIds);
 	 * ```
 	 */
-	static async cleanupByIds(storageDir: string, executionIds: Set<string>): Promise<void> {
+	static async cleanupByIds(
+		storageDir: string,
+		executionIds: ReadonlySet<string>,
+		candidates?: ReadonlySet<string>,
+		canRemove?: (executionId: string) => boolean,
+	): Promise<void> {
 		try {
 			const files = await fs.promises.readdir(storageDir)
 			for (const file of files) {
-				const match = file.match(/^cmd-(\d+)\.txt$/)
-				if (match && !executionIds.has(match[1])) {
+				const executionId = getCommandArtifactExecutionId(file)
+				if (
+					executionId !== undefined &&
+					!executionIds.has(executionId) &&
+					(!candidates || candidates.has(executionId)) &&
+					(!canRemove || canRemove(executionId))
+				) {
 					await fs.promises.unlink(path.join(storageDir, file)).catch(() => {})
 				}
 			}

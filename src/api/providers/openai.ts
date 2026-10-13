@@ -1,14 +1,21 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI, { AzureOpenAI } from "openai"
 import axios from "axios"
+import { isDeepStrictEqual } from "node:util"
 
 import {
 	type ModelInfo,
+	type AssistantMessageMetadata,
+	normalizeAssistantMessageMetadata,
 	taskReasoningCustomTokenPattern,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
 	OPENAI_AZURE_AI_INFERENCE_PATH,
+	resolveModelParameterApplicability,
+	resolveOptionalOutputTokenLimit,
+	usesOpenAiReasoningFamilyChat,
+	usesOpenAiResponsesApi,
 } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
@@ -28,7 +35,6 @@ import {
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
-import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
@@ -48,14 +54,6 @@ import {
 // protocol default local to the generic adapter; the retired DeepSeek catalog
 // and provider remain removed.
 const DEEP_SEEK_DEFAULT_TEMPERATURE = 0.3
-
-function usesOpenAiResponsesApi(modelId: string, options: ApiHandlerOptions): boolean {
-	const deepseekReasoner = modelId.includes("deepseek-reasoner") || (options.openAiR1FormatEnabled ?? false)
-	return (
-		!deepseekReasoner &&
-		getNativeOpenAiModelCapabilities(modelId, options.openAiBaseUrl, options.openAiUseAzure)?.responses === true
-	)
-}
 
 function createOpenAiChatCompletionOutcome(
 	finishReason: string | null | undefined,
@@ -213,6 +211,9 @@ function toR1InstructionMessages(
 }
 
 function openAiResponsesOutputIdentity(item: OpenAI.Responses.ResponseOutputItem): string {
+	// Message IDs are optional in the protocol and may arrive only at completion.
+	// Their stable index owns the boundary; the metadata map validates known IDs.
+	if (item.type === "message") return JSON.stringify([item.type])
 	return item.type === "function_call" || item.type === "custom_tool_call"
 		? JSON.stringify([item.type, item.call_id, item.name])
 		: JSON.stringify([item.type, item.id])
@@ -329,7 +330,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		this.responsesEncryptedContent = undefined
 		this.responsesReasoningItems.clear()
 		this.responsesSummary = undefined
-		const { info: modelInfo, reasoning } = this.getModel()
+		const { info: modelInfo, reasoning, temperature } = this.getModel()
 		const effectiveReasoning = this.getRuntimeReasoning(reasoning)
 		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
@@ -365,7 +366,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			return
 		}
 
-		if (modelId.includes("o1") || modelId.includes("o3") || modelId.includes("o4")) {
+		if (usesOpenAiReasoningFamilyChat(modelId)) {
 			yield* this.handleO3FamilyMessage(modelId, systemPrompt, messages, metadata)
 			return
 		}
@@ -444,7 +445,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 				model: modelId,
-				temperature: this.options.modelTemperature ?? (deepseekReasoner ? DEEP_SEEK_DEFAULT_TEMPERATURE : 0),
+				...(temperature !== undefined ? { temperature } : {}),
 				messages: convertedMessages,
 				stream: true as const,
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
@@ -526,6 +527,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		} else {
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: modelId,
+				...(temperature !== undefined ? { temperature } : {}),
 				messages: deepseekReasoner
 					? convertToR1Format([...toR1InstructionMessages(systemPrompt, instructionFragments), ...messages])
 					: [
@@ -605,7 +607,17 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				: {}),
 			...(summaryEnabled ? { summary: "auto" as const } : {}),
 		}
-		const maxOutputTokens = this.options.modelMaxTokens || modelInfo.maxTokens
+		const maxOutputTokens = resolveOptionalOutputTokenLimit({
+			model: modelInfo,
+			settings: this.options,
+			route: "openai-responses",
+		})
+		const { supportsVerbosity } = resolveModelParameterApplicability({
+			provider: "openai",
+			modelId,
+			model: modelInfo,
+			settings: this.options,
+		})
 		const commonOptions = {
 			model: modelId,
 			input: buildOpenAiResponsesInput(
@@ -623,8 +635,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				: {}),
 			store,
 			...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-			...(this.options.includeMaxTokens === true && maxOutputTokens
-				? { max_output_tokens: maxOutputTokens }
+			...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
+			...(supportsVerbosity && this.options.verbosity !== undefined
+				? { text: { verbosity: this.options.verbosity } }
 				: {}),
 		}
 
@@ -652,6 +665,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	private async *handleOpenAiResponsesStream(stream: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
+		const messageMetadata = new Map<number, AssistantMessageMetadata>()
 		const handledOutputIdentities = new Map<number, string>()
 		const textDeltaParts = new Set<string>()
 		let reasoningSummary = ""
@@ -661,7 +675,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			switch (event.type) {
 				case "response.output_item.added": {
 					const item = event.item
-					if (item.type === "function_call") {
+					if (item.type === "message") {
+						yield {
+							type: "message_metadata",
+							...this.captureOpenAiResponsesMessageMetadata(item, event.output_index, messageMetadata),
+						}
+					} else if (item.type === "function_call") {
 						toolCalls.set(event.output_index, {
 							id: item.call_id,
 							name: item.name,
@@ -715,12 +734,28 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 				case "response.output_text.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta }
+					yield {
+						type: "text",
+						text: event.delta,
+						...this.captureOpenAiResponsesMessageMetadata(
+							{ id: event.item_id },
+							event.output_index,
+							messageMetadata,
+						),
+					}
 					break
 				}
 				case "response.refusal.delta": {
 					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield { type: "text", text: event.delta }
+					yield {
+						type: "text",
+						text: event.delta,
+						...this.captureOpenAiResponsesMessageMetadata(
+							{ id: event.item_id },
+							event.output_index,
+							messageMetadata,
+						),
+					}
 					break
 				}
 				case "response.reasoning_summary_text.delta": {
@@ -739,10 +774,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					const handled = handledOutputIdentities.get(event.output_index)
 					if (handled !== undefined) {
 						if (handled !== identity) throw new Error("OpenAI Responses output item changed identity")
+						if (event.item.type === "message") {
+							yield {
+								type: "message_metadata",
+								...this.captureOpenAiResponsesMessageMetadata(
+									event.item,
+									event.output_index,
+									messageMetadata,
+								),
+							}
+						}
 						break
 					}
 					handledOutputIdentities.set(event.output_index, identity)
-					yield* this.emitOpenAiResponsesOutputItem(event.item, event.output_index, toolCalls, textDeltaParts)
+					yield* this.emitOpenAiResponsesOutputItem(
+						event.item,
+						event.output_index,
+						toolCalls,
+						textDeltaParts,
+						messageMetadata,
+					)
 					break
 				}
 				case "response.incomplete":
@@ -756,6 +807,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						toolCalls,
 						handledOutputIdentities,
 						textDeltaParts,
+						messageMetadata,
 						reasoningSummary,
 						true,
 					)
@@ -779,7 +831,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
 		const textDeltaParts = new Set<string>()
-		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), textDeltaParts, "")
+		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), textDeltaParts, new Map(), "")
 	}
 
 	private async *finishOpenAiResponsesResult(
@@ -787,6 +839,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		handledOutputIdentities: Map<number, string>,
 		textDeltaParts: Set<string>,
+		messageMetadata: Map<number, AssistantMessageMetadata>,
 		reasoningSummary: string,
 		completedEvent = false,
 	): ApiStream {
@@ -816,8 +869,25 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 		}
 		for (const [index, item] of output.entries()) {
-			if (handledOutputIdentities.has(index)) continue
-			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts)
+			if (handledOutputIdentities.has(index)) {
+				if (item.type === "message") {
+					yield {
+						type: "message_metadata",
+						...this.captureOpenAiResponsesMessageMetadata(item, index, messageMetadata),
+					}
+					continue
+				}
+				if (item.type !== "reasoning" || !item.encrypted_content) continue
+				const streamed = this.responsesReasoningItems.get(index)
+				if (
+					streamed?.encrypted_content === item.encrypted_content &&
+					streamed.id === item.id &&
+					isDeepStrictEqual(streamed.summary, item.summary)
+				) {
+					continue
+				}
+			}
+			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts, messageMetadata)
 		}
 		if (toolCalls.size > 0) {
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
@@ -840,6 +910,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		outputIndex: number,
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		textDeltaParts: Set<string>,
+		messageMetadata: Map<number, AssistantMessageMetadata>,
 	): ApiStream {
 		const active = toolCalls.get(outputIndex)
 		if (
@@ -855,7 +926,13 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 		if (item.type === "function_call") {
 			if (!active) {
-				yield { type: "tool_call", id: item.call_id, name: item.name, arguments: item.arguments }
+				yield {
+					type: "tool_call",
+					id: item.call_id,
+					name: item.name,
+					arguments: item.arguments,
+					outputIndex,
+				}
 				yield { type: "tool_call_end", id: item.call_id }
 				return
 			}
@@ -877,6 +954,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					id: item.call_id,
 					name: item.name,
 					arguments: normalizeOpenAiCustomToolInput(item.name, item.input),
+					outputIndex,
 				}
 				yield { type: "tool_call_end", id: item.call_id }
 				return
@@ -900,20 +978,56 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		if (item.type === "reasoning") {
 			this.captureOpenAiResponsesReasoningItem(item, outputIndex)
+			if (typeof item.encrypted_content === "string" && item.encrypted_content) {
+				yield {
+					type: "reasoning",
+					text: "",
+					encryptedContent: item.encrypted_content,
+					id: item.id,
+					...(item.summary !== undefined ? { summary: structuredClone(item.summary) } : {}),
+					outputIndex,
+				}
+			}
 			return
 		}
 
 		if (item.type !== "message") return
+		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata)
+		// Some providers attach phase only when the item or response completes.
+		// Update prior deltas without emitting the same visible text a second time.
+		yield { type: "message_metadata", ...metadata }
+		if (item.content.length === 0 && !textDeltaParts.has(`${outputIndex}:empty`)) {
+			textDeltaParts.add(`${outputIndex}:empty`)
+			yield { type: "text", text: "", ...metadata }
+		}
 		for (const [contentIndex, content] of item.content.entries()) {
 			const key = `${outputIndex}:${contentIndex}`
 			if (content.type === "output_text" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.text }
+				yield { type: "text", text: content.text, ...metadata }
 			} else if (content.type === "refusal" && !textDeltaParts.has(key)) {
 				textDeltaParts.add(key)
-				yield { type: "text", text: content.refusal }
+				yield { type: "text", text: content.refusal, ...metadata }
 			}
 		}
+	}
+
+	private captureOpenAiResponsesMessageMetadata(
+		item: unknown,
+		outputIndex: number,
+		messages: Map<number, AssistantMessageMetadata>,
+	): AssistantMessageMetadata {
+		if (!Number.isSafeInteger(outputIndex) || outputIndex < 0) {
+			throw new Error("OpenAI Responses message has an invalid index")
+		}
+		const previous = messages.get(outputIndex)
+		const incoming = normalizeAssistantMessageMetadata(item)
+		if (previous?.id !== undefined && incoming.id !== undefined && previous.id !== incoming.id) {
+			throw new Error("OpenAI Responses streamed message changed identity")
+		}
+		const metadata = { ...previous, ...incoming, outputIndex }
+		messages.set(outputIndex, metadata)
+		return metadata
 	}
 
 	private captureOpenAiResponsesState(response: Partial<OpenAI.Responses.Response>): void {
@@ -1027,9 +1141,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			modelId: id,
 			model: info,
 			settings: this.options,
-			defaultTemperature: 0,
+			defaultTemperature:
+				id.includes("deepseek-reasoner") || this.options.openAiR1FormatEnabled
+					? DEEP_SEEK_DEFAULT_TEMPERATURE
+					: 0,
 		})
-		return { id, info, ...params, toolIdentity: { provider: "openai", id } }
+		const applicability = resolveModelParameterApplicability({
+			provider: "openai",
+			modelId: id,
+			model: info,
+			settings: this.options,
+		})
+		return {
+			id,
+			info,
+			...params,
+			temperature:
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? params.temperature : undefined),
+			verbosity: applicability.supportsVerbosity ? params.verbosity : undefined,
+			toolIdentity: { provider: "openai", id },
+		}
 	}
 
 	async completePrompt(prompt: string): Promise<string> {
@@ -1038,11 +1169,24 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const model = this.getModel()
 			const modelInfo = model.info
 			const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+			const applicability = resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: model.id,
+				model: modelInfo,
+				settings: this.options,
+				requestKind: "single-completion",
+			})
 
+			const temperature =
+				applicability.fixedTemperature ?? (applicability.supportsTemperature ? model.temperature : undefined)
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: model.id,
 				messages: [{ role: "user", content: prompt }],
+				...(temperature !== undefined ? { temperature } : {}),
 				...(effectiveReasoning && effectiveReasoning),
+				...(applicability.supportsVerbosity && this.options.verbosity !== undefined
+					? { verbosity: this.options.verbosity }
+					: {}),
 			}
 
 			// Add max_tokens if needed
@@ -1278,11 +1422,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			| OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
 		modelInfo: ModelInfo,
 	): void {
-		// Only add max_completion_tokens if includeMaxTokens is true
-		if (this.options.includeMaxTokens === true) {
-			// Use user-configured modelMaxTokens if available, otherwise fall back to model's default maxTokens
-			// Using max_completion_tokens as max_tokens is deprecated
-			requestOptions.max_completion_tokens = this.options.modelMaxTokens || modelInfo.maxTokens
+		const maxOutputTokens = resolveOptionalOutputTokenLimit({ model: modelInfo, settings: this.options })
+		if (maxOutputTokens !== undefined) {
+			requestOptions.max_completion_tokens = maxOutputTokens
 		}
 	}
 }

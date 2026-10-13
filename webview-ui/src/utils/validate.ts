@@ -8,6 +8,10 @@ import {
 	isProviderName,
 	isFauxProvider,
 	isCustomProvider,
+	openAiModelInfoSaneDefaults,
+	resolveOptionalOutputTokenLimit,
+	resolveModelParameterApplicability,
+	MIN_OPENAI_RESPONSES_OUTPUT_TOKENS,
 } from "@alpha-code/types"
 
 const VERTEX_GATEWAY_REQUIRED_FIELDS = ["gatewayBaseUrl", "pemCaBundlePath", "helixCommand"] as const
@@ -58,11 +62,41 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				return i18next.t("settings:validation.stellar")
 			}
 			break
-		case "openai":
+		case "openai": {
 			if (!apiConfiguration.openAiBaseUrl || !apiConfiguration.openAiApiKey || !apiConfiguration.openAiModelId) {
 				return i18next.t("settings:validation.openAi")
 			}
+			const model = apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults
+			const { route } = resolveModelParameterApplicability({
+				provider: "openai",
+				modelId: apiConfiguration.openAiModelId,
+				model,
+				settings: apiConfiguration,
+			})
+			try {
+				resolveOptionalOutputTokenLimit({
+					model,
+					settings: apiConfiguration,
+					route,
+				})
+			} catch (error) {
+				if (!(error instanceof RangeError)) throw error
+				const limit = apiConfiguration.modelMaxTokens ?? model.maxTokens
+				if (
+					route === "openai-responses" &&
+					typeof limit === "number" &&
+					Number.isSafeInteger(limit) &&
+					limit > 0 &&
+					limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS
+				) {
+					return i18next.t("settings:validation.responsesOutputTokenLimit", {
+						minimum: MIN_OPENAI_RESPONSES_OUTPUT_TOKENS,
+					})
+				}
+				return i18next.t("settings:validation.outputTokenLimit")
+			}
 			break
+		}
 		case "vscode-lm":
 			if (!apiConfiguration.vsCodeLmModelSelector) {
 				return i18next.t("settings:validation.modelSelector")

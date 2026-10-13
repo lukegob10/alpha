@@ -132,56 +132,141 @@ export function analyzeShellCommands(source: string): ShellCommandAnalysis {
 	}
 }
 
-interface ShellTokenDetail {
+export interface ShellCommandToken {
 	value: string
-	startsWithDynamicExpansion: boolean
+	/** Expansions/globs cannot be compared with a literal configured argument. */
+	dynamic: boolean
 	redirection?: boolean
 }
 
-function tokenizeShellCommandDetails(source: string, splitRedirections = false): ShellTokenDetail[][] {
-	const commands: ShellTokenDetail[][] = []
-	let tokens: ShellTokenDetail[] = []
+export interface ShellCommandTokenAnalysis {
+	commands: Array<{ source: string; tokens: ShellCommandToken[] }>
+	malformed: boolean
+	unsupportedSyntax: boolean
+	/** Supported quote notation whose execution differs between Windows shells. */
+	ambiguousSyntax: boolean
+	hasChainOperators: boolean
+}
+
+export type ShellCommandPlatform = "win32" | "posix"
+
+function tokenizeShellCommandDetails(
+	source: string,
+	splitRedirections = false,
+	platform: ShellCommandPlatform = process.platform === "win32" ? "win32" : "posix",
+): ShellCommandTokenAnalysis {
+	const analysis: ShellCommandTokenAnalysis = {
+		commands: [],
+		malformed: source.includes("\0"),
+		unsupportedSyntax: false,
+		ambiguousSyntax: false,
+		hasChainOperators: false,
+	}
+	let tokens: ShellCommandToken[] = []
 	let current = ""
 	let tokenStarted = false
-	let startsWithDynamicExpansion = false
+	let dynamic = false
 	let quote: "single" | "double" | null = null
-	let substitutionDepth = 0
-	let inBackticks = false
+	let commandStart = 0
+	let tokenStart = 0
+	let requiresCommand = false
+	let invocationOperator = false
 
 	const pushToken = () => {
-		if (tokenStarted) tokens.push({ value: current, startsWithDynamicExpansion })
+		if (tokenStarted) tokens.push({ value: current, dynamic })
 		current = ""
 		tokenStarted = false
-		startsWithDynamicExpansion = false
+		dynamic = false
 	}
-	const pushCommand = () => {
+	const pushCommand = (end: number): boolean => {
 		pushToken()
-		if (tokens.length > 0) commands.push(tokens)
+		const hasTokens = tokens.length > 0
+		if (hasTokens) {
+			const first = platform === "win32" ? tokens[0].value.toLowerCase() : tokens[0].value
+			if (
+				[
+					"if",
+					"then",
+					"else",
+					"elif",
+					"fi",
+					"for",
+					"while",
+					"until",
+					"do",
+					"done",
+					"case",
+					"esac",
+					"select",
+					"function",
+					"!",
+					"time",
+					"coproc",
+				].includes(first)
+			) {
+				analysis.unsupportedSyntax = true
+			}
+			for (let index = 0; index < tokens.length; index++) {
+				if (
+					tokens[index].redirection &&
+					!/[<>]&[\d-]+$/.test(tokens[index].value) &&
+					(!tokens[index + 1] || tokens[index + 1].redirection)
+				) {
+					analysis.malformed = true
+				}
+			}
+			analysis.commands.push({ source: source.slice(commandStart, end).trim(), tokens })
+			requiresCommand = false
+			invocationOperator = false
+		}
 		tokens = []
+		commandStart = end
+		return hasTokens
 	}
 
 	for (let index = 0; index < source.length; index++) {
 		const character = source[index]
 		const nextCharacter = source[index + 1]
 
-		if (inBackticks) {
-			current += character
-			tokenStarted = true
-			if (character === "`") inBackticks = false
-			continue
+		if (
+			platform === "win32" &&
+			((character === "%" && /^(?:%[^%\r\n]+%|%[0-9*]|%~[A-Za-z$0-9:]+)/.test(source.slice(index))) ||
+				(character === "!" && /^![^!\r\n]+!/.test(source.slice(index))))
+		) {
+			// cmd.exe expands variables even inside single quotes; a finite policy cannot assume PowerShell literals.
+			dynamic = true
+			analysis.ambiguousSyntax = true
 		}
 		if (quote === "single") {
-			if (character === "'") quote = null
+			if (platform === "win32" && /[&|<>]/.test(character)) analysis.ambiguousSyntax = true
+			if (platform === "win32" && character === "'" && nextCharacter === "'") {
+				// PowerShell and POSIX shells disagree on doubled single quotes; a finite grant cannot assume a dialect.
+				analysis.ambiguousSyntax = true
+				current += "'"
+				index++
+			} else if (character === "'") quote = null
 			else current += character
 			continue
 		}
-		if (
-			character === "\\" &&
-			nextCharacter !== undefined &&
-			!(splitRedirections && process.platform === "win32" && nextCharacter === "\\")
-		) {
-			const canEscape = quote === "double" ? /["\\$`]/.test(nextCharacter) : /[\s'"\\$`]/.test(nextCharacter)
+		if (character === "\\" && nextCharacter !== undefined) {
+			if (/[\r\n]/.test(nextCharacter)) {
+				if (platform === "posix" && nextCharacter === "\n") {
+					// POSIX removes the pair before argv parsing, including inside double quotes.
+					index++
+					continue
+				}
+				analysis.unsupportedSyntax = true
+			}
+			// Windows separators and UNC prefixes are executable identity, not escapes.
+			const canEscape =
+				quote === "double"
+					? /["$`]/.test(nextCharacter) || (platform !== "win32" && nextCharacter === "\\")
+					: platform === "win32"
+						? /[ \t'"$`]/.test(nextCharacter)
+						: true
 			if (canEscape) {
+				if (platform === "win32") analysis.ambiguousSyntax = true
+				if (!tokenStarted) tokenStart = index
 				current += nextCharacter
 				tokenStarted = true
 				index++
@@ -189,104 +274,187 @@ function tokenizeShellCommandDetails(source: string, splitRedirections = false):
 			}
 		}
 		if (character === "`" && findBacktickEnd(source, index) !== undefined) {
-			if (current.length === 0) startsWithDynamicExpansion = true
-			current += character
+			if (!tokenStarted) tokenStart = index
+			const end = findBacktickEnd(source, index)!
+			current += source.slice(index, end + 1)
 			tokenStarted = true
-			inBackticks = true
+			dynamic = true
+			index = end
 			continue
 		}
 		if (character === "'" && quote === null) {
+			if (!tokenStarted) tokenStart = index
 			quote = "single"
 			tokenStarted = true
 			continue
 		}
 		if (character === '"') {
+			if (!tokenStarted) tokenStart = index
 			quote = quote === "double" ? null : "double"
 			tokenStarted = true
 			continue
 		}
-		if (character === "$" && nextCharacter === "(") {
-			if (current.length === 0) startsWithDynamicExpansion = true
-			current += "$("
+		if (
+			(character === "$" && nextCharacter === "(") ||
+			(quote === null && (character === "<" || character === ">") && nextCharacter === "(")
+		) {
+			if (!tokenStarted) tokenStart = index
+			const end = findParenthesizedSubstitutionEnd(source, index)
+			analysis.malformed ||= end === undefined
+			current += source.slice(index, end === undefined ? source.length : end + 1)
 			tokenStarted = true
-			substitutionDepth++
-			index++
+			dynamic = true
+			index = end ?? source.length
 			continue
 		}
-		if (quote === null && (character === "<" || character === ">") && nextCharacter === "(") {
-			current += `${character}(`
+		if (character === "$" && (nextCharacter === "{" || nextCharacter === "[")) {
+			if (!tokenStarted) tokenStart = index
+			const closing = nextCharacter === "{" ? "}" : "]"
+			let depth = 1
+			let end = index + 2
+			for (; end < source.length && depth > 0; end++) {
+				if (source[end] === nextCharacter) depth++
+				if (source[end] === closing) depth--
+			}
+			analysis.malformed ||= depth !== 0
+			current += source.slice(index, end)
 			tokenStarted = true
-			substitutionDepth++
-			index++
-			continue
-		}
-		if (substitutionDepth > 0) {
-			if (character === "(") substitutionDepth++
-			if (character === ")") substitutionDepth--
-			current += character
-			tokenStarted = true
+			dynamic = true
+			index = end - 1
 			continue
 		}
 		if (quote === null) {
+			if (character === "#" && !tokenStarted) {
+				// PowerShell comments and cmd.exe arguments disagree; keep finite approval conservative.
+				if (platform === "win32") analysis.unsupportedSyntax = true
+				pushCommand(index)
+				while (index + 1 < source.length && !/[\r\n]/.test(source[index + 1])) index++
+				commandStart = index + 1
+				continue
+			}
 			if (splitRedirections && (character === ">" || character === "<")) {
 				// Keep descriptor duplication inert (2>&1) and expose file redirections, even without spaces.
-				if (/^\d*$/.test(current)) current = ""
+				if (/^(?:\d+|\*)$/.test(source.slice(tokenStart, index))) {
+					current = ""
+					tokenStarted = false
+				}
 				pushToken()
 				let operator = character
 				if (nextCharacter === character || nextCharacter === "|") operator += source[++index]
+				if (source[index + 1] === character) {
+					operator += source[++index]
+					analysis.unsupportedSyntax = true
+				}
+				if (operator === "<<") analysis.unsupportedSyntax = true
 				if (source[index + 1] === "&") {
 					operator += source[++index]
 					while (/[\d-]/.test(source[index + 1] ?? "")) operator += source[++index]
 				}
-				tokens.push({ value: operator, startsWithDynamicExpansion: false, redirection: true })
+				tokens.push({ value: operator, dynamic: false, redirection: true })
 				continue
 			}
 			const doubleSeparator =
 				(character === "&" && nextCharacter === "&") || (character === "|" && nextCharacter === "|")
 			if (doubleSeparator) {
-				pushCommand()
+				analysis.hasChainOperators = true
+				if (!pushCommand(index)) analysis.malformed = true
+				requiresCommand = true
 				index++
+				commandStart = index + 1
 				continue
 			}
 			if ([";", "|", "&", "\n", "\r"].includes(character)) {
-				pushCommand()
+				// PowerShell's call operator introduces one executable; '&' after a command is a separator.
+				if (
+					character === "&" &&
+					platform === "win32" &&
+					!tokenStarted &&
+					!tokens.length &&
+					!invocationOperator &&
+					/^(?:\s+\S|['"])/.test(source.slice(index + 1))
+				) {
+					invocationOperator = true
+					requiresCommand = true
+					continue
+				}
+				const newline = character === "\n" || character === "\r"
+				analysis.hasChainOperators ||= !newline || tokens.length > 0 || tokenStarted
+				const hasTokens = pushCommand(index)
+				if (!newline && !hasTokens) analysis.malformed = true
+				if (character === "|") requiresCommand = true
+				commandStart = index + 1
+				if (character === "|" && nextCharacter === "&") {
+					index++
+					commandStart++
+				}
 				continue
 			}
 			if (/\s/.test(character)) {
 				pushToken()
 				continue
 			}
+			if (/[(){}]/.test(character)) analysis.unsupportedSyntax = true
+			if (/[*?\[]/.test(character)) dynamic = true
+			if (platform === "win32" && character === "^") {
+				// cmd.exe may remove caret escapes; without a shell dialect, literal argv cannot be guaranteed.
+				analysis.unsupportedSyntax = true
+				dynamic = true
+			}
 		}
 
-		if (current.length === 0 && character === "$") {
-			startsWithDynamicExpansion = true
+		if (!tokenStarted) tokenStart = index
+		if (character === "$") {
+			dynamic = true
 		}
+		if (character === "`") {
+			if (platform !== "win32") analysis.malformed = true
+			dynamic = true
+		}
+		if (character === "\\" && nextCharacter === undefined && platform !== "win32") analysis.malformed = true
 		current += character
 		tokenStarted = true
 	}
 
-	pushCommand()
-	return commands
+	pushCommand(source.length)
+	analysis.malformed ||= quote !== null || requiresCommand || invocationOperator
+	return analysis
 }
 
 /** Tokenize shell command chains while retaining quoted paths. */
 export function tokenizeShellCommands(source: string): string[][] {
-	return tokenizeShellCommandDetails(source).map((tokens) => tokens.map(({ value }) => value))
+	return tokenizeShellCommandDetails(source).commands.map(({ tokens }) => tokens.map(({ value }) => value))
 }
 
 /** Distinguish file redirection operators from quoted text for command path preflight. */
 export function tokenizeShellCommandPaths(source: string): Array<Array<{ value: string; redirection?: boolean }>> {
-	return tokenizeShellCommandDetails(source, true)
+	return tokenizeShellCommandDetails(source, true).commands.map(({ tokens }) => tokens)
 }
 
-export function containsDynamicExecutable(source: string): boolean {
+/** Approval matching needs both parsed argv and failure evidence; never reconstruct quoted tokens with join(' '). */
+export function analyzeShellCommandTokens(source: string, platform?: ShellCommandPlatform): ShellCommandTokenAnalysis {
+	return tokenizeShellCommandDetails(source, true, platform)
+}
+
+/** Redirection effects stay in path preflight; command policy compares only executable and argument tokens. */
+export function shellCommandArgumentTokens(tokens: ShellCommandToken[]): ShellCommandToken[] {
+	const args: ShellCommandToken[] = []
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]
+		if (!token.redirection) args.push(token)
+		else if (!/[<>]&[\d-]+$/.test(token.value)) index++
+	}
+	return args
+}
+
+export function containsDynamicExecutable(source: string, platform?: ShellCommandPlatform): boolean {
 	const extracted = extractCommandSubstitutions(source)
 	return [source, ...extracted.commands]
-		.flatMap((command) => tokenizeShellCommandDetails(command))
-		.some((tokens) => {
+		.flatMap((command) => tokenizeShellCommandDetails(command, true, platform).commands)
+		.some(({ tokens: rawTokens }) => {
+			const tokens = shellCommandArgumentTokens(rawTokens)
 			let commandIndex = 0
 			while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[commandIndex]?.value ?? "")) commandIndex++
 			const executable = tokens[commandIndex]
-			return executable?.startsWithDynamicExpansion === true && /^(?:\$|`)/.test(executable.value)
+			return executable?.dynamic === true
 		})
 }

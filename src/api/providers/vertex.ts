@@ -1,6 +1,12 @@
-import { type ModelInfo, type VertexModelId, vertexDefaultModelId, vertexModels } from "@alpha-code/types"
+import {
+	type ModelInfo,
+	type VertexModelId,
+	vertexDefaultModelId,
+	vertexModels,
+	validateOptionalOutputTokenLimit,
+} from "@alpha-code/types"
 
-import type { ApiHandlerOptions } from "../../shared/api"
+import { type ApiHandlerOptions, shouldUseReasoningBudget } from "../../shared/api"
 
 import { getModelParams } from "../transform/model-params"
 
@@ -24,10 +30,11 @@ export class VertexHandler extends VertexGeminiHandler implements SingleCompleti
 		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
 			id = modelId
 			// Keep the catalog row's conservative transport/context metadata, but
-			// never clone its reasoning contract onto an unknown model. A newly
-			// released Gemini ID must be treated as reasoning-unavailable until its
+			// never clone its sampling or reasoning contract onto an unknown model. A newly
+			// released Gemini ID must be treated as capability-unavailable until its
 			// wire capabilities are verified and added to the catalog.
 			info = { ...vertexModels["gemini-3.7-flash"] }
+			info.supportsTemperature = false
 			delete info.supportsReasoningEffort
 			delete info.reasoningEffort
 			delete info.supportsReasoningBudget
@@ -36,11 +43,14 @@ export class VertexHandler extends VertexGeminiHandler implements SingleCompleti
 			delete info.requiredReasoningEffort
 		}
 
+		const settings = shouldUseReasoningBudget({ model: info, settings: this.options })
+			? { ...this.options, modelMaxTokens: validateOptionalOutputTokenLimit(this.options.modelMaxTokens) }
+			: this.options
 		const params = getModelParams({
 			format: "gemini",
 			modelId: id,
 			model: info,
-			settings: this.options,
+			settings,
 			defaultTemperature: info.defaultTemperature ?? 1,
 		})
 

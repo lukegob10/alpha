@@ -1357,7 +1357,12 @@ Instructions here...`
 			try {
 				await scoped.initialize()
 				expect(scoped.getSkillsForMode("code")[0]?.description).toBe(description)
-				const watcher = mockWatchers[12]!
+				const projectWatcherIndex = vi
+					.mocked(vscode.RelativePattern)
+					.mock.calls.findIndex(
+						([base, glob]) => base === PROJECT_DIR && glob === ".agents/{skills,skills-*}/**/SKILL.md",
+					)
+				const watcher = mockWatchers[projectWatcherIndex]!
 				for (const [index, event] of [
 					watcher.onDidChange,
 					watcher.onDidCreate,
@@ -1398,8 +1403,13 @@ Instructions here...`
 					p(PROJECT_DIR, "sibling"),
 					".agents/{skills,skills-*}/**/SKILL.md",
 				)
-				expect(mockWatchers).toHaveLength(20)
-				const createHandler = mockWatchers[12].onDidCreate.mock.calls[0]?.[0]
+				expect(mockWatchers).toHaveLength(30)
+				const projectWatcherIndex = vi
+					.mocked(vscode.RelativePattern)
+					.mock.calls.findIndex(
+						([base, glob]) => base === PROJECT_DIR && glob === ".agents/{skills,skills-*}/**/SKILL.md",
+					)
+				const createHandler = mockWatchers[projectWatcherIndex].onDidCreate.mock.calls[0]?.[0]
 				await createHandler({ fsPath: projectAgentsSkillsDir })
 				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: [] })
 				await scoped.dispose()
@@ -1449,8 +1459,13 @@ description: Updated through watcher refresh
 
 				await skillsManager.initialize()
 
-				expect(mockCreateFileSystemWatcher).toHaveBeenCalledTimes(16)
-				const createHandler = mockWatchers[12].onDidCreate.mock.calls[0]?.[0]
+				expect(mockCreateFileSystemWatcher).toHaveBeenCalledTimes(24)
+				const projectWatcherIndex = vi
+					.mocked(vscode.RelativePattern)
+					.mock.calls.findIndex(
+						([base, glob]) => base === PROJECT_DIR && glob === ".agents/{skills,skills-*}/**/SKILL.md",
+					)
+				const createHandler = mockWatchers[projectWatcherIndex].onDidCreate.mock.calls[0]?.[0]
 				expect(createHandler).toBeTypeOf("function")
 
 				await createHandler({ fsPath: projectAgentSkillMd })
@@ -1514,7 +1529,12 @@ description: Added by the skills hub
 				expect(skillsManager.getAllSkills()).toHaveLength(0)
 
 				projectAgentsSkillsAvailable = true
-				const createHandler = mockWatchers[15].onDidCreate.mock.calls[0]?.[0]
+				const projectWatcherIndex = vi
+					.mocked(vscode.RelativePattern)
+					.mock.calls.findIndex(
+						([base, glob]) => base === PROJECT_DIR && glob === ".agents/{skills,skills-*}/*",
+					)
+				const createHandler = mockWatchers[projectWatcherIndex].onDidCreate.mock.calls[0]?.[0]
 				expect(createHandler).toBeTypeOf("function")
 
 				await createHandler({ fsPath: projectAgentSkillDir })

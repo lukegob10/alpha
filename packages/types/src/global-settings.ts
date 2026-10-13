@@ -262,6 +262,8 @@ export const globalSettingsSchema = z.object({
 	 * @default "send"
 	 */
 	enterBehavior: z.enum(["send", "newline"]).optional(),
+	/** Automatically steer submitted messages into a running turn; omitted values queue instead. */
+	autoSteer: z.boolean().optional(),
 	/** @deprecated Read legacy saved values safely; runtime compaction uses the global threshold. */
 	profileThresholds: z.record(z.string(), z.number()).optional(),
 	hasOpenedModeSelector: z.boolean().optional(),

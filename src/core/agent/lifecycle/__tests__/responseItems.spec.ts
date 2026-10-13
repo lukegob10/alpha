@@ -12,6 +12,43 @@ describe("lifecycle response projection", () => {
 		expect(remaining).toEqual([{ itemId: "step:items-3-4", responseItem: { type: "text", text: "34" } }])
 		expect([...lifecycleResponseItems(fragments, "step", new Set(["step:items-0-4"]))]).toEqual([])
 	})
+	it.each([
+		[
+			{ id: "progress", phase: "commentary" },
+			{ id: "answer", phase: "final_answer" },
+		],
+		[
+			{ id: "first", phase: "commentary" },
+			{ id: "second", phase: "commentary" },
+		],
+		[{ id: "first" }, { id: "second" }],
+		[{ outputIndex: 0 }, { outputIndex: 1 }],
+		[{ phase: "partial_answer" }, { phase: "final_answer" }],
+		[{ phase: "commentary" }, { phase: "commentary" }],
+	] as const)("preserves assistant source boundaries %j and %j", (first, second) => {
+		const items: AgentResponseItem[] = [
+			{ type: "text", text: "Checking.", ...first },
+			{ type: "text", text: "Done.", ...second },
+		]
+		expect([...lifecycleResponseItems(items, "step")].map(({ responseItem }) => responseItem)).toEqual(items)
+	})
+	it("groups fragments only within their original assistant message", () => {
+		const items: AgentResponseItem[] = [
+			{ type: "text", text: "First ", id: "message", phase: "partial_answer", outputIndex: 0 },
+			{ type: "text", text: "answer.", id: "message", phase: "partial_answer", outputIndex: 0 },
+			{ type: "text", text: "More.", id: "next", phase: "partial_answer", outputIndex: 1 },
+		]
+		expect([...lifecycleResponseItems(items, "step")]).toEqual([
+			{
+				itemId: "step:items-0-1",
+				responseItem: { ...items[0], text: "First answer." },
+			},
+			{ itemId: "step:item-2", responseItem: items[2] },
+		])
+		expect([...lifecycleResponseItems(items, "step", new Set(["step:items-0-1"]))]).toEqual([
+			{ itemId: "step:item-2", responseItem: items[2] },
+		])
+	})
 	it("preserves tool, usage, grounding and reasoning signature boundaries", () => {
 		const items: AgentResponseItem[] = [
 			{ type: "reasoning", text: "a", signature: "first" },

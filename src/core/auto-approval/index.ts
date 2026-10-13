@@ -92,6 +92,11 @@ export type CheckAutoApprovalResult =
 
 export interface CheckAutoApprovalInput {
 	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
+	/** Invoking step's immutable command ceiling; live settings may only narrow this boundary. */
+	commandPolicy?: {
+		allowedPrefixes: readonly string[]
+		deniedPrefixes: readonly string[]
+	}
 	ask: AlphaAsk
 	text?: string
 	isProtected?: boolean
@@ -101,6 +106,7 @@ export interface CheckAutoApprovalInput {
 
 export async function checkAutoApproval({
 	state,
+	commandPolicy,
 	ask,
 	text,
 	isProtected,
@@ -172,14 +178,26 @@ export async function checkAutoApproval({
 			return { decision: "ask" }
 		}
 
-		const decision = getCommandDecision(
-			text,
-			effectiveCommandAllowlist(mode, state.allowedCommands || []),
-			state.deniedCommands || [],
-		)
-		if (decision === "auto_deny") {
+		const decisions = [
+			getCommandDecision(
+				text,
+				effectiveCommandAllowlist(mode, state.allowedCommands || []),
+				state.deniedCommands || [],
+			),
+		]
+		if (commandPolicy) {
+			decisions.push(
+				getCommandDecision(
+					text,
+					effectiveCommandAllowlist(mode, [...commandPolicy.allowedPrefixes]),
+					commandPolicy.deniedPrefixes,
+				),
+			)
+		}
+		if (decisions.includes("auto_deny")) {
 			return { decision: "deny" }
 		}
+		const decision = decisions.every((decision) => decision === "auto_approve") ? "auto_approve" : "ask_user"
 		if (mode === "ask") {
 			return decision === "auto_approve" &&
 				(state.allowedCommands || []).some((command) => command.trim() !== "*") &&
@@ -296,6 +314,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 }): Promise<CheckAutoApprovalResult> {
 	if (!inheritedState) return checkAutoApproval(input)
 	if (isNonBlockingAsk(input.ask)) return { decision: "approve" }
+	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
 		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
 		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute || !input.text) {
@@ -305,7 +324,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 			(policy) => getSubagentCommandDecision(input.text!, policy),
 		)
 		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
-		if (input.requiresExplicitApproval) return { decision: "ask" }
+		if (input.requiresExplicitApproval && inheritedMode !== "bypass") return { decision: "ask" }
 		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
 		return { decision: "ask" }
 	}
@@ -315,11 +334,21 @@ export async function checkAutoApprovalWithInheritedPolicy({
 
 	if (results.some(({ decision }) => decision === "deny")) return { decision: "deny" }
 	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
-	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	if (liveMode === "ask" || inheritedMode === "ask") return { decision: "ask" }
 	if (liveMode === "bypass" && inheritedMode === "bypass") {
 		// Full Access can skip per-action review only when both the live and captured
 		// grants authorize it. Auto still applies each action's narrower policy.
+		if (input.ask === "command") {
+			if (!input.text || liveResult.decision !== "approve") return { decision: "ask" }
+			const capturedDenials = [
+				inheritedState.commandApproval,
+				...(inheritedState.commandApprovalCeilings ?? []),
+			].map((policy) => getSubagentCommandDecision(input.text!, { ...policy, allowAll: true }))
+			// Bypassing an allowlist miss cannot bypass an opaque or unresolved deny ceiling.
+			if (capturedDenials.some((decision) => decision !== "auto_approve")) {
+				return { decision: "ask" }
+			}
+		}
 		return { decision: "approve" }
 	}
 	if (results.some(({ decision }) => decision === "ask")) return { decision: "ask" }

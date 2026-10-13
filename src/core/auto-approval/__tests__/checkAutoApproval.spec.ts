@@ -1,5 +1,6 @@
+import { createHash } from "crypto"
 import { describe, expect, it } from "vitest"
-import { disabledSubagentAutoApprovalPolicy } from "@alpha-code/types"
+import { disabledSubagentAutoApprovalPolicy, subagentAutoApprovalPolicySchema } from "@alpha-code/types"
 
 import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../index"
 import { createSubagentCommandApprovalPolicy } from "../commands"
@@ -204,6 +205,109 @@ describe("checkAutoApproval", () => {
 				state: { approvalMode: "ask", allowedCommands: ["*", "git status"] },
 			}),
 		).resolves.toEqual({ decision: "approve" })
+	})
+
+	it.each([
+		["git-impostor status", "git", "ask"],
+		["pnpm test-extra", "pnpm test", "ask"],
+		["rm ./build-old", "rm ./build", "ask"],
+		['"git" status --short', "git status", "approve"],
+		["pnpm\t test --run", "pnpm test", "approve"],
+		["git STATUS", "git status", "ask"],
+		["git status && pnpm test-extra", "git status", "ask"],
+	])("reviews reloaded saved allow rules by complete tokens: %s", async (text, rule, decision) => {
+		const storedSettings = JSON.parse(JSON.stringify({ allowedCommands: [rule], deniedCommands: [] }))
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text,
+				state: { approvalMode: "ask", ...storedSettings },
+			}),
+		).resolves.toEqual({ decision })
+	})
+
+	it.each([
+		["git status --short", "approve"],
+		["git status-extra", "ask"],
+		["pnpm test", "ask"],
+	])("does not widen an Ask step's captured command grant after settings change: %s", async (text, decision) => {
+		const commandPolicy = Object.freeze({
+			allowedPrefixes: Object.freeze(["git status"]),
+			deniedPrefixes: Object.freeze([] as string[]),
+		})
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text,
+				commandPolicy,
+				state: {
+					approvalMode: "ask",
+					allowedCommands: ["git status", "git status-extra", "pnpm test"],
+					deniedCommands: [],
+				},
+			}),
+		).resolves.toEqual({ decision })
+	})
+
+	it.each(["auto", "bypass"] as const)(
+		"retains a captured finite denial after live settings remove it in %s",
+		async (approvalMode) => {
+			const commandPolicy = Object.freeze({
+				allowedPrefixes: Object.freeze(["*"]),
+				deniedPrefixes: Object.freeze(["git push"]),
+			})
+			for (const [text, decision] of [
+				["git status", "approve"],
+				["git push origin main", "deny"],
+				['git "$ACTION"', "ask"],
+				["git push${SUFFIX} origin main", "ask"],
+			]) {
+				await expect(
+					checkAutoApproval({
+						ask: "command",
+						text,
+						commandPolicy,
+						state: { approvalMode, allowedCommands: [], deniedCommands: [] },
+					}),
+				).resolves.toEqual({ decision })
+			}
+		},
+	)
+
+	it.each(["ask", "auto", "bypass"] as const)(
+		"lets a new live denial narrow the captured command grant in %s",
+		async (approvalMode) => {
+			const commandPolicy = { allowedPrefixes: ["git"], deniedPrefixes: [] }
+			for (const [text, decision] of [
+				["git push origin main", "deny"],
+				["git push-more origin main", "approve"],
+			]) {
+				await expect(
+					checkAutoApproval({
+						ask: "command",
+						text,
+						commandPolicy,
+						state: { approvalMode, allowedCommands: ["git"], deniedCommands: ["git push"] },
+					}),
+				).resolves.toEqual({ decision })
+			}
+		},
+	)
+
+	it("uses the same authoritative token denial in Ask, Auto, and Full Access", async () => {
+		for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+			const state = {
+				approvalMode,
+				allowedCommands: ["git push --dry-run", "git push-more"],
+				deniedCommands: ["git push"],
+			}
+			await expect(
+				checkAutoApproval({ ask: "command", text: "git push --dry-run origin main", state }),
+			).resolves.toEqual({ decision: "deny" })
+			await expect(
+				checkAutoApproval({ ask: "command", text: "git push-more origin main", state }),
+			).resolves.toEqual({ decision: "approve" })
+		}
 	})
 
 	it("ignores a leftover write-outside chip in Auto and still asks", async () => {
@@ -813,4 +917,117 @@ describe("checkAutoApproval", () => {
 			}),
 		).resolves.toEqual({ decision: "deny" })
 	})
+
+	it.each([
+		["git status", "approve"],
+		["git push origin main", "deny"],
+		['git "$ACTION"', "ask"],
+		["git push${SUFFIX} origin main", "ask"],
+	])("keeps Full Access children inside the invoking step's finite denial ceiling: %s", async (text, decision) => {
+		const inheritedState = {
+			...disabledSubagentAutoApprovalPolicy,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			commandApproval: createSubagentCommandApprovalPolicy(["*"], [], "9".repeat(64)),
+		}
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				ask: "command",
+				text,
+				state: { approvalMode: "bypass", allowedCommands: ["*"], deniedCommands: [] },
+				inheritedState,
+				commandPolicy: { allowedPrefixes: ["*"], deniedPrefixes: ["git push"] },
+			}),
+		).resolves.toEqual({ decision })
+	})
+
+	it.each([
+		["git status --short", "approve"],
+		['"git" status --short', "approve"],
+		["git-impostor status", "ask"],
+		["pnpm test-extra", "ask"],
+		["pnpm test --run", "approve"],
+		["rm ./build", "ask"],
+		["git push --dry-run origin main", "deny"],
+		["git status && pnpm test-extra", "ask"],
+	])("keeps a reloaded child inside its captured command grant: %s", async (text, decision) => {
+		const allowedCommands = ["git status", "git push --dry-run", "pnpm test"]
+		const deniedCommands = ["git push"]
+		const captured = {
+			...disabledSubagentAutoApprovalPolicy,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+			commandApproval: createSubagentCommandApprovalPolicy(allowedCommands, deniedCommands, "c".repeat(64)),
+		}
+		const inheritedState = subagentAutoApprovalPolicySchema.parse(JSON.parse(JSON.stringify(captured)))
+		allowedCommands.push("rm")
+		deniedCommands.splice(0)
+
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				ask: "command",
+				text,
+				state: { approvalMode: "auto", allowedCommands: ["*"], deniedCommands: [] },
+				inheritedState,
+			}),
+		).resolves.toEqual({ decision })
+	})
+
+	it.each(["git push origin main", '"git" push origin main', "'git' push origin main"])(
+		"keeps mixed v1/v2 ancestor denials after reload and live authority broadening: %s",
+		async (text) => {
+			const salt = "d".repeat(64)
+			const denied = '"git" push'
+			const inheritedState = subagentAutoApprovalPolicySchema.parse(
+				JSON.parse(
+					JSON.stringify({
+						...disabledSubagentAutoApprovalPolicy,
+						autoApprovalEnabled: true,
+						alwaysAllowReadOnly: true,
+						alwaysAllowReadOnlyOutsideWorkspace: true,
+						alwaysAllowWrite: true,
+						alwaysAllowWriteOutsideWorkspace: true,
+						alwaysAllowWriteProtected: true,
+						alwaysAllowExecute: true,
+						commandApproval: createSubagentCommandApprovalPolicy(["*"], [], "e".repeat(64)),
+						commandApprovalCeilings: [
+							{
+								algorithm: "sha256-salted-prefix-v1",
+								salt,
+								allowAll: true,
+								denyAll: false,
+								allowed: [],
+								denied: [
+									{
+										prefixLength: denied.length,
+										digest: createHash("sha256")
+											.update(salt)
+											.update("\0")
+											.update(denied)
+											.digest("hex"),
+									},
+								],
+							},
+						],
+					}),
+				),
+			)
+			for (const approvalMode of ["auto", "bypass"] as const) {
+				const result = await checkAutoApprovalWithInheritedPolicy({
+					ask: "command",
+					text,
+					state: { approvalMode, allowedCommands: ["*"], deniedCommands: [] },
+					inheritedState,
+				})
+				expect(result.decision).not.toBe("approve")
+			}
+		},
+	)
 })

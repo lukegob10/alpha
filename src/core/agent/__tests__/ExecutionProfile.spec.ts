@@ -47,6 +47,7 @@ describe("execution profiles", () => {
 		const names = [
 			"read_file",
 			"exec_command",
+			"write_stdin",
 			"request_user_input",
 			"update_plan",
 			"spawn_agent",
@@ -65,7 +66,7 @@ describe("execution profiles", () => {
 					{
 						concurrency: "serial" as const,
 						sideEffects:
-							name === "exec_command" || name === "apply_diff"
+							name === "exec_command" || name === "write_stdin" || name === "apply_diff"
 								? ("workspace" as const)
 								: name === "read_file"
 									? ("none" as const)

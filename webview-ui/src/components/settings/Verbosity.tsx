@@ -1,4 +1,10 @@
-import { type ProviderSettings, type ModelInfo, type VerbosityLevel, verbosityLevels } from "@alpha-code/types"
+import {
+	type ProviderSettings,
+	type ModelInfo,
+	type VerbosityLevel,
+	verbosityLevels,
+	resolveModelParameterApplicability,
+} from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
@@ -7,14 +13,18 @@ interface VerbosityProps {
 	apiConfiguration: ProviderSettings
 	setApiConfigurationField: <K extends keyof ProviderSettings>(field: K, value: ProviderSettings[K]) => void
 	modelInfo?: ModelInfo
+	modelId?: string
 }
 
-export const Verbosity = ({ apiConfiguration, setApiConfigurationField, modelInfo }: VerbosityProps) => {
+export const Verbosity = ({ apiConfiguration, setApiConfigurationField, modelInfo, modelId }: VerbosityProps) => {
 	const { t } = useAppTranslation()
 
-	// For now, we'll show verbosity for all models, but this can be restricted later
-	// based on model capabilities (e.g., only for GPT-5 models)
-	if (!modelInfo) {
+	const { supportsVerbosity } = resolveModelParameterApplicability({
+		modelId: modelId ?? apiConfiguration.openAiModelId ?? apiConfiguration.apiModelId ?? "",
+		model: modelInfo,
+		settings: apiConfiguration,
+	})
+	if (!supportsVerbosity) {
 		return null
 	}
 
@@ -24,12 +34,15 @@ export const Verbosity = ({ apiConfiguration, setApiConfigurationField, modelInf
 				<label className="block font-medium mb-1">{t("settings:providers.verbosity.label")}</label>
 			</div>
 			<Select
-				value={apiConfiguration.verbosity || "medium"}
-				onValueChange={(value) => setApiConfigurationField("verbosity", value as VerbosityLevel)}>
+				value={apiConfiguration.verbosity ?? "default"}
+				onValueChange={(value) =>
+					setApiConfigurationField("verbosity", value === "default" ? undefined : (value as VerbosityLevel))
+				}>
 				<SelectTrigger className="w-full">
 					<SelectValue placeholder={t("settings:common.select")} />
 				</SelectTrigger>
 				<SelectContent>
+					<SelectItem value="default">{t("settings:providers.verbosity.default")}</SelectItem>
 					{verbosityLevels.map((value) => (
 						<SelectItem key={value} value={value}>
 							{t(`settings:providers.verbosity.${value}`)}

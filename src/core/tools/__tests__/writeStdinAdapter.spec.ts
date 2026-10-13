@@ -22,12 +22,13 @@ describe("write_stdin adapter", () => {
 		if (schema.type !== "function") return
 		expect(schema.function.parameters).toMatchObject({
 			properties: { session_id: { type: "integer", minimum: 1 } },
-			required: ["session_id"],
+			required: [],
 		})
 	})
 
 	it.each([
 		{ label: "empty poll default", chars: undefined, requested: undefined, expected: 5_000 },
+		{ label: "strict nullable poll fields", chars: null, requested: null, expected: 5_000 },
 		{ label: "empty poll below minimum", chars: "", requested: 1_000, expected: 5_000 },
 		{ label: "empty poll at maximum", chars: "", requested: 300_000, expected: 300_000 },
 		{ label: "empty poll above maximum", chars: "", requested: 400_000, expected: 300_000 },

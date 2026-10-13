@@ -98,6 +98,38 @@ vitest.mock("vscode", () => {
 })
 
 describe("convertToVsCodeLmMessages", () => {
+	it("preserves enriched text and tool ordering without unsupported message metadata", () => {
+		const messages = [
+			{
+				role: "assistant" as const,
+				content: [
+					{ type: "text" as const, text: "Checking", id: "progress", phase: "commentary", outputIndex: 0 },
+					{ type: "text" as const, text: "Again", id: "other", phase: "commentary", outputIndex: 1 },
+					{ type: "tool_use" as const, id: "tool", name: "read_file", input: { path: "README.md" } },
+					{ type: "text" as const, text: "Partial", id: "partial", phase: "partial_answer", outputIndex: 3 },
+					{ type: "text" as const, text: "Answer", id: "answer", phase: "final_answer", outputIndex: 4 },
+				],
+			},
+			{
+				role: "user" as const,
+				content: [{ type: "tool_result" as const, tool_use_id: "tool", content: "Result" }],
+			},
+		]
+		const before = structuredClone(messages)
+		const result = convertToVsCodeLmMessages(messages)
+		expect(result).toHaveLength(2)
+		expect(result[0].content).toEqual([
+			new vscode.LanguageModelTextPart("Checking"),
+			new vscode.LanguageModelTextPart("Again"),
+			new vscode.LanguageModelToolCallPart("tool", "read_file", { path: "README.md" }),
+			new vscode.LanguageModelTextPart("Partial"),
+			new vscode.LanguageModelTextPart("Answer"),
+		])
+		expect(result[1].content).toEqual([
+			new vscode.LanguageModelToolResultPart("tool", [new vscode.LanguageModelTextPart("Result")]),
+		])
+		expect(messages).toEqual(before)
+	})
 	it.each([null, undefined, "", []])(
 		"replays a legacy terminal ID with raw patch input and empty output (%j)",
 		(content) => {

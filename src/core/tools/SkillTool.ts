@@ -53,9 +53,18 @@ export class SkillTool extends BaseTool<"skill"> {
 					? await task.getTaskMode()
 					: ((await provider?.getState())?.mode ?? "code")
 			const inheritedSkill = task.taskKind === "subagent" ? task.getInheritedSubagentSkill(skillName) : undefined
+			const getSuggestedSkillNames = () =>
+				task.taskKind === "subagent"
+					? task
+							.getInheritedSubagentSkillNames()
+							.filter((name) => task.getInheritedSubagentSkill(name)?.allowImplicitInvocation !== false)
+					: skillsManager
+							.getSkillsForMode(currentMode)
+							.filter((skill) => skill.allowImplicitInvocation !== false)
+							.map((skill) => skill.name)
 
 			if (task.taskKind === "subagent" && !inheritedSkill) {
-				const availableSkills = task.getInheritedSubagentSkillNames()
+				const availableSkills = getSuggestedSkillNames()
 				task.recordToolError("skill")
 				task.didToolFailInCurrentTurn = true
 				pushToolResult(
@@ -77,8 +86,7 @@ export class SkillTool extends BaseTool<"skill"> {
 
 			if (!skillContent) {
 				// Get available skills for error message
-				const availableSkills = skillsManager.getSkillsForMode(currentMode)
-				const skillNames = availableSkills.map((s) => s.name)
+				const skillNames = getSuggestedSkillNames()
 
 				task.recordToolError("skill")
 				task.didToolFailInCurrentTurn = true

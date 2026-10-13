@@ -86,6 +86,8 @@ export const subagentContextSkillSchema = z
 		name: z.string().min(1),
 		path: z.string().min(1),
 		digest: subagentContextDigestSchema,
+		/** Captured discovery policy; omission keeps legacy implicit invocation enabled. */
+		allowImplicitInvocation: z.boolean().optional(),
 	})
 	.strict()
 export type SubagentContextSkill = z.infer<typeof subagentContextSkillSchema>
@@ -104,7 +106,7 @@ export const subagentCommandApprovalRuleSchema = z
 	.strict()
 export type SubagentCommandApprovalRule = z.infer<typeof subagentCommandApprovalRuleSchema>
 
-export const subagentCommandApprovalPolicySchema = z
+const legacySubagentCommandApprovalPolicySchema = z
 	.object({
 		algorithm: z.literal("sha256-salted-prefix-v1"),
 		salt: subagentContextDigestSchema,
@@ -114,6 +116,37 @@ export const subagentCommandApprovalPolicySchema = z
 		denied: z.array(subagentCommandApprovalRuleSchema),
 	})
 	.strict()
+
+export const subagentCommandApprovalTokenRuleSchema = z
+	.object({
+		/** Number of complete executable/argument tokens in the captured prefix. */
+		tokenCount: z.number().int().positive(),
+		/** Salted digest of canonical argv; command text and credentials are never persisted. */
+		digest: subagentContextDigestSchema,
+	})
+	.strict()
+export type SubagentCommandApprovalTokenRule = z.infer<typeof subagentCommandApprovalTokenRuleSchema>
+
+const tokenSubagentCommandApprovalPolicySchema = z
+	.object({
+		algorithm: z.literal("sha256-salted-argv-v2"),
+		/** Captured executable normalization; argument tokens always retain exact case and separators. */
+		platform: z.enum(["win32", "posix"]),
+		salt: subagentContextDigestSchema,
+		allowAll: z.boolean(),
+		denyAll: z.boolean(),
+		/** Unparseable deny rules must remain an approval ceiling rather than disappear during capture. */
+		unresolvedDenyRules: z.boolean(),
+		allowed: z.array(subagentCommandApprovalTokenRuleSchema),
+		denied: z.array(subagentCommandApprovalTokenRuleSchema),
+	})
+	.strict()
+
+/** Retain v1 records unchanged so their manifest digests remain valid after reload. */
+export const subagentCommandApprovalPolicySchema = z.discriminatedUnion("algorithm", [
+	legacySubagentCommandApprovalPolicySchema,
+	tokenSubagentCommandApprovalPolicySchema,
+])
 export type SubagentCommandApprovalPolicy = z.infer<typeof subagentCommandApprovalPolicySchema>
 
 export const subagentAutoApprovalPolicySchema = z

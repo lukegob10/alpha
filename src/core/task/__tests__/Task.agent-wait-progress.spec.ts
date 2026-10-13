@@ -193,9 +193,14 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 		},
 	)
 
-	it.each([false, true])(
-		"advises on unchanged command reads while a command runs (completion recovery: %s)",
-		async (recovery) => {
+	it.each([
+		["read_command_output", false],
+		["read_command_output", true],
+		["write_stdin", false],
+		["write_stdin", true],
+	] as const)(
+		"advises on unchanged %s artifact reads while a command runs (completion recovery: %s)",
+		async (toolName, recovery) => {
 			const { task } = harness("primary", mode)
 			Reflect.set(
 				task,
@@ -212,22 +217,16 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 				})
 			}
 			for (let index = 0; index < 5; index++) {
-				await task.recordToolCallForStopping(
-					"read_command_output",
-					{ artifact_id: "cmd-123.txt" },
-					"success",
-					undefined,
-					{
-						callId: `read-${index}`,
-						name: "read_command_output",
-						status: "success",
-						content: "same output",
-						durationMs: 0,
-						trustedProgress: { kind: "read", scope: "cmd-123.txt", stateFingerprint: "unchanged" },
-					},
-				)
+				await task.recordToolCallForStopping(toolName, { artifact_id: "cmd-123.txt" }, "success", undefined, {
+					callId: `read-${index}`,
+					name: toolName,
+					status: "success",
+					content: "same output",
+					durationMs: 0,
+					trustedProgress: { kind: "read", scope: "cmd-123.txt", stateFingerprint: "unchanged" },
+				})
 			}
-			expect(task.shouldStopRepeatedToolCall("read_command_output", {})).toBe(false)
+			expect(task.shouldStopRepeatedToolCall(toolName, {})).toBe(false)
 			expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 		},
 	)

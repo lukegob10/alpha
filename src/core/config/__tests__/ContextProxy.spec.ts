@@ -59,6 +59,30 @@ describe("ContextProxy", () => {
 		await proxy.initialize()
 	})
 
+	describe("automatic steering persistence", () => {
+		it("keeps missing values unset and round-trips explicit choices through storage and export", async () => {
+			const stored = new Map<string, unknown>()
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
+				if (value === undefined) stored.delete(key)
+				else stored.set(key, value)
+			})
+			expect(proxy.getValue("autoSteer")).toBeUndefined()
+
+			for (const autoSteer of [true, false]) {
+				await proxy.setValues({ autoSteer })
+				const reloaded = new ContextProxy(mockContext)
+				await reloaded.initialize()
+				expect(reloaded.getValue("autoSteer")).toBe(autoSteer)
+				expect(await reloaded.export()).toMatchObject({ autoSteer })
+			}
+
+			await proxy.resetAllState()
+			expect(stored.has("autoSteer")).toBe(false)
+			expect(proxy.getValue("autoSteer")).toBeUndefined()
+		})
+	})
+
 	describe("ticket auto-approval persistence", () => {
 		it("keeps missing settings disabled and round-trips explicit choices through storage and export", async () => {
 			const stored = new Map<string, unknown>()
@@ -399,6 +423,42 @@ describe("ContextProxy", () => {
 	})
 
 	describe("setProviderSettings", () => {
+		it("waits for all provider-setting writes before rejecting a failed setValues batch", async () => {
+			let release!: () => void
+			let enter!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const started = new Promise<void>((resolve) => (enter = resolve))
+			const failure = new Error("storage rejection")
+			mockGlobalState.update.mockRejectedValueOnce(failure)
+			mockSecrets.store.mockImplementationOnce(async () => {
+				enter()
+				await held
+			})
+			let settled = false
+			const update = proxy.setProviderSettings({ apiModelId: "updated-model", openAiApiKey: "updated-key" }).then(
+				() => {
+					settled = true
+					return undefined
+				},
+				(error: unknown) => {
+					settled = true
+					return error
+				},
+			)
+			await started
+			let settledWhileHeld: boolean
+			try {
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				settledWhileHeld = settled
+			} finally {
+				release()
+			}
+			expect(await update).toBe(failure)
+			expect(settledWhileHeld).toBe(false)
+			expect(mockGlobalState.update).toHaveBeenCalledWith("apiModelId", "updated-model")
+			expect(mockSecrets.store).toHaveBeenCalledWith("openAiApiKey", "updated-key")
+		})
+
 		it("should clear old API configuration values and set new ones", async () => {
 			// Set up initial API configuration values
 			await proxy.updateGlobalState("apiModelId", "old-model")

@@ -355,7 +355,7 @@ describe("VertexHandler", () => {
 				expect.objectContaining({
 					type: "usage",
 					inputTokens: 11,
-					outputTokens: 7,
+					outputTokens: 10,
 					cacheReadTokens: 2,
 					reasoningTokens: 3,
 				}),
@@ -403,7 +403,7 @@ describe("VertexHandler", () => {
 				text: t("common:errors.gemini.thinking_complete_no_output"),
 			})
 			expect(chunks).toContainEqual(
-				expect.objectContaining({ type: "usage", inputTokens: 11, outputTokens: 0, reasoningTokens: 9 }),
+				expect.objectContaining({ type: "usage", inputTokens: 11, outputTokens: 9, reasoningTokens: 9 }),
 			)
 		})
 

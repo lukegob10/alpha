@@ -23,7 +23,7 @@ const casesPath = path.join(
 	"../../../../evals/lookup-efficiency/cases.json",
 )
 
-const RETIRED_LOOKUP_NAMES = ["codebase_search", "list_files", "read_file", "search_files"]
+const RETIRED_LOOKUP_NAMES = ["list_files", "read_file", "search_files"]
 
 const leftoverPlan: TaskWorkPlan = {
 	objective: "Fix behavior",
@@ -140,6 +140,8 @@ describe("lookup-efficiency frozen prompts CI shape", () => {
 		for (const fixture of cases) {
 			const result = await buildNativeToolsArrayWithRestrictions(options({ userRequestText: fixture.prompt }))
 			expect(namesOf(result.tools), fixture.id).toEqual(namesOf(baseline.tools))
+			expect(namesOf(result.tools), fixture.id).toContain("codebase_search")
+			expect(result.surface?.isCallable("codebase_search"), fixture.id).toBe(true)
 			for (const retired of RETIRED_LOOKUP_NAMES) {
 				expect(result.surface?.isCallable(retired), `${fixture.id} ${retired}`).toBe(false)
 			}

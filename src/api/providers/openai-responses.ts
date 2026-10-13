@@ -1,5 +1,7 @@
 import type OpenAI from "openai"
 
+import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+
 import type { ApiInstructionFragment } from "../index"
 import { normalizeToolHistory, toFunctionToolInput } from "../transform/tool-history"
 import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
@@ -110,7 +112,14 @@ export function buildOpenAiResponsesInput(
 
 		if (candidate.role !== "user" && candidate.role !== "assistant") continue
 		if (typeof candidate.content === "string") {
-			if (candidate.content) input.push({ role: candidate.role, content: candidate.content })
+			const metadata = getAssistantEnvelopeMetadata(candidate)
+			if (candidate.content || (candidate.role === "assistant" && hasAssistantMessageMetadata(metadata))) {
+				input.push(
+					candidate.role === "assistant"
+						? toAssistantMessageInput(candidate.content, metadata)
+						: { role: "user", content: candidate.content },
+				)
+			}
 			continue
 		}
 		if (!Array.isArray(candidate.content)) continue
@@ -148,12 +157,42 @@ export function buildOpenAiResponsesInput(
 			continue
 		}
 
+		const messageMetadata = getAssistantEnvelopeMetadata(candidate)
+		if (
+			candidate.content.length === 0 &&
+			(candidate.type === "message" || hasAssistantMessageMetadata(messageMetadata))
+		) {
+			input.push(toAssistantMessageInput([], messageMetadata))
+			continue
+		}
+		let pendingText:
+			| {
+					metadata: AssistantMessageMetadata
+					content: Array<OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal>
+			  }
+			| undefined
+		const flushAssistantText = () => {
+			if (!pendingText) return
+			input.push(toAssistantMessageInput(pendingText.content, pendingText.metadata))
+			pendingText = undefined
+		}
 		for (const block of candidate.content) {
 			if (!isRecord(block)) continue
-			if (block.type === "text" && typeof block.text === "string" && block.text) {
-				input.push({ role: "assistant", content: block.text })
+			const metadata = { ...messageMetadata, ...normalizeAssistantMessageMetadata(block) }
+			const part = toAssistantTextPart(
+				block,
+				candidate.type === "message" || hasAssistantMessageMetadata(metadata),
+			)
+			if (part) {
+				if (pendingText && belongsToSameAssistantMessage(pendingText.metadata, metadata)) {
+					pendingText.content.push(part)
+				} else {
+					flushAssistantText()
+					pendingText = { metadata, content: [part] }
+				}
 				continue
 			}
+			flushAssistantText()
 			if (block.type === "reasoning") {
 				const reasoningItem = toReasoningInput(block, store)
 				if (reasoningItem) {
@@ -182,9 +221,78 @@ export function buildOpenAiResponsesInput(
 				})
 			}
 		}
+		flushAssistantText()
 	}
 
 	return input
+}
+
+function getAssistantEnvelopeMetadata(candidate: Record<string, unknown>): AssistantMessageMetadata {
+	// Native ApiMessage.id identifies the response envelope, not a source message.
+	// Raw Responses messages declare their type; native histories use messageId.
+	return normalizeAssistantMessageMetadata({
+		id: candidate.type === "message" ? candidate.id : candidate.messageId,
+		phase: candidate.phase,
+		outputIndex: candidate.outputIndex,
+	})
+}
+
+function belongsToSameAssistantMessage(left: AssistantMessageMetadata, right: AssistantMessageMetadata): boolean {
+	// A phase alone classifies text; it does not identify one provider message.
+	return (
+		(left.id !== undefined || left.outputIndex !== undefined) &&
+		left.id === right.id &&
+		left.phase === right.phase &&
+		left.outputIndex === right.outputIndex
+	)
+}
+
+function hasAssistantMessageMetadata(metadata: AssistantMessageMetadata): boolean {
+	return metadata.id !== undefined || metadata.phase !== undefined || metadata.outputIndex !== undefined
+}
+
+function toAssistantMessageInput(
+	content: string | Array<OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal>,
+	metadata: AssistantMessageMetadata,
+): OpenAI.Responses.ResponseInputItem {
+	if (metadata.id === undefined && metadata.phase === undefined) {
+		return {
+			role: "assistant",
+			content:
+				typeof content === "string"
+					? content
+					: content.map((part) => (part.type === "output_text" ? part.text : part.refusal)).join(""),
+		}
+	}
+	const item = {
+		type: "message" as const,
+		role: "assistant" as const,
+		content:
+			typeof content === "string" ? [{ type: "output_text" as const, text: content, annotations: [] }] : content,
+		...(metadata.id !== undefined ? { id: metadata.id } : {}),
+		...(metadata.phase !== undefined ? { phase: metadata.phase } : {}),
+	}
+	// The pinned SDK predates message phase and optional replay IDs. Native
+	// Responses keeps the exact Codex protocol phase, including partial_answer
+	// (27065a91ccbf5ba8532844be3777fcf83b77820d, reviewed 2026-10-11).
+	return item as unknown as OpenAI.Responses.ResponseInputItem
+}
+
+function toAssistantTextPart(
+	block: Record<string, unknown>,
+	retainEmpty: boolean,
+): OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal | undefined {
+	if (
+		(block.type === "text" || block.type === "output_text") &&
+		typeof block.text === "string" &&
+		(block.text || retainEmpty)
+	) {
+		return { type: "output_text", text: block.text, annotations: [] }
+	}
+	if (block.type === "refusal" && typeof block.refusal === "string" && (block.refusal || retainEmpty)) {
+		return { type: "refusal", refusal: block.refusal }
+	}
+	return undefined
 }
 
 export function normalizeOpenAiCustomToolInput(name: string, input: string): string {

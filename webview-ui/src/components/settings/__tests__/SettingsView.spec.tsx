@@ -175,19 +175,28 @@ vi.mock("@/components/ui", () => ({
 			data-testid={dataTestId}
 		/>
 	),
-	Button: ({ children, onClick, variant, className, "data-testid": dataTestId, "aria-pressed": pressed }: any) => (
+	Button: ({
+		children,
+		onClick,
+		variant,
+		className,
+		"data-testid": dataTestId,
+		"aria-pressed": pressed,
+		disabled,
+	}: any) => (
 		<button
 			onClick={onClick}
 			data-variant={variant}
 			className={className}
 			data-testid={dataTestId}
-			aria-pressed={pressed}>
+			aria-pressed={pressed}
+			disabled={disabled}>
 			{children}
 		</button>
 	),
 	StandardTooltip: ({ children, content }: any) => <div title={content}>{children}</div>,
-	Input: ({ value, onChange, placeholder, "data-testid": dataTestId }: any) => (
-		<input type="text" value={value} onChange={onChange} placeholder={placeholder} data-testid={dataTestId} />
+	Input: ({ value, onChange, placeholder, "data-testid": dataTestId, ...props }: any) => (
+		<input value={value} onChange={onChange} placeholder={placeholder} data-testid={dataTestId} {...props} />
 	),
 	Select: ({ children, value, onValueChange }: any) => (
 		<div data-testid="select" data-value={value}>
@@ -345,17 +354,188 @@ const renderSettingsView = (targetSection?: string) => {
 	// Helper to get elements within the settings content (not the indexing container)
 	const getSettingsContent = () => screen.getByTestId("settings-content")
 
-	return { onDone, activateTab, getSettingsContent }
+	return { onDone, activateTab, getSettingsContent, unmount: result.unmount }
 }
 
 describe("SettingsView - Startup rendering", () => {
-	it("falls back to providers for the retired Agents route and excludes its controls", () => {
+	it("opens the discoverable Agents route with its buffered controls", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
-		expect(sectionNames).not.toContain("agents")
-		expect(getSettingsContent()).toHaveTextContent("settings:sections.providers")
-		expect(screen.queryByTestId("subagent-default-profile")).not.toBeInTheDocument()
-		expect(screen.queryByTestId("max-concurrent-subagents-input")).not.toBeInTheDocument()
-		expect(screen.queryByText("Orchestration guardrails")).not.toBeInTheDocument()
+		expect(sectionNames).toContain("agents")
+		expect(getSettingsContent()).toHaveTextContent("agents:title")
+		expect(within(getSettingsContent()).getByLabelText("agents:concurrency.label")).toBeInTheDocument()
+		expect(screen.getByTestId("tab-agents")).toHaveTextContent("settings:sections.agents")
+	})
+})
+
+describe("SettingsView - Agents edit buffer", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const refresh = (state: Record<string, unknown>) =>
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
+
+	it("saves edited basics and advanced units through the typed settings path", () => {
+		const { getSettingsContent } = renderSettingsView("agents")
+		refresh({
+			maxConcurrentSubagents: 2,
+			subagentDefaultApiConfigId: "saved-child-profile",
+			subagentApiConfigByRole: { review: "saved-review-profile" },
+			subagentRoleTimeoutsMs: { explore: 120_000, review: 180_000, worker: 900_000 },
+		})
+		const content = getSettingsContent()
+		const concurrency = within(content).getByTestId("agents-concurrency")
+		const policy = within(content).getByTestId("agents-delegation-policy")
+		expect(concurrency).toHaveValue(2)
+		expect(within(content).getByTestId("agents-default-profile")).toHaveValue("saved-child-profile")
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(concurrency, { target: { value: "4" } })
+		fireEvent.change(policy, { target: { value: "proactive" } })
+		fireEvent.change(within(content).getByTestId("agents-timeout-review"), { target: { value: "91.125" } })
+		fireEvent.change(within(content).getByTestId("agents-root-tokens"), { target: { value: "50000" } })
+		fireEvent.change(within(content).getByTestId("agents-root-cost"), { target: { value: "2.5" } })
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					maxConcurrentSubagents: 4,
+					subagentDelegationPolicy: "proactive",
+					subagentRoleTimeoutsMs: { explore: 120_000, review: 91_125, worker: 900_000 },
+					subagentRootTokenBudget: 50_000,
+					subagentRootCostBudget: 2.5,
+					subagentDefaultApiConfigId: "saved-child-profile",
+					subagentApiConfigByRole: { review: "saved-review-profile" },
+				}),
+			}),
+		)
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+	})
+
+	it("retains dirty edits during refresh and Cancel, then discards to the latest host values", () => {
+		const { getSettingsContent, onDone } = renderSettingsView("agents")
+		refresh({ maxConcurrentSubagents: 2, subagentDefaultApiConfigId: "initial-child-profile" })
+		const concurrency = () => within(getSettingsContent()).getByTestId("agents-concurrency")
+		fireEvent.change(concurrency(), { target: { value: "4" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		refresh({ maxConcurrentSubagents: 3, subagentDefaultApiConfigId: "refreshed-child-profile" })
+		expect(concurrency()).toHaveValue(4)
+		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue("initial-child-profile")
+
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
+		expect(concurrency()).toHaveValue(4)
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+		expect(concurrency()).toHaveValue(3)
+		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue(
+			"refreshed-child-profile",
+		)
+		expect(onDone).toHaveBeenCalledTimes(1)
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+	})
+
+	it("keeps Save disabled for invalid agent edits after leaving the Agents tab", () => {
+		const { getSettingsContent, activateTab } = renderSettingsView("agents")
+		refresh({ maxConcurrentSubagents: 2 })
+		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "2.5" } })
+		expect(within(getSettingsContent()).getByTestId("agents-concurrency")).toHaveAttribute("aria-invalid", "true")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		activateTab("notifications")
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		activateTab("agents")
+		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "3" } })
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+	})
+
+	it("resyncs imported settings without losing millisecond precision or saved routes", () => {
+		const { getSettingsContent } = renderSettingsView("agents")
+		refresh({ maxConcurrentSubagents: 2 })
+		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "4" } })
+		refresh({
+			settingsImportedAt: 101,
+			maxConcurrentSubagents: 5,
+			subagentDefaultApiConfigId: "imported-child-profile",
+			subagentApiConfigByRole: { worker: "imported-worker-profile" },
+			subagentRoleTimeoutsMs: { explore: 10_001, review: 180_000, worker: 900_000 },
+		})
+		expect(within(getSettingsContent()).getByTestId("agents-concurrency")).toHaveValue(5)
+		expect(within(getSettingsContent()).getByTestId("agents-timeout-explore")).toHaveValue(10.001)
+		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue("imported-child-profile")
+		expect(within(getSettingsContent()).getByTestId("agents-profile-worker")).toHaveValue("imported-worker-profile")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+	})
+
+	it("finds collapsed Advanced controls in search and reveals the selected setting", async () => {
+		vi.useFakeTimers()
+		const { getSettingsContent, unmount } = renderSettingsView("agents")
+		try {
+			const disclosure = getSettingsContent().querySelector("details[data-agents-advanced]")
+			expect(disclosure).not.toHaveAttribute("open")
+			// Indexing mounts one section per frame, then publishes the final search registry.
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			const search = screen.getByTestId("settings-search-input")
+			fireEvent.focus(search)
+			fireEvent.change(search, { target: { value: "depth" } })
+			const result = screen.getByRole("option", { name: /depth/ })
+			expect(result).toHaveAttribute("id", "settings-search-result-agents-depth")
+			fireEvent.click(result)
+			await act(async () => vi.advanceTimersToNextFrame())
+			await act(async () => vi.advanceTimersByTime(100))
+			expect(disclosure).toHaveAttribute("open")
+			expect(within(getSettingsContent()).getByTestId("agents-depth")).toBeVisible()
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
+
+	it("serializes optional limit and route clearing explicitly without dropping saved type overrides", () => {
+		const { getSettingsContent } = renderSettingsView("agents")
+		const definition = {
+			description: "Review public contracts",
+			apiConfigId: "old-type-profile",
+			model: "review-model",
+			reasoningEffort: "low",
+			developerInstructions: "Preserve saved task compatibility.",
+		}
+		refresh({
+			subagentDefaultApiConfigId: "old-child-profile",
+			subagentApiConfigByRole: { review: "old-review-profile" },
+			subagentAgentTypes: { reviewer: definition },
+			subagentRootTokenBudget: 50_000,
+			subagentRootCostBudget: 2,
+		})
+		const content = getSettingsContent()
+		fireEvent.change(within(content).getByTestId("agents-default-profile"), { target: { value: "" } })
+		fireEvent.change(within(content).getByTestId("agents-profile-review"), { target: { value: "" } })
+		fireEvent.change(within(content).getByTestId("agents-root-tokens"), { target: { value: "" } })
+		fireEvent.change(within(content).getByTestId("agents-root-cost"), { target: { value: "" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(JSON.parse(JSON.stringify(update))).toEqual(
+			expect.objectContaining({
+				updatedSettings: expect.objectContaining({
+					subagentDefaultApiConfigId: "",
+					subagentApiConfigByRole: {},
+					subagentRootTokenBudget: null,
+					subagentRootCostBudget: null,
+					subagentAgentTypes: { reviewer: definition },
+				}),
+			}),
+		)
 	})
 })
 

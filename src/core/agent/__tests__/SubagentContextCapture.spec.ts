@@ -461,7 +461,7 @@ describe("native sub-agent conversation forks", () => {
 		const final = {
 			role: "assistant" as const,
 			content: "Final from a classified provider response",
-			phase: "final_answer",
+			phase: "final_answer" as const,
 			internal_chat_message_metadata_passthrough: {
 				content_item_kinds: ["generic.assistant"],
 				user_input_order: 12,
@@ -623,13 +623,13 @@ describe("native sub-agent conversation forks", () => {
 		const final = {
 			role: "assistant" as const,
 			content: "Final answer",
-			phase: "final_answer",
+			phase: "final_answer" as const,
 			id: "parent-response-id",
 			vscodeLmStatefulMarker: "opaque-parent-state",
 			previous_response_id: "resp-parent-chain",
 			provider_metadata: { opaque: "parent-provider-state" },
-			agentResponseItems: [{ type: "reasoning", text: "private reasoning" }],
-			agentResponseOutcome: { status: "completed" },
+			agentResponseItems: [{ type: "reasoning" as const, text: "private reasoning" }],
+			agentResponseOutcome: { status: "completed" as const },
 		}
 		const captured = captureNative("all", [{ role: "user", content: "Request" }, final])
 		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
@@ -1331,6 +1331,53 @@ describe("sub-agent context capture", () => {
 		expect(isValidSubagentContextManifest(first.manifest)).toBe(true)
 	})
 
+	it.each([false, true, undefined])(
+		"preserves portable implicit policy %s through immutable capture and durable reload",
+		(allowImplicitInvocation) => {
+			const skill = {
+				name: "portable-review",
+				path: "/skills/portable-review/SKILL.md",
+				content: "Captured review instructions",
+				...(allowImplicitInvocation === undefined ? {} : { allowImplicitInvocation }),
+			}
+			const captured = captureSubagentContext({
+				parentTaskId: "parent-task",
+				capturedAt: 1_700_000_000_000,
+				forkTurns: "none",
+				history: [],
+				instructions: {
+					effectiveText: "Captured host instructions",
+					sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Captured host instructions" }],
+				},
+				skills: [skill],
+				cwd: "/workspace",
+				workspaceRoots: ["/workspace"],
+				modelRoute: route,
+				runtimePolicy,
+			})
+			const restored = subagentContextManifestSchema.parse(
+				JSON.parse(serializeSubagentContextManifest(captured.manifest)),
+			)
+			expect(restored.skills).toEqual(captured.manifest.skills)
+			expect(restored.skills[0]).toMatchObject({
+				name: skill.name,
+				path: skill.path,
+				digest: digestValue("Captured review instructions"),
+			})
+			expect(restored.skills[0].allowImplicitInvocation).toBe(allowImplicitInvocation)
+			if (allowImplicitInvocation === undefined)
+				expect(restored.skills[0]).not.toHaveProperty("allowImplicitInvocation")
+			skill.allowImplicitInvocation = allowImplicitInvocation !== false ? false : true
+			expect(captured.manifest.skills[0].allowImplicitInvocation).toBe(allowImplicitInvocation)
+			expect(isValidSubagentContextManifest(restored)).toBe(true)
+			if (allowImplicitInvocation !== undefined) {
+				const tampered = structuredClone(restored)
+				tampered.skills[0].allowImplicitInvocation = !allowImplicitInvocation
+				expect(isValidSubagentContextManifest(tampered)).toBe(false)
+			}
+		},
+	)
+
 	it.each(["none", "all", "2"] as const)(
 		"retains captured skills and authority independently of fork_turns=%s",
 		(forkTurns) => {
@@ -1388,7 +1435,7 @@ describe("sub-agent context capture", () => {
 		expect(result.manifest.runtimePolicy.autoApproval).toMatchObject({
 			alwaysAllowExecute: true,
 			commandApproval: {
-				algorithm: "sha256-salted-prefix-v1",
+				algorithm: "sha256-salted-argv-v2",
 				allowed: expect.arrayContaining([
 					expect.objectContaining({ digest: expect.stringMatching(/^[a-f0-9]{64}$/) }),
 				]),
@@ -1396,6 +1443,48 @@ describe("sub-agent context capture", () => {
 			},
 		})
 		expect(result.manifest.workspace.cwd).toBe(path.resolve("/workspace"))
+	})
+
+	it("retains legacy command policy identities alongside token-policy ceilings on manifest reload", () => {
+		const legacy = {
+			algorithm: "sha256-salted-prefix-v1" as const,
+			salt: "5".repeat(64),
+			allowAll: true,
+			denyAll: false,
+			allowed: [],
+			denied: [{ prefixLength: 8, digest: "6".repeat(64) }],
+		}
+		const tokenPolicy = createSubagentCommandApprovalPolicy(["git diff"], ["git push"], "7".repeat(64))
+		const result = captureSubagentContext({
+			parentTaskId: "parent-task",
+			capturedAt: 1_700_000_000_000,
+			forkTurns: "none",
+			history: [],
+			instructions: {
+				effectiveText: "Review",
+				sources: [{ kind: "base", ref: "builtin:base", text: "Review" }],
+			},
+			skills: [],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy: {
+				...runtimePolicy,
+				autoApproval: {
+					...runtimePolicy.autoApproval,
+					commandApproval: legacy,
+					commandApprovalCeilings: [tokenPolicy, legacy],
+				},
+			},
+		})
+		const restored = subagentContextManifestSchema.parse(
+			JSON.parse(serializeSubagentContextManifest(result.manifest)),
+		)
+
+		expect(isValidSubagentContextManifest(restored)).toBe(true)
+		expect(restored.runtimePolicy.autoApproval?.commandApproval).toEqual(legacy)
+		expect(restored.runtimePolicy.autoApproval?.commandApprovalCeilings).toEqual([tokenPolicy, legacy])
+		expect(restored.manifestDigest).toBe(result.manifest.manifestDigest)
 	})
 
 	it("validates source, policy, turn-ref, and top-level digest integrity", () => {

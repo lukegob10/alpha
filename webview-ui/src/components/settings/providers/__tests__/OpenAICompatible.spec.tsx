@@ -1,7 +1,8 @@
 import React from "react"
+import { expect } from "vitest"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { OpenAICompatible } from "../OpenAICompatible"
-import { ProviderSettings } from "@alpha-code/types"
+import { ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
 const { thinkingBudgetProps } = vi.hoisted(() => ({ thinkingBudgetProps: [] as any[] }))
 
@@ -209,7 +210,7 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			expect(checkboxInput).not.toBeChecked()
 		})
 
-		it("should default to checked when includeMaxTokens is undefined", () => {
+		it("leaves the optional output cap unchecked when includeMaxTokens is undefined", () => {
 			const apiConfiguration: Partial<ProviderSettings> = {
 				// includeMaxTokens is not defined
 			}
@@ -223,10 +224,11 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			)
 
 			const checkboxInput = screen.getByTestId("checkbox-input-settings:includemaxoutputtokens")
-			expect(checkboxInput).toBeChecked()
+			expect(checkboxInput).not.toBeChecked()
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 		})
 
-		it("should default to checked when includeMaxTokens is null", () => {
+		it("leaves malformed null inclusion data unchecked without rewriting it", () => {
 			const apiConfiguration: Partial<ProviderSettings> = {
 				includeMaxTokens: null as any,
 			}
@@ -240,7 +242,141 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			)
 
 			const checkboxInput = screen.getByTestId("checkbox-input-settings:includemaxoutputtokens")
-			expect(checkboxInput).toBeChecked()
+			expect(checkboxInput).not.toBeChecked()
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+		})
+	})
+
+	it("lets custom endpoints declare temperature support without changing saved parameter values", () => {
+		const configuration: ProviderSettings = {
+			apiProvider: "openai",
+			modelTemperature: 0.6,
+			verbosity: "high",
+			openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, supportedParameters: [] },
+		}
+		render(
+			<OpenAICompatible
+				apiConfiguration={configuration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+			/>,
+		)
+		const declaration = screen.getByRole("checkbox", {
+			name: "settings:providers.customModel.temperatureSupport.label",
+		})
+		expect(declaration).not.toBeChecked()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+		fireEvent.click(declaration)
+		expect(mockSetApiConfigurationField).toHaveBeenCalledExactlyOnceWith(
+			"openAiCustomModelInfo",
+			expect.objectContaining({ supportsTemperature: true }),
+		)
+		expect(configuration).toMatchObject({ modelTemperature: 0.6, verbosity: "high" })
+	})
+
+	it("projects imported temperature parameter support and allows an explicit capability opt-out", () => {
+		render(
+			<OpenAICompatible
+				apiConfiguration={{
+					openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, supportedParameters: ["temperature"] },
+				}}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+			/>,
+		)
+		const declaration = screen.getByRole("checkbox", {
+			name: "settings:providers.customModel.temperatureSupport.label",
+		})
+		expect(declaration).toBeChecked()
+		fireEvent.click(declaration)
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"openAiCustomModelInfo",
+			expect.objectContaining({ supportsTemperature: false, supportedParameters: ["temperature"] }),
+		)
+	})
+
+	describe("output token limit validation", () => {
+		const onOutputTokenLimitError = vi.fn()
+		const editor = (maxTokens: number | undefined = 1024) => (
+			<OpenAICompatible
+				apiConfiguration={{
+					includeMaxTokens: true,
+					openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, maxTokens },
+				}}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+				onOutputTokenLimitError={onOutputTokenLimitError}
+			/>
+		)
+
+		it("accepts -1 as the server-default sentinel without flagging or rewriting it", () => {
+			render(editor(-1))
+			expect(screen.getByTestId("max-output-tokens")).toHaveValue("-1")
+			expect(screen.getByTestId("max-output-tokens")).toHaveAttribute("aria-invalid", "false")
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+		})
+
+		it.each(["1.5", "-1x", "0", "-2", "Infinity"])(
+			"rejects %s without truncating or replacing the saved cap",
+			(input) => {
+				render(editor())
+				fireEvent.change(screen.getByTestId("max-output-tokens"), { target: { value: input } })
+				expect(screen.getByTestId("max-output-tokens")).toHaveValue(input)
+				expect(screen.getByTestId("max-output-tokens")).toHaveAttribute("aria-invalid", "true")
+				expect(screen.getByTestId("max-output-tokens")).toHaveAttribute(
+					"aria-describedby",
+					"openai-output-token-limit-description openai-output-token-limit-error",
+				)
+				expect(screen.getByRole("alert")).toHaveTextContent("settings:validation.outputTokenLimit")
+				expect(onOutputTokenLimitError).toHaveBeenLastCalledWith("settings:validation.outputTokenLimit")
+				expect(mockSetApiConfigurationField).toHaveBeenCalledExactlyOnceWith("openAiCustomModelInfo", {
+					...openAiModelInfoSaneDefaults,
+					maxTokens: 1024,
+				})
+				mockSetApiConfigurationField.mockClear()
+
+				fireEvent.change(screen.getByTestId("max-output-tokens"), { target: { value: "512" } })
+				expect(mockSetApiConfigurationField).toHaveBeenCalledExactlyOnceWith(
+					"openAiCustomModelInfo",
+					expect.objectContaining({ maxTokens: 512 }),
+				)
+				expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+				expect(onOutputTokenLimitError).toHaveBeenLastCalledWith(undefined)
+			},
+		)
+
+		it("surfaces an imported zero and resyncs validation after a profile change", () => {
+			const { rerender, unmount } = render(editor(0))
+			expect(screen.getByTestId("max-output-tokens")).toHaveValue("0")
+			expect(screen.getByRole("alert")).toBeInTheDocument()
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+			rerender(editor(256))
+			expect(screen.getByTestId("max-output-tokens")).toHaveValue("256")
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+			unmount()
+			expect(onOutputTokenLimitError).toHaveBeenLastCalledWith(undefined)
+		})
+
+		it("resets an invalid local draft on a profile identity change with the same saved cap", () => {
+			const configuration = {
+				id: "profile-a",
+				openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, maxTokens: 1024 },
+			}
+			const props = {
+				setApiConfigurationField: mockSetApiConfigurationField,
+				organizationAllowList: mockOrganizationAllowList,
+				onOutputTokenLimitError,
+			}
+			const { rerender } = render(<OpenAICompatible apiConfiguration={configuration} {...props} />)
+			fireEvent.change(screen.getByTestId("max-output-tokens"), { target: { value: "1.5" } })
+			expect(screen.getByRole("alert")).toBeInTheDocument()
+			mockSetApiConfigurationField.mockClear()
+			rerender(<OpenAICompatible apiConfiguration={{ ...configuration, id: "profile-b" }} {...props} />)
+			expect(screen.getByTestId("max-output-tokens")).toHaveValue("1024")
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+			expect(onOutputTokenLimitError).toHaveBeenLastCalledWith(undefined)
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 		})
 	})
 

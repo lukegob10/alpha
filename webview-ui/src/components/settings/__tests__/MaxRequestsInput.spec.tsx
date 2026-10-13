@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react"
+import settingsLocale from "@/i18n/locales/en/settings.json"
 
 import { MaxRequestsInput } from "../MaxRequestsInput"
 
@@ -9,7 +10,7 @@ vi.mock("@/utils/vscode", () => ({
 vi.mock("react-i18next", () => ({
 	useTranslation: () => {
 		const translations: Record<string, string> = {
-			"settings:autoApprove.apiRequestLimit.title": "Max Count",
+			"settings:autoApprove.apiRequestLimit.title": settingsLocale.autoApprove.apiRequestLimit.title,
 			"settings:autoApprove.apiRequestLimit.unlimited": "Unlimited",
 		}
 		return { t: (key: string) => translations[key] || key }
@@ -21,6 +22,16 @@ describe("MaxRequestsInput", () => {
 
 	beforeEach(() => {
 		mockOnValueChange.mockClear()
+	})
+
+	it("associates its confirmation label with the input", () => {
+		render(<MaxRequestsInput allowedMaxRequests={10} onValueChange={mockOnValueChange} />)
+
+		const input = screen.getByLabelText(settingsLocale.autoApprove.apiRequestLimit.title)
+		expect(input.id).not.toBe("")
+		expect(
+			screen.getByText(`${settingsLocale.autoApprove.apiRequestLimit.title}:`).closest("label"),
+		).toHaveAttribute("for", input.id)
 	})
 
 	it("shows empty input when allowedMaxRequests is undefined", () => {

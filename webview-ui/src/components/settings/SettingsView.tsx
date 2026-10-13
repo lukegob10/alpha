@@ -29,12 +29,18 @@ import {
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
+	Bot,
 } from "lucide-react"
 
 import {
 	type ProviderSettings,
 	type ExperimentId,
 	type TelemetrySetting,
+	type ProviderProfileRenameRequest,
+	type ProviderProfileRenameResult,
+	type ProviderProfileSaveRequest,
+	providerProfileRenameResultSchema,
+	providerProfileSaveResultSchema,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
@@ -66,6 +72,8 @@ import { SectionHeader } from "./SectionHeader"
 import ApiConfigManager from "./ApiConfigManager"
 import ApiOptions from "./ApiOptions"
 import { AutoApproveSettings } from "./AutoApproveSettings"
+import { AgentsSettings } from "./AgentsSettings"
+import { getManagedAgentSettingsError } from "./agents-settings-validation"
 import { CheckpointSettings } from "./CheckpointSettings"
 import { NotificationSettings } from "./NotificationSettings"
 import { ContextManagementSettings } from "./ContextManagementSettings"
@@ -103,6 +111,7 @@ export interface SettingsViewRef {
 export const sectionNames = [
 	"providers",
 	"autoApprove",
+	"agents",
 	"slashCommands",
 	"skills",
 	"checkpoints",
@@ -126,6 +135,41 @@ type SettingsViewProps = {
 	targetSection?: string
 }
 
+type ConfirmedProfileRename = Pick<
+	Extract<ProviderProfileRenameResult, { status: "success" }>,
+	"id" | "oldName" | "newName"
+> & { requestedName?: string }
+
+const profileSaveTimeoutMs = 30_000
+
+function getCurrentProfileId(
+	state: Pick<SettingsCachedState, "currentApiConfigName" | "listApiConfigMeta">,
+	rename?: ConfirmedProfileRename,
+): string | undefined {
+	const profile = state.listApiConfigMeta?.find(({ name }) => name === state.currentApiConfigName)
+	if (profile) return profile.id
+
+	// A name projection and its metadata can arrive on either side of the rename acknowledgement.
+	if (
+		rename &&
+		(state.currentApiConfigName === rename.oldName ||
+			state.currentApiConfigName === rename.newName ||
+			(rename.requestedName !== undefined && state.currentApiConfigName === rename.requestedName)) &&
+		state.listApiConfigMeta?.some(({ id }) => id === rename.id)
+	) {
+		return rename.id
+	}
+	return undefined
+}
+
+function captureProfileIdentity(
+	state: Pick<SettingsCachedState, "currentApiConfigName" | "listApiConfigMeta">,
+	requiresId = false,
+) {
+	const id = getCurrentProfileId(state)
+	return { id, name: state.currentApiConfigName, requiresId: requiresId || id !== undefined }
+}
+
 const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, targetSection }, ref) => {
 	const { t } = useAppTranslation()
 
@@ -134,6 +178,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	const [isDiscardDialogShow, setDiscardDialogShow] = useState(false)
 	const [isChangeDetected, setChangeDetected] = useState(false)
+	const [isProfileRenaming, setProfileRenaming] = useState(false)
+	const [confirmedProfileRename, setConfirmedProfileRename] = useState<ConfirmedProfileRename>()
+	// Save follows the profile that supplied the edit buffer, even if another view renames it.
+	const [cachedApiConfigIdentity, setCachedApiConfigIdentity] = useState(() => captureProfileIdentity(extensionState))
+	const [isProfileSaving, setProfileSaving] = useState(false)
+	const [profileSaveError, setProfileSaveError] = useState<string>()
 	const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined)
 	const [activeTab, setActiveTab] = useState<SectionName>(
 		targetSection && sectionNames.includes(targetSection as SectionName)
@@ -147,6 +197,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const contentRef = useRef<HTMLDivElement | null>(null)
 
 	const prevApiConfigName = useRef(currentApiConfigName)
+	const pendingProfileRename = useRef<
+		ProviderProfileRenameRequest & { oldName: string; resolve: (error?: string) => void }
+	>()
+	const pendingProfileSave = useRef<
+		ProviderProfileSaveRequest & {
+			generation: SettingsCachedState
+			timeout: ReturnType<typeof setTimeout>
+		}
+	>()
 	const prevSettingsImportedAt = useRef(settingsImportedAt)
 	const initializedFromHydration = useRef(didHydrateState)
 	const latestExtensionState = useRef(extensionState)
@@ -158,6 +217,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		...withManagedAgentSettingsDefaults(extensionState),
 		terminalInheritEnv: terminalInheritEnvInitial.current,
 	}))
+	const latestCommittedApiConfigId = useRef(cachedApiConfigIdentity.id)
+	useLayoutEffect(() => {
+		latestCommittedApiConfigId.current = cachedApiConfigIdentity.id
+	}, [cachedApiConfigIdentity.id])
 
 	const {
 		alwaysAllowReadOnly,
@@ -218,6 +281,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		enhancementApiConfigId,
 		reasoningBlockCollapsed,
 		enterBehavior,
+		autoSteer,
 		maxConcurrentTasks,
 		subagentDefaultApiConfigId,
 		subagentAgentTypes,
@@ -230,6 +294,167 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
+	const currentApiConfigId = getCurrentProfileId(
+		extensionState,
+		pendingProfileRename.current ?? confirmedProfileRename,
+	)
+	const effectiveApiConfigName =
+		confirmedProfileRename &&
+		confirmedProfileRename.id === currentApiConfigId &&
+		(currentApiConfigName === confirmedProfileRename.oldName ||
+			currentApiConfigName === confirmedProfileRename.newName ||
+			(confirmedProfileRename.requestedName !== undefined &&
+				currentApiConfigName === confirmedProfileRename.requestedName))
+			? confirmedProfileRename.newName
+			: currentApiConfigName
+	const effectiveApiConfigMeta = useMemo(
+		() =>
+			listApiConfigMeta?.map((profile) =>
+				profile.id === currentApiConfigId && effectiveApiConfigName
+					? { ...profile, name: effectiveApiConfigName }
+					: profile,
+			),
+		[listApiConfigMeta, currentApiConfigId, effectiveApiConfigName],
+	)
+	const isProfileNameAwaitingRefresh = Boolean(
+		confirmedProfileRename &&
+			confirmedProfileRename.id === currentApiConfigId &&
+			(currentApiConfigName !== effectiveApiConfigName ||
+				listApiConfigMeta?.find(({ id }) => id === currentApiConfigId)?.name !== effectiveApiConfigName),
+	)
+	const areProfileActionsDisabled = isProfileRenaming || isProfileSaving || isProfileNameAwaitingRefresh
+	const isProfileIdentityPending = cachedApiConfigIdentity.requiresId && cachedApiConfigIdentity.id === undefined
+
+	const cancelPendingProfileRename = useCallback((error: string) => {
+		const pending = pendingProfileRename.current
+		pendingProfileRename.current = undefined
+		setProfileRenaming(false)
+		pending?.resolve(error)
+	}, [])
+	const cancelPendingProfileSave = useCallback(() => {
+		clearTimeout(pendingProfileSave.current?.timeout)
+		pendingProfileSave.current = undefined
+		setProfileSaving(false)
+		setProfileSaveError(undefined)
+	}, [])
+
+	useEffect(() => {
+		const receive = (event: MessageEvent) => {
+			if (event.data?.type !== "apiConfigurationSaved") return
+			const response = providerProfileSaveResultSchema.safeParse(event.data.apiConfigurationSaveResult)
+			const pending = pendingProfileSave.current
+			if (
+				!response.success ||
+				!pending ||
+				response.data.requestId !== pending.requestId ||
+				latestCommittedApiConfigId.current !== pending.id ||
+				(response.data.status === "success" && response.data.id !== pending.id)
+			) {
+				return
+			}
+
+			clearTimeout(pending.timeout)
+			pendingProfileSave.current = undefined
+			setProfileSaving(false)
+			if (response.data.status === "error") {
+				setProfileSaveError(t(`settings:providers.saveErrors.${response.data.error}`))
+				return
+			}
+
+			setProfileSaveError(undefined)
+			// Compare in the state queue so edits queued before this response also retain dirty state.
+			setCachedState((state) => {
+				if (state === pending.generation) setChangeDetected(false)
+				return state
+			})
+		}
+		window.addEventListener("message", receive)
+		return () => window.removeEventListener("message", receive)
+	}, [t])
+
+	useEffect(() => {
+		const receive = (event: MessageEvent) => {
+			if (event.data?.type !== "apiConfigurationRenamed") return
+			const response = providerProfileRenameResultSchema.safeParse(event.data.apiConfigurationRenameResult)
+			const pending = pendingProfileRename.current
+			if (!response.success || !pending || response.data.requestId !== pending.requestId) return
+
+			pendingProfileRename.current = undefined
+			setProfileRenaming(false)
+			if (response.data.status === "error") {
+				if (response.data.profile?.id === pending.id) {
+					const confirmed = {
+						id: pending.id,
+						oldName: pending.oldName,
+						newName: response.data.profile.name,
+						requestedName: pending.newName,
+					}
+					if (getCurrentProfileId(latestExtensionState.current, confirmed) === pending.id) {
+						setConfirmedProfileRename(confirmed)
+					}
+				}
+				pending.resolve(t(`settings:providers.renameErrors.${response.data.error}`))
+				return
+			}
+			if (response.data.id !== pending.id) {
+				pending.resolve(t("settings:providers.renameErrors.invalid"))
+				return
+			}
+			if (
+				getCurrentProfileId(latestExtensionState.current, {
+					id: pending.id,
+					oldName: pending.oldName,
+					newName: response.data.newName,
+					requestedName: pending.newName,
+				}) !== pending.id
+			) {
+				pending.resolve(t("settings:providers.renameErrors.cancelled"))
+				return
+			}
+			setConfirmedProfileRename({
+				id: pending.id,
+				oldName: pending.oldName,
+				newName: response.data.newName,
+				requestedName: pending.newName,
+			})
+			pending.resolve()
+		}
+		window.addEventListener("message", receive)
+		return () => window.removeEventListener("message", receive)
+	}, [t])
+
+	useEffect(
+		() => () => {
+			pendingProfileRename.current?.resolve()
+			pendingProfileRename.current = undefined
+			clearTimeout(pendingProfileSave.current?.timeout)
+			pendingProfileSave.current = undefined
+		},
+		[],
+	)
+
+	const renameApiConfiguration = (oldName: string, newName: string): Promise<string | undefined> => {
+		const id = getCurrentProfileId(latestExtensionState.current, confirmedProfileRename)
+		if (!id) return Promise.resolve(t("settings:providers.renameErrors.notFound"))
+		if (pendingProfileSave.current) return Promise.resolve(t("settings:providers.profileSavePending"))
+		if (isProfileNameAwaitingRefresh) return Promise.resolve(t("settings:providers.profileRefreshPending"))
+		if (pendingProfileRename.current) return Promise.resolve(t("settings:providers.renameErrors.pending"))
+
+		const request: ProviderProfileRenameRequest = { requestId: crypto.randomUUID(), id, newName }
+		setProfileRenaming(true)
+		return new Promise((resolve) => {
+			pendingProfileRename.current = {
+				...request,
+				oldName: latestExtensionState.current.currentApiConfigName ?? oldName,
+				resolve,
+			}
+			try {
+				vscode.postMessage({ type: "renameApiConfiguration", apiConfigurationRename: request })
+			} catch {
+				cancelPendingProfileRename(t("settings:providers.renameErrors.saveFailed"))
+			}
+		})
+	}
 
 	// Hydrate the edit buffer exactly once. Subsequent live state pushes must not
 	// overwrite unsaved fields in cachedState.
@@ -243,25 +468,57 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
 		prevApiConfigName.current = latestExtensionState.current.currentApiConfigName
+		setCachedApiConfigIdentity(
+			captureProfileIdentity(latestExtensionState.current, cachedApiConfigIdentity.requiresId),
+		)
+		cancelPendingProfileSave()
 		prevSettingsImportedAt.current = latestExtensionState.current.settingsImportedAt
 		initializedFromHydration.current = true
 		setChangeDetected(false)
-	}, [didHydrateState])
+	}, [didHydrateState, cachedApiConfigIdentity.requiresId, cancelPendingProfileSave])
 
 	useEffect(() => {
-		// Update only when currentApiConfigName is changed.
-		// Expected to be triggered by loadApiConfiguration/upsertApiConfiguration.
-		if (prevApiConfigName.current === currentApiConfigName) {
+		// Names are editable metadata; only a profile selection replaces the edit buffer.
+		const sameName = prevApiConfigName.current === currentApiConfigName
+		const sameProfile =
+			cachedApiConfigIdentity.id !== undefined
+				? currentApiConfigId === undefined || cachedApiConfigIdentity.id === currentApiConfigId
+				: sameName
+		prevApiConfigName.current = currentApiConfigName
+		if (sameProfile) {
+			// A partial metadata push cannot replace a known target with name-based creation.
+			if (
+				currentApiConfigId !== undefined &&
+				(!cachedApiConfigIdentity.requiresId ||
+					cachedApiConfigIdentity.id !== currentApiConfigId ||
+					cachedApiConfigIdentity.name !== currentApiConfigName)
+			) {
+				setCachedApiConfigIdentity({ id: currentApiConfigId, name: currentApiConfigName, requiresId: true })
+			}
 			return
 		}
 
+		setCachedApiConfigIdentity({
+			id: currentApiConfigId,
+			name: currentApiConfigName,
+			requiresId: cachedApiConfigIdentity.requiresId || currentApiConfigId !== undefined,
+		})
+		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
+		cancelPendingProfileSave()
+		setConfirmedProfileRename(undefined)
 		setCachedState({
 			...withManagedAgentSettingsDefaults(latestExtensionState.current),
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
-		prevApiConfigName.current = currentApiConfigName
 		setChangeDetected(false)
-	}, [currentApiConfigName])
+	}, [
+		currentApiConfigName,
+		currentApiConfigId,
+		cachedApiConfigIdentity,
+		cancelPendingProfileRename,
+		cancelPendingProfileSave,
+		t,
+	])
 
 	// Bust the cache when settings are imported.
 	useEffect(() => {
@@ -270,12 +527,24 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		}
 
 		prevSettingsImportedAt.current = settingsImportedAt
+		setCachedApiConfigIdentity(
+			captureProfileIdentity(latestExtensionState.current, cachedApiConfigIdentity.requiresId),
+		)
+		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
+		cancelPendingProfileSave()
+		setConfirmedProfileRename(undefined)
 		setCachedState({
 			...withManagedAgentSettingsDefaults(latestExtensionState.current),
 			terminalInheritEnv: terminalInheritEnvInitial.current,
 		})
 		setChangeDetected(false)
-	}, [settingsImportedAt])
+	}, [
+		settingsImportedAt,
+		cachedApiConfigIdentity.requiresId,
+		cancelPendingProfileRename,
+		cancelPendingProfileSave,
+		t,
+	])
 
 	const setCachedStateField = useCallback(
 		<K extends keyof SettingsCachedState>(field: K, value: SettingsCachedState[K]) => {
@@ -390,10 +659,17 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const isSettingValid = !errorMessage
+	const managedAgentSettingsError = getManagedAgentSettingsError(cachedState)
+	const settingsErrorMessage = errorMessage ?? (managedAgentSettingsError ? t(managedAgentSettingsError) : undefined)
+	const isSettingValid = !settingsErrorMessage
 
 	const handleSubmit = () => {
-		if (isSettingValid) {
+		if (
+			isSettingValid &&
+			!pendingProfileRename.current &&
+			!pendingProfileSave.current &&
+			!isProfileIdentityPending
+		) {
 			vscode.postMessage({
 				type: "updateSettings",
 				updatedSettings: {
@@ -423,11 +699,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
 					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
 					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
-					subagentApiConfigByRole: {
-						explore: subagentApiConfigByRole?.explore ?? "",
-						review: subagentApiConfigByRole?.review ?? "",
-						worker: subagentApiConfigByRole?.worker ?? "",
-					},
+					...(subagentApiConfigByRole !== undefined ? { subagentApiConfigByRole } : {}),
 					...toManagedAgentSettingsSavePayload(cachedState),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
@@ -464,6 +736,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					enhancementApiConfigId: enhancementApiConfigId ?? "",
 					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
 					enterBehavior: enterBehavior ?? "send",
+					autoSteer: autoSteer === true,
 					includeCurrentTime: includeCurrentTime ?? true,
 					includeCurrentCost: includeCurrentCost ?? true,
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
@@ -477,7 +750,38 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			// These have more complex logic so they aren't (yet) handled
 			// by the `updateSettings` message.
-			vscode.postMessage({ type: "upsertApiConfiguration", text: currentApiConfigName, apiConfiguration })
+			if (cachedApiConfigIdentity.id !== undefined) {
+				const request: ProviderProfileSaveRequest = {
+					requestId: crypto.randomUUID(),
+					id: cachedApiConfigIdentity.id,
+				}
+				const timeout = setTimeout(() => {
+					if (pendingProfileSave.current?.requestId !== request.requestId) return
+					pendingProfileSave.current = undefined
+					setProfileSaving(false)
+					setProfileSaveError(t("settings:providers.saveErrors.timeout"))
+				}, profileSaveTimeoutMs)
+				pendingProfileSave.current = { ...request, generation: cachedState, timeout }
+				setProfileSaving(true)
+				setProfileSaveError(undefined)
+				try {
+					vscode.postMessage({
+						type: "upsertApiConfiguration",
+						requestId: request.requestId,
+						apiConfigurationId: request.id,
+						text: effectiveApiConfigName,
+						apiConfiguration,
+					})
+				} catch {
+					clearTimeout(timeout)
+					pendingProfileSave.current = undefined
+					setProfileSaving(false)
+					setProfileSaveError(t("settings:providers.saveErrors.saveFailed"))
+				}
+			} else {
+				vscode.postMessage({ type: "upsertApiConfiguration", text: effectiveApiConfigName, apiConfiguration })
+				setChangeDetected(false)
+			}
 			vscode.postMessage({ type: "telemetrySetting", text: telemetrySetting })
 			vscode.postMessage({ type: "debugSetting", bool: cachedState.debug })
 			if (terminalInheritEnv !== undefined && terminalInheritEnv !== terminalInheritEnvInitial.current) {
@@ -488,8 +792,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				})
 				terminalInheritEnvInitial.current = terminalInheritEnv
 			}
-
-			setChangeDetected(false)
 		}
 	}
 
@@ -511,6 +813,22 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		(confirm: boolean) => {
 			if (confirm) {
 				// Discard changes: Reset state and flag
+				const knownSameProfileName =
+					currentApiConfigName === cachedApiConfigIdentity.name ||
+					(confirmedProfileRename &&
+						confirmedProfileRename.id === cachedApiConfigIdentity.id &&
+						(currentApiConfigName === confirmedProfileRename.oldName ||
+							currentApiConfigName === confirmedProfileRename.newName ||
+							currentApiConfigName === confirmedProfileRename.requestedName))
+				const id =
+					getCurrentProfileId(extensionState, confirmedProfileRename) ??
+					(knownSameProfileName ? cachedApiConfigIdentity.id : undefined)
+				setCachedApiConfigIdentity({
+					id,
+					name: currentApiConfigName,
+					requiresId: cachedApiConfigIdentity.requiresId || id !== undefined,
+				})
+				cancelPendingProfileSave()
 				setCachedState({
 					...withManagedAgentSettingsDefaults(extensionState),
 					terminalInheritEnv: terminalInheritEnvInitial.current,
@@ -520,7 +838,13 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			}
 			// If confirm is false (Cancel), do nothing, dialog closes automatically
 		},
-		[extensionState], // Depend on extensionState to get the latest original state
+		[
+			extensionState,
+			currentApiConfigName,
+			confirmedProfileRename,
+			cachedApiConfigIdentity,
+			cancelPendingProfileSave,
+		],
 	)
 
 	// Handle tab changes with unsaved changes check
@@ -574,6 +898,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "skills", icon: GraduationCap },
 			{ id: "slashCommands", icon: SquareSlash },
 			{ id: "autoApprove", icon: CheckCheck },
+			{ id: "agents", icon: Bot },
 			{ id: "mcp", icon: Server },
 			{ id: "checkpoints", icon: GitCommitVertical },
 			{ id: "notifications", icon: Bell },
@@ -677,6 +1002,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				setTimeout(() => {
 					const element = document.querySelector(`[data-setting-id="${settingId}"]`)
 					if (element) {
+						const advancedSettings = element.closest<HTMLDetailsElement>("details[data-agents-advanced]")
+						if (advancedSettings) advancedSettings.open = true
 						element.scrollIntoView({ behavior: "smooth", block: "center" })
 
 						// Add highlight animation
@@ -700,30 +1027,42 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 					<Section>
 						<ApiConfigManager
-							currentApiConfigName={currentApiConfigName}
-							listApiConfigMeta={listApiConfigMeta}
-							onSelectConfig={(configName: string) =>
+							currentApiConfigName={effectiveApiConfigName}
+							listApiConfigMeta={effectiveApiConfigMeta}
+							profileActionsDisabled={areProfileActionsDisabled}
+							onSelectConfig={(configName: string) => {
+								if (
+									pendingProfileRename.current ||
+									pendingProfileSave.current ||
+									isProfileNameAwaitingRefresh
+								)
+									return
 								checkUnsaveChanges(() =>
 									vscode.postMessage({ type: "loadApiConfiguration", text: configName }),
 								)
-							}
-							onDeleteConfig={(configName: string) =>
+							}}
+							onDeleteConfig={(configName: string) => {
+								if (
+									pendingProfileRename.current ||
+									pendingProfileSave.current ||
+									isProfileNameAwaitingRefresh
+								)
+									return
 								checkUnsaveChanges(() =>
 									vscode.postMessage({
 										type: "deleteApiConfiguration",
 										text: configName,
 									}),
 								)
-							}
-							onRenameConfig={(oldName: string, newName: string) => {
-								vscode.postMessage({
-									type: "renameApiConfiguration",
-									values: { oldName, newName },
-									apiConfiguration,
-								})
-								prevApiConfigName.current = newName
 							}}
+							onRenameConfig={renameApiConfiguration}
 							onUpsertConfig={(configName: string) => {
+								if (
+									pendingProfileRename.current ||
+									pendingProfileSave.current ||
+									isProfileNameAwaitingRefresh
+								)
+									return
 								const hadUnsavedChanges = isChangeDetected
 								checkUnsaveChanges(() =>
 									vscode.postMessage({
@@ -736,6 +1075,21 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								)
 							}}
 						/>
+						{isProfileNameAwaitingRefresh && (
+							<p role="status" className="text-vscode-descriptionForeground text-sm">
+								{t("settings:providers.profileRefreshPending")}
+							</p>
+						)}
+						{isProfileIdentityPending && (
+							<p role="status" className="text-vscode-descriptionForeground text-sm">
+								{t("settings:providers.profileIdentityPending")}
+							</p>
+						)}
+						{profileSaveError && (
+							<p role="alert" className="text-vscode-errorForeground text-sm">
+								{profileSaveError}
+							</p>
+						)}
 						<ApiOptions
 							uriScheme={uriScheme}
 							apiConfiguration={apiConfiguration}
@@ -767,6 +1121,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					allowedMaxCost={allowedMaxCost ?? undefined}
 					deniedCommands={deniedCommands}
 					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Agents Section */}
+			{section === "agents" && (
+				<AgentsSettings
+					values={cachedState}
+					setCachedStateField={setCachedStateField}
+					listApiConfigMeta={listApiConfigMeta}
 				/>
 			)}
 
@@ -891,6 +1254,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				<UISettings
 					reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
 					enterBehavior={enterBehavior ?? "send"}
+					autoSteer={autoSteer === true}
 					maxConcurrentTasks={maxConcurrentTasks ?? 3}
 					setCachedStateField={setCachedStateField}
 				/>
@@ -941,17 +1305,29 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					)}
 					<StandardTooltip
 						content={
-							!isSettingValid
-								? errorMessage
-								: isChangeDetected
-									? t("settings:header.saveButtonTooltip")
-									: t("settings:header.nothingChangedTooltip")
+							isProfileRenaming
+								? t("settings:providers.renameErrors.pending")
+								: isProfileSaving
+									? t("settings:providers.profileSavePending")
+									: isProfileIdentityPending
+										? t("settings:providers.profileIdentityPending")
+										: !isSettingValid
+											? settingsErrorMessage
+											: isChangeDetected
+												? t("settings:header.saveButtonTooltip")
+												: t("settings:header.nothingChangedTooltip")
 						}>
 						<Button
 							variant={isSettingValid ? "primary" : "secondary"}
 							className={!isSettingValid ? "!border-vscode-errorForeground" : ""}
 							onClick={handleSubmit}
-							disabled={!isChangeDetected || !isSettingValid}
+							disabled={
+								!isChangeDetected ||
+								!isSettingValid ||
+								isProfileRenaming ||
+								isProfileSaving ||
+								isProfileIdentityPending
+							}
 							data-testid="save-button">
 							{t("settings:common.save")}
 						</Button>

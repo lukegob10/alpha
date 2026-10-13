@@ -32,6 +32,28 @@ import type {
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
+export type CommandArtifactReadArgs = {
+	artifact_id: string
+	search?: string | null
+	offset?: number | null
+	limit?: number | null
+	session_id?: null
+	chars?: null
+	yield_time_ms?: null
+	max_output_tokens?: null
+}
+
+/** Recognize the read-only branch; artifact paths, ranges, and patterns are validated by the reader. */
+export function isCommandArtifactRead(args: Record<string, unknown> | undefined): args is CommandArtifactReadArgs {
+	if (!args || typeof args.artifact_id !== "string" || args.artifact_id.length === 0) return false
+	return Object.entries(args).every(([key, value]) => {
+		if (key === "artifact_id") return true
+		if (key === "search") return value == null || typeof value === "string"
+		if (key === "offset" || key === "limit") return value == null || typeof value === "number"
+		return ["session_id", "chars", "yield_time_ms", "max_output_tokens"].includes(key) && value == null
+	})
+}
+
 export type AskApproval = (
 	type: AlphaAsk,
 	partialMessage?: string,
@@ -157,6 +179,7 @@ export const toolParamNames = [
 	"agent_type",
 	"fork_turns",
 	"objective",
+	"token_budget",
 	"agent_kind",
 	"write_scope",
 	"expected_output",
@@ -177,6 +200,9 @@ export type ToolParamName = (typeof toolParamNames)[number]
  * Tools not listed here will fall back to `any` for backward compatibility.
  */
 export type NativeToolArgs = BrowserToolArgs & {
+	create_goal: { objective: string; token_budget?: number }
+	get_goal: Record<string, never>
+	update_goal: { status: "complete" | "blocked" | "paused" }
 	read_diagnostic_evidence: Record<string, never>
 	access_mcp_resource: { server_name: string; uri: string }
 	list_mcp_resources: { server?: string; cursor?: string }
@@ -201,12 +227,18 @@ export type NativeToolArgs = BrowserToolArgs & {
 				offset?: number
 				limit?: number
 		  }
-	write_stdin: {
-		session_id: number
-		chars?: string
-		yield_time_ms?: number
-		max_output_tokens?: number
-	}
+	write_stdin:
+		| CommandArtifactReadArgs
+		| {
+				session_id: number
+				chars?: string | null
+				yield_time_ms?: number | null
+				max_output_tokens?: number | null
+				artifact_id?: null
+				search?: null
+				offset?: null
+				limit?: null
+		  }
 	shell: {
 		command: string
 		cwd?: string | null
@@ -468,6 +500,9 @@ export type ToolGroupConfig = {
 }
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
+	create_goal: "create a persistent goal",
+	get_goal: "read the current goal",
+	update_goal: "update goal status",
 	shell: "run commands",
 	exec_command: "run commands",
 	execute_command: "run commands",
@@ -543,6 +578,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	read: {
 		tools: [
+			"get_goal",
 			"read_file",
 			"view_image",
 			"search_files",
@@ -553,7 +589,15 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		],
 	},
 	edit: {
-		tools: ["edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"],
+		tools: [
+			"edit",
+			"write_to_file",
+			"create_ticket",
+			"update_ticket",
+			"delete_ticket",
+			"create_goal",
+			"update_goal",
+		],
 		customTools: ["apply_patch"],
 	},
 	command: {

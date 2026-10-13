@@ -31,6 +31,7 @@
 				"src/runFailure.ts",
 				"src/runComposerUi.ts",
 				"src/runReasoningUi.ts",
+				"src/runRequestUserInputUi.ts",
 				"src/runFileReviewUi.ts",
 				"src/runHistoryUi.ts",
 				"src/runTaskNavigationUi.ts",

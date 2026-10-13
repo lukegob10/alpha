@@ -1,4 +1,10 @@
-import { containsDynamicExecutable, tokenizeShellCommands } from "./shellCommand"
+import {
+	analyzeShellCommandTokens,
+	shellCommandArgumentTokens,
+	tokenizeShellCommands,
+	type ShellCommandPlatform,
+	type ShellCommandToken,
+} from "./shellCommand"
 
 const TRANSPARENT_LAUNCHERS = new Set([
 	"call",
@@ -15,7 +21,7 @@ const TRANSPARENT_LAUNCHERS = new Set([
 	"npx",
 	"pnpx",
 ])
-const OPAQUE_LAUNCHERS = new Set(["xargs", "start"])
+const OPAQUE_LAUNCHERS = new Set(["xargs", "start", "time"])
 const EVALUATORS = new Set(["eval", "iex", "invoke-expression"])
 const SCRIPT_LOADERS = new Set(["source", "."])
 const SHELLS = new Set(["sh", "ash", "bash", "dash", "fish", "ksh", "zsh", "csh", "tcsh", "cmd", "powershell", "pwsh"])
@@ -41,7 +47,7 @@ function isScriptInterpreter(name: string): boolean {
 
 function optionConsumesValue(name: string, option: string): boolean {
 	return (
-		(name === "env" && ["-u", "--unset", "-c", "--chdir"].includes(option)) ||
+		(name === "env" && ["-u", "--unset", "-c", "--chdir", "-a", "--argv0"].includes(option)) ||
 		(name === "sudo" && ["-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"].includes(option)) ||
 		(name === "exec" && ["-a", "--argv0"].includes(option)) ||
 		(name === "nice" && ["-n", "--adjustment"].includes(option)) ||
@@ -166,18 +172,71 @@ export function isUnsafePersistentCommandPrefix(command: string): boolean {
 }
 
 /** Expose nested commands to deny rules and detect code that the shell supplies at runtime. */
-export function analyzeIndirectCommandExecution(command: string): {
+export function analyzeIndirectCommandExecution(
+	command: string,
+	platform?: ShellCommandPlatform,
+): {
 	commands: string[]
+	tokenCommands: ShellCommandToken[][]
 	dynamicCode: boolean
 	resolved: boolean
 } {
 	const commands: string[] = []
+	const tokenCommands: ShellCommandToken[][] = []
+	const pending: Array<{ tokens: ShellCommandToken[]; depth: number }> = []
 	let dynamicCode = false
 	let resolved = true
-	for (const group of tokenizeShellCommands(command)) {
-		let tokens = group
-		for (let depth = 0; depth < 8 && tokens.length; depth++) {
+
+	const enqueue = (source: string, depth: number) => {
+		const parsed = analyzeShellCommandTokens(source, platform)
+		resolved &&= !parsed.malformed && !parsed.unsupportedSyntax && !parsed.ambiguousSyntax
+		for (const group of parsed.commands) {
+			// A shared bounded queue/depth covers launcher and inline-shell nesting without evaluating any code.
+			if (pending.length >= 64) {
+				resolved = false
+				break
+			}
+			pending.push({ tokens: shellCommandArgumentTokens(group.tokens), depth })
+		}
+	}
+
+	enqueue(command, 0)
+	for (let cursor = 0; cursor < pending.length; cursor++) {
+		let details = pending[cursor].tokens
+		let depth = pending[cursor].depth
+		let tokens = details.map(({ value }) => value)
+		while (tokens.length) {
 			const name = executableName(tokens[0])
+			if (name === "env") {
+				let splitIndex = -1
+				for (let index = 1; index < tokens.length; index++) {
+					const option = tokens[index]
+					if (option === "--" || (!option.startsWith("-") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(option))) break
+					const longOption = option.split("=")[0]
+					if (
+						/^-[^-]*S/.test(option) ||
+						(option.startsWith("--") && longOption.length > 2 && "--split-string".startsWith(longOption))
+					) {
+						splitIndex = index
+						break
+					}
+					if (optionConsumesValue(name, option.toLowerCase())) index++
+				}
+				if (splitIndex !== -1) {
+					const option = tokens[splitIndex]
+					const equals = option.indexOf("=")
+					const attached = option.startsWith("--")
+						? equals === -1
+							? undefined
+							: option.slice(equals + 1)
+						: option.slice(option.indexOf("S") + 1) || undefined
+					const splitSource = attached ?? tokens[splitIndex + 1]
+					if (splitSource) commands.push(splitSource)
+					// GNU env's split-string escapes/expansions differ from shell argv; only known denials can be inferred.
+					resolved = false
+					break
+				}
+			}
 			const code = inlineCode(tokens)
 			if (
 				(isScriptInterpreter(name) ||
@@ -194,6 +253,11 @@ export function analyzeIndirectCommandExecution(command: string): {
 			if (code) {
 				if (code.code) commands.push(code.code)
 				dynamicCode ||= code.opaque || DYNAMIC_CODE_OPERAND.test(code.code)
+				if (depth >= 8 || code.opaque || (!SHELLS.has(name) && !EVALUATORS.has(name))) {
+					// JavaScript/Python/etc are not shell argv. Finite deny policies need review for opaque inline code.
+					resolved = false
+				} else if (code.code) enqueue(code.code, depth + 1)
+				else resolved = false
 				break
 			}
 			if (OPAQUE_LAUNCHERS.has(name)) {
@@ -202,14 +266,17 @@ export function analyzeIndirectCommandExecution(command: string): {
 			}
 			const child = launcherChild(tokens)
 			if (!child) break
-			if (!child.length) {
+			if (!child.length || depth >= 8) {
 				resolved = false
 				break
 			}
-			commands.push(child.join(" "))
-			dynamicCode ||= containsDynamicExecutable(child.join(" "))
+			// Preserve argument boundaries and expansion evidence through transparent launcher nesting.
+			details = details.slice(tokens.length - child.length)
+			tokenCommands.push(details)
+			dynamicCode ||= details[0]?.dynamic === true
 			tokens = child
+			depth++
 		}
 	}
-	return { commands, dynamicCode, resolved }
+	return { commands, tokenCommands, dynamicCode, resolved }
 }

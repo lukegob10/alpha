@@ -7,6 +7,76 @@ import { createAgentResponse } from "../../agent/AgentResponse"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../../agent/lifecycle/AgentLifecycleJournal"
 
 describe("Task lifecycle response publication", () => {
+	it("persists source message phases and boundaries without completing the task", async () => {
+		const storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-phase-publication-"))
+		const journal = new AgentLifecycleJournal("task", storage)
+		const identity = { version: 1 as const, taskId: "task", runId: "run", turnId: "turn", occurredAt: 1 }
+		try {
+			await journal.append({ ...identity, eventId: "turn", type: "turn_started", payload: { phase: "starting" } })
+			await journal.append({
+				...identity,
+				eventId: "step",
+				stepId: "step",
+				type: "step_started",
+				payload: { phase: "working" },
+			})
+			const provider = {
+				getAgentLifecycleSnapshot: () => journal.getSnapshot(),
+				publishAgentLifecycleEvent: async (input: AgentLifecycleEventInput) => {
+					await journal.append(input)
+					return { accepted: true }
+				},
+			}
+			const task = Object.assign(Object.create(Task.prototype), {
+				taskId: "task",
+				agentRunId: "run",
+				agentTurnId: "turn",
+				providerRef: new WeakRef(provider),
+				canonicalLifecycleQueue: Promise.resolve(),
+			}) as {
+				publishCanonicalLifecycleResponseItems: (
+					response: ReturnType<typeof createAgentResponse>,
+					step: { stepId: string },
+				) => Promise<void>
+			}
+			const response = createAgentResponse([
+				{ type: "text", text: "Checking.", id: "first", phase: "commentary", outputIndex: 0 },
+				{ type: "text", text: "Checking again.", id: "second", phase: "commentary", outputIndex: 1 },
+				{ type: "text", text: "Partial answer.", id: "partial", phase: "partial_answer", outputIndex: 2 },
+				{ type: "text", text: "Done.", id: "final", phase: "final_answer", outputIndex: 3 },
+				{ type: "text", text: "Legacy." },
+			])
+			await task.publishCanonicalLifecycleResponseItems(response, { stepId: "step" })
+			const snapshot = await journal.replay()
+			expect(snapshot?.status).toBe("in_progress")
+			expect(snapshot?.items.filter((item) => item.type === "assistant_text")).toMatchObject([
+				{ type: "assistant_text", messageId: "first", phase: "commentary", outputIndex: 0, text: "Checking." },
+				{
+					type: "assistant_text",
+					messageId: "second",
+					phase: "commentary",
+					outputIndex: 1,
+					text: "Checking again.",
+				},
+				{
+					type: "assistant_text",
+					messageId: "partial",
+					phase: "partial_answer",
+					outputIndex: 2,
+					text: "Partial answer.",
+				},
+				{ type: "assistant_text", messageId: "final", phase: "final_answer", outputIndex: 3, text: "Done." },
+				{ type: "assistant_text", text: "Legacy." },
+			])
+			expect(snapshot?.items.at(-1)).not.toHaveProperty("phase")
+			const sequence = journal.getSequence()
+			await task.publishCanonicalLifecycleResponseItems(response, { stepId: "step" })
+			expect(journal.getSequence()).toBe(sequence)
+		} finally {
+			await journal.close()
+			await fs.rm(storage, { recursive: true, force: true })
+		}
+	}, 60_000)
 	it("bounds durable publication for the recorded 763-fragment shape and replays once", async () => {
 		const storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-publication-"))
 		const journal = new AgentLifecycleJournal("task", storage)

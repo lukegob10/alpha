@@ -3,13 +3,18 @@ import type { AlphaAskUseMcpServer, McpServer } from "@alpha-code/types"
 
 import type { Task } from "../task/Task"
 import type { McpHub } from "../../services/mcp/McpHub"
+import {
+	collectPaginatedCatalog,
+	DEFAULT_MCP_PAGINATION_TIMEOUT_MS,
+	MAX_MCP_CATALOG_ITEMS,
+	validateMcpPaginationCursor,
+} from "../../services/mcp/pagination"
 import { formatResponse } from "../prompts/responses"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 
 type ListParams = { server?: string; cursor?: string }
 type ResourcePage<T extends object> = { items: T[]; nextCursor?: string }
 
-const MAX_RESOURCE_PAGES = 100
 const MAX_LISTED_RESOURCES = 10_000
 
 function mcpHub(task: Task): McpHub {
@@ -46,7 +51,10 @@ async function listResources<T extends object>(
 ): Promise<void> {
 	const { signal } = callbacks
 	try {
-		if (params.cursor && !params.server) throw new Error("cursor requires a server")
+		signal?.throwIfAborted()
+		if (params.cursor !== undefined && !params.server) throw new Error("cursor requires a server")
+		const method = field === "resources" ? "resources/list" : "resources/templates/list"
+		validateMcpPaginationCursor(method, params.cursor)
 		const hub = mcpHub(task)
 		const available = connectedServers(hub)
 		const targets = params.server
@@ -54,6 +62,12 @@ async function listResources<T extends object>(
 			: available.sort((left, right) => left.name.localeCompare(right.name))
 		if (params.server && targets.length === 0)
 			throw new Error(`MCP server "${params.server}" is not connected or enabled`)
+		const assertCurrentServer = (server: McpServer) => {
+			signal?.throwIfAborted()
+			if (!connectedServers(hub).includes(server)) {
+				throw new Error(`MCP server "${server.name}" changed during resource listing`)
+			}
+		}
 		for (const server of targets) {
 			if (
 				!(await approveResourceRequest(
@@ -66,39 +80,42 @@ async function listResources<T extends object>(
 		}
 		if (params.server) {
 			const server = targets[0]
+			assertCurrentServer(server)
 			const page = await fetchPage(hub, server, params.cursor, signal)
-			signal?.throwIfAborted()
-			if (page.items.length > MAX_LISTED_RESOURCES)
+			assertCurrentServer(server)
+			if (page.items.length > MAX_MCP_CATALOG_ITEMS)
 				throw new Error("MCP resource listing exceeded the item limit")
+			validateMcpPaginationCursor(method, page.nextCursor)
 			callbacks.pushToolResult(
 				JSON.stringify({
 					server: server.name,
 					[field]: page.items.map((item) => ({ ...item, server: server.name })),
-					...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+					...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
 				}),
 			)
 			return
 		}
 
 		const items: Array<T & { server: string }> = []
+		const deadline = performance.now() + DEFAULT_MCP_PAGINATION_TIMEOUT_MS
 		for (const server of targets) {
-			let cursor: string | undefined
-			const seenCursors = new Set<string>()
-			for (let pageNumber = 0; pageNumber < MAX_RESOURCE_PAGES; pageNumber++) {
-				const page = await fetchPage(hub, server, cursor, signal)
-				signal?.throwIfAborted()
-				if (items.length + page.items.length > MAX_LISTED_RESOURCES)
-					throw new Error("MCP resource listing exceeded the item limit")
-				items.push(...page.items.map((item) => ({ ...item, server: server.name })))
-				if (!page.nextCursor) break
-				if (seenCursors.has(page.nextCursor))
-					throw new Error(`MCP server "${server.name}" repeated a resource cursor`)
-				if (pageNumber + 1 === MAX_RESOURCE_PAGES)
-					throw new Error("MCP resource listing exceeded the page limit")
-				seenCursors.add(page.nextCursor)
-				cursor = page.nextCursor
+			const serverItems = await collectPaginatedCatalog(
+				method,
+				async (params, pageSignal) => {
+					assertCurrentServer(server)
+					const page = await fetchPage(hub, server, params?.cursor, pageSignal)
+					assertCurrentServer(server)
+					return page
+				},
+				{ signal, timeoutMs: Math.max(0, deadline - performance.now()) },
+			)
+			if (items.length + serverItems.length > MAX_LISTED_RESOURCES) {
+				throw new Error("MCP resource listing exceeded the item limit")
 			}
+			items.push(...serverItems.map((item) => ({ ...item, server: server.name })))
 		}
+		for (const server of targets) assertCurrentServer(server)
+		signal?.throwIfAborted()
 		callbacks.pushToolResult(JSON.stringify({ [field]: items }))
 	} catch (error) {
 		if (signal?.aborted) throw error

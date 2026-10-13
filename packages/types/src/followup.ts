@@ -36,6 +36,25 @@ export interface RequestUserInputAnswer {
 
 export type RequestUserInputAnswerMap = Record<string, RequestUserInputAnswer>
 
+const userInputResponseTextSchema = z.string().refine((value) => value.trim().length > 0, {
+	message: "User input response text must not be empty.",
+})
+
+/** Presentation receipt for a completed native question request, kept alongside the full feedback text. */
+export const userInputResponseDataSchema = z.object({
+	questions: z
+		.array(
+			z.object({
+				header: userInputResponseTextSchema.optional(),
+				question: userInputResponseTextSchema,
+				answers: z.array(userInputResponseTextSchema).min(1),
+			}),
+		)
+		.min(1),
+})
+
+export type UserInputResponseData = z.infer<typeof userInputResponseDataSchema>
+
 /** Nonblocking user questions requested during an active task turn. */
 export interface AsyncUserInputQuestion {
 	title: string

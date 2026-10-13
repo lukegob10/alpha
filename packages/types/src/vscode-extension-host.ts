@@ -22,6 +22,8 @@ export interface TaskReasoningResponse {
 
 import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
+import type { ProviderProfileRenameRequest, ProviderProfileRenameResult } from "./provider-profile-rename.js"
+import type { ProviderProfileSaveId, ProviderProfileSaveResult } from "./provider-profile-save.js"
 import type { HistoryItem } from "./history.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
@@ -399,6 +401,8 @@ export interface ExtensionMessage {
 		| "scheduledTasksUpdated"
 		| "scheduledTaskSkills"
 		| "taskReasoningUpdated"
+		| "apiConfigurationRenamed"
+		| "apiConfigurationSaved"
 		| "taskApprovalModeUpdated"
 		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
@@ -419,6 +423,8 @@ export interface ExtensionMessage {
 	scheduledTaskState?: ScheduledTaskState
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	taskReasoningResponse?: TaskReasoningResponse
+	apiConfigurationRenameResult?: ProviderProfileRenameResult
+	apiConfigurationSaveResult?: ProviderProfileSaveResult
 	taskApprovalModeUpdateResult?: TaskApprovalModeUpdateResult
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
@@ -634,6 +640,7 @@ export type ExtensionState = Pick<
 	| "includeTaskHistoryInEnhance"
 	| "reasoningBlockCollapsed"
 	| "enterBehavior"
+	| "autoSteer"
 	| "includeCurrentTime"
 	| "includeCurrentCost"
 	| "maxGitStatusFiles"
@@ -1012,6 +1019,8 @@ interface WebviewMessageBase {
 	payload?: WebViewMessagePayload
 	source?: "global" | "project" | "builtin"
 	skillName?: string // For skill operations (createSkill, deleteSkill, moveSkill, openSkillFile)
+	/** Discovered SKILL.md identity for openSkillFile, updateSkillModes, and deleteSkill. */
+	skillPath?: string
 	/** @deprecated Use skillModeSlugs instead */
 	skillMode?: string // For skill operations (current mode restriction)
 	/** @deprecated Use newSkillModeSlugs instead */
@@ -1094,6 +1103,29 @@ export type WebviewMessage =
 			type: "setTaskApprovalMode"
 			taskApprovalModeUpdate: TaskApprovalModeUpdate
 	  })
+	| (Omit<WebviewMessageBase, "type" | "values" | "apiConfiguration"> & {
+			type: "renameApiConfiguration"
+			apiConfigurationRename: ProviderProfileRenameRequest
+	  })
+	| (Omit<WebviewMessageBase, "type" | "values"> & {
+			type: "renameApiConfiguration"
+			/** Older webviews identify the persisted profile by name; their edit buffer is ignored. */
+			values: { oldName: string; newName: string }
+			apiConfigurationRename?: never
+	  })
+	| (Omit<WebviewMessageBase, "type" | "apiConfiguration"> & {
+			type: "upsertApiConfiguration"
+			requestId: string
+			/** Resolve the saved name by ID inside the host's configuration queue. */
+			apiConfigurationId: ProviderProfileSaveId
+			apiConfiguration: ProviderSettings
+	  })
+	| (Omit<WebviewMessageBase, "type" | "requestId"> & {
+			type: "upsertApiConfiguration"
+			/** Creation and historical webviews retain the name-based contract. */
+			apiConfigurationId?: never
+			requestId?: never
+	  })
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
 			z.infer<typeof sendAndSteerMessageSchema> & { clientSubmittedAt?: number })
@@ -1109,6 +1141,8 @@ export type WebviewMessage =
 				| "sendAndSteer"
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
+				| "renameApiConfiguration"
+				| "upsertApiConfiguration"
 				| "startDebuggingTask"
 				| "incidentDashboardRequestTurnDetail"
 				| "startDebuggingTurn"
@@ -1211,6 +1245,7 @@ export interface LanguageModelChatSelector {
 
 export interface AlphaSayTool {
 	ticketActivity?: TicketActivity
+	goalActivity?: import("./goal-tool-approval.js").GoalToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1231,6 +1266,7 @@ export interface AlphaSayTool {
 		| "imageGenerated"
 		| "runSlashCommand"
 		| "ticket"
+		| "goal"
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"

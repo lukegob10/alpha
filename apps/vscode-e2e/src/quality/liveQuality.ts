@@ -62,6 +62,8 @@ const ledger = (): string => {
 }
 
 const readTools = ["exec_command"] as const satisfies readonly ToolName[]
+const readOnlySourceScope = (directory: string): string =>
+	`Work only inside ${directory}. Inspect source text with bounded rg searches before answering. Narrow patterns or limit results for long files. Do not execute source files or inline interpreter code. Do not edit files or delegate.`
 
 /**
  * Four read-only probes. One live completion scores groundedness and trajectory together.
@@ -77,7 +79,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/supported-total/notes.md": "Invoice total: 900\n",
 		},
 		prompt: "Items are [{cents:200,quantity:3},{cents:50,quantity:2}]. What number does exports.total in live-quality/supported-total/invoice.cjs return? Reply with only that number.",
-		scope: "Work only inside live-quality/supported-total. Read the implementation with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
+		scope: readOnlySourceScope("live-quality/supported-total"),
 		requestLimit: 8,
 		expected: "700",
 		forbidden: ["900", "250"],
@@ -94,7 +96,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 				"function draftTotal() {\n  return 400\n}\nfunction total() {\n  return 250\n}\nmodule.exports = { total }\n",
 		},
 		prompt: "What number does the exported total function in live-quality/exported-symbol/totals.cjs return? Reply with only that number.",
-		scope: "Work only inside live-quality/exported-symbol. Read the implementation with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
+		scope: readOnlySourceScope("live-quality/exported-symbol"),
 		requestLimit: 8,
 		expected: "250",
 		forbidden: ["400"],
@@ -110,7 +112,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/late-span/ledger.txt": ledger(),
 		},
 		prompt: "live-quality/late-span/ledger.txt is long. What is the active ticket id? Reply with only that id.",
-		scope: "Work only inside live-quality/late-span. Find the active ticket with bounded exec_command reads using rg or Node.js. Do not edit files or delegate.",
+		scope: readOnlySourceScope("live-quality/late-span"),
 		requestLimit: 8,
 		expected: "TICKET-1842",
 		forbidden: ["TICKET-0001"],
@@ -126,7 +128,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/refund-absence/shipping.md": "Standard shipping is 5 business days.\n",
 		},
 		prompt: "What refund window does live-quality/refund-absence/shipping.md state? If none is stated, reply exactly: no refund window is stated",
-		scope: "Work only inside live-quality/refund-absence. Read the file with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
+		scope: readOnlySourceScope("live-quality/refund-absence"),
 		requestLimit: 8,
 		expected: "no refund window is stated",
 		forbidden: ["14 days", "30 days", "60 days", "90 days"],

@@ -89,6 +89,7 @@ describe("attemptCompletionTool", () => {
 			todoList: undefined,
 			say: vi.fn().mockResolvedValue(undefined),
 			presentCompletionResult: vi.fn().mockResolvedValue(undefined),
+			completeGoalTurn: vi.fn().mockResolvedValue(false),
 			retractCompletionResult: vi.fn().mockResolvedValue(undefined),
 			ask: vi.fn().mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] }),
 			messageQueueService: {
@@ -167,6 +168,42 @@ describe("attemptCompletionTool", () => {
 		expect(mockTask.presentCompletionResult).toHaveBeenCalledExactlyOnceWith("Task complete.", undefined, false)
 		expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
 		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
+	it("finishes one goal turn without completing the task while the goal remains active", async () => {
+		vi.mocked(mockTask.completeGoalTurn!).mockResolvedValue(true)
+		await attemptCompletionTool.execute({ result: "First requirement verified." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "goal-progress-completion",
+		})
+		expect(mockTask.completeGoalTurn).toHaveBeenCalledExactlyOnceWith("First requirement verified.")
+		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ status: "success", goalContinues: true }),
+		)
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
+	it("keeps completion hooks authoritative before finishing a goal turn", async () => {
+		vi.mocked(mockTask.completeGoalTurn!).mockResolvedValue(true)
+		vi.mocked(mockTask.evaluateCompletionHooks!).mockResolvedValue({ prompt: "Run the required validation." })
+		await attemptCompletionTool.execute({ result: "First requirement verified." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "hook-rejected-goal-progress",
+		})
+		expect(mockTask.completeGoalTurn).not.toHaveBeenCalled()
+		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith("Error: Run the required validation.")
 	})
 
 	it.each(["hooks", "presentation"] as const)("does not finalize when cancelled during %s", async (stage) => {

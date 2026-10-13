@@ -20,6 +20,11 @@ export interface SkillMetadata {
 	 * - An array with one or more mode slugs restricts the skill to those modes.
 	 */
 	modeSlugs?: string[]
+	/**
+	 * Portable agents/openai.yaml policy. False requires explicit invocation;
+	 * undefined preserves the default of allowing implicit invocation.
+	 */
+	allowImplicitInvocation?: boolean
 }
 
 /**

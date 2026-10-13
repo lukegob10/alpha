@@ -21,6 +21,50 @@ describe("anthropic-filter", () => {
 	})
 
 	describe("filterNonAnthropicBlocks", () => {
+		it("keeps source message boundaries and cache controls while stripping unsupported metadata", () => {
+			const messages = [
+				{
+					role: "assistant" as const,
+					id: "source-response",
+					phase: "final_answer",
+					agentResponseItems: [{ type: "text", text: "Canonical evidence" }],
+					agentResponseOutcome: { status: "completed" },
+					content: [
+						{
+							type: "text" as const,
+							text: "Checking",
+							id: "progress",
+							phase: "commentary",
+							outputIndex: 0,
+						},
+						{
+							type: "text" as const,
+							text: "Answer",
+							id: "answer",
+							phase: "final_answer",
+							outputIndex: 1,
+							cache_control: { type: "ephemeral" as const },
+						},
+					],
+				},
+			]
+			const snapshot = structuredClone(messages)
+			expect(filterNonAnthropicBlocks(messages)).toEqual([
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Checking" },
+						{ type: "text", text: "Answer", cache_control: { type: "ephemeral" } },
+					],
+				},
+			])
+			expect(messages).toEqual(snapshot)
+		})
+		it("omits Responses metadata from legacy string messages on Anthropic wire", () => {
+			const messages = [{ role: "assistant" as const, content: "Answer", id: "original", phase: "final_answer" }]
+			expect(filterNonAnthropicBlocks(messages)).toEqual([{ role: "assistant", content: "Answer" }])
+			expect(messages[0]).toHaveProperty("id", "original")
+		})
 		it("should pass through messages with string content", () => {
 			const messages: Anthropic.Messages.MessageParam[] = [
 				{ role: "user", content: "Hello" },

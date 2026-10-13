@@ -115,7 +115,7 @@ it("formats a native running wait with the process session", async () => {
 it("formats a completed native wait with its exit code", async () => {
 	const { task, callbacks, process, commandEvidence } = harness()
 	process.isSettled = true
-	commandEvidence.status = "succeeded"
+	commandEvidence.status = "failed"
 	commandEvidence.exitCode = 7
 	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, {
 		...callbacks,
@@ -125,6 +125,9 @@ it("formats a completed native wait with its exit code", async () => {
 	})
 
 	const sidecar = callbacks.setResultMetadata.mock.calls[0]?.[0].commandResult
+	expect(callbacks.setResultMetadata).toHaveBeenCalledWith(
+		expect.objectContaining({ status: "success", executionStatus: "error", exitCode: 7 }),
+	)
 	expect(sidecar).toMatchObject({ exit_code: 7, output: "ready at http://localhost:1234" })
 	expect(sidecar).not.toHaveProperty("session_id")
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(

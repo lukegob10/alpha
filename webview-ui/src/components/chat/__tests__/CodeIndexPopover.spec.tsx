@@ -165,7 +165,7 @@ describe("CodeIndexPopover", () => {
 			"value",
 			"https://index.example.com/vertex",
 		)
-		expect(screen.getByPlaceholderText("settings:placeholders.credentialsJson")).toHaveProperty("value", "")
+		expect(screen.getByPlaceholderText("settings:codeIndex.savedSecretPlaceholder")).toHaveProperty("value", "")
 		expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeDisabled()
 	})
 
@@ -249,6 +249,50 @@ describe("CodeIndexPopover", () => {
 		if (draft) expect(saved?.codeIndexSettings?.codebaseIndexGeminiApiKey).toBe(draft)
 		else expect(saved?.codeIndexSettings).not.toHaveProperty("codebaseIndexGeminiApiKey")
 	})
+
+	it.each([false, true])(
+		"acknowledges the saved Gemini key while preserving later edits (%s)",
+		async (editDuringSave) => {
+			vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+				...useExtensionState(),
+				codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: "gemini" },
+			})
+			render(
+				<CodeIndexPopover indexingStatus={{ ...indexingStatus, workspaceEnabled: true }}>
+					<PopoverTrigger asChild>
+						<button type="button">Open code index</button>
+					</PopoverTrigger>
+				</CodeIndexPopover>,
+			)
+			fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+			fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+			const input = screen.getByPlaceholderText("settings:codeIndex.geminiApiKeyPlaceholder")
+			fireEvent.input(input, { target: { value: "index-secret" } })
+			fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "saveCodeIndexSettingsAtomic",
+				codeIndexSettings: expect.objectContaining({ codebaseIndexGeminiApiKey: "index-secret" }),
+			})
+			if (editDuringSave) fireEvent.input(input, { target: { value: "next-secret" } })
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "codeIndexSettingsSaved", success: true } }),
+				)
+			})
+
+			// The save acknowledgement must be sufficient; the separate status round trip can be delayed.
+			expect(input).toHaveProperty("value", editDuringSave ? "next-secret" : "")
+			if (editDuringSave) {
+				expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeEnabled()
+			} else {
+				expect(input).toHaveAttribute("placeholder", "settings:codeIndex.savedSecretPlaceholder")
+				expect(screen.getByText("settings:codeIndex.geminiApiKeySaved")).toBeVisible()
+				expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeDisabled()
+				fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.startIndexingButton" }))
+				expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startIndexing" })
+			}
+		},
+	)
 
 	it("requires a dedicated Gemini key before saving a new configuration", async () => {
 		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({

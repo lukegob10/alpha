@@ -31,7 +31,7 @@ The tool supports two modes:
 This is an immediate read, not a blocking wait. Follow the returned byte cursor for unread output; avoid repeatedly reading an unchanged page while a command runs.
 
 Parameters:
-- artifact_id: (required) The artifact filename from the truncated output message (e.g., "cmd-1706119234567.txt"). Must match cmd-{digits}.txt and be at most ${READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH} characters.
+- artifact_id: (required) The artifact filename from the truncated output message (e.g., "cmd-1706119234567.txt"). Must match cmd-{digits}.txt or cmd-{lowercase UUID v4}.txt and be at most ${READ_COMMAND_OUTPUT_MAX_ARTIFACT_ID_LENGTH} characters.
 - search: (optional) Pattern to filter lines. Supports regex or literal strings. Case-insensitive. Must be 1-256 characters. **Omit this parameter entirely if you don't need to filter - do not pass null or empty string.**
 - offset: (optional) Byte offset to start reading from. Default: 0. Use for pagination. Must be an integer from 0 to ${READ_COMMAND_OUTPUT_MAX_OFFSET}.
 - limit: (optional) Maximum UTF-8 bytes in the complete response, including headers, line numbers, and search metadata. Default: 40 KiB; minimum: 512 bytes; maximum: 4 MiB.

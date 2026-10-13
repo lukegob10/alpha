@@ -39,6 +39,45 @@ The same Task stream, captured surface, isolated read fixture, and fake clock we
 
 The two affected cases remove 200 ms of serialized waiting in this fixture (33.3%). This measures scheduling overlap, not live-model speed, filesystem throughput, or overall task quality. The regression requires the read to start before EOF and the total controlled time to remain 400 ms.
 
+## Fixture clock follow-up, 2026-10-11
+
+A later certification reported 800 ms for the default-workdir case. The unchanged isolated case completed at 400 ms.
+Controlled event timestamps then exposed a narrower fixture defect: the run completed at 400 ms, and the actual paired
+result flush also finished immediately, but that later save scheduled another 100 ms callback against an already released
+assistant-save gate. Draining that callback advanced the clock to 500 ms without awaiting more persistence work. A new
+post-flush clock assertion failed before the fixture correction. The exact source of the certification's additional
+400 ms was not captured; these probes establish no production or goal-accounting defect.
+
+The measurement now waits for the actual read-start and provider-tail barriers while fake time remains frozen. It advances
+300 ms, waits for the first assistant-save boundary, then advances its 100 ms delay and awaits the original request. Elapsed
+time comes from that request's settlement timestamp. The first assistant save arms its delay once; later saves still await
+the same gate and record every history snapshot. The real result flush must leave no pending timer or clock movement.
+Escaping workdirs wait only for the provider tail because their read must never start. Each scenario owns and clears its
+timers before restoring the real clock, then retains the existing abort, request, and termination joins. Frozen waits
+retain the fixture's 4-second real-clock watchdog and diagnostic state so a failed boundary still reaches cleanup.
+
+The provider/read/save durations remain 200/300/100 ms, the expected elapsed time remains 400 ms, and the read-before-EOF,
+single effect, single request, terminal result, and persistence assertions remain in place. Storage/path checks, runtime
+code, retries, and timeouts are unchanged.
+
+Focused validation on base `ceaa4c3c7efbd3edbfc77076a1b63c0b2d974e82`:
+
+```sh
+pnpm --dir src test core/task/__tests__/Task.spec.ts --maxWorkers=2 --testNamePattern "measures read overlap|withholds a read from escaping workdir" --silent=false
+```
+
+All five cases passed; each allowed workdir completed at exactly 400 ms. The final full Task file passed 315 tests,
+including the frozen-origin, result-flush, and no-clock-drift assertions. Four adjacent scheduler/persistence/goal files
+passed 154 tests. These commands used the same base and two-worker limit:
+
+```sh
+pnpm --dir src test core/task/__tests__/Task.spec.ts --maxWorkers=2
+pnpm --dir src test core/agent/__tests__/ToolScheduler.deferredResults.spec.ts core/agent/__tests__/ToolScheduler.command-batching.spec.ts core/task/__tests__/Task.persistence.spec.ts core/task/__tests__/Task.goals.spec.ts --maxWorkers=2
+```
+
+The extension typecheck, scoped ESLint check, and Prettier check for both touched files passed. No host, live-provider, or
+certification gate was rerun for this fixture-only follow-up.
+
 ## Validation
 
 Focused tests cover each working-directory spelling, legacy argument staging, delayed assistant persistence, lifecycle barriers, provider failure/cancellation, cancellation during an active read, and repair of an omitted accepted call. Adapter tests cover relative/absolute escapes, escaping junctions, a narrower captured workspace policy, and a directory replaced by an escaping junction after approval. Scheduler regressions cover discarded presentation, cancellation before commit, finalizer failure, publication retries/concurrent commits, and rejection of the isolated early path under serial execution policy.

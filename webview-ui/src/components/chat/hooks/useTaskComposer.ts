@@ -17,7 +17,7 @@ export interface TaskComposerDraft {
 	pendingSteerRequest: { requestId: string; taskId: string; messageId: string } | null
 	pendingEditRequest: (ComposerSubmission & { messageId: string }) | null
 	pendingResumeRequest: ComposerSubmission | null
-	pendingAskRequests: (ComposerSubmission & { askMessageTs?: number })[]
+	pendingAskRequests: (ComposerSubmission & { askMessageTs?: number; isNativeUserInput?: true })[]
 	chatCommandError?: string
 }
 

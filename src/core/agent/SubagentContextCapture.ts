@@ -81,6 +81,8 @@ export interface SubagentContextInstructionSourceInput {
 export interface SubagentContextSkillInput {
 	name: string
 	path: string
+	/** Prompt visibility is captured independently from explicit skill availability. */
+	allowImplicitInvocation?: boolean
 	/** Exact, mode-filtered skill content. It is digested but never persisted in the manifest. */
 	content?: string
 	digest?: string
@@ -931,15 +933,24 @@ function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteS
 function sanitizeAutoApprovalPolicy(
 	input: NonNullable<RuntimePolicyInput["autoApproval"]>,
 ): NonNullable<SubagentContextRuntimePolicy["autoApproval"]> {
-	const normalizeRules = (rules: typeof input.commandApproval.allowed) =>
-		[...new Map(rules.map((rule) => [`${rule.prefixLength}:${rule.digest}`, { ...rule }] as const)).values()].sort(
-			(left, right) => left.prefixLength - right.prefixLength || left.digest.localeCompare(right.digest),
+	const normalizeRules = <Rule extends { digest: string }>(rules: readonly Rule[], length: (rule: Rule) => number) =>
+		[...new Map(rules.map((rule) => [`${length(rule)}:${rule.digest}`, { ...rule }] as const)).values()].sort(
+			(left, right) => length(left) - length(right) || left.digest.localeCompare(right.digest),
 		)
-	const sanitizeCommandApproval = (policy: typeof input.commandApproval) => ({
-		...policy,
-		allowed: normalizeRules(policy.allowed),
-		denied: normalizeRules(policy.denied),
-	})
+	const sanitizeCommandApproval = (policy: typeof input.commandApproval): typeof input.commandApproval => {
+		if (policy.algorithm === "sha256-salted-prefix-v1") {
+			return {
+				...policy,
+				allowed: normalizeRules(policy.allowed, (rule) => rule.prefixLength),
+				denied: normalizeRules(policy.denied, (rule) => rule.prefixLength),
+			}
+		}
+		return {
+			...policy,
+			allowed: normalizeRules(policy.allowed, (rule) => rule.tokenCount),
+			denied: normalizeRules(policy.denied, (rule) => rule.tokenCount),
+		}
+	}
 
 	return subagentAutoApprovalPolicySchema.parse({
 		autoApprovalEnabled: input.autoApprovalEnabled,
@@ -1039,6 +1050,9 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 			name: skill.name.trim(),
 			path: skill.path.trim(),
 			digest: resolveContentDigest(skill, `Skill ${index + 1}`),
+			...(skill.allowImplicitInvocation !== undefined
+				? { allowImplicitInvocation: skill.allowImplicitInvocation }
+				: {}),
 		}))
 		.sort((left, right) => left.name.localeCompare(right.name) || left.path.localeCompare(right.path))
 	const runtimePolicy = buildRuntimePolicy(input.runtimePolicy)

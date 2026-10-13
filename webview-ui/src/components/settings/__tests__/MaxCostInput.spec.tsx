@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react"
+import settingsLocale from "@/i18n/locales/en/settings.json"
 
 import { MaxCostInput } from "../MaxCostInput"
 
@@ -9,7 +10,7 @@ vi.mock("@/utils/vscode", () => ({
 vi.mock("react-i18next", () => ({
 	useTranslation: () => {
 		const translations: Record<string, string> = {
-			"settings:autoApprove.apiCostLimit.title": "Max API Cost",
+			"settings:autoApprove.apiCostLimit.title": settingsLocale.autoApprove.apiCostLimit.title,
 			"settings:autoApprove.apiCostLimit.unlimited": "Unlimited",
 		}
 		return { t: (key: string) => translations[key] || key }
@@ -21,6 +22,17 @@ describe("MaxCostInput", () => {
 
 	beforeEach(() => {
 		mockOnValueChange.mockClear()
+	})
+
+	it("associates its reported-cost confirmation label with the input", () => {
+		render(<MaxCostInput allowedMaxCost={5} onValueChange={mockOnValueChange} />)
+
+		const input = screen.getByLabelText(settingsLocale.autoApprove.apiCostLimit.title)
+		expect(input.id).not.toBe("")
+		expect(screen.getByText(`${settingsLocale.autoApprove.apiCostLimit.title}:`).closest("label")).toHaveAttribute(
+			"for",
+			input.id,
+		)
 	})
 
 	it("shows empty input when allowedMaxCost is undefined", () => {

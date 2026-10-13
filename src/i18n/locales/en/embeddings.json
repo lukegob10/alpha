@@ -3,6 +3,8 @@
 	"requestQueueFull": "Too many embedding requests are queued. Wait for indexing to catch up, then try again.",
 	"searchTimeout": "Code search timed out before returning usable evidence. Try file search, or retry after indexing catches up.",
 	"searchNotConfigured": "Code indexing is not configured. Check the selected embedding provider and vector store settings.",
+	"searchPartialCoverage": "Search coverage is partial because a retrieval channel timed out or failed. Use exec_command with rg and direct file reads to verify missing evidence.",
+	"searchIncompleteIndex": "The code index is incomplete. Semantic coverage of recent changes may lag; use exec_command with rg and direct file reads to verify missing evidence.",
 	"authenticationFailed": "Failed to create embeddings: Authentication failed. Please check your API key.",
 	"failedWithStatus": "Failed to create embeddings after {{attempts}} attempts: HTTP {{statusCode}} - {{errorMessage}}",
 	"failedWithError": "Failed to create embeddings after {{attempts}} attempts: {{errorMessage}}",

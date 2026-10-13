@@ -337,8 +337,10 @@ export async function prepareParallelCommand(
 				interceptor.write(output)
 				const persisted = await interceptor.finalize()
 				preview = persisted.preview
-				if (persisted.artifactPath)
-					artifact = `\nArtifact ID: ${path.basename(persisted.artifactPath)}; in Code mode, use manage_command with action "read" and this artifact_id for full output.`
+				if (persisted.artifactPath) {
+					const artifactId = path.basename(persisted.artifactPath)
+					artifact = `\nArtifact ID: ${artifactId}\nOutput truncated. Read artifact ${artifactId} with write_stdin using ${JSON.stringify({ artifact_id: artifactId })}.`
+				}
 			}
 			resultCallbacks.pushToolResult(`${details}${artifact}\n${preview}`)
 			return async () => {

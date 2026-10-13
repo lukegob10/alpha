@@ -128,6 +128,7 @@ export const ChatTextArea = memo(
 				clineMessages,
 				commands,
 				enterBehavior,
+				autoSteer = false,
 				taskReasoning,
 				currentTaskId,
 			} = useShellState()
@@ -329,6 +330,16 @@ export const ChatTextArea = memo(
 				// Default: Enter sends
 				return "Enter"
 			}, [enterBehavior])
+			const sendActionLabel = isStopAction
+				? t("chat:stop.title")
+				: t(
+						isStreaming && !isEditMode
+							? autoSteer
+								? "chat:pressToSteer"
+								: "chat:pressToQueue"
+							: "chat:pressToSend",
+						{ keyCombination: sendKeyCombination },
+					)
 
 			const queryItems = useMemo(() => {
 				return [
@@ -1440,8 +1451,8 @@ export const ChatTextArea = memo(
 											</button>
 										</StandardTooltip>
 									)}
-									{/* Queue button - shown when streaming and user has typed content */}
-									{!isEditMode && isStreaming && hasInputContent && onEnqueueMessage && (
+									{/* Auto-steer keeps an explicit queue action beside the primary submission. */}
+									{!isEditMode && isStreaming && autoSteer && hasInputContent && onEnqueueMessage && (
 										<StandardTooltip content={t("chat:enqueueMessage")}>
 											<button
 												aria-label={t("chat:enqueueMessage")}
@@ -1463,18 +1474,9 @@ export const ChatTextArea = memo(
 										</StandardTooltip>
 									)}
 									{/* Send/Stop button - morphs based on streaming state, always visible in edit mode */}
-									<StandardTooltip
-										content={
-											isStopAction
-												? t("chat:stop.title")
-												: t("chat:pressToSend", { keyCombination: sendKeyCombination })
-										}>
+									<StandardTooltip content={sendActionLabel}>
 										<button
-											aria-label={
-												isStopAction
-													? t("chat:stop.title")
-													: t("chat:pressToSend", { keyCombination: sendKeyCombination })
-											}
+											aria-label={sendActionLabel}
 											disabled={sendDisabled}
 											onClick={sendDisabled ? undefined : isStopAction ? onStop : onSend}
 											className={cn(

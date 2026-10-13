@@ -6,6 +6,8 @@ import {
 	type ProviderSettings,
 	type TaskReasoningProjection,
 	type CreateTaskOptions,
+	type ExtensionMessage,
+	type AlphaMessage,
 } from "@alpha-code/types"
 import { uiFixtureBarrier } from "../ui/fixtureBarrier"
 import { waitFor } from "./utils"
@@ -18,15 +20,22 @@ interface ReasoningTask {
 	getReasoningState(): TaskReasoningProjection
 	updateApiConfiguration(configuration: ProviderSettings): void
 	messageQueueService: { messages: Array<{ text: string }> }
+	clineMessages: AlphaMessage[]
+	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
 }
 interface ReasoningHost {
 	viewLaunched: boolean
+	contextProxy: {
+		getValue(key: "autoSteer"): boolean | undefined
+		setValue(key: "autoSteer", value: boolean | undefined): Promise<void>
+	}
 	upsertProviderProfile(name: string, configuration: ProviderSettings): Promise<unknown>
 	activateProviderProfile(args: { name: string }): Promise<unknown>
 	providerSettingsManager: { getProfile(args: { name: string }): Promise<unknown>; listConfig(): Promise<unknown[]> }
 	getLiveTask(id: string): ReasoningTask | undefined
 	showTaskWithId(id: string): Promise<void>
 	postStateToWebview(): Promise<void>
+	postMessageToWebview(message: ExtensionMessage): Promise<unknown>
 	getActiveTaskId(): string | undefined
 	createTask(text: string, images?: string[], parent?: undefined, options?: CreateTaskOptions): Promise<ReasoningTask>
 	removeTaskFromStack(options: { taskId: string }): Promise<void>
@@ -38,6 +47,7 @@ suite("Rendered reasoning controls", function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
 		assert.equal(vscode.version, "1.125.0")
 		const provider = (globalThis.api as unknown as { sidebarProvider: ReasoningHost }).sidebarProvider
+		const originalAutoSteer = provider.contextProxy.getValue("autoSteer")
 		const requests: Array<{ model: string; reasoning_effort?: string }> = []
 		const requestMessages: string[] = []
 		let heldResponse: ServerResponse | undefined
@@ -51,10 +61,13 @@ suite("Rendered reasoning controls", function () {
 				requests.push({ model: body.model, reasoning_effort: body.reasoning_effort })
 				const messages = JSON.stringify(body.messages)
 				requestMessages.push(messages)
-				if (
-					messages.includes("Windows steering fixture") &&
-					!messages.includes("Windows steering instruction")
-				) {
+				const awaitingSteer =
+					(messages.includes("Windows steering fixture") &&
+						!messages.includes("Windows steering instruction")) ||
+					(messages.includes("Windows auto-steer fixture") &&
+						!messages.includes("Windows auto-steer instruction")) ||
+					messages.includes("Activity chip fixture")
+				if (awaitingSteer) {
 					heldResponse = response
 					response.once("close", () => {
 						heldRequestCancelled = true
@@ -135,6 +148,7 @@ suite("Rendered reasoning controls", function () {
 		}
 		globalThis.api.on(AlphaCodeEventName.TaskCompleted, completed)
 		try {
+			await provider.contextProxy.setValue("autoSteer", false)
 			await provider.upsertProviderProfile("GPT 6 Luna", configuration)
 			await provider.upsertProviderProfile("GPT 5.6 Luna", alternateConfiguration)
 			await provider.activateProviderProfile({ name: "GPT 6 Luna" })
@@ -221,7 +235,11 @@ suite("Rendered reasoning controls", function () {
 				await waitFor(() =>
 					steering.messageQueueService.messages.some((m) => m.text.includes("Windows queue instruction")),
 				)
-				assert.equal(requests.length, beforeQueue, "Explicit queueing must retain the held turn")
+				assert.equal(
+					requests.length,
+					beforeQueue,
+					"Ordinary Enter must queue and retain the held turn by default",
+				)
 				assert.equal(heldRequestCancelled, false)
 				await uiFixtureBarrier("hotkeys-steer")
 				await waitFor(() => requestMessages.some((m) => m.includes("Windows steering instruction")), {
@@ -230,7 +248,7 @@ suite("Rendered reasoning controls", function () {
 				assert.equal(
 					heldRequestCancelled,
 					true,
-					"Ordinary Enter must steer and cancel the previous model request",
+					"Send and Steer must cancel the previous model request even with auto-steer disabled",
 				)
 				await waitFor(() => completions >= 3 || steering.taskAsk?.ask === "completion_result")
 				if (completions < 3) steering.approveAsk()
@@ -260,9 +278,84 @@ suite("Rendered reasoning controls", function () {
 				assert.equal(provider.getActiveTaskId(), undefined, "Editor navigation must preserve the sidebar draft")
 				await uiFixtureBarrier("hotkeys-editor-previous")
 				await waitFor(() => editor.getActiveTaskId() === taskId)
+				heldResponse = undefined
+				heldRequestCancelled = false
+				const autoSteering = await createFixture("Windows auto-steer fixture: wait for direction.")
+				await waitFor(() => !!heldResponse, { description: "held auto-steer request" })
+				await editor.showTaskWithId(autoSteering.taskId)
+				await editor.postStateToWebview()
+				await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+				await provider.postStateToWebview()
+				await provider.postMessageToWebview({ type: "action", action: "settingsButtonClicked" })
+				await uiFixtureBarrier("steering-enable-settings")
+				await waitFor(() => provider.contextProxy.getValue("autoSteer") === true, {
+					description: "saved automatic steering preference",
+				})
+				await uiFixtureBarrier("hotkeys-editor-auto-steer")
+				await waitFor(() => requestMessages.some((m) => m.includes("Windows auto-steer instruction")), {
+					description: "automatic steering on the next model request",
+				})
+				assert.equal(
+					heldRequestCancelled,
+					true,
+					"Saving auto-steer in the sidebar must let ordinary Enter interrupt the response in an open editor",
+				)
+				assert.equal(autoSteering.messageQueueService.messages.length, 0)
 			}
+
+			heldResponse = undefined
+			const activity = await provider.createTask(
+				"Activity chip fixture: inspect the activity rows.",
+				undefined,
+				undefined,
+				{
+					preserveExisting: true,
+					apiConfiguration: configuration,
+					taskApprovalMode: "ask",
+					enableCheckpoints: false,
+				},
+			)
+			createdTaskIds.push(activity.taskId)
+			await waitFor(() => !!heldResponse, { description: "held activity request" })
+			const activityTimestamp = Math.max(Date.now(), ...activity.clineMessages.map((message) => message.ts)) + 1
+			// Reasoning stays outside the fold; a trailing read keeps the live action group active.
+			await activity.overwriteAlphaMessages([
+				...activity.clineMessages,
+				{
+					type: "say",
+					say: "reasoning",
+					ts: activityTimestamp,
+					text: "Checking activity chip alignment.",
+				},
+				{
+					type: "say",
+					say: "tool",
+					ts: activityTimestamp + 1,
+					text: JSON.stringify({
+						tool: "readFile",
+						path: "activity-fixture.ts",
+						content: "Activity fixture",
+					}),
+				},
+			])
+			await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+			await provider.postStateToWebview()
+			for (const [theme, stage] of [
+				["Default Dark Modern", "activity-edge"],
+				["Default Light Modern", "activity-edge-light"],
+				["Default High Contrast", "activity-edge-contrast"],
+			] as const) {
+				await vscode.workspace
+					.getConfiguration("workbench")
+					.update("colorTheme", theme, vscode.ConfigurationTarget.Global)
+				await uiFixtureBarrier(stage, { version: vscode.version, taskId: activity.taskId, theme })
+			}
+			await globalThis.api.cancelCurrentTask()
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("activity-edge-stopped", { version: vscode.version, taskId: activity.taskId })
 		} finally {
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, completed)
+			await provider.contextProxy.setValue("autoSteer", originalAutoSteer)
 			for (const id of createdTaskIds) await provider.removeTaskFromStack({ taskId: id }).catch(() => undefined)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
 			server.closeAllConnections()

@@ -495,7 +495,10 @@ export class ContextProxy {
 
 	public async setValues(values: AlphaCodeSettings) {
 		const entries = Object.entries(values) as [AlphaCodeSettingsKey, unknown][]
-		await Promise.all(entries.map(([key, value]) => this.setValue(key, value)))
+		// Callers use completion as a queue barrier, including when one setting's persistence rejects.
+		const outcomes = await Promise.allSettled(entries.map(([key, value]) => this.setValue(key, value)))
+		const failure = outcomes.find((outcome) => outcome.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
 	}
 
 	/**
