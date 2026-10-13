@@ -54,6 +54,11 @@ const ReasoningPreferenceTestComponent = () => {
 	return <div data-testid="reasoning-block-collapsed">{String(reasoningBlockCollapsed)}</div>
 }
 
+const AutoSteerPreferenceTestComponent = () => {
+	const { autoSteer } = useExtensionState()
+	return <div data-testid="auto-steer">{String(autoSteer)}</div>
+}
+
 const ApiConfigTestComponent = () => {
 	const { apiConfiguration, setApiConfiguration } = useExtensionState()
 
@@ -211,6 +216,22 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("reasoning-block-collapsed")).toHaveTextContent("true")
 		act(() => dispatchExtensionState({ reasoningBlockCollapsed: false }))
 		expect(screen.getByTestId("reasoning-block-collapsed")).toHaveTextContent("false")
+	})
+
+	it("defaults to queuing and hydrates explicit automatic steering preferences", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<AutoSteerPreferenceTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		expect(screen.getByTestId("auto-steer")).toHaveTextContent("false")
+		act(() => dispatchExtensionState({ autoSteer: true }))
+		expect(screen.getByTestId("auto-steer")).toHaveTextContent("true")
+		act(() => dispatchExtensionState({ soundEnabled: true }))
+		expect(screen.getByTestId("auto-steer")).toHaveTextContent("true")
+		act(() => dispatchExtensionState({ autoSteer: false }))
+		expect(screen.getByTestId("auto-steer")).toHaveTextContent("false")
 	})
 
 	it("initializes with soundEnabled set to false", () => {

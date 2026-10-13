@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.11
+
+### Patch Changes
+
+- Deliver sub-agent results automatically and preserve sender-attributed messages through continuation, interruption, cancellation, and reload.
+- Commit delegated-task summaries before publishing them, recover interrupted follow-up launches, and retain approval responses safely through storage failures.
+- Persist task goals and preserve usage accounting across delegated work, provider retries, and resumed tasks.
+- Restore Agents settings and keep profile, approval, reasoning, and provider controls consistent with saved preferences.
+- Present questions one at a time with keyboard navigation, retained custom answers, and readable completed-answer receipts.
+- Add a preference for automatic steering versus queued messages while preserving explicit steering and pending approvals.
+- Refresh chat activity indicators and alignment with theme, high-contrast, and reduced-motion support.
+- Preserve provider message phases and cancellation history, collect complete bounded MCP catalogs, and honor explicit-only skills.
+- Update the extension and in-app release announcement together, with expanded deterministic and exact VS Code 1.125.0 coverage.
+
 ## 3.1.10
 
 ### Patch Changes

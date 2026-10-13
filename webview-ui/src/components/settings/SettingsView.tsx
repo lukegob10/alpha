@@ -281,6 +281,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		enhancementApiConfigId,
 		reasoningBlockCollapsed,
 		enterBehavior,
+		autoSteer,
 		maxConcurrentTasks,
 		subagentDefaultApiConfigId,
 		subagentAgentTypes,
@@ -735,6 +736,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					enhancementApiConfigId: enhancementApiConfigId ?? "",
 					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
 					enterBehavior: enterBehavior ?? "send",
+					autoSteer: autoSteer === true,
 					includeCurrentTime: includeCurrentTime ?? true,
 					includeCurrentCost: includeCurrentCost ?? true,
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
@@ -1252,6 +1254,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				<UISettings
 					reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
 					enterBehavior={enterBehavior ?? "send"}
+					autoSteer={autoSteer === true}
 					maxConcurrentTasks={maxConcurrentTasks ?? 3}
 					setCachedStateField={setCachedStateField}
 				/>

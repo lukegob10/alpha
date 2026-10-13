@@ -44,6 +44,7 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import { AskIgnoredError } from "./AskIgnoredError"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
+import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
 import { TaskGoalStore } from "../task-persistence/TaskGoalStore"
 import { GoalController } from "../agent/goals/GoalController"
@@ -131,6 +132,7 @@ import {
 	type AlphaApiReqInfo,
 	type FollowUpData,
 	type AsyncUserInputData,
+	type UserInputResponseData,
 	AlphaCodeEventName,
 	TaskStatus,
 	TodoItem,
@@ -943,9 +945,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
 	private readonly stagedWaitAgentNotifications = new Map<string, Anthropic.TextBlockParam[]>()
-	private readonly waitAgentClaimEventIds = new Map<string, Set<string>>()
+	private readonly waitAgentClaimEntries = new Map<string, readonly AgentMailboxEntry[]>()
 	private readonly durableWaitAgentClaimIds = new Set<string>()
 	private readonly pendingWaitAgentNotificationBlocks = new Set<Anthropic.TextBlockParam>()
+	/** A final answer fences passive result mail until the next authorized turn. */
+	private deferAgentResultNotifications = false
 	private persistedToolResultIds = new Set<string>()
 	private steerMessageAwaitingPersistence = false
 	private isAgentTurnEngineActive = false
@@ -1424,28 +1428,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!claimId || entries.length === 0) throw new Error("Agent notifications require a nonempty mailbox claim")
 		if (this.stagedWaitAgentNotifications.has(claimId)) return
 		const ordered = [...entries].sort((left, right) => left.sequence - right.sequence)
-		this.waitAgentClaimEventIds.set(claimId, new Set(ordered.map((entry) => entry.eventId)))
+		this.waitAgentClaimEntries.set(claimId, structuredClone(ordered))
+		const deliveredEventIds = getPersistedAgentNotificationIds(this.apiConversationHistory, ordered, (text) =>
+			redactTaskPrivatePaths(this, text),
+		)
 		this.stagedWaitAgentNotifications.set(
 			claimId,
-			ordered.map((entry) => ({
-				type: "text",
-				text: redactTaskPrivatePaths(
-					this,
-					JSON.stringify({
-						source: "managed_agent_notification",
-						eventId: entry.eventId,
-						sequence: entry.sequence,
-						createdAt: entry.createdAt,
-						senderTaskId: entry.senderTaskId,
-						senderPath: entry.senderPath,
-						recipientTaskId: entry.recipientTaskId,
-						recipientPath: entry.recipientPath,
-						kind: entry.kind,
-						name: entry.name,
-						payload: entry.payload,
-					}),
-				),
-			})),
+			ordered
+				.filter((entry) => !deliveredEventIds.has(entry.eventId))
+				.map((entry) => ({
+					type: "text",
+					text: redactTaskPrivatePaths(this, serializeAgentNotification(entry)),
+				})),
 		)
 	}
 
@@ -1473,7 +1467,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public forgetWaitAgentResultClaim(claimId: string): void {
 		this.stagedWaitAgentNotifications.delete(claimId)
-		this.waitAgentClaimEventIds.delete(claimId)
+		this.waitAgentClaimEntries.delete(claimId)
 		this.durableWaitAgentClaimIds.delete(claimId)
 		for (const [toolCallId, retainedClaimId] of this.pendingWaitAgentResultClaims) {
 			if (retainedClaimId === claimId) this.pendingWaitAgentResultClaims.delete(toolCallId)
@@ -1483,22 +1477,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private waitAgentClaimsPersistedBy(message: Anthropic.MessageParam): string[] {
 		if (message.role !== "user" || !Array.isArray(message.content)) return []
 		const persistedClaimIds = new Set<string>()
-		const persistedEventIds = new Set<string>()
 		for (const block of message.content) {
-			if (block.type !== "text") continue
-			try {
-				const notification = JSON.parse(block.text) as { source?: unknown; eventId?: unknown }
-				if (notification.source === "managed_agent_notification" && typeof notification.eventId === "string") {
-					persistedEventIds.add(notification.eventId)
-				}
-			} catch {
-				// Ordinary user text is not an agent notification.
-			}
-		}
-		for (const block of message.content) {
-			if (block.type !== "tool_result") continue
+			if (block.type !== "tool_result" || block.is_error) continue
 			const retainedClaimId = this.pendingWaitAgentResultClaims.get(sanitizeToolUseId(block.tool_use_id))
 			if (!retainedClaimId) continue
+			const expectedEntries = this.waitAgentClaimEntries.get(retainedClaimId)
+			const persistedEventIds = getPersistedAgentNotificationIds(
+				this.apiConversationHistory,
+				expectedEntries,
+				(text) => redactTaskPrivatePaths(this, text),
+			)
 			const textParts =
 				typeof block.content === "string"
 					? [block.content]
@@ -1506,12 +1494,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			for (const text of textParts) {
 				try {
 					const receipt = JSON.parse(text) as { source?: unknown; claimId?: unknown }
-					const expectedEventIds = this.waitAgentClaimEventIds.get(retainedClaimId)
 					if (
 						receipt.source === "managed_agent_mailbox" &&
 						receipt.claimId === retainedClaimId &&
-						expectedEventIds?.size &&
-						[...expectedEventIds].every((eventId) => persistedEventIds.has(eventId))
+						expectedEntries?.length &&
+						expectedEntries.every((entry) => persistedEventIds.has(entry.eventId))
 					) {
 						persistedClaimIds.add(retainedClaimId)
 						break
@@ -1971,18 +1958,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// - trailing: true - Emit final state when updates stop
 		// - maxWait        - Ensures at most one emit per interval during rapid updates (throttle behavior)
 		this.debouncedEmitTokenUsage = debounce(
-			(tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
-				const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
-				const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
-
-				if (tokenChanged || toolChanged) {
-					this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
-					this.tokenUsageSnapshot = tokenUsage
-					this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
-					// Deep copy tool usage for snapshot
-					this.toolUsageSnapshot = JSON.parse(JSON.stringify(toolUsage))
-				}
-			},
+			(tokenUsage: TokenUsage, toolUsage: ToolUsage) => this.publishTokenUsageUpdate(tokenUsage, toolUsage),
 			this.TOKEN_USAGE_EMIT_INTERVAL_MS,
 			{ leading: true, trailing: true, maxWait: this.TOKEN_USAGE_EMIT_INTERVAL_MS },
 		)
@@ -6877,6 +6853,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.say("text", text, undefined, false)
 		if (this.abort || this.hasGoalPendingInput()) return false
 		this.goalTurnCompletionText = text
+		this.deferAgentResultNotifications = true
 		return true
 	}
 
@@ -7553,7 +7530,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
 						)
 					: []
-			const decision = await provider.getParentCompletionDecision(this)
+			const decision = await provider.getParentCompletionDecision(this, {
+				deferResultNotifications: this.deferAgentResultNotifications,
+			})
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
 			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
@@ -8280,31 +8259,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async upsertSubagentGroup(group: SubagentGroupState): Promise<void> {
-		const existing = this.clineMessages.find(
-			(message) => message.say === "subagent_group" && message.subagentGroup?.groupId === group.groupId,
+		const snapshot = structuredClone(group)
+		const committed = await this.commitAlphaMessageMutation(
+			snapshot.createdAt,
+			"the sub-agent group",
+			(message) => ({
+				...(message ?? { ts: snapshot.createdAt, type: "say" as const, say: "subagent_group" as const }),
+				subagentGroup: snapshot,
+			}),
+			undefined,
+			(message) =>
+				message.type === "say" &&
+				message.say === "subagent_group" &&
+				message.subagentGroup?.groupId === snapshot.groupId,
 		)
-
-		if (existing) {
-			existing.subagentGroup = structuredClone(group)
-			this.releaseSubagentReviewBarrierIfSettled()
-			await this.saveAlphaMessages()
-			await this.updateAlphaMessage(existing)
-			return
-		}
-
-		await this.addToAlphaMessages({
-			ts: group.createdAt,
-			type: "say",
-			say: "subagent_group",
-			subagentGroup: structuredClone(group),
-		})
+		if (!committed) throw new Error("Unable to stage the sub-agent group.")
 		this.releaseSubagentReviewBarrierIfSettled()
+		if (committed.created) await this.publishAlphaMessageCreated(committed.message)
+		else await this.updateAlphaMessage(committed.message)
 	}
 
 	private getPendingSpawnedSubagentResults(): PendingSpawnedSubagentResult[] {
-		// Phase 3: asynchronous terminal results are consumed only through the
-		// native wait_agent mailbox path. Keep this compatibility seam inert so
-		// the legacy request loop never fabricates a user-authored result block.
+		// Lifecycle projections are not input receipts. Automatic delivery consumes
+		// the durable mailbox at the same safe boundary as ordinary agent messages.
+		// Keep the legacy synthetic-human-result seam inert.
 		return []
 	}
 
@@ -9161,6 +9139,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 	}
 
+	private shouldDeferAgentResultNotifications(response: AgentResponse): boolean {
+		if (response.toolCalls.length > 0) return false
+		const textItems = response.items.filter(
+			(item): item is Extract<AgentResponseItem, { type: "text" }> =>
+				item.type === "text" && item.text.trim().length > 0,
+		)
+		if (textItems.some((item) => item.phase === "final_answer")) return true
+		return (
+			response.outcome?.requiresContinuation !== true &&
+			response.text.trim().length > 0 &&
+			!textItems.some((item) => item.phase === "commentary")
+		)
+	}
+
 	private pendingAgentMessageDecision(): CompletionGateDecision {
 		return {
 			allowed: false,
@@ -9189,7 +9181,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const persist = async (message: AgentMessage) => {
 			if (this.abort) throw new Error("Agent message delivery was cancelled")
 			// A crash between transcript commit and mailbox ACK must not duplicate input.
-			if (this.apiConversationHistory.some((entry) => entry.agent_message_id === message.id)) {
+			if (
+				getPersistedAgentNotificationIds(
+					this.apiConversationHistory,
+					message.notification ? [message.notification] : [],
+					(text) => redactTaskPrivatePaths(this, text),
+				).has(message.id)
+			) {
 				if (!(await this.saveApiConversationHistory())) throw new Error("Agent message receipt is not durable")
 				return
 			}
@@ -9200,7 +9198,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				content: [
 					{
 						type: "text",
-						text: `<agent_message>\n${JSON.stringify({ sender_task_id: message.senderTaskId, message: message.text })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`,
+						text: message.notification
+							? redactTaskPrivatePaths(this, serializeAgentNotification(message.notification))
+							: `<agent_message>\n${JSON.stringify({ sender_task_id: message.senderTaskId, message: message.text })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`,
 					},
 				],
 			}
@@ -9310,6 +9310,50 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public canAcceptSubagentFollowup(): boolean {
 		return this.taskKind === "subagent" && this.didComplete && !this.isTaskLoopActive && !this.isStreaming
+	}
+
+	/** Persist agent guidance before interrupting an active independent task. */
+	public async steerAgentMessage(message: AgentMessage): Promise<"steered" | "buffered"> {
+		if (this.abort || this.abandoned || this.didComplete) {
+			throw new Error("The task cannot accept a steering message")
+		}
+		await this.admitAgentMessage(() => this.receiveAgentMessage(message))
+
+		// Admission may race a human response, approval, stop, or completion. Keep
+		// accepted guidance in the existing inbox for the next authorized boundary.
+		if (
+			this.abort ||
+			this.abandoned ||
+			this.didComplete ||
+			this.isPaused ||
+			this.activeAsk ||
+			this.activeToolApprovalRequest ||
+			this.contextCondenseAbortController ||
+			this.pendingSteerMessage ||
+			this.steerMessageAwaitingPersistence ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse !== undefined ||
+			!this.isTurnActive()
+		) {
+			return "buffered"
+		}
+
+		this.invalidateGoalContinuation()
+		this.cancelAutoApprovalTimeout()
+		// The interruption marker carries no parent guidance. The actual input and
+		// receipt are delivered once from the durable inbox between logical steps.
+		this.pendingSteerMessage = {
+			text: "Continue with the pending agent messages.",
+			images: [],
+			inputOrigin: "agent",
+		}
+		this.steerMessageAwaitingPersistence = true
+		const interrupt = new SteerRequestInterruptError()
+		this.agentWaitAbortController?.abort(interrupt)
+		this.postTurnCompactionAbortController?.abort(interrupt)
+		this.stepInterruptionController?.abort(interrupt)
+		this.currentRequestAbortController?.abort(interrupt)
+		return "steered"
 	}
 
 	public async steerUserMessage(
@@ -9844,6 +9888,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: {
 			isNonInteractive?: boolean
 			asyncUserInput?: AsyncUserInputData
+			userInputResponse?: UserInputResponseData
 			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
@@ -9861,10 +9906,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if ((type === "async_user_input") !== (options.asyncUserInput !== undefined)) {
 			throw new Error("Async user input messages require their typed question payload.")
 		}
+		if (options.userInputResponse !== undefined && type !== "user_feedback") {
+			throw new Error("User input responses can only be attached to user feedback.")
+		}
 		if (this.abort) {
 			throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
+		const userInputResponse =
+			options.userInputResponse === undefined
+				? undefined
+				: {
+						questions: options.userInputResponse.questions.map(({ header, question, answers }) => ({
+							...(header === undefined ? {} : { header: redactTaskPrivatePaths(this, header) }),
+							question: redactTaskPrivatePaths(this, question),
+							answers: answers.map((answer) => redactTaskPrivatePaths(this, answer)),
+						})),
+					}
 		const queuedMessageIds =
 			options.feedbackSource !== "automatic" && options.queuedMessageIds?.length
 				? [...options.queuedMessageIds]
@@ -9921,7 +9979,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					"the retried user feedback",
 					(message) =>
 						!this.abort && !this.abandoned && !isFeedbackConsumed() && isSameFeedback(message)
-							? { ...message, text, images, queuedMessageIds }
+							? { ...message, text, images, queuedMessageIds, userInputResponse }
 							: undefined,
 					undefined,
 					isSameFeedback,
@@ -9955,6 +10013,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = partial
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					lastMessage.userInputResponse = userInputResponse
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 					await this.updateAlphaMessage(lastMessage).catch((error) => {
 						console.error(`[Task#${this.taskId}] Failed to update partial message:`, error)
@@ -9979,6 +10038,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							userInputResponse,
 							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
@@ -9999,6 +10059,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = false
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					lastMessage.userInputResponse = userInputResponse
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 
 					// Instead of streaming partialMessage events, we do a save
@@ -10028,6 +10089,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							userInputResponse,
 							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
@@ -10058,6 +10120,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					contextCondense,
 					contextTruncation,
 					asyncUserInput: options.asyncUserInput,
+					userInputResponse,
 					...(queuedMessageIds ? { queuedMessageIds } : {}),
 					...(options.commandExecutionId ? { commandExecutionId: options.commandExecutionId } : {}),
 				},
@@ -10842,15 +10905,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	/**
-	 * Force emit a final token usage update, ignoring throttle.
-	 * Called before task completion or abort to ensure final stats are captured.
-	 * Triggers the debounce with current values and immediately flushes to ensure emit.
-	 */
+	private publishTokenUsageUpdate(tokenUsage: TokenUsage, toolUsage: ToolUsage): void {
+		const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
+		const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
+
+		if (tokenChanged || toolChanged) {
+			this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
+			this.tokenUsageSnapshot = tokenUsage
+			this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
+			// Deep copy tool usage for snapshot
+			this.toolUsageSnapshot = JSON.parse(JSON.stringify(toolUsage))
+		}
+	}
+
+	/** Publish final usage immediately without retaining a debounce timer after completion or abort. */
 	public emitFinalTokenUsageUpdate(): void {
-		const tokenUsage = this.getTokenUsage()
-		this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
-		this.debouncedEmitTokenUsage.flush()
+		this.debouncedEmitTokenUsage.cancel()
+		this.publishTokenUsageUpdate(this.getTokenUsage(), this.toolUsage)
 	}
 
 	/** Stop fences idle work immediately, then durably pauses only this Task owner's goal. */
@@ -11032,6 +11103,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public dispose(): void {
+		this.debouncedEmitTokenUsage.cancel()
 		void this.stopGoalForTaskCancellation().catch((error) => {
 			console.error(`[Task#${this.taskId}] Goal pause could not be persisted during disposal:`, error)
 		})
@@ -11289,6 +11361,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			sampleStep: async (input) => {
+				this.deferAgentResultNotifications = false
 				// Legacy hosts may return without entering the request loop.
 				this.recoveryAttemptMessageStart = this.clineMessages.length
 				recoveryExplanationPublished = false
@@ -11552,10 +11625,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				const providerRequiresContinuation = sample.response.outcome?.requiresContinuation === true
+				this.deferAgentResultNotifications = this.shouldDeferAgentResultNotifications(sample.response)
+				const hasPendingResultNotifications =
+					!this.deferAgentResultNotifications &&
+					this.providerRef.deref()?.hasPendingAgentResultNotifications?.(this) === true
 				let requiresContinuation =
 					providerRequiresContinuation ||
 					this.userMessageContent.length > 0 ||
 					this.hasPendingAgentMessages() ||
+					hasPendingResultNotifications ||
 					this.pendingSteerMessage !== undefined
 				let nextUserContent: Anthropic.Messages.ContentBlockParam[]
 
@@ -11564,7 +11642,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (this.pendingSteerMessage !== undefined) {
 					// runAgentRequests consumes durable steering before the next API request.
 					nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
-				} else if (this.hasPendingAgentMessages()) {
+				} else if (this.hasPendingAgentMessages() || hasPendingResultNotifications) {
 					nextUserContent = []
 				} else {
 					const isVisibleResponse =

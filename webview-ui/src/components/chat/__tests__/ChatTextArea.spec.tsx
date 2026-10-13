@@ -144,6 +144,36 @@ describe("ChatTextArea", () => {
 		expect(onStop).toHaveBeenCalledTimes(1)
 	})
 
+	it.each([undefined, false, true])("labels streaming submission with autoSteer=%s", (autoSteer) => {
+		;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			filePaths: [],
+			openedTabs: [],
+			apiConfiguration: { apiProvider: "anthropic" },
+			taskHistory: [],
+			cwd: "/test/workspace",
+			autoSteer,
+		})
+		const onEnqueueMessage = vi.fn()
+		render(
+			<ChatTextArea
+				{...defaultProps}
+				inputValue="NEW_DIRECTION"
+				isStreaming
+				onEnqueueMessage={onEnqueueMessage}
+			/>,
+		)
+		fireEvent.click(
+			screen.getByRole("button", { name: autoSteer ? "Press Enter to send and steer" : "Press Enter to queue" }),
+		)
+		expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
+		if (autoSteer) {
+			fireEvent.click(screen.getByRole("button", { name: /Add message to queue/ }))
+			expect(onEnqueueMessage).toHaveBeenCalledTimes(1)
+		} else {
+			expect(screen.queryByRole("button", { name: /Add message to queue/ })).not.toBeInTheDocument()
+		}
+	})
+
 	describe("new task appearance", () => {
 		it("labels the existing settings and removes the helper text without changing Enter submission", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)

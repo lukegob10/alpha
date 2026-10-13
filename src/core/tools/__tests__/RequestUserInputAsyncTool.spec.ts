@@ -60,6 +60,65 @@ describe("RequestUserInputAsyncTool", () => {
 		expect(callbacks.handleError).not.toHaveBeenCalled()
 	})
 
+	it("trims questions and options while keeping shared option labels across different questions", async () => {
+		const task = { taskKind: "primary", abort: false, say: vi.fn(async () => {}) }
+		const { callbacks, results } = createCallbacks()
+
+		await new RequestUserInputAsyncTool().execute(
+			{
+				questions: [
+					{ title: " Which environment should I use? ", options: [" Staging ", " Production "] },
+					{ title: " Which backup environment should I use? ", options: [" Staging ", " Production "] },
+				],
+			},
+			task as never,
+			callbacks,
+		)
+
+		expect(task.say).toHaveBeenCalledExactlyOnceWith(
+			"async_user_input",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{
+				isNonInteractive: true,
+				asyncUserInput: {
+					questions: [
+						{ title: "Which environment should I use?", options: ["Staging", "Production"] },
+						{ title: "Which backup environment should I use?", options: ["Staging", "Production"] },
+					],
+				},
+			},
+		)
+		expect(results).toEqual(['{"accepted":true}'])
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it.each(["Staging", " Staging "])(
+		"rejects duplicate option %s before publishing the question",
+		async (duplicate) => {
+			const task = { taskKind: "primary", abort: false, say: vi.fn() }
+			const { callbacks, results } = createCallbacks()
+
+			await new RequestUserInputAsyncTool().execute(
+				{
+					questions: [{ title: "Which environment should I use?", options: ["Staging", duplicate] }],
+				},
+				task as never,
+				callbacks,
+			)
+
+			expect(task.say).not.toHaveBeenCalled()
+			expect(callbacks.handleError).toHaveBeenCalledExactlyOnceWith(
+				"requesting user input",
+				expect.objectContaining({ message: "request_user_input_async question 1 options must be unique." }),
+			)
+			expect(results).toHaveLength(0)
+		},
+	)
+
 	it("denies the action for subagents", async () => {
 		const task = { taskKind: "subagent", abort: false, say: vi.fn() }
 		const { callbacks, results } = createCallbacks()

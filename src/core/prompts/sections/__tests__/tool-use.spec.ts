@@ -189,6 +189,35 @@ describe("getSharedToolUseSection", () => {
 		expect(toolUse).toContain("Do not control ancestors, siblings, or foreign branches")
 	})
 
+	it.each(["explore", "review", "worker"] as const)(
+		"keeps passive same-tree messaging available to %s children independently of delegation",
+		(role) => {
+			for (const canDelegate of [false, true]) {
+				const rules = getRulesSection("F:/workspace", {
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					subagentRole: role,
+					subagentCanDelegate: canDelegate,
+				})
+				const toolUse = getSharedToolUseSection(role, false, canDelegate)
+
+				expect(rules).toContain("send_message may address your parent, /root, or a peer in this managed tree")
+				expect(rules).not.toMatch(/send_message[^\n]*only for your retained descendant subtree/)
+				expect(toolUse).toContain("passive send_message within this managed tree")
+				expect(toolUse).toContain("never starts a recipient turn or answers human approval")
+				expect(toolUse).toContain(
+					"Retained stopped recipients keep passive mail for their next authorized turn",
+				)
+				if (canDelegate) {
+					expect(toolUse).toContain("Do not control ancestors, siblings, or foreign branches")
+				} else {
+					expect(toolUse).not.toContain("spawn_agent")
+				}
+			}
+		},
+	)
+
 	it("retains the delegation prohibition for explicit false and legacy child prompt settings", () => {
 		const baseSettings = {
 			todoListEnabled: true,

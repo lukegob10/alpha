@@ -1,6 +1,7 @@
 import { HTMLAttributes, useMemo } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
+import type { Checkbox } from "@vscode/webview-ui-toolkit"
 import { telemetryClient } from "@/utils/TelemetryClient"
 import { DEFAULT_MAX_CONCURRENT_TASKS, MAX_MAX_CONCURRENT_TASKS, MIN_MAX_CONCURRENT_TASKS } from "@alpha-code/types"
 
@@ -13,6 +14,7 @@ import { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 interface UISettingsProps extends HTMLAttributes<HTMLDivElement> {
 	reasoningBlockCollapsed: boolean
 	enterBehavior: "send" | "newline"
+	autoSteer: boolean
 	maxConcurrentTasks: number
 	setCachedStateField: SetCachedStateField<keyof ExtensionStateContextType>
 }
@@ -20,6 +22,7 @@ interface UISettingsProps extends HTMLAttributes<HTMLDivElement> {
 export const UISettings = ({
 	reasoningBlockCollapsed,
 	enterBehavior,
+	autoSteer,
 	maxConcurrentTasks,
 	setCachedStateField,
 	...props
@@ -100,6 +103,22 @@ export const UISettings = ({
 							</VSCodeCheckbox>
 							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
 								{t("settings:ui.requireCtrlEnterToSend.description", { primaryMod })}
+							</div>
+						</div>
+					</SearchableSetting>
+
+					<SearchableSetting settingId="ui-auto-steer" section="ui" label={t("settings:ui.autoSteer.label")}>
+						<div className="flex flex-col gap-1">
+							<VSCodeCheckbox
+								checked={autoSteer}
+								onChange={(event) =>
+									setCachedStateField("autoSteer", (event.target as Checkbox).checked)
+								}
+								data-testid="auto-steer-checkbox">
+								<span className="font-medium">{t("settings:ui.autoSteer.label")}</span>
+							</VSCodeCheckbox>
+							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
+								{t("settings:ui.autoSteer.description")}
 							</div>
 						</div>
 					</SearchableSetting>

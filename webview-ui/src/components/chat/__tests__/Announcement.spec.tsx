@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.10",
+		version: "3.1.11",
 	},
 }))
 
@@ -37,14 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.10" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.11" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.10")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.11")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v3.1.10 recovers abandoned task-storage locks so chats can resume after an interrupted session.",
-			),
+			screen.getByText("Alpha v3.1.11 improves agent coordination, task goals, and the chat experience."),
 		).toBeInTheDocument()
 	})
 
@@ -53,20 +51,22 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Interrupted sessions can resume without manually deleting a leftover task lock."),
+			screen.getByText(
+				"Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Saved task goals keep progress and usage accounting connected across delegated work."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Abandoned locks from older versions recover automatically once other Alpha hosts have stopped.",
+				"Answer questions one at a time, revisit your choices, and review completed answers in the chat.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Recovery preserves saved task history and protects storage still used by an active host.",
+				"Choose automatic steering or queued messages, with clearer Agents settings and activity indicators.",
 			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Storage delays show a specific recovery message with guidance for resuming."),
 		).toBeInTheDocument()
 	})
 
@@ -74,12 +74,12 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText(
-				"Alpha v3.1.10 recovers abandoned task-storage locks so chats can resume after an interrupted session.",
-			),
+			screen.getByText("Alpha v3.1.11 improves agent coordination, task goals, and the chat experience."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Interrupted sessions can resume without manually deleting a leftover task lock."),
+			screen.getByText(
+				"Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
+			),
 		).toBeInTheDocument()
 	})
 })

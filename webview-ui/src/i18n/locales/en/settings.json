@@ -152,6 +152,10 @@
 			"label": "Require {{primaryMod}}+Enter to send messages",
 			"description": "When enabled, you must press {{primaryMod}}+Enter to send messages instead of just Enter"
 		},
+		"autoSteer": {
+			"label": "Auto-steer messages",
+			"description": "When enabled, messages you submit while Alpha is working steer the current turn automatically. When disabled (default), messages wait in the queue until the current turn finishes. You can still select Steer on a queued message to deliver it sooner."
+		},
 		"maxConcurrentTasks": {
 			"label": "Maximum parallel tasks",
 			"description": "The number of live tasks that can run at the same time. Failed and completed tasks do not count against this limit."

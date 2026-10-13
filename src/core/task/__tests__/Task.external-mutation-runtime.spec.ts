@@ -77,7 +77,12 @@ describe("Task external mutation runtime state", () => {
 			],
 			isAwaitingSubagentReview: false,
 			subagentReviewBarrier: undefined,
-			saveAlphaMessages: vi.fn(async () => true),
+			// Storage is isolated here; keep Task's real staged mutation and durable commit callback.
+			enqueueAlphaMessagesSave: vi.fn(async (createSnapshot: () => unknown, onPersisted?: () => void) => {
+				createSnapshot()
+				onPersisted?.()
+				return true
+			}),
 			updateAlphaMessage: vi.fn(async () => undefined),
 		})
 

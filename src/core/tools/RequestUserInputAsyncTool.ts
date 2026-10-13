@@ -28,6 +28,12 @@ function validateQuestions(questions: unknown): asserts questions is AsyncUserIn
 		) {
 			throw new Error(`request_user_input_async question ${index + 1} options must be non-empty strings.`)
 		}
+		if (Array.isArray(record.options)) {
+			const labels = new Set(record.options.map((option: string) => option.trim()))
+			if (labels.size !== record.options.length) {
+				throw new Error(`request_user_input_async question ${index + 1} options must be unique.`)
+			}
+		}
 	}
 }
 

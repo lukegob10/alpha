@@ -19,9 +19,10 @@ validated message, and the host publishes `alpha.focusedWebview` for VS Code's k
 `focusedView` context does not follow focus into its webview overlay in VS Code 1.125.0. Sidebar bindings explicitly address
 the sidebar provider; editor bindings use the focused visible editor provider. Late blur notifications cannot clear another
 view's focus, and hidden or disposed views release it. Custom macro-pad bindings may invoke these commands directly; pass
-`"sidebar"` as the command argument to target the sidebar explicitly. Ordinary Enter now steers an eligible active
-response through the same durable submission path. The explicit queue button keeps input for the next safe boundary;
-submission at an approval still queues without answering the approval. Shift+Tab retains the Plan/Code control.
+`"sidebar"` as the command argument to target the sidebar explicitly. Ordinary Send/Enter queues messages during an active
+turn by default. Enable **Auto-steer messages** in **Settings → UI** and click **Save** to make ordinary submission steer
+an eligible active response. A queued message's **Steer** action and the **Send and steer** command remain available with
+either preference. Submission at an approval queues without answering the approval. Shift+Tab retains the Plan/Code control.
 
 Send and steer submits a nonempty, visible composer draft through `Task.steerUserMessageDurably` with a stable receipt ID.
 Input is durably queued before the current turn is interrupted. A rejected admission preserves the draft. If an approval or
@@ -51,9 +52,10 @@ Reviewed Codex CLI commit `d63a9b8344cfe58bc78bbe319b560378fc8756ef` on October 
 
 The October 8 convergence additionally reviewed Codex's
 [instant interruption](https://github.com/openai/codex/commit/406b0c44460cf71e90c21c7abe6e581add3a6421).
-Enter now steers an eligible active primary response; explicit queueing and the dedicated steering command remain
-available. Approval boundaries keep their queued-input contract. See
-[the implementation and validation](codex-steering-convergence-2026-10-08.md). VS Code task navigation uses Alpha's
+The October 11 [queue preference](steering-queue-preference.md) makes that behavior opt-in, with ordinary submission
+queueing by default at the user's request. Explicit queueing and the dedicated steering command remain available.
+Approval boundaries keep their queued-input contract. See the earlier
+[steering implementation and validation](codex-steering-convergence-2026-10-08.md). VS Code task navigation uses Alpha's
 shared session registry rather than the CLI's terminal navigation. No execution policy or approval authority changes.
 
 The implementation uses stable command, webview messaging, and keybinding contracts for VS Code **1.125.0**. Consulted
@@ -68,6 +70,8 @@ registry, focus, message-handler, and composer tests, package and consumer typec
 with `pnpm --filter @alpha-code/vscode-e2e test:reasoning:1250`.
 
 The Windows fixture presses reasoning minus/plus inside both composers and navigates both views. Its sidebar stages also
-verify that explicit queueing retains input without interrupting a held HTTP request, Enter cancels that request and delivers both
-queued and steered input, next-needing-input selects an unresolved approval, and new task preserves existing work. Host
+verify that ordinary Enter queues without interrupting a held HTTP request, Send and steer cancels that request and delivers
+both queued and steered input, and saving auto-steer in sidebar settings makes ordinary Enter in an already-open editor
+interrupt a held response. Next-needing-input
+selects an unresolved approval, and new task preserves existing work. Host
 assertions independently verify task IDs and model request payloads, while the renderer records focus and screenshots.

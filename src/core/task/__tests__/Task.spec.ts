@@ -12,6 +12,7 @@ import {
 	AlphaCodeEventName,
 	getApiProtocol,
 	alphaMessageSchema,
+	type AlphaMessage,
 	type AlphaAsk,
 	type ApprovalMode,
 	type GlobalState,
@@ -19,6 +20,7 @@ import {
 	type ModelInfo,
 	type ToolApprovalDecision,
 	type ToolApprovalRequest,
+	type SubagentGroupState,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -48,6 +50,7 @@ import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../../a
 import * as contextManagement from "../../context-management"
 import type { AgentMessage } from "../../task-persistence/AgentMessageInbox"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import * as taskPersistence from "../../task-persistence"
 import i18n from "../../../i18n"
 import enCommon from "../../../i18n/locales/en/common.json"
 
@@ -98,24 +101,25 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
-function createStorageLstatMock(actualLstat: typeof import("node:fs/promises").lstat) {
+function isVirtualTaskStoragePath(filePath: string): boolean {
 	const virtualStorageRoots = [
 		path.resolve(os.tmpdir(), "test-storage"),
 		path.resolve("/test/storage"),
 		path.resolve("/mock/storage/path"),
 	]
-	const isWithin = (root: string, candidate: string) => {
+	const candidate = path.resolve(filePath)
+	return virtualStorageRoots.some((root) => {
 		const relativePath = path.relative(root, candidate)
 		return (
 			relativePath === "" ||
 			(!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`))
 		)
-	}
+	})
+}
+
+function createStorageLstatMock(actualLstat: typeof import("node:fs/promises").lstat) {
 	return vi.fn().mockImplementation((filePath, options) => {
-		if (
-			typeof filePath === "string" &&
-			virtualStorageRoots.some((root) => isWithin(root, path.resolve(filePath)))
-		) {
+		if (typeof filePath === "string" && isVirtualTaskStoragePath(filePath)) {
 			return Promise.reject(
 				Object.assign(new Error("Virtual storage path does not exist"), {
 					code: "ENOENT",
@@ -127,6 +131,30 @@ function createStorageLstatMock(actualLstat: typeof import("node:fs/promises").l
 		return actualLstat(filePath, options)
 	})
 }
+
+// Constructor goal-owner writes share the virtual filesystem boundary and must not leave real lock retries behind.
+// Physical task-loop and goal fixtures retain the actual durable store.
+vi.mock("../../agent/goals/GoalAccountingBindingStore", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../agent/goals/GoalAccountingBindingStore")>()
+	return {
+		...actual,
+		GoalAccountingBindingStore: class extends actual.GoalAccountingBindingStore {
+			constructor(
+				private readonly fixtureStoragePath: string,
+				taskId: string,
+			) {
+				super(fixtureStoragePath, taskId)
+			}
+
+			override async save(
+				...args: Parameters<typeof actual.GoalAccountingBindingStore.prototype.save>
+			): Promise<void> {
+				if (isVirtualTaskStoragePath(this.fixtureStoragePath)) return
+				await super.save(...args)
+			}
+		},
+	}
+})
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
@@ -1603,67 +1631,79 @@ describe("Alpha", () => {
 				])
 			})
 
-			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "persist an owned native wait result",
-					startTask: false,
-				})
-				task.apiConversationHistory = [
-					{
-						role: "assistant",
-						content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
-						ts: 1,
-					},
-				] as any
-				task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
-				task.stageWaitAgentNotifications("claim-native-wait", [
-					{
-						eventId: "wait-event",
-						sequence: 1,
-						senderTaskId: "child",
-						senderPath: "/root/child",
-						recipientTaskId: task.taskId,
-						recipientPath: "/root",
-						rootTaskId: task.taskId,
-						kind: "result",
-						name: "agent_completed",
-						payload: { summary: "Child done" },
-						createdAt: 1,
-					},
-				])
-				let releaseSave!: (saved: boolean) => void
-				const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
-				vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
-				const toolResult = {
-					role: "user" as const,
-					content: [
+			it.each([true, false])(
+				"acknowledges a native wait claim only after its matching tool result and unchanged notification are durably saved (%s)",
+				async (matchingBody) => {
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "persist an owned native wait result",
+						startTask: false,
+					})
+					task.apiConversationHistory = [
 						{
-							type: "tool_result" as const,
-							tool_use_id: "call-wait",
-							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-native-wait" }),
+							role: "assistant",
+							content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
+							ts: 1,
 						},
+					] as any
+					task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
+					task.stageWaitAgentNotifications("claim-native-wait", [
 						{
-							type: "text" as const,
-							text: JSON.stringify({
-								source: "managed_agent_notification",
-								eventId: "wait-event",
-								senderPath: "/root/child",
-								payload: { summary: "Child done" },
-							}),
+							eventId: "wait-event",
+							sequence: 1,
+							senderTaskId: "child",
+							senderPath: "/root/child",
+							recipientTaskId: task.taskId,
+							recipientPath: "/root",
+							rootTaskId: task.taskId,
+							kind: "result",
+							name: "agent_completed",
+							payload: { summary: "Child done" },
+							createdAt: 1,
 						},
-					],
-				}
+					])
+					let releaseSave!: (saved: boolean) => void
+					const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
+					vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
+					const notification = JSON.parse(
+						task["stagedWaitAgentNotifications"].get("claim-native-wait")![0].text,
+					)
+					if (!matchingBody)
+						notification.payload.summary = "Unrelated prose with matching notification headers"
+					const toolResult = {
+						role: "user" as const,
+						content: [
+							{
+								type: "tool_result" as const,
+								tool_use_id: "call-wait",
+								content: JSON.stringify({
+									source: "managed_agent_mailbox",
+									claimId: "claim-native-wait",
+								}),
+							},
+							{
+								type: "text" as const,
+								text: JSON.stringify(notification),
+							},
+						],
+					}
 
-				const persisting = (task as any).addToApiConversationHistory(toolResult)
-				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-native-wait")
-				releaseSave(true)
-				await expect(persisting).resolves.toBe(true)
+					const persisting = (task as any).addToApiConversationHistory(toolResult)
+					expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-native-wait")
+					releaseSave(true)
+					await expect(persisting).resolves.toBe(true)
 
-				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
-				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
-			})
+					if (matchingBody) {
+						expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
+						expect(task.hasRetainedWaitAgentResultClaim("claim-native-wait")).toBe(false)
+					} else {
+						expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+						expect(task.hasRetainedWaitAgentResultClaim("claim-native-wait")).toBe(true)
+						expect(task.hasDurablyPersistedWaitAgentClaim("claim-native-wait")).toBe(false)
+					}
+				},
+			)
 
 			it("does not ACK a wait receipt if its child notification is missing from the saved message", async () => {
 				const task = new Task({
@@ -1784,7 +1824,7 @@ describe("Alpha", () => {
 						},
 						{
 							type: "text" as const,
-							text: JSON.stringify({ source: "managed_agent_notification", eventId: "retry-event" }),
+							text: task["stagedWaitAgentNotifications"].get("claim-retry")![0].text,
 						},
 					],
 				}
@@ -3816,6 +3856,105 @@ describe("Alpha", () => {
 		})
 	})
 
+	describe("token usage timer ownership", () => {
+		let task: Task
+		beforeEach(() => {
+			vi.useFakeTimers()
+			task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Publish final usage without retaining timers",
+				startTask: false,
+			})
+		})
+		afterEach(() => {
+			task.dispose()
+			vi.useRealTimers()
+		})
+		const usage = (tokens: number) => ({
+			totalTokensIn: tokens,
+			totalTokensOut: tokens / 10,
+			totalCost: tokens / 1_000,
+			contextTokens: tokens,
+		})
+
+		it("publishes the latest final usage once without scheduling a timeout", async () => {
+			const latest = usage(100)
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(latest)
+			task.toolUsage = { read_file: { attempts: 2, failures: 1 } }
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+
+			task.emitFinalTokenUsageUpdate()
+			task.emitFinalTokenUsageUpdate()
+
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, latest, task.toolUsage)
+			expect(vi.getTimerCount()).toBe(0)
+			await vi.runAllTimersAsync()
+			expect(updated).toHaveBeenCalledOnce()
+		})
+
+		it("cancels pending throttled usage before publishing the current terminal payload", async () => {
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+			task["debouncedEmitTokenUsage"](usage(100), {})
+			task["debouncedEmitTokenUsage"](usage(200), {})
+			expect(vi.getTimerCount()).toBe(1)
+			updated.mockClear()
+			const latest = usage(300)
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(latest)
+			task.toolUsage = { read_file: { attempts: 3, failures: 0 } }
+
+			task.emitFinalTokenUsageUpdate()
+
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, latest, task.toolUsage)
+			expect(vi.getTimerCount()).toBe(0)
+			await vi.advanceTimersByTimeAsync(2_000)
+			expect(updated).toHaveBeenCalledOnce()
+		})
+
+		it.each(["pending", "final"] as const)(
+			"disposes %s usage timers without a later task event",
+			async (boundary) => {
+				vi.spyOn(task, "getTokenUsage").mockReturnValue(usage(300))
+				task["debouncedEmitTokenUsage"](usage(100), {})
+				task["debouncedEmitTokenUsage"](usage(200), {})
+				if (boundary === "final") task.emitFinalTokenUsageUpdate()
+				const emit = vi.spyOn(task, "emit")
+
+				task.dispose()
+
+				expect(vi.getTimerCount()).toBe(0)
+				await vi.advanceTimersByTimeAsync(2_000)
+				expect(emit).not.toHaveBeenCalledWith(
+					AlphaCodeEventName.TaskTokenUsageUpdated,
+					task.taskId,
+					expect.anything(),
+					expect.anything(),
+				)
+			},
+		)
+
+		it("retains normal usage throttling after a final emission", async () => {
+			vi.spyOn(task, "getTokenUsage").mockReturnValue(usage(100))
+			const updated = vi.fn()
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, updated)
+			task.emitFinalTokenUsageUpdate()
+			updated.mockClear()
+
+			task["debouncedEmitTokenUsage"](usage(200), {})
+			task["debouncedEmitTokenUsage"](usage(300), {})
+			expect(updated).toHaveBeenCalledExactlyOnceWith(task.taskId, usage(200), {})
+			expect(vi.getTimerCount()).toBe(1)
+			await vi.advanceTimersByTimeAsync(1_999)
+			expect(updated).toHaveBeenCalledOnce()
+			await vi.advanceTimersByTimeAsync(1)
+			expect(updated).toHaveBeenLastCalledWith(task.taskId, usage(300), {})
+			expect(updated).toHaveBeenCalledTimes(2)
+			expect(vi.getTimerCount()).toBe(0)
+		})
+	})
+
 	describe("v2.0.9 root task loop", () => {
 		const loopStorageParent = path.resolve(os.tmpdir())
 		const loopStoragePrefix = "alpha-task-loop-"
@@ -4075,6 +4214,135 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 			expect(request).toHaveBeenCalledTimes(2)
 			expect(request.mock.calls[1][0]).toEqual([])
+		})
+
+		it.each(["commentary", "reasoning"] as const)(
+			"continues after %s to read automatic child reports without calling wait_agent",
+			async (phase) => {
+				const task = createTask()
+				let resultPending = false
+				mockProvider.hasPendingAgentResultNotifications = vi.fn(() => resultPending)
+				mockProvider.deliverAgentMessages = vi.fn(async (_recipient, persist) => {
+					await persist({
+						id: "automatic-turn-result",
+						senderTaskId: "child",
+						text: "Follow-up finished",
+						notification: {
+							eventId: "automatic-turn-result",
+							sequence: 1,
+							rootTaskId: task.taskId,
+							senderTaskId: "child",
+							senderPath: "/root/child",
+							recipientTaskId: task.taskId,
+							recipientPath: "/root",
+							kind: "result",
+							name: "agent_completed",
+							payload: { taskId: "child", status: "completed", summary: "Follow-up finished" },
+							createdAt: 1,
+						},
+					})
+					resultPending = false
+				})
+				const request = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						resultPending = true
+						return {
+							status: "completed",
+							response: createAgentResponse(
+								phase === "reasoning"
+									? [{ type: "reasoning", text: "Thinking about the review" }]
+									: [{ type: "text", text: "Checking the review", phase: "commentary" }],
+							),
+						}
+					})
+					.mockImplementationOnce(async () => {
+						await task["deliverAgentMessages"]()
+						return true
+					})
+				await task["initiateTaskLoop"]([{ type: "text", text: "start" }])
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1][0]).toEqual([])
+				expect(task.apiConversationHistory).toEqual([
+					expect.objectContaining({
+						input_origin: "agent",
+						agent_message_id: "automatic-turn-result",
+					}),
+				])
+				expect(JSON.parse((task.apiConversationHistory[0].content[0] as { text: string }).text)).toMatchObject({
+					source: "managed_agent_notification",
+					eventId: "automatic-turn-result",
+					payload: { summary: "Follow-up finished" },
+				})
+			},
+		)
+
+		it.each(["final_answer", undefined] as const)(
+			"retains passive child reports after a %s answer without another model request",
+			async (phase) => {
+				const task = createTask()
+				mockProvider.hasPendingAgentResultNotifications = vi.fn(() => true)
+				const delivery = vi.fn(async () => undefined)
+				mockProvider.deliverAgentMessages = delivery
+				const request = vi.spyOn(task, "runAgentRequests").mockResolvedValue({
+					status: "completed",
+					response: createAgentResponse([
+						{ type: "text", text: "Review complete", ...(phase ? { phase } : {}) },
+					]),
+				})
+				await task["initiateTaskLoop"]([{ type: "text", text: "start" }])
+				expect(request).toHaveBeenCalledOnce()
+				expect(delivery).not.toHaveBeenCalled()
+				expect(task.isCompleted()).toBe(true)
+				expect(mockProvider.getParentCompletionDecision).toHaveBeenCalledWith(task, {
+					deferResultNotifications: true,
+				})
+			},
+		)
+
+		it("deduplicates an automatic result across a later native wait receipt", async () => {
+			const task = createTask()
+			const acknowledge = vi.spyOn(mockProvider, "acknowledgeWaitAgentResults").mockResolvedValue(undefined)
+			const notification = {
+				eventId: "automatic-before-wait",
+				sequence: 1,
+				createdAt: 1,
+				rootTaskId: task.taskId,
+				senderTaskId: "child",
+				senderPath: "/root/child",
+				recipientTaskId: task.taskId,
+				recipientPath: "/root",
+				kind: "result" as const,
+				name: "agent_completed",
+				payload: { status: "completed", summary: "Only one body" },
+			}
+			await task.receiveAgentMessage({
+				id: notification.eventId,
+				senderTaskId: "child",
+				text: "Only one body",
+				notification,
+			})
+			await task["deliverAgentMessages"]()
+			task.apiConversationHistory.push({
+				role: "assistant",
+				content: [{ type: "tool_use", id: "wait-after-auto", name: "wait_agent", input: {} }],
+			})
+			task.retainWaitAgentResultClaim("wait-after-auto", "claim-after-auto")
+			task.stageWaitAgentNotifications("claim-after-auto", [notification])
+			task.pushToolResultToUserContent({
+				type: "tool_result",
+				tool_use_id: "wait-after-auto",
+				content: JSON.stringify({
+					source: "managed_agent_mailbox",
+					claimId: "claim-after-auto",
+					eventCount: 1,
+				}),
+			})
+			expect(task.userMessageContent.map((block) => block.type)).toEqual(["tool_result"])
+			task["assistantMessageSavedToHistory"] = true
+			await expect(task.flushPendingToolResultsToHistory()).resolves.toBe(true)
+			expect(acknowledge).toHaveBeenCalledWith(task, "claim-after-auto")
+			expect(JSON.stringify(task.apiConversationHistory).match(/Only one body/g)).toHaveLength(1)
 		})
 
 		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
@@ -8072,6 +8340,156 @@ describe("Alpha", () => {
 				}),
 			)
 		})
+	})
+
+	describe("upsertSubagentGroup durable publication", () => {
+		function fixture(operation: "create" | "update") {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Persist managed group cards",
+				taskId: "group-parent",
+				taskApiConfigName: "default",
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			const group: SubagentGroupState = {
+				groupId: "target-group",
+				parentTaskId: task.taskId,
+				status: "running",
+				createdAt: 1,
+				agents: [
+					{
+						taskId: "child",
+						nickname: "Child",
+						role: "review",
+						objective: "Review communication",
+						status: "running",
+						usage: { inputTokens: 0, outputTokens: 0, cost: 0, durationMs: 0 },
+					},
+				],
+			}
+			const sibling: AlphaMessage = {
+				ts: group.createdAt,
+				type: "say",
+				say: "subagent_group",
+				text: "Sibling card",
+				subagentGroup: { ...structuredClone(group), groupId: "sibling-group" },
+			}
+			const original: AlphaMessage = {
+				ts: 10,
+				type: "say",
+				say: "subagent_group",
+				text: "Retained card text",
+				images: ["data:image/png;base64,aA=="],
+				partial: false,
+				subagentGroup: structuredClone(group),
+			}
+			task.clineMessages = [
+				{ ts: group.createdAt, type: "say", say: "text", text: "Unrelated message at the same timestamp" },
+				sibling,
+				...(operation === "update" ? [original] : []),
+			]
+			const baseline = structuredClone(task.clineMessages)
+			const nextGroup: SubagentGroupState = {
+				...group,
+				status: "completed",
+				completedAt: 20,
+				agents: group.agents.map((agent) => ({ ...agent, status: "completed" })),
+			}
+			const expected: AlphaMessage = {
+				...(operation === "update"
+					? original
+					: { ts: group.createdAt, type: "say" as const, say: "subagent_group" as const }),
+				subagentGroup: nextGroup,
+			}
+			const projection = vi.fn(async () => undefined)
+			mockProvider.postTaskMessageToWebview = projection
+			const messageEvents = vi.fn()
+			task.on(AlphaCodeEventName.Message, messageEvents)
+			const releaseReview = vi.fn()
+			Reflect.set(task, "subagentReviewBarrier", { promise: new Promise<void>(() => {}), resolve: releaseReview })
+			return { task, nextGroup, baseline, sibling, original, expected, projection, messageEvents, releaseReview }
+		}
+
+		it.each(["create", "update"] as const)(
+			"keeps memory, UI, and the review barrier unchanged when %s persistence fails",
+			async (operation) => {
+				const { task, nextGroup, baseline, sibling, original, projection, messageEvents, releaseReview } =
+					fixture(operation)
+				const save = vi
+					.spyOn(taskPersistence, "saveTaskMessages")
+					.mockRejectedValue(new Error("Transcript storage unavailable"))
+				try {
+					await expect(task.upsertSubagentGroup(nextGroup)).rejects.toThrow(
+						"Unable to persist the sub-agent group",
+					)
+					expect(save).toHaveBeenCalledTimes(3)
+					expect(task.clineMessages).toEqual(baseline)
+					expect(task.clineMessages[1]).toBe(sibling)
+					if (operation === "update") expect(task.clineMessages[2]).toBe(original)
+					expect(projection).not.toHaveBeenCalled()
+					expect(messageEvents).not.toHaveBeenCalled()
+					expect(releaseReview).not.toHaveBeenCalled()
+				} finally {
+					save.mockRestore()
+				}
+			},
+		)
+
+		it.each(["create", "update"] as const)(
+			"commits %s before publishing while preserving existing fields and sibling cards",
+			async (operation) => {
+				const { task, nextGroup, baseline, sibling, expected, projection, messageEvents, releaseReview } =
+					fixture(operation)
+				let enterSave!: () => void
+				const saveEntered = new Promise<void>((resolve) => (enterSave = resolve))
+				let releaseSave!: () => void
+				const saveBarrier = new Promise<void>((resolve) => (releaseSave = resolve))
+				let snapshot: AlphaMessage[] | undefined
+				let saved = false
+				const projectionObservations: Array<{ saved: boolean; message: AlphaMessage | undefined }> = []
+				const save = vi
+					.spyOn(taskPersistence, "saveTaskMessages")
+					.mockImplementationOnce(async ({ messages }) => {
+						snapshot = structuredClone(messages)
+						enterSave()
+						await saveBarrier
+						saved = true
+					})
+				projection.mockImplementation(async () => {
+					projectionObservations.push({ saved, message: structuredClone(task.clineMessages[2]) })
+				})
+				const committing = task.upsertSubagentGroup(nextGroup)
+				try {
+					await saveEntered
+					expect(snapshot).toEqual([...baseline.slice(0, 2), expected])
+					expect(task.clineMessages).toEqual(baseline)
+					expect(projection).not.toHaveBeenCalled()
+					expect(messageEvents).not.toHaveBeenCalled()
+					expect(releaseReview).not.toHaveBeenCalled()
+					releaseSave()
+					await committing
+					expect(task.clineMessages).toEqual(snapshot)
+					expect(task.clineMessages[1]).toBe(sibling)
+					expect(projectionObservations).toEqual([{ saved: true, message: expected }])
+					expect(projection).toHaveBeenCalledExactlyOnceWith(
+						operation === "create" ? "messageCreated" : "messageUpdated",
+						task.taskId,
+						expected,
+					)
+					expect(messageEvents).toHaveBeenCalledExactlyOnceWith({
+						action: operation === "create" ? "created" : "updated",
+						message: expected,
+					})
+					expect(releaseReview).toHaveBeenCalledOnce()
+				} finally {
+					releaseSave()
+					await committing
+					save.mockRestore()
+				}
+			},
+		)
 	})
 
 	describe("design handoff persistence", () => {

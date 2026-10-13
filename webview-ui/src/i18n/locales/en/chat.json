@@ -170,7 +170,7 @@
 		"title": "Stop",
 		"tooltip": "Stop the current task"
 	},
-	"enqueueMessage": "Add message to queue (will be sent after current task completes)",
+	"enqueueMessage": "Add message to queue (will be sent after the current turn completes)",
 	"editMessage": {
 		"placeholder": "Edit your message..."
 	},
@@ -206,6 +206,8 @@
 	"addImages": "Add images to message",
 	"sendMessage": "Send message",
 	"pressToSend": "Press {{keyCombination}} to send",
+	"pressToQueue": "Press {{keyCombination}} to queue",
+	"pressToSteer": "Press {{keyCombination}} to send and steer",
 	"stopTts": "Stop text-to-speech",
 	"typeMessage": "Type a message...",
 	"typeTask": "What should I work on?",
@@ -480,11 +482,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} recovers abandoned task-storage locks so chats can resume after an interrupted session.",
-			"lockRecovery": "Interrupted sessions can resume without manually deleting a leftover task lock.",
-			"legacyRecovery": "Abandoned locks from older versions recover automatically once other Alpha hosts have stopped.",
-			"historySafety": "Recovery preserves saved task history and protects storage still used by an active host.",
-			"recoveryGuidance": "Storage delays show a specific recovery message with guidance for resuming."
+			"welcome": "Alpha v{{version}} improves agent coordination, task goals, and the chat experience.",
+			"agentCommunication": "Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
+			"persistentGoals": "Saved task goals keep progress and usage accounting connected across delegated work.",
+			"questionFlow": "Answer questions one at a time, revisit your choices, and review completed answers in the chat.",
+			"steeringAndSettings": "Choose automatic steering or queued messages, with clearer Agents settings and activity indicators."
 		}
 	},
 	"crossTasks": {
@@ -549,11 +551,29 @@
 	},
 	"requestUserInput": {
 		"title": "Answer the questions",
-		"other": "Other",
-		"otherAnswer": "Other answer for {{header}} question {{index}}",
+		"intro": "One question at a time. You can go back to any answer.",
+		"progress": "{{answered}} of {{total}} answered",
+		"questions": "Questions",
+		"stepLabel": "{{header}}, question {{index}} of {{total}}",
+		"other": "Write your own",
+		"otherAnswer": "Custom answer for {{header}}, question {{index}}",
 		"otherPlaceholder": "Enter an answer",
+		"otherDescription": "Add a different answer in your own words.",
+		"recommended": "Recommended",
 		"cancel": "Cancel",
-		"submit": "Submit answers"
+		"back": "Back",
+		"continue": "Continue",
+		"review": "Review answers",
+		"reviewTitle": "Review your answers",
+		"reviewDescription": "You can edit any answer before sending.",
+		"edit": "Edit",
+		"editQuestion": "Edit answer for {{header}}",
+		"submit": "Send answers",
+		"closed": "Question request closed",
+		"pending": "Sending answers…",
+		"sendFailed": "Could not send your answers. You can try again.",
+		"receiptTitle": "Your answers",
+		"receiptStatus": "Answers sent"
 	},
 	"asyncUserInput": {
 		"title": "A question for you",

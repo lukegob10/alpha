@@ -1,5 +1,9 @@
 # Codex steering convergence — October 8, 2026
 
+The October 11 [queue preference](steering-queue-preference.md) supersedes this iteration's ordinary Send/Enter default:
+messages now queue by default, and **Auto-steer messages** in **Settings → UI** restores automatic steering. The runtime
+interruption and durable admission behavior described here still applies to explicit and enabled automatic steering.
+
 This iteration makes ordinary composer submission interrupt an eligible active response, releases stalled provider
 reads, and prevents an advisory tool-progress callback from blocking cancellation. The existing queue, turn engine,
 policy snapshot, persistence receipts, and scheduler continue to own execution.

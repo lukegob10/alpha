@@ -302,6 +302,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		telemetrySetting,
 		soundEnabled,
 		soundVolume,
+		autoSteer = false,
 		messageQueue = [],
 		liveTasksById,
 		agentLifecycleSnapshots,
@@ -1305,7 +1306,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	 * @param images - Array of image data URLs to send with the message
 	 */
 	const handleSendMessage = useCallback(
-		(text: string, images: string[], asyncUserInputMessageTs?: number, steer = false): boolean => {
+		(
+			text: string,
+			images: string[],
+			asyncUserInputMessageTs?: number,
+			steer = false,
+			isNativeUserInput = false,
+		): boolean => {
 			text = text.trim()
 			const planCommand = parsePlanModeCommand(text)
 
@@ -1492,6 +1499,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						text,
 						images: [...images],
 						askMessageTs,
+						...(isNativeUserInput ? { isNativeUserInput: true as const } : {}),
 						...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
 					}
 					pendingAskRequestsRef.current = [...pendingAskRequestsRef.current, request]
@@ -1617,8 +1625,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [visibleTaskPayload, setDidClickCancel])
 
 	const handleComposerSend = useCallback(() => {
-		handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
-	}, [handleSendMessage, inputValue, selectedImages, isManagedSubagent])
+		handleSendMessage(inputValue, selectedImages, undefined, autoSteer && !isManagedSubagent)
+	}, [handleSendMessage, inputValue, selectedImages, autoSteer, isManagedSubagent])
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
@@ -2079,7 +2087,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							pendingAskRequests: current.pendingAskRequests.filter(
 								(request) => request.requestId !== result.requestId,
 							),
-							...(result.status === "rejected"
+							...(result.status === "rejected" && !submission.isNativeUserInput
 								? {
 										inputValue: current.inputValue
 											? `${current.inputValue} ${submission.text}`
@@ -2843,10 +2851,42 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 
 	const handleRequestUserInputSubmit = useCallback(
-		(answers: RequestUserInputAnswerMap) => {
-			void handleSendMessage(JSON.stringify({ answers }), [])
+		(answers: RequestUserInputAnswerMap, askMessageTs: number) => {
+			if (!visibleCurrentTaskId || editingQueuedMessage || isVisibleTaskFailedOrClosed) return false
+			const boundary = messagesRef.current.findLast(
+				(message) =>
+					message.type === "ask" ||
+					(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+			)
+			// An answer packet belongs to this ask, even when composer or task state offers another send route.
+			if (
+				boundary?.type !== "ask" ||
+				boundary.ask !== "followup" ||
+				boundary.ts !== askMessageTs ||
+				boundary.partial === true ||
+				boundary.isAnswered === true ||
+				(submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
+					submittedFollowUpRef.current.ts === askMessageTs)
+			) {
+				return false
+			}
+			const preservedInput = inputValueRef.current
+			const preservedImages = [...selectedImagesRef.current]
+			const accepted = handleSendMessage(JSON.stringify({ answers }), [], undefined, false, true)
+			if (accepted) {
+				setInputValue(preservedInput)
+				setSelectedImages(preservedImages)
+			}
+			return accepted
 		},
-		[handleSendMessage],
+		[
+			handleSendMessage,
+			visibleCurrentTaskId,
+			editingQueuedMessage,
+			isVisibleTaskFailedOrClosed,
+			setInputValue,
+			setSelectedImages,
+		],
 	)
 
 	const handleAsyncUserInputSubmit = useCallback(
@@ -2891,25 +2931,50 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		],
 	)
 
-	const handleRequestUserInputCancel = useCallback(() => {
-		if (alphaAskRef.current !== "followup") return
-
-		const pendingFollowUp = messagesRef.current.findLast(
-			(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
-		)
-		if (pendingFollowUp && visibleCurrentTaskId) {
-			submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: pendingFollowUp.ts }
-		}
-		userRespondedRef.current = true
-		markFollowUpAsAnswered()
-		vscode.postMessage({
-			type: "askResponse",
-			askMessageTs: getCurrentAskMessageTs(),
-			askResponse: "noButtonClicked",
-			...visibleTaskPayload,
-		})
-		handleChatReset()
-	}, [handleChatReset, getCurrentAskMessageTs, markFollowUpAsAnswered, visibleCurrentTaskId, visibleTaskPayload])
+	const handleRequestUserInputCancel = useCallback(
+		(askMessageTs: number) => {
+			if (!visibleCurrentTaskId || isVisibleTaskFailedOrClosed) return
+			const boundary = messagesRef.current.findLast(
+				(message) =>
+					message.type === "ask" ||
+					(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+			)
+			if (
+				boundary?.type !== "ask" ||
+				boundary.ask !== "followup" ||
+				boundary.ts !== askMessageTs ||
+				boundary.partial === true ||
+				boundary.isAnswered === true ||
+				(submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
+					submittedFollowUpRef.current.ts === askMessageTs)
+			) {
+				return
+			}
+			const preservedInput = inputValueRef.current
+			const preservedImages = [...selectedImagesRef.current]
+			submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: askMessageTs }
+			userRespondedRef.current = true
+			markFollowUpAsAnswered()
+			vscode.postMessage({
+				type: "askResponse",
+				askMessageTs,
+				askResponse: "noButtonClicked",
+				...visibleTaskPayload,
+			})
+			handleChatReset()
+			setInputValue(preservedInput)
+			setSelectedImages(preservedImages)
+		},
+		[
+			handleChatReset,
+			markFollowUpAsAnswered,
+			visibleCurrentTaskId,
+			visibleTaskPayload,
+			isVisibleTaskFailedOrClosed,
+			setInputValue,
+			setSelectedImages,
+		],
+	)
 
 	const handleBatchFileResponse = useCallback(
 		(response: { [key: string]: boolean }) => {
@@ -3099,8 +3164,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (hasInput) {
 				// The host Enter shortcut and textarea submit share input routing.
 				// Approval buttons remain explicit actions when no draft is present.
-				if (!isProfileDisabled && !isCondensing)
-					handleSendMessage(inputValue, selectedImages, undefined, !isManagedSubagent)
+				if (!isProfileDisabled && !isCondensing) handleComposerSend()
 				return
 			}
 

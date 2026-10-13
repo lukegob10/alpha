@@ -13,6 +13,7 @@ async function setup() {
 	await store.createAgent({
 		taskId: "child",
 		parentTaskId: "root",
+		groupId: "original-batch",
 		nickname: "Child",
 		role: "review",
 		objective: "Inspect",
@@ -54,6 +55,70 @@ async function setup() {
 }
 
 describe("AgentControlStore follow-up admission durability", () => {
+	it("admits a per-child continuation group atomically and restores its original group on rollback", async () => {
+		const { store, persistence, previous, event } = await setup()
+		await store.updateAgentStatusAndAppendEvent(
+			"child",
+			"pending",
+			{ groupId: "child-continuation", pendingFollowupEventId: event.eventId },
+			event,
+			"root",
+		)
+		expect(store.getAgent("child")).toMatchObject({ status: "pending", groupId: "child-continuation" })
+		expect(await store.rollbackAgentFollowup(previous, event.eventId)).toBe(true)
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		expect(reloaded.getAgent("child")).toEqual({ ...previous, pendingFollowupEventId: event.eventId })
+		expect(reloaded.getSnapshot().mailbox.filter((entry) => entry.eventId === event.eventId)).toHaveLength(1)
+	})
+
+	it("rejects group changes outside child pending admission without changing the retained record", async () => {
+		const { store, previous } = await setup()
+		await expect(
+			store.updateAgentStatus("child", "completed", { groupId: "invalid-terminal-group" }),
+		).rejects.toThrow("during pending admission")
+		await store.updateAgentStatus("root", "completed")
+		await expect(store.updateAgentStatus("root", "pending", { groupId: "invalid-root-group" })).rejects.toThrow(
+			"during pending admission",
+		)
+		await expect(store.updateAgentStatus("child", "pending", { groupId: " " })).rejects.toThrow(
+			"during pending admission",
+		)
+		expect(store.getAgent("child")).toEqual(previous)
+	})
+
+	it.each(["completion", "message"] as const)(
+		"serializes active follow-up admission with %s winning the terminal boundary",
+		async (winner) => {
+			const { store } = await setup()
+			await store.updateAgentStatus("child", "pending")
+			await store.updateAgentStatus("child", "running")
+			const terminal = () => store.updateAgentStatus("child", "completed")
+			const message = () =>
+				store.appendEventWhileRecipientActive({
+					eventId: "active-followup",
+					rootTaskId: "root",
+					sender: "root",
+					recipient: "child",
+					kind: "message",
+					name: "parent_message",
+					payload: { message: "Continue if active" },
+				})
+			const admitted =
+				winner === "completion"
+					? await Promise.all([terminal(), message()]).then(([, result]) => result)
+					: await Promise.all([message(), terminal()]).then(([result]) => result)
+			expect(store.getAgent("child")?.status).toBe("completed")
+			if (winner === "completion") {
+				expect(admitted).toBeUndefined()
+				expect(store.getUnacknowledgedMailboxEntries("child", { kinds: ["message"] })).toEqual([])
+			} else {
+				expect(admitted).toMatchObject({ appended: true, entry: { eventId: "active-followup" } })
+				expect(store.getUnacknowledgedMailboxEntries("child", { kinds: ["message"] })).toHaveLength(1)
+			}
+		},
+	)
+
 	it("atomically rolls back terminal metadata while retaining one authoritative event across reload", async () => {
 		const { store, persistence, previous, event, admit } = await setup()
 		await admit()

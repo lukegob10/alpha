@@ -11,6 +11,7 @@ for (const testFile of [
 	"file-review-ui.test",
 	"task-navigation-ui.test",
 	"composer-ui.test",
+	"request-user-input-ui.test",
 ]) {
 	test(`renderer debugging for ${testFile} requires scripted execution and an owned profile`, async () => {
 		for (const change of [
@@ -47,10 +48,13 @@ for (const testFile of [
 					workspace: path.join(root, "workspace"),
 					artifactsDir: path.join(root, "evidence"),
 					initializeProfile: true,
+					...(testFile === "request-user-input-ui.test" ? { requireAllTests: true } : {}),
 				},
 				{
 					launch: async (options) => {
 						launched = true
+						if (testFile === "request-user-input-ui.test")
+							assert.equal(options.extensionTestsEnv?.ALPHA_E2E_REQUIRE_ALL_TESTS, "1")
 						assert.equal(
 							options.launchArgs?.filter((value) => value.startsWith("--remote-debugging-port=")).join(),
 							"--remote-debugging-port=0",

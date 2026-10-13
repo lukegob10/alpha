@@ -48,6 +48,7 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		isCompleted: vi.fn(() => false),
 		isTurnActive: vi.fn(() => true),
 		steerUserMessage: vi.fn(async () => undefined),
+		steerAgentMessage: vi.fn(async () => "steered"),
 		receiveAgentMessage: vi.fn(async () => undefined),
 		resumeCompletedTaskFollowup: vi.fn(async () => undefined),
 		submitUserMessage: vi.fn(async () => undefined),
@@ -708,9 +709,12 @@ describe("Cross-task orchestration host", () => {
 		await expect(
 			provider.steerIndependentTask(parent as unknown as Task, child.taskId, "Focus on parser recovery"),
 		).resolves.toEqual({ task_id: child.taskId, status: "steered" })
-		expect(child.steerUserMessage).toHaveBeenCalledWith(
-			`Message from parent task ${parent.taskId}:\nFocus on parser recovery`,
-		)
+		expect(child.steerAgentMessage).toHaveBeenCalledWith({
+			id: expect.any(String),
+			senderTaskId: parent.taskId,
+			text: "Focus on parser recovery",
+		})
+		expect(child.steerUserMessage).not.toHaveBeenCalled()
 		await expect(
 			provider.steerIndependentTask(parent as unknown as Task, "unrelated", "Take over"),
 		).rejects.toThrow("direct child")

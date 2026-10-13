@@ -48,10 +48,12 @@ export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefaul
 			onToggleExpand={handleToggle}
 			summary={
 				<>
-					<Lightbulb className="w-4" />
+					<Lightbulb aria-hidden="true" className="size-4 shrink-0" />
 					<span>{t("chat:reasoning.thinking")}</span>
 					{elapsed > 0 && (
-						<span className="text-sm text-vscode-descriptionForeground mt-0.5">{secondsLabel}</span>
+						<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">
+							{secondsLabel}
+						</span>
 					)}
 				</>
 			}>

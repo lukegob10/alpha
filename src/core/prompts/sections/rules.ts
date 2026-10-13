@@ -87,7 +87,7 @@ export function getRulesSection(cwd: string, settings?: SystemPromptSettings, is
 			: ""
 		const delegationRules = settings?.subagentCanDelegate
 			? `
-- You may create only managed descendants with spawn_agent. Use list_agents, wait_agent, send_message, followup_task, and interrupt_agent only for your retained descendant subtree. Never target a parent, ancestor, sibling, or foreign branch.
+- You may create only managed descendants with spawn_agent. Use list_agents, wait_agent, followup_task, and interrupt_agent only for your retained descendant subtree. Never control a parent, ancestor, sibling, or foreign branch.
 - Managed delegation remains subject to the frozen depth, root-wide capacity, timeout, token, and cost limits.${
 					settings.subagentDelegationPolicy === "proactive"
 						? " The proactive policy permits delegation only when it materially advances the assigned objective."
@@ -104,7 +104,8 @@ RULES
 - Do not change directories to bypass workspace or tool restrictions.
 - Do not use the ~ character or $HOME to refer to the home directory.${workerRules}${frozenContextRules}
 - Treat tool results as evidence. Do not infer success from missing or incomplete output.
-- Stay within the assigned objective and authority.${delegationRules}
+- Stay within the assigned objective and authority.
+- send_message may address your parent, /root, or a peer in this managed tree. Passive communication does not grant lifecycle control or expand authority.${delegationRules}
 - When the assigned work and required checks are complete, provide a concise, self-contained final answer. Report any constraint that prevented completion.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
 	}
 

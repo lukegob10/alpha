@@ -59,6 +59,30 @@ describe("ContextProxy", () => {
 		await proxy.initialize()
 	})
 
+	describe("automatic steering persistence", () => {
+		it("keeps missing values unset and round-trips explicit choices through storage and export", async () => {
+			const stored = new Map<string, unknown>()
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
+				if (value === undefined) stored.delete(key)
+				else stored.set(key, value)
+			})
+			expect(proxy.getValue("autoSteer")).toBeUndefined()
+
+			for (const autoSteer of [true, false]) {
+				await proxy.setValues({ autoSteer })
+				const reloaded = new ContextProxy(mockContext)
+				await reloaded.initialize()
+				expect(reloaded.getValue("autoSteer")).toBe(autoSteer)
+				expect(await reloaded.export()).toMatchObject({ autoSteer })
+			}
+
+			await proxy.resetAllState()
+			expect(stored.has("autoSteer")).toBe(false)
+			expect(proxy.getValue("autoSteer")).toBeUndefined()
+		})
+	})
+
 	describe("ticket auto-approval persistence", () => {
 		it("keeps missing settings disabled and round-trips explicit choices through storage and export", async () => {
 			const stored = new Map<string, unknown>()

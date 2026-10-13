@@ -248,7 +248,24 @@ vi.mock("../SlashCommandsSettings", () => ({
 	SlashCommandsSettings: () => null,
 }))
 vi.mock("../UISettings", () => ({
-	UISettings: () => null,
+	UISettings: ({
+		autoSteer,
+		setCachedStateField,
+	}: {
+		autoSteer: boolean
+		setCachedStateField: (key: string, value: boolean) => void
+	}) => (
+		<label>
+			<input
+				type="checkbox"
+				data-testid="auto-steer-checkbox"
+				data-value={String(autoSteer)}
+				checked={autoSteer}
+				onChange={(event) => setCachedStateField("autoSteer", event.target.checked)}
+			/>
+			Auto-steer
+		</label>
+	),
 }))
 
 vi.mock("../SettingsSearch", () => ({
@@ -319,6 +336,7 @@ describe("SettingsView - Change Detection Fix", () => {
 		openRouterImageApiKey: undefined,
 		openRouterImageGenerationSelectedModel: undefined,
 		reasoningBlockCollapsed: true,
+		autoSteer: undefined,
 		...overrides,
 	})
 
@@ -330,6 +348,70 @@ describe("SettingsView - Change Detection Fix", () => {
 				mutations: { retry: false },
 			},
 		})
+	})
+
+	it("defaults to queuing and preserves unsaved steering edits across live state refreshes", async () => {
+		const liveState = createExtensionState({ didHydrateState: true, autoSteer: undefined })
+		;(useExtensionState as any).mockReturnValue(liveState)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="ui" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view())
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).toHaveAttribute("data-value", "false"))
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		expect(screen.getByTestId("auto-steer-checkbox")).toBeChecked()
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(liveState.autoSteer).toBeUndefined()
+		;(useExtensionState as any).mockReturnValue({ ...liveState, autoSteer: false })
+		rerender(view())
+		expect(screen.getByTestId("auto-steer-checkbox")).toBeChecked()
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ autoSteer: true }),
+			}),
+		)
+	})
+
+	it("discards unsaved automatic steering edits without persisting them", async () => {
+		const onDone = vi.fn()
+		;(useExtensionState as any).mockReturnValue(createExtensionState({ didHydrateState: true, autoSteer: false }))
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} targetSection="ui" />
+			</QueryClientProvider>,
+		)
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).toHaveAttribute("data-value", "false"))
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+		expect(screen.getByTestId("auto-steer-checkbox")).not.toBeChecked()
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(onDone).toHaveBeenCalledOnce()
+	})
+
+	it("resyncs automatic steering when settings are imported", async () => {
+		const liveState = createExtensionState({ didHydrateState: true, autoSteer: false })
+		;(useExtensionState as any).mockReturnValue(liveState)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="ui" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view())
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).toHaveAttribute("data-value", "false"))
+		;(useExtensionState as any).mockReturnValue({ ...liveState, autoSteer: true, settingsImportedAt: 1 })
+		rerender(view())
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).toBeChecked())
+		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
 	it("should not show unsaved changes when no changes are made", async () => {

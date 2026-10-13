@@ -529,6 +529,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		historyPreviewCollapsed: false, // Initialize the new state (default to expanded)
 		reasoningBlockCollapsed: true,
 		enterBehavior: "send", // Default: Enter sends, Shift+Enter creates newline
+		autoSteer: false,
 		autoCondenseContext: true,
 		autoCondenseContextPercent: 100,
 		autoCondenseContextScope: "full-context",
@@ -1122,6 +1123,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setReasoningBlockCollapsed: (value) =>
 			setState((prevState) => ({ ...prevState, reasoningBlockCollapsed: value })),
 		enterBehavior: state.enterBehavior ?? "send",
+		autoSteer: state.autoSteer === true,
 		setEnterBehavior: (value) => setState((prevState) => ({ ...prevState, enterBehavior: value })),
 		setHasOpenedModeSelector: (value) => setState((prevState) => ({ ...prevState, hasOpenedModeSelector: value })),
 		setAutoCondenseContext: (value) => setState((prevState) => ({ ...prevState, autoCondenseContext: value })),
