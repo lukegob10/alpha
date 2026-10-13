@@ -151,9 +151,7 @@ function launcherChild(tokens: string[]): string[] | undefined {
 	return tokens.slice(index)
 }
 
-/** A saved prefix can grow new arguments, so do not offer one for command dispatchers or inline evaluators. */
-export function isUnsafePersistentCommandPrefix(command: string): boolean {
-	const tokens = tokenizeShellCommands(command)[0] ?? []
+function isUnsafePersistentCommandTokens(tokens: string[]): boolean {
 	const name = executableName(tokens[0] ?? "")
 	if (
 		TRANSPARENT_LAUNCHERS.has(name) ||
@@ -169,6 +167,14 @@ export function isUnsafePersistentCommandPrefix(command: string): boolean {
 	if (name === "deno" && tokens[1]?.toLowerCase() === "run" && tokens.length < 3) return true
 	if (isScriptInterpreter(name)) return tokens.length < 2 || tokens[1].startsWith("-") || !!inlineCode(tokens)
 	return false
+}
+
+/** A saved prefix can grow new arguments, so do not offer one for command dispatchers or inline evaluators. */
+export function isUnsafePersistentCommandPrefix(command: string): boolean {
+	const tokens = tokenizeShellCommands(command)[0] ?? []
+	// The prefix owner admits only static words. Preserve Windows separators that
+	// POSIX parsing consumes; original spelling can reject a grant, never create one.
+	return isUnsafePersistentCommandTokens(tokens) || isUnsafePersistentCommandTokens(command.trim().split(/[ \t]+/))
 }
 
 /** Expose nested commands to deny rules and detect code that the shell supplies at runtime. */

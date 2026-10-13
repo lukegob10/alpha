@@ -55,7 +55,19 @@ describe("NOR-30 captured tool execution: images and permissions", () => {
 			content: JSON.stringify({ answers: { image_description: { answers: ["I see a cat"] } } }),
 		})
 		expect(typeof toolResults(harness)[0].content).toBe("string")
-		expect(harness.host.say).toHaveBeenCalledWith("user_feedback", "I see a cat", images)
+		expect(harness.host.say).toHaveBeenCalledExactlyOnceWith(
+			"user_feedback",
+			"What do you see?\nI see a cat",
+			images,
+			undefined,
+			undefined,
+			undefined,
+			{
+				userInputResponse: {
+					questions: [{ header: "Image", question: "What do you see?", answers: ["I see a cat"] }],
+				},
+			},
+		)
 	})
 
 	it("keeps a native text-only result a string when the leaf has no images", async () => {
@@ -93,7 +105,19 @@ describe("NOR-30 captured tool execution: images and permissions", () => {
 		expect(outcome.results[0].status).toBe("success")
 		expect(typeof outcome.results[0].content).toBe("string")
 		expect(outcome.results[0].content).toBe(JSON.stringify({ answers: { name: { answers: ["Alice"] } } }))
-		expect(harness.host.say).toHaveBeenCalledWith("user_feedback", "Alice", undefined)
+		expect(harness.host.say).toHaveBeenCalledExactlyOnceWith(
+			"user_feedback",
+			"What is your name?\nAlice",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{
+				userInputResponse: {
+					questions: [{ header: "Name", question: "What is your name?", answers: ["Alice"] }],
+				},
+			},
+		)
 	})
 
 	it("returns a deterministic fallback for a leaf that emits no output", async () => {
