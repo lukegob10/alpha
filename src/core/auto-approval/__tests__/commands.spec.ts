@@ -4,6 +4,7 @@ import {
 	getCommandDecision,
 	getSubagentCommandDecision,
 } from "../commands"
+import { createPersistentCommandPrefixAmendment } from "../commandApprovalAmendment"
 
 function withPlatform(platform: NodeJS.Platform, run: () => void): void {
 	const original = Object.getOwnPropertyDescriptor(process, "platform")
@@ -228,7 +229,31 @@ describe("getCommandDecision — integration with dangerous substitution checks"
 
 	it("preserves auto-approval when both the outer and substituted commands are allowed", () => {
 		expect(getCommandDecision('echo "$(whoami)"', ["echo", "whoami"])).toBe("auto_approve")
-		expect(getCommandDecision('echo "line`nbreak"', ["echo"])).toBe("auto_approve")
+	})
+
+	it.each(["linux", "win32"] as const)("respects %s parsing of a PowerShell backtick escape", (platform) => {
+		withPlatform(platform, () => {
+			expect(getCommandDecision('echo "line`nbreak"', ["echo"])).toBe(
+				platform === "win32" ? "auto_approve" : "ask_user",
+			)
+		})
+	})
+
+	it.each(["linux", "win32"] as const)("rejects persistent Windows launcher prefixes on %s", (platform) => {
+		withPlatform(platform, () => {
+			for (const command of [
+				"C:\\Windows\\System32\\cmd.exe /c dir",
+				"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command Get-Date",
+				"C:\\Tools\\pnpm.cmd exec echo",
+				"C:\\Tools\\node.exe -e 1",
+			]) {
+				expect(createPersistentCommandPrefixAmendment(command)).toBeUndefined()
+			}
+			expect(createPersistentCommandPrefixAmendment("C:\\Tools\\node.exe scripts/check.js")).toEqual({
+				kind: "command_prefix",
+				prefix: "C:\\Tools\\node.exe scripts/check.js",
+			})
+		})
 	})
 
 	it("asks for malformed substitutions instead of inheriting approval from the outer command", () => {
