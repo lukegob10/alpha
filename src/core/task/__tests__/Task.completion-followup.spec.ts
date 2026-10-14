@@ -1,4 +1,6 @@
 import { Task } from "../Task"
+import { AlphaProvider } from "../../webview/AlphaProvider"
+import { TaskSessionRegistry } from "../../webview/TaskSessionRegistry"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import type { AlphaMessage } from "@alpha-code/types"
 import { createAgentResponse } from "../../agent/AgentResponse"
@@ -527,3 +529,79 @@ it.each(["finishCanonicalLifecycleTurn", "presentCompletionResult", "finalizeTas
 		expect(task.isCompleted()).toBe(false)
 	},
 )
+
+it("consumes admitted independent messages if completion wins after mailbox admission", async () => {
+	const { task } = createTask()
+	let pending = false
+	Object.assign(task, {
+		isInitialized: true,
+		_started: true,
+		agentMessageInbox: {
+			receive: vi.fn(async () => {
+				pending = true
+			}),
+			hasPending: () => pending,
+		},
+	})
+	const ending = deferred()
+	task["ownBackgroundLifecycle"]("resume", ending.promise)
+	const resumed = vi.spyOn(task, "resumeCompletedTaskFollowup").mockImplementation(async () => {
+		pending = false
+		Object.assign(task, { didComplete: false })
+	})
+	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
+		taskSessions: new TaskSessionRegistry(),
+		assertCrossTaskRoot: vi.fn(),
+		getDirectCrossTask: vi.fn(async () => ({ task })),
+		getLiveTask: vi.fn(() => task),
+	}) as AlphaProvider
+	await expect(
+		provider.sendIndependentTaskMessage(
+			{ taskId: "launcher", taskKind: "primary" } as Task,
+			task.taskId,
+			"Finish the report",
+		),
+	).resolves.toMatchObject({ status: "buffered" })
+	task.markCompleted()
+	ending.resolve()
+	await ending.promise
+	await task["queuedInputWakePromise"]
+	expect(resumed).toHaveBeenCalledOnce()
+	expect(resumed).toHaveBeenCalledWith("Continue with the pending agent messages.", [], "agent")
+	expect(pending).toBe(false)
+})
+
+it("coalesces independent wake requests while the preceding lifecycle drains", async () => {
+	const { task } = createTask()
+	task.markCompleted()
+	const ending = deferred()
+	Object.assign(task, { ownedLifecyclePromise: ending.promise })
+	const resume = vi.fn(async (_text: string, persisted?: () => void | Promise<void>) => persisted?.())
+	Object.assign(task, { resumeTaskFromHistory: resume })
+	const wakes = Array.from({ length: 10 }, () => task.resumeIndependentAgentMessages())
+	expect(new Set(wakes).size).toBe(1)
+	expect(resume).not.toHaveBeenCalled()
+	ending.resolve()
+	await expect(Promise.all(wakes)).resolves.toEqual(Array(10).fill(true))
+	expect(resume).toHaveBeenCalledOnce()
+})
+
+it.each(["passive", "cancelled", "managed"])("does not wake %s mail after lifecycle settlement", async (kind) => {
+	const { task } = createTask()
+	Object.assign(task, {
+		isInitialized: true,
+		_started: true,
+		agentMessageInbox: { hasPending: () => true },
+	})
+	if (kind !== "passive") task.markIndependentAgentMessagesPending()
+	if (kind === "cancelled") task.abort = true
+	if (kind === "managed") Object.assign(task, { taskKind: "subagent" })
+	const resumed = vi.spyOn(task, "resumeCompletedTaskFollowup").mockResolvedValue(undefined)
+	const ending = deferred()
+	task["ownBackgroundLifecycle"]("resume", ending.promise)
+	task.markCompleted()
+	ending.resolve()
+	await ending.promise
+	await task["queuedInputWakePromise"]
+	expect(resumed).not.toHaveBeenCalled()
+})

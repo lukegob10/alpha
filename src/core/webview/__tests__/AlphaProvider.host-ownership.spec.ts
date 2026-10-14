@@ -123,6 +123,42 @@ const storage = () => path.join(os.tmpdir(), `alpha-host-ownership-${crypto.rand
 describe("agent hotkey view ownership", () => {
 	beforeEach(() => vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined))
 
+	it("keeps independently launched tasks alive when the originating editor is disposed", async () => {
+		const host = storage()
+		const sidebar = makeProvider(host)
+		const editor = makeProvider(host)
+		Object.assign(editor, { renderContext: "editor" })
+		const parent = Object.assign(makeTask("launcher"), {
+			metadata: { task: "Launch a new chat thread" },
+			workspacePath: "C:/repo",
+			historyWorkspacePath: "C:/repo",
+			apiConversationHistory: [],
+			getTaskApiConfigName: vi.fn(async () => "profile-a"),
+			getTaskApprovalMode: vi.fn(() => "ask"),
+			isCompleted: vi.fn(() => false),
+			isTurnActive: vi.fn(() => true),
+		})
+		await editor.addTaskToStack(parent)
+		const child = Object.assign(makeTask("independent"), {
+			isCompleted: vi.fn(() => false),
+			isTurnActive: vi.fn(() => true),
+		})
+		for (const owner of [sidebar, editor]) {
+			vi.spyOn(owner, "createTask").mockImplementation(async (_text, _images, _parent, options) => {
+				Object.assign(child, { orchestrationParentTaskId: options?.orchestrationParentTaskId })
+				await owner.addTaskToStack(child, { focus: false })
+				return child
+			})
+		}
+		await editor.createIndependentTask(parent, "Continue independently", "shared")
+		expect(sidebar.createTask).toHaveBeenCalledOnce()
+		expect(editor.createTask).not.toHaveBeenCalled()
+		expect(sidebar.getTaskOwner(child.taskId)).toBe(sidebar)
+		await editor.dispose()
+		expect(child.abortTask).not.toHaveBeenCalled()
+		expect(sidebar.getLiveTask(child.taskId)).toBe(child)
+	})
+
 	it("routes keyboard commands to the focused sidebar despite an active editor panel", async () => {
 		const sidebar = makeProvider(storage())
 		const editor = makeProvider(storage())

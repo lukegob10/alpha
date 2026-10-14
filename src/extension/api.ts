@@ -207,9 +207,6 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		let provider: AlphaProvider
 
 		if (newTab) {
-			await vscode.commands.executeCommand("workbench.action.files.revert")
-			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
-
 			provider = await openAlphaInNewTab({ context: this.context, outputChannel: this.outputChannel })
 			this.registerListeners(provider)
 		} else {
@@ -218,12 +215,12 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			provider = this.sidebarProvider
 		}
 
-		await provider.removeTaskFromStack()
 		await provider.postStateToWebview()
 		await provider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 		await provider.postMessageToWebview({ type: "invoke", invoke: "newChat", text, images })
 
 		const options: CreateTaskOptions = {
+			preserveExisting: true,
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
 			// Keep the caller-supplied runtime configuration authoritative for this
 			// task. Persisting settings intentionally strips executable values such as

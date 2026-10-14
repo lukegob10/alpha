@@ -136,7 +136,7 @@ export interface CreateTaskOptions {
 	/** Whether to start the task loop immediately (default: true).
 	 *  When false, the caller must invoke `task.start()` manually. */
 	startTask?: boolean
-	/** Keep other live top-level tasks running when this task is created. */
+	/** Keep other live top-level tasks running (default: true). False explicitly replaces the selected task. */
 	preserveExisting?: boolean
 	/** Parent conversation for an independent primary task; separate from managed-agent parentTaskId. */
 	orchestrationParentTaskId?: string
