@@ -9241,6 +9241,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!(await this.addToApiConversationHistory(entry))) throw new Error("Agent message was not persisted")
 		}
 		await this.agentMessageInbox.deliver(persist)
+		// Consume the wake request with its inbox; later passive mail grants no new turn.
+		if (!this.agentMessageInbox.hasPending()) this.independentAgentMessagesMayResume = false
 		await this.providerRef.deref()?.deliverAgentMessages?.(this, persist)
 	}
 

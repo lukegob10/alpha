@@ -605,3 +605,34 @@ it.each(["passive", "cancelled", "managed"])("does not wake %s mail after lifecy
 	await task["queuedInputWakePromise"]
 	expect(resumed).not.toHaveBeenCalled()
 })
+
+it("clears an independent wake request after consumption before later passive mail arrives", async () => {
+	const { task } = createTask()
+	let pending = true
+	Object.assign(task, {
+		isInitialized: true,
+		_started: true,
+		agentMessageAdmissions: new Set(),
+		agentMessageInbox: {
+			hasPending: () => pending,
+			deliver: vi.fn(async () => {
+				pending = false
+			}),
+			receive: vi.fn(async () => {
+				pending = true
+			}),
+		},
+	})
+	task.markIndependentAgentMessagesPending()
+	await task["deliverAgentMessages"]()
+	await task.receiveAgentMessage({ id: "later-passive", senderTaskId: "parent", text: "Passive observation" })
+	const resumed = vi.spyOn(task, "resumeCompletedTaskFollowup").mockResolvedValue(undefined)
+	const ending = deferred()
+	task["ownBackgroundLifecycle"]("resume", ending.promise)
+	task.markCompleted()
+	ending.resolve()
+	await ending.promise
+	await task["queuedInputWakePromise"]
+	expect(resumed).not.toHaveBeenCalled()
+	expect(pending).toBe(true)
+})
