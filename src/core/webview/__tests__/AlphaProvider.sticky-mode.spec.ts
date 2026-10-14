@@ -59,7 +59,7 @@ vi.mock("vscode", () => ({
 let taskIdCounter = 0
 
 vi.mock("../../task/Task", () => ({
-	Task: vi.fn().mockImplementation((options) => {
+	Task: vi.fn().mockImplementation(function (options) {
 		const task = {
 			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
 			_taskMode: options.taskMode ?? options.historyItem?.mode ?? "code",

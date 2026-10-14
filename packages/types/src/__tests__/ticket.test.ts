@@ -10,6 +10,7 @@ import {
 	ticketActivitySchema,
 	ticketLocatorSchema,
 	normalizeTicketReference,
+	normalizeTicketNumberQuery,
 	ticketStatusSchema,
 	ticketSearchRequestSchema,
 	ticketSearchResponseSchema,
@@ -17,6 +18,18 @@ import {
 } from "../ticket.js"
 
 describe("ticket wire contracts", () => {
+	it.each([
+		["42", 42],
+		["#001", 1],
+		[" #42 ", 42],
+		["PM-42", undefined],
+		["42oops", undefined],
+		["12345678901", undefined],
+		["", undefined],
+	] as const)("parses the project-scoped number query %s", (query, number) => {
+		expect(normalizeTicketNumberQuery(query)).toBe(number)
+	})
+
 	it("accepts cancellation and UUID parent links while rejecting arbitrary hierarchy input", () => {
 		const parentId = "a97392fe-59bf-4f80-8a10-51b2cb62a38f"
 		expect(ticketStatusSchema.options).toContain("canceled")

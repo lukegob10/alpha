@@ -60,35 +60,37 @@ vi.mock("vscode", () => ({
 let taskIdCounter = 0
 
 vi.mock("../../task/Task", () => ({
-	Task: vi.fn().mockImplementation((options) => ({
-		taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
-		apiConfiguration: options.apiConfiguration,
-		saveAlphaMessages: vi.fn(),
-		clineMessages: [],
-		apiConversationHistory: [],
-		overwriteAlphaMessages: vi.fn(),
-		overwriteApiConversationHistory: vi.fn(),
-		abortTask: vi.fn(),
-		handleWebviewAskResponse: vi.fn(),
-		getTaskNumber: vi.fn().mockReturnValue(0),
-		setTaskNumber: vi.fn(),
-		setParentTask: vi.fn(),
-		setRootTask: vi.fn(),
-		emit: vi.fn(),
-		parentTask: options.parentTask,
-		updateApiConfiguration: vi.fn(function (this: any, providerSettings: any) {
-			this.apiConfiguration = providerSettings
-		}),
-		setTaskApiConfigName: vi.fn(function (this: any, name: string | undefined) {
-			this._taskApiConfigName = name
-			this.taskApiConfigName = name
-		}),
-		getTaskApiConfigName: vi.fn(async function (this: any) {
-			return this._taskApiConfigName
-		}),
-		_taskApiConfigName: options.historyItem?.apiConfigName,
-		taskApiConfigName: options.historyItem?.apiConfigName,
-	})),
+	Task: vi.fn().mockImplementation(function (options) {
+		return {
+			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
+			apiConfiguration: options.apiConfiguration,
+			saveAlphaMessages: vi.fn(),
+			clineMessages: [],
+			apiConversationHistory: [],
+			overwriteAlphaMessages: vi.fn(),
+			overwriteApiConversationHistory: vi.fn(),
+			abortTask: vi.fn(),
+			handleWebviewAskResponse: vi.fn(),
+			getTaskNumber: vi.fn().mockReturnValue(0),
+			setTaskNumber: vi.fn(),
+			setParentTask: vi.fn(),
+			setRootTask: vi.fn(),
+			emit: vi.fn(),
+			parentTask: options.parentTask,
+			updateApiConfiguration: vi.fn(function (this: any, providerSettings: any) {
+				this.apiConfiguration = providerSettings
+			}),
+			setTaskApiConfigName: vi.fn(function (this: any, name: string | undefined) {
+				this._taskApiConfigName = name
+				this.taskApiConfigName = name
+			}),
+			getTaskApiConfigName: vi.fn(async function (this: any) {
+				return this._taskApiConfigName
+			}),
+			_taskApiConfigName: options.historyItem?.apiConfigName,
+			taskApiConfigName: options.historyItem?.apiConfigName,
+		}
+	}),
 }))
 
 vi.mock("../../prompts/sections/custom-instructions")

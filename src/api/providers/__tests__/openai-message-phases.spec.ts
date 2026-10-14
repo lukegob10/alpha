@@ -5,10 +5,12 @@ import type { ApiStreamChunk } from "../../transform/stream"
 const { responsesCreate, chatCreate } = vi.hoisted(() => ({ responsesCreate: vi.fn(), chatCreate: vi.fn() }))
 
 vi.mock("openai", () => {
-	const constructor = vi.fn(() => ({
-		responses: { create: responsesCreate },
-		chat: { completions: { create: chatCreate } },
-	}))
+	const constructor = vi.fn(function () {
+		return {
+			responses: { create: responsesCreate },
+			chat: { completions: { create: chatCreate } },
+		}
+	})
 	return { default: constructor, AzureOpenAI: constructor }
 })
 

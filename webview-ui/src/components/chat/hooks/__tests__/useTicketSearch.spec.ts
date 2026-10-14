@@ -32,14 +32,17 @@ describe("ticket search lifecycle", () => {
 		)
 		expect(result.current[0]?.label).toBe("activitySearching")
 	})
-	it.each(["", "PM-42", "pm42"])("immediately searches an opened picker or complete reference: %s", (query) => {
-		vi.useFakeTimers()
-		renderHook(() => useTicketSearch(true, query, "/project"))
-		act(() => vi.advanceTimersByTime(0))
-		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith(
-			expect.objectContaining({ type: "searchTickets", query }),
-		)
-	})
+	it.each(["", "PM-42", "pm42", "42", "#42"])(
+		"immediately searches an opened picker or complete reference: %s",
+		(query) => {
+			vi.useFakeTimers()
+			renderHook(() => useTicketSearch(true, query, "/project"))
+			act(() => vi.advanceTimersByTime(0))
+			expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ type: "searchTickets", query }),
+			)
+		},
+	)
 	it("debounces title typing into one request after 50 ms", () => {
 		vi.useFakeTimers()
 		const { rerender } = renderHook(({ query }) => useTicketSearch(true, query, "/project"), {

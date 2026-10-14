@@ -323,6 +323,9 @@ on merging and scanning that branch. No original CodeQL query, test directory, o
   Its sole historical location contains an explicit sequential alphabet/digit redaction fixture, never a credential
   issued by Google. Constructing the same synthetic fixture from fragments retains redaction coverage.
 - Dependabot alerts and automated security fixes are enabled. CodeQL actions are pinned to verified full commit SHAs.
+- The existing `protect-main` ruleset now requires the nine observed PR check names and CodeQL results at all severity
+  levels. Its default-branch scope, no-bypass policy, deletion/history protections, and existing review rules are
+  preserved. Push-only `release-vsix` is deliberately excluded from PR requirements because it cannot run before merge.
 
 ### Dependency remediation
 
@@ -355,7 +358,7 @@ they become available.
 
 ### Project ticket lookup
 
-Chat suggestions now find references, UUIDs, and titles only in the requesting conversation's project. Editor chats carry
+Chat suggestions now find exact ticket numbers (with optional `#`), references, UUIDs, and titles only in the requesting conversation's project. Editor chats carry
 their task ID, and an unknown task ID fails closed instead of falling back to the foreground project. The ticket editor's
 full-text list still searches descriptions and context.
 
@@ -387,12 +390,24 @@ on each keystroke. To reproduce, set `ALPHA_TICKET_SEARCH_BENCHMARK=1` and run:
 pnpm --dir src test services/tickets/__tests__/TicketStore.search.spec.ts --testNamePattern "measures a 1,000-ticket typing workload" --maxWorkers=1 --no-silent
 ```
 
-### Validation in progress
+### Validation and closure evidence
 
-Passed: all workspace typechecks; extension-focused lint; knip; 551 shared-types tests; 2,278 webview tests; 592 host-runner
+Passed: all workspace typechecks; extension-focused lint; knip; shared-types tests; webview tests; 592 host-runner
 unit tests; offline evaluator suites (384 unit, 20 contract, 5 certification); focused security/search tests; dependency
-patch regressions; and Windows managed-agent preflight. Full extension/dependency tests, packaging, and branch CodeQL
-verification are still being finalized.
+patch regressions; and Windows managed-agent preflight. Packaging produced `bin/alpha-3.1.12.vsix`; the verifier confirmed
+1,676 entries, all required assets including DOMPurify, no packaged `.env` file, and 16 document assets matching source
+bytes. Full extension/dependency tests and the final CI pass are being finalized.
+
+CodeQL analysis [1954688717](https://github.com/lukegob10/alpha/actions/runs/38629894733), on PR #145's merge commit
+`32632739235550762bfdbcd0d09bca4559fd8182` (head `2183a495b`), completed with CodeQL 2.27.2, 87 rules, zero results, and no
+analysis error. The PR ref returned zero alerts; `main` still returned the original 32 open alerts pending merge. Open
+secret-scanning alerts are zero. Confirm zero findings again on the final head and merged `main`.
+
+The broader security upgrade exposed mock compatibility in 16 unit-test files. All 720 focused tests now pass after
+constructable mock updates, explicit reset of module-mock implementations, and assertions on stable SDK error paths and
+opaque bytes. Test expectations for policy, cancellation, persistence, and replay remain enforced. The initial macOS CI
+install also hit GitHub's unauthenticated API limit in the existing ripgrep installer; the setup action now supplies its
+supported `GITHUB_TOKEN` only during installation/rebuild. The installer strips authorization on non-GitHub redirects.
 
 The exact `pnpm --filter @alpha-code/vscode-e2e test:smoke:1250` gate was attempted locally. After fixing the transitive
 module compatibility error, VS Code 1.125.0 itself refused to launch because the Windows `vscode-updating` mutex remained

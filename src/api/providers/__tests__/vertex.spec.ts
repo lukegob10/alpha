@@ -2,13 +2,15 @@
 
 const { mockExecFile, mockGoogleGenAI } = vitest.hoisted(() => ({
 	mockExecFile: vitest.fn(),
-	mockGoogleGenAI: vitest.fn(() => ({
-		models: {
-			generateContentStream: vitest.fn(),
-			generateContent: vitest.fn(),
-			getGenerativeModel: vitest.fn(),
-		},
-	})),
+	mockGoogleGenAI: vitest.fn(function () {
+		return {
+			models: {
+				generateContentStream: vitest.fn(),
+				generateContent: vitest.fn(),
+				getGenerativeModel: vitest.fn(),
+			},
+		}
+	}),
 }))
 
 // Mock vscode first to avoid import errors

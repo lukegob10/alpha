@@ -25,6 +25,9 @@ import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { shouldCompactAfterTurn, Task } from "../Task"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 
+// Module mocks retain their last implementation under Vitest 4 unless explicitly reset.
+beforeEach(() => vi.resetAllMocks())
+
 vi.mock("../build-tools", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../build-tools")>()),
 	buildNativeToolsArrayWithRestrictions: vi.fn(),

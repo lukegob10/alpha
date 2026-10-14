@@ -78,6 +78,15 @@ describe("ticket mention search", () => {
 		expect(stats.mock.calls.length).toBeLessThan(96)
 	})
 
+	it("finds a project ticket by its exact number without matching other titles or numbers", async () => {
+		await seed(130)
+		for (const query of ["1", "#1", "#001"]) {
+			expect(await store.search(query)).toMatchObject([{ reference: "PRO-01" }])
+			expect(await store.search(query)).toHaveLength(1)
+		}
+		expect(await store.search("#131")).toEqual([])
+	})
+
 	it("refreshes only edited files, including equal-size edits with restored mtime", async () => {
 		await seed(3)
 		const [ticket] = await store.search("PRO-01")

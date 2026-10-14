@@ -2709,7 +2709,7 @@ describe("AlphaProvider", () => {
 		test("handles history items without mode property", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			const getState = vi.spyOn(provider, "getState")
-			const getCustomModes = vi.spyOn(provider.customModesManager, "getCustomModes")
+			const getCustomModes = vi.spyOn(provider.customModesManager, "getCustomModes").mockClear()
 
 			// Mock provider settings manager
 			;(provider as any).providerSettingsManager = {

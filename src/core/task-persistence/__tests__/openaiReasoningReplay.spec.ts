@@ -13,10 +13,12 @@ import { invalidPersistedApiMessages } from "../validatePersistedApiMessages"
 const { responsesCreate } = vi.hoisted(() => ({ responsesCreate: vi.fn() }))
 
 vi.mock("openai", () => {
-	const constructor = vi.fn(() => ({
-		chat: { completions: { create: vi.fn() } },
-		responses: { create: responsesCreate },
-	}))
+	const constructor = vi.fn(function () {
+		return {
+			chat: { completions: { create: vi.fn() } },
+			responses: { create: responsesCreate },
+		}
+	})
 	return { default: constructor, AzureOpenAI: constructor }
 })
 

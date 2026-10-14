@@ -1132,8 +1132,11 @@ describe("VsCodeLmHandler", () => {
 					name: "apply_patch",
 					input: { patch },
 				}),
-				expect.objectContaining({ mimeType: "stateful_marker", data: marker }),
+				expect.objectContaining({ mimeType: "stateful_marker", data: expect.any(Uint8Array) }),
 			])
+			expect(Array.from((assistantMessages[0].content[2] as vscode.LanguageModelDataPart).data)).toEqual(
+				Array.from(marker),
+			)
 			expect(assistantMessages[1].content[0]).toMatchObject({
 				type: "tool_call",
 				callId: "reused-call",

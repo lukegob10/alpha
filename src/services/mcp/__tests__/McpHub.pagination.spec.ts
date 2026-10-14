@@ -598,7 +598,14 @@ describe("McpHub complete paginated catalogs", () => {
 			const connection = await connect(client)
 
 			expect(connection.server.status).toBe("disconnected")
-			expect(connection.server.error).toContain("Required")
+			const requiredField =
+				failedMethod === "tools/list"
+					? "inputSchema"
+					: failedMethod === "resources/list"
+						? "uri"
+						: "uriTemplate"
+			expect(connection.server.error).toContain(requiredField)
+			expect(connection.server.error).toContain("invalid_type")
 			expect(connection.server.tools).toBeUndefined()
 			expect(connection.server.resources).toBeUndefined()
 			expect(connection.server.resourceTemplates).toBeUndefined()

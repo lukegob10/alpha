@@ -7,10 +7,12 @@ import { isApiStreamSemanticChunk, type ApiStreamChunk } from "../../transform/s
 const { chatCreate, responsesCreate } = vi.hoisted(() => ({ chatCreate: vi.fn(), responsesCreate: vi.fn() }))
 
 vi.mock("openai", () => {
-	const constructor = vi.fn(() => ({
-		chat: { completions: { create: chatCreate } },
-		responses: { create: responsesCreate },
-	}))
+	const constructor = vi.fn(function () {
+		return {
+			chat: { completions: { create: chatCreate } },
+			responses: { create: responsesCreate },
+		}
+	})
 	return { default: constructor, AzureOpenAI: constructor }
 })
 

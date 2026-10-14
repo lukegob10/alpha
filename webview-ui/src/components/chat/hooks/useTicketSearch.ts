@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { normalizeTicketReference, ticketSearchResponseSchema, type TicketSearchResponse } from "@alpha-code/types"
+import {
+	normalizeTicketReference,
+	normalizeTicketNumberQuery,
+	ticketSearchResponseSchema,
+	type TicketSearchResponse,
+} from "@alpha-code/types"
 import { ContextMenuOptionType, type ContextMenuQueryItem } from "../../../utils/context-mentions"
 import { vscode } from "../../../utils/vscode"
 
@@ -27,7 +32,7 @@ export function useTicketSearch(active: boolean, query: string, cwd: string, tas
 		window.addEventListener("message", receive)
 		const timer = setTimeout(
 			() => vscode.postMessage({ type: "searchTickets", query, requestId, ...(taskId ? { taskId } : {}) }),
-			query === "" || normalizeTicketReference(query) ? 0 : 50,
+			query === "" || normalizeTicketReference(query) || normalizeTicketNumberQuery(query) !== undefined ? 0 : 50,
 		)
 		const timeout = setTimeout(
 			() =>

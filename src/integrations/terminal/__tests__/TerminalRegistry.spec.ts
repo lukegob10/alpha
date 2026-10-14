@@ -18,6 +18,7 @@ describe("TerminalRegistry", () => {
 	let mockCreateTerminal: any
 
 	beforeEach(() => {
+		vi.clearAllMocks()
 		vi.mocked(resolveRipgrepBinary).mockReset()
 		vi.mocked(resolveRipgrepBinary).mockResolvedValue(undefined)
 		mockCreateTerminal = vi.spyOn(vscode.window, "createTerminal").mockImplementation(

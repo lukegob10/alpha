@@ -1,4 +1,3 @@
-import * as actualFsPromises from "fs/promises"
 import * as fsSyncActual from "fs"
 import { Writable } from "stream"
 import * as path from "path"
@@ -6,6 +5,7 @@ import * as os from "os"
 
 import { safeWriteJson } from "../safeWriteJson"
 
+const actualFsPromises = await vi.importActual<typeof import("fs/promises")>("fs/promises")
 const originalFsPromisesRename = actualFsPromises.rename
 const originalFsPromisesUnlink = actualFsPromises.unlink
 const originalFsPromisesWriteFile = actualFsPromises.writeFile
@@ -62,6 +62,7 @@ describe("safeWriteJson", () => {
 	let currentTestFilePath: string
 
 	beforeEach(async () => {
+		vi.resetAllMocks()
 		// Create a temporary directory for each test
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "safeWriteJson-test-"))
 
@@ -75,7 +76,7 @@ describe("safeWriteJson", () => {
 
 	afterEach(async () => {
 		// Clean up the temporary directory after each test
-		await fs.rm(tempDir, { recursive: true, force: true })
+		await actualFsPromises.rm(tempDir, { recursive: true, force: true })
 
 		// Reset all mocks to their actual implementations
 		vi.restoreAllMocks()

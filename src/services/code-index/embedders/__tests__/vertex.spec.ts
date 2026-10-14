@@ -10,11 +10,13 @@ const {
 
 	return {
 		mockEmbedContent,
-		mockGoogleGenAI: vitest.fn(() => ({
-			models: {
-				embedContent: mockEmbedContent,
-			},
-		})),
+		mockGoogleGenAI: vitest.fn(function () {
+			return {
+				models: {
+					embedContent: mockEmbedContent,
+				},
+			}
+		}),
 		mockGetToken: vitest.fn(),
 		mockForceRefreshToken: vitest.fn(),
 		mockGetOrCreate: vitest.fn(),

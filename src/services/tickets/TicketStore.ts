@@ -16,6 +16,7 @@ import {
 	ticketIdSchema,
 	ticketLocatorSchema,
 	normalizeTicketReference,
+	normalizeTicketNumberQuery,
 	type CreateTicket,
 	type DeleteTicket,
 	type UpdateTicket,
@@ -621,6 +622,7 @@ export class TicketStore {
 			checkCancelled(signal)
 			const reference = normalizeTicketReference(query)
 			const id = ticketIdSchema.safeParse(query.trim())
+			const number = normalizeTicketNumberQuery(query)
 			const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
 			const compactQuery = normalizeSearchText(query)
 			return entries
@@ -630,7 +632,9 @@ export class TicketStore {
 							? entry.ticket.id !== id.data
 							: reference
 								? entry.ticket.reference !== reference
-								: !terms.every((term) => entry.text.includes(term))
+								: number !== undefined
+									? Number(entry.ticket.reference?.split("-")[1]) !== number
+									: !terms.every((term) => entry.text.includes(term))
 					)
 						return []
 					let rank = 3
