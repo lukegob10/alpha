@@ -91,6 +91,17 @@ describe("API - SendMessage Command", () => {
 		)
 	})
 
+	it("opens a task through canonical navigation instead of replacing its runtime", async () => {
+		const show = vi.fn(async () => undefined)
+		const read = vi.fn(async () => ({ historyItem: { id: "running-task" } }))
+		const replace = vi.fn(async () => ({}) as Task)
+		Object.assign(mockProvider, { showTaskWithId: show, getTaskWithId: read, createTaskWithHistoryItem: replace })
+		await api.resumeTask("running-task")
+		expect(show).toHaveBeenCalledWith("running-task")
+		expect(read).not.toHaveBeenCalled()
+		expect(replace).not.toHaveBeenCalled()
+	})
+
 	it("should handle SendMessage command with text only", async () => {
 		// Arrange
 		const messageText = "Hello, this is a test message"

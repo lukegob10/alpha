@@ -242,10 +242,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
 		await this.waitForWebviewLaunch(5_000)
 
-		const { historyItem } = await this.sidebarProvider.getTaskWithId(taskId, {
-			includeApiConversationHistory: false,
-		})
-		await this.sidebarProvider.createTaskWithHistoryItem(historyItem)
+		await this.sidebarProvider.showTaskWithId(taskId)
 
 		if (this.sidebarProvider.viewLaunched) {
 			await this.sidebarProvider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })

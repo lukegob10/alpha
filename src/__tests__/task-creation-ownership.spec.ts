@@ -1,4 +1,4 @@
-// npx vitest run __tests__/single-open-invariant.spec.ts
+// pnpm --dir src test __tests__/task-creation-ownership.spec.ts
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
@@ -28,7 +28,7 @@ vi.mock("../core/task/Task", () => {
 	return { Task: TaskStub }
 })
 
-describe("Single-open-task invariant", () => {
+describe("Task creation and navigation ownership", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
 	})
@@ -38,7 +38,7 @@ describe("Single-open-task invariant", () => {
 		createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
 	})
 
-	it("User-initiated create: closes existing before opening new", async () => {
+	it("explicit replacement closes the selected task before opening its replacement", async () => {
 		// Allow profile
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
@@ -82,62 +82,67 @@ describe("Single-open-task invariant", () => {
 			},
 		} as unknown as AlphaProvider
 
-		await (AlphaProvider.prototype as any).createTask.call(provider, "New task")
+		await (AlphaProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+			preserveExisting: false,
+		})
 
 		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
 		expect(addTaskToStack).toHaveBeenCalledTimes(1)
 	})
 
-	it("Extension multi-session create: preserves existing live task", async () => {
-		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
+	it.each([undefined, true])(
+		"new roots preserve existing live tasks with preserveExisting=%s",
+		async (preserveExisting) => {
+			vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
-		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
-		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
+			const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
+			const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 
-		const provider = {
-			...serializedTaskCreation(),
-			taskStack: [{ taskId: "existing-1" }],
-			taskSessions: { canCreateTask: vi.fn(() => true) },
-			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
-			setValues: vi.fn(),
-			getState: vi.fn().mockResolvedValue({
-				apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
-				organizationAllowList: "*",
-				enableCheckpoints: true,
-				checkpointTimeout: 60,
-			}),
-			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
-			removeTaskFromStack,
-			updateGlobalState: vi.fn().mockResolvedValue(undefined),
-			addTaskToStack,
-			postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
-			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
-			setProviderProfile: vi.fn(),
-			log: vi.fn(),
-			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
-			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
-			taskCreationCallback: vi.fn(),
-			contextProxy: {
-				extensionUri: {},
-				getValues: vi.fn(() => ({
+			const provider = {
+				...serializedTaskCreation(),
+				taskStack: [{ taskId: "existing-1" }],
+				taskSessions: { canCreateTask: vi.fn(() => true) },
+				finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
+				setValues: vi.fn(),
+				getState: vi.fn().mockResolvedValue({
+					apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
+					organizationAllowList: "*",
 					enableCheckpoints: true,
 					checkpointTimeout: 60,
-					experiments: {},
-				})),
-				setValue: vi.fn(),
-				getValue: vi.fn(),
-				setProviderSettings: vi.fn(),
-				getProviderSettings: vi.fn(() => ({})),
-			},
-		} as unknown as AlphaProvider
+				}),
+				getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
+				removeTaskFromStack,
+				updateGlobalState: vi.fn().mockResolvedValue(undefined),
+				addTaskToStack,
+				postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
+				postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+				setProviderProfile: vi.fn(),
+				log: vi.fn(),
+				providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+				customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+				taskCreationCallback: vi.fn(),
+				contextProxy: {
+					extensionUri: {},
+					getValues: vi.fn(() => ({
+						enableCheckpoints: true,
+						checkpointTimeout: 60,
+						experiments: {},
+					})),
+					setValue: vi.fn(),
+					getValue: vi.fn(),
+					setProviderSettings: vi.fn(),
+					getProviderSettings: vi.fn(() => ({})),
+				},
+			} as unknown as AlphaProvider
 
-		await (AlphaProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
-			preserveExisting: true,
-		})
+			await (AlphaProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+				preserveExisting,
+			})
 
-		expect(removeTaskFromStack).not.toHaveBeenCalled()
-		expect(addTaskToStack).toHaveBeenCalledTimes(1)
-	})
+			expect(removeTaskFromStack).not.toHaveBeenCalled()
+			expect(addTaskToStack).toHaveBeenCalledTimes(1)
+		},
+	)
 
 	it("Extension multi-session create: blocks when live task cap is reached", async () => {
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
@@ -239,7 +244,7 @@ describe("Single-open-task invariant", () => {
 		expect(postStateToWebview).toHaveBeenCalledTimes(1)
 	})
 
-	it("History resume path always closes current before rehydration (non-rehydrating case)", async () => {
+	it("compatibility history replacement closes the selected task before hydration", async () => {
 		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 		const updateGlobalState = vi.fn().mockResolvedValue(undefined)
@@ -310,7 +315,7 @@ describe("Single-open-task invariant", () => {
 		expect(addTaskToStack).toHaveBeenCalledTimes(1)
 	})
 
-	it("IPC StartNewTask path closes current before new task", async () => {
+	it("IPC StartNewTask preserves the current task while opening another", async () => {
 		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const createTask = vi.fn().mockResolvedValue({ taskId: "ipc-1" })
 		const provider = {
@@ -344,12 +349,12 @@ describe("Single-open-task invariant", () => {
 		})
 
 		expect(taskId).toBe("ipc-1")
-		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
 		expect(createTask).toHaveBeenCalledWith(
 			"hello",
 			undefined,
 			undefined,
-			expect.objectContaining({ apiConfiguration: configuration }),
+			expect.objectContaining({ apiConfiguration: configuration, preserveExisting: true }),
 			configuration,
 		)
 	})

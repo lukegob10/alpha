@@ -198,7 +198,7 @@ const makeMailboxRecipient = (provider: AlphaProvider, history: ApiMessage[] = [
 		apiConversationHistory: history,
 		providerRef: { deref: () => provider },
 		agentMessageAdmissions: new Set(),
-		agentMessageInbox: { deliver: async () => undefined },
+		agentMessageInbox: { deliver: async () => undefined, hasPending: () => false },
 		saveApiConversationHistory: vi.fn(async () => true),
 		addToApiConversationHistory: vi.fn(async (message: ApiMessage) => {
 			history.push(message)

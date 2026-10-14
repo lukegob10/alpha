@@ -430,6 +430,17 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				})
 			}
 			assert.equal(scripted.started.size, 10)
+			const liveTasks = taskIds.map((taskId) => provider.getLiveTask(taskId))
+			const firstTaskId = taskIds[0]
+			assert.ok(firstTaskId)
+			await api.resumeTask(firstTaskId)
+			for (const [index, taskId] of taskIds.entries()) {
+				assert.equal(
+					provider.getLiveTask(taskId),
+					liveTasks[index],
+					"Opening a running chat must retain its runtime",
+				)
+			}
 			for (const taskId of taskIds) {
 				assert.equal(
 					provider.getLiveTask(taskId)?.abort,
