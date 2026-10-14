@@ -1,0 +1,121 @@
+{
+  "files": [
+    {
+      "path": "20261013T003543/editSessions.log",
+      "bytes": 132,
+      "sha256": "4773f36ba2fd9715f5df91547b36a6e0389843fca54c38f071581ba5fbdcc1fe"
+    },
+    {
+      "path": "20261013T003543/main.log",
+      "bytes": 790,
+      "sha256": "cb85e68b1be884e52cb10ea667748685418005e4247bcfe02518143db08851fe"
+    },
+    {
+      "path": "20261013T003543/mcpGateway.log",
+      "bytes": 64,
+      "sha256": "250fb38c3f0853554779869be644833c6efe2545113342cb86a5c96e8569aea0"
+    },
+    {
+      "path": "20261013T003543/network-shared.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/remoteTunnelService.log",
+      "bytes": 56,
+      "sha256": "3240d845f1940363d4f4d73d84d3f8f3c66f8e4e55d5e67df7885773cbd34885"
+    },
+    {
+      "path": "20261013T003543/sharedprocess.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/telemetry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/terminal.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/tunnelHostService.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/userDataSync.log",
+      "bytes": 164,
+      "sha256": "c91a009f10a16d6d2b40d8f52ad9186997e628f75a0fb39c3baf9d5a8222bb4e"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/exthost.log",
+      "bytes": 14770,
+      "sha256": "637ecf2a3f919c3d923a8b52da4a83b4041179ba87f144189f7c2bbadd83aa49"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/extHostTelemetry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/output_logging_20261013T003545/1-Alpha.log",
+      "bytes": 816,
+      "sha256": "edc3be8fb6b0b09826f776a8f2d34725d9c8256693ba642a5c71a7d4fd34c3ed"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/vscode.github-authentication/GitHub Authentication.log",
+      "bytes": 798,
+      "sha256": "1706fbae6ba42d20816d1864b6f81abce3bd258f0a9a848ef11f169c50a8e759"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/vscode.github/GitHub.log",
+      "bytes": 48,
+      "sha256": "75e85cdaf76dee2161bdffa5fbf1624d29a637c938ad82d086ac1028b1551266"
+    },
+    {
+      "path": "20261013T003543/window1/exthost/vscode.json-language-features/JSON Language Server.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/network.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/notebook.rendering.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/output_20261013T003545/agentSessionsOutput.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/output_20261013T003545/tasks.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/renderer.log",
+      "bytes": 5568,
+      "sha256": "a34d66c5bb3413c50c26a3da18bfa45d3f946e3ee5f407481202a34f61f9b5b1"
+    },
+    {
+      "path": "20261013T003543/window1/textModelChanges.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "20261013T003543/window1/views.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "complete": true,
+  "skipped": 0
+}

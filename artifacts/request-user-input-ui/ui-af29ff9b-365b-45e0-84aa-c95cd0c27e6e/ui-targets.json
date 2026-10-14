@@ -1,0 +1,33 @@
+[
+  {
+    "target": {
+      "targetId": "200B15CAA7D54BED2A4417201552CD54",
+      "type": "page",
+      "title": "[Extension Development Host] workspace - Visual Studio Code",
+      "url": "vscode-file://vscode-app/f:/roo-fork/Alpha-Code/apps/vscode-e2e/.vscode-test/vscode-win32-x64-archive-1.125.0/93cfdd489c/resources/app/out/vs/code/electron-browser/workbench/workbench.html",
+      "attached": false,
+      "canAccessOpener": false,
+      "browserContextId": "41C19E50E2363C9411DA1890336EC95C"
+    },
+    "snapshot": {
+      "text": "File\nEdit\nSelection\nView\nGo\nRun\nTerminal\nHelp\n[Extension Development Host] workspace\nSign In\nOpen in Agents\nALPHA\nOpen Chat\nCtrl\n+\nAlt\n+\nI\nShow All Commands\nCtrl\n+\nShift\n+\nP\nGo to File\nCtrl\n+\nP\nCHAT\nBuild with Agent\n\nAI responses may be inaccurate\n\nGenerate Agent Instructions to onboard AI onto your",
+      "inputs": 1
+    }
+  },
+  {
+    "target": {
+      "targetId": "12EAC7B0595A091FBA6B7A7F0408EF5E",
+      "type": "iframe",
+      "title": "vscode-webview://0l51tke0nnv4ar2r2f4jclfeuacgpuco49t6o5h86nk7052abvsn/index.html?id=025552ff-7974-493b-93f9-3472c63a1e53&parentId=1&origin=26a04f12-357b-4704-8fa2-95704cfd9be5&swVersion=5&extensionId=AlphaInc.alpha&platform=electron&vscode-resource-base-authority=vscode-resource.vscode-cdn.net&parentOrigin=vscode-file%3A%2F%2Fvscode-app&purpose=webviewView",
+      "url": "vscode-webview://0l51tke0nnv4ar2r2f4jclfeuacgpuco49t6o5h86nk7052abvsn/index.html?id=025552ff-7974-493b-93f9-3472c63a1e53&parentId=1&origin=26a04f12-357b-4704-8fa2-95704cfd9be5&swVersion=5&extensionId=AlphaInc.alpha&platform=electron&vscode-resource-base-authority=vscode-resource.vscode-cdn.net&parentOrigin=vscode-file%3A%2F%2Fvscode-app&purpose=webviewView",
+      "attached": false,
+      "canAccessOpener": false,
+      "parentFrameId": "200B15CAA7D54BED2A4417201552CD54",
+      "browserContextId": "41C19E50E2363C9411DA1890336EC95C"
+    },
+    "snapshot": {
+      "text": "×\nHelp Improve Alpha\nAlpha collects error and usage data to help us fix bugs and improve the extension. This telemetry does not collect code, prompts or personal information. You can turn this off in settings.\nContext usage\n0%\nChoose the first version, Oracle setup, and initial concurrency workload ",
+      "inputs": 2
+    }
+  }
+]

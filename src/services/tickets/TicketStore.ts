@@ -23,6 +23,7 @@ import {
 	type TicketRelations,
 	type TicketSummary,
 	type TicketStatus,
+	type TicketSearchResponse,
 } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "../../core/task-persistence/atomicWrite"
 
@@ -49,13 +50,34 @@ function countChildren(tickets: Ticket[]): Map<string, TicketChildCounts> {
 	}
 	return counts
 }
-function compareTickets(a: Ticket, b: Ticket): number {
+function compareTickets(
+	a: Pick<Ticket, "id" | "status" | "updatedAt">,
+	b: Pick<Ticket, "id" | "status" | "updatedAt">,
+): number {
 	return (
 		ticketStatusOrder.indexOf(a.status) - ticketStatusOrder.indexOf(b.status) ||
 		b.updatedAt.localeCompare(a.updatedAt) ||
 		a.id.localeCompare(b.id)
 	)
 }
+const normalizeSearchText = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")
+type TicketSearchEntry = {
+	signature: string
+	ticket: TicketSearchResponse["tickets"][number]
+	name: string
+	text: string
+	bytes: number
+}
+type TicketSearchCache = {
+	files: Map<string, TicketSearchEntry>
+	bytes: number
+	generation: number
+	refreshing?: Promise<TicketSearchEntry[]>
+}
+const maxSearchProjects = 4
+const maxSearchFiles = 10000
+const maxSearchBytes = 16 * 1024 * 1024
+const searchConcurrency = 16
 function summarizeTicket(ticket: Ticket, childCounts: Map<string, TicketChildCounts>): TicketSummary {
 	return {
 		id: ticket.id,
@@ -114,6 +136,7 @@ function sections(body: string) {
 /** Markdown is authoritative. Every cooperating writer holds the project transaction lock. */
 export class TicketStore {
 	private static readonly preparing = new Map<string, Promise<void>>()
+	private static readonly searches = new Map<string, TicketSearchCache>()
 	private constructor(
 		readonly directory: string,
 		readonly projectId: string,
@@ -134,16 +157,16 @@ export class TicketStore {
 		const store = new TicketStore(path.join(await fs.realpath(home), ".alpha", "tickets", id), id, canonical)
 		checkCancelled(signal)
 		// Join editor-owned migration if it is in flight; opening a store never starts a write.
-		await TicketStore.joinPreparation(TicketStore.preparing.get(store.directory), signal)
+		const preparation = TicketStore.preparing.get(store.directory)
+		if (preparation) await TicketStore.joinPending(preparation, signal)
 		checkCancelled(signal)
 		return store
 	}
 
-	private static async joinPreparation(preparation: Promise<void> | undefined, signal?: AbortSignal): Promise<void> {
-		if (!preparation) return
-		if (!signal) return preparation
+	private static async joinPending<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+		if (!signal) return pending
 		checkCancelled(signal)
-		await new Promise<void>((resolve, reject) => {
+		return new Promise<T>((resolve, reject) => {
 			const detach = () => signal.removeEventListener("abort", cancel)
 			const cancel = () => {
 				detach()
@@ -151,12 +174,11 @@ export class TicketStore {
 			}
 			signal.addEventListener("abort", cancel, { once: true })
 			if (signal.aborted) cancel()
-			// Cancellation belongs to this reader. The editor's migration remains
-			// joined by its owner and other readers until its physical work settles.
-			preparation.then(
-				() => {
+			// Cancel this reader without interrupting work shared with other readers.
+			pending.then(
+				(value) => {
 					detach()
-					resolve()
+					resolve(value)
 				},
 				(error) => {
 					detach()
@@ -200,8 +222,22 @@ export class TicketStore {
 		await fs.mkdir(this.directory, { recursive: true })
 		return withFileLock(path.join(this.directory, ".transaction"), async () => {
 			checkCancelled(signal)
-			await this.recover()
-			return run()
+			// A search begun after a mutation must not join its earlier inspection.
+			const invalidateRefresh = () => {
+				const directory = process.platform === "win32" ? this.directory.toLowerCase() : this.directory
+				const cache = TicketStore.searches.get(directory)
+				if (cache) {
+					cache.generation++
+					cache.refreshing = undefined
+				}
+			}
+			invalidateRefresh()
+			try {
+				await this.recover()
+				return await run()
+			} finally {
+				invalidateRefresh()
+			}
 		})
 	}
 
@@ -532,6 +568,131 @@ export class TicketStore {
 				invalidFiles: invalidFiles.slice(0, 100),
 			}
 		}, signal)
+	}
+
+	/** Chat suggestions reuse parsed search records; selected attachments still read authoritative Markdown. */
+	async search(query: string, signal?: AbortSignal): Promise<TicketSearchResponse["tickets"]> {
+		listTicketsSchema.shape.query.parse(query)
+		return this.inspect(async () => {
+			const directory = process.platform === "win32" ? this.directory.toLowerCase() : this.directory
+			const cache: TicketSearchCache = TicketStore.searches.get(directory) ?? {
+				files: new Map(),
+				bytes: 0,
+				generation: 0,
+			}
+			TicketStore.searches.delete(directory)
+			TicketStore.searches.set(directory, cache)
+			if (TicketStore.searches.size > maxSearchProjects)
+				TicketStore.searches.delete(TicketStore.searches.keys().next().value!)
+			if (!cache.refreshing) {
+				const refresh = this.refreshSearch(cache, cache.generation)
+				cache.refreshing = refresh
+				const settled = () => {
+					if (cache.refreshing === refresh) cache.refreshing = undefined
+				}
+				void refresh.then(settled, settled)
+			}
+			const entries = await TicketStore.joinPending(cache.refreshing, signal)
+			checkCancelled(signal)
+			const reference = normalizeTicketReference(query)
+			const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+			const compactQuery = normalizeSearchText(query)
+			return entries
+				.flatMap((entry) => {
+					if (
+						reference
+							? entry.ticket.reference !== reference
+							: !terms.every((term) => entry.text.includes(term))
+					)
+						return []
+					let rank = 3
+					if (!compactQuery || entry.name === compactQuery) rank = 0
+					else if (
+						normalizeSearchText(entry.ticket.reference ?? "").startsWith(compactQuery) ||
+						entry.name.startsWith(compactQuery)
+					)
+						rank = 1
+					else if (terms.every((term) => entry.name.includes(term))) rank = 2
+					return [{ ticket: entry.ticket, rank }]
+				})
+				.sort((a, b) => a.rank - b.rank || compareTickets(a.ticket, b.ticket))
+				.slice(0, 50)
+				.map(({ ticket }) => ({ ...ticket }))
+		}, signal)
+	}
+
+	private async refreshSearch(cache: TicketSearchCache, generation: number): Promise<TicketSearchEntry[]> {
+		const files: { file: string; name: string; status: TicketStatus }[] = []
+		for (const status of ticketStatusSchema.options) {
+			const directory = path.join(this.directory, status)
+			await this.safe(directory)
+			try {
+				for (const name of await fs.readdir(directory)) {
+					if (name.endsWith(".md")) files.push({ file: path.join(directory, name), name, status })
+				}
+			} catch (error) {
+				if (!missing(error)) throw error
+			}
+		}
+		const present = new Set(files.map(({ file }) => file))
+		for (const [file, entry] of cache.files) {
+			if (cache.generation === generation && !present.has(file)) {
+				cache.files.delete(file)
+				cache.bytes -= entry.bytes
+			}
+		}
+		const entries: TicketSearchEntry[] = []
+		for (let offset = 0; offset < files.length; offset += searchConcurrency) {
+			const batch = await Promise.all(
+				files.slice(offset, offset + searchConcurrency).map(async ({ file, name, status }) => {
+					try {
+						// Revalidate every file, including symlinks, replacements, and edits that restore mtime.
+						const stat = await fs.lstat(file, { bigint: true })
+						if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 100000n) return undefined
+						const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeNs}:${stat.ctimeNs}`
+						const cached = cache.files.get(file)
+						if (cached?.signature === signature) return cached
+						const ticket = this.parse(await this.raw(file), status).ticket
+						if (`${ticket.id}.md` !== name) throw new Error("Invalid filename")
+						const entry: TicketSearchEntry = {
+							signature,
+							ticket: {
+								id: ticket.id,
+								reference: ticket.reference,
+								parentId: ticket.parentId,
+								name: ticket.name,
+								status: ticket.status,
+								type: ticket.type,
+								priority: ticket.priority,
+								updatedAt: ticket.updatedAt,
+							},
+							name: normalizeSearchText(ticket.name),
+							text: normalizeSearchText(
+								`${ticket.reference ?? ""}\n${ticket.name}\n${ticket.description}\n${ticket.context}`,
+							),
+							bytes: 256,
+						}
+						entry.bytes += 2 * (entry.name.length + entry.text.length + JSON.stringify(entry.ticket).length)
+						if (cache.generation === generation) {
+							const previous = cache.files.get(file)
+							if (previous) {
+								cache.files.delete(file)
+								cache.bytes -= previous.bytes
+							}
+							if (cache.files.size < maxSearchFiles && cache.bytes + entry.bytes <= maxSearchBytes) {
+								cache.files.set(file, entry)
+								cache.bytes += entry.bytes
+							}
+						}
+						return entry
+					} catch {
+						return undefined
+					}
+				}),
+			)
+			for (const entry of batch) if (entry) entries.push(entry)
+		}
+		return entries
 	}
 
 	async create(input: CreateTicket, signal?: AbortSignal): Promise<Ticket> {

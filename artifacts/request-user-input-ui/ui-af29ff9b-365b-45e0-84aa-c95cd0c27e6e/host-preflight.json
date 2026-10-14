@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "runId": "ui-af29ff9b-365b-45e0-84aa-c95cd0c27e6e",
+  "actualVSCodeVersion": "1.125.0",
+  "requireAllTests": true,
+  "stage": "suite-complete",
+  "testCounts": {
+    "total": 1,
+    "passed": 1,
+    "pending": 0,
+    "executed": 1,
+    "failed": 0
+  },
+  "status": "passed",
+  "ownershipGate": "verified"
+}

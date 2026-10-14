@@ -1,0 +1,16 @@
+{
+  "x": 197.5,
+  "y": 472.140625,
+  "deltaY": -80,
+  "before": {
+    "x": 149.5,
+    "y": 402.140625,
+    "scrollTop": 359,
+    "focus": "<textarea aria-label=\"Type a message...\" aria-autocomplete=\"list\" aria-expanded=\"false\" placeholder=\"Type a message...\" class=\"w-full font-vscode-font-family text-vscode-editor-font-size leading-vscode-editor-line-height cursor-text py-2 pl-2 border border-transparent focus:outline-0 focus-visible:ring-0 bg-transparent transition-background-color duration-150 ease-in-out will-change-background-color min-h-[94px] box-border rounded-none resize-none overflow-x-hidden overflow-y-auto pr-9 flex-none flex-grow z-[2] scrollbar-none scrollbar-hide\" style=\"height: 66px !important;\"></textarea>"
+  },
+  "after": {
+    "scrollTop": 359,
+    "focus": "<textarea aria-label=\"Type a message...\" aria-autocomplete=\"list\" aria-expanded=\"false\" placeholder=\"Type a message...\" class=\"w-full font-vscode-font-family text-vscode-editor-font-size leading-vscode-editor-line-height cursor-text py-2 pl-2 border border-transparent focus:outline-0 focus-visible:ring-0 bg-transparent transition-background-color duration-150 ease-in-out will-change-background-color min-h-[94px] box-border rounded-none resize-none overflow-x-hidden overflow-y-auto pr-9 flex-none flex-grow z-[2] scrollbar-none scrollbar-hide\" style=\"height: 66px !important;\"></textarea>"
+  },
+  "trustedWheel": true
+}

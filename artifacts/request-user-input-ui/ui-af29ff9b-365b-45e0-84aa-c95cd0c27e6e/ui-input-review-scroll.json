@@ -1,0 +1,16 @@
+{
+  "x": 197.5,
+  "y": 477.140625,
+  "deltaY": -80,
+  "before": {
+    "x": 149.5,
+    "y": 407.140625,
+    "scrollTop": 311,
+    "focus": "<h3 tabindex=\"-1\" class=\"m-0 text-sm font-semibold\">Review your answers</h3>"
+  },
+  "after": {
+    "scrollTop": 311,
+    "focus": "<h3 tabindex=\"-1\" class=\"m-0 text-sm font-semibold\">Review your answers</h3>"
+  },
+  "trustedWheel": true
+}

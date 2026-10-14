@@ -25,7 +25,7 @@ function mockStore() {
 	const store = {
 		projectId: "project-hash",
 		read: vi.fn().mockResolvedValue(ticket),
-		list: vi.fn().mockResolvedValue({ tickets: [ticket], total: 1 }),
+		search: vi.fn().mockResolvedValue([ticket]),
 	}
 	vi.spyOn(TicketStore, "forWorkspace").mockResolvedValue(store as unknown as TicketStore)
 	return store
@@ -96,7 +96,7 @@ describe("ticket chat context", () => {
 			cwd: "/untrusted",
 		})
 		expect(TicketStore.forWorkspace).toHaveBeenCalledExactlyOnceWith("/project")
-		expect(store.list).toHaveBeenCalledExactlyOnceWith({ query: "PM1", offset: 0, limit: 50 })
+		expect(store.search).toHaveBeenCalledExactlyOnceWith("PM1")
 		expect(result).toEqual({ type: "ticketSearchResults", requestId: "a", tickets: [ticket] })
 	})
 	it("rejects oversized searches and distinguishes unavailable storage from no matches", async () => {
@@ -104,8 +104,8 @@ describe("ticket chat context", () => {
 		expect(
 			await searchTicketMentions("/project", { type: "searchTickets", requestId: "a", query: "x".repeat(201) }),
 		).toBeUndefined()
-		expect(store.list).not.toHaveBeenCalled()
-		store.list.mockRejectedValue(new Error("private path"))
+		expect(store.search).not.toHaveBeenCalled()
+		store.search.mockRejectedValue(new Error("private path"))
 		expect(await searchTicketMentions("/project", { type: "searchTickets", requestId: "b", query: "" })).toEqual({
 			type: "ticketSearchResults",
 			requestId: "b",
