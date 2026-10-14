@@ -31,6 +31,7 @@ export const extendedHostFiles = [
 	"html-document.test",
 	"storage-recovery.test",
 	"scheduled-tasks.acceptance.test",
+	"rich-documents.test",
 ]
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)

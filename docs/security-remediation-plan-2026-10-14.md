@@ -392,11 +392,13 @@ pnpm --dir src test services/tickets/__tests__/TicketStore.search.spec.ts --test
 
 ### Validation and closure evidence
 
-Passed: all workspace typechecks; extension-focused lint; knip; shared-types tests; webview tests; 592 host-runner
+Passed: all workspace typechecks; extension-focused lint; knip; 15,484 extension/shared/webview unit tests (34 declared
+skips retained); 222 repository tooling tests; 592 host-runner
 unit tests; offline evaluator suites (384 unit, 20 contract, 5 certification); focused security/search tests; dependency
 patch regressions; and Windows managed-agent preflight. Packaging produced `bin/alpha-3.1.12.vsix`; the verifier confirmed
 1,676 entries, all required assets including DOMPurify, no packaged `.env` file, and 16 document assets matching source
-bytes. Full extension/dependency tests and the final CI pass are being finalized.
+bytes. The full local unit command was `pnpm test --env-mode=loose --concurrency=2` with `VITEST_MAX_WORKERS=2`, which
+passes the worker limit through Turborepo. The final CI pass is being finalized.
 
 CodeQL analysis [1954688717](https://github.com/lukegob10/alpha/actions/runs/38629894733), on PR #145's merge commit
 `32632739235550762bfdbcd0d09bca4559fd8182` (head `2183a495b`), completed with CodeQL 2.27.2, 87 rules, zero results, and no
@@ -412,4 +414,9 @@ supported `GITHUB_TOKEN` only during installation/rebuild. The installer strips 
 The exact `pnpm --filter @alpha-code/vscode-e2e test:smoke:1250` gate was attempted locally. After fixing the transitive
 module compatibility error, VS Code 1.125.0 itself refused to launch because the Windows `vscode-updating` mutex remained
 held after its 30-second wait. The runner correctly retained a blocked receipt (`host-preflight-missing`); no other host
-version was substituted. The same required gate must pass on the clean GitHub runner before merge.
+version was substituted. The clean GitHub runner passed the exact smoke, HTML-document extended coverage, and independently
+asserted task outcomes on [the first remediation head](https://github.com/lukegob10/alpha/actions/runs/38629895246/job/116078526385).
+Its evidence matrix marked all three lanes `executed-pass` with exact VS Code 1.125.0 and zero pending tests. The final head
+must pass again before merge. The existing extended gate now also requires `rich-documents.test`, with the canonical
+evidence inventory updated together; this verifies the changed document parser dependencies and generated read command
+on the same exact host.
