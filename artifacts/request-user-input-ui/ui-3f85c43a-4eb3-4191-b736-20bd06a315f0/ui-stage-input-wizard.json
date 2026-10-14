@@ -1,0 +1,83 @@
+{
+  "version": "1.125.0",
+  "taskId": "01a13378-e80a-75b4-9fe3-0b2602935738",
+  "questions": [
+    {
+      "id": "app_type",
+      "header": "App type",
+      "question": "What should the first version do?",
+      "options": [
+        {
+          "label": "API + CRUD (Recommended)",
+          "description": "A small Go HTTP API backed by Oracle, with health and sample data endpoints."
+        },
+        {
+          "label": "Load tester",
+          "description": "A Go CLI that sends concurrent requests to an API you already have."
+        },
+        {
+          "label": "Both",
+          "description": "An Oracle-backed API plus a mode to generate concurrent test traffic."
+        }
+      ]
+    },
+    {
+      "id": "oracle",
+      "header": "Oracle",
+      "question": "What Oracle setup should it target?",
+      "options": [
+        {
+          "label": "Existing Oracle (Recommended)",
+          "description": "Share the Oracle version and whether it runs locally, in a container, or on another host."
+        },
+        {
+          "label": "Oracle Free in Docker",
+          "description": "Use Oracle Database Free for a local homelab development setup."
+        },
+        {
+          "label": "Help me choose",
+          "description": "Recommend a driver and setup based on your homelab environment."
+        }
+      ]
+    },
+    {
+      "id": "workload",
+      "header": "Workload",
+      "question": "What should the initial concurrency test look like?",
+      "options": [
+        {
+          "label": "Small smoke test (Recommended)",
+          "description": "Start with 10 concurrent clients and a modest request count."
+        },
+        {
+          "label": "I have targets",
+          "description": "Use your expected concurrency, duration, and read/write mix."
+        },
+        {
+          "label": "Skip for now",
+          "description": "Build the API first and add load settings later."
+        }
+      ]
+    }
+  ],
+  "expectedAnswers": {
+    "app_type": {
+      "answers": [
+        "API + CRUD (Recommended)"
+      ]
+    },
+    "oracle": {
+      "answers": [
+        "Oracle 23ai on a local Docker host; use the existing database."
+      ]
+    },
+    "workload": {
+      "answers": [
+        "Small smoke test (Recommended)"
+      ]
+    }
+  },
+  "customAnswer": "Oracle 23ai on a local Docker host; use the existing database.",
+  "nonce": "3f85c43a-4eb3-4191-b736-20bd06a315f0",
+  "stage": "input-wizard"
+}

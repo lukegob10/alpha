@@ -53,7 +53,8 @@ describe("AlphaProvider incident dashboard loading", () => {
 						ts: Date.now(),
 					},
 					{ id: "old-task", task: "Old chat", status: "completed", ts: Date.now() - 86_400_001 },
-					{ id: "investigation", diagnosticIncidentId: "investigate:abc", ts: Date.now() },
+					{ id: "investigation", diagnosticIncidentId: "investigate:abc", status: "failed", ts: Date.now() },
+					{ id: "restricted-diagnostic", diagnosticSession: true, ts: Date.now() },
 				],
 			},
 			contextProxy: { globalStorageUri: { fsPath: "unused-storage-path" } },
@@ -70,10 +71,17 @@ describe("AlphaProvider incident dashboard loading", () => {
 		expect(journalRead).not.toHaveBeenCalled()
 
 		await vi.advanceTimersByTimeAsync(50)
-		expect(journalRead).toHaveBeenCalledExactlyOnceWith("unused-storage-path", "stored-task")
-		expect(monitor.snapshot().tasks[0]?.state).toBe("completed")
-		expect(snapshots.at(-1)?.tasks[0]?.state).toBe("completed")
-		expect((await provider.getIncidentDashboardSnapshot()).tasks[0]).toMatchObject({
+		expect(journalRead).toHaveBeenCalledTimes(2)
+		expect(journalRead).toHaveBeenCalledWith("unused-storage-path", "stored-task")
+		expect(journalRead).toHaveBeenCalledWith("unused-storage-path", "investigation")
+		expect(
+			monitor
+				.snapshot()
+				.tasks.map((task) => task.state)
+				.sort(),
+		).toEqual(["completed", "failed"])
+		expect(snapshots.at(-1)?.alerts).toHaveLength(1)
+		expect((await provider.getIncidentDashboardSnapshot()).tasks.find((task) => task.chatTitle)).toMatchObject({
 			chatTitle: "Fix dashboard",
 			workspace: "/projects/Alpha-Code",
 		})

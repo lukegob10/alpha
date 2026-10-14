@@ -1,0 +1,32 @@
+{
+  "runId": "ui-3f85c43a-4eb3-4191-b736-20bd06a315f0",
+  "providerMode": "scripted",
+  "vscodeVersion": "1.125.0",
+  "launchKind": "extension-test",
+  "workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\workspace",
+  "userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\profile\\1.125.0\\user-data",
+  "extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\profile\\1.125.0\\extensions",
+  "artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\evidence\\ui-3f85c43a-4eb3-4191-b736-20bd06a315f0",
+  "profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\profile",
+  "execution": "extension-host",
+  "status": "passed",
+  "hostExitObserved": true,
+  "ownershipGate": "verified",
+  "actualVSCodeVersion": "1.125.0",
+  "requireAllTests": true,
+  "testCounts": {
+    "total": 1,
+    "passed": 1,
+    "pending": 0,
+    "executed": 1,
+    "failed": 0
+  },
+  "exitCode": 0,
+  "retained": true,
+  "retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\evidence\\ui-3f85c43a-4eb3-4191-b736-20bd06a315f0\\retention-result.json",
+  "launchedHostPid": 21076,
+  "extensionHostPid": 59464,
+  "extensionHostParentPid": 21076,
+  "evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-SKA5Qh\\evidence\\ui-3f85c43a-4eb3-4191-b736-20bd06a315f0\\manifest.json",
+  "captureComplete": true
+}

@@ -30,7 +30,18 @@ describe("read_diagnostic_evidence", () => {
 		expect(result).not.toContain("PRIVATE PROMPT")
 		expect(result).not.toContain("PRIVATE JOIN")
 		expect(JSON.parse(result).sources.lifecycle.recentEvents).toHaveLength(8)
+		expect(JSON.parse(result).sources.lifecycle).toMatchObject({ eventCount: 100, omittedEventCount: 92 })
 		expect(result.length).toBeLessThanOrEqual(16 * 1_024)
+	})
+
+	it("marks the compact fallback as truncated instead of implying all captured events were returned", () => {
+		const result = JSON.parse(
+			formatDiagnosticEvidenceForTool(evidence([{ type: "turn_terminal", reason: "x".repeat(20_000) }])),
+		)
+		expect(result).toMatchObject({
+			evidenceTruncated: true,
+			sources: { lifecycle: { eventCount: 1, omittedEventCount: 1 } },
+		})
 	})
 
 	it("keeps the bounded fallback parseable when source summaries are oversized", () => {

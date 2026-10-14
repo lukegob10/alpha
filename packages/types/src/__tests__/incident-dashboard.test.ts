@@ -20,6 +20,28 @@ const turn = {
 }
 
 describe("incident dashboard turn contract", () => {
+	it.each(["tool_denied", "tool_cancelled", "tool_indeterminate"])(
+		"accepts distinct %s results without requiring new fields on legacy rows",
+		(kind) => {
+			expect(
+				incidentDashboardTurnDetailMessageSchema.safeParse({
+					type: "incidentDashboardTurnDetail",
+					turnId: hash,
+					detail: { turn, events: [{ id: hash, at: 120, kind }] },
+				}).success,
+			).toBe(true)
+			const toolOutcomes = { success: 1, error: 0, denied: 1, cancelled: 0, indeterminate: 1 }
+			const snapshot = {
+				generatedAt: 200,
+				tasks: [],
+				alerts: [],
+				turns: [{ ...turn, toolOutcomes }],
+			}
+			expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)
+			toolOutcomes.indeterminate = 257
+			expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(false)
+		},
+	)
 	it("accepts optional bounded chat titles and retains legacy anonymous rows", () => {
 		const snapshot = { generatedAt: 200, tasks: [], alerts: [], turns: [turn] }
 		expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)

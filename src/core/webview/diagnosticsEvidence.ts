@@ -2,6 +2,7 @@ import { createHash } from "crypto"
 import * as fs from "fs/promises"
 import * as path from "path"
 import type { Stats } from "fs"
+import { agentLifecycleEventSchema, toolNamesSchema } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import {
@@ -16,18 +17,7 @@ const MAX_EVENTS = 2_000
 const MAX_HISTORY_MESSAGES = 2_000
 
 const EVENT_TYPES = new Set([
-	"turn_started",
-	"phase_changed",
-	"step_started",
-	"step_status_changed",
-	"item_added",
-	"item_updated",
-	"tool_call_accepted",
-	"tool_result_recorded",
-	"approval_requested",
-	"approval_resolved",
-	"turn_status_changed",
-	"turn_terminal",
+	...agentLifecycleEventSchema.options.map((schema) => schema.shape.type.value),
 	"assistant_committed",
 	"response_terminal",
 	"tool_result",
@@ -38,17 +28,13 @@ const EVENT_TYPES = new Set([
 	"retry",
 	"model_request_started",
 	"request_usage",
-	"turn_completed",
 	"task_completed",
-	"turn_failed",
 	"task_failed",
 	"turn_incomplete",
 	"task_incomplete",
 	"compaction_completed",
 	"verification_result",
 	"cancelled",
-	"turn_interrupted",
-	"turn_cancelled",
 	"internal_task_started",
 	"internal_task_completed",
 	"progress",
@@ -68,6 +54,7 @@ const STATUSES = new Set([
 	"aborted",
 	"cancelled",
 	"success",
+	"succeeded",
 	"error",
 	"denied",
 	"approved",
@@ -75,6 +62,10 @@ const STATUSES = new Set([
 	"timed_out",
 	"pending",
 	"interrupted",
+	"indeterminate",
+	"accepted",
+	"rejected",
+	"requested",
 ])
 const PHASES = new Set([
 	"queued",
@@ -187,6 +178,7 @@ function projectLifecycleEvent(value: unknown): Record<string, unknown> | undefi
 	const raw = object(value)
 	const event = object(raw?.event) ?? raw
 	const payload = object(event?.payload) ?? event
+	const item = object(payload?.item)
 	const type = safeString(event?.type)
 	if (!type || !EVENT_TYPES.has(type)) return undefined
 	const projected: Record<string, unknown> = { type }
@@ -210,11 +202,11 @@ function projectLifecycleEvent(value: unknown): Record<string, unknown> | undefi
 		"parallelToolCount",
 		"truncatedResultCount",
 	] as const) {
-		const number = finiteNumber(raw?.[key] ?? payload?.[key])
+		const number = finiteNumber(event?.[key] ?? raw?.[key] ?? payload?.[key])
 		if (number !== undefined) projected[key] = number
 	}
 	for (const key of ["status", "phase", "decision", "commandCategory"] as const) {
-		const value = safeString(payload?.[key] ?? raw?.[key])
+		const value = safeString(payload?.[key] ?? item?.[key] ?? raw?.[key])
 		if (
 			value &&
 			((key === "status" && STATUSES.has(value)) ||
@@ -225,11 +217,17 @@ function projectLifecycleEvent(value: unknown): Record<string, unknown> | undefi
 			projected[key] = value
 	}
 	for (const key of ["callId", "toolCallId", "requestId", "attemptId", "approvalId"] as const) {
-		const value = hashId(payload?.[key] ?? raw?.[key])
+		const value = hashId(payload?.[key] ?? item?.[key] ?? raw?.[key])
 		if (value) projected[`${key}Sha256`] = value
 	}
 	for (const key of ["reason", "error", "message"] as const) {
-		if (payload?.[key] !== undefined || raw?.[key] !== undefined) projected[`${key}Present`] = true
+		if (payload?.[key] !== undefined || item?.[key] !== undefined || raw?.[key] !== undefined)
+			projected[`${key}Present`] = true
+	}
+	if (item?.type === "tool_call") {
+		const name = toolNamesSchema.safeParse(item.name)
+		if (name.success) projected.toolName = name.data
+		else if (hashId(item.name)) projected.toolNameSha256 = hashId(item.name)
 	}
 	return projected
 }
@@ -242,7 +240,7 @@ function projectSnapshot(value: unknown): Record<string, unknown> {
 		const value = hashId(snapshot[key])
 		if (value) projected[`${key}Sha256`] = value
 	}
-	for (const key of ["version", "lastSequence"] as const) {
+	for (const key of ["version", "lastSequence", "effectTrackingVersion"] as const) {
 		const value = finiteNumber(snapshot[key])
 		if (value !== undefined) projected[key] = value
 	}
@@ -251,7 +249,14 @@ function projectSnapshot(value: unknown): Record<string, unknown> {
 		if (value && ((key === "status" && STATUSES.has(value)) || (key === "phase" && PHASES.has(value))))
 			projected[key] = value
 	}
-	for (const key of ["items", "steps", "acceptedToolCallIds", "terminalToolCallIds", "processedEvents"] as const) {
+	for (const key of [
+		"items",
+		"steps",
+		"acceptedToolCallIds",
+		"effectStartedToolCallIds",
+		"terminalToolCallIds",
+		"processedEvents",
+	] as const) {
 		if (Array.isArray(snapshot[key])) projected[`${key}Count`] = snapshot[key].length
 	}
 	return projected
@@ -511,13 +516,20 @@ function joinEvidence(
 	if (eventLog.status !== "captured") missing.add(`eventLog:${eventLog.status}`)
 	const lifecycleEvents = object(lifecycle.projection)?.events
 	if (Array.isArray(lifecycleEvents)) lifecycleEvents.forEach((value) => add("lifecycle", value))
-	const eventRecords = object(eventLog.projection)?.records
+	const eventProjection = object(eventLog.projection)
+	const eventRecords = eventProjection?.events ?? eventProjection?.records
 	if (Array.isArray(eventRecords)) eventRecords.forEach((value) => add("eventLog", value))
 	return { records: [...groups.values()], missing: [...missing].sort() }
 }
 
 function sourceStatus(sources: Record<string, DiagnosticsSourceEvidence>): DiagnosticsEvidenceStatus {
-	if (Object.values(sources).some((source) => source.status === "incomplete")) return "incomplete"
+	if (
+		Object.values(sources).some((source) => {
+			const validation = object(source.projection)?.validationStatus
+			return source.status === "incomplete" || validation === "incomplete" || validation === "unverified"
+		})
+	)
+		return "incomplete"
 	if (Object.values(sources).some((source) => source.status === "captured")) return "captured"
 	return "absent"
 }
@@ -561,6 +573,7 @@ export function projectRuntimeDiagnostics(value: unknown): unknown {
 				return [projected]
 			})
 		: []
+	let reservationsTruncated = false
 	const obligations = Array.isArray(runtime.obligations)
 		? runtime.obligations.slice(0, 16).flatMap((value) => {
 				const obligation = object(value)
@@ -580,6 +593,20 @@ export function projectRuntimeDiagnostics(value: unknown): unknown {
 				}
 				for (const key of ["scopeUnresolved", "observationIncomplete"] as const)
 					if (typeof obligation[key] === "boolean") projected[key] = obligation[key]
+				if (Array.isArray(obligation.pendingReservations)) {
+					reservationsTruncated ||= obligation.pendingReservations.length > 32
+					// Use the same hash as command execution IDs and file-tool call IDs so
+					// missing receipts remain joinable without exporting raw identifiers.
+					projected.pendingReservations = obligation.pendingReservations.slice(-32).flatMap((value) => {
+						const reservation = object(value)
+						const tokenSha256 = hashId(reservation?.token)
+						if (!tokenSha256) return []
+						const commandStatus = safeString(reservation?.commandStatus)
+						return [
+							{ tokenSha256, ...(commandStatus && STATUSES.has(commandStatus) ? { commandStatus } : {}) },
+						]
+					})
+				}
 				return [projected]
 			})
 		: []
@@ -587,7 +614,11 @@ export function projectRuntimeDiagnostics(value: unknown): unknown {
 		completion: projectedCompletion,
 		commands,
 		obligations,
-		truncated: runtime.truncated === true || (Array.isArray(runtime.commands) && runtime.commands.length > 32),
+		truncated:
+			runtime.truncated === true ||
+			reservationsTruncated ||
+			(Array.isArray(runtime.commands) && runtime.commands.length > 32) ||
+			(Array.isArray(runtime.obligations) && runtime.obligations.length > 16),
 	}
 }
 

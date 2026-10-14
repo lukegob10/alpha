@@ -76,6 +76,43 @@ describe("AlphaProvider incident investigation launch", () => {
 		await fs.rm(storage, { recursive: true, force: true })
 	})
 
+	it.each(["alert", "turn"])(
+		"requests a concise evidence summary and cautious handoff for a %s investigation",
+		async (entry) => {
+			if (entry === "alert") await provider.startIncidentDebuggingTask(alertId)
+			else await provider.startIncidentDebuggingTurnTask(failedTurnId)
+			const prompt = createTask.mock.calls[0]![0]
+			expect(prompt).toContain("Incident summary")
+			expect(prompt).toContain("3–5 sentences")
+			expect(prompt).toContain("Follow-up prompt")
+			expect(prompt).toContain("smallest justified fix")
+			expect(prompt).toContain("regression test")
+			expect(prompt).toContain("Do not replay successful effects")
+			expect(prompt).toContain("cancellation initiator")
+			expect(prompt).toContain("investigation's own failures")
+		},
+	)
+
+	it.each([false, true])(
+		"observes investigation failures without starting another investigation (restricted=%s)",
+		(diagnosticSession) => {
+			const notifyIncidentAlert = vi.fn()
+			Object.assign(provider, {
+				getLiveTask: () => ({ diagnosticIncidentId: "investigate:abc", diagnosticSession }),
+				taskHistoryStore: { get: () => undefined },
+				incidentHostStartedAt: 0,
+				notifyIncidentAlert,
+			})
+			provider["observeIncidentLifecycleEvent"]({
+				...failureEvent,
+				taskId: "investigation",
+				eventId: "investigation-failure",
+			})
+			expect(notifyIncidentAlert).toHaveBeenCalledTimes(diagnosticSession ? 0 : 1)
+			expect(createTask).not.toHaveBeenCalled()
+		},
+	)
+
 	it("creates one Code investigation grounded in the source task records", async () => {
 		const [first, second] = await Promise.all([
 			provider.startIncidentDebuggingTask(alertId),

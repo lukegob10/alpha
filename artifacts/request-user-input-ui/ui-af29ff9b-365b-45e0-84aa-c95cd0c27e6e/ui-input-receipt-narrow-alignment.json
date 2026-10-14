@@ -1,0 +1,41 @@
+{
+  "top": {
+    "top": 268.109375,
+    "bottom": 572.765625,
+    "height": 304.65625,
+    "viewportTop": 188.28125,
+    "viewportBottom": 616,
+    "viewportHeight": 427.71875,
+    "scrollTop": 211,
+    "settled": true,
+    "observations": [
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 616,
+        "viewportHeight": 427.71875,
+        "scrollTop": 211
+      },
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 616,
+        "viewportHeight": 427.71875,
+        "scrollTop": 211
+      },
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 616,
+        "viewportHeight": 427.71875,
+        "scrollTop": 211
+      }
+    ]
+  }
+}

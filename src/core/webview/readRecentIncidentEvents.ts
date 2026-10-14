@@ -33,12 +33,17 @@ export async function readRecentIncidentEvents(
 		const buffer = Buffer.alloc(length)
 		const { bytesRead } = await handle.read(buffer, 0, length, opened.size - length)
 		const after = await handle.stat()
-		if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) return { events: [], status: "incomplete" }
+		if (bytesRead !== length || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs)
+			return { events: [], status: "incomplete" }
 		let text = buffer.subarray(0, bytesRead).toString("utf8")
-		if (opened.size > length) text = text.slice(text.indexOf("\n") + 1)
+		const tailTruncated = opened.size > length
+		if (tailTruncated) {
+			const firstNewline = text.indexOf("\n")
+			text = firstNewline === -1 ? "" : text.slice(firstNewline + 1)
+		}
 		const lines = text.split("\n")
-		lines.pop() // Empty after a final newline, or an incomplete concurrent append.
-		let invalid = false
+		const unfinishedLine = lines.pop() // Only newline-terminated records have been fully appended.
+		let invalid = tailTruncated || lines.length > MAX_EVENTS || unfinishedLine !== ""
 		const events = lines.slice(-MAX_EVENTS).flatMap((line) => {
 			if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
 				invalid = true

@@ -12,15 +12,18 @@ function safeObject(value: unknown): Record<string, unknown> | undefined {
 
 function sourceSummary(source: DiagnosticsSourceEvidence, includeEvents: boolean): Record<string, unknown> {
 	const projection = safeObject(source.projection)
+	const events = Array.isArray(projection?.events) ? projection.events : undefined
+	const recentEvents = includeEvents ? events?.slice(-MAX_EVENTS_PER_SOURCE) : undefined
 	return {
 		status: source.status,
 		...(source.sourceBytes !== undefined ? { sourceBytes: source.sourceBytes } : {}),
 		...(source.sourceSha256 ? { sourceSha256: source.sourceSha256 } : {}),
 		...(source.warning ? { warning: source.warning } : {}),
 		...(projection?.validationStatus ? { validationStatus: projection.validationStatus } : {}),
-		...(includeEvents && Array.isArray(projection?.events)
-			? { recentEvents: projection.events.slice(-MAX_EVENTS_PER_SOURCE) }
+		...(events
+			? { eventCount: events.length, omittedEventCount: events.length - (recentEvents?.length ?? 0) }
 			: {}),
+		...(recentEvents ? { recentEvents } : {}),
 		...(includeEvents && source.status === "captured" && !Array.isArray(projection?.events) && projection
 			? { snapshot: projection }
 			: {}),
@@ -32,6 +35,7 @@ export function formatDiagnosticEvidenceForTool(collected: CollectedDiagnosticsE
 	const summarize = (includeEvents: boolean) =>
 		JSON.stringify({
 			status: collected.evidence.status,
+			...(!includeEvents ? { evidenceTruncated: true } : {}),
 			taskIdSha256: collected.evidence.taskIdSha256,
 			rawProviderHistory: collected.evidence.rawProviderHistory,
 			sources: Object.fromEntries(
@@ -40,7 +44,10 @@ export function formatDiagnosticEvidenceForTool(collected: CollectedDiagnosticsE
 					sourceSummary(source, includeEvents),
 				]),
 			),
-			joins: { missing: collected.evidence.joins.missing.slice(0, 32) },
+			joins: {
+				missing: collected.evidence.joins.missing.slice(0, 32),
+				omittedMissingCount: Math.max(0, collected.evidence.joins.missing.length - 32),
+			},
 		})
 	const detailed = summarize(true)
 	if (detailed.length <= MAX_RESULT_CHARS) return detailed

@@ -64,6 +64,7 @@ type EvidenceSource = "lifecycle" | "projector" | "task_history"
 type EvidenceStatus = "captured" | "absent" | "incomplete"
 type ErrorStatus = "failed" | "incomplete"
 type TurnStatus = IncidentDashboardTurn["status"]
+type ToolOutcomes = NonNullable<IncidentDashboardTurn["toolOutcomes"]>
 
 export interface AgentIncidentMonitorOptions {
 	/** Injectable wall clock for deterministic hosts and tests. */
@@ -172,13 +173,13 @@ interface TurnRecord {
 	lastEventAt: number
 	steps: number
 	toolCalls: number
-	toolErrors: number
+	toolOutcomes: ToolOutcomes
 	evidenceStatus?: EvidenceStatus
 	events: StoredTurnEvent[]
 	seenEventIds: Set<string>
 	stepIds: Set<string>
 	toolCallIds: Set<string>
-	errorToolCallIds: Set<string>
+	resultToolCallIds: Set<string>
 	toolNamesByCallId: Map<string, ToolName>
 }
 
@@ -449,7 +450,7 @@ interface TurnEventProjection {
 	toolCallId?: string
 	toolName?: ToolName
 	countToolCall?: boolean
-	countToolError?: boolean
+	toolOutcome?: keyof ToolOutcomes
 }
 
 function turnEventProjection(event: AgentLifecycleEvent): TurnEventProjection | undefined {
@@ -476,15 +477,22 @@ function turnEventProjection(event: AgentLifecycleEvent): TurnEventProjection | 
 				countToolCall: true,
 			}
 		}
-		case "tool_result_recorded":
+		case "tool_result_recorded": {
+			const status = event.payload.item.status
+			const outcome = status === "completed" ? "success" : status === "failed" ? "error" : status
+			const kinds = {
+				success: "tool_succeeded",
+				error: "tool_failed",
+				denied: "tool_denied",
+				cancelled: "tool_cancelled",
+				indeterminate: "tool_indeterminate",
+			} as const
 			return {
-				kind:
-					event.payload.item.status === "completed" || event.payload.item.status === "success"
-						? "tool_succeeded"
-						: "tool_failed",
+				kind: kinds[outcome],
 				toolCallId: event.payload.item.toolCallId,
-				countToolError: event.payload.item.status === "failed" || event.payload.item.status === "error",
+				toolOutcome: outcome,
 			}
+		}
 		case "approval_requested":
 			return { kind: "approval_requested" }
 		case "approval_resolved":
@@ -583,6 +591,12 @@ function buildTurnInvestigationPrompt(
 		`- Steps: ${Number.isSafeInteger(turn.steps) && turn.steps >= 0 ? turn.steps : 0}`,
 		`- Tool calls: ${Number.isSafeInteger(turn.toolCalls) && turn.toolCalls >= 0 ? turn.toolCalls : 0}`,
 		`- Tool errors: ${Number.isSafeInteger(turn.toolErrors) && turn.toolErrors >= 0 ? turn.toolErrors : 0}`,
+		...(turn.toolOutcomes
+			? Object.entries(turn.toolOutcomes).map(
+					([status, count]) => `- Observed tool results (${status}): ${count}`,
+				)
+			: []),
+		"- Counts reflect observed events, capped at 256 per counter; retained history may omit earlier activity. Zero observed errors is not proof that no failure occurred.",
 		`- Evidence status: ${safeEvidenceStatus}`,
 		`- Bounded lifecycle events (${eventLines.length}):\n${eventLines.join("\n") || "- No event details retained."}`,
 		"",
@@ -986,8 +1000,9 @@ export class AgentIncidentMonitor {
 			if (projection.countToolCall && this.rememberBoundedId(turn.toolCallIds, toolCallId))
 				turn.toolCalls = Math.min(256, turn.toolCalls + 1)
 			if (projection.toolName) turn.toolNamesByCallId.set(toolCallId, projection.toolName)
-			if (projection.countToolError && this.rememberBoundedId(turn.errorToolCallIds, toolCallId))
-				turn.toolErrors = Math.min(256, turn.toolErrors + 1)
+			if (projection.toolOutcome && this.rememberBoundedId(turn.resultToolCallIds, toolCallId)) {
+				turn.toolOutcomes[projection.toolOutcome] = Math.min(256, turn.toolOutcomes[projection.toolOutcome] + 1)
+			}
 			if (!projection.countToolCall) turn.toolNamesByCallId.delete(toolCallId)
 			while (turn.toolNamesByCallId.size > this.maxEventsPerTask) {
 				const oldest = turn.toolNamesByCallId.keys().next().value as string | undefined
@@ -1051,13 +1066,13 @@ export class AgentIncidentMonitor {
 			lastEventAt: event.occurredAt,
 			steps: 0,
 			toolCalls: 0,
-			toolErrors: 0,
+			toolOutcomes: { success: 0, error: 0, denied: 0, cancelled: 0, indeterminate: 0 },
 			evidenceStatus: task.evidenceStatus,
 			events: [],
 			seenEventIds: new Set(),
 			stepIds: new Set(),
 			toolCallIds: new Set(),
-			errorToolCallIds: new Set(),
+			resultToolCallIds: new Set(),
 			toolNamesByCallId: new Map(),
 		}
 		this.turns.set(key, turn)
@@ -1097,7 +1112,8 @@ export class AgentIncidentMonitor {
 			...(durationMs === undefined ? {} : { durationMs }),
 			steps: turn.steps,
 			toolCalls: turn.toolCalls,
-			toolErrors: turn.toolErrors,
+			toolErrors: turn.toolOutcomes.error,
+			toolOutcomes: { ...turn.toolOutcomes },
 			...(turn.evidenceStatus ? { evidenceStatus: turn.evidenceStatus } : {}),
 		}
 	}
@@ -1455,6 +1471,7 @@ export function buildIncidentInvestigationPrompt(
 		"- Compare the referenced lifecycle event sequence with its task snapshot and event-log joins.",
 		"- Check whether the same failure identity appears in the turn and task histories.",
 		"- Treat missing, incomplete, or mismatched evidence as uncertainty; do not infer from absent records.",
+		"- An attached tool error is an observed event in this turn, not proof that it caused the terminal failure. Check later successful steps and recovery before assigning cause.",
 	].join("\n")
 	return truncateUtf8(prompt, MAX_INVESTIGATION_PROMPT_BYTES)
 }

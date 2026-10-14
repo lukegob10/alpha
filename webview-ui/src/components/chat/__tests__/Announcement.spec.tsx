@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.11",
+		version: "3.1.12",
 	},
 }))
 
@@ -37,12 +37,14 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.11" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.12" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.11")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.12")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.1.11 improves agent coordination, task goals, and the chat experience."),
+			screen.getByText(
+				"Alpha v3.1.12 improves incident investigations, tool outcome visibility, and ticket search.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -52,21 +54,21 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
-			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Saved task goals keep progress and usage accounting connected across delegated work."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Answer questions one at a time, revisit your choices, and review completed answers in the chat.",
+				"Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Choose automatic steering or queued messages, with clearer Agents settings and activity indicators.",
+				"The Incidents dashboard distinguishes failed, denied, cancelled, and unknown tool outcomes.",
 			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Incident reports include a concise summary and a follow-up prompt grounded in the available evidence.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha Tickets suggestions reuse unchanged records and respond sooner while you type."),
 		).toBeInTheDocument()
 	})
 
@@ -74,11 +76,13 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.1.11 improves agent coordination, task goals, and the chat experience."),
+			screen.getByText(
+				"Alpha v3.1.12 improves incident investigations, tool outcome visibility, and ticket search.",
+			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
+				"Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
 			),
 		).toBeInTheDocument()
 	})

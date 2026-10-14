@@ -32,7 +32,7 @@ export async function searchTicketMentions(cwd: string, request: unknown): Promi
 	const { requestId, query } = parsed.data
 	try {
 		const store = await TicketStore.forWorkspace(cwd)
-		const { tickets } = await store.list({ query, offset: 0, limit: 50 })
+		const tickets = await store.search(query)
 		return { type: "ticketSearchResults", requestId, tickets }
 	} catch {
 		return { type: "ticketSearchResults", requestId, tickets: [], error: true }

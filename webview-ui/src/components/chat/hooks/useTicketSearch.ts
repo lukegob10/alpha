@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { ticketSearchResponseSchema, type TicketSearchResponse } from "@alpha-code/types"
+import { normalizeTicketReference, ticketSearchResponseSchema, type TicketSearchResponse } from "@alpha-code/types"
 import { ContextMenuOptionType, type ContextMenuQueryItem } from "../../../utils/context-mentions"
 import { vscode } from "../../../utils/vscode"
 
@@ -8,10 +8,10 @@ export function useTicketSearch(active: boolean, query: string, cwd: string): Co
 	const { t } = useTranslation("tickets")
 	const [response, setResponse] = useState<{ query: string; cwd: string; result: TicketSearchResponse }>()
 	useEffect(() => {
-		if (!active) return
+		if (!active || query.length > 200) return
 		const requestId = `tickets-${crypto.randomUUID()}`
 		const receive = (event: MessageEvent) => {
-			if (event.data?.type !== "ticketSearchResults") return
+			if (event.data?.type !== "ticketSearchResults" || event.data.ticketSearch?.requestId !== requestId) return
 			const parsed = ticketSearchResponseSchema.safeParse(event.data.ticketSearch)
 			if (parsed.success && parsed.data.requestId === requestId) {
 				clearTimeout(timeout)
@@ -20,9 +20,10 @@ export function useTicketSearch(active: boolean, query: string, cwd: string): Co
 		}
 		setResponse(undefined)
 		window.addEventListener("message", receive)
-		const timer = setTimeout(() => {
-			if (query.length <= 200) vscode.postMessage({ type: "searchTickets", query, requestId })
-		}, 200)
+		const timer = setTimeout(
+			() => vscode.postMessage({ type: "searchTickets", query, requestId }),
+			query === "" || normalizeTicketReference(query) ? 0 : 100,
+		)
 		const timeout = setTimeout(
 			() =>
 				setResponse({

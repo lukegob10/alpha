@@ -1,0 +1,10 @@
+{
+  "sourceBytes": 703,
+  "sourceSha256": "c945df21a0cc7f2a0e1da95fde237d53b2856fa1c5e47896b8ce90bec702ad07",
+  "counts": {
+    "agents": 1,
+    "tombstones": 0,
+    "mailbox": 0,
+    "verificationObligations": 0
+  }
+}

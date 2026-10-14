@@ -482,11 +482,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves agent coordination, task goals, and the chat experience.",
-			"agentCommunication": "Sub-agents deliver results automatically and retain messages across follow-up turns and recovery.",
-			"persistentGoals": "Saved task goals keep progress and usage accounting connected across delegated work.",
-			"questionFlow": "Answer questions one at a time, revisit your choices, and review completed answers in the chat.",
-			"steeringAndSettings": "Choose automatic steering or queued messages, with clearer Agents settings and activity indicators."
+			"welcome": "Alpha v{{version}} improves incident investigations, tool outcome visibility, and ticket search.",
+			"diagnosticEvidence": "Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
+			"toolOutcomes": "The Incidents dashboard distinguishes failed, denied, cancelled, and unknown tool outcomes.",
+			"incidentReports": "Incident reports include a concise summary and a follow-up prompt grounded in the available evidence.",
+			"ticketSearch": "Alpha Tickets suggestions reuse unchanged records and respond sooner while you type."
 		}
 	},
 	"crossTasks": {

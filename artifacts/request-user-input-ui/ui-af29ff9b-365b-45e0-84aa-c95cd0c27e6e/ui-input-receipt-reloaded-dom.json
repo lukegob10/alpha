@@ -1,0 +1,46 @@
+{
+  "theme": "vscode-light",
+  "width": 299,
+  "forms": 0,
+  "receipts": 0,
+  "active": "<body role=\"document\" class=\"vscode-light\" data-vscode-theme-kind=\"vscode-light\" data-vscode-theme-name=\"Light Modern\" data-vscode-theme-id=\"Light Modern\" style=\"--background: #ffffff; --contrast-active-border: transparent; --focus-border: #005fb8; --font-family: &quot;Segoe WPC&quot;, &quot;Segoe UI&quot;, sans-serif; --font-weight: normal; --foreground: #3b3b3b; --scrollbar-slider-background: rgba(100, 100, 100, 0.4); --scrollbar-slider-hover-background: rgba(100, 100, 100, 0.7); --scrollbar-slider-active-background: rgba(0, 0, 0, 0.6); --badge-background: #cccccc; --badge-foreground: #3b3b3b; --button-border: rgba(0, 0, 0, 0.1); --button-primary-background: #005fb8; --button-primary-hover-background: #0258a8; --button-secondary-background: #e5e5e5; --button-secondary-foreground: #3b3b3b; --button-secondary-hover-background: #cccccc; --checkbox-background: #f8f8f8; --checkbox-border: #cecece; --checkbox-foreground: #3b3b3b; --list-active-selection-background: #e8e8e8; --list-active-selection-foreground: #000000; --list-hover-background: #f2f2f2; --divider-background: rgba(59, 59, 59, 0.2); --dropdown-background: #ffffff; --dropdown-border: #cecece; --dropdown-foreground: #3b3b3b; --input-background: #ffffff; --input-foreground: #3b3b3b; --input-placeholder-foreground: #767676; --link-active-foreground: #005fb8; --link-foreground: #005fb8; --progress-background: #005fb8; --panel-tab-active-border: #005fb8; --panel-tab-active-foreground: #3b3b3b; --panel-tab-foreground: #3b3b3b; --panel-view-background: #f8f8f8; --panel-view-border: #e5e5e5;\">\n            <noscript>You need to enable JavaScript to run this app.</noscript>\n            <div id=\"root\"></div>\n            <script nonce=\"VvolrIBgSYec1dvJDfBsUev3dZsQoraz\" type=\"module\" src=\"https://file%2B.vscode-resource.vscode-cdn.net/f%3A/roo-fork/Alpha-Code/src/webview-ui/build/assets/index.js\"></script>\n          \n        \n      </body>",
+  "captureBounds": {
+    "top": 268.109375,
+    "bottom": 572.765625,
+    "height": 304.65625,
+    "viewportTop": 188.28125,
+    "viewportBottom": 626,
+    "viewportHeight": 437.71875,
+    "scrollTop": 211,
+    "settled": true,
+    "observations": [
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 626,
+        "viewportHeight": 437.71875,
+        "scrollTop": 211
+      },
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 626,
+        "viewportHeight": 437.71875,
+        "scrollTop": 211
+      },
+      {
+        "top": 268.109375,
+        "bottom": 572.765625,
+        "height": 304.65625,
+        "viewportTop": 188.28125,
+        "viewportBottom": 626,
+        "viewportHeight": 437.71875,
+        "scrollTop": 211
+      }
+    ]
+  }
+}

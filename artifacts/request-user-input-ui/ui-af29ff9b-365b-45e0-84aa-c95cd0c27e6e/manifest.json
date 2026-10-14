@@ -1,0 +1,65 @@
+{
+  "kind": "alpha-vscode-e2e-run-evidence",
+  "version": 1,
+  "runId": "ui-af29ff9b-365b-45e0-84aa-c95cd0c27e6e",
+  "finalized": true,
+  "metadata": {
+    "scenarioId": "extension-suite",
+    "hostVersion": "1.125.0",
+    "requestedHostVersion": "1.125.0",
+    "provider": "scripted",
+    "taskIds": [],
+    "startedAt": "2026-10-13T04:44:06.992Z",
+    "finishedAt": "2026-10-13T04:44:19.566Z",
+    "outcome": "passed"
+  },
+  "summary": {
+    "category": "none",
+    "code": "OK"
+  },
+  "captureComplete": true,
+  "warnings": [],
+  "artifacts": [
+    {
+      "path": "repository-before.json",
+      "bytes": 209,
+      "sha256": "12b5b96f289092e1bda58ee1d29eba6a13a710b9cbeacfbeeacc0fef0e3c84c2"
+    },
+    {
+      "path": "repository-after.json",
+      "bytes": 209,
+      "sha256": "12b5b96f289092e1bda58ee1d29eba6a13a710b9cbeacfbeeacc0fef0e3c84c2"
+    },
+    {
+      "path": "agent-control-summary.json",
+      "bytes": 218,
+      "sha256": "c7841520166768fd1ff7bbd4edc1820e13996ef7ff11393fe7fef2004249cfe8"
+    },
+    {
+      "path": "storage-lock.json",
+      "bytes": 23,
+      "sha256": "0744ff7908d868f9d73055c7e45514b746d8a8c66d8ea8dfa492c76566552a78"
+    },
+    {
+      "path": "logs-index.json",
+      "bytes": 4147,
+      "sha256": "a2ffc7fc5bb36c4ab26e82f13e12152a96830b6984501a1123a308f28cd7b2e0"
+    }
+  ],
+  "retainedSources": [
+    {
+      "kind": "workspace",
+      "path": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-WgHWsr\\workspace"
+    },
+    {
+      "kind": "storage",
+      "path": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-WgHWsr\\profile\\1.125.0\\user-data\\User\\globalStorage\\alphainc.alpha"
+    },
+    {
+      "kind": "logs",
+      "path": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-WgHWsr\\profile\\1.125.0\\user-data\\logs"
+    }
+  ],
+  "taskEvidence": [],
+  "bundleSha256": "8efd2035617c8d4a621ca54cbe892ea5cd4f948f5c6a504af34e1b72e7c0a050"
+}

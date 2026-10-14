@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "runId": "ui-1da6dad6-4f7d-4c5b-b109-ba5a004e0524",
+  "requestedHostVersion": "1.125.0",
+  "providerMode": "scripted",
+  "launchKind": "extension-test",
+  "testFile": "request-user-input-ui.test",
+  "requireAllTests": true,
+  "setup": false
+}

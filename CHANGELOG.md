@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.12
+
+### Patch Changes
+
+- Preserve tool outcomes, effect boundaries, approval identities, and hashed pending receipt reservations in diagnostic evidence, with explicit truncation and incomplete-history reporting.
+- Distinguish failed, denied, cancelled, and unknown tool outcomes in the Incidents dashboard, and exclude incomplete or indeterminate turns from the positive filter.
+- Observe failures in ordinary incident investigations and request a concise incident summary with an evidence-grounded follow-up prompt.
+- Reuse unchanged Alpha Tickets search records, improve suggestion ranking, and reduce the chat composer's search delay while preserving bounded caching, cancellation, and external-edit detection.
+- Update the extension version and in-app release announcement together for Alpha 3.1.12.
+
 ## 3.1.11
 
 ### Patch Changes

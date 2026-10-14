@@ -23,7 +23,12 @@ type TurnFilter = "all" | "positive" | "errors"
 type TurnStatus = IncidentDashboardTurn["status"]
 
 function isPositiveTurn(turn: IncidentDashboardTurn) {
-	return turn.status === "completed" && turn.toolErrors === 0
+	return (
+		turn.status === "completed" &&
+		turn.toolErrors === 0 &&
+		!turn.toolOutcomes?.indeterminate &&
+		turn.evidenceStatus !== "incomplete"
+	)
 }
 
 function isErrorTurn(turn: IncidentDashboardTurn) {
@@ -499,6 +504,9 @@ export default function IncidentsView() {
 									</p>
 								) : turnDetail ? (
 									<>
+										{turnDetail.turn.toolOutcomes && (
+											<p>{t("toolOutcomes", turnDetail.turn.toolOutcomes)}</p>
+										)}
 										{turnDetail.turn.evidenceStatus && (
 											<p className="incident-turn-detail-evidence">
 												{evidenceStatusLabel(turnDetail.turn.evidenceStatus)}

@@ -117,6 +117,17 @@ export const incidentDashboardTurnSchema = z
 		steps: z.number().int().nonnegative().max(256),
 		toolCalls: z.number().int().nonnegative().max(256),
 		toolErrors: z.number().int().nonnegative().max(256),
+		/** Observed terminal outcomes; optional for older extension messages. Counts are bounded, not totals. */
+		toolOutcomes: z
+			.object({
+				success: z.number().int().nonnegative().max(256),
+				error: z.number().int().nonnegative().max(256),
+				denied: z.number().int().nonnegative().max(256),
+				cancelled: z.number().int().nonnegative().max(256),
+				indeterminate: z.number().int().nonnegative().max(256),
+			})
+			.strict()
+			.optional(),
 		evidenceStatus: incidentDashboardEvidenceStatusSchema.optional(),
 	})
 	.strict()
@@ -129,6 +140,9 @@ export const incidentDashboardTurnEventKindSchema = z.enum([
 	"tool_accepted",
 	"tool_succeeded",
 	"tool_failed",
+	"tool_denied",
+	"tool_cancelled",
+	"tool_indeterminate",
 	"approval_requested",
 	"approval_resolved",
 	"turn_completed",

@@ -1,0 +1,33 @@
+×
+Help Improve Alpha
+Alpha collects error and usage data to help us fix bugs and improve the extension. This telemetry does not collect code, prompts or personal information. You can turn this off in settings.
+Context usage
+0%
+Choose the first version, Oracle setup, and initial concurrency workload before continuing.
+Working
+1
+
+Question request closed
+
+Your answers
+Answers sent
+App type
+What should the first version do?
+API + CRUD (Recommended)
+Oracle
+What Oracle setup should it target?
+Oracle 23ai on a local Docker host; use the existing database.
+Workload
+What should the initial concurrency test look like?
+Small smoke test (Recommended)
+Worked for 1s
+PROPOSED PLAN
+
+The setup choices are recorded. I can continue using them.
+
+Implement plan
+(@ to add context, / for commands, hold shift to drag in files)
+Plan
+default
+Unavailable
+Ask
