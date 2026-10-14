@@ -16,8 +16,12 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("openai", () => ({
-	default: vi.fn(() => ({ chat: { completions: { create: mocks.create } } })),
-	AzureOpenAI: vi.fn(() => ({ chat: { completions: { create: mocks.create } } })),
+	default: vi.fn(function () {
+		return { chat: { completions: { create: mocks.create } } }
+	}),
+	AzureOpenAI: vi.fn(function () {
+		return { chat: { completions: { create: mocks.create } } }
+	}),
 }))
 
 vi.mock("../utils/helix-token-manager", () => ({

@@ -60,14 +60,14 @@
 		"@alpha-code/ipc": "workspace:^",
 		"@alpha-code/types": "workspace:^",
 		"cmd-ts": "^0.13.0",
-		"drizzle-orm": "^0.44.1",
+		"drizzle-orm": "^0.45.2",
 		"execa": "^9.6.0",
 		"p-map": "^7.0.3",
 		"p-queue": "^8.1.0",
 		"p-wait-for": "^5.0.2",
 		"postgres": "^3.4.7",
 		"redis": "^5.5.5",
-		"yaml": "2.8.1",
+		"yaml": "2.8.3",
 		"zod": "^3.25.61"
 	},
 	"devDependencies": {
@@ -76,6 +76,6 @@
 		"@types/node": "^24.1.0",
 		"drizzle-kit": "^0.31.1",
 		"tsx": "^4.22.0",
-		"vitest": "^3.2.3"
+		"vitest": "^4.1.11"
 	}
 }

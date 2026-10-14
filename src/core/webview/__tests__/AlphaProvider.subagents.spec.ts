@@ -187,7 +187,7 @@ const makeParent = () => ({
 	getSubagentFileWriteScope: vi.fn(() => []),
 	emit: vi.fn(),
 	say: vi.fn(async () => undefined),
-	upsertSubagentGroup: vi.fn(async () => undefined),
+	upsertSubagentGroup: vi.fn<(group: SubagentGroupState) => Promise<void>>(async () => undefined),
 })
 
 /** Use the real Task delivery fence while isolating transcript storage from the extension host. */

@@ -43,8 +43,9 @@ interface ScriptState {
 const scripts = new WeakMap<object, ScriptState>()
 
 function nodeReadCommand(file: string): string {
-	const commandPath = file.replace(/\\/g, "/").replace(/'/g, "\\'")
-	return `node -e "process.stdout.write(require('fs').readFileSync('${commandPath}','utf8'))"`
+	// Only a fixed base64 alphabet enters the shell/JavaScript source; paths remain UTF-8 data.
+	const encodedPath = Buffer.from(file, "utf8").toString("base64")
+	return `node -e "process.stdout.write(require('fs').readFileSync(Buffer.from('${encodedPath}','base64').toString('utf8'),'utf8'))"`
 }
 
 class DocumentScriptedAI {

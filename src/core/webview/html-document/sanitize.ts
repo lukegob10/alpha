@@ -1,17 +1,15 @@
 import { load } from "cheerio"
 import { posix } from "node:path"
-import { HTML_DOCUMENT_LIMITS, HTML_DOCUMENT_VERSION, type HtmlDocumentReference } from "@alpha-code/types"
+import {
+	HTML_DOCUMENT_LIMITS,
+	HTML_DOCUMENT_VERSION,
+	HTML_DOCUMENT_TAGS,
+	HTML_DOCUMENT_ATTRIBUTES,
+	type HtmlDocumentReference,
+} from "@alpha-code/types"
 
-const tags = new Set(
-	"main article section header footer nav aside h1 h2 h3 h4 h5 h6 p div span strong em b i u s small mark sub sup abbr time blockquote pre code kbd samp ul ol li dl dt dd table caption colgroup col thead tbody tfoot tr th td details summary a hr br label input figure figcaption img".split(
-		" ",
-	),
-)
-const attributes = new Set(
-	"id class title role aria-label aria-labelledby aria-describedby aria-hidden for scope colspan rowspan datetime open data-alpha-kit data-severity data-alpha-table data-alpha-filter data-sort data-sort-value data-alpha-chart data-chart-type data-alpha-chart-data data-unit data-value data-alpha-tabs data-tab-label data-alpha-toc data-alpha-diagram".split(
-		" ",
-	),
-)
+const tags = new Set(HTML_DOCUMENT_TAGS)
+const attributes = new Set(HTML_DOCUMENT_ATTRIBUTES)
 const forbidden =
 	"script,style,iframe,frame,frameset,object,embed,svg,math,template,form,link,meta,base,audio,video,canvas,source,textarea,select,button"
 export type DocumentImage = { path: string; alt: string }

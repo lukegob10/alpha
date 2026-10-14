@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -54,11 +55,11 @@ export async function exerciseRenderedReasoning(
 	}
 	const focus = async (selector: string) => {
 		await check(
-			`(()=>{const e=d.querySelector(${JSON.stringify(selector)});return !!e&&!e.disabled&&e.getBoundingClientRect().width>0})()`,
+			`(()=>{const e=d.querySelector(${javascriptLiteral(selector)});return !!e&&!e.disabled&&e.getBoundingClientRect().width>0})()`,
 		)
 		assert.equal(
 			await evaluate(
-				`(()=>{const e=d.querySelector(${JSON.stringify(selector)});e.focus();return d.activeElement===e})()`,
+				`(()=>{const e=d.querySelector(${javascriptLiteral(selector)});e.focus();return d.activeElement===e})()`,
 			),
 			true,
 			`Could not focus ${selector}`,
@@ -157,7 +158,9 @@ export async function exerciseRenderedReasoning(
 						assert.match(await evaluate<string>(`${animation}.maskComposite`), /^exclude(?:,\s*exclude)*$/)
 						assert.equal(await evaluate(`${animation}.boxShadow`), "none")
 						const angle = await evaluate<string>(`${animation}.getPropertyValue('--activity-edge-angle')`)
-						await check(`${animation}.getPropertyValue('--activity-edge-angle')!==${JSON.stringify(angle)}`)
+						await check(
+							`${animation}.getPropertyValue('--activity-edge-angle')!==${javascriptLiteral(angle)}`,
+						)
 						await capture(`${stage}-collapsed`)
 						await media("reduce")
 						await check(`${animation}.animationName==='none'`)
@@ -215,7 +218,7 @@ export async function exerciseRenderedReasoning(
 							)
 							await capture(`${stage}-expanded`)
 						} finally {
-							await evaluate(`${surface}.style.maxWidth=${JSON.stringify(originalWidth)}`)
+							await evaluate(`${surface}.style.maxWidth=${javascriptLiteral(originalWidth)}`)
 						}
 						await focus(reasoning)
 						await key("Enter", "Enter", 13)
@@ -282,7 +285,7 @@ export async function exerciseRenderedReasoning(
 					)
 					const submissionLabel =
 						stage === "hotkeys-editor-auto-steer" ? "Press Enter to send and steer" : "Press Enter to queue"
-					await check(`!!d.querySelector('button[aria-label=${JSON.stringify(submissionLabel)}]')`)
+					await check(`!!d.querySelector('button[aria-label=${javascriptLiteral(submissionLabel)}]')`)
 					if (stage === "hotkeys-steer") await key("s", "KeyS", 83, 3)
 					else await key("Enter", "Enter", 13)
 					await check("d.querySelector('textarea').value===''")
@@ -291,7 +294,7 @@ export async function exerciseRenderedReasoning(
 					await key(previous ? "PageUp" : "PageDown", previous ? "PageUp" : "PageDown", previous ? 33 : 34, 3)
 					const prompt = previous ? "Complete the first fixture turn." : "Windows steering fixture"
 					await check(
-						`d.querySelector('[data-testid=chat-view]')?.innerText.includes(${JSON.stringify(prompt)})`,
+						`d.querySelector('[data-testid=chat-view]')?.innerText.includes(${javascriptLiteral(prompt)})`,
 					)
 				} else if (stage === "hotkeys-attention") {
 					await key("Home", "Home", 36, 3)
@@ -408,7 +411,7 @@ export async function exerciseRenderedReasoning(
 			} else {
 				const expected = stage === "reasoning-fallback" ? "Unavailable" : "High"
 				await check(
-					`d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')===${JSON.stringify(`Reasoning: ${expected}`)}`,
+					`d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')===${javascriptLiteral(`Reasoning: ${expected}`)}`,
 				)
 				await key("Enter", "Enter", 13)
 				await check("!!d.querySelector('[role=dialog]')")

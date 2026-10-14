@@ -16,7 +16,9 @@ import {
 
 vi.mock("vscode", async (importOriginal) => ({
 	...(await importOriginal<typeof import("vscode")>()),
-	RelativePattern: vi.fn().mockImplementation((base, pattern) => ({ base, pattern })),
+	RelativePattern: vi.fn().mockImplementation(function (base, pattern) {
+		return { base, pattern }
+	}),
 }))
 
 describe("Ripgrep line truncation", () => {
@@ -68,7 +70,7 @@ describe("Ripgrep line truncation", () => {
 
 describe("Ripgrep binary resolution", () => {
 	let tempDir: string
-	let logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> }
+	let logger: { info: import("vitest").Mock; warn: import("vitest").Mock }
 
 	beforeEach(async () => {
 		clearRipgrepPathCache()

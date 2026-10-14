@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -41,7 +42,7 @@ export async function exerciseRenderedComposer(
 	const text = Array.from({ length: 45 }, (_, i) => `@/fixture-${i}.ts line ${i}`).join("\n")
 	await cdp.request("Input.insertText", { text }, sessionId)
 	await waitUntil(
-		() => evaluate<boolean>(`d.querySelector('.new-task-composer textarea').value===${JSON.stringify(text)}`),
+		() => evaluate<boolean>(`d.querySelector('.new-task-composer textarea').value===${javascriptLiteral(text)}`),
 		Date.now() + 10_000,
 		"composer_input_timeout",
 	)

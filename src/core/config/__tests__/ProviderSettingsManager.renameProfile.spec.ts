@@ -40,7 +40,7 @@ function deferred() {
 
 describe("ProviderSettingsManager persisted profile rename", () => {
 	let stored: string
-	let secrets: { get: ReturnType<typeof vi.fn>; store: ReturnType<typeof vi.fn> }
+	let secrets: { get: import("vitest").Mock; store: import("vitest").Mock }
 	let manager: ProviderSettingsManager
 
 	beforeEach(async () => {

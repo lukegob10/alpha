@@ -14,7 +14,7 @@ vi.mock("@/utils/highlight", () => ({
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 
-const mockUseExtensionState = useExtensionState as ReturnType<typeof vi.fn>
+const mockUseExtensionState = useExtensionState as import("vitest").Mock
 
 const mockTaskHistory: HistoryItem[] = [
 	{

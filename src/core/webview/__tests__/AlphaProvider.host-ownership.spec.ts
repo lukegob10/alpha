@@ -402,7 +402,7 @@ describe("AlphaProvider host ownership", () => {
 	it("registers a restored task before its constructor can start a history loop", async () => {
 		const provider = makeProvider(storage())
 		const task = makeTask(history.id)
-		vi.mocked(Task).mockImplementationOnce((options) => {
+		vi.mocked(Task).mockImplementationOnce(function (options) {
 			options.onCreated?.(task)
 			expect(provider.getLiveTask(history.id)).toBe(task)
 			expect(provider.getTaskOwner(history.id)).toBe(provider)

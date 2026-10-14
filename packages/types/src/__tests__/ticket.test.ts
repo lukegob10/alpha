@@ -100,6 +100,11 @@ describe("ticket wire contracts", () => {
 		)
 		expect(createTicketSchema.safeParse({ name: "Test", reference: "PM-01" }).success).toBe(false)
 	})
+	it("bounds direct reference normalization before matching adversarial whitespace", () => {
+		expect(normalizeTicketReference(`PM${"\t".repeat(81)}1`)).toBeUndefined()
+		expect(normalizeTicketReference(`PM${" ".repeat(100000)}!`)).toBeUndefined()
+		expect(normalizeTicketReference("  PM number 42  ")).toBe("PM-42")
+	})
 	it("accepts only bounded, known ticket activities", () => {
 		expect(ticketActivitySchema.safeParse({ operation: "create", state: "success", name: "Ticket" }).success).toBe(
 			true,

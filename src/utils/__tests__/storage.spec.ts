@@ -47,7 +47,7 @@ describe("getStorageBasePath - customStoragePath", () => {
 
 		await (fsPromises as any).mkdir(customPath, { recursive: true })
 
-		const accessMock = (fsPromises as any).access as ReturnType<typeof vi.fn>
+		const accessMock = (fsPromises as any).access as import("vitest").Mock
 		accessMock.mockImplementationOnce(async (p: string) => {
 			if (p === customPath) {
 				const err: any = new Error("EACCES: permission denied")
@@ -91,7 +91,7 @@ describe("getStorageBasePath - customStoragePath", () => {
 		const fsPromises = await import("fs/promises")
 		const { getStorageBasePath } = await import("../storage")
 
-		const mkdirMock = (fsPromises as any).mkdir as ReturnType<typeof vi.fn>
+		const mkdirMock = (fsPromises as any).mkdir as import("vitest").Mock
 		mkdirMock.mockImplementationOnce(async (p: string) => {
 			if (p === customPath) {
 				const err: any = new Error("EACCES: permission denied")
@@ -136,7 +136,7 @@ describe("getStorageBasePath - customStoragePath", () => {
 		const fsPromises = await import("fs/promises")
 		const { getStorageBasePath } = await import("../storage")
 
-		const accessMock = (fsPromises as any).access as ReturnType<typeof vi.fn>
+		const accessMock = (fsPromises as any).access as import("vitest").Mock
 		const constants = (fsPromises as any).constants
 		accessMock.mockImplementationOnce(async (p: string, mode?: number) => {
 			// Simulate readable (R_OK) but not writable/executable (W_OK | X_OK)

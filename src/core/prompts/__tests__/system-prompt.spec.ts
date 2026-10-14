@@ -34,7 +34,9 @@ vi.mock("os", () => ({
 }))
 
 vi.mock("os-name", () => ({
-	default: vi.fn(() => "Linux"),
+	default: vi.fn(function () {
+		return "Linux"
+	}),
 }))
 
 vi.mock("fs/promises")
@@ -155,11 +157,13 @@ vi.mock("vscode", () => ({
 	window: {
 		activeTextEditor: undefined,
 	},
-	EventEmitter: vi.fn().mockImplementation(() => ({
-		event: vi.fn(),
-		fire: vi.fn(),
-		dispose: vi.fn(),
-	})),
+	EventEmitter: vi.fn().mockImplementation(function () {
+		return {
+			event: vi.fn(),
+			fire: vi.fn(),
+			dispose: vi.fn(),
+		}
+	}),
 }))
 
 vi.mock("../../../utils/shell", () => ({

@@ -72,7 +72,9 @@ vi.mock("../../core/agent/AgentControlStore", () => ({
 	AgentControlStore: { shutdownGlobalStores: mocks.shutdownGlobalStores },
 }))
 vi.mock("../../core/webview/AlphaProvider", () => {
-	const AlphaProvider = vi.fn(() => mocks.provider)
+	const AlphaProvider = vi.fn(function () {
+		return mocks.provider
+	})
 	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider" })
 	return { AlphaProvider }
 })
@@ -87,10 +89,14 @@ vi.mock("../../services/code-index/manager", () => ({
 	CodeIndexManager: { getInstance: vi.fn() },
 }))
 vi.mock("../../services/scheduled-tasks", () => ({
-	ScheduledTaskService: vi.fn(() => ({ initialize: vi.fn().mockResolvedValue(undefined) })),
+	ScheduledTaskService: vi.fn(function () {
+		return { initialize: vi.fn().mockResolvedValue(undefined) }
+	}),
 }))
 vi.mock("../../services/tickets/TicketPanel", () => ({
-	TicketPanel: vi.fn(() => ({ dispose: vi.fn() })),
+	TicketPanel: vi.fn(function () {
+		return { dispose: vi.fn() }
+	}),
 }))
 vi.mock("../../utils/migrateSettings", () => ({ migrateSettings: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("../../utils/autoImportSettings", () => ({ autoImportSettings: vi.fn().mockResolvedValue(undefined) }))

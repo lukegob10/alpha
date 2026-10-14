@@ -49,23 +49,23 @@ type PresentationTask = {
 	didRejectTool: boolean
 	consecutiveMistakeCount: number
 	api: {
-		getModel: ReturnType<typeof vi.fn>
+		getModel: import("vitest").Mock
 	}
 	providerRef: {
-		deref: ReturnType<typeof vi.fn>
+		deref: import("vitest").Mock
 	}
-	getTaskMode: ReturnType<typeof vi.fn>
-	getTaskToolDenialReason: ReturnType<typeof vi.fn>
-	recordToolUsage: ReturnType<typeof vi.fn>
-	recordToolError: ReturnType<typeof vi.fn>
+	getTaskMode: import("vitest").Mock
+	getTaskToolDenialReason: import("vitest").Mock
+	recordToolUsage: import("vitest").Mock
+	recordToolError: import("vitest").Mock
 	toolRepetitionDetector: {
-		check: ReturnType<typeof vi.fn>
+		check: import("vitest").Mock
 	}
 	say: ReturnType<typeof vi.fn<SayImplementation>>
-	ask: ReturnType<typeof vi.fn>
-	pushToolResultToUserContent: ReturnType<typeof vi.fn>
-	checkpointSave: ReturnType<typeof vi.fn>
-	getTaskCancellationSignal: ReturnType<typeof vi.fn>
+	ask: import("vitest").Mock
+	pushToolResultToUserContent: import("vitest").Mock
+	checkpointSave: import("vitest").Mock
+	getTaskCancellationSignal: import("vitest").Mock
 	isStreamingPreviewEpochCurrent: ReturnType<typeof vi.fn<(epoch: number) => boolean>>
 }
 

@@ -47,7 +47,7 @@ vi.mock("vscode", () => ({
 }))
 
 vi.mock("../../task/Task", () => ({
-	Task: vi.fn().mockImplementation((options: Record<string, any>) => {
+	Task: vi.fn().mockImplementation(function (options: Record<string, any>) {
 		providerTestState.constructedTaskOptions.push(options)
 		const task = {
 			taskId: options.historyItem?.id ?? options.taskId ?? `created-${++providerTestState.nextTaskId}`,
@@ -102,10 +102,14 @@ vi.mock("../../../shared/modes", () => ({
 vi.mock("../../prompts/sections/custom-instructions")
 vi.mock("../../prompts/system", () => ({ SYSTEM_PROMPT: vi.fn(), codeMode: "code" }))
 vi.mock("../../diff/strategies/multi-search-replace", () => ({
-	MultiSearchReplaceDiffStrategy: vi.fn().mockImplementation(() => ({ getName: () => "test", applyDiff: vi.fn() })),
+	MultiSearchReplaceDiffStrategy: vi.fn().mockImplementation(function () {
+		return { getName: () => "test", applyDiff: vi.fn() }
+	}),
 }))
 vi.mock("../../../integrations/workspace/WorkspaceTracker", () => ({
-	default: vi.fn().mockImplementation(() => ({ initializeFilePaths: vi.fn(), dispose: vi.fn() })),
+	default: vi.fn().mockImplementation(function () {
+		return { initializeFilePaths: vi.fn(), dispose: vi.fn() }
+	}),
 }))
 vi.mock("../../../api/providers/fetchers/modelCache", () => ({ getModels: vi.fn(), flushModels: vi.fn() }))
 vi.mock("../../../integrations/misc/extract-text", () => ({ extractTextFromFile: vi.fn() }))
@@ -123,10 +127,10 @@ type FakeTask = {
 	abandoned: boolean
 	reasoningPreference: TaskReasoningPreference
 	apiConfiguration: ProviderSettings
-	updateReasoningPreference: ReturnType<typeof vi.fn>
-	getReasoningState: ReturnType<typeof vi.fn>
-	setTaskApprovalMode: ReturnType<typeof vi.fn>
-	getTaskApprovalMode: ReturnType<typeof vi.fn>
+	updateReasoningPreference: import("vitest").Mock
+	getReasoningState: import("vitest").Mock
+	setTaskApprovalMode: import("vitest").Mock
+	getTaskApprovalMode: import("vitest").Mock
 }
 
 const baseConfiguration: ProviderSettings = {

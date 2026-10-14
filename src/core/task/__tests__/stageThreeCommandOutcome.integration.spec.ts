@@ -278,7 +278,7 @@ class ControlledProcess extends EventEmitter {
 type ControlledTerminal = Omit<AlphaTerminal, "runCommand"> & {
 	processForTest?: ControlledProcess
 	runStarted: CompletionGate
-	runCommand: ReturnType<typeof vi.fn>
+	runCommand: import("vitest").Mock
 }
 
 function controlledTerminal(
@@ -320,14 +320,14 @@ type TaskHarness = {
 	workspacePath: string
 	provider: {
 		context: { globalStorageUri: { fsPath: string } }
-		getState: ReturnType<typeof vi.fn>
-		postMessageToWebview: ReturnType<typeof vi.fn>
-		runWorkspaceMutation: ReturnType<typeof vi.fn>
-		recordParentVerificationEvidence: ReturnType<typeof vi.fn>
-		reservePrimaryMutation: ReturnType<typeof vi.fn>
-		releasePrimaryMutation: ReturnType<typeof vi.fn>
-		recordPrimaryMutation: ReturnType<typeof vi.fn>
-		captureCommandVerification: ReturnType<typeof vi.fn>
+		getState: import("vitest").Mock
+		postMessageToWebview: import("vitest").Mock
+		runWorkspaceMutation: import("vitest").Mock
+		recordParentVerificationEvidence: import("vitest").Mock
+		reservePrimaryMutation: import("vitest").Mock
+		releasePrimaryMutation: import("vitest").Mock
+		recordPrimaryMutation: import("vitest").Mock
+		captureCommandVerification: import("vitest").Mock
 	}
 	toolResults: () => ToolResultBlock[]
 	cleanup: () => Promise<void>

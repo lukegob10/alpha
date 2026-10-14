@@ -14,12 +14,16 @@ const { geminiStream, geminiResponse, claudeCreate } = vi.hoisted(() => ({
 
 vi.mock("@google/genai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@google/genai")>()),
-	GoogleGenAI: vi.fn(() => ({
-		models: { generateContentStream: geminiStream, generateContent: geminiResponse },
-	})),
+	GoogleGenAI: vi.fn(function () {
+		return {
+			models: { generateContentStream: geminiStream, generateContent: geminiResponse },
+		}
+	}),
 }))
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
-	AnthropicVertex: vi.fn(() => ({ messages: { create: claudeCreate } })),
+	AnthropicVertex: vi.fn(function () {
+		return { messages: { create: claudeCreate } }
+	}),
 }))
 
 const messages: Anthropic.Messages.MessageParam[] = [{ role: "user", content: "Inspect the project" }]

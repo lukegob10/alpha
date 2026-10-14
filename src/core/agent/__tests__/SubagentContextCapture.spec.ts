@@ -1172,7 +1172,8 @@ describe("sub-agent context capture", () => {
 			urlPassword: "url-password-123",
 			privateKey: "private-key-body-123456",
 			basic: "dXNlcjpiYXNpYy1zZWNyZXQtMTIzNDU2",
-			google: "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
+			// Synthetic provider-shaped data, never an issued credential.
+			google: ["AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789"].join(""),
 			jsonApiKey: "json-api-key-value-123456",
 		}
 		const result = captureSubagentContext({

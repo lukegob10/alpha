@@ -1,5 +1,6 @@
 import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
 import { TicketPanel } from "./services/tickets/TicketPanel"
+import { TicketStore } from "./services/tickets/TicketStore"
 import { IncidentPanel } from "./core/webview/IncidentPanel"
 import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
@@ -175,6 +176,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	const incidentPanel = new IncidentPanel(context, provider)
 	context.subscriptions.push(
 		ticketPanel,
+		{ dispose: () => TicketStore.disposeSearchCaches() },
 		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
 		incidentPanel,
 		vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()),

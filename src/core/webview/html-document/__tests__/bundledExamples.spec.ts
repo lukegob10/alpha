@@ -3,6 +3,7 @@ import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { load } from "cheerio"
+import { HTML_DOCUMENT_TAGS, HTML_DOCUMENT_RENDER_ATTRIBUTES, HTML_DOCUMENT_LIMITS } from "@alpha-code/types"
 
 import { sanitizeDocument } from "../sanitize"
 
@@ -17,6 +18,9 @@ const { JSDOM } = createRequire(path.join(repository, "webview-ui/package.json")
 		window: Window & typeof globalThis & { AlphaDocumentKit: { mount: (root: Element) => () => void } }
 	}
 }
+const createDOMPurify = createRequire(path.join(repository, "webview-ui/package.json"))("dompurify") as (
+	window: Window & typeof globalThis,
+) => unknown
 const kitScript = readFileSync(path.join(kitDirectory, "kit.js"), "utf8")
 const viewerScript = readFileSync(path.join(repository, "webview-ui/public/html-document/viewer.js"), "utf8")
 const examples = ["review", "spec", "report"] as const
@@ -34,11 +38,20 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 			const identity = { documentId: target.uri, token: "a".repeat(48) }
 			const api = { getState: vi.fn(), setState: vi.fn(), postMessage: vi.fn() }
 			Object.assign(window, {
+				DOMPurify: createDOMPurify(window),
 				acquireVsCodeApi: () => api,
 				requestAnimationFrame: (callback: () => void) => callback(),
 				scrollTo: vi.fn(),
 			})
-			window.document.body.dataset.viewerConfig = JSON.stringify({ target, ...identity })
+			window.document.body.dataset.viewerConfig = JSON.stringify({
+				target,
+				...identity,
+				sanitizer: {
+					tags: HTML_DOCUMENT_TAGS,
+					attributes: HTML_DOCUMENT_RENDER_ATTRIBUTES,
+					maxHtmlLength: HTML_DOCUMENT_LIMITS.renderBytes,
+				},
+			})
 			window.eval(kitScript)
 			window.eval(viewerScript)
 			expect(api.postMessage).toHaveBeenCalledWith({ ...identity, action: "ready", revision: 0 })

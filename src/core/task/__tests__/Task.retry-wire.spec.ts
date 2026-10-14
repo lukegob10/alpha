@@ -894,8 +894,8 @@ describe("Task retained retry wire inputs", () => {
 			await lifecycleRelease
 			markLifecycleFinished()
 		})
-		const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as ReturnType<typeof vi.fn>
-		const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as ReturnType<typeof vi.fn>
+		const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as import("vitest").Mock
+		const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as import("vitest").Mock
 		const controller = new AbortController()
 		const pending = task
 			.attemptApiRequest(0, {
@@ -950,8 +950,8 @@ describe("Task retained retry wire inputs", () => {
 				markLifecycleStarted()
 				await lifecycleRelease
 			})
-			const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as ReturnType<typeof vi.fn>
-			const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as ReturnType<typeof vi.fn>
+			const publishPhase = Reflect.get(task, "publishCanonicalLifecyclePhase") as import("vitest").Mock
+			const appendEvent = Reflect.get(task, "appendAgentTurnEvent") as import("vitest").Mock
 			const pending = task
 				.attemptApiRequest(1, {
 					skipProviderRateLimit: true,

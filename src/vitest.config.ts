@@ -8,7 +8,7 @@ export default defineConfig({
 	test: {
 		globals: true,
 		// Bundled document examples belong to the shipped kit, not the extension unit suite.
-		exclude: [...configDefaults.exclude, "webview-ui/build/**"],
+		exclude: [...configDefaults.exclude, "**/{dist,out,build}/**"],
 		setupFiles: ["./vitest.setup.ts"],
 		watch: false,
 		reporters,

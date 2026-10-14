@@ -79,33 +79,35 @@ const {
 		code = "revision_conflict"
 		taskId = "test-id"
 	},
-	MockProviderTranscriptStore: vi.fn().mockImplementation((taskId: string) => ({
-		read: vi.fn().mockResolvedValue({
-			version: 1,
-			taskId,
-			revision: 0,
-			digest: "0".repeat(64),
-			writtenAt: 0,
-			messages: [],
-		}),
-		getLastCommitReceipt: vi.fn(),
-		commitAuthoritativeTranscript: vi.fn().mockResolvedValue({
-			version: 1,
-			taskId,
-			revision: 1,
-			digest: "0".repeat(64),
-			writtenAt: 1,
-		}),
-		verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
-		assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
-		repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({
-			version: 1,
-			taskId,
-			revision: 1,
-			digest: "1".repeat(64),
-			writtenAt: 1,
-		}),
-	})),
+	MockProviderTranscriptStore: vi.fn().mockImplementation(function (taskId: string) {
+		return {
+			read: vi.fn().mockResolvedValue({
+				version: 1,
+				taskId,
+				revision: 0,
+				digest: "0".repeat(64),
+				writtenAt: 0,
+				messages: [],
+			}),
+			getLastCommitReceipt: vi.fn(),
+			commitAuthoritativeTranscript: vi.fn().mockResolvedValue({
+				version: 1,
+				taskId,
+				revision: 1,
+				digest: "0".repeat(64),
+				writtenAt: 1,
+			}),
+			verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+			assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
+			repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({
+				version: 1,
+				taskId,
+				revision: 1,
+				digest: "1".repeat(64),
+				writtenAt: 1,
+			}),
+		}
+	}),
 }))
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
@@ -171,17 +173,19 @@ vi.mock("../../task-persistence", async (importOriginal) => ({
 	readApiMessages: mockReadApiMessages,
 	readTaskMessages: mockReadTaskMessages,
 	taskMetadata: mockTaskMetadata,
-	TaskHistoryStore: vi.fn().mockImplementation(() => ({
-		initialize: vi.fn().mockResolvedValue(undefined),
-		dispose: vi.fn(),
-		get: vi.fn(),
-		getAll: vi.fn().mockReturnValue([]),
-		upsert: vi.fn().mockResolvedValue([]),
-		delete: vi.fn().mockResolvedValue(undefined),
-		deleteMany: vi.fn().mockResolvedValue(undefined),
-		reconcile: vi.fn().mockResolvedValue(undefined),
-		initialized: Promise.resolve(),
-	})),
+	TaskHistoryStore: vi.fn().mockImplementation(function () {
+		return {
+			initialize: vi.fn().mockResolvedValue(undefined),
+			dispose: vi.fn(),
+			get: vi.fn(),
+			getAll: vi.fn().mockReturnValue([]),
+			upsert: vi.fn().mockResolvedValue([]),
+			delete: vi.fn().mockResolvedValue(undefined),
+			deleteMany: vi.fn().mockResolvedValue(undefined),
+			reconcile: vi.fn().mockResolvedValue(undefined),
+			initialized: Promise.resolve(),
+		}
+	}),
 }))
 
 // Task persistence tests replace the filesystem with narrow write/read mocks.
@@ -243,7 +247,9 @@ vi.mock("vscode", () => {
 			uriScheme: "vscode",
 			language: "en",
 		},
-		EventEmitter: vi.fn().mockImplementation(() => mockEventEmitter),
+		EventEmitter: vi.fn().mockImplementation(function () {
+			return mockEventEmitter
+		}),
 		Disposable: {
 			from: vi.fn(),
 		},
@@ -1168,7 +1174,7 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as {
-				commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
+				commitAuthoritativeTranscript: import("vitest").Mock
 			}
 
 			const promise = task.retrySaveApiConversationHistory()
@@ -1190,7 +1196,7 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as {
-				commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
+				commitAuthoritativeTranscript: import("vitest").Mock
 			}
 			store.commitAuthoritativeTranscript.mockRejectedValue(
 				new MockProviderTranscriptStoreError("sidecar unavailable"),

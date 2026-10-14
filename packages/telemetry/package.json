@@ -18,6 +18,6 @@
 		"@alpha-code/config-eslint": "workspace:^",
 		"@alpha-code/config-typescript": "workspace:^",
 		"@types/node": "^24.1.0",
-		"vitest": "^3.2.3"
+		"vitest": "^4.1.11"
 	}
 }

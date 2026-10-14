@@ -144,15 +144,15 @@ describe("Task dispose method", () => {
 	test("should prevent memory leaks by removing listeners before other cleanup", () => {
 		// Add multiple listeners of different types using type assertion for testing
 		const listeners = {
-			TaskStarted: vi.fn(() => {}),
-			TaskAborted: vi.fn(() => {}),
-			TaskIdle: vi.fn((taskId: string) => {}),
-			TaskActive: vi.fn((taskId: string) => {}),
-			TaskAskResponded: vi.fn(() => {}),
-			Message: vi.fn((data: { action: "created" | "updated"; message: any }) => {}),
-			TaskTokenUsageUpdated: vi.fn((taskId: string, tokenUsage: any) => {}),
-			TaskToolFailed: vi.fn((taskId: string, tool: any, error: string) => {}),
-			TaskUnpaused: vi.fn(() => {}),
+			TaskStarted: vi.fn(function () {}),
+			TaskAborted: vi.fn(function () {}),
+			TaskIdle: vi.fn(function (taskId: string) {}),
+			TaskActive: vi.fn(function (taskId: string) {}),
+			TaskAskResponded: vi.fn(function () {}),
+			Message: vi.fn(function (data: { action: "created" | "updated"; message: any }) {}),
+			TaskTokenUsageUpdated: vi.fn(function (taskId: string, tokenUsage: any) {}),
+			TaskToolFailed: vi.fn(function (taskId: string, tool: any, error: string) {}),
+			TaskUnpaused: vi.fn(function () {}),
 		}
 
 		// Add all listeners using type assertion to bypass strict typing for testing

@@ -252,7 +252,9 @@ vi.mock("vscode", () => {
 			uriScheme: "vscode",
 			language: "en",
 		},
-		EventEmitter: vi.fn().mockImplementation(() => mockEventEmitter),
+		EventEmitter: vi.fn().mockImplementation(function () {
+			return mockEventEmitter
+		}),
 		Disposable: {
 			from: vi.fn(),
 		},
@@ -1258,7 +1260,7 @@ describe("Alpha", () => {
 		describe("Subtask Rate Limiting", () => {
 			let mockProvider: any
 			let mockApiConfig: any
-			let mockDelay: ReturnType<typeof vi.fn>
+			let mockDelay: import("vitest").Mock
 
 			beforeEach(() => {
 				vi.clearAllMocks()
@@ -1298,7 +1300,7 @@ describe("Alpha", () => {
 				}
 
 				// Get the mocked delay function
-				mockDelay = delay as ReturnType<typeof vi.fn>
+				mockDelay = delay as import("vitest").Mock
 				mockDelay.mockClear()
 			})
 

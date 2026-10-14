@@ -9,7 +9,7 @@ vi.mock("../../prompts/responses", () => ({
 }))
 
 describe("accessMcpResourceTool", () => {
-	function setup(readResource?: ReturnType<typeof vi.fn>) {
+	function setup(readResource?: import("vitest").Mock) {
 		const setResultMetadata = vi.fn()
 		const handleError = vi.fn()
 		const pushToolResult = vi.fn()

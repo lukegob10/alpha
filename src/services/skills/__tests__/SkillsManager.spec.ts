@@ -21,10 +21,10 @@ const {
 	mockProjectInstructionDirectories,
 } = vi.hoisted(() => {
 	const watchers: Array<{
-		onDidChange: ReturnType<typeof vi.fn>
-		onDidCreate: ReturnType<typeof vi.fn>
-		onDidDelete: ReturnType<typeof vi.fn>
-		dispose: ReturnType<typeof vi.fn>
+		onDidChange: import("vitest").Mock
+		onDidCreate: import("vitest").Mock
+		onDidDelete: import("vitest").Mock
+		dispose: import("vitest").Mock
 	}> = []
 
 	return {

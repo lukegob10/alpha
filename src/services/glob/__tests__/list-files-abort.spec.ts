@@ -36,10 +36,10 @@ type EventListener = (...args: any[]) => void
 
 interface MockRipgrepProcess {
 	process: {
-		stdout: { on: ReturnType<typeof vi.fn> }
-		stderr: { on: ReturnType<typeof vi.fn> }
-		on: ReturnType<typeof vi.fn>
-		kill: ReturnType<typeof vi.fn>
+		stdout: { on: import("vitest").Mock }
+		stderr: { on: import("vitest").Mock }
+		on: import("vitest").Mock
+		kill: import("vitest").Mock
 	}
 	emitData(data: string): void
 	emitClose(code?: number | null, signal?: NodeJS.Signals | null): void
@@ -83,7 +83,7 @@ function createDeferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 	return { promise, resolve: resolvePromise }
 }
 
-async function waitForCall(mock: ReturnType<typeof vi.fn>): Promise<void> {
+async function waitForCall(mock: import("vitest").Mock): Promise<void> {
 	for (let attempt = 0; attempt < 40 && mock.mock.calls.length === 0; attempt++) {
 		await Promise.resolve()
 	}

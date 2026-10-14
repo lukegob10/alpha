@@ -1,0 +1,31 @@
+diff --git a/src/sprintf.js b/src/sprintf.js
+index 65d6324645ef1d0133614a71497751009dc5c912..967395f82a1bc0685d4a036a675c4ee0c59f7a80 100644
+--- a/src/sprintf.js
++++ b/src/sprintf.js
+@@ -66,6 +66,9 @@
+                     is_positive = arg >= 0
+                 }
+ 
++                // Numeric methods accept at most 100 precision digits (ECMAScript).
++                var precision = ph.precision === undefined ? undefined : Math.min(100, parseInt(ph.precision, 10))
++                if (ph.type === 'g' && precision !== undefined) precision = Math.max(1, precision)
+                 switch (ph.type) {
+                     case 'b':
+                         arg = parseInt(arg, 10).toString(2)
+@@ -81,13 +84,13 @@
+                         arg = JSON.stringify(arg, null, ph.width ? parseInt(ph.width) : 0)
+                         break
+                     case 'e':
+-                        arg = ph.precision ? parseFloat(arg).toExponential(ph.precision) : parseFloat(arg).toExponential()
++                        arg = precision !== undefined ? parseFloat(arg).toExponential(precision) : parseFloat(arg).toExponential()
+                         break
+                     case 'f':
+-                        arg = ph.precision ? parseFloat(arg).toFixed(ph.precision) : parseFloat(arg)
++                        arg = precision !== undefined ? parseFloat(arg).toFixed(precision) : parseFloat(arg)
+                         break
+                     case 'g':
+-                        arg = ph.precision ? String(Number(arg.toPrecision(ph.precision))) : parseFloat(arg)
++                        arg = precision !== undefined ? String(Number(arg.toPrecision(precision))) : parseFloat(arg)
+                         break
+                     case 'o':
+                         arg = (parseInt(arg, 10) >>> 0).toString(8)

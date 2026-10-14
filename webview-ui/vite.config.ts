@@ -1,6 +1,7 @@
 import path, { resolve } from "path"
 import fs from "fs"
 import { execSync } from "child_process"
+import { createRequire } from "node:module"
 
 import { defineConfig, type PluginOption, type Plugin } from "vite"
 import react from "@vitejs/plugin-react"
@@ -76,6 +77,18 @@ export default defineConfig(({ mode }) => {
 		tailwindcss(),
 		persistPortPlugin(),
 		wasmPlugin(),
+		{
+			name: "html-document-sanitizer",
+			apply: "build",
+			buildStart() {
+				const require = createRequire(path.join(__dirname, "package.json"))
+				this.emitFile({
+					type: "asset",
+					fileName: "html-document/purify.min.js",
+					source: fs.readFileSync(path.join(path.dirname(require.resolve("dompurify")), "purify.min.js")),
+				})
+			},
+		},
 		sourcemapPlugin(),
 	]
 
@@ -92,6 +105,8 @@ export default defineConfig(({ mode }) => {
 			},
 		},
 		build: {
+			// Alpha's only host is VS Code 1.125.0; avoid Vite's older Safari transform target.
+			target: "es2022",
 			outDir,
 			emptyOutDir: true,
 			reportCompressedSize: false,

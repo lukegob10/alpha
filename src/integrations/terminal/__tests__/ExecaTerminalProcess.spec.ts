@@ -21,7 +21,9 @@ vitest.mock("execa", () => {
 })
 
 vitest.mock("ps-tree", () => ({
-	default: vitest.fn((_: number, cb: any) => cb(null, [])),
+	default: vitest.fn(function (_: number, cb: any) {
+		return cb(null, [])
+	}),
 }))
 
 import { execa, ExecaError } from "execa"

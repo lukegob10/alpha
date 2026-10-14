@@ -9,14 +9,18 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("openai", () => ({
-	default: vi.fn(() => ({
-		chat: { completions: { create: mocks.chatCreate } },
-		responses: { create: mocks.responsesCreate },
-	})),
-	AzureOpenAI: vi.fn(() => ({
-		chat: { completions: { create: mocks.chatCreate } },
-		responses: { create: mocks.responsesCreate },
-	})),
+	default: vi.fn(function () {
+		return {
+			chat: { completions: { create: mocks.chatCreate } },
+			responses: { create: mocks.responsesCreate },
+		}
+	}),
+	AzureOpenAI: vi.fn(function () {
+		return {
+			chat: { completions: { create: mocks.chatCreate } },
+			responses: { create: mocks.responsesCreate },
+		}
+	}),
 }))
 
 function modelInfo(overrides: Partial<ModelInfo> = {}): ModelInfo {

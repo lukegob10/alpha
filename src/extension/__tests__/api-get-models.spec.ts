@@ -24,15 +24,17 @@ const ipcMock = vi.hoisted(() => ({
 vi.mock("vscode")
 vi.mock("../../core/webview/AlphaProvider", () => ({ AlphaProvider: vi.fn() }))
 vi.mock("@alpha-code/ipc", () => ({
-	IpcServer: vi.fn().mockImplementation(() => ({
-		listen: ipcMock.listen,
-		send: ipcMock.send,
-		broadcast: ipcMock.broadcast,
-		dispose: ipcMock.dispose,
-		on: vi.fn((_eventName, handler) => {
-			ipcMock.handler = handler
-		}),
-	})),
+	IpcServer: vi.fn().mockImplementation(function () {
+		return {
+			listen: ipcMock.listen,
+			send: ipcMock.send,
+			broadcast: ipcMock.broadcast,
+			dispose: ipcMock.dispose,
+			on: vi.fn((_eventName, handler) => {
+				ipcMock.handler = handler
+			}),
+		}
+	}),
 }))
 
 describe("API - GetModels command", () => {
@@ -55,7 +57,7 @@ describe("API - GetModels command", () => {
 	})
 
 	async function getModelsForProvider(apiProvider: string | undefined) {
-		;(mockProvider.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+		;(mockProvider.getState as import("vitest").Mock).mockResolvedValue({
 			apiConfiguration: { apiProvider },
 		})
 
@@ -93,7 +95,7 @@ describe("API - GetModels command", () => {
 	})
 
 	it("returns an empty catalog when state lookup fails", async () => {
-		;(mockProvider.getState as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("state unavailable"))
+		;(mockProvider.getState as import("vitest").Mock).mockRejectedValue(new Error("state unavailable"))
 
 		const outputChannel = { appendLine: vi.fn() } as unknown as vscode.OutputChannel
 		new API(outputChannel, mockProvider, "models-test-socket", false)

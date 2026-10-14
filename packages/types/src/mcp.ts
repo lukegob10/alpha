@@ -139,6 +139,15 @@ export type McpToolCallResponse = {
 				mimeType: string
 		  }
 		| {
+				type: "resource_link"
+				uri: string
+				name: string
+				title?: string
+				description?: string
+				mimeType?: string
+				size?: number
+		  }
+		| {
 				type: "resource"
 				resource: {
 					uri: string

@@ -657,7 +657,8 @@
 					"type": "boolean",
 					"default": false,
 					"description": "%settings.debugProxy.tlsInsecure.description%",
-					"markdownDescription": "%settings.debugProxy.tlsInsecure.description%"
+					"markdownDescription": "%settings.debugProxy.tlsInsecure.description%",
+					"deprecationMessage": "%settings.debugProxy.tlsInsecure.deprecationMessage%"
 				}
 			}
 		}
@@ -680,7 +681,7 @@
 		"@anthropic-ai/vertex-sdk": "^0.7.0",
 		"@google/genai": "^1.47.0",
 		"@lancedb/lancedb": "^0.27.2",
-		"@modelcontextprotocol/sdk": "1.12.0",
+		"@modelcontextprotocol/sdk": "1.31.0",
 		"@qdrant/js-client-rest": "^1.14.0",
 		"@alpha-code/core": "workspace:^",
 		"@alpha-code/ipc": "workspace:^",
@@ -688,7 +689,7 @@
 		"@alpha-code/types": "workspace:^",
 		"@vscode/ripgrep": "^1.17.0",
 		"async-mutex": "^0.5.0",
-		"axios": "^1.12.0",
+		"axios": "^1.20.0",
 		"cheerio": "^1.0.0",
 		"chokidar": "^4.0.1",
 		"clone-deep": "^4.0.1",
@@ -707,7 +708,7 @@
 		"isbinaryfile": "^5.0.2",
 		"json-stream-stringify": "^3.1.6",
 		"lodash.debounce": "^4.0.8",
-		"mammoth": "^1.9.1",
+		"mammoth": "^1.11.0",
 		"monaco-vscode-textmate-theme-converter": "^0.1.7",
 		"node-cache": "^5.1.2",
 		"openai": "^5.12.2",
@@ -724,16 +725,16 @@
 		"say": "^0.16.0",
 		"serialize-error": "^12.0.0",
 		"shell-quote": "^1.8.2",
-		"simple-git": "^3.27.0",
+		"simple-git": "^4.0.2",
 		"strip-bom": "^5.0.0",
 		"tiktoken": "^1.0.21",
 		"tree-sitter-wasms": "^0.1.12",
-		"undici": "^6.21.3",
+		"undici": "^6.28.1",
 		"uuid": "^11.1.0",
 		"vscode-material-icons": "^0.1.1",
 		"web-tree-sitter": "^0.25.6",
 		"workerpool": "^9.2.0",
-		"yaml": "^2.8.0",
+		"yaml": "2.8.3",
 		"zod": "3.25.76"
 	},
 	"devDependencies": {
@@ -748,13 +749,13 @@
 		"@types/ps-tree": "^1.1.6",
 		"@types/vscode": "1.125.0",
 		"@vscode/vsce": "3.3.2",
-		"esbuild-wasm": "^0.25.0",
+		"esbuild-wasm": "^0.28.1",
 		"execa": "^9.5.2",
 		"mkdirp": "^3.0.1",
 		"nock": "^14.0.4",
 		"ovsx": "0.10.4",
 		"rimraf": "^6.0.1",
 		"tsx": "^4.22.0",
-		"vitest": "^3.2.3"
+		"vitest": "^4.1.11"
 	}
 }

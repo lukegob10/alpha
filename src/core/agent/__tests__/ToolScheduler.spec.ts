@@ -118,7 +118,7 @@ describe("ToolScheduler", () => {
 		let reference: string
 		let task: Task
 		let registry: ToolRegistry
-		let execute: ReturnType<typeof vi.fn>
+		let execute: import("vitest").Mock
 
 		beforeEach(async () => {
 			fixture = await fs.mkdtemp(path.join(tmpdir(), "alpha-bundled-read-"))

@@ -1,4 +1,5 @@
 import { escapeSpaces, convertToMentionPath } from "../path-mentions"
+import { mentionRegex, unescapeSpaces } from "@alpha/context-mentions"
 
 describe("Path Mentions Utilities", () => {
 	describe("escapeSpaces", () => {
@@ -26,10 +27,13 @@ describe("Path Mentions Utilities", () => {
 			expect(escapeSpaces("")).toBe("")
 		})
 
-		it("should not affect already escaped spaces", () => {
-			// This function assumes input spaces are not already escaped
-			// The function will re-escape the backslashes, resulting in double-escaped spaces
-			expect(escapeSpaces("file\\ with\\ spaces.txt")).toBe("file\\\\ with\\\\ spaces.txt")
+		it("encodes literal backslashes before spaces and round-trips raw paths", () => {
+			for (const raw of ["/file\\ with spaces.txt", "/trailing\\", "/a\\b  c", "/雪\\ file.txt"]) {
+				const encoded = escapeSpaces(raw)
+				expect(mentionRegex.exec(`@${encoded}`)?.[1]).toBe(encoded)
+				expect(unescapeSpaces(encoded)).toBe(raw)
+			}
+			expect(unescapeSpaces("/legacy\\ file.txt")).toBe("/legacy file.txt")
 		})
 
 		it("should not escape other characters", () => {
@@ -39,6 +43,10 @@ describe("Path Mentions Utilities", () => {
 	})
 
 	describe("convertToMentionPath", () => {
+		it("preserves literal backslashes in POSIX filenames", () => {
+			const encoded = convertToMentionPath("/work/a\\b file.txt", "/work")
+			expect(unescapeSpaces(encoded.slice(1))).toBe("/a\\b file.txt")
+		})
 		const MOCK_CWD_POSIX = "/Users/test/project"
 		const MOCK_CWD_WIN = "C:\\Users\\test\\project"
 
@@ -108,9 +116,9 @@ describe("Path Mentions Utilities", () => {
 		})
 
 		it("normalizes UNC file URIs for workspace matching", () => {
-			expect(
-				convertToMentionPath("file://server/share/project/src/file.ts", "\\\\server\\share\\project"),
-			).toBe("@/src/file.ts")
+			expect(convertToMentionPath("file://server/share/project/src/file.ts", "\\\\server\\share\\project")).toBe(
+				"@/src/file.ts",
+			)
 		})
 
 		it("should return original path if cwd is not provided", () => {

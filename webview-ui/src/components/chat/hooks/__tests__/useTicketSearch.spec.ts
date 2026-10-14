@@ -9,6 +9,29 @@ afterEach(() => {
 	vi.clearAllMocks()
 })
 describe("ticket search lifecycle", () => {
+	it("routes the picker to its editor task and invalidates replies when that task changes", () => {
+		vi.useFakeTimers()
+		const { rerender, result } = renderHook(({ taskId }) => useTicketSearch(true, "", "/project", taskId), {
+			initialProps: { taskId: "editor-one" },
+		})
+		act(() => vi.advanceTimersByTime(0))
+		const earlier = vi.mocked(vscode.postMessage).mock.calls.at(-1)![0]
+		expect(earlier.taskId).toBe("editor-one")
+		rerender({ taskId: "editor-two" })
+		act(() => vi.advanceTimersByTime(0))
+		expect(vi.mocked(vscode.postMessage).mock.calls.at(-1)![0].taskId).toBe("editor-two")
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "ticketSearchResults",
+						ticketSearch: { type: "ticketSearchResults", requestId: earlier.requestId, tickets: [] },
+					},
+				}),
+			),
+		)
+		expect(result.current[0]?.label).toBe("activitySearching")
+	})
 	it.each(["", "PM-42", "pm42"])("immediately searches an opened picker or complete reference: %s", (query) => {
 		vi.useFakeTimers()
 		renderHook(() => useTicketSearch(true, query, "/project"))
@@ -17,14 +40,14 @@ describe("ticket search lifecycle", () => {
 			expect.objectContaining({ type: "searchTickets", query }),
 		)
 	})
-	it("debounces title typing into one request after 100 ms", () => {
+	it("debounces title typing into one request after 50 ms", () => {
 		vi.useFakeTimers()
 		const { rerender } = renderHook(({ query }) => useTicketSearch(true, query, "/project"), {
 			initialProps: { query: "backend" },
 		})
-		act(() => vi.advanceTimersByTime(75))
+		act(() => vi.advanceTimersByTime(25))
 		rerender({ query: "backend cleanup" })
-		act(() => vi.advanceTimersByTime(99))
+		act(() => vi.advanceTimersByTime(49))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		act(() => vi.advanceTimersByTime(1))
 		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith(

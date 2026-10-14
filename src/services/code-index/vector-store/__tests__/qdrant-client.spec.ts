@@ -62,7 +62,9 @@ describe("QdrantVectorStore", () => {
 		vitest.clearAllMocks()
 
 		// Mock QdrantClient constructor
-		;(QdrantClient as any).mockImplementation(() => mockQdrantClientInstance)
+		;(QdrantClient as any).mockImplementation(function () {
+			return mockQdrantClientInstance
+		})
 
 		// Mock crypto.createHash
 		;(createHash as any).mockReturnValue(mockCreateHashInstance)

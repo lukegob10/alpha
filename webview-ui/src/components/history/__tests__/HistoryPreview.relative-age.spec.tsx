@@ -59,7 +59,7 @@ describe("inline Chats relative task ages", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 8, 25, 12))
-		;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+		;(useExtensionState as import("vitest").Mock).mockReturnValue({
 			taskHistory: mockTaskHistory,
 			cwd: "/test/workspace",
 		})

@@ -83,7 +83,7 @@ import { getOpenAiModels } from "../../api/providers/openai"
 import { getVsCodeLmModels } from "../../api/providers/vscode-lm"
 import { openMention } from "../mentions"
 import { searchTicketMentions } from "../../services/tickets/TicketChat"
-import { ticketTargetSchema } from "@alpha-code/types"
+import { ticketTargetSchema, ticketSearchRequestSchema } from "@alpha-code/types"
 import { resolveImageMentions, textHasImageMention } from "../mentions/resolveImageMentions"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
@@ -1326,7 +1326,22 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "searchTickets": {
-			const result = await searchTicketMentions(getCurrentCwd(), message)
+			const task = getTaskForMessage(provider, message, { allowActiveFallback: true })
+			if (message.taskId && !task) {
+				const request = ticketSearchRequestSchema.safeParse(message)
+				if (request.success)
+					await provider.postMessageToWebview({
+						type: "ticketSearchResults",
+						ticketSearch: {
+							type: "ticketSearchResults",
+							requestId: request.data.requestId,
+							tickets: [],
+							error: true,
+						},
+					})
+				break
+			}
+			const result = await searchTicketMentions(task?.cwd ?? provider.cwd, message)
 			if (result) await provider.postMessageToWebview({ type: "ticketSearchResults", ticketSearch: result })
 			break
 		}

@@ -69,7 +69,7 @@ describe("bounded context recovery policy", () => {
 			metadata,
 		})
 
-		const requestMetadata = (handler.createMessage as ReturnType<typeof vi.fn>).mock.calls[0][2]
+		const requestMetadata = (handler.createMessage as import("vitest").Mock).mock.calls[0][2]
 		expect(requestMetadata).toMatchObject({ tools: [], tool_choice: "none", parallelToolCalls: false })
 	})
 
@@ -175,7 +175,7 @@ describe("bounded context recovery policy", () => {
 
 	it("falls back to one bounded truncation when summarization fails", async () => {
 		const handler = createCountingHandler()
-		;(handler.createMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+		;(handler.createMessage as import("vitest").Mock).mockImplementation(() => {
 			throw new Error("summary unavailable")
 		})
 		const messages: ApiMessage[] = [

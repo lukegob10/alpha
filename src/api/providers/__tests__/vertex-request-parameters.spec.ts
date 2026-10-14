@@ -12,12 +12,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@google/genai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@google/genai")>()),
-	GoogleGenAI: vi.fn(() => ({
-		models: { generateContentStream: mocks.geminiStream, generateContent: mocks.geminiResponse },
-	})),
+	GoogleGenAI: vi.fn(function () {
+		return {
+			models: { generateContentStream: mocks.geminiStream, generateContent: mocks.geminiResponse },
+		}
+	}),
 }))
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
-	AnthropicVertex: vi.fn(() => ({ messages: { create: mocks.claudeCreate } })),
+	AnthropicVertex: vi.fn(function () {
+		return { messages: { create: mocks.claudeCreate } }
+	}),
 }))
 
 beforeEach(() => {

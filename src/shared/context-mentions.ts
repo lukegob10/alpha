@@ -63,7 +63,7 @@ Mention regex:
 
 */
 export const mentionRegex =
-	/(?:^|(?<=\s))(?<!\\)@((?:\/|\w+:\/\/)(?:[^\s\\]|\\ )+?|(?:tickets?:)?[A-Za-z]{2,4}-\d{1,10}|tickets?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[a-f0-9]{7,40}\b|problems\b|git-changes\b|terminal\b)(?=[.,;:!?]?(?=[\s\r\n]|$))/
+	/(?:^|(?<=\s))(?<!\\)@((?:\/|\w+:\/\/)(?:[^\s\\]|\\[ \\])+?|(?:tickets?:)?[A-Za-z]{2,4}-\d{1,10}|tickets?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[a-f0-9]{7,40}\b|problems\b|git-changes\b|terminal\b)(?=[.,;:!?]?(?=[\s\r\n]|$))/
 export const mentionRegexGlobal = new RegExp(mentionRegex.source, "g")
 
 /** Keep ticket aliases consistent across attachment loading and clickable chat mentions. */
@@ -120,5 +120,5 @@ export function formatGitSuggestion(commit: {
 
 // Helper function to unescape paths with backslash-escaped spaces
 export function unescapeSpaces(path: string): string {
-	return path.replace(/\\ /g, " ")
+	return path.replace(/\\([\\ ])/g, "$1")
 }

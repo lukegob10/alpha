@@ -30,6 +30,7 @@ export function insertMention(
 	position: number,
 	value: string,
 	isSlashCommand: boolean = false,
+	rawPath: boolean = false,
 ): { newValue: string; mentionIndex: number } {
 	// Handle slash command selection (only when explicitly selecting a slash command)
 	if (isSlashCommand) {
@@ -49,7 +50,7 @@ export function insertMention(
 	let processedValue = value
 	if (value && value.startsWith("/")) {
 		// Only escape if the path contains spaces that aren't already escaped
-		if (value.includes(" ") && !value.includes("\\ ")) {
+		if (rawPath || (value.includes(" ") && !value.includes("\\ "))) {
 			processedValue = escapeSpaces(value)
 		}
 	}

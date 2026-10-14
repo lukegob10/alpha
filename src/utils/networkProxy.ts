@@ -3,8 +3,8 @@
  *
  * Provides proxy configuration for all outbound HTTP/HTTPS requests from the Alpha extension.
  * When running in debug mode (F5), a proxy can be enabled for outbound traffic.
- * Optionally, TLS certificate verification can be disabled (debug only) to allow
- * MITM proxy inspection.
+ * TLS certificate verification remains enabled. Trust the local inspection proxy's
+ * CA before launching the development host (for example with NODE_EXTRA_CA_CERTS).
  *
  * Uses global-agent to globally route all HTTP/HTTPS traffic through the proxy,
  * which works with axios, fetch, and most SDKs that use native Node.js http/https.
@@ -21,7 +21,7 @@ export interface ProxyConfig {
 	enabled: boolean
 	/** The proxy server URL (e.g., http://127.0.0.1:8888) */
 	serverUrl: string
-	/** Accept self-signed/insecure TLS certificates from the proxy (required for MITM) */
+	/** Legacy setting, retained for compatibility; certificate verification is always enabled. */
 	tlsInsecure: boolean
 	/** Whether running in debug/development mode */
 	isDebugMode: boolean
@@ -36,9 +36,6 @@ let outputChannel: vscode.OutputChannel | null = null
 
 let loggingEnabled = false
 let consoleLoggingEnabled = false
-
-let tlsVerificationOverridden = false
-let originalNodeTlsRejectUnauthorized: string | undefined
 
 function redactProxyUrl(proxyUrl: string | undefined): string {
 	if (!proxyUrl) {
@@ -69,42 +66,6 @@ function restoreGlobalFetchPatch(): void {
 	originalFetch = undefined
 }
 
-function restoreTlsVerificationOverride(): void {
-	if (!tlsVerificationOverridden) {
-		return
-	}
-
-	if (typeof originalNodeTlsRejectUnauthorized === "string") {
-		process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalNodeTlsRejectUnauthorized
-	} else {
-		delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
-	}
-
-	tlsVerificationOverridden = false
-	originalNodeTlsRejectUnauthorized = undefined
-}
-
-function applyTlsVerificationOverride(config: ProxyConfig): void {
-	// Only relevant in debug mode with an active proxy.
-	if (!config.isDebugMode || !config.enabled) {
-		restoreTlsVerificationOverride()
-		return
-	}
-
-	if (!config.tlsInsecure) {
-		restoreTlsVerificationOverride()
-		return
-	}
-
-	if (!tlsVerificationOverridden) {
-		originalNodeTlsRejectUnauthorized = process.env.NODE_TLS_REJECT_UNAUTHORIZED
-	}
-
-	// CodeQL: debug-only opt-in for MITM debugging.
-	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0" // lgtm[js/disabling-certificate-validation]
-	tlsVerificationOverridden = true
-}
-
 /**
  * Initialize the network proxy module with the extension context.
  * Must be called early in extension activation before any network requests.
@@ -130,6 +91,11 @@ export async function initializeNetworkProxy(
 	consoleLoggingEnabled = !outputChannel
 
 	const config = getProxyConfig()
+	if (config.tlsInsecure) {
+		log(
+			"debugProxy.tlsInsecure is deprecated. TLS verification remains enabled; trust the proxy CA before launching the development host.",
+		)
+	}
 
 	log(`Initializing network proxy module...`)
 	log(
@@ -149,14 +115,12 @@ export async function initializeNetworkProxy(
 					const newConfig = getProxyConfig()
 
 					if (newConfig.enabled) {
-						applyTlsVerificationOverride(newConfig)
 						configureGlobalProxy(newConfig)
 						configureUndiciProxy(newConfig)
 					} else {
 						// Proxy disabled - but we can't easily un-bootstrap global-agent or reset undici dispatcher safely.
 						// We *can* restore any global fetch patch immediately.
 						restoreGlobalFetchPatch()
-						restoreTlsVerificationOverride()
 						log("Debug proxy disabled. Restart VS Code to fully disable proxy routing.")
 					}
 				}
@@ -168,12 +132,10 @@ export async function initializeNetworkProxy(
 	context.subscriptions.push({
 		dispose: () => {
 			restoreGlobalFetchPatch()
-			restoreTlsVerificationOverride()
 		},
 	})
 
 	if (config.enabled) {
-		applyTlsVerificationOverride(config)
 		await configureGlobalProxy(config)
 		await configureUndiciProxy(config)
 	} else {
@@ -278,13 +240,6 @@ async function configureUndiciProxy(config: ProxyConfig): Promise<void> {
 
 		const proxyAgent = new ProxyAgent({
 			uri: config.serverUrl,
-			// If the user enabled TLS insecure mode (debug only), apply it to undici.
-			requestTls: config.tlsInsecure
-				? ({ rejectUnauthorized: false } satisfies import("tls").ConnectionOptions) // lgtm[js/disabling-certificate-validation]
-				: undefined,
-			proxyTls: config.tlsInsecure
-				? ({ rejectUnauthorized: false } satisfies import("tls").ConnectionOptions) // lgtm[js/disabling-certificate-validation]
-				: undefined,
 		})
 		setGlobalDispatcher(proxyAgent)
 		undiciProxyInitialized = true

@@ -11,10 +11,10 @@ import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 describe("Task working record integration", () => {
 	let root: string
 	let task: Task
-	let save: ReturnType<typeof vi.fn>
+	let save: import("vitest").Mock
 	let provider: {
-		getParentCompletionDecision: ReturnType<typeof vi.fn>
-		recordParentVerificationEvidence: ReturnType<typeof vi.fn>
+		getParentCompletionDecision: import("vitest").Mock
+		recordParentVerificationEvidence: import("vitest").Mock
 	}
 	const plan: TaskWorkPlan = {
 		objective: "Fix behavior",

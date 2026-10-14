@@ -86,7 +86,7 @@ function dynamicHandler() {
 		prepareModel,
 		setReasoningOptions,
 		streamCapabilities: { lifecycle: true, cancellation: true },
-	} as ApiHandler & { setReasoningOptions: ReturnType<typeof vi.fn> }
+	} as ApiHandler & { setReasoningOptions: import("vitest").Mock }
 	return { api, createMessage, prepareModel, setReasoningOptions, streamStarted, releaseStream }
 }
 

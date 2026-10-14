@@ -21,7 +21,7 @@ vi.mock("vscode", () => ({
 
 describe("networkProxy", () => {
 	let mockOutputChannel: vscode.OutputChannel
-	let mockConfig: { get: ReturnType<typeof vi.fn> }
+	let mockConfig: { get: import("vitest").Mock }
 
 	// Helper to create mock context with configurable extensionMode
 	function createMockContext(mode: vscode.ExtensionMode = vscode.ExtensionMode.Production): vscode.ExtensionContext {
@@ -133,7 +133,7 @@ describe("networkProxy", () => {
 			expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined()
 		})
 
-		it("should disable TLS verification when tlsInsecure is enabled (debug mode only)", () => {
+		it("keeps TLS verification enabled when the legacy insecure setting is enabled", async () => {
 			mockConfig.get.mockImplementation((key: string) => {
 				if (key === "debugProxy.enabled") return true
 				if (key === "debugProxy.serverUrl") return "http://localhost:8080"
@@ -142,9 +142,12 @@ describe("networkProxy", () => {
 			})
 			const context = createMockContext(vscode.ExtensionMode.Development)
 
-			void initializeNetworkProxy(context, mockOutputChannel)
+			await initializeNetworkProxy(context, mockOutputChannel)
 
-			expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBe("0")
+			expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined()
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("TLS verification remains enabled"),
+			)
 		})
 
 		it("should register configuration change listener in debug mode", () => {
@@ -291,7 +294,7 @@ describe("networkProxy", () => {
 	})
 
 	describe("security", () => {
-		it("should not disable TLS verification unless tlsInsecure is enabled", () => {
+		it("preserves TLS verification when proxy routing is enabled", () => {
 			mockConfig.get.mockImplementation((key: string) => {
 				if (key === "debugProxy.enabled") return true
 				if (key === "debugProxy.serverUrl") return "http://localhost:8080"

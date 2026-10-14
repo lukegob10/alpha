@@ -8,7 +8,7 @@ import type { Task } from "../../task/Task"
 const taskId = "task-1"
 const completionResponse = { type: "condenseTaskContextResponse" as const, text: taskId }
 
-const createProviderHarness = (condenseContext: ReturnType<typeof vi.fn>, postMessageToWebview = vi.fn()) => {
+const createProviderHarness = (condenseContext: import("vitest").Mock, postMessageToWebview = vi.fn()) => {
 	const task = { taskId, condenseContext } as unknown as Task
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		taskStack: [task],

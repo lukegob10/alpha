@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./ui/javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
@@ -240,7 +241,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		] as const) {
 			await ready(stage)
 			await check(
-				`d.body.classList.contains(${JSON.stringify(themeClass)}) && !!d.querySelector('[data-testid="history-view-all"]')`,
+				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('[data-testid="history-view-all"]')`,
 			)
 			await check("d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 5")
 			assert.equal(await evaluate("!!d.querySelector('[data-testid=history-search-input]')"), false)
@@ -338,7 +339,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			sentinelVisible: boolean
 			homeVisible: boolean
 		}>(
-			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {transcriptCount:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)}),homeVisible:!!d.querySelector('[data-testid="alpha-home-brand"]')}})()`,
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {transcriptCount:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${javascriptLiteral(navigationReady.sentinel)}),homeVisible:!!d.querySelector('[data-testid="alpha-home-brand"]')}})()`,
 		)
 		await fs.writeFile(
 			path.join(directory, "navigation-ready-dom.json"),
@@ -346,7 +347,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		)
 		await capture("navigation-ready")
 		await check(
-			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})})()`,
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${javascriptLiteral(navigationReady.sentinel)})})()`,
 		)
 		await installNavigationProbe(
 			"!!d.querySelector('[data-testid=alpha-home-brand]')&&!d.querySelector('[data-testid=chat-transcript-viewport]')",
@@ -377,15 +378,15 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		assert.equal(reopenReceipt.taskId, navigationReady.taskId)
 		const taskId = navigationReady.taskId as string
 		const taskItemSelector = `[data-testid="task-item-${taskId}"]`
-		await check(`!!d.querySelector(${JSON.stringify(taskItemSelector)})`)
+		await check(`!!d.querySelector(${javascriptLiteral(taskItemSelector)})`)
 		assert.equal(
 			await evaluate(
-				`(()=>{const e=d.querySelector(${JSON.stringify(taskItemSelector)});e.focus();return d.activeElement===e})()`,
+				`(()=>{const e=d.querySelector(${javascriptLiteral(taskItemSelector)});e.focus();return d.activeElement===e})()`,
 			),
 			true,
 		)
 		await installNavigationProbe(
-			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})})()`,
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${javascriptLiteral(navigationReady.sentinel)})})()`,
 			taskId,
 		)
 		for (const type of ["keyDown", "keyUp"]) {
@@ -405,7 +406,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		const reopenProbe = await readNavigationProbe()
 		assert.ok(reopenProbe.domAt !== undefined && reopenProbe.paintedAt !== undefined)
 		const reopenedTranscript = await evaluate<{ count: number; renderedCount: number; sentinelVisible: boolean }>(
-			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {count:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})}})()`,
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {count:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${javascriptLiteral(navigationReady.sentinel)})}})()`,
 		)
 		assert.ok(reopenedTranscript.count >= transcriptCount, "Reopened transcript retains all fixture messages")
 		assert.ok(reopenedTranscript.renderedCount > 0 && reopenedTranscript.renderedCount <= 100)

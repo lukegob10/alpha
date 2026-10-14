@@ -7,17 +7,17 @@ describe("webviewMessageHandler - lockApiConfigAcrossModes", () => {
 	let mockProvider: {
 		context: {
 			workspaceState: {
-				get: ReturnType<typeof vi.fn>
-				update: ReturnType<typeof vi.fn>
+				get: import("vitest").Mock
+				update: import("vitest").Mock
 			}
 		}
-		getState: ReturnType<typeof vi.fn>
-		postStateToWebview: ReturnType<typeof vi.fn>
+		getState: import("vitest").Mock
+		postStateToWebview: import("vitest").Mock
 		providerSettingsManager: {
-			setModeConfig: ReturnType<typeof vi.fn>
+			setModeConfig: import("vitest").Mock
 		}
-		postMessageToWebview: ReturnType<typeof vi.fn>
-		getCurrentTask: ReturnType<typeof vi.fn>
+		postMessageToWebview: import("vitest").Mock
+		getCurrentTask: import("vitest").Mock
 	}
 
 	beforeEach(() => {

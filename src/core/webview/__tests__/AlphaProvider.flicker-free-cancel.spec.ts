@@ -24,10 +24,12 @@ vi.mock("vscode", () => {
 			uriScheme: "vscode",
 			language: "en",
 		},
-		EventEmitter: vi.fn().mockImplementation(() => ({
-			event: vi.fn(),
-			fire: vi.fn(),
-		})),
+		EventEmitter: vi.fn().mockImplementation(function () {
+			return {
+				event: vi.fn(),
+				fire: vi.fn(),
+			}
+		}),
 		Disposable: {
 			from: vi.fn(),
 		},
@@ -180,7 +182,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		}
 
 		// Mock Task constructor
-		vi.mocked(Task).mockImplementation((options) => {
+		vi.mocked(Task).mockImplementation(function (options) {
 			mockTask2.taskId = options.historyItem?.id ?? mockTask2.taskId
 			options.onCreated?.(mockTask2)
 			return mockTask2 as any
@@ -240,7 +242,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 			persistedMessages = structuredClone(mockTask1.clineMessages)
 			order.push("transcript-persisted")
 		})
-		vi.mocked(Task).mockImplementation(() => {
+		vi.mocked(Task).mockImplementation(function () {
 			order.push("replacement-constructed")
 			return { ...mockTask2, clineMessages: structuredClone(persistedMessages) } as any
 		})

@@ -310,9 +310,13 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		const images: string[] = []
 
 		const contentText = (toolResult.content ?? [])
-			.map((item: any) => {
+			.map((item) => {
 				if (item.type === "text") {
 					return item.text
+				}
+				if (item.type === "resource_link") {
+					// Preserve the server's link metadata without following its URI or widening tool authority.
+					return JSON.stringify(item, null, 2)
 				}
 				if (item.type === "resource") {
 					const resource = item.resource

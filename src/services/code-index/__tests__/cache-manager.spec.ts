@@ -27,7 +27,11 @@ vitest.mock("vscode", () => ({
 }))
 
 // Mock debounce to execute immediately
-vitest.mock("lodash.debounce", () => ({ default: vitest.fn((fn) => Object.assign(fn, { cancel: vitest.fn() })) }))
+vitest.mock("lodash.debounce", () => ({
+	default: vitest.fn(function (fn) {
+		return Object.assign(fn, { cancel: vitest.fn() })
+	}),
+}))
 
 // Mock TelemetryService
 vitest.mock("@alpha-code/telemetry", () => ({

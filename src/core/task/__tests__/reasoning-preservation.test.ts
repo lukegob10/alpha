@@ -20,7 +20,9 @@ vi.mock("vscode", () => ({
 		openTextDocument: vi.fn(),
 		applyEdit: vi.fn(),
 	},
-	RelativePattern: vi.fn((base, pattern) => ({ base, pattern })),
+	RelativePattern: vi.fn(function (base, pattern) {
+		return { base, pattern }
+	}),
 	window: {
 		createOutputChannel: vi.fn(() => ({
 			appendLine: vi.fn(),
@@ -38,11 +40,13 @@ vi.mock("vscode", () => ({
 	},
 	Range: vi.fn(),
 	Position: vi.fn(),
-	WorkspaceEdit: vi.fn(() => ({
-		replace: vi.fn(),
-		insert: vi.fn(),
-		delete: vi.fn(),
-	})),
+	WorkspaceEdit: vi.fn(function () {
+		return {
+			replace: vi.fn(),
+			insert: vi.fn(),
+			delete: vi.fn(),
+		}
+	}),
 	ViewColumn: {
 		One: 1,
 		Two: 2,

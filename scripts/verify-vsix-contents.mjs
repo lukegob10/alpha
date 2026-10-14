@@ -51,6 +51,7 @@ const requiredEntries = [
 	"extension/webview-ui/build/artifact-kit/v1/examples/fixture-workspace/images/layout-sample.png",
 	"extension/webview-ui/build/artifact-kit/v1/examples/report.html",
 	"extension/webview-ui/build/html-document/viewer.js",
+	"extension/webview-ui/build/html-document/purify.min.js",
 	"extension/webview-ui/build/html-document/viewer.css",
 	"extension/package.nls.json",
 	"extension/dist/extension.js",

@@ -4,9 +4,14 @@ import { normalizeTicketReference, ticketSearchResponseSchema, type TicketSearch
 import { ContextMenuOptionType, type ContextMenuQueryItem } from "../../../utils/context-mentions"
 import { vscode } from "../../../utils/vscode"
 
-export function useTicketSearch(active: boolean, query: string, cwd: string): ContextMenuQueryItem[] {
+export function useTicketSearch(active: boolean, query: string, cwd: string, taskId?: string): ContextMenuQueryItem[] {
 	const { t } = useTranslation("tickets")
-	const [response, setResponse] = useState<{ query: string; cwd: string; result: TicketSearchResponse }>()
+	const [response, setResponse] = useState<{
+		query: string
+		cwd: string
+		taskId?: string
+		result: TicketSearchResponse
+	}>()
 	useEffect(() => {
 		if (!active || query.length > 200) return
 		const requestId = `tickets-${crypto.randomUUID()}`
@@ -15,20 +20,21 @@ export function useTicketSearch(active: boolean, query: string, cwd: string): Co
 			const parsed = ticketSearchResponseSchema.safeParse(event.data.ticketSearch)
 			if (parsed.success && parsed.data.requestId === requestId) {
 				clearTimeout(timeout)
-				setResponse({ query, cwd, result: parsed.data })
+				setResponse({ query, cwd, taskId, result: parsed.data })
 			}
 		}
 		setResponse(undefined)
 		window.addEventListener("message", receive)
 		const timer = setTimeout(
-			() => vscode.postMessage({ type: "searchTickets", query, requestId }),
-			query === "" || normalizeTicketReference(query) ? 0 : 100,
+			() => vscode.postMessage({ type: "searchTickets", query, requestId, ...(taskId ? { taskId } : {}) }),
+			query === "" || normalizeTicketReference(query) ? 0 : 50,
 		)
 		const timeout = setTimeout(
 			() =>
 				setResponse({
 					query,
 					cwd,
+					taskId,
 					result: { type: "ticketSearchResults", requestId, tickets: [], error: true },
 				}),
 			15000,
@@ -38,8 +44,9 @@ export function useTicketSearch(active: boolean, query: string, cwd: string): Co
 			clearTimeout(timeout)
 			window.removeEventListener("message", receive)
 		}
-	}, [active, query, cwd])
-	const current = response?.query === query && response.cwd === cwd ? response.result : undefined
+	}, [active, query, cwd, taskId])
+	const current =
+		response?.query === query && response.cwd === cwd && response.taskId === taskId ? response.result : undefined
 	if (query.length > 200 || current?.error)
 		return [{ type: ContextMenuOptionType.NoResults, label: t("activityLookupFailed") }]
 	if (!current) return [{ type: ContextMenuOptionType.NoResults, label: t("activitySearching") }]

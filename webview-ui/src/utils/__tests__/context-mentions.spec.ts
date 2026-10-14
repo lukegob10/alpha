@@ -9,6 +9,10 @@ import {
 } from "@src/utils/context-mentions"
 
 describe("insertMention", () => {
+	it("encodes raw file selections even when a literal backslash precedes a space", () => {
+		const result = insertMention("@", 1, "/a\\ b file.txt", false, true)
+		expect(result.newValue).toBe("@/a\\\\\\ b\\ file.txt ")
+	})
 	it("should insert mention at cursor position when no @ symbol exists", () => {
 		const result = insertMention("Hello world", 5, "test")
 		expect(result.newValue).toBe("Hello@test  world")

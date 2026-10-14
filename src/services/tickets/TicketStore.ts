@@ -1,4 +1,5 @@
 import * as fs from "fs/promises"
+import { watch, type FSWatcher } from "node:fs"
 import path from "path"
 import os from "os"
 import { createHash, randomUUID } from "crypto"
@@ -73,6 +74,9 @@ type TicketSearchCache = {
 	bytes: number
 	generation: number
 	refreshing?: Promise<TicketSearchEntry[]>
+	entries?: TicketSearchEntry[]
+	watcher?: FSWatcher
+	identity?: string
 }
 const maxSearchProjects = 4
 const maxSearchFiles = 10000
@@ -137,6 +141,15 @@ function sections(body: string) {
 export class TicketStore {
 	private static readonly preparing = new Map<string, Promise<void>>()
 	private static readonly searches = new Map<string, TicketSearchCache>()
+	static disposeSearchCaches(): void {
+		for (const cache of TicketStore.searches.values()) {
+			cache.watcher?.close()
+			cache.watcher = undefined
+			cache.entries = undefined
+			cache.generation++
+		}
+		TicketStore.searches.clear()
+	}
 	private constructor(
 		readonly directory: string,
 		readonly projectId: string,
@@ -229,6 +242,7 @@ export class TicketStore {
 				if (cache) {
 					cache.generation++
 					cache.refreshing = undefined
+					cache.entries = undefined
 				}
 			}
 			invalidateRefresh()
@@ -582,9 +596,20 @@ export class TicketStore {
 			}
 			TicketStore.searches.delete(directory)
 			TicketStore.searches.set(directory, cache)
-			if (TicketStore.searches.size > maxSearchProjects)
-				TicketStore.searches.delete(TicketStore.searches.keys().next().value!)
-			if (!cache.refreshing) {
+			if (TicketStore.searches.size > maxSearchProjects) {
+				const oldest = TicketStore.searches.keys().next().value!
+				TicketStore.searches.get(oldest)?.watcher?.close()
+				const retired = TicketStore.searches.get(oldest)
+				if (retired) {
+					retired.watcher = undefined
+					retired.generation++
+				}
+				TicketStore.searches.delete(oldest)
+			}
+			// Recheck scope on every lookup; only per-ticket inspection is shared between queries.
+			for (const status of ticketStatusSchema.options) await this.safe(path.join(this.directory, status))
+			await this.watchSearch(cache)
+			if (!cache.entries && !cache.refreshing) {
 				const refresh = this.refreshSearch(cache, cache.generation)
 				cache.refreshing = refresh
 				const settled = () => {
@@ -592,17 +617,20 @@ export class TicketStore {
 				}
 				void refresh.then(settled, settled)
 			}
-			const entries = await TicketStore.joinPending(cache.refreshing, signal)
+			const entries = cache.entries ?? (await TicketStore.joinPending(cache.refreshing!, signal))
 			checkCancelled(signal)
 			const reference = normalizeTicketReference(query)
+			const id = ticketIdSchema.safeParse(query.trim())
 			const terms = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
 			const compactQuery = normalizeSearchText(query)
 			return entries
 				.flatMap((entry) => {
 					if (
-						reference
-							? entry.ticket.reference !== reference
-							: !terms.every((term) => entry.text.includes(term))
+						id.success
+							? entry.ticket.id !== id.data
+							: reference
+								? entry.ticket.reference !== reference
+								: !terms.every((term) => entry.text.includes(term))
 					)
 						return []
 					let rank = 3
@@ -619,6 +647,46 @@ export class TicketStore {
 				.slice(0, 50)
 				.map(({ ticket }) => ({ ...ticket }))
 		}, signal)
+	}
+
+	private async watchSearch(cache: TicketSearchCache): Promise<void> {
+		try {
+			const stat = await fs.lstat(this.directory, { bigint: true })
+			const directory = process.platform === "win32" ? this.directory.toLowerCase() : this.directory
+			if (TicketStore.searches.get(directory) !== cache) return
+			const identity = `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`
+			if (cache.identity !== identity) {
+				cache.watcher?.close()
+				cache.watcher = undefined
+				cache.entries = undefined
+				cache.refreshing = undefined
+				cache.files.clear()
+				cache.bytes = 0
+				cache.generation++
+				cache.identity = identity
+			}
+			if (cache.watcher) return
+			const watcher = watch(this.directory, { recursive: true, persistent: false }, () => {
+				if (cache.watcher !== watcher) return
+				cache.generation++
+				cache.entries = undefined
+				cache.refreshing = undefined
+			})
+			cache.watcher = watcher
+			watcher.on("error", () => {
+				watcher.close()
+				if (cache.watcher !== watcher) return
+				cache.watcher = undefined
+				cache.entries = undefined
+				cache.refreshing = undefined
+				cache.generation++
+			})
+		} catch {
+			// Unsupported/missing watchers retain the original per-query inspection path.
+			cache.watcher?.close()
+			cache.watcher = undefined
+			cache.entries = undefined
+		}
 	}
 
 	private async refreshSearch(cache: TicketSearchCache, generation: number): Promise<TicketSearchEntry[]> {
@@ -667,9 +735,7 @@ export class TicketStore {
 								updatedAt: ticket.updatedAt,
 							},
 							name: normalizeSearchText(ticket.name),
-							text: normalizeSearchText(
-								`${ticket.reference ?? ""}\n${ticket.name}\n${ticket.description}\n${ticket.context}`,
-							),
+							text: normalizeSearchText(`${ticket.reference ?? ""}\n${ticket.name}`),
 							bytes: 256,
 						}
 						entry.bytes += 2 * (entry.name.length + entry.text.length + JSON.stringify(entry.ticket).length)
@@ -692,6 +758,8 @@ export class TicketStore {
 			)
 			for (const entry of batch) if (entry) entries.push(entry)
 		}
+		if (cache.generation === generation && cache.watcher && cache.files.size === entries.length)
+			cache.entries = entries
 		return entries
 	}
 
