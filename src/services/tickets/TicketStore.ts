@@ -72,6 +72,10 @@ type TicketSearchEntry = {
 }
 type TicketSearchCache = {
 	files: Map<string, TicketSearchEntry>
+	metadata?: Map<string, string>
+	checking?: Promise<void>
+	changed: Set<string>
+	directories?: string
 	bytes: number
 	generation: number
 	refreshing?: Promise<TicketSearchEntry[]>
@@ -592,6 +596,7 @@ export class TicketStore {
 			const directory = process.platform === "win32" ? this.directory.toLowerCase() : this.directory
 			const cache: TicketSearchCache = TicketStore.searches.get(directory) ?? {
 				files: new Map(),
+				changed: new Set(),
 				bytes: 0,
 				generation: 0,
 			}
@@ -610,15 +615,23 @@ export class TicketStore {
 			// Recheck scope on every lookup; only per-ticket inspection is shared between queries.
 			for (const status of ticketStatusSchema.options) await this.safe(path.join(this.directory, status))
 			await this.watchSearch(cache)
-			if (!cache.entries && !cache.refreshing) {
-				const refresh = this.refreshSearch(cache, cache.generation)
-				cache.refreshing = refresh
-				const settled = () => {
-					if (cache.refreshing === refresh) cache.refreshing = undefined
+			await this.checkSearchDirectories(cache)
+			let entries: TicketSearchEntry[]
+			for (;;) {
+				checkCancelled(signal)
+				if (!cache.refreshing) await TicketStore.joinPending(this.checkSearchChanges(cache), signal)
+				const generation = cache.generation
+				if (!cache.entries && !cache.refreshing) {
+					const refresh = this.refreshSearch(cache, generation)
+					cache.refreshing = refresh
+					const settled = () => {
+						if (cache.refreshing === refresh) cache.refreshing = undefined
+					}
+					void refresh.then(settled, settled)
 				}
-				void refresh.then(settled, settled)
+				entries = cache.entries ?? (await TicketStore.joinPending(cache.refreshing!, signal))
+				if (cache.generation === generation) break
 			}
-			const entries = cache.entries ?? (await TicketStore.joinPending(cache.refreshing!, signal))
 			checkCancelled(signal)
 			const reference = normalizeTicketReference(query)
 			const id = ticketIdSchema.safeParse(query.trim())
@@ -665,16 +678,36 @@ export class TicketStore {
 				cache.entries = undefined
 				cache.refreshing = undefined
 				cache.files.clear()
+				cache.metadata = undefined
+				cache.changed.clear()
+				cache.directories = undefined
 				cache.bytes = 0
 				cache.generation++
 				cache.identity = identity
 			}
 			if (cache.watcher) return
-			const watcher = watch(this.directory, { recursive: true, persistent: false }, () => {
+			const watcher = watch(this.directory, { recursive: true, persistent: false }, (_event, filename) => {
 				if (cache.watcher !== watcher) return
-				cache.generation++
-				cache.entries = undefined
-				cache.refreshing = undefined
+				if (!filename) {
+					watcher.close()
+					cache.watcher = undefined
+					cache.generation++
+					cache.entries = undefined
+					cache.refreshing = undefined
+					return
+				}
+				const relative = String(filename)
+				const parts = relative.split(/[\\/]/)
+				if (parts.length !== 2 || !ticketStatusSchema.safeParse(parts[0]).success || !parts[1].endsWith(".md"))
+					return
+				if (cache.changed.size < maxSearchFiles) cache.changed.add(path.join(this.directory, ...parts))
+				else {
+					watcher.close()
+					cache.watcher = undefined
+					cache.generation++
+					cache.entries = undefined
+					cache.refreshing = undefined
+				}
 			})
 			cache.watcher = watcher
 			watcher.on("error", () => {
@@ -693,7 +726,68 @@ export class TicketStore {
 		}
 	}
 
+	private async checkSearchDirectories(cache: TicketSearchCache): Promise<void> {
+		const signatures = await Promise.all(
+			ticketStatusSchema.options.map(async (status) => {
+				try {
+					const stat = await fs.lstat(path.join(this.directory, status), { bigint: true })
+					return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.mtimeNs}`
+				} catch (error) {
+					if (!missing(error)) throw error
+					return "missing"
+				}
+			}),
+		)
+		const signature = signatures.join("/")
+		if (cache.directories !== undefined && cache.directories !== signature) {
+			cache.generation++
+			cache.entries = undefined
+			cache.refreshing = undefined
+		}
+		cache.directories = signature
+	}
+
+	private checkSearchChanges(cache: TicketSearchCache): Promise<void> {
+		if (cache.checking) return cache.checking
+		const generation = cache.generation
+		const changed = [...cache.changed]
+		cache.changed.clear()
+		// Watchers also report reads/access changes. Only content or identity changes invalidate the index.
+		const check = (async () => {
+			for (let offset = 0; offset < changed.length; offset += searchConcurrency) {
+				await Promise.all(
+					changed.slice(offset, offset + searchConcurrency).map(async (file) => {
+						let signature: string | undefined
+						try {
+							signature = this.searchSignature(await fs.lstat(file, { bigint: true }))
+						} catch (error) {
+							if (!missing(error)) signature = "unreadable"
+						}
+						if (cache.generation === generation && cache.metadata?.get(file) !== signature) {
+							cache.generation++
+							cache.entries = undefined
+							cache.refreshing = undefined
+						}
+					}),
+				)
+			}
+		})()
+		cache.checking = check
+		const settled = () => {
+			if (cache.checking === check) cache.checking = undefined
+		}
+		void check.then(settled, settled)
+		return check
+	}
+
+	private searchSignature(stat: import("node:fs").BigIntStats): string {
+		return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeNs}:${stat.ctimeNs}`
+	}
+
 	private async refreshSearch(cache: TicketSearchCache, generation: number): Promise<TicketSearchEntry[]> {
+		if (cache.generation === generation) cache.metadata = undefined
+		const metadata = new Map<string, string>()
+		let metadataBytes = 0
 		const files: { file: string; name: string; status: TicketStatus }[] = []
 		for (const status of ticketStatusSchema.options) {
 			const directory = path.join(this.directory, status)
@@ -720,11 +814,15 @@ export class TicketStore {
 					try {
 						// Revalidate every file, including symlinks, replacements, and edits that restore mtime.
 						const stat = await fs.lstat(file, { bigint: true })
+						const signature = this.searchSignature(stat)
+						if (metadata.size < maxSearchFiles) {
+							metadata.set(file, signature)
+							metadataBytes += 64 + 2 * (file.length + signature.length)
+						}
 						if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 100000n) {
 							this.discardSearchEntry(cache, file, generation)
 							return undefined
 						}
-						const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeNs}:${stat.ctimeNs}`
 						const cached = cache.files.get(file)
 						if (cached?.signature === signature) return cached
 						const ticket = this.parse(await this.raw(file), status).ticket
@@ -766,8 +864,18 @@ export class TicketStore {
 			)
 			for (const entry of batch) if (entry) entries.push(entry)
 		}
-		if (cache.generation === generation && cache.watcher && cache.files.size === entries.length)
+		if (
+			cache.generation === generation &&
+			cache.watcher &&
+			files.length <= maxSearchFiles &&
+			cache.bytes + metadataBytes <= maxSearchBytes &&
+			cache.files.size === entries.length
+		) {
+			cache.metadata = metadata
+			await this.checkSearchChanges(cache)
+			if (cache.generation !== generation) return entries
 			cache.entries = entries
+		}
 		return entries
 	}
 

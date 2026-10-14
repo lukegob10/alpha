@@ -362,14 +362,19 @@ Chat suggestions now find exact ticket numbers (with optional `#`), references, 
 their task ID, and an unknown task ID fails closed instead of falling back to the foreground project. The ticket editor's
 full-text list still searches descriptions and context.
 
-The existing bounded search cache now retains a watcher-invalidated project snapshot across keystrokes. It skips repeated
-per-ticket metadata scans when unchanged, shares in-flight refreshes, and refreshes external edits, moves, and deletions.
+The existing bounded search cache now retains a project snapshot across keystrokes. It skips repeated per-ticket metadata
+scans when unchanged and shares in-flight refreshes. Watch notifications are filtered to ticket files and compared against
+content/identity metadata before invalidation, so access notifications and transaction-lock activity cannot restart a
+read or discard its cache. Status-directory fingerprints detect moves, additions, and deletions on every lookup even
+before macOS delivers a batched notification. External content edits refresh after their native notification arrives;
+suggestions are derived previews, and selecting a ticket always reads its authoritative current Markdown. Controlled
+notification tests exercise this boundary without timing sleeps, including edits with restored modification timestamps.
 Every lookup still revalidates directory protections and pending transactions. Caches remain limited to four projects,
 10,000 records/16 MiB per project, with 16-file read batches, LRU watcher disposal, and extension-unload cleanup. A watcher
 failure uses the original per-query inspection path. Suggestions remain limited to 50, and title-query debounce is 50 ms.
 An externally malformed, oversized, or non-file ticket evicts its earlier search record during refresh, allowing the
 remaining valid project records to return to the warm snapshot. A regression reproduced the unwanted Markdown reread
-before the fix; 64 focused ticket-store/search/cancellation/recovery tests and the extension typecheck pass afterward.
+before the fix. The ticket suite also covers watcher noise, delayed notifications, and coalesced cancellation.
 
 Current Codex CLI file-search source at `0fd85b075288c4fee50f0df3e4e4f98f80c693fe` was checked on 2026-10-14. Its reusable,
 root-scoped search sessions and bounded results inform this change; native Alpha Tickets remain implemented in Alpha's
@@ -377,17 +382,21 @@ existing TypeScript store rather than a second search runtime.
 
 The 1,000-ticket fixture uses the same queries and Markdown contents as the before-fix run:
 
-| Run                     | Cold empty query | Warm `backend` | Warm `backend cleanup` | Warm exact `PRO-500` | Warm missing query | Markdown reads |
-| ----------------------- | ---------------: | -------------: | ---------------------: | -------------------: | -----------------: | -------------: |
-| Before, one observation |         776.6 ms |        79.0 ms |                51.5 ms |              51.2 ms |            53.5 ms |          1,000 |
-| After, sample 1         |       1,041.2 ms |         9.7 ms |                 9.6 ms |               8.7 ms |             8.5 ms |          1,000 |
-| After, sample 2         |         864.9 ms |         8.6 ms |                 7.8 ms |               7.5 ms |             7.7 ms |          1,000 |
-| After, sample 3         |       1,034.5 ms |        10.3 ms |                 8.9 ms |               9.2 ms |             7.7 ms |          1,000 |
+| Run                       | Cold empty query | Warm `backend` | Warm `backend cleanup` | Warm exact `PRO-500` | Warm missing query | Markdown reads |
+| ------------------------- | ---------------: | -------------: | ---------------------: | -------------------: | -----------------: | -------------: |
+| Before, one observation   |         776.6 ms |        79.0 ms |                51.5 ms |              51.2 ms |            53.5 ms |          1,000 |
+| After, sample 1           |       1,041.2 ms |         9.7 ms |                 9.6 ms |               8.7 ms |             8.5 ms |          1,000 |
+| After, sample 2           |         864.9 ms |         8.6 ms |                 7.8 ms |               7.5 ms |             7.7 ms |          1,000 |
+| After, sample 3           |       1,034.5 ms |        10.3 ms |                 8.9 ms |               9.2 ms |             7.7 ms |          1,000 |
+| After platform correction |         908.3 ms |         8.4 ms |                 8.0 ms |               7.4 ms |             7.5 ms |          1,000 |
 
 The three after-fix observations were taken on Windows/Node 24.21.0 during other validation work, so cold times are not
 comparable enough to claim a cold-start improvement. Warm lookup medians are 9.7/8.9/8.7/7.7 ms, with no Markdown rereads.
 The deterministic regression additionally verifies that metadata-call count no longer scales with every project ticket
 on each keystroke. To reproduce, set `ALPHA_TICKET_SEARCH_BENCHMARK=1` and run:
+
+Native watcher delivery is platform-dependent; see the [Node.js 24 watcher contract](https://nodejs.org/docs/latest-v24.x/api/fs.html#caveats),
+retrieved 2026-10-14. Unavailable watchers, unknown filenames, or notification overflow use the metadata-inspection fallback.
 
 ```sh
 pnpm --dir src test services/tickets/__tests__/TicketStore.search.spec.ts --testNamePattern "measures a 1,000-ticket typing workload" --maxWorkers=1 --no-silent
