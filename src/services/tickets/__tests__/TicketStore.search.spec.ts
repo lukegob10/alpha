@@ -87,6 +87,17 @@ describe("ticket mention search", () => {
 		expect(await store.search("#131")).toEqual([])
 	})
 
+	it("returns to the warm index after a previously cached ticket becomes malformed", async () => {
+		await seed(3)
+		const [ticket] = await store.search("PRO-01")
+		await fs.writeFile(path.join(store.directory, "backlog", `${ticket.id}.md`), "invalid ticket")
+		expect(await store.search("backend")).toHaveLength(2)
+		const reads = vi.mocked(fs.readFile)
+		reads.mockClear()
+		expect(await store.search("cleanup")).toHaveLength(2)
+		expect(reads).not.toHaveBeenCalled()
+	})
+
 	it("refreshes only edited files, including equal-size edits with restored mtime", async () => {
 		await seed(3)
 		const [ticket] = await store.search("PRO-01")

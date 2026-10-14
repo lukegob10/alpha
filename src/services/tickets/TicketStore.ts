@@ -720,7 +720,10 @@ export class TicketStore {
 					try {
 						// Revalidate every file, including symlinks, replacements, and edits that restore mtime.
 						const stat = await fs.lstat(file, { bigint: true })
-						if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 100000n) return undefined
+						if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 100000n) {
+							this.discardSearchEntry(cache, file, generation)
+							return undefined
+						}
 						const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mode}:${stat.mtimeNs}:${stat.ctimeNs}`
 						const cached = cache.files.get(file)
 						if (cached?.signature === signature) return cached
@@ -756,6 +759,7 @@ export class TicketStore {
 						}
 						return entry
 					} catch {
+						this.discardSearchEntry(cache, file, generation)
 						return undefined
 					}
 				}),
@@ -765,6 +769,14 @@ export class TicketStore {
 		if (cache.generation === generation && cache.watcher && cache.files.size === entries.length)
 			cache.entries = entries
 		return entries
+	}
+
+	private discardSearchEntry(cache: TicketSearchCache, file: string, generation: number): void {
+		if (cache.generation !== generation) return
+		const entry = cache.files.get(file)
+		if (!entry) return
+		cache.files.delete(file)
+		cache.bytes -= entry.bytes
 	}
 
 	async create(input: CreateTicket, signal?: AbortSignal): Promise<Ticket> {

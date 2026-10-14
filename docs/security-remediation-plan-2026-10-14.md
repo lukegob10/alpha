@@ -367,6 +367,9 @@ per-ticket metadata scans when unchanged, shares in-flight refreshes, and refres
 Every lookup still revalidates directory protections and pending transactions. Caches remain limited to four projects,
 10,000 records/16 MiB per project, with 16-file read batches, LRU watcher disposal, and extension-unload cleanup. A watcher
 failure uses the original per-query inspection path. Suggestions remain limited to 50, and title-query debounce is 50 ms.
+An externally malformed, oversized, or non-file ticket evicts its earlier search record during refresh, allowing the
+remaining valid project records to return to the warm snapshot. A regression reproduced the unwanted Markdown reread
+before the fix; 64 focused ticket-store/search/cancellation/recovery tests and the extension typecheck pass afterward.
 
 Current Codex CLI file-search source at `0fd85b075288c4fee50f0df3e4e4f98f80c693fe` was checked on 2026-10-14. Its reusable,
 root-scoped search sessions and bounded results inform this change; native Alpha Tickets remain implemented in Alpha's
