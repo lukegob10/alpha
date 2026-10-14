@@ -47,6 +47,86 @@ function turnFailed(options: Parameters<typeof lifecycleEvent>[2] = {}) {
 }
 
 describe("AgentIncidentMonitor", () => {
+	it.each([
+		["success", "tool_succeeded", 0],
+		["completed", "tool_succeeded", 0],
+		["error", "tool_failed", 1],
+		["failed", "tool_failed", 1],
+		["denied", "tool_denied", 0],
+		["cancelled", "tool_cancelled", 0],
+		["indeterminate", "tool_indeterminate", 0],
+	])("preserves %s outcomes in live and restored turn evidence", (status, kind, errors) => {
+		const events = [
+			turnStarted(),
+			lifecycleEvent(
+				"tool_call_accepted",
+				{
+					item: {
+						itemId: "call",
+						type: "tool_call",
+						toolCallId: "call-id",
+						name: "apply_patch",
+						arguments: "PRIVATE",
+					},
+				},
+				{ sequence: 2 },
+			),
+			lifecycleEvent(
+				"tool_result_recorded",
+				{ item: { itemId: "result", type: "tool_result", toolCallId: "call-id", status, output: "PRIVATE" } },
+				{ sequence: 3 },
+			),
+		]
+		for (const restored of [false, true]) {
+			const monitor = new AgentIncidentMonitor({ now: () => 9_000 })
+			if (restored) monitor.restore([{ taskId: "task-incident", events }])
+			else events.forEach((event) => monitor.observe(event))
+			monitor.observe(events[2])
+			const turn = monitor.snapshot().turns[0]!
+			expect(turn.toolErrors).toBe(errors)
+			const outcome = status === "completed" ? "success" : status === "failed" ? "error" : status
+			expect(turn.toolOutcomes).toEqual({
+				success: 0,
+				error: 0,
+				denied: 0,
+				cancelled: 0,
+				indeterminate: 0,
+				[outcome]: 1,
+			})
+			expect(monitor.getTurnDetail(turn.id)?.events.at(-1)).toMatchObject({ kind, toolName: "apply_patch" })
+			expect(monitor.buildTurnInvestigationPrompt(turn.id)).toContain(kind)
+			expect(monitor.buildTurnInvestigationPrompt(turn.id)).toContain("Counts reflect observed events")
+			expect(JSON.stringify(monitor.snapshot())).not.toContain("PRIVATE")
+		}
+	})
+
+	it("retains outcome counts after their event details roll out of the bounded tail", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 9_000 })
+		monitor.observe(turnStarted())
+		monitor.observe(
+			lifecycleEvent(
+				"tool_result_recorded",
+				{
+					item: {
+						itemId: "unknown",
+						type: "tool_result",
+						toolCallId: "call-unknown",
+						status: "indeterminate",
+						output: "unknown",
+					},
+				},
+				{ sequence: 2 },
+			),
+		)
+		for (let sequence = 3; sequence < 50; sequence++) {
+			monitor.observe(
+				lifecycleEvent("step_started", { phase: "working" }, { sequence, stepId: `step-${sequence}` }),
+			)
+		}
+		const turn = monitor.snapshot().turns[0]!
+		expect(monitor.getTurnDetail(turn.id)?.events.some((event) => event.kind === "tool_indeterminate")).toBe(false)
+		expect(monitor.buildTurnInvestigationPrompt(turn.id)).toContain("Observed tool results (indeterminate): 1")
+	})
 	it("expires tasks, alerts, and turns after 24 hours without deleting their detail records", () => {
 		let now = 100_000_000
 		const monitor = new AgentIncidentMonitor({ now: () => now })

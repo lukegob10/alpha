@@ -46,4 +46,34 @@ describe("readRecentIncidentEvents", () => {
 		expect(await readRecentIncidentEvents(storage, "missing-task")).toEqual({ events: [], status: "absent" })
 		await expect(fs.stat(path.join(storage, "tasks"))).rejects.toMatchObject({ code: "ENOENT" })
 	})
+
+	it.each(["record limit", "byte limit", "partial append"])(
+		"reports incomplete coverage after a %s",
+		async (boundary) => {
+			const taskId = "bounded-task"
+			const directory = await getTaskDirectoryPath(storage, taskId)
+			const lineCount = boundary === "record limit" ? 257 : boundary === "byte limit" ? 20 : 2
+			const lines = Array.from({ length: lineCount }, (_, index) =>
+				JSON.stringify({
+					version: 1,
+					taskId,
+					runId: "run",
+					turnId: "turn",
+					eventId: `event-${index}`,
+					sequence: index + 1,
+					occurredAt: index + 1,
+					type: "turn_failed",
+					payload: { status: "failed", error: boundary === "byte limit" ? "x".repeat(10_000) : "failure" },
+				}),
+			)
+			await fs.writeFile(
+				path.join(directory, GlobalFileNames.agentLifecycleEvents),
+				lines.join("\n") + "\n" + (boundary === "partial append" ? '{"version":' : ""),
+			)
+			const result = await readRecentIncidentEvents(storage, taskId)
+			expect(result.status).toBe("incomplete")
+			expect(result.events.length).toBeGreaterThan(0)
+			if (boundary !== "byte limit") expect(result.events).toHaveLength(boundary === "record limit" ? 256 : 2)
+		},
+	)
 })

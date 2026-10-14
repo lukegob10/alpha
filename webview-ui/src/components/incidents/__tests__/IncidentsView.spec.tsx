@@ -18,6 +18,7 @@ vi.mock("react-i18next", () => ({
 				maximum?: number
 				minutes?: number
 				seconds?: number
+				indeterminate?: number
 			},
 		) => {
 			const labels: Record<string, string> = {
@@ -91,6 +92,10 @@ vi.mock("react-i18next", () => ({
 				"turnEvent.tool_accepted": "Tool accepted",
 				"turnEvent.tool_succeeded": "Tool succeeded",
 				"turnEvent.tool_failed": "Tool failed",
+				"turnEvent.tool_denied": "Tool denied",
+				"turnEvent.tool_cancelled": "Tool cancelled",
+				"turnEvent.tool_indeterminate": "Tool outcome unknown",
+				toolOutcomes: `Observed tool results: ${options?.indeterminate ?? 0} unknown`,
 				"turnEvent.approval_requested": "Approval requested",
 				"turnEvent.approval_resolved": "Approval resolved",
 				"turnEvent.turn_completed": "Turn completed",
@@ -429,6 +434,46 @@ describe("IncidentsView", () => {
 			within(screen.getByRole("region", { name: "Turn details · Task 1234abcd" })).getByText("read_file"),
 		).toBeInTheDocument()
 	})
+
+	it.each([
+		["tool_denied", "Tool denied"],
+		["tool_cancelled", "Tool cancelled"],
+		["tool_indeterminate", "Tool outcome unknown"],
+	] as const)("renders %s distinctly from a tool failure", async (kind, label) => {
+		render(<IncidentsView />)
+		reply({ type: "incidentDashboardUpdate", snapshot })
+		fireEvent.click(await screen.findByRole("button", { name: "Inspect turn eeeeeeeeeeee for Task 1234abcd" }))
+		reply({
+			type: "incidentDashboardTurnDetail",
+			turnId: snapshot.turns[0].id,
+			detail: {
+				turn: {
+					...snapshot.turns[0],
+					toolOutcomes: { success: 0, error: 0, denied: 0, cancelled: 0, indeterminate: 1 },
+				},
+				events: [{ id: "b".repeat(64), at: snapshot.turns[0].startedAt, kind, toolName: "apply_patch" }],
+			},
+		})
+		expect(await screen.findByText(label)).toBeInTheDocument()
+		expect(screen.queryByText("Tool failed")).not.toBeInTheDocument()
+		expect(screen.getByText("Observed tool results: 1 unknown")).toBeInTheDocument()
+	})
+
+	it.each(["indeterminate", "incomplete"])(
+		"does not call a completed turn positive when its evidence is %s",
+		async (reason) => {
+			render(<IncidentsView />)
+			const candidate: IncidentDashboardSnapshot["turns"][number] = {
+				...snapshot.turns[0],
+				...(reason === "indeterminate"
+					? { toolOutcomes: { success: 0, error: 0, denied: 0, cancelled: 0, indeterminate: 1 } }
+					: { evidenceStatus: "incomplete" }),
+			}
+			reply({ type: "incidentDashboardUpdate", snapshot: { ...snapshot, turns: [candidate] } })
+			fireEvent.click(await screen.findByRole("button", { name: "Positive" }))
+			expect(screen.getByText("No turns match this filter.")).toBeInTheDocument()
+		},
+	)
 
 	it("ignores stale detail and clears the loading state when the selected detail is unavailable", async () => {
 		render(<IncidentsView />)
