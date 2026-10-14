@@ -523,6 +523,24 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 		expect(provider.postStateToWebview).not.toHaveBeenCalled()
 	})
 
+	it("keeps ten command-launched tasks registered and starts each once without replacing the previous task", async () => {
+		const { provider } = providerHarness()
+		const sessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
+		sessions.setMaxLiveTasks(10)
+		vi.mocked(provider.addTaskToStack).mockImplementation(async (task) => {
+			Object.assign(task, { clineMessages: [], taskKind: "primary" })
+			sessions.register(task)
+		})
+		const tasks = await Promise.all(Array.from({ length: 10 }, (_, index) => provider.createTask(`Work ${index}`)))
+		expect(sessions.getLiveTaskCount()).toBe(10)
+		expect(new Set(tasks.map((task) => task.taskId)).size).toBe(10)
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+		for (const task of tasks) expect(task.start).toHaveBeenCalledOnce()
+		await expect(provider.createTask("Over capacity")).rejects.toThrow("Maximum live task limit reached (10)")
+		expect(sessions.getLiveTaskCount()).toBe(10)
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+	})
+
 	it("snapshots the composer preference for a new task and the parent preference for a child", async () => {
 		const { provider } = providerHarness([], { kind: "effort", effort: "medium" })
 		const parent = fakeTask("parent", { kind: "effort", effort: "high" })

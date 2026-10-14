@@ -17,6 +17,7 @@ type ScriptChunk =
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 
 interface CrossTaskHostProvider {
+	closeTask(taskId: string): Promise<void>
 	getLiveTask(taskId: string): HostTask | undefined
 	getTaskWithId(
 		taskId: string,
@@ -292,8 +293,263 @@ class CompletingChildAI {
 	}
 }
 
+class ConcurrentThreadsAI {
+	readonly id = "concurrent-threads-e2e"
+	readonly started = new Set<string>()
+	readonly receivedResults = new Set<string>()
+	readonly children: string[] = []
+	private rootTaskId?: string
+	private readonly turns = new Map<string, number>()
+	private releaseRequests!: () => void
+	private readonly mayFinish = new Promise<void>((resolve) => {
+		this.releaseRequests = resolve
+	})
+
+	constructor(private readonly childCount = 0) {}
+
+	release(): void {
+		this.releaseRequests()
+	}
+
+	async *createMessage(
+		_system: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; signal?: AbortSignal; tools?: Array<{ function?: { name?: string } }> },
+	): AsyncGenerator<ScriptChunk> {
+		const taskId = metadata?.taskId
+		assert.ok(taskId)
+		const turn = this.turns.get(taskId) ?? 0
+		this.turns.set(taskId, turn + 1)
+		if (this.childCount > 0) this.rootTaskId ??= taskId
+		if (taskId === this.rootTaskId) {
+			if (turn > 0 && turn <= this.childCount) {
+				const created = JSON.parse(findLatestToolResult(messages)) as { task_id: string }
+				assert.ok(created.task_id, "Every create_task call must return its child ID")
+				this.children.push(created.task_id)
+			}
+			if (turn < this.childCount) {
+				assert.ok(metadata?.tools?.some((tool) => tool.function?.name === "create_task"))
+				yield {
+					type: "tool_call",
+					id: `${taskId}-create-${turn}`,
+					name: "create_task",
+					arguments: JSON.stringify({ objective: `Concurrent child ${turn + 1}`, workspace_mode: "shared" }),
+				}
+			} else {
+				if (turn > this.childCount) {
+					const history = JSON.stringify(messages)
+					for (const childId of this.children) {
+						if (history.includes(`Concurrent child ${childId} completed.`))
+							this.receivedResults.add(childId)
+					}
+					assert.ok(this.receivedResults.size > 0, "A resumed coordinator must receive child results")
+					assert.ok(turn <= this.childCount * 2 + 1, "Child results must not cause duplicate wake loops")
+				}
+				yield {
+					type: "text",
+					text: `Launched ${this.children.length}; integrated ${this.receivedResults.size}.`,
+				}
+			}
+		} else {
+			assert.equal(turn, 0, "Each concurrent worker should need one model request")
+			const signal = metadata?.signal
+			assert.ok(signal)
+			this.started.add(taskId)
+			let cancelled!: () => void
+			const cancellation = new Promise<void>((resolve) => {
+				cancelled = resolve
+			})
+			if (signal.aborted) cancelled()
+			else signal.addEventListener("abort", cancelled, { once: true })
+			try {
+				await Promise.race([this.mayFinish, cancellation])
+			} finally {
+				signal.removeEventListener("abort", cancelled)
+			}
+			if (signal.aborted) return
+			yield { type: "text", text: `Concurrent child ${taskId} completed.` }
+		}
+		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
+	}
+
+	getModel() {
+		return {
+			id: this.id,
+			info: { contextWindow: 128_000, maxTokens: 8_192, supportsImages: false, supportsPromptCache: false },
+		}
+	}
+
+	async countTokens(content: unknown[]): Promise<number> {
+		return Math.max(1, Math.ceil(JSON.stringify(content).length / 4))
+	}
+
+	async completePrompt(): Promise<string> {
+		return ""
+	}
+}
+
 suite("Cross-task deterministic Extension Host acceptance", function () {
 	setDefaultSuiteTimeout(this)
+
+	test("ten command/API launches keep every previous task running and respect capacity", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI()
+		const taskIds: string[] = []
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result") {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 10,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			for (let index = 0; index < 10; index++) {
+				const taskId = await api.startNewTask({ configuration, text: `Concurrent command ${index + 1}` })
+				taskIds.push(taskId)
+				await waitFor(() => scripted.started.has(taskId), {
+					timeout: 15_000,
+					description: `worker ${index + 1} to start`,
+				})
+			}
+			assert.equal(scripted.started.size, 10)
+			const liveTasks = taskIds.map((taskId) => provider.getLiveTask(taskId))
+			const firstTaskId = taskIds[0]
+			assert.ok(firstTaskId)
+			await api.resumeTask(firstTaskId)
+			for (const [index, taskId] of taskIds.entries()) {
+				assert.equal(
+					provider.getLiveTask(taskId),
+					liveTasks[index],
+					"Opening a running chat must retain its runtime",
+				)
+			}
+			for (const taskId of taskIds) {
+				assert.equal(
+					provider.getLiveTask(taskId)?.abort,
+					false,
+					"Launching another root must not cancel this task",
+				)
+				assert.equal(provider.getLiveTask(taskId)?.didComplete, false)
+			}
+			await assert.rejects(
+				api.startNewTask({ configuration, text: "Exceeds capacity" }),
+				/Maximum live task limit/,
+			)
+			assert.ok(taskIds.every((id) => provider.getLiveTask(id)?.abort === false))
+			scripted.release()
+			await waitFor(() => taskIds.every((id) => completed.has(id)), {
+				timeout: 60_000,
+				description: "all ten roots to complete",
+			})
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const taskId of taskIds) await provider.closeTask(taskId)
+			await api.setConfiguration(original)
+		}
+	})
+
+	test("one chat launches ten children that survive its completion and deliver every result", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI(10)
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result") {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		let rootId: string | undefined
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 11,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			rootId = await api.startNewTask({
+				configuration,
+				text: "Launch ten new chat threads for this project and collect their results.",
+			})
+			await waitFor(() => scripted.started.size === 10 && completed.has(rootId!), {
+				timeout: 60_000,
+				description: "ten children running after their coordinator completes",
+			})
+			const root = provider.getLiveTask(rootId)
+			assert.ok(root)
+			assert.equal(root.didComplete, true)
+			assert.equal(new Set(scripted.children).size, 10)
+			const children = await provider.listIndependentTasks(root)
+			assert.equal(children.length, 10)
+			assert.ok(children.every((child) => child.lifecycle === "running"))
+			for (const childId of scripted.children) {
+				assert.equal(provider.getLiveTask(childId)?.abort, false)
+				assert.equal(provider.getLiveTask(childId)?.didComplete, false)
+			}
+			scripted.release()
+			await waitFor(
+				() => scripted.receivedResults.size === 10 && provider.getLiveTask(rootId!)?.didComplete === true,
+				{ timeout: 60_000, description: "the coordinator to integrate all ten completion messages" },
+			)
+			assert.ok(scripted.children.every((id) => completed.has(id)))
+			await waitFor(
+				async () => {
+					for (const childId of scripted.children) {
+						const { historyItem } = await provider.getTaskWithId(childId, {
+							includeApiConversationHistory: false,
+						})
+						if (!historyItem.orchestrationCompletionNotifications?.[0]?.deliveredAt) return false
+					}
+					return true
+				},
+				{ timeout: 30_000, description: "all child completion receipts to become durable" },
+			)
+			for (const childId of scripted.children) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationParentTaskId, rootId)
+				assert.equal(historyItem.orchestrationCompletionNotifications?.length, 1)
+				assert.ok(historyItem.orchestrationCompletionNotifications?.[0]?.deliveredAt)
+			}
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const childId of scripted.children) await provider.closeTask(childId)
+			if (rootId) await provider.closeTask(rootId)
+			await api.setConfiguration(original)
+		}
+	})
 
 	test("creates, lists, stops, waits, and persists a parent-owned child through the model tool path", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")

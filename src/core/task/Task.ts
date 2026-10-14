@@ -885,6 +885,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly globalStoragePath: string
 	private readonly agentMessageInbox: AgentMessageInbox
 	private readonly agentMessageAdmissions = new Set<Promise<unknown>>()
+	private independentAgentMessagesMayResume = false
+	private independentAgentWakePromise?: Promise<boolean>
 	/**
 	 * The legacy API-history file remains the provider/runtime authority during
 	 * the strangler rollout. This versioned transcript is an integrity-checked
@@ -2043,12 +2045,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!this.isStreaming &&
 			!this.isAgentTurnEngineActive &&
 			!this.steerMessageAwaitingPersistence &&
-			this.messageQueueService.messages.length > 0
+			(this.messageQueueService.messages.length > 0 ||
+				(this.independentAgentMessagesMayResume && this.didComplete && this.agentMessageInbox.hasPending()))
 		if (!canWake()) return Promise.resolve()
 		// Install the owner before selecting input: queue selection publishes synchronously.
 		const wake = Promise.resolve().then(async () => {
 			if (!canWake()) return
 			const message = this.messageQueueService.messages[0]
+			if (!message) {
+				await this.resumeIndependentAgentMessages()
+				return
+			}
 			if (this.didComplete) {
 				await this.resumeCompletedTaskFollowup(message.text, message.images, "human", [message.id])
 				return
@@ -9163,6 +9170,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Independent-task input can require a consumer after the current lifecycle settles. */
+	public markIndependentAgentMessagesPending(): void {
+		this.independentAgentMessagesMayResume = true
+	}
+
+	/** Coalesce wake requests without turning passive managed-agent mail into new work. */
+	public resumeIndependentAgentMessages(): Promise<boolean> {
+		if (this.independentAgentWakePromise) return this.independentAgentWakePromise
+		if (
+			this.taskKind !== "primary" ||
+			!this.didComplete ||
+			this.abort ||
+			this.abandoned ||
+			this.steerMessageAwaitingPersistence
+		)
+			return Promise.resolve(false)
+		const wake = this.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent").then(
+			() => true,
+		)
+		this.independentAgentWakePromise = wake
+		const settled = () => {
+			if (this.independentAgentWakePromise === wake) this.independentAgentWakePromise = undefined
+		}
+		void wake.then(settled, settled)
+		return wake
+	}
+
 	public async receiveAgentMessage(message: AgentMessage): Promise<void> {
 		if (this.abort && !this.didComplete) throw new Error("The task is stopped and cannot accept an agent message")
 		await this.agentMessageInbox.receive(message)
@@ -9207,6 +9241,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!(await this.addToApiConversationHistory(entry))) throw new Error("Agent message was not persisted")
 		}
 		await this.agentMessageInbox.deliver(persist)
+		// Consume the wake request with its inbox; later passive mail grants no new turn.
+		if (!this.agentMessageInbox.hasPending()) this.independentAgentMessagesMayResume = false
 		await this.providerRef.deref()?.deliverAgentMessages?.(this, persist)
 	}
 

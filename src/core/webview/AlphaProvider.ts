@@ -5400,6 +5400,7 @@ export class AlphaProvider
 			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
 		}
 
+		const taskApprovalMode = parent.getTaskApprovalMode()
 		const taskMode = await parent.getTaskMode()
 		const taskApiConfigName = await parent.getTaskApiConfigName()
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
@@ -5419,12 +5420,19 @@ export class AlphaProvider
 			// FakeAI is a host-provided runtime adapter, not persisted configuration. Keep
 			// its methods intact while snapshotting the serializable provider settings.
 			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
-			const child = await this.createTask(normalizedObjective, undefined, undefined, {
+			// Independent roots outlive the editor that issued their launch command.
+			// The existing sidebar provider owns host-lifetime background execution.
+			const runtimeOwner =
+				this.getHostProviders().find(
+					(provider) => !provider._disposed && provider.renderContext === "sidebar",
+				) ?? this
+			const child = await runtimeOwner.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
 				preserveExisting: true,
 				background: true,
 				workspacePath,
 				historyWorkspacePath: parent.historyWorkspacePath,
+				taskApprovalMode,
 				taskMode,
 				taskApiConfigName,
 				apiConfiguration,
@@ -5603,6 +5611,16 @@ export class AlphaProvider
 		})
 	}
 
+	private async serializeIndependentCompletionDelivery(
+		taskId: string,
+		operation: () => Promise<void>,
+	): Promise<void> {
+		await this.taskSessions.runOwnershipOperation(`independent-delivery:${taskId}`, async () => {
+			await this.taskHistoryStore.invalidate?.(taskId)
+			await operation()
+		})
+	}
+
 	private getIndependentCompletionId(taskId: string, timestamp: number): string {
 		return `completion:${crypto.createHash("sha256").update(`${taskId}:${timestamp}`).digest("hex")}`
 	}
@@ -5670,7 +5688,7 @@ export class AlphaProvider
 		const owner = this.getTaskOwner(child.taskId)
 		if (owner && owner !== this) return owner.notifyIndependentTaskCompletion(child, parentWasWaiting, completion)
 		await this.taskHistoryStoreReady
-		await this.serializeIndependentCompletion(child.taskId, () =>
+		await this.serializeIndependentCompletionDelivery(child.taskId, () =>
 			this.deliverIndependentCompletion(child.taskId, completion, parentWasWaiting),
 		)
 	}
@@ -5681,95 +5699,97 @@ export class AlphaProvider
 		completion: { ts: number; text: string },
 		parentWasWaiting = false,
 	): Promise<void> {
-		let history = this.taskHistoryStore.get(taskId)
-		if (!history?.orchestrationParentTaskId || history.taskKind === "subagent") return
-		let receipts = history.orchestrationCompletionNotifications ?? []
-		let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
-		if (receipt?.deliveredAt !== undefined) return
-		if (!receipt) {
-			// Only settled receipts may be evicted. Full pending outboxes reject admission.
-			if (receipts.length >= 100) {
-				const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
-				if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
-				receipts = receipts.filter((_, index) => index !== settled)
-			}
-			receipt = {
-				id: this.getIndependentCompletionId(taskId, completion.ts),
-				turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
-				completionMessageTs: completion.ts,
-				createdAt: Date.now(),
-				deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
-			}
-			receipts = [...receipts, receipt]
-			await this.updateTaskHistory(
-				{ ...history, orchestrationCompletionNotifications: receipts },
-				{ broadcast: false },
-			)
-		}
-
-		const parentId = history.orchestrationParentTaskId
-		const parent = this.getLiveTask(parentId)
-		const receiptId = receipt.id
-		if (receipt.deliveredVia === "wait") {
-			// Only the canonical saved transcript proves consumption; an in-memory Promise does not.
-			const savedHistory = await readApiMessages({
-				taskId: parentId,
-				globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-			})
-			if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
-				if (parent && !parent.abort && !parent.isCompleted()) return
-				// A host restart or terminated parent cannot finish that old wait. Transfer its
-				// reserved identity to the inbox before delivering, preserving exactly-once replay.
-				const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
-				receipt = transferredReceipt
-				receipts = receipts.map((item) => (item.id === receiptId ? transferredReceipt : item))
+		let delivery:
+			| { parentId: string; receiptId: string; deliveredVia: "wait" | "inbox"; enqueue: boolean }
+			| undefined
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (!history?.orchestrationParentTaskId || history.taskKind === "subagent") return
+			let receipts = history.orchestrationCompletionNotifications ?? []
+			let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
+			if (receipt?.deliveredAt !== undefined) return
+			if (!receipt) {
+				// Only settled receipts may be evicted; pending outboxes remain bounded.
+				if (receipts.length >= 100) {
+					const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
+					if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
+					receipts = receipts.filter((_, index) => index !== settled)
+				}
+				receipt = {
+					id: this.getIndependentCompletionId(taskId, completion.ts),
+					turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
+					completionMessageTs: completion.ts,
+					createdAt: Date.now(),
+					deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
+				}
+				receipts = [...receipts, receipt]
 				await this.updateTaskHistory(
 					{ ...history, orchestrationCompletionNotifications: receipts },
 					{ broadcast: false },
 				)
 			}
-		}
-
-		if (receipt.deliveredVia !== "wait") {
-			if (parent && parent.taskKind !== "primary")
-				throw new Error("The completion recipient is not a primary task")
-			const apiHistory =
-				parent?.apiConversationHistory ??
-				(await readApiMessages({
+			const parentId = history.orchestrationParentTaskId
+			const parent = this.getLiveTask(parentId)
+			if (receipt.deliveredVia === "wait") {
+				// Only the saved transcript proves consumption of a successful wait result.
+				const savedHistory = await readApiMessages({
 					taskId: parentId,
 					globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-				}))
-			// A failed receipt write after transcript commit must not append or start another turn.
-			if (!apiHistory.some((message) => message.agent_message_id === receipt.id)) {
-				const message = {
-					id: receipt.id,
-					senderTaskId: taskId,
-					text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
-				}
-				if (parent) {
-					await parent.receiveAgentMessage(message)
-					if (parent.isCompleted())
-						await parent.resumeCompletedTaskFollowup(
-							"Continue with the pending agent messages.",
-							[],
-							"agent",
-						)
-				} else {
-					await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
+				})
+				if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
+					if (parent && !parent.abort && !parent.isCompleted()) return
+					const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
+					receipt = transferredReceipt
+					receipts = receipts.map((item) => (item.id === transferredReceipt.id ? transferredReceipt : item))
+					await this.updateTaskHistory(
+						{ ...history, orchestrationCompletionNotifications: receipts },
+						{ broadcast: false },
+					)
 				}
 			}
+			let enqueue = false
+			if (receipt.deliveredVia !== "wait") {
+				if (parent && parent.taskKind !== "primary")
+					throw new Error("The completion recipient is not a primary task")
+				const apiHistory =
+					parent?.apiConversationHistory ??
+					(await readApiMessages({
+						taskId: parentId,
+						globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
+					}))
+				const receiptId = receipt.id
+				// Retrying a failed receipt write must not append committed input again.
+				enqueue = !apiHistory.some((message) => message.agent_message_id === receiptId)
+			}
+			delivery = { parentId, receiptId: receipt.id, deliveredVia: receipt.deliveredVia ?? "inbox", enqueue }
+		})
+		if (!delivery) return
+		const { parentId, receiptId, deliveredVia, enqueue } = delivery
+		// Recipient append/resume may itself finalize older wait receipts. Never hold
+		// the child's receipt-write fence across that callback or its mailbox lock.
+		if (enqueue) {
+			const message = {
+				id: receiptId,
+				senderTaskId: taskId,
+				text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
+			}
+			if (this.getLiveTask(parentId)) await this.deliverIndependentTaskMessage(parentId, message)
+			else await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
 		}
-		history = this.taskHistoryStore.get(taskId) ?? history
-		const deliveredVia = receipt.deliveredVia ?? "inbox"
-		await this.updateTaskHistory(
-			{
-				...history,
-				orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? receipts).map(
-					(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
-				),
-			},
-			{ broadcast: false },
-		)
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (history?.orchestrationParentTaskId !== parentId)
+				throw new Error("Completion recipient changed during delivery")
+			await this.updateTaskHistory(
+				{
+					...history,
+					orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? []).map(
+						(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
+					),
+				},
+				{ broadcast: false },
+			)
+		})
 	}
 
 	public retryIndependentTaskCompletionsForParent(parentId: string): void {
@@ -5870,7 +5890,7 @@ export class AlphaProvider
 	}
 
 	private async reconcileIndependentTaskCompletion(taskId: string): Promise<void> {
-		await this.serializeIndependentCompletion(taskId, async () => {
+		await this.serializeIndependentCompletionDelivery(taskId, async () => {
 			const current = this.taskHistoryStore.get(taskId)
 			if (!current?.orchestrationParentTaskId) return
 			const messages = await readTaskMessages({
@@ -5914,12 +5934,27 @@ export class AlphaProvider
 			if (!target) throw new Error("The child task is not live to receive messages")
 		}
 
-		await target.receiveAgentMessage({ id: uuidv7(), senderTaskId: sender.taskId, text: message.trim() })
-		if (target.isCompleted()) {
-			await target.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
-			return { task_id: resolvedTargetTaskId, status: "resumed" }
-		}
-		return { task_id: resolvedTargetTaskId, status: "buffered" }
+		return this.deliverIndependentTaskMessage(resolvedTargetTaskId, {
+			id: uuidv7(),
+			senderTaskId: sender.taskId,
+			text: message.trim(),
+		})
+	}
+
+	private async deliverIndependentTaskMessage(
+		taskId: string,
+		message: AgentMessage,
+	): Promise<{ task_id: string; status: string }> {
+		// Different children/views can address one completed recipient simultaneously.
+		// Serialize admission and wake against its stable ID, independently of selection.
+		return this.taskSessions.runOwnershipOperation(`independent-input:${taskId}`, async () => {
+			const target = this.getLiveTask(taskId)
+			if (!target || target.taskKind !== "primary") throw new Error("The recipient task is not live")
+			target.markIndependentAgentMessagesPending()
+			await target.receiveAgentMessage(message)
+			const resumed = await target.resumeIndependentAgentMessages()
+			return { task_id: taskId, status: resumed ? "resumed" : "buffered" }
+		})
 	}
 
 	public async steerIndependentTask(
@@ -6413,14 +6448,15 @@ export class AlphaProvider
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
 		assertSupportedApiProvider(apiConfiguration.apiProvider)
 
-		if (!parentTask && options.preserveExisting && !options.background) {
+		const preserveExisting = options.preserveExisting !== false
+		if (!parentTask && preserveExisting && !options.background) {
 			await this.finalizeActiveCompletionCandidate()
 		}
 
-		// Single-open-task invariant: always enforce for user-initiated top-level tasks
-		if (!parentTask && !options.preserveExisting) await this.removeTaskFromStack()
+		// New roots keep existing runtimes alive; replacement is an explicit compatibility operation.
+		if (!parentTask && !preserveExisting) await this.removeTaskFromStack()
 
-		if (!parentTask && options.preserveExisting && !this.taskSessions.canCreateTask()) {
+		if (!parentTask && preserveExisting && !this.taskSessions.canCreateTask()) {
 			const configuredMaxLiveTasks = normalizeMaxLiveTasks(
 				(this.contextProxy as { getValue?: (key: string) => unknown } | undefined)?.getValue?.(
 					"maxConcurrentTasks",
