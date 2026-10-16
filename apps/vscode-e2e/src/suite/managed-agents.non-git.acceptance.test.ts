@@ -40,6 +40,7 @@ interface HostProvider {
 	getLiveTask(taskId: string): LiveTask | undefined
 	getTaskWithId(taskId: string): Promise<{ taskDirPath: string }>
 	getStateToPostToWebview(): Promise<ExtensionState>
+	deleteTaskWithId(taskId: string): Promise<void>
 }
 
 function deferred() {
@@ -187,6 +188,7 @@ suite("Managed agents in a plain folder", function () {
 			childrenCompleted: deferred(),
 		}
 		const model = new NonGitAgentsAI(observation)
+		let rootTaskId: string | undefined
 		const failures: string[] = []
 		const onFailed = (_taskId: string, tool: string, error: string) => failures.push(tool + ": " + error)
 		const onCompleted = (taskId: string) => {
@@ -224,6 +226,7 @@ suite("Managed agents in a plain folder", function () {
 				text: "Use two default sub-agents to return separate short replies, collect both, and complete.",
 				configuration,
 			})
+			rootTaskId = rootId
 			await waitFor(
 				() => {
 					assert.deepEqual(failures, [], "Native non-Git agent launch must not fail")
@@ -297,6 +300,7 @@ suite("Managed agents in a plain folder", function () {
 				observation.childrenCompleted.resolve()
 			},
 			() => api.clearCurrentTask(),
+			() => (rootTaskId ? provider.deleteTaskWithId(rootTaskId) : undefined),
 			() => api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
 			() => api.off(AlphaCodeEventName.TaskToolFailed, onFailed),
 			() => model.removeFromCache?.(),

@@ -319,6 +319,85 @@ describe("ManagedAgentTree", () => {
 		expect(screen.getByRole("button", { name: /Cinder task unavailable/i })).toBeDisabled()
 	})
 
+	it("closes existing toolbar activity when the presentation changes to the dock", async () => {
+		const user = userEvent.setup()
+		const projection = hierarchyProjection()
+		const onShowTask = vi.fn()
+		const { rerender } = render(
+			<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />,
+		)
+		await user.click(screen.getByRole("button", { name: "agentActivity.open" }))
+		expect(screen.getByRole("dialog", { name: "agentActivity.title" })).toBeVisible()
+		rerender(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={projection}
+				onShowTask={onShowTask}
+				presentation="dock"
+			/>,
+		)
+		expect(screen.queryByRole("dialog", { name: "agentActivity.title" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "agentActivity.open" })).not.toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		await user.click(screen.getByRole("button", { name: /Open Cinder/ }))
+		expect(onShowTask).toHaveBeenCalledWith("parent-1")
+		rerender(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />)
+		expect(screen.queryByRole("dialog", { name: "agentActivity.title" })).not.toBeInTheDocument()
+	})
+
+	it("does not render an empty nested dock strip for activity from already represented agents", () => {
+		const { container } = render(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={hierarchyProjection()}
+				presentation="dock"
+				excludeTaskIds={new Set(["parent-1", "child-2"])}
+			/>,
+		)
+		expect(container).toBeEmptyDOMElement()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it("retains dock overflow navigation while omitting activity", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		render(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={hierarchyProjection()}
+				presentation="dock"
+				maxVisibleAgents={1}
+				onShowTask={onShowTask}
+			/>,
+		)
+		expect(screen.queryByRole("button", { name: "agentActivity.open" })).not.toBeInTheDocument()
+		await user.click(screen.getByRole("button", { name: "agentNavigation.more" }))
+		const dialog = screen.getByRole("dialog", { name: "agentNavigation.title" })
+		await user.click(within(dialog).getByRole("button", { name: /Open Iris/ }))
+		expect(onShowTask).toHaveBeenCalledWith("child-2")
+	})
+
+	it("retains omitted-descendant overflow when group cards already show every known row", async () => {
+		const user = userEvent.setup()
+		const projection = hierarchyProjection()
+		projection.activity = []
+		projection.omittedNodeCount = 2
+		render(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={projection}
+				presentation="dock"
+				excludeTaskIds={new Set(["parent-1", "child-2"])}
+			/>,
+		)
+		expect(screen.getByRole("button", { name: "agentNavigation.more" })).toHaveTextContent("+2")
+		await user.click(screen.getByRole("button", { name: "agentNavigation.more" }))
+		expect(screen.getByRole("dialog", { name: "agentNavigation.title" })).toHaveTextContent(
+			"agentNavigation.omitted",
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
 	it("keeps status readable without relying on dot color", () => {
 		render(<ManagedAgentTree rootTaskId="root-1" projection={hierarchyProjection()} onShowTask={vi.fn()} />)
 		expect(screen.getByRole("button", { name: /Open Cinder · Working/i })).toHaveTextContent("Working")

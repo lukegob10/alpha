@@ -29,6 +29,9 @@ The expanded list retains that width and has a bounded scroll area. A robot icon
 shows the total number of sub-agents, and a separate badge shows the running count. Compact rows retain names,
 status or a spinner, native task navigation, and existing controls. Approval, input, and change-review attention
 remain visible without replacing the running count.
+The compact dock has no Activity button or activity feed; users inspect a sub-agent through its task link and
+return through the existing parent-chat navigation. Runtime activity and delivery records retain their existing
+owners, and hiding the feed never marks unseen events as read.
 
 ## User-facing contract
 

@@ -255,7 +255,7 @@ describe("SubagentDock", () => {
 		expect(screen.getByRole("button", { name: /Open Maple · Completed/ })).toBeVisible()
 	})
 
-	it("keeps projected descendants and activity origin labels alongside action rows", async () => {
+	it("keeps projected descendant navigation without activity controls or hidden read effects", async () => {
 		const user = userEvent.setup()
 		const onShowTask = vi.fn()
 		const projected = projection()
@@ -272,7 +272,7 @@ describe("SubagentDock", () => {
 				unread: true,
 			},
 		]
-		render(
+		const { rerender } = render(
 			<SubagentDock groups={[group()]} projection={projected} parentTaskId="parent-1" onShowTask={onShowTask} />,
 		)
 		expect(screen.getByText("2 sub-agents")).toBeVisible()
@@ -280,9 +280,39 @@ describe("SubagentDock", () => {
 		expect(screen.getAllByRole("button", { name: /Open Maple/ })).toHaveLength(1)
 		await user.click(screen.getByRole("button", { name: /Open Iris/ }))
 		expect(onShowTask).toHaveBeenCalledWith("nested-1")
-		await user.click(screen.getByRole("button", { name: /Activity/ }))
-		expect(screen.getByRole("dialog")).toHaveTextContent("Maple")
-		expect(screen.getByRole("dialog")).toHaveTextContent("Layout result delivered")
+		expect(screen.queryByRole("button", { name: /Activity/ })).not.toBeInTheDocument()
+		expect(screen.queryByText("Layout result delivered")).not.toBeInTheDocument()
+		rerender(<SubagentDock groups={[group()]} projection={projected} parentTaskId="parent-1" isVisible={false} />)
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "markManagedAgentActivityRead" }))
+	})
+
+	it("does not render an activity-only zero-agent dock", () => {
+		const projected = projection()
+		projected.nodes = [
+			{
+				...projected.nodes[0],
+				taskId: "parent-1",
+				path: "/root",
+				role: "root",
+				depth: 0,
+				parentTaskId: undefined,
+			},
+		]
+		projected.activity = [
+			{
+				eventId: "activity-1",
+				sequence: 1,
+				createdAt: 5,
+				kind: "result",
+				name: "agent_completed",
+				summary: "Earlier result",
+				unread: true,
+			},
+		]
+		const { container } = render(<SubagentDock groups={[]} projection={projected} parentTaskId="parent-1" />)
+		expect(container).toBeEmptyDOMElement()
+		expect(postMessage).not.toHaveBeenCalled()
 	})
 
 	it("supports a reloaded projection without transcript groups", async () => {

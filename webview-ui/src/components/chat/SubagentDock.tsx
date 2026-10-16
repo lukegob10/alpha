@@ -53,7 +53,7 @@ export const SubagentDock = memo(function SubagentDock({
 		() => new Set(latestGroups.flatMap((group) => group.agents.map((agent) => agent.taskId))),
 		[latestGroups],
 	)
-	// Exclude duplicate navigation rows only; retain the full tree so activity keeps originating agent names.
+	// Exclude only duplicate navigation rows; the canonical tree still owns descendant and overflow projections.
 	const agents = latestGroups.flatMap((group) => group.agents)
 	const ungroupedAttention =
 		projection?.rootTaskId === parentTaskId
@@ -81,7 +81,7 @@ export const SubagentDock = memo(function SubagentDock({
 				? t("subagentDock.input", { count: inputCount })
 				: undefined
 	const count = new Set([...model.nodes.map((node) => node.taskId), ...groupedTaskIds]).size
-	if (count === 0 && !projection?.activity.length) return null
+	if (count === 0) return null
 
 	return (
 		<section

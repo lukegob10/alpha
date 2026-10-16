@@ -117,10 +117,11 @@ export function ManagedAgentTree({
 	const descendants = excludeTaskIds ? model.nodes.filter((node) => !excludeTaskIds.has(node.taskId)) : model.nodes
 	const visibleDescendants = descendants.slice(0, visibleLimit)
 	const hiddenCount = Math.max(0, descendants.length - visibleDescendants.length + model.omittedNodeCount)
-	const activity = projection?.activity ?? []
+	const activityEnabled = presentation !== "dock"
+	const activity = activityEnabled ? (projection?.activity ?? []) : []
 	const unreadCount = activity.filter((event) => event.unread).length
 	const markDisplayedActivityRead = () => {
-		if (!showActivity || !isVisible || !projection || !unreadCount) return
+		if (!activityEnabled || !showActivity || !isVisible || !projection || !unreadCount) return
 		const sequence = Math.max(...projection.activity.map((event) => event.sequence))
 		vscode.postMessage({
 			type: "markManagedAgentActivityRead",
@@ -131,9 +132,10 @@ export function ManagedAgentTree({
 	useEffect(() => {
 		setShowAllAgents(false)
 		setShowActivity(false)
-	}, [rootTaskId])
+	}, [rootTaskId, presentation])
 
-	if (visibleDescendants.length === 0 && !activity.length && !isLoading && !errorMessage) return null
+	if (visibleDescendants.length === 0 && hiddenCount === 0 && !activity.length && !isLoading && !errorMessage)
+		return null
 
 	return (
 		<section
@@ -244,7 +246,7 @@ export function ManagedAgentTree({
 					)}
 				</DialogContent>
 			</Dialog>
-			<Dialog open={showActivity && isVisible} onOpenChange={setShowActivity}>
+			<Dialog open={activityEnabled && showActivity && isVisible} onOpenChange={setShowActivity}>
 				<DialogContent
 					className="max-h-[80vh] overflow-y-auto"
 					onCloseAutoFocus={(event) => {

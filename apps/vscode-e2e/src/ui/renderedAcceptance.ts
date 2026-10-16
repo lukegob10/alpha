@@ -251,6 +251,9 @@ export async function exerciseRenderedAcceptance(
 		assert.ok(expanded.centerOffset <= 1)
 		assert.ok(expanded.rowsHeight > 0 && expanded.rowsHeight <= Math.min(240, expanded.viewportHeight * 0.32) + 1)
 		assert.equal(expanded.clipped, false, "Task controls must fit inside the compact list")
+		await check(
+			"![...d.querySelectorAll('.subagent-dock button')].some(e=>/^Activity(?:\\s|\\()/.test(e.textContent.trim()))",
+		)
 		await capture("compact-subagent-dock-open")
 		await fs.writeFile(
 			path.join(directory, "ui-compact-subagent-dock.json"),
