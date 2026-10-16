@@ -25,6 +25,7 @@ const toCompatibilityItem = (item: HistoryItem): HistoryItem => ({
 	number: item.number,
 	ts: item.ts,
 	task: truncate(item.task, MAX_TASK_TEXT_CHARS) ?? "",
+	displayName: item.displayName,
 	tokensIn: item.tokensIn,
 	tokensOut: item.tokensOut,
 	cacheWrites: item.cacheWrites,

@@ -16,6 +16,8 @@ export interface SafeWriteJsonOptions {
 	 * @default false
 	 */
 	prettyPrint?: boolean
+	/** Prepare a read/modify/write snapshot after acquiring the destination's existing write lease. */
+	prepareData?: () => unknown | Promise<unknown>
 	/** Serialization buffer threshold in characters (512–65,536; default 512). A primitive may exceed it. */
 	serializationBufferSize?: number
 	/** Optional replacement; each attempt must synchronously fence ownership and rename the closed temporary file. */
@@ -106,12 +108,13 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 
 	try {
 		// Step 1: Write data to a new temporary file.
+		const preparedData = options?.prepareData ? await options.prepareData() : data
 		actualTempNewFilePath = path.join(
 			path.dirname(absoluteFilePath),
 			`.${path.basename(absoluteFilePath)}.new_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
 		)
 
-		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint, serializationBufferSize)
+		await _streamDataToFile(actualTempNewFilePath, preparedData, options?.prettyPrint, serializationBufferSize)
 
 		// Step 2: The default path retains a rollback backup. Callers with an
 		// external transaction fence can choose a single atomic replacement so

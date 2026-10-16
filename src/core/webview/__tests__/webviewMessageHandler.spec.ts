@@ -25,6 +25,7 @@ import type { WebviewMessage } from "@alpha-code/types"
 import type { ExtensionContext } from "vscode"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
+import { TaskRenameError } from "../../task-persistence/TaskHistoryStore"
 import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
@@ -93,6 +94,100 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("chat rename and toolbar host messages", () => {
+	const renamed = { id: "chat-1", displayName: "Useful name" }
+	const rename = vi.fn()
+	const host = { ...mockAlphaProvider, renameTask: rename } as unknown as AlphaProvider
+	const request = {
+		type: "renameTask" as const,
+		taskRenameRequest: { taskId: "chat-1", requestId: "rename-1", displayName: "  Useful name  " },
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		rename.mockReset().mockResolvedValue(renamed)
+	})
+
+	it("trims the label and acknowledges the persisted identity only after the save settles", async () => {
+		let complete!: (item: typeof renamed) => void
+		rename.mockImplementationOnce(() => new Promise((resolve) => (complete = resolve)))
+		const pending = webviewMessageHandler(host, request)
+		expect(rename).toHaveBeenCalledExactlyOnceWith("chat-1", "Useful name")
+		expect(host.postMessageToWebview).not.toHaveBeenCalled()
+		complete(renamed)
+		await pending
+		expect(host.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "taskRenameResult",
+			taskRenameResult: {
+				taskId: "chat-1",
+				requestId: "rename-1",
+				status: "success",
+				displayName: "Useful name",
+			},
+		})
+	})
+
+	it.each(["", " ", "x".repeat(97)])(
+		"rejects an invalid label without entering persistence (%s)",
+		async (displayName) => {
+			await webviewMessageHandler(host, {
+				...request,
+				taskRenameRequest: { ...request.taskRenameRequest, displayName },
+			})
+			expect(rename).not.toHaveBeenCalled()
+			expect(host.postMessageToWebview).toHaveBeenCalledWith({
+				type: "taskRenameResult",
+				taskRenameResult: {
+					taskId: "chat-1",
+					requestId: "rename-1",
+					status: "error",
+					error: "invalid",
+				},
+			})
+		},
+	)
+
+	it.each(["notFound", "wrongWorkspace"] as const)("returns a bounded %s rejection", async (code) => {
+		rename.mockRejectedValueOnce(new TaskRenameError(code))
+		await webviewMessageHandler(host, request)
+		expect(host.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskRenameResult",
+			taskRenameResult: {
+				taskId: "chat-1",
+				requestId: "rename-1",
+				status: "error",
+				error: code,
+			},
+		})
+	})
+
+	it("does not retry a committed rename when its acknowledgement transport fails", async () => {
+		vi.mocked(host.postMessageToWebview).mockRejectedValueOnce(new Error("webview gone"))
+		await webviewMessageHandler(host, request)
+		expect(rename).toHaveBeenCalledTimes(1)
+		expect(host.postMessageToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("opens Tickets through its existing command", async () => {
+		await webviewMessageHandler(host, { type: "openTickets" })
+		expect(vscode.commands.executeCommand).toHaveBeenCalledWith("alpha.openTickets")
+	})
+
+	it.each([false, true])("gates Incident Dashboard on the actual debug configuration (%s)", async (enabled) => {
+		const config = vi
+			.spyOn(vscode.workspace, "getConfiguration")
+			.mockReturnValue({ get: vi.fn(() => enabled) } as unknown as vscode.WorkspaceConfiguration)
+		try {
+			await webviewMessageHandler(host, { type: "openIncidentDashboard" })
+			expect(config).toHaveBeenCalledWith("alpha")
+			if (enabled) expect(vscode.commands.executeCommand).toHaveBeenCalledWith("alpha.openIncidents")
+			else expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		} finally {
+			config.mockRestore()
+		}
+	})
+})
 
 describe("provider profile Save messages", () => {
 	const draft = { apiProvider: "openai" as const, openAiModelId: "explicit-save-model" }
@@ -678,6 +773,7 @@ vi.mock("vscode", () => {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
 
 	return {
+		commands: { executeCommand: vi.fn().mockResolvedValue(undefined) },
 		window: {
 			showInformationMessage,
 			showWarningMessage,
@@ -685,6 +781,7 @@ vi.mock("vscode", () => {
 			showTextDocument,
 		},
 		workspace: {
+			getConfiguration: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue(false) }),
 			workspaceFolders: [{ uri: { fsPath: "/mock/workspace" } }],
 			openTextDocument,
 		},

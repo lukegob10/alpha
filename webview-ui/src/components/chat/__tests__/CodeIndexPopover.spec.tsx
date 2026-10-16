@@ -1,7 +1,7 @@
 import { cloneElement } from "react"
 import type { IndexingStatus } from "@alpha-code/types"
 
-import { act, fireEvent, render, screen, within } from "@src/utils/test-utils"
+import { act, cleanup, fireEvent, render, screen, within } from "@src/utils/test-utils"
 import { PopoverTrigger } from "@src/components/ui"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -347,7 +347,15 @@ describe("CodeIndexPopover", () => {
 			act(() => vi.advanceTimersByTime(1))
 			expect(screen.queryByText("Save failed")).not.toBeInTheDocument()
 		} finally {
-			vi.useRealTimers()
+			try {
+				// Drain Radix's deferred unmount autofocus before restoring the clock or DOM realm.
+				cleanup()
+				await act(async () => {
+					await vi.runOnlyPendingTimersAsync()
+				})
+			} finally {
+				vi.useRealTimers()
+			}
 		}
 	})
 })

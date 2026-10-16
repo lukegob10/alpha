@@ -2,7 +2,7 @@ import { useMemo } from "react"
 import { ArrowUpRight, Square } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
-import { TaskLifecycleState, type HistoryItem, type LiveTaskMetadata } from "@alpha-code/types"
+import { getTaskDisplayName, TaskLifecycleState, type HistoryItem, type LiveTaskMetadata } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { Button } from "@src/components/ui"
@@ -16,6 +16,7 @@ interface CrossTaskPanelProps {
 
 type CrossTaskRow = {
 	id: string
+	label: string
 	objective: string
 	workspaceMode: "shared" | "worktree"
 	lifecycle: TaskLifecycleState
@@ -71,6 +72,7 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 			const live = liveTasksById?.[item.id]
 			rows.set(item.id, {
 				id: item.id,
+				label: getTaskDisplayName(item),
 				objective: item.task,
 				workspaceMode: live?.orchestrationWorkspaceMode ?? item.orchestrationWorkspaceMode ?? "shared",
 				lifecycle: live?.lifecycle ?? lifecycleFromHistory(item),
@@ -80,6 +82,7 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 			if (live.orchestrationParentTaskId !== parentTaskId || rows.has(live.id)) continue
 			rows.set(live.id, {
 				id: live.id,
+				label: live.orchestrationObjective || t("crossTasks.untitled"),
 				objective: live.orchestrationObjective || t("crossTasks.untitled"),
 				workspaceMode: live.orchestrationWorkspaceMode ?? "shared",
 				lifecycle: live.lifecycle,
@@ -92,12 +95,14 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 	if (tasks.length === 0) return null
 
 	return (
-		<nav aria-label={t("crossTasks.title")} className="mx-3 mb-2 flex min-w-0 items-center gap-2 text-xs">
+		<nav
+			aria-label={t("crossTasks.title")}
+			className="mx-3 mb-2 flex min-w-0 items-center gap-1.5 rounded-xl bg-[var(--chat-surface)] p-1 text-[length:var(--chat-ui-font-size,13px)]">
 			<span className="shrink-0 text-vscode-descriptionForeground">{t("crossTasks.title")}</span>
-			<ul className="flex min-w-0 items-center gap-1 overflow-x-auto">
+			<ul className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
 				{tasks.map((task) => {
 					const terminal = isTerminal(task.lifecycle)
-					const threadLabel = task.objective.trim() || t("crossTasks.untitled")
+					const threadLabel = task.label.trim() || t("crossTasks.untitled")
 					return (
 						<li key={task.id} className="flex shrink-0 items-center gap-0.5">
 							<button
@@ -108,7 +113,7 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 								})}
 								title={`${task.objective} · ${t(`crossTasks.workspace.${task.workspaceMode}`)} · ${lifecycleLabel(task.lifecycle, t)}`}
 								onClick={() => onOpen(task.id)}
-								className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-vscode-foreground hover:bg-[var(--alpha-accent-soft)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+								className="flex h-6 shrink-0 items-center gap-1.5 rounded-lg px-1.5 py-0 text-vscode-foreground hover:bg-[var(--alpha-accent-soft)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
 								<span
 									className={`size-1.5 shrink-0 rounded-full ${
 										task.lifecycle === TaskLifecycleState.Completed
@@ -124,7 +129,7 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 									aria-hidden="true"
 								/>
 								<span className="max-w-40 truncate">{threadLabel}</span>
-								<span className="text-[10px] text-vscode-descriptionForeground">
+								<span className="text-vscode-descriptionForeground">
 									{lifecycleLabel(task.lifecycle, t)}
 								</span>
 								<ArrowUpRight className="size-3 shrink-0 opacity-50" aria-hidden="true" />

@@ -38,6 +38,8 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 	const [showAllFiles, setShowAllFiles] = useState(false)
 	const panelId = useId()
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+	const reviewInitializedRef = useRef(false)
+	const userToggledPathsRef = useRef(new Set<string>())
 	const netStatsCacheRef = useRef(
 		new Map<string, { originalContent: string; finalContent: string; stats: { added: number; removed: number } }>(),
 	)
@@ -47,6 +49,8 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		setPanelExpanded(false)
 		setShowAllFiles(false)
 		setExpandedPaths(new Set())
+		reviewInitializedRef.current = false
+		userToggledPathsRef.current.clear()
 		netStatsCacheRef.current.clear()
 	}, [taskId])
 
@@ -131,9 +135,31 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		})
 	}, [])
 
+	const reviewChanges = useCallback(() => {
+		const files = Array.from(diffFilesByPath.values())
+		if (files.length === 0) return
+		if (byPath.size === 1) {
+			openDiff(files)
+			return
+		}
+
+		onExpandedChange?.()
+		setPanelExpanded(true)
+		setShowAllFiles(true)
+		// Initialize the bottom displayed file once; explicit choices before Review also remain authoritative.
+		if (!reviewInitializedRef.current) {
+			reviewInitializedRef.current = true
+			const bottomPath = Array.from(byPath.keys()).at(-1)
+			if (bottomPath && !userToggledPathsRef.current.has(bottomPath)) {
+				setExpandedPaths((previous) => new Set(previous).add(bottomPath))
+			}
+		}
+	}, [byPath, diffFilesByPath, onExpandedChange, openDiff])
+
 	const togglePath = useCallback(
 		(path: string) => {
 			onExpandedChange?.()
+			userToggledPathsRef.current.add(path)
 			setExpandedPaths((prev) => {
 				const next = new Set(prev)
 				if (next.has(path)) next.delete(path)
@@ -199,7 +225,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 					type="button"
 					aria-label={t("chat:fileChangesInConversation.openAllDiffs")}
 					disabled={diffFilesByPath.size === 0}
-					onClick={() => openDiff(Array.from(diffFilesByPath.values()))}
+					onClick={reviewChanges}
 					className="my-auto mr-3 shrink-0 rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background px-2.5 py-1 text-xs text-vscode-foreground hover:bg-vscode-list-hoverBackground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder">
 					{t("chat:fileChangesInConversation.openAllDiffs")}
 				</button>

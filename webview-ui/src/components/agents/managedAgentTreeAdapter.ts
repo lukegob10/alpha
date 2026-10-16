@@ -42,7 +42,7 @@ interface AgentCandidate {
 const groupObservedAt = (group: SubagentGroupState): number =>
 	Math.max(group.completedAt ?? 0, group.startedAt ?? 0, group.createdAt)
 
-const dedupeGroups = (groups: readonly SubagentGroupState[]): SubagentGroupState[] => {
+export const dedupeManagedAgentGroups = (groups: readonly SubagentGroupState[]): SubagentGroupState[] => {
 	const latest = new Map<string, { group: SubagentGroupState; index: number }>()
 	groups.forEach((group, index) => {
 		const current = latest.get(group.groupId)
@@ -60,7 +60,7 @@ const dedupeGroups = (groups: readonly SubagentGroupState[]): SubagentGroupState
 const collectAgents = (groups: readonly SubagentGroupState[], rootTaskId: string): AgentCandidate[] => {
 	const latest = new Map<string, AgentCandidate>()
 	let order = 0
-	for (const group of dedupeGroups(groups)) {
+	for (const group of dedupeManagedAgentGroups(groups)) {
 		for (const agent of group.agents) {
 			if (agent.taskId !== rootTaskId) latest.set(agent.taskId, { agent, group, order })
 			order += 1

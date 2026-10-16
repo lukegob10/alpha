@@ -50,18 +50,55 @@ suite("Alpha Extension", function () {
 		await vscode.window.tabGroups.close(tabs)
 	})
 
-	test("Debug mode exposes the incident overflow action and opens one dashboard tab", async () => {
+	test("Native sidebar actions are scoped and incident commands open one dashboard tab", async () => {
 		const extension = vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)
 		assert.ok(extension)
 		const menus = extension.packageJSON.contributes?.menus as
 			| Record<string, Array<{ command: string; group?: string; when?: string }>>
 			| undefined
-		const viewAction = menus?.["view/title"]?.find((item) => item.command === "alpha.openIncidents")
-		assert.equal(viewAction?.group, "overflow@0")
-		assert.equal(viewAction?.when, "view == alpha.SidebarProvider && config.alpha.debug")
-		const editorAction = menus?.["editor/title"]?.find((item) => item.command === "alpha.openIncidents")
-		assert.equal(editorAction?.group, "overflow@0")
-		assert.equal(editorAction?.when, "activeWebviewPanelId == alpha.TabPanelProvider && config.alpha.debug")
+		const paletteAction = menus?.commandPalette?.find((item) => item.command === "alpha.openIncidents")
+		assert.equal(paletteAction?.when, "config.alpha.debug")
+		const toolbarCommands = new Set([
+			"alpha.sidebarNewChat",
+			"alpha.sidebarSettings",
+			"alpha.sidebarScheduledTasks",
+			"alpha.sidebarMarketplace",
+			"alpha.plusButtonClicked",
+			"alpha.settingsButtonClicked",
+			"alpha.openTickets",
+			"alpha.historyButtonClicked",
+			"alpha.openIncidents",
+			"alpha.scheduledTasksButtonClicked",
+			"alpha.marketplaceButtonClicked",
+			"alpha.popoutButtonClicked",
+		])
+		assert.deepEqual(menus?.["view/title"], [
+			{ command: "alpha.sidebarNewChat", group: "navigation@1", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.sidebarSettings", group: "navigation@2", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.openTickets", group: "navigation@3", when: "view == alpha.SidebarProvider" },
+			{
+				command: "alpha.openIncidents",
+				group: "overflow@0",
+				when: "view == alpha.SidebarProvider && config.alpha.debug",
+			},
+			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.sidebarMarketplace", group: "overflow@2", when: "view == alpha.SidebarProvider" },
+		])
+		for (const command of [
+			"alpha.sidebarNewChat",
+			"alpha.sidebarSettings",
+			"alpha.sidebarScheduledTasks",
+			"alpha.sidebarMarketplace",
+		]) {
+			assert.deepEqual(
+				menus?.commandPalette?.find((item) => item.command === command),
+				{ command, when: "false" },
+			)
+		}
+		assert.ok(
+			!menus?.["editor/title"]?.some((item) => toolbarCommands.has(item.command)),
+			"Editor title must not duplicate the webview fallback controls",
+		)
 
 		const configuration = vscode.workspace.getConfiguration("alpha")
 		const priorDebug = configuration.inspect<boolean>("debug")?.globalValue
@@ -133,6 +170,10 @@ suite("Alpha Extension", function () {
 			"SidebarProvider.removeView",
 			"activationCompleted",
 			"plusButtonClicked",
+			"sidebarNewChat",
+			"sidebarSettings",
+			"sidebarScheduledTasks",
+			"sidebarMarketplace",
 			"popoutButtonClicked",
 			"openInNewTab",
 			"settingsButtonClicked",

@@ -23,6 +23,7 @@ interface TaskGroupItemProps {
 	onToggleSelection?: (taskId: string, isSelected: boolean) => void
 	/** Callback when delete is requested */
 	onDelete?: (taskId: string) => void
+	onOpenTask?: (taskId: string) => void
 	/** Callback when the parent group expand/collapse is toggled */
 	onToggleExpand: () => void
 	/** Callback when a nested subtask node expand/collapse is toggled */
@@ -44,6 +45,7 @@ const TaskGroupItem = ({
 	selectedTaskIds,
 	onToggleSelection,
 	onDelete,
+	onOpenTask,
 	onToggleExpand,
 	onToggleSubtaskExpand,
 	className,
@@ -74,6 +76,7 @@ const TaskGroupItem = ({
 				isSelected={isSelected}
 				onToggleSelection={onToggleSelection}
 				onDelete={onDelete}
+				onOpenTask={onOpenTask}
 				hasSubtasks={hasSubtasks}
 				contained
 			/>
@@ -108,6 +111,7 @@ const TaskGroupItem = ({
 							selectedTaskIds={selectedTaskIds}
 							onToggleSelection={onToggleSelection}
 							onDelete={onDelete}
+							onOpenTask={onOpenTask}
 						/>
 					))}
 				</div>

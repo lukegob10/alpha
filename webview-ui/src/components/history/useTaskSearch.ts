@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react"
 import { Fzf } from "fzf"
+import { getTaskDisplayName } from "@alpha-code/types"
 
 import { highlightFzfMatch } from "@/utils/highlight"
 import { useExtensionState } from "@/context/ExtensionStateContext"
@@ -28,7 +29,10 @@ export const useTaskSearch = () => {
 
 	const fzf = useMemo(() => {
 		return new Fzf(presentableTasks, {
-			selector: (item) => item.task,
+			selector: (item) => {
+				const name = getTaskDisplayName(item)
+				return name === item.task ? name : `${name}\n${item.task}`
+			},
 		})
 	}, [presentableTasks])
 
@@ -38,15 +42,12 @@ export const useTaskSearch = () => {
 		if (searchQuery) {
 			const searchResults = fzf.find(searchQuery)
 			results = searchResults.map((result) => {
-				const positions = Array.from(result.positions)
-				const taskEndIndex = result.item.task.length
+				const displayName = getTaskDisplayName(result.item)
+				const positions = Array.from(result.positions).filter((position) => position < displayName.length)
 
 				return {
 					...result.item,
-					highlight: highlightFzfMatch(
-						result.item.task,
-						positions.filter((p) => p < taskEndIndex),
-					),
+					highlight: positions.length ? highlightFzfMatch(displayName, positions) : undefined,
 					workspace: result.item.workspace,
 				}
 			})

@@ -1,5 +1,5 @@
 import React from "react"
-import { Check, ChevronDown } from "lucide-react"
+import { Check } from "lucide-react"
 
 import { type ModeConfig, type CustomModePrompts, TelemetryEventName, restoreTaskMode } from "@alpha-code/types"
 
@@ -156,7 +156,6 @@ export const ModeSelector = ({
 					data-testid="mode-selector-trigger"
 					className={cn("composer-control composer-selector", triggerClassName)}>
 					<span className="truncate">{selectedMode?.name || ""}</span>
-					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent

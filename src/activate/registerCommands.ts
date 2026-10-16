@@ -73,6 +73,25 @@ export const registerCommands = (options: RegisterCommandOptions) => {
 
 const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOptions): Record<CommandId, any> => ({
 	activationCompleted: () => {},
+	// Native view/title actions must keep their sidebar owner even while an editor Alpha view is focused.
+	// VS Code 1.125.0 forwards no reliable originating view identity through menu activation arguments.
+	sidebarNewChat: async () => {
+		TelemetryService.instance.captureTitleButtonClicked("plus")
+		// App owns the Settings unsaved-changes guard and the subsequent startBlankTask request.
+		await provider.postMessageToWebview({ type: "action", action: "newChatButtonClicked" })
+	},
+	sidebarSettings: () => {
+		TelemetryService.instance.captureTitleButtonClicked("settings")
+		provider.postMessageToWebview({ type: "action", action: "settingsButtonClicked" })
+		provider.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
+	},
+	sidebarScheduledTasks: () => {
+		TelemetryService.instance.captureTitleButtonClicked("scheduledTasks")
+		provider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
+	},
+	sidebarMarketplace: () => {
+		provider.postMessageToWebview({ type: "action", action: "marketplaceButtonClicked" })
+	},
 	plusButtonClicked: async (surface?: string) => {
 		const visibleProvider =
 			(surface === "sidebar" ? provider : AlphaProvider.getVisibleInstance()) ??

@@ -72,9 +72,12 @@ export interface SubagentGroupCardProps {
 	group: SubagentGroupState
 	parentTaskId?: string
 	onShowTask?: (taskId: string) => void
+	presentation?: "transcript" | "dock"
+	isVisible?: boolean
 }
 
-export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: SubagentGroupCardProps) => {
+export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
+	const { group, parentTaskId, onShowTask, presentation: cardPresentation = "transcript", isVisible = true } = props
 	const { t } = useTranslation("chat")
 	const presentation = useContext(ExtensionStateContext)
 	const managedSteeringDrafts = presentation?.managedSteeringDrafts
@@ -207,7 +210,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 		if (!resolvedParentTaskId || actionableChangeSetIds.length === 0) return
 
 		const requestAll = () => actionableChangeSetIds.forEach(requestChangeSetCapability)
-		requestAll()
+		if (isVisible) requestAll()
 		let refreshTimer: number | undefined
 		const handleMessage = (event: MessageEvent) => {
 			if (typeof event.data !== "object" || event.data === null) return
@@ -253,7 +256,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 				return
 			}
 
-			if (capabilityRefreshMessageTypes.has(message.type)) {
+			if (isVisible && capabilityRefreshMessageTypes.has(message.type)) {
 				if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
 				refreshTimer = window.setTimeout(requestAll, 75)
 			}
@@ -264,7 +267,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 			window.removeEventListener("message", handleMessage)
 			if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
 		}
-	}, [actionableChangeSetIds, group.groupId, requestChangeSetCapability, resolvedParentTaskId])
+	}, [actionableChangeSetIds, group.groupId, requestChangeSetCapability, resolvedParentTaskId, isVisible])
 
 	const openTask = (agent: SubagentRunState) => {
 		if (onShowTask) onShowTask(agent.taskId)
@@ -398,7 +401,11 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 		<>
 			<section
 				aria-label={`${group.agents.length} sub-agent task${group.agents.length === 1 ? "" : "s"}`}
-				className="rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background/40 p-1">
+				className={cn(
+					cardPresentation === "dock"
+						? "subagent-dock-group min-w-0 break-words rounded-lg"
+						: "rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background/40 p-1",
+				)}>
 				<div className="flex min-w-0 items-start gap-1">
 					<div className="min-w-0 flex-1 space-y-0.5">
 						{group.agents.map((agent, agentIndex) => {
@@ -442,6 +449,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 											detail={taskUnavailable ? agent.error : agentDetail(agent)}
 											disabled={taskUnavailable}
 											onOpen={() => openTask(agent)}
+											variant={cardPresentation === "dock" ? "dock" : "row"}
 										/>
 										{hasOverflowActions && (
 											<DropdownMenu>
@@ -452,11 +460,19 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 														onClick={(event) => {
 															actionTriggerRef.current = event.currentTarget
 														}}
-														className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-vscode-descriptionForeground hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+														className={cn(
+															"inline-flex shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-vscode-descriptionForeground hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
+															cardPresentation === "dock" ? "size-6" : "size-8",
+														)}>
 														<MoreHorizontal className="size-4" aria-hidden="true" />
 													</button>
 												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end" className="w-64">
+												<DropdownMenuContent
+													align="end"
+													className={cn(
+														"w-64",
+														cardPresentation === "dock" && "max-w-[calc(100vw-16px)]",
+													)}>
 													{!taskUnavailable && (
 														<DropdownMenuItem onSelect={() => openTask(agent)}>
 															<ExternalLink aria-hidden="true" /> Open task
@@ -613,7 +629,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 			</section>
 
 			<Dialog
-				open={Boolean(changeSetConfirmation)}
+				open={isVisible && Boolean(changeSetConfirmation)}
 				onOpenChange={(open) => {
 					if (!open) setChangeSetConfirmation(undefined)
 				}}>
@@ -621,7 +637,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 					className="max-w-md gap-4 p-5"
 					onCloseAutoFocus={(event) => {
 						event.preventDefault()
-						actionTriggerRef.current?.focus()
+						if (isVisible) actionTriggerRef.current?.focus()
 					}}>
 					<DialogHeader>
 						<DialogTitle>
@@ -659,7 +675,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 			</Dialog>
 
 			<Dialog
-				open={Boolean(approvalAgent)}
+				open={isVisible && Boolean(approvalAgent)}
 				onOpenChange={(open) => {
 					if (!open) setApprovalTaskId(undefined)
 				}}>
@@ -667,7 +683,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 					className="max-w-md gap-4 p-5"
 					onCloseAutoFocus={(event) => {
 						event.preventDefault()
-						actionTriggerRef.current?.focus()
+						if (isVisible) actionTriggerRef.current?.focus()
 					}}>
 					<DialogHeader>
 						<DialogTitle>Review {approvalAgent?.nickname}&apos;s request</DialogTitle>
@@ -695,7 +711,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 			</Dialog>
 
 			<Dialog
-				open={Boolean(steeringTaskId)}
+				open={isVisible && Boolean(steeringTaskId)}
 				onOpenChange={(open) => {
 					if (!open) closeSteeringDialog()
 				}}>
@@ -703,7 +719,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 					className="max-w-md gap-4 p-5"
 					onCloseAutoFocus={(event) => {
 						event.preventDefault()
-						actionTriggerRef.current?.focus()
+						if (isVisible) actionTriggerRef.current?.focus()
 					}}>
 					<DialogHeader>
 						<DialogTitle>Steer {steeringAgent?.nickname}</DialogTitle>

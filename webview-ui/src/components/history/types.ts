@@ -33,6 +33,27 @@ export function countAllSubtasks(nodes: SubtaskTreeNode[]): number {
 	return count
 }
 
+/** Count each persisted descendant once, including malformed cycles from historical records. */
+export function countTaskDescendants(tasks: readonly HistoryItem[], taskId: string): number {
+	const children = new Map<string, string[]>()
+	for (const task of tasks) {
+		if (!task.parentTaskId) continue
+		const siblings = children.get(task.parentTaskId) ?? []
+		siblings.push(task.id)
+		children.set(task.parentTaskId, siblings)
+	}
+	const visited = new Set([taskId])
+	const pending = [taskId]
+	while (pending.length) {
+		for (const childId of children.get(pending.pop()!) ?? []) {
+			if (visited.has(childId)) continue
+			visited.add(childId)
+			pending.push(childId)
+		}
+	}
+	return visited.size - 1
+}
+
 /**
  * A group of tasks consisting of a parent task and its nested subtask tree
  */

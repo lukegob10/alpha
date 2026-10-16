@@ -94,14 +94,15 @@ export const IndexingStatusBadge: React.FC<IndexingStatusBadgeProps> = ({ classN
 						size="sm"
 						aria-label={tooltipText}
 						className={cn(
-							"relative h-5 w-5 p-0",
+							"relative h-6 w-6 shrink-0 rounded-md p-0",
 							"text-vscode-foreground opacity-85",
-							"hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)]",
+							"hover:opacity-100 hover:bg-vscode-toolbar-hoverBackground",
 							"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
 							className,
 						)}>
 						<Database className="w-4 h-4" />
 						<span
+							aria-hidden="true"
 							className={cn(
 								"absolute top-0 right-0 w-1.5 h-1.5 rounded-full transition-colors duration-200",
 								statusColorClass,

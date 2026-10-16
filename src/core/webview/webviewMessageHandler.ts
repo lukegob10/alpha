@@ -40,12 +40,15 @@ import {
 	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
 	type ProviderProfileSaveResult,
+	taskRenameRequestSchema,
+	type TaskRenameResult,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
+import { TaskRenameError } from "../task-persistence/TaskHistoryStore"
 
 import { AlphaProvider } from "./AlphaProvider"
 import { ProviderProfileRenameError, ProviderProfileSaveError } from "../config/ProviderSettingsManager"
@@ -1117,6 +1120,49 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
+		case "renameTask": {
+			const payload: unknown = message.taskRenameRequest
+			const identity = payload && typeof payload === "object" ? payload : undefined
+			const taskId = identity && "taskId" in identity ? identity.taskId : undefined
+			const requestId = identity && "requestId" in identity ? identity.requestId : undefined
+			if (
+				typeof taskId !== "string" ||
+				!taskId ||
+				taskId.length > 128 ||
+				typeof requestId !== "string" ||
+				!requestId ||
+				requestId.length > 128
+			)
+				break
+			const parsed = taskRenameRequestSchema.safeParse(payload)
+			let result: TaskRenameResult
+			if (!parsed.success) {
+				result = { taskId, requestId, status: "error", error: "invalid" }
+			} else {
+				try {
+					const renamed = await provider.renameTask(parsed.data.taskId, parsed.data.displayName)
+					result = {
+						taskId,
+						requestId,
+						status: "success",
+						displayName: renamed.displayName ?? parsed.data.displayName,
+					}
+				} catch (error) {
+					result = {
+						taskId,
+						requestId,
+						status: "error",
+						error: error instanceof TaskRenameError ? error.code : "saveFailed",
+					}
+				}
+			}
+			try {
+				await provider.postMessageToWebview({ type: "taskRenameResult", taskRenameResult: result })
+			} catch {
+				provider.log("[TaskRename] acknowledgement_failed")
+			}
+			break
+		}
 		case "condenseTaskContextRequest":
 			await provider.condenseTaskContext(message.text!)
 			break
@@ -1325,6 +1371,14 @@ export const webviewMessageHandler = async (
 			if (target.success) await vscode.commands.executeCommand("alpha.openTickets", target.data)
 			break
 		}
+		case "openTickets":
+			await vscode.commands.executeCommand("alpha.openTickets")
+			break
+		case "openIncidentDashboard":
+			if (vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false)) {
+				await vscode.commands.executeCommand("alpha.openIncidents")
+			}
+			break
 		case "searchTickets": {
 			const task = getTaskForMessage(provider, message, { allowActiveFallback: true })
 			if (message.taskId && !task) {

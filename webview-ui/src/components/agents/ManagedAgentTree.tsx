@@ -21,6 +21,8 @@ export interface ManagedAgentTreeProps {
 	className?: string
 	onShowTask?: (taskId: string) => void
 	isVisible?: boolean
+	presentation?: "toolbar" | "dock"
+	excludeTaskIds?: ReadonlySet<string>
 }
 
 const DEFAULT_MAX_VISIBLE_AGENTS = 24
@@ -90,6 +92,8 @@ export function ManagedAgentTree({
 	className,
 	onShowTask,
 	isVisible = true,
+	presentation = "toolbar",
+	excludeTaskIds,
 }: ManagedAgentTreeProps) {
 	const { t } = useTranslation("chat")
 	const [showAllAgents, setShowAllAgents] = useState(false)
@@ -110,12 +114,14 @@ export function ManagedAgentTree({
 	const visibleLimit = Number.isFinite(maxVisibleAgents)
 		? Math.max(1, Math.floor(maxVisibleAgents))
 		: DEFAULT_MAX_VISIBLE_AGENTS
-	const visibleDescendants = model.nodes.slice(0, visibleLimit)
-	const hiddenCount = Math.max(0, model.nodes.length - visibleDescendants.length + model.omittedNodeCount)
-	const activity = projection?.activity ?? []
+	const descendants = excludeTaskIds ? model.nodes.filter((node) => !excludeTaskIds.has(node.taskId)) : model.nodes
+	const visibleDescendants = descendants.slice(0, visibleLimit)
+	const hiddenCount = Math.max(0, descendants.length - visibleDescendants.length + model.omittedNodeCount)
+	const activityEnabled = presentation !== "dock"
+	const activity = activityEnabled ? (projection?.activity ?? []) : []
 	const unreadCount = activity.filter((event) => event.unread).length
 	const markDisplayedActivityRead = () => {
-		if (!showActivity || !isVisible || !projection || !unreadCount) return
+		if (!activityEnabled || !showActivity || !isVisible || !projection || !unreadCount) return
 		const sequence = Math.max(...projection.activity.map((event) => event.sequence))
 		vscode.postMessage({
 			type: "markManagedAgentActivityRead",
@@ -126,32 +132,47 @@ export function ManagedAgentTree({
 	useEffect(() => {
 		setShowAllAgents(false)
 		setShowActivity(false)
-	}, [rootTaskId])
+	}, [rootTaskId, presentation])
 
-	if (visibleDescendants.length === 0 && !activity.length && !isLoading && !errorMessage) return null
+	if (visibleDescendants.length === 0 && hiddenCount === 0 && !activity.length && !isLoading && !errorMessage)
+		return null
 
 	return (
 		<section
 			aria-label="Sub-agent tasks"
 			aria-busy={isLoading}
 			className={cn(
-				"flex min-h-9 min-w-0 items-center gap-1.5 border-y border-[var(--border-subtle)] bg-vscode-editor-background/60 px-1.5 py-1",
+				presentation === "dock"
+					? "flex min-w-0 flex-wrap items-center gap-1"
+					: "flex min-h-9 min-w-0 items-center gap-1.5 border-y border-[var(--border-subtle)] bg-vscode-editor-background/60 px-1.5 py-1",
 				className,
 			)}>
-			<span className="shrink-0 px-1 text-[10px] font-medium uppercase tracking-wide text-vscode-descriptionForeground">
-				Agents
-			</span>
-			<div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="list">
+			{presentation !== "dock" && (
+				<span className="shrink-0 px-1 text-[10px] font-medium uppercase tracking-wide text-vscode-descriptionForeground">
+					Agents
+				</span>
+			)}
+			<div
+				className={
+					presentation === "dock"
+						? "flex min-w-0 basis-full flex-col gap-0.5"
+						: "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+				}
+				role="list">
 				{visibleDescendants.map((node) => {
 					const taskUnavailable = node.stopReason === "never_launched"
 					return (
-						<div key={node.taskId} role="listitem" className="shrink-0">
+						<div
+							key={node.taskId}
+							role="listitem"
+							className={presentation === "dock" ? "min-w-0" : "shrink-0"}>
 							<SubagentTaskLink
 								name={node.nickname}
 								status={node.status}
 								attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
 								detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
-								variant="chip"
+								variant={presentation === "dock" ? "dock" : "chip"}
+								className={presentation === "dock" ? "w-full" : undefined}
 								disabled={!onShowTask || taskUnavailable}
 								onOpen={() => onShowTask?.(node.taskId)}
 							/>
@@ -204,7 +225,7 @@ export function ManagedAgentTree({
 						<DialogDescription>{t("agentNavigation.description")}</DialogDescription>
 					</DialogHeader>
 					<ul className="space-y-2">
-						{model.nodes.map((node) => (
+						{descendants.map((node) => (
 							<li key={node.taskId}>
 								<SubagentTaskLink
 									name={node.nickname}
@@ -225,7 +246,7 @@ export function ManagedAgentTree({
 					)}
 				</DialogContent>
 			</Dialog>
-			<Dialog open={showActivity && isVisible} onOpenChange={setShowActivity}>
+			<Dialog open={activityEnabled && showActivity && isVisible} onOpenChange={setShowActivity}>
 				<DialogContent
 					className="max-h-[80vh] overflow-y-auto"
 					onCloseAutoFocus={(event) => {

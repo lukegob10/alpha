@@ -101,4 +101,37 @@ describe("CrossTaskPanel", () => {
 		fireEvent.click(screen.getAllByRole("button", { name: "crossTasks.openTask" })[0])
 		expect(onOpen).toHaveBeenCalledWith("child-01")
 	})
+
+	it("displays a renamed child while retaining its objective, workspace identity, and Open/Stop routes", () => {
+		const onOpen = vi.fn()
+		const item = {
+			...makeHistoryItem("child-1", "parent-1", "Parse the original AST objective"),
+			displayName: "Parser investigation",
+		}
+		render(
+			<CrossTaskPanel
+				parentTaskId="parent-1"
+				taskHistory={[item]}
+				liveTasksById={{ "child-1": makeLiveTask("child-1", "parent-1") }}
+				onOpen={onOpen}
+			/>,
+		)
+
+		expect(screen.getByText("Parser investigation")).toBeInTheDocument()
+		expect(screen.queryByText(item.task)).not.toBeInTheDocument()
+		const open = screen.getByRole("button", { name: "crossTasks.openTask" })
+		expect(open).toHaveAttribute(
+			"title",
+			`${item.task} · crossTasks.workspace.worktree · crossTasks.status.running`,
+		)
+		fireEvent.click(open)
+		expect(onOpen).toHaveBeenCalledExactlyOnceWith("child-1")
+		fireEvent.click(screen.getByRole("button", { name: "crossTasks.stopTask" }))
+		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({
+			type: "stopIndependentTask",
+			parentTaskId: "parent-1",
+			taskId: "child-1",
+		})
+		expect(item.task).toBe("Parse the original AST objective")
+	})
 })

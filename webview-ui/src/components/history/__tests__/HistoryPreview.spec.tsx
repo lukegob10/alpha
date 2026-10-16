@@ -59,20 +59,37 @@ describe("inline Chats history", () => {
 		setHistory()
 	})
 
-	it("shows five recent chats in one shared surface without expanded controls", () => {
+	it("shows four quiet recent chats under the Chats heading without expanded controls", () => {
 		render(<HistoryPreview onExpand={vi.fn()} />)
-		expect(screen.getByText("history:chats")).toBeInTheDocument()
-		expect(screen.getAllByTestId(/^task-item-task-/)).toHaveLength(5)
+		expect(screen.getByRole("region", { name: "history:chats" })).toBeInTheDocument()
+		expect(screen.getByRole("heading", { name: "history:chats", level: 2 })).toBeInTheDocument()
+		expect(screen.getAllByTestId(/^task-item-task-/)).toHaveLength(4)
+		expect(screen.queryByTestId("task-item-task-5")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("task-item-task-6")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("history-search-input")).not.toBeInTheDocument()
 		expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
 		expect(screen.queryByRole("button", { name: "history:manageChats" })).not.toBeInTheDocument()
 		const list = screen.getByTestId("history-preview-list")
-		expect(list).toHaveClass("surface-raised")
+		expect(list).toHaveClass("chat-history-quiet-list")
 		for (const row of screen.getAllByTestId(/^task-item-task-/)) {
-			expect(row.closest(".surface-raised")).toBe(list)
+			expect(row.closest(".surface-raised")).toBeNull()
 			expect(row).toHaveAttribute("data-contained", "true")
 		}
+	})
+
+	it("retains the same labelled heading when expanding and closing Chats", () => {
+		const view = render(<HistoryPreview onExpand={vi.fn()} />)
+		const heading = screen.getByRole("heading", { name: "history:chats", level: 2 })
+		const section = screen.getByRole("region", { name: "history:chats" })
+		expect(section).toHaveAttribute("aria-labelledby", heading.id)
+		view.rerender(<HistoryPreview expanded onClose={vi.fn()} />)
+		expect(screen.getByRole("heading", { name: "history:chats", level: 2 })).toBe(heading)
+		expect(screen.getByRole("region", { name: "history:chats" })).toBe(section)
+		expect(screen.getByRole("button", { name: "history:closeChats" })).toBeInTheDocument()
+		view.rerender(<HistoryPreview />)
+		expect(screen.getByRole("heading", { name: "history:chats", level: 2 })).toBe(heading)
+		expect(screen.getByRole("region", { name: "history:chats" })).toBe(section)
+		expect(screen.queryByRole("button", { name: "history:closeChats" })).not.toBeInTheDocument()
 	})
 
 	it.each([0, 1, 3])("renders only the available %i chats without empty row placeholders", (count) => {
@@ -103,6 +120,21 @@ describe("inline Chats history", () => {
 		expect(onExpand).not.toHaveBeenCalled()
 	})
 
+	it("uses the owning cached task opener for recent and nested chats", () => {
+		const onOpenTask = vi.fn()
+		setHistory([tasks[0], { ...tasks[1], parentTaskId: tasks[0].id }])
+		const { rerender } = render(<HistoryPreview onOpenTask={onOpenTask} />)
+		fireEvent.click(screen.getByTestId("task-item-task-1"))
+		expect(onOpenTask).toHaveBeenCalledWith("task-1")
+		rerender(<HistoryPreview expanded onOpenTask={onOpenTask} />)
+		fireEvent.click(screen.getByRole("button", { name: "history:expandSubtasks" }))
+		fireEvent.click(
+			within(screen.getByTestId("subtask-item-row-task-2")).getByRole("button", { name: "history:openChat" }),
+		)
+		expect(onOpenTask).toHaveBeenCalledWith("task-2")
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
 	it("returns to an unfiltered recent preview after closing expanded history", () => {
 		const onClose = vi.fn()
 		const { rerender } = render(<HistoryPreview expanded onClose={onClose} />)
@@ -110,7 +142,7 @@ describe("inline Chats history", () => {
 		fireEvent.click(screen.getByTestId("history-close"))
 		expect(onClose).toHaveBeenCalledTimes(1)
 		rerender(<HistoryPreview />)
-		expect(screen.getAllByTestId(/^task-item-task-/)).toHaveLength(5)
+		expect(screen.getAllByTestId(/^task-item-task-/)).toHaveLength(4)
 		expect(screen.queryByTestId("history-search-input")).not.toBeInTheDocument()
 		rerender(<HistoryPreview expanded />)
 		expect(screen.getByTestId("history-search-input")).toHaveValue("")

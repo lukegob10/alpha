@@ -217,6 +217,50 @@ export async function exerciseRenderedAcceptance(
 		)
 		await fs.writeFile(path.join(directory, `ui-${name}.png`), Buffer.from(screenshot.data, "base64"))
 	}
+	const dockToggle = "d.querySelector('.subagent-dock > button[aria-expanded]')"
+	const openDock = async () => {
+		await check(`!!(${dockToggle})`)
+		if (await evaluate<boolean>(`(${dockToggle}).getAttribute('aria-expanded')==='false'`)) {
+			await click(dockToggle)
+		}
+	}
+	const verifyCompactDock = async () => {
+		await check(`!!(${dockToggle})`)
+		if (await evaluate<boolean>(`(${dockToggle}).getAttribute('aria-expanded')==='true'`)) {
+			await click(dockToggle)
+		}
+		const readDock = () =>
+			evaluate<{
+				width: number
+				centerOffset: number
+				rowsHeight: number
+				viewportHeight: number
+				clipped: boolean
+			}>(
+				`(()=>{const e=d.querySelector('.subagent-dock'),r=e.getBoundingClientRect(),p=e.parentElement.getBoundingClientRect(),b=e.querySelector(':scope > button'),rows=d.getElementById(b.getAttribute('aria-controls')),rr=rows.getBoundingClientRect();return {width:r.width,centerOffset:Math.abs((r.left+r.right-p.left-p.right)/2),rowsHeight:rr.height,viewportHeight:d.defaultView.innerHeight,clipped:[...rows.querySelectorAll('button')].some(b=>{const x=b.getBoundingClientRect();return x.width>0&&(x.left<rr.left-1||x.right>rr.right+1)})}})()`,
+			)
+		const collapsed = await readDock()
+		assert.ok(collapsed.width > 0 && collapsed.width <= 272)
+		assert.ok(collapsed.centerOffset <= 1, "The sub-agent menu must be centered")
+		assert.equal(collapsed.rowsHeight, 0)
+		await check("!!d.querySelector('.subagent-dock > button svg.lucide-bot')")
+		await capture("compact-subagent-dock-closed")
+		await openDock()
+		const expanded = await readDock()
+		assert.equal(expanded.width, collapsed.width, "Expanding the menu must retain its compact width")
+		assert.ok(expanded.centerOffset <= 1)
+		assert.ok(expanded.rowsHeight > 0 && expanded.rowsHeight <= Math.min(240, expanded.viewportHeight * 0.32) + 1)
+		assert.equal(expanded.clipped, false, "Task controls must fit inside the compact list")
+		await check(
+			"![...d.querySelectorAll('.subagent-dock button')].some(e=>/^Activity(?:\\s|\\()/.test(e.textContent.trim()))",
+		)
+		await capture("compact-subagent-dock-open")
+		await fs.writeFile(
+			path.join(directory, "ui-compact-subagent-dock.json"),
+			JSON.stringify({ nonce, collapsed, expanded }, null, 2),
+			{ flag: "wx" },
+		)
+	}
 	const stages = [
 		"settings-edit",
 		"settings-refresh-discard",
@@ -343,6 +387,8 @@ export async function exerciseRenderedAcceptance(
 			)
 		} else if (stage === "navigate-nested" || stage === "live-navigate-nested") {
 			assert.ok(detail?.nickname)
+			if (stage === "live-navigate-nested") await verifyCompactDock()
+			else await openDock()
 			await activate('section[aria-label="Sub-agent tasks"] button', `Open ${detail.nickname}`, true)
 		} else if (
 			stage === "navigate-outer" ||

@@ -142,6 +142,8 @@ interface ChatRowProps {
 	message: AlphaMessage
 	/** The persisted opening prompt is say/text, but displays as a user message. */
 	isTaskPrompt?: boolean
+	/** The composer dock can present these canonical groups instead of repeating them in the transcript. */
+	hideSubagentGroups?: boolean
 	environment: ChatRowEnvironment
 	lastModifiedMessage?: AlphaMessage
 	isExpanded: boolean
@@ -173,6 +175,9 @@ interface ChatRowContentInnerProps extends ChatRowContentProps {
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
+		if (props.hideSubagentGroups && props.message.type === "say" && props.message.say === "subagent_group") {
+			return null
+		}
 		// ChatView filters non-rendered messages before constructing this row.
 		return (
 			<div
@@ -229,6 +234,7 @@ export const ChatRowContent = (props: ChatRowContentProps) => {
 const ChatRowContentInner = ({
 	message,
 	isTaskPrompt = false,
+	hideSubagentGroups = false,
 	environment,
 	lastModifiedMessage,
 	isExpanded,
@@ -264,6 +270,8 @@ const ChatRowContentInner = ({
 	} = environment
 	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
 	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
+	const userMessageActionsDisabled =
+		messageActionsDisabled || !currentTaskId || currentTaskItem?.taskKind === "subagent"
 	const clineMessages = getAlphaMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
@@ -313,13 +321,14 @@ const ChatRowContentInner = ({
 
 	// Handle edit button click
 	const handleEditClick = useCallback(() => {
+		if (userMessageActionsDisabled) return
 		setIsEditing(true)
 		setEditedContent(message.text || "")
 		setEditImages(message.images || [])
 		setEditMode(mode || "code")
 		// Edit mode is now handled entirely in the frontend
 		// No need to notify the backend
-	}, [message.text, message.images, mode])
+	}, [message.text, message.images, mode, userMessageActionsDisabled])
 
 	// Handle cancel edit
 	const handleCancelEdit = useCallback(() => {
@@ -331,7 +340,7 @@ const ChatRowContentInner = ({
 
 	// Handle save edit
 	const handleSaveEdit = useCallback(() => {
-		if (messageActionsDisabled) return
+		if (userMessageActionsDisabled) return
 		setIsEditing(false)
 		// Send edited message to backend
 		vscode.postMessage({
@@ -341,7 +350,7 @@ const ChatRowContentInner = ({
 			images: editImages,
 			taskId: currentTaskId,
 		})
-	}, [message.ts, editedContent, editImages, currentTaskId, messageActionsDisabled])
+	}, [message.ts, editedContent, editImages, currentTaskId, userMessageActionsDisabled])
 
 	const handleRestartClick = useCallback(() => {
 		if (messageActionsDisabled || message.partial || !currentTaskId) return
@@ -1264,7 +1273,7 @@ const ChatRowContentInner = ({
 					)
 				}
 				case "subagent_group":
-					return message.subagentGroup ? (
+					return !hideSubagentGroups && message.subagentGroup ? (
 						<ActivityStep
 							{...activityProps}
 							summary={
@@ -1520,7 +1529,7 @@ const ChatRowContentInner = ({
 										<ChatTextArea
 											inputValue={editedContent}
 											setInputValue={setEditedContent}
-											sendingDisabled={messageActionsDisabled}
+											sendingDisabled={userMessageActionsDisabled}
 											selectApiConfigDisabled={true}
 											placeholderText={t("chat:editMessage.placeholder")}
 											selectedImages={editImages}
@@ -1542,7 +1551,7 @@ const ChatRowContentInner = ({
 										text={message.text}
 										isExpanded={isExpanded}
 										onToggleExpand={handleToggleExpand}
-										onEdit={!messageActionsDisabled ? handleEditClick : undefined}
+										onEdit={!userMessageActionsDisabled ? handleEditClick : undefined}
 									/>
 								)}
 								{!isEditing && message.images && message.images.length > 0 && (
@@ -1550,21 +1559,25 @@ const ChatRowContentInner = ({
 								)}
 							</div>
 							{!isEditing && (
-								<MessageActions
-									text={message.text || ""}
-									onEdit={handleEditClick}
-									disabled={messageActionsDisabled}
-									onDelete={
-										isTaskPrompt
-											? undefined
-											: () =>
-													vscode.postMessage({
-														type: "deleteMessage",
-														value: message.ts,
-														taskId: currentTaskId,
-													})
-									}
-								/>
+								<div className="user-message-actions opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100">
+									<MessageActions
+										text={message.text || ""}
+										onEdit={handleEditClick}
+										disabled={userMessageActionsDisabled}
+										onDelete={
+											isTaskPrompt
+												? undefined
+												: () => {
+														if (userMessageActionsDisabled) return
+														vscode.postMessage({
+															type: "deleteMessage",
+															value: message.ts,
+															taskId: currentTaskId,
+														})
+													}
+										}
+									/>
+								</div>
 							)}
 						</article>
 					)

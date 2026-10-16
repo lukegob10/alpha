@@ -42,6 +42,32 @@ suite("Rendered composer", function () {
 		await waitFor(
 			async () => {
 				try {
+					return (
+						JSON.parse(await fs.readFile(path.join(directory, "ui-composer-sidebar-done.json"), "utf8"))
+							.nonce === nonce
+					)
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+					throw error
+				}
+			},
+			{ timeout: 60_000 },
+		)
+		const editor = await vscode.commands.executeCommand<{
+			viewLaunched: boolean
+			postStateToWebview(): Promise<void>
+		}>("alpha.openInNewTab")
+		assert.ok(editor)
+		await waitFor(() => editor.viewLaunched, { timeout: 15_000 })
+		await editor.postStateToWebview()
+		await fs.writeFile(
+			path.join(directory, "ui-composer-editor-ready.json"),
+			JSON.stringify({ nonce, version: vscode.version }),
+			{ flag: "wx" },
+		)
+		await waitFor(
+			async () => {
+				try {
 					return JSON.parse(await fs.readFile(path.join(directory, "ui-finish.json"), "utf8")).nonce === nonce
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false

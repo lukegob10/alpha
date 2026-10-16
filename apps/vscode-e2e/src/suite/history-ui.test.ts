@@ -114,6 +114,9 @@ suite("Inline Chats rendered history", function () {
 				.update("colorTheme", theme, vscode.ConfigurationTarget.Global)
 			await uiFixtureBarrier(stage, { version: vscode.version })
 		}
+		await vscode.workspace
+			.getConfiguration("workbench")
+			.update("colorTheme", "Default Dark Modern", vscode.ConfigurationTarget.Global)
 
 		const navigationAI = new HistoryNavigationAI()
 		try {

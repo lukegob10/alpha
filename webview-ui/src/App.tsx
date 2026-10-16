@@ -12,6 +12,8 @@ import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
 import { ExtensionStateContextProvider, useExtensionState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
+import ChatToolbar from "./components/chat/ChatToolbar"
+import { chatToolbarActions } from "./components/chat/chatToolbarActions"
 import type { SettingsViewRef } from "./components/settings/SettingsView"
 import WelcomeView from "./components/welcome/WelcomeViewProvider"
 import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDialog"
@@ -20,6 +22,7 @@ import ErrorBoundary from "./components/ErrorBoundary"
 import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonInteractiveClick"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
+import { useAppTranslation } from "./i18n/TranslationContext"
 
 const webviewAppStartedAt = performance.now()
 
@@ -70,7 +73,9 @@ const App = () => {
 		machineId,
 		renderContext,
 		currentTaskId,
+		debug,
 	} = useExtensionState()
+	const { t } = useAppTranslation()
 	const didReportUiReady = useRef(false)
 
 	useEffect(() => {
@@ -141,14 +146,25 @@ const App = () => {
 
 	const [currentSection, setCurrentSection] = useState<string | undefined>(undefined)
 	const [currentMarketplaceTab, setCurrentMarketplaceTab] = useState<string | undefined>(undefined)
+	const startNewChat = useCallback(() => {
+		const start = () => {
+			setCurrentSection(undefined)
+			setCurrentMarketplaceTab(undefined)
+			navigateToTab("chat")
+			chatViewRef.current?.startNewChat()
+		}
+		if (settingsRef.current?.checkUnsaveChanges) settingsRef.current.checkUnsaveChanges(start)
+		else start()
+	}, [navigateToTab])
 
 	const onMessage = useCallback(
 		(e: MessageEvent) => {
 			const message: ExtensionMessage = e.data
 
 			if (message.type === "action" && message.action) {
-				// Handle switchTab action with tab parameter
-				if (message.action === "switchTab" && message.tab) {
+				if (message.action === "newChatButtonClicked") {
+					startNewChat()
+				} else if (message.action === "switchTab" && message.tab) {
 					const targetTab = supportedTabs.find((tab) => tab === message.tab)
 					if (!targetTab) return
 					if (targetTab === "scheduledTasks") {
@@ -211,7 +227,7 @@ const App = () => {
 				chatViewRef.current?.sendAndSteer(message.taskId)
 			}
 		},
-		[switchTab, navigateToTab, currentTaskId],
+		[switchTab, navigateToTab, startNewChat, currentTaskId],
 	)
 
 	useEvent("message", onMessage)
@@ -291,21 +307,45 @@ const App = () => {
 		<WelcomeView />
 	) : (
 		<>
-			<React.Suspense fallback={null}>
-				{tab === "settings" && (
-					<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
-				)}
-				{tab === "marketplace" && (
-					<MarketplaceView
-						stateManager={marketplaceStateManager}
-						onDone={() => switchTab("chat")}
-						targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
+			{tab !== "chat" && (
+				<div className="app-shell fixed inset-0 flex min-h-0 flex-col overflow-hidden">
+					<ChatToolbar
+						{...chatToolbarActions}
+						renderContext={renderContext}
+						debug={debug === true}
+						onNewChat={startNewChat}
+						navigation={
+							<span className="min-w-0 truncate px-1 text-vscode-foreground">
+								{t(`common:chatToolbar.${tab === "scheduledTasks" ? "scheduledTasks" : tab}`)}
+							</span>
+						}
 					/>
-				)}
-				{tab === "scheduledTasks" && (
-					<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
-				)}
-			</React.Suspense>
+					<div className="relative min-h-0 flex-1 [&>.app-shell]:absolute">
+						<React.Suspense fallback={null}>
+							{tab === "settings" && (
+								<SettingsView
+									ref={settingsRef}
+									onDone={() => setTab("chat")}
+									targetSection={currentSection}
+								/>
+							)}
+							{tab === "marketplace" && (
+								<MarketplaceView
+									stateManager={marketplaceStateManager}
+									onDone={() => switchTab("chat")}
+									targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
+								/>
+							)}
+							{tab === "scheduledTasks" && (
+								<ScheduledTasksView
+									onDone={() => switchTab("chat")}
+									targetTaskId={scheduledTaskTargetId}
+								/>
+							)}
+						</React.Suspense>
+					</div>
+				</div>
+			)}
 			<ChatView
 				ref={chatViewRef}
 				isHidden={tab !== "chat"}

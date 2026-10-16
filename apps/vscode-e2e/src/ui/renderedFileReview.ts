@@ -4,10 +4,11 @@ import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
+import { javascriptLiteral } from "./javascriptLiteral"
 
 /** Exercise the built webview with keyboard input while the host checks the resulting VS Code diff tab. */
 export async function exerciseRenderedFileReview(
-	cdp: CdpConnection,
+	cdp: Pick<CdpConnection, "request">,
 	sessionId: string,
 	workbenchSession: string,
 	directory: string,
@@ -52,20 +53,42 @@ export async function exerciseRenderedFileReview(
 			)
 		}
 	}
+	const stage = JSON.parse(await fs.readFile(path.join(directory, "ui-stage-file-review.json"), "utf8")) as {
+		nonce: string
+		fileNames: string[]
+	}
+	assert.equal(stage.nonce, nonce)
+	assert.equal(stage.fileNames.length, 3)
+	const fileToggle = (fileName: string) =>
+		`[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes(${javascriptLiteral(fileName)}))`
 
 	await check("!!d.querySelector('[data-activity-trace-id][aria-expanded=false]')")
-	await check("d.body.innerText.includes('Files edited: 1')")
-	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-added]')?.textContent??''"), "+1")
-	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-removed]')?.textContent??''"), "-1")
+	await check("d.body.innerText.includes('Files edited: 3')")
+	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-added]')?.textContent??''"), "+3")
+	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-removed]')?.textContent??''"), "-3")
 	await focus("d.querySelector('[data-activity-trace-id]')")
 	await enter()
 	await check("d.querySelector('[data-activity-trace-id]')?.getAttribute('aria-expanded')==='true'")
 	await check(
 		"!![...d.querySelectorAll('[data-chat-message-index]')].find(e=>!e.hidden&&e.textContent?.includes('alpha-file-review-'))",
 	)
-	await focus("[...d.querySelectorAll('button')].find(e=>e.textContent?.includes('Files edited: 1'))")
+	await focus("d.querySelector('button[aria-label=Review]')")
 	await enter()
-	await check("!!d.querySelector('button[aria-label^=\"Show diff:\"]')")
+	for (const [index, fileName] of stage.fileNames.entries()) {
+		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='${index === 2}'`)
+	}
+	await focus(fileToggle(stage.fileNames[2]!))
+	await enter()
+	for (const fileName of stage.fileNames) {
+		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='false'`)
+	}
+	await focus(fileToggle(stage.fileNames[0]!))
+	await enter()
+	await check(`(${fileToggle(stage.fileNames[0]!)})?.getAttribute('aria-expanded')==='true'`)
+	await focus(fileToggle(stage.fileNames[0]!))
+	await enter()
+	await focus(fileToggle(stage.fileNames[2]!))
+	await enter()
 	const screenshot = await cdp.request<{ data: string }>(
 		"Page.captureScreenshot",
 		{ format: "png" },
@@ -80,5 +103,5 @@ export async function exerciseRenderedFileReview(
 		{ nonce, stage: "file-review", status: "passed" },
 		{ rename: fs.link },
 	)
-	return ["file-review"]
+	return ["file-review", "review-bottom-file-open", "review-all-files-closed", "review-native-file-diff"]
 }

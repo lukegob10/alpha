@@ -42,6 +42,41 @@ describe("safeWriteJson asynchronous commit boundary", () => {
 		await fs.rm(directory, { recursive: true, force: true })
 	})
 
+	it("prepares the next snapshot while holding the same destination lease as its write", async () => {
+		const held = barrier()
+		const release = barrier()
+		const first = safeWriteJson(target, null, {
+			prepareData: async () => {
+				held.resolve()
+				await release.promise
+				return { count: 1 }
+			},
+		})
+		await held.promise
+		const second = safeWriteJson(target, null, {
+			prepareData: async () => {
+				const current = JSON.parse(await fs.readFile(target, "utf8"))
+				return { count: current.count + 1 }
+			},
+		})
+		release.resolve()
+		await Promise.all([first, second])
+		expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ count: 2 })
+	})
+
+	it("keeps prior data and releases the lease when snapshot preparation rejects", async () => {
+		await expect(
+			safeWriteJson(target, null, {
+				prepareData: () => {
+					throw new Error("Snapshot unavailable")
+				},
+			}),
+		).rejects.toThrow("Snapshot unavailable")
+		expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ original: true })
+		await safeWriteJson(target, { next: true })
+		expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ next: true })
+	})
+
 	it("retains the closed temporary file and prior target until its single commit callback completes", async () => {
 		const entered = barrier()
 		const proceed = barrier()

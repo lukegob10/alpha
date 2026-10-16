@@ -11,7 +11,7 @@ export const TASK_OPENING_FEEDBACK_TIMEOUT_MS = 30_000
  * Provides immediate selection feedback while the extension restores a task.
  * The host acknowledges with taskOpenResult; the timeout is only a failure escape.
  */
-export function useTaskOpeningFeedback(taskId: string) {
+export function useTaskOpeningFeedback(taskId: string, onOpenTask?: (taskId: string) => void) {
 	const cachedTranscriptRevision = useCachedTranscriptRevision(taskId)
 	const [isOpening, setIsOpening] = useState(false)
 	const isOpeningRef = useRef(false)
@@ -54,17 +54,20 @@ export function useTaskOpeningFeedback(taskId: string) {
 
 		isOpeningRef.current = true
 		setIsOpening(true)
-		vscode.postMessage({
-			type: "showTaskWithId",
-			text: taskId,
-			...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
-		})
+		if (onOpenTask) onOpenTask(taskId)
+		else {
+			vscode.postMessage({
+				type: "showTaskWithId",
+				text: taskId,
+				...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
+			})
+		}
 		resetTimeoutRef.current = window.setTimeout(() => {
 			resetTimeoutRef.current = undefined
 			isOpeningRef.current = false
 			setIsOpening(false)
 		}, TASK_OPENING_FEEDBACK_TIMEOUT_MS)
-	}, [cachedTranscriptRevision, taskId])
+	}, [cachedTranscriptRevision, onOpenTask, taskId])
 
 	return { isOpening, openTask }
 }

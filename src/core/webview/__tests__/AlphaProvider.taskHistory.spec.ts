@@ -417,6 +417,81 @@ describe("AlphaProvider Task History Synchronization", () => {
 		return calls.filter((call) => call[0]?.type === type)
 	}
 
+	it("projects a committed rename to sibling views in the same project without changing transcript state", async () => {
+		const renamed = createHistoryItem({ id: "renamed-chat", task: "Original prompt", displayName: "Named chat" })
+		const rename = vi.spyOn(provider.taskHistoryStore, "renameTask").mockResolvedValue(renamed)
+		vi.spyOn(provider.taskHistoryStore, "get").mockReturnValue(renamed)
+		provider.isViewLaunched = true
+		const send = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+		const siblingSend = vi.fn().mockResolvedValue(undefined)
+		const siblingInvalidate = vi.fn().mockResolvedValue(undefined)
+		const sibling = {
+			taskHistoryStoreReady: Promise.resolve(),
+			taskHistoryStore: {
+				invalidate: siblingInvalidate,
+				get: () => renamed,
+				isForWorkspace: (_item: unknown, workspace: string) => workspace === "/test/workspace",
+			},
+			isViewLaunched: true,
+			cwd: "/test/workspace",
+			postMessageToWebview: siblingSend,
+			scheduleGlobalStateWriteThrough: vi.fn(),
+		}
+		const otherProject = { ...sibling, cwd: "/other/project", postMessageToWebview: vi.fn() }
+		vi.spyOn(provider as any, "getHostProviders").mockReturnValue([provider, sibling, otherProject])
+		const transcript = vi.spyOn(provider, "postTaskStateToWebview")
+
+		await expect(provider.renameTask(renamed.id, "Named chat")).resolves.toEqual(renamed)
+
+		expect(rename).toHaveBeenCalledExactlyOnceWith(renamed.id, "Named chat", "/test/workspace")
+		expect(siblingInvalidate).toHaveBeenCalledWith(renamed.id, { requireExisting: true })
+		const projection = { type: "taskHistoryItemUpdated", taskHistoryItem: renamed }
+		expect(send).toHaveBeenCalledWith(projection)
+		expect(siblingSend).toHaveBeenCalledWith(projection)
+		expect(otherProject.postMessageToWebview).not.toHaveBeenCalled()
+		expect(transcript).not.toHaveBeenCalled()
+	})
+
+	it("serializes subsequent renames behind the previous name's blocked projection", async () => {
+		const base = createHistoryItem({ id: "rename-race", task: "Original prompt" })
+		let current = { ...base, displayName: "Original name" }
+		const rename = vi
+			.spyOn(provider.taskHistoryStore, "renameTask")
+			.mockImplementation(async (_id, displayName) => {
+				current = { ...current, displayName }
+				return current
+			})
+		vi.spyOn(provider.taskHistoryStore, "get").mockImplementation(() => current)
+		provider.isViewLaunched = true
+		let enter!: () => void
+		let release!: () => void
+		const entered = new Promise<void>((resolve) => (enter = resolve))
+		const blocked = new Promise<void>((resolve) => (release = resolve))
+		const names: string[] = []
+		vi.spyOn(provider as any, "getHostProviders").mockReturnValue([provider])
+		vi.spyOn(provider, "postMessageToWebview").mockImplementation(async (message) => {
+			if (message.type !== "taskHistoryItemUpdated") return
+			names.push(message.taskHistoryItem!.displayName!)
+			if (names.length === 1) {
+				enter()
+				await blocked
+			}
+		})
+
+		const first = provider.renameTask(base.id, "First name")
+		await entered
+		const second = provider.renameTask(base.id, "Second name")
+		try {
+			expect(rename).toHaveBeenCalledTimes(1)
+			expect(names).toEqual(["First name"])
+		} finally {
+			release()
+		}
+		await Promise.all([first, second])
+		expect(names).toEqual(["First name", "Second name"])
+		expect(current.displayName).toBe("Second name")
+	})
+
 	it("does not post a pre-migration state while task-history recovery is still running", async () => {
 		let finishRecovery!: () => void
 		;(provider as any).taskHistoryStoreReady = new Promise<void>((resolve) => (finishRecovery = resolve))

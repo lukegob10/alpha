@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from "@/utils/test-utils"
+import userEvent from "@testing-library/user-event"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -33,22 +34,32 @@ const environment: ChatRowEnvironment = {
 	getAlphaMessages: () => [message],
 }
 
-function renderMessage(isStreaming = false, isTaskPrompt = false) {
-	return render(
+function messageElement(
+	isStreaming = false,
+	isTaskPrompt = false,
+	rowEnvironment = environment,
+	messageActionsDisabled?: boolean,
+) {
+	return (
 		<ExtensionStateContextProvider>
 			<ChatRow
 				message={
 					isTaskPrompt ? { ...message, say: "text", images: ["data:image/png;base64,aGVsbG8="] } : message
 				}
 				isTaskPrompt={isTaskPrompt}
-				environment={environment}
+				environment={rowEnvironment}
 				isExpanded={false}
 				isLast={false}
 				isStreaming={isStreaming}
+				messageActionsDisabled={messageActionsDisabled}
 				onToggleExpand={() => {}}
 			/>
-		</ExtensionStateContextProvider>,
+		</ExtensionStateContextProvider>
 	)
+}
+
+function renderMessage(isStreaming = false, isTaskPrompt = false) {
+	return render(messageElement(isStreaming, isTaskPrompt))
 }
 
 describe("user message bubbles", () => {
@@ -105,6 +116,47 @@ describe("user message bubbles", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "submitEditedMessage" }))
 	})
 
+	it("lets keyboard users copy and edit a message without hovering over it", async () => {
+		// The shared FAST setup replaces focus with a no-op; use the DOM's implementation for keyboard navigation.
+		const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
+		const frame = document.createElement("iframe")
+		document.body.append(frame)
+		const nativeFocus = frame.contentDocument!.createElement("button").focus
+		frame.remove()
+		Object.defineProperty(HTMLElement.prototype, "focus", { configurable: true, value: nativeFocus })
+		try {
+			const user = userEvent.setup()
+			renderMessage()
+			const copy = screen.getByRole("button", { name: "Copy" })
+			await user.tab()
+			expect(copy).toHaveFocus()
+			await user.keyboard("{Enter}")
+			expect(copyWithFeedback).toHaveBeenCalledWith(message.text, expect.anything())
+			await user.tab()
+			expect(screen.getByRole("button", { name: "Edit and resend" })).toHaveFocus()
+			await user.keyboard("{Enter}")
+			expect(screen.getByRole("textbox", { name: "Edit your message..." })).toHaveValue(message.text)
+		} finally {
+			Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor)
+		}
+	})
+
+	it("targets the selected follow-up by its persisted timestamp and task ID", () => {
+		renderMessage()
+		fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "Edit your message..." }), {
+			target: { value: "Use the smaller layout" },
+		})
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "submitEditedMessage",
+			value: message.ts,
+			taskId: environment.currentTaskId,
+			editedMessageContent: "Use the smaller layout",
+			images: [],
+		})
+	})
+
 	it("keeps edit and delete unavailable while streaming", () => {
 		renderMessage(true)
 		expect(screen.getByRole("button", { name: "Edit and resend" })).toBeDisabled()
@@ -112,5 +164,45 @@ describe("user message bubbles", () => {
 		expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled()
 		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+	})
+
+	it.each([
+		["an active turn", environment, true],
+		[
+			"a parent-managed sub-agent",
+			{ ...environment, currentTaskItem: { id: "style-task", taskKind: "subagent" as const } },
+			false,
+		],
+		["a missing task", { ...environment, currentTaskId: undefined }, false],
+	] as const)("keeps copying available while mutations are restricted for %s", (_, rowEnvironment, disabled) => {
+		render(messageElement(false, false, rowEnvironment, disabled))
+		expect(screen.getByRole("button", { name: "Edit and resend" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Delete Message" })).toBeDisabled()
+		fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(message.text, expect.anything())
+		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
+		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "submitEditedMessage" }))
+	})
+
+	it("disables an open editor when a turn starts without losing its draft", () => {
+		const { rerender } = renderMessage()
+		fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }))
+		const editor = screen.getByRole("textbox", { name: "Edit your message..." })
+		fireEvent.change(editor, { target: { value: "Keep this draft" } })
+		rerender(messageElement(false, false, environment, true))
+		expect(screen.getByRole("button", { name: "chat:pressToSend" })).toBeDisabled()
+		expect(editor).toHaveValue("Keep this draft")
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "submitEditedMessage" }))
+		rerender(messageElement())
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				value: message.ts,
+				taskId: "style-task",
+				editedMessageContent: "Keep this draft",
+			}),
+		)
 	})
 })

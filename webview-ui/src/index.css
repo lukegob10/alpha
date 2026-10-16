@@ -207,6 +207,8 @@
 		--chat-surface: var(--surface-raised);
 		--chat-link: var(--vscode-textLink-foreground);
 		--chat-content-width: 800px;
+		--chat-ui-font-family: var(--vscode-font-family, system-ui, sans-serif);
+		--chat-ui-font-size: var(--vscode-font-size, 13px);
 	}
 
 	/* Keep the reference palette scoped to dark chat; accessible host themes retain their own colors. */
@@ -442,14 +444,15 @@
 		display: inline-flex;
 		position: relative;
 		align-items: center;
-		gap: 0.375rem;
+		gap: 0.25rem;
 		min-width: 0;
 		max-width: 100%;
-		height: 1.75rem;
-		padding: 0 0.375rem;
-		font-size: 0.75rem;
+		height: 24px;
+		padding: 0 4px;
+		font-family: var(--chat-ui-font-family);
+		font-size: var(--chat-ui-font-size);
 		font-weight: 400;
-		line-height: 1rem;
+		line-height: 18px;
 		white-space: nowrap;
 		cursor: pointer;
 	}
@@ -510,34 +513,121 @@
 		background: var(--chat-surface);
 	}
 
+	.chat-composer-shell {
+		min-width: 0;
+		font-family: var(--chat-ui-font-family);
+		font-size: var(--chat-ui-font-size);
+	}
+
+	.chat-composer-context {
+		margin-bottom: 8px;
+	}
+
+	.chat-composer-text {
+		font-family: var(--chat-ui-font-family);
+		font-size: var(--chat-ui-font-size);
+		line-height: 22px;
+	}
+
+	.chat-composer-footer {
+		display: flex;
+		align-items: flex-end;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.chat-composer-settings {
+		display: flex;
+		flex: 1 1 auto;
+		align-items: center;
+		gap: 1px;
+		min-width: 0;
+		margin-left: -3px;
+		padding-bottom: 2px;
+		white-space: nowrap;
+	}
+
+	.chat-composer-settings > * {
+		min-width: 0;
+	}
+
+	.chat-composer-settings .chat-composer-profile {
+		flex: 0 1 auto;
+		max-width: 160px;
+	}
+
+	.chat-composer-settings .chat-composer-approval {
+		flex: 0 0 auto;
+	}
+
+	.chat-composer-actions {
+		display: flex;
+		flex: 0 0 auto;
+		align-items: center;
+		gap: 1px;
+	}
+
+	.chat-composer-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		cursor: pointer;
+	}
+
+	.chat-composer-icon:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: -1px;
+	}
+
+	.chat-composer-utility {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		min-height: 24px;
+		margin-top: 4px;
+		padding-inline: 8px;
+	}
+
+	.chat-composer-help {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		color: var(--vscode-descriptionForeground);
+		font-size: 11px;
+		line-height: 16px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.chat-composer:focus-within {
 		border-color: var(--vscode-focusBorder);
 	}
 
 	.new-task-home {
-		padding: 32px 15px 0;
+		padding: 4px 12px 0;
 	}
 
 	.new-task-dock {
-		max-width: calc(var(--chat-content-width) + 30px);
-		padding: 0 15px 21px;
+		max-width: calc(var(--chat-content-width) + 24px);
+		padding: 0 12px 12px;
 	}
 
 	.new-task-history-heading {
-		margin-bottom: 10px;
-		padding-inline: 15px;
-		color: color-mix(in srgb, var(--chat-foreground) 65%, transparent);
-	}
-
-	.vscode-high-contrast .new-task-history-heading,
-	.vscode-high-contrast-light .new-task-history-heading {
-		color: var(--chat-foreground);
+		display: flex;
+		min-height: 24px;
+		align-items: center;
+		margin-bottom: 4px;
+		padding-inline: 8px;
+		color: var(--vscode-descriptionForeground);
 	}
 
 	.new-task-history-heading h2 {
-		font-size: max(14px, calc(var(--vscode-font-size) * 1.3));
-		line-height: 1.3;
-		letter-spacing: -0.2px;
+		font: inherit;
+		letter-spacing: normal;
 	}
 
 	.new-task-history-list {
@@ -559,9 +649,7 @@
 	}
 
 	.new-task-composer {
-		border: 1px solid var(--vscode-contrastBorder, color-mix(in srgb, var(--border-accent) 70%, transparent));
-		border-radius: 20px;
-		box-shadow: var(--shadow-raised);
+		border-color: var(--vscode-contrastBorder, transparent);
 	}
 
 	.new-task-composer:focus-within {
@@ -577,109 +665,38 @@
 		border-color: var(--vscode-focusBorder);
 	}
 
-	/* Reclaim the top inset inside the textarea while retaining the initial composer height. */
-	.new-task-input {
-		padding: 8px 14px 20px;
-	}
-
-	.new-task-input-text {
-		font-family: var(--vscode-font-family);
-		font-size: max(14px, calc(var(--vscode-font-size) * 1.1));
-		line-height: 1.5;
-	}
-
-	.new-task-input-actions {
-		top: 3px;
-		right: 0;
-	}
-
-	.new-task-attachment {
-		width: 34px;
-		height: 34px;
-		border: 1px solid var(--vscode-contrastBorder, var(--border-accent));
-		border-radius: 9px;
-	}
-
-	.new-task-composer-footer {
-		display: flex;
-		align-items: flex-end;
-		gap: 16px;
-		padding: 10px 14px;
-		border-top: 1px solid var(--border-subtle);
-		border-radius: 0 0 19px 19px;
-		background: color-mix(in srgb, var(--chat-background) 50%, var(--chat-surface));
-	}
-
-	.new-task-settings {
-		display: flex;
-		flex: 1;
-		flex-wrap: wrap;
-		gap: 8px 24px;
-		min-width: 0;
-	}
-
-	.new-task-setting {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 1px;
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	.new-task-setting-label {
-		font-size: max(11px, calc(var(--vscode-font-size) * 0.85));
-		line-height: 1.5;
-		color: var(--vscode-descriptionForeground);
-	}
-
-	.new-task-composer .composer-selector {
-		height: 23px;
-		padding: 0;
-		font-size: max(12px, var(--vscode-font-size));
-		font-weight: 400;
-		line-height: 1.5;
-		color: color-mix(in srgb, var(--chat-foreground) 65%, transparent);
-	}
-
-	@media (max-width: 600px) {
-		.new-task-home {
-			padding: 27px 10px 0;
-		}
-
-		.new-task-dock {
-			padding-inline: 10px;
-		}
-
-		.new-task-settings {
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: 8px 16px;
-		}
-	}
-
 	@media (max-width: 390px) {
-		.new-task-home {
-			padding-inline: 7px;
+		.chat-composer-settings {
+			gap: 0;
 		}
 
-		.new-task-dock {
-			padding-inline: 7px;
+		.chat-composer-settings .composer-selector {
+			padding-inline: 3px;
 		}
 
-		.new-task-composer-footer {
-			gap: 10px;
+		.chat-composer-settings .chat-composer-profile {
+			max-width: 100px;
 		}
 	}
 
 	@media (pointer: coarse) {
-		.new-task-composer .composer-selector,
-		.new-task-attachment {
+		.chat-composer .composer-selector,
+		.chat-composer-actions button,
+		.chat-composer-icon {
 			min-height: 44px;
 		}
 
-		.new-task-attachment {
+		.chat-composer-actions button,
+		.chat-composer-icon {
 			min-width: 44px;
+		}
+
+		.chat-composer-footer {
+			flex-wrap: wrap;
+		}
+
+		.chat-composer-actions {
+			margin-left: auto;
 		}
 	}
 
@@ -710,7 +727,10 @@
 }
 
 @layer utilities {
-	.new-task-composer textarea,
+	.chat-composer textarea {
+		caret-color: var(--chat-foreground);
+	}
+
 	.new-task-history-search {
 		color: color-mix(in srgb, var(--chat-foreground) 60%, transparent);
 		caret-color: var(--chat-foreground);
@@ -748,16 +768,6 @@
 	.new-task-history-compact [data-contained="true"],
 	.new-task-history-compact .history-subtask-row {
 		border-radius: 0;
-		color: color-mix(in srgb, var(--chat-foreground) 55%, transparent);
-	}
-
-	.vscode-high-contrast .new-task-history-list .new-task-history-row,
-	.vscode-high-contrast-light .new-task-history-list .new-task-history-row,
-	.vscode-high-contrast .new-task-history-compact [data-contained="true"],
-	.vscode-high-contrast-light .new-task-history-compact [data-contained="true"],
-	.vscode-high-contrast .new-task-history-compact .history-subtask-row,
-	.vscode-high-contrast-light .new-task-history-compact .history-subtask-row {
-		color: var(--chat-foreground);
 	}
 
 	.new-task-history-compact [data-selected="true"] {

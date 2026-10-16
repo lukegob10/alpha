@@ -1,5 +1,4 @@
 import { useEffect, useId, useState } from "react"
-import { ChevronDown } from "lucide-react"
 import {
 	taskReasoningCustomTokenPattern,
 	type ReasoningEffortExtended,
@@ -164,7 +163,6 @@ export function ReasoningSelector({
 						) : state?.pending ? (
 							<span className="shrink-0">· {t("chat:reasoning.nextStep")}</span>
 						) : null}
-						<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 					</button>
 				</PopoverTrigger>
 				<PopoverContent

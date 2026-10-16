@@ -361,6 +361,198 @@ function edit(path: string, overrides: Partial<AlphaMessage> = {}): AlphaMessage
 	}
 }
 
+describe("Review disclosure", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const capturedFiles = (count: number) =>
+		Array.from({ length: count }, (_, index) =>
+			completedCommandEdit(
+				`src/file-${index + 1}.ts`,
+				`before-${index + 1}\n`,
+				`after-${index + 1}\n`,
+				`edit-${index + 1}`,
+			),
+		)
+	const fileToggle = (path: string) => screen.getByText(path).closest("button")!
+	const clickReview = () => fireEvent.click(screen.getByRole("button", { name: "Review" }))
+
+	it("opens the three-file list with only its bottom captured diff expanded", () => {
+		renderPanel(capturedFiles(3), "task-a", false)
+		clickReview()
+
+		expect(screen.getByText("Files edited: 3").closest("button")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getAllByText(/^src\/file-\d\.ts$/).map((label) => label.textContent)).toEqual([
+			"src/file-1.ts",
+			"src/file-2.ts",
+			"src/file-3.ts",
+		])
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getAllByTestId("file-diff")).toHaveLength(1)
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("-before-3")
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("+after-3")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+	})
+
+	it("reveals every file when Review starts beyond the compact three-row limit", () => {
+		renderPanel(capturedFiles(5), "task-a", false)
+		clickReview()
+
+		expect(screen.getAllByText(/^src\/file-\d\.ts$/)).toHaveLength(5)
+		for (const index of [1, 2, 3, 4]) {
+			expect(fileToggle(`src/file-${index}.ts`)).toHaveAttribute("aria-expanded", "false")
+		}
+		expect(fileToggle("src/file-5.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByRole("button", { name: "chat:task.seeLess" })).toBeInTheDocument()
+	})
+
+	it("keeps manual file choices through final output updates and newly appended files", () => {
+		const messages = capturedFiles(3)
+		const { rerender } = renderPanel(messages, "task-a", false)
+		clickReview()
+		fireEvent.click(fileToggle("src/file-3.ts"))
+		fireEvent.click(fileToggle("src/file-1.ts"))
+		const updated: AlphaMessage[] = [
+			...messages,
+			completedCommandEdit("src/file-1.ts", "after-1\n", "final-1\n", "edit-1-final"),
+			completedCommandEdit("src/file-3.ts", "after-3\n", "final-3\n", "edit-3-final"),
+			completedCommandEdit("src/file-4.ts", "before-4\n", "after-4\n", "edit-4"),
+			{ type: "say", say: "text", ts: 50, text: "Final response", partial: true },
+		]
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={updated} taskId="task-a" />
+			</TranslationProvider>,
+		)
+
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-4.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("-before-1")
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("+final-1")
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel
+					clineMessages={updated.map((message) => ({ ...message, partial: false }))}
+					taskId="task-a"
+				/>
+			</TranslationProvider>,
+		)
+		clickReview()
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-4.ts")).toHaveAttribute("aria-expanded", "false")
+	})
+
+	it("lets the user close the bottom file and keep the entire list closed on later Review clicks", () => {
+		renderPanel(capturedFiles(3), "task-a", false)
+		clickReview()
+		fireEvent.click(fileToggle("src/file-3.ts"))
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByText("Files edited: 3").closest("button")!)
+		clickReview()
+
+		for (const index of [1, 2, 3]) {
+			expect(fileToggle(`src/file-${index}.ts`)).toHaveAttribute("aria-expanded", "false")
+		}
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+	})
+
+	it("initializes Review again after changing tasks without reusing prior file choices", () => {
+		const messages = capturedFiles(3)
+		const { rerender } = renderPanel(messages, "task-a", false)
+		clickReview()
+		fireEvent.click(fileToggle("src/file-3.ts"))
+		fireEvent.click(fileToggle("src/file-1.ts"))
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={messages} taskId="task-b" />
+			</TranslationProvider>,
+		)
+		expect(screen.getByText("Files edited: 3").closest("button")).toHaveAttribute("aria-expanded", "false")
+		clickReview()
+
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "true")
+	})
+
+	it("keeps per-file native diff actions bound to the captured content after inline Review", () => {
+		renderPanel(capturedFiles(3), "task-a", false)
+		clickReview()
+		fireEvent.click(screen.getAllByRole("button", { name: "chat:fileChangesInConversation.openDiff" })[0]!)
+
+		expect(mockPostMessage).toHaveBeenCalledTimes(1)
+		expect(mockPostMessage).toHaveBeenLastCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff: src/file-1.ts",
+				files: [{ path: "src/file-1.ts", originalContent: "before-1\n", finalContent: "after-1\n" }],
+			},
+		})
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "true")
+	})
+
+	it("keeps single-file Review native and initializes the list if a second file arrives", () => {
+		const first = capturedFiles(1)
+		const { rerender } = renderPanel(first, "task-a", false)
+		clickReview()
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff: src/file-1.ts",
+				files: [{ path: "src/file-1.ts", originalContent: "before-1\n", finalContent: "after-1\n" }],
+			},
+		})
+		expect(screen.queryByText("src/file-1.ts")).not.toBeInTheDocument()
+		mockPostMessage.mockClear()
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={capturedFiles(2)} taskId="task-a" />
+			</TranslationProvider>,
+		)
+		clickReview()
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "true")
+	})
+
+	it("opens the bottom displayed legacy diff even when it has no native snapshot", () => {
+		renderPanel([...capturedFiles(2), edit("src/legacy.ts")], "task-a", false)
+		clickReview()
+
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/legacy.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("-old +new")
+	})
+
+	it("preserves an earlier file the user explicitly opened before first Review", () => {
+		renderPanel(capturedFiles(3), "task-a")
+		fireEvent.click(fileToggle("src/file-1.ts"))
+		clickReview()
+
+		expect(fileToggle("src/file-1.ts")).toHaveAttribute("aria-expanded", "true")
+		expect(fileToggle("src/file-2.ts")).toHaveAttribute("aria-expanded", "false")
+		expect(fileToggle("src/file-3.ts")).toHaveAttribute("aria-expanded", "true")
+	})
+
+	it("keeps a bottom file explicitly closed before first Review closed", () => {
+		renderPanel(capturedFiles(3), "task-a")
+		fireEvent.click(fileToggle("src/file-3.ts"))
+		fireEvent.click(fileToggle("src/file-3.ts"))
+		clickReview()
+
+		for (const index of [1, 2, 3]) {
+			expect(fileToggle(`src/file-${index}.ts`)).toHaveAttribute("aria-expanded", "false")
+		}
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+	})
+})
+
 describe("Compact file summaries", () => {
 	beforeEach(() => vi.clearAllMocks())
 
@@ -401,7 +593,7 @@ describe("Compact file summaries", () => {
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
 	})
 
-	it("opens a captured single-file diff and a broader change-set diff", () => {
+	it("reviews the captured change set inline and keeps individual native diff actions", () => {
 		const first = completedCommandEdit("src/one.ts", "old\n", "new\n", "run-1")
 		const second = completedCommandEdit("src/two.ts", "before\n", "after\n", "run-2")
 		renderPanel([first, second], "one", false)
@@ -409,22 +601,9 @@ describe("Compact file summaries", () => {
 		const allDiffs = screen.getByRole("button", { name: "Review" })
 		expect(allDiffs).toBeEnabled()
 		fireEvent.click(allDiffs)
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "openDiff",
-			payload: {
-				title: "Alpha Diff",
-				files: [
-					expect.objectContaining({ path: "src/one.ts", originalContent: "old\n", finalContent: "new\n" }),
-					expect.objectContaining({
-						path: "src/two.ts",
-						originalContent: "before\n",
-						finalContent: "after\n",
-					}),
-				],
-			},
-		})
-
-		fireEvent.click(screen.getByText("Files edited: 2").closest("button")!)
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(screen.getByRole("button", { name: /^src\/one.ts/ })).toHaveAttribute("aria-expanded", "false")
+		expect(screen.getByRole("button", { name: /^src\/two.ts/ })).toHaveAttribute("aria-expanded", "true")
 		fireEvent.click(screen.getAllByRole("button", { name: "chat:fileChangesInConversation.openDiff" })[0]!)
 		expect(mockPostMessage).toHaveBeenLastCalledWith({
 			type: "openDiff",
@@ -435,7 +614,7 @@ describe("Compact file summaries", () => {
 		})
 	})
 
-	it("opens individual and aggregate diffs for a grouped two-file approval", () => {
+	it("reviews a grouped approval inline while preserving its individual native snapshots", () => {
 		const message: AlphaMessage = {
 			type: "ask",
 			ask: "tool",
@@ -463,17 +642,9 @@ describe("Compact file summaries", () => {
 		const allDiffs = screen.getByRole("button", { name: "Review" })
 		expect(allDiffs).toBeEnabled()
 		fireEvent.click(allDiffs)
-		expect(mockPostMessage).toHaveBeenLastCalledWith({
-			type: "openDiff",
-			payload: {
-				title: "Alpha Diff",
-				files: [
-					{ path: "bootstrap.py", originalContent: "old\n", finalContent: "new\n" },
-					{ path: "config.py", originalContent: "before\n", finalContent: "after\n" },
-				],
-			},
-		})
-		fireEvent.click(screen.getByText("Files edited: 2").closest("button")!)
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(screen.getByRole("button", { name: /^bootstrap.py/ })).toHaveAttribute("aria-expanded", "false")
+		expect(screen.getByRole("button", { name: /^config.py/ })).toHaveAttribute("aria-expanded", "true")
 		fireEvent.click(screen.getAllByRole("button", { name: "chat:fileChangesInConversation.openDiff" })[1]!)
 		expect(mockPostMessage).toHaveBeenLastCalledWith({
 			type: "openDiff",
