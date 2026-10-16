@@ -28,6 +28,7 @@ afterEach(async () => {
 	for (const task of detached.splice(0)) {
 		task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
 		await task.waitForTermination()
+		await task.messageQueueService.flush()
 	}
 	for (const fixture of fixtures.splice(0)) await fixture.cleanup()
 })

@@ -1,10 +1,15 @@
 import { EventEmitter } from "node:events"
+import * as fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
 import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
+import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
+import * as storage from "../../../utils/storage"
 
 // Mock dependencies
 vi.mock("../../webview/AlphaProvider")
@@ -216,5 +221,104 @@ describe("Task dispose method", () => {
 
 		// Verify total listener count is 0
 		expect(task.eventNames().length).toBe(0)
+	})
+})
+
+describe("Task dispose artifact storage", () => {
+	test("does not recreate removed task storage when delayed output cleanup resumes", async () => {
+		const storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-task-dispose-output-"))
+		const resolvedStorageRoot = path.resolve(storageRoot)
+		if (
+			path.dirname(resolvedStorageRoot) !== path.resolve(os.tmpdir()) ||
+			!path.basename(resolvedStorageRoot).startsWith("alpha-task-dispose-output-")
+		) {
+			throw new Error("Refusing to remove storage outside its owned temporary root")
+		}
+		const provider = {
+			context: { globalStorageUri: { fsPath: storageRoot } },
+			getState: vi.fn().mockResolvedValue({ mode: "code" }),
+			log: vi.fn(),
+		} as unknown as AlphaProvider
+		const ownedTask = new Task({
+			provider,
+			apiConfiguration: { apiProvider: "vertex" },
+			taskId: "dispose-output-cleanup",
+			taskMode: "code",
+			taskApiConfigName: "Dispose fixture",
+			startTask: false,
+		})
+		let releaseLookup!: () => void
+		const lookupPermit = new Promise<void>((resolve) => {
+			releaseLookup = resolve
+		})
+		let finishCleanup!: () => void
+		const cleanupFinished = new Promise<void>((resolve) => {
+			finishCleanup = resolve
+		})
+		let lookupHeld = false
+		const nativeCreatingResolver = storage.getTaskDirectoryPath
+		const nativeReadOnlyResolver = storage.resolveExistingTaskDirectoryPathReadOnly
+		const holdOwnedLookup =
+			(nativeResolver: typeof nativeCreatingResolver) => async (storagePath: string, taskId: string) => {
+				if (storagePath === storageRoot && taskId === ownedTask.taskId && !lookupHeld) {
+					lookupHeld = true
+					await lookupPermit
+				}
+				return nativeResolver(storagePath, taskId)
+			}
+		const taskDirectory = storage.resolveTaskDirectoryPath(storageRoot, ownedTask.taskId)
+		const outputDirectory = path.join(taskDirectory, "command-output")
+		const nativeCleanup = OutputInterceptor.cleanupByIds
+		const ownedCleanup = vi.fn()
+		const cleanup = vi.spyOn(OutputInterceptor, "cleanupByIds").mockImplementation(async (...args) => {
+			if (args[0] === outputDirectory) ownedCleanup(...args)
+			try {
+				await nativeCleanup(...args)
+			} finally {
+				if (args[0] === outputDirectory) finishCleanup()
+			}
+		})
+		try {
+			// Join constructor-owned queue I/O before isolating dispose's later lookup.
+			await ownedTask.messageQueueService.ready
+			await ownedTask.messageQueueService.flush()
+			await expect(fs.stat(taskDirectory)).resolves.toBeDefined()
+			const creatingResolver = vi
+				.spyOn(storage, "getTaskDirectoryPath")
+				.mockImplementation(holdOwnedLookup(nativeCreatingResolver))
+			const readOnlyResolver = vi
+				.spyOn(storage, "resolveExistingTaskDirectoryPathReadOnly")
+				.mockImplementation(holdOwnedLookup(nativeReadOnlyResolver))
+			try {
+				ownedTask.dispose()
+				expect(lookupHeld).toBe(true)
+				expect(ownedCleanup).not.toHaveBeenCalled()
+				if (
+					path.dirname(resolvedStorageRoot) !== path.resolve(os.tmpdir()) ||
+					!path.basename(resolvedStorageRoot).startsWith("alpha-task-dispose-output-") ||
+					path.dirname(path.resolve(taskDirectory)) !== path.join(resolvedStorageRoot, "tasks") ||
+					path.basename(taskDirectory) !== ownedTask.taskId
+				) {
+					throw new Error("Refusing to remove storage outside the owned temporary task")
+				}
+				await fs.rm(taskDirectory, { recursive: true, force: true })
+				releaseLookup()
+				await cleanupFinished
+				await ownedTask.waitForTermination()
+				expect(ownedCleanup).toHaveBeenCalledOnce()
+				await expect(fs.stat(taskDirectory)).rejects.toMatchObject({ code: "ENOENT" })
+			} finally {
+				releaseLookup()
+				if (lookupHeld) await cleanupFinished
+				creatingResolver.mockRestore()
+				readOnlyResolver.mockRestore()
+			}
+		} finally {
+			ownedTask.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+			await ownedTask.waitForTermination()
+			await ownedTask.messageQueueService.flush()
+			cleanup.mockRestore()
+			await fs.rm(resolvedStorageRoot, { recursive: true, force: true })
+		}
 	})
 })

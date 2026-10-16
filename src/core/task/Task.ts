@@ -13291,7 +13291,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Retain referenced output and every unfinished/unconfirmed writer. A
 		// released polling session does not revoke its captured cleanup gate.
 		if (!options.preserveSharedTaskResources && !options.preserveCommandOutputArtifacts && outputReferences) {
-			getTaskDirectoryPath(outputStoragePath, outputTaskId)
+			resolveExistingTaskDirectoryPathReadOnly(outputStoragePath, outputTaskId)
 				.then((taskDir) => {
 					const outputDir = path.join(taskDir, "command-output")
 					return OutputInterceptor.cleanupByIds(

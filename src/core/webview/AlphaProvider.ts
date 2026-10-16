@@ -1322,7 +1322,7 @@ export class AlphaProvider
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
 		})
 		await this.flushGlobalStateWriteThrough()
-		this.taskHistoryStore.dispose()
+		await this.taskHistoryStore.dispose()
 		this.subagentNicknameRegistry?.clear()
 		this.taskSessions.disposeView()
 		this.log("Disposed all disposables")

@@ -416,6 +416,14 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		} catch (error) {
 			failures.push(error)
 		}
+		const queues = new Set([root, ...childrenCaptured].map((task) => task.messageQueueService))
+		for (const queue of queues) {
+			try {
+				await queue.flush()
+			} catch (error) {
+				failures.push(error)
+			}
+		}
 		try {
 			await store.shutdown()
 		} catch (error) {
