@@ -31,7 +31,7 @@ import type {
 	QueuedMessage,
 	ApprovalMode,
 } from "@alpha-code/types"
-import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
+import { getTaskDisplayName, isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
 import { planModeSlug } from "@alpha/modes"
@@ -54,13 +54,16 @@ import { StandardTooltip, Button } from "@src/components/ui"
 
 import TelemetryBanner from "../common/TelemetryBanner"
 import HistoryPreview from "../history/HistoryPreview"
-import { ManagedAgentTree } from "../agents/ManagedAgentTree"
+import ChatHistorySwitcher from "../history/ChatHistorySwitcher"
+import ChatToolbar from "./ChatToolbar"
+import { chatToolbarActions } from "./chatToolbarActions"
+import { SubagentDock } from "./SubagentDock"
 import { CrossTaskPanel } from "./CrossTaskPanel"
 import Announcement from "./Announcement"
 import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
 import { ChatTextArea } from "./ChatTextArea"
-import TaskHeader from "./TaskHeader"
+import TaskHeader, { type TaskHeaderProps } from "./TaskHeader"
 import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
@@ -82,6 +85,7 @@ export interface ChatViewProps {
 export interface ChatViewRef {
 	acceptInput: () => void
 	sendAndSteer: (taskId?: string) => void
+	startNewChat: () => void
 }
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
@@ -374,7 +378,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		visibleCurrentTaskId &&
 			!visibleCurrentTaskItem?.parentTaskId &&
 			!visibleCurrentTaskItem?.orchestrationParentTaskId &&
-			!liveTasksById?.[visibleCurrentTaskId]?.orchestrationParentTaskId &&
+			!visibleLiveTask?.orchestrationParentTaskId &&
 			!isManagedSubagent,
 	)
 	const managedAgentGroups = useMemo(
@@ -3068,6 +3072,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					isLast={isLast}
 					isStreaming={isLast && isStreaming}
 					messageActionsDisabled={isTurnActive || isCompletedTaskResumePending}
+					hideSubagentGroups={showManagedAgentTree}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onRequestUserInputSubmit={handleRequestUserInputSubmit}
 					onRequestUserInputCancel={handleRequestUserInputCancel}
@@ -3116,6 +3121,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isStreaming,
 			isTurnActive,
 			isCompletedTaskResumePending,
+			showManagedAgentTree,
 			handleSuggestionClickInRow,
 			handleRequestUserInputSubmit,
 			handleRequestUserInputCancel,
@@ -3142,6 +3148,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		!toolApprovalRequest
 
 	useImperativeHandle(ref, () => ({
+		startNewChat: () => startNewTask(),
 		sendAndSteer: (taskId) => {
 			if (
 				taskId !== visibleCurrentTaskId ||
@@ -3177,6 +3184,43 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const areActionButtonsVisible = primaryButtonText || secondaryButtonText || tertiaryButtonText
 	const shouldShowActionButtons =
 		areActionButtonsVisible && !isStandaloneNewTaskAction && !isManagedSubagent && !isCompletedTaskResumePending
+	const taskHeaderProps: TaskHeaderProps = {
+		isVisible: !isHidden,
+		apiConfiguration,
+		currentTaskItem: visibleCurrentTaskItem,
+		taskModel: visibleCurrentTaskItem ? liveTasksById?.[visibleCurrentTaskItem.id]?.model : undefined,
+		tokensIn: task ? apiMetrics.totalTokensIn : 0,
+		tokensOut: task ? apiMetrics.totalTokensOut : 0,
+		cacheWrites: task ? apiMetrics.totalCacheWrites : undefined,
+		cacheReads: task ? apiMetrics.totalCacheReads : undefined,
+		totalCost: task ? apiMetrics.totalCost : 0,
+		aggregatedCost:
+			visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
+				? aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.totalCost
+				: undefined,
+		hasSubtasks: Boolean(
+			visibleCurrentTaskItem?.id &&
+				aggregatedCostsMap.has(visibleCurrentTaskItem.id) &&
+				aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.childrenCost > 0,
+		),
+		parentTaskId: visibleCurrentTaskItem?.parentTaskId,
+		launcherTaskId: visibleCurrentTaskItem?.orchestrationParentTaskId ?? visibleLiveTask?.orchestrationParentTaskId,
+		onShowTask: openTaskWithCache,
+		isManagedSubagent,
+		costBreakdown:
+			visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
+				? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
+						own: t("common:costs.own"),
+						subtasks: t("common:costs.subtasks"),
+					})
+				: undefined,
+		contextTokens: task ? apiMetrics.contextTokens : 0,
+		buttonsDisabled: sendingDisabled || isManagedSubagent || !task,
+		handleCondenseContext,
+		todos: latestTodos,
+		onExpandedChange: handleTaskHeaderExpandedChange,
+	}
+	const parentChatId = taskHeaderProps.parentTaskId ?? taskHeaderProps.launcherTaskId
 
 	return (
 		<div
@@ -3188,76 +3232,33 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					: undefined
 			}}
 			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
+			{!isHidden && (
+				<ChatToolbar
+					key={visibleCurrentTaskId ?? "new-chat"}
+					{...chatToolbarActions}
+					renderContext={extensionState.renderContext}
+					debug={extensionState.debug === true}
+					onNewChat={() => startNewTask()}
+					navigation={
+						task ? (
+							<ChatHistorySwitcher
+								isVisible={!isHidden}
+								currentTask={
+									visibleCurrentTaskItem ??
+									taskHistory.find((item) => item.id === visibleCurrentTaskId)
+								}
+								onOpenTask={openTaskWithCache}
+								onViewAll={() => setIsHistoryExpanded(true)}
+							/>
+						) : undefined
+					}
+				/>
+			)}
 			{telemetrySetting === "unset" && <TelemetryBanner />}
 			{showAnnouncement && <Announcement hideAnnouncement={hideAnnouncement} />}
 			{task ? (
 				<>
-					<TaskHeader
-						apiConfiguration={apiConfiguration}
-						currentTaskItem={visibleCurrentTaskItem}
-						taskModel={
-							visibleCurrentTaskItem ? liveTasksById?.[visibleCurrentTaskItem.id]?.model : undefined
-						}
-						tokensIn={apiMetrics.totalTokensIn}
-						tokensOut={apiMetrics.totalTokensOut}
-						cacheWrites={apiMetrics.totalCacheWrites}
-						cacheReads={apiMetrics.totalCacheReads}
-						totalCost={apiMetrics.totalCost}
-						aggregatedCost={
-							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
-								? aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.totalCost
-								: undefined
-						}
-						hasSubtasks={
-							!!(
-								visibleCurrentTaskItem?.id &&
-								aggregatedCostsMap.has(visibleCurrentTaskItem.id) &&
-								aggregatedCostsMap.get(visibleCurrentTaskItem.id)!.childrenCost > 0
-							)
-						}
-						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
-						launcherTaskId={
-							visibleCurrentTaskItem?.orchestrationParentTaskId ??
-							visibleLiveTask?.orchestrationParentTaskId
-						}
-						onShowTask={openTaskWithCache}
-						isManagedSubagent={isManagedSubagent}
-						costBreakdown={
-							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
-								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
-										own: t("common:costs.own"),
-										subtasks: t("common:costs.subtasks"),
-									})
-								: undefined
-						}
-						contextTokens={apiMetrics.contextTokens}
-						buttonsDisabled={sendingDisabled}
-						handleCondenseContext={handleCondenseContext}
-						todos={latestTodos}
-						onExpandedChange={handleTaskHeaderExpandedChange}
-					/>
-
-					{showManagedAgentTree && visibleCurrentTaskId && (
-						<div className="px-3 pb-1">
-							<ManagedAgentTree
-								rootTaskId={visibleCurrentTaskId}
-								groups={managedAgentGroups}
-								projection={managedAgentTreeProjection}
-								liveTasksById={liveTasksById}
-								onShowTask={openTaskWithCache}
-								isVisible={!isHidden}
-							/>
-						</div>
-					)}
-
-					{canShowCrossTaskPanel && visibleCurrentTaskId && (
-						<CrossTaskPanel
-							parentTaskId={visibleCurrentTaskId}
-							taskHistory={taskHistory}
-							liveTasksById={liveTasksById}
-							onOpen={openTaskWithCache}
-						/>
-					)}
+					{parentChatId && <TaskHeader {...taskHeaderProps} presentation="identity" />}
 
 					{checkpointWarning && (
 						<div className="px-3">
@@ -3274,6 +3275,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								onExpand={() => setIsHistoryExpanded(true)}
 								focusRequest={historyFocusRequest}
 								onClose={closeChatsPanel}
+								onOpenTask={openTaskWithCache}
 							/>
 						)}
 						{/* Keep the decorative watermark from forcing a scrollbar when history fills the panel. */}
@@ -3288,7 +3290,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			{task && showChatsPanel && (
 				<div className="max-h-[40vh] shrink-0 overflow-y-auto px-3 pb-2">
-					<HistoryPreview expanded focusRequest={historyFocusRequest} onClose={closeChatsPanel} />
+					<HistoryPreview
+						expanded
+						focusRequest={historyFocusRequest}
+						onClose={closeChatsPanel}
+						onOpenTask={openTaskWithCache}
+					/>
 				</div>
 			)}
 
@@ -3375,7 +3382,28 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			<div
 				data-testid="chat-bottom-dock"
-				className={cn("chat-column relative z-20 flex shrink-0 flex-col", !task && "new-task-dock")}>
+				className={cn("chat-column relative z-20 flex shrink-0 flex-col", task ? "pb-3" : "new-task-dock")}>
+				{canShowCrossTaskPanel && visibleCurrentTaskId && (
+					<CrossTaskPanel
+						parentTaskId={visibleCurrentTaskId}
+						taskHistory={taskHistory}
+						liveTasksById={liveTasksById}
+						onOpen={openTaskWithCache}
+					/>
+				)}
+				{showManagedAgentTree && visibleCurrentTaskId && (
+					<div className="px-3">
+						<SubagentDock
+							key={visibleCurrentTaskId}
+							parentTaskId={visibleCurrentTaskId}
+							groups={managedAgentGroups}
+							projection={managedAgentTreeProjection}
+							liveTasksById={liveTasksById}
+							onShowTask={openTaskWithCache}
+							isVisible={!isHidden}
+						/>
+					</div>
+				)}
 				{task && (
 					<>
 						{isCompletedTaskResumePending && !isManagedSubagent && (
@@ -3613,14 +3641,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							className="mx-[15px] mb-2 flex items-center gap-2 text-xs text-vscode-descriptionForeground">
 							<span className="min-w-0 flex-1 truncate">
 								{t("chat:taskAttention.waiting", {
-									name: taskHistory.find((item) => item.id === taskId)?.task ?? taskId,
+									name: getTaskDisplayName(
+										taskHistory.find((item) => item.id === taskId) ?? { task: taskId },
+									),
 								})}
 							</span>
 							<Button
 								variant="secondary"
 								size="sm"
 								aria-label={t("chat:taskAttention.openNamed", {
-									name: taskHistory.find((item) => item.id === taskId)?.task ?? taskId,
+									name: getTaskDisplayName(
+										taskHistory.find((item) => item.id === taskId) ?? { task: taskId },
+									),
 								})}
 								onClick={() => {
 									openTaskWithCache(taskId)
@@ -3657,6 +3689,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				{!isManagedSubagent && (
 					<ChatTextArea
 						ref={textAreaRef}
+						isVisible={!isHidden}
+						contextControl={<TaskHeader {...taskHeaderProps} presentation="composer" />}
 						appearance={task ? "default" : "newTask"}
 						inputValue={inputValue}
 						setInputValue={setInputValue}
@@ -3691,6 +3725,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						draftApprovalMode={draftApprovalMode}
 						onDraftApprovalModeChange={setDraftApprovalMode}
 					/>
+				)}
+				{isManagedSubagent && (
+					<div className="px-3">
+						<TaskHeader {...taskHeaderProps} presentation="composer" />
+					</div>
 				)}
 			</div>
 		</div>

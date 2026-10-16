@@ -40,6 +40,7 @@ import { GoalController } from "../../agent/goals/GoalController"
 import type { GoalAccountingBinding } from "../../agent/GoalStepAccounting"
 import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
+import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -668,6 +669,102 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		})
 		expect(prepared.group.agents[0].role).toBe("explore")
 		expect(prepared.envelopes[0].scope.allowedPaths).toBeUndefined()
+	})
+
+	it("prepares two default Code agents in a plain folder without initializing the user's repository", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-plain-spawn-"))
+		const provider = makeProviderHarness()
+		const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
+		try {
+			for (const taskName of ["first_test", "second_test"]) {
+				const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+					task_name: taskName,
+					message: "Return a short test response without changing files",
+				})
+				expect(prepared.group.agents[0]).toMatchObject({ role: "worker", writeScope: ["."] })
+				expect(prepared.envelopes[0].scope).toMatchObject({
+					workspaceRoots: [path.resolve(workspace)],
+					allowedPaths: [path.resolve(workspace)],
+					sharedWorkspace: false,
+				})
+			}
+			expect(await fs.readdir(workspace)).toEqual([])
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
+	it("restores the workspace-root scope of a default worker after its prepared runtime is unloaded", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-plain-followup-"))
+		const provider = makeProviderHarness()
+		const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
+		try {
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "retained_test",
+				message: "Return a short test response without changing files",
+			})
+			Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+			const records = await Reflect.get(provider, "ensurePreparedSubagentControlRecords").call(
+				provider,
+				parent,
+				prepared,
+			)
+			const record = records.get(prepared.envelopes[0].id)
+			expect(record).toBeDefined()
+			parent.clineMessages.push({ subagentGroup: structuredClone(prepared.group) })
+			Reflect.get(provider, "preparedSubagentGroups").clear()
+			Reflect.get(provider, "subagentDescriptors").clear()
+			const restored = await Reflect.get(provider, "restorePreparedSubagentForFollowup").call(
+				provider,
+				parent,
+				record,
+				"Return another short response",
+			)
+			expect(restored.group.agents[0]).toMatchObject({ role: "worker", writeScope: ["."] })
+			expect(restored.envelopes[0].scope.allowedPaths).toEqual([path.resolve(workspace)])
+			expect(await fs.readdir(workspace)).toEqual([])
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
+	it("deletes a no-op worker's private artifact when its parent chat is deleted", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-plain-delete-"))
+		const workspace = path.join(root, "workspace")
+		const storage = path.join(root, "storage")
+		await fs.mkdir(workspace)
+		const provider = makeProviderHarness()
+		Reflect.set(provider.contextProxy, "globalStorageUri", { fsPath: storage })
+		Object.defineProperty(provider, "cwd", { value: workspace })
+		vi.spyOn(ShadowCheckpointService, "deleteTask").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+		const history = Reflect.get(provider, "__historyItems") as Map<string, { id: string; childIds?: string[] }>
+		history.set("parent-1", { id: "parent-1", childIds: ["empty-worker"] })
+		history.set("empty-worker", { id: "empty-worker" })
+		Reflect.set(
+			Reflect.get(provider, "taskHistoryStore"),
+			"deleteMany",
+			vi.fn(async () => undefined),
+		)
+		let artifactId: string | undefined
+		try {
+			const worker = await managedSubagentWorktreeService.create(
+				storage,
+				"empty-worker",
+				await managedSubagentWorktreeService.validateScope(workspace, ["."], { allowWorkspaceRoot: true }),
+			)
+			artifactId = worker.artifact.id
+			const captured = await managedSubagentWorktreeService.capture(storage, artifactId)
+			expect(captured).toMatchObject({ status: "discarded", changes: [] })
+			await provider.deleteTaskWithId("parent-1")
+			await expect(fs.access(path.join(storage, "subagent-change-sets", artifactId))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+			expect(await fs.readdir(workspace)).toEqual([])
+		} finally {
+			if (artifactId) await managedSubagentWorktreeService.deleteArtifact(storage, artifactId)
+			await fs.rm(root, { recursive: true, force: true })
+		}
 	})
 
 	it("permits read-only Explore and Review agents in Plan mode", async () => {

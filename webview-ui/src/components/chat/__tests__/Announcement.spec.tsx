@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.0",
+		version: "3.2.1",
 	},
 }))
 
@@ -37,12 +37,14 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.0" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.1" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.0")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.1")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.0 improves task reliability, recovery, and alignment with Codex CLI."),
+			screen.getByText(
+				"Alpha v3.2.1 makes chats easier to navigate and supports sub-agents in folders without a Git repository.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -52,20 +54,22 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Tasks preserve context and recover more reliably after interruptions, cancellations, and reloads.",
+				"See recent chats before starting, switch quickly between chats, and keep custom chat names across reloads.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Commands, tools, and model providers report clearer outcomes and retain ordered results.",
+				"Use the native Alpha toolbar with consistent chat text, composer controls, and context details.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Delegated agents and questions keep their progress and responses through task handoffs."),
+			screen.getByText(
+				"Copy or edit your messages, and keep the Send button visible when the draft cannot be sent yet.",
+			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Skills, previews, Alpha Tickets, and scheduled tasks remain integrated with the shared task engine.",
+				"Launch sub-agents in folders without a Git repository while keeping workspace isolation, approvals, and recovery.",
 			),
 		).toBeInTheDocument()
 	})
@@ -74,11 +78,13 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.0 improves task reliability, recovery, and alignment with Codex CLI."),
+			screen.getByText(
+				"Alpha v3.2.1 makes chats easier to navigate and supports sub-agents in folders without a Git repository.",
+			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Tasks preserve context and recover more reliably after interruptions, cancellations, and reloads.",
+				"See recent chats before starting, switch quickly between chats, and keep custom chat names across reloads.",
 			),
 		).toBeInTheDocument()
 	})

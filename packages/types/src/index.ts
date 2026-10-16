@@ -55,3 +55,4 @@ export * from "./worktree.js"
 
 export * from "./providers/index.js"
 export * from "./task-reasoning.js"
+export * from "./task-rename.js"

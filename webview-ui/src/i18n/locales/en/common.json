@@ -1,4 +1,14 @@
 {
+	"chatToolbar": {
+		"label": "Chat controls",
+		"newChat": "New chat",
+		"settings": "Settings",
+		"tickets": "Alpha Tickets",
+		"more": "More actions",
+		"incidentDashboard": "Alpha: Incident Dashboard",
+		"scheduledTasks": "Scheduled Tasks",
+		"marketplace": "Marketplace"
+	},
 	"errorBoundary": {
 		"title": "Something went wrong",
 		"reportText": "Please help us improve by reporting this error on",

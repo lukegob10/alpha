@@ -92,6 +92,7 @@ vi.mock("../ChatRow", () => ({
 		onAsyncUserInputSubmit,
 		isAsyncUserInputAnswered,
 		isAsyncUserInputPending,
+		hideSubagentGroups,
 	}: {
 		message: AlphaMessage
 		isTaskPrompt?: boolean
@@ -102,8 +103,10 @@ vi.mock("../ChatRow", () => ({
 		onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
 		isAsyncUserInputAnswered?: boolean
 		isAsyncUserInputPending?: boolean
+		hideSubagentGroups?: boolean
 	}) {
 		const [nativeAccepted, setNativeAccepted] = React.useState(false)
+		if (hideSubagentGroups && message.type === "say" && message.say === "subagent_group") return null
 		return (
 			<div data-testid="chat-row">
 				{isTaskPrompt ? <span>{message.text}</span> : JSON.stringify(message)}
@@ -300,6 +303,7 @@ vi.mock("react-i18next", () => ({
 }))
 
 interface ChatTextAreaProps {
+	contextControl?: React.ReactNode
 	onSend: () => void
 	isTaskDraft?: boolean
 	draftApprovalMode?: "ask" | "auto" | "bypass"
@@ -337,6 +341,7 @@ vi.mock("../ChatTextArea", () => {
 
 		return (
 			<div data-testid="chat-textarea" data-is-task-draft={props.isTaskDraft ? "true" : "false"}>
+				{props.contextControl}
 				{props.isTaskDraft && (
 					<button
 						data-testid="mock-draft-approval-ask"
@@ -534,6 +539,112 @@ describe("ChatView checkpoint initialization warnings", () => {
 			)
 		})
 		await waitFor(() => expect(view.queryByText("errors.init_checkpoint_fail_long_time")).not.toBeInTheDocument())
+	})
+})
+
+describe("ChatView toolbar navigation", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each(["secondary view", "another chat"])(
+		"closes More when navigating to %s and retains the draft",
+		async (target) => {
+			const props = { ...defaultProps }
+			const tree = () => (
+				<ExtensionStateContextProvider>
+					<QueryClientProvider client={queryClient}>
+						<ChatView {...props} />
+					</QueryClientProvider>
+				</ExtensionStateContextProvider>
+			)
+			const view = render(tree())
+			const taskState = (id: string): Partial<ExtensionState> => ({
+				renderContext: "editor",
+				currentTaskId: id,
+				currentView: { type: "task", taskId: id },
+				currentTaskItem: { id, task: `Original ${id}`, displayName: `Named ${id}`, ts: 1 },
+				clineMessages: [{ type: "say", say: "task", ts: 1, text: `Original ${id}` }],
+			})
+			mockPostMessage(taskState("a"))
+			await view.findByText("Named a")
+			const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
+			expect(within(toolbar).getByText("Named a")).toBeInTheDocument()
+			expect(within(view.getByTestId("chat-transcript-viewport")).getByText("Original a")).toBeInTheDocument()
+			const input = view.getByTestId("chat-textarea").querySelector("input")!
+			fireEvent.change(input, { target: { value: "Keep unsent guidance" } })
+			fireEvent.keyDown(within(toolbar).getByRole("button", { name: "common:chatToolbar.more" }), {
+				key: "Enter",
+			})
+			expect(await view.findByRole("menu")).toBeInTheDocument()
+
+			if (target === "secondary view") {
+				props.isHidden = true
+				view.rerender(tree())
+			} else mockPostMessage(taskState("b"))
+			await waitFor(() => expect(view.queryByRole("menu")).not.toBeInTheDocument())
+
+			if (target === "secondary view") {
+				expect(view.queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
+				props.isHidden = false
+				view.rerender(tree())
+			} else mockPostMessage(taskState("a"))
+			await waitFor(() => expect(input).toHaveValue("Keep unsent guidance"))
+		},
+	)
+
+	it("keeps only task navigation in an active sidebar and preserves the unsent draft while switching", async () => {
+		const view = renderChatView()
+		const currentTaskItem = {
+			id: "sidebar-active",
+			task: "Original sidebar prompt",
+			displayName: "Sidebar chat",
+			ts: 1,
+		}
+		mockPostMessage({
+			renderContext: "sidebar",
+			currentTaskId: currentTaskItem.id,
+			currentView: { type: "task", taskId: currentTaskItem.id },
+			currentTaskItem,
+			taskHistory: [
+				currentTaskItem,
+				{ ...currentTaskItem, id: "sidebar-other", task: "Other chat", displayName: "Other chat" },
+			],
+			clineMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
+		})
+		await view.findByText("Sidebar chat")
+		const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
+		for (const action of ["newChat", "settings", "tickets", "more"]) {
+			expect(
+				within(toolbar).queryByRole("button", { name: `common:chatToolbar.${action}` }),
+			).not.toBeInTheDocument()
+		}
+		const input = view.getByTestId("chat-textarea").querySelector("input")!
+		fireEvent.change(input, { target: { value: "Keep sidebar guidance" } })
+		fireEvent.click(within(toolbar).getByRole("button", { name: "history:switchChat" }))
+		fireEvent.click(await view.findByTestId("task-item-sidebar-other"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "sidebar-other" })
+		expect(input).toHaveValue("Keep sidebar guidance")
+	})
+
+	it("keeps the complete fallback toolbar on an empty editor chat without adding a New chat heading", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			renderContext: "editor",
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			clineMessages: [],
+		})
+		const toolbar = await view.findByRole("group", { name: "common:chatToolbar.label" })
+		for (const action of ["newChat", "settings", "tickets", "more"]) {
+			expect(within(toolbar).getByRole("button", { name: `common:chatToolbar.${action}` })).toBeInTheDocument()
+		}
+		expect(within(toolbar).queryByText("common:chatToolbar.newChat")).not.toBeInTheDocument()
+	})
+
+	it("keeps the context meter inside the new-chat composer", () => {
+		const view = renderChatView()
+		mockPostMessage({ currentTaskId: undefined, currentTaskItem: undefined, clineMessages: [] })
+		expect(within(view.getByTestId("chat-textarea")).getByRole("progressbar")).toBeInTheDocument()
+		expect(view.getAllByRole("progressbar")).toHaveLength(1)
 	})
 })
 
@@ -1709,7 +1820,7 @@ describe("ChatView - Empty chat home", () => {
 	beforeEach(() => vi.clearAllMocks())
 
 	it.each([0, 3, 7])("shows only the centered Alpha mark when there are %i recent chats", async (historyCount) => {
-		const { getByTestId, getByRole, queryByTestId } = renderChatView()
+		const { getByTestId, getByRole, queryByTestId, queryByRole } = renderChatView()
 		const taskHistory = Array.from({ length: historyCount }, (_, index) => ({
 			id: `task-${index + 1}`,
 			ts: Date.now() - index * 1000,
@@ -1727,9 +1838,11 @@ describe("ChatView - Empty chat home", () => {
 		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 		expect(queryByTestId("version-indicator")).not.toBeInTheDocument()
 		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
+		expect(queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
+		expect(queryByRole("button", { name: "common:chatToolbar.newChat" })).not.toBeInTheDocument()
 
 		if (historyCount > 0) {
-			expect(getByRole("heading", { name: "history:chats" })).toBeInTheDocument()
+			expect(getByRole("region", { name: "history:chats" })).toBeInTheDocument()
 			expect(getByTestId("history-preview-list")).toBeInTheDocument()
 		}
 	})
@@ -1941,7 +2054,12 @@ describe("ChatView - Managed agent monitor", () => {
 			},
 		})
 
-		const taskStrip = await waitFor(() => getByRole("region", { name: "Sub-agent tasks" }))
+		const taskStrip = await waitFor(() => getByRole("region", { name: "subagentDock.title" }))
+		expect(within(taskStrip).getByRole("button", { name: "subagentDock.expand" })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		fireEvent.click(within(taskStrip).getByRole("button", { name: "subagentDock.expand" }))
 		expect(queryByRole("heading", { name: "Managed agents" })).not.toBeInTheDocument()
 		expect(queryByText("Mailbox & activity")).not.toBeInTheDocument()
 		vi.mocked(vscode.postMessage).mockClear()
@@ -2031,7 +2149,12 @@ describe("ChatView - Managed agent monitor", () => {
 			},
 		})
 
-		const taskStrip = await waitFor(() => getByRole("region", { name: "Sub-agent tasks" }))
+		const taskStrip = await waitFor(() => getByRole("region", { name: "subagentDock.title" }))
+		expect(within(taskStrip).getByRole("button", { name: "subagentDock.expand" })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		fireEvent.click(within(taskStrip).getByRole("button", { name: "subagentDock.expand" }))
 		expect(within(taskStrip).getByRole("button", { name: /Open Cinder · Working/i })).toBeInTheDocument()
 		const nestedTask = within(taskStrip).getByRole("button", { name: /Open Iris · Completed/i })
 		expect(queryByText("1 of 3 active")).not.toBeInTheDocument()
@@ -2999,7 +3122,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 	it("shows the task chat shell when a focused task exists before its first message arrives", async () => {
-		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+		const { getByTestId, queryByTestId } = renderChatView()
 
 		mockPostMessage({
 			currentTaskId: "task-2",
@@ -3020,7 +3143,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			expect(getByTestId("chat-view")).toBeInTheDocument()
 		})
 
-		expect(queryByText("Second task")).toBeInTheDocument()
+		expect(within(getByTestId("chat-transcript-viewport")).getByText("Second task")).toBeInTheDocument()
 		expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 	})
 
@@ -3122,7 +3245,7 @@ describe("ChatView - Message Queueing Tests", () => {
 	})
 
 	it("opens the source task on the first click after entering the new-task window", async () => {
-		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+		const { getByTestId, queryByTestId } = renderChatView()
 
 		const taskItem = {
 			id: "task-1",
@@ -3179,12 +3302,12 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		await waitFor(() => {
 			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
-			expect(queryByText("Original task")).toBeInTheDocument()
+			expect(within(getByTestId("chat-transcript-viewport")).getByText("Original task")).toBeInTheDocument()
 		})
 	})
 
 	it("opens the same running task after the provider confirms the new-task window", async () => {
-		const { getByTestId, queryByTestId, queryByText } = renderChatView()
+		const { getByTestId, queryByTestId } = renderChatView()
 
 		const taskItem = {
 			id: "task-1",
@@ -3249,7 +3372,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		await waitFor(() => {
 			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
-			expect(queryByText("Original task")).toBeInTheDocument()
+			expect(within(getByTestId("chat-transcript-viewport")).getByText("Original task")).toBeInTheDocument()
 		})
 	})
 
@@ -5616,7 +5739,7 @@ describe("ChatView chat-owned composer commands", () => {
 			messageQueue: [],
 		}
 		mockPostMessage(completedState)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Explain the result" } })
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -5688,7 +5811,7 @@ describe("ChatView chat-owned composer commands", () => {
 			],
 		}
 		mockPostMessage(state)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Explain the retained result" } })
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -5724,14 +5847,14 @@ describe("ChatView chat-owned composer commands", () => {
 				},
 			],
 		})
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		expect(view.getByTestId("queued-messages")).toHaveTextContent(queued.text)
 	})
 
 	it("keeps submitted input in a queue preview until authoritative admission and preserves a later draft", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a"))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
 		fireEvent.click(view.getByTestId("mock-enqueue"))
@@ -5749,7 +5872,7 @@ describe("ChatView chat-owned composer commands", () => {
 	it("restores rejected queue input alongside a draft typed while awaiting admission", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a"))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
 		fireEvent.click(view.getByTestId("mock-enqueue"))
@@ -5767,7 +5890,7 @@ describe("ChatView chat-owned composer commands", () => {
 		async (autoSteer) => {
 			const view = renderChatView()
 			mockPostMessage({ ...runningState("a"), autoSteer })
-			await waitFor(() => view.getByText("Prompt a"))
+			await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 			const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 			fireEvent.change(input, { target: { value: "compact the context" } })
 			fireEvent.keyDown(input, { key: "Enter" })
@@ -5790,7 +5913,7 @@ describe("ChatView chat-owned composer commands", () => {
 			...runningState("a", [{ id: "queued-a", text: "Review the remaining changes" }]),
 			autoSteer: true,
 		})
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		fireEvent.click(view.getByLabelText("Edit queued-a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "compact the context" } })
@@ -5845,7 +5968,7 @@ describe("ChatView chat-owned composer commands", () => {
 							],
 						}),
 			})
-			await waitFor(() => view.getByText("Prompt a"))
+			await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 			const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 			fireEvent.change(input, { target: { value: "Review the remaining changes" } })
 			vi.mocked(vscode.postMessage).mockClear()
@@ -5874,20 +5997,20 @@ describe("ChatView chat-owned composer commands", () => {
 			],
 		}
 		mockPostMessage(waiting)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Choose option one" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "askResponse")![0]
 		expect(request).toMatchObject({ requestId: expect.any(String), taskId: "a", askMessageTs: 2 })
 		mockPostMessage(runningState("b"))
-		await waitFor(() => view.getByText("Prompt b"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 		fireEvent.change(input, { target: { value: "Draft b" } })
 		receipt("askResponse", request.requestId!, "a", "rejected")
 		receipt("askResponse", request.requestId!, "a", "rejected")
 		expect(input).toHaveValue("Draft b")
 		mockPostMessage(waiting)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		expect(input).toHaveValue("Choose option one")
 		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.answerFailed")
 	})
@@ -5901,7 +6024,7 @@ describe("ChatView chat-owned composer commands", () => {
 				{ type: "ask", ask: "completion_result", ts: 2, text: "Completed report" },
 			],
 		})
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Continue this chat" } })
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -5913,7 +6036,7 @@ describe("ChatView chat-owned composer commands", () => {
 	it("keeps edits and late receipts on their originating chat across navigation", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Prior draft a" } })
 		fireEvent.click(view.getByLabelText("Edit queue-a"))
@@ -5928,7 +6051,7 @@ describe("ChatView chat-owned composer commands", () => {
 			payload: { id: "queue-a", text: "Edited queued text" },
 		})
 		mockPostMessage(runningState("b"))
-		await waitFor(() => view.getByText("Prompt b"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 		expect(input).toHaveValue("")
 		fireEvent.change(input, { target: { value: "Draft b" } })
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -5941,7 +6064,7 @@ describe("ChatView chat-owned composer commands", () => {
 		receipt("editQueuedMessage", edit.requestId!, "a", "rejected")
 		expect(input).toHaveValue("Draft b")
 		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		expect(input).toHaveValue("Edited queued text")
 		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.editFailed")
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -5969,12 +6092,12 @@ describe("ChatView chat-owned composer commands", () => {
 			})
 			const view = renderChatView()
 			mockPostMessage({ ...runningState("b"), autoSteer })
-			await waitFor(() => view.getByText("Prompt b"))
+			await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 			const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 			fireEvent.change(input, { target: { value: "Queued b" } })
 			fireEvent.keyDown(input, { key: "Enter" })
 			mockPostMessage({ ...runningState("a"), autoSteer })
-			await waitFor(() => view.getByText("Prompt a"))
+			await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 			fireEvent.change(input, { target: { value: "Queued a" } })
 			fireEvent.keyDown(input, { key: "Enter" })
 			const requestA = vi
@@ -5985,7 +6108,7 @@ describe("ChatView chat-owned composer commands", () => {
 			const subscribed = [...listeners]
 			try {
 				mockPostMessage({ ...runningState("b"), autoSteer })
-				await waitFor(() => view.getByText("Prompt b"))
+				await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 				const event = new MessageEvent("message", {
 					data: {
 						type: "chatCommandResult",
@@ -6040,7 +6163,7 @@ describe("ChatView chat-owned composer commands", () => {
 			},
 		}
 		mockPostMessage(completed)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Continue a" } })
 		fireEvent.keyDown(input, { key: "Enter" })
@@ -6048,18 +6171,18 @@ describe("ChatView chat-owned composer commands", () => {
 			.mocked(vscode.postMessage)
 			.mock.calls.find(([message]) => message.type === "resumeCompletedTask")![0]
 		mockPostMessage(runningState("b"))
-		await waitFor(() => view.getByText("Prompt b"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 		fireEvent.change(input, { target: { value: "Keep draft b" } })
 		receipt("resumeCompletedTask", request.requestId!, "a", "rejected")
 		expect(input).toHaveValue("Keep draft b")
 		mockPostMessage(completed)
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		expect(input).toHaveValue("Continue a")
 	})
 	it("defers API guidance during an edit and preserves the separate composer draft", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Queued a" }]))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Human draft" } })
 		fireEvent.click(view.getByLabelText("Edit queue-a"))
@@ -6088,7 +6211,7 @@ describe("ChatView chat-owned composer commands", () => {
 	it("opens the background chat named by its attention notification", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("b"))
-		await waitFor(() => view.getByText("Prompt b"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b"))
 		act(() =>
 			window.dispatchEvent(
 				new MessageEvent("message", { data: { type: "interactionRequired", taskId: "attention-a" } }),
@@ -6102,7 +6225,7 @@ describe("ChatView chat-owned composer commands", () => {
 	it("makes deferred host-send overflow observable without replacing the composer", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a"))
-		await waitFor(() => view.getByText("Prompt a"))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 		fireEvent.change(input, { target: { value: "Keep human draft" } })
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})

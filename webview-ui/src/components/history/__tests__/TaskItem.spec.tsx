@@ -168,21 +168,27 @@ describe("TaskItem", () => {
 		expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
 	})
 
-	it.each([
-		TaskLifecycleState.Initializing,
-		TaskLifecycleState.Running,
-		TaskLifecycleState.Waiting,
-		TaskLifecycleState.Completed,
-		TaskLifecycleState.Failed,
-	])("replaces the compact timestamp with live %s status in the same slot", (lifecycle) => {
-		render(taskWithLiveMetadata(liveTask({ lifecycle })))
-		const metadata = screen.getByTestId("task-metadata")
+	it.each([TaskLifecycleState.Initializing, TaskLifecycleState.Running, TaskLifecycleState.Failed])(
+		"replaces the compact timestamp with live %s status in the same slot",
+		(lifecycle) => {
+			render(taskWithLiveMetadata(liveTask({ lifecycle })))
+			const metadata = screen.getByTestId("task-metadata")
 
-		expect(metadata).toHaveClass("w-12", "justify-end")
-		expect(metadata.children).toHaveLength(1)
-		expect(metadata).toContainElement(screen.getByTestId("task-status-indicator"))
-		expect(screen.queryByTestId("task-time-ago")).not.toBeInTheDocument()
-	})
+			expect(metadata).toHaveClass("w-12", "justify-end")
+			expect(metadata.children).toHaveLength(1)
+			expect(metadata).toContainElement(screen.getByTestId("task-status-indicator"))
+			expect(screen.queryByTestId("task-time-ago")).not.toBeInTheDocument()
+		},
+	)
+
+	it.each([TaskLifecycleState.Waiting, TaskLifecycleState.Completed, TaskLifecycleState.Closed])(
+		"uses the saved age for quiet %s chats",
+		(lifecycle) => {
+			render(taskWithLiveMetadata(liveTask({ lifecycle })))
+			expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+			expect(screen.getByTestId("task-time-ago")).toBeInTheDocument()
+		},
+	)
 
 	it("restores the compact timestamp when live session metadata is removed", () => {
 		const { rerender } = render(taskWithLiveMetadata(liveTask({})))
@@ -315,16 +321,21 @@ describe("TaskItem", () => {
 			expect(indicator.querySelector("svg")).not.toBeInTheDocument()
 		})
 
-		it("shows Complete as a green dot even with stale streaming and input flags", () => {
+		it("shows completed chats without stale streaming or input indicators", () => {
 			render(
 				taskWithLiveMetadata(
 					liveTask({ lifecycle: TaskLifecycleState.Completed, isWaitingForInput: true }),
 					variant,
 				),
 			)
-			const indicator = screen.getByRole("img", { name: "Task status: Complete" })
-			expect(indicator.querySelector(".rounded-full")).toHaveClass("bg-vscode-charts-green")
-			expect(indicator.querySelector("svg")).not.toBeInTheDocument()
+			if (variant === "compact") {
+				expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+				expect(screen.getByTestId("task-time-ago")).toBeInTheDocument()
+			} else {
+				const indicator = screen.getByRole("img", { name: "Task status: Complete" })
+				expect(indicator.querySelector(".rounded-full")).toHaveClass("bg-vscode-charts-green")
+				expect(indicator.querySelector("svg")).not.toBeInTheDocument()
+			}
 		})
 
 		it("shows Failed as a static error symbol even with stale streaming and input flags", () => {
@@ -351,6 +362,11 @@ describe("TaskItem", () => {
 
 		// A delayed streaming update must not keep a waiting or finished task spinning.
 		rerender(taskWithLiveMetadata(liveTask({ lifecycle, status, isStreaming: true })))
+		if (lifecycle === TaskLifecycleState.Completed) {
+			expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+			expect(screen.getByTestId("task-time-ago")).toBeInTheDocument()
+			return
+		}
 
 		const indicator = screen.getByTestId("task-status-indicator")
 		expect(indicator).toHaveAttribute("aria-label", `Task status: ${label}`)

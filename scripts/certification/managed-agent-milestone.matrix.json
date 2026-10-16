@@ -33,7 +33,7 @@
 			"packageDir": "packages/core",
 			"minimumTestCount": 25,
 			"include": [
-				"^src/worktree/__tests__/managed-subagent-worktree(?:\\.(?:capture-recovery|persistence))?\\.spec\\.ts$"
+				"^src/worktree/__tests__/managed-subagent-worktree(?:\\.(?:capture-recovery|persistence|non-git))?\\.spec\\.ts$"
 			]
 		},
 		{

@@ -4,10 +4,11 @@ type ExtensionManifest = {
 	contributes: {
 		commands: Array<{
 			command: string
-			icon?: string
+			icon?: string | { light: string; dark: string }
 			title?: string
 		}>
 		keybindings: Array<{ command: string; key: string; mac?: string; when?: string; args?: string }>
+		menus: Record<string, Array<{ command: string; group?: string; when?: string }>>
 	}
 }
 
@@ -61,13 +62,54 @@ describe("extension command manifest", () => {
 			false,
 		)
 	})
-	it("uses the Codicon pencil and New Chat label for the new chat action", () => {
+	it("preserves the square-pen New Chat and ticket artwork in the native title actions", () => {
 		const newChatCommand = manifest.contributes.commands.find(
 			({ command }) => command === "alpha.plusButtonClicked",
 		)
-		expect(newChatCommand?.icon).toBe("$(edit)")
+		expect(newChatCommand?.icon).toEqual({
+			light: "assets/icons/chat-actions/new-chat-light.svg",
+			dark: "assets/icons/chat-actions/new-chat-dark.svg",
+		})
 		expect(newChatCommand?.title).toBe("%command.newTask.title%")
 		expect(localization["command.newTask.title"]).toBe("New Chat")
+		for (const command of ["alpha.sidebarNewChat", "alpha.sidebarSettings", "alpha.openTickets"]) {
+			const icon = manifest.contributes.commands.find((item) => item.command === command)?.icon
+			expect(icon && typeof icon).toBe("object")
+			if (!icon || typeof icon === "string") throw new Error(`Missing native artwork for ${command}`)
+			for (const [theme, iconPath] of Object.entries(icon)) {
+				const svg = readFileSync(new URL(iconPath, extensionRoot), "utf8")
+				expect(svg).toContain('width="16" height="16"')
+				expect(svg).toContain("scale(1.08)")
+				expect(svg).toContain(theme === "light" ? 'stroke="#424242"' : 'stroke="#c5c5c5"')
+			}
+		}
+	})
+
+	it("keeps sidebar controls in the native header and editor controls in the webview", () => {
+		expect(manifest.contributes.menus["view/title"]).toEqual([
+			{ command: "alpha.sidebarNewChat", group: "navigation@1", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.sidebarSettings", group: "navigation@2", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.openTickets", group: "navigation@3", when: "view == alpha.SidebarProvider" },
+			{
+				command: "alpha.openIncidents",
+				group: "overflow@0",
+				when: "view == alpha.SidebarProvider && config.alpha.debug",
+			},
+			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
+			{ command: "alpha.sidebarMarketplace", group: "overflow@2", when: "view == alpha.SidebarProvider" },
+		])
+		expect(manifest.contributes.menus["editor/title"]).toEqual([])
+		for (const command of ["sidebarNewChat", "sidebarSettings", "sidebarScheduledTasks", "sidebarMarketplace"]) {
+			expect(manifest.contributes.commands.some((item) => item.command === `alpha.${command}`)).toBe(true)
+			expect(manifest.contributes.menus.commandPalette).toContainEqual({
+				command: `alpha.${command}`,
+				when: "false",
+			})
+		}
+		expect(manifest.contributes.menus.commandPalette).toContainEqual({
+			command: "alpha.openIncidents",
+			when: "config.alpha.debug",
+		})
 	})
 
 	it("resolves every contributed localization reference to a nonempty English label", () => {

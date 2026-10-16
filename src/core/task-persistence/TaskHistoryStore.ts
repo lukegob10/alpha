@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as fsSync from "fs"
 import * as path from "path"
 
-import { historyItemSchema, type HistoryItem } from "@alpha-code/types"
+import { historyItemSchema, taskDisplayNameSchema, type HistoryItem, type TaskRenameErrorCode } from "@alpha-code/types"
 import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
@@ -30,6 +30,12 @@ function isStoredHistoryItem(value: unknown): value is HistoryItem {
 	return historyItemSchema.safeParse(value).success
 }
 
+export class TaskRenameError extends Error {
+	constructor(readonly code: TaskRenameErrorCode) {
+		super(`Chat rename failed: ${code}`)
+	}
+}
+
 /**
  * TaskHistoryStore encapsulates all task history persistence logic.
  *
@@ -49,7 +55,7 @@ function isStoredHistoryItem(value: unknown): value is HistoryItem {
 export interface TaskHistoryStoreOptions {
 	/**
 	 * Optional callback invoked inside the write lock after each mutation
-	 * (upsert, delete, deleteMany). Used for serialized write-through to
+	 * (upsert, rename, delete, deleteMany). Used for serialized write-through to
 	 * globalState during the transition period.
 	 */
 	onWrite?: (items: HistoryItem[]) => Promise<void>
@@ -202,10 +208,10 @@ export class TaskHistoryStore {
 			const existing = this.cache.get(item.id)
 
 			// Merge: preserve existing metadata unless explicitly overwritten
-			const merged = existing ? { ...existing, ...item } : item
+			let merged = existing ? { ...existing, ...item } : item
 
 			// Write per-task file (source of truth)
-			await this.writeTaskFile(merged)
+			merged = await this.writeTaskFile(merged)
 
 			// Update in-memory cache
 			this.cache.set(merged.id, merged)
@@ -221,6 +227,51 @@ export class TaskHistoryStore {
 			}
 
 			return all
+		})
+	}
+
+	/** Rename only the user-owned label. Validate workspace ownership inside the same file lease as the write. */
+	async renameTask(taskId: string, displayName: string, workspace: string): Promise<HistoryItem> {
+		const parsed = taskDisplayNameSchema.safeParse(displayName)
+		if (!parsed.success) throw new TaskRenameError("invalid")
+		return this.withLock(async () => {
+			let taskDirectory: string
+			try {
+				taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
+			} catch {
+				throw new TaskRenameError("invalid")
+			}
+			const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+			// Do not create storage directories for an unknown task. Ownership is rechecked under the lease below.
+			if (!(await this.readHistoryForMutation(filePath, taskId))) throw new TaskRenameError("notFound")
+			let renamed: HistoryItem | undefined
+			let expectedContent: string | undefined
+			await safeWriteJson(filePath, null, {
+				atomicReplace: true,
+				prepareData: async () => {
+					const current = await this.readHistoryForMutation(filePath, taskId)
+					if (!current) throw new TaskRenameError("notFound")
+					if (!this.isForWorkspace(current.item, workspace)) throw new TaskRenameError("wrongWorkspace")
+					expectedContent = current.content
+					renamed = { ...current.item, displayName: parsed.data }
+					return renamed
+				},
+				commitTempFile: (temporaryPath, destinationPath) => {
+					this.commitTaskFile(temporaryPath, destinationPath, expectedContent)
+				},
+			})
+			if (!renamed) throw new TaskRenameError("saveFailed")
+			this.cache.set(taskId, renamed)
+			this.scheduleIndexWrite()
+			if (this.onWrite) {
+				try {
+					await this.onWrite(this.getAll())
+				} catch {
+					// The file is authoritative; a derived mirror failure cannot undo an acknowledged label.
+					console.error("[TaskHistoryStore] Chat rename compatibility projection failed")
+				}
+			}
+			return renamed
 		})
 	}
 
@@ -591,9 +642,55 @@ export class TaskHistoryStore {
 	/**
 	 * Write a HistoryItem to its per-task `history_item.json` file.
 	 */
-	private async writeTaskFile(item: HistoryItem): Promise<void> {
+	private async writeTaskFile(item: HistoryItem): Promise<HistoryItem> {
 		const filePath = await this.getTaskFilePath(item.id)
-		await safeWriteJson(filePath, item)
+		let merged = item
+		let expectedContent: string | undefined
+		await safeWriteJson(filePath, item, {
+			atomicReplace: true,
+			prepareData: async () => {
+				const current = await this.readHistoryForMutation(filePath, item.id)
+				expectedContent = current?.content
+				// Label authority belongs to renameTask. A stale full-record save may never undo it.
+				if (current) merged = { ...current.item, ...item, displayName: current.item.displayName }
+				return merged
+			},
+			commitTempFile: (temporaryPath, destinationPath) => {
+				this.commitTaskFile(temporaryPath, destinationPath, expectedContent)
+			},
+		})
+		return merged
+	}
+
+	private async readHistoryForMutation(
+		filePath: string,
+		taskId: string,
+	): Promise<{ content: string; item: HistoryItem } | undefined> {
+		try {
+			const stats = await fs.lstat(filePath)
+			if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Task history is not a regular file")
+			const content = await fs.readFile(filePath, "utf8")
+			const item: unknown = JSON.parse(content)
+			if (!isStoredHistoryItem(item) || item.id !== taskId) throw new Error("Task history identity is invalid")
+			return { content, item }
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+			throw error
+		}
+	}
+
+	/** Fence a replaced/deleted file or a compromised advisory lease before the atomic replacement. */
+	private commitTaskFile(temporaryPath: string, destinationPath: string, expectedContent: string | undefined): void {
+		let currentContent: string | undefined
+		try {
+			const stats = fsSync.lstatSync(destinationPath)
+			if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Task history is not a regular file")
+			currentContent = fsSync.readFileSync(destinationPath, "utf8")
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		if (currentContent !== expectedContent) throw new Error("Task history changed during metadata write")
+		fsSync.renameSync(temporaryPath, destinationPath)
 	}
 
 	/**

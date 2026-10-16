@@ -79,6 +79,7 @@ vi.mock("@/components/ui", async (importOriginal) => {
 vi.mock("../ChatTextArea", () => {
 	const MockTextArea = React.forwardRef(function MockTextArea(
 		props: {
+			contextControl?: React.ReactNode
 			inputValue?: string
 			setInputValue?: (value: string) => void
 			onSend: () => void
@@ -88,16 +89,19 @@ vi.mock("../ChatTextArea", () => {
 	) {
 		useImperativeHandle(ref, () => ({ focus: () => {} }))
 		return (
-			<input
-				data-testid="chat-input"
-				value={props.inputValue ?? ""}
-				onChange={(event) => props.setInputValue?.(event.target.value)}
-				onKeyDown={(event) => {
-					if (event.key === "Enter" && !props.sendingDisabled) {
-						props.onSend()
-					}
-				}}
-			/>
+			<>
+				{props.contextControl}
+				<input
+					data-testid="chat-input"
+					value={props.inputValue ?? ""}
+					onChange={(event) => props.setInputValue?.(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Enter" && !props.sendingDisabled) {
+							props.onSend()
+						}
+					}}
+				/>
+			</>
 		)
 	})
 

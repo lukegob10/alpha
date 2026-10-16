@@ -13,11 +13,13 @@ import {
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useTaskSearch } from "./useTaskSearch"
 import { useGroupedTasks } from "./useGroupedTasks"
+import { countTaskDescendants } from "./types"
 import TaskGroupItem from "./TaskGroupItem"
 import TaskItem from "./TaskItem"
 import { DeleteTaskDialog } from "./DeleteTaskDialog"
 import { BatchDeleteTaskDialog } from "./BatchDeleteTaskDialog"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import "./chat-history.css"
 
 const sortOptions = ["newest", "oldest", "mostExpensive", "mostTokens", "mostRelevant"] as const
 
@@ -26,14 +28,16 @@ type HistoryPreviewProps = {
 	expanded?: boolean
 	onExpand?: () => void
 	onClose?: () => void
+	onOpenTask?: (taskId: string) => void
 }
 
-const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose }: HistoryPreviewProps) => {
+const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose, onOpenTask }: HistoryPreviewProps) => {
 	const { tasks, searchQuery, setSearchQuery, sortOption, setSortOption, setLastNonRelevantSort } = useTaskSearch()
 	const { taskHistory, cwd } = useExtensionState()
 	const { groups, flatTasks, toggleExpand, isSearchMode } = useGroupedTasks(tasks, searchQuery)
 	const { t } = useAppTranslation()
 	const headingId = useId()
+	const sectionRef = useRef<HTMLElement>(null)
 	const searchRef = useRef<HTMLInputElement>(null)
 	const selectionButtonRef = useRef<HTMLButtonElement>(null)
 	const deleteSelectionButtonRef = useRef<HTMLButtonElement>(null)
@@ -66,28 +70,10 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 	const selectedIds = useMemo(() => selectedTaskIds.filter((id) => visibleIds.has(id)), [selectedTaskIds, visibleIds])
 	const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
 	const allSelected = tasks.length > 0 && selectedIds.length === tasks.length
-	const deleteSubtaskCount = useMemo(() => {
-		if (!deleteTaskId) return 0
-		const children = new Map<string, string[]>()
-		for (const task of taskHistory) {
-			if (task.parentTaskId) {
-				const siblings = children.get(task.parentTaskId) ?? []
-				siblings.push(task.id)
-				children.set(task.parentTaskId, siblings)
-			}
-		}
-		const descendants = new Set([deleteTaskId])
-		const pending = [deleteTaskId]
-		while (pending.length) {
-			for (const id of children.get(pending.pop()!) ?? []) {
-				if (!descendants.has(id)) {
-					descendants.add(id)
-					pending.push(id)
-				}
-			}
-		}
-		return descendants.size - 1
-	}, [deleteTaskId, taskHistory])
+	const deleteSubtaskCount = useMemo(
+		() => (deleteTaskId ? countTaskDescendants(taskHistory, deleteTaskId) : 0),
+		[deleteTaskId, taskHistory],
+	)
 	const toggleTaskSelection = (id: string, selected: boolean) =>
 		setSelectedTaskIds((ids) => (selected ? [...new Set([...ids, id])] : ids.filter((entry) => entry !== id)))
 	const rowProps = {
@@ -95,24 +81,41 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 		isSelectionMode,
 		onToggleSelection: toggleTaskSelection,
 		onDelete: setDeleteTaskId,
+		onOpenTask,
 	}
 	const restoreHistoryFocus = (event: Event) => {
 		event.preventDefault()
-		const target = isSelectionMode
-			? (deleteSelectionButtonRef.current ?? selectionButtonRef.current)
-			: searchRef.current
+		const compactRow = Array.from(sectionRef.current?.querySelectorAll<HTMLElement>("[data-testid]") ?? []).find(
+			(element) => element.dataset.testid === `task-item-${deleteTaskId}`,
+		)
+		const target = !expanded
+			? compactRow
+			: isSelectionMode
+				? (deleteSelectionButtonRef.current ?? selectionButtonRef.current)
+				: searchRef.current
 		target?.focus()
 	}
+	const deleteDialog = deleteTaskId && (
+		<DeleteTaskDialog
+			taskId={deleteTaskId}
+			subtaskCount={deleteSubtaskCount}
+			open
+			onCloseAutoFocus={restoreHistoryFocus}
+			onOpenChange={(open) => {
+				if (!open) setDeleteTaskId(null)
+			}}
+		/>
+	)
 	const historyHeading = (
 		<div className="new-task-history-heading relative pr-9">
-			<h2 id={headingId} className="m-0 font-medium">
+			<h2 id={headingId} className="m-0 font-normal">
 				{t("history:chats")}
 			</h2>
 			{expanded && onClose && (
 				<Button
 					variant="ghost"
 					size="icon"
-					className="absolute top-1/2 right-0 -translate-y-1/2"
+					className="absolute top-1/2 right-0 size-6 -translate-y-1/2"
 					onClick={onClose}
 					data-testid="history-close"
 					aria-label={t("history:closeChats")}>
@@ -123,39 +126,50 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 	)
 	if (!expanded) {
 		return (
-			<section className="new-task-history flex w-full min-w-0 flex-col" aria-labelledby={headingId}>
+			<section
+				ref={sectionRef}
+				className="new-task-history chat-history-preview flex w-full min-w-0 flex-col"
+				aria-labelledby={headingId}>
 				{historyHeading}
-				<div className="new-task-history-list surface-raised min-w-0" data-testid="history-preview-list">
-					{groups.slice(0, 5).map((group) => (
+				<div
+					className="new-task-history-list chat-history-quiet-list min-w-0"
+					data-testid="history-preview-list">
+					{groups.slice(0, 4).map((group) => (
 						<TaskItem
 							key={group.parent.id}
 							item={group.parent}
 							variant="compact"
 							contained
-							className="new-task-history-row"
+							className="chat-history-quiet-row"
+							onOpenTask={onOpenTask}
+							onDelete={setDeleteTaskId}
 						/>
 					))}
 				</div>
 				<Button
 					variant="ghost"
 					size="sm"
-					className="mt-2 mr-1 h-auto shrink-0 self-end px-0 py-1 text-xs font-normal text-vscode-textLink-foreground"
+					className="chat-history-view-all mt-1 mr-2 h-auto shrink-0 self-end gap-1 px-0 py-0.5 font-normal text-vscode-descriptionForeground"
 					data-testid="history-view-all"
 					onClick={onExpand}
 					aria-label={t("history:viewAllHistory", { count: tasks.length })}>
 					{t("history:viewAllHistory", { count: tasks.length })}
 					<ArrowRight className="size-3" aria-hidden="true" />
 				</Button>
+				{deleteDialog}
 			</section>
 		)
 	}
 	return (
-		<section className="new-task-history flex w-full min-w-0 flex-col" aria-labelledby={headingId}>
+		<section
+			ref={sectionRef}
+			className="new-task-history chat-history-expanded flex w-full min-w-0 flex-col"
+			aria-labelledby={headingId}>
 			{historyHeading}
 			<div
 				className="new-task-history-list new-task-history-compact surface-raised min-w-0 overflow-hidden"
 				data-testid="history-preview-list">
-				<div className="flex min-w-0 items-center gap-2 border-b border-[var(--border-subtle)] py-2">
+				<div className="flex min-w-0 items-center gap-2 border-b border-[var(--border-subtle)] px-2 py-2">
 					<Search className="size-3.5 shrink-0 text-vscode-descriptionForeground" aria-hidden="true" />
 					<input
 						ref={searchRef}
@@ -164,7 +178,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 						aria-label={t("history:searchPlaceholder")}
 						placeholder={t("history:searchPlaceholder")}
 						data-testid="history-search-input"
-						className="new-task-history-search min-w-0 flex-1 border-0 bg-transparent text-base leading-5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder"
+						className="new-task-history-search chat-history-text min-w-0 flex-1 border-0 bg-transparent focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder"
 						onChange={(event) => {
 							const value = event.target.value
 							setSearchQuery(value)
@@ -188,13 +202,13 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 						</Button>
 					)}
 				</div>
-				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2 py-1">
+				<div className="flex min-w-0 flex-wrap items-center justify-between gap-2 px-2 py-1">
 					{isSelectionMode ? (
 						<div className="flex min-w-0 items-center gap-2">
 							<Button
 								variant="ghost"
 								size="sm"
-								className="h-7 px-1.5 text-xs font-normal text-vscode-descriptionForeground"
+								className="chat-history-text h-7 px-1.5 text-vscode-descriptionForeground"
 								disabled={!tasks.length}
 								onClick={() => setSelectedTaskIds(allSelected ? [] : tasks.map((task) => task.id))}>
 								{t(allSelected ? "history:deselectAll" : "history:selectAll")}
@@ -204,7 +218,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 							</span>
 						</div>
 					) : (
-						<span className="truncate text-xs text-vscode-descriptionForeground">
+						<span className="chat-history-text truncate text-vscode-descriptionForeground">
 							{t("history:currentWorkspace")}
 						</span>
 					)}
@@ -214,7 +228,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 								ref={deleteSelectionButtonRef}
 								variant="ghost"
 								size="sm"
-								className="h-7 px-1.5 text-xs font-normal text-vscode-errorForeground hover:text-vscode-errorForeground"
+								className="chat-history-text h-7 px-1.5 text-vscode-errorForeground hover:text-vscode-errorForeground"
 								onClick={() => setShowBatchDeleteDialog(true)}>
 								<Trash2 className="size-3.5" aria-hidden="true" />
 								{t("history:deleteSelectedCount", { count: selectedIds.length })}
@@ -224,7 +238,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 							ref={selectionButtonRef}
 							variant="ghost"
 							size="sm"
-							className="h-7 px-1.5 text-xs font-normal text-vscode-descriptionForeground"
+							className="chat-history-text h-7 px-1.5 text-vscode-descriptionForeground"
 							data-testid="toggle-selection-mode-button"
 							aria-label={t(isSelectionMode ? "history:exitSelection" : "history:selectionMode")}
 							aria-pressed={isSelectionMode}
@@ -269,7 +283,9 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 					</div>
 				</div>
 				{tasks.length === 0 ? (
-					<p className="m-0 px-2 py-7 text-center text-sm text-vscode-descriptionForeground" role="status">
+					<p
+						className="chat-history-text m-0 px-2 py-7 text-center text-vscode-descriptionForeground"
+						role="status">
 						{t(searchQuery ? "history:noResults" : "history:noChats")}
 					</p>
 				) : (isSearchMode && flatTasks ? flatTasks.length : groups.length) <= 10 ? (
@@ -337,17 +353,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 					/>
 				)}
 			</div>
-			{deleteTaskId && (
-				<DeleteTaskDialog
-					taskId={deleteTaskId}
-					subtaskCount={deleteSubtaskCount}
-					open
-					onCloseAutoFocus={restoreHistoryFocus}
-					onOpenChange={(open) => {
-						if (!open) setDeleteTaskId(null)
-					}}
-				/>
-			)}
+			{deleteDialog}
 			{showBatchDeleteDialog && (
 				<BatchDeleteTaskDialog
 					taskIds={selectedIds}

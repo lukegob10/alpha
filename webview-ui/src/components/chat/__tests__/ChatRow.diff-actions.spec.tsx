@@ -1,5 +1,5 @@
 import React from "react"
-import { fireEvent, render, screen } from "@/utils/test-utils"
+import { act, fireEvent, render, screen } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -87,10 +87,29 @@ describe("ChatRow - inline diff stats and actions", () => {
 		expect(editButton.tagName).toBe("BUTTON")
 		expect(deleteButton.tagName).toBe("BUTTON")
 		expect(deleteButton).toHaveAttribute("type", "button")
+		expect(editButton).toBeDisabled()
+		expect(deleteButton).toBeDisabled()
+		expect(screen.getByRole("button", { name: "chat:messageActions.copy" })).toBeEnabled()
+		fireEvent.click(deleteButton)
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "deleteMessage" }))
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "state", state: { currentTaskId: "native-actions-task" } },
+				}),
+			)
+		})
+		expect(editButton).toBeEnabled()
+		expect(deleteButton).toBeEnabled()
 
 		fireEvent.click(deleteButton)
 
-		expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "deleteMessage", value: 123 }))
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "deleteMessage",
+			value: 123,
+			taskId: "native-actions-task",
+		})
 	})
 
 	it("uses appliedDiff edit treatment (header/icon/diff stats)", () => {

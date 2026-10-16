@@ -6,7 +6,8 @@ import { vscode } from "@src/utils/vscode"
 
 import AppWithProviders from "../App"
 
-const mockChatCommands = vi.hoisted(() => ({ acceptInput: vi.fn(), sendAndSteer: vi.fn() }))
+const mockChatCommands = vi.hoisted(() => ({ acceptInput: vi.fn(), sendAndSteer: vi.fn(), startNewChat: vi.fn() }))
+const mockCheckUnsavedChanges = vi.hoisted(() => vi.fn<(onContinue: () => void) => void>())
 
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
@@ -30,6 +31,8 @@ vi.mock("@src/utils/TelemetryClient", () => ({
 
 vi.mock("@src/components/chat/ChatView", async () => {
 	const React = await import("react")
+	const { default: ChatToolbar } = await import("../components/chat/ChatToolbar")
+	const { chatToolbarActions } = await import("../components/chat/chatToolbarActions")
 	return {
 		__esModule: true,
 		default: React.forwardRef(function ChatView(
@@ -38,7 +41,17 @@ vi.mock("@src/components/chat/ChatView", async () => {
 		) {
 			React.useImperativeHandle(ref, () => mockChatCommands)
 			return (
-				<div data-testid="chat-view" data-hidden={isHidden} data-history-request={historyFocusRequest}>
+				<div
+					data-testid="chat-view"
+					data-hidden={isHidden}
+					data-history-request={historyFocusRequest}
+					hidden={isHidden}>
+					<ChatToolbar
+						{...chatToolbarActions}
+						renderContext={mockUseExtensionState().renderContext}
+						debug={mockUseExtensionState().debug === true}
+						onNewChat={mockChatCommands.startNewChat}
+					/>
 					<input aria-label="Draft" defaultValue="" />
 					Chat View
 				</div>
@@ -47,16 +60,20 @@ vi.mock("@src/components/chat/ChatView", async () => {
 	}
 })
 
-vi.mock("@src/components/settings/SettingsView", () => ({
-	__esModule: true,
-	default: function SettingsView({ onDone }: { onDone: () => void }) {
-		return (
-			<div data-testid="settings-view" onClick={onDone}>
-				Settings View
-			</div>
-		)
-	},
-}))
+vi.mock("@src/components/settings/SettingsView", async () => {
+	const React = await import("react")
+	return {
+		__esModule: true,
+		default: React.forwardRef(function SettingsView({ onDone }: { onDone: () => void }, ref) {
+			React.useImperativeHandle(ref, () => ({ checkUnsaveChanges: mockCheckUnsavedChanges }))
+			return (
+				<div data-testid="settings-view" className="app-shell" onClick={onDone}>
+					Settings View
+				</div>
+			)
+		}),
+	}
+})
 
 vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", () => ({
 	default: ({ targetTaskId }: { targetTaskId?: string }) => (
@@ -219,10 +236,12 @@ describe("App", () => {
 	})
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mockCheckUnsavedChanges.mockImplementation((onContinue) => onContinue())
 		window.removeEventListener("message", () => {})
 
 		// Set up default mock return value
 		mockUseExtensionState.mockReturnValue({
+			renderContext: "editor",
 			didHydrateState: true,
 			showWelcome: false,
 			shouldShowAnnouncement: false,
@@ -304,6 +323,167 @@ describe("App", () => {
 		expect(chatView).toBeInTheDocument()
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 	}, 10000)
+
+	it("has no duplicate toolbar row on a new sidebar chat", () => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+		render(<AppWithProviders />)
+		expect(screen.getByTestId("chat-view")).toBeVisible()
+		expect(screen.queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
+		for (const action of ["newChat", "settings", "tickets", "more"]) {
+			expect(screen.queryByRole("button", { name: `common:chatToolbar.${action}` })).not.toBeInTheDocument()
+		}
+	})
+
+	it.each([
+		{ tab: "settings", pane: "settings-view", label: "settings" },
+		{ tab: "marketplace", pane: "marketplace-view", label: "marketplace" },
+		{ tab: "scheduledTasks", pane: "scheduled-tasks-view", label: "scheduledTasks" },
+	])("keeps the sidebar secondary $tab title without duplicating native actions", async ({ tab, pane, label }) => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+		render(<AppWithProviders />)
+		fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "Sidebar draft" } })
+		act(() =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } })),
+		)
+		await screen.findByTestId(pane)
+		expect(screen.getByText(`common:chatToolbar.${label}`)).toBeInTheDocument()
+		expect(screen.getAllByRole("group", { name: "common:chatToolbar.label" })).toHaveLength(1)
+		for (const action of ["newChat", "settings", "tickets", "more"]) {
+			expect(screen.queryByRole("button", { name: `common:chatToolbar.${action}` })).not.toBeInTheDocument()
+		}
+		expect(screen.getByRole("textbox", { name: "Draft", hidden: true })).toHaveValue("Sidebar draft")
+		act(() => triggerMessage("chatButtonClicked"))
+		expect(screen.getByTestId("chat-view")).toBeVisible()
+		expect(screen.getByRole("textbox", { name: "Draft" })).toHaveValue("Sidebar draft")
+		expect(screen.queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
+	})
+
+	it.each([
+		{ tab: "settings", pane: "settings-view", label: "settings" },
+		{ tab: "marketplace", pane: "marketplace-view", label: "marketplace" },
+		{ tab: "scheduledTasks", pane: "scheduled-tasks-view", label: "scheduledTasks" },
+	])("keeps one visible shared toolbar when visiting $tab and starting a new chat", async ({ tab, pane, label }) => {
+		render(<AppWithProviders />)
+		const chat = screen.getByTestId("chat-view")
+		const toolbarName = "common:chatToolbar.label"
+		expect(screen.getAllByRole("group", { name: toolbarName })).toHaveLength(1)
+		fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "Preserved draft" } })
+		act(() =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } })),
+		)
+		const secondaryPane = await screen.findByTestId(pane)
+		expect(chat).toHaveAttribute("data-hidden", "true")
+		expect(chat).not.toBeVisible()
+		expect(screen.getByRole("textbox", { name: "Draft", hidden: true })).toHaveValue("Preserved draft")
+		expect(screen.getAllByRole("group", { name: toolbarName })).toHaveLength(1)
+		expect(screen.getByText(`common:chatToolbar.${label}`)).toBeInTheDocument()
+		expect(secondaryPane.parentElement).toHaveClass("relative", "min-h-0", "flex-1")
+		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.newChat" }))
+		expect(mockChatCommands.startNewChat).toHaveBeenCalledTimes(1)
+		expect(chat).toBe(screen.getByTestId("chat-view"))
+		expect(chat).toBeVisible()
+		expect(screen.queryByTestId(pane)).not.toBeInTheDocument()
+		expect(screen.getAllByRole("group", { name: toolbarName })).toHaveLength(1)
+	})
+
+	it("waits for Settings unsaved changes approval before starting a new chat", async () => {
+		render(<AppWithProviders />)
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		let continueNavigation: (() => void) | undefined
+		mockCheckUnsavedChanges.mockImplementation((onContinue) => {
+			continueNavigation = onContinue
+		})
+		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.newChat" }))
+		expect(mockCheckUnsavedChanges).toHaveBeenCalledTimes(1)
+		expect(mockChatCommands.startNewChat).not.toHaveBeenCalled()
+		expect(screen.getByTestId("settings-view")).toBeInTheDocument()
+		expect(screen.getByTestId("chat-view")).not.toBeVisible()
+		act(() => continueNavigation?.())
+		expect(mockChatCommands.startNewChat).toHaveBeenCalledTimes(1)
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
+		expect(screen.getByTestId("chat-view")).toBeVisible()
+	})
+
+	it("waits for the Settings guard before starting one chat from the native sidebar action", async () => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+		render(<AppWithProviders />)
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		let continueNavigation: (() => void) | undefined
+		mockCheckUnsavedChanges.mockImplementation((onContinue) => {
+			continueNavigation = onContinue
+		})
+		act(() => triggerMessage("newChatButtonClicked"))
+		expect(mockCheckUnsavedChanges).toHaveBeenCalledTimes(1)
+		expect(mockChatCommands.startNewChat).not.toHaveBeenCalled()
+		expect(screen.getByTestId("settings-view")).toBeInTheDocument()
+		act(() => continueNavigation?.())
+		expect(mockChatCommands.startNewChat).toHaveBeenCalledTimes(1)
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
+		expect(screen.getByTestId("chat-view")).toBeVisible()
+	})
+
+	it("keeps Settings and the draft when its guard cancels the native sidebar New chat action", async () => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+		render(<AppWithProviders />)
+		fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), {
+			target: { value: "Do not lose this draft" },
+		})
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		mockCheckUnsavedChanges.mockImplementation(() => {})
+		act(() => triggerMessage("newChatButtonClicked"))
+		expect(mockCheckUnsavedChanges).toHaveBeenCalledTimes(1)
+		expect(mockChatCommands.startNewChat).not.toHaveBeenCalled()
+		expect(screen.getByTestId("settings-view")).toBeInTheDocument()
+		expect(screen.getByRole("textbox", { name: "Draft", hidden: true })).toHaveValue("Do not lose this draft")
+	})
+
+	it("starts exactly one chat from the native sidebar action when no Settings guard is active", () => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+		render(<AppWithProviders />)
+		act(() => triggerMessage("newChatButtonClicked"))
+		expect(mockChatCommands.startNewChat).toHaveBeenCalledTimes(1)
+		expect(mockCheckUnsavedChanges).not.toHaveBeenCalled()
+	})
+
+	it("keeps Settings and the chat intact if its unsaved changes guard cancels New chat", async () => {
+		render(<AppWithProviders />)
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		mockCheckUnsavedChanges.mockImplementation(() => {})
+		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.newChat" }))
+		expect(mockCheckUnsavedChanges).toHaveBeenCalledTimes(1)
+		expect(mockChatCommands.startNewChat).not.toHaveBeenCalled()
+		expect(screen.getByTestId("settings-view")).toBeInTheDocument()
+		expect(screen.getByTestId("chat-view")).not.toBeVisible()
+	})
+
+	it("dispatches the owning toolbar's typed host routes from secondary views", async () => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), debug: true })
+		render(<AppWithProviders />)
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.settings" }))
+		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.tickets" }))
+		for (const label of ["incidentDashboard", "scheduledTasks", "marketplace"]) {
+			fireEvent.keyDown(screen.getByRole("button", { name: "common:chatToolbar.more" }), { key: "Enter" })
+			fireEvent.click(screen.getByRole("menuitem", { name: `common:chatToolbar.${label}` }))
+		}
+		const actionMessages = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.map(([message]) => message)
+			.filter((message) => message.type !== "focusPanelRequest")
+		expect(actionMessages).toEqual([
+			{ type: "switchTab", tab: "settings" },
+			{ type: "openTickets" },
+			{ type: "openIncidentDashboard" },
+			{ type: "switchTab", tab: "scheduledTasks" },
+			{ type: "switchTab", tab: "marketplace" },
+		])
+	})
 
 	it.each(["goalSeek", "unknownTab"])("ignores an unavailable tab request for %s", (tab) => {
 		render(<AppWithProviders />)

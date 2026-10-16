@@ -14,6 +14,7 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 			}
 			if (key === "history:collapseSubtasks") return "Collapse subtasks"
 			if (key === "history:expandSubtasks") return "Expand subtasks"
+			if (key === "history:openChat") return `Open chat: ${options?.task}`
 			return key
 		},
 	}),
@@ -114,7 +115,7 @@ describe("SubtaskRow", () => {
 
 			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
-			const row = screen.getByRole("button")
+			const row = screen.getByRole("button", { name: "Open chat: Clickable task" })
 			fireEvent.click(row)
 			fireEvent.click(row)
 
@@ -173,7 +174,7 @@ describe("SubtaskRow", () => {
 			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
 			expect(screen.getByTestId("nested-subtask-list")).toHaveAttribute("hidden")
-			expect(screen.queryByRole("button", { name: "Open task: Child 1" })).not.toBeInTheDocument()
+			expect(screen.queryByRole("button", { name: "Open chat: Child 1" })).not.toBeInTheDocument()
 		})
 
 		it("exposes descendants when the node is expanded", () => {
@@ -186,7 +187,7 @@ describe("SubtaskRow", () => {
 			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
 			expect(screen.getByTestId("nested-subtask-list")).not.toHaveAttribute("hidden")
-			expect(screen.getByRole("button", { name: "Open task: Child 1" })).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: "Open chat: Child 1" })).toBeInTheDocument()
 		})
 
 		it("renders deeply nested recursive structure when all levels expanded", () => {

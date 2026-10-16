@@ -17,6 +17,10 @@ const item = (overrides: Partial<HistoryItem> = {}): HistoryItem => ({
 })
 
 describe("compactTaskHistoryForGlobalState", () => {
+	it("retains user labels independently from the original prompt in the downgrade mirror", () => {
+		const result = compactTaskHistoryForGlobalState([item({ displayName: "Custom chat name" })])
+		expect(result[0]).toMatchObject({ task: "Root task", displayName: "Custom chat name" })
+	})
 	it("keeps the compatibility mirror budget explicit for host evidence", () => {
 		expect(TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES).toBe(192 * 1024)
 	})

@@ -42,14 +42,11 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 const mockPostMessage = vscode.postMessage as import("vitest").Mock
 const mockConvertToMentionPath = pathMentions.convertToMentionPath as import("vitest").Mock
 
-// Custom query function to get the enhance prompt button
 const getEnhancePromptButton = () => {
-	return screen.getByRole("button", {
-		name: (_, element) => {
-			// Find the button with the wand sparkles icon (Lucide React)
-			return element.querySelector(".lucide-wand-sparkles") !== null
-		},
-	})
+	const existing = screen.queryByRole("menuitem", { name: "Improve prompt" })
+	if (existing) return existing
+	fireEvent.keyDown(screen.getByRole("button", { name: "Draft actions" }), { key: "ArrowDown" })
+	return screen.getByRole("menuitem", { name: "Improve prompt" })
 }
 
 describe("ChatTextArea", () => {
@@ -175,10 +172,10 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("new task appearance", () => {
-		it("labels the existing settings and removes the helper text without changing Enter submission", () => {
+		it("uses the same compact settings as active chats without changing Enter submission", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)
 			for (const label of ["Mode", "Model", "Effort", "Approvals"]) {
-				expect(screen.getByText(label)).toBeInTheDocument()
+				expect(screen.queryByText(label)).not.toBeInTheDocument()
 			}
 			for (const testId of [
 				"mode-selector-trigger",
@@ -194,7 +191,7 @@ describe("ChatTextArea", () => {
 			expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
 		})
 
-		it.each([false, true])("keeps conversation and edit composers unchanged (edit=%s)", (isEditMode) => {
+		it.each([false, true])("keeps edit cancellation separate from composer utilities (edit=%s)", (isEditMode) => {
 			render(
 				<ChatTextArea
 					{...defaultProps}
@@ -203,7 +200,97 @@ describe("ChatTextArea", () => {
 				/>,
 			)
 			expect(screen.queryByText("Effort")).not.toBeInTheDocument()
-			expect(screen.getByText(/hold shift to drag in files/)).toBeInTheDocument()
+			expect(screen.queryByText(/hold shift to drag in files/)).not.toBeInTheDocument()
+			if (isEditMode) {
+				expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument()
+				expect(screen.queryByRole("button", { name: "Draft actions" })).not.toBeInTheDocument()
+			} else {
+				expect(screen.getByRole("button", { name: "Draft actions" })).toBeInTheDocument()
+			}
+		})
+
+		it("puts context inside the composer and indexing below it while preserving pasted attachments", () => {
+			const { container } = render(
+				<ChatTextArea
+					{...defaultProps}
+					contextControl={<button>Context usage</button>}
+					selectedImages={["data:image/png;base64,image"]}
+				/>,
+			)
+			const composer = container.querySelector(".chat-composer")!
+			expect(composer).toContainElement(screen.getByRole("button", { name: "Context usage" }))
+			expect(composer).toContainElement(screen.getByAltText("Thumbnail 1"))
+			expect(screen.queryByRole("button", { name: "Add images to message" })).not.toBeInTheDocument()
+			const indexing = screen.getByRole("button", { name: "Index ready" })
+			expect(container.querySelector(".chat-composer-utility")).toContainElement(indexing)
+			expect(composer).not.toContainElement(indexing)
+		})
+	})
+
+	describe("draft actions lifecycle", () => {
+		it("closes the portal menu when hidden without remounting the textarea or losing the draft", () => {
+			const portal = document.createElement("div")
+			portal.id = "alpha-portal"
+			document.body.append(portal)
+			try {
+				const view = render(<ChatTextArea {...defaultProps} inputValue="Keep this draft" />)
+				const textarea = screen.getByRole("textbox")
+				expect(portal).toContainElement(getEnhancePromptButton())
+				view.rerender(<ChatTextArea {...defaultProps} inputValue="Keep this draft" isVisible={false} />)
+				expect(screen.queryByRole("menuitem", { name: "Improve prompt" })).not.toBeInTheDocument()
+				expect(screen.queryByRole("button", { name: "Draft actions" })).not.toBeInTheDocument()
+				expect(screen.getByRole("textbox")).toBe(textarea)
+				expect(textarea).toHaveValue("Keep this draft")
+				view.rerender(<ChatTextArea {...defaultProps} inputValue="Keep this draft" />)
+				expect(screen.getByRole("textbox")).toBe(textarea)
+				expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-expanded", "false")
+			} finally {
+				portal.remove()
+			}
+		})
+
+		it.each([false, true])("closes when the effective conversation changes (explicit=%s)", (explicit) => {
+			const shellState = {
+				filePaths: [],
+				openedTabs: [],
+				taskHistory: [],
+				cwd: "/test/workspace",
+				currentTaskId: "task-a",
+			}
+			mockUseExtensionState.mockReturnValue(shellState)
+			const view = render(
+				<ChatTextArea
+					{...defaultProps}
+					inputValue="Draft A"
+					conversationClineMessages={explicit ? [] : undefined}
+					conversationTaskId={explicit ? "task-a" : undefined}
+				/>,
+			)
+			getEnhancePromptButton()
+			mockUseExtensionState.mockReturnValue({ ...shellState, currentTaskId: "task-b" })
+			view.rerender(
+				<ChatTextArea
+					{...defaultProps}
+					inputValue="Draft B"
+					conversationClineMessages={explicit ? [] : undefined}
+					conversationTaskId={explicit ? "task-b" : undefined}
+				/>,
+			)
+			expect(screen.queryByRole("menuitem", { name: "Improve prompt" })).not.toBeInTheDocument()
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-expanded", "false")
+			expect(screen.getByRole("textbox")).toHaveValue("Draft B")
+		})
+
+		it("keeps the pending enhancement listener mounted while hidden", () => {
+			const view = render(<ChatTextArea {...defaultProps} inputValue="Original prompt" />)
+			fireEvent.click(getEnhancePromptButton())
+			view.rerender(<ChatTextArea {...defaultProps} inputValue="Original prompt" isVisible={false} />)
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "enhancedPrompt", text: "Improved prompt" } }),
+				)
+			})
+			expect(defaultProps.setInputValue).toHaveBeenCalledWith("Improved prompt")
 		})
 	})
 
@@ -500,7 +587,7 @@ describe("ChatTextArea", () => {
 			})
 			render(<ChatTextArea {...defaultProps} sendingDisabled={true} />)
 			const enhanceButton = getEnhancePromptButton()
-			expect(enhanceButton).toHaveClass("cursor-pointer")
+			expect(enhanceButton).not.toHaveAttribute("data-disabled")
 		})
 	})
 
@@ -569,7 +656,7 @@ describe("ChatTextArea", () => {
 			fireEvent.click(enhanceButton)
 
 			// Check if the WandSparkles icon has the animate-spin class
-			const animatingIcon = enhanceButton.querySelector(".animate-spin")
+			const animatingIcon = screen.getByRole("button", { name: "Draft actions" }).querySelector(".animate-spin")
 			expect(animatingIcon).toBeInTheDocument()
 		})
 	})
@@ -726,7 +813,7 @@ describe("ChatTextArea", () => {
 			fireEvent.click(enhanceButton)
 
 			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt")).toHaveLength(1)
-			expect(enhanceButton).toBeDisabled()
+			expect(getEnhancePromptButton()).toHaveAttribute("data-disabled")
 		})
 	})
 
@@ -1707,7 +1794,9 @@ describe("ChatTextArea", () => {
 					cwd: "/test/workspace",
 				})
 
-				const { container } = render(<ChatTextArea {...defaultProps} onSend={onSend} />)
+				const { container } = render(
+					<ChatTextArea {...defaultProps} inputValue="Ready to send" onSend={onSend} />,
+				)
 
 				const textarea = container.querySelector("textarea")!
 
@@ -1731,7 +1820,9 @@ describe("ChatTextArea", () => {
 					enterBehavior: "newline",
 				})
 
-				const { container } = render(<ChatTextArea {...defaultProps} onSend={onSend} />)
+				const { container } = render(
+					<ChatTextArea {...defaultProps} inputValue="Ready to send" onSend={onSend} />,
+				)
 
 				const textarea = container.querySelector("textarea")!
 
@@ -1792,6 +1883,24 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("send button visibility", () => {
+		it.each([
+			{ enterBehavior: "send", shiftKey: true },
+			{ enterBehavior: "newline", shiftKey: false },
+		] as const)(
+			"allows an empty draft newline when Enter behavior is $enterBehavior",
+			({ enterBehavior, shiftKey }) => {
+				vi.mocked(useExtensionState).mockReturnValue({
+					...vi.mocked(useExtensionState)(),
+					enterBehavior,
+				})
+				render(<ChatTextArea {...defaultProps} inputValue="" />)
+				const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey, bubbles: true, cancelable: true })
+				fireEvent(screen.getByRole("textbox"), event)
+				expect(event.defaultPrevented).toBe(false)
+				expect(defaultProps.onSend).not.toHaveBeenCalled()
+			},
+		)
+
 		it("should show send button when there are images but no text", () => {
 			const { container } = render(
 				<ChatTextArea
@@ -1816,22 +1925,40 @@ describe("ChatTextArea", () => {
 			expect(sendButton).not.toHaveClass("pointer-events-none")
 		})
 
-		it("should hide send button when there is no text and no images", () => {
-			const { container } = render(<ChatTextArea {...defaultProps} inputValue="" selectedImages={[]} />)
-
-			// Find the send button by looking for the button with SendHorizontal icon
-			const buttons = container.querySelectorAll("button")
-			const sendButton = Array.from(buttons).find(
-				(button) => button.querySelector(".lucide-send-horizontal") !== null,
+		it.each(
+			(["default", "newTask"] as const).flatMap((appearance) =>
+				["", " \n"].map((inputValue) => ({ appearance, inputValue })),
+			),
+		)("keeps empty Send visible and disabled in $appearance for $inputValue", ({ appearance, inputValue }) => {
+			render(
+				<ChatTextArea {...defaultProps} appearance={appearance} inputValue={inputValue} selectedImages={[]} />,
 			)
+			const sendButton = screen.getByRole("button", { name: "Press Enter to send" })
+			expect(sendButton).toBeVisible()
+			expect(sendButton).toBeDisabled()
+			expect(sendButton).toHaveClass("opacity-50")
+			expect(sendButton).not.toHaveClass("opacity-0", "pointer-events-none")
+			fireEvent.click(sendButton)
+			fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" })
+			expect(defaultProps.onSend).not.toHaveBeenCalled()
+		})
 
-			expect(sendButton).toBeInTheDocument()
-
-			// Check that the button is hidden (has opacity-0 class when no content)
-			expect(sendButton).toHaveClass("opacity-0")
-			expect(sendButton).toHaveClass("pointer-events-none")
-			expect(sendButton).not.toHaveClass("opacity-100")
-			expect(sendButton).not.toHaveClass("pointer-events-auto")
+		it("brightens the same Send button when text is entered and dims it again when cleared", () => {
+			const { rerender } = render(<ChatTextArea {...defaultProps} inputValue="" />)
+			const sendButton = screen.getByRole("button", { name: "Press Enter to send" })
+			expect(sendButton).toBeDisabled()
+			rerender(<ChatTextArea {...defaultProps} inputValue="Send this" />)
+			expect(screen.getByRole("button", { name: "Press Enter to send" })).toBe(sendButton)
+			expect(sendButton).toBeEnabled()
+			expect(sendButton).toHaveClass("opacity-100")
+			expect(sendButton).not.toHaveClass("opacity-50")
+			fireEvent.click(sendButton)
+			expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
+			rerender(<ChatTextArea {...defaultProps} inputValue="" />)
+			expect(sendButton).toBeDisabled()
+			expect(sendButton).toHaveClass("opacity-50")
+			fireEvent.click(sendButton)
+			expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
 		})
 
 		it("should show send button when there is text but no images", () => {

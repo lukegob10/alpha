@@ -1,6 +1,5 @@
 import { useState, useMemo, useCallback } from "react"
 import { Fzf } from "fzf"
-import { ChevronDown } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
@@ -152,7 +151,6 @@ export const ApiConfigSelector = ({
 					data-testid="dropdown-trigger"
 					className={cn("composer-control composer-selector", triggerClassName)}>
 					<span className="truncate">{displayName}</span>
-					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent

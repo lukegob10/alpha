@@ -12,6 +12,7 @@ import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
 import { TEST_ROOT_OWNERSHIP_MARKER } from "./testProfile"
 import { CdpConnection } from "./ui/cdp"
+import { nativeChatHeaderExpression } from "./ui/nativeChatHeader"
 
 interface Target {
 	targetId: string
@@ -261,7 +262,7 @@ async function armClickTarget(
 	const taskSelector = taskId ? `[data-testid="task-item-${taskId}"]` : ""
 	const body =
 		target === "new-chat"
-			? `const labels=e=>[e.getAttribute('aria-label'),e.getAttribute('title')].filter(Boolean);const visible=e=>{const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'};const candidates=[...d.querySelectorAll('[aria-label],[title]')].filter(e=>labels(e).some(v=>/new chat/i.test(v))&&visible(e));const target=candidates.find(e=>e.classList.contains('action-label'))??candidates[0];const descriptions=candidates.slice(0,12).map(e=>({tagName:e.tagName,className:String(e.className),labels:labels(e)}));if(!target)return {error:'new-chat-action-not-found',descriptions};`
+			? `const header=${nativeChatHeaderExpression};const labels=e=>[e.getAttribute('aria-label'),e.getAttribute('title')].filter(Boolean);const visible=e=>{const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'};const candidates=[...(header?.querySelectorAll('.action-label')??[])].filter(e=>labels(e).some(v=>/^new chat(?:\\s*\\(|$)/i.test(v))&&visible(e));const target=candidates[0];const descriptions=candidates.slice(0,12).map(e=>({tagName:e.tagName,className:String(e.className),labels:labels(e)}));if(!target)return {error:'native-new-chat-action-not-found',descriptions};`
 			: `const target=d.querySelector(${javascriptLiteral(taskSelector)});if(!target)return {error:'task-row-not-found'};const visible=e=>{const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'};if(!visible(target))return {error:'task-row-not-visible'};`
 	const result = await evaluate<ClickTarget & { error?: string; descriptions?: unknown }>(
 		connection,
@@ -287,7 +288,7 @@ async function waitForClickTarget(
 	const selector = taskId ? `[data-testid="task-item-${taskId}"]` : ""
 	const body =
 		target === "new-chat"
-			? `return [...d.querySelectorAll('[aria-label],[title]')].some(e=>/new chat/i.test((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||''))&&(()=>{const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'})())`
+			? `const header=${nativeChatHeaderExpression};return [...(header?.querySelectorAll('.action-label')??[])].some(e=>/^new chat(?:\\s*\\(|$)/i.test(e.getAttribute('aria-label')||e.getAttribute('title')||'')&&(()=>{const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'})())`
 			: `const e=d.querySelector(${javascriptLiteral(selector)});if(!e)return false;const r=e.getBoundingClientRect(),s=win.getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'`
 	await waitUntil(
 		async () => evaluate<boolean>(connection, sessionId, body, target === "task-open"),
@@ -377,20 +378,19 @@ async function rendererMetrics(connection: CdpConnection, sessionId: string) {
 
 async function clickAndMeasure(
 	connection: CdpConnection,
-	pageSession: string,
 	webviewSession: string,
+	pageSession: string,
 	taskId: string,
 	operation: "new-chat" | "task-open",
 ) {
 	const clickSession = operation === "new-chat" ? pageSession : webviewSession
-	const clickUsesActiveFrame = operation === "task-open"
 	const rendererBefore = await rendererMetrics(connection, webviewSession)
 	const systemBefore = systemSnapshot()
 	await installNavigationProbe(connection, webviewSession, operation, taskId)
 	await waitForClickTarget(connection, clickSession, operation, taskId)
 	const target = await armClickTarget(connection, clickSession, operation, taskId)
 	await clickTarget(connection, clickSession, target)
-	const click = await readClickCapture(connection, clickSession, clickUsesActiveFrame)
+	const click = await readClickCapture(connection, clickSession, operation === "task-open")
 	assert.equal(click.trusted, true, "The interaction must use a trusted pointer click")
 	const probe = await readUiProbe(connection, webviewSession)
 	const rendererAfter = await rendererMetrics(connection, webviewSession)
@@ -621,8 +621,8 @@ export async function runTaskNavigationUi(executable: string, output: string, ex
 			assert.equal(stageReceipt.taskId, taskId)
 			const blank = await clickAndMeasure(
 				connection,
-				targets.pageSession,
 				targets.webviewSession,
+				targets.pageSession,
 				taskId,
 				"new-chat",
 			)
@@ -634,8 +634,8 @@ export async function runTaskNavigationUi(executable: string, output: string, ex
 			assert.equal(taskStage.taskId, taskId)
 			const reopened = await clickAndMeasure(
 				connection,
-				targets.pageSession,
 				targets.webviewSession,
+				targets.pageSession,
 				taskId,
 				"task-open",
 			)

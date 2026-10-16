@@ -56,6 +56,7 @@ import {
 	type TerminalActionId,
 	type TerminalActionPromptType,
 	type HistoryItem,
+	getTaskDisplayName,
 	type IncidentDashboardTurnDetail,
 	type CreateTaskOptions,
 	type CurrentTaskView,
@@ -787,7 +788,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.0-agent-reliability-and-codex-alignment"
+	public readonly latestAnnouncementId = "october-2026-v3.2.1-chat-navigation-and-subagent-launch"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -3005,9 +3006,6 @@ export class AlphaProvider
 					await this.removeTaskFromStack({ taskId })
 				}
 			}
-			const changeSetIds = allIdsToDelete
-				.map((taskId) => this.taskHistoryStore.get(taskId)?.subagentChangeSet?.id)
-				.filter((changeSetId): changeSetId is string => Boolean(changeSetId))
 			// Delete all tasks from state in one batch
 			await this.taskHistoryStore.deleteMany(allIdsToDelete)
 			this.recentTasksCache = undefined
@@ -3044,11 +3042,9 @@ export class AlphaProvider
 				}
 			}
 
-			for (const changeSetId of changeSetIds) {
-				await managedSubagentWorktreeService
-					.deleteArtifact(this.context.globalStorageUri.fsPath, changeSetId)
-					.catch((error) => this.log(`Failed to delete worker artifact ${changeSetId}: ${String(error)}`))
-			}
+			await managedSubagentWorktreeService
+				.deleteArtifactsForTasks(globalStoragePath, allIdsToDelete)
+				.catch((error) => this.log(`Failed to delete worker artifacts: ${String(error)}`))
 
 			await this.postStateToWebview()
 		} catch (error) {
@@ -3262,7 +3258,7 @@ export class AlphaProvider
 	private getIncidentChatContexts(): Map<string, { chatTitle?: string; workspace?: string }> {
 		return new Map(
 			this.taskHistoryStore.getAll().map((item) => {
-				const chatTitle = item.task?.replace(/\s+/g, " ").trim().slice(0, 200) || undefined
+				const chatTitle = getTaskDisplayName(item)?.replace(/\s+/g, " ").trim().slice(0, 200) || undefined
 				const workspace = item.workspace && item.workspace.length <= 4096 ? item.workspace : undefined
 				return [crypto.createHash("sha256").update(item.id).digest("hex"), { chatTitle, workspace }]
 			}),
@@ -4890,6 +4886,31 @@ export class AlphaProvider
 			includeCurrentCost: stateValues.includeCurrentCost ?? true,
 			maxGitStatusFiles: stateValues.maxGitStatusFiles ?? 0,
 		}
+	}
+
+	/** Commit a chat label and publish it in order across this host's matching views. */
+	async renameTask(taskId: string, displayName: string): Promise<HistoryItem> {
+		return this.taskSessions.runOwnershipOperation(`rename:${taskId}`, async () => {
+			await this.taskHistoryStoreReady
+			const renamed = await this.taskHistoryStore.renameTask(taskId, displayName, this.cwd)
+			for (const peer of this.getHostProviders()) {
+				if (peer._disposed) continue
+				try {
+					await peer.taskHistoryStoreReady
+					if (peer !== this) await peer.taskHistoryStore.invalidate(taskId, { requireExisting: true })
+					peer.recentTasksCache = undefined
+					peer.scheduleGlobalStateWriteThrough()
+					const current = peer.taskHistoryStore.get(taskId) ?? renamed
+					if (peer.isViewLaunched && peer.taskHistoryStore.isForWorkspace(current, peer.cwd)) {
+						await peer.postMessageToWebview({ type: "taskHistoryItemUpdated", taskHistoryItem: current })
+					}
+				} catch {
+					// A transport failure cannot undo the committed label or report a second rename outcome.
+					this.log("[TaskRename] projection_failed")
+				}
+			}
+			return this.taskHistoryStore.get(taskId) ?? renamed
+		})
 	}
 
 	/**
@@ -11007,7 +11028,9 @@ export class AlphaProvider
 		}
 		const validatedScope =
 			agent.role === "worker"
-				? await managedSubagentWorktreeService.validateScope(parent.cwd, agent.writeScope!)
+				? await managedSubagentWorktreeService.validateScope(parent.cwd, agent.writeScope!, {
+						allowWorkspaceRoot: agent.writeScope?.length === 1 && agent.writeScope[0] === ".",
+					})
 				: undefined
 		const capturedPolicy = contextManifest.runtimePolicy
 		const orchestration = contextManifest.orchestration

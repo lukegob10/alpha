@@ -27,6 +27,10 @@ export type TerminalActionPromptType = `TERMINAL_${TerminalActionName}`
  */
 
 export const commandIds = [
+	"sidebarNewChat",
+	"sidebarSettings",
+	"sidebarScheduledTasks",
+	"sidebarMarketplace",
 	"activationCompleted",
 
 	"plusButtonClicked",

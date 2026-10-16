@@ -348,6 +348,47 @@ describe("SubagentGroupCard", () => {
 		)
 	})
 
+	it("retains correlated action receipts while hidden without refreshing capabilities", async () => {
+		const user = userEvent.setup()
+		const group = makeWorkerGroup()
+		const { rerender } = render(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
+		sendChangeSetCapability(true, "Ready")
+		await openActions(user, "Maple")
+		await user.click(screen.getByRole("menuitem", { name: "Apply changes" }))
+		await user.click(screen.getByRole("button", { name: "Confirm apply" }))
+		const request = postMessage.mock.calls.find(([message]) => message.type === "applySubagentChangeSet")![0]
+		rerender(<SubagentGroupCard group={group} parentTaskId="parent-1" isVisible={false} />)
+		const capabilityCount = postMessage.mock.calls.filter(
+			([message]) => message.type === "requestSubagentChangeSetActionCapability",
+		).length
+		act(() => {
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "state" } }))
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "subagentChangeSetActionResult",
+						requestId: request.requestId,
+						subagentChangeSetActionResult: {
+							action: "apply",
+							taskId: "parent-1",
+							groupId: "group-1",
+							changeSetId: "change-1",
+							success: false,
+							message: "Review the updated parent files.",
+						},
+					},
+				}),
+			)
+		})
+		expect(
+			postMessage.mock.calls.filter(([message]) => message.type === "requestSubagentChangeSetActionCapability"),
+		).toHaveLength(capabilityCount)
+		rerender(<SubagentGroupCard group={group} parentTaskId="parent-1" />)
+		expect(screen.getByRole("alert")).toHaveTextContent("Review the updated parent files.")
+		await openActions(user, "Maple")
+		expect(screen.getByRole("menuitem", { name: "Apply changes" })).not.toHaveAttribute("data-disabled")
+	})
+
 	it("provider capability disables mutation actions during active parent work", async () => {
 		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)

@@ -1,4 +1,5 @@
-import { memo } from "react"
+import { memo, useRef } from "react"
+import { getTaskDisplayName } from "@alpha-code/types"
 import { ArrowRight, ChevronRight, CornerDownRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAppTranslation } from "@/i18n/TranslationContext"
@@ -6,7 +7,7 @@ import type { SubtaskTreeNode } from "./types"
 import { countAllSubtasks } from "./types"
 import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 import { Checkbox, StandardTooltip } from "../ui"
-import TaskItemActionsMenu from "./TaskItemActionsMenu"
+import TaskItemActionsMenu, { type TaskItemActionsMenuHandle } from "./TaskItemActionsMenu"
 
 interface SubtaskRowProps {
 	/** The subtask tree node to display */
@@ -19,6 +20,7 @@ interface SubtaskRowProps {
 	selectedTaskIds?: ReadonlySet<string>
 	onToggleSelection?: (taskId: string, selected: boolean) => void
 	onDelete?: (taskId: string) => void
+	onOpenTask?: (taskId: string) => void
 	/** Optional className for styling */
 	className?: string
 }
@@ -36,11 +38,14 @@ const SubtaskRow = ({
 	selectedTaskIds,
 	onToggleSelection,
 	onDelete,
+	onOpenTask,
 	className,
 }: SubtaskRowProps) => {
 	const { t } = useAppTranslation()
 	const { item, children, isExpanded } = node
-	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
+	const { isOpening, openTask } = useTaskOpeningFeedback(item.id, onOpenTask)
+	const actionsRef = useRef<TaskItemActionsMenuHandle>(null)
+	const displayName = getTaskDisplayName(item)
 	const hasChildren = children.length > 0
 	const descendantCount = hasChildren ? countAllSubtasks(children) : 0
 	const childListId = `subtask-${item.id}-children`
@@ -60,6 +65,19 @@ const SubtaskRow = ({
 			<div
 				data-testid={`subtask-item-row-${item.id}`}
 				data-selected={isSelectionMode ? isSelected : undefined}
+				onContextMenu={(event) => {
+					if (isSelectionMode || !event.currentTarget.contains(event.target as Node)) return
+					event.preventDefault()
+					actionsRef.current?.openMenu()
+				}}
+				onKeyDown={(event) => {
+					if (!event.currentTarget.contains(event.target as Node)) return
+					if (!isSelectionMode && ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu")) {
+						event.preventDefault()
+						event.stopPropagation()
+						actionsRef.current?.openMenu()
+					}
+				}}
 				className={cn(
 					"history-subtask-row group flex min-h-9 items-center gap-1.5 pr-2 transition-colors",
 					"text-vscode-foreground/70 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground",
@@ -68,7 +86,7 @@ const SubtaskRow = ({
 				{isSelectionMode ? (
 					<Checkbox
 						variant="description"
-						aria-label={t("history:selectChat", { task: item.task })}
+						aria-label={t("history:selectChat", { task: displayName })}
 						checked={isSelected}
 						onCheckedChange={(checked) => onToggleSelection?.(item.id, checked === true)}
 					/>
@@ -85,10 +103,12 @@ const SubtaskRow = ({
 					aria-busy={isOpening}
 					aria-pressed={isSelectionMode ? isSelected : undefined}
 					aria-label={
-						isSelectionMode ? t("history:selectChat", { task: item.task }) : `Open task: ${item.task}`
+						isSelectionMode
+							? t("history:selectChat", { task: displayName })
+							: t("history:openChat", { task: displayName })
 					}>
-					<StandardTooltip content={item.task} delay={600}>
-						<span className="min-w-0 flex-1 truncate text-base">{item.task}</span>
+					<StandardTooltip content={displayName} delay={600}>
+						<span className="min-w-0 flex-1 truncate text-base">{displayName}</span>
 					</StandardTooltip>
 					{isOpening ? (
 						<span
@@ -100,7 +120,7 @@ const SubtaskRow = ({
 						<ArrowRight className="size-3 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
 					) : null}
 				</button>
-				{!isSelectionMode && onDelete && <TaskItemActionsMenu item={item} onDelete={onDelete} />}
+				{!isSelectionMode && <TaskItemActionsMenu ref={actionsRef} item={item} onDelete={onDelete} />}
 
 				{hasChildren && (
 					<button
@@ -142,6 +162,7 @@ const SubtaskRow = ({
 							selectedTaskIds={selectedTaskIds}
 							onToggleSelection={onToggleSelection}
 							onDelete={onDelete}
+							onOpenTask={onOpenTask}
 						/>
 					))}
 				</div>

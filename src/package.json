@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.0",
+	"version": "3.2.1",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -72,6 +72,32 @@
 		},
 		"commands": [
 			{
+				"command": "alpha.sidebarNewChat",
+				"title": "%command.newTask.title%",
+				"icon": {
+					"light": "assets/icons/chat-actions/new-chat-light.svg",
+					"dark": "assets/icons/chat-actions/new-chat-dark.svg"
+				}
+			},
+			{
+				"command": "alpha.sidebarSettings",
+				"title": "%command.settings.title%",
+				"icon": {
+					"light": "assets/icons/chat-actions/settings-light.svg",
+					"dark": "assets/icons/chat-actions/settings-dark.svg"
+				}
+			},
+			{
+				"command": "alpha.sidebarScheduledTasks",
+				"title": "%command.scheduledTasks.title%",
+				"icon": "$(calendar)"
+			},
+			{
+				"command": "alpha.sidebarMarketplace",
+				"title": "%command.marketplace.title%",
+				"icon": "$(extensions)"
+			},
+			{
 				"command": "alpha.manageGoal",
 				"title": "%command.manageGoal.title%",
 				"category": "%configuration.title%"
@@ -84,7 +110,10 @@
 			{
 				"command": "alpha.openTickets",
 				"title": "%command.openTickets.title%",
-				"icon": "$(issues)"
+				"icon": {
+					"light": "assets/icons/chat-actions/tickets-light.svg",
+					"dark": "assets/icons/chat-actions/tickets-dark.svg"
+				}
 			},
 			{
 				"command": "alpha.openIncidents",
@@ -94,7 +123,10 @@
 			{
 				"command": "alpha.plusButtonClicked",
 				"title": "%command.newTask.title%",
-				"icon": "$(edit)"
+				"icon": {
+					"light": "assets/icons/chat-actions/new-chat-light.svg",
+					"dark": "assets/icons/chat-actions/new-chat-dark.svg"
+				}
 			},
 			{
 				"command": "alpha.historyButtonClicked",
@@ -119,7 +151,10 @@
 			{
 				"command": "alpha.settingsButtonClicked",
 				"title": "%command.settings.title%",
-				"icon": "$(settings-gear)"
+				"icon": {
+					"light": "assets/icons/chat-actions/settings-light.svg",
+					"dark": "assets/icons/chat-actions/settings-dark.svg"
+				}
 			},
 			{
 				"command": "alpha.openInNewTab",
@@ -225,6 +260,22 @@
 		"menus": {
 			"commandPalette": [
 				{
+					"command": "alpha.sidebarNewChat",
+					"when": "false"
+				},
+				{
+					"command": "alpha.sidebarSettings",
+					"when": "false"
+				},
+				{
+					"command": "alpha.sidebarScheduledTasks",
+					"when": "false"
+				},
+				{
+					"command": "alpha.sidebarMarketplace",
+					"when": "false"
+				},
+				{
 					"command": "alpha.openIncidents",
 					"when": "config.alpha.debug"
 				}
@@ -278,23 +329,18 @@
 			],
 			"view/title": [
 				{
-					"command": "alpha.plusButtonClicked",
+					"command": "alpha.sidebarNewChat",
 					"group": "navigation@1",
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
-					"command": "alpha.settingsButtonClicked",
+					"command": "alpha.sidebarSettings",
 					"group": "navigation@2",
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
 					"command": "alpha.openTickets",
 					"group": "navigation@3",
-					"when": "view == alpha.SidebarProvider"
-				},
-				{
-					"command": "alpha.historyButtonClicked",
-					"group": "overflow@1",
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
@@ -303,63 +349,17 @@
 					"when": "view == alpha.SidebarProvider && config.alpha.debug"
 				},
 				{
-					"command": "alpha.scheduledTasksButtonClicked",
+					"command": "alpha.sidebarScheduledTasks",
+					"group": "overflow@1",
+					"when": "view == alpha.SidebarProvider"
+				},
+				{
+					"command": "alpha.sidebarMarketplace",
 					"group": "overflow@2",
-					"when": "view == alpha.SidebarProvider"
-				},
-				{
-					"command": "alpha.marketplaceButtonClicked",
-					"group": "overflow@3",
-					"when": "view == alpha.SidebarProvider"
-				},
-				{
-					"command": "alpha.popoutButtonClicked",
-					"group": "overflow@4",
 					"when": "view == alpha.SidebarProvider"
 				}
 			],
-			"editor/title": [
-				{
-					"command": "alpha.plusButtonClicked",
-					"group": "navigation@1",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.settingsButtonClicked",
-					"group": "navigation@2",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.openTickets",
-					"group": "navigation@3",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.historyButtonClicked",
-					"group": "overflow@1",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.openIncidents",
-					"group": "overflow@0",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider && config.alpha.debug"
-				},
-				{
-					"command": "alpha.scheduledTasksButtonClicked",
-					"group": "overflow@2",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.marketplaceButtonClicked",
-					"group": "overflow@3",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				},
-				{
-					"command": "alpha.popoutButtonClicked",
-					"group": "overflow@4",
-					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
-				}
-			]
+			"editor/title": []
 		},
 		"keybindings": [
 			{

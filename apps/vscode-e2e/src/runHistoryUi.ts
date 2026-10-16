@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto"
 import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { CdpConnection } from "./ui/cdp"
+import { activateNativeChatHeader, readNativeChatHeader } from "./ui/nativeChatHeader"
 import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
 
@@ -23,6 +24,41 @@ interface PanelMetrics {
 	composer: boolean
 	alignedCards: boolean
 	text: string
+}
+
+interface HistoryTextMetrics {
+	fontFamily: string
+	fontSize: string
+	fontWeight: string
+	lineHeight: string
+	color: string
+	opacity: number
+}
+
+interface HistoryStyleMetrics {
+	heading: HistoryTextMetrics & {
+		text: string
+		sameElement: boolean
+		bounds: { left: number; top: number; width: number; height: number }
+	}
+	title: HistoryTextMetrics
+	titleLeft: number
+	list: { left: number; borderLeft: number }
+	age: HistoryTextMetrics | null
+	expected: { fontFamily: string; fontSize: string; muted: string; foreground: string }
+	row: {
+		focused: boolean
+		focusVisible: boolean
+		hovered: boolean
+		boxShadow: string
+		outlineStyle: string
+		outlineWidth: string
+		role: string | null
+		label: string | null
+		statusLabels: Array<string | null>
+		hasRunningSpinner: boolean
+		hasTimestamp: boolean
+	}
 }
 
 interface RendererNavigationProbe {
@@ -142,15 +178,19 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		const { sessionId } = await attach(target.targetId)
 		const { sessionId: pageSession } = await attach(page.targetId)
 		await connection.request("Page.bringToFront", {}, pageSession)
-		const evaluate = async <T>(expression: string): Promise<T> => {
+		const evaluate = async <T>(
+			expression: string,
+			targetSession = sessionId,
+			useActiveFrame = true,
+		): Promise<T> => {
 			abort.signal.throwIfAborted()
 			const result = await connection.request<{ result: { value: T }; exceptionDetails?: unknown }>(
 				"Runtime.evaluate",
 				{
-					expression: `(()=>{const d=document.getElementById('active-frame')?.contentDocument??document;return (${expression})})()`,
+					expression: `(()=>{const d=${useActiveFrame ? "document.getElementById('active-frame')?.contentDocument??document" : "document"};return (${expression})})()`,
 					returnByValue: true,
 				},
-				sessionId,
+				targetSession,
 			)
 			assert.equal(result.exceptionDetails, undefined)
 			return result.result.value
@@ -186,6 +226,35 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				)
 			}
 		}
+		const pressEscape = async (targetSession = sessionId) => {
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{ type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+					targetSession,
+				)
+		}
+		const activateSelector = async (selector: string) => {
+			await check(`!!d.querySelector(${javascriptLiteral(selector)})`)
+			assert.equal(
+				await evaluate(
+					`(()=>{const e=d.querySelector(${javascriptLiteral(selector)});e.focus();return d.activeElement===e})()`,
+				),
+				true,
+			)
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{
+						type,
+						key: "Enter",
+						code: "Enter",
+						windowsVirtualKeyCode: 13,
+						...(type === "keyDown" ? { text: "\r" } : {}),
+					},
+					sessionId,
+				)
+		}
 		const capture = async (name: string) => {
 			const screenshot = await connection.request<{ data: string }>(
 				"Page.captureScreenshot",
@@ -193,6 +262,209 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				pageSession,
 			)
 			await fs.writeFile(path.join(directory, `${name}.png`), Buffer.from(screenshot.data, "base64"))
+			const { frameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
+				"Page.getFrameTree",
+				{},
+				sessionId,
+			)
+			const { backendNodeId } = await connection.request<{ backendNodeId: number }>(
+				"DOM.getFrameOwner",
+				{ frameId: frameTree.frame.id },
+				pageSession,
+			)
+			const { model } = await connection.request<{ model: { content: number[] } }>(
+				"DOM.getBoxModel",
+				{ backendNodeId },
+				pageSession,
+			)
+			const [x, y, right, , , bottom] = model.content
+			assert.ok(
+				typeof x === "number" &&
+					Number.isFinite(x) &&
+					typeof y === "number" &&
+					Number.isFinite(y) &&
+					typeof right === "number" &&
+					Number.isFinite(right) &&
+					typeof bottom === "number" &&
+					Number.isFinite(bottom) &&
+					right > x &&
+					bottom > y,
+				"Webview frame has measured bounds",
+			)
+			const clipped = await connection.request<{ data: string }>(
+				"Page.captureScreenshot",
+				{ format: "png", clip: { x, y, width: right - x, height: bottom - y, scale: 1 } },
+				pageSession,
+			)
+			await fs.writeFile(path.join(directory, `${name}-content.png`), Buffer.from(clipped.data, "base64"))
+			const header = await readNativeChatHeader(connection, pageSession)
+			assert.ok(header, "Native ALPHA sidebar remains visible")
+			const sidebar = header.sidebarBounds
+			assert.ok(
+				[sidebar.left, sidebar.top, sidebar.width, sidebar.height].every(Number.isFinite) &&
+					sidebar.width > 0 &&
+					sidebar.height > 0,
+				"Native ALPHA sidebar has measured bounds",
+			)
+			await connection.request(
+				"Input.dispatchMouseEvent",
+				{
+					type: "mouseMoved",
+					x: header.bounds.left + header.bounds.width / 2,
+					y: header.bounds.top + header.bounds.height / 2,
+				},
+				pageSession,
+			)
+			const sidebarScreenshot = await connection.request<{ data: string }>(
+				"Page.captureScreenshot",
+				{
+					format: "png",
+					clip: { x: sidebar.left, y: sidebar.top, width: sidebar.width, height: sidebar.height, scale: 1 },
+				},
+				pageSession,
+			)
+			await fs.writeFile(
+				path.join(directory, `${name}-sidebar.png`),
+				Buffer.from(sidebarScreenshot.data, "base64"),
+			)
+		}
+		const headingReference = javascriptLiteral(`alpha-history-heading-${nonce}`)
+		const observeHistoryStyle = async (taskId: string, rememberHeading = false) => {
+			const observation = await evaluate<HistoryStyleMetrics | null>(
+				`(()=>{
+					const section=d.querySelector('[data-testid=history-preview-list]')?.closest('section');
+					const heading=section?.querySelector('h2'),row=section?.querySelector(${javascriptLiteral(`[data-testid="task-item-${taskId}"]`)});
+					const title=row?.querySelector('[data-testid=task-content]');
+					if(!heading||!row||!title)return null;
+					const win=d.defaultView;
+					if(${rememberHeading})win[${headingReference}]=heading;
+					const font=e=>{const s=win.getComputedStyle(e);return {fontFamily:s.fontFamily,fontSize:s.fontSize,fontWeight:s.fontWeight,lineHeight:s.lineHeight,color:s.color,opacity:Number(s.opacity)}};
+					const probe=d.createElement('span');probe.style.cssText='position:absolute;visibility:hidden;pointer-events:none;color:var(--vscode-descriptionForeground);font-family:var(--chat-ui-font-family,var(--vscode-font-family,sans-serif));font-size:var(--chat-ui-font-size,var(--vscode-font-size,13px))';d.body.appendChild(probe);
+					const expectedStyle=win.getComputedStyle(probe),expected={fontFamily:expectedStyle.fontFamily,fontSize:expectedStyle.fontSize,muted:expectedStyle.color};
+					probe.style.color='var(--vscode-foreground)';const foreground=win.getComputedStyle(probe).color;probe.remove();
+					const r=heading.getBoundingClientRect(),s=win.getComputedStyle(row),age=row.querySelector('[data-testid=task-time-ago]'),list=section.querySelector('[data-testid=history-preview-list]');
+					return {heading:{...font(heading),text:heading.textContent.trim(),sameElement:win[${headingReference}]===heading,bounds:{left:r.left,top:r.top,width:r.width,height:r.height}},title:font(title),titleLeft:title.getBoundingClientRect().left,list:{left:list.getBoundingClientRect().left,borderLeft:parseFloat(win.getComputedStyle(list).borderLeftWidth)},age:age?font(age):null,expected:{...expected,foreground},row:{focused:d.activeElement===row,focusVisible:row.matches(':focus-visible'),hovered:row.matches(':hover'),boxShadow:s.boxShadow,outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth,role:row.getAttribute('role'),label:row.getAttribute('aria-label'),statusLabels:[...row.querySelectorAll('[data-testid=task-status-indicator]')].map(e=>e.getAttribute('aria-label')),hasRunningSpinner:!!row.querySelector('[data-testid=task-status-indicator] .animate-spin'),hasTimestamp:!!age}};
+				})()`,
+			)
+			assert.ok(observation, "Chats heading and fixture title must exist in both history states")
+			return observation
+		}
+		const assertMutedHistoryStyle = (metrics: HistoryStyleMetrics) => {
+			assert.equal(metrics.heading.text, "Chats")
+			assert.equal(metrics.heading.fontFamily, metrics.expected.fontFamily)
+			assert.equal(
+				metrics.heading.fontSize,
+				metrics.expected.fontSize,
+				"Chats heading uses the compact chat UI font",
+			)
+			assert.equal(metrics.heading.color, metrics.expected.muted)
+			assert.equal(metrics.title.fontFamily, metrics.expected.fontFamily)
+			assert.equal(metrics.title.fontSize, metrics.expected.fontSize)
+			assert.equal(metrics.title.fontWeight, "400")
+			assert.equal(
+				metrics.title.color,
+				metrics.expected.muted,
+				"Neutral history titles use descriptionForeground",
+			)
+			if (metrics.age) {
+				assert.deepEqual(metrics.age, metrics.title, "History ages share the title typography and muted color")
+			}
+			assert.ok(metrics.heading.opacity > 0 && metrics.title.opacity > 0)
+			assert.ok(metrics.heading.bounds.height > 0 && metrics.heading.bounds.height <= 24)
+		}
+		const observeMutedHistoryStyle = async (taskId: string, rememberHeading = false) => {
+			let metrics = await observeHistoryStyle(taskId, rememberHeading)
+			// Theme changes animate inherited row colors; compare after the neutral token is actually rendered.
+			await waitUntil(
+				async () => {
+					metrics = await observeHistoryStyle(taskId)
+					return (
+						metrics.heading.color === metrics.expected.muted &&
+						metrics.title.color === metrics.expected.muted
+					)
+				},
+				Date.now() + 5000,
+				"history_muted_color_transition_timeout",
+			)
+			return metrics
+		}
+		const assertSameHeading = (before: HistoryStyleMetrics, after: HistoryStyleMetrics) => {
+			assert.equal(after.heading.sameElement, true, "Expand/collapse retains the same Chats heading")
+			for (const key of ["fontFamily", "fontSize", "fontWeight", "lineHeight", "color"] as const) {
+				assert.equal(after.heading[key], before.heading[key], `Chats heading ${key} remains stable`)
+			}
+			for (const key of ["left", "top"] as const) {
+				assert.ok(
+					Math.abs(after.heading.bounds[key] - before.heading.bounds[key]) <= 0.5,
+					`Chats heading ${key} remains stable`,
+				)
+			}
+		}
+		const inspectHistoryInteraction = async (taskId: string, baseline: HistoryStyleMetrics) => {
+			const selector = javascriptLiteral(`[data-testid="task-item-${taskId}"]`)
+			const point = await evaluate<{ x: number; y: number }>(
+				`(()=>{const r=d.querySelector(${selector}).getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();return {x:r.left+r.width/2+(f?.left??0),y:r.top+r.height/2+(f?.top??0)}})()`,
+			)
+			const { frameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
+				"Page.getFrameTree",
+				{},
+				sessionId,
+			)
+			const { backendNodeId } = await connection.request<{ backendNodeId: number }>(
+				"DOM.getFrameOwner",
+				{ frameId: frameTree.frame.id },
+				pageSession,
+			)
+			const { model } = await connection.request<{ model: { content: number[] } }>(
+				"DOM.getBoxModel",
+				{ backendNodeId },
+				pageSession,
+			)
+			const [originX, originY] = model.content
+			assert.ok(typeof originX === "number" && typeof originY === "number")
+			await connection.request(
+				"Input.dispatchMouseEvent",
+				{ type: "mouseMoved", x: originX + point.x, y: originY + point.y },
+				pageSession,
+			)
+			await check(`d.querySelector(${selector}).matches(':hover')`)
+			await check(
+				`d.defaultView.getComputedStyle(d.querySelector(${selector}).querySelector('[data-testid=task-content]')).color===${javascriptLiteral(baseline.expected.foreground)}`,
+			)
+			const hovered = await observeHistoryStyle(taskId)
+			await evaluate(`d.querySelector(${selector}).focus()`)
+			for (const modifiers of [0, 8]) {
+				for (const type of ["keyDown", "keyUp"]) {
+					await connection.request(
+						"Input.dispatchKeyEvent",
+						{ type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers },
+						sessionId,
+					)
+				}
+			}
+			await check(`d.activeElement===d.querySelector(${selector}) && d.activeElement.matches(':focus-visible')`)
+			const focused = await observeHistoryStyle(taskId)
+			assert.ok(
+				focused.row.boxShadow !== "none" ||
+					(focused.row.outlineStyle !== "none" && parseFloat(focused.row.outlineWidth) > 0),
+				"History rows retain a visible keyboard focus indicator",
+			)
+			for (const state of [hovered, focused]) {
+				for (const key of ["fontFamily", "fontSize", "fontWeight", "lineHeight"] as const) {
+					assert.equal(state.title[key], baseline.title[key], `History title ${key} survives hover/focus`)
+				}
+				assert.ok(
+					state.title.opacity > 0 &&
+						[baseline.expected.muted, baseline.expected.foreground].includes(state.title.color),
+					"History text stays visible in a readable theme color",
+				)
+				assert.deepEqual(state.row.statusLabels, baseline.row.statusLabels)
+				assert.equal(state.row.hasRunningSpinner, baseline.row.hasRunningSpinner)
+				assert.equal(state.row.hasTimestamp, baseline.row.hasTimestamp)
+				assert.equal(state.row.role, baseline.row.role)
+				assert.equal(state.row.label, baseline.row.label)
+			}
+			return { hovered, focused }
 		}
 		const installNavigationProbe = async (predicate: string, taskId?: string) =>
 			evaluate<boolean>(
@@ -213,6 +485,60 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		)
 		assert.ok(smallHeight < 160, `Three-row preview must fit its content, observed ${smallHeight}px`)
 		await capture("chats-small-preview")
+		assert.equal(
+			await evaluate("d.querySelectorAll('.chat-toolbar').length"),
+			0,
+			"New chat has no duplicate toolbar row",
+		)
+		const nativeHeader = await activateNativeChatHeader(connection, pageSession, "more")
+		await waitUntil(
+			() => evaluate<boolean>("!!d.querySelector('[role=\"menu\"]')", pageSession, false),
+			Date.now() + 5000,
+			"native_chat_more_menu_timeout",
+		)
+		const menuEntries = await evaluate<string[]>(
+			"Array.from(d.querySelectorAll('[role=\"menuitem\"]'), e=>(e.querySelector('.action-label')?.textContent??e.textContent).trim())",
+			pageSession,
+			false,
+		)
+		const alphaMenuEntries = menuEntries.filter((label) =>
+			["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"].includes(label),
+		)
+		assert.ok(
+			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks", "Marketplace"]) ||
+				JSON.stringify(alphaMenuEntries) ===
+					JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"]),
+			`Only approved toolbar entries remain: ${JSON.stringify(menuEntries)}`,
+		)
+		assert.ok(
+			!menuEntries.some((label) => /^(?:Task History|All chats|Show sub-agents|Open in Editor)$/i.test(label)),
+		)
+		await capture("chat-toolbar-more")
+		await pressEscape(pageSession)
+		await waitUntil(
+			() => evaluate<boolean>("!d.querySelector('[role=\"menu\"]')", pageSession, false),
+			Date.now() + 5000,
+			"native_chat_more_close_timeout",
+		)
+		await activateSelector(".chat-context-meter")
+		await check('!!d.querySelector(\'[role="dialog"][aria-label="Task details"]\')')
+		await capture("chat-context-details")
+		await pressEscape()
+		await check('!d.querySelector(\'[role="dialog"][aria-label="Task details"]\')')
+		await fs.writeFile(
+			path.join(directory, "chat-redesign-controls.json"),
+			JSON.stringify(
+				{
+					hostVersion: expectedHostVersion,
+					nativeHeader,
+					menuEntries,
+					alphaMenuEntries,
+					contextDetailsOpenedAndClosed: true,
+				},
+				null,
+				2,
+			),
+		)
 		await activate("history-view-all")
 		await check("!!d.querySelector('[data-testid=history-search-input]')")
 		assert.equal(
@@ -243,12 +569,45 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			await check(
 				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('[data-testid="history-view-all"]')`,
 			)
-			await check("d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 5")
+			await check("d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 4")
 			assert.equal(await evaluate("!!d.querySelector('[data-testid=history-search-input]')"), false)
+			assert.equal(
+				await evaluate("d.querySelectorAll('.chat-toolbar').length"),
+				0,
+				"Native header has no duplicate webview toolbar",
+			)
+			const previewStyle = await observeMutedHistoryStyle("history-visual-0", true)
+			assertMutedHistoryStyle(previewStyle)
 			await capture(`${stage}-preview`)
+			const previewInteraction = await inspectHistoryInteraction("history-visual-0", previewStyle)
 			await activate("history-view-all")
 			await check("!!d.querySelector('[data-testid=history-search-input]')")
 			await check("!!d.querySelector('[data-testid=task-item-history-visual-0]')")
+			assert.equal(
+				await evaluate("d.querySelectorAll('.chat-toolbar').length"),
+				0,
+				"Expanded history has no duplicate webview toolbar",
+			)
+			const expandedStyle = await observeMutedHistoryStyle("history-visual-0")
+			assertMutedHistoryStyle(expandedStyle)
+			assertSameHeading(previewStyle, expandedStyle)
+			assert.deepEqual(
+				expandedStyle.title,
+				previewStyle.title,
+				"Recent and expanded task titles use identical typography",
+			)
+			assert.deepEqual(expandedStyle.age, previewStyle.age, "Recent and expanded ages use identical typography")
+			const previewInset = previewStyle.titleLeft - previewStyle.list.left - previewStyle.list.borderLeft
+			const expandedInset = expandedStyle.titleLeft - expandedStyle.list.left - expandedStyle.list.borderLeft
+			assert.ok(
+				Math.abs(expandedInset - previewInset) <= 0.5,
+				"Task titles retain the same content inset inside the list border",
+			)
+			assert.deepEqual(expandedStyle.row.statusLabels, previewStyle.row.statusLabels)
+			assert.equal(expandedStyle.row.hasRunningSpinner, previewStyle.row.hasRunningSpinner)
+			assert.equal(expandedStyle.row.hasTimestamp, previewStyle.row.hasTimestamp)
+			await capture(`${stage}-expanded`)
+			const expandedInteraction = await inspectHistoryInteraction("history-visual-0", expandedStyle)
 			const metrics = await evaluate<PanelMetrics>(
 				`(()=>{
 					const s=d.querySelector('[data-testid="history-search-input"]').closest('section');
@@ -309,6 +668,17 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				"d.querySelector('[data-testid=history-search-input]').value === '' && !!d.querySelector('[data-testid=task-item-history-visual-0]')",
 			)
 			await activate("history-close")
+			const collapsedStyle = await observeHistoryStyle("history-visual-0")
+			assertSameHeading(previewStyle, collapsedStyle)
+			await evaluate(`delete d.defaultView[${headingReference}]`)
+			await fs.writeFile(
+				path.join(directory, `${stage}-consistency.json`),
+				JSON.stringify(
+					{ previewStyle, expandedStyle, collapsedStyle, previewInteraction, expandedInteraction },
+					null,
+					2,
+				),
+			)
 			await writeJsonAtomically(path.join(directory, `ui-done-${stage}.json`), { nonce, stage, status: "passed" })
 		}
 
@@ -411,6 +781,21 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		assert.ok(reopenedTranscript.count >= transcriptCount, "Reopened transcript retains all fixture messages")
 		assert.ok(reopenedTranscript.renderedCount > 0 && reopenedTranscript.renderedCount <= 100)
 		assert.equal(reopenedTranscript.sentinelVisible, true)
+		// Inspect earlier actions after measuring the bounded reopen window: Load all persists the expanded window.
+		await activate("chat-load-all")
+		await check("!!d.querySelector('.user-message-actions button[aria-label=\"Copy\"]')")
+		assert.equal(
+			await evaluate<boolean>(
+				'(()=>{const copy=d.querySelector(\'.user-message-actions button[aria-label="Copy"]\');copy.focus();const actions=copy.closest(".user-message-actions");const edit=actions.querySelector(\'button[aria-label="Edit and resend"]\');return d.activeElement===copy&&d.defaultView.getComputedStyle(actions).opacity==="1"&&!!edit&&!edit.disabled})()',
+			),
+			true,
+			"User-message Copy and Edit appear on keyboard focus and editing remains available for the completed task",
+		)
+		await capture("chat-user-message-actions")
+		await fs.writeFile(
+			path.join(directory, "chat-user-message-actions.json"),
+			JSON.stringify({ hostVersion: expectedHostVersion, copyAndEditVisibleOnKeyboardFocus: true }, null, 2),
+		)
 		const rendererLatency = {
 			schemaVersion: 1,
 			hostVersion: expectedHostVersion,

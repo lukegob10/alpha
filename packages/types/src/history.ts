@@ -10,6 +10,9 @@ import { approvalModeSchema } from "./approval-mode.js"
 
 export const diagnosticTaskIdentitySchema = z.string().trim().min(1).max(128)
 
+/** User-owned label; the original task prompt remains unchanged. */
+export const taskDisplayNameSchema = z.string().trim().min(1).max(96)
+
 /** Delivery receipts contain identities only; result text stays in the task transcript and recipient inbox. */
 export const orchestrationCompletionNotificationSchema = z.object({
 	id: z.string().min(1).max(256),
@@ -48,6 +51,7 @@ export const historyItemSchema = z.object({
 	number: z.number(),
 	ts: z.number(),
 	task: z.string(),
+	displayName: taskDisplayNameSchema.optional(),
 	tokensIn: z.number(),
 	tokensOut: z.number(),
 	cacheWrites: z.number().optional(),
@@ -88,3 +92,7 @@ export const historyItemSchema = z.object({
 })
 
 export type HistoryItem = z.infer<typeof historyItemSchema>
+
+export function getTaskDisplayName(item: Pick<HistoryItem, "task" | "displayName">): string {
+	return item.displayName?.trim() || item.task
+}

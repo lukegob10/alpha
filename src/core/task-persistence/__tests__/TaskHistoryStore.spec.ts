@@ -58,6 +58,7 @@ describe("TaskHistoryStore", () => {
 		mockSafeWriteJson.mockImplementation(
 			async (filePath: string, data: unknown, options?: SafeWriteJsonOptions) => {
 				await fs.mkdir(path.dirname(filePath), { recursive: true })
+				data = options?.prepareData ? await options.prepareData() : data
 				if (options?.commitTempFile) {
 					const temporaryPath = `${filePath}.test.tmp`
 					await fs.writeFile(temporaryPath, JSON.stringify(data, null, "\t"), "utf8")

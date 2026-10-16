@@ -157,6 +157,50 @@ describe("registerCommands", () => {
 	})
 
 	it.each([
+		["sidebarNewChat", [{ type: "action", action: "newChatButtonClicked" }]],
+		[
+			"sidebarSettings",
+			[
+				{ type: "action", action: "settingsButtonClicked" },
+				{ type: "action", action: "didBecomeVisible" },
+			],
+		],
+		["sidebarScheduledTasks", [{ type: "action", action: "switchTab", tab: "scheduledTasks" }]],
+		["sidebarMarketplace", [{ type: "action", action: "marketplaceButtonClicked" }]],
+	])(
+		"keeps the native %s action on its sidebar owner for keyboard and pointer activation",
+		async (command, messages) => {
+			const sidebar = {
+				postMessageToWebview: vi.fn().mockResolvedValue(undefined),
+				startBlankTask: vi.fn(),
+				refreshWorkspace: vi.fn(),
+			} as unknown as AlphaProvider
+			const editor = { postMessageToWebview: vi.fn(), startBlankTask: vi.fn() } as unknown as AlphaProvider
+			vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor)
+			registerCommands({
+				context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+				outputChannel: mockOutputChannel,
+				provider: sidebar,
+			})
+			const callback = vi
+				.mocked(vscode.commands.registerCommand)
+				.mock.calls.find(([id]) => id === `alpha.${command}`)![1]
+			for (const activationContext of [undefined, { preserveFocus: false }, { preserveFocus: true }]) {
+				vi.mocked(sidebar.postMessageToWebview).mockClear()
+				await callback(activationContext)
+				expect(vi.mocked(sidebar.postMessageToWebview).mock.calls.map(([message]) => message)).toEqual(messages)
+			}
+			expect(AlphaProvider.getVisibleInstance).not.toHaveBeenCalled()
+			expect(AlphaProvider.getInstance).not.toHaveBeenCalled()
+			expect(editor.postMessageToWebview).not.toHaveBeenCalled()
+			// New chat stays behind App's unsaved Settings guard rather than mutating host state first.
+			expect(sidebar.startBlankTask).not.toHaveBeenCalled()
+			expect(sidebar.refreshWorkspace).not.toHaveBeenCalled()
+			expect(editor.startBlankTask).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each([
 		["decreaseReasoningEffort", "adjustTaskReasoningEffort", ["sidebar-task", -1]],
 		["increaseReasoningEffort", "adjustTaskReasoningEffort", ["sidebar-task", 1]],
 		["previousTask", "navigateTask", [-1]],

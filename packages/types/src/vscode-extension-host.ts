@@ -25,6 +25,7 @@ import type { ProviderSettings, ProviderSettingsEntry } from "./provider-setting
 import type { ProviderProfileRenameRequest, ProviderProfileRenameResult } from "./provider-profile-rename.js"
 import type { ProviderProfileSaveId, ProviderProfileSaveResult } from "./provider-profile-save.js"
 import type { HistoryItem } from "./history.js"
+import type { TaskRenameRequest, TaskRenameResult } from "./task-rename.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
@@ -331,6 +332,7 @@ export interface ExtensionMessage {
 		| "chatCommandResult"
 		| "taskHistoryUpdated"
 		| "taskHistoryItemUpdated"
+		| "taskRenameResult"
 		| "selectedImages"
 		| "theme"
 		| "workspaceUpdated"
@@ -439,6 +441,7 @@ export interface ExtensionMessage {
 	}
 	action?:
 		| "chatButtonClicked"
+		| "newChatButtonClicked"
 		| "settingsButtonClicked"
 		| "historyButtonClicked"
 		| "marketplaceButtonClicked"
@@ -522,6 +525,7 @@ export interface ExtensionMessage {
 	taskHistory?: HistoryItem[] // For taskHistoryUpdated: full sorted task history
 	/** For taskHistoryItemUpdated: single updated/added history item */
 	taskHistoryItem?: HistoryItem
+	taskRenameResult?: TaskRenameResult
 	// Worktree response properties
 	worktrees?: Array<{
 		path: string
@@ -790,6 +794,7 @@ interface WebviewMessageBase {
 		| "selectImages"
 		| "exportCurrentTask"
 		| "showTaskWithId"
+		| "renameTask"
 		| "deleteTaskWithId"
 		| "exportTaskWithId"
 		| "importSettings"
@@ -863,6 +868,8 @@ interface WebviewMessageBase {
 		| "searchFiles"
 		| "searchTickets"
 		| "openTicket"
+		| "openTickets"
+		| "openIncidentDashboard"
 		| "toggleApiConfigPin"
 		| "hasOpenedModeSelector"
 		| "lockApiConfigAcrossModes"
@@ -1089,6 +1096,7 @@ interface WebviewMessageBase {
 }
 
 export type WebviewMessage =
+	| (Omit<WebviewMessageBase, "type"> & { type: "renameTask"; taskRenameRequest: TaskRenameRequest })
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
 	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTurn"; turnId: string })
@@ -1135,6 +1143,7 @@ export type WebviewMessage =
 			type: Exclude<
 				WebviewMessageBase["type"],
 				| "updateVSCodeSetting"
+				| "renameTask"
 				| "webviewUiReady"
 				| "webviewFocusChanged"
 				| "queueMessage"

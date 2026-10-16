@@ -536,6 +536,95 @@ describe("TaskHeader", () => {
 		})
 	})
 
+	describe("composer context presentation", () => {
+		beforeEach(() => {
+			mockModelInfo = { contextWindow: 1_000, maxTokens: 200 }
+			mockMaxOutputTokens = 200
+		})
+		afterEach(() => {
+			mockModelInfo = undefined
+			mockMaxOutputTokens = 0
+		})
+
+		it("keeps only the thin meter visible until the details are opened", () => {
+			renderTaskHeader({ presentation: "composer", contextTokens: 200 })
+			const progress = screen.getByRole("progressbar", { name: "chat:task.contextUsage" })
+			expect(progress).toHaveAttribute("aria-valuenow", "25")
+			expect(progress).toHaveClass("h-[3px]")
+			expect(screen.queryByText("25%")).not.toBeInTheDocument()
+			expect(screen.queryByText("chat:task.contextUsage")).not.toBeInTheDocument()
+			expect(screen.queryByRole("button", { name: "chat:task.condenseContext" })).not.toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			expect(screen.getByRole("dialog", { name: "chat:task.taskDetails" })).toBeVisible()
+			expect(screen.getByText("25%")).toBeVisible()
+			expect(screen.getByText("chat:task.tokens")).toBeVisible()
+			expect(screen.getByText("$0.05")).toBeVisible()
+			expect(screen.getByRole("button", { name: "chat:task.export" })).toBeVisible()
+		})
+
+		it("retains context condensation and disables it while task actions are unavailable", () => {
+			const handleCondenseContext = vi.fn()
+			const { rerender } = renderTaskHeader({ presentation: "composer", handleCondenseContext })
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.condenseContext" }))
+			expect(handleCondenseContext).toHaveBeenCalledWith("test-task-id")
+			rerender(
+				<QueryClientProvider client={queryClient}>
+					<TaskHeader
+						{...defaultProps}
+						{...taskHeaderStateProps()}
+						presentation="composer"
+						buttonsDisabled
+						handleCondenseContext={handleCondenseContext}
+					/>
+				</QueryClientProvider>,
+			)
+			expect(screen.getByRole("button", { name: "chat:task.condenseContext" })).toBeDisabled()
+		})
+
+		it("exposes detailed usage when the meter receives keyboard focus", async () => {
+			renderTaskHeader({ presentation: "composer" })
+			fireEvent.focus(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			const tooltip = await screen.findByRole("tooltip")
+			expect(tooltip).toHaveTextContent("chat:tokenProgress.tokensUsed")
+			expect(tooltip).toHaveTextContent("chat:tokenProgress.reservedForResponse")
+			expect(tooltip).toHaveTextContent("chat:tokenProgress.availableSpace")
+		})
+
+		it("retains managed child identity and return navigation without a duplicate context card", () => {
+			renderTaskHeader({ presentation: "identity", isManagedSubagent: true, parentTaskId: "parent-1" })
+			expect(screen.getByRole("button", { name: "Return to parent" })).toBeVisible()
+			expect(screen.getByText("Parent-managed read-only sub-agent")).toBeVisible()
+			expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+		})
+
+		it("uses an empty meter and keeps advanced task actions disabled on a new chat", () => {
+			renderTaskHeader({ presentation: "composer", currentTaskItem: null, contextTokens: 0 })
+			expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0")
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			expect(screen.getByRole("button", { name: "chat:task.condenseContext" })).toBeDisabled()
+			expect(screen.queryByRole("button", { name: "chat:task.export" })).not.toBeInTheDocument()
+		})
+
+		it("closes context portals when the chat is hidden or its visible task changes", () => {
+			const { rerender } = renderTaskHeader({ presentation: "composer" })
+			const header = (props: Partial<TaskHeaderProps>) => (
+				<QueryClientProvider client={queryClient}>
+					<TaskHeader {...defaultProps} {...taskHeaderStateProps()} presentation="composer" {...props} />
+				</QueryClientProvider>
+			)
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			expect(screen.getByRole("dialog")).toBeVisible()
+			rerender(header({ isVisible: false }))
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+			rerender(header({ isVisible: true }))
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+			rerender(header({ currentTaskItem: null }))
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		})
+	})
+
 	describe("Context window percentage calculation", () => {
 		// The percentage should be calculated as:
 		// contextTokens / (contextWindow - reservedForOutput) * 100

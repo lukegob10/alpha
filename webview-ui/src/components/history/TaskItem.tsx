@@ -1,6 +1,6 @@
-import { memo, useContext, type KeyboardEvent } from "react"
-import { ArrowRight, CircleAlert, Folder, LoaderCircle } from "lucide-react"
-import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
+import { memo, useContext, useRef, type KeyboardEvent } from "react"
+import { CircleAlert, Folder, LoaderCircle } from "lucide-react"
+import { getTaskDisplayName, TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
 import { cn } from "@/lib/utils"
@@ -10,7 +10,7 @@ import { formatTimeAgo } from "@/utils/format"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import TaskItemFooter from "./TaskItemFooter"
-import TaskItemActionsMenu from "./TaskItemActionsMenu"
+import TaskItemActionsMenu, { type TaskItemActionsMenuHandle } from "./TaskItemActionsMenu"
 import { StandardTooltip } from "../ui"
 import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 
@@ -62,6 +62,7 @@ interface TaskItemProps {
 	isSelected?: boolean
 	onToggleSelection?: (taskId: string, isSelected: boolean) => void
 	onDelete?: (taskId: string) => void
+	onOpenTask?: (taskId: string) => void
 	className?: string
 }
 
@@ -75,9 +76,12 @@ const TaskItem = ({
 	isSelected = false,
 	onToggleSelection,
 	onDelete,
+	onOpenTask,
 	className,
 }: TaskItemProps) => {
 	const { t } = useAppTranslation()
+	const displayName = getTaskDisplayName(item)
+	const actionsRef = useRef<TaskItemActionsMenuHandle>(null)
 	const ageSeconds = Math.max(0, Math.floor((Date.now() - item.ts) / 1000))
 	const ageUnit = (
 		[
@@ -92,7 +96,7 @@ const TaskItem = ({
 	const compactAge = ageUnit
 		? t(`history:age.${ageUnit[0]}`, { count: Math.floor(ageSeconds / ageUnit[1]) })
 		: t("history:age.now")
-	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
+	const { isOpening, openTask } = useTaskOpeningFeedback(item.id, onOpenTask)
 	const extensionState = useContext(ExtensionStateContext)
 	const currentTaskId = extensionState?.currentTaskId
 	const liveTasksById = extensionState?.liveTasksById
@@ -100,6 +104,10 @@ const TaskItem = ({
 	const liveTaskIndicator = liveTask ? getLiveTaskIndicator(liveTask, t) : undefined
 	const isRunning =
 		liveTask?.lifecycle === TaskLifecycleState.Running || liveTask?.lifecycle === TaskLifecycleState.Initializing
+	const needsAttention =
+		liveTask?.lifecycle === TaskLifecycleState.Failed ||
+		(liveTask?.lifecycle === TaskLifecycleState.Waiting &&
+			(liveTask.isWaitingForInput || liveTask.status === TaskStatus.Interactive))
 	const isActive = currentTaskId === item.id
 	const liveTaskStatus = liveTaskIndicator
 		? liveTask?.waitingReason && liveTaskIndicator.label !== formatStatusText(liveTask.waitingReason)
@@ -123,6 +131,12 @@ const TaskItem = ({
 	}
 
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (!event.currentTarget.contains(event.target as Node)) return
+		if (!isSelectionMode && ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu")) {
+			event.preventDefault()
+			actionsRef.current?.openMenu()
+			return
+		}
 		if (event.currentTarget !== event.target) {
 			return
 		}
@@ -179,12 +193,21 @@ const TaskItem = ({
 			)}
 			onClick={handleClick}
 			onKeyDown={handleKeyDown}
+			onContextMenu={(event) => {
+				if (isSelectionMode || !event.currentTarget.contains(event.target as Node)) return
+				event.preventDefault()
+				actionsRef.current?.openMenu()
+			}}
 			role="button"
 			tabIndex={0}
 			aria-busy={isOpening}
 			aria-current={isActive ? "page" : undefined}
 			aria-pressed={isSelectionMode ? isSelected : undefined}
-			aria-label={isSelectionMode ? t("history:selectChat", { task: item.task }) : `Open task: ${item.task}`}>
+			aria-label={
+				isSelectionMode
+					? t("history:selectChat", { task: displayName })
+					: t("history:openChat", { task: displayName })
+			}>
 			<div
 				className={cn(
 					"flex min-w-0",
@@ -198,7 +221,7 @@ const TaskItem = ({
 							e.stopPropagation()
 						}}>
 						<Checkbox
-							aria-label={t("history:selectChat", { task: item.task })}
+							aria-label={t("history:selectChat", { task: displayName })}
 							checked={isSelected}
 							onCheckedChange={(checked) => onToggleSelection?.(item.id, checked === true)}
 							variant="description"
@@ -216,14 +239,22 @@ const TaskItem = ({
 							/>
 						) : (
 							<div className={taskContentClassName} data-testid="task-content">
-								<StandardTooltip content={item.task}>
-									<span>{item.task}</span>
+								<StandardTooltip content={displayName}>
+									<span>{displayName}</span>
 								</StandardTooltip>
 							</div>
 						)}
 						{isCompact ? (
 							<div className="flex w-12 shrink-0 items-center justify-end" data-testid="task-metadata">
-								{statusIndicator ?? (
+								{isOpening ? (
+									<LoaderCircle
+										className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
+										data-testid="task-opening-indicator"
+										aria-hidden="true"
+									/>
+								) : isRunning || needsAttention ? (
+									statusIndicator
+								) : (
 									<StandardTooltip content={new Date(item.ts).toLocaleString()}>
 										<span
 											className="w-12 shrink-0 whitespace-nowrap text-right text-xs text-vscode-descriptionForeground"
@@ -240,21 +271,14 @@ const TaskItem = ({
 						)}
 						{isSelectionMode ? (
 							isCompact && <span className="size-5 shrink-0" aria-hidden="true" />
-						) : isOpening ? (
+						) : !isCompact && isOpening ? (
 							<span
 								className="codicon codicon-loading codicon-modifier-spin size-4 shrink-0"
 								data-testid="task-opening-indicator"
 								aria-hidden="true"
 							/>
-						) : isCompact && onDelete ? (
-							<TaskItemActionsMenu item={item} onDelete={onDelete} />
 						) : (
-							<ArrowRight
-								className={cn(
-									"shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100",
-									isCompact ? "size-3.5" : "size-4",
-								)}
-							/>
+							<TaskItemActionsMenu ref={actionsRef} item={item} onDelete={onDelete} />
 						)}
 					</div>
 

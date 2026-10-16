@@ -1,5 +1,5 @@
 import React from "react"
-import { Settings, ChevronDown } from "lucide-react"
+import { Settings } from "lucide-react"
 import { type ApprovalMode, migrateApprovalMode, taskApprovalModeUpdateResultSchema } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
@@ -226,7 +226,6 @@ export const AutoApproveDropdown = ({
 						data-testid="auto-approve-dropdown-trigger"
 						className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
 						<span className="truncate min-w-0">{t(`chat:autoApprove.modes.${mode}`)}</span>
-						<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 					</PopoverTrigger>
 				</StandardTooltip>
 				<PopoverContent
