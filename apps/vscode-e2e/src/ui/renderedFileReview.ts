@@ -4,10 +4,11 @@ import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
+import { javascriptLiteral } from "./javascriptLiteral"
 
 /** Exercise the built webview with keyboard input while the host checks the resulting VS Code diff tab. */
 export async function exerciseRenderedFileReview(
-	cdp: CdpConnection,
+	cdp: Pick<CdpConnection, "request">,
 	sessionId: string,
 	workbenchSession: string,
 	directory: string,
@@ -59,7 +60,7 @@ export async function exerciseRenderedFileReview(
 	assert.equal(stage.nonce, nonce)
 	assert.equal(stage.fileNames.length, 3)
 	const fileToggle = (fileName: string) =>
-		`[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes(${JSON.stringify(fileName)}))`
+		`[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes(${javascriptLiteral(fileName)}))`
 
 	await check("!!d.querySelector('[data-activity-trace-id][aria-expanded=false]')")
 	await check("d.body.innerText.includes('Files edited: 3')")
