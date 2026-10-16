@@ -33,6 +33,13 @@ const pngBytes = Buffer.from([
 	68, 174, 66, 96, 130,
 ])
 
+// Inline frames keep decoding coverage independent of Git LFS downloads.
+const animatedGifBytes = Buffer.from([
+	71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0, 255, 0, 0, 0, 0, 255, 33, 255, 11, 78, 69, 84, 83, 67, 65, 80, 69,
+	50, 46, 48, 3, 1, 0, 0, 0, 33, 249, 4, 0, 5, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 33, 249, 4, 0,
+	5, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 76, 1, 0, 59,
+])
+
 describe("image helper full decode boundary", () => {
 	let workspace: string
 
@@ -101,8 +108,8 @@ describe("image helper full decode boundary", () => {
 		expect(await readFile(imagePath)).toEqual(svgBytes)
 	})
 
-	it("decodes the repository animated GIF through the production first-frame policy", async () => {
-		const gifBytes = await readFile(path.join(process.cwd(), "assets/docs/demo.gif"))
+	it("decodes a self-contained animated GIF through the production first-frame policy", async () => {
+		const gifBytes = animatedGifBytes
 		const imagePath = path.join(workspace, "animation.gif")
 		await writeFile(imagePath, gifBytes)
 

@@ -40,6 +40,7 @@ export async function executeSteps({
 					cwd: root,
 					env: {
 						...process.env,
+						VITEST_MAX_WORKERS: "2",
 						VITEST_MAX_FORKS: "2",
 						VITEST_MIN_FORKS: "1",
 						VITEST_MAX_THREADS: "2",
