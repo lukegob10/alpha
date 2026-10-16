@@ -4,6 +4,8 @@ import * as diff from "diff"
 import { AlphaIgnoreController, LOCK_TEXT_SYMBOL } from "../ignore/AlphaIgnoreController"
 import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 
+export type ToolResultContentItem = { type: "text"; text: string } | { type: "image"; dataUrl: string }
+
 export const formatResponse = {
 	toolDenied: () =>
 		JSON.stringify({
@@ -99,7 +101,13 @@ Otherwise, if work remains and no input is missing, your next response must cont
 	toolResult: (
 		text: string,
 		images?: string[],
+		orderedContent?: ToolResultContentItem[],
 	): string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> => {
+		if (orderedContent) {
+			return orderedContent.flatMap<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>((item) =>
+				item.type === "image" ? formatImagesIntoBlocks([item.dataUrl]) : [item],
+			)
+		}
 		if (images && images.length > 0) {
 			const textBlock: Anthropic.TextBlockParam = { type: "text", text }
 			const imageBlocks: Anthropic.ImageBlockParam[] = formatImagesIntoBlocks(images)

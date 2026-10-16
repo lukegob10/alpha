@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.12",
+		version: "3.2.0",
 	},
 }))
 
@@ -37,14 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.12" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.0" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.12")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.0")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v3.1.12 improves incident investigations, tool outcome visibility, and ticket search.",
-			),
+			screen.getByText("Alpha v3.2.0 improves task reliability, recovery, and alignment with Codex CLI."),
 		).toBeInTheDocument()
 	})
 
@@ -54,21 +52,21 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
+				"Tasks preserve context and recover more reliably after interruptions, cancellations, and reloads.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"The Incidents dashboard distinguishes failed, denied, cancelled, and unknown tool outcomes.",
+				"Commands, tools, and model providers report clearer outcomes and retain ordered results.",
 			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Delegated agents and questions keep their progress and responses through task handoffs."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Incident reports include a concise summary and a follow-up prompt grounded in the available evidence.",
+				"Skills, previews, Alpha Tickets, and scheduled tasks remain integrated with the shared task engine.",
 			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Alpha Tickets suggestions reuse unchanged records and respond sooner while you type."),
 		).toBeInTheDocument()
 	})
 
@@ -76,13 +74,11 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText(
-				"Alpha v3.1.12 improves incident investigations, tool outcome visibility, and ticket search.",
-			),
+			screen.getByText("Alpha v3.2.0 improves task reliability, recovery, and alignment with Codex CLI."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
+				"Tasks preserve context and recover more reliably after interruptions, cancellations, and reloads.",
 			),
 		).toBeInTheDocument()
 	})

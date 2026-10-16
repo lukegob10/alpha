@@ -11,8 +11,8 @@ export function getSharedToolUseSection(
 	if (subagentRole) {
 		const baseAuthority =
 			subagentRole === "worker"
-				? "repository reads, native file edits within the approved write scope, exec_command, write_stdin, passive send_message within this managed tree, and visible assistant completion"
-				: "repository reads, file listing and search, available codebase search, passive send_message within this managed tree, and visible assistant completion"
+				? "repository reads, native file edits within the approved write scope, exec_command, write_stdin, read-only list_agents discovery and passive send_message within this managed tree, and visible assistant completion"
+				: "repository reads, file listing and search, available codebase search, read-only list_agents discovery and passive send_message within this managed tree, and visible assistant completion"
 		const authority = subagentHasInheritedSkills
 			? `${baseAuthority}, plus loading skills listed in the frozen inherited catalog`
 			: baseAuthority
@@ -22,7 +22,7 @@ export function getSharedToolUseSection(
 		const delegationGuidance = subagentCanDelegate
 			? `
 
-spawn_agent is nonblocking. Batch independent spawn_agent calls when root-wide capacity allows. The lifecycle controls list_agents, followup_task, and interrupt_agent may be combined only when every descendant target is already known. wait_agent is blocking and must be called alone; bounded waits may repeat while agent work or parent control is pending. Do not control ancestors, siblings, or foreign branches.${
+spawn_agent is nonblocking. Batch independent spawn_agent calls when root-wide capacity allows. The lifecycle controls followup_task and interrupt_agent may be combined only when every descendant target is already known. wait_agent is blocking and must be called alone; bounded waits may repeat while agent work or parent control is pending. Do not control ancestors, siblings, or foreign branches.${
 					subagentDelegationPolicy === "proactive"
 						? ""
 						: " A launch requires persisted task opt-in or trusted group approval."
@@ -38,6 +38,8 @@ You have only ${authority}${delegationAuthority}. Use the provider-native tool-c
 ${scopeGuidance}
 
 ${progressGuidance}
+
+list_agents discovers identities and statuses throughout this managed tree without granting lifecycle control over peers or ancestors.
 
 send_message queues passive agent input for the next model-step boundary after current tools settle. It never starts a recipient turn or answers human approval. Retained stopped recipients keep passive mail for their next authorized turn.
 

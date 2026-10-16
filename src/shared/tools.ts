@@ -151,6 +151,7 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"tty", // exec_command terminal transport
 	"yield_time_ms", // exec_command and write_stdin wait interval
 	"max_output_tokens", // exec_command and write_stdin result budget
 	"session_id", // write_stdin session identifier
@@ -249,6 +250,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	exec_command: {
 		cmd: string
 		workdir?: string | null
+		tty?: boolean | null
 		yield_time_ms?: number | null
 		max_output_tokens?: number | null
 		/** Host-injected verification scope; omitted from the model-facing schema. */
@@ -259,6 +261,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 		command: string
 		cwd?: string | null
 		timeout?: number | null
+		/** Native exec transport selection; omitted historical calls retain their configured provider. */
+		tty?: boolean | null
 		/** Explicitly identifies applied Worker change sets this command validates. */
 		verification?: { change_set_ids: string[] } | null
 	}
@@ -321,7 +325,12 @@ export type NativeToolArgs = BrowserToolArgs & {
 	codebase_search: { query: string; path?: string }
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
-	skill: { skill: string; args?: string }
+	skill: {
+		skill?: string | null
+		args?: string | null
+		action?: "load" | "list" | null
+		cursor?: string | null
+	}
 	search_files: SearchFilesParams
 	list_tickets: { query?: string; status?: TicketStatus; type?: TicketType | null; offset?: number; limit?: number }
 	read_ticket: { id: string }
@@ -484,7 +493,7 @@ export interface RunSlashCommandToolUse extends ToolUse<"run_slash_command"> {
 
 export interface SkillToolUse extends ToolUse<"skill"> {
 	name: "skill"
-	params: Partial<Pick<Record<ToolParamName, string>, "skill" | "args">>
+	params: Partial<Pick<Record<ToolParamName, string>, "skill" | "args" | "action" | "cursor">>
 }
 
 export interface GenerateImageToolUse extends ToolUse<"generate_image"> {

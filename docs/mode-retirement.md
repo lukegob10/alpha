@@ -7,9 +7,36 @@ as configuration data, including Code customizations, but cannot introduce anoth
 The model-facing `switch_mode` tool is retired: it has no native schema, parser case, or executable registry entry. The
 host still owns user-requested Code/Plan transitions, preserving the current task, transcript, and model. Model-authored
 follow-up mode suggestions require a user click; auto-approved replies cannot change modes. Plan continues to enforce its
-existing read-only policy. This cleanup does not add a new "Implement plan" UI action.
+existing read-only policy. The current Plan handoff contract is described below.
 Model-invoked slash commands load their instructions without applying mode metadata; user-entered commands may still
 select a supported mode through the host.
+
+## Plan handoffs and questions
+
+Plan mode remains conversational. Clarification, limitation, empty, and malformed final output retain their original text;
+the host does not reconstruct a proposed plan from them. Only one explicit, exact, complete, non-empty
+`<proposed_plan>...</proposed_plan>` result can create or replace the persisted implementation handoff. Official-plan
+prompt instructions apply only when the model presents a decision-complete specification.
+
+Implement plan requires an explicit user click on a completed, stored plan in the same visible primary task. The host
+validates task identity, mode, current handoff digest, and active execution boundary before switching Plan to Code and
+continuing the task. A later conversational response preserves the prior handoff. Existing saved handoffs and transcripts
+remain readable, including historical inline wrappers.
+No migration fabricates missing plans or answers; retired and unknown saved modes still resume in Plan as described below.
+
+The reference is Codex commit `bb64b894fd67158be0f874872e6d7bfe717e7368`:
+its [Plan template][codex-plan-template] makes official plans conditional, and the [TUI tests][codex-plan-tests] require
+proposed-plan output before offering implementation. Alpha retains its stricter exact, explicitly closed handoff contract.
+Codex's [display parser][codex-plan-parser] also accepts surrounding prose and closes an unterminated block at EOF;
+Alpha preserves those responses without creating a handoff.
+
+Unanswered primary-task followups remain pending in Ask and Auto approval modes regardless of whether the task is on screen.
+Explicitly configured autonomous followup timeouts, including Full Access, continue through the shared approval policy.
+A visibility change alone never supplies a user answer.
+
+[codex-plan-template]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/collaboration-mode-templates/templates/plan.md
+[codex-plan-tests]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/tui/src/chatwidget/tests/plan_mode.rs#L937-L982
+[codex-plan-parser]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/utils/stream-parser/src/proposed_plan.rs
 
 ## Existing data
 
@@ -38,7 +65,7 @@ unsupported-target rejection before side effects, task-local concurrent transiti
 delegation, prompt/tool filtering, mode selectors, and approval settings. The release-gating host command remains:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 ## Validation record (2026-09-14)

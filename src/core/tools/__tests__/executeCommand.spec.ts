@@ -11,7 +11,9 @@ import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminal } from "../../../integrations/terminal/ExecaTerminal"
 import { commandSessionRegistry } from "../CommandSessionRegistry"
 import { ToolRegistry } from "../ToolRegistry"
-import type { AlphaTerminalCallbacks } from "../../../integrations/terminal/types"
+import type { AlphaTerminalCallbacks, AlphaTerminalProcess } from "../../../integrations/terminal/types"
+import type { Task } from "../../task/Task"
+import type { ToolCallbacks } from "../BaseTool"
 
 const fsMocks = vitest.hoisted(() => ({ access: vitest.fn(), realpath: vitest.fn() }))
 
@@ -29,7 +31,7 @@ vitest.mock("../../../integrations/terminal/Terminal")
 vitest.mock("../../../integrations/terminal/ExecaTerminal")
 
 // Import the actual executeCommand function (not mocked)
-import { executeCommandInTerminal } from "../ExecuteCommandTool"
+import { executeCommandInTerminal, executeCommandTool } from "../ExecuteCommandTool"
 
 // Tests for the executeCommand function
 describe("executeCommand", () => {
@@ -56,6 +58,7 @@ describe("executeCommand", () => {
 		}
 
 		// Create mock task
+		let presentationTimestamp = Date.now()
 		mockTask = {
 			cwd: "/test/project",
 			taskId: "test-task-123",
@@ -63,6 +66,18 @@ describe("executeCommand", () => {
 				deref: vitest.fn().mockResolvedValue(mockProvider),
 			},
 			say: vitest.fn().mockResolvedValue(undefined),
+			clineMessages: [],
+			presentApprovedCommand: vitest.fn(async function (this: Task, command: string) {
+				presentationTimestamp = Math.max(Date.now(), presentationTimestamp + 1, (this.lastMessageTs ?? 0) + 1)
+				this.clineMessages.push({
+					ts: presentationTimestamp,
+					type: "ask",
+					ask: "command",
+					text: command,
+					isAnswered: true,
+				})
+				return presentationTimestamp.toString()
+			}),
 			terminalProcess: undefined,
 			abort: false,
 			getTaskLifetimeCancellationSignal: vitest.fn(() => taskLifetimeController.signal),
@@ -779,4 +794,363 @@ describe("executeCommand", () => {
 		expect(result).not.toContain("undefined")
 		expect(mockTask.say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
 	})
+
+	describe("approved command output correlation", () => {
+		function controlledCommand() {
+			let commandCallbacks!: AlphaTerminalCallbacks
+			let notifyLaunch!: () => void
+			const launched = new Promise<void>((resolve) => (notifyLaunch = resolve))
+			let settleProcess!: () => void
+			const processSettlement = new Promise<void>((resolve) => (settleProcess = resolve))
+			let notifyPartial!: () => void
+			const partialPublished = new Promise<void>((resolve) => (notifyPartial = resolve))
+			mockProcess = Object.assign(new EventEmitter(), {
+				then: processSettlement.then.bind(processSettlement),
+				catch: processSettlement.catch.bind(processSettlement),
+				finally: processSettlement.finally.bind(processSettlement),
+				continue: vitest.fn(),
+				isSettled: false,
+			})
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
+				commandCallbacks = callbacks
+				notifyLaunch()
+				return mockProcess
+			})
+			mockTask.lastMessageTs = 1000
+			mockTask.clineMessages = [{ ts: 999, type: "ask", ask: "command", text: "earlier command" }]
+			mockTask.ask = vitest.fn(async () => ({ response: "yesButtonClicked" }))
+			mockTask.say = vitest.fn<Task["say"]>(async (type, _text, _images, partial) => {
+				if (type === "command_output" && partial === true) notifyPartial()
+				return undefined
+			})
+			mockTask.recordToolError = vitest.fn()
+			mockTask.getTaskCommandDenialReason = vitest.fn(async () => undefined)
+			mockTask.getTaskMode = vitest.fn(async () => "code")
+			mockTask.presentApprovedCommand = vitest.fn(async (command: string) => {
+				mockTask.clineMessages.push({ ts: 1001, type: "ask", ask: "command", text: command, isAnswered: true })
+				return "1001"
+			})
+			vitest.mocked(Terminal.compressTerminalOutput).mockImplementation((output) => output)
+			const callbacks = {
+				askApproval: vitest.fn(async () => true),
+				askCommandApproval: vitest
+					.fn<NonNullable<ToolCallbacks["askCommandApproval"]>>()
+					.mockResolvedValue({ approved: true, commandExecutionId: "1001" }),
+				handleError: vitest.fn(async () => {}),
+				pushToolResult: vitest.fn(),
+				setResultMetadata: vitest.fn(),
+				toolCallId: "correlated-command",
+			}
+			return {
+				callbacks,
+				async finish(execution: Promise<void>) {
+					try {
+						await launched
+						commandCallbacks.onShellExecutionStarted(42, mockProcess)
+						commandCallbacks.onLine("owned output\n", mockProcess)
+						await partialPublished
+						commandCallbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
+						await commandCallbacks.onCompleted("owned output\n", mockProcess)
+						mockProcess.isSettled = true
+						settleProcess()
+						await execution
+					} finally {
+						settleProcess()
+						commandSessionRegistry.releaseForTask(mockTask)
+					}
+				},
+				assertCorrelation() {
+					const outputs = vitest
+						.mocked(mockTask.say)
+						.mock.calls.filter((args: Parameters<Task["say"]>) => args[0] === "command_output")
+					expect(outputs.map((args: Parameters<Task["say"]>) => args[3])).toEqual([true, false])
+					for (const args of outputs) expect(args[6]?.commandExecutionId).toBe("1001")
+					const updates = mockProvider.postMessageToWebview.mock.calls
+						.map(([message]: [{ type: string; text: string }]) => message)
+						.filter((message: { type: string }) => message.type === "commandExecutionStatus")
+						.map((message: { text: string }) => JSON.parse(message.text))
+					expect(updates.map(({ status }: { status: string }) => status)).toEqual([
+						"started",
+						"output",
+						"exited",
+					])
+					for (const update of updates) expect(update.executionId).toBe("1001")
+					expect(mockProcess.executionId).toMatch(/^1001:[\da-f-]+$/)
+					expect(mockTask.completeCommandExecution).toHaveBeenCalledWith(
+						"correlated-command",
+						{ exitCode: 0 },
+						mockProcess.executionId,
+					)
+					expect(callbacks.handleError).not.toHaveBeenCalled()
+				},
+			}
+		}
+
+		it.each(["creation hook", "legacy post-return fallback"] as const)(
+			"tracks the original archive through actual Execute admission: %s",
+			async (route) => {
+				const fixture = controlledCommand()
+				let releaseArchive!: () => void
+				const archiveCompletion = new Promise<void>((resolve) => (releaseArchive = resolve))
+				mockProcess.waitForOutputFinalization = vitest.fn(() => archiveCompletion)
+				mockProcess.isOutputFinalized = false
+				vitest.mocked(TerminalRegistry.getTerminals).mockReturnValue([])
+				fixture.callbacks.askCommandApproval.mockImplementation(async () => {
+					mockTask.clineMessages.push({
+						ts: 1001,
+						type: "ask",
+						ask: "command",
+						text: "echo owned",
+						isAnswered: true,
+					})
+					mockTask.lastMessageTs = 1003
+					return { approved: true, commandExecutionId: "1001" }
+				})
+				type Snapshot = ReturnType<typeof commandSessionRegistry.capturePendingTaskOutput>
+				const beforeReturn: { executionId?: string; captured: Snapshot }[] = []
+				let inRunCommand = false
+				let installedCreationHook: AlphaTerminalCallbacks["onProcessCreated"]
+				mockProvider.postMessageToWebview.mockImplementation((message: { type: string; text?: string }) => {
+					if (
+						inRunCommand &&
+						message.type === "commandExecutionStatus" &&
+						JSON.parse(message.text ?? "{}").status === "started"
+					) {
+						beforeReturn.push({
+							executionId: mockProcess.executionId,
+							// The baseline has no capture API. Its observable empty ownership
+							// assertion is the RED oracle, never a missing-method exception.
+							captured: commandSessionRegistry.capturePendingTaskOutput?.(mockTask) ?? [],
+						})
+					}
+				})
+				const originalRun = mockTerminal.runCommand.getMockImplementation()!
+				mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
+					inRunCommand = true
+					installedCreationHook = callbacks.onProcessCreated
+					if (route === "creation hook") callbacks.onProcessCreated?.(mockProcess)
+					callbacks.onShellExecutionStarted(42, mockProcess)
+					const returned = originalRun(command, callbacks)
+					inRunCommand = false
+					return returned
+				})
+				try {
+					await fixture.finish(
+						executeCommandTool.execute({ command: "echo owned" }, mockTask, fixture.callbacks),
+					)
+					expect(beforeReturn).toHaveLength(1)
+					if (route === "creation hook") {
+						expect(beforeReturn[0]!.captured).toHaveLength(1)
+						expect(beforeReturn[0]!.executionId).toMatch(/^1001:[\da-f-]+$/)
+					} else {
+						expect(beforeReturn[0]!.captured).toHaveLength(0)
+					}
+					expect(installedCreationHook).toBeTypeOf("function")
+					const captured = commandSessionRegistry.capturePendingTaskOutput?.(mockTask) ?? []
+					expect(captured).toHaveLength(1)
+					expect(captured[0]!.process).toBe(mockProcess)
+					expect(captured[0]!.executionId).toBe(mockProcess.executionId)
+					expect(captured[0]!.executionId).toMatch(/^1001:[\da-f-]+$/)
+					expect(captured[0]!.archiveExecutionId).toBe("1001")
+					expect(captured[0]!.archiveExecutionId).not.toBe(captured[0]!.executionId)
+					expect(captured[0]!.archiveExecutionId).not.toBe("1000")
+					expect(captured[0]!.completion).toBe(archiveCompletion)
+					expect(captured[0]!.isCleanupSafe()).toBe(false)
+					expect(mockProcess.waitForOutputFinalization).toHaveBeenCalledOnce()
+					expect(mockProcess.outputArtifactId).toBeUndefined()
+					expect(commandSessionRegistry.ownsOutput(mockProcess)).toBe(false)
+					expect(fixture.callbacks.handleError).not.toHaveBeenCalled()
+				} finally {
+					releaseArchive()
+					await archiveCompletion
+					commandSessionRegistry.releaseForTask(mockTask)
+				}
+			},
+		)
+
+		it("uses the request-owned approval row after feedback and another ask change the latest message", async () => {
+			const fixture = controlledCommand()
+			fixture.callbacks.askCommandApproval.mockImplementation(async () => {
+				mockTask.clineMessages.push(
+					{ ts: 1001, type: "ask", ask: "command", text: "echo owned" },
+					{ ts: 1002, type: "say", say: "user_feedback", text: "accepted feedback" },
+					{ ts: 1003, type: "ask", ask: "followup", text: "another question" },
+				)
+				mockTask.lastMessageTs = 1003
+				return { approved: true, commandExecutionId: "1001" }
+			})
+			await fixture.finish(executeCommandTool.execute({ command: "echo owned" }, mockTask, fixture.callbacks))
+			fixture.assertCorrelation()
+			expect(mockTask.presentApprovedCommand).not.toHaveBeenCalled()
+			expect(fixture.callbacks.askApproval).not.toHaveBeenCalled()
+		})
+
+		it.each(["owned callback", "legacy callback"] as const)(
+			"presents approved output without a prompt receipt after authority checks through %s",
+			async (route) => {
+				const fixture = controlledCommand()
+				fixture.callbacks.askCommandApproval.mockResolvedValue({ approved: true })
+				const callbacks =
+					route === "legacy callback"
+						? { ...fixture.callbacks, askCommandApproval: undefined }
+						: fixture.callbacks
+				mockTask.presentApprovedCommand.mockImplementation(async (command: string) => {
+					expect(mockTask.getTaskCommandDenialReason).toHaveBeenCalledTimes(2)
+					expect(mockTask.getTaskMode).toHaveBeenCalledOnce()
+					expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+					mockTask.clineMessages.push({
+						ts: 1001,
+						type: "ask",
+						ask: "command",
+						text: command,
+						isAnswered: true,
+					})
+					return "1001"
+				})
+				await fixture.finish(executeCommandTool.execute({ command: "echo owned" }, mockTask, callbacks))
+				fixture.assertCorrelation()
+				expect(mockTask.presentApprovedCommand).toHaveBeenCalledExactlyOnceWith("echo owned", undefined)
+			},
+		)
+
+		it("does not present or launch an approved command when authority is revoked", async () => {
+			const fixture = controlledCommand()
+			fixture.callbacks.askCommandApproval.mockResolvedValue({ approved: true })
+			mockTask.getTaskCommandDenialReason
+				.mockResolvedValueOnce(undefined)
+				.mockResolvedValueOnce("Command authority was revoked")
+			await executeCommandTool.execute({ command: "echo owned" }, mockTask, fixture.callbacks)
+			expect(mockTask.presentApprovedCommand).not.toHaveBeenCalled()
+			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(mockTask.say).not.toHaveBeenCalled()
+			expect(fixture.callbacks.pushToolResult).toHaveBeenCalledOnce()
+			expect(fixture.callbacks.handleError).not.toHaveBeenCalled()
+		})
+
+		it("does not launch or reserve a command when approved presentation persistence rejects", async () => {
+			const fixture = controlledCommand()
+			const persistenceFailure = new Error("Approved command presentation could not be saved")
+			fixture.callbacks.askCommandApproval.mockResolvedValue({ approved: true })
+			mockTask.presentApprovedCommand.mockRejectedValue(persistenceFailure)
+			mockTask.taskKind = "primary"
+			mockTask.admitCommandExecution = vitest.fn()
+			mockProvider.reservePrimaryMutation = vitest.fn()
+			await executeCommandTool.execute({ command: "echo owned" }, mockTask, fixture.callbacks)
+			expect(mockTask.presentApprovedCommand).toHaveBeenCalledOnce()
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(mockTask.admitCommandExecution).not.toHaveBeenCalled()
+			expect(mockProvider.reservePrimaryMutation).not.toHaveBeenCalled()
+			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+			expect(mockTask.say).not.toHaveBeenCalled()
+			expect(fixture.callbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(fixture.callbacks.handleError).toHaveBeenCalledExactlyOnceWith(
+				"executing command",
+				persistenceFailure,
+			)
+			expect(fixture.callbacks.setResultMetadata).toHaveBeenCalledWith(
+				expect.objectContaining({ failure: expect.objectContaining({ effectsStarted: "no" }) }),
+			)
+		})
+
+		it("does not present or launch a denied command even if the host supplies a row receipt", async () => {
+			const fixture = controlledCommand()
+			fixture.callbacks.askApproval.mockResolvedValue(false)
+			fixture.callbacks.askCommandApproval.mockResolvedValue({ approved: false, commandExecutionId: "1001" })
+			await executeCommandTool.execute({ command: "echo owned" }, mockTask, fixture.callbacks)
+			expect(mockTask.presentApprovedCommand).not.toHaveBeenCalled()
+			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(mockTask.say).not.toHaveBeenCalled()
+			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+			expect(fixture.callbacks.handleError).not.toHaveBeenCalled()
+		})
+	})
+
+	it.each([
+		{ image: "bad-image", published: false },
+		{ image: "data:image/png;base64,aA==", published: true },
+	])(
+		"retains command output ownership only after feedback result publication: $published",
+		async ({ image, published }) => {
+			vitest.useFakeTimers()
+			let finishForeground!: () => void
+			const foreground = new Promise<void>((resolve) => (finishForeground = resolve))
+			const backgroundProcess = Object.assign(new EventEmitter(), {
+				then: foreground.then.bind(foreground),
+				catch: foreground.catch.bind(foreground),
+				finally: foreground.finally.bind(foreground),
+				isSettled: false,
+				continue: vitest.fn(() => finishForeground()),
+				hasUnretrievedOutput: () => true,
+				captureUnretrievedOutput: vitest.fn(() => ({
+					output: "READY\n",
+					commit: vitest.fn(),
+					release: vitest.fn(),
+				})),
+			})
+			const otherTask = { taskId: "other-task" } as Task
+			const otherProcess = Object.assign(new EventEmitter(), {
+				executionId: "other-execution",
+				isSettled: true,
+			}) as AlphaTerminalProcess
+			const otherSessionId = commandSessionRegistry.register(otherTask, otherProcess)
+			const evidence = { toolCallId: "feedback-result-call", executionId: "", status: "running" }
+			mockTask.ask = vitest
+				.fn()
+				.mockResolvedValue({ response: "messageResponse", text: "Continue", images: [image] })
+			mockTask.beginCommandExecution = vitest.fn((_toolCallId: string, executionId: string) => {
+				evidence.executionId = executionId
+			})
+			mockTask.failCommandExecution.mockImplementation(() => {
+				evidence.status = "failed"
+			})
+			mockTask.recordToolError = vitest.fn()
+			mockTask.getCommandExecutionEvidence = () => [evidence]
+			mockProvider.getState.mockResolvedValue({ terminalShellIntegrationDisabled: false })
+			vitest.mocked(Terminal.compressTerminalOutput).mockImplementation((output) => output)
+			Object.assign(mockTerminal, {
+				busy: true,
+				running: true,
+				taskId: mockTask.taskId,
+				process: backgroundProcess,
+			})
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
+				void callbacks.onLine("READY\n", backgroundProcess as never)
+				return backgroundProcess
+			})
+			const callbacks = {
+				askApproval: vitest.fn().mockResolvedValue(true),
+				handleError: vitest.fn(),
+				pushToolResult: vitest.fn(),
+				setResultMetadata: vitest.fn(),
+				toolCallId: "feedback-result-call",
+				commandResultMaxOutputTokens: 1000,
+				commandResultFormat: "codex" as const,
+			}
+			try {
+				const execution = executeCommandTool.execute({ command: "node server.cjs" }, mockTask, callbacks)
+				await vitest.advanceTimersByTimeAsync(100)
+				await execution
+				expect(callbacks.pushToolResult).toHaveBeenCalledTimes(published ? 1 : 0)
+				expect(callbacks.handleError).toHaveBeenCalledTimes(published ? 0 : 1)
+				if (!published)
+					expect(callbacks.handleError).toHaveBeenCalledWith("executing command", expect.any(TypeError))
+				expect(
+					callbacks.setResultMetadata.mock.calls.some(
+						([metadata]) => metadata.commandResult?.session_id !== undefined,
+					),
+				).toBe(published)
+				expect(commandSessionRegistry.ownsOutput(backgroundProcess as never)).toBe(published)
+				expect(backgroundProcess.hasUnretrievedOutput()).toBe(true)
+				expect(backgroundProcess.captureUnretrievedOutput).not.toHaveBeenCalled()
+				expect(commandSessionRegistry.resolve(otherTask, otherSessionId)?.process).toBe(otherProcess)
+				expect(commandSessionRegistry.ownsOutput(otherProcess)).toBe(true)
+			} finally {
+				finishForeground()
+				commandSessionRegistry.releaseForTask(mockTask)
+				commandSessionRegistry.releaseForTask(otherTask)
+				vitest.useRealTimers()
+			}
+		},
+	)
 })

@@ -63,33 +63,10 @@ export function hasCompleteProposedPlan(text: string): boolean {
 }
 
 /**
- * Normalize a provider's terminal Plan response to the stable UI/protocol
- * boundary. Prompting remains responsible for plan quality; the host owns the
- * exact outer contract so providers cannot accidentally leak the tags as prose.
+ * Normalize only an explicit complete Plan handoff. Conversational responses and
+ * malformed wrappers retain their original text rather than becoming a plan.
  */
 export function ensureProposedPlanBlock(text: string): string {
-	const exactPlan = parseProposedPlan(text)
-	if (exactPlan) {
-		return `${PROPOSED_PLAN_OPEN_TAG}\n${exactPlan.content}\n${PROPOSED_PLAN_CLOSE_TAG}`
-	}
-
-	const trimmed = text.trim()
-	const openIndex = trimmed.indexOf(PROPOSED_PLAN_OPEN_TAG)
-	const closeIndex =
-		openIndex >= 0 ? trimmed.indexOf(PROPOSED_PLAN_CLOSE_TAG, openIndex + PROPOSED_PLAN_OPEN_TAG.length) : -1
-	let content =
-		openIndex >= 0 && closeIndex >= 0
-			? trimmed.slice(openIndex + PROPOSED_PLAN_OPEN_TAG.length, closeIndex)
-			: trimmed
-
-	// Providers occasionally echo the wrapper or add a preamble. The host owns
-	// this protocol boundary, so retain the first complete plan body and remove
-	// any nested/stray wrappers before rendering or persistence.
-	content = content.split(PROPOSED_PLAN_OPEN_TAG).join("").split(PROPOSED_PLAN_CLOSE_TAG).join("").trim()
-
-	if (!content) {
-		content = "# Plan\n\nNo implementation plan was provided."
-	}
-
-	return `${PROPOSED_PLAN_OPEN_TAG}\n${content}\n${PROPOSED_PLAN_CLOSE_TAG}`
+	const plan = parseProposedPlan(text)
+	return plan ? `${PROPOSED_PLAN_OPEN_TAG}\n${plan.content}\n${PROPOSED_PLAN_CLOSE_TAG}` : text
 }

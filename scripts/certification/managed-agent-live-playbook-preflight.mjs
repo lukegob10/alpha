@@ -39,7 +39,7 @@ const runCBaselineReceipt = `BASELINE_READY=${runCBaselineSha256}:${runCBaseline
 const runCVerifierSource = `import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 
-const baseline = '${runCBaselineJson.replace("\n", "\\n")}'
+const baseline = Buffer.from('${Buffer.from(runCBaselineJson).toString("base64")}','base64').toString('utf8')
 const expectedFinal = new Map([
 	["managed-agent-live-acceptance/worker/outer.json", '{"owner":"outer_worker","verified":true}\\n'],
 	["managed-agent-live-acceptance/worker/nested.json", '{"owner":"nested_writer","verified":true}\\n'],

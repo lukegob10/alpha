@@ -172,6 +172,7 @@ describe("NativeToolCallParser registry dispatch", () => {
 		expect(execute.mock.calls[0][0]).toEqual({
 			command: args.cmd,
 			cwd: args.workdir,
+			tty: false,
 			timeout: 10,
 			verification: args.verification,
 		})

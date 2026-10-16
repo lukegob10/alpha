@@ -44,23 +44,29 @@ describe("Plan collaboration helpers", () => {
 		expect(parseProposedPlan("<proposed_plan>outer<proposed_plan>inner", true)).toBeUndefined()
 	})
 
-	it("normalizes plain provider text to one exact handoff block", () => {
-		expect(ensureProposedPlanBlock("# Plan\n- Change the parser")).toBe(
-			"<proposed_plan>\n# Plan\n- Change the parser\n</proposed_plan>",
-		)
+	it("normalizes only an explicitly completed handoff block", () => {
 		expect(ensureProposedPlanBlock("<proposed_plan>Plan</proposed_plan>")).toBe(
 			"<proposed_plan>\nPlan\n</proposed_plan>",
 		)
+		expect(ensureProposedPlanBlock(" \n<proposed_plan>\n# Plan\n- Change the parser\n</proposed_plan>\n ")).toBe(
+			"<proposed_plan>\n# Plan\n- Change the parser\n</proposed_plan>",
+		)
 	})
 
-	it("extracts one clean handoff when a provider adds prose or nested wrappers", () => {
-		expect(
-			ensureProposedPlanBlock(
-				"Here is the result:\n<proposed_plan>\n# Plan\n<proposed_plan>- Inspect</proposed_plan>\n</proposed_plan>\nDone.",
-			),
-		).toBe("<proposed_plan>\n# Plan\n- Inspect\n</proposed_plan>")
-		expect(ensureProposedPlanBlock("<proposed_plan></proposed_plan>")).toContain(
-			"No implementation plan was provided",
-		)
+	it.each([
+		"# Plan\n- Change the parser",
+		"Which storage option should I use?",
+		"I could not inspect the workspace.",
+		"",
+		" \n\t ",
+		"<proposed_plan></proposed_plan>",
+		"<proposed_plan>\n# Still incomplete",
+		"<proposed_plan>outer<proposed_plan>inner</proposed_plan></proposed_plan>",
+		"<proposed_plan>one</proposed_plan><proposed_plan>two</proposed_plan>",
+		"Here is the result:\n<proposed_plan>\n# Plan\n</proposed_plan>\nDone.",
+		"</proposed_plan>",
+	])("preserves conversation and malformed plans without inventing a handoff (%j)", (text) => {
+		expect(ensureProposedPlanBlock(text)).toBe(text)
+		expect(hasCompleteProposedPlan(ensureProposedPlanBlock(text))).toBe(false)
 	})
 })

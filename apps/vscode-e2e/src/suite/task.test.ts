@@ -6,6 +6,8 @@ import { waitFor } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { withBoundedFixtureCleanup } from "./proportional-context-support"
 
+const completionProbe = "ALPHA_TASK_COMPLETION_PROBE_7F3A"
+
 class TaskScriptedAI {
 	readonly id = "task-e2e"
 	removeFromCache?: () => void
@@ -13,7 +15,7 @@ class TaskScriptedAI {
 	async *createMessage(): AsyncGenerator<
 		{ type: "text"; text: string } | { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 	> {
-		yield { type: "text", text: "My name is Alpha." }
+		yield { type: "text", text: completionProbe }
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
 
@@ -84,12 +86,12 @@ suite("Alpha Task", function () {
 						writeDelayMs: 0,
 						enableCheckpoints: false,
 					}
-				: { mode: "code" as const, autoApprovalEnabled: true }
+				: { ...originalConfiguration, mode: "code" as const, autoApprovalEnabled: true }
 		let taskId: string | undefined
 		await withBoundedFixtureCleanup(async () => {
 			taskId = await api.startNewTask({
 				configuration,
-				text: "Hello world, what is your name? Respond with 'My name is ...'",
+				text: `Respond with exactly this one line and nothing else: ${completionProbe}`,
 			})
 			await waitFor(
 				() => {
@@ -115,9 +117,10 @@ suite("Alpha Task", function () {
 				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
 			)
 			assert.equal(completionRows.length, 1, "The task must retain one canonical final answer")
-			assert.ok(
-				completionRows[0]?.text?.includes("My name is Alpha"),
-				`Completion should include "My name is Alpha"`,
+			assert.equal(
+				completionRows[0]?.text?.trim(),
+				completionProbe,
+				"The final answer must contain exactly the requested completion probe",
 			)
 		}, [
 			async () => {

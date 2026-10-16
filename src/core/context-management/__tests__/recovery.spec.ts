@@ -69,7 +69,7 @@ describe("bounded context recovery policy", () => {
 			metadata,
 		})
 
-		const requestMetadata = (handler.createMessage as ReturnType<typeof vi.fn>).mock.calls[0][2]
+		const requestMetadata = (handler.createMessage as import("vitest").Mock).mock.calls[0][2]
 		expect(requestMetadata).toMatchObject({ tools: [], tool_choice: "none", parallelToolCalls: false })
 	})
 
@@ -175,7 +175,7 @@ describe("bounded context recovery policy", () => {
 
 	it("falls back to one bounded truncation when summarization fails", async () => {
 		const handler = createCountingHandler()
-		;(handler.createMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+		;(handler.createMessage as import("vitest").Mock).mockImplementation(() => {
 			throw new Error("summary unavailable")
 		})
 		const messages: ApiMessage[] = [
@@ -242,7 +242,7 @@ describe("bounded context recovery policy", () => {
 
 			expect(summarizer).toHaveBeenCalledOnce()
 			expect(result.messages).toBe(messages)
-			expect(result.status).toBe("no_progress")
+			expect(result.status).toBe("unchanged")
 			expect(result.error).toBe("Summary request rate limited")
 			expect(result.cost).toBe(0.01)
 			expect(result.truncationId).toBeUndefined()
@@ -272,5 +272,127 @@ describe("bounded context recovery policy", () => {
 		expect(result.messagesRemoved).toBe(0)
 		expect(result.status).toBe("exhausted")
 		expect(result.messages).toHaveLength(1)
+	})
+	it.each([600, 100_000])(
+		"continues fitting input after a failed early summary with usage %s",
+		async (totalTokens) => {
+			const handler = createCountingHandler()
+			vi.mocked(handler.createMessage).mockImplementation(async function* () {
+				yield { type: "usage", inputTokens: 1, outputTokens: 1, totalCost: 0.01 }
+				throw new Error("Summary provider unavailable")
+			})
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Preserve every requirement." },
+				{ role: "assistant", content: "A".repeat(500), reasoning_content: "opaque provider state" },
+				{ role: "user", content: "Continue." },
+			]
+			const measured = await condenseModule.countContextTokens(messages, handler, "System")
+			const result = await manageContext({
+				messages,
+				totalTokens,
+				contextWindow: 1000,
+				maxTokens: 100,
+				apiHandler: handler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 30,
+				systemPrompt: "System",
+				taskId: "proactive-failure",
+			})
+			expect(result.status).toBe("unchanged")
+			expect(result.messages).toBe(messages)
+			expect(result.newContextTokens).toBe(measured)
+			expect(result.prevContextTokens).toBe(measured)
+			expect(result.error).toBeDefined()
+			expect(result.errorDetails).toContain("Summary provider unavailable")
+			expect(result.cost).toBe(0.01)
+			expect(result.truncationId).toBeUndefined()
+			expect(result.messages[1].reasoning_content).toBe("opaque provider state")
+			expect(handler.createMessage).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("reduces actual over-limit input after summary failure despite a stale low estimate", async () => {
+		const handler = createCountingHandler()
+		vi.mocked(handler.createMessage).mockImplementation(async function* () {
+			yield { type: "usage" as const, inputTokens: 0, outputTokens: 0, totalCost: 0 }
+			throw new Error("Summary unavailable")
+		})
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Keep the original requirement." },
+			{ role: "assistant", content: "Older evidence ".repeat(100) },
+			{ role: "user", content: "Continue." },
+		]
+		const result = await manageContext({
+			messages,
+			totalTokens: 350,
+			contextWindow: 1000,
+			maxTokens: 100,
+			apiHandler: handler,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 30,
+			systemPrompt: "System",
+			taskId: "actual-over-limit",
+		})
+		expect(result.status).not.toBe("unchanged")
+		if (result.status === "reduced") {
+			expect(result.newContextTokensAfterTruncation).toBeLessThan(result.prevContextTokens)
+			expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
+		} else {
+			expect(["exhausted", "no_progress"]).toContain(result.status)
+		}
+		expect(handler.createMessage).toHaveBeenCalledOnce()
+	})
+
+	it("cancels a pending retained-input recount without admitting another request", async () => {
+		const handler = createCountingHandler()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original requirement" },
+			{ role: "assistant", content: "Older evidence" },
+			{ role: "user", content: "Continue" },
+		]
+		let countStarted!: () => void
+		let releaseCount!: () => void
+		const started = new Promise<void>((resolve) => (countStarted = resolve))
+		const release = new Promise<void>((resolve) => (releaseCount = resolve))
+		vi.mocked(handler.countTokens).mockImplementation(async (blocks) => {
+			if (JSON.stringify(blocks).includes("Older evidence")) {
+				countStarted()
+				await release
+			}
+			return blocks.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0)
+		})
+		const summarizer = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+			messages,
+			summary: "",
+			cost: 0.01,
+			error: "Summary unavailable",
+			status: "no_progress",
+		})
+		const control = new AbortController()
+		const pending = manageContext({
+			messages,
+			totalTokens: 600,
+			contextWindow: 1000,
+			maxTokens: 100,
+			apiHandler: handler,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 30,
+			systemPrompt: "System",
+			taskId: "cancel-retained-recount",
+			metadata: { taskId: "cancel-retained-recount", signal: control.signal },
+		})
+		try {
+			expect(await Promise.race([started.then(() => true), pending.then(() => false)])).toBe(true)
+			const reason = new DOMException("Task cancelled during recount", "AbortError")
+			const rejected = expect(pending).rejects.toBe(reason)
+			control.abort(reason)
+			releaseCount()
+			await rejected
+			expect(handler.createMessage).not.toHaveBeenCalled()
+			expect(messages[1].content).toBe("Older evidence")
+		} finally {
+			releaseCount()
+			summarizer.mockRestore()
+		}
 	})
 })

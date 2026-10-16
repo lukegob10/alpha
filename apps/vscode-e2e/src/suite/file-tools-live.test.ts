@@ -25,12 +25,16 @@ suite("Live Copilot file-tool contracts", function () {
 
 	test("patch preserves BOM, CRLF, literal dollars/entities and no final newline", async () => {
 		const file = `${prefix}/patch-bytes.txt`
-		const inspect = `node -e "const fs=require('fs');console.log(fs.readFileSync('${file}').toString('base64'))"`
+		const script = `${prefix}/inspect-patch-bytes.cjs`
+		const inspect = `node ${script}`
 		const patch = `*** Begin Patch\n*** Update File: ${file}\n@@\n-header\n-value = old\n-footer\n+header\r\n+${replacement}\r\n+footer\n*** End Patch`
 		await runLiveCase(
 			"patch-bytes",
 			["exec_command", "apply_patch"],
-			{ [file]: originalBytes },
+			{
+				[file]: originalBytes,
+				[script]: `console.log(require("node:fs").readFileSync(${JSON.stringify(file)}).toString("base64"))\n`,
+			},
 			`Inspect ${file} with exec_command using this cmd before and after editing: ${JSON.stringify(inspect)}. Then submit exactly one apply_patch call using the patch string in this JSON argument unchanged, including its mixed LF/CRLF separators: ${JSON.stringify({ patch })}. Preserve the file's BOM, CRLF and absent final newline.`,
 			async (calls, _messages, workspace) => {
 				const edits = calls.filter((call) => call.name === "apply_patch")
@@ -48,7 +52,7 @@ suite("Live Copilot file-tool contracts", function () {
 				assert.equal(edits[0]!.isError, false)
 				assert.deepEqual(await fs.readFile(path.join(workspace, file)), Buffer.from(expectedBytes))
 			},
-			{ commands: ["node"] },
+			{ commands: [inspect] },
 		)
 	})
 
@@ -74,7 +78,8 @@ suite("Live Copilot file-tool contracts", function () {
 			"+fourth new",
 			"*** End Patch",
 		].join("\n")
-		const inspect = `node -e "const fs=require('fs');for(const p of ['${paths[0]}','${paths[1]}','${paths[2]}']){console.log(p);console.log(fs.readFileSync(p,'utf8'))}"`
+		const script = `${prefix}/inspect-partial-patch.cjs`
+		const inspect = `node ${script}`
 		await runLiveCase(
 			"patch-partial",
 			["exec_command", "apply_patch"],
@@ -83,6 +88,7 @@ suite("Live Copilot file-tool contracts", function () {
 				[paths[1]!]: "second old\n",
 				[paths[2]!]: "third old\n",
 				[paths[3]!]: "fourth old\n",
+				[script]: `const fs = require("node:fs")\nfor (const file of ${JSON.stringify(paths.slice(0, 3))}) {\n  console.log(file)\n  console.log(fs.readFileSync(file, "utf8"))\n}\n`,
 			},
 			`Inspect the first three named files under live-file-tools with exec_command using this cmd: ${JSON.stringify(inspect)}. Submit exactly ONE apply_patch call with this deliberate contract probe, unchanged: the second hunk cannot match, and the fourth file is ignored. Let the tool enforce those failures. Do not inspect the fourth file, fix the patch, or retry it. Report the per-file outcomes, then finish.\n${patch}`,
 			async (calls, _messages, workspace) => {
@@ -112,13 +118,14 @@ suite("Live Copilot file-tool contracts", function () {
 				assert.match(String(record(ledger[1]).reason), /Failed to find expected lines/)
 				assert.match(String(record(ledger[3]).reason), /alphaignore/)
 			},
-			{ commands: ["node"] },
+			{ commands: [inspect] },
 		)
 	})
 
 	test("exec_command inspects bounded workspace matches", async () => {
 		const dir = `${prefix}/search`
-		const inspect = `node -e "const fs=require('fs');for(const p of ['${dir}/first.txt','${dir}/second.txt']){const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/);for(let i=0;i<lines.length;i++)if(lines[i].includes('foo(.bar'))console.log(p+':'+String(i+1)+':'+lines[i])}"`
+		const script = `${prefix}/inspect-matches.cjs`
+		const inspect = `node ${script}`
 		await runLiveCase(
 			"exec-file-inspection",
 			["exec_command"],
@@ -127,6 +134,7 @@ suite("Live Copilot file-tool contracts", function () {
 				[`${dir}/second.txt`]: "foo(.bar\nTODO\n",
 				[`${dir}/secret.txt`]: "foo(.bar TODO\n",
 				[`${prefix}/large/repeated.txt`]: "BUDGET_TOKEN\n".repeat(2_000),
+				[script]: `const fs = require("node:fs")\nfor (const file of ${JSON.stringify([`${dir}/first.txt`, `${dir}/second.txt`])}) {\n  const lines = fs.readFileSync(file, "utf8").split(/\\r?\\n/)\n  for (let i = 0; i < lines.length; i++)\n    if (lines[i].includes("foo(.bar")) console.log(file + ":" + String(i + 1) + ":" + lines[i])\n}\n`,
 			},
 			`Use one exec_command call with this cmd exactly: ${JSON.stringify(inspect)}. Report the matches and their line numbers. Do not inspect secret.txt or the large directory.`,
 			async (calls) => {
@@ -139,7 +147,7 @@ suite("Live Copilot file-tool contracts", function () {
 				assert.doesNotMatch(inspections[0]!.result, /secret\.txt|BUDGET_TOKEN/)
 				assert.ok(inspections[0]!.result.length <= 16_000)
 			},
-			{ commands: ["node"] },
+			{ commands: [inspect] },
 		)
 	})
 })

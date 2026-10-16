@@ -9,7 +9,7 @@ import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 function fixture(
 	mode: ToolExecutionMode,
 	count = 12,
-	preparation: "read" | "fallback" | "mutation" = "read",
+	preparation: "read" | "fallback" | "mutation" | "unavailable" = "read",
 	durationForCall: (id: string) => number = () => 100,
 	requirePreparedCommandRead = false,
 	deferResultCommit = false,
@@ -57,6 +57,7 @@ function fixture(
 			parallelCommandRead: true,
 		},
 		prepareParallelCommand: async (context) => {
+			if (preparation === "unavailable") return undefined
 			if (preparation === "mutation" && context.call.id === "command-4") return undefined
 			if (!(await context.callbacks.askApproval("command", "git status"))) return undefined
 			if (preparation === "fallback") return { scope: cwd, serialFallback: true }
@@ -177,6 +178,32 @@ describe("approved command batches", () => {
 		expect(test.peak()).toBe(1)
 		expect(test.host.askApproval).toHaveBeenCalledTimes(2)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
+	})
+
+	it("keeps unavailable isolated reads eligible for ordinary serial execution after provider EOF", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 1, "unavailable")
+		const pending = test.scheduler.run(test.calls)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		expect(outcome.results.map((result) => result.status)).toEqual(["success"])
+		expect(test.host.askApproval).toHaveBeenCalledOnce()
+		expect(test.trace.filter((entry) => entry.startsWith("start:"))).toEqual(["start:command-0"])
+		expect(test.host.userMessageContent).toHaveLength(1)
+	})
+
+	it("keeps late isolation loss fenced in the early lane with exactly one terminal result", async () => {
+		const test = fixture("selective-parallel", 1, "unavailable", () => 0, true, true)
+		const outcome = await test.scheduler.run(test.calls)
+		expect(outcome.results.map((result) => result.status)).toEqual(["denied"])
+		expect(test.host.askApproval).not.toHaveBeenCalled()
+		expect(test.trace).toEqual([])
+		expect(test.host.userMessageContent).toEqual([])
+		await test.scheduler.commitDeferredResults()
+		await test.scheduler.commitDeferredResults()
+		expect(test.host.userMessageContent).toEqual([
+			expect.objectContaining({ type: "tool_result", tool_use_id: "command-0", is_error: true }),
+		])
 	})
 
 	it("fails closed instead of running an ordinary command when an early read is no longer isolated", async () => {

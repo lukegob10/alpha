@@ -8,7 +8,7 @@ import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
 
 import { Task } from "../task/Task"
-import { formatResponse } from "../prompts/responses"
+import { formatResponse, type ToolResultContentItem } from "../prompts/responses"
 import { t } from "../../i18n"
 import type { ToolUse } from "../../shared/tools"
 import { toolNamesMatch } from "../../utils/mcp-name"
@@ -62,6 +62,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			// Use the resolved tool name (original name from the server) for MCP calls
 			// This handles cases where models mangle hyphens to underscores
 			const resolvedToolName = toolValidation.resolvedToolName ?? toolName
+			const supportsImages = callbacks.supportsImages === true
 
 			// Reset mistake count on successful validation
 			task.consecutiveMistakeCount = 0
@@ -92,6 +93,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				parsedArguments,
 				executionId,
 				callbacks,
+				supportsImages,
 			)
 		} catch (error) {
 			// Keep cancellation as a rejection so ToolScheduler can emit its one
@@ -302,44 +304,49 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		}
 	}
 
-	private processToolContent(toolResult: McpToolCallResponse): { text: string; images: string[] } {
-		if (!toolResult?.content?.length && toolResult?.structuredContent === undefined) {
-			return { text: "", images: [] }
+	private processToolContent(
+		toolResult: McpToolCallResponse,
+		supportsImages = true,
+	): { text: string; images: string[]; content: ToolResultContentItem[] } {
+		const images: string[] = []
+		const content: ToolResultContentItem[] = []
+		const appendText = (text: string) => content.push({ type: "text", text })
+		const appendImage = (dataUrl: string) => {
+			if (supportsImages) {
+				images.push(dataUrl)
+				content.push({ type: "image", dataUrl })
+			} else {
+				appendText(t("tools:mcpMedia.imageUnsupported"))
+			}
 		}
 
-		const images: string[] = []
-
-		const contentText = (toolResult.content ?? [])
-			.map((item: any) => {
-				if (item.type === "text") {
-					return item.text
+		for (const item of toolResult.content ?? []) {
+			if (item.type === "text") {
+				appendText(item.text)
+			} else if (item.type === "resource_link") {
+				// Preserve link metadata without following its URI or widening tool authority.
+				appendText(JSON.stringify(item, null, 2))
+			} else if (item.type === "resource") {
+				const resource = item.resource
+				if (!resource || typeof resource !== "object") {
+					appendText(t("tools:mcpMedia.resourceUnsupported"))
+					continue
 				}
-				if (item.type === "resource") {
-					const resource = item.resource
-					if (!resource || typeof resource !== "object") {
-						return ""
-					}
 
-					const resourceRecord = resource as Record<string, unknown>
-					const mimeType = typeof resourceRecord.mimeType === "string" ? resourceRecord.mimeType : undefined
-					const blob = resourceRecord.blob
-					if (mimeType?.toLowerCase().startsWith("image/") && typeof blob === "string" && blob.length > 0) {
-						images.push(blob.startsWith("data:") ? blob : `data:${mimeType};base64,${blob}`)
-						return ""
-					}
-
-					if (typeof resourceRecord.text === "string") {
-						// Text resources remain a structured representation so URI,
-						// MIME type, and any server-provided metadata stay visible.
-						const metadata = { ...resourceRecord }
-						delete metadata.blob
-						return JSON.stringify(metadata, null, 2)
-					}
-
-					if (blob !== undefined) {
-						// Binary payloads other than images are not useful as model text.
-						// Report bounded metadata and size without copying the payload.
-						return JSON.stringify(
+				const resourceRecord = resource as Record<string, unknown>
+				const mimeType = typeof resourceRecord.mimeType === "string" ? resourceRecord.mimeType : undefined
+				const blob = resourceRecord.blob
+				if (mimeType?.toLowerCase().startsWith("image/") && typeof blob === "string" && blob.length > 0) {
+					appendImage(blob.startsWith("data:") ? blob : `data:${mimeType};base64,${blob}`)
+				} else if (typeof resourceRecord.text === "string") {
+					// Keep URI, MIME type, and server metadata beside the resource text.
+					const metadata = { ...resourceRecord }
+					delete metadata.blob
+					appendText(JSON.stringify(metadata, null, 2))
+				} else if (blob !== undefined) {
+					// Binary payloads cannot be carried by Alpha's shared text/image tool contract.
+					appendText(
+						JSON.stringify(
 							{
 								status: "unsupported_binary_resource",
 								uri:
@@ -352,33 +359,34 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 							},
 							null,
 							2,
-						)
-					}
+						),
+					)
+				} else {
+					appendText(JSON.stringify(resourceRecord, null, 2))
+				}
+			} else if (item.type === "image") {
+				if (typeof item.mimeType === "string" && typeof item.data === "string" && item.data.length > 0) {
+					appendImage(item.data.startsWith("data:") ? item.data : `data:${item.mimeType};base64,${item.data}`)
+				} else {
+					appendText(t("tools:mcpMedia.imageInvalid"))
+				}
+			} else if (item.type === "audio") {
+				// The shared provider-neutral tool result has no audio input representation.
+				appendText(t("tools:mcpMedia.audioUnsupported"))
+			} else {
+				appendText(t("tools:mcpMedia.contentUnsupported"))
+			}
+		}
+		if (toolResult.structuredContent !== undefined) {
+			appendText(`Structured content:\n${JSON.stringify(toolResult.structuredContent, null, 2)}`)
+		}
 
-					return JSON.stringify(resourceRecord, null, 2)
-				}
-				if (item.type === "image") {
-					// Handle image content (MCP image content has mimeType and data properties)
-					if (typeof item.mimeType === "string" && typeof item.data === "string" && item.data.length > 0) {
-						if (item.data.startsWith("data:")) {
-							images.push(item.data)
-						} else {
-							images.push(`data:${item.mimeType};base64,${item.data}`)
-						}
-					}
-					return ""
-				}
-				return ""
-			})
+		const text = content
+			.filter((item): item is Extract<ToolResultContentItem, { type: "text" }> => item.type === "text")
+			.map((item) => item.text)
 			.filter(Boolean)
 			.join("\n\n")
-		const structuredContentText =
-			toolResult.structuredContent === undefined
-				? ""
-				: `Structured content:\n${JSON.stringify(toolResult.structuredContent, null, 2)}`
-		const textContent = [contentText, structuredContentText].filter(Boolean).join("\n\n")
-
-		return { text: textContent, images }
+		return { text, images, content }
 	}
 
 	private async executeToolAndProcessResult(
@@ -388,6 +396,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		parsedArguments: Record<string, unknown> | undefined,
 		executionId: string,
 		callbacks: ToolCallbacks,
+		supportsImages: boolean,
 	): Promise<void> {
 		const { beforeMcpDispatch, mcpSource: source, pushToolResult, signal } = callbacks
 		signal?.throwIfAborted()
@@ -443,7 +452,11 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				// state instead of relying on the rendered "Error:" prefix.
 				this.markFailure(task, callbacks)
 			}
-			const { text: outputText, images: extractedImages } = this.processToolContent(toolResult)
+			const {
+				text: outputText,
+				images: extractedImages,
+				content,
+			} = this.processToolContent(toolResult, supportsImages)
 			images = extractedImages
 
 			if (outputText || images.length > 0) {
@@ -462,13 +475,21 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			signal?.throwIfAborted()
 			await task.say("mcp_server_response", toolResultPretty, images)
 			signal?.throwIfAborted()
-			pushToolResult(formatResponse.toolResult(toolResultPretty, images))
+			pushToolResult(
+				images.length > 0
+					? formatResponse.toolResult(
+							toolResultPretty,
+							images,
+							toolResult.isError ? [{ type: "text", text: "Error:\n" }, ...content] : content,
+						)
+					: formatResponse.toolResult(toolResultPretty, images),
+			)
 			if (!toolResult.isError)
 				callbacks.setResultMetadata?.({
 					status: "success",
 					// This observes the exchange, not the server's claims about effects or completion.
 					opaqueResultFingerprint: createHash("sha256")
-						.update(stringify([serverName, source, toolName, parsedArguments, outputText, images]) ?? "")
+						.update(stringify([serverName, source, toolName, parsedArguments, content]) ?? "")
 						.digest("hex"),
 				})
 			await finishExecution(

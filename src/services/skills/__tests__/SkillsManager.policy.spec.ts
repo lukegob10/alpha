@@ -6,10 +6,10 @@ const { fsMock, mockHomedir, mockDirectoryExists, mockFileExists, mockProjectDir
 	vi.hoisted(() => {
 		const watchers: Array<{
 			pattern: { base: string; pattern: string }
-			onDidChange: ReturnType<typeof vi.fn>
-			onDidCreate: ReturnType<typeof vi.fn>
-			onDidDelete: ReturnType<typeof vi.fn>
-			dispose: ReturnType<typeof vi.fn>
+			onDidChange: import("vitest").Mock
+			onDidCreate: import("vitest").Mock
+			onDidDelete: import("vitest").Mock
+			dispose: import("vitest").Mock
 		}> = []
 		return {
 			fsMock: {
@@ -81,17 +81,17 @@ describe("portable skill invocation policy", () => {
 	let disabledBuiltinSkills: string[]
 	let provider: {
 		cwd: string
-		postMessageToWebview: ReturnType<typeof vi.fn>
-		customModesManager: { getCustomModes: ReturnType<typeof vi.fn> }
+		postMessageToWebview: import("vitest").Mock
+		customModesManager: { getCustomModes: import("vitest").Mock }
 		contextProxy: {
 			extensionUri: { fsPath: string }
-			getValue: ReturnType<typeof vi.fn>
+			getValue: import("vitest").Mock
 		}
 	}
 	let handles: Array<{
-		stat: ReturnType<typeof vi.fn>
-		read: ReturnType<typeof vi.fn>
-		close: ReturnType<typeof vi.fn>
+		stat: import("vitest").Mock
+		read: import("vitest").Mock
+		close: import("vitest").Mock
 	}>
 
 	function addSkill(directory: string, name = "portable-review", metadata?: string, modeSlugs?: string[]) {

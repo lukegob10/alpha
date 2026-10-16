@@ -16,7 +16,9 @@ const { openAiCreate, anthropicCreate, geminiCreate, sendRequest } = vi.hoisted(
 }))
 
 vi.mock("openai", () => ({
-	default: vi.fn().mockImplementation(() => ({ chat: { completions: { create: openAiCreate } } })),
+	default: vi.fn().mockImplementation(function () {
+		return { chat: { completions: { create: openAiCreate } } }
+	}),
 }))
 vi.mock("@anthropic-ai/vertex-sdk", () => ({ AnthropicVertex: vi.fn() }))
 vi.mock("../../../services/code-index/manager", () => ({ CodeIndexManager: { getInstance: () => ({}) } }))

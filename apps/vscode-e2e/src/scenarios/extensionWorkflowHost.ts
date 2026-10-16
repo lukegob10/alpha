@@ -15,6 +15,7 @@ import {
 } from "@alpha-code/types"
 
 import { waitFor } from "../suite/utils"
+import { withBoundedFixtureCleanup } from "../suite/proportional-context-support"
 import { WorkflowFailure } from "./contracts"
 import {
 	workflowCommands,
@@ -347,7 +348,10 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly cleanup: Array<() => void> = []
 	private readonly approvedAsks = new Set<number>()
 	private readonly scripted?: WorkflowScriptedAI
+	private readonly originalConfiguration: AlphaCodeSettings
 	private readonly configuration: AlphaCodeSettings
+	private configurationApplied = false
+	private disposal?: Promise<void>
 	private readonly deadline: number
 	private currentId?: string
 	private readonly backgroundIds = new Set<string>()
@@ -377,8 +381,9 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.provider = provider
 		this.deadline = Date.now() + timeoutMs
 		this.scripted = providerMode === "scripted" ? new WorkflowScriptedAI(budget, workspace) : undefined
+		this.originalConfiguration = api.getConfiguration()
 		this.configuration = {
-			...api.getConfiguration(),
+			...this.originalConfiguration,
 			...(this.scripted ? { apiProvider: "fake-ai", fakeAi: this.scripted } : {}),
 			mode: "code",
 			approvalMode: "auto",
@@ -407,6 +412,12 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 		this.api.on(AlphaCodeEventName.TaskCompleted, this.onCompleted)
 		this.provider.on("taskCreated", this.onCreated)
+	}
+
+	private async applyConfiguration(): Promise<void> {
+		// setConfiguration can persist a partial update before rejecting; disposal still restores the original.
+		this.configurationApplied = true
+		await this.api.setConfiguration(this.configuration)
 	}
 
 	private requireTask(taskId: string): HostTask {
@@ -448,7 +459,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.problemSolving = true
 		this.configuration.alwaysAllowExecute = true
 		this.configuration.commandExecutionTimeout = 60
-		await this.api.setConfiguration(this.configuration)
+		await this.applyConfiguration()
 		const id = await this.api.startNewTask({ configuration: this.configuration, text })
 		await this.provider.focusTask?.(id)
 		this.currentId = id
@@ -495,7 +506,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.activePrompt = prompt
 		this.scripted?.setPhase(prompt)
 		// Policy stays explicit across reloads and never derives from the selected model.
-		await this.api.setConfiguration(this.configuration)
+		await this.applyConfiguration()
 		const id = await this.api.startNewTask({ configuration: this.configuration, text: workflowPrompt(prompt) })
 		await this.provider.focusTask?.(id)
 		this.currentId = id
@@ -672,7 +683,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		if (restoreAutoApproval) this.configuration.approvalMode = "auto"
 		// The saved provider callback does not restore global execution policy.
 		// Establish the same dedicated-profile policy before Task construction.
-		await this.api.setConfiguration(this.configuration)
+		await this.applyConfiguration()
 		this.scripted?.setPhase(prompt)
 		const previous = options.reopen ? this.requireTask(taskId) : undefined
 		const summaryCount = (task: HostTask) =>
@@ -991,16 +1002,20 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		)
 	}
 
-	async dispose(): Promise<void> {
-		try {
-			for (const id of this.backgroundIds) await this.provider.closeTask(id)
-			if (this.currentId && !this.provider.getLiveTask(this.currentId)?.didComplete)
-				await this.api.cancelCurrentTask()
-		} finally {
-			this.provider.off("taskCreated", this.onCreated)
-			this.api.off(AlphaCodeEventName.TaskCompleted, this.onCompleted)
-			for (const release of this.cleanup.reverse()) release()
-			this.scripted?.dispose()
-		}
+	dispose(): Promise<void> {
+		return (this.disposal ??= withBoundedFixtureCleanup(async () => {}, [
+			...Array.from(this.backgroundIds, (id) => () => this.provider.closeTask(id)),
+			async () => {
+				if (this.currentId && !this.provider.getLiveTask(this.currentId)?.didComplete)
+					await this.api.cancelCurrentTask()
+			},
+			() => this.provider.off("taskCreated", this.onCreated),
+			() => this.api.off(AlphaCodeEventName.TaskCompleted, this.onCompleted),
+			...[...this.cleanup].reverse(),
+			() => this.scripted?.dispose(),
+			async () => {
+				if (this.configurationApplied) await this.api.setConfiguration(this.originalConfiguration)
+			},
+		]))
 	}
 }

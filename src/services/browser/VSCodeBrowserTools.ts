@@ -133,6 +133,18 @@ export async function invokeVSCodeBrowserTool<TName extends BrowserToolName>(
 			cancellation.token,
 		)
 		signal?.throwIfAborted()
+		// VS Code 1.125.0 exposes toolResultError through this optional result marker.
+		// Some host failures omit it; ordinary page text must never be treated as an error flag.
+		if ("hasError" in result && result.hasError === true) {
+			const details = result.content
+				.filter(isLanguageModelTextPartLike)
+				.map((part) => part.value)
+				.join("\n")
+				.trim()
+			throw new Error(
+				`VS Code integrated-browser tool "${name}" reported an error.${details ? `\n${details}` : ""}`,
+			)
+		}
 		return convertVSCodeToolResult(result)
 	} finally {
 		signal?.removeEventListener("abort", onAbort)

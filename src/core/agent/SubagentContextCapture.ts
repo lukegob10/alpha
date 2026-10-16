@@ -3,7 +3,10 @@ import { z } from "zod"
 
 import {
 	SUBAGENT_CONTEXT_MANIFEST_VERSION,
+	SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES,
 	subagentContextManifestSchema,
+	subagentContextSkillSchema,
+	getSubagentSkillDescriptionsByteLength,
 	subagentForkTurnsSchema,
 	subagentManifestOrchestrationSchema,
 	subagentModelRouteStateSchema,
@@ -18,6 +21,7 @@ import {
 	type FinalizeSubagentDelegationPolicyAuthorization,
 } from "@alpha-code/types"
 
+import { t } from "../../i18n"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import { invalidPersistedApiMessages } from "../task-persistence/validatePersistedApiMessages"
 import { getEffectiveApiHistory } from "../condense"
@@ -81,6 +85,8 @@ export interface SubagentContextInstructionSourceInput {
 export interface SubagentContextSkillInput {
 	name: string
 	path: string
+	/** Exact frozen relevance metadata; absent for legacy captures. */
+	description?: string
 	/** Prompt visibility is captured independently from explicit skill availability. */
 	allowImplicitInvocation?: boolean
 	/** Exact, mode-filtered skill content. It is digested but never persisted in the manifest. */
@@ -1021,6 +1027,14 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 	) {
 		throw new Error("Sub-agent context requires the exact effective instruction text")
 	}
+	for (const { description } of input.skills) {
+		if (description !== undefined) subagentContextSkillSchema.shape.description.parse(description)
+	}
+	if (getSubagentSkillDescriptionsByteLength(input.skills) > SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES) {
+		throw new Error(
+			t("common:subagentContext.skillDescriptionLimit", { maxBytes: SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES }),
+		)
+	}
 
 	const native = forkTurns !== "none" && input.historyInheritance ? captureNativeConversation(input) : undefined
 	const historyFork: SubagentHistoryFork =
@@ -1050,6 +1064,7 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 			name: skill.name.trim(),
 			path: skill.path.trim(),
 			digest: resolveContentDigest(skill, `Skill ${index + 1}`),
+			...(skill.description !== undefined ? { description: skill.description } : {}),
 			...(skill.allowImplicitInvocation !== undefined
 				? { allowImplicitInvocation: skill.allowImplicitInvocation }
 				: {}),

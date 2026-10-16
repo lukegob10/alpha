@@ -552,6 +552,8 @@ export const alphaMessageSchema = z
 		 * Present when `say: "sliding_window_truncation"`.
 		 */
 		contextTruncation: contextTruncationSchema.optional(),
+		/** Known cost of a failed summary; successful fallback keeps its existing truncation presentation. */
+		contextCondenseErrorCost: z.number().finite().nonnegative().optional(),
 		isProtected: z.boolean().optional(),
 		apiProtocol: z.union([z.literal("openai"), z.literal("anthropic")]).optional(),
 		isAnswered: z.boolean().optional(),
@@ -562,6 +564,20 @@ export const alphaMessageSchema = z
 				code: "custom",
 				message: "Async user input cards require a typed question payload and cannot be attached elsewhere.",
 				path: ["asyncUserInput"],
+			})
+		}
+		if (
+			message.contextCondenseErrorCost !== undefined &&
+			!(
+				message.type === "say" &&
+				(message.say === "condense_context_error" || message.say === "sliding_window_truncation") &&
+				message.partial !== true
+			)
+		) {
+			context.addIssue({
+				code: "custom",
+				message: "Failed summary cost requires a completed error or truncation message.",
+				path: ["contextCondenseErrorCost"],
 			})
 		}
 		if (message.userInputResponse !== undefined && !(message.type === "say" && message.say === "user_feedback")) {

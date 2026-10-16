@@ -115,3 +115,22 @@ test("an exit-zero hard gate cannot pass when its execution receipt is missing o
 		assert.equal(input.report.steps[1].status, "not_started")
 	}
 })
+
+test("the harness bounds Vitest 4 workers even when the parent requests more", async () => {
+	const previous = process.env.VITEST_MAX_WORKERS
+	process.env.VITEST_MAX_WORKERS = "8"
+	try {
+		const workers = []
+		const input = fixture({
+			runProcess: async (command) => {
+				workers.push(command.env.VITEST_MAX_WORKERS)
+				return { exitCode: 0, signal: null, cleanupVerified: true }
+			},
+		})
+		await executeSteps(input)
+		assert.deepEqual(workers, ["2", "2"])
+	} finally {
+		if (previous === undefined) delete process.env.VITEST_MAX_WORKERS
+		else process.env.VITEST_MAX_WORKERS = previous
+	}
+})

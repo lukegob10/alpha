@@ -392,6 +392,7 @@ describe("rewind command artifact retention", () => {
 	it.each([true, false])("returns the actual UI save receipt %s", async (saved) => {
 		Object.assign(task, {
 			invalidateBackgroundUsageDrain: vi.fn(),
+			observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
 			saveAlphaMessages: vi.fn(async () => saved),
 		})
 

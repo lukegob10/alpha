@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import path from "node:path"
+import createDOMPurify from "dompurify"
+import { HTML_DOCUMENT_TAGS, HTML_DOCUMENT_RENDER_ATTRIBUTES, HTML_DOCUMENT_LIMITS } from "@alpha-code/types"
 
 const script = readFileSync(path.resolve("public/html-document/viewer.js"), "utf8")
 const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
@@ -19,12 +21,22 @@ describe("packaged HTML viewer runtime", () => {
 		const api = { getState: vi.fn(), setState: vi.fn(), postMessage: vi.fn() }
 		const dispose = vi.fn()
 		Object.assign(window, {
+			DOMPurify: createDOMPurify(window),
 			acquireVsCodeApi: () => api,
 			AlphaDocumentKit: { mount: vi.fn(() => dispose) },
 			requestAnimationFrame: (callback: () => void) => callback(),
 			scrollTo: vi.fn(),
 		})
-		window.document.body.dataset.viewerConfig = JSON.stringify({ target, documentId: target.uri, token })
+		window.document.body.dataset.viewerConfig = JSON.stringify({
+			target,
+			documentId: target.uri,
+			token,
+			sanitizer: {
+				tags: HTML_DOCUMENT_TAGS,
+				attributes: HTML_DOCUMENT_RENDER_ATTRIBUTES,
+				maxHtmlLength: HTML_DOCUMENT_LIMITS.renderBytes,
+			},
+		})
 		window.eval(script)
 		const send = (revision: number, html: string, overrides = {}) =>
 			window.dispatchEvent(
@@ -78,8 +90,17 @@ describe("packaged HTML viewer runtime", () => {
 		expect(section.hasAttribute("tabindex")).toBe(false)
 		send(5, '<main class="alpha-doc"><details id="new"><summary>New</summary></details></main>')
 		expect((window.document.getElementById("new") as HTMLDetailsElement).open).toBe(false)
+		send(
+			6,
+			'<main class="alpha-doc"><a id="unsafe" onclick="throw 1" href="javascript:throw 1">safe text</a><img src="https://evil.test"><img src="data:image/svg+xml;base64,PHN2Zz4="><script>throw 1</script></main>',
+		)
+		expect(window.document.querySelector("#unsafe")?.getAttribute("onclick")).toBeNull()
+		expect(window.document.querySelector("#unsafe")?.getAttribute("href")).toBeNull()
+		expect(window.document.querySelector("script, [src]")).toBeNull()
+		send(7, "x".repeat(HTML_DOCUMENT_LIMITS.renderBytes + 1))
+		expect(window.document.querySelector("#unsafe")?.textContent).toBe("safe text")
 		window.dispatchEvent(new window.Event("pagehide"))
-		expect(dispose).toHaveBeenCalledTimes(5)
+		expect(dispose).toHaveBeenCalledTimes(6)
 		expect(api.setState).toHaveBeenCalledWith(expect.objectContaining({ target }))
 		window.close()
 	})

@@ -11,7 +11,7 @@ vi.mock("@alpha-code/telemetry")
 
 describe("MessageEnhancer", () => {
 	let mockProviderSettingsManager: ProviderSettingsManager
-	let mockSingleCompletionHandler: ReturnType<typeof vi.fn>
+	let mockSingleCompletionHandler: import("vitest").Mock
 
 	const mockApiConfiguration: ProviderSettings = {
 		apiProvider: "openai",

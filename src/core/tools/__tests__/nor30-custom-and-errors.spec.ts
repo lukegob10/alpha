@@ -8,7 +8,6 @@ import {
 	fixtureDescriptor,
 	fixtureRegistry,
 	functionSchema,
-	imageResults,
 	makeExecutionHost,
 	registerCustomTool,
 	runToolCalls,
@@ -19,6 +18,11 @@ import type { ToolDescriptor } from "../ToolRegistry"
 
 const cleanups: Array<() => void> = []
 const mcpToolNames = ["mcp--nor30-server--nor30-tool", "mcp__nor30-server__nor30-tool"]
+const approvalPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
+const firstMcpPngBase64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+const secondMcpPngBase64 =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup()
@@ -110,7 +114,8 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			{ experiments: { customTools: false } },
 		)
 
-		expect(outcome.results[0].status).toBe("error")
+		expect(outcome.results[0].status).toBe("denied")
+		expect(outcome.results[0].failure).toMatchObject({ reason: "policy_denied", effectsStarted: "no" })
 		expect(String(outcome.results[0].content)).toContain("Unknown tool")
 		expect(execute).not.toHaveBeenCalled()
 		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()
@@ -139,7 +144,8 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			},
 		])
 
-		expect(outcome.results[0].status).toBe("error")
+		expect(outcome.results[0].status).toBe("denied")
+		expect(outcome.results[0].failure).toMatchObject({ reason: "policy_denied", effectsStarted: "no" })
 		expect(String(outcome.results[0].content)).toContain("not allowed")
 		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()
 		expect(toolResults(harness)).toHaveLength(1)
@@ -185,8 +191,8 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		const callTool = vi.fn().mockResolvedValue({
 			content: [
 				{ type: "text", text: "dynamic MCP result" },
-				{ type: "image", mimeType: "image/png", data: "mcp-image-one" },
-				{ type: "image", mimeType: "image/jpeg", data: "mcp-image-two" },
+				{ type: "image", mimeType: "image/png", data: firstMcpPngBase64 },
+				{ type: "image", mimeType: "image/png", data: secondMcpPngBase64 },
 			],
 		})
 		const mcpHub = {
@@ -195,9 +201,9 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		}
 		const provider = { getMcpHub: () => mcpHub, postMessageToWebview: vi.fn() }
 		const schema = functionSchema("mcp--nor30-server--nor30-tool")
-		const registry = new ToolRegistry({ nativeTools: [], mcpTools: [schema] })
+		const registry = new ToolRegistry({ nativeTools: [], mcpTools: [schema], supportsImages: true })
 		const surface = capturedSurface(registry, { schemas: [schema] })
-		const approvalImages = ["data:image/gif;base64,approval-image"]
+		const approvalImages = [`data:image/png;base64,${approvalPngBase64}`]
 		const harness = makeExecutionHost({
 			provider,
 			approval: { response: "yesButtonClicked", text: "approved dynamic call", images: approvalImages },
@@ -214,12 +220,14 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			name,
 			status: "success",
 		})
-		expect(outcome.results[0].content).toEqual(
-			expect.arrayContaining([
-				{ type: "text", text: expect.stringContaining("approved dynamic call") },
-				{ type: "text", text: "dynamic MCP result" },
-			]),
-		)
+		const expectedContent = [
+			{ type: "text", text: expect.stringContaining("approved dynamic call") },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: approvalPngBase64 } },
+			{ type: "text", text: "dynamic MCP result" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: firstMcpPngBase64 } },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: secondMcpPngBase64 } },
+		]
+		expect(outcome.results[0].content).toEqual(expectedContent)
 		expect(callTool).toHaveBeenCalledOnce()
 		expect(callTool).toHaveBeenCalledWith(
 			"nor30-server",
@@ -233,19 +241,10 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		expect(toolResults(harness)).toHaveLength(1)
 		expect(toolResults(harness)[0]).toMatchObject({
 			tool_use_id: `dynamic-${name}`,
-			content: expect.stringContaining("dynamic MCP result"),
+			is_error: false,
+			content: expectedContent,
 		})
-		expect(imageResults(harness).map((item) => item.source)).toEqual([
-			{ type: "base64", media_type: "image/gif", data: "approval-image" },
-			{ type: "base64", media_type: "image/png", data: "mcp-image-one" },
-			{ type: "base64", media_type: "image/jpeg", data: "mcp-image-two" },
-		])
-		expect(harness.userMessageContent.slice(0, 4).map((item) => item.type)).toEqual([
-			"tool_result",
-			"image",
-			"image",
-			"image",
-		])
+		expect(harness.userMessageContent.map((item) => item.type)).toEqual(["tool_result"])
 	})
 
 	it.each(mcpToolNames)("rejects approval-denied %s without invoking its leaf", async (name) => {

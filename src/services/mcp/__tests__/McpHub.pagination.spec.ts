@@ -33,9 +33,9 @@ type TestConfig = {
 }
 type MockClient = ReturnType<typeof createClient>
 type MockTransport = {
-	start: ReturnType<typeof vi.fn>
-	close: ReturnType<typeof vi.fn>
-	stderr: { on: ReturnType<typeof vi.fn> }
+	start: import("vitest").Mock
+	close: import("vitest").Mock
+	stderr: { on: import("vitest").Mock }
 	onerror?: (error: Error) => void | Promise<void>
 	onclose?: () => void | Promise<void>
 }
@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
 	files: new Map<string, string>(),
 	clients: [] as MockClient[],
 	transports: [] as MockTransport[],
-	transportStarts: [] as ReturnType<typeof vi.fn>[],
+	transportStarts: [] as import("vitest").Mock[],
 	readFile: vi.fn(),
 	writeFile: vi.fn(),
 	injectVariables: vi.fn(),
@@ -67,14 +67,14 @@ vi.mock("../../../utils/safeWriteJson", () => ({
 }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
-	Client: vi.fn().mockImplementation(() => {
+	Client: vi.fn().mockImplementation(function () {
 		const client = mocks.clients.shift()
 		if (!client) throw new Error("No MCP client fixture queued")
 		return client
 	}),
 }))
 vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-	StdioClientTransport: vi.fn().mockImplementation(() => {
+	StdioClientTransport: vi.fn().mockImplementation(function () {
 		const transport: MockTransport = {
 			start: mocks.transportStarts.shift() ?? vi.fn().mockResolvedValue(undefined),
 			close: vi.fn().mockResolvedValue(undefined),
@@ -598,7 +598,14 @@ describe("McpHub complete paginated catalogs", () => {
 			const connection = await connect(client)
 
 			expect(connection.server.status).toBe("disconnected")
-			expect(connection.server.error).toContain("Required")
+			const requiredField =
+				failedMethod === "tools/list"
+					? "inputSchema"
+					: failedMethod === "resources/list"
+						? "uri"
+						: "uriTemplate"
+			expect(connection.server.error).toContain(requiredField)
+			expect(connection.server.error).toContain("invalid_type")
 			expect(connection.server.tools).toBeUndefined()
 			expect(connection.server.resources).toBeUndefined()
 			expect(connection.server.resourceTemplates).toBeUndefined()

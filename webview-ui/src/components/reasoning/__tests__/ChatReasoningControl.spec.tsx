@@ -49,8 +49,8 @@ vi.mock("../ReasoningSelector", () => ({
 	),
 }))
 
-const mockPostMessage = vscode.postMessage as ReturnType<typeof vi.fn>
-const mockUseExtensionState = useExtensionState as ReturnType<typeof vi.fn>
+const mockPostMessage = vscode.postMessage as import("vitest").Mock
+const mockUseExtensionState = useExtensionState as import("vitest").Mock
 const request1 = "00000000-0000-0000-0000-000000000001"
 const request2 = "00000000-0000-0000-0000-000000000002"
 

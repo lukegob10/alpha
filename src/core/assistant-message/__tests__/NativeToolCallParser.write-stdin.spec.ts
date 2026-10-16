@@ -219,10 +219,14 @@ it.each([undefined, "yes\n"])("denies parsed session control in Plan with chars=
 	const outcome = await fixture.run({ ...inactiveArtifactFields, session_id: 17, chars })
 	expect(outcome.results).toEqual([
 		expect.objectContaining({
-			status: "error",
+			status: "denied",
 			content: expect.stringContaining("not allowed"),
 			failure: expect.objectContaining({ reason: "policy_denied", effectsStarted: "no" }),
 		}),
 	])
+	expect(fixture.host.userMessageContent).toEqual([
+		expect.objectContaining({ type: "tool_result", tool_use_id: "parsed-stdin", is_error: true }),
+	])
+	expect(fixture.host.askApproval).not.toHaveBeenCalled()
 	expect(resolveSession).not.toHaveBeenCalled()
 })

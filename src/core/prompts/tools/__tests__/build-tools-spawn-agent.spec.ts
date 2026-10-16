@@ -248,12 +248,14 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			taskKind: "subagent",
 		})
 
-		for (const tool of orchestrationTools.filter((name) => name !== "send_message")) {
+		for (const tool of ["spawn_agent", "wait_agent", "followup_task", "interrupt_agent"]) {
 			expect(names(result.tools as any)).not.toContain(tool)
 			expect(result.allowedFunctionNames).not.toContain(tool)
 		}
-		expect(names(result.tools as any)).toContain("send_message")
-		expect(result.allowedFunctionNames).toContain("send_message")
+		for (const tool of ["send_message", "list_agents"]) {
+			expect(names(result.tools as any)).toContain(tool)
+			expect(result.allowedFunctionNames).toContain(tool)
+		}
 		expect(names(result.tools as any)).not.toContain("report_progress")
 		expect(result.allowedFunctionNames).not.toContain("report_progress")
 	})

@@ -125,13 +125,23 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 			try {
 				if (["node", "vitest"].includes(descriptor.runner)) {
 					const rawFile = path.join(directory, `step-${index}.raw.json`)
+					let failureDiagnostics
 					const receipt =
 						descriptor.runner === "node"
 							? await readExecutionJson(path.join(directory, `step-${index}.execution.json`))
 							: await readExecutionJson(rawFile)
-									.then((value) => normalizeVitestEvidence(value, root))
+									.then((value) =>
+										normalizeVitestEvidence(value, root, {
+											onFailureDiagnostics: (diagnostics) => {
+												failureDiagnostics = diagnostics
+											},
+										}),
+									)
 									.finally(() => unlink(rawFile).catch(() => {}))
-					const verdict = testEvidenceVerdict(receipt, descriptor.requireAllTests)
+					const verdict = {
+						...testEvidenceVerdict(receipt, descriptor.requireAllTests),
+						...(failureDiagnostics ? { failureDiagnostics } : {}),
+					}
 					if (verdict.status !== "passed") return verdict
 					const expected = await expectedTestFiles(root, descriptor, args)
 					const observed = verdict.receipt.files.map((file) => file.path).sort()

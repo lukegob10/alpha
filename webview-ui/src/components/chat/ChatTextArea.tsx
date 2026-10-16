@@ -257,6 +257,7 @@ export const ChatTextArea = memo(
 						(selectedType === null && /^[a-z]{2,4}$/i.test(searchQuery))),
 				searchQuery,
 				cwd ?? "",
+				conversationClineMessages !== undefined ? conversationTaskId : currentTaskId,
 			)
 			const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
 			const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
@@ -492,6 +493,7 @@ export const ChatTextArea = memo(
 							cursorPosition,
 							insertValue,
 							isSlashCommand,
+							type === ContextMenuOptionType.File || type === ContextMenuOptionType.Folder,
 						)
 
 						setInputValue(newValue)

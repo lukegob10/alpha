@@ -3,13 +3,14 @@ import { renderHook } from "@testing-library/react"
 import { useEscapeKey } from "./useEscapeKey"
 
 describe("useEscapeKey", () => {
-	let mockOnEscape: ReturnType<typeof vi.fn>
+	let mockOnEscape: ReturnType<typeof vi.fn<() => void>>
 
 	beforeEach(() => {
 		mockOnEscape = vi.fn()
 	})
 
 	afterEach(() => {
+		vi.restoreAllMocks()
 		vi.clearAllMocks()
 	})
 

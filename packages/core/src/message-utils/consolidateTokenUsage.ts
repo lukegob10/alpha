@@ -38,6 +38,16 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 
 	// Calculate running totals.
 	messages.forEach((message) => {
+		if (
+			message.type === "say" &&
+			message.partial !== true &&
+			(message.say === "condense_context_error" || message.say === "sliding_window_truncation")
+		) {
+			const errorCost = message.contextCondenseErrorCost
+			if (typeof errorCost === "number" && Number.isFinite(errorCost) && errorCost >= 0) {
+				result.totalCost += errorCost
+			}
+		}
 		if (message.type === "say" && message.say === "reasoning" && message.reasoningSummaryUsage) {
 			const usage = message.reasoningSummaryUsage
 			result.totalTokensIn += usage.tokensIn

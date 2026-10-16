@@ -67,6 +67,24 @@ export class Terminal extends BaseTerminal {
 		process.command = command
 		this.process = process
 		this.pendingProcesses.add(process)
+		if (callbacks.onOutput) process.setOutputWriter((chunk, signal) => callbacks.onOutput!(chunk, process, signal))
+		if (callbacks.onOutputClosed) process.setOutputFinalizer(() => callbacks.onOutputClosed!(process))
+		try {
+			callbacks.onProcessCreated?.(process)
+		} catch (error) {
+			this.pendingProcesses.delete(process)
+			if (this.process === process) {
+				this.process = undefined
+				this.running = false
+				this.busy = false
+			}
+			// No physical run or public event exists yet. Close only this archive,
+			// preserving the creation failure even if its cleanup also rejects.
+			void process.finalizeOutput().catch((failure: unknown) => {
+				console.error(`[Terminal ${this.id}] output finalization after creation failed`, failure)
+			})
+			throw error
+		}
 
 		// Set up event handlers from callbacks before starting process.
 		// This ensures that we don't miss any events because they are
@@ -98,7 +116,8 @@ export class Terminal extends BaseTerminal {
 						ShellIntegrationManager.zshCleanupTmpDir(this.id)
 
 						// Run the command in the terminal
-						return process.run(command)
+						// Closing during async completed observers may remove continue listeners.
+						return process.run(command).then(() => resolve())
 					},
 					() => {
 						if (process.terminalClosedSignal.aborted) return
@@ -114,14 +133,30 @@ export class Terminal extends BaseTerminal {
 					},
 				)
 				.catch((error: unknown) => {
-					if (process.terminalClosedSignal.aborted) return
+					if (process.terminalClosedSignal.aborted) {
+						// Preserve an observer failure after close without emitting a second error.
+						reject(error)
+						return
+					}
 					// A stream failure does not prove the shell command stopped. Keep a
 					// running terminal reserved until its physical end event arrives.
 					if (!this.running) this.busy = false
 					this.setActiveStream(undefined)
 					process.emit("error", error instanceof Error ? error : new Error(String(error)))
 				})
-				.finally(() => this.pendingProcesses.delete(process))
+				.finally(async () => {
+					try {
+						await process.finalizeOutput()
+					} finally {
+						this.pendingProcesses.delete(process)
+						this.cleanCompletedProcessQueue()
+					}
+				})
+				.catch((error: unknown) => {
+					// The command already published its completed/error outcome. The
+					// archival owner reports this separate failure without a second one.
+					console.error(`[Terminal ${this.id}] output finalization failed`, error)
+				})
 		})
 
 		return mergePromise(process, promise)

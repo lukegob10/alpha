@@ -181,13 +181,13 @@ describe("terminal output receipts", () => {
 		receipt.release()
 	})
 
-	it("keeps an active VS Code partial line for a later capture", () => {
+	it("includes an active VS Code partial line in explicit receipt captures", () => {
 		const process = makeVscodeProcess()
 		;(process as any).fullOutput = "complete line\npartial"
 		setVscodeStreamClosed(process, false)
 
 		const active = process.captureUnretrievedOutput()
-		expect(active.output).toBe("complete line\n")
+		expect(active.output).toBe("complete line\npartial")
 		active.release()
 		setVscodeStreamClosed(process, true)
 		const completed = process.captureUnretrievedOutput()

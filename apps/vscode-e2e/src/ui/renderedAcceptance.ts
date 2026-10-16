@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -202,7 +203,7 @@ export async function exerciseRenderedAcceptance(
 	const outputPreview =
 		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
 	const activate = async (selector: string, label?: string, prefix = false) => {
-		const find = `[...d.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.getBoundingClientRect().width>0&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'${label === undefined ? "" : `&&(e.getAttribute('aria-label')??e.textContent).trim().${prefix ? "startsWith" : "includes"}(${JSON.stringify(label)})`})`
+		const find = `[...d.querySelectorAll(${javascriptLiteral(selector)})].find(e=>e.getBoundingClientRect().width>0&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'${label === undefined ? "" : `&&(e.getAttribute('aria-label')??e.textContent).trim().${prefix ? "startsWith" : "includes"}(${javascriptLiteral(label)})`})`
 		const deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS
 		await check(`!!(${find})`, deadline)
 		await click(find, deadline)
@@ -266,7 +267,7 @@ export async function exerciseRenderedAcceptance(
 					["agents-default-profile", "select", "Default child model/API profile"],
 				]
 				await check(
-					`(${JSON.stringify(basicControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
+					`(${javascriptLiteral(basicControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
 				)
 				await capture("settings-agents-basic")
 				await activate(
@@ -281,10 +282,10 @@ export async function exerciseRenderedAcceptance(
 				)
 				await capture("settings-agents-advanced")
 			} finally {
-				await activate(`[data-testid="settings-tab-list"] [data-testid=${JSON.stringify(originalTab)}]`)
+				await activate(`[data-testid="settings-tab-list"] [data-testid=${javascriptLiteral(originalTab)}]`)
 			}
 			await check(
-				`d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')?.getAttribute('data-testid')===${JSON.stringify(originalTab)}&&d.querySelector('[data-testid=save-button]').disabled===${originalSaveDisabled}`,
+				`d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')?.getAttribute('data-testid')===${javascriptLiteral(originalTab)}&&d.querySelector('[data-testid=save-button]').disabled===${originalSaveDisabled}`,
 			)
 			await activate('[data-testid="tab-terminal"]')
 			await check(`${outputPreview}?.textContent?.includes('Medium (10KB)')`)
@@ -316,7 +317,7 @@ export async function exerciseRenderedAcceptance(
 			await check(`!(${outputPreview})`)
 		} else if (stage.endsWith("-apply") || stage === "discard-discard") {
 			assert.ok(detail?.nickname)
-			const action = `[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${JSON.stringify(`Actions for ${detail.nickname}`)})`
+			const action = `[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${javascriptLiteral(`Actions for ${detail.nickname}`)})`
 			await check(`!!(${action})`)
 			if (await evaluate<boolean>(`!!(${action}).closest('[hidden]')`)) {
 				await click(

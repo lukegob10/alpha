@@ -16,23 +16,25 @@ const ipcMock = vi.hoisted(() => ({
 vi.mock("vscode")
 vi.mock("../../core/webview/AlphaProvider")
 vi.mock("@alpha-code/ipc", () => ({
-	IpcServer: vi.fn().mockImplementation(() => ({
-		listen: ipcMock.listen,
-		send: ipcMock.send,
-		broadcast: ipcMock.broadcast,
-		dispose: ipcMock.dispose,
-		on: vi.fn((_eventName, handler) => {
-			ipcMock.handler = handler
-		}),
-	})),
+	IpcServer: vi.fn().mockImplementation(function () {
+		return {
+			listen: ipcMock.listen,
+			send: ipcMock.send,
+			broadcast: ipcMock.broadcast,
+			dispose: ipcMock.dispose,
+			on: vi.fn((_eventName, handler) => {
+				ipcMock.handler = handler
+			}),
+		}
+	}),
 }))
 
 describe("API - SendMessage Command", () => {
 	let api: API
 	let mockOutputChannel: vscode.OutputChannel
 	let mockProvider: AlphaProvider
-	let mockPostMessageToWebview: ReturnType<typeof vi.fn>
-	let mockLog: ReturnType<typeof vi.fn>
+	let mockPostMessageToWebview: import("vitest").Mock
+	let mockLog: import("vitest").Mock
 
 	beforeEach(() => {
 		ipcMock.listen.mockReset()

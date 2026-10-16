@@ -1,6 +1,11 @@
 import type { McpServerUse, McpServer, McpTool } from "@alpha-code/types"
+import type { McpToolApprovalGrant } from "./mcpApprovalPolicy"
 
-export function isMcpToolAlwaysAllowed(mcpServerUse: McpServerUse, mcpServers: McpServer[] | undefined): boolean {
+/** Resolve the exact configured grant before comparing it with the invoking step's ceiling. */
+export function getMcpToolApprovalGrant(
+	mcpServerUse: McpServerUse,
+	mcpServers: McpServer[] | undefined,
+): McpToolApprovalGrant | undefined {
 	if (mcpServerUse.type === "use_mcp_tool" && mcpServerUse.toolName) {
 		const matchingServers = mcpServers?.filter((server) => server.name === mcpServerUse.serverName) ?? []
 		const server =
@@ -11,8 +16,18 @@ export function isMcpToolAlwaysAllowed(mcpServerUse: McpServerUse, mcpServers: M
 						? matchingServers[0]
 						: undefined))
 		const tool = server?.tools?.find((t: McpTool) => t.name === mcpServerUse.toolName)
-		return tool?.alwaysAllow || false
+		if (server && tool?.alwaysAllow) {
+			return {
+				serverName: server.name,
+				toolName: tool.name,
+				...(server.source === undefined ? {} : { source: server.source }),
+			}
+		}
 	}
 
-	return false
+	return undefined
+}
+
+export function isMcpToolAlwaysAllowed(mcpServerUse: McpServerUse, mcpServers: McpServer[] | undefined): boolean {
+	return getMcpToolApprovalGrant(mcpServerUse, mcpServers) !== undefined
 }

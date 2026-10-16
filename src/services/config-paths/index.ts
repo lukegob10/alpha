@@ -3,6 +3,29 @@ import * as os from "os"
 import * as fs from "fs/promises"
 import { constants } from "fs"
 
+/** Captured host settings; project files cannot change their own discovery boundary. */
+export interface ProjectInstructionDiscoveryOptions {
+	projectRootMarkers?: readonly string[]
+	projectDocFallbackFilenames?: readonly string[]
+}
+
+/** Keep discovery probes to basenames, including on Windows where ':' selects a stream. */
+export function getSafeProjectInstructionFilenames(filenames: readonly string[]): string[] {
+	if (!Array.isArray(filenames)) return []
+	return Array.from(
+		new Set(
+			filenames.filter(
+				(filename) =>
+					typeof filename === "string" &&
+					filename.length > 0 &&
+					filename !== "." &&
+					filename !== ".." &&
+					!/[\\/\0:]/.test(filename),
+			),
+		),
+	)
+}
+
 /** Canonical root for configuration created by Alpha in the current project. */
 export function getProjectConfigDirectory(cwd: string): string {
 	return path.join(cwd, ".alpha")
@@ -403,27 +426,34 @@ export async function getAgentsDirectoriesForCwd(cwd: string): Promise<string[]>
 }
 
 /**
- * Finds the nearest project root marked by a .git entry and returns its
+ * Finds the nearest project root marked by a configured entry and returns its
  * directories from root to cwd. If no marker is found, cwd is the only
  * instruction directory.
  */
 export async function getProjectInstructionDirectoriesForCwd(
 	cwd: string,
+	options: ProjectInstructionDiscoveryOptions = {},
 ): Promise<{ root: string; directories: string[] }> {
 	const cwdPath = path.isAbsolute(cwd) ? cwd : path.resolve(cwd)
+	const markers = getSafeProjectInstructionFilenames(options.projectRootMarkers ?? [".git"])
 	let cursor = cwdPath
 	let root = cwdPath
 
-	while (true) {
-		try {
-			const marker = await fs.stat(path.join(cursor, ".git"))
-			if (marker.isDirectory() || marker.isFile()) {
-				root = cursor
-				break
+	while (markers.length > 0) {
+		let foundMarker = false
+		for (const name of markers) {
+			try {
+				const marker = await fs.stat(path.join(cursor, name))
+				if (marker.isDirectory() || marker.isFile()) {
+					root = cursor
+					foundMarker = true
+					break
+				}
+			} catch {
+				// Project-root discovery is best effort; inaccessible or absent markers are ignored.
 			}
-		} catch {
-			// Project-root discovery is best effort; inaccessible or absent markers are ignored.
 		}
+		if (foundMarker) break
 
 		const parent = path.dirname(cursor)
 		if (parent === cursor) break

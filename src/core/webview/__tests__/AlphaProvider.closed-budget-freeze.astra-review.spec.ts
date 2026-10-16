@@ -96,6 +96,13 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		taskLifecycleHistoryWrites: new Map(),
 		agentFollowupAdmissions: new Map(),
 		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
+		agentLifecycleJournals: new Map(),
+		agentLifecycleProjector: { clear: vi.fn() },
+		agentLifecycleDegradedSignals: new Map(),
+		publishedTaskTranscriptRevisions: new Map(),
+		taskEventListeners: new Map(),
+		taskStack: [],
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: bounded,
@@ -106,6 +113,7 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		}),
 		postStateToWebview: vi.fn(async () => undefined),
 		postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
+		postTaskSessionStateToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	}) as AlphaProvider
 	return { provider, persistence, store, history, parent, parentAbort, runs, ready }
@@ -132,7 +140,7 @@ const completeChild = async (harness: ReturnType<typeof makeHarness>, tokens = 0
 		harness.parentAbort.signal,
 	)
 	await harness.runs.waitForResult(handle.taskId)
-	await Reflect.get(harness.provider, "subagentRunFinalizations").get(handle.taskId)
+	await ownedFinalization(Reflect.get(harness.provider, "subagentRunFinalizations").get(handle.taskId))
 	const record = harness.store.getAgent(handle.taskId)
 	expect(record?.status).toBe("completed")
 	const manifest = record?.snapshot?.contextManifest
@@ -148,6 +156,10 @@ const completeChild = async (harness: ReturnType<typeof makeHarness>, tokens = 0
 		subagentContextManifest: manifest,
 	})
 	return { handle, manifest }
+}
+
+function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<void> } | undefined) {
+	return entry && ("promise" in entry ? entry.promise : entry)
 }
 
 describe("closed child history deletion preserves frozen root limits", () => {
@@ -167,7 +179,7 @@ describe("closed child history deletion preserves frozen root limits", () => {
 				harness.parentAbort.signal,
 			)
 			await harness.runs.waitForResult(handle.taskId)
-			await Reflect.get(harness.provider, "subagentRunFinalizations").get(handle.taskId)
+			await ownedFinalization(Reflect.get(harness.provider, "subagentRunFinalizations").get(handle.taskId))
 			const record = harness.store.getAgent(handle.taskId)
 			expect(record?.status).toBe("completed")
 			harness.history.set(handle.taskId, {

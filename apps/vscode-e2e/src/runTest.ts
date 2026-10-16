@@ -434,6 +434,7 @@ export async function runExtensionTests(
 					requestedHostVersion: options.vscodeVersion,
 					providerMode: options.providerMode,
 					launchKind,
+					fixtureIsolation: { disabledExtensions: ["vscode.git"], gitExecution: "native-cli" },
 					...(sidecarPath ? { nonce: liveExpected.nonce, sharedDataDir: profile.sharedDataDir } : {}),
 					modelId: options.modelId,
 					modelFamily: options.modelFamily,
@@ -470,8 +471,9 @@ export async function runExtensionTests(
 				`--extensions-dir=${profile.extensionsDir}`,
 				...(profile.sharedDataDir ? [`--shared-data-dir=${profile.sharedDataDir}`] : []),
 				"--new-window",
-				// Live workflow tests need real Git integration; preserve the old fixture isolation.
-				...(options.providerMode === "live-copilot" ? [] : ["--disable-extension=vscode.git"]),
+				// Fixtures exercise the real Git executable, not VS Code's SCM API. Keep optional SCM observers
+				// isolated in live hosts too: bundled Copilot 0.53 crashes when a fixture repository opens.
+				"--disable-extension=vscode.git",
 			],
 			extensionTestsEnv: {
 				...process.env,

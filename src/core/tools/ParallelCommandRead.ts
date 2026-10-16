@@ -1,27 +1,14 @@
-import fs from "fs/promises"
 import path from "path"
-import { randomUUID } from "crypto"
-import { execa } from "execa"
+import fs from "fs/promises"
 
-import type { CommandExecutionStatus } from "@alpha-code/types"
-import { DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE } from "@alpha-code/types"
-import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
+import { isCommandDeniedByPolicy, isPathAllowed, type ToolPolicySnapshot } from "../agent/ToolPolicy"
+import type { PreparedCommandRead, ToolExecutionContext } from "./ToolRegistry"
+import { canonicalRgInspection, tokenizeSingleCommand } from "./CommandExploration"
+import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
+import { ToolReadDeniedError, type ToolCallbacks } from "./BaseTool"
+import { resolveRipgrepLaunchEnvironment } from "../../integrations/terminal/ripgrepEnvironment"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
-import { getTaskDirectoryPath } from "../../utils/storage"
-import { ToolReadDeniedError } from "./BaseTool"
-import { canonicalizeToolName, type PreparedCommandRead, type ToolExecutionContext } from "./ToolRegistry"
-import { canonicalRgInspection, getTrustedCommandExploration, tokenizeSingleCommand } from "./CommandExploration"
 import { isPathWithinRoot } from "./pathSafety"
-import { isToolAllowedForMode } from "./validateToolUse"
-import { getCommandDecision } from "../auto-approval/commands"
-import { isCommandDeniedByPolicy, isPathAllowed, isToolAllowed, type ToolPolicySnapshot } from "../agent/ToolPolicy"
-import { createToolFailure } from "./ToolFailure"
-import { normalizeExecCommandYieldTimeMs } from "./commandTimeouts"
-import { getBinPath } from "../../services/ripgrep"
-
-const MAX_OUTPUT_BYTES = 1_048_576
-const MAX_READ_TIME_MS = 60_000
-const gitIsolationSupport = new Map<string, { identity: string; supported: boolean }>()
 const GIT_OPTIONS: Readonly<Record<string, RegExp>> = {
 	status: /^(?:--short|-s|--branch|-b|--porcelain(?:=(?:1|2|v1|v2))?|-z|--untracked-files(?:=(?:no|normal|all))?)$/,
 	diff: /^(?:--stat|--numstat|--shortstat|--name-only|--name-status|--patch|-p|--no-patch|-s|--raw|--cached|--staged|--check|--exit-code|--quiet|--no-ext-diff|--no-textconv|--color=never|--unified=\d+|-U\d+|--ignore-space-at-eol|--ignore-all-space|-w)$/,
@@ -95,292 +82,299 @@ export async function classifyCommandRead(
 	}
 }
 
-async function resolveExecutable(name: string, root: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
-	const searchPath = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? ""
-	for (const directory of searchPath.split(path.delimiter).slice(0, 128)) {
-		if (!path.isAbsolute(directory)) continue
-		try {
-			const candidate = await fs.realpath(
-				path.join(directory, process.platform === "win32" ? `${name}.exe` : name),
-			)
-			if (isPathWithinRoot(root, candidate)) return undefined
-			if (!(await fs.stat(candidate)).isFile()) continue
-			return candidate
-		} catch {
-			/* An unavailable PATH entry is not an executable candidate. */
+interface CapturedRgRead {
+	readonly scope: string
+	readonly command: string
+	readonly executable: string
+	readonly args: readonly string[]
+	readonly env: Readonly<Record<string, string>>
+	revalidate(): Promise<void>
+}
+
+function explicitFileTargets(args: readonly string[]): readonly string[] | undefined {
+	const flags = new Set([
+		"--no-config",
+		"-n",
+		"--line-number",
+		"-N",
+		"--no-line-number",
+		"-H",
+		"--with-filename",
+		"-I",
+		"--no-filename",
+		"--heading",
+		"--no-heading",
+		"--column",
+		"--no-column",
+		"--no-messages",
+		"-F",
+		"--fixed-strings",
+		"-i",
+		"--ignore-case",
+		"-s",
+		"--case-sensitive",
+		"-S",
+		"--smart-case",
+		"-w",
+		"--word-regexp",
+		"-x",
+		"--line-regexp",
+		"-v",
+		"--invert-match",
+		"-l",
+		"--files-with-matches",
+		"--files-without-match",
+		"-c",
+		"--count",
+		"--count-matches",
+	])
+	let explicitPattern = false
+	let optionsEnded = false
+	const positionals: string[] = []
+	for (let index = 0; index < args.length; index++) {
+		const value = args[index]
+		if (!optionsEnded && value === "--") {
+			optionsEnded = true
+			continue
 		}
+		if (!optionsEnded && (value === "-e" || value === "--regexp")) {
+			if (args[++index] === undefined) return undefined
+			explicitPattern = true
+			continue
+		}
+		if (!optionsEnded && value.startsWith("-")) {
+			if (!flags.has(value)) return undefined
+			continue
+		}
+		positionals.push(value)
 	}
-	// The extension bundles ripgrep for hosts that do not expose it on PATH. Keep
-	// the fallback limited to the read-only executable and apply the same workspace
-	// boundary check as PATH candidates.
-	if (name !== "rg") return undefined
-	const bundledPath = await getBinPath()
-	if (!bundledPath) return undefined
+	// rg accepts -e after positional files. Decide their role only after every
+	// regexp option was consumed, so an earlier ignored file cannot disappear.
+	const targets = explicitPattern ? positionals : positionals.slice(1)
+	return targets.length > 0 && targets.length <= 16 && !targets.includes("-") ? targets : undefined
+}
+
+function launchEnvironment(): Record<string, string> | undefined {
+	const env: Record<string, string> = {}
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value === undefined) continue
+		// These settings can execute injected code or change rg configuration.
+		// Falling back preserves ordinary intent instead of silently stripping it.
+		if (value && /^(?:LD_|DYLD_|RIPGREP_CONFIG_PATH$)/i.test(key)) return undefined
+		env[key] = value
+	}
+	return env
+}
+
+async function readIgnoreContent(root: string): Promise<string | undefined> {
 	try {
-		const candidate = await fs.realpath(bundledPath)
-		if (isPathWithinRoot(root, candidate)) return undefined
-		if (!(await fs.stat(candidate)).isFile()) return undefined
-		return candidate
-	} catch {
-		return undefined
+		const target = path.join(root, ".alphaignore")
+		if ((await fs.stat(target)).size > 1_048_576) throw new Error("Ignore configuration requires ordinary handling")
+		return await fs.readFile(target, "utf8")
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined
+		throw error
 	}
 }
 
-/** Prepare serially through the scheduler's existing approval and durability boundaries. */
-export async function prepareParallelCommand(
-	{ task, call, callbacks, signal }: ToolExecutionContext,
+async function captureRgRead(
+	task: ToolExecutionContext["task"],
+	args: Readonly<Record<string, unknown>>,
 	policy: ToolPolicySnapshot,
-): Promise<PreparedCommandRead | undefined> {
-	const args: Record<string, unknown> = { ...call.nativeArgs }
-	const usesExecCommandArgs = typeof args.cmd === "string"
-	const commandValue = usesExecCommandArgs ? args.cmd : args.command
-	const requestedCwdValue = usesExecCommandArgs ? args.workdir : args.cwd
-	const requestedTimeoutValue = usesExecCommandArgs
-		? normalizeExecCommandYieldTimeMs(args.yield_time_ms) / 1_000
-		: args.timeout
+): Promise<CapturedRgRead | undefined> {
+	// Historical command/timeout spellings retain their configured transport.
 	if (
-		canonicalizeToolName(call.name) !== "exec_command" ||
-		typeof commandValue !== "string" ||
-		args.verification != null ||
-		!callbacks.toolCallId ||
-		(requestedCwdValue != null && typeof requestedCwdValue !== "string") ||
-		(requestedTimeoutValue != null &&
-			(typeof requestedTimeoutValue !== "number" || !Number.isFinite(requestedTimeoutValue)))
+		typeof args.cmd !== "string" ||
+		args.tty === true ||
+		args.shell != null ||
+		args.login != null ||
+		args.verification != null
 	)
 		return undefined
-	const requestedCwd = typeof requestedCwdValue === "string" ? requestedCwdValue : "."
-	const command = unescapeHtmlEntities(commandValue)
-	// Acceptance checks need the ordinary command path's before/after observations.
-	if (task.workContext?.plan?.checks.some((check) => check.command === command)) return undefined
+	if (task.abort || !policy.allowedTools.includes("exec_command") || policy.disabledTools.includes("exec_command"))
+		return undefined
+	const command = unescapeHtmlEntities(args.cmd)
+	const taskId = task.taskId
+	if (isCommandDeniedByPolicy(policy, command)) return undefined
+	const environment = launchEnvironment()
+	if (!environment) return undefined
+	const environmentIdentity = JSON.stringify(environment)
 	const root = await fs.realpath(task.cwd)
-	const cwd = await fs.realpath(path.resolve(root, requestedCwd))
+	const requestedCwd = typeof args.workdir === "string" ? args.workdir : typeof args.cwd === "string" ? args.cwd : "."
+	const cwd = await fs.realpath(path.resolve(task.cwd, requestedCwd))
 	if (!isPathWithinRoot(root, cwd) || !isPathAllowed(policy, cwd, root)) return undefined
+	const roots = await Promise.all(policy.execution.workspaceRoots.map((directory) => fs.realpath(directory)))
+	if (roots.length === 0 || !roots.some((directory) => isPathWithinRoot(directory, cwd))) return undefined
 	const invocation = await classifyCommandRead(command, root, cwd)
-	if (!invocation) return undefined
-	const env = { ...process.env }
-	// Shell/profile configuration and injected Git configuration belong to the serial handler.
-	if (
-		(invocation.executable === "rg" && env.RIPGREP_CONFIG_PATH) ||
-		(invocation.executable === "git" && Object.keys(env).some((key) => /^GIT_/i.test(key)))
-	)
-		return undefined
-	if (invocation.executable === "git") {
-		try {
-			await fs.lstat(path.join(root, ".git"))
-			// Nested submodule inspection may launch additional Git processes with its own configuration.
-			await fs.lstat(path.join(root, ".gitmodules"))
-			return undefined
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined
-			try {
-				await fs.lstat(path.join(root, ".git"))
-			} catch {
-				return undefined
-			}
-		}
-	}
-	const executable = await resolveExecutable(invocation.executable, root, env)
-	if (!executable) return undefined
-	const binaryStat = await fs.stat(executable)
-	const binaryIdentity = `${binaryStat.size}:${binaryStat.mtimeMs}:${binaryStat.ctimeMs}`
-	const cachedGitSupport = gitIsolationSupport.get(executable)
-	if (invocation.executable === "git" && cachedGitSupport?.identity === binaryIdentity && !cachedGitSupport.supported)
-		return undefined
+	if (!invocation || invocation.executable !== "rg") return undefined
+	const targetArguments = explicitFileTargets(invocation.args)
+	if (!targetArguments) return undefined
+	const semantics = await canonicalRgInspection(invocation.args, root, cwd)
+	if (!semantics) return undefined
 	const ignore = task.alphaIgnoreController
+	if (ignore?.validateCommand(command)) return undefined
 	const ignoreContent = ignore?.alphaIgnoreContent
-	const protectedController = task.alphaProtectedController
-	const mode = await task.getTaskMode()
-	const provider = task.providerRef.deref()
-	if (!provider || ignoreContent?.trim() || ignore?.validateCommand(command)) return undefined
-	const state = provider.getValues()
-	const previewSize = state.terminalOutputPreviewSize ?? DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
-	const globalStoragePath = provider.context?.globalStorageUri?.fsPath
-	const requestedTimeout =
-		typeof requestedTimeoutValue === "number" && requestedTimeoutValue > 0 ? requestedTimeoutValue * 1000 : 0
-	const timeout = Math.min(
-		MAX_READ_TIME_MS,
-		callbacks.resolveCommandTimeoutMs?.(requestedTimeout, command) || requestedTimeout || MAX_READ_TIME_MS,
-	)
-	const assertAuthorized = async (activeSignal?: AbortSignal) => {
-		activeSignal?.throwIfAborted()
-		const current = provider.getValues()
-		if (
-			task.abort ||
-			task.taskMode !== mode ||
-			task.providerRef.deref() !== provider ||
-			!isToolAllowedForMode("exec_command", task.taskMode, [], undefined, args) ||
-			!isToolAllowed(policy, "exec_command") ||
-			isCommandDeniedByPolicy(policy, command) ||
-			current.disabledTools?.some((name) => canonicalizeToolName(name) === "exec_command") ||
-			getCommandDecision(command, current.allowedCommands ?? [], current.deniedCommands ?? []) === "auto_deny" ||
-			task.alphaIgnoreController !== ignore ||
-			ignore?.alphaIgnoreContent !== ignoreContent ||
-			task.alphaProtectedController !== protectedController ||
-			ignore?.validateCommand(command) ||
-			(await fs.realpath(task.cwd)) !== root ||
-			(await fs.realpath(path.resolve(root, requestedCwd))) !== cwd ||
-			(await resolveExecutable(invocation.executable, root, process.env)) !== executable ||
-			!(await classifyCommandRead(command, root, cwd))
-		) {
-			throw new ToolReadDeniedError("Command approval or read scope changed before execution.")
-		}
-		activeSignal?.throwIfAborted()
-	}
-	await assertAuthorized(signal)
-	if (!(await callbacks.askApproval("command", command, requestedCwdValue ? { text: cwd } : undefined)))
-		return undefined
-	// Approval feedback can append another message before the callback returns.
-	let executionId: string | undefined
-	for (let index = task.clineMessages.length - 1; index >= 0; index--) {
-		const message = task.clineMessages[index]
-		if (message.type === "ask" && message.ask === "command") {
-			executionId = message.ts.toString()
-			break
-		}
-	}
-	await assertAuthorized(signal)
-	if (invocation.executable === "git" && cachedGitSupport?.identity !== binaryIdentity) {
-		// Probe once per binary version, under this command's approval. Older Git
-		// lacks --no-lazy-fetch and must retain the ordinary serial command path.
-		const probe = await execa(executable, ["--no-lazy-fetch", "--version"], {
-			cwd,
-			env,
-			shell: false,
-			stdin: "ignore",
-			reject: false,
-			windowsHide: true,
-			maxBuffer: 4_096,
-			timeout: Math.min(timeout, 5_000),
-			cancelSignal: signal,
-			forceKillAfterDelay: 1_000,
-		})
-		signal?.throwIfAborted()
-		if (probe.isCanceled || probe.timedOut)
-			throw new ToolReadDeniedError("Git capability preflight did not complete.")
-		if (gitIsolationSupport.size >= 16) gitIsolationSupport.delete(gitIsolationSupport.keys().next().value!)
-		gitIsolationSupport.set(executable, { identity: binaryIdentity, supported: !probe.failed })
-		if (probe.failed) return { scope: root, serialFallback: true }
-	}
-	// The process ID is separate from the approval message timestamp and never comes from model input.
-	const outputId = randomUUID()
-	const toolCallId = callbacks.toolCallId
-	const storageDir = globalStoragePath
-		? path.join(await getTaskDirectoryPath(globalStoragePath, task.taskId), "command-output")
-		: undefined
-	return {
-		scope: root,
-		run: async (resultCallbacks) => {
-			await assertAuthorized(resultCallbacks.signal)
-			const startedAt = Date.now()
-			const result = await execa(executable, invocation.args, {
-				cwd,
-				env: { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" },
-				shell: false,
-				stdin: "ignore",
-				all: true,
-				reject: false,
-				windowsHide: true,
-				maxBuffer: MAX_OUTPUT_BYTES,
-				timeout,
-				cancelSignal: resultCallbacks.signal,
-				forceKillAfterDelay: 1_000,
-			})
-			const cancelled = result.isCanceled || resultCallbacks.signal?.aborted || task.abort
-			const completedAt = Date.now()
-			const status = cancelled ? "cancelled" : result.failed ? "error" : "success"
-			const output = result.all || result.stderr || ""
-			const trustedExploration =
-				status === "success"
-					? await getTrustedCommandExploration({
-							command,
-							workspaceRoot: root,
-							cwd,
-							executionStatus: "succeeded",
-							exitCode: result.exitCode,
-						})
-					: undefined
-			resultCallbacks.setResultMetadata?.({
-				status,
-				executionStatus: status,
-				exitCode: result.exitCode,
-				timedOut: result.timedOut,
-				...(trustedExploration ? { trustedExploration } : {}),
-				...(status !== "success"
-					? {
-							failure: createToolFailure({
-								reason: cancelled ? "cancelled" : "execution_failed",
-								scopeKind: "operation",
-								scopeIdentity: ["exec_command", cwd, command],
-								effectsStarted: "yes",
-								outcome: "known",
-								recovery: { kind: "repair" },
-							}),
-						}
-					: {}),
-			})
-			const details =
-				`Command: ${command}\nExit code: ${result.exitCode ?? "unavailable"}` +
-				(result.timedOut ? "\nInspection timed out." : "") +
-				(result.isMaxBuffer ? "\nInspection exceeded the 1 MiB output limit; narrow the command." : "") +
-				(cancelled ? "\nCommand cancelled." : "")
-			// Result collection is per call; shared command evidence and UI are published only after workers join.
-			let preview = output
-			let artifact = ""
-			if (storageDir && output.length > 8_000) {
-				const interceptor = new OutputInterceptor({
-					executionId: outputId,
-					taskId: task.taskId,
-					command,
-					storageDir,
-					previewSize,
-				})
-				interceptor.write(output)
-				const persisted = await interceptor.finalize()
-				preview = persisted.preview
-				if (persisted.artifactPath) {
-					const artifactId = path.basename(persisted.artifactPath)
-					artifact = `\nArtifact ID: ${artifactId}\nOutput truncated. Read artifact ${artifactId} with write_stdin using ${JSON.stringify({ artifact_id: artifactId })}.`
-				}
+	const diskIgnoreContent = await readIgnoreContent(root)
+	if (diskIgnoreContent !== ignoreContent) return undefined
+	if (ignoreContent?.trim() && typeof ignore?.validateAccess !== "function") return undefined
+	const protectedFiles = task.alphaProtectedController
+	const captureTargets = async () => {
+		const targets: Array<readonly [string, string, number, number]> = []
+		for (const argument of targetArguments) {
+			const lexical = path.resolve(cwd, argument)
+			const real = await fs.realpath(lexical)
+			const stat = await fs.stat(real)
+			if (
+				!stat.isFile() ||
+				!isPathWithinRoot(root, lexical) ||
+				!isPathWithinRoot(root, real) ||
+				!isPathAllowed(policy, lexical, root) ||
+				!isPathAllowed(policy, real, root) ||
+				ignore?.validateAccess?.(lexical) === false ||
+				ignore?.validateAccess?.(real) === false ||
+				protectedFiles?.isWriteProtected(lexical) ||
+				protectedFiles?.isWriteProtected(real)
+			) {
+				throw new ToolReadDeniedError("Prepared command file scope requires ordinary policy handling")
 			}
-			resultCallbacks.pushToolResult(`${details}${artifact}\n${preview}`)
-			return async () => {
-				await task.recordCommandInspectionResult({
-					toolCallId,
-					executionId: outputId,
-					command,
-					cwd,
-					startedAt,
-					completedAt,
-					status:
-						cancelled || task.abort
-							? "cancelled"
-							: result.timedOut
-								? "timed_out"
-								: result.failed
-									? "failed"
-									: "succeeded",
-					exitCode: result.exitCode,
-					signalName: result.signal,
-				})
-				if (executionId) {
-					const update: CommandExecutionStatus = result.timedOut
-						? { executionId, status: "timeout" }
-						: { executionId, status: "exited", exitCode: result.exitCode }
-					provider.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(update) })
-				}
-				if (!task.abort && !resultCallbacks.signal?.aborted) {
-					task.consecutiveMistakeCount = 0
-					await task.say(
-						"command_output",
-						`${details}${artifact}\n${preview}`,
-						undefined,
-						undefined,
-						undefined,
-						undefined,
-						{ isNonInteractive: true, commandExecutionId: executionId },
-					)
-				}
+			targets.push([lexical, real, stat.dev, stat.ino])
+		}
+		return targets
+	}
+	const targetsIdentity = JSON.stringify(await captureTargets())
+	const policyIdentity = JSON.stringify(policy)
+	const { resolution, overlay } = await resolveRipgrepLaunchEnvironment(environment)
+	if (!resolution || resolution.source === "system" || !path.isAbsolute(resolution.path)) return undefined
+	const executable = await fs.realpath(resolution.path)
+	if (isPathWithinRoot(root, executable) || roots.some((directory) => isPathWithinRoot(directory, executable)))
+		return undefined
+	const executableStat = await fs.stat(executable)
+	if (!executableStat.isFile()) return undefined
+	const binaryIdentity = JSON.stringify([
+		executableStat.dev,
+		executableStat.ino,
+		executableStat.size,
+		executableStat.mtimeMs,
+		executableStat.ctimeMs,
+	])
+	const inspectionIdentity = JSON.stringify(semantics)
+	const env = Object.freeze({ ...environment, ...overlay, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" })
+	const provider = task.providerRef.deref()
+	if (!provider) return undefined
+	const mode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : "code"
+	return Object.freeze({
+		scope: cwd,
+		command,
+		executable,
+		args: Object.freeze([...invocation.args]),
+		env,
+		revalidate: async () => {
+			const currentEnvironment = launchEnvironment()
+			const currentMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : "code"
+			const currentIgnoreContent = await readIgnoreContent(root)
+			const currentLaunch = currentEnvironment
+				? await resolveRipgrepLaunchEnvironment(currentEnvironment)
+				: undefined
+			if (
+				currentMode !== mode ||
+				JSON.stringify(policy) !== policyIdentity ||
+				task.alphaIgnoreController !== ignore ||
+				ignore?.alphaIgnoreContent !== ignoreContent ||
+				currentIgnoreContent !== diskIgnoreContent ||
+				task.alphaProtectedController !== protectedFiles ||
+				ignore?.validateCommand(command)
+			) {
+				throw new ToolReadDeniedError("Prepared command policy changed before launch")
+			}
+			if (
+				task.abort ||
+				task.taskId !== taskId ||
+				JSON.stringify(currentEnvironment) !== environmentIdentity ||
+				task.providerRef.deref() !== provider ||
+				!currentLaunch?.resolution ||
+				currentLaunch.resolution.path !== resolution.path ||
+				currentLaunch.resolution.source !== resolution.source ||
+				JSON.stringify(currentLaunch.overlay) !== JSON.stringify(overlay)
+			) {
+				throw new Error("Prepared command authority or environment changed before launch")
+			}
+			if (await task.getTaskCommandDenialReason?.(command, requestedCwd))
+				throw new ToolReadDeniedError("Prepared command authority was revoked")
+			const [currentRoot, currentCwd, currentExecutable, currentRoots] = await Promise.all([
+				fs.realpath(task.cwd),
+				fs.realpath(path.resolve(task.cwd, requestedCwd)),
+				fs.realpath(resolution.path),
+				Promise.all(policy.execution.workspaceRoots.map((directory) => fs.realpath(directory))),
+			])
+			const currentStat = await fs.stat(currentExecutable)
+			const currentIdentity = JSON.stringify([
+				currentStat.dev,
+				currentStat.ino,
+				currentStat.size,
+				currentStat.mtimeMs,
+				currentStat.ctimeMs,
+			])
+			const currentInspection = await canonicalRgInspection(invocation.args, currentRoot, currentCwd)
+			const currentTargetsIdentity = JSON.stringify(await captureTargets())
+			if (
+				currentRoot !== root ||
+				currentCwd !== cwd ||
+				currentExecutable !== executable ||
+				currentIdentity !== binaryIdentity ||
+				JSON.stringify(currentRoots) !== JSON.stringify(roots) ||
+				JSON.stringify(currentInspection) !== inspectionIdentity ||
+				currentTargetsIdentity !== targetsIdentity
+			) {
+				throw new Error("Prepared command executable or workspace scope changed before launch")
 			}
 		},
+	})
+}
+
+/** Readiness never approves or launches; unsupported commands retain the ordinary executor. */
+export async function isParallelCommandReadReady(
+	task: ToolExecutionContext["task"],
+	args: Readonly<Record<string, unknown>>,
+	policy: ToolPolicySnapshot,
+): Promise<boolean> {
+	try {
+		return (await captureRgRead(task, args, policy)) !== undefined
+	} catch {
+		return false
 	}
+}
+
+export async function prepareParallelCommand(
+	context: ToolExecutionContext,
+	policy: ToolPolicySnapshot,
+	invocation?: { readonly params: ExecuteCommandParams; readonly callbacks: ToolCallbacks },
+): Promise<PreparedCommandRead | undefined> {
+	if (!invocation) return undefined
+	const args = context.call.nativeArgs
+	if (!args || typeof args !== "object") return undefined
+	let captured: CapturedRgRead | undefined
+	try {
+		captured = await captureRgRead(context.task, { ...args }, policy)
+	} catch {
+		return undefined
+	}
+	if (!captured || context.signal?.aborted) return undefined
+	const approved = await executeCommandTool.prepareApprovedRead(
+		invocation.params,
+		context.task,
+		invocation.callbacks,
+		{
+			directCommand: { executable: captured.executable, args: captured.args, env: captured.env },
+			beforeLaunch: captured.revalidate,
+		},
+	)
+	return approved
+		? {
+				scope: captured.scope,
+				run: approved.run,
+				dispose: approved.dispose,
+				commit: approved.commit,
+				settleRejectedRun: approved.settleRejectedRun,
+			}
+		: undefined
 }

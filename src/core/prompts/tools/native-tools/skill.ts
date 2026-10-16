@@ -2,9 +2,9 @@ import type OpenAI from "openai"
 
 const SKILL_DESCRIPTION = `Load and execute a skill by name. Skills provide specialized instructions for common tasks like creating MCP servers or custom modes.
 
-Use this tool when you need to follow specific procedures documented in a skill. Available skills are listed in the AVAILABLE SKILLS section of the system prompt.`
+Use this tool when you need to follow specific procedures documented in a skill. The AVAILABLE SKILLS section is bounded. Use action "list" to discover further available skills, following next_cursor until the relevant skill is found. List responses contain at most 50 entries and 8000 UTF-8 bytes. An omitted action loads a skill for compatibility.`
 
-const SKILL_PARAMETER_DESCRIPTION = `Name of the skill to load (e.g., create-mcp-server, create-mode). Must match a skill name from the available skills list.`
+const SKILL_PARAMETER_DESCRIPTION = `Name of the skill to load (e.g., create-mcp-server, create-mode), including a skill named by the user. Set null for action "list".`
 
 const ARGS_PARAMETER_DESCRIPTION = `Optional context or arguments to pass to the skill`
 
@@ -17,8 +17,17 @@ export default {
 		parameters: {
 			type: "object",
 			properties: {
+				action: {
+					type: ["string", "null"],
+					enum: ["load", "list", null],
+					description: 'Use "load" (or null) for instructions, or "list" for bounded metadata discovery.',
+				},
+				cursor: {
+					type: ["string", "null"],
+					description: 'Opaque next_cursor from a previous action "list" result, or null for the first page.',
+				},
 				skill: {
-					type: "string",
+					type: ["string", "null"],
 					description: SKILL_PARAMETER_DESCRIPTION,
 				},
 				args: {
@@ -26,7 +35,7 @@ export default {
 					description: ARGS_PARAMETER_DESCRIPTION,
 				},
 			},
-			required: ["skill", "args"],
+			required: ["skill", "args", "action", "cursor"],
 			additionalProperties: false,
 		},
 	},

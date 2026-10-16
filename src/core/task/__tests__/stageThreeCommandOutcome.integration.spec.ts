@@ -159,11 +159,15 @@ class ControlledProcess extends EventEmitter {
 	private readonly completion: Promise<void>
 	private resolveCompletion!: () => void
 	private rejectCompletion!: (error: unknown) => void
+	private readonly outputFinalization: Promise<void>
+	private resolveOutputFinalization!: () => void
+	private rejectOutputFinalization!: (error: unknown) => void
 	private readonly callbacks: AlphaTerminalCallbacks
 	private completionStarted = false
 	private backgrounded = false
 	private aborted = false
 	private _isSettled = false
+	private _isOutputFinalized = false
 
 	constructor(command: string, callbacks: AlphaTerminalCallbacks) {
 		super()
@@ -173,10 +177,33 @@ class ControlledProcess extends EventEmitter {
 			this.resolveCompletion = resolve
 			this.rejectCompletion = reject
 		})
+		this.outputFinalization = new Promise<void>((resolve, reject) => {
+			this.resolveOutputFinalization = resolve
+			this.rejectOutputFinalization = reject
+		})
+		void this.outputFinalization.catch(() => undefined)
+		callbacks.onProcessCreated?.(this as unknown as AlphaTerminalProcess)
 	}
 
 	get isSettled(): boolean {
 		return this._isSettled
+	}
+
+	get isOutputFinalized(): boolean {
+		return this._isOutputFinalized
+	}
+
+	waitForOutputFinalization = () => this.outputFinalization
+
+	private async finishOutput(): Promise<void> {
+		const [outcome] = await Promise.allSettled([
+			Promise.resolve().then(() => this.callbacks.onOutputClosed?.(this as unknown as AlphaTerminalProcess)),
+		])
+		this._isOutputFinalized = true
+		this.emit("finalized")
+		// Archive rejection belongs to the passive barrier; background UI completion is independent.
+		if (outcome.status === "rejected") this.rejectOutputFinalization(outcome.reason)
+		else this.resolveOutputFinalization()
 	}
 
 	continue = vi.fn(() => {
@@ -222,6 +249,7 @@ class ControlledProcess extends EventEmitter {
 		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
 		this._isSettled = true
 		this.emit("completed", output)
+		await this.finishOutput()
 		this.resolveCompletion()
 	}
 
@@ -237,8 +265,9 @@ class ControlledProcess extends EventEmitter {
 		)
 		this._isSettled = true
 		this.emit("completed", output)
-		this.resolveCompletion()
 		await outputCompletion
+		await this.finishOutput()
+		this.resolveCompletion()
 	}
 
 	completeWithoutOutputCallback(details: ExitCodeDetails): void {
@@ -278,7 +307,7 @@ class ControlledProcess extends EventEmitter {
 type ControlledTerminal = Omit<AlphaTerminal, "runCommand"> & {
 	processForTest?: ControlledProcess
 	runStarted: CompletionGate
-	runCommand: ReturnType<typeof vi.fn>
+	runCommand: import("vitest").Mock
 }
 
 function controlledTerminal(
@@ -320,14 +349,14 @@ type TaskHarness = {
 	workspacePath: string
 	provider: {
 		context: { globalStorageUri: { fsPath: string } }
-		getState: ReturnType<typeof vi.fn>
-		postMessageToWebview: ReturnType<typeof vi.fn>
-		runWorkspaceMutation: ReturnType<typeof vi.fn>
-		recordParentVerificationEvidence: ReturnType<typeof vi.fn>
-		reservePrimaryMutation: ReturnType<typeof vi.fn>
-		releasePrimaryMutation: ReturnType<typeof vi.fn>
-		recordPrimaryMutation: ReturnType<typeof vi.fn>
-		captureCommandVerification: ReturnType<typeof vi.fn>
+		getState: import("vitest").Mock
+		postMessageToWebview: import("vitest").Mock
+		runWorkspaceMutation: import("vitest").Mock
+		recordParentVerificationEvidence: import("vitest").Mock
+		reservePrimaryMutation: import("vitest").Mock
+		releasePrimaryMutation: import("vitest").Mock
+		recordPrimaryMutation: import("vitest").Mock
+		captureCommandVerification: import("vitest").Mock
 	}
 	toolResults: () => ToolResultBlock[]
 	cleanup: () => Promise<void>
@@ -356,6 +385,8 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			taskKind: "primary",
 			subagentRole: undefined,
 			workspacePath: fixture.workspacePath,
+			clineMessages: [],
+			apiConversationHistory: [],
 			lastMessageTs: 1_700_000_000_000,
 			didRejectTool: false,
 			didToolFailInCurrentTurn: false,
@@ -374,6 +405,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			toolRepetitionDetector: {
 				recordOutcome: vi.fn(() => ({ action: "continue" as const })),
 			},
+			taskCancellationController: lifetimeController,
 			getTaskLifetimeCancellationSignal: vi.fn(() => lifetimeController.signal),
 			requestToolApproval: undefined,
 			ask: vi.fn(async (type: string) =>
@@ -401,7 +433,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			emitFinalTokenUsageUpdate: vi.fn(),
 			emit: vi.fn(),
 			dispose: vi.fn(() => lifetimeController.abort()),
-			saveAlphaMessages: vi.fn(async () => undefined),
+			saveAlphaMessages: vi.fn(async () => true),
 			appendAgentTurnEvent: vi.fn(async () => undefined),
 			flushAgentTurnEvents: vi.fn(async () => undefined),
 			finishCanonicalLifecycleCancellation: vi.fn(async () => undefined),
@@ -1440,9 +1472,16 @@ describe("Stage Three command outcome integration", () => {
 			])
 			expect(resultIds(harness)).toEqual(["still-running"])
 			expect(terminal.processForTest?.isSettled).toBe(false)
-			// The process was deliberately left running for the assertions above. Join
-			// the real Task cancellation path before the harness removes its workspace.
-			await harness.task.abortTask()
+			// The public command promise already yielded; Stop still owns physical exit and output closure.
+			const process = terminal.processForTest!
+			expect(process.isOutputFinalized).toBe(false)
+			const stopRequested = new Promise<void>((resolve) => process.once("aborted", resolve))
+			const stopping = harness.task.abortTask()
+			await stopRequested
+			await process.complete({ exitCode: undefined, signalName: "SIGTERM" }, "background command stopped")
+			await stopping
+			expect(process.wasAborted()).toBe(true)
+			expect(process.isOutputFinalized).toBe(true)
 		})
 	})
 
@@ -1519,6 +1558,7 @@ describe("Stage Three command outcome integration", () => {
 			await stopRequested
 			await terminal.processForTest!.complete({ exitCode: 0 }, "late successful close after cancellation")
 			await abort
+			expect(terminal.processForTest!.isOutputFinalized).toBe(true)
 			const outcome = await run
 
 			expect(outcome.status).toBe("aborted")

@@ -314,8 +314,8 @@ describe("scheduled profiles and skills", () => {
 		)
 		expect(run).toMatchObject({ reasoningPreference, reasoningState })
 		const createdTask = (await provider.createTask.mock.results[0]?.value) as {
-			prepareReasoningForAdmission: ReturnType<typeof vi.fn>
-			start: ReturnType<typeof vi.fn>
+			prepareReasoningForAdmission: import("vitest").Mock
+			start: import("vitest").Mock
 		}
 		expect(createdTask.prepareReasoningForAdmission).toHaveBeenCalledOnce()
 		expect(createdTask.start).toHaveBeenCalledOnce()

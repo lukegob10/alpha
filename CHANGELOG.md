@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.0
+
+### Minor Changes
+
+- Align task continuation, cancellation, recovery, and completion with the shared agent lifecycle, preserving context and durable results across reloads.
+- Preserve ordered provider responses, reasoning state, tool outcomes, command sessions, and bounded output through retries and interruptions.
+- Strengthen managed-agent ownership, delegated-task cleanup, progress delivery, and question and plan handoffs.
+- Integrate instruction discovery, skills, lifecycle hooks, MCP media, and image validation with the existing TypeScript harness.
+- Retain Alpha Tickets, HTML previews, scheduled tasks, and existing execution protections while expanding deterministic and exact VS Code 1.125.0 coverage.
+- Update the extension version and in-app release announcement together for Alpha 3.2.0.
+
 ## 3.1.12
 
 ### Patch Changes

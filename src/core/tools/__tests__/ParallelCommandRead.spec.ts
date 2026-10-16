@@ -2,65 +2,101 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { execa } from "execa"
-import type { Task } from "../../task/Task"
-import type { ToolExecutionContext } from "../ToolRegistry"
+import { Task, type CommandExecutionEvidence } from "../../task/Task"
+import { ToolRegistry, type ToolExecutionContext } from "../ToolRegistry"
+import { createTaskToolSurface } from "../TaskToolSurface"
 import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
-import { classifyCommandRead, prepareParallelCommand } from "../ParallelCommandRead"
+import { classifyCommandRead, isParallelCommandReadReady } from "../ParallelCommandRead"
+import { AlphaIgnoreController } from "../../ignore/AlphaIgnoreController"
+import { AlphaProtectedController } from "../../protect/AlphaProtectedController"
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 
-const { getBinPathMock } = vi.hoisted(() => ({
-	getBinPathMock: vi.fn(),
+const platform = vi.hoisted(() => ({ resolveRipgrep: vi.fn() }))
+vi.mock("../../../services/ripgrep", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../services/ripgrep")>()),
+	resolveRipgrepBinary: platform.resolveRipgrep,
+}))
+vi.mock("vscode", async (importOriginal) => ({
+	...(await importOriginal<typeof import("vscode")>()),
+	RelativePattern: class {
+		constructor(
+			readonly base: string,
+			readonly pattern: string,
+		) {}
+	},
 }))
 
-vi.mock("execa", () => ({ execa: vi.fn() }))
-vi.mock("../../../services/ripgrep", () => ({ getBinPath: getBinPathMock }))
+vi.mock("execa", () => ({ execa: vi.fn(), ExecaError: class extends Error {} }))
 
-describe("isolated command reads", () => {
+describe("command-read classification and session execution boundary", () => {
 	let directory: string
 	let root: string
-	let bundledRipgrep: string
 	let context: ToolExecutionContext
-	let state: { disabledTools: string[]; allowedCommands: string[]; deniedCommands: string[] }
+	let executable: string
+	let replaceProvider: () => void
 	const policy = createToolPolicySnapshot({ visibleTools: ["execute_command"] })
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		for (const key of [
+			"RIPGREP_CONFIG_PATH",
+			"GIT_CONFIG_PARAMETERS",
+			"GIT_TRACE",
+			"GIT_REDIRECT_STDOUT",
+			"GIT_PAGER",
+		]) {
+			vi.stubEnv(key, undefined)
+		}
 		directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-command-read-")))
 		root = path.join(directory, "workspace")
 		await fs.mkdir(path.join(root, ".git"), { recursive: true })
 		await fs.mkdir(path.join(root, "src"))
 		await fs.writeFile(path.join(root, "src", "example.ts"), "const needle = 1")
-		const bin = path.join(directory, "bin")
-		await fs.mkdir(bin)
-		bundledRipgrep = path.join(directory, "bundled", process.platform === "win32" ? "rg.exe" : "rg")
-		await fs.mkdir(path.dirname(bundledRipgrep), { recursive: true })
-		await fs.writeFile(bundledRipgrep, "")
-		getBinPathMock.mockResolvedValue(bundledRipgrep)
-		for (const name of ["git", "rg"])
-			await fs.writeFile(path.join(bin, process.platform === "win32" ? `${name}.exe` : name), "")
-		for (const key of Object.keys(process.env))
-			if (/^GIT_|^RIPGREP_CONFIG_PATH$/i.test(key)) vi.stubEnv(key, undefined)
-		vi.stubEnv(Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH", bin)
-		state = { disabledTools: [], allowedCommands: [], deniedCommands: [] }
-		const provider = { getValues: () => state, postMessageToWebview: vi.fn(), context: {} }
+		executable = path.join(directory, process.platform === "win32" ? "rg.exe" : "rg")
+		await fs.writeFile(executable, "controlled trusted executable metadata\n")
+		await fs.chmod(executable, 0o755)
+		platform.resolveRipgrep.mockResolvedValue({
+			path: executable,
+			source: "bundled",
+			reason: "unit platform fixture",
+		})
+		const ignoreController = new AlphaIgnoreController(root)
+		await ignoreController.initialize()
+		const provider = { getState: async () => ({}), getValues: () => ({}), postMessageToWebview: vi.fn() }
+		const lifetime = new AbortController()
+		let currentProvider = provider
+		replaceProvider = () => {
+			currentProvider = { ...provider }
+		}
 		const task = {
 			taskId: "command-read",
-			taskKind: "primary",
 			cwd: root,
-			abort: false,
 			taskMode: "code",
 			getTaskMode: async () => "code",
-			providerRef: { deref: () => provider },
-			lastMessageTs: 123,
-			clineMessages: [{ ts: 123, type: "ask", ask: "command", text: "git status --short" }],
+			getTaskLifetimeCancellationSignal: () => lifetime.signal,
+			providerRef: { deref: () => currentProvider },
+			abort: false,
+			clineMessages: [],
+			commandExecutionEvidence: new Map<string, CommandExecutionEvidence>(),
+			pendingCommandVerification: Promise.resolve(),
+			completionRuntimeRevision: 0,
+			beginCommandExecution: Task.prototype.beginCommandExecution,
+			admitCommandExecution: Task.prototype.admitCommandExecution,
+			completeCommandExecution: Task.prototype.completeCommandExecution,
+			failCommandExecution: Task.prototype.failCommandExecution,
+			getCommandExecutionEvidence: Task.prototype.getCommandExecutionEvidence,
+			prepareCommandEvidenceSlot: Task.prototype["prepareCommandEvidenceSlot"],
+			enqueueCommandEvidence: Task.prototype["enqueueCommandEvidence"],
+			publishParentVerificationEvidence: vi.fn(),
+			recordToolError: vi.fn(),
 			recordCommandInspectionResult: vi.fn(),
-			beginCommandExecution: vi.fn(),
-			completeCommandExecution: vi.fn(),
-			failCommandExecution: vi.fn(),
 			say: vi.fn(),
-			alphaIgnoreController: { validateCommand: () => undefined },
+			alphaIgnoreController: ignoreController,
+			alphaProtectedController: new AlphaProtectedController(root),
 		} as unknown as Task
 		context = {
 			task,
+			mode: "code",
 			call: {
 				id: "call-1",
 				name: "execute_command",
@@ -72,24 +108,254 @@ describe("isolated command reads", () => {
 			callbacks: {
 				toolCallId: "call-1",
 				askApproval: vi.fn(async () => true),
+				askCommandApproval: vi.fn(async (_type, command) => {
+					task.clineMessages.push({ ts: 1_001, type: "ask", ask: "command", text: command })
+					return { approved: true, commandExecutionId: "1001" }
+				}),
 				handleError: vi.fn(),
 				pushToolResult: vi.fn(),
 				setResultMetadata: vi.fn(),
 			},
 		}
-		vi.mocked(execa).mockResolvedValue({
-			all: "result",
-			exitCode: 0,
-			failed: false,
-			timedOut: false,
-			isCanceled: false,
-		} as never)
 	})
 
 	afterEach(async () => {
+		context.task.alphaIgnoreController?.dispose()
+		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
+		TerminalRegistry.releaseTerminalsForTask(context.task.taskId)
 		await fs.rm(directory, { recursive: true, force: true })
 	})
+
+	function native(command = "rg -n needle src/example.ts", extra: Record<string, unknown> = {}) {
+		const args = { cmd: command, ...extra }
+		context.call = { ...context.call, name: "exec_command", nativeArgs: args } as ToolExecutionContext["call"]
+		return {
+			args,
+			policy: createToolPolicySnapshot({ visibleTools: ["exec_command"], execution: { workspaceRoots: [root] } }),
+		}
+	}
+
+	function prepareWithRegistry(context: ToolExecutionContext, capturedPolicy: typeof policy) {
+		const descriptor = new ToolRegistry().resolve(context.call.name)
+		if (!descriptor?.prepareParallelCommand) throw new Error("Command read descriptor is unavailable")
+		return descriptor.prepareParallelCommand(context, capturedPolicy)
+	}
+
+	it.each([undefined, false])(
+		"admits a trusted explicit-file rg pipe with tty=%s without spawning during preparation",
+		async (tty) => {
+			const { args, policy: capturedPolicy } = native(
+				"rg -n needle src/example.ts",
+				tty === undefined ? {} : { tty },
+			)
+			expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(true)
+			const surface = createTaskToolSurface({
+				registry: new ToolRegistry(),
+				mode: "code",
+				cwd: root,
+				applyProfile: false,
+				execution: { workspaceRoots: [root] },
+			})
+			expect(
+				await Task.prototype["isPreEofReadonlyToolCall"].call(
+					context.task,
+					{
+						type: "tool_call",
+						id: "ready-native",
+						name: "exec_command",
+						arguments: args,
+					},
+					surface,
+				),
+			).toBe(true)
+			expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+			const prepared = await prepareWithRegistry(context, capturedPolicy)
+			try {
+				expect(prepared?.scope).toBe(root)
+				expect(prepared?.run).toBeTypeOf("function")
+				expect(context.callbacks.askCommandApproval).toHaveBeenCalledOnce()
+				expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+				expect(context.task.say).not.toHaveBeenCalled()
+				expect(execa).not.toHaveBeenCalled()
+			} finally {
+				await prepared?.dispose?.()
+			}
+		},
+	)
+
+	it("allows the exact explicit target while a real nonempty ignore policy blocks an rg directory traversal", async () => {
+		await fs.writeFile(path.join(root, ".alphaignore"), "src/hidden.txt\n")
+		await fs.writeFile(path.join(root, "src", "hidden.txt"), "needle hidden")
+		await context.task.alphaIgnoreController!.initialize()
+		const { args, policy: capturedPolicy } = native()
+		expect(context.task.alphaIgnoreController!.validateAccess("src/hidden.txt")).toBe(false)
+		expect(context.task.alphaIgnoreController!.validateCommand("rg -n needle src")).toBeUndefined()
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(true)
+		expect(await isParallelCommandReadReady(context.task, { cmd: "rg -n needle src" }, capturedPolicy)).toBe(false)
+		context.call = { ...context.call, nativeArgs: { cmd: "rg -n needle src" } } as ToolExecutionContext["call"]
+		expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+		expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it.each(["src/hidden.txt", "AGENTS.md"])(
+		"does not admit the ignored or protected explicit target %s",
+		async (target) => {
+			await fs.writeFile(path.join(root, ".alphaignore"), "src/hidden.txt\n")
+			await fs.writeFile(path.join(root, target), "needle protected or ignored")
+			await context.task.alphaIgnoreController!.initialize()
+			const { args, policy: capturedPolicy } = native(`rg -n needle ${target}`)
+			expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+			expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+			expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+			expect(execa).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each([
+		{ label: "ignored positional file before -e", command: "rg .env -e secret src/example.ts" },
+		{ label: "protected positional file before --regexp", command: "rg AGENTS.md --regexp secret src/example.ts" },
+	])("does not omit an $label from admission", async ({ command }) => {
+		await fs.writeFile(path.join(root, ".alphaignore"), ".env\n")
+		await fs.writeFile(path.join(root, ".env"), "secret ignored")
+		await fs.writeFile(path.join(root, "AGENTS.md"), "secret protected")
+		await context.task.alphaIgnoreController!.initialize()
+		const { args, policy: capturedPolicy } = native(command)
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+		expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+		expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it("preserves an explicit dash-prefixed file after the rg option terminator", async () => {
+		await fs.writeFile(path.join(root, "-e"), "needle literal filename")
+		const { args, policy: capturedPolicy } = native("rg -e needle -- -e")
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(true)
+		const prepared = await prepareWithRegistry(context, capturedPolicy)
+		try {
+			expect(prepared?.run).toBeTypeOf("function")
+			expect(execa).not.toHaveBeenCalled()
+		} finally {
+			await prepared?.dispose?.()
+		}
+	})
+
+	it.each([
+		"rg -n needle .",
+		"rg --files src",
+		"rg -n needle",
+		"rg --glob '*.ts' needle src/example.ts",
+		"rg -n needle -",
+	])("keeps unaudited traversal or argv on the ordinary path: %s", async (command) => {
+		const { args, policy: capturedPolicy } = native(command)
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+		expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+		expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it("bounds the prepared regular-file target set before approval", async () => {
+		const targets = Array.from({ length: 17 }, (_, index) => `src/bounded-${index}.txt`)
+		await Promise.all(targets.map((target) => fs.writeFile(path.join(root, target), "needle")))
+		const { args, policy: capturedPolicy } = native(`rg -n needle ${targets.join(" ")}`)
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+		expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+		expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		{ label: "PTY", extra: { tty: true } },
+		{ label: "shell", extra: { shell: "bash" } },
+		{ label: "login", extra: { login: true } },
+		{ label: "verification", extra: { verification: { change_set_ids: ["change"] } } },
+	])("does not convert unsupported $label semantics into an audited pipe", async ({ extra }) => {
+		const { args, policy: capturedPolicy } = native(undefined, extra)
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+		expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+		expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it.each(["system", "workspace", "missing", "configured environment"])(
+		"falls back before approval for %s executable capability",
+		async (kind) => {
+			if (kind === "system") platform.resolveRipgrep.mockResolvedValue({ path: executable, source: "system" })
+			if (kind === "workspace") {
+				const inWorkspace = path.join(root, process.platform === "win32" ? "rg.exe" : "rg")
+				await fs.copyFile(executable, inWorkspace)
+				platform.resolveRipgrep.mockResolvedValue({ path: inWorkspace, source: "bundled" })
+			}
+			if (kind === "missing") await fs.unlink(executable)
+			if (kind === "configured environment")
+				vi.stubEnv("RIPGREP_CONFIG_PATH", path.join(directory, "injected-config"))
+			const { args, policy: capturedPolicy } = native()
+			expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+			expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
+			expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+			expect(execa).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["environment", "executable", "scope", "ignore", "mode", "provider", "authority"])(
+		"revalidates captured %s after approval before launching the shared collector",
+		async (kind) => {
+			const { policy: capturedPolicy } = native()
+			const prepared = await prepareWithRegistry(context, capturedPolicy)
+			try {
+				expect(prepared?.run).toBeTypeOf("function")
+				if (!prepared?.run) return
+				if (kind === "environment") vi.stubEnv("ALPHA_PREPARED_REVALIDATION", "changed after approval")
+				if (kind === "executable")
+					await fs.writeFile(executable, "replacement executable with a different identity and size")
+				if (kind === "scope") {
+					const outside = path.join(directory, "outside")
+					await fs.mkdir(outside)
+					await fs.writeFile(path.join(outside, "example.ts"), "needle outside")
+					await fs.rename(path.join(root, "src"), path.join(root, "old-src"))
+					await fs.symlink(outside, path.join(root, "src"), process.platform === "win32" ? "junction" : "dir")
+				}
+				if (kind === "ignore") {
+					await fs.writeFile(path.join(root, ".alphaignore"), "src/example.ts\n")
+					await context.task.alphaIgnoreController!.initialize()
+				}
+				if (kind === "mode") context.task.getTaskMode = async () => "architect"
+				if (kind === "provider") replaceProvider()
+				if (kind === "authority")
+					context.task.getTaskCommandDenialReason = () => "Task command authority was revoked"
+				const observed = await prepared.run(context.callbacks).then(
+					async (finalize) => {
+						await finalize()
+						return { status: "fulfilled" as const }
+					},
+					(reason) => ({ status: "rejected" as const, reason }),
+				)
+				if (observed.status === "rejected") {
+					expect(String(observed.reason)).toMatch(/Prepared command/)
+				}
+				expect(execa).not.toHaveBeenCalled()
+				expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith(
+					expect.objectContaining({ status: expect.stringMatching(/error|denied/) }),
+				)
+				if (kind === "ignore" || kind === "authority") {
+					expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith(
+						expect.objectContaining({
+							status: "denied",
+							failure: expect.objectContaining({
+								reason: "policy_denied",
+								effectsStarted: "no",
+								outcome: "known",
+								recovery: { kind: "user-action" },
+							}),
+						}),
+					)
+				}
+			} finally {
+				await prepared?.dispose?.()
+			}
+		},
+	)
 
 	it.each([
 		"git status --short",
@@ -103,7 +369,7 @@ describe("isolated command reads", () => {
 		"rg -n needle src",
 		"rg --files src",
 		"rg -n -e 'needle|other' src",
-	])("admits independent inspection %s", async (command) => {
+	])("recognizes a conservative read without granting execution: %s", async (command) => {
 		expect(await classifyCommandRead(command, root, root)).toBeDefined()
 	})
 
@@ -132,295 +398,106 @@ describe("isolated command reads", () => {
 		"git diff --output out.txt",
 		"git status $(whoami)",
 		"git.cmd status",
-	])("keeps unsupported or effectful command serial: %s", async (command) => {
+	])("does not classify unsupported or effectful commands as safe reads: %s", async (command) => {
 		expect(await classifyCommandRead(command, root, root)).toBeUndefined()
 	})
 
-	it("approves before starting and publishes evidence and output only after joining", async () => {
-		const read = await prepareParallelCommand(context, policy)
-		expect(read).toBeDefined()
-		expect(context.callbacks.askApproval).toHaveBeenCalledExactlyOnceWith(
-			"command",
-			"git status --short",
-			undefined,
-		)
-		expect(execa).toHaveBeenCalledTimes(1)
-		const finalize = await read!.run!(context.callbacks)
-		expect(execa).toHaveBeenCalledWith(
-			expect.stringContaining("git"),
-			expect.arrayContaining(["--no-optional-locks", "--no-lazy-fetch", "core.fsmonitor=false"]),
-			expect.objectContaining({
-				shell: false,
-				stdin: "ignore",
-				windowsHide: true,
-				maxBuffer: 1_048_576,
-				timeout: 60_000,
-			}),
-		)
+	it.each([
+		"git status --short --untracked-files=all",
+		"git diff -- README.md lib/cart.cjs",
+		"git diff --cached -- README.md",
+		"git ls-files --others --exclude-standard",
+	])("waits for provider EOF and ordinary policy handling for %s", async (command) => {
+		const surface = createTaskToolSurface({
+			registry: new ToolRegistry(),
+			mode: "code",
+			applyProfile: false,
+			execution: { workspaceRoots: [root] },
+		})
+		const call = {
+			type: "tool_call" as const,
+			id: "native-read",
+			name: "exec_command",
+			arguments: { cmd: command, workdir: root, yield_time_ms: 10_000, max_output_tokens: 2_000 },
+		}
+		expect(await prepareWithRegistry(context, surface.policy)).toBeUndefined()
+		expect(await Task.prototype["isPreEofReadonlyToolCall"].call(context.task, call, surface)).toBe(false)
+		context.task.alphaIgnoreController!.alphaIgnoreContent = ".alpha-development-*\n.alpha-e2e-owned.json\n"
+		expect(await Task.prototype["isPreEofReadonlyToolCall"].call(context.task, call, surface)).toBe(false)
+		expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	// Yield deadlines, output budgets, nonzero numeric exits, cancellation, and
+	// session publication belong to the ordinary executor's existing regressions.
+	it.each([
+		{ name: "exec_command", args: { cmd: "git diff --exit-code", yield_time_ms: 10_000, max_output_tokens: 0 } },
+		{ name: "exec_command", args: { cmd: "rg -n needle src", tty: true, max_output_tokens: 1 } },
+		{ name: "execute_command", args: { command: "git diff --exit-code", timeout: 10 } },
+		{ name: "shell", args: { command: "rg -n needle src", timeout: 10 } },
+	])("routes $name through the session executor before approval or process launch", async ({ name, args }) => {
+		context.call = { ...context.call, name, nativeArgs: args } as ToolExecutionContext["call"]
+		expect(await isParallelCommandReadReady(context.task, args, policy)).toBe(false)
+		expect(await prepareWithRegistry(context, policy)).toBeUndefined()
+		expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(context.callbacks.pushToolResult).not.toHaveBeenCalled()
+		expect(context.task.recordCommandInspectionResult).not.toHaveBeenCalled()
 		expect(context.task.say).not.toHaveBeenCalled()
-		expect(context.task.beginCommandExecution).not.toHaveBeenCalled()
-		expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith(
-			expect.objectContaining({ status: "success", exitCode: 0, trustedExploration: expect.any(Object) }),
-		)
-		await finalize()
-		expect(context.task.recordCommandInspectionResult).toHaveBeenCalledWith(
-			expect.objectContaining({ toolCallId: "call-1", exitCode: 0, status: "succeeded", cwd: root }),
-		)
-		expect(context.task.say).toHaveBeenCalledWith(
-			"command_output",
-			expect.stringContaining("result"),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ isNonInteractive: true, commandExecutionId: "123" },
-		)
+		expect(execa).not.toHaveBeenCalled()
 	})
 
-	it("uses the isolated executor for audited reads from managed child tasks", async () => {
-		const child = context.task as unknown as { taskKind: string; subagentRole: string }
-		child.taskKind = "subagent"
-		child.subagentRole = "review"
-
-		const read = await prepareParallelCommand(context, policy)
-
-		expect(read).toBeDefined()
-		expect(context.callbacks.askApproval).toHaveBeenCalledWith("command", "git status --short", undefined)
-		const finalize = await read!.run!(context.callbacks)
-		expect(execa).toHaveBeenCalledWith(
-			expect.stringContaining("git"),
-			expect.arrayContaining(["--no-lazy-fetch", "--no-pager", "status", "--short"]),
-			expect.objectContaining({ shell: false, stdin: "ignore" }),
-		)
-		await finalize()
+	it("falls back before filesystem or executable capability inspection", async () => {
+		const realpath = vi
+			.spyOn(fs, "realpath")
+			.mockRejectedValue(new Error("Unexpected isolated execution preflight"))
+		expect(await prepareWithRegistry(context, policy)).toBeUndefined()
+		expect(realpath).not.toHaveBeenCalled()
+		expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
 	})
-
-	it.each(["root-relative", "root-absolute", "nested-relative", "nested-absolute"])(
-		"prepares an exec_command rg read from %s workdir",
-		async (directory) => {
-			const command = "rg -n needle ."
-			const cwd = directory.startsWith("nested") ? path.join(root, "src") : root
-			const workdir = directory.endsWith("absolute") ? cwd : directory.startsWith("nested") ? "src" : "."
-			context.call = {
-				...context.call,
-				name: "exec_command",
-				nativeArgs: { cmd: command, workdir, yield_time_ms: 10_000 },
-			}
-
-			const read = await prepareParallelCommand(context, policy)
-
-			// Invocation cwd can narrow; the scheduler's read scope still covers the workspace.
-			expect(read).toMatchObject({ scope: root })
-			expect(context.callbacks.askApproval).toHaveBeenCalledExactlyOnceWith("command", command, { text: cwd })
-			const finalize = await read!.run!(context.callbacks)
-			expect(execa).toHaveBeenCalledWith(
-				expect.stringContaining("rg"),
-				expect.arrayContaining(["--no-config", "-n", "needle", "."]),
-				expect.objectContaining({ cwd, timeout: 10_000, shell: false }),
-			)
-			await finalize()
-		},
-	)
 
 	it.each(["relative", "absolute", "junction", "captured-policy"])(
-		"rejects %s workdir outside the authorized workspace before approval or process launch",
-		async (directory) => {
+		"defers %s workdir enforcement to the ordinary handler without launching an isolated process",
+		async (kind) => {
 			const outside = path.join(root, "..", "outside")
 			await fs.mkdir(outside)
 			const link = path.join(root, "linked-outside")
-			if (directory === "junction")
-				await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
+			if (kind === "junction") await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
 			context.call = {
 				...context.call,
 				name: "exec_command",
 				nativeArgs: {
 					cmd: "rg --files .",
 					workdir:
-						directory === "captured-policy"
+						kind === "captured-policy"
 							? root
-							: directory === "relative"
+							: kind === "relative"
 								? "../outside"
-								: directory === "junction"
+								: kind === "junction"
 									? link
 									: outside,
 				},
 			}
 			const capturedPolicy =
-				directory === "captured-policy"
+				kind === "captured-policy"
 					? createToolPolicySnapshot({
 							visibleTools: ["exec_command"],
 							execution: { workspaceRoots: [path.join(root, "src")] },
 						})
 					: policy
-			expect(await prepareParallelCommand(context, capturedPolicy)).toBeUndefined()
+			expect(await prepareWithRegistry(context, capturedPolicy)).toBeUndefined()
 			expect(context.callbacks.askApproval).not.toHaveBeenCalled()
 			expect(execa).not.toHaveBeenCalled()
-		},
-	)
-
-	it("rejects a nested workdir replaced with an escaping junction after approval", async () => {
-		const nested = path.join(root, "src")
-		const outside = path.join(root, "..", "outside")
-		await fs.mkdir(outside)
-		context.call = { ...context.call, name: "exec_command", nativeArgs: { cmd: "rg --files .", workdir: "src" } }
-		const read = await prepareParallelCommand(context, policy)
-		expect(read).toBeDefined()
-		await fs.rename(nested, path.join(root, "original-src"))
-		await fs.symlink(outside, nested, process.platform === "win32" ? "junction" : "dir")
-		await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
-		expect(execa).not.toHaveBeenCalled()
-	})
-
-	it("uses the extension-bundled ripgrep when rg is absent from PATH", async () => {
-		context.call = {
-			...context.call,
-			name: "exec_command",
-			nativeArgs: { cmd: "rg -n needle src" },
-		}
-		vi.stubEnv(Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH", "")
-
-		const read = await prepareParallelCommand(context, policy)
-
-		expect(read).toMatchObject({ scope: root })
-		expect(getBinPathMock).toHaveBeenCalled()
-		const finalize = await read!.run!(context.callbacks)
-		expect(execa).toHaveBeenCalledWith(
-			bundledRipgrep,
-			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
-			expect.objectContaining({ cwd: root, shell: false }),
-		)
-		await finalize()
-	})
-
-	it("allows isolated rg reads when only an unrelated Git environment setting is present", async () => {
-		context.call = {
-			...context.call,
-			name: "exec_command",
-			nativeArgs: { cmd: "rg -n needle src" },
-		}
-		vi.stubEnv("GIT_PAGER", "custom")
-
-		const read = await prepareParallelCommand(context, policy)
-
-		expect(read).toMatchObject({ scope: root })
-		const finalize = await read!.run!(context.callbacks)
-		expect(execa).toHaveBeenCalledExactlyOnceWith(
-			expect.any(String),
-			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
-			expect.objectContaining({ cwd: root, shell: false }),
-		)
-		await finalize()
-	})
-
-	it("keeps non-read exec_command calls on the ordinary path without approval or process start", async () => {
-		context.call = {
-			...context.call,
-			name: "exec_command",
-			nativeArgs: { cmd: "node -e \\\"require('fs').writeFileSync('unsafe.txt', 'x')\\\"" },
-		}
-
-		expect(await prepareParallelCommand(context, policy)).toBeUndefined()
-		expect(context.callbacks.askApproval).not.toHaveBeenCalled()
-		expect(execa).not.toHaveBeenCalled()
-	})
-
-	it("rechecks changed approval for native exec_command before starting the read process", async () => {
-		context.call = {
-			...context.call,
-			name: "exec_command",
-			nativeArgs: { cmd: "rg -n needle src" },
-		}
-		const read = await prepareParallelCommand(context, policy)
-		expect(read).toBeDefined()
-
-		state.deniedCommands.push("rg")
-		await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
-		expect(execa).not.toHaveBeenCalled()
-	})
-
-	it("associates output with the command approval when approval feedback follows it", async () => {
-		context.task.clineMessages.push({ ts: 124, type: "say", say: "user_feedback", text: "Proceed" })
-		Object.defineProperty(context.task, "lastMessageTs", { value: 124 })
-		const read = await prepareParallelCommand(context, policy)
-		const finalize = await read!.run!(context.callbacks)
-		await finalize()
-		expect(context.task.say).toHaveBeenCalledWith(
-			"command_output",
-			expect.any(String),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ isNonInteractive: true, commandExecutionId: "123" },
-		)
-	})
-
-	it("does not launch a denied command", async () => {
-		vi.mocked(context.callbacks.askApproval).mockResolvedValue(false)
-		expect(await prepareParallelCommand(context, policy)).toBeUndefined()
-		expect(execa).not.toHaveBeenCalled()
-	})
-
-	it("falls back for unsupported Git and remembers the binary capability without another probe", async () => {
-		vi.mocked(execa).mockResolvedValueOnce({ failed: true, exitCode: 129, stderr: "unknown option" } as never)
-		const read = await prepareParallelCommand(context, policy)
-		expect(read).toEqual({ scope: root, serialFallback: true })
-		expect(execa).toHaveBeenCalledTimes(1)
-		expect(await prepareParallelCommand(context, policy)).toBeUndefined()
-		expect(context.callbacks.askApproval).toHaveBeenCalledTimes(1)
-		expect(execa).toHaveBeenCalledTimes(1)
-	})
-
-	it.each(["mode", "disabled", "rule", "ignore"])(
-		"revalidates %s after approval and before launch",
-		async (change) => {
-			const read = await prepareParallelCommand(context, policy)
-			if (change === "mode") Object.defineProperty(context.task, "taskMode", { value: "architect" })
-			if (change === "disabled") state.disabledTools.push("execute_command")
-			if (change === "rule") state.deniedCommands.push("git")
-			if (change === "ignore") context.task.alphaIgnoreController = undefined
-			await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
-			expect(execa).toHaveBeenCalledTimes(1)
 		},
 	)
 
 	it.each(["RIPGREP_CONFIG_PATH", "GIT_CONFIG_PARAMETERS", "GIT_TRACE", "GIT_REDIRECT_STDOUT", "GIT_PAGER"])(
-		"keeps environment-configured %s commands serial",
+		"does not probe or execute a separate collector when %s is configured",
 		async (key) => {
 			vi.stubEnv(key, "custom")
-			if (key === "RIPGREP_CONFIG_PATH") {
-				context.call.nativeArgs = { command: "rg -n needle src" }
-			}
-			expect(await prepareParallelCommand(context, policy)).toBeUndefined()
+			expect(await prepareWithRegistry(context, policy)).toBeUndefined()
 			expect(context.callbacks.askApproval).not.toHaveBeenCalled()
 			expect(execa).not.toHaveBeenCalled()
 		},
 	)
-
-	it.each([
-		{ failed: true, exitCode: 2, timedOut: false, isCanceled: false, status: "error" },
-		{ failed: true, exitCode: undefined, timedOut: true, isCanceled: false, status: "error" },
-		{ failed: true, exitCode: undefined, timedOut: false, isCanceled: true, status: "cancelled" },
-	])("preserves process failure $status / timeout $timedOut", async ({ status, ...result }) => {
-		vi.mocked(execa).mockResolvedValue({ all: "failure details", ...result } as never)
-		vi.mocked(execa).mockResolvedValueOnce({ failed: false, exitCode: 0, stdout: "git version" } as never)
-		const read = await prepareParallelCommand(context, policy)
-		const finalize = await read!.run!(context.callbacks)
-		expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith(
-			expect.objectContaining({ status, exitCode: result.exitCode, timedOut: result.timedOut }),
-		)
-		await finalize()
-		expect(context.task.providerRef.deref()?.postMessageToWebview).toHaveBeenCalledWith({
-			type: "commandExecutionStatus",
-			text: JSON.stringify(
-				result.timedOut
-					? { executionId: "123", status: "timeout" }
-					: { executionId: "123", status: "exited", exitCode: result.exitCode },
-			),
-		})
-		if (status === "cancelled")
-			expect(context.task.recordCommandInspectionResult).toHaveBeenCalledWith(
-				expect.objectContaining({ toolCallId: "call-1", status: "cancelled" }),
-			)
-	})
 })

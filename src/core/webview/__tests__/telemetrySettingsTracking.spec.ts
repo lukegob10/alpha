@@ -4,9 +4,9 @@ import { TelemetryEventName, type TelemetrySetting } from "@alpha-code/types"
 
 describe("Telemetry Settings Tracking", () => {
 	let mockTelemetryService: {
-		captureTelemetrySettingsChanged: ReturnType<typeof vi.fn>
-		updateTelemetryState: ReturnType<typeof vi.fn>
-		hasInstance: ReturnType<typeof vi.fn>
+		captureTelemetrySettingsChanged: import("vitest").Mock
+		updateTelemetryState: import("vitest").Mock
+		hasInstance: import("vitest").Mock
 	}
 
 	beforeEach(() => {

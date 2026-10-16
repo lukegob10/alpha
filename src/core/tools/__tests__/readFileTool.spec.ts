@@ -23,9 +23,14 @@ import {
 	validateImageForProcessing,
 	processImageFile,
 	isSupportedImageFormat,
+	isSupportedImageContent,
 	ImageMemoryTracker,
 } from "../helpers/imageHelpers"
-import { extractTextFromFile, addLineNumbers, getSupportedBinaryFormats } from "../../../integrations/misc/extract-text"
+import {
+	extractTextFromFileRaw,
+	addLineNumbers,
+	getSupportedBinaryFormats,
+} from "../../../integrations/misc/extract-text"
 import { readWithIndentation, readWithSlice } from "../../../integrations/misc/indentation-reader"
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -47,7 +52,7 @@ vi.mock("fs/promises", () => ({
 vi.mock("isbinaryfile")
 
 vi.mock("../../../integrations/misc/extract-text", () => ({
-	extractTextFromFile: vi.fn(),
+	extractTextFromFileRaw: vi.fn(),
 	addLineNumbers: vi.fn().mockImplementation((text: string, startLine = 1) => {
 		if (!text) return ""
 		const lines = text.split("\n")
@@ -71,12 +76,15 @@ vi.mock("../helpers/imageHelpers", () => ({
 	DEFAULT_MAX_IMAGE_FILE_SIZE_MB: 5,
 	DEFAULT_MAX_TOTAL_IMAGE_SIZE_MB: 20,
 	isSupportedImageFormat: vi.fn(),
+	isSupportedImageContent: vi.fn(),
 	validateImageForProcessing: vi.fn(),
 	processImageFile: vi.fn(),
-	ImageMemoryTracker: vi.fn().mockImplementation(() => ({
-		getTotalMemoryUsed: vi.fn().mockReturnValue(0),
-		addMemoryUsage: vi.fn(),
-	})),
+	ImageMemoryTracker: vi.fn().mockImplementation(function () {
+		return {
+			getTotalMemoryUsed: vi.fn().mockReturnValue(0),
+			addMemoryUsage: vi.fn(),
+		}
+	}),
 }))
 
 vi.mock("../../prompts/responses", () => ({
@@ -125,10 +133,11 @@ const mockedFsReadFile = vi.mocked(fsPromises.readFile)
 const mockedFsStat = vi.mocked(fsPromises.stat)
 
 const mockedIsBinaryFile = vi.mocked(isBinaryFile)
-const mockedExtractTextFromFile = vi.mocked(extractTextFromFile)
+const mockedExtractTextFromFile = vi.mocked(extractTextFromFileRaw)
 const mockedReadWithSlice = vi.mocked(readWithSlice)
 const mockedReadWithIndentation = vi.mocked(readWithIndentation)
 const mockedIsSupportedImageFormat = vi.mocked(isSupportedImageFormat)
+const mockedIsSupportedImageContent = vi.mocked(isSupportedImageContent)
 const mockedValidateImageForProcessing = vi.mocked(validateImageForProcessing)
 const mockedProcessImageFile = vi.mocked(processImageFile)
 
@@ -496,6 +505,38 @@ describe("ReadFileTool", () => {
 		beforeEach(() => {
 			mockedIsBinaryFile.mockResolvedValue(true)
 			mockedIsSupportedImageFormat.mockReturnValue(true)
+			mockedIsSupportedImageContent.mockReturnValue(true)
+		})
+
+		it("rejects mismatched image-only source metadata despite a valid output signature", async () => {
+			const mockTask = createMockTask({ supportsImages: true })
+			const callbacks = createMockCallbacks()
+			// This controls preparation and signature acceptance, not real codec validity.
+			mockedValidateImageForProcessing.mockResolvedValue({ isValid: true, sizeInMB: 0.5 })
+			mockedProcessImageFile.mockResolvedValue({
+				dataUrl: "data:image/png;base64,cHJlcGFyZWQ=",
+				buffer: Buffer.from("prepared"),
+				sourceExtension: ".png",
+				outputExtension: ".png",
+				mimeType: "image/png",
+				sizeInKB: 1,
+				sizeInMB: 8 / 1024 ** 2,
+				notice: "Image processed successfully",
+			})
+
+			await readFileTool.executeImage(
+				"square.svg",
+				mockTask as unknown as Parameters<typeof readFileTool.executeImage>[1],
+				callbacks,
+			)
+
+			expect(callbacks.askApprovalResponse).toHaveBeenCalledOnce()
+			expect(mockedProcessImageFile).toHaveBeenCalledOnce()
+			expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+			expect(JSON.stringify(callbacks.pushToolResult.mock.calls)).toContain("does not match")
+			expect(JSON.stringify(callbacks.pushToolResult.mock.calls)).not.toContain('"type":"image"')
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
 		})
 
 		it("should process image file when model supports images", async () => {
@@ -509,6 +550,9 @@ describe("ReadFileTool", () => {
 			mockedProcessImageFile.mockResolvedValue({
 				dataUrl: "data:image/png;base64,abc123",
 				buffer: Buffer.from("test"),
+				sourceExtension: ".png",
+				outputExtension: ".png",
+				mimeType: "image/png",
 				sizeInKB: 512,
 				sizeInMB: 0.5,
 				notice: "Image processed successfully",

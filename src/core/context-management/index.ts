@@ -356,6 +356,8 @@ export function willManageContext({
  */
 
 export type ContextManagementOptions = {
+	/** One host admission for a summary attempt and any following truncation fallback. */
+	beforeCompact?: () => Promise<void>
 	messages: ApiMessage[]
 	totalTokens: number
 	contextWindow: number
@@ -391,6 +393,8 @@ export type ContextManagementOptions = {
 	forceCompaction?: boolean
 	/** Shared token-counting budget/cache for this context-preparation operation. */
 	countContext?: TokenCountContext
+	/** Retain observed summary usage independently of the recovery outcome. */
+	observeCost?: (cost: number) => void
 }
 
 export type ContextManagementResult = SummarizeResponse & {
@@ -413,6 +417,7 @@ export type ContextManagementResult = SummarizeResponse & {
  * @returns {Promise<ApiMessage[]>} The original, condensed, or truncated conversation messages.
  */
 export async function manageContext({
+	beforeCompact,
 	messages,
 	totalTokens,
 	contextWindow,
@@ -434,8 +439,15 @@ export async function manageContext({
 	recentTailTokenBudget,
 	forceCompaction = false,
 	countContext,
+	observeCost,
 }: ContextManagementOptions): Promise<ContextManagementResult> {
 	metadata?.signal?.throwIfAborted()
+	let compactAdmission: Promise<void> | undefined
+	const admitCompaction = async () => {
+		compactAdmission ??= Promise.resolve().then(() => beforeCompact?.())
+		await compactAdmission
+		metadata?.signal?.throwIfAborted()
+	}
 	const operation =
 		countContext ??
 		createTokenCountContext(apiHandler, {
@@ -527,6 +539,7 @@ export async function manageContext({
 			})
 			// Attempt to intelligently condense the context
 			const result = await summarizeConversation({
+				beforeCompact: admitCompaction,
 				messages,
 				apiHandler,
 				systemPrompt,
@@ -542,6 +555,7 @@ export async function manageContext({
 				recentTailTokenBudget,
 				countContext: operation,
 				forceCompaction,
+				observeCost,
 			})
 			metadata?.signal?.throwIfAborted()
 			cost = result.cost
@@ -566,13 +580,32 @@ export async function manageContext({
 					new Error([result.error, result.errorDetails].filter(Boolean).join("\n\n")),
 				)
 				forceTruncation ||= isContextWindowError
-				if (!forceTruncation && prevContextTokens <= allowedTokens) {
-					return {
-						...result,
-						messages,
-						prevContextTokens,
-						status: result.status === "exhausted" ? "exhausted" : "no_progress",
-						targetContextTokens,
+				if (!forceTruncation) {
+					// A proactive summary failure is not context exhaustion. Recount the
+					// retained input, including fixed overhead, before allowing a normal
+					// request above the preferred trigger but within the safe input limit.
+					const retainedTokens = await countContextTokens(
+						getEffectiveApiHistory(messages),
+						apiHandler,
+						systemPrompt,
+						metadata,
+						operation,
+					)
+					metadata?.signal?.throwIfAborted()
+					operation.signal?.throwIfAborted()
+					if (!Number.isFinite(retainedTokens) || retainedTokens < 0) {
+						return { ...result, messages, prevContextTokens, status: "no_progress", targetContextTokens }
+					}
+					prevContextTokens = retainedTokens
+					if (retainedTokens <= allowedTokens) {
+						return {
+							...result,
+							messages,
+							prevContextTokens,
+							newContextTokens: retainedTokens,
+							status: result.status === "exhausted" ? "exhausted" : "unchanged",
+							targetContextTokens,
+						}
 					}
 				}
 			} else {
@@ -636,6 +669,7 @@ export async function manageContext({
 			fixedTokens,
 			targetPercent: 75,
 		})
+		await admitCompaction()
 		const truncationResult = await truncateToTokenBudget(
 			messages,
 			apiHandler,

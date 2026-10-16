@@ -278,6 +278,58 @@ export class TaskSessionRegistry {
 		})
 	}
 
+	/** Terminal runtime accounting is separate from the live execution cap. */
+	getTerminalSubagentTasks(): Task[] {
+		return [...this.sessions.values()]
+			.filter(
+				(session) =>
+					session.owner === this && session.task.taskKind === "subagent" && !this.isLiveSession(session),
+			)
+			.sort(
+				(left, right) =>
+					left.lastActivityAt - right.lastActivityAt || left.task.taskId.localeCompare(right.task.taskId),
+			)
+			.map((session) => session.task)
+	}
+
+	/** Unload an exact idle runtime, retaining ownership and replay caches if cleanup fails. */
+	async unloadAfterCleanup(
+		task: Task,
+		cleanup: () => Promise<void>,
+		canUnload: () => boolean = () => true,
+		afterUnload: () => void = () => undefined,
+	): Promise<boolean> {
+		return this.runOwnershipOperation(task.taskId, async () => {
+			const session = this.sessions.get(task.taskId)
+			if (
+				!session ||
+				session.task !== task ||
+				session.owner !== this ||
+				task.taskKind !== "subagent" ||
+				this.isLiveSession(session) ||
+				[...this.shared.views].some((view) => view.activeTaskId === task.taskId) ||
+				!canUnload()
+			)
+				return false
+			await cleanup()
+			if (
+				this.getTask(task.taskId) !== task ||
+				!this.ownsTask(task.taskId) ||
+				this.isLiveSession(session) ||
+				[...this.shared.views].some((view) => view.activeTaskId === task.taskId) ||
+				!canUnload()
+			)
+				return false
+			this.unregister(task.taskId, task)
+			this.clearLifecycleSnapshot(task.taskId)
+			this.lifecycleDegradedTaskIds.delete(task.taskId)
+			// Keep host cache release inside the identity queue so a cold successor
+			// cannot publish between unregister and removal of the old journal.
+			afterUnload()
+			return true
+		})
+	}
+
 	setMaxLiveTasks(maxLiveTasks: number): void {
 		this.maxLiveTasks = normalizeMaxLiveTasks(maxLiveTasks)
 	}

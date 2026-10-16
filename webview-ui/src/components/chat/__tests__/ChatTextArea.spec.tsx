@@ -39,8 +39,8 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 	useShellState: (...args: unknown[]) => mockUseExtensionState(...(args as [])),
 }))
 
-const mockPostMessage = vscode.postMessage as ReturnType<typeof vi.fn>
-const mockConvertToMentionPath = pathMentions.convertToMentionPath as ReturnType<typeof vi.fn>
+const mockPostMessage = vscode.postMessage as import("vitest").Mock
+const mockConvertToMentionPath = pathMentions.convertToMentionPath as import("vitest").Mock
 
 // Custom query function to get the enhance prompt button
 const getEnhancePromptButton = () => {
@@ -73,7 +73,7 @@ describe("ChatTextArea", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		// Default mock implementation for useExtensionState
-		;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+		;(useExtensionState as import("vitest").Mock).mockReturnValue({
 			filePaths: [],
 			openedTabs: [],
 			apiConfiguration: {
@@ -145,7 +145,7 @@ describe("ChatTextArea", () => {
 	})
 
 	it.each([undefined, false, true])("labels streaming submission with autoSteer=%s", (autoSteer) => {
-		;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+		;(useExtensionState as import("vitest").Mock).mockReturnValue({
 			filePaths: [],
 			openedTabs: [],
 			apiConfiguration: { apiProvider: "anthropic" },
@@ -492,7 +492,7 @@ describe("ChatTextArea", () => {
 
 	describe("enhance prompt button", () => {
 		it("should be enabled even when sendingDisabled is true (for message queueing)", () => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				taskHistory: [],
@@ -511,7 +511,7 @@ describe("ChatTextArea", () => {
 				apiKey: "test-key",
 			}
 
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration,
@@ -531,7 +531,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should not send message when input is empty", () => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration: {
@@ -553,7 +553,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should show loading state while enhancing", () => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration: {
@@ -579,7 +579,7 @@ describe("ChatTextArea", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} />)
 
 			// Update apiConfiguration
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration: {
@@ -602,7 +602,7 @@ describe("ChatTextArea", () => {
 			const onSend = vi.fn()
 			const draft = "Review @/src/feature.ts before sending"
 			const selectedImages = ["data:image/png;base64,test-image"]
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration: { apiProvider: "openai", apiModelId: "gpt-5" },
@@ -753,7 +753,7 @@ describe("ChatTextArea", () => {
 		const mockCwd = "/Users/test/project"
 
 		beforeEach(() => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				apiConfiguration: {
@@ -842,7 +842,7 @@ describe("ChatTextArea", () => {
 
 		beforeEach(() => {
 			vi.clearAllMocks()
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				cwd: mockCwd,
@@ -1101,7 +1101,7 @@ describe("ChatTextArea", () => {
 			]
 
 			beforeEach(() => {
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1254,7 +1254,7 @@ describe("ChatTextArea", () => {
 					{ type: "say", say: "user_feedback", text: "Workspace 1 prompt 2", ts: 3000 },
 				]
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1282,7 +1282,7 @@ describe("ChatTextArea", () => {
 			})
 
 			it("should handle empty conversation history gracefully", () => {
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1313,7 +1313,7 @@ describe("ChatTextArea", () => {
 					{ type: "say", say: "user_feedback", text: "Another valid prompt", ts: 4000 },
 				]
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1347,7 +1347,7 @@ describe("ChatTextArea", () => {
 					{ task: "Third task", workspace: "/test/workspace" },
 				]
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1381,7 +1381,7 @@ describe("ChatTextArea", () => {
 				)
 
 				// Start with task history
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1411,7 +1411,7 @@ describe("ChatTextArea", () => {
 				expect(setInputValue).toHaveBeenCalledWith("Task 1")
 
 				// Switch to conversation messages
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					apiConfiguration: {
@@ -1530,7 +1530,7 @@ describe("ChatTextArea", () => {
 		]
 
 		beforeEach(() => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				taskHistory: [],
@@ -1639,7 +1639,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should work when no commands are available", () => {
-			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+			;(useExtensionState as import("vitest").Mock).mockReturnValue({
 				filePaths: [],
 				openedTabs: [],
 				taskHistory: [],
@@ -1700,7 +1700,7 @@ describe("ChatTextArea", () => {
 			it("should send on Enter and allow newline on Shift+Enter in default mode", () => {
 				const onSend = vi.fn()
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					taskHistory: [],
@@ -1723,7 +1723,7 @@ describe("ChatTextArea", () => {
 			it("should treat Ctrl/Cmd/Shift+Enter as send and plain Enter as newline in newline mode", () => {
 				const onSend = vi.fn()
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					taskHistory: [],
@@ -1764,7 +1764,7 @@ describe("ChatTextArea", () => {
 			it("should save queued edit on plain Enter even when normal Enter behavior is newline", () => {
 				const onSend = vi.fn()
 
-				;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				;(useExtensionState as import("vitest").Mock).mockReturnValue({
 					filePaths: [],
 					openedTabs: [],
 					taskHistory: [],

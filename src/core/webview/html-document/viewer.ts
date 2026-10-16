@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto"
 import {
 	HTML_DOCUMENT_LIMITS,
 	HTML_DOCUMENT_VIEW_TYPE,
+	HTML_DOCUMENT_TAGS,
+	HTML_DOCUMENT_RENDER_ATTRIBUTES,
 	htmlDocumentMessageSchema,
 	htmlDocumentTargetSchema,
 	type HtmlDocumentTarget,
@@ -159,9 +161,19 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 			...i18n.getResourceBundle(i18n.language, "htmlArtifactKit"),
 		}
 		const config = escapeHtml(
-			JSON.stringify({ documentId: entry.target.uri, token: entry.token, target: entry.target, labels }),
+			JSON.stringify({
+				documentId: entry.target.uri,
+				token: entry.token,
+				target: entry.target,
+				labels,
+				sanitizer: {
+					tags: HTML_DOCUMENT_TAGS,
+					attributes: HTML_DOCUMENT_RENDER_ATTRIBUTES,
+					maxHtmlLength: HTML_DOCUMENT_LIMITS.renderBytes,
+				},
+			}),
 		)
-		return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${entry.panel.webview.cspSource}; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none';"><link rel="stylesheet" href="${resource("artifact-kit", "v1", "kit.css")}"><link rel="stylesheet" href="${resource("html-document", "viewer.css")}"><title>${escapeHtml(t("htmlDocument:title"))}</title></head><body data-viewer-config="${config}"><header class="viewer-toolbar"><span id="viewer-title">${escapeHtml(path.basename(entry.fsPath))}</span><button id="viewer-source" type="button">${escapeHtml(t("htmlDocument:openSource"))}</button></header><p id="viewer-status" role="status">${escapeHtml(t("htmlDocument:loading"))}</p><div id="viewer-content"></div><script nonce="${nonce}" src="${resource("artifact-kit", "v1", "kit.js")}"></script><script nonce="${nonce}" src="${resource("html-document", "viewer.js")}"></script></body></html>`
+		return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${entry.panel.webview.cspSource}; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none';"><link rel="stylesheet" href="${resource("artifact-kit", "v1", "kit.css")}"><link rel="stylesheet" href="${resource("html-document", "viewer.css")}"><title>${escapeHtml(t("htmlDocument:title"))}</title></head><body data-viewer-config="${config}"><header class="viewer-toolbar"><span id="viewer-title">${escapeHtml(path.basename(entry.fsPath))}</span><button id="viewer-source" type="button">${escapeHtml(t("htmlDocument:openSource"))}</button></header><p id="viewer-status" role="status">${escapeHtml(t("htmlDocument:loading"))}</p><div id="viewer-content"></div><script nonce="${nonce}" src="${resource("artifact-kit", "v1", "kit.js")}"></script><script nonce="${nonce}" src="${resource("html-document", "purify.min.js")}"></script><script nonce="${nonce}" src="${resource("html-document", "viewer.js")}"></script></body></html>`
 	}
 
 	private schedule(entry: Entry, immediate = false): void {

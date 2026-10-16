@@ -106,6 +106,23 @@ All automated host tests target exact VS Code 1.125.0. Profile state is separate
 `profiles/<exact-version>/user-data` and `profiles/<exact-version>/extensions`; authentication may be required separately.
 Do not copy credential stores between versions. Persistent profiles and workspaces are never automatically deleted.
 
+## Fixture Git isolation
+
+Runner fixture launches disable the built-in VS Code Git extension with `--disable-extension=vscode.git`, including dedicated live-Copilot hosts. Each run's `launch.json` records the condition:
+
+```json
+{
+	"fixtureIsolation": {
+		"disabledExtensions": ["vscode.git"],
+		"gitExecution": "native-cli"
+	}
+}
+```
+
+This isolates the bundled Copilot repository/branch observer errors encountered when fixture repositories open. Alpha's Git tool workflows still execute the real Git CLI through the normal command approval and workspace boundaries. The resulting tests cover those commands and their repository effects; they do not certify the built-in SCM UI or the VS Code Git extension API.
+
+Isolation is a launch condition. Downloaded/vendor extensions are not patched, and uncaught errors retain normal test failure handling. Record this condition when interpreting or comparing results, and keep native SCM integration coverage separate.
+
 ## Cold-start provider readiness
 
 Setup discovery and live preflight share one readiness path. It subscribes to the stable

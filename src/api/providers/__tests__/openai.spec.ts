@@ -19,46 +19,20 @@ vitest.mock("openai", () => {
 	const mockConstructor = vitest.fn()
 	return {
 		__esModule: true,
-		default: mockConstructor.mockImplementation(() => ({
-			responses: {
-				create: mockResponsesCreate,
-			},
-			chat: {
-				completions: {
-					create: mockCreate.mockImplementation(async (options) => {
-						if (!options.stream) {
-							return {
-								id: "test-completion",
-								choices: [
-									{
-										message: { role: "assistant", content: "Test response", refusal: null },
-										finish_reason: "stop",
-										index: 0,
-									},
-								],
-								usage: {
-									prompt_tokens: 10,
-									completion_tokens: 5,
-									total_tokens: 15,
-								},
-							}
-						}
-
-						return {
-							[Symbol.asyncIterator]: async function* () {
-								yield {
+		default: mockConstructor.mockImplementation(function () {
+			return {
+				responses: {
+					create: mockResponsesCreate,
+				},
+				chat: {
+					completions: {
+						create: mockCreate.mockImplementation(async (options) => {
+							if (!options.stream) {
+								return {
+									id: "test-completion",
 									choices: [
 										{
-											delta: { content: "Test response" },
-											index: 0,
-										},
-									],
-									usage: null,
-								}
-								yield {
-									choices: [
-										{
-											delta: {},
+											message: { role: "assistant", content: "Test response", refusal: null },
 											finish_reason: "stop",
 											index: 0,
 										},
@@ -69,12 +43,40 @@ vitest.mock("openai", () => {
 										total_tokens: 15,
 									},
 								}
-							},
-						}
-					}),
+							}
+
+							return {
+								[Symbol.asyncIterator]: async function* () {
+									yield {
+										choices: [
+											{
+												delta: { content: "Test response" },
+												index: 0,
+											},
+										],
+										usage: null,
+									}
+									yield {
+										choices: [
+											{
+												delta: {},
+												finish_reason: "stop",
+												index: 0,
+											},
+										],
+										usage: {
+											prompt_tokens: 10,
+											completion_tokens: 5,
+											total_tokens: 15,
+										},
+									}
+								},
+							}
+						}),
+					},
 				},
-			},
-		})),
+			}
+		}),
 	}
 })
 
@@ -900,7 +902,14 @@ describe("OpenAiHandler", () => {
 					}))
 						chunks.push(chunk)
 				}).rejects.toThrow("incomplete")
-				expect(chunks).toEqual([])
+				expect(chunks).toEqual([
+					expect.objectContaining({
+						type: "outcome",
+						status: "incomplete",
+						terminal: true,
+						retryable: false,
+					}),
+				])
 			},
 		)
 

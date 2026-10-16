@@ -150,7 +150,10 @@ describe("lookup-efficiency frozen prompts CI shape", () => {
 			const command = result.tools.find(
 				(tool) => tool.type === "function" && tool.function?.name === "exec_command",
 			) as { function?: { description?: string } } | undefined
-			expect(command?.function?.description, fixture.id).toContain("task's host terminal")
+			const description = command?.function?.description
+			expect(description, fixture.id).toContain("Runs a command in a PTY")
+			expect(description, fixture.id).toContain("output or a session ID for ongoing interaction")
+			expect(description, fixture.id).toContain("task's approval and execution policy")
 		}
 	})
 

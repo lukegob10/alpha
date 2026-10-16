@@ -13,6 +13,10 @@ const required = [
 	"extension/package.nls.json",
 	"extension/dist/extension.js",
 	"extension/dist/workers/sanitizeDocument.js",
+	"extension/dist/workers/validateImage.js",
+	"extension/dist/workers/magick.wasm",
+	"extension/dist/workers/magick-LICENSE",
+	"extension/dist/workers/magick-NOTICE",
 	"extension/assets/skills/debug/SKILL.md",
 	"extension/assets/skills/rich-documents/SKILL.md",
 	"extension/assets/skills/skill-builder/SKILL.md",
@@ -30,6 +34,7 @@ const required = [
 	"extension/webview-ui/build/artifact-kit/v1/examples/report.html",
 	"extension/webview-ui/build/artifact-kit/v1/examples/fixture-workspace/images/layout-sample.png",
 	"extension/webview-ui/build/html-document/viewer.js",
+	"extension/webview-ui/build/html-document/purify.min.js",
 	"extension/webview-ui/build/html-document/viewer.css",
 ]
 if (["win32", "darwin"].includes(process.platform))
@@ -92,8 +97,13 @@ test("VSIX content verification accepts the extension, webview, worker, skill, a
 for (const entry of [
 	"extension/dist/extension.js",
 	"extension/dist/workers/sanitizeDocument.js",
+	"extension/dist/workers/validateImage.js",
+	"extension/dist/workers/magick.wasm",
+	"extension/dist/workers/magick-LICENSE",
+	"extension/dist/workers/magick-NOTICE",
 	"extension/assets/skills/skill-builder/references/evaluation.md",
 	"extension/webview-ui/build/html-document/viewer.js",
+	"extension/webview-ui/build/html-document/purify.min.js",
 ])
 	test(`VSIX content verification refuses a missing ${entry}`, async () => {
 		await withArchive(

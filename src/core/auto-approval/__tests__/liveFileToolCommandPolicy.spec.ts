@@ -47,6 +47,16 @@ describe("live file-tool command policy without executing commands", () => {
 		"rg --no-config -n -m 4 ALPHA_READ_PROBE live-file-tools/read.txt",
 		"cut -c 1-8 live-file-tools/read.txt",
 		"node --version",
+		"node live-file-tools/edit-command-diff.cjs",
+		"node live-file-tools/inspect-patch-bytes.cjs",
+		"node live-file-tools/inspect-partial-patch.cjs",
+		"node live-file-tools/inspect-matches.cjs",
+		"node live-read-evidence/repair/inspect-invoice.cjs",
+		"node live-read-evidence/repair/verify-invoice.cjs",
+		"node live-read-evidence/batch/inspect-records.cjs",
+		"node live-read-evidence/inspect-first-window.cjs",
+		"node live-read-evidence/inspect-second-window.cjs",
+		"node live-read-evidence/review/inspect-access.cjs",
 	])("approves an observable bounded argv read with the retained denials: %s", async (text) => {
 		const state = fixtureState()
 		const commandPolicy = capture(state)
@@ -54,6 +64,18 @@ describe("live file-tool command policy without executing commands", () => {
 		await expect(checkAutoApproval({ ask: "command", text, state, commandPolicy })).resolves.toEqual({
 			decision: "approve",
 		})
+	})
+
+	it("the finite fixture rules name scripts without granting unrelated or inline Node commands", () => {
+		const state = fixtureState()
+		state.allowedCommands = ["node live-file-tools/inspect-patch-bytes.cjs"]
+		expect(getCommandDecision(state.allowedCommands[0], state.allowedCommands, state.deniedCommands)).toBe(
+			"auto_approve",
+		)
+		for (const text of ["node unrelated.cjs", 'node -e "process.stdout.write(1)"']) {
+			expect(getCommandDecision(text, state.allowedCommands, state.deniedCommands)).toBe("ask_user")
+		}
+		expect(state.deniedCommands).toEqual(savedDenials)
 	})
 
 	it.each([

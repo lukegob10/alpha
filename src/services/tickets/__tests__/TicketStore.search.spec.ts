@@ -1,12 +1,31 @@
 import * as fs from "fs/promises"
+import { watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TicketStore } from "../TicketStore"
 
+const notifications = vi.hoisted(() => new Map<string, (event: "rename" | "change", filename: string | null) => void>())
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const original = await importOriginal<typeof import("fs/promises")>()
 	return { ...original, readFile: vi.fn(original.readFile) }
+})
+vi.mock("node:fs", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:fs")>()
+	return {
+		...original,
+		watch: vi.fn(
+			(
+				filename: import("node:fs").PathLike,
+				options: { recursive: boolean; persistent: boolean },
+				listener: (event: "rename" | "change", filename: string | null) => void,
+			) => {
+				notifications.set(String(filename), listener)
+				return original.watch(filename, options, listener)
+			},
+		),
+	}
 })
 
 describe("ticket mention search", () => {
@@ -18,6 +37,8 @@ describe("ticket mention search", () => {
 		store = await TicketStore.forWorkspace(workspace, home)
 	})
 	afterEach(async () => {
+		TicketStore.disposeSearchCaches()
+		notifications.clear()
 		vi.restoreAllMocks()
 		await fs.rm(home, { recursive: true, force: true })
 	})
@@ -53,6 +74,13 @@ describe("ticket mention search", () => {
 		}
 	}
 
+	function notify(file: string) {
+		// Deliver the notification explicitly; native watchers may batch editor changes on macOS.
+		const listener = notifications.get(store.directory)
+		if (!listener) throw new Error("Project ticket watcher was not installed")
+		listener("change", path.relative(store.directory, file))
+	}
+
 	it("reuses unchanged search records across queries and store instances", async () => {
 		await seed(64)
 		const reads = vi.mocked(fs.readFile)
@@ -66,6 +94,75 @@ describe("ticket mention search", () => {
 		expect(await reopened.search("missing")).toEqual([])
 		expect(reads).not.toHaveBeenCalled()
 	})
+	it("does not stat every project ticket again while the search index is unchanged", async () => {
+		await seed(128)
+		await store.search("")
+		const stats = vi.spyOn(fs, "lstat")
+		expect(await store.search("backend")).toHaveLength(50)
+		expect(stats.mock.calls.length).toBeLessThan(96)
+		stats.mockClear()
+		expect(await store.search("PRO-128")).toMatchObject([{ reference: "PRO-128" }])
+		expect(stats.mock.calls.length).toBeLessThan(96)
+	})
+
+	it("ignores unchanged file notifications and unrelated project metadata", async () => {
+		await seed(3)
+		const tickets = await store.search("")
+		const reads = vi.mocked(fs.readFile)
+		reads.mockClear()
+		for (const ticket of tickets) notify(path.join(store.directory, "backlog", `${ticket.id}.md`))
+		notify(path.join(store.directory, ".transaction.lock"))
+		notify(path.join(store.directory, "backlog"))
+		expect(await store.search("backend")).toHaveLength(3)
+		expect(await store.search("cleanup")).toHaveLength(3)
+		expect(reads).not.toHaveBeenCalled()
+	})
+
+	it("checks status moves and deletions before delayed native notifications arrive", async () => {
+		await seed(2)
+		const tickets = await store.search("")
+		vi.mocked(watch).mock.results.at(-1)!.value.close()
+		const active = path.join(store.directory, "in-progress")
+		await fs.mkdir(active)
+		await fs.rename(
+			path.join(store.directory, "backlog", `${tickets[0].id}.md`),
+			path.join(active, `${tickets[0].id}.md`),
+		)
+		await fs.unlink(path.join(store.directory, "backlog", `${tickets[1].id}.md`))
+		expect(await store.search("")).toMatchObject([{ id: tickets[0].id, status: "in-progress" }])
+	})
+
+	it("reads current Markdown on selection while an external edit notification is delayed", async () => {
+		await seed(1)
+		const [ticket] = await store.search("")
+		vi.mocked(watch).mock.results.at(-1)!.value.close()
+		const file = path.join(store.directory, "backlog", `${ticket.id}.md`)
+		await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("Backend cleanup 1", "Edited title"))
+		expect(await store.read(ticket.id)).toMatchObject({ name: "Edited title" })
+		notify(file)
+		expect(await store.search("edited")).toMatchObject([{ id: ticket.id, name: "Edited title" }])
+	})
+
+	it("finds a project ticket by its exact number without matching other titles or numbers", async () => {
+		await seed(130)
+		for (const query of ["1", "#1", "#001"]) {
+			expect(await store.search(query)).toMatchObject([{ reference: "PRO-01" }])
+			expect(await store.search(query)).toHaveLength(1)
+		}
+		expect(await store.search("#131")).toEqual([])
+	})
+
+	it("returns to the warm index after a previously cached ticket becomes malformed", async () => {
+		await seed(3)
+		const [ticket] = await store.search("PRO-01")
+		await fs.writeFile(path.join(store.directory, "backlog", `${ticket.id}.md`), "invalid ticket")
+		notify(path.join(store.directory, "backlog", `${ticket.id}.md`))
+		expect(await store.search("backend")).toHaveLength(2)
+		const reads = vi.mocked(fs.readFile)
+		reads.mockClear()
+		expect(await store.search("cleanup")).toHaveLength(2)
+		expect(reads).not.toHaveBeenCalled()
+	})
 
 	it("refreshes only edited files, including equal-size edits with restored mtime", async () => {
 		await seed(3)
@@ -74,10 +171,12 @@ describe("ticket mention search", () => {
 		const original = await fs.readFile(file, "utf8")
 		const timestamp = new Date("2026-10-01T00:00:00.000Z")
 		await fs.utimes(file, timestamp, timestamp)
+		notify(file)
 		await store.search("PRO-01")
 		const stat = await fs.stat(file, { bigint: true })
 		await fs.writeFile(file, original.replace("Backend cleanup 1", "Frontend update 1"))
 		await fs.utimes(file, timestamp, timestamp)
+		notify(file)
 		const edited = await fs.stat(file, { bigint: true })
 		expect(edited.size).toBe(stat.size)
 		expect(edited.mtimeNs).toBe(stat.mtimeNs)
@@ -99,10 +198,13 @@ describe("ticket mention search", () => {
 		const brokenFile = path.join(store.directory, "backlog", `${tickets[2].id}.md`)
 		const original = await fs.readFile(brokenFile, "utf8")
 		await fs.writeFile(brokenFile, "broken Markdown")
+		notify(brokenFile)
 		expect(await store.search("")).toMatchObject([{ id: tickets[0].id, status: "in-progress" }])
 		await fs.writeFile(brokenFile, original)
+		notify(brokenFile)
 		expect(await store.search("")).toHaveLength(2)
 		await fs.writeFile(movedFile, "x".repeat(100001))
+		notify(movedFile)
 		expect(await store.search("")).toMatchObject([{ id: tickets[2].id }])
 	})
 
@@ -117,25 +219,32 @@ describe("ticket mention search", () => {
 		})
 		expect(await store.search("renamed")).toMatchObject([{ name: "Renamed", status: "complete" }])
 		expect(await store.search("original")).toEqual([])
-		expect(await store.search("legacy context")).toMatchObject([{ id: ticket.id }])
+		expect(await store.search("legacy context")).toEqual([])
+		expect(await store.list({ query: "legacy context" })).toMatchObject({ tickets: [{ id: ticket.id }] })
 		const file = await store.markdownPath(ticket.id)
 		await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("PRO-01", "PRO-99"))
+		notify(file)
 		expect(await store.search("PRO-01")).toEqual([])
 		expect(await store.search("pro99")).toMatchObject([{ id: ticket.id }])
 		await store.delete({ id: ticket.id, expectedRevision: (await store.read(ticket.id)).revision })
 		expect(await store.search("")).toEqual([])
 	})
 
-	it("ranks exact titles and title prefixes ahead of content matches before limiting results", async () => {
+	it("ranks exact titles and title prefixes without searching full ticket contents", async () => {
 		await seed(64)
 		await fs.rename(path.join(store.directory, "backlog"), path.join(store.directory, "in-progress"))
 		const exact = await store.create({ name: "Implementation context" })
 		const prefix = await store.create({ name: "Implementation context cleanup" })
 		const words = await store.create({ name: "Audit implementation and context" })
 		const results = await store.search("implementation context")
-		expect(results).toHaveLength(50)
+		expect(results).toHaveLength(3)
 		expect(results.slice(0, 3).map(({ id }) => id)).toEqual([exact.id, prefix.id, words.id])
 		expect(await store.search(exact.reference!.toLowerCase().replace("-", " "))).toMatchObject([{ id: exact.id }])
+	})
+	it("finds exact UUIDs in this project without loading other projects", async () => {
+		await seed(2)
+		const [ticket] = await store.search("PRO-02")
+		expect(await store.search(ticket.id)).toMatchObject([{ id: ticket.id }])
 	})
 
 	it("keeps projects isolated and returned suggestions independent of cached records", async () => {
@@ -165,7 +274,9 @@ describe("ticket mention search", () => {
 		reads.mockImplementation(async (...args) => {
 			started()
 			await barrier
-			return originalRead(...args)
+			const value = await originalRead(...args)
+			if (String(args[0]).endsWith(".md")) notify(String(args[0]))
+			return value
 		})
 		reads.mockClear()
 		const controller = new AbortController()
@@ -232,6 +343,39 @@ describe("ticket mention search", () => {
 		}
 		reads.mockClear()
 		expect(await store.search("renamed")).toMatchObject([{ name: "Renamed" }])
+		expect(reads).not.toHaveBeenCalled()
+	})
+
+	it("does not return an older refresh after an external edit notification", async () => {
+		await seed(1)
+		const file = path.join(store.directory, "backlog", "00000000-0000-4000-8000-000000000001.md")
+		const reads = vi.mocked(fs.readFile)
+		const originalRead = (await vi.importActual<typeof import("fs/promises")>("fs/promises")).readFile
+		let started!: () => void
+		let release!: () => void
+		const reading = new Promise<void>((resolve) => {
+			started = resolve
+		})
+		const barrier = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		reads.mockImplementationOnce(async (...args) => {
+			const value = await originalRead(...args)
+			started()
+			await barrier
+			return value
+		})
+		const pending = store.search("edited")
+		await reading
+		try {
+			await fs.writeFile(file, (await originalRead(file, "utf8")).replace("Backend cleanup 1", "Edited title"))
+			notify(file)
+		} finally {
+			release()
+		}
+		expect(await pending).toMatchObject([{ name: "Edited title" }])
+		reads.mockClear()
+		expect(await store.search("edited")).toMatchObject([{ name: "Edited title" }])
 		expect(reads).not.toHaveBeenCalled()
 	})
 

@@ -69,8 +69,13 @@ runs:
         - name: Install dependencies
           if: ${{ inputs.skip-install != 'true' }}
           shell: bash
+          env:
+              # @vscode/ripgrep's installer otherwise shares GitHub's unauthenticated API limit.
+              GITHUB_TOKEN: ${{ github.token }}
           run: pnpm install --frozen-lockfile ${{ inputs.install-args }}
         - name: Restore bundled ripgrep executable
           if: ${{ inputs.skip-install != 'true' }}
           shell: bash
+          env:
+              GITHUB_TOKEN: ${{ github.token }}
           run: pnpm --dir src rebuild @vscode/ripgrep

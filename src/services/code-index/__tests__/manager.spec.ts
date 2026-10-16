@@ -63,7 +63,9 @@ vi.mock("vscode", () => {
 			}),
 			getWorkspaceFolder: vi.fn(),
 		},
-		RelativePattern: vi.fn().mockImplementation((base: any, pattern: any) => ({ base, pattern })),
+		RelativePattern: vi.fn().mockImplementation(function (base: any, pattern: any) {
+			return { base, pattern }
+		}),
 	}
 })
 
@@ -90,19 +92,28 @@ vi.mock("../../../utils/fs", () => ({
 
 // Mock ignore module
 vi.mock("ignore", () => ({
-	default: vi.fn().mockReturnValue({
-		add: vi.fn(),
-		ignores: vi.fn().mockReturnValue(false),
-	}),
+	default: vi.fn().mockImplementation(
+		(() => {
+			const instance = {
+				add: vi.fn(),
+				ignores: vi.fn().mockReturnValue(false),
+			}
+			return function () {
+				return instance
+			}
+		})(),
+	),
 }))
 
 vi.mock("../state-manager", () => ({
-	CodeIndexStateManager: vi.fn().mockImplementation(() => ({
-		onProgressUpdate: vi.fn(),
-		getCurrentStatus: vi.fn(),
-		dispose: vi.fn(),
-		setSystemState: vi.fn(),
-	})),
+	CodeIndexStateManager: vi.fn().mockImplementation(function () {
+		return {
+			onProgressUpdate: vi.fn(),
+			getCurrentStatus: vi.fn(),
+			dispose: vi.fn(),
+			setSystemState: vi.fn(),
+		}
+	}),
 }))
 
 // Mock TelemetryService
@@ -253,7 +264,9 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				}),
 				validateEmbedder: vi.fn().mockResolvedValue({ valid: true }),
 			}
-			MockedCodeIndexServiceFactory.mockImplementation(() => mockServiceFactoryInstance as any)
+			MockedCodeIndexServiceFactory.mockImplementation(function () {
+				return mockServiceFactoryInstance as any
+			})
 
 			// The key test: this should NOT throw "CodeIndexManager not initialized" error
 			await expect(manager.handleSettingsChange()).resolves.not.toThrow()
@@ -333,7 +346,9 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				}),
 				validateEmbedder: vi.fn().mockResolvedValue({ valid: true }),
 			}
-			MockedCodeIndexServiceFactory.mockImplementation(() => mockServiceFactoryInstance as any)
+			MockedCodeIndexServiceFactory.mockImplementation(function () {
+				return mockServiceFactoryInstance as any
+			})
 
 			// Mock the methods that would be called during restart
 			const recreateServicesSpy = vi.spyOn(manager as any, "_recreateServices")
@@ -438,7 +453,9 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			}
 
 			// Mock the ServiceFactory constructor
-			MockedCodeIndexServiceFactory.mockImplementation(() => mockServiceFactoryInstance)
+			MockedCodeIndexServiceFactory.mockImplementation(function () {
+				return mockServiceFactoryInstance
+			})
 
 			// Mock state manager methods directly on the existing instance
 			mockStateManager = (manager as any)._stateManager
@@ -788,7 +805,9 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				}),
 				validateEmbedder: vi.fn().mockResolvedValue({ valid: true }),
 			}
-			MockedCodeIndexServiceFactory.mockImplementation(() => mockServiceFactoryInstance as any)
+			MockedCodeIndexServiceFactory.mockImplementation(function () {
+				return mockServiceFactoryInstance as any
+			})
 
 			// Act - recover from error
 			await manager.recoverFromError()

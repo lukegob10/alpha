@@ -1,7 +1,7 @@
 {
 	"extends": "@alpha-code/config-typescript/base.json",
 	"compilerOptions": {
-		"types": ["vitest/globals"],
+		"types": ["node", "vitest/globals"],
 		"outDir": "dist"
 	},
 	"include": ["src", "scripts", "*.config.ts"],

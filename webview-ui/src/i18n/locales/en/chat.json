@@ -482,11 +482,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves incident investigations, tool outcome visibility, and ticket search.",
-			"diagnosticEvidence": "Investigations retain clearer tool and command evidence, with visible gaps when history is incomplete.",
-			"toolOutcomes": "The Incidents dashboard distinguishes failed, denied, cancelled, and unknown tool outcomes.",
-			"incidentReports": "Incident reports include a concise summary and a follow-up prompt grounded in the available evidence.",
-			"ticketSearch": "Alpha Tickets suggestions reuse unchanged records and respond sooner while you type."
+			"welcome": "Alpha v{{version}} improves task reliability, recovery, and alignment with Codex CLI.",
+			"taskContinuity": "Tasks preserve context and recover more reliably after interruptions, cancellations, and reloads.",
+			"toolsAndProviders": "Commands, tools, and model providers report clearer outcomes and retain ordered results.",
+			"delegation": "Delegated agents and questions keep their progress and responses through task handoffs.",
+			"workspaceExperience": "Skills, previews, Alpha Tickets, and scheduled tasks remain integrated with the shared task engine."
 		}
 	},
 	"crossTasks": {

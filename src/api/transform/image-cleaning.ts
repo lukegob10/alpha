@@ -23,6 +23,20 @@ export function maybeRemoveImageBlocks(messages: ApiMessage[], apiHandler: ApiHa
 							text: "[Referenced image in conversation]",
 						}
 					}
+					if (
+						block.type === "tool_result" &&
+						Array.isArray(block.content) &&
+						block.content.some((part) => part.type === "image")
+					) {
+						return {
+							...block,
+							content: block.content.map((part) =>
+								part.type === "image"
+									? { type: "text" as const, text: "[Referenced image in conversation]" }
+									: part,
+							),
+						}
+					}
 					return block
 				})
 			}

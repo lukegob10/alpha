@@ -34,7 +34,9 @@ vi.mock("os", () => ({
 }))
 
 vi.mock("os-name", () => ({
-	default: vi.fn(() => "Linux"),
+	default: vi.fn(function () {
+		return "Linux"
+	}),
 }))
 
 vi.mock("fs/promises")
@@ -155,11 +157,13 @@ vi.mock("vscode", () => ({
 	window: {
 		activeTextEditor: undefined,
 	},
-	EventEmitter: vi.fn().mockImplementation(() => ({
-		event: vi.fn(),
-		fire: vi.fn(),
-		dispose: vi.fn(),
-	})),
+	EventEmitter: vi.fn().mockImplementation(function () {
+		return {
+			event: vi.fn(),
+			fire: vi.fn(),
+			dispose: vi.fn(),
+		}
+	}),
 }))
 
 vi.mock("../../../utils/shell", () => ({
@@ -1322,7 +1326,10 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).toContain("host-classified inspection or verification commands")
 		expect(prompt).not.toContain("artifact reader")
 		expect(prompt).not.toContain("manage_command")
-		expect(prompt).toContain("exactly one non-empty <proposed_plan> block")
+		expect(prompt).not.toContain("A terminal Plan response must contain")
+		expect(prompt).toContain("Only output the final plan when it is decision complete")
+		expect(prompt).toContain("When you present the official plan, wrap it in a <proposed_plan> block")
+		expect(prompt).toContain("only when you are presenting a complete spec")
 		expect(prompt).not.toContain("You have access to tools that let you execute CLI commands")
 		expect(prompt.split("\n").some((line) => line.startsWith("\t"))).toBe(false)
 	})

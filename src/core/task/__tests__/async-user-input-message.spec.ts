@@ -17,6 +17,8 @@ describe("Task async user input message", () => {
 			instanceId: "primary",
 			clineMessages: emitted,
 			lastMessageTs: 123,
+			observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
+			reserveUiMessageTimestamp: Task.prototype["reserveUiMessageTimestamp"],
 			apiConversationHistory: providerHistory,
 			addToAlphaMessages: vi.fn(async (message: AlphaMessage) => emitted.push(message)),
 		} as unknown as Task

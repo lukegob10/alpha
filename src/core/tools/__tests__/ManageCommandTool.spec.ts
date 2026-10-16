@@ -113,8 +113,9 @@ it("formats a native running wait with the process session", async () => {
 })
 
 it("formats a completed native wait with its exit code", async () => {
-	const { task, callbacks, process, commandEvidence } = harness()
+	const { task, callbacks, process, terminal, commandEvidence } = harness()
 	process.isSettled = true
+	terminal.running = false
 	commandEvidence.status = "failed"
 	commandEvidence.exitCode = 7
 	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, {

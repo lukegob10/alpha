@@ -12,7 +12,9 @@ import type { ApiStreamChunk } from "../../transform/stream"
 const { createMessage } = vi.hoisted(() => ({ createMessage: vi.fn() }))
 
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
-	AnthropicVertex: vi.fn(() => ({ messages: { create: createMessage } })),
+	AnthropicVertex: vi.fn(function () {
+		return { messages: { create: createMessage } }
+	}),
 }))
 
 interface TaskHistoryBridge {

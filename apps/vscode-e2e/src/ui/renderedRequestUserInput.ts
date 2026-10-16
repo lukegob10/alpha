@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -103,16 +104,16 @@ export async function exerciseRenderedRequestUserInput(
 		assert.equal(await evaluate(`(()=>{const e=${expression};e.focus();return d.activeElement===e})()`), true)
 	}
 	const button = (label: string) =>
-		`[...d.querySelectorAll('${form} button')].find(e=>e.textContent.trim()===${JSON.stringify(label)})`
+		`[...d.querySelectorAll('${form} button')].find(e=>e.textContent.trim()===${javascriptLiteral(label)})`
 	const activate = async (label: string) => {
 		await focus(button(label))
 		await key("Enter", "Enter", 13)
 	}
 	const choose = async (label: string) => {
-		const selector = `${form} input[type=radio][value=${JSON.stringify(label)}]`
-		await focus(`d.querySelector(${JSON.stringify(selector)})`)
+		const selector = `${form} input[type=radio][value=${javascriptLiteral(label)}]`
+		await focus(`d.querySelector(${javascriptLiteral(selector)})`)
 		await key(" ", "Space", 32)
-		await check(`d.querySelector(${JSON.stringify(selector)})?.checked===true`)
+		await check(`d.querySelector(${javascriptLiteral(selector)})?.checked===true`)
 	}
 	const capture = async (stage: string, selector?: string) => {
 		const browse = async () => {
@@ -170,10 +171,10 @@ export async function exerciseRenderedRequestUserInput(
 		}
 		const align = async (block: "start" | "end"): Promise<CaptureBounds> => {
 			const bounds = await evaluate<CaptureBounds | null>(
-				`new Promise(resolve=>{const e=d.querySelector(${JSON.stringify(selector)});
+				`new Promise(resolve=>{const e=d.querySelector(${javascriptLiteral(selector)});
 				const viewport=e?.closest('[data-testid=chat-transcript-scroller]');
 				if(!e||!viewport){resolve(null);return}
-				e.scrollIntoView({block:${JSON.stringify(block)},behavior:'instant'});
+				e.scrollIntoView({block:${javascriptLiteral(block)},behavior:'instant'});
 				const observations=[],deadline=d.defaultView.performance.now()+2000;
 				let previous='',stableFrames=0;
 				const observe=()=>{
@@ -239,7 +240,7 @@ export async function exerciseRenderedRequestUserInput(
 	}
 	const assertFits = async (selector: string) => {
 		const metrics = await evaluate<{ width: number; overflow: boolean; scrollWidth: number; clientWidth: number }>(
-			`(()=>{const e=d.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();return {
+			`(()=>{const e=d.querySelector(${javascriptLiteral(selector)}),r=e.getBoundingClientRect();return {
 				width:r.width,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth,
 				overflow:[...e.querySelectorAll('h3,label,input,textarea,button,dt,dd')].some(child=>{
 					const c=child.getBoundingClientRect();return c.width>0&&(c.left<r.left-1||c.right>r.right+1)
@@ -255,7 +256,7 @@ export async function exerciseRenderedRequestUserInput(
 	assert.equal(typeof fixture.customAnswer, "string")
 	const question = async (index: number, focused = false) => {
 		await check(
-			`d.querySelector('${form} h3')?.textContent===${JSON.stringify(fixture.questions[index]!.question)}&&d.querySelectorAll('${form} fieldset').length===1`,
+			`d.querySelector('${form} h3')?.textContent===${javascriptLiteral(fixture.questions[index]!.question)}&&d.querySelectorAll('${form} fieldset').length===1`,
 		)
 		assert.equal(
 			await evaluate<number>(`new Set([...d.querySelectorAll('${form} input[type=radio]')].map(e=>e.name)).size`),
@@ -272,7 +273,7 @@ export async function exerciseRenderedRequestUserInput(
 			assert.ok(metrics.width <= 320, "The fixture must exercise a 320px or narrower real webview layout")
 			await capture(stage, selector)
 		} finally {
-			await evaluate(`d.documentElement.style.width=${JSON.stringify(originalWidth)}`)
+			await evaluate(`d.documentElement.style.width=${javascriptLiteral(originalWidth)}`)
 		}
 	}
 	try {
@@ -303,7 +304,7 @@ export async function exerciseRenderedRequestUserInput(
 			typed += part
 			await cdp.request("Input.insertText", { text: part }, sessionId)
 			await check(
-				`d.querySelector('${form} textarea')?.value===${JSON.stringify(typed)}&&d.activeElement===d.querySelector('${form} textarea')`,
+				`d.querySelector('${form} textarea')?.value===${javascriptLiteral(typed)}&&d.activeElement===d.querySelector('${form} textarea')`,
 			)
 		}
 		await captureNarrow("input-custom-narrow", form)
@@ -323,7 +324,7 @@ export async function exerciseRenderedRequestUserInput(
 		await check(`d.querySelector('${form} h3')?.textContent==='Review your answers'`)
 		await check(`d.activeElement===d.querySelector('${form} h3')`)
 		const editSelector = `${form} button[aria-label="Edit answer for Oracle"]`
-		await focus(`d.querySelector(${JSON.stringify(editSelector)})`)
+		await focus(`d.querySelector(${javascriptLiteral(editSelector)})`)
 		await key("Enter", "Enter", 13)
 		await question(1, true)
 		assert.equal(await evaluate<string>(`d.querySelector('${form} textarea').value`), fixture.customAnswer)
@@ -358,7 +359,7 @@ export async function exerciseRenderedRequestUserInput(
 			}
 			await check(`d.querySelectorAll('${receipt}').length===1&&d.querySelectorAll('${form}').length===0`)
 			await check(
-				`d.body.classList.contains(${JSON.stringify(stage === "input-receipt-dark" ? "vscode-dark" : "vscode-light")})`,
+				`d.body.classList.contains(${javascriptLiteral(stage === "input-receipt-dark" ? "vscode-dark" : "vscode-light")})`,
 			)
 			const closedSummary =
 				"[...d.querySelectorAll('details > summary')].find(e=>e.textContent.trim()==='Question request closed')"
@@ -368,10 +369,10 @@ export async function exerciseRenderedRequestUserInput(
 			await key(" ", "Space", 32)
 			await check(`${closedRequest}.open===true`)
 			for (const expected of fixture.questions) {
-				await check(`${closedRequest}.innerText.includes(${JSON.stringify(expected.question)})`)
+				await check(`${closedRequest}.innerText.includes(${javascriptLiteral(expected.question)})`)
 				for (const option of expected.options) {
-					await check(`${closedRequest}.innerText.includes(${JSON.stringify(option.label)})`)
-					await check(`${closedRequest}.innerText.includes(${JSON.stringify(option.description)})`)
+					await check(`${closedRequest}.innerText.includes(${javascriptLiteral(option.label)})`)
+					await check(`${closedRequest}.innerText.includes(${javascriptLiteral(option.description)})`)
 				}
 			}
 			assert.equal(
@@ -384,9 +385,9 @@ export async function exerciseRenderedRequestUserInput(
 			await key("Enter", "Enter", 13)
 			await check(`${closedRequest}.open===false`)
 			for (const expected of fixture.questions) {
-				await check(`d.querySelector('${receipt}').innerText.includes(${JSON.stringify(expected.question)})`)
+				await check(`d.querySelector('${receipt}').innerText.includes(${javascriptLiteral(expected.question)})`)
 				for (const answer of fixture.expectedAnswers[expected.id]!.answers) {
-					await check(`d.querySelector('${receipt}').innerText.includes(${JSON.stringify(answer)})`)
+					await check(`d.querySelector('${receipt}').innerText.includes(${javascriptLiteral(answer)})`)
 				}
 			}
 			await assertFits(receipt)
@@ -398,7 +399,7 @@ export async function exerciseRenderedRequestUserInput(
 		await capture("input-failed").catch(() => undefined)
 		throw error
 	} finally {
-		await evaluate(`d.documentElement.style.width=${JSON.stringify(originalWidth)}`).catch(() => undefined)
+		await evaluate(`d.documentElement.style.width=${javascriptLiteral(originalWidth)}`).catch(() => undefined)
 	}
 	return [
 		"one-active-question",

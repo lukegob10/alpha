@@ -64,7 +64,7 @@ describe("custom-instructions global .roo support", () => {
 	const legacyProjectConfigDir = path.join(mockCwd, ".roo")
 
 	beforeEach(() => {
-		vi.clearAllMocks()
+		vi.resetAllMocks()
 		mockHomedir.mockReturnValue(mockHomeDir)
 		mockGetLegacyConfigDirectoriesForCwd.mockReturnValue([legacyGlobalConfigDir, legacyProjectConfigDir])
 		// getAllLegacyConfigDirectoriesForCwd is now async and returns the same directories by default

@@ -12,7 +12,7 @@ import { waitFor } from "./utils"
 const REAL_IMAGE_CALL_ID = "view-image-real-png"
 const SPOOF_IMAGE_CALL_ID = "view-image-spoof-png"
 const PNG_BYTES = Buffer.from(
-	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lS8AAAAASUVORK5CYII=",
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
 	"base64",
 )
 
@@ -111,7 +111,13 @@ function getMessageBlocks(messages: unknown[], type: string): Array<{ role: unkn
 
 function getImageBlocks(messages: unknown[]): ProviderBlock[] {
 	return asMessages(messages).flatMap((message) =>
-		asBlocks(message.content).filter((block) => block.type === "image"),
+		asBlocks(message.content).flatMap((block) =>
+			block.type === "image"
+				? [block]
+				: block.type === "tool_result"
+					? asBlocks(block.content).filter((item) => item.type === "image")
+					: [],
+		),
 	)
 }
 
@@ -150,7 +156,7 @@ suite("Alpha view_image native tool acceptance", function () {
 
 		try {
 			await fs.writeFile(realImageFsPath, PNG_BYTES, { flag: "wx" })
-			await fs.writeFile(spoofImageFsPath, "this file is not a PNG", { flag: "wx" })
+			await fs.writeFile(spoofImageFsPath, PNG_BYTES.subarray(0, 8), { flag: "wx" })
 
 			const configuration: AlphaCodeSettings = {
 				...originalConfiguration,
@@ -218,6 +224,16 @@ suite("Alpha view_image native tool acceptance", function () {
 			assert.strictEqual(realResults[0]?.block.is_error, false, "The real image result must succeed")
 			const realImages = getImageBlocks(realResultRequest)
 			assert.equal(realImages.length, 1, "The next provider request must contain one image payload")
+			assert.deepStrictEqual(
+				asBlocks(realResults[0]!.block.content).filter((block) => block.type === "image"),
+				realImages,
+				"The image must remain inside its paired tool result",
+			)
+			assert.deepStrictEqual(
+				getMessageBlocks(realResultRequest, "image"),
+				[],
+				"The image payload must not escape into an unpaired top-level block",
+			)
 			assert.deepStrictEqual(realImages[0], {
 				type: "image",
 				source: { type: "base64", media_type: "image/png", data: PNG_BYTES.toString("base64") },
@@ -236,7 +252,7 @@ suite("Alpha view_image native tool acceptance", function () {
 			assert.equal(spoofResults[0]?.role, "user")
 			const spoofResult = spoofResults[0]!.block
 			assert.strictEqual(spoofResult.is_error, true, "The spoofed image result must be a terminal tool error")
-			assert.match(JSON.stringify(spoofResult), /does not match the supported image format/i)
+			assert.match(JSON.stringify(spoofResult), /unable to process image: invalid or unsupported image data/i)
 			assert.deepStrictEqual(
 				getImageBlocks(spoofResultRequest),
 				realImages,

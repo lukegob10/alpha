@@ -21,7 +21,7 @@ vi.mock("@alpha-code/telemetry", () => ({
 describe("CodeIndexServiceFactory", () => {
 	let factory: CodeIndexServiceFactory
 	let configManager: {
-		getConfig: ReturnType<typeof vi.fn>
+		getConfig: import("vitest").Mock
 		isFeatureConfigured: boolean
 		configurationError?: string
 	}

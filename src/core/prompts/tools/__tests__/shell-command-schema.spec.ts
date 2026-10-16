@@ -34,6 +34,7 @@ describe("command tool schemas", () => {
 		expect(parameters.properties).toMatchObject({
 			cmd: { type: "string" },
 			workdir: { type: "string" },
+			tty: { type: "boolean" },
 			yield_time_ms: { type: "integer" },
 			max_output_tokens: { type: "integer" },
 		})
@@ -47,7 +48,7 @@ describe("command tool schemas", () => {
 				? "effective range on Windows is 10000-30000 ms"
 				: "effective range is 250-30000 ms",
 		)
-		expect(parameters.properties).not.toHaveProperty("tty")
+		expect(parameters.properties?.tty?.description).toContain("false or omitted uses plain pipes")
 		expect(parameters.properties).not.toHaveProperty("shell")
 		expect(parameters.properties).not.toHaveProperty("login")
 		expect(parameters.properties).not.toHaveProperty("verification")
@@ -68,6 +69,7 @@ describe("command tool schemas", () => {
 		expect(tool.description).toContain("strict Plan mode")
 		expect(parameters.required).toEqual(["cmd"])
 		expect(parameters.properties).not.toHaveProperty("verification")
+		expect(parameters.properties).not.toHaveProperty("tty")
 	})
 
 	it("publishes write_stdin with task session identifiers and bounded controls", () => {

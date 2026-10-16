@@ -1,4 +1,5 @@
 import type { ApprovalMode } from "@alpha-code/types"
+import type { ProjectInstructionDiscoveryOptions } from "../../services/config-paths"
 
 /**
  * Settings passed to system prompt generation functions
@@ -8,6 +9,10 @@ export interface SystemPromptSettings {
 	useAgentRules: boolean
 	/** When true, recursively discover and load .alpha/rules from subdirectories */
 	enableSubfolderRules?: boolean
+	/** User-owned project boundary and safe fallback names captured for this step. */
+	projectInstructionDiscovery?: ProjectInstructionDiscoveryOptions
+	/** Selected provider model's context window captured for this step. */
+	skillCatalogContextWindow?: number
 	newTaskRequireTodos: boolean
 	/** When true, model should hide vendor/company identity in responses */
 	isStealthModel?: boolean

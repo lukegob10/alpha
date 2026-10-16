@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 
 import { ViewsContainer, Views, Menus, Configuration, Keybindings, contributesSchema } from "./types.js"
 
@@ -47,7 +47,11 @@ function rmDir(dirPath: string, maxRetries: number = 5): void {
 					// Try to clear readonly flags on Windows.
 					if (process.platform === "win32") {
 						try {
-							execSync(`attrib -R "${dirPath}\\*.*" /S /D`, { stdio: "ignore" })
+							execFileSync("attrib.exe", ["-R", path.join(dirPath, "*.*"), "/S", "/D"], {
+								stdio: "ignore",
+								shell: false,
+								windowsHide: true,
+							})
 						} catch {
 							// Ignore attrib errors.
 						}
@@ -125,9 +129,18 @@ function resolveCopySourcePath(srcDir: string, srcRelPath: string): string {
 
 export function copyPaths(copyPaths: [string, string, CopyPathOptions?][], srcDir: string, dstDir: string) {
 	copyPaths.forEach(([srcRelPath, dstRelPath, options = {}]) => {
+		const outputRoot = path.resolve(dstDir)
+		const dstPath = path.resolve(outputRoot, dstRelPath)
+		const relative = path.relative(outputRoot, dstPath)
+		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+			throw new Error("Copy destination must stay inside its output directory")
+		for (let current = dstPath; current !== path.dirname(outputRoot); current = path.dirname(current)) {
+			if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink())
+				throw new Error("Copy destination cannot contain symbolic links")
+			if (current === outputRoot) break
+		}
 		try {
 			const srcPath = resolveCopySourcePath(srcDir, srcRelPath)
-			const dstPath = path.join(dstDir, dstRelPath)
 			const stats = fs.lstatSync(srcPath)
 
 			if (stats.isDirectory()) {
@@ -169,6 +182,13 @@ export function copyWasms(srcDir: string, distDir: string): void {
 	fs.copyFileSync(tiktokenWasmPath, path.join(workersDir, "tiktoken_bg.wasm"))
 
 	console.log(`[copyWasms] Copied tiktoken WASMs to ${workersDir}`)
+
+	// The image validator uses the portable codec only in its bounded worker.
+	const imageCodecRoot = resolveNodeModulePath(srcDir, "@imagemagick", "magick-wasm")
+	fs.copyFileSync(path.join(imageCodecRoot, "dist", "x86", "magick.wasm"), path.join(workersDir, "magick.wasm"))
+	for (const license of ["LICENSE", "NOTICE"]) {
+		fs.copyFileSync(path.join(imageCodecRoot, license), path.join(workersDir, `magick-${license}`))
+	}
 
 	// Main tree-sitter WASM file.
 	fs.copyFileSync(

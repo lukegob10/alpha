@@ -86,9 +86,9 @@ describe("editTool", () => {
 	const mockedPathIsAbsolute = path.isAbsolute as MockedFunction<typeof path.isAbsolute>
 
 	const mockTask: any = {}
-	let mockAskApproval: ReturnType<typeof vi.fn>
-	let mockHandleError: ReturnType<typeof vi.fn>
-	let mockPushToolResult: ReturnType<typeof vi.fn>
+	let mockAskApproval: import("vitest").Mock
+	let mockHandleError: import("vitest").Mock
+	let mockPushToolResult: import("vitest").Mock
 	let toolResult: ToolResponse | undefined
 
 	beforeEach(() => {

@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const gitState = vi.hoisted(() => ({
 	clients: [] as {
 		signal?: AbortSignal
-		add: ReturnType<typeof vi.fn>
-		commit: ReturnType<typeof vi.fn>
+		add: import("vitest").Mock
+		commit: import("vitest").Mock
 	}[],
 	addBarrier: undefined as Promise<void> | undefined,
 }))
@@ -16,7 +16,7 @@ vi.mock("../../../utils/fs", () => ({ fileExistsAtPath: vi.fn().mockResolvedValu
 vi.mock("../../../services/search/file-search", () => ({ executeRipgrep: vi.fn().mockResolvedValue([]) }))
 vi.mock("../excludes", () => ({ getExcludePatterns: vi.fn().mockResolvedValue([]) }))
 vi.mock("simple-git", () => ({
-	default: vi.fn((options: { abort?: AbortSignal }) => {
+	simpleGit: vi.fn((options: { abort?: AbortSignal }) => {
 		const git = {
 			signal: options.abort,
 			env: vi.fn(),

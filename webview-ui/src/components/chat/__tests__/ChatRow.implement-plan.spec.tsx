@@ -25,7 +25,10 @@ const message: AlphaMessage = {
 	text: `<proposed_plan>\n${markdown}\n</proposed_plan>`,
 }
 
-function showPlan(options: { history?: HistoryItem; mode?: string; partial?: boolean; busy?: boolean } = {}) {
+function showPlan(
+	options: { history?: HistoryItem; mode?: string; partial?: boolean; busy?: boolean; text?: string } = {},
+) {
+	const currentMessage = { ...message, text: options.text ?? message.text, partial: options.partial }
 	const environment: ChatRowEnvironment = {
 		mcpServers: [],
 		alwaysAllowMcp: false,
@@ -33,12 +36,12 @@ function showPlan(options: { history?: HistoryItem; mode?: string; partial?: boo
 		currentTaskId: item.id,
 		currentTaskItem: options.history ?? item,
 		reasoningBlockCollapsed: true,
-		getAlphaMessages: () => [message],
+		getAlphaMessages: () => [currentMessage],
 	}
 	return render(
 		<ExtensionStateContextProvider>
 			<ChatRow
-				message={{ ...message, partial: options.partial }}
+				message={currentMessage}
 				environment={environment}
 				isExpanded
 				isLast
@@ -79,6 +82,19 @@ describe("stored plan action", () => {
 		const button = screen.getByRole("button", { name: "Implement plan" })
 		expect(button).toBeDisabled()
 		fireEvent.click(button)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "implementPlan" }))
+	})
+
+	it.each([
+		"Which storage option should replace the prior design?",
+		markdown,
+		"",
+		"<proposed_plan></proposed_plan>",
+		"<proposed_plan>\n# Incomplete revision",
+		`<proposed_plan>\n${markdown}\n<proposed_plan>Nested</proposed_plan>\n</proposed_plan>`,
+	])("does not offer a new action for a conversational or malformed result with an older handoff (%j)", (text) => {
+		showPlan({ text })
+		expect(screen.queryByRole("button", { name: "Implement plan" })).not.toBeInTheDocument()
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "implementPlan" }))
 	})
 })

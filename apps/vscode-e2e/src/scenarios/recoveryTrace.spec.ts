@@ -85,10 +85,14 @@ function trace(
 		command(RECOVERY_COMMANDS.rg, 1)
 		command(RECOVERY_COMMANDS.narrow, 1)
 		command(RECOVERY_COMMANDS.broad, 0, "docs/integrations.md:3:Copilot\nconfig/assistants.json:1:copilot")
-		history.push({ role: "assistant", content: "Found docs/integrations.md and config/assistants.json." })
+		const result = "Found docs/integrations.md and config/assistants.json."
+		history.push({ role: "assistant", content: result })
+		ui.push({ ts: 11, type: "say", say: "completion_result", text: result, partial: false })
 	} else if (phase === "devSearchAbsent") {
 		command(RECOVERY_COMMANDS.absent, 1)
-		history.push({ role: "assistant", content: "No matches found." })
+		const result = "No matches found."
+		history.push({ role: "assistant", content: result })
+		ui.push({ ts: 11, type: "say", say: "completion_result", text: result, partial: false })
 	} else {
 		command(RECOVERY_COMMANDS.verify, 2, "INTEGRATION_CONFIGURATION_MISSING")
 		const result = "Integration remains unverified because config/local-integration.json is missing."
@@ -124,8 +128,8 @@ function trace(
 }
 
 test("recovery trace accepts historical shell receipts", () => {
-	const { history, ui } = trace("devSearchAbsent", "shell")
-	assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
+	const { history, ui, lifecycle } = trace("devSearchAbsent", "shell")
+	assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [])
 })
 
 function failures(
@@ -170,10 +174,11 @@ test("rejects stale phase evidence and claims without broad-search receipts", ()
 })
 
 test("accepts the live model's equivalent absent-term report", () => {
-	const { history, ui } = trace("devSearchAbsent")
+	const { history, ui, lifecycle } = trace("devSearchAbsent")
 	history[3]!.content =
 		"No tracked repository files contain `AlphaMissingProvider947` (case-insensitive). Git status is clean; the workspace was unchanged."
-	assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
+	ui[0]!.text = history[3]!.content
+	assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [])
 })
 
 test("accepts absent-term reports with hyphenated search modifiers", () => {
@@ -185,6 +190,7 @@ test("accepts absent-term reports with hyphenated search modifiers", () => {
 				text: "No case-insensitive matches for `AlphaMissingProvider947` were found in tracked repository files. Git status was clean.",
 			},
 		]
+		ui[0]!.text = recordBlock(history[3]!).text
 		assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [], toolName)
 	}
 })
@@ -361,9 +367,9 @@ test("command output cannot spoof a native or historical exit status", () => {
 })
 
 test("expected native command failures accept the canonical exit header", () => {
-	const { history, ui } = trace("devSearchAbsent", "exec_command")
+	const { history, ui, lifecycle } = trace("devSearchAbsent", "exec_command")
 	recordBlock(history[2]!).is_error = true
-	assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
+	assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [])
 })
 
 test("a running native process cannot borrow an exit status from its output", () => {
@@ -375,11 +381,11 @@ test("a running native process cannot borrow an exit status from its output", ()
 
 test("historical inline and persisted command envelopes remain readable without trusting preview text", () => {
 	for (const persisted of [false, true]) {
-		const { history, ui } = trace("devSearchAbsent", "shell")
+		const { history, ui, lifecycle } = trace("devSearchAbsent", "shell")
 		recordBlock(history[2]!).content = persisted
 			? "Command executed in 'fixture'. Command execution was not successful, inspect the cause and adjust as needed.\nExit code: 1\n\nOutput (1KB) persisted. Artifact ID: output.txt\n\nPreview:\nExit code: 128\n"
 			: "Command executed in terminal within working directory 'fixture'. Command execution was not successful, inspect the cause and adjust as needed.\nExit code: 1\nOutput:\nExit code: 128\n"
-		assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
+		assert.deepEqual(failures(history, ui, "devSearchAbsent", lifecycle), [])
 	}
 })
 
@@ -466,3 +472,121 @@ test("legacy running output cannot establish an observed absent-search exit", ()
 		"Command is still running in terminal from 'fixture'. execution_id: 42.\nHere's the output so far:\nExit code: 1\nOutput:\nNo matches found."
 	assert.ok(failures(history, ui, "devSearchAbsent").includes("search_absence_observed"))
 })
+
+for (const phase of ["devSearchScope", "devSearchAbsent"] as const) {
+	const reportCheck = phase === "devSearchScope" ? "search_report_identifies_matches" : "search_absence_reported"
+	test(`${phase} rejects contradictory final answers despite earlier matching commentary`, () => {
+		const { history, ui, lifecycle } = trace(phase, "exec_command")
+		const preamble =
+			phase === "devSearchScope"
+				? "I will inspect docs/integrations.md and config/assistants.json."
+				: "I expect no matches; I will run the search."
+		const final = phase === "devSearchScope" ? "The search found no matches." : "Matches were found."
+		history.splice(1, 0, { role: "assistant", content: [{ type: "text", text: preamble }] })
+		history.at(-1)!.content = [{ type: "text", text: final }]
+		ui[0]!.text = final
+		assert.ok(failures(history, ui, phase, lifecycle).includes(reportCheck))
+	})
+
+	test(`${phase} requires a canonical finalized UI report and completed phase`, () => {
+		for (const fault of [
+			"missing-ui",
+			"partial",
+			"stale",
+			"commentary-only",
+			"mismatch",
+			"duplicate-ui",
+			"missing-lifecycle",
+			"failed-lifecycle",
+		]) {
+			const { history, ui, lifecycle } = trace(phase, "exec_command")
+			if (fault === "missing-ui") ui.length = 0
+			if (fault === "partial") ui[0]!.partial = true
+			if (fault === "stale") ui[0]!.ts = 9
+			if (fault === "commentary-only") ui[0]!.say = "text"
+			if (fault === "mismatch") ui[0]!.text = "A different response."
+			if (fault === "duplicate-ui") ui.push({ ...ui[0], ts: 12 })
+			if (fault === "missing-lifecycle") lifecycle.events.length = 0
+			if (fault === "failed-lifecycle") lifecycle.events[1]!.payload.status = "failed"
+			assert.ok(failures(history, ui, phase, lifecycle).includes(reportCheck), fault)
+		}
+	})
+
+	test(`${phase} cannot borrow its final answer from reasoning or an earlier assistant response`, () => {
+		const { history, ui, lifecycle } = trace(phase, "exec_command")
+		const matching = String(history.at(-1)!.content)
+		history.push({ role: "assistant", content: [{ type: "reasoning", text: matching }] })
+		assert.ok(failures(history, ui, phase, lifecycle).includes(reportCheck))
+	})
+
+	test(`${phase} accepts final text with separate reasoning and presentation whitespace`, () => {
+		const { history, ui, lifecycle } = trace(phase, "exec_command")
+		const result = String(history.at(-1)!.content)
+		history.at(-1)!.content = [
+			{ type: "reasoning", text: "This internal content is not the answer." },
+			{ type: "text", text: `\n${result}\n` },
+		]
+		assert.deepEqual(failures(history, ui, phase, lifecycle), [])
+	})
+
+	test(`${phase} accepts a paired historical completion matching its canonical final UI`, () => {
+		const { history, ui, lifecycle } = trace(phase, "execute_command")
+		const result = String(history.pop()!.content)
+		history.push({
+			role: "assistant",
+			content: [{ type: "tool_use", id: "final-completion", name: "attempt_completion", input: { result } }],
+		})
+		history.push({
+			role: "user",
+			content: [
+				{
+					type: "tool_result",
+					tool_use_id: "final-completion",
+					is_error: false,
+					content: "(tool did not return anything)",
+				},
+			],
+		})
+		assert.deepEqual(failures(history, ui, phase, lifecycle), [])
+		recordBlock(history.at(-1)!).is_error = true
+		assert.ok(failures(history, ui, phase, lifecycle).includes(reportCheck))
+	})
+}
+
+for (const phase of ["devSearchScope", "devSearchAbsent", "devVerificationUnavailable"] as const) {
+	test(`${phase} retains its completed outcome when a later phase has its own report`, () => {
+		const { history, ui, lifecycle } = trace(phase, "exec_command")
+		history.push(
+			{ role: "user", ts: 20, content: "[workflow:verify] A later phase." },
+			{ role: "assistant", ts: 21, content: [{ type: "text", text: "A later response." }] },
+		)
+		ui.push({ ts: 21, type: "say", say: "completion_result", text: "A later response.", partial: false })
+		lifecycle.events.push(
+			{ ...lifecycle.events[0]!, turnId: "later", eventId: "later-start", sequence: 3, occurredAt: 19 },
+			{ ...lifecycle.events[1]!, turnId: "later", eventId: "later-terminal", sequence: 4, occurredAt: 22 },
+		)
+		assert.deepEqual(failures(history, ui, phase, lifecycle), [])
+	})
+
+	test(`${phase} cannot borrow finality or a matching report from a later phase`, () => {
+		const { history, ui, lifecycle } = trace(phase, "exec_command")
+		const result = String(ui[0]!.text)
+		const laterStart = { ...lifecycle.events[0]!, turnId: "later", eventId: "later-start", occurredAt: 19 }
+		const laterEnd = { ...lifecycle.events[1]!, turnId: "later", eventId: "later-terminal", occurredAt: 22 }
+		history.pop()
+		ui.length = 0
+		lifecycle.events.splice(0, lifecycle.events.length, laterStart, laterEnd)
+		history.push(
+			{ role: "user", ts: 20, content: "[workflow:verify] A later phase." },
+			{ role: "assistant", ts: 21, content: [{ type: "text", text: result }] },
+		)
+		ui.push({ ts: 21, type: "say", say: "completion_result", text: result, partial: false })
+		const check =
+			phase === "devSearchScope"
+				? "search_report_identifies_matches"
+				: phase === "devSearchAbsent"
+					? "search_absence_reported"
+					: "verification_one_blocked_handoff"
+		assert.ok(failures(history, ui, phase, lifecycle).includes(check))
+	})
+}

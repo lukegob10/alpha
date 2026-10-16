@@ -629,3 +629,59 @@ describe("request-independent tool authority", () => {
 		expect(namesOf(result.tools)).not.toContain("wait_agent")
 	})
 })
+
+describe("captured MCP image capability from the canonical task builder", () => {
+	it.each([false, true])("forwards the captured supportsImages=%s into MCP execution", async (supportsImages) => {
+		const { useMcpToolTool } = await import("../../tools/UseMcpToolTool")
+		const handle = vi.spyOn(useMcpToolTool, "handle").mockImplementation(async () => {})
+		try {
+			const server = {
+				name: "media-server",
+				source: "global",
+				status: "connected",
+				config: "{}",
+				tools: [
+					{ name: "inspect", description: "Inspect media", inputSchema: { type: "object", properties: {} } },
+				],
+			}
+			const hub = { getServers: () => [server] }
+			const provider = { context: {}, getMcpHub: () => hub } as unknown as BuildToolsOptions["provider"]
+			const modelInfo = { contextWindow: 128_000, supportsPromptCache: false, supportsImages }
+			const result = await buildNativeToolsArrayWithRestrictions(
+				options({ provider, modelInfo, catalogCache: undefined }),
+			)
+			const descriptor = result.surface?.registry.resolve("mcp--media-server--inspect")
+			expect(descriptor).toBeDefined()
+			if (!descriptor) throw new Error("Fixture did not capture the MCP descriptor")
+			modelInfo.supportsImages = !supportsImages
+			const getModel = vi.fn(() => {
+				throw new Error("MCP execution must use its captured image capability")
+			})
+			await descriptor.execute({
+				task: { api: { getModel } },
+				call: {
+					type: "tool_use",
+					id: "captured-media-capability",
+					name: "mcp--media-server--inspect",
+					params: {},
+					partial: false,
+					nativeArgs: {},
+				},
+				callbacks: {
+					askApproval: vi.fn(async () => true),
+					handleError: vi.fn(async () => {}),
+					pushToolResult: vi.fn(),
+				},
+			} as unknown as Parameters<typeof descriptor.execute>[0])
+			expect(handle).toHaveBeenCalledOnce()
+			expect(handle).toHaveBeenLastCalledWith(
+				expect.anything(),
+				expect.anything(),
+				expect.objectContaining({ supportsImages }),
+			)
+			expect(getModel).not.toHaveBeenCalled()
+		} finally {
+			handle.mockRestore()
+		}
+	})
+})

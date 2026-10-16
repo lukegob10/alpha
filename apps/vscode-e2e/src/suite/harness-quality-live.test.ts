@@ -7,6 +7,13 @@ import * as vscode from "vscode"
 import { waitFor } from "./utils"
 import { record, runLiveCase } from "./live-file-tool-support"
 import { withAutomatedBrowserApprovals } from "./host-browser-approvals"
+import { assertCommandSession, assertRepairChecks } from "./harness-quality-support"
+import {
+	SKILL_COMPOSITION_FILES,
+	SKILL_COMPOSITION_PROMPT,
+	SKILL_COMPOSITION_READ_COMMANDS,
+	SKILL_COMPOSITION_READ_SCRIPT,
+} from "../scenarios/skillCompositionFixture"
 
 suite("Live Copilot harness quality", function () {
 	this.timeout(600_000)
@@ -47,17 +54,7 @@ suite("Live Copilot harness quality", function () {
 					planSteps,
 				)
 				assert.ok(recordedSteps.every((step) => record(step).status === "completed"))
-				const commands = calls.filter((call) => call.name === "exec_command")
-				assert.equal(commands.length, 2, "One failing baseline and one passing repair check")
-				assert.ok(commands.every((call) => call.input.cmd === command))
-				assert.deepEqual(
-					commands.map((call) => /Process exited with code (\d+)/.exec(call.result)?.[1]),
-					["1", "0"],
-					"Persisted tool results must show the failing baseline and passing repair",
-				)
-				assert.ok(commands[0] && commands[1])
-				assert.match(commands[0].result, /AssertionError/)
-				assert.match(commands[1].result, /3 checks passed/)
+				assertRepairChecks(calls, command)
 				const patches = calls.filter((call) => call.name === "apply_patch")
 				assert.ok(patches.length > 0, "The repair must use apply_patch")
 				assert.ok(
@@ -90,11 +87,15 @@ suite("Live Copilot harness quality", function () {
 		const directory = browser ? "live-browser" : "live-server"
 		const startCommand = `node ${directory}/server.cjs`
 		const checkCommand = `node ${directory}/check.cjs`
-		if (browser)
+		if (browser) {
+			// The host opens tokenless browser tools inactive when no native chat widget owns them.
+			// An empty owned editor group makes the created page visible for Playwright actionability.
+			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 			await waitFor(() => vscode.lm.tools.some((tool) => tool.name === "open_browser_page"), {
 				timeout: 15_000,
 				description: "VS Code 1.125.0 browser tools",
 			})
+		}
 		await runLiveCase(
 			browser ? "browser-session" : "command-session",
 			browser
@@ -104,7 +105,7 @@ suite("Live Copilot harness quality", function () {
 				[`${directory}/server.cjs`]: `const fs=require('node:fs'); const http=require('node:http'); const server=http.createServer((req,res)=>{if(req.url==='/__shutdown'){res.writeHead(200,{'Content-Type':'text/plain'}).end('shutdown requested'); console.log('SHUTDOWN_REQUESTED'); server.close(()=>console.log('SERVER_STOPPED')); return} res.writeHead(200,{'Content-Type':'text/html'}).end('<!doctype html><h1>ALPHA_READY</h1><button onclick="this.textContent=\\'Count1\\';fetch(\\'/__shutdown\\')">Count0</button>')}); setTimeout(()=>server.listen(0,'127.0.0.1',()=>{const url='http://127.0.0.1:'+server.address().port; fs.writeFileSync('${directory}/url.txt',url); console.log('READY '+url)}),2500); setTimeout(()=>{if(server.listening){console.log('SERVER_FAILSAFE_STOP');server.close(()=>console.log('SERVER_STOPPED'))}},90000).unref();\n`,
 				[`${directory}/check.cjs`]: `const fs=require('node:fs'); const assert=require('node:assert/strict'); const url=fs.readFileSync('${directory}/url.txt','utf8'); fetch(url).then(r=>r.text()).then(async body=>{assert.ok(body.includes('ALPHA_READY')); ${browser ? "console.log('HTTP behavior passed')" : "const stopped=await fetch(url+'/__shutdown'); assert.equal(await stopped.text(),'shutdown requested'); console.log('HTTP behavior passed; shutdown requested')"}}).catch(e=>{console.error(e);process.exitCode=1});\n`,
 			},
-			`Start ${startCommand} with exec_command and yield_time_ms 1000. Use write_stdin with the returned numeric session_id until READY is observed. Run ${checkCommand} once. ${browser ? "Open the observed URL with open_browser_page, click the Count0 button, and read_page to verify Count1; the button requests graceful server shutdown. " : ""}Then use write_stdin with the same session_id until you observe SERVER_STOPPED and exit code 0. Do not edit files or start duplicate servers.`,
+			`Start ${startCommand} with exec_command and yield_time_ms 10000. Observe READY in the launch result or use write_stdin with its numeric session_id until READY is observed. Run ${checkCommand} once. ${browser ? "Open the observed URL with open_browser_page, click the Count0 button, and read_page to verify Count1; the button requests graceful server shutdown. " : ""}Then use write_stdin with the same session_id until you observe SERVER_STOPPED and exit code 0. Do not edit files or start duplicate servers.`,
 			async (calls) => {
 				if (browser)
 					assert.ok(
@@ -112,32 +113,7 @@ suite("Live Copilot harness quality", function () {
 							(call) => call.name === "read_page" && !call.isError && call.result.includes("Count1"),
 						),
 					)
-				const commands = calls.filter((call) => call.name === "exec_command")
-				const launches = commands.filter((call) => call.input.cmd === startCommand)
-				assert.equal(launches.length, 1)
-				assert.ok(launches[0])
-				const sessionId = /Process running with session ID (\d+)/.exec(launches[0].result)?.[1]
-				assert.ok(sessionId, "The background launch must expose a numeric session ID")
-				assert.equal(commands.length, 2, "Only the fixture start and one HTTP check command may run")
-				assert.ok(
-					commands.some(
-						(call) => call.input.cmd === checkCommand && /HTTP behavior passed/.test(call.result),
-					),
-				)
-				const polls = calls.filter((call) => call.name === "write_stdin")
-				assert.ok(polls.length > 0, "The model must use write_stdin to observe its command session")
-				assert.ok(polls.every((call) => call.input.session_id === Number(sessionId) && !call.isError))
-				assert.ok(
-					polls.some((call) => call.result.includes("READY ")),
-					"The session poll must observe the server readiness output",
-				)
-				assert.ok(
-					polls.some(
-						(call) =>
-							/Process exited with code 0/.test(call.result) && call.result.includes("SERVER_STOPPED"),
-					),
-					"The final session poll must observe the owned server exit successfully",
-				)
+				assertCommandSession(calls, startCommand, checkCommand)
 			},
 			{
 				scope: "Control only commands started in this fixture. These test commands and a graceful shutdown of the fixture server are authorized. Do not load any skills for this explicit contract probe.",
@@ -160,14 +136,8 @@ suite("Live Copilot harness quality", function () {
 		await runLiveCase(
 			"skill-composition",
 			["skill", "update_plan", "apply_patch", "exec_command"],
-			{
-				".alpha/skills/harness-prepare/SKILL.md":
-					"---\nname: harness-prepare\ndescription: First stage of the harness workflow fixture\n---\nRead seed.txt beside this skill. Create live-skills/prepared.txt with its exact content. Then use harness-finish for the next stage.\n",
-				".alpha/skills/harness-prepare/seed.txt": "ALPHA_WORKFLOW_SEED\n",
-				".alpha/skills/harness-finish/SKILL.md":
-					"---\nname: harness-finish\ndescription: Final stage of the harness workflow fixture\n---\nRead live-skills/prepared.txt and create live-skills/final.txt containing its content followed by FINISHED on a new line. Read the final file before reporting completion.\n",
-			},
-			"Complete both stages of the harness workflow using harness-prepare then harness-finish. Use update_plan to track preparing the first output, creating the final output, and verifying final.txt; mark every step completed. Follow both skills and use exec_command to read final.txt before finishing.",
+			SKILL_COMPOSITION_FILES,
+			SKILL_COMPOSITION_PROMPT,
 			async (calls, _messages, workspace, _answer, task) => {
 				assert.deepEqual(
 					calls.filter((call) => call.name === "skill").map((call) => call.input.skill),
@@ -203,10 +173,24 @@ suite("Live Copilot harness quality", function () {
 					"ALPHA_WORKFLOW_SEED\nFINISHED\n",
 				)
 				assert.equal(task.workContext?.skills.length, 2)
+				const commands = calls
+					.filter((call) => call.name === "exec_command")
+					.map((call) => String(call.input.cmd))
+				assert.ok(
+					commands.every((command) => SKILL_COMPOSITION_READ_COMMANDS.includes(command)),
+					"Only the prepared fixture read commands may run",
+				)
+				for (const command of SKILL_COMPOSITION_READ_COMMANDS)
+					assert.ok(commands.includes(command), "Both skill inputs and the final output must be read")
+				assert.equal(
+					await fs.readFile(path.join(workspace, SKILL_COMPOSITION_READ_SCRIPT), "utf8"),
+					SKILL_COMPOSITION_FILES[SKILL_COMPOSITION_READ_SCRIPT],
+					"The fixture reader must remain unchanged",
+				)
 			},
 			{
 				scope: "Use only the fixture skills and live-skills outputs. Do not modify the skill sources or invoke any other skill.",
-				commands: ["node"],
+				commands: SKILL_COMPOSITION_READ_COMMANDS,
 				requestLimit: 24,
 				timeoutMs: 420_000,
 			},

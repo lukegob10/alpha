@@ -8,7 +8,7 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => k
 const onEdit = vi.fn()
 let textHeight: number
 let resize: () => void
-let disconnect: ReturnType<typeof vi.fn>
+let disconnect: import("vitest").Mock
 
 function Message({ text = "A pasted log\n".repeat(40) }: { text?: string }) {
 	const [expanded, setExpanded] = useState(false)

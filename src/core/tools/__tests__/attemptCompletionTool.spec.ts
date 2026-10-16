@@ -44,13 +44,13 @@ import * as vscode from "vscode"
 
 describe("attemptCompletionTool", () => {
 	let mockTask: Partial<Task>
-	let mockPushToolResult: ReturnType<typeof vi.fn>
-	let mockAskApproval: ReturnType<typeof vi.fn>
-	let mockHandleError: ReturnType<typeof vi.fn>
-	let mockToolDescription: ReturnType<typeof vi.fn>
-	let mockAskFinishSubTaskApproval: ReturnType<typeof vi.fn>
-	let mockGetConfiguration: ReturnType<typeof vi.fn>
-	let mockGetParentCompletionDecision: ReturnType<typeof vi.fn>
+	let mockPushToolResult: import("vitest").Mock
+	let mockAskApproval: import("vitest").Mock
+	let mockHandleError: import("vitest").Mock
+	let mockToolDescription: import("vitest").Mock
+	let mockAskFinishSubTaskApproval: import("vitest").Mock
+	let mockGetConfiguration: import("vitest").Mock
+	let mockGetParentCompletionDecision: import("vitest").Mock
 
 	beforeEach(() => {
 		mockCaptureTaskCompleted.mockReset()
@@ -907,7 +907,7 @@ describe("attemptCompletionTool", () => {
 				expect(mockPushToolResult).toHaveBeenCalledWith("")
 				expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
 				expect(
-					(mockTask.finalizeTaskCompletion as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+					(mockTask.finalizeTaskCompletion as import("vitest").Mock).mock.invocationCallOrder[0],
 				).toBeLessThan(mockPushToolResult.mock.invocationCallOrder[0])
 				expect(mockTask.markCompleted).toHaveBeenCalled()
 				expect(mockCaptureTaskCompleted).toHaveBeenCalledWith("task_1")

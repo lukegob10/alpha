@@ -221,6 +221,31 @@ export class AsyncSubagentRunManager {
 		return interrupted
 	}
 
+	getRunId(taskId: string): string | undefined {
+		return this.runs.get(taskId)?.handle.runId
+	}
+
+	/** Drop events only after the host has durably committed this exact run. */
+	acknowledgeEvents(taskId: string, expectedRunId: string): boolean {
+		const record = this.runs.get(taskId)
+		if (!record || record.handle.runId !== expectedRunId || !isTerminalStatus(record.state.status)) return false
+		for (let index = this.events.length - 1; index >= 0; index--) {
+			if (this.events[index].taskId === taskId) this.events.splice(index, 1)
+		}
+		return true
+	}
+
+	/** Durable agent identity remains in the control store; only this runtime is released. */
+	unload(taskId: string, expectedRunId: string): boolean {
+		const record = this.runs.get(taskId)
+		if (!record || record.handle.runId !== expectedRunId || !isTerminalStatus(record.state.status)) return false
+		this.acknowledgeEvents(taskId, expectedRunId)
+		record.detachParentSignal?.()
+		this.runs.delete(taskId)
+		this.knownTaskIds.delete(taskId)
+		return true
+	}
+
 	resolveRunTaskId(runId: string): string | undefined {
 		const taskId = runId.slice(0, runId.lastIndexOf(":"))
 		const record = this.runs.get(taskId)

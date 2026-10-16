@@ -7,6 +7,18 @@
 	const content = document.getElementById("viewer-content")
 	const status = document.getElementById("viewer-status")
 	const title = document.getElementById("viewer-title")
+	const purifier = window.DOMPurify
+	if (!purifier || !config.sanitizer) return
+	// Browser reparsing is a separate trust boundary from the host's allowlist.
+	purifier.addHook("uponSanitizeAttribute", (_node, attribute) => {
+		if (
+			attribute.attrName === "src" &&
+			!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+=*$/.test(attribute.attrValue)
+		)
+			attribute.keepAttr = false
+		if (attribute.attrName === "href" && !/^#(?:[A-Za-z][\w-]{0,127})?$/.test(attribute.attrValue))
+			attribute.keepAttr = false
+	})
 	let revision = 0
 	let disposeKit
 	const restored = api.getState()
@@ -66,6 +78,7 @@
 			message.revision < revision
 		)
 			return
+		if (typeof message.html === "string" && message.html.length > config.sanitizer.maxHtmlLength) return
 		revision = message.revision
 		status.textContent = message.error ? `${message.stale ? message.staleLabel + " " : ""}${message.error}` : ""
 		status.hidden = !message.error
@@ -78,7 +91,12 @@
 			document.hasFocus() && content.contains(document.activeElement) ? document.activeElement.id : ""
 		previousState = undefined
 		disposeKit?.()
-		content.innerHTML = message.html
+		content.innerHTML = purifier.sanitize(message.html, {
+			ALLOWED_TAGS: config.sanitizer.tags,
+			ALLOWED_ATTR: config.sanitizer.attributes,
+			ALLOW_DATA_ATTR: false,
+			ALLOW_ARIA_ATTR: false,
+		})
 		if (typeof message.title === "string") {
 			title.textContent = message.title
 			document.title = message.title

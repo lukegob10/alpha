@@ -3,9 +3,32 @@ import { z } from "zod"
 /** Version 1 is ordinary HTML with declarative table data; only packaged code executes. */
 export const HTML_DOCUMENT_VERSION = "1"
 export const HTML_DOCUMENT_VIEW_TYPE = "alpha.htmlDocument"
+export const HTML_DOCUMENT_TAGS =
+	"main article section header footer nav aside h1 h2 h3 h4 h5 h6 p div span strong em b i u s small mark sub sup abbr time blockquote pre code kbd samp ul ol li dl dt dd table caption colgroup col thead tbody tfoot tr th td details summary a hr br label input figure figcaption img".split(
+		" ",
+	)
+export const HTML_DOCUMENT_ATTRIBUTES =
+	"id class title role aria-label aria-labelledby aria-describedby aria-hidden for scope colspan rowspan datetime open data-alpha-kit data-severity data-alpha-table data-alpha-filter data-sort data-sort-value data-alpha-chart data-chart-type data-alpha-chart-data data-unit data-value data-alpha-tabs data-tab-label data-alpha-toc data-alpha-diagram".split(
+		" ",
+	)
+export const HTML_DOCUMENT_RENDER_ATTRIBUTES = [
+	...HTML_DOCUMENT_ATTRIBUTES,
+	"href",
+	"data-alpha-reference",
+	"data-alpha-image",
+	"type",
+	"disabled",
+	"alt",
+	"width",
+	"height",
+	"decoding",
+	"src",
+]
 export const HTML_DOCUMENT_LIMITS = {
 	panels: 8,
 	bytes: 512 * 1024,
+	// Host escaping and bounded base64 raster hydration expand the source representation.
+	renderBytes: 10 * 1024 * 1024,
 	nodes: 12000,
 	depth: 64,
 	widgets: 32,

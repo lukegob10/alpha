@@ -571,15 +571,9 @@ export class AgentLifecycleJournal {
 				this.taskId,
 			)
 		}
-		if (persistedSnapshot.lastSequence > replayed.lastSequence) {
-			throw new AgentLifecycleRecoveryError(
-				"snapshot_ahead",
-				`Lifecycle snapshot sequence ${persistedSnapshot.lastSequence} is ahead of journal sequence ${replayed.lastSequence}`,
-				this.taskId,
-				{ lastSequence: persistedSnapshot.lastSequence, expectedSequence: replayed.lastSequence },
-			)
-		}
 
+		// Sequences are local to a run/turn partition. Validate an older snapshot
+		// against its own prefix even when the latest turn has fewer events.
 		const snapshotAtSequence = replayPrefix(
 			events,
 			persistedSnapshot.lastSequence,
@@ -642,7 +636,7 @@ export async function readAgentLifecycleEvents(
 	const journal = new AgentLifecycleJournal(taskId, globalStoragePath, options)
 	await journal.initialize()
 	const filePath = await journal.getEventsFilePath()
-	return readLifecycleEventsFile(filePath, taskId)
+	return withFileLock(filePath, () => readLifecycleEventsFile(filePath, taskId))
 }
 
 /** Read and validate the new snapshot without touching legacy files. */
@@ -831,9 +825,9 @@ async function readLifecycleSnapshotFile(
 }
 
 async function readLifecycleEventsFile(filePath: string, taskId: string): Promise<AgentLifecycleEvent[]> {
-	let contents: string
+	let contents: Buffer
 	try {
-		contents = await fs.readFile(filePath, "utf8")
+		contents = await fs.readFile(filePath)
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
 		throw new AgentLifecycleRecoveryError(
@@ -846,17 +840,18 @@ async function readLifecycleEventsFile(filePath: string, taskId: string): Promis
 	}
 
 	if (contents.length === 0) return []
-	const lines = contents.split("\n")
-	const hasTrailingNewline = contents.endsWith("\n")
-	if (hasTrailingNewline) lines.pop()
+	const hasTrailingNewline = contents[contents.length - 1] === 0x0a
 
 	const events: AgentLifecycleEvent[] = []
 	let offset = 0
-	for (let index = 0; index < lines.length; index++) {
-		const line = lines[index]
-		const lineNumber = index + 1
+	let lineNumber = 0
+	while (offset < contents.length) {
 		const lineStart = offset
-		offset += line.length + 1
+		const newlineOffset = contents.indexOf(0x0a, lineStart)
+		const lineEnd = newlineOffset < 0 ? contents.length : newlineOffset
+		const line = contents.toString("utf8", lineStart, lineEnd)
+		offset = newlineOffset < 0 ? contents.length : newlineOffset + 1
+		lineNumber++
 		if (line.trim().length === 0) {
 			throw new AgentLifecycleRecoveryError(
 				"malformed_record",
@@ -870,10 +865,10 @@ async function readLifecycleEventsFile(filePath: string, taskId: string): Promis
 		try {
 			parsed = JSON.parse(line)
 		} catch (error) {
-			const isUnterminatedFinalLine = index === lines.length - 1 && !hasTrailingNewline
+			const isUnterminatedFinalLine = newlineOffset < 0
 			if (isUnterminatedFinalLine) {
-				// The previous newline-delimited records are durable. Truncate only
-				// this final partial record so the next append can proceed normally.
+				// Keep offsets in the original bytes: UTF-16 string lengths can
+				// truncate valid Unicode records before this final partial record.
 				try {
 					await fs.truncate(filePath, lineStart)
 				} catch (truncateError) {
@@ -915,6 +910,21 @@ async function readLifecycleEventsFile(filePath: string, taskId: string): Promis
 			)
 		}
 		events.push(result.data)
+	}
+	if (!hasTrailingNewline) {
+		// A valid final event is durable evidence even when its delimiter was
+		// interrupted. Finish that boundary before another append can be accepted.
+		try {
+			await appendLifecycleEventLine(filePath, "\n", true)
+		} catch (error) {
+			throw new AgentLifecycleRecoveryError(
+				"write_failed",
+				`Final lifecycle record at ${filePath}:${lineNumber} could not be newline-terminated`,
+				taskId,
+				{ lineNumber, filePath },
+				error,
+			)
+		}
 	}
 	return events
 }

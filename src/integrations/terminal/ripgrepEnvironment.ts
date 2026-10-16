@@ -30,10 +30,21 @@ export function createRipgrepPathOverlay(
 /** Keep Alpha's own terminals portable without changing the user's global PATH. */
 export async function getRipgrepPathOverlay(env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
 	try {
-		const resolution = await resolveRipgrepBinary({ appRoot: vscode.env.appRoot })
-		return createRipgrepPathOverlay(env, resolution)
+		return (await resolveRipgrepLaunchEnvironment(env)).overlay
 	} catch (error) {
 		console.warn("[Alpha terminal] Could not resolve ripgrep for agent commands:", error)
 		return {}
 	}
+}
+
+/** One resolver owns both the terminal PATH overlay and audited direct-argv identity. */
+export async function resolveRipgrepLaunchEnvironment(env: NodeJS.ProcessEnv = process.env): Promise<{
+	readonly resolution: RipgrepResolution | undefined
+	readonly overlay: Readonly<Record<string, string>>
+}> {
+	const resolution = await resolveRipgrepBinary({ appRoot: vscode.env.appRoot })
+	return Object.freeze({
+		resolution: resolution ? Object.freeze({ ...resolution }) : undefined,
+		overlay: Object.freeze(createRipgrepPathOverlay(env, resolution)),
+	})
 }

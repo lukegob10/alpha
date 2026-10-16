@@ -1,7 +1,14 @@
 import { EventEmitter } from "events"
 
 import type { AlphaTerminalProcess, AlphaTerminalProcessEvents, ExitCodeDetails, TerminalOutputReceipt } from "./types"
-import { DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS } from "./types"
+import { DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS, MAX_TERMINAL_OUTPUT_BUFFER_BYTES } from "./types"
+import {
+	TerminalOutputBuffer,
+	copyTerminalOutput,
+	terminalOutputOmissionMarker,
+	terminalOutputPrefix,
+	terminalOutputSuffix,
+} from "./TerminalOutputBuffer"
 
 type UnretrievedOutputRange = {
 	endIndex: number
@@ -15,6 +22,8 @@ type OutputReceiptReservation = {
 	endIndex: number
 }
 
+type OutputOmission = { start: number; end: number; bytes: number }
+
 const EMPTY_TERMINAL_OUTPUT_RECEIPT: TerminalOutputReceipt = Object.freeze({
 	output: "",
 	hasMoreOutput: false,
@@ -27,10 +36,13 @@ export abstract class BaseTerminalProcess
 	implements AlphaTerminalProcess
 {
 	public executionId?: string
+	public outputArtifactId?: string
+	public outputArchiveInterrupted = false
 	public command: string = ""
 
 	public isHot: boolean = false
 	public isSettled: boolean = false
+	public isOutputFinalized: boolean = false
 	protected hotTimer: NodeJS.Timeout | null = null
 
 	protected isListening: boolean = true
@@ -39,11 +51,216 @@ export abstract class BaseTerminalProcess
 	protected lastRetrievedIndex: number = 0
 	private outputBufferGeneration = 0
 	private activeOutputReceipt?: OutputReceiptReservation
+	protected outputOmissions: OutputOmission[] = []
+	private readonly outputTranscript = new TerminalOutputBuffer()
+	private outputWriter?: (chunk: string, signal: AbortSignal) => void | Promise<void>
+	private readonly outputCancellation = new AbortController()
+	private outputWritePending = false
+	private outputFinalizer?: () => void | Promise<void>
+	private outputFinalization?: Promise<void>
+	private readonly outputFinalizationCompletion: Promise<void>
+	private resolveOutputFinalization!: () => void
+	private rejectOutputFinalization!: (reason: unknown) => void
 
 	protected constructor(options?: ConstructorParameters<typeof EventEmitter>[0]) {
 		super(options)
+		this.outputFinalizationCompletion = new Promise((resolve, reject) => {
+			this.resolveOutputFinalization = resolve
+			this.rejectOutputFinalization = reject
+		})
+		// A command need not have a Stop observer when its archival owner fails.
+		void this.outputFinalizationCompletion.catch(() => undefined)
 		this.once("completed", () => (this.isSettled = true))
 		this.once("error", () => (this.isSettled = true))
+	}
+
+	public setOutputWriter(writer: (chunk: string, signal: AbortSignal) => void | Promise<void>): void {
+		this.outputWriter = writer
+	}
+
+	public setOutputFinalizer(finalizer: () => void | Promise<void>): void {
+		this.outputFinalizer = finalizer
+	}
+
+	/** Waiting never detaches a live writer or starts the adapter's finalizer. */
+	public waitForOutputFinalization(): Promise<void> {
+		return this.outputFinalizationCompletion
+	}
+
+	/** Archival settlement is distinct from output events and physical process exit. */
+	public finalizeOutput(): Promise<void> {
+		if (this.outputFinalization) return this.outputFinalization
+		const finalizer = this.outputFinalizer
+		this.outputFinalizer = undefined
+		this.outputWriter = undefined
+		this.outputFinalization = Promise.resolve()
+			.then(() => finalizer?.())
+			.catch((error) => {
+				this.outputArchiveInterrupted = true
+				this.outputArtifactId = undefined
+				throw error
+			})
+			.finally(() => this.markOutputFinalized())
+		void this.outputFinalization.then(this.resolveOutputFinalization, this.rejectOutputFinalization)
+		return this.outputFinalization
+	}
+
+	public get outputCancellationSignal(): AbortSignal {
+		return this.outputCancellation.signal
+	}
+
+	/** Release only a blocked raw write; a healthy held finalizer stays intact. */
+	public cancelPendingOutputWrite(): void {
+		if (!this.outputFinalization) this.cancelOutputWriter()
+	}
+
+	protected cancelOutputWriter(): void {
+		if (this.outputWritePending && !this.outputCancellation.signal.aborted) {
+			this.outputCancellation.abort(new Error("Command output persistence was interrupted"))
+		}
+	}
+
+	/** One producer awaits the archival sink before it can read another chunk. */
+	protected async appendOutput(chunk: string, transcriptChunk = chunk): Promise<void> {
+		if (!chunk) {
+			if (transcriptChunk) this.appendOutputTranscript(transcriptChunk)
+			return
+		}
+		this.fullOutput += chunk
+		this.appendOutputTranscript(transcriptChunk)
+		this.boundUnreadOutput()
+		this.emit("output_available")
+		if (!this.outputWriter) return
+		this.outputWritePending = true
+		const signal = this.outputCancellation.signal
+		let onAbort!: () => void
+		const cancelled = new Promise<never>((_resolve, reject) => {
+			onAbort = () => reject(signal.reason)
+			signal.addEventListener("abort", onAbort, { once: true })
+		})
+		try {
+			signal.throwIfAborted()
+			await Promise.race([this.outputWriter(chunk, signal), cancelled])
+		} catch (error) {
+			if (!this.outputCancellation.signal.aborted || error !== this.outputCancellation.signal.reason) throw error
+			// Stop may interrupt a blocked archive without losing process ownership.
+			// Keep bounded terminal collection alive and never advertise a complete file.
+			this.outputArchiveInterrupted = true
+			this.outputWriter = undefined
+		} finally {
+			signal.removeEventListener("abort", onAbort)
+			this.outputWritePending = false
+		}
+	}
+
+	protected appendOutputTranscript(chunk: string): void {
+		this.outputTranscript.append(chunk)
+	}
+
+	/** Keep each bounded receipt at a Unicode scalar boundary. */
+	protected safeOutputRangeEnd(endIndex: number): number {
+		if (endIndex <= 0 || endIndex >= this.fullOutput.length) return endIndex
+		const previous = this.fullOutput.charCodeAt(endIndex - 1)
+		const next = this.fullOutput.charCodeAt(endIndex)
+		return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? endIndex - 1 : endIndex
+	}
+
+	protected getOutputTranscriptParts(): ReadonlyArray<{ output: string; omitted: boolean }> {
+		return this.outputTranscript.parts()
+	}
+
+	protected getOutputTranscript(): string {
+		return this.getOutputTranscriptParts()
+			.map((part) => part.output)
+			.join("")
+	}
+
+	public hasActiveOutputReceipt(): boolean {
+		return this.activeOutputReceipt !== undefined
+	}
+
+	protected markOutputFinalized(): void {
+		if (this.isOutputFinalized) return
+		this.isOutputFinalized = true
+		this.outputWriter = undefined
+		this.outputTranscript.clear()
+		this.emit("finalized")
+	}
+
+	protected async emitCompletedAndWait(output: string): Promise<Error | undefined> {
+		// Native once wrappers retain listener order and remove themselves normally.
+		const pending = this.rawListeners("completed").map((listener) => {
+			try {
+				return Promise.resolve(listener.call(this, output))
+			} catch (error) {
+				return Promise.reject(error)
+			}
+		})
+		const failures = (await Promise.allSettled(pending)).flatMap((outcome) =>
+			outcome.status === "rejected"
+				? [outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason))]
+				: [],
+		)
+		if (failures.length === 1) return failures[0]
+		if (failures.length > 1) return new AggregateError(failures, "Command completion observers failed")
+		return undefined
+	}
+
+	/**
+	 * Keep pending head/tail bytes bounded without changing an in-flight receipt.
+	 * Delivered prefixes can be reclaimed; a reservation pins only its raw range.
+	 */
+	private boundUnreadOutput(): void {
+		if (Buffer.byteLength(this.fullOutput, "utf8") <= MAX_TERMINAL_OUTPUT_BUFFER_BYTES) return
+		const retrieved = this.clampRetrievedIndex()
+		if (retrieved > 0) {
+			this.fullOutput = this.fullOutput.slice(retrieved)
+			this.lastRetrievedIndex = 0
+			if (this.activeOutputReceipt) {
+				this.activeOutputReceipt.startIndex -= retrieved
+				this.activeOutputReceipt.endIndex -= retrieved
+			}
+			this.outputOmissions = this.outputOmissions.flatMap((omission) =>
+				omission.end <= retrieved
+					? []
+					: [{ ...omission, start: Math.max(0, omission.start - retrieved), end: omission.end - retrieved }],
+			)
+		}
+		if (Buffer.byteLength(this.fullOutput, "utf8") <= MAX_TERMINAL_OUTPUT_BUFFER_BYTES) return
+
+		// Reserve enough room for an omission count through Number.MAX_SAFE_INTEGER.
+		const retainedBudget = MAX_TERMINAL_OUTPUT_BUFFER_BYTES - 96
+		let headEnd = Math.max(
+			this.activeOutputReceipt?.endIndex ?? 0,
+			terminalOutputPrefix(this.fullOutput, Math.floor(retainedBudget / 2)).length,
+		)
+		for (const omission of this.outputOmissions) {
+			if (headEnd > omission.start && headEnd < omission.end) headEnd = omission.end
+		}
+		const head = copyTerminalOutput(this.fullOutput.slice(0, headEnd))
+		const tailBudget = Math.max(0, retainedBudget - Buffer.byteLength(head, "utf8"))
+		let tailStart = this.fullOutput.length - terminalOutputSuffix(this.fullOutput, tailBudget).length
+		for (const omission of this.outputOmissions) {
+			if (tailStart > omission.start && tailStart < omission.end) tailStart = omission.end
+		}
+		const tail = copyTerminalOutput(this.fullOutput.slice(tailStart))
+		let omittedBytes = Buffer.byteLength(this.fullOutput.slice(headEnd, tailStart), "utf8")
+		for (const omission of this.outputOmissions) {
+			if (omission.start >= headEnd && omission.end <= tailStart) {
+				omittedBytes +=
+					omission.bytes - Buffer.byteLength(this.fullOutput.slice(omission.start, omission.end), "utf8")
+			}
+		}
+		const marker = terminalOutputOmissionMarker(omittedBytes)
+		const tailShift = headEnd + marker.length - tailStart
+		this.outputOmissions = [
+			...this.outputOmissions.filter((omission) => omission.end <= headEnd),
+			{ start: headEnd, end: headEnd + marker.length, bytes: omittedBytes },
+			...this.outputOmissions
+				.filter((omission) => omission.start >= tailStart)
+				.map((omission) => ({ ...omission, start: omission.start + tailShift, end: omission.end + tailShift })),
+		]
+		this.fullOutput = head + marker + tail
 	}
 
 	static interpretExitCode(exitCode: number | undefined): ExitCodeDetails {
@@ -168,7 +385,7 @@ export abstract class BaseTerminalProcess
 	 * The range must be no larger than maxCharacters raw characters.
 	 * Cleanup may carry a bounded ESC/CSI prefix into the next range, so the
 	 * rendered output can be slightly larger than the raw range.
-	 * @param includeTrailingOutput Receipts may include a completed final line;
+	 * @param includeTrailingOutput Explicit receipts include active partial text;
 	 * legacy line consumers keep their existing complete-line behavior.
 	 */
 	protected abstract getUnretrievedOutputRange(
@@ -199,7 +416,7 @@ export abstract class BaseTerminalProcess
 
 		const startIndex = this.clampRetrievedIndex()
 		const range = this.getUnretrievedOutputRange(limit, true)
-		const maxEndIndex = Math.min(this.fullOutput.length, startIndex + limit)
+		const maxEndIndex = this.safeOutputRangeEnd(Math.min(this.fullOutput.length, startIndex + limit))
 		const endIndex = Math.min(maxEndIndex, Math.max(startIndex, range.endIndex))
 
 		if (endIndex <= startIndex) {
@@ -225,17 +442,21 @@ export abstract class BaseTerminalProcess
 			if (this.activeOutputReceipt !== reservation) return
 			this.activeOutputReceipt = undefined
 
-			if (!commit) return
-			if (this.outputBufferGeneration !== reservation.generation) return
-			if (this.lastRetrievedIndex !== reservation.startIndex) return
-			if (this.fullOutput.length < reservation.endIndex) return
+			try {
+				if (!commit) return
+				if (this.outputBufferGeneration !== reservation.generation) return
+				if (this.lastRetrievedIndex !== reservation.startIndex) return
+				if (this.fullOutput.length < reservation.endIndex) return
 
-			this.lastRetrievedIndex = reservation.endIndex
-			range.onCommit?.()
+				this.lastRetrievedIndex = reservation.endIndex
+				range.onCommit?.()
+			} finally {
+				this.emit("output_receipt_released")
+			}
 		}
 
 		return Object.freeze({
-			output: range.output,
+			output: copyTerminalOutput(range.output),
 			hasMoreOutput: endIndex < this.fullOutput.length,
 			commit: () => finish(true),
 			release: () => finish(false),
@@ -261,6 +482,7 @@ export abstract class BaseTerminalProcess
 		// receipt commit advance beyond the range that was actually consumed.
 		if (this.activeOutputReceipt && this.lastRetrievedIndex !== this.activeOutputReceipt.startIndex) {
 			this.activeOutputReceipt = undefined
+			this.emit("output_receipt_released")
 		}
 
 		return range.output
@@ -281,7 +503,7 @@ export abstract class BaseTerminalProcess
 			this.lastRetrievedIndex >= this.fullOutput.length &&
 			(this.fullOutput.length > 0 || this.activeOutputReceipt !== undefined)
 		) {
-			this.resetOutputBuffer()
+			this.resetOutputBuffer(false)
 		}
 	}
 
@@ -289,11 +511,13 @@ export abstract class BaseTerminalProcess
 	 * Starts a new output buffer. Receipts from the previous buffer become stale
 	 * and cannot consume output written to the new buffer.
 	 */
-	protected resetOutputBuffer(): void {
+	protected resetOutputBuffer(resetTranscript = true): void {
 		this.fullOutput = ""
 		this.lastRetrievedIndex = 0
 		this.outputBufferGeneration += 1
 		this.activeOutputReceipt = undefined
+		this.outputOmissions = []
+		if (resetTranscript) this.outputTranscript.clear()
 		this.onOutputBufferReset()
 	}
 
@@ -305,7 +529,7 @@ export abstract class BaseTerminalProcess
 		if (maxCharacters <= 0) return 0
 		if (!Number.isFinite(maxCharacters)) return DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS
 
-		return Math.floor(maxCharacters)
+		return Math.min(DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS, Math.floor(maxCharacters))
 	}
 
 	private clampRetrievedIndex(): number {

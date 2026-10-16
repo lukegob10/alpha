@@ -380,8 +380,11 @@ describe("custom tool policy and effect admission", () => {
 			expect(f.askApproval).not.toHaveBeenCalled()
 			expect(f.execute).not.toHaveBeenCalled()
 			expect(f.onEffectStart).not.toHaveBeenCalled()
-			expect(outcome.results[0].status).toBe("error")
-			expect(f.host.userMessageContent).toHaveLength(1)
+			expect(outcome.results[0].status).toBe("denied")
+			expect(outcome.results[0].failure).toMatchObject({ reason: "policy_denied", effectsStarted: "no" })
+			expect(f.host.userMessageContent).toEqual([
+				expect.objectContaining({ type: "tool_result", tool_use_id: "custom-effect-call", is_error: true }),
+			])
 		},
 	)
 })

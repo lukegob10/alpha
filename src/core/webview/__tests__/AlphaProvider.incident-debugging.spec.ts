@@ -24,9 +24,9 @@ describe("AlphaProvider incident investigation launch", () => {
 	let monitor: AgentIncidentMonitor
 	let alertId: string
 	let provider: AlphaProvider
-	let createTask: ReturnType<typeof vi.fn>
-	let showTaskWithId: ReturnType<typeof vi.fn>
-	let getAll: ReturnType<typeof vi.fn>
+	let createTask: import("vitest").Mock
+	let showTaskWithId: import("vitest").Mock
+	let getAll: import("vitest").Mock
 	let positiveTurnId: string
 	let failedTurnId: string
 

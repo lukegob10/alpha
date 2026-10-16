@@ -8,9 +8,17 @@ export const ticketReferenceSchema = z
 	.string()
 	.regex(/^[A-Z]{2,4}-\d{2,10}$/)
 	.refine((value) => Number(value.split("-")[1]) > 0)
+/** A number-only chat query is meaningful within one project, not as a persisted reference. */
+export function normalizeTicketNumberQuery(value: string): number | undefined {
+	const match = /^#?(\d{1,10})$/.exec(value.trim())
+	return match ? Number(match[1]) : undefined
+}
+
 /** Accept spoken-style spacing without making arbitrary text a filesystem identifier. */
 export function normalizeTicketReference(value: string): string | undefined {
-	const match = /^([a-z]{2,4})\s*(?:[-#]|number\s*)?\s*(\d{1,10})$/i.exec(value.trim())
+	const candidate = value.trim()
+	if (candidate.length > 80) return undefined
+	const match = /^([a-z]{2,4})\s*(?:(?:[-#]|number)\s*)?(\d{1,10})$/i.exec(candidate)
 	if (!match || Number(match[2]) < 1) return undefined
 	return `${match[1]!.toUpperCase()}-${String(Number(match[2])).padStart(2, "0")}`
 }

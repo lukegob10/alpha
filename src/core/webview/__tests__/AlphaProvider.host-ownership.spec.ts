@@ -74,6 +74,8 @@ function makeProvider(storagePath: string) {
 		subagentNicknameRegistry: new SubagentNicknameRegistry(),
 		subagentDescriptors: new Map(),
 		subagentGroupControllers: new Map(),
+		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
 		reservedSubagentSlots: new Map(),
 		publishedSubagentResults: new Set(),
 		legacyHandoffInputBuffers: new Map(),
@@ -402,7 +404,7 @@ describe("AlphaProvider host ownership", () => {
 	it("registers a restored task before its constructor can start a history loop", async () => {
 		const provider = makeProvider(storage())
 		const task = makeTask(history.id)
-		vi.mocked(Task).mockImplementationOnce((options) => {
+		vi.mocked(Task).mockImplementationOnce(function (options) {
 			options.onCreated?.(task)
 			expect(provider.getLiveTask(history.id)).toBe(task)
 			expect(provider.getTaskOwner(history.id)).toBe(provider)
@@ -618,5 +620,48 @@ describe("AlphaProvider host ownership", () => {
 		} finally {
 			await fs.rm(host, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("AlphaProvider final history disposal", () => {
+	it("keeps provider disposal pending until the final history write settles", async () => {
+		const owner = makeProvider(storage())
+		const entered = barrier()
+		const release = barrier()
+		const history = Reflect.get(owner, "taskHistoryStore") as TaskHistoryStore
+		vi.spyOn(history, "dispose").mockImplementation(async () => {
+			entered.resolve()
+			await release.promise
+		})
+		let closed = false
+		const closing = owner.dispose().then(() => {
+			closed = true
+		})
+		await entered.promise
+		let closedBeforeRelease = false
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			closedBeforeRelease = closed
+		} finally {
+			release.resolve()
+			await closing
+		}
+		expect(closedBeforeRelease).toBe(false)
+	})
+
+	it("retains final history disposal failure for a caller and retries cleanup explicitly", async () => {
+		const owner = makeProvider(storage())
+		const failure = new Error("controlled final history disposal failure")
+		const rejected = Promise.reject(failure)
+		void rejected.catch(() => undefined)
+		const history = Reflect.get(owner, "taskHistoryStore") as TaskHistoryStore
+		const dispose = vi
+			.spyOn(history, "dispose")
+			.mockImplementationOnce(() => rejected)
+			.mockResolvedValue(undefined)
+		const [result] = await Promise.allSettled([owner.dispose()])
+		expect(result).toEqual({ status: "rejected", reason: failure })
+		await owner.dispose()
+		expect(dispose).toHaveBeenCalledTimes(2)
 	})
 })

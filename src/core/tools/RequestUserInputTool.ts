@@ -148,37 +148,6 @@ function isCancellation(task: Task, signal?: AbortSignal): boolean {
 	return task.abort || signal?.aborted === true
 }
 
-async function askWithCancellation(
-	task: Task,
-	payload: string,
-	signal?: AbortSignal,
-): Promise<Awaited<ReturnType<Task["ask"]>> | undefined> {
-	if (signal?.aborted) return undefined
-	const askPromise = task.ask("followup", payload, false)
-	if (!signal) return askPromise
-
-	let onAbort: (() => void) | undefined
-	const cancelled = new Promise<{ kind: "cancelled" }>((resolve) => {
-		onAbort = () => resolve({ kind: "cancelled" })
-		signal.addEventListener("abort", onAbort, { once: true })
-	})
-	try {
-		const result = await Promise.race([
-			askPromise.then((value) => ({ kind: "response" as const, value })),
-			cancelled,
-		])
-		if (result.kind === "response") return result.value
-
-		// The scheduler signal can stop this call without aborting the whole Task.
-		// Settle the existing Alpha ask so its polling promise and UI do not leak.
-		if (!task.abort) task.handleWebviewAskResponse("noButtonClicked")
-		await askPromise.catch(() => undefined)
-		return undefined
-	} finally {
-		if (onAbort) signal.removeEventListener("abort", onAbort)
-	}
-}
-
 export class RequestUserInputTool extends BaseTool<"request_user_input"> {
 	readonly name = "request_user_input" as const
 
@@ -201,7 +170,17 @@ export class RequestUserInputTool extends BaseTool<"request_user_input"> {
 			}
 
 			const request = formatRequestUserInput(params.questions)
-			const answer = await askWithCancellation(task, JSON.stringify(request), signal)
+			const answer = await task.ask(
+				"followup",
+				JSON.stringify(request),
+				false,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				signal,
+			)
 			if (!answer || isCancellation(task, signal) || answer.response === "noButtonClicked") {
 				setResultMetadata?.({ status: "cancelled" })
 				pushToolResult(JSON.stringify({ answers: {} }))

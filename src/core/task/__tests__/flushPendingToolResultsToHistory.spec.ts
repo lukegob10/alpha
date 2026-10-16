@@ -69,21 +69,23 @@ const { MockProviderTranscriptStore, MockProviderTranscriptStoreError, MockProvi
 			writtenAt: 1,
 		}
 
-		const MockProviderTranscriptStore = vi.fn().mockImplementation((taskId: string) => ({
-			read: vi.fn().mockResolvedValue({
-				version: 1,
-				taskId,
-				revision: 0,
-				digest: "0".repeat(64),
-				writtenAt: 0,
-				messages: [],
-			}),
-			getLastCommitReceipt: vi.fn().mockReturnValue({ ...receipt, taskId }),
-			commitAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
-			verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
-			assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
-			repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
-		}))
+		const MockProviderTranscriptStore = vi.fn().mockImplementation(function (taskId: string) {
+			return {
+				read: vi.fn().mockResolvedValue({
+					version: 1,
+					taskId,
+					revision: 0,
+					digest: "0".repeat(64),
+					writtenAt: 0,
+					messages: [],
+				}),
+				getLastCommitReceipt: vi.fn().mockReturnValue({ ...receipt, taskId }),
+				commitAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
+				verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+				assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
+				repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
+			}
+		})
 
 		return {
 			MockProviderTranscriptStore,
@@ -161,7 +163,9 @@ vi.mock("vscode", () => {
 			uriScheme: "vscode",
 			language: "en",
 		},
-		EventEmitter: vi.fn().mockImplementation(() => mockEventEmitter),
+		EventEmitter: vi.fn().mockImplementation(function () {
+			return mockEventEmitter
+		}),
 		Disposable: {
 			from: vi.fn(),
 		},

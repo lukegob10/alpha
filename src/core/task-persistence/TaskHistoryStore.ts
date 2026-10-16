@@ -65,6 +65,7 @@ export class TaskHistoryStore {
 	private watchDebounce: ReturnType<typeof setTimeout> | null = null
 	private reconcileTimer: ReturnType<typeof setTimeout> | null = null
 	private disposed = false
+	private disposal: Promise<void> | undefined
 
 	/**
 	 * Promise that resolves when initialization is complete.
@@ -120,7 +121,8 @@ export class TaskHistoryStore {
 	/**
 	 * Flush pending writes, clear watchers, release resources.
 	 */
-	dispose(): void {
+	dispose(): Promise<void> {
+		if (this.disposal) return this.disposal
 		this.disposed = true
 
 		if (this.indexWriteTimer) {
@@ -142,10 +144,16 @@ export class TaskHistoryStore {
 			this.watchDebounce = null
 		}
 
-		// Synchronously flush the index (best-effort)
-		this.flushIndex().catch((err) => {
+		// The final cache snapshot follows every already-admitted mutation. Keep
+		// legacy fire-and-forget callers observed while exposing the same join to
+		// asynchronous resource owners before they release task storage.
+		const disposal = this.flushIndex()
+		this.disposal = disposal
+		void disposal.catch((err) => {
+			if (this.disposal === disposal) this.disposal = undefined
 			console.error("[TaskHistoryStore] Error flushing index on dispose:", err)
 		})
+		return disposal
 	}
 
 	// ────────────────────────────── Reads ──────────────────────────────
@@ -557,7 +565,7 @@ export class TaskHistoryStore {
 		this.indexWriteTimer = setTimeout(async () => {
 			this.indexWriteTimer = null
 			try {
-				await this.writeIndex()
+				await this.flushIndex()
 			} catch (err) {
 				console.error("[TaskHistoryStore] Failed to write index:", err)
 			}
@@ -573,7 +581,9 @@ export class TaskHistoryStore {
 			this.indexWriteTimer = null
 		}
 
-		await this.writeIndex()
+		// Admit the refresh before resolving its path so legacy dispose-then-flush
+		// callers and already-running timer refreshes share the mutation boundary.
+		await this.withLock(() => this.writeIndex())
 	}
 
 	// ────────────────────────────── Private: Per-task file I/O ──────────────────────────────

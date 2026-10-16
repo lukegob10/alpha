@@ -10,6 +10,7 @@ import {
 	ticketActivitySchema,
 	ticketLocatorSchema,
 	normalizeTicketReference,
+	normalizeTicketNumberQuery,
 	ticketStatusSchema,
 	ticketSearchRequestSchema,
 	ticketSearchResponseSchema,
@@ -17,6 +18,18 @@ import {
 } from "../ticket.js"
 
 describe("ticket wire contracts", () => {
+	it.each([
+		["42", 42],
+		["#001", 1],
+		[" #42 ", 42],
+		["PM-42", undefined],
+		["42oops", undefined],
+		["12345678901", undefined],
+		["", undefined],
+	] as const)("parses the project-scoped number query %s", (query, number) => {
+		expect(normalizeTicketNumberQuery(query)).toBe(number)
+	})
+
 	it("accepts cancellation and UUID parent links while rejecting arbitrary hierarchy input", () => {
 		const parentId = "a97392fe-59bf-4f80-8a10-51b2cb62a38f"
 		expect(ticketStatusSchema.options).toContain("canceled")
@@ -99,6 +112,11 @@ describe("ticket wire contracts", () => {
 			false,
 		)
 		expect(createTicketSchema.safeParse({ name: "Test", reference: "PM-01" }).success).toBe(false)
+	})
+	it("bounds direct reference normalization before matching adversarial whitespace", () => {
+		expect(normalizeTicketReference(`PM${"\t".repeat(81)}1`)).toBeUndefined()
+		expect(normalizeTicketReference(`PM${" ".repeat(100000)}!`)).toBeUndefined()
+		expect(normalizeTicketReference("  PM number 42  ")).toBe("PM-42")
 	})
 	it("accepts only bounded, known ticket activities", () => {
 		expect(ticketActivitySchema.safeParse({ operation: "create", state: "success", name: "Ticket" }).success).toBe(

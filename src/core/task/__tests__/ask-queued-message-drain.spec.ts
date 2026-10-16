@@ -444,7 +444,8 @@ describe("Task.ask queued message drain", () => {
 		expect(result.text).toContain("spawn_agent by itself")
 	})
 
-	it("auto-answers off-screen follow-up asks with the first suggestion", async () => {
+	it("keeps off-screen follow-up suggestions pending until the user answers", async () => {
+		vi.useFakeTimers()
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {
 			deref: () => ({
@@ -453,7 +454,7 @@ describe("Task.ask queued message drain", () => {
 			}),
 		}
 
-		const result = await task.ask(
+		const pending = task.ask(
 			"followup",
 			JSON.stringify({
 				question: "Which path?",
@@ -462,11 +463,23 @@ describe("Task.ask queued message drain", () => {
 			false,
 		)
 
-		expect(result.response).toBe("messageResponse")
-		expect(result.text).toBe("Use option A")
+		try {
+			await vi.advanceTimersByTimeAsync(2_100)
+			expect(task["askResponse"]).toBeUndefined()
+			expect(task.getActiveAskTimestamp()).toEqual(expect.any(Number))
+			task.handleWebviewAskResponse("messageResponse", "Use option B")
+			await vi.advanceTimersByTimeAsync(100)
+			await expect(pending).resolves.toMatchObject({ response: "messageResponse", text: "Use option B" })
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(100)
+			await pending
+			vi.useRealTimers()
+		}
 	})
 
-	it("auto-answers off-screen follow-up asks with guidance when no suggestion is available", async () => {
+	it("keeps off-screen follow-ups without suggestions pending instead of inventing guidance", async () => {
+		vi.useFakeTimers()
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {
 			deref: () => ({
@@ -475,10 +488,24 @@ describe("Task.ask queued message drain", () => {
 			}),
 		}
 
-		const result = await task.ask("followup", JSON.stringify({ question: "Which path?", suggest: [] }), false)
+		const pending = task.ask("followup", JSON.stringify({ question: "Which path?", suggest: [] }), false)
 
-		expect(result.response).toBe("messageResponse")
-		expect(result.text).toContain("Continue without waiting for the user")
+		try {
+			await vi.advanceTimersByTimeAsync(2_100)
+			expect(task["askResponse"]).toBeUndefined()
+			expect(task.getActiveAskTimestamp()).toEqual(expect.any(Number))
+			task.handleWebviewAskResponse("messageResponse", "Use the linked workspace")
+			await vi.advanceTimersByTimeAsync(100)
+			await expect(pending).resolves.toMatchObject({
+				response: "messageResponse",
+				text: "Use the linked workspace",
+			})
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(100)
+			await pending
+			vi.useRealTimers()
+		}
 	})
 
 	it("auto-approves off-screen completion asks so background tasks finalize", async () => {

@@ -21,6 +21,8 @@ import {
 import type { ApiHandlerOptions } from "../../shared/api"
 
 import { TagMatcher } from "../../utils/tag-matcher"
+import type { AgentRetryCategory } from "../../core/agent/AgentRetryPolicy"
+import { readRetryAfterMs } from "../../core/agent/RequestPacing"
 
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { convertToR1Format } from "../transform/r1-format"
@@ -54,6 +56,72 @@ import {
 // protocol default local to the generic adapter; the retired DeepSeek catalog
 // and provider remain removed.
 const DEEP_SEEK_DEFAULT_TEMPERATURE = 0.3
+
+function providerTokenCount(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER
+		? value
+		: undefined
+}
+
+function providerRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined
+}
+
+function hasOpenAiResponsesUsage(usage: unknown): boolean {
+	const source = providerRecord(usage)
+	return (
+		providerTokenCount(source?.input_tokens) !== undefined &&
+		providerTokenCount(source?.output_tokens) !== undefined
+	)
+}
+
+/** Normalize native SSE failures before the generic provider wrapper sees them. */
+function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Responses request failed") {
+	const envelope = providerRecord(error)
+	const source = providerRecord(envelope?.error) ?? envelope
+	const code = typeof source?.code === "string" ? source.code : undefined
+	const message = typeof source?.message === "string" && source.message.trim() ? source.message : fallbackMessage
+	const rateLimited = code === "rate_limit_exceeded" || code === "slow_down"
+	const contextExceeded = code === "context_length_exceeded"
+	const permanent =
+		code !== undefined &&
+		[
+			"insufficient_quota",
+			"credit_balance_exhausted",
+			"organization_spend_limit_exceeded",
+			"project_spend_limit_exceeded",
+			"usage_not_included",
+			"cyber_policy",
+			"bio_policy",
+			"misalignment_policy_violation",
+			"invalid_prompt",
+			"invalid_request_error",
+			"flex_unavailable",
+		].includes(code)
+	let retryAfterMs = readRetryAfterMs(source?.headers)
+	// Only a native rate-limit code authorizes plaintext delay advice.
+	if (retryAfterMs === undefined && rateLimited) {
+		const match = message.match(/try again in\s*(\d+(?:\.\d+)?)\s*(ms|s(?:econds?)?)/i)
+		if (match) {
+			const delay = Number(match[1]) * (match[2].toLowerCase() === "ms" ? 1 : 1_000)
+			if (Number.isFinite(delay) && delay >= 0 && delay <= Number.MAX_SAFE_INTEGER) {
+				retryAfterMs = Math.ceil(delay)
+			}
+		}
+	}
+	const retryCategory: AgentRetryCategory = contextExceeded ? "context" : rateLimited ? "rate-limit" : "transport"
+	return Object.assign(new Error(message), {
+		...(code !== undefined ? { code } : {}),
+		retryCategory,
+		// Context failures retain Alpha's bounded compaction recovery.
+		...(!contextExceeded
+			? { retryable: !permanent && (code !== "server_is_overloaded" || retryAfterMs !== undefined) }
+			: {}),
+		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+	})
+}
 
 function createOpenAiChatCompletionOutcome(
 	finishReason: string | null | undefined,
@@ -479,37 +547,41 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			let semanticOutputObserved = false
 			let sawToolCallFragment = false
 
-			for await (const chunk of stream) {
-				const delta = chunk.choices?.[0]?.delta ?? {}
-				const chunkFinishReason = chunk.choices?.[0]?.finish_reason
-				if (chunkFinishReason) {
-					finishReason = chunkFinishReason
-					sawTerminalFinishReason = true
-				}
+			try {
+				for await (const chunk of stream) {
+					const delta = chunk.choices?.[0]?.delta ?? {}
+					const chunkFinishReason = chunk.choices?.[0]?.finish_reason
+					if (chunkFinishReason) {
+						finishReason = chunkFinishReason
+						sawTerminalFinishReason = true
+					}
 
-				if (delta.content) {
-					semanticOutputObserved = true
-					for (const chunk of matcher.update(delta.content)) {
-						yield chunk
+					if (delta.content) {
+						semanticOutputObserved = true
+						for (const chunk of matcher.update(delta.content)) {
+							yield chunk
+						}
+					}
+
+					const reasoningChunks = [...this.readReasoning(delta)]
+					if (reasoningChunks.length > 0) semanticOutputObserved = true
+					for (const reasoningChunk of reasoningChunks) yield reasoningChunk
+
+					if (delta.tool_calls?.length) {
+						semanticOutputObserved = true
+						sawToolCallFragment = true
+					}
+
+					yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
+
+					if (chunk.usage) {
+						lastUsage = chunk.usage
 					}
 				}
-
-				const reasoningChunks = [...this.readReasoning(delta)]
-				if (reasoningChunks.length > 0) semanticOutputObserved = true
-				for (const reasoningChunk of reasoningChunks) yield reasoningChunk
-
-				if (delta.tool_calls?.length) {
-					semanticOutputObserved = true
-					sawToolCallFragment = true
-				}
-
-				yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
-
-				if (chunk.usage) {
-					lastUsage = chunk.usage
-				}
+			} catch (error) {
+				if (lastUsage) yield this.processUsageMetrics(lastUsage, modelInfo)
+				throw error
 			}
-
 			for (const chunk of matcher.final()) {
 				yield chunk
 			}
@@ -670,6 +742,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const textDeltaParts = new Set<string>()
 		let reasoningSummary = ""
 		let receivedTerminalEvent = false
+		let incompleteOutputItemObserved = false
 
 		for await (const event of stream) {
 			switch (event.type) {
@@ -766,8 +839,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					if (!Number.isSafeInteger(event.output_index) || event.output_index < 0) {
 						throw new Error("OpenAI Responses output item has an invalid index")
 					}
+					const isToolCall = event.item.type === "function_call" || event.item.type === "custom_tool_call"
 					if ("status" in event.item && event.item.status === "incomplete") {
-						throw new Error("OpenAI Responses output item is incomplete")
+						// Wait for the terminal envelope so billed usage and interruption state survive.
+						incompleteOutputItemObserved = true
+						if (isToolCall) break
 					}
 					// Output indexes remain stable through completion even when an item has no provider ID.
 					const identity = openAiResponsesOutputIdentity(event.item)
@@ -797,9 +873,6 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					break
 				}
 				case "response.incomplete":
-					throw new Error(
-						`OpenAI Responses request is incomplete: ${event.response.incomplete_details?.reason ?? "unknown reason"}`,
-					)
 				case "response.completed": {
 					receivedTerminalEvent = true
 					yield* this.finishOpenAiResponsesResult(
@@ -809,16 +882,21 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						textDeltaParts,
 						messageMetadata,
 						reasoningSummary,
-						true,
+						event.type === "response.incomplete" ? "incomplete" : "completed",
+						incompleteOutputItemObserved,
 					)
 					break
 				}
 				case "response.failed": {
-					const message = event.response.error?.message ?? "OpenAI Responses request failed"
-					throw new Error(message)
+					yield* this.rejectOpenAiResponsesResult(
+						event.response,
+						createOpenAiResponsesError(event.response.error),
+						"failed",
+					)
+					return
 				}
 				case "error":
-					throw new Error(event.message)
+					throw createOpenAiResponsesError(event, "OpenAI Responses stream error")
 				default:
 					break
 			}
@@ -841,10 +919,39 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		textDeltaParts: Set<string>,
 		messageMetadata: Map<number, AssistantMessageMetadata>,
 		reasoningSummary: string,
-		completedEvent = false,
+		terminalEvent?: "completed" | "incomplete",
+		incompleteOutputItemObserved = false,
 	): ApiStream {
-		if (response.status !== "completed" && (!completedEvent || response.status !== undefined)) {
+		const incomplete = terminalEvent === "incomplete" || (!terminalEvent && response.status === "incomplete")
+		// The pinned SDK predates Codex's interrupted terminal reason.
+		const reportedReason = providerRecord(response.incomplete_details)?.reason
+		const incompleteReason = typeof reportedReason === "string" ? reportedReason : "unknown reason"
+		const interrupted = incomplete && incompleteReason === "interrupted"
+		if (incomplete && !interrupted) {
+			yield* this.rejectOpenAiResponsesResult(
+				response,
+				Object.assign(new Error(`OpenAI Responses request is incomplete: ${incompleteReason}`), {
+					code: "response_incomplete",
+					retryable: false,
+				}),
+				"incomplete",
+			)
+			return
+		}
+		if (!terminalEvent && response.status === "failed") {
+			yield* this.rejectOpenAiResponsesResult(response, createOpenAiResponsesError(response.error), "failed")
+			return
+		}
+		if (
+			!interrupted &&
+			response.status !== "completed" &&
+			(terminalEvent !== "completed" || response.status !== undefined)
+		) {
 			throw new Error(`OpenAI Responses request ended with status ${response.status}`)
+		}
+		if (interrupted) {
+			if (typeof response.id === "string" && response.id) this.responsesResponseId = response.id
+			if (hasOpenAiResponsesUsage(response.usage)) yield this.processOpenAiResponsesUsage(response.usage)
 		}
 		if (typeof response.id !== "string" || !response.id) {
 			throw new Error("OpenAI Responses completed without a response id")
@@ -852,23 +959,44 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (response.output !== undefined && !Array.isArray(response.output)) {
 			throw new Error("OpenAI Responses completed with invalid output")
 		}
-		if (!completedEvent && response.output === undefined) {
+		if (!terminalEvent && !interrupted && response.output === undefined) {
 			throw new Error("OpenAI Responses result did not include output")
 		}
 		const output = response.output ?? []
-		if (output.some((item) => "status" in item && item.status === "incomplete")) {
-			throw new Error("OpenAI Responses output item is incomplete")
+		if (
+			!interrupted &&
+			(incompleteOutputItemObserved || output.some((item) => "status" in item && item.status === "incomplete"))
+		) {
+			yield* this.rejectOpenAiResponsesResult(
+				response,
+				Object.assign(new Error("OpenAI Responses output item is incomplete"), {
+					code: "response_incomplete",
+					retryable: false,
+				}),
+				"incomplete",
+			)
+			return
 		}
 		// A minimal completion can omit output; otherwise its items must agree with streamed receipts.
 		if (response.output !== undefined) {
 			for (const [index, identity] of handledOutputIdentities) {
 				const item = output[index]
+				if (!item && interrupted) continue
 				if (!item || openAiResponsesOutputIdentity(item) !== identity) {
 					throw new Error("OpenAI Responses completed item did not match its final output")
 				}
 			}
 		}
 		for (const [index, item] of output.entries()) {
+			// An interrupted terminal is not a completion receipt for an unfinished tool.
+			if (
+				interrupted &&
+				(item.type === "function_call" || item.type === "custom_tool_call") &&
+				!handledOutputIdentities.has(index) &&
+				(!("status" in item) || item.status !== "completed")
+			) {
+				continue
+			}
 			if (handledOutputIdentities.has(index)) {
 				if (item.type === "message") {
 					yield {
@@ -889,7 +1017,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts, messageMetadata)
 		}
-		if (toolCalls.size > 0) {
+		if (toolCalls.size > 0 && !interrupted) {
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
 		}
 
@@ -898,11 +1026,25 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const summary = this.responsesSummary?.map((part) => part.text).join("\n") || reasoningSummary
 			if (summary) yield { type: "reasoning", text: summary }
 		}
-		yield this.processOpenAiResponsesUsage(response.usage)
+		if (!interrupted) yield this.processOpenAiResponsesUsage(response.usage)
 		// Codex can finish this response while requesting another model step.
-		if (response.end_turn === false) {
+		if (interrupted || response.end_turn === false) {
 			yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
 		}
+	}
+
+	private async *rejectOpenAiResponsesResult(
+		response: Partial<OpenAI.Responses.Response>,
+		error: Error & { retryable?: boolean },
+		status: "failed" | "incomplete",
+	): ApiStream {
+		if (typeof response.id === "string" && response.id) this.responsesResponseId = response.id
+		if (hasOpenAiResponsesUsage(response.usage)) yield this.processOpenAiResponsesUsage(response.usage)
+		// Failed requests retain the throw-only boundary consumed by Task's retry/compaction policy.
+		if (status === "incomplete") {
+			yield createApiStreamOutcome({ status, terminal: true, reason: error.message, retryable: error.retryable })
+		}
+		throw error
 	}
 
 	private async *emitOpenAiResponsesOutputItem(
@@ -1067,13 +1209,14 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (item.summary?.length) this.responsesSummary = [...(this.responsesSummary ?? []), ...item.summary]
 	}
 
-	private processOpenAiResponsesUsage(usage: OpenAI.Responses.ResponseUsage | null | undefined): ApiStreamUsageChunk {
+	private processOpenAiResponsesUsage(usage: unknown): ApiStreamUsageChunk {
+		const source = providerRecord(usage)
 		return {
 			type: "usage",
-			inputTokens: usage?.input_tokens ?? 0,
-			outputTokens: usage?.output_tokens ?? 0,
-			cacheReadTokens: usage?.input_tokens_details?.cached_tokens || undefined,
-			reasoningTokens: usage?.output_tokens_details?.reasoning_tokens || undefined,
+			inputTokens: providerTokenCount(source?.input_tokens) ?? 0,
+			outputTokens: providerTokenCount(source?.output_tokens) ?? 0,
+			cacheReadTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens),
+			reasoningTokens: providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens),
 		}
 	}
 
@@ -1107,13 +1250,19 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return { reasoning_effort: value as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] }
 	}
 
-	protected processUsageMetrics(usage: any, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
+	protected processUsageMetrics(usage: unknown, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
+		const source = providerRecord(usage)
 		return {
 			type: "usage",
-			inputTokens: usage?.prompt_tokens || 0,
-			outputTokens: usage?.completion_tokens || 0,
-			cacheWriteTokens: usage?.cache_creation_input_tokens || undefined,
-			cacheReadTokens: usage?.cache_read_input_tokens || undefined,
+			inputTokens: providerTokenCount(source?.prompt_tokens) ?? 0,
+			outputTokens: providerTokenCount(source?.completion_tokens) ?? 0,
+			cacheWriteTokens: providerTokenCount(source?.cache_creation_input_tokens),
+			// A valid legacy counter, including zero, takes precedence on compatible endpoints.
+			cacheReadTokens:
+				providerTokenCount(source?.cache_read_input_tokens) ??
+				providerTokenCount(providerRecord(source?.prompt_tokens_details)?.cached_tokens),
+			// Reasoning is already included in completion_tokens; report it as a subset only.
+			reasoningTokens: providerTokenCount(providerRecord(source?.completion_tokens_details)?.reasoning_tokens),
 		}
 	}
 
@@ -1303,47 +1452,50 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	private async *handleStreamResponse(stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>): ApiStream {
 		const activeToolCallIds = new Set<string>()
+		let lastUsage: OpenAI.CompletionUsage | undefined
 		let finishReason: string | null | undefined
 		let sawTerminalFinishReason = false
 		let semanticOutputObserved = false
 		let sawToolCallFragment = false
 
-		for await (const chunk of stream) {
-			const delta = chunk.choices?.[0]?.delta
-			const chunkFinishReason = chunk.choices?.[0]?.finish_reason
-			if (chunkFinishReason) {
-				finishReason = chunkFinishReason
-				sawTerminalFinishReason = true
-			}
+		try {
+			for await (const chunk of stream) {
+				const delta = chunk.choices?.[0]?.delta
+				const chunkFinishReason = chunk.choices?.[0]?.finish_reason
+				if (chunkFinishReason) {
+					finishReason = chunkFinishReason
+					sawTerminalFinishReason = true
+				}
 
-			if (delta) {
-				const reasoningChunks = [...this.readReasoning(delta)]
-				if (reasoningChunks.length > 0) semanticOutputObserved = true
-				for (const reasoningChunk of reasoningChunks) yield reasoningChunk
-				if (delta.content) {
-					semanticOutputObserved = true
-					yield {
-						type: "text",
-						text: delta.content,
+				if (delta) {
+					const reasoningChunks = [...this.readReasoning(delta)]
+					if (reasoningChunks.length > 0) semanticOutputObserved = true
+					for (const reasoningChunk of reasoningChunks) yield reasoningChunk
+					if (delta.content) {
+						semanticOutputObserved = true
+						yield {
+							type: "text",
+							text: delta.content,
+						}
 					}
+
+					if (delta.tool_calls?.length) {
+						semanticOutputObserved = true
+						sawToolCallFragment = true
+					}
+
+					yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
 				}
 
-				if (delta.tool_calls?.length) {
-					semanticOutputObserved = true
-					sawToolCallFragment = true
-				}
-
-				yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
-			}
-
-			if (chunk.usage) {
-				yield {
-					type: "usage",
-					inputTokens: chunk.usage.prompt_tokens || 0,
-					outputTokens: chunk.usage.completion_tokens || 0,
+				if (chunk.usage) {
+					lastUsage = chunk.usage
 				}
 			}
+		} catch (error) {
+			if (lastUsage) yield this.processUsageMetrics(lastUsage)
+			throw error
 		}
+		if (lastUsage) yield this.processUsageMetrics(lastUsage)
 
 		yield createOpenAiChatCompletionOutcome(
 			finishReason,

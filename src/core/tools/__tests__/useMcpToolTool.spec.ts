@@ -43,13 +43,13 @@ vi.mock("../../../i18n", () => ({
 
 describe("useMcpToolTool", () => {
 	let mockTask: Partial<Task>
-	let mockAskApproval: ReturnType<typeof vi.fn>
-	let mockHandleError: ReturnType<typeof vi.fn>
-	let mockPushToolResult: ReturnType<typeof vi.fn>
-	let mockRemoveClosingTag: ReturnType<typeof vi.fn>
+	let mockAskApproval: import("vitest").Mock
+	let mockHandleError: import("vitest").Mock
+	let mockPushToolResult: import("vitest").Mock
+	let mockRemoveClosingTag: import("vitest").Mock
 	let mockProviderRef: any
 
-	function executionStatuses(postMessageToWebview: ReturnType<typeof vi.fn>) {
+	function executionStatuses(postMessageToWebview: import("vitest").Mock) {
 		return postMessageToWebview.mock.calls
 			.map(([message]) => message)
 			.filter((message) => message.type === "mcpExecutionStatus")
@@ -878,7 +878,7 @@ describe("useMcpToolTool", () => {
 			}
 		}
 
-		function installValidServer(callTool: ReturnType<typeof vi.fn>): ReturnType<typeof vi.fn> {
+		function installValidServer(callTool: import("vitest").Mock): import("vitest").Mock {
 			const postMessageToWebview = vi.fn()
 			mockProviderRef.deref.mockReturnValue({
 				getMcpHub: () => ({
@@ -1013,6 +1013,28 @@ describe("useMcpToolTool", () => {
 	})
 
 	describe("image handling", () => {
+		it("preserves MCP resource links as tool-result metadata without following them", async () => {
+			const link = { type: "resource_link", uri: "file:///report.md", name: "Report", mimeType: "text/markdown" }
+			const callTool = vi.fn().mockResolvedValue({ content: [link] })
+			mockAskApproval.mockResolvedValue(true)
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					callTool,
+					getAllServers: () => [{ name: "test_server", tools: [{ name: "test_tool" }] }],
+				}),
+				postMessageToWebview: vi.fn(),
+			})
+			await useMcpToolTool.execute({ server_name: "test_server", tool_name: "test_tool" }, mockTask as Task, {
+				askApproval: mockAskApproval,
+				supportsImages: true,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+			})
+			expect(mockPushToolResult).toHaveBeenCalledWith(`Tool result: ${JSON.stringify(link, null, 2)}`)
+			expect(callTool).toHaveBeenCalledTimes(1)
+			expect(mockHandleError).not.toHaveBeenCalled()
+		})
+
 		it("forwards structured content from an error result with empty content", async () => {
 			const structuredContent = { code: "NOT_FOUND", message: "Record is missing" }
 			const callTool = vi.fn().mockResolvedValue({ content: [], structuredContent, isError: true })
@@ -1029,6 +1051,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.execute({ server_name: "test_server", tool_name: "test_tool" }, mockTask as Task, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 				setResultMetadata,
@@ -1060,7 +1083,11 @@ describe("useMcpToolTool", () => {
 				],
 			})
 
-			expect(result).toEqual({ text: "", images: ["data:image/png;base64,iVBORw0KGgo="] })
+			expect(result).toEqual({
+				text: "",
+				images: ["data:image/png;base64,iVBORw0KGgo="],
+				content: [{ type: "image", dataUrl: "data:image/png;base64,iVBORw0KGgo=" }],
+			})
 		})
 
 		it("preserves metadata for embedded text resources", () => {
@@ -1160,6 +1187,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1216,6 +1244,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1272,6 +1301,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1332,6 +1362,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})

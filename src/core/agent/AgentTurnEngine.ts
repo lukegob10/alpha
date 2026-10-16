@@ -62,6 +62,16 @@ interface AgentTurnHostBase<TInput, TStep> {
 	commitResponse?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnPhaseResult | void>
 	executeEffects?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnPhaseResult | void>
 	selectContinuation?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnContinuation<TInput>>
+	/** Admit history-based recovery only after a failed sample's transaction and cleanup settle. */
+	selectRecovery?(
+		sample: AgentTurnSample<TStep>,
+		step: number,
+		failure: AgentTurnPhaseResult & { status: "failed" | "incomplete" },
+	): Promise<AgentTurnContinuation<TInput> | undefined>
+	/** Blocking completion checks remain inside the original turn and captured step. */
+	admitCompletion?(
+		outcome: Extract<AgentTurnOutcome, { status: "completed" }>,
+	): Promise<AgentTurnContinuation<TInput> | undefined>
 	/** Release process-local step state after every path through the staged transaction. */
 	releaseStep?(sample: AgentTurnSample<TStep>, step: number): Promise<void> | void
 	shouldAbort(): boolean
@@ -300,12 +310,36 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				}
 				if (result.nextInput === "complete" || completedWithoutTools) {
 					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, result.response)
-					return {
+					const outcome: Extract<AgentTurnOutcome, { status: "completed" }> = {
 						status: "completed",
 						steps,
 						response: result.response,
 						completionReason: result.nextInput === "complete" ? "host" : "assistant",
 					}
+					const admission = await this.host.admitCompletion?.(outcome)
+					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, result.response)
+					if (admission?.status && admission.status !== "completed") {
+						return terminalOutcome(
+							admission.status,
+							steps,
+							result.response,
+							admission.reason,
+							admission.error,
+						)
+					}
+					if (admission && admission.nextInput !== "complete") {
+						input = admission.nextInput
+						continue
+					}
+					if (admission?.requiresContinuation) {
+						return terminalOutcome(
+							"incomplete",
+							steps,
+							result.response,
+							"Completion requires continuation input.",
+						)
+					}
+					return outcome
 				}
 
 				input = result.nextInput
@@ -334,6 +368,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				steps += 1
 
 				let { status, reason, error } = captureResponsePhase(sample, sample.response)
+				let recoveryEligible = status === "failed" || status === "incomplete"
 				let outcome: AgentTurnOutcome | undefined
 				let continuationInput: TInput | undefined
 				let hasContinuation = false
@@ -347,7 +382,15 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					// The host owns the transcript format, but the shared engine enforces
 					// that the response commit settles before any effect can begin.
-					absorbPhase(await this.host.commitResponse?.(sample, steps))
+					const commitResult = await this.host.commitResponse?.(sample, steps)
+					if (
+						commitResult &&
+						((commitResult.status && commitResult.status !== "completed") ||
+							commitResult.error !== undefined)
+					) {
+						recoveryEligible = false
+					}
+					absorbPhase(commitResult)
 
 					const sampleTerminal = status && status !== "completed" ? status : undefined
 					const providerTerminal = outcomeStatus(sample.response)
@@ -357,12 +400,18 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						absorbPhase(await this.host.executeEffects?.(sample, steps))
 					}
 				} catch (phaseError) {
+					recoveryEligible = false
 					absorbPhase({ status: "failed", reason: errorMessage(phaseError), error: phaseError })
 				}
 
 				try {
-					absorbPhase(await this.host.onStepComplete?.(sample.response, steps))
+					const completed = await this.host.onStepComplete?.(sample.response, steps)
+					if ((completed?.status && completed.status !== "completed") || completed?.error !== undefined) {
+						recoveryEligible = false
+					}
+					absorbPhase(completed)
 				} catch (callbackError) {
+					recoveryEligible = false
 					absorbPhase({ status: "failed", reason: errorMessage(callbackError), error: callbackError })
 				}
 
@@ -431,7 +480,33 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							}
 						}
 					}
+					if (outcome?.status === "completed") {
+						const admission = await this.host.admitCompletion?.(outcome)
+						if (this.host.shouldAbort()) {
+							outcome = terminalOutcome("aborted", steps, sample.response)
+						} else if (admission?.status && admission.status !== "completed") {
+							outcome = terminalOutcome(
+								admission.status,
+								steps,
+								sample.response,
+								admission.reason,
+								admission.error,
+							)
+						} else if (admission && admission.nextInput !== "complete") {
+							continuationInput = admission.nextInput
+							hasContinuation = true
+							outcome = undefined
+						} else if (admission?.requiresContinuation) {
+							outcome = terminalOutcome(
+								"incomplete",
+								steps,
+								sample.response,
+								"Completion requires continuation input.",
+							)
+						}
+					}
 				} catch (decisionError) {
+					recoveryEligible = false
 					outcome = terminalOutcome(
 						"failed",
 						steps,
@@ -444,6 +519,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					await this.host.releaseStep?.(sample, steps)
 				} catch (releaseError) {
+					recoveryEligible = false
 					if (!outcome || outcome.status === "completed") {
 						outcome = terminalOutcome(
 							"failed",
@@ -459,6 +535,41 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				// Do not publish the completion candidate captured before that drain.
 				if (outcome?.status === "completed" && this.host.shouldAbort()) {
 					return terminalOutcome("aborted", steps, sample.response, reason)
+				}
+				if (recoveryEligible && (outcome?.status === "failed" || outcome?.status === "incomplete")) {
+					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, sample.response, reason)
+					// A secondary admission failure cannot hide the original failed attempt.
+					let recovery: AgentTurnContinuation<TInput> | undefined
+					try {
+						recovery = await this.host.selectRecovery?.(sample, steps, {
+							status: outcome.status,
+							...(reason ? { reason } : {}),
+							...(error !== undefined ? { error } : {}),
+						})
+					} catch {
+						return this.host.shouldAbort()
+							? terminalOutcome("aborted", steps, sample.response, reason)
+							: outcome
+					}
+					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, sample.response, reason)
+					if (recovery?.status && recovery.status !== "completed") {
+						outcome = terminalOutcome(
+							recovery.status,
+							steps,
+							sample.response,
+							recovery.reason ?? reason,
+							error ?? recovery.error,
+						)
+					}
+					if (
+						recovery &&
+						recovery.nextInput !== "complete" &&
+						(!recovery.status || recovery.status === "completed")
+					) {
+						continuationInput = recovery.nextInput
+						hasContinuation = true
+						outcome = undefined
+					}
 				}
 				if (outcome) return outcome
 				if (!hasContinuation) {

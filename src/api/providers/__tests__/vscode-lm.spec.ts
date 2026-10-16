@@ -6,10 +6,10 @@ const { mockGetApiRequestTimeoutSetting, mockCancellationSources, mockVsCodeVers
 	mockCancellationSources: [] as Array<{
 		token: {
 			isCancellationRequested: boolean
-			onCancellationRequested: ReturnType<typeof vi.fn>
+			onCancellationRequested: import("vitest").Mock
 		}
-		cancel: ReturnType<typeof vi.fn>
-		dispose: ReturnType<typeof vi.fn>
+		cancel: import("vitest").Mock
+		dispose: import("vitest").Mock
 	}>,
 }))
 
@@ -59,7 +59,7 @@ vi.mock("vscode", () => {
 				get: mockGetApiRequestTimeoutSetting,
 			})),
 		},
-		CancellationTokenSource: vi.fn(() => {
+		CancellationTokenSource: vi.fn(function () {
 			const token = {
 				isCancellationRequested: false,
 				onCancellationRequested: vi.fn(() => ({ dispose: vi.fn() })),
@@ -81,14 +81,18 @@ vi.mock("vscode", () => {
 			}
 		},
 		LanguageModelChatMessage: {
-			Assistant: vi.fn((content) => ({
-				role: "assistant",
-				content: Array.isArray(content) ? content : [new MockLanguageModelTextPart(content)],
-			})),
-			User: vi.fn((content) => ({
-				role: "user",
-				content: Array.isArray(content) ? content : [new MockLanguageModelTextPart(content)],
-			})),
+			Assistant: vi.fn(function (content) {
+				return {
+					role: "assistant",
+					content: Array.isArray(content) ? content : [new MockLanguageModelTextPart(content)],
+				}
+			}),
+			User: vi.fn(function (content) {
+				return {
+					role: "user",
+					content: Array.isArray(content) ? content : [new MockLanguageModelTextPart(content)],
+				}
+			}),
 		},
 		LanguageModelChatMessageRole: { Assistant: "assistant", User: "user" },
 		LanguageModelTextPart: MockLanguageModelTextPart,
@@ -1128,8 +1132,11 @@ describe("VsCodeLmHandler", () => {
 					name: "apply_patch",
 					input: { patch },
 				}),
-				expect.objectContaining({ mimeType: "stateful_marker", data: marker }),
+				expect.objectContaining({ mimeType: "stateful_marker", data: expect.any(Uint8Array) }),
 			])
+			expect(Array.from((assistantMessages[0].content[2] as vscode.LanguageModelDataPart).data)).toEqual(
+				Array.from(marker),
+			)
 			expect(assistantMessages[1].content[0]).toMatchObject({
 				type: "tool_call",
 				callId: "reused-call",

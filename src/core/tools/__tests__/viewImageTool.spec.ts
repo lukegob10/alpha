@@ -2,14 +2,36 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { NativeToolCallParser } from "../../assistant-message/NativeToolCallParser"
 import type { Task } from "../../task/Task"
 import { ToolRegistry } from "../ToolRegistry"
+import i18next from "../../../i18n"
+import toolTranslations from "../../../i18n/locales/en/tools.json"
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "tools", toolTranslations, true, true)
+})
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:worker_threads")>()
+	const nodePath = await import("node:path")
+	class ImageValidationTestWorker extends original.Worker {
+		constructor(filename: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+			const workerPath =
+				typeof filename === "string" && nodePath.basename(filename) === "validateImage.js"
+					? (process.env.ALPHA_TEST_IMAGE_WORKER_PATH ??
+						nodePath.resolve(process.cwd(), "dist/workers/validateImage.js"))
+					: filename
+			super(workerPath, options)
+		}
+	}
+	return { ...original, Worker: ImageValidationTestWorker }
+})
 
 const pngBytes = Buffer.from(
-	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lS8AAAAASUVORK5CYII=",
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
 	"base64",
 )
 const pngBase64 = pngBytes.toString("base64")
@@ -163,7 +185,7 @@ describe("view_image registry adapter", () => {
 		expect(toolCallbacks.askApprovalResponse).toHaveBeenCalledOnce()
 		expect(toolCallbacks.pushToolResult).toHaveBeenCalledOnce()
 		expect(toolCallbacks.pushToolResult).toHaveBeenCalledWith(
-			expect.stringContaining("File content does not match the supported image format"),
+			expect.stringContaining("unable to process image: invalid or unsupported image data"),
 		)
 		expect(toolCallbacks.setResultMetadata).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error" }))
 	})

@@ -1,3 +1,4 @@
+import { javascriptLiteral } from "./ui/javascriptLiteral"
 import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
@@ -49,13 +50,13 @@ function ticketMarkdown(fixture: TicketFixture, id: string, reference: string, d
 	return [
 		"---",
 		"schemaVersion: 1",
-		`id: ${JSON.stringify(id)}`,
+		`id: ${javascriptLiteral(id)}`,
 		`reference: ${reference}`,
-		`name: ${JSON.stringify(fixture.name)}`,
+		`name: ${javascriptLiteral(fixture.name)}`,
 		`type: ${fixture.type}`,
 		...(fixture.priority ? [`priority: ${fixture.priority}`] : []),
-		`createdAt: ${JSON.stringify(date)}`,
-		`updatedAt: ${JSON.stringify(date)}`,
+		`createdAt: ${javascriptLiteral(date)}`,
+		`updatedAt: ${javascriptLiteral(date)}`,
 		"linkedTaskIds: []",
 		"---",
 		"## Description",
@@ -278,7 +279,7 @@ export async function runTicketsUi(executable: string, output: string) {
 			await fs.writeFile(path.join(directory, `${name}.png`), Buffer.from(screenshot.data, "base64"))
 		}
 		const changeProperty = async (id: string, key: string, value: string) => {
-			await evaluate(`d.getElementById(${JSON.stringify(id)}).focus()`)
+			await evaluate(`d.getElementById(${javascriptLiteral(id)}).focus()`)
 			for (const type of ["keyDown", "keyUp"])
 				await connection.request(
 					"Input.dispatchKeyEvent",
@@ -291,10 +292,10 @@ export async function runTicketsUi(executable: string, output: string) {
 					webviewSession,
 				)
 			await check(
-				`d.getElementById(${JSON.stringify(id)})?.value === ${JSON.stringify(value)} && !d.getElementById(${JSON.stringify(id)})?.disabled`,
+				`d.getElementById(${javascriptLiteral(id)})?.value === ${javascriptLiteral(value)} && !d.getElementById(${javascriptLiteral(id)})?.disabled`,
 				`${id}_saved`,
 			)
-			await check(`d.activeElement?.id === ${JSON.stringify(id)}`, `${id}_focus_restored`)
+			await check(`d.activeElement?.id === ${javascriptLiteral(id)}`, `${id}_focus_restored`)
 			await check("!d.querySelector('.tickets-notice')", `${id}_no_self_change_notice`)
 		}
 		const requiredTypes = ["bug", "feature", "improvement", "performance", "testing", "ux"]
@@ -305,13 +306,13 @@ export async function runTicketsUi(executable: string, output: string) {
 		] as const) {
 			if (stage !== "tickets-dark") await ready(stage)
 			await check(
-				`d.body.classList.contains(${JSON.stringify(themeClass)}) && !!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === 6`,
+				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === 6`,
 				`${stage}_list`,
 			)
 			for (const fixture of fixtures) {
 				assert.equal(
 					await evaluate(
-						`(()=>{const row=[...d.querySelectorAll('.ticket-row')].find(r=>r.querySelector('.ticket-row-name')?.textContent===${JSON.stringify(fixture.name)}); const r=row?.getBoundingClientRect(); return !!row && row.dataset.status===${JSON.stringify(fixture.status)} && row.closest('tbody')?.id===${JSON.stringify(`ticket-group-rows-${fixture.status}`)} && row.checkVisibility() && r.width>0 && r.height>0})()`,
+						`(()=>{const row=[...d.querySelectorAll('.ticket-row')].find(r=>r.querySelector('.ticket-row-name')?.textContent===${javascriptLiteral(fixture.name)}); const r=row?.getBoundingClientRect(); return !!row && row.dataset.status===${javascriptLiteral(fixture.status)} && row.closest('tbody')?.id===${javascriptLiteral(`ticket-group-rows-${fixture.status}`)} && row.checkVisibility() && r.width>0 && r.height>0})()`,
 					),
 					true,
 					`${fixture.name} is visible in its status section`,
@@ -367,14 +368,14 @@ export async function runTicketsUi(executable: string, output: string) {
 			const selectedName = fixtures[0]!.name
 			assert.equal(
 				await evaluate(
-					`(()=>{const e=[...d.querySelectorAll('.ticket-row-open')].find(b=>b.innerText.includes(${JSON.stringify(selectedName)}));if(!e)return false;e.focus();return d.activeElement===e})()`,
+					`(()=>{const e=[...d.querySelectorAll('.ticket-row-open')].find(b=>b.innerText.includes(${javascriptLiteral(selectedName)}));if(!e)return false;e.focus();return d.activeElement===e})()`,
 				),
 				true,
 				"Seeded ticket identity is keyboard focusable",
 			)
 			await pressEnter()
 			await check(
-				`d.querySelector('#ticket-heading')?.textContent?.trim() === ${JSON.stringify(selectedName)}`,
+				`d.querySelector('#ticket-heading')?.textContent?.trim() === ${javascriptLiteral(selectedName)}`,
 				`${stage}_detail`,
 			)
 			await capture(`${stage}-detail`)
@@ -390,7 +391,7 @@ export async function runTicketsUi(executable: string, output: string) {
 				await pressEnter()
 				await check("!!d.querySelector('.tickets-list')", "property_roundtrip_back")
 				await evaluate(
-					`([...d.querySelectorAll('.ticket-row-open')].find(b=>b.innerText.includes(${JSON.stringify(selectedName)}))).focus()`,
+					`([...d.querySelectorAll('.ticket-row-open')].find(b=>b.innerText.includes(${javascriptLiteral(selectedName)}))).focus()`,
 				)
 				await pressEnter()
 				await check(

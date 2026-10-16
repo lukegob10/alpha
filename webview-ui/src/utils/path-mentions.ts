@@ -9,7 +9,7 @@
  * @returns A path with spaces escaped
  */
 export function escapeSpaces(path: string): string {
-	return path.replace(/ /g, "\\ ")
+	return path.replace(/[\\ ]/g, (character) => `\\${character}`)
 }
 
 /**
@@ -50,8 +50,9 @@ export function convertToMentionPath(path: string, cwd?: string): string {
 		console.error("Error decoding URI component in convertToMentionPath:", e, pathWithoutProtocol)
 	}
 
-	const normalizedPath = pathWithoutProtocol.replace(/\\/g, "/")
-	let normalizedCwd = cwd ? cwd.replace(/\\/g, "/") : ""
+	const windowsCwd = !!cwd && (/^[a-z]:[\\/]/i.test(cwd) || /^(?:\\\\|\/\/)/.test(cwd))
+	const normalizedPath = windowsCwd ? pathWithoutProtocol.replace(/\\/g, "/") : pathWithoutProtocol
+	let normalizedCwd = cwd ? (windowsCwd ? cwd.replace(/\\/g, "/") : cwd) : ""
 
 	if (!normalizedCwd) {
 		return pathWithoutProtocol

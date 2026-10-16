@@ -10,10 +10,15 @@ vi.mock("../../tools/helpers/imageHelpers", () => ({
 	),
 	readImageAsDataUrlWithBuffer: vi.fn(),
 	validateImageForProcessing: vi.fn(),
-	ImageMemoryTracker: vi.fn().mockImplementation(() => ({
-		getTotalMemoryUsed: vi.fn().mockReturnValue(0),
-		addMemoryUsage: vi.fn(),
-	})),
+	ImageMemoryTracker: vi.fn().mockImplementation(function () {
+		let currentMemory = 0
+		return {
+			getTotalMemoryUsed: vi.fn(() => currentMemory),
+			addMemoryUsage: vi.fn((sizeInMB: number) => {
+				currentMemory += sizeInMB
+			}),
+		}
+	}),
 	DEFAULT_MAX_IMAGE_FILE_SIZE_MB: 5,
 	DEFAULT_MAX_TOTAL_IMAGE_SIZE_MB: 20,
 }))
@@ -23,16 +28,27 @@ import { validateImageForProcessing, readImageAsDataUrlWithBuffer } from "../../
 const mockReadImageAsDataUrl = vi.mocked(readImageAsDataUrlWithBuffer)
 const mockValidateImage = vi.mocked(validateImageForProcessing)
 
+function imageReceipt(dataUrl: string, buffer: Buffer, sourceExtension = ".png", outputExtension = sourceExtension) {
+	return {
+		dataUrl,
+		buffer,
+		sourceExtension,
+		outputExtension,
+		mimeType: dataUrl.slice("data:".length, dataUrl.indexOf(";")),
+	}
+}
+
 describe("resolveImageMentions", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mockReadImageAsDataUrl.mockReset()
 		// Default: validation passes
 		mockValidateImage.mockResolvedValue({ isValid: true, sizeInMB: 0.1 })
 	})
 
 	it("should append a data URL when a local png mention is present", async () => {
 		const dataUrl = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("png-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("png-bytes")))
 
 		const result = await resolveImageMentions({
 			text: "Please look at @/assets/cat.png",
@@ -41,14 +57,18 @@ describe("resolveImageMentions", () => {
 		})
 
 		expect(mockValidateImage).toHaveBeenCalled()
-		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(path.resolve("/workspace", "assets/cat.png"))
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.resolve("/workspace", "assets/cat.png"),
+			undefined,
+			5 * 1024 * 1024,
+		)
 		expect(result.text).toBe("Please look at @/assets/cat.png")
 		expect(result.images).toEqual([dataUrl])
 	})
 
 	it("should support gif images (matching read_file)", async () => {
 		const dataUrl = `data:image/gif;base64,${Buffer.from("gif-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("gif-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("gif-bytes"), ".gif"))
 
 		const result = await resolveImageMentions({
 			text: "See @/animation.gif",
@@ -59,9 +79,10 @@ describe("resolveImageMentions", () => {
 		expect(result.images).toEqual([dataUrl])
 	})
 
-	it("should support svg images (matching read_file)", async () => {
-		const dataUrl = `data:image/svg+xml;base64,${Buffer.from("svg-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("svg-bytes") })
+	it("appends the helper's prepared PNG for an SVG source mention", async () => {
+		const buffer = Buffer.from("prepared-svg-png")
+		const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, buffer, ".svg", ".png"))
 
 		const result = await resolveImageMentions({
 			text: "See @/icon.svg",
@@ -70,6 +91,11 @@ describe("resolveImageMentions", () => {
 		})
 
 		expect(result.images).toEqual([dataUrl])
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.resolve("/workspace", "icon.svg"),
+			undefined,
+			5 * 1024 * 1024,
+		)
 	})
 
 	it("should ignore non-image mentions", async () => {
@@ -97,7 +123,7 @@ describe("resolveImageMentions", () => {
 
 	it("should respect alphaIgnoreController", async () => {
 		const dataUrl = `data:image/jpeg;base64,${Buffer.from("jpg-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("jpg-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("jpg-bytes"), ".jpg"))
 		const alphaIgnoreController = {
 			validateAccess: vi.fn().mockReturnValue(false),
 		}
@@ -116,7 +142,7 @@ describe("resolveImageMentions", () => {
 
 	it("should dedupe when mention repeats", async () => {
 		const dataUrl = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("png-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("png-bytes")))
 
 		const result = await resolveImageMentions({
 			text: "@/a.png and again @/a.png",
@@ -129,7 +155,7 @@ describe("resolveImageMentions", () => {
 
 	it("should skip images when supportsImages is false", async () => {
 		const dataUrl = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("png-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("png-bytes")))
 
 		const result = await resolveImageMentions({
 			text: "See @/cat.png",
@@ -178,7 +204,7 @@ describe("resolveImageMentions", () => {
 
 	it("should pass custom size limits to validation", async () => {
 		const dataUrl = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`
-		mockReadImageAsDataUrl.mockResolvedValue({ dataUrl, buffer: Buffer.from("png-bytes") })
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("png-bytes")))
 
 		await resolveImageMentions({
 			text: "See @/cat.png",
@@ -189,5 +215,63 @@ describe("resolveImageMentions", () => {
 		})
 
 		expect(mockValidateImage).toHaveBeenCalledWith(expect.any(String), true, 10, 50, 0)
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(expect.any(String), undefined, 10 * 1024 * 1024)
+	})
+
+	it.each([
+		{ firstFile: "first.png", sourceExtension: ".png" },
+		{ firstFile: "first.svg", sourceExtension: ".svg" },
+	])(
+		"charges actual bytes from $firstFile and retains failed-read allowance",
+		async ({ firstFile, sourceExtension }) => {
+			const first = Buffer.alloc(768 * 1024)
+			const second = Buffer.alloc(512 * 1024)
+			const third = Buffer.alloc(128 * 1024)
+			const fixtures = new Map([
+				[firstFile, imageReceipt("data:image/png;base64,Zmlyc3Q=", first, sourceExtension, ".png")],
+				["second.png", imageReceipt("data:image/png;base64,c2Vjb25k", second)],
+				["third.png", imageReceipt("data:image/png;base64,dGhpcmQ=", third)],
+			])
+			mockValidateImage.mockResolvedValue({ isValid: true, sizeInMB: 0.1 })
+			mockReadImageAsDataUrl.mockImplementation(async (imagePath, _signal, maxBytes) => {
+				const fixture = fixtures.get(path.basename(imagePath))
+				if (!fixture) throw new Error("Unknown image fixture")
+				if (maxBytes !== undefined && fixture.buffer.length > maxBytes) throw new Error("Image grew after stat")
+				return fixture
+			})
+
+			const result = await resolveImageMentions({
+				text: `@/${firstFile} @/second.png @/third.png`,
+				cwd: "/workspace",
+				maxImageFileSize: 1,
+				maxTotalImageSize: 1,
+			})
+
+			expect(mockReadImageAsDataUrl).toHaveBeenNthCalledWith(1, expect.any(String), undefined, 1024 * 1024)
+			expect(mockReadImageAsDataUrl).toHaveBeenNthCalledWith(2, expect.any(String), undefined, 256 * 1024)
+			expect(mockReadImageAsDataUrl).toHaveBeenNthCalledWith(3, expect.any(String), undefined, 256 * 1024)
+			expect(mockValidateImage).toHaveBeenNthCalledWith(2, expect.any(String), true, 1, 1, 0.75)
+			expect(mockValidateImage).toHaveBeenNthCalledWith(3, expect.any(String), true, 1, 1, 0.75)
+			expect(result.images).toEqual([fixtures.get(firstFile)!.dataUrl, fixtures.get("third.png")!.dataUrl])
+		},
+	)
+
+	it("caps the first read at the smaller remaining total allowance", async () => {
+		mockValidateImage.mockResolvedValue({ isValid: true, sizeInMB: 0.01 })
+		mockReadImageAsDataUrl.mockRejectedValue(new Error("Image changed after size validation"))
+
+		const result = await resolveImageMentions({
+			text: "@/small.png",
+			cwd: "/workspace",
+			maxImageFileSize: 5,
+			maxTotalImageSize: 0.05,
+		})
+
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.resolve("/workspace", "small.png"),
+			undefined,
+			Math.floor(0.05 * 1024 * 1024),
+		)
+		expect(result.images).toEqual([])
 	})
 })

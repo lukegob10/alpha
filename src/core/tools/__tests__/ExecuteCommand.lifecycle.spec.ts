@@ -441,8 +441,10 @@ describe("primary command timeout mutation receipts", () => {
 
 	it("starts physical cleanup even when timeout projection fails", async () => {
 		const fixture = await createFixture()
+		const projectionFailure = new Error("lifecycle projection unavailable")
+		const diagnostics = vi.spyOn(console, "error")
 		vi.mocked(fixture.task.failCommandExecution).mockImplementationOnce(() => {
-			throw new Error("lifecycle projection unavailable")
+			throw projectionFailure
 		})
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
 		const execution = executeCommandInTerminal(fixture.task, {
@@ -462,5 +464,120 @@ describe("primary command timeout mutation receipts", () => {
 		expect(fixture.store.getVerificationObligations().flatMap((item) => item.mutationReservations ?? [])).toEqual(
 			[],
 		)
+		expect(diagnostics).toHaveBeenCalledExactlyOnceWith("Failed to project a command timeout:", projectionFailure)
+		expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith(
+			"projection-timeout-call",
+			"timed_out",
+			expect.stringMatching(/^projection-timeout:/),
+		)
+		expect(fixture.process.isSettled).toBe(true)
+		expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+		expect(fixture.task.say).toHaveBeenCalledWith("error", expect.any(String))
+	})
+
+	it.each(["cancelled", "denied"] as const)(
+		"propagates the original %s evidence failure before acquiring a terminal",
+		async (status) => {
+			const fixture = await createFixture()
+			const projectionFailure = new Error(`early ${status} projection unavailable`)
+			fixture.task.abort = status === "cancelled"
+			vi.mocked(fixture.task.failCommandExecution).mockImplementation(() => {
+				throw projectionFailure
+			})
+			await expect(
+				executeCommandInTerminal(fixture.task, {
+					executionId: "early-projection",
+					toolCallId: "early-projection-call",
+					command: "command",
+					tty: status === "denied" ? true : undefined,
+					capturedExecutionMode: status === "denied" ? "architect" : "code",
+				}),
+			).rejects.toBe(projectionFailure)
+			expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith("early-projection-call", status)
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(fixture.provider.reservePrimaryMutation).not.toHaveBeenCalled()
+			expect(fixture.process.abort).not.toHaveBeenCalled()
+			expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+		},
+	)
+
+	it("preserves an outside-workspace denial when its evidence projection throws the original error", async () => {
+		const fixture = await createFixture()
+		const projectionFailure = new Error("outside-workspace projection unavailable")
+		const failures = vi.fn()
+		vi.mocked(fixture.task.failCommandExecution).mockImplementationOnce(() => {
+			throw projectionFailure
+		})
+		await expect(
+			executeCommandInTerminal(fixture.task, {
+				executionId: "outside-projection",
+				toolCallId: "outside-projection-call",
+				command: "command",
+				customCwd: "..",
+				capturedExecutionMode: "architect",
+				onFailure: failures,
+			}),
+		).rejects.toBe(projectionFailure)
+		expect(failures).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				reason: "policy_denied",
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: "user-action" },
+			}),
+		)
+		expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith("outside-projection-call")
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(fixture.provider.reservePrimaryMutation).not.toHaveBeenCalled()
+		expect(fixture.process.abort).not.toHaveBeenCalled()
+	})
+
+	it("observes the original background bookkeeping projection error after physical mutation cleanup settles", async () => {
+		const fixture = await createFixture()
+		const projectionFailure = new Error("background bookkeeping projection unavailable")
+		const diagnostics = vi.spyOn(console, "error")
+		let projectionAttempted!: () => void
+		const projectionAttempt = new Promise<void>((resolve) => (projectionAttempted = resolve))
+		vi.mocked(fixture.task.failCommandExecution).mockImplementationOnce(() => {
+			projectionAttempted()
+			throw projectionFailure
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "background-projection",
+			toolCallId: "background-projection-call",
+			command: "long-running-command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 1_000,
+			commandExecutionTimeout: 0,
+		})
+		try {
+			await fixture.launch
+			await vi.advanceTimersByTimeAsync(1_100)
+			await execution
+			fixture.reportShellExit()
+			// This is the collector's missing-completion timer, not a delay for log delivery.
+			await vi.advanceTimersByTimeAsync(0)
+			await projectionAttempt
+			await vi.advanceTimersByTimeAsync(0)
+			await vi.waitFor(() => expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce())
+			expect(diagnostics).toHaveBeenCalledExactlyOnceWith(
+				"[ExecuteCommandTool] Failed to preserve background output bookkeeping failure",
+				projectionFailure,
+			)
+			expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith(
+				"background-projection-call",
+				"failed",
+				expect.stringMatching(/^background-projection:/),
+			)
+			expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+			expect(fixture.process.abort).not.toHaveBeenCalled()
+			expect(
+				fixture.store.getVerificationObligations().flatMap((item) => item.mutationReservations ?? []),
+			).toEqual([])
+		} finally {
+			fixture.releaseProcess()
+			await execution
+		}
 	})
 })

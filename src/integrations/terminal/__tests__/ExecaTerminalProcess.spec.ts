@@ -8,20 +8,23 @@ vitest.mock("node:child_process", () => ({ execFile: execFileMock }))
 vitest.mock("execa", () => {
 	const mockKill = vitest.fn()
 	const execa = vitest.fn((options: any) => {
-		return (_template: TemplateStringsArray, ...args: any[]) => ({
-			pid: mockPid,
-			iterable: (_opts: any) =>
-				(async function* () {
-					yield "test output\n"
-				})(),
-			kill: mockKill,
-		})
+		return (_template: TemplateStringsArray, ...args: any[]) =>
+			Object.assign(Promise.resolve({ exitCode: 0 }), {
+				pid: mockPid,
+				iterable: (_opts: any) =>
+					(async function* () {
+						yield "test output\n"
+					})(),
+				kill: mockKill,
+			})
 	})
 	return { execa, ExecaError: class extends Error {} }
 })
 
 vitest.mock("ps-tree", () => ({
-	default: vitest.fn((_: number, cb: any) => cb(null, [])),
+	default: vitest.fn(function (_: number, cb: any) {
+		return cb(null, [])
+	}),
 }))
 
 import { execa, ExecaError } from "execa"
@@ -31,6 +34,16 @@ import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { ExecaTerminal } from "../ExecaTerminal"
 import { BaseTerminal } from "../BaseTerminal"
 import type { AlphaTerminal } from "../types"
+
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	let reject!: (reason: unknown) => void
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise
+		reject = rejectPromise
+	})
+	return { promise, resolve, reject }
+}
 
 describe("ExecaTerminalProcess", () => {
 	let mockTerminal: AlphaTerminal
@@ -78,6 +91,102 @@ describe("ExecaTerminalProcess", () => {
 		vitest.useRealTimers()
 		process.env = originalEnv
 		vitest.clearAllMocks()
+	})
+
+	describe("trusted direct argv transport", () => {
+		it("executes the captured executable, argv and environment without a shell or ambient extension", async () => {
+			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {
+				iterable: () =>
+					(async function* () {
+						yield "argv output\n"
+					})(),
+				kill: vitest.fn(),
+			})
+			const spawn = vitest.fn().mockReturnValue(child)
+			const factory = vitest.fn().mockReturnValue(spawn)
+			vitest.mocked(execa).mockImplementationOnce(factory)
+			process.env.UNREVIEWED_COMMAND_ENV = "must not reach the direct child"
+			mockTerminal.commandEnv = { TERMINAL_ONLY_ENV: "must not replace the approved snapshot" }
+			const executable = path.join(process.platform === "win32" ? "C:\\trusted" : "/trusted", "rg")
+			const args = ["--no-config", "-n", "one two;$(not-a-shell)", "src/file with spaces.txt"]
+			const env = { PATH: "captured-path", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }
+			await terminalProcess.run("display text; $(must-not-be-interpreted)", { executable, args, env })
+			expect(factory).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					shell: false,
+					extendEnv: false,
+					cwd: "/test/cwd",
+					env,
+					all: true,
+					buffer: false,
+					stdin: "ignore",
+				}),
+			)
+			expect(spawn).toHaveBeenCalledExactlyOnceWith(executable, args)
+			expect(factory.mock.calls[0][0].env).toEqual(env)
+			expect(mockTerminal.shellExecutionComplete).toHaveBeenCalledExactlyOnceWith({
+				exitCode: 0,
+				signalName: undefined,
+			})
+		})
+
+		it("keeps creation, raw output and finalization ownership on the ordinary Execa adapter", async () => {
+			const trace: string[] = []
+			const raw: string[] = []
+			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {
+				iterable: () =>
+					(async function* () {
+						yield "first without newline"
+						yield " and tail\n"
+					})(),
+				kill: vitest.fn(),
+			})
+			const spawn = vitest.fn()
+			spawn.mockImplementation(() => {
+				trace.push("spawn")
+				return child
+			})
+			const factory = vitest.fn().mockReturnValue(spawn)
+			vitest.mocked(execa).mockImplementationOnce(factory)
+			const terminal = new ExecaTerminal(91, "/test/cwd")
+			const completed = vitest.fn()
+			const closed = vitest.fn(() => {
+				trace.push("closed")
+			})
+			const command = terminal.runCommand(
+				"reviewed rg command",
+				{
+					onProcessCreated: () => {
+						trace.push("created")
+					},
+					onLine: () => undefined,
+					onOutput: (chunk) => {
+						raw.push(chunk)
+						trace.push("raw")
+					},
+					onCompleted: completed,
+					onOutputClosed: closed,
+					onShellExecutionStarted: () => undefined,
+					onShellExecutionComplete: () => undefined,
+				},
+				{ executable: "/trusted/rg", args: ["--no-config", "needle", "src"], env: { LANG: "en_US.UTF-8" } },
+			)
+			await command
+			await command.waitForOutputFinalization?.()
+			expect(spawn).toHaveBeenCalledExactlyOnceWith("/trusted/rg", ["--no-config", "needle", "src"])
+			expect(factory).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ shell: false, extendEnv: false, env: { LANG: "en_US.UTF-8" } }),
+			)
+			expect(trace[0]).toBe("created")
+			expect(trace[1]).toBe("spawn")
+			expect(trace.at(-1)).toBe("closed")
+			expect(raw).toEqual(["first without newline", " and tail\n"])
+			expect(completed).toHaveBeenCalledExactlyOnceWith("first without newline and tail\n", command)
+			expect(closed).toHaveBeenCalledOnce()
+			expect(command.isOutputFinalized).toBe(true)
+			expect(terminal.process).toBeUndefined()
+			expect(terminal.running).toBe(false)
+		})
 	})
 
 	describe("UTF-8 encoding fix", () => {
@@ -209,18 +318,55 @@ describe("ExecaTerminalProcess", () => {
 			const spy = vitest.fn()
 			terminalProcess.on("shell_execution_complete", spy)
 			await terminalProcess.run("echo test")
-			expect(spy).toHaveBeenCalledWith({ exitCode: 0 })
+			expect(spy).toHaveBeenCalledExactlyOnceWith({ exitCode: 0, signalName: undefined })
 		})
 
 		it("does not report a cancelled command as a successful execution", async () => {
 			const spy = vitest.fn()
+			const completed = vitest.fn()
+			const exited = deferred<{ exitCode: number }>()
+			const outputAccepted = deferred<void>()
+			const releaseOutput = deferred<void>()
+			const readerFinished = deferred<void>()
+			const cancellation = Object.assign(new ExecaError(), { signal: "SIGKILL" })
 			terminalProcess.on("shell_execution_complete", spy)
-			;(terminalProcess as any).aborted = true
+			terminalProcess.on("completed", completed)
+			terminalProcess.once("output_available", () => outputAccepted.resolve())
+			vitest.mocked(execa).mockImplementationOnce(
+				(() => () =>
+					Object.assign(exited.promise, {
+						// A transport without a published PID must still await its physical result.
+						iterable: () =>
+							(async function* () {
+								try {
+									yield "output before cancellation\n"
+									await releaseOutput.promise
+								} finally {
+									readerFinished.resolve()
+								}
+							})(),
+					})) as unknown as typeof execa,
+			)
+			const run = terminalProcess.run("echo test")
+			try {
+				await outputAccepted.promise
+				await terminalProcess.abort()
+				releaseOutput.resolve()
+				await readerFinished.promise
+				expect(spy).not.toHaveBeenCalled()
+				expect(completed).not.toHaveBeenCalled()
+				exited.reject(cancellation)
+				await run
 
-			await terminalProcess.run("echo test")
-
-			expect(spy).toHaveBeenCalledWith({ exitCode: 137, signalName: "SIGKILL" })
-			expect(spy).not.toHaveBeenCalledWith({ exitCode: 0 })
+				expect(spy).toHaveBeenCalledExactlyOnceWith({ exitCode: undefined, signalName: "SIGKILL" })
+				expect(completed).toHaveBeenCalledExactlyOnceWith("output before cancellation\n")
+				expect(terminalProcess.isSettled).toBe(true)
+				expect(terminalProcess.isOutputFinalized).toBe(true)
+			} finally {
+				releaseOutput.resolve()
+				exited.reject(cancellation)
+				await run
+			}
 		})
 
 		it("should emit completed event with full output", async () => {

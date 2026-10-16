@@ -286,6 +286,7 @@ for (const fault of ["nonzero", "running"] as const) {
 					],
 				},
 			]
+			const report = "No matches found."
 			const history = [
 				...command("broad", RECOVERY_COMMANDS.broad, "Process exited with code 0"),
 				...command("prior-status", RECOVERY_COMMANDS.status, "Process exited with code 0"),
@@ -296,10 +297,36 @@ for (const fault of ["nonzero", "running"] as const) {
 					RECOVERY_COMMANDS.status,
 					fault === "nonzero" ? "Process exited with code 7" : "Process running with session ID 42",
 				),
-				{ role: "assistant", content: "No matches found." },
+				{ role: "assistant", ts: 11, content: [{ type: "text", text: report }] },
 			]
 			evidence.trace = inspectWorkflowTrace(history, [RECOVERY_COMMANDS.broad, RECOVERY_COMMANDS.status])
-			evidence.recoveryChecks = inspectRecoveryTrace(history, [], "devSearchAbsent")
+			const turnIdentity = { version: 1, taskId, runId: options.runId, turnId: "absent-search" }
+			evidence.recoveryChecks = inspectRecoveryTrace(
+				history,
+				[{ ts: 11, type: "say", say: "completion_result", text: report, partial: false }],
+				"devSearchAbsent",
+				{
+					taskId,
+					events: [
+						{
+							...turnIdentity,
+							type: "turn_started",
+							eventId: "absent-start",
+							sequence: 1,
+							occurredAt: 10,
+							payload: { phase: "starting" },
+						},
+						{
+							...turnIdentity,
+							type: "turn_terminal",
+							eventId: "absent-terminal",
+							sequence: 2,
+							occurredAt: 12,
+							payload: { status: "completed" },
+						},
+					],
+				},
+			)
 			assert.ok(
 				evidence.recoveryChecks.every((check) => check.passed),
 				"The absent-search oracle is satisfied",

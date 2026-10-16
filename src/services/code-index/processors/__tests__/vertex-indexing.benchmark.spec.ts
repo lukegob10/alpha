@@ -10,7 +10,11 @@ const { embedContent, files } = vi.hoisted(() => ({
 	files: Array.from({ length: 85 }, (_, index) => `/workspace/file-${index}.ts`),
 }))
 
-vi.mock("@google/genai", () => ({ GoogleGenAI: vi.fn(() => ({ models: { embedContent } })) }))
+vi.mock("@google/genai", () => ({
+	GoogleGenAI: vi.fn(function () {
+		return { models: { embedContent } }
+	}),
+}))
 vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureEvent: vi.fn() } } }))
 vi.mock("fs/promises", () => ({ stat: vi.fn(async () => ({ size: 1024 })) }))
 vi.mock("../../../glob/list-files", () => ({ listFiles: vi.fn(async () => [files, false]) }))

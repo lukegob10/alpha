@@ -1,13 +1,22 @@
+import { EventEmitter } from "node:events"
+import * as fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
+import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
+import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
+import * as storage from "../../../utils/storage"
 
 // Mock dependencies
 vi.mock("../../webview/AlphaProvider")
 vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
 		releaseTerminalsForTask: vi.fn(),
+		getTerminals: vi.fn(() => []),
 	},
 }))
 vi.mock("../../ignore/AlphaIgnoreController")
@@ -101,6 +110,24 @@ describe("Task dispose method", () => {
 		expect(task.listenerCount("TaskIdle")).toBe(0)
 	})
 
+	test("releases unread command output ownership when its task instance is disposed", () => {
+		const process = Object.assign(new EventEmitter(), {
+			executionId: "settled-command",
+			isSettled: true,
+			hasUnretrievedOutput: () => true,
+		}) as AlphaTerminalProcess
+		const sessionId = commandSessionRegistry.register(task, process)
+		expect(commandSessionRegistry.ownsOutput(process)).toBe(true)
+		try {
+			task.dispose()
+			expect(commandSessionRegistry.ownsOutput(process)).toBe(false)
+			expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+			expect(process.hasUnretrievedOutput()).toBe(true)
+		} finally {
+			commandSessionRegistry.release(task, sessionId)
+		}
+	})
+
 	test("should handle errors when removing event listeners", () => {
 		// Mock removeAllListeners to throw an error
 		const originalRemoveAllListeners = task.removeAllListeners
@@ -144,15 +171,15 @@ describe("Task dispose method", () => {
 	test("should prevent memory leaks by removing listeners before other cleanup", () => {
 		// Add multiple listeners of different types using type assertion for testing
 		const listeners = {
-			TaskStarted: vi.fn(() => {}),
-			TaskAborted: vi.fn(() => {}),
-			TaskIdle: vi.fn((taskId: string) => {}),
-			TaskActive: vi.fn((taskId: string) => {}),
-			TaskAskResponded: vi.fn(() => {}),
-			Message: vi.fn((data: { action: "created" | "updated"; message: any }) => {}),
-			TaskTokenUsageUpdated: vi.fn((taskId: string, tokenUsage: any) => {}),
-			TaskToolFailed: vi.fn((taskId: string, tool: any, error: string) => {}),
-			TaskUnpaused: vi.fn(() => {}),
+			TaskStarted: vi.fn(function () {}),
+			TaskAborted: vi.fn(function () {}),
+			TaskIdle: vi.fn(function (taskId: string) {}),
+			TaskActive: vi.fn(function (taskId: string) {}),
+			TaskAskResponded: vi.fn(function () {}),
+			Message: vi.fn(function (data: { action: "created" | "updated"; message: any }) {}),
+			TaskTokenUsageUpdated: vi.fn(function (taskId: string, tokenUsage: any) {}),
+			TaskToolFailed: vi.fn(function (taskId: string, tool: any, error: string) {}),
+			TaskUnpaused: vi.fn(function () {}),
 		}
 
 		// Add all listeners using type assertion to bypass strict typing for testing
@@ -194,5 +221,106 @@ describe("Task dispose method", () => {
 
 		// Verify total listener count is 0
 		expect(task.eventNames().length).toBe(0)
+	})
+})
+
+describe("Task dispose artifact storage", () => {
+	test("does not recreate removed task storage when delayed output cleanup resumes", async () => {
+		const storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-task-dispose-output-"))
+		const resolvedStorageRoot = path.resolve(storageRoot)
+		if (
+			path.dirname(resolvedStorageRoot) !== path.resolve(os.tmpdir()) ||
+			!path.basename(resolvedStorageRoot).startsWith("alpha-task-dispose-output-")
+		) {
+			throw new Error("Refusing to remove storage outside its owned temporary root")
+		}
+		const provider = {
+			context: { globalStorageUri: { fsPath: storageRoot } },
+			getState: vi.fn().mockResolvedValue({ mode: "code" }),
+			log: vi.fn(),
+		} as unknown as AlphaProvider
+		const ownedTask = new Task({
+			provider,
+			apiConfiguration: { apiProvider: "vertex" },
+			taskId: "dispose-output-cleanup",
+			taskMode: "code",
+			taskApiConfigName: "Dispose fixture",
+			startTask: false,
+		})
+		let releaseLookup!: () => void
+		const lookupPermit = new Promise<void>((resolve) => {
+			releaseLookup = resolve
+		})
+		let finishCleanup!: () => void
+		const cleanupFinished = new Promise<void>((resolve) => {
+			finishCleanup = resolve
+		})
+		let lookupHeld = false
+		const nativeCreatingResolver = storage.getTaskDirectoryPath
+		const nativeReadOnlyResolver = storage.resolveExistingTaskDirectoryPathReadOnly
+		const holdOwnedLookup =
+			(nativeResolver: typeof nativeCreatingResolver) => async (storagePath: string, taskId: string) => {
+				if (storagePath === storageRoot && taskId === ownedTask.taskId && !lookupHeld) {
+					lookupHeld = true
+					await lookupPermit
+				}
+				return nativeResolver(storagePath, taskId)
+			}
+		const taskDirectory = storage.resolveTaskDirectoryPath(storageRoot, ownedTask.taskId)
+		const outputDirectory = path.join(taskDirectory, "command-output")
+		const nativeCleanup = OutputInterceptor.cleanupByIds
+		const ownedCleanup = vi.fn()
+		const cleanup = vi.spyOn(OutputInterceptor, "cleanupByIds").mockImplementation(async (...args) => {
+			if (args[0] === outputDirectory) ownedCleanup(...args)
+			try {
+				await nativeCleanup(...args)
+			} finally {
+				if (args[0] === outputDirectory) finishCleanup()
+			}
+		})
+		try {
+			// Join constructor-owned queue I/O before isolating dispose's later lookup.
+			await ownedTask.messageQueueService.ready
+			await ownedTask.messageQueueService.flush()
+			await expect(fs.stat(taskDirectory)).resolves.toBeDefined()
+			const creatingResolver = vi
+				.spyOn(storage, "getTaskDirectoryPath")
+				.mockImplementation(holdOwnedLookup(nativeCreatingResolver))
+			const readOnlyResolver = vi
+				.spyOn(storage, "resolveExistingTaskDirectoryPathReadOnly")
+				.mockImplementation(holdOwnedLookup(nativeReadOnlyResolver))
+			try {
+				ownedTask.dispose()
+				expect(lookupHeld).toBe(true)
+				expect(ownedCleanup).not.toHaveBeenCalled()
+				// Goal shutdown also reads storage; join it while output cleanup stays held.
+				await ownedTask.waitForTermination()
+				if (
+					path.dirname(resolvedStorageRoot) !== path.resolve(os.tmpdir()) ||
+					!path.basename(resolvedStorageRoot).startsWith("alpha-task-dispose-output-") ||
+					path.dirname(path.resolve(taskDirectory)) !== path.join(resolvedStorageRoot, "tasks") ||
+					path.basename(taskDirectory) !== ownedTask.taskId
+				) {
+					throw new Error("Refusing to remove storage outside the owned temporary task")
+				}
+				await fs.rm(taskDirectory, { recursive: true, force: true })
+				releaseLookup()
+				await cleanupFinished
+				await ownedTask.waitForTermination()
+				expect(ownedCleanup).toHaveBeenCalledOnce()
+				await expect(fs.stat(taskDirectory)).rejects.toMatchObject({ code: "ENOENT" })
+			} finally {
+				releaseLookup()
+				if (lookupHeld) await cleanupFinished
+				creatingResolver.mockRestore()
+				readOnlyResolver.mockRestore()
+			}
+		} finally {
+			ownedTask.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+			await ownedTask.waitForTermination()
+			await ownedTask.messageQueueService.flush()
+			cleanup.mockRestore()
+			await fs.rm(resolvedStorageRoot, { recursive: true, force: true })
+		}
 	})
 })

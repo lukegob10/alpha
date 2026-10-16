@@ -139,13 +139,18 @@ export async function resolveImageMentions({
 				continue
 			}
 
-			const { dataUrl } = await readImageAsDataUrlWithBuffer(absPath)
+			const { dataUrl, buffer } = await readImageAsDataUrlWithBuffer(
+				absPath,
+				undefined,
+				Math.floor(
+					Math.min(maxImageFileSize, maxTotalImageSize - imageMemoryTracker.getTotalMemoryUsed()) *
+						1024 *
+						1024,
+				),
+			)
 			newImages.push(dataUrl)
 
-			// Track memory usage
-			if (validationResult.sizeInMB) {
-				imageMemoryTracker.addMemoryUsage(validationResult.sizeInMB)
-			}
+			imageMemoryTracker.addMemoryUsage(buffer.length / (1024 * 1024))
 		} catch {
 			// Fail-soft: skip unreadable/missing files.
 			continue

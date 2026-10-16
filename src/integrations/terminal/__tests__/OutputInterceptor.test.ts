@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { EventEmitter } from "node:events"
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest"
 
 import { OutputInterceptor } from "../OutputInterceptor"
@@ -12,6 +13,7 @@ vi.mock("fs", () => ({
 		mkdirSync: vi.fn(),
 		createWriteStream: vi.fn(),
 		promises: {
+			mkdir: vi.fn().mockResolvedValue(undefined),
 			readdir: vi.fn(),
 			unlink: vi.fn(),
 		},
@@ -20,13 +22,39 @@ vi.mock("fs", () => ({
 	mkdirSync: vi.fn(),
 	createWriteStream: vi.fn(),
 	promises: {
+		mkdir: vi.fn().mockResolvedValue(undefined),
 		readdir: vi.fn(),
 		unlink: vi.fn(),
 	},
 }))
 
+class WriteStreamFixture extends EventEmitter {
+	writableNeedDrain = false
+	writableFinished = false
+	destroyed = false
+	closed = false
+	write = vi.fn((_chunk: string) => true)
+	end = vi.fn((callback?: () => void) => {
+		this.writableFinished = true
+		this.emit("finish")
+		callback?.()
+		this.closed = true
+		this.emit("close")
+		return this
+	})
+	destroy = vi.fn((error?: Error) => {
+		this.destroyed = true
+		queueMicrotask(() => {
+			if (error) this.emit("error", error)
+			this.closed = true
+			this.emit("close")
+		})
+		return this
+	})
+}
+
 describe("OutputInterceptor", () => {
-	let mockWriteStream: any
+	let mockWriteStream: WriteStreamFixture
 	let storageDir: string
 
 	beforeEach(() => {
@@ -34,25 +62,74 @@ describe("OutputInterceptor", () => {
 
 		storageDir = path.normalize("/tmp/test-storage")
 
-		// Setup mock write stream with callback support for end()
-		mockWriteStream = {
-			write: vi.fn(),
-			end: vi.fn((callback?: () => void) => {
-				// Immediately call the callback to simulate stream flush completing
-				if (callback) callback()
-			}),
-			on: vi.fn(),
-		}
+		mockWriteStream = new WriteStreamFixture()
 
 		vi.mocked(fs.existsSync).mockReturnValue(true)
-		vi.mocked(fs.createWriteStream).mockReturnValue(mockWriteStream as any)
+		vi.mocked(fs.createWriteStream).mockReturnValue(mockWriteStream as unknown as fs.WriteStream)
 	})
 
 	afterEach(() => {
 		vi.restoreAllMocks()
 	})
 
+	// GREEN-only controls for the new sink-lifetime query. The fixture uses the
+	// same separate finish/close facts that finalize already waits for.
+	describe("Actual sink closure", () => {
+		it("reports no sink while output remains in memory", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "echo small",
+				storageDir,
+				previewSize: "small",
+			})
+			expect(interceptor.isOutputClosed()).toBe(true)
+			interceptor.write("small output")
+			expect(interceptor.isOutputClosed()).toBe(true)
+			expect(fs.createWriteStream).not.toHaveBeenCalled()
+			await interceptor.finalize()
+			expect(interceptor.isOutputClosed()).toBe(true)
+		})
+
+		it("requires the spilled sink close fact even after destroy and finish", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "echo large",
+				storageDir,
+				previewSize: "small",
+			})
+			interceptor.write("x".repeat(6000))
+			expect(interceptor.hasSpilledToDisk()).toBe(true)
+			expect(interceptor.isOutputClosed()).toBe(false)
+			mockWriteStream.destroyed = true
+			expect(interceptor.isOutputClosed()).toBe(false)
+			mockWriteStream.writableFinished = true
+			mockWriteStream.emit("finish")
+			expect(interceptor.isOutputClosed()).toBe(false)
+			mockWriteStream.closed = true
+			mockWriteStream.emit("close")
+			expect(interceptor.isOutputClosed()).toBe(true)
+			await interceptor.finalize()
+			expect(interceptor.isOutputClosed()).toBe(true)
+		})
+	})
+
 	describe("Buffering behavior", () => {
+		it("does not retain empty writes or create an artifact", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "test",
+				storageDir,
+				previewSize: "small",
+			})
+			for (let index = 0; index < 10_000; index++) interceptor.write("")
+			expect((interceptor as unknown as { pendingChunks: string[] }).pendingChunks).toHaveLength(0)
+			expect(fs.createWriteStream).not.toHaveBeenCalled()
+			expect(await interceptor.finalize()).toMatchObject({ preview: "", totalBytes: 0, artifactPath: null })
+		})
+
 		it("should keep small output in memory without spilling to disk", async () => {
 			const interceptor = new OutputInterceptor({
 				executionId: "12345",
@@ -272,6 +349,100 @@ describe("OutputInterceptor", () => {
 	})
 
 	describe("finalize() method", () => {
+		it("waits for the owned finish and close events before advertising an artifact", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "test",
+				storageDir,
+				previewSize: "small",
+			})
+			interceptor.write("x".repeat(6000))
+			mockWriteStream.end.mockImplementation(() => mockWriteStream)
+			let finished = false
+			const result = interceptor.finalize().then((value) => {
+				finished = true
+				return value
+			})
+			expect(mockWriteStream.end).toHaveBeenCalledOnce()
+			expect(finished).toBe(false)
+			expect(mockWriteStream.listenerCount("finish")).toBe(1)
+			mockWriteStream.writableFinished = true
+			mockWriteStream.emit("finish")
+			expect(finished).toBe(false)
+			mockWriteStream.closed = true
+			mockWriteStream.emit("close")
+			expect(await result).toMatchObject({
+				truncated: true,
+				artifactPath: path.join(storageDir, "cmd-12345.txt"),
+			})
+			expect(mockWriteStream.listenerCount("finish")).toBe(0)
+			expect(mockWriteStream.listenerCount("close")).toBe(0)
+		})
+
+		it("preserves an artifact stream error observed before finalization", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "test",
+				storageDir,
+				previewSize: "small",
+			})
+			interceptor.write("x".repeat(6000))
+			const failure = new Error("artifact write failed")
+			mockWriteStream.emit("error", failure)
+			await expect(interceptor.finalize()).rejects.toBe(failure)
+			expect(() => interceptor.write("later output")).toThrow(failure)
+			expect(mockWriteStream.end).not.toHaveBeenCalled()
+		})
+
+		it("cancels a blocked write and removes temporary drain/close listeners", async () => {
+			const interceptor = new OutputInterceptor({
+				executionId: "12345",
+				taskId: "task-1",
+				command: "test",
+				storageDir,
+				previewSize: "small",
+			})
+			const entered = new Promise<void>((resolve) => {
+				mockWriteStream.write.mockImplementation(() => {
+					mockWriteStream.writableNeedDrain = true
+					resolve()
+					return false
+				})
+			})
+			const controller = new AbortController()
+			mockWriteStream.destroy.mockImplementation(() => {
+				mockWriteStream.destroyed = true
+				return mockWriteStream
+			})
+			const waiting = interceptor.writeWithBackpressure("x".repeat(6000), controller.signal)
+			await entered
+			expect(mockWriteStream.listenerCount("drain")).toBe(1)
+			const failure = new Error("write cancelled")
+			controller.abort(failure)
+			await expect(waiting).rejects.toBe(failure)
+			expect(mockWriteStream.destroy).toHaveBeenCalledWith(failure)
+			expect(mockWriteStream.listenerCount("drain")).toBe(0)
+			expect(mockWriteStream.listenerCount("close")).toBe(0)
+			let finalized = false
+			const close = interceptor.finalize().then(
+				() => {
+					throw new Error("Interrupted output must not advertise a complete artifact")
+				},
+				(error: unknown) => {
+					finalized = true
+					return error
+				},
+			)
+			expect(finalized).toBe(false)
+			expect(mockWriteStream.listenerCount("close")).toBe(1)
+			mockWriteStream.closed = true
+			mockWriteStream.emit("close")
+			expect(await close).toMatchObject({ name: "OutputArchiveInterruptedError", cause: failure })
+			expect(mockWriteStream.listenerCount("close")).toBe(0)
+		})
+
 		it("should return preview output for small commands", async () => {
 			const interceptor = new OutputInterceptor({
 				executionId: "12345",

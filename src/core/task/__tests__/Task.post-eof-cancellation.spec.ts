@@ -92,7 +92,7 @@ type TaskHooks = {
 
 async function harness(
 	boundary: Boundary = "EOF",
-	options: { holdReceipt?: boolean; approvedRead?: boolean; throughEngine?: boolean } = {},
+	options: { holdReceipt?: boolean; approvedRead?: boolean; throughEngine?: boolean; isolationReady?: boolean } = {},
 ) {
 	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-post-eof-cancellation-"))
@@ -109,6 +109,7 @@ async function harness(
 	const earlyTailSettled = barrier()
 	const releaseEarlyTail = barrier()
 	const accepted = barrier()
+	const readinessChecked = barrier()
 	const receiptEntered = barrier()
 	const releaseReceipt = barrier()
 	const effectEntered = barrier()
@@ -160,6 +161,8 @@ async function harness(
 		taskApprovalMode: "ask",
 		workspacePath: cwd,
 		startTask: false,
+		// These lifecycle/transaction barriers exclude unrelated background checkpoint Git initialization.
+		enableCheckpoints: false,
 		toolApprovalReviewer: async (_request: ToolApprovalRequest, signal: AbortSignal) => {
 			expect(signal.aborted).toBe(false)
 			approvalStarted.resolve()
@@ -249,6 +252,7 @@ async function harness(
 			parallelCommandRead: true,
 		},
 		prepareParallelCommand: async (context) => {
+			if (options.isolationReady === false) return undefined
 			if (!(await context.callbacks.askApproval("command", "git status --short"))) return undefined
 			return {
 				scope: cwd,
@@ -257,6 +261,10 @@ async function harness(
 					return async () => undefined
 				},
 			}
+		},
+		isParallelCommandReadReady: async () => {
+			readinessChecked.resolve()
+			return options.isolationReady !== false
 		},
 		execute: effect,
 	}
@@ -356,8 +364,8 @@ async function harness(
 	if (boundary === "apply") {
 		const apply = task["applyCanonicalAgentResponse"].bind(task)
 		let held = false
-		vi.spyOn(hooks, "applyCanonicalAgentResponse").mockImplementation(async (response) => {
-			await apply(response)
+		vi.spyOn(hooks, "applyCanonicalAgentResponse").mockImplementation(async (response, ...args) => {
+			await apply(response, ...args)
 			if (!held && response.outcome?.status === "completed") {
 				held = true
 				boundaryEntered.resolve()
@@ -386,7 +394,7 @@ async function harness(
 			return true
 		})
 	}
-	const attempt = vi.spyOn(hooks, "attemptApiRequest").mockImplementation(() =>
+	const attempt = vi.spyOn(hooks, "attemptApiRequest").mockImplementation((_retryAttempt, requestOptions) =>
 		(async function* (): AsyncGenerator<ApiStreamChunk> {
 			const snapshot = new AgentStepContextBuilder<ApiHandler>().build({
 				kind: "agent",
@@ -443,6 +451,7 @@ async function harness(
 			}
 			task["currentAgentStep"] = step
 			task["currentTaskToolSurface"] = surface
+			requestOptions?.onStepCaptured?.(step)
 			await task["ensureCanonicalLifecycleStepStarted"](step)
 			yield { type: "text", text: "Checking.", id: "message-progress", phase: "commentary", outputIndex: 0 }
 			yield {
@@ -499,6 +508,7 @@ async function harness(
 		earlyTailSettled: earlyTailSettled.promise,
 		releaseEarlyTail: releaseEarlyTail.resolve,
 		accepted: accepted.promise,
+		readinessChecked: readinessChecked.promise,
 		receiptEntered: receiptEntered.promise,
 		releaseReceipt: releaseReceipt.resolve,
 		effectEntered: effectEntered.promise,
@@ -535,6 +545,28 @@ afterEach(async () => {
 })
 
 describe("Task cancellation after accepted output reaches EOF", () => {
+	it("defers an unavailable isolated read until EOF, then executes its ordinary handler exactly once", async () => {
+		const fixture = await harness("EOF", { isolationReady: false })
+		await fixture.readinessChecked
+		expect(fixture.effect).not.toHaveBeenCalled()
+		expect(fixture.task.assistantMessageSavedToHistory).toBe(false)
+		expect(fixture.task.hasPendingToolApprovalRequest()).toBe(false)
+		fixture.releaseProvider()
+		expect(await fixture.run).toMatchObject({ status: "completed" })
+		expect(fixture.effect).toHaveBeenCalledOnce()
+		expect(await fixture.task["flushPendingToolResultsToHistory"]()).toBe(true)
+		const history = await readApiMessages({ taskId: fixture.taskId, globalStoragePath: fixture.storage })
+		const results = history.flatMap((message) =>
+			Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_result") : [],
+		)
+		expect(results).toEqual([
+			expect.objectContaining({ tool_use_id: callId, is_error: false, content: "effect ran" }),
+		])
+		const lifecycle = await fixture.journal.replay()
+		expect(lifecycle?.terminalToolCallIds).toEqual([callId])
+		expect(lifecycle?.items.filter((item) => item.type === "tool_result")).toHaveLength(1)
+	})
+
 	it.each(boundaries.flatMap((boundary) => [false, true].map((abandoned) => ({ boundary, abandoned }))))(
 		"closes the durable call at $boundary (abandoned=$abandoned)",
 		async ({ boundary, abandoned }) => {

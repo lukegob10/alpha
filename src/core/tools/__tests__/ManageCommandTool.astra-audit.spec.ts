@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events"
+import { TelemetryService } from "@alpha-code/telemetry"
+import type { AlphaMessage } from "@alpha-code/types"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
@@ -9,6 +11,7 @@ import { createTaskToolSurface } from "../TaskToolSurface"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { commandSessionRegistry } from "../CommandSessionRegistry"
 import { formatCommandToolResult } from "../BaseTool"
+import { executeCommandTool } from "../ExecuteCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { TerminalProcess } from "../../../integrations/terminal/TerminalProcess"
 import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
@@ -20,6 +23,8 @@ import type {
 	AlphaTerminalProcess,
 	ExitCodeDetails,
 } from "../../../integrations/terminal/types"
+
+const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
 
 function commandFixture(
 	options: {
@@ -34,6 +39,8 @@ function commandFixture(
 	const taskId = options.taskId ?? "astra-command-audit"
 	const lifetime = new AbortController()
 	const evidence = new Map<string, CommandExecutionEvidence>()
+	const publishedMessages: AlphaMessage[] = []
+	const persistedMessages: AlphaMessage[][] = []
 	let resolveLaunched!: () => void
 	const launched = new Promise<void>((resolve) => (resolveLaunched = resolve))
 	let resolveProcess!: () => void
@@ -88,6 +95,18 @@ function commandFixture(
 		consecutiveMistakeCount: 0,
 		commandExecutionEvidence: evidence,
 		completionRuntimeRevision: 0,
+		clineMessages: [] as AlphaMessage[],
+		presentApprovedCommand: Task.prototype.presentApprovedCommand,
+		reserveUiMessageTimestamp: Task.prototype["reserveUiMessageTimestamp"],
+		observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
+		addToAlphaMessages: Task.prototype["addToAlphaMessages"],
+		publishAlphaMessageCreated: vi.fn(async (message: AlphaMessage) => {
+			publishedMessages.push(structuredClone(message))
+		}),
+		saveAlphaMessages: vi.fn(async () => {
+			persistedMessages.push(structuredClone(task.clineMessages))
+			return true
+		}),
 		providerRef: { deref: () => provider },
 		getTaskLifetimeCancellationSignal: () => lifetime.signal,
 		getTaskMode: async () => mode,
@@ -134,10 +153,13 @@ function commandFixture(
 		])
 	return {
 		task,
+		publishedMessages,
+		persistedMessages,
 		host,
 		run,
 		launched,
 		terminalProcess,
+		emitLine: (line: string) => handlers.onLine(line, terminalProcess as unknown as AlphaTerminalProcess),
 		surface,
 		finish: async (exit: number | ExitCodeDetails) => {
 			const details = typeof exit === "number" ? { exitCode: exit } : exit
@@ -167,7 +189,7 @@ async function startBackgroundCommand(fixture: ReturnType<typeof commandFixture>
 	return sessionId!
 }
 
-function completedReceiptFixture(provider: "vscode" | "execa", output: string) {
+async function completedReceiptFixture(provider: "vscode" | "execa", output: string) {
 	const fixture = commandFixture()
 	const terminal = {
 		provider,
@@ -185,6 +207,9 @@ function completedReceiptFixture(provider: "vscode" | "execa", output: string) {
 	command.executionId = "retained-execution"
 	Reflect.set(command, "fullOutput", output)
 	command.emit("completed")
+	// Adapters join output closure before a settled command becomes releasable.
+	await command.finalizeOutput()
+	expect(command.isOutputFinalized).toBe(true)
 	fixture.task.beginCommandExecution("retained", command.executionId)
 	fixture.task.completeCommandExecution("retained", { exitCode: 0 }, command.executionId)
 	vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([])
@@ -200,7 +225,7 @@ afterEach(() => {
 describe.each(["vscode", "execa"] as const)("completed %s command receipts", (provider) => {
 	it("advertises and drains the retained tail without implying the process is still running", async () => {
 		const output = `${"build progress\n".repeat(600)}final diagnostic`
-		const fixture = completedReceiptFixture(provider, output)
+		const fixture = await completedReceiptFixture(provider, output)
 		const first = (await fixture.run("first", "write_stdin", { session_id: fixture.sessionId })).results[0]
 		expect(first).toMatchObject({
 			status: "success",
@@ -224,7 +249,7 @@ describe.each(["vscode", "execa"] as const)("completed %s command receipts", (pr
 
 	it("does not lose JSON-sensitive text when bounded native receipts commit", async () => {
 		const output = `${'"\\'.repeat(600)}final diagnostic`
-		const fixture = completedReceiptFixture(provider, output)
+		const fixture = await completedReceiptFixture(provider, output)
 		let delivered = ""
 		for (let index = 0; index < 10; index++) {
 			const result = (
@@ -243,7 +268,7 @@ describe.each(["vscode", "execa"] as const)("completed %s command receipts", (pr
 	})
 
 	it.each([0, 100])("retains truthful continuation metadata for a %s-token budget", async (maxOutputTokens) => {
-		const fixture = completedReceiptFixture(provider, "final diagnostic")
+		const fixture = await completedReceiptFixture(provider, "final diagnostic")
 		const first = (
 			await fixture.run("tiny", "write_stdin", {
 				session_id: fixture.sessionId,
@@ -264,7 +289,7 @@ describe.each(["vscode", "execa"] as const)("completed %s command receipts", (pr
 	})
 
 	it("retains structured continuation when the host cap cannot fit the text hint", async () => {
-		const fixture = completedReceiptFixture(provider, "final diagnostic")
+		const fixture = await completedReceiptFixture(provider, "final diagnostic")
 		const surface = createTaskToolSurface({
 			schemas: fixture.surface.schemas,
 			mode: "code",
@@ -297,7 +322,8 @@ describe.each(["vscode", "execa"] as const)("completed %s command receipts", (pr
 	})
 
 	it("releases a failed delivery reservation without consuming output or retiring its session", async () => {
-		const fixture = completedReceiptFixture(provider, "final diagnostic")
+		const release = vi.spyOn(commandSessionRegistry, "release")
+		const fixture = await completedReceiptFixture(provider, "final diagnostic")
 		const callbacks: ToolCallbacks = {
 			askApproval: vi.fn(),
 			handleError: vi.fn(),
@@ -319,11 +345,16 @@ describe.each(["vscode", "execa"] as const)("completed %s command receipts", (pr
 			callbacks,
 		})
 		expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
+		expect(release).not.toHaveBeenCalled()
 		expect(Reflect.get(fixture.command, "lastRetrievedIndex")).toBe(0)
 		expect(commandSessionRegistry.resolve(fixture.task, fixture.sessionId)).toBeDefined()
 		const retry = (await fixture.run("retry-delivery", "write_stdin", { session_id: fixture.sessionId })).results[0]
 		expect(retry.commandResult?.output).toBe("final diagnostic")
 		expect(commandSessionRegistry.resolve(fixture.task, fixture.sessionId)).toBeUndefined()
+		expect(release).toHaveBeenCalledExactlyOnceWith(fixture.task, fixture.sessionId)
+		const retired = await fixture.run("already-retired", "write_stdin", { session_id: fixture.sessionId })
+		expect(retired.results[0].status).toBe("error")
+		expect(release).toHaveBeenCalledOnce()
 	})
 })
 
@@ -606,5 +637,380 @@ describe("native command transaction consistency", () => {
 			expect(outcome.results[0].content).toContain("not allowed")
 		}
 		expect(TerminalRegistry.getTerminals).not.toHaveBeenCalled()
+	})
+})
+
+function schedulerFor(fixture: ReturnType<typeof commandFixture>, limit: number) {
+	const surface = createTaskToolSurface({
+		registry: fixture.surface.registry,
+		mode: "code",
+		cwd: fixture.task.cwd,
+		outputLimits: { exec_command: limit },
+	})
+	return new ToolScheduler({
+		executionHost: fixture.host,
+		registry: surface.registry,
+		policy: surface.policy,
+		mode: "code",
+	})
+}
+describe("command-session publication is possible before effects", () => {
+	it.each(["native", "legacy"])(
+		"rejects insufficient host framing for %s arguments before any launch",
+		async (syntax) => {
+			vi.useFakeTimers()
+			const fixture = commandFixture()
+			const arguments_ =
+				syntax === "native"
+					? { cmd: 'node -e "process.exit(7)"' }
+					: { command: 'node -e "process.exit(7)"', timeout: 10 }
+			const execution = schedulerFor(fixture, 64).run([
+				{
+					type: "tool_call",
+					id: "publication",
+					name: "exec_command",
+					arguments: arguments_,
+				},
+			])
+			const boundary = await Promise.race([
+				fixture.launched.then(() => "launched"),
+				execution.then(() => "settled"),
+			])
+			if (boundary === "launched") await vi.advanceTimersByTimeAsync(10_100)
+			const outcome = await execution
+			try {
+				expect(boundary).toBe("settled")
+				expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+				expect(outcome.results).toHaveLength(1)
+				expect(outcome.results[0]).toMatchObject({
+					status: "error",
+					failure: {
+						reason: "pre_launch_rejected",
+						effectsStarted: "no",
+						outcome: "known",
+					},
+				})
+				expect(outcome.results[0].commandResult).toBeUndefined()
+				expect(String(outcome.results[0].content).length).toBeLessThanOrEqual(64)
+				expect(fixture.host.userMessageContent).toHaveLength(1)
+				expect(fixture.host.userMessageContent[0]).toMatchObject({
+					type: "tool_result",
+					is_error: true,
+				})
+				expect(
+					commandSessionRegistry.ownsOutput(fixture.terminalProcess as unknown as AlphaTerminalProcess),
+				).toBe(false)
+			} finally {
+				if (boundary === "launched") await fixture.finish(0)
+				commandSessionRegistry.releaseForTask(fixture.task)
+			}
+		},
+	)
+	it.each(["native", "legacy"])("accounts for approval feedback before launching %s arguments", async (syntax) => {
+		vi.useFakeTimers()
+		const fixture = commandFixture()
+		fixture.host.askApproval = async () => ({
+			response: "yesButtonClicked",
+			text: "x".repeat(32_000),
+		})
+		const arguments_ =
+			syntax === "native"
+				? { cmd: 'node -e "process.exit(7)"' }
+				: { command: 'node -e "process.exit(7)"', timeout: 10 }
+		const execution = schedulerFor(fixture, 32_000).run([
+			{
+				type: "tool_call",
+				id: "feedback",
+				name: "exec_command",
+				arguments: arguments_,
+			},
+		])
+		const boundary = await Promise.race([fixture.launched.then(() => "launched"), execution.then(() => "settled")])
+		if (boundary === "launched") await vi.advanceTimersByTimeAsync(10_100)
+		const outcome = await execution
+		try {
+			expect(boundary).toBe("settled")
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0]).toMatchObject({
+				status: "error",
+				failure: {
+					reason: "pre_launch_rejected",
+					effectsStarted: "no",
+					outcome: "known",
+				},
+			})
+			expect(String(outcome.results[0].content).length).toBeLessThanOrEqual(32_000)
+			expect(String(outcome.results[0].content).includes('"feedback":"' + "x".repeat(50))).toBe(true)
+			expect(fixture.host.userMessageContent).toHaveLength(1)
+			expect(commandSessionRegistry.ownsOutput(fixture.terminalProcess as unknown as AlphaTerminalProcess)).toBe(
+				false,
+			)
+		} finally {
+			if (boundary === "launched") await fixture.finish(0)
+			commandSessionRegistry.releaseForTask(fixture.task)
+		}
+	})
+	it.each([
+		"native-zero-output",
+		"legacy",
+		"native-feedback",
+		"legacy-feedback",
+		"native-feedback-image",
+		"native-truncated-stdout",
+		"native-feedback-truncated-stdout",
+	])("publishes and retains usable sessions with %s", async (condition) => {
+		vi.useFakeTimers()
+		const fixture = commandFixture()
+		const feedback = "Keep the existing server available."
+		const hasApprovalFeedback =
+			condition === "native-feedback" ||
+			condition === "legacy-feedback" ||
+			condition === "native-feedback-truncated-stdout"
+		if (hasApprovalFeedback)
+			fixture.host.askApproval = async () => ({
+				response: "yesButtonClicked",
+				text: feedback,
+			})
+		if (condition === "native-feedback-image")
+			Object.assign(fixture.task, {
+				ask: vi.fn(async () => ({
+					response: "messageResponse",
+					text: "Continue after capture.",
+					images: [`data:image/png;base64,${pngBase64}`],
+				})),
+			})
+		const arguments_ = condition.startsWith("native")
+			? {
+					cmd: 'node -e "process.exit(7)"',
+					max_output_tokens: condition.endsWith("truncated-stdout") ? 10_000 : 0,
+				}
+			: { command: 'node -e "process.exit(7)"', timeout: 10 }
+		const execution = schedulerFor(fixture, 256).run([
+			{
+				type: "tool_call",
+				id: "usable",
+				name: "exec_command",
+				arguments: arguments_,
+			},
+		])
+		expect(await Promise.race([fixture.launched.then(() => "launched"), execution])).toBe("launched")
+		if (condition === "native-feedback-image") fixture.emitLine("READY\n")
+		if (condition.endsWith("truncated-stdout")) fixture.emitLine("large command output\n".repeat(500))
+		await vi.advanceTimersByTimeAsync(10_100)
+		const outcome = await execution
+		let sessionId: number | undefined
+		try {
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0].status).toBe("success")
+			sessionId =
+				outcome.results[0].commandResult?.session_id ??
+				Number(JSON.stringify(outcome.results[0].content).match(/session(?: ID |(?:_id: ))(\d+)/)?.[1])
+			expect(sessionId).toBeGreaterThan(0)
+
+			if (condition.startsWith("native")) {
+				expect(outcome.results[0].commandResult).not.toHaveProperty("has_more_output")
+				expect(outcome.results[0].commandResult).not.toHaveProperty("original_token_count")
+				const content = outcome.results[0].content
+				const visible =
+					typeof content === "string"
+						? content
+						: content
+								.filter((block) => block.type === "text")
+								.map((block) => block.text)
+								.join("\n")
+				const control = visible.indexOf("session ID " + sessionId)
+				expect(control).toBeGreaterThanOrEqual(0)
+				expect(control).toBeLessThan(visible.indexOf("\nOutput:"))
+			}
+
+			expect(/session(?: ID |(?:_id: ))\d+/.test(JSON.stringify(outcome.results[0].content))).toBe(true)
+			expect(
+				typeof outcome.results[0].content === "string"
+					? outcome.results[0].content.length
+					: outcome.results[0].content
+							.filter((block) => block.type === "text")
+							.map((block) => block.text)
+							.join("\n").length,
+			).toBeLessThanOrEqual(256)
+			expect(/session(?: ID |(?:_id: ))\d+/.test(JSON.stringify(fixture.host.userMessageContent))).toBe(true)
+			if (hasApprovalFeedback) expect(String(outcome.results[0].content)).toContain(feedback)
+			expect(commandSessionRegistry.ownsOutput(fixture.terminalProcess as unknown as AlphaTerminalProcess)).toBe(
+				true,
+			)
+			await fixture.finish(0)
+			const poll = await fixture.run("final-poll", "write_stdin", {
+				session_id: sessionId,
+			})
+			expect(poll.results).toHaveLength(1)
+			expect(poll.results[0].status).toBe("success")
+			expect(poll.results[0].commandResult?.output).toBe("process completed with 0")
+			expect(commandSessionRegistry.resolve(fixture.task, sessionId!)).toBeUndefined()
+			expect(commandSessionRegistry.ownsOutput(fixture.terminalProcess as unknown as AlphaTerminalProcess)).toBe(
+				false,
+			)
+			expect(fixture.host.userMessageContent.filter((block) => block.type === "tool_result")).toHaveLength(2)
+			if (condition === "native-feedback-image") {
+				const receipt = fixture.host.userMessageContent.find(
+					(block) => block.type === "tool_result" && block.tool_use_id === "usable",
+				)
+				expect(receipt).toMatchObject({ tool_use_id: "usable", is_error: false })
+				const images =
+					receipt?.type === "tool_result" && Array.isArray(receipt.content)
+						? receipt.content.filter((block) => block.type === "image")
+						: []
+				expect(images).toEqual([
+					{ type: "image", source: { type: "base64", media_type: "image/png", data: pngBase64 } },
+				])
+				expect(fixture.host.userMessageContent.filter((block) => block.type === "image")).toHaveLength(0)
+			}
+		} finally {
+			if (!fixture.terminalProcess.isSettled) await fixture.finish(0)
+			commandSessionRegistry.releaseForTask(fixture.task)
+		}
+	})
+	it("preserves denial before insufficient framing can launch a process", async () => {
+		const fixture = commandFixture()
+		fixture.host.askApproval = async () => ({ response: "noButtonClicked" })
+		const outcome = await schedulerFor(fixture, 64).run([
+			{
+				type: "tool_call",
+				id: "denied",
+				name: "exec_command",
+				arguments: { cmd: "node server.cjs" },
+			},
+		])
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0].status).toBe("denied")
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+	})
+	it("preserves cancellation before insufficient framing can launch a process", async () => {
+		const fixture = commandFixture()
+		const controller = new AbortController()
+		controller.abort()
+		const outcome = await new ToolScheduler({
+			executionHost: fixture.host,
+			registry: fixture.surface.registry,
+			policy: fixture.surface.policy,
+			mode: "code",
+			signal: controller.signal,
+		}).run([
+			{
+				type: "tool_call",
+				id: "cancelled",
+				name: "exec_command",
+				arguments: { cmd: "node server.cjs" },
+			},
+		])
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0].status).toBe("cancelled")
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+	})
+
+	it("publishes one usable handle after configured shell integration falls back to Execa", async () => {
+		vi.useFakeTimers()
+		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+		const fixture = commandFixture()
+		const provider = fixture.task.providerRef.deref()!
+		vi.mocked(provider.getState).mockResolvedValue({ terminalShellIntegrationDisabled: false } as never)
+		const fallback = await TerminalRegistry.getOrCreateTerminal(fixture.task.cwd, fixture.task.taskId, "execa")
+		const settled = Promise.resolve()
+		const firstProcess = Object.assign(new EventEmitter(), {
+			then: settled.then.bind(settled),
+			catch: settled.catch.bind(settled),
+			finally: settled.finally.bind(settled),
+			isSettled: true,
+		})
+		const first = {
+			provider: "vscode",
+			id: 99,
+			taskId: fixture.task.taskId,
+			running: false,
+			busy: false,
+			process: firstProcess,
+			getCurrentWorkingDirectory: () => fixture.task.cwd,
+			runCommand: (_command: string, callbacks: AlphaTerminalCallbacks) => {
+				callbacks.onNoShellIntegration!(
+					"shell integration unavailable",
+					firstProcess as unknown as AlphaTerminalProcess,
+				)
+				return firstProcess
+			},
+		}
+		vi.mocked(TerminalRegistry.getOrCreateTerminal)
+			.mockReset()
+			.mockResolvedValueOnce(first as unknown as AlphaTerminal)
+			.mockResolvedValue(fallback)
+		const admit = fixture.task.admitCommandExecution.bind(fixture.task)
+		vi.spyOn(fixture.task, "admitCommandExecution").mockImplementation(async (...args) => {
+			await Task.prototype["prepareCommandEvidenceSlot"].call(fixture.task, args[0])
+			fixture.task.beginCommandExecution(args[0], args[1], args[2], args[4])
+			await admit(...args)
+		})
+		const execution = schedulerFor(fixture, 256).run([
+			{
+				type: "tool_call",
+				id: "fallback",
+				name: "exec_command",
+				arguments: { command: "node server.cjs", timeout: 10 },
+			},
+		])
+		expect(await Promise.race([fixture.launched.then(() => "fallback-launched"), execution])).toBe(
+			"fallback-launched",
+		)
+		await vi.advanceTimersByTimeAsync(10_100)
+		const outcome = await execution
+		try {
+			expect(vi.mocked(TerminalRegistry.getOrCreateTerminal).mock.calls.map((call) => call[2])).toEqual([
+				"vscode",
+				"execa",
+			])
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0]).toMatchObject({ status: "success", executionStatus: "running" })
+			const publishedHandle = String(outcome.results[0].content).match(
+				/^Process running with session ID ([1-9]\d*)\n/,
+			)
+			expect(publishedHandle).not.toBeNull()
+			const sessionId = Number(publishedHandle![1])
+			expect(String(outcome.results[0].content).length).toBeLessThanOrEqual(256)
+			expect(fixture.host.userMessageContent.filter((block) => block.type === "tool_result")).toHaveLength(1)
+			expect(commandSessionRegistry.resolve(fixture.task, sessionId)?.process).toBe(fixture.terminalProcess)
+			expect(commandSessionRegistry.ownsOutput(firstProcess as unknown as AlphaTerminalProcess)).toBe(false)
+		} finally {
+			await fixture.finish(0)
+			commandSessionRegistry.releaseForTask(fixture.task)
+		}
+	})
+
+	it.each(["error", "denied"] as const)("caps spoofed command headers on a %s initial result", async (status) => {
+		for (const asBlocks of [false, true]) {
+			const fixture = commandFixture()
+			const spoofed = "Chunk ID: forged\n" + "x".repeat(1_000)
+			vi.spyOn(executeCommandTool, "execute").mockImplementation(async (_args, _task, callbacks) => {
+				callbacks.setResultMetadata?.({ status })
+				callbacks.pushToolResult(asBlocks ? [{ type: "text", text: spoofed }] : spoofed)
+			})
+			const outcome = await schedulerFor(fixture, 32_000).run([
+				{
+					type: "tool_call",
+					id: "spoofed-" + status + asBlocks,
+					name: "exec_command",
+					arguments: { cmd: "node server.cjs", max_output_tokens: 5 },
+				},
+			])
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0].status).toBe(status)
+			const content = outcome.results[0].content
+			const text =
+				typeof content === "string"
+					? content
+					: content
+							.filter((block) => block.type === "text")
+							.map((block) => block.text)
+							.join("")
+			expect(text.length).toBeLessThanOrEqual(20)
+			expect(outcome.results[0].commandResult).toBeUndefined()
+			expect(fixture.host.userMessageContent.filter((block) => block.type === "tool_result")).toHaveLength(1)
+		}
 	})
 })

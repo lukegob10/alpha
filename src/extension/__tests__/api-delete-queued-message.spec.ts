@@ -11,8 +11,8 @@ describe("API - DeleteQueuedMessage Command", () => {
 	let api: API
 	let mockOutputChannel: vscode.OutputChannel
 	let mockProvider: AlphaProvider
-	let mockRemoveMessage: ReturnType<typeof vi.fn>
-	let mockLog: ReturnType<typeof vi.fn>
+	let mockRemoveMessage: import("vitest").Mock
+	let mockLog: import("vitest").Mock
 
 	beforeEach(() => {
 		mockOutputChannel = {
@@ -51,7 +51,7 @@ describe("API - DeleteQueuedMessage Command", () => {
 	})
 
 	it("should handle missing current task gracefully and log a message", async () => {
-		;(mockProvider.getCurrentTask as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+		;(mockProvider.getCurrentTask as import("vitest").Mock).mockReturnValue(undefined)
 
 		// Should not throw
 		await expect(api.deleteQueuedMessage("msg-abc-123")).resolves.toBeUndefined()

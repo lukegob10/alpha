@@ -644,7 +644,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should fall back to truncateConversation when autoCondenseContext is true but summarization fails", async () => {
+		it("truncates over-limit retained input when automatic summarization fails", async () => {
 			// Mock the summarizeConversation function to return an error
 			const mockSummarizeResponse: condenseModule.SummarizeResponse = {
 				messages: messages, // Original messages unchanged
@@ -657,10 +657,12 @@ describe("Context Management", () => {
 				.spyOn(condenseModule, "summarizeConversation")
 				.mockResolvedValue(mockSummarizeResponse)
 
-			const modelInfo = createModelInfo(100000, 30000)
-			const totalTokens = 70001 // Above threshold
+			const modelInfo = createModelInfo(1000, 100)
+			const totalTokens = 801
 			const messagesWithSmallContent = [
-				...messages.slice(0, -1),
+				...messages.slice(0, 2),
+				{ ...messages[2], content: "Third message. ".repeat(1000) },
+				messages[3],
 				{ ...messages[messages.length - 1], content: "" },
 			]
 
@@ -692,6 +694,8 @@ describe("Context Management", () => {
 			// Verify it fell back to truncation (non-destructive)
 			expect(result.truncationId).toBeDefined()
 			expect(result.messagesRemoved).toBe(2)
+			expect(result.prevContextTokens).toBeGreaterThan(800)
+			expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
 			expect(result.summary).toBe("")
 			expect(result.prevContextTokens).toBe(
 				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),

@@ -68,12 +68,14 @@ vi.mock("delay", () => ({
 }))
 
 vi.mock("../DecorationController", () => ({
-	DecorationController: vi.fn().mockImplementation(() => ({
-		setActiveLine: vi.fn(),
-		updateOverlayAfterLine: vi.fn(),
-		addLines: vi.fn(),
-		clear: vi.fn(),
-	})),
+	DecorationController: vi.fn().mockImplementation(function () {
+		return {
+			setActiveLine: vi.fn(),
+			updateOverlayAfterLine: vi.fn(),
+			addLines: vi.fn(),
+			clear: vi.fn(),
+		}
+	}),
 }))
 
 vi.mock("vscode", () => {
@@ -175,9 +177,9 @@ type ControlledDocument = {
 	isDirty: boolean
 	lineCount: number
 	version: number
-	getText: ReturnType<typeof vi.fn>
-	positionAt: ReturnType<typeof vi.fn>
-	save: ReturnType<typeof vi.fn>
+	getText: import("vitest").Mock
+	positionAt: import("vitest").Mock
+	save: import("vitest").Mock
 	setText: (nextText: string) => void
 }
 

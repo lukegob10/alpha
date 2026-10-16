@@ -9,8 +9,10 @@ import {
 	getGlobalAgentsDirectory,
 	getProjectAgentsDirectoryForCwd,
 	getProjectInstructionDirectoriesForCwd,
+	type ProjectInstructionDiscoveryOptions,
 } from "../config-paths"
 import { directoryExists, fileExists } from "../config-paths"
+import { captureProjectInstructionDiscoveryOptions } from "../config-paths/project-instruction-settings"
 import { SkillMetadata, SkillContent, SkillSource } from "../../shared/skills"
 import { modes, getAllModes } from "../../shared/modes"
 import {
@@ -25,12 +27,17 @@ import { readSkillInvocationPolicy } from "./skillPolicy"
 export type { SkillMetadata, SkillContent, SkillSource }
 
 const ALPHA_CONFIG_DIR = ".alpha"
+const MAX_PORTABLE_SKILL_DEPTH = 6
+const MAX_PORTABLE_SKILL_DIRECTORIES = 2_000
+const MAX_PORTABLE_SKILL_ENTRIES = 20_000
 
 type SkillSelection = Partial<Pick<SkillMetadata, "path" | "modeSlugs" | "mode">>
 
 export interface SkillsManagerOptions {
 	/** Only the foreground manager may publish the Settings skill catalog. */
 	notifyWebview?: boolean
+	/** One user-owned boundary shared by this catalog and its task's project instructions. */
+	projectInstructionDiscovery?: ProjectInstructionDiscoveryOptions
 }
 
 function getGlobalAlphaDirectory(): string {
@@ -49,6 +56,7 @@ export class SkillsManager {
 	private isDisposed = false
 	private discoveryGeneration = 0
 	private readonly notifyWebview: boolean
+	private readonly projectInstructionDiscovery: ProjectInstructionDiscoveryOptions
 
 	constructor(
 		provider: AlphaProvider,
@@ -57,11 +65,28 @@ export class SkillsManager {
 	) {
 		this.providerRef = new WeakRef(provider)
 		this.notifyWebview = options.notifyWebview ?? true
+		const discovery =
+			options.projectInstructionDiscovery ??
+			(typeof vscode.workspace.getConfiguration === "function" ? captureProjectInstructionDiscoveryOptions() : {})
+		this.projectInstructionDiscovery = Object.freeze({
+			...(discovery.projectRootMarkers === undefined
+				? {}
+				: { projectRootMarkers: Object.freeze([...discovery.projectRootMarkers]) }),
+			...(discovery.projectDocFallbackFilenames === undefined
+				? {}
+				: {
+						projectDocFallbackFilenames: Object.freeze([...discovery.projectDocFallbackFilenames]),
+					}),
+		})
 	}
 
 	async initialize(): Promise<void> {
 		await this.discoverSkills()
 		await this.setupFileWatchers()
+	}
+
+	getProjectInstructionDiscoveryOptions(): ProjectInstructionDiscoveryOptions {
+		return this.projectInstructionDiscovery
 	}
 
 	/**
@@ -78,9 +103,9 @@ export class SkillsManager {
 		const discoveredByPath = new Map<string, SkillMetadata>()
 		const skillsDirs = await this.getSkillsDirectories()
 
-		for (const { dir, source, mode } of skillsDirs) {
+		for (const { dir, source, mode, recursive } of skillsDirs) {
 			if (this.isDisposed || generation !== this.discoveryGeneration) return
-			await this.scanSkillsDirectory(dir, source, discovered, discoveredByPath, mode)
+			await this.scanSkillsDirectory(dir, source, discovered, discoveredByPath, mode, recursive, generation)
 		}
 		// Readers see complete catalogs; an older refresh cannot overwrite a newer one.
 		if (!this.isDisposed && generation === this.discoveryGeneration) {
@@ -102,7 +127,7 @@ export class SkillsManager {
 	}
 
 	/**
-	 * Scan a skills directory for skill subdirectories.
+	 * Scan portable roots recursively; keep Alpha and bundled layout compatibility.
 	 * Handles two symlink cases:
 	 * 1. The skills directory itself is a symlink (resolved by directoryExists using realpath)
 	 * 2. Individual skill subdirectories are symlinks
@@ -113,6 +138,8 @@ export class SkillsManager {
 		discovered: Map<string, SkillMetadata>,
 		discoveredByPath: Map<string, SkillMetadata>,
 		mode?: string,
+		recursive: boolean = false,
+		generation: number = this.discoveryGeneration,
 	): Promise<void> {
 		if (!(await directoryExists(dirPath))) {
 			return
@@ -122,18 +149,44 @@ export class SkillsManager {
 			// Get the real path (resolves if dirPath is a symlink)
 			const realDirPath = await fs.realpath(dirPath)
 
-			// Read directory entries
-			const entries = await fs.readdir(realDirPath)
+			const queue = [{ directory: realDirPath, depth: 0 }]
+			const visited = new Set<string>([this.normalizeSkillPath(realDirPath)])
+			let scannedEntries = 0
+			const reportLimit = () => console.warn(`Skills scan reached its traversal limit (root: ${dirPath})`)
+			for (let index = 0; index < queue.length; index++) {
+				if (this.isDisposed || generation !== this.discoveryGeneration) return
+				const { directory, depth } = queue[index]!
+				const entries = await fs.readdir(directory).catch(() => [])
+				// Sorting makes duplicate-name resolution and bounded truncation reproducible.
+				entries.sort()
+				for (const entryName of entries) {
+					if (this.isDisposed || generation !== this.discoveryGeneration) return
+					if (recursive && ++scannedEntries > MAX_PORTABLE_SKILL_ENTRIES) {
+						reportLimit()
+						return
+					}
+					if (recursive && entryName.startsWith(".")) continue
+					const entryPath = path.join(directory, entryName)
+					const stats = await fs.stat(entryPath).catch(() => null)
+					if (!stats?.isDirectory()) continue
 
-			for (const entryName of entries) {
-				const entryPath = path.join(realDirPath, entryName)
-
-				// Check if this entry is a directory (follows symlinks automatically)
-				const stats = await fs.stat(entryPath).catch(() => null)
-				if (!stats?.isDirectory()) continue
-
-				// Load skill metadata - the skill name comes from the entry name (symlink name if symlinked)
-				await this.loadSkillMetadata(entryPath, source, discovered, discoveredByPath, mode, entryName)
+					// Resolve aliases only for the visited set; selected paths retain their discovery identity.
+					if (recursive) {
+						const realEntryPath = await fs.realpath(entryPath).catch(() => undefined)
+						if (!realEntryPath) continue
+						const identity = this.normalizeSkillPath(realEntryPath)
+						if (visited.has(identity)) continue
+						if (visited.size >= MAX_PORTABLE_SKILL_DIRECTORIES) {
+							reportLimit()
+							return
+						}
+						visited.add(identity)
+					}
+					await this.loadSkillMetadata(entryPath, source, discovered, discoveredByPath, mode, entryName)
+					if (recursive && depth + 2 < MAX_PORTABLE_SKILL_DEPTH) {
+						queue.push({ directory: entryPath, depth: depth + 1 })
+					}
+				}
 			}
 		} catch {
 			// Directory doesn't exist or can't be read - this is fine
@@ -731,9 +784,10 @@ Add your skill instructions here.
 			dir: string
 			source: SkillSource
 			mode?: string
+			recursive?: boolean
 		}>
 	> {
-		const dirs: Array<{ dir: string; source: SkillSource; mode?: string }> = []
+		const dirs: Array<{ dir: string; source: SkillSource; mode?: string; recursive?: boolean }> = []
 		const globalAlphaDir = getGlobalAlphaDirectory()
 		const globalAgentsDir = getGlobalAgentsDirectory()
 		const provider = this.providerRef.deref()
@@ -743,7 +797,9 @@ Add your skill instructions here.
 		}
 		const cwd = this.workspacePath ?? provider?.cwd
 		const projectAlphaDir = cwd ? getProjectAlphaDirectoryForCwd(cwd) : null
-		const projectDirectories = cwd ? (await getProjectInstructionDirectoriesForCwd(cwd)).directories : []
+		const projectDirectories = cwd
+			? (await getProjectInstructionDirectoriesForCwd(cwd, this.projectInstructionDiscovery)).directories
+			: []
 
 		// Get list of modes to check for mode-specific skills
 		const modesList = await this.getAvailableModes()
@@ -759,17 +815,22 @@ Add your skill instructions here.
 		//   This retains Alpha-specific overrides; a nearer portable skill overrides its ancestor.
 
 		// Global .agents directories (lowest priority - shared across agents)
-		dirs.push({ dir: path.join(globalAgentsDir, "skills"), source: "global" })
+		dirs.push({ dir: path.join(globalAgentsDir, "skills"), source: "global", recursive: true })
 		for (const mode of modesList) {
-			dirs.push({ dir: path.join(globalAgentsDir, `skills-${mode}`), source: "global", mode })
+			dirs.push({ dir: path.join(globalAgentsDir, `skills-${mode}`), source: "global", mode, recursive: true })
 		}
 
 		// Portable skills apply from the nearest repository root through this task's cwd.
 		for (const directory of projectDirectories) {
 			const projectAgentsDir = getProjectAgentsDirectoryForCwd(directory)
-			dirs.push({ dir: path.join(projectAgentsDir, "skills"), source: "project" })
+			dirs.push({ dir: path.join(projectAgentsDir, "skills"), source: "project", recursive: true })
 			for (const mode of modesList) {
-				dirs.push({ dir: path.join(projectAgentsDir, `skills-${mode}`), source: "project", mode })
+				dirs.push({
+					dir: path.join(projectAgentsDir, `skills-${mode}`),
+					source: "project",
+					mode,
+					recursive: true,
+				})
 			}
 		}
 
@@ -822,7 +883,7 @@ Add your skill instructions here.
 
 		const cwd = this.workspacePath ?? this.providerRef.deref()?.cwd
 		if (!cwd) return
-		const { directories } = await getProjectInstructionDirectoriesForCwd(cwd)
+		const { directories } = await getProjectInstructionDirectoriesForCwd(cwd, this.projectInstructionDiscovery)
 		if (this.isDisposed) return
 
 		this.watchSkillsTree(os.homedir(), ".alpha")

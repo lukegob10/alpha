@@ -8,19 +8,24 @@ import { extractTextFromXLSX } from "./extract-text-from-xlsx"
 import { readWithSlice } from "./indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../../core/prompts/tools/native-tools/read_file"
 
-async function extractTextFromPDF(filePath: string): Promise<string> {
-	const dataBuffer = await fs.readFile(filePath)
-	const data = await pdf(dataBuffer)
-	return addLineNumbers(data.text)
+async function extractTextFromPDF(filePath: string, signal?: AbortSignal): Promise<string> {
+	const dataBuffer = signal ? await fs.readFile(filePath, { signal }) : await fs.readFile(filePath)
+	signal?.throwIfAborted()
+	// Keep pdf.js substream offsets relative to an owned byte array, independent of Node Buffer pooling.
+	const data = await pdf(Uint8Array.from(dataBuffer))
+	return data.text
 }
 
 async function extractTextFromDOCX(filePath: string): Promise<string> {
 	const result = await mammoth.extractRawText({ path: filePath })
-	return addLineNumbers(result.value)
+	return result.value
 }
 
-async function extractTextFromIPYNB(filePath: string): Promise<string> {
-	const data = await fs.readFile(filePath, "utf8")
+async function extractTextFromIPYNB(filePath: string, signal?: AbortSignal): Promise<string> {
+	const data = signal
+		? await fs.readFile(filePath, { encoding: "utf8", signal })
+		: await fs.readFile(filePath, "utf8")
+	signal?.throwIfAborted()
 	const notebook = JSON.parse(data)
 	let extractedText = ""
 
@@ -30,18 +35,19 @@ async function extractTextFromIPYNB(filePath: string): Promise<string> {
 		}
 	}
 
-	return addLineNumbers(extractedText)
+	return extractedText
 }
 
 /**
  * Map of supported binary file formats to their extraction functions
  */
-const SUPPORTED_BINARY_FORMATS = {
-	".pdf": extractTextFromPDF,
-	".docx": extractTextFromDOCX,
-	".ipynb": extractTextFromIPYNB,
-	".xlsx": extractTextFromXLSX,
-} as const
+const SUPPORTED_BINARY_FORMATS: Readonly<Record<string, (filePath: string, signal?: AbortSignal) => Promise<string>>> =
+	{
+		".pdf": extractTextFromPDF,
+		".docx": extractTextFromDOCX,
+		".ipynb": extractTextFromIPYNB,
+		".xlsx": extractTextFromXLSX,
+	}
 
 /**
  * Returns the list of supported binary file formats that can be processed by extractTextFromFile
@@ -66,60 +72,69 @@ export interface ExtractTextResult {
 	linesShown?: [number, number]
 	/** First shown source line shortened by the character limit (1-based). */
 	firstClippedLine?: number
+	/** Line positions refer to extracted document text, not the original file bytes. */
+	isExtractedDocument?: true
 }
 
 /**
- * Extracts text content from a file with truncation support.
- * Returns structured result with metadata about truncation.
- *
- * @param filePath - Path to the file to extract text from
- * @param limit - Maximum lines to return (default: 2000)
- * @returns Promise resolving to extracted text with metadata
- * @throws {Error} If file not found or unsupported binary format
+ * Read the unnumbered extractor output or source text for the bounded file-reader projection.
+ * Do not send this result directly to a model; use the metadata or paginated reader.
  */
-export async function extractTextFromFileWithMetadata(
-	filePath: string,
-	limit: number = DEFAULT_LINE_LIMIT,
-): Promise<ExtractTextResult> {
+export async function extractTextFromFileRaw(filePath: string, signal?: AbortSignal): Promise<string> {
+	signal?.throwIfAborted()
 	try {
 		await fs.access(filePath)
 	} catch (error) {
+		signal?.throwIfAborted()
 		throw new Error(`File not found: ${filePath}`)
 	}
+	signal?.throwIfAborted()
 
 	const fileExtension = path.extname(filePath).toLowerCase()
-
-	// Check if we have a specific extractor for this format
-	const extractor = SUPPORTED_BINARY_FORMATS[fileExtension as keyof typeof SUPPORTED_BINARY_FORMATS]
+	const extractor = SUPPORTED_BINARY_FORMATS[fileExtension]
 	if (extractor) {
-		// For binary formats, extract and count lines
-		const content = await extractor(filePath)
-		const lines = content.split("\n")
-		return {
-			content,
-			totalLines: lines.length,
-			returnedLines: lines.length,
-			wasTruncated: false,
+		try {
+			const content = await extractor(filePath, signal)
+			signal?.throwIfAborted()
+			return content
+		} catch (error) {
+			signal?.throwIfAborted()
+			throw error
 		}
 	}
 
-	// Handle other files
 	const isBinary = await isBinaryFile(filePath).catch(() => false)
-
-	if (!isBinary) {
-		const rawContent = await fs.readFile(filePath, "utf8")
-		const result = readWithSlice(rawContent, 0, limit)
-
-		return {
-			content: result.content,
-			totalLines: result.totalLines,
-			returnedLines: result.returnedLines,
-			wasTruncated: result.wasTruncated,
-			linesShown: result.includedRanges.length > 0 ? result.includedRanges[0] : undefined,
-			...(result.firstClippedLine === undefined ? {} : { firstClippedLine: result.firstClippedLine }),
-		}
-	} else {
+	signal?.throwIfAborted()
+	if (isBinary) {
 		throw new Error(`Cannot read text for file type: ${fileExtension}`)
+	}
+	const content = signal
+		? await fs.readFile(filePath, { encoding: "utf8", signal })
+		: await fs.readFile(filePath, "utf8")
+	signal?.throwIfAborted()
+	return content
+}
+
+/** Apply the same source-line and long-line limits to text and extracted documents. */
+export async function extractTextFromFileWithMetadata(
+	filePath: string,
+	limit: number = DEFAULT_LINE_LIMIT,
+	signal?: AbortSignal,
+): Promise<ExtractTextResult> {
+	const rawContent = await extractTextFromFileRaw(filePath, signal)
+	signal?.throwIfAborted()
+	const result = readWithSlice(rawContent, 0, limit)
+	const fileExtension = path.extname(filePath).toLowerCase()
+	const isExtractedDocument = fileExtension in SUPPORTED_BINARY_FORMATS
+
+	return {
+		content: result.content,
+		totalLines: result.totalLines,
+		returnedLines: result.returnedLines,
+		wasTruncated: result.wasTruncated,
+		linesShown: result.includedRanges[0],
+		...(result.firstClippedLine === undefined ? {} : { firstClippedLine: result.firstClippedLine }),
+		...(isExtractedDocument ? { isExtractedDocument: true } : {}),
 	}
 }
 

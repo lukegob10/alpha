@@ -36,7 +36,7 @@ import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
 import { requestUserInputTool } from "./RequestUserInputTool"
 import { requestUserInputAsyncTool } from "./RequestUserInputAsyncTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
-import { BaseTool, type ToolCallbacks } from "./BaseTool"
+import { BaseTool, formatCommandToolResult, type ToolCallbacks } from "./BaseTool"
 import { createToolFailure } from "./ToolFailure"
 import { cancelAgentTool } from "./CancelAgentTool"
 import { closeAgentTool } from "./CloseAgentTool"
@@ -52,8 +52,8 @@ import {
 import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
-import { executeCommandTool } from "./ExecuteCommandTool"
-import { prepareParallelCommand } from "./ParallelCommandRead"
+import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
+import { isParallelCommandReadReady, prepareParallelCommand } from "./ParallelCommandRead"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
@@ -127,7 +127,16 @@ export interface PreparedCommandRead {
 	/** No approvals or shared Task/UI writes while this isolated process runs. */
 	run?: (
 		callbacks: Pick<ToolCallbacks, "signal" | "pushToolResult" | "setResultMetadata">,
-	) => Promise<() => Promise<void>>
+	) => Promise<(assertOwnership?: () => void) => Promise<void>>
+	/** Discard closes presentation synchronously, then joins only this command's owned cleanup. */
+	dispose?: () => Promise<void>
+	/** Rejected runs still join intrinsic cleanup and retain only ordered failure evidence. */
+	settleRejectedRun?: () => {
+		cleanup: Promise<void>
+		finalize: (assertOwnership?: () => void) => Promise<void>
+	}
+	/** Transfers a finalized live command to ordinary Task ownership without an async gap. */
+	commit?: () => void
 }
 
 export interface ToolDescriptor {
@@ -157,6 +166,12 @@ export interface ToolDescriptor {
 		context: ToolExecutionContext,
 		policy: ToolPolicySnapshot,
 	) => Promise<PreparedCommandRead | undefined>
+	/** Effect-free readiness check; unavailable isolation must wait for provider EOF and ordinary execution. */
+	isParallelCommandReadReady?: (
+		task: Task,
+		args: Readonly<Record<string, unknown>>,
+		policy: ToolPolicySnapshot,
+	) => Promise<boolean>
 	execute(context: ToolExecutionContext): Promise<void>
 }
 
@@ -251,36 +266,8 @@ class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
 	}
 
 	async execute(params: NativeToolArgs["exec_command"], task: Task, callbacks: ToolCallbacks): Promise<void> {
-		const raw = params as unknown as Record<string, unknown>
-		const usesExecCommandArgs = typeof raw.cmd === "string"
-		const command = typeof raw.cmd === "string" ? raw.cmd : typeof raw.command === "string" ? raw.command : ""
-		const workdir =
-			typeof raw.workdir === "string" ? raw.workdir : typeof raw.cwd === "string" ? raw.cwd : undefined
-		const normalizedYield = normalizeExecCommandYieldTimeMs(raw.yield_time_ms)
-		const legacyTimeout = typeof raw.timeout === "number" ? raw.timeout : undefined
-		const maxOutputTokens =
-			typeof raw.max_output_tokens === "number" && Number.isInteger(raw.max_output_tokens)
-				? Math.min(100_000, Math.max(0, raw.max_output_tokens))
-				: usesExecCommandArgs
-					? 10_000
-					: undefined
-		const nativeParams: NativeToolArgs["execute_command"] = {
-			command,
-			...(workdir ? { cwd: workdir } : {}),
-			...(usesExecCommandArgs
-				? { timeout: normalizedYield / 1_000 }
-				: legacyTimeout !== undefined
-					? { timeout: legacyTimeout }
-					: {}),
-			...(raw.verification && typeof raw.verification === "object"
-				? { verification: raw.verification as NativeToolArgs["execute_command"]["verification"] }
-				: {}),
-		}
-		await this.legacyTool.execute(
-			nativeParams,
-			task,
-			withMaxOutputTokens(callbacks, maxOutputTokens, usesExecCommandArgs),
-		)
+		const invocation = normalizeExecCommandInvocation(params as unknown as Record<string, unknown>, callbacks)
+		await this.legacyTool.execute(invocation.params, task, invocation.callbacks)
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"exec_command">): Promise<void> {
@@ -299,6 +286,7 @@ class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
 				? {
 						command,
 						...(workdir ? { cwd: workdir } : {}),
+						...(typeof nativeArgs?.cmd === "string" ? { tty: nativeArgs.tty === true } : {}),
 						...(typeof timeout === "number" ? { timeout } : {}),
 						...(verification ? { verification } : {}),
 					}
@@ -306,6 +294,38 @@ class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
 		}
 		await this.legacyTool.handlePartial(task, legacyBlock)
 	}
+}
+
+/** One translation and output budget for ordinary and prepared native commands. */
+function normalizeExecCommandInvocation(
+	raw: Readonly<Record<string, unknown>>,
+	callbacks: ToolCallbacks,
+): { params: ExecuteCommandParams; callbacks: ToolCallbacks } {
+	const usesExecCommandArgs = typeof raw.cmd === "string"
+	const command = typeof raw.cmd === "string" ? raw.cmd : typeof raw.command === "string" ? raw.command : ""
+	const workdir = typeof raw.workdir === "string" ? raw.workdir : typeof raw.cwd === "string" ? raw.cwd : undefined
+	const normalizedYield = normalizeExecCommandYieldTimeMs(raw.yield_time_ms)
+	const legacyTimeout = typeof raw.timeout === "number" ? raw.timeout : undefined
+	const maxOutputTokens =
+		typeof raw.max_output_tokens === "number" && Number.isInteger(raw.max_output_tokens)
+			? Math.min(100_000, Math.max(0, raw.max_output_tokens))
+			: usesExecCommandArgs
+				? 10_000
+				: undefined
+	const nativeParams: NativeToolArgs["execute_command"] = {
+		command,
+		...(workdir ? { cwd: workdir } : {}),
+		...(usesExecCommandArgs ? { tty: raw.tty === true } : {}),
+		...(usesExecCommandArgs
+			? { timeout: normalizedYield / 1_000 }
+			: legacyTimeout !== undefined
+				? { timeout: legacyTimeout }
+				: {}),
+		...(raw.verification && typeof raw.verification === "object"
+			? { verification: raw.verification as NativeToolArgs["execute_command"]["verification"] }
+			: {}),
+	}
+	return { params: nativeParams, callbacks: withMaxOutputTokens(callbacks, maxOutputTokens, usesExecCommandArgs) }
 }
 
 const execCommandToolAdapter = new ExecCommandToolAdapter(executeCommandTool)
@@ -356,6 +376,25 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 		}
 		const session = commandSessionRegistry.resolve(task, params.session_id)
 		if (!session) {
+			const expired = commandSessionRegistry.getExpiredReceipt(task, params.session_id)
+			if (expired) {
+				const commandResult = {
+					wall_time_seconds: 0,
+					output: expired.artifactId
+						? "Command session expired after completion. Read the retained artifact for command output."
+						: "Command session expired after completion. Its in-memory output is no longer retained.",
+					...(expired.artifactId ? { artifact_id: expired.artifactId } : {}),
+					...(expired.exitCode !== undefined ? { exit_code: expired.exitCode } : {}),
+				}
+				callbacks.setResultMetadata?.({ status: "error", commandResult })
+				const bounded = withMaxOutputTokens(
+					callbacks,
+					normalizeWriteStdinOutputTokens(params.max_output_tokens),
+					true,
+				)
+				bounded.pushCommandResult!(commandResult)
+				return
+			}
 			callbacks.setResultMetadata?.({ status: "error" })
 			await callbacks.handleError(
 				"controlling command",
@@ -386,9 +425,17 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 					boundedCallbacks.pushToolResult(content)
 					returnedResult = true
 				},
+				pushCommandResult: (result, additionalContent) => {
+					boundedCallbacks.pushCommandResult!(result, additionalContent)
+					returnedResult = true
+				},
 			},
 			() => {
-				if (chars.length > 0 && !commandSessionRegistry.isCurrent(task, params.session_id, session.process))
+				const isCurrent =
+					chars === "\x03"
+						? commandSessionRegistry.isRunning(task, params.session_id, session.process)
+						: commandSessionRegistry.isCurrent(task, params.session_id, session.process)
+				if (chars.length > 0 && !isCurrent)
 					throw new Error("Command session changed while approval was pending")
 			},
 			params.session_id,
@@ -397,6 +444,8 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 		if (
 			returnedResult &&
 			session.process.isSettled &&
+			session.process.isOutputFinalized !== false &&
+			!commandSessionRegistry.isRunning(task, params.session_id, session.process) &&
 			!session.process.hasUnretrievedOutput() &&
 			task
 				.getCommandExecutionEvidence()
@@ -423,33 +472,55 @@ function withMaxOutputTokens(
 		if (limit <= marker.length) return value.slice(0, limit)
 		return `${value.slice(0, limit - marker.length)}${marker}`
 	}
+	const boundContent = (content: ToolResponse, budget = maxCharacters): ToolResponse => {
+		if (typeof content === "string") return truncate(content, budget)
+		let remaining = budget
+		const bounded: Exclude<ToolResponse, string>[number][] = []
+		for (const block of content) {
+			if (block.type !== "text") {
+				bounded.push(block)
+				continue
+			}
+			if (remaining <= 0) continue
+			const text = truncate(block.text, remaining)
+			remaining = Math.max(0, remaining - text.length)
+			bounded.push({ ...block, text })
+		}
+		return bounded
+	}
 	return {
 		...callbacks,
-		...(includeCommandResult
-			? { commandResultMaxOutputTokens: maxOutputTokens ?? 10_000, commandResultFormat: "codex" as const }
-			: {}),
-		pushToolResult: (content: ToolResponse) => {
-			if (typeof content === "string") {
-				callbacks.pushToolResult(
-					includeCommandResult && content.startsWith("Chunk ID: ") ? content : truncate(content),
-				)
-				return
-			}
-
-			let remaining = maxCharacters
-			const bounded: Exclude<ToolResponse, string>[number][] = []
-			for (const block of content) {
-				if (block.type !== "text") {
-					bounded.push(block)
-					continue
+		...(!includeCommandResult && maxOutputChars !== undefined
+			? {
+					getRemainingOutputChars: () =>
+						Math.min(maxOutputChars, callbacks.getRemainingOutputChars?.() ?? maxOutputChars),
 				}
-				if (remaining <= 0) continue
-				const text = truncate(block.text, remaining)
-				remaining = Math.max(0, remaining - text.length)
-				bounded.push({ ...block, text })
-			}
-			callbacks.pushToolResult(bounded)
-		},
+			: {}),
+		...(includeCommandResult
+			? {
+					commandResultMaxOutputTokens: maxOutputTokens ?? 10_000,
+					commandResultFormat: "codex" as const,
+					pushCommandResult: (result, additionalContent) => {
+						const outputLimit = Math.min(
+							maxCharacters,
+							callbacks.getRemainingOutputChars?.() ?? maxCharacters,
+						)
+						const formatted = formatCommandToolResult(result, outputLimit, callbacks.toolCallId)
+						const extra = additionalContent
+							? boundContent(
+									additionalContent,
+									Math.max(0, maxCharacters - Math.min(result.output.length, outputLimit)),
+								)
+							: undefined
+						callbacks.pushToolResult(
+							extra && typeof extra !== "string"
+								? [{ type: "text", text: formatted }, ...extra]
+								: formatted,
+						)
+					},
+				}
+			: {}),
+		pushToolResult: (content: ToolResponse) => callbacks.pushToolResult(boundContent(content)),
 	}
 }
 
@@ -828,6 +899,7 @@ export class ToolRegistry {
 	private sealed = false
 
 	constructor(options: ToolRegistryOptions = {}) {
+		const supportsImages = options.supportsImages === true
 		const nativeTools = options.nativeTools ?? getNativeTools({ supportsImages: options.supportsImages })
 		const schemas = getSchemaMap(nativeTools)
 
@@ -1030,6 +1102,7 @@ export class ToolRegistry {
 					}
 					await useMcpToolTool.handle(task, mcpCall, {
 						...callbacks,
+						supportsImages,
 						beforeMcpDispatch: assertCurrent,
 						mcpSource: capturedTarget?.source,
 						askApproval: async (...args) => {
@@ -1125,7 +1198,20 @@ export class ToolRegistry {
 			aliases: [],
 			schema: canonicalizeSchema(schema),
 			capabilities: getToolCapabilities(name),
-			...(name === "exec_command" ? { prepareParallelCommand } : {}),
+			...(name === "exec_command"
+				? {
+						isParallelCommandReadReady,
+						prepareParallelCommand: (context: ToolExecutionContext, policy: ToolPolicySnapshot) =>
+							prepareParallelCommand(
+								context,
+								policy,
+								normalizeExecCommandInvocation(
+									{ ...(context.call.nativeArgs ?? {}) },
+									context.callbacks,
+								),
+							),
+					}
+				: {}),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}
