@@ -1,4 +1,22 @@
 {
+	"subagentContext": {
+		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
+	},
+	"lifecycleHooks": {
+		"issue": "{{event}} hook {{failure}}.",
+		"failed": "{{event}} hook failed.",
+		"invalidOutput": "{{event}} hook returned invalid or unsupported JSON output.",
+		"blockWithoutReason": "{{event}} hook requested a block without a non-empty reason.",
+		"stopped": "{{event}} hook stopped execution",
+		"permissionDenied": "PermissionRequest hook denied approval",
+		"permissionAllowAdvisory": "PermissionRequest hook allow is advisory; native approval is still required.",
+		"preToolBlocked": "Tool call blocked by a PreToolUse hook.",
+		"preToolAdapterFailed": "PreToolUse hook could not finish: {{error}}",
+		"postToolAdapterFailed": "PostToolUse hook could not finish: {{error}}",
+		"postToolBlocked": "PostToolUse hook blocked the tool result.",
+		"postToolStopped": "PostToolUse hook stopped execution",
+		"completedBeforeBlock": "The tool completed before this result was blocked. Inspect the existing state before repeating it."
+	},
 	"goals": {
 		"title": "Task Goal",
 		"create": "Create goal",
@@ -111,6 +129,7 @@
 		"command_mutation_receipt_incomplete": "Task remains incomplete and unverified because the command mutation receipt could not be finalized.",
 		"mutation_receipt_incomplete": "Task remains incomplete because a workspace change receipt could not be finalized. Review the original tool error before resuming.",
 		"command_output_bookkeeping_incomplete": "Task remains incomplete because completed command output could not be finalized.",
+		"command_output_archive_interrupted": "Output artifact was interrupted and is incomplete.",
 		"command_terminal_closed": "The command terminal closed before the command exit was reported. Its outcome is unknown.",
 		"command_terminal_closed_output": "The command terminal closed before its output could be finalized.",
 		"share_task_failed": "Failed to share task. Please try again.",

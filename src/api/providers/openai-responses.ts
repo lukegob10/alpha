@@ -5,6 +5,7 @@ import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from
 import type { ApiInstructionFragment } from "../index"
 import { normalizeToolHistory, toFunctionToolInput } from "../transform/tool-history"
 import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
+import { t } from "../../i18n"
 
 const APPLY_PATCH_DESCRIPTION =
 	"The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -135,14 +136,13 @@ export function buildOpenAiResponsesInput(
 				if (isToolResult(block)) {
 					flushUserContent()
 					const toolName = callNames.get(block.tool_use_id)
-					const output = toolResultText(block.content)
+					const { output, imageContent } = toolResultContent(block.content)
 					input.push(
 						toolName === "apply_patch" && freeformApplyPatch
 							? { type: "custom_tool_call_output", call_id: block.tool_use_id, output }
 							: { type: "function_call_output", call_id: block.tool_use_id, output },
 					)
-					const images = toolResultImages(block.content)
-					if (images.length > 0) input.push({ role: "user", content: images })
+					if (imageContent.length > 0) input.push({ role: "user", content: imageContent })
 					continue
 				}
 				if (!isRecord(block)) continue
@@ -333,27 +333,35 @@ function isToolUse(value: unknown): value is { type: "tool_use"; id: string; nam
 	)
 }
 
-function toolResultText(content: unknown): string {
-	if (typeof content === "string") return content || "(empty)"
-	if (!Array.isArray(content)) return "(empty)"
-	return (
-		content
-			.map((part) => {
-				if (!isRecord(part)) return ""
-				return typeof part.text === "string" ? part.text : ""
-			})
-			.filter(Boolean)
-			.join("\n") || "(empty)"
-	)
-}
-
-function toolResultImages(content: unknown): OpenAI.Responses.ResponseInputImage[] {
-	if (!Array.isArray(content)) return []
-	return content.flatMap((part) => {
-		if (!isRecord(part) || part.type !== "image") return []
-		const image = toInputImage(part.source)
-		return image ? [image] : []
-	})
+function toolResultContent(content: unknown): {
+	output: string
+	imageContent: Array<OpenAI.Responses.ResponseInputText | OpenAI.Responses.ResponseInputImage>
+} {
+	if (typeof content === "string") return { output: content || "(empty)", imageContent: [] }
+	if (!Array.isArray(content)) return { output: "(empty)", imageContent: [] }
+	const text: string[] = []
+	const imageContent: Array<OpenAI.Responses.ResponseInputText | OpenAI.Responses.ResponseInputImage> = []
+	let imageCount = 0
+	for (const part of content) {
+		if (!isRecord(part)) continue
+		if (part.type === "image") {
+			const image = toInputImage(part.source)
+			if (image) {
+				const label = t("tools:mcpMedia.imageLabel", { index: ++imageCount })
+				// The installed Responses SDK requires string tool output. Keep its media slot explicit.
+				text.push(t("tools:mcpMedia.imageAttachedFollowing", { label }))
+				imageContent.push(
+					{ type: "input_text", text: t("tools:mcpMedia.followingImageLabel", { label }) },
+					image,
+				)
+			} else {
+				text.push(t("tools:mcpMedia.imageSourceUnsupported"))
+			}
+		} else if (typeof part.text === "string" && part.text) {
+			text.push(part.text)
+		}
+	}
+	return { output: text.join("\n") || "(empty)", imageContent }
 }
 
 function toInputImage(source: unknown): OpenAI.Responses.ResponseInputImage | undefined {

@@ -1,5 +1,11 @@
 import path from "path"
-import { subagentContextManifestSchema, type SubagentModelRouteState } from "@alpha-code/types"
+import i18next from "i18next"
+import common from "../../../i18n/locales/en/common.json"
+import {
+	subagentContextManifestSchema,
+	getSubagentSkillDescriptionsByteLength,
+	type SubagentModelRouteState,
+} from "@alpha-code/types"
 
 import { formatResponse } from "../../prompts/responses"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
@@ -24,6 +30,10 @@ const route = {
 	provider: "openai",
 	modelId: "gpt-test",
 }
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "common", common, true, true)
+})
 
 const runtimePolicy = {
 	role: "review" as const,
@@ -108,7 +118,13 @@ const history: ApiMessage[] = [
 	{ role: "assistant", content: [{ type: "text", text: "Third answer" }] },
 ]
 
-function capture(forkTurns: "none" | "all" | `${number}` = "all", modelRoute: SubagentModelRouteState = route) {
+function capture(
+	forkTurns: "none" | "all" | `${number}` = "all",
+	modelRoute: SubagentModelRouteState = route,
+	skills: CaptureSubagentContextInput["skills"] = [
+		{ name: "typescript", path: "/skills/typescript/SKILL.md", content: "Skill instructions" },
+	],
+) {
 	return captureSubagentContext({
 		parentTaskId: "parent-task",
 		capturedAt: 1_700_000_000_000,
@@ -118,7 +134,7 @@ function capture(forkTurns: "none" | "all" | `${number}` = "all", modelRoute: Su
 			effectiveText: "Effective AGENTS and mode instructions",
 			sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Repository instructions" }],
 		},
-		skills: [{ name: "typescript", path: "/skills/typescript/SKILL.md", content: "Skill instructions" }],
+		skills,
 		cwd: "/workspace",
 		workspaceRoots: ["/workspace"],
 		modelRoute,
@@ -719,6 +735,111 @@ describe("native sub-agent conversation forks", () => {
 })
 
 describe("sub-agent context capture", () => {
+	it("retains the exact pre-description legacy manifest hash and canonical bytes", () => {
+		const { manifest } = capture("none")
+		const legacySkills = [
+			{
+				name: "typescript",
+				path: "/skills/typescript/SKILL.md",
+				digest: digestValue("Skill instructions"),
+			},
+		]
+		const { manifestDigest: _digest, ...capturedFields } = manifest
+		const legacyFields = { ...capturedFields, skills: legacySkills }
+		const expectedLegacyDigest = digestValue(legacyFields)
+		const legacyRecord = { ...manifest, skills: legacySkills, manifestDigest: expectedLegacyDigest }
+		const legacyBytes = JSON.stringify(legacyRecord)
+		const reloaded = subagentContextManifestSchema.parse(JSON.parse(legacyBytes))
+
+		expect(manifest.skills).toEqual(legacySkills)
+		expect(manifest.skills[0]).not.toHaveProperty("description")
+		expect(manifest.manifestDigest).toBe(expectedLegacyDigest)
+		expect(isValidSubagentContextManifest(reloaded)).toBe(true)
+		expect(serializeSubagentContextManifest(reloaded)).toBe(legacyBytes)
+		expect(reloaded.manifestDigest).toBe(expectedLegacyDigest)
+	})
+
+	it("binds exact frozen relevance metadata without changing body identity, context refs or authority", () => {
+		const skill = {
+			name: "typescript",
+			path: "/skills/typescript/SKILL.md",
+			content: "Skill instructions",
+			description: '  Audit é 😀 "quoted"\\path\nThen inspect the release  ',
+			allowImplicitInvocation: false,
+		}
+		const capturedDescription = skill.description
+		const { description: _description, ...legacySkill } = skill
+		const legacy = capture("none", route, [legacySkill]).manifest
+		const captured = capture("none", route, [skill]).manifest
+		const serialized = serializeSubagentContextManifest(captured)
+		const reloaded = subagentContextManifestSchema.parse(JSON.parse(serialized))
+
+		expect(reloaded.skills[0].description).toBe(capturedDescription)
+		expect(reloaded.skills[0].digest).toBe(legacy.skills[0].digest)
+		expect(reloaded.contextRefs).toEqual(legacy.contextRefs)
+		expect(reloaded.runtimePolicy).toEqual(legacy.runtimePolicy)
+		expect(reloaded.manifestDigest).not.toBe(legacy.manifestDigest)
+		expect(isValidSubagentContextManifest(reloaded)).toBe(true)
+		skill.description = "Mutable later description"
+		skill.path = "/mutable/SKILL.md"
+		expect(captured.skills[0]).toMatchObject({
+			description: capturedDescription,
+			path: "/skills/typescript/SKILL.md",
+			allowImplicitInvocation: false,
+		})
+
+		const tampered = structuredClone(reloaded)
+		tampered.skills[0].description = "Changed captured relevance"
+		expect(tampered.skills[0].digest).toBe(reloaded.skills[0].digest)
+		expect(tampered.contextRefs).toEqual(reloaded.contextRefs)
+		expect(isValidSubagentContextManifest(tampered)).toBe(false)
+		expect(() => serializeSubagentContextManifest(tampered)).toThrow("invalid sub-agent context manifest")
+	})
+
+	it.each(["x".repeat(1_024), "😀".repeat(512), " keep exact admitted whitespace "])(
+		"captures nonblank descriptions at the UTF-16 boundary without transformation",
+		(description) => {
+			const skill = { name: "boundary", path: "/skills/boundary/SKILL.md", content: "Body", description }
+			expect(capture("none", route, [skill]).manifest.skills[0].description).toBe(description)
+		},
+	)
+
+	it.each(["", " \t\n", "x".repeat(1_025), "😀".repeat(513)])(
+		"rejects an invalid description before producing a captured manifest",
+		(description) => {
+			expect(() =>
+				capture("none", route, [
+					{ name: "invalid", path: "/skills/invalid/SKILL.md", content: "Body", description },
+				]),
+			).toThrow()
+		},
+	)
+
+	it("counts duplicate hidden description occurrences at exactly 1 MiB and rejects one extra byte", () => {
+		const repeated = {
+			name: "duplicate-hidden",
+			path: "/skills/duplicate-hidden/SKILL.md",
+			content: "Captured body",
+			description: "a".repeat(1_024),
+			allowImplicitInvocation: false,
+		}
+		// 1,007 * (17 framing + 1,024 ASCII bytes) + (17 + 272) = 1,048,576.
+		const skills = [
+			...Array.from({ length: 1_007 }, () => ({ ...repeated })),
+			{ ...repeated, description: "a".repeat(272) },
+		]
+		expect(getSubagentSkillDescriptionsByteLength(skills)).toBe(1_048_576)
+		const atLimit = capture("none", route, skills)
+		expect(atLimit.manifest.skills).toHaveLength(1_008)
+		expect(atLimit.manifest.skills.every((skill) => skill.allowImplicitInvocation === false)).toBe(true)
+		expect(isValidSubagentContextManifest(atLimit.manifest)).toBe(true)
+		const overLimit = [...skills.slice(0, -1), { ...repeated, description: "a".repeat(273) }]
+		expect(getSubagentSkillDescriptionsByteLength(overLimit)).toBe(1_048_577)
+		expect(() => capture("none", route, overLimit)).toThrow(
+			"Captured skill descriptions exceed 1048576 bytes. Reduce the available skill catalog before starting another child.",
+		)
+	})
+
 	it("keeps legacy ticket approval absent across manifest reload and digest validation", () => {
 		const { manifest } = capture("none")
 		expect(manifest.runtimePolicy.autoApproval).not.toHaveProperty("alwaysAllowTickets")

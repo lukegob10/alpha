@@ -15,12 +15,17 @@ import { assessCommandPaths } from "../auto-approval/commandPathScope"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 
 import { toolApprovalDecisionSchema, toolApprovalRequestSchema } from "@alpha-code/types"
-import type { AlphaAsk, AlphaAskResponse, AlphaSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
+import type { AlphaAsk, AlphaSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 import type { ToolApprovalDecision, ToolApprovalRequest } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
-import { MAX_TOOL_PROGRESS_OBSERVATIONS, ToolReadDeniedError } from "../tools/BaseTool"
+import {
+	MAX_TOOL_PROGRESS_OBSERVATIONS,
+	TOOL_OUTPUT_TRUNCATION_SUFFIX,
+	ToolReadDeniedError,
+	truncateToolOutputText,
+} from "../tools/BaseTool"
 import {
 	createToolFailure,
 	formatToolFailureGuidance,
@@ -85,6 +90,19 @@ export interface ToolSchedulerOptions {
 	validateCall?: (call: AgentToolCall, toolCall: ToolUse<any>) => void
 	/** Revalidate the persisted assistant boundary immediately before an effect. */
 	beforeEffect?: (call: AgentToolCall) => void | Promise<void>
+	/** User-installed hooks may narrow a call or rewrite input before the ordinary approval path. */
+	preToolUse?: (
+		call: Readonly<AgentToolCall>,
+		signal: AbortSignal,
+	) => Promise<{ denied?: string; updatedInput?: Record<string, unknown> }>
+	/** Runs after successful terminal output; it cannot change the completed execution outcome. */
+	postToolUse?: (
+		call: Readonly<AgentToolCall>,
+		result: Readonly<ToolSchedulerResult>,
+		signal: AbortSignal,
+	) => Promise<{ blocked?: string; feedback?: string }>
+	/** Native approval remains authoritative; installed hooks can deny, never create a grant. */
+	permissionRequest?: (call: Readonly<AgentToolCall>, signal: AbortSignal) => Promise<{ denied?: string }>
 	/** Durably record that a potentially effectful call is about to start, after approval settles. */
 	onEffectStart?: (call: AgentToolCall) => void | Promise<void>
 	/** Persist deterministic results for all calls when cancellation wins. */
@@ -111,7 +129,7 @@ type ToolExecutionApproval = (
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
 	requiresExplicitApproval?: boolean,
-) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
+) => Promise<ToolApprovalResponse>
 
 type ToolExecutionSay = (type: AlphaSay, text?: string, images?: string[]) => Promise<unknown>
 
@@ -122,12 +140,15 @@ type ToolExecutionHostAsk = (
 	progressStatus?: ToolProgressStatus,
 	isProtected?: boolean,
 	requiresExplicitApproval?: boolean,
-) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
+	toolApprovalRequest?: ToolApprovalRequest,
+	onCommandApproval?: (commandExecutionId: string) => void,
+) => Promise<ToolApprovalResponse>
 
 /** Full review text stays separate from bounded metadata and is never truncated. */
 type ToolExecutionHostApproval = (
 	request: ToolApprovalRequest,
 	reviewMessage?: string,
+	onCommandApproval?: (commandExecutionId: string) => void,
 ) => Promise<ToolApprovalDecision | undefined>
 
 function describeToolApproval(toolName: string, askType: AlphaAsk, message: string | undefined): string | undefined {
@@ -174,6 +195,7 @@ export interface ToolExecutionHost {
 		status: ToolSchedulerResult["status"],
 		commandCategory?: "test" | "build" | "lint" | "typecheck",
 		result?: ToolSchedulerResult,
+		assertOwnership?: () => void,
 	) => void | Promise<void>
 	/** Rich facade for existing ToolRegistry handlers. */
 	taskFacade?: Task
@@ -192,12 +214,12 @@ export interface ToolSchedulerOutcome {
 	supersededAskCount: number
 	completedToolResultCount: number
 	outputTruncatedCount: number
-	/** Present when host integrity checks prevented one or more effects. */
+	/** Present when host integrity or command cleanup prevents a completed batch. */
 	failure?: ToolSchedulerFailure
 }
 
 export interface ToolSchedulerFailure {
-	kind: "effect_fence"
+	kind: "effect_fence" | "command_cleanup"
 	callId: string
 	message: string
 }
@@ -230,6 +252,17 @@ class ToolEffectFenceError extends Error {
 		super(message, { cause })
 		this.name = "ToolEffectFenceError"
 		this.call = call
+	}
+}
+
+/** Keeps cleanup failure separate from the accepted call's terminal receipt. */
+class CommandReadCleanupError extends Error {
+	constructor(
+		readonly call: AgentToolCall,
+		readonly reason: unknown,
+	) {
+		super("Prepared command cleanup remains unconfirmed", { cause: reason })
+		this.name = "CommandReadCleanupError"
 	}
 }
 
@@ -399,16 +432,50 @@ function limitToolResponse(
 	content: ToolResponse,
 	maxOutputChars: number,
 ): { content: ToolResponse; truncated: boolean } {
-	const parts = getToolResultParts(content)
-	if (parts.text.length <= maxOutputChars) {
+	const suffix = TOOL_OUTPUT_TRUNCATION_SUFFIX
+	const available = Math.max(0, maxOutputChars - suffix.length)
+	if (typeof content === "string" || !content.some((item) => item.type === "image")) {
+		const parts = getToolResultParts(content)
+		if (parts.text.length <= maxOutputChars) return { content, truncated: false }
+		const text = `${truncateToolOutputText(parts.text, available)}${suffix}`
+		return { content: typeof content === "string" ? text : [{ type: "text", text }], truncated: true }
+	}
+
+	const textLength = content
+		.filter((item): item is Anthropic.TextBlockParam => item.type === "text")
+		.map((item) => item.text)
+		.join("\n").length
+	if (textLength <= maxOutputChars) {
 		return { content, truncated: false }
 	}
 
-	const suffix = "\n[Tool output truncated by harness]"
-	const available = Math.max(0, maxOutputChars - suffix.length)
-	const text = `${parts.text.slice(0, available)}${suffix}`
+	let remaining = available
+	let omittedText = false
+	let previousText: Anthropic.TextBlockParam | undefined
+	const limited: Exclude<ToolResponse, string> = []
+	for (const item of content) {
+		if (item.type === "image") {
+			limited.push(item)
+		} else if (!omittedText) {
+			if (previousText && remaining < 1) {
+				previousText.text += suffix
+				omittedText = true
+				continue
+			}
+			if (previousText) remaining -= 1
+			if (item.text.length <= remaining) {
+				previousText = { ...item }
+				limited.push(previousText)
+				remaining -= item.text.length
+			} else {
+				previousText = { ...item, text: `${truncateToolOutputText(item.text, remaining)}${suffix}` }
+				limited.push(previousText)
+				omittedText = true
+			}
+		}
+	}
 	return {
-		content: typeof content === "string" ? text : [{ type: "text", text }, ...parts.images],
+		content: limited,
 		truncated: true,
 	}
 }
@@ -446,7 +513,7 @@ interface PreparedCall {
 	commandApproval?: { command: string; response: ToolApprovalResponse }
 	preparationResult?: ToolSchedulerResult
 	preparationDurationMs?: number
-	finalizeCommand?: () => Promise<void>
+	finalizeCommand?: (assertOwnership?: () => void) => Promise<void>
 	usageRecorded?: boolean
 	scope?: string
 	finalizeRead?: () => Promise<ToolResponse>
@@ -604,6 +671,12 @@ function getToolResultParts(content: ToolResponse): {
 	}
 }
 
+function getToolResultContent(content: ToolResponse): ToolResponse {
+	return typeof content === "string" || !content.some((item) => item.type === "image")
+		? getToolResultParts(content).text
+		: content
+}
+
 function normalizeAgentToolCall(value: unknown): AgentToolCall {
 	const record = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 	return {
@@ -690,7 +763,7 @@ export class ToolScheduler {
 	private effectFenceFailure?: ToolEffectFenceError
 	private batchController = new AbortController()
 	private approvalAbortRequested = false
-	private executionSignal?: AbortSignal
+	private executionSignal: AbortSignal = this.batchController.signal
 	private approvalRequestCount = 0
 	private approvalDeniedCount = 0
 	private approvalCancelledCount = 0
@@ -699,9 +772,21 @@ export class ToolScheduler {
 	private outputTruncatedCount = 0
 	private readonly observedToolCallIds = new Set<string>()
 	private readonly repetitionSkippedResults = new WeakSet<ToolSchedulerResult>()
+	private readonly effectiveHookCalls = new Map<string, AgentToolCall>()
+	private readonly preHookCompleted = new Set<string>()
+	private readonly postHookOutputReplaced = new Set<string>()
+	private readonly postHookCompleted = new Set<string>()
 	private readonly effectStartedCallIds = new Set<string>()
 	private deferredResultCommit?: { calls: AgentToolCall[]; results: ToolSchedulerResult[] }
-	private readonly deferredReadFinalizers = new Map<string, { item: PreparedCall; result: ToolSchedulerResult }>()
+	private readonly deferredReadFinalizers = new Map<
+		string,
+		{
+			item: PreparedCall
+			result: ToolSchedulerResult
+			cleanupFailure?: CommandReadCleanupError
+		}
+	>()
+	private readonly commandReadOwners = new Map<PreparedCall, PreparedCommandRead>()
 	private deferredCommitPromise?: Promise<void>
 	private readonly deferredCommittedResultIds = new Set<string>()
 	private readonly deferredResultEventIds = new Set<string>()
@@ -727,7 +812,147 @@ export class ToolScheduler {
 	}
 
 	private get executionMode(): ToolExecutionMode {
+		// Hook commands have user-defined effects with no audited independent scope.
+		if (this.options.preToolUse || this.options.postToolUse || this.options.permissionRequest) return "serial"
 		return this.options.executionMode ?? "serial"
+	}
+
+	private effectiveCall(call: AgentToolCall): AgentToolCall {
+		return this.effectiveHookCalls.get(call.id) ?? call
+	}
+
+	private verificationCategory(call: AgentToolCall): ReturnType<typeof getVerificationCategory> {
+		return this.postHookOutputReplaced.has(call.id) ? undefined : getVerificationCategory(this.effectiveCall(call))
+	}
+
+	private async applyPreToolHook(item: PreparedCall): Promise<PreparedCall> {
+		if (
+			!this.options.preToolUse ||
+			this.preHookCompleted.has(item.call.id) ||
+			item.validationError ||
+			!item.descriptor ||
+			!item.toolCall ||
+			this.isCancelled()
+		) {
+			return item
+		}
+		await this.checkEffectFence(item.call)
+		if (this.isCancelled()) return item
+		this.preHookCompleted.add(item.call.id)
+		let outcome: Awaited<ReturnType<NonNullable<ToolSchedulerOptions["preToolUse"]>>>
+		try {
+			outcome = await this.options.preToolUse(
+				{ ...item.call, name: item.toolCall.name, arguments: structuredClone(item.toolCall.nativeArgs ?? {}) },
+				this.executionSignal,
+			)
+		} catch (error) {
+			if (this.isCancelled()) return item
+			item.validationError = t("common:lifecycleHooks.preToolAdapterFailed", { error: this.errorMessage(error) })
+			item.failure = createToolFailure({
+				reason: "pre_launch_rejected",
+				scopeKind: "operation",
+				scopeIdentity: [item.call.name, item.call.arguments],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: "repair" },
+			})
+			return item
+		}
+		if (this.isCancelled()) return item
+		if (outcome.denied !== undefined) {
+			item.validationError = outcome.denied
+			item.preparationDenied = true
+			item.failure = createToolFailure({
+				reason: "policy_denied",
+				scopeKind: "operation",
+				scopeIdentity: [item.call.name, item.call.arguments],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: "user-action" },
+			})
+			return item
+		}
+		if (outcome.updatedInput === undefined) return item
+		const effective = { ...item.call, arguments: structuredClone(outcome.updatedInput) }
+		const updated = await this.prepareCall(effective, item.index)
+		// Keep the accepted provider call intact for the transcript/effect fence.
+		// Execution, approvals, stopping, and verification use the fully revalidated input.
+		this.effectiveHookCalls.set(item.call.id, effective)
+		updated.call = item.call
+		return updated
+	}
+
+	private async applyPostToolHook(item: PreparedCall, result: ToolSchedulerResult): Promise<ToolSchedulerResult> {
+		if (
+			!this.options.postToolUse ||
+			this.postHookCompleted.has(item.call.id) ||
+			this.isCancelled() ||
+			result.status !== "success" ||
+			(result.executionStatus !== undefined && result.executionStatus !== "success") ||
+			(result.exitCode !== undefined && result.exitCode !== 0)
+		)
+			return result
+		this.postHookCompleted.add(item.call.id)
+		let outcome: Awaited<ReturnType<NonNullable<ToolSchedulerOptions["postToolUse"]>>>
+		let adapterFailed = false
+		try {
+			outcome = await this.options.postToolUse(
+				{
+					...item.call,
+					name: item.toolCall?.name ?? item.call.name,
+					arguments: structuredClone(item.toolCall?.nativeArgs ?? {}),
+				},
+				{ ...result, content: structuredClone(result.content) },
+				this.executionSignal,
+			)
+		} catch (error) {
+			if (this.isCancelled()) return result
+			adapterFailed = true
+			outcome = { blocked: t("common:lifecycleHooks.postToolAdapterFailed", { error: this.errorMessage(error) }) }
+		}
+		// The tool's terminal result was already observed before this optional callback began.
+		if (this.isCancelled()) return result
+		if (outcome.blocked === undefined && outcome.feedback === undefined) return result
+		this.postHookOutputReplaced.add(item.call.id)
+		const message =
+			outcome.blocked !== undefined
+				? `${outcome.blocked}\n\n${t("common:lifecycleHooks.completedBeforeBlock")}`
+				: outcome.feedback!
+		const output = limitToolResponse(
+			message,
+			Math.min(
+				item.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
+				getToolOutputLimit(this.options.policy, item.toolCall?.name ?? item.call.name),
+			),
+		)
+		if (output.truncated) this.outputTruncatedCount++
+		const {
+			trustedExploration: _exploration,
+			trustedProgress: _progress,
+			opaqueResultFingerprint: _fingerprint,
+			...receipt
+		} = result
+		return {
+			...receipt,
+			status: outcome.blocked !== undefined ? "error" : result.status,
+			executionStatus: result.executionStatus ?? "success",
+			content: output.content,
+			truncated: output.truncated,
+			...(outcome.blocked !== undefined
+				? {
+						failure: createToolFailure({
+							reason: adapterFailed ? "execution_failed" : "policy_denied",
+							scopeKind: "operation",
+							scopeIdentity: [item.call.name, this.effectiveCall(item.call).arguments],
+							effectsStarted: this.effectStartedCallIds.has(sanitizeToolUseId(item.call.id))
+								? "yes"
+								: "no",
+							outcome: "known",
+							recovery: { kind: adapterFailed ? "verify-outcome" : "user-action" },
+						}),
+					}
+				: {}),
+		}
 	}
 
 	private resolveScopedPath(candidate: string): string {
@@ -868,7 +1093,13 @@ export class ToolScheduler {
 		}
 	}
 
-	private async observeToolResult(result: ToolSchedulerResult, call: AgentToolCall): Promise<void> {
+	private async observeToolResult(
+		result: ToolSchedulerResult,
+		call: AgentToolCall,
+		assertOwnership?: () => void,
+	): Promise<void> {
+		assertOwnership?.()
+		call = this.effectiveCall(call)
 		// A repetition skip closes a call without another attempt. Feeding that
 		// receipt back as new evidence can reopen the stop that produced it.
 		if (!this.executionHost.recordToolCallForStopping || this.repetitionSkippedResults.has(result)) return
@@ -892,13 +1123,25 @@ export class ToolScheduler {
 			const argumentsForStopping = legacyReadArguments
 				? { ...(call.arguments as Record<string, unknown>), action: "read" }
 				: call.arguments
-			await this.executionHost.recordToolCallForStopping(
-				canonicalName,
-				argumentsForStopping,
-				result.status,
-				getVerificationCategory(call),
-				result,
-			)
+			if (assertOwnership) {
+				await this.executionHost.recordToolCallForStopping(
+					canonicalName,
+					argumentsForStopping,
+					result.status,
+					this.verificationCategory(call),
+					result,
+					assertOwnership,
+				)
+			} else {
+				await this.executionHost.recordToolCallForStopping(
+					canonicalName,
+					argumentsForStopping,
+					result.status,
+					this.verificationCategory(call),
+					result,
+				)
+			}
+			assertOwnership?.()
 		} catch (error) {
 			// A failed evidence observation must preserve the already completed effect
 			// and close remaining receipts through the existing failed-batch boundary.
@@ -997,7 +1240,38 @@ export class ToolScheduler {
 		item: PreparedCall,
 		result: ToolSchedulerResult,
 		commitDeferred = false,
+		assertOwnership?: () => void,
 	): Promise<ToolSchedulerResult> {
+		assertOwnership?.()
+		const finalized = await this.finalizeReadResult(item, result, commitDeferred, assertOwnership)
+		assertOwnership?.()
+		if (this.deferredReadFinalizers.has(result.callId) && !commitDeferred) return finalized
+		const observed = await this.applyPostToolHook(item, finalized)
+		assertOwnership?.()
+		return observed
+	}
+
+	private async finalizeReadResult(
+		item: PreparedCall,
+		result: ToolSchedulerResult,
+		commitDeferred = false,
+		assertOwnership?: () => void,
+	): Promise<ToolSchedulerResult> {
+		assertOwnership?.()
+		const rejectedOwner = !item.finalizeCommand ? this.commandReadOwners.get(item) : undefined
+		if (rejectedOwner) {
+			// A rejected run never returns its presentation finalizer. Its real
+			// process/archive owner must still join before any receipt or next window.
+			const rejected = rejectedOwner.settleRejectedRun?.()
+			if (rejected) item.finalizeCommand = rejected.finalize
+			const [cleanup] = await Promise.allSettled([rejected?.cleanup ?? this.disposeCommandReads([item])])
+			assertOwnership?.()
+			if (cleanup.status === "rejected") {
+				if (!this.options.deferResultCommit) await this.flushRejectedCommandProjection(item, assertOwnership)
+				throw new CommandReadCleanupError(item.call, cleanup.reason)
+			}
+			if (!rejected) return result
+		}
 		if (this.options.deferResultCommit && !commitDeferred && (item.finalizeCommand || item.finalizeRead)) {
 			// Finalizers publish command evidence and UI state as well as output.
 			// Keep them behind the same durable assistant boundary as the result.
@@ -1007,16 +1281,40 @@ export class ToolScheduler {
 		const finalizeCommand = item.finalizeCommand
 		item.finalizeCommand = undefined
 		if (finalizeCommand) {
+			const dispose = async () => {
+				try {
+					await this.disposeCommandReads([item])
+				} catch (reason) {
+					throw new CommandReadCleanupError(item.call, reason)
+				}
+			}
 			try {
-				await finalizeCommand()
+				if (this.isCancelled()) {
+					await dispose()
+					return this.cancelledResultFor(item.call)
+				}
+				await finalizeCommand(assertOwnership)
+				assertOwnership?.()
+				if (this.isCancelled()) {
+					await dispose()
+					return this.cancelledResultFor(item.call)
+				}
+				const owner = this.commandReadOwners.get(item)
+				owner?.commit?.()
+				if (this.commandReadOwners.get(item) === owner) this.commandReadOwners.delete(item)
+				if (item.commandCollector) result = this.buildToolResult(item, item.commandCollector, result.durationMs)
 			} catch (error) {
+				if (error instanceof CommandReadCleanupError) {
+					assertOwnership?.()
+					throw error
+				}
+				const cleanup = await Promise.allSettled([dispose()])
+				assertOwnership?.()
+				if (cleanup[0].status === "rejected") throw cleanup[0].reason
+				if (this.isCancelled()) return this.cancelledResultFor(item.call)
 				if (!this.isCancelled()) {
 					this.executionHost.didToolFailInCurrentTurn = true
-					return {
-						...result,
-						status: "error",
-						content: formatFailureResult(this.errorMessage(error), "error"),
-					}
+					return this.commandCleanupResult(item.call, result, error)
 				}
 			}
 		}
@@ -1037,6 +1335,7 @@ export class ToolScheduler {
 					getToolOutputLimit(this.options.policy, item.call.name),
 				),
 			)
+			assertOwnership?.()
 			if (output.truncated) this.outputTruncatedCount++
 			return {
 				...result,
@@ -1045,6 +1344,7 @@ export class ToolScheduler {
 				durationMs: result.durationMs + Math.max(0, performance.now() - startedAt),
 			}
 		} catch (error) {
+			assertOwnership?.()
 			if (this.isCancelled()) return this.cancelledResultFor(item.call)
 			if (!(error instanceof ToolReadDeniedError)) this.executionHost.didToolFailInCurrentTurn = true
 			const status = error instanceof ToolReadDeniedError ? "denied" : "error"
@@ -1057,263 +1357,365 @@ export class ToolScheduler {
 	}
 
 	async run(response: AgentResponse | AgentToolCall[]): Promise<ToolSchedulerOutcome> {
+		if (
+			this.options.deferResultCommit &&
+			(this.options.preToolUse || this.options.postToolUse || this.options.permissionRequest)
+		) {
+			throw new Error("Lifecycle tool hooks require the committed assistant boundary.")
+		}
 		if (this.deferredResultCommit || this.deferredCommitPromise) {
 			throw new Error("ToolScheduler cannot start another batch while deferred results are pending.")
 		}
-		this.approvalRequestCount = 0
-		this.approvalDeniedCount = 0
-		this.approvalCancelledCount = 0
-		this.supersededAskCount = 0
-		this.parallelToolCount = 0
-		this.outputTruncatedCount = 0
-		this.observedToolCallIds.clear()
-		this.effectStartedCallIds.clear()
-		this.effectFenceFailure = undefined
-		this.approvalAbortRequested = false
-		this.batchController = new AbortController()
-		this.executionSignal = this.options.signal
-			? AbortSignal.any([this.options.signal, this.batchController.signal])
-			: this.batchController.signal
-		const startedAt = performance.now()
-		const calls = (
-			Array.isArray(response)
-				? response
-				: response && typeof response === "object" && Array.isArray(response.items)
-					? response.items.filter((item) => item?.type === "tool_call")
-					: []
-		).map(normalizeAgentToolCall)
-		const prepared: PreparedCall[] = []
-		for (const [index, call] of calls.entries()) prepared.push(await this.prepareCall(call, index))
-		if (this.options.deferResultCommit) {
-			for (const item of prepared) {
-				const descriptor = item.descriptor
-				const descriptorCapabilities = descriptor?.capabilities
-				const policyCapabilities = descriptor ? this.options.policy?.capabilities[descriptor.name] : undefined
-				const auditedCommandReadAdmission =
-					this.options.requirePreparedCommandRead === true &&
-					item.call.name === "exec_command" &&
-					descriptor?.name === "exec_command" &&
-					descriptorCapabilities?.parallelCommandRead === true &&
-					!descriptorCapabilities.controlFlow &&
-					policyCapabilities?.parallelCommandRead === true &&
-					!policyCapabilities.controlFlow
-				const approvalFreeReadAdmission =
-					item.read !== undefined ||
-					auditedCommandReadAdmission ||
-					(this.options.readGrant?.enabled === true && descriptor?.prepareParallelRead !== undefined)
-				const noEffectEarlyResult =
-					this.options.requirePreparedCommandRead === true &&
-					(item.validationError !== undefined || item.preparationResult !== undefined)
-				if (
-					!descriptorCapabilities ||
-					(!noEffectEarlyResult &&
-						((!auditedCommandReadAdmission && descriptorCapabilities.concurrency !== "parallel") ||
-							(!auditedCommandReadAdmission && descriptorCapabilities.sideEffects !== "none") ||
-							descriptorCapabilities.controlFlow ||
-							(descriptorCapabilities.requiresApproval && !approvalFreeReadAdmission) ||
-							(policyCapabilities !== undefined &&
-								((!auditedCommandReadAdmission && policyCapabilities.concurrency !== "parallel") ||
-									(!auditedCommandReadAdmission && policyCapabilities.sideEffects !== "none") ||
-									policyCapabilities.controlFlow ||
-									(policyCapabilities.requiresApproval && !approvalFreeReadAdmission)))))
-				) {
-					throw new Error(
-						`Deferred tool results require an audited, approval-free read call. ` +
-							`Call ${item.call.id} failed admission (early command candidate=${auditedCommandReadAdmission}, ` +
-							`no-effect early result=${noEffectEarlyResult}, descriptor=${descriptor?.name ?? "missing"}, ` +
-							`captured command-read capability=${policyCapabilities?.parallelCommandRead === true}).`,
-					)
-				}
-			}
-		}
-		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
-
-		if (prepared.length === 0) {
-			return this.metrics("completed", [], calls.length, 0, startedAt)
-		}
-
-		await this.options.onEvent?.({ type: "tool_batch_started", batchSize: calls.length })
-
-		if (this.isCancelled()) {
-			this.fillCancelledResults(results, calls)
-			return this.abortOutcome(results, calls, calls.length, 0, startedAt)
-		}
-
-		let cursor = 0
-		let parallelBatchCount = 0
-		while (cursor < prepared.length) {
-			if (this.isCancelled()) {
-				this.fillCancelledResults(results, calls, cursor)
-				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
-			}
-			// Preflight and retry-block receipts also carry stopping evidence. Observe
-			// them before admitting the next call; executed results are deduplicated.
-			if (!this.options.deferResultCommit && cursor > 0 && results[cursor - 1]) {
-				try {
-					await this.observeToolResult(results[cursor - 1]!, calls[cursor - 1])
-				} catch (error) {
-					if (!(error instanceof ToolEffectFenceError)) throw error
-					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
-				}
-			}
-
-			const item = prepared[cursor]
-			if (item.preparationResult) {
-				results[item.index] = item.preparationResult
-				cursor++
-				continue
-			}
-			const retryBlock = this.retryBlockResult(item.call)
-			if (retryBlock) {
-				results[item.index] = retryBlock
-				cursor += 1
-				continue
-			}
-			if (item.validationError || !item.descriptor || !item.toolCall) {
-				results[item.index] = resultForError(
-					item.call,
-					item.validationError ?? "Tool call could not be prepared.",
-					item.preparationDenied ? "denied" : "error",
-					item.failure,
-				)
-				cursor += 1
-				continue
-			}
-			if (
-				this.executionHost.shouldStopRepeatedToolCall?.(
-					getSchedulerToolIdentity(this.options.registry, item.call.name),
-					item.toolCall?.nativeArgs ?? item.call.arguments,
-				)
-			) {
-				const result = resultForError(
-					item.call,
-					`Stopping repeated ${item.call.name} call; use existing evidence or change the approach.`,
-				)
-				this.repetitionSkippedResults.add(result)
-				results[item.index] = result
-				cursor += 1
-				continue
-			}
+		let runFailed = false
+		const failedCommandCleanups = new Set<PreparedCall>()
+		const disposeRemainingCommandReads = async (): Promise<void> => {
+			// Retained finalizers own speculative output until commit/discard. All
+			// other prepared commands, including calls cancelled before run, are joined.
 			try {
-				await this.prepareRead(item)
-			} catch (error) {
-				if (!(error instanceof ToolEffectFenceError)) throw error
-				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
-			}
-			if (item.preparationResult) continue
-			if (item.validationError) {
-				results[item.index] = resultForError(
-					item.call,
-					item.validationError,
-					item.preparationDenied ? "denied" : "error",
-					item.failure,
+				await this.disposeCommandReads(
+					[...this.commandReadOwners.keys()].filter(
+						(item) => !this.deferredReadFinalizers.has(item.call.id) && !failedCommandCleanups.has(item),
+					),
 				)
-				cursor++
-				continue
+			} catch (error) {
+				if (!runFailed) throw error
+				console.error("[ToolScheduler] Prepared command cleanup also failed", error)
 			}
-			if (this.isSelectableParallel(item)) {
-				const parallelItems: PreparedCall[] = []
-				while (cursor < prepared.length && parallelItems.length < this.maxConcurrency) {
-					const candidate = prepared[cursor]
-					try {
-						await this.prepareRead(candidate)
-					} catch (error) {
-						if (!(error instanceof ToolEffectFenceError)) throw error
-						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
-					}
+		}
+		try {
+			this.approvalRequestCount = 0
+			this.approvalDeniedCount = 0
+			this.approvalCancelledCount = 0
+			this.supersededAskCount = 0
+			this.parallelToolCount = 0
+			this.outputTruncatedCount = 0
+			this.observedToolCallIds.clear()
+			this.effectiveHookCalls.clear()
+			this.preHookCompleted.clear()
+			this.postHookOutputReplaced.clear()
+			this.postHookCompleted.clear()
+			this.effectStartedCallIds.clear()
+			this.effectFenceFailure = undefined
+			this.approvalAbortRequested = false
+			this.batchController = new AbortController()
+			this.executionSignal = this.options.signal
+				? AbortSignal.any([this.options.signal, this.batchController.signal])
+				: this.batchController.signal
+			const startedAt = performance.now()
+			const calls = (
+				Array.isArray(response)
+					? response
+					: response && typeof response === "object" && Array.isArray(response.items)
+						? response.items.filter((item) => item?.type === "tool_call")
+						: []
+			).map(normalizeAgentToolCall)
+			const prepared: PreparedCall[] = []
+			for (const [index, call] of calls.entries()) prepared.push(await this.prepareCall(call, index))
+			if (this.options.deferResultCommit) {
+				for (const item of prepared) {
+					const descriptor = item.descriptor
+					const descriptorCapabilities = descriptor?.capabilities
+					const policyCapabilities = descriptor
+						? this.options.policy?.capabilities[descriptor.name]
+						: undefined
+					const auditedCommandReadAdmission =
+						this.options.requirePreparedCommandRead === true &&
+						item.call.name === "exec_command" &&
+						descriptor?.name === "exec_command" &&
+						descriptorCapabilities?.parallelCommandRead === true &&
+						!descriptorCapabilities.controlFlow &&
+						policyCapabilities?.parallelCommandRead === true &&
+						!policyCapabilities.controlFlow
+					const approvalFreeReadAdmission =
+						item.read !== undefined ||
+						auditedCommandReadAdmission ||
+						(this.options.readGrant?.enabled === true && descriptor?.prepareParallelRead !== undefined)
+					const noEffectEarlyResult =
+						this.options.requirePreparedCommandRead === true &&
+						(item.validationError !== undefined || item.preparationResult !== undefined)
 					if (
-						candidate.validationError ||
-						candidate.preparationResult ||
-						!candidate.descriptor ||
-						!candidate.toolCall ||
-						!this.isSelectableParallel(candidate) ||
-						parallelItems.some((active) => {
-							const independentPreparedReads =
-								(active.commandRead && candidate.commandRead) ||
-								(active.mcpReadPrepared && candidate.mcpReadPrepared)
-							return (
-								!independentPreparedReads &&
-								!!active.scope &&
-								!!candidate.scope &&
-								scopesOverlap(active.scope, candidate.scope)
-							)
-						})
+						!descriptorCapabilities ||
+						(!noEffectEarlyResult &&
+							((!auditedCommandReadAdmission && descriptorCapabilities.concurrency !== "parallel") ||
+								(!auditedCommandReadAdmission && descriptorCapabilities.sideEffects !== "none") ||
+								descriptorCapabilities.controlFlow ||
+								(descriptorCapabilities.requiresApproval && !approvalFreeReadAdmission) ||
+								(policyCapabilities !== undefined &&
+									((!auditedCommandReadAdmission && policyCapabilities.concurrency !== "parallel") ||
+										(!auditedCommandReadAdmission && policyCapabilities.sideEffects !== "none") ||
+										policyCapabilities.controlFlow ||
+										(policyCapabilities.requiresApproval && !approvalFreeReadAdmission)))))
 					) {
-						break
+						throw new Error(
+							`Deferred tool results require an audited, approval-free read call. ` +
+								`Call ${item.call.id} failed admission (early command candidate=${auditedCommandReadAdmission}, ` +
+								`no-effect early result=${noEffectEarlyResult}, descriptor=${descriptor?.name ?? "missing"}, ` +
+								`captured command-read capability=${policyCapabilities?.parallelCommandRead === true}).`,
+						)
 					}
-					parallelItems.push(candidate)
-					cursor += 1
 				}
-				parallelBatchCount += 1
-				this.parallelToolCount += parallelItems.length
+			}
+			const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
-				const settled = await this.executeParallelBatch(parallelItems)
-				settled.results.forEach((result, offset) => {
-					if (result) results[parallelItems[offset].index] = result
-				})
-				// No worker is live here, including workers that ignored cancellation.
-				// Join presentation in model-call order; deferred lanes hold
-				// these finalizers until the durable assistant boundary commits.
-				for (const readItem of parallelItems) {
-					const result = results[readItem.index]
-					if (result) results[readItem.index] = await this.finalizeRead(readItem, result)
-				}
-				if (settled.failure) {
-					return this.failedOutcome(
-						results,
-						calls,
-						settled.failure,
-						calls.length,
-						parallelBatchCount,
-						startedAt,
-					)
-				}
+			if (prepared.length === 0) {
+				return this.metrics("completed", [], calls.length, 0, startedAt)
+			}
+
+			await this.options.onEvent?.({ type: "tool_batch_started", batchSize: calls.length })
+
+			if (this.isCancelled()) {
+				this.fillCancelledResults(results, calls)
+				return this.abortOutcome(results, calls, calls.length, 0, startedAt)
+			}
+
+			let cursor = 0
+			let parallelBatchCount = 0
+			while (cursor < prepared.length) {
 				if (this.isCancelled()) {
 					this.fillCancelledResults(results, calls, cursor)
 					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 				}
-				try {
-					// All workers and finalizers are settled. Only this bounded read
-					// window can overshoot a stop; later windows have not been admitted.
-					for (const readItem of parallelItems) {
-						if (!this.options.deferResultCommit) {
-							await this.observeToolResult(results[readItem.index]!, readItem.call)
-						}
+				// Preflight and retry-block receipts also carry stopping evidence. Observe
+				// them before admitting the next call; executed results are deduplicated.
+				if (!this.options.deferResultCommit && cursor > 0 && results[cursor - 1]) {
+					try {
+						await this.observeToolResult(results[cursor - 1]!, calls[cursor - 1])
+					} catch (error) {
+						if (!(error instanceof ToolEffectFenceError)) throw error
+						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 					}
+				}
+
+				let item = prepared[cursor]
+				try {
+					item = prepared[cursor] = await this.applyPreToolHook(item)
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
 					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 				}
-				continue
+				if (item.preparationResult) {
+					results[item.index] = item.preparationResult
+					cursor++
+					continue
+				}
+				const retryBlock = this.retryBlockResult(item.call)
+				if (retryBlock) {
+					results[item.index] = retryBlock
+					cursor += 1
+					continue
+				}
+				if (item.validationError || !item.descriptor || !item.toolCall) {
+					results[item.index] = resultForError(
+						item.call,
+						item.validationError ?? "Tool call could not be prepared.",
+						item.preparationDenied ? "denied" : "error",
+						item.failure,
+					)
+					cursor += 1
+					continue
+				}
+				if (
+					this.executionHost.shouldStopRepeatedToolCall?.(
+						getSchedulerToolIdentity(this.options.registry, item.call.name),
+						item.toolCall?.nativeArgs ?? item.call.arguments,
+					)
+				) {
+					const result = resultForError(
+						item.call,
+						`Stopping repeated ${item.call.name} call; use existing evidence or change the approach.`,
+					)
+					this.repetitionSkippedResults.add(result)
+					results[item.index] = result
+					cursor += 1
+					continue
+				}
+				try {
+					await this.prepareRead(item)
+				} catch (error) {
+					if (!(error instanceof ToolEffectFenceError)) throw error
+					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+				}
+				if (item.preparationResult) continue
+				if (item.validationError) {
+					results[item.index] = resultForError(
+						item.call,
+						item.validationError,
+						item.preparationDenied ? "denied" : "error",
+						item.failure,
+					)
+					cursor++
+					continue
+				}
+				if (this.isSelectableParallel(item)) {
+					const parallelItems: PreparedCall[] = []
+					while (cursor < prepared.length && parallelItems.length < this.maxConcurrency) {
+						const candidate = prepared[cursor]
+						try {
+							await this.prepareRead(candidate)
+						} catch (error) {
+							if (!(error instanceof ToolEffectFenceError)) throw error
+							return this.failedOutcome(
+								results,
+								calls,
+								error,
+								calls.length,
+								parallelBatchCount,
+								startedAt,
+							)
+						}
+						if (
+							candidate.validationError ||
+							candidate.preparationResult ||
+							!candidate.descriptor ||
+							!candidate.toolCall ||
+							!this.isSelectableParallel(candidate) ||
+							parallelItems.some((active) => {
+								const independentPreparedReads =
+									(active.commandRead && candidate.commandRead) ||
+									(active.mcpReadPrepared && candidate.mcpReadPrepared)
+								return (
+									!independentPreparedReads &&
+									!!active.scope &&
+									!!candidate.scope &&
+									scopesOverlap(active.scope, candidate.scope)
+								)
+							})
+						) {
+							break
+						}
+						parallelItems.push(candidate)
+						cursor += 1
+					}
+					parallelBatchCount += 1
+					this.parallelToolCount += parallelItems.length
+
+					const settled = await this.executeParallelBatch(parallelItems)
+					settled.results.forEach((result, offset) => {
+						if (result) results[parallelItems[offset].index] = result
+					})
+					// No worker is live here, including workers that ignored cancellation.
+					// Join presentation in model-call order; deferred lanes hold
+					// these finalizers until the durable assistant boundary commits.
+					let cleanupFailure: CommandReadCleanupError | undefined
+					for (const readItem of parallelItems) {
+						const result = results[readItem.index]
+						if (!result) continue
+						try {
+							results[readItem.index] = await this.finalizeRead(readItem, result)
+						} catch (error) {
+							if (!(error instanceof CommandReadCleanupError)) throw error
+							failedCommandCleanups.add(readItem)
+							cleanupFailure ??= error
+							const failedResult = this.commandCleanupResult(readItem.call, result, error.reason)
+							results[readItem.index] = failedResult
+							if (this.options.deferResultCommit) {
+								this.deferredReadFinalizers.set(result.callId, {
+									item: readItem,
+									result: failedResult,
+									cleanupFailure: error,
+								})
+							}
+						}
+					}
+					if (cleanupFailure) {
+						runFailed = true
+						return await this.failedOutcome(
+							results,
+							calls,
+							cleanupFailure,
+							calls.length,
+							parallelBatchCount,
+							startedAt,
+						)
+					}
+					if (settled.failure) {
+						return this.failedOutcome(
+							results,
+							calls,
+							settled.failure,
+							calls.length,
+							parallelBatchCount,
+							startedAt,
+						)
+					}
+					if (this.isCancelled()) {
+						this.fillCancelledResults(results, calls, cursor)
+						return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+					}
+					try {
+						// All workers and finalizers are settled. Only this bounded read
+						// window can overshoot a stop; later windows have not been admitted.
+						for (const readItem of parallelItems) {
+							if (!this.options.deferResultCommit) {
+								await this.observeToolResult(results[readItem.index]!, readItem.call)
+							}
+						}
+					} catch (error) {
+						if (!(error instanceof ToolEffectFenceError)) throw error
+						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+					}
+					continue
+				}
+
+				// Serial calls, including lifecycle barriers, are exclusive ordered fences:
+				// the preceding parallel window has settled above, and this await prevents
+				// any later call from starting until the current call has returned.
+				try {
+					const result = await this.executeCall(item)
+					item.terminalResultReady = !item.finalizeRead && result.status !== "cancelled"
+					results[item.index] = result
+					results[item.index] = await this.finalizeRead(item, result)
+					if (!this.options.deferResultCommit && !this.isCancelled()) {
+						await this.observeToolResult(results[item.index]!, item.call)
+					}
+				} catch (error) {
+					if (error instanceof CommandReadCleanupError) {
+						failedCommandCleanups.add(item)
+						const failedResult = this.commandCleanupResult(
+							item.call,
+							results[item.index] ?? resultForError(item.call, error.message),
+							error.reason,
+						)
+						results[item.index] = failedResult
+						if (this.options.deferResultCommit) {
+							this.deferredReadFinalizers.set(item.call.id, {
+								item,
+								result: failedResult,
+								cleanupFailure: error,
+							})
+						}
+						runFailed = true
+						return await this.failedOutcome(
+							results,
+							calls,
+							error,
+							calls.length,
+							parallelBatchCount,
+							startedAt,
+						)
+					}
+					if (!(error instanceof ToolEffectFenceError)) throw error
+					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+				}
+				cursor += 1
+				if (this.isCancelled()) {
+					this.fillCancelledResults(results, calls, cursor)
+					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+				}
 			}
 
-			// Serial calls, including lifecycle barriers, are exclusive ordered fences:
-			// the preceding parallel window has settled above, and this await prevents
-			// any later call from starting until the current call has returned.
-			try {
-				const result = await this.executeCall(item)
-				item.terminalResultReady = !item.finalizeRead && result.status !== "cancelled"
-				results[item.index] = await this.finalizeRead(item, result)
-				if (!this.options.deferResultCommit && !this.isCancelled()) {
-					await this.observeToolResult(results[item.index]!, item.call)
-				}
-			} catch (error) {
-				if (!(error instanceof ToolEffectFenceError)) throw error
-				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
-			}
-			cursor += 1
 			if (this.isCancelled()) {
-				this.fillCancelledResults(results, calls, cursor)
+				this.fillCancelledResults(results, calls)
 				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 			}
-		}
 
-		if (this.isCancelled()) {
-			this.fillCancelledResults(results, calls)
-			return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+			return await this.commitResults(results, calls, calls.length, parallelBatchCount, startedAt)
+		} catch (error) {
+			runFailed = true
+			throw error
+		} finally {
+			await disposeRemainingCommandReads()
 		}
-
-		return this.commitResults(results, calls, calls.length, parallelBatchCount, startedAt)
 	}
 
 	private async executeParallelBatch(items: PreparedCall[]): Promise<{
@@ -1402,14 +1804,12 @@ export class ToolScheduler {
 			this.retainDeferredResults(calls, completeResults)
 		} else if (this.options.preserveAbortedResults) {
 			for (const [index, result] of completeResults.entries()) {
-				const parts = getToolResultParts(result.content)
 				const added = this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: parts.text,
+					content: getToolResultContent(result.content),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
-				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
 				if (!added) continue
 				await this.options.onEvent?.({
 					type: "tool_result",
@@ -1420,7 +1820,7 @@ export class ToolScheduler {
 					truncated: result.truncated,
 					timedOut: result.timedOut,
 				})
-				const commandCategory = getVerificationCategory(calls[index])
+				const commandCategory = this.verificationCategory(calls[index])
 				const verificationStatus =
 					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
 				if (commandCategory && verificationStatus && verificationStatus !== "running") {
@@ -1445,22 +1845,27 @@ export class ToolScheduler {
 	private async failedOutcome(
 		results: Array<ToolSchedulerResult | undefined>,
 		calls: AgentToolCall[],
-		failure: ToolEffectFenceError,
+		failure: ToolEffectFenceError | CommandReadCleanupError,
 		batchSize: number,
 		parallelBatchCount: number,
 		startedAt: number,
 	): Promise<ToolSchedulerOutcome> {
 		const failedIndex = calls.indexOf(failure.call)
 		const cancelled = this.isCancelled()
+		const cleanupFailed = failure instanceof CommandReadCleanupError
 		const completeResults = calls.map((call, index) => {
 			const existing = results[index]
 			if (existing) return existing
 			if (cancelled) return this.cancelledResultFor(call)
 			return resultForError(
 				call,
-				index === failedIndex
-					? `Tool effect was blocked by the transcript persistence fence: ${failure.message}`
-					: `Tool call was not executed because the transcript persistence fence failed before it could start: ${failure.message}`,
+				cleanupFailed
+					? index === failedIndex
+						? "Prepared command cleanup remains unconfirmed; original ownership was retained."
+						: "Tool call was not executed because prepared command cleanup remains unconfirmed."
+					: index === failedIndex
+						? `Tool effect was blocked by the transcript persistence fence: ${failure.message}`
+						: `Tool call was not executed because the transcript persistence fence failed before it could start: ${failure.message}`,
 			)
 		})
 
@@ -1470,14 +1875,12 @@ export class ToolScheduler {
 			this.retainDeferredResults(calls, completeResults)
 		} else {
 			for (const [index, result] of completeResults.entries()) {
-				const parts = getToolResultParts(result.content)
 				const added = this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: parts.text,
+					content: getToolResultContent(result.content),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
-				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
 				if (added) {
 					await this.options.onEvent?.({
 						type: "tool_result",
@@ -1496,13 +1899,47 @@ export class ToolScheduler {
 		const outcome: ToolSchedulerOutcome = {
 			...this.metrics("failed", completeResults, batchSize, parallelBatchCount, startedAt),
 			failure: {
-				kind: "effect_fence",
+				kind: cleanupFailed ? "command_cleanup" : "effect_fence",
 				callId: failure.call.id,
 				message: failure.message,
 			},
 		}
 		await this.emitBatchFinished(outcome)
 		return outcome
+	}
+
+	private commandCleanupResult(
+		call: AgentToolCall,
+		result: ToolSchedulerResult,
+		reason: unknown,
+	): ToolSchedulerResult {
+		if (result.status !== "success") return result
+		if (this.isCancelled()) return this.cancelledResultFor(call)
+		this.executionHost.didToolFailInCurrentTurn = true
+		return { ...result, status: "error", content: formatFailureResult(this.errorMessage(reason), "error") }
+	}
+
+	private async flushRejectedCommandProjection(item: PreparedCall, assertOwnership?: () => void): Promise<void> {
+		// Cleanup already failed. Observe secondary projection failure without
+		// replacing that first reason; ownership guard failures still propagate.
+		const finalize = item.finalizeCommand
+		item.finalizeCommand = undefined
+		if (!finalize) return
+		let guardFailure: { reason: unknown } | undefined
+		const guard = () => {
+			try {
+				assertOwnership?.()
+			} catch (reason) {
+				guardFailure ??= { reason }
+				throw reason
+			}
+		}
+		const [projection] = await Promise.allSettled([Promise.resolve().then(() => finalize(guard))])
+		if (guardFailure) throw guardFailure.reason
+		guard()
+		if (projection.status === "rejected" && !this.isCancelled()) {
+			console.error("[ToolScheduler] Rejected command evidence projection also failed", projection.reason)
+		}
 	}
 
 	private async raceCancellation<T>(operation: () => Promise<T>): Promise<T | undefined> {
@@ -1545,6 +1982,7 @@ export class ToolScheduler {
 			reason: ToolFailureMetadata["reason"],
 			scopeKind: ToolFailureMetadata["affectedScope"]["kind"] = "operation",
 		) => {
+			prepared.preparationDenied = reason === "policy_denied"
 			prepared.failure = createToolFailure({
 				reason,
 				scopeKind,
@@ -1836,7 +2274,10 @@ export class ToolScheduler {
 		const approvalToolName = interceptedPatch
 			? "apply_patch"
 			: this.options.registry.canonicalName(prepared.call.name)
-		const approvalArguments = interceptedPatch ? prepared.toolCall?.nativeArgs : prepared.call.arguments
+		const approvalArguments =
+			interceptedPatch || this.effectiveHookCalls.has(prepared.call.id)
+				? prepared.toolCall?.nativeArgs
+				: prepared.call.arguments
 		const startsAuditedCommandRead =
 			!prepareCommand && prepared.commandRead?.serialFallback !== true && prepared.commandRead?.run !== undefined
 		const requiresEffectStart =
@@ -1921,9 +2362,17 @@ export class ToolScheduler {
 		const requestApproval = async (
 			args: Parameters<ToolCallbacks["askApproval"]>,
 			responseMode: "boolean" | "structured",
+			captureCommandPresentation = false,
 		): Promise<ToolApprovalResponse | undefined> =>
 			this.approvalMutex.run(async () => {
 				const [type] = args
+				let commandExecutionId: string | undefined
+				const onCommandApproval =
+					captureCommandPresentation && type === "command"
+						? (id: string) => {
+								commandExecutionId ??= id
+							}
+						: undefined
 				if (prepared.mcpReadPrepared && type === "use_mcp_server" && responseMode === "boolean") {
 					if (this.isCancelled()) return undefined
 					return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
@@ -2056,9 +2505,41 @@ export class ToolScheduler {
 				let typedDecision: ToolApprovalDecision | undefined
 				let approvalEventReason: string | undefined
 				try {
+					if (this.options.permissionRequest) {
+						const hook = await this.options.permissionRequest(
+							{
+								...prepared.call,
+								name: approvalToolName,
+								arguments: structuredClone(prepared.toolCall?.nativeArgs ?? {}),
+							},
+							this.executionSignal,
+						)
+						if (this.isCancelled()) {
+							await recordApprovalCancellation(
+								requestId,
+								"Approval was cancelled while a permission hook was running.",
+							)
+							return undefined
+						}
+						if (hook.denied !== undefined) {
+							collector.setStatus("denied")
+							collector.pushApprovalResult(formatFailureResult(hook.denied, "denied"))
+							approvalFailure("denied")
+							this.approvalDeniedCount++
+							await this.options.onEvent?.({
+								type: "approval_result",
+								requestId,
+								decision: "denied",
+								reason: hook.denied,
+							})
+							return undefined
+						}
+					}
 					if (typedApprovalHost && approvalRequest) {
 						const response = await this.raceCancellation(() =>
-							typedApprovalHost(approvalRequest, partialMessage),
+							onCommandApproval
+								? typedApprovalHost(approvalRequest, partialMessage, onCommandApproval)
+								: typedApprovalHost(approvalRequest, partialMessage),
 						)
 						if (response !== undefined) {
 							const parsed = toolApprovalDecisionSchema.safeParse(response)
@@ -2077,6 +2558,18 @@ export class ToolScheduler {
 								)
 							}
 							if (this.executionHost.ask) {
+								if (onCommandApproval) {
+									return this.executionHost.ask(
+										type,
+										partialMessage,
+										false,
+										progressStatus,
+										forceApproval || false,
+										explicitApproval[0],
+										undefined,
+										onCommandApproval,
+									)
+								}
 								return this.executionHost.ask(
 									type,
 									partialMessage,
@@ -2248,6 +2741,10 @@ export class ToolScheduler {
 									: undefined
 				}
 
+				if (onCommandApproval && commandExecutionId !== undefined && approval) {
+					approval = { ...approval, commandExecutionId }
+				}
+
 				if (!approval) {
 					this.approvalCancelledCount += 1
 					collector.setStatus("cancelled")
@@ -2357,6 +2854,16 @@ export class ToolScheduler {
 				// complete serial preflight for its parallel batch.
 				return prepareMcpRead ? false : approved
 			},
+			askCommandApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) => {
+				const approval = await requestApproval(args, "boolean", true)
+				const approved = approval?.response === "yesButtonClicked"
+				return {
+					approved,
+					...(approved && approval?.commandExecutionId
+						? { commandExecutionId: approval.commandExecutionId }
+						: {}),
+				}
+			},
 			askApprovalResponse: async (...args: Parameters<NonNullable<ToolCallbacks["askApprovalResponse"]>>) =>
 				requestApproval(args, "structured"),
 			handleError: async (action: string, error: Error) => {
@@ -2455,7 +2962,10 @@ export class ToolScheduler {
 							this.options.policy!,
 						).then((read) => {
 							prepared.commandRead = read
-							if (read) prepared.commandCollector = collector
+							if (read) {
+								prepared.commandCollector = collector
+								if (read.dispose) this.commandReadOwners.set(prepared, read)
+							}
 						})
 					: prepared.commandRead?.run && !prepared.commandRead.serialFallback
 						? prepared.commandRead.run(callbacks).then((finalize) => {
@@ -2510,6 +3020,19 @@ export class ToolScheduler {
 			this.outputTruncatedCount += 1
 		}
 
+		return this.buildToolResult(
+			prepared,
+			collector,
+			Math.max(0, performance.now() - startedAt) + (prepareCommand ? 0 : (prepared.preparationDurationMs ?? 0)),
+		)
+	}
+
+	private buildToolResult(
+		prepared: PreparedCall,
+		collector: ToolResultCollector,
+		durationMs: number,
+	): ToolSchedulerResult {
+		const callId = sanitizeToolUseId(prepared.call.id)
 		const status = collector.getStatus()
 		const metadata = collector.getMetadata()
 		const executionStatus = metadata.executionStatus ?? metadata.status
@@ -2547,10 +3070,13 @@ export class ToolScheduler {
 		const effectOutcomeUnknown =
 			effectMayHaveStarted && (status === "cancelled" || metadata.failure?.outcome === "unknown")
 		const content = effectOutcomeUnknown
-			? (() => {
-					const parts = getToolResultParts(rawContent)
-					const text = `${parts.text}\n\nThe tool effect may have started, but its outcome is unknown. Verify the current state before retrying.`
-					return parts.images.length > 0 ? ([{ type: "text", text }, ...parts.images] as ToolResponse) : text
+			? ((): ToolResponse => {
+					const original = getToolResultContent(rawContent)
+					const warning =
+						"The tool effect may have started, but its outcome is unknown. Verify the current state before retrying."
+					return typeof original === "string"
+						? `${original}\n\n${warning}`
+						: [...original, { type: "text", text: warning }]
 				})()
 			: rawContent
 		return {
@@ -2568,9 +3094,7 @@ export class ToolScheduler {
 			...(waitOutcome ? { waitOutcome } : {}),
 			...(opaqueResultFingerprint ? { opaqueResultFingerprint } : {}),
 			...(status !== "success" && metadata.failure ? { failure: metadata.failure } : {}),
-			durationMs:
-				Math.max(0, performance.now() - startedAt) +
-				(prepareCommand ? 0 : (prepared.preparationDurationMs ?? 0)),
+			durationMs: durationMs,
 		}
 	}
 
@@ -2611,16 +3135,12 @@ export class ToolScheduler {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, batchSize, parallelBatchCount, startedAt)
 			}
-			const parts = getToolResultParts(result.content)
-			const added = this.executionHost.pushToolResultToUserContent({
+			this.executionHost.pushToolResultToUserContent({
 				type: "tool_result",
 				tool_use_id: sanitizeToolUseId(result.callId),
-				content: parts.text,
+				content: getToolResultContent(result.content),
 				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 			})
-			if (added && parts.images.length > 0) {
-				this.executionHost.userMessageContent.push(...parts.images)
-			}
 			committed.push(result)
 			await this.options.onEvent?.({
 				type: "tool_result",
@@ -2631,7 +3151,7 @@ export class ToolScheduler {
 				truncated: result.truncated,
 				timedOut: result.timedOut,
 			})
-			const commandCategory = getVerificationCategory(calls[index])
+			const commandCategory = this.verificationCategory(calls[index])
 			const verificationStatus =
 				result.executionStatus ?? (result.status === "success" ? undefined : result.status)
 			if (commandCategory && verificationStatus && verificationStatus !== "running") {
@@ -2659,7 +3179,10 @@ export class ToolScheduler {
 	}
 
 	/** Commit held results after the host has made the assistant response durable. */
-	async commitDeferredResults(options: { deferBatchFinished?: boolean } = {}): Promise<void> {
+	async commitDeferredResults(
+		options: { deferBatchFinished?: boolean; assertOwnership?: () => void } = {},
+	): Promise<void> {
+		options.assertOwnership?.()
 		if (!this.options.deferResultCommit) {
 			throw new Error("ToolScheduler has no deferred result boundary to commit.")
 		}
@@ -2667,36 +3190,58 @@ export class ToolScheduler {
 		const deferred = this.deferredResultCommit
 		if (!deferred) return
 		const commit = async () => {
+			options.assertOwnership?.()
 			let observationError: unknown
+			let cleanupFailure: { reason: unknown } | undefined
 			for (const [index, result] of deferred.results.entries()) {
+				options.assertOwnership?.()
 				const callId = sanitizeToolUseId(result.callId)
 				if (this.deferredCommittedResultIds.has(callId)) continue
 				const pending = this.deferredReadFinalizers.get(result.callId)
 				if (pending) {
 					// A publication retry must not repeat a finalizer that already ran.
 					this.deferredReadFinalizers.delete(result.callId)
-					const finalized = this.isCancelled()
-						? this.cancelledResultFor(pending.item.call)
-						: await this.finalizeRead(pending.item, result, true)
+					let finalized: ToolSchedulerResult
+					try {
+						// Cleanup already ran at the intrinsic boundary, even when run
+						// rejected without a finalizer. Keep its first failure for commit.
+						if (pending.cleanupFailure) {
+							await this.flushRejectedCommandProjection(pending.item, options.assertOwnership)
+							throw pending.cleanupFailure
+						}
+						if (this.isCancelled()) {
+							try {
+								await this.disposeCommandReads([pending.item])
+							} catch (reason) {
+								throw new CommandReadCleanupError(pending.item.call, reason)
+							}
+							finalized = this.cancelledResultFor(pending.item.call)
+						} else finalized = await this.finalizeRead(pending.item, result, true, options.assertOwnership)
+					} catch (error) {
+						if (!(error instanceof CommandReadCleanupError)) throw error
+						options.assertOwnership?.()
+						cleanupFailure ??= { reason: error.reason }
+						finalized = this.commandCleanupResult(pending.item.call, result, error.reason)
+					}
 					pending.item.finalizeCommand = undefined
 					pending.item.finalizeRead = undefined
 					// Task retains the run outcome; keep it consistent with committed receipts.
 					Object.assign(pending.result, finalized)
 					Object.assign(result, finalized)
 				}
+				options.assertOwnership?.()
 				try {
-					await this.observeToolResult(result, deferred.calls[index])
+					await this.observeToolResult(result, deferred.calls[index], options.assertOwnership)
 				} catch (error) {
 					observationError ??= error
 				}
-				const parts = getToolResultParts(result.content)
-				const added = this.executionHost.pushToolResultToUserContent({
+				options.assertOwnership?.()
+				this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: parts.text,
+					content: getToolResultContent(result.content),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
-				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
 				if (!this.deferredResultEventIds.has(callId)) {
 					await this.options.onEvent?.({
 						type: "tool_result",
@@ -2707,9 +3252,10 @@ export class ToolScheduler {
 						truncated: result.truncated,
 						timedOut: result.timedOut,
 					})
+					options.assertOwnership?.()
 					this.deferredResultEventIds.add(callId)
 				}
-				const commandCategory = getVerificationCategory(deferred.calls[index])
+				const commandCategory = this.verificationCategory(deferred.calls[index])
 				const verificationStatus =
 					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
 				if (
@@ -2727,12 +3273,23 @@ export class ToolScheduler {
 						exitCode: result.exitCode,
 						output: getVerificationOutput(result.content),
 					})
+					options.assertOwnership?.()
 					this.deferredVerificationEventIds.add(callId)
 				}
 				this.deferredCommittedResultIds.add(callId)
 			}
+			options.assertOwnership?.()
 			this.executionHost.userMessageContentReady = true
-			if (!options.deferBatchFinished) await this.finishDeferredBatch()
+			if (cleanupFailure) {
+				// Every accepted call has its truthful receipt. The host still owns
+				// the failed/aborted batch transition and the retained cleanup pins.
+				this.deferredResultCommit = undefined
+				throw cleanupFailure.reason
+			}
+			if (!options.deferBatchFinished) {
+				await this.finishDeferredBatch({ assertOwnership: options.assertOwnership })
+			}
+			options.assertOwnership?.()
 			this.deferredResultCommit = undefined
 			if (observationError) throw observationError
 		}
@@ -2749,7 +3306,9 @@ export class ToolScheduler {
 	async finishDeferredBatch(overrides?: {
 		status?: ToolSchedulerOutcome["status"]
 		batchSize?: number
+		assertOwnership?: () => void
 	}): Promise<void> {
+		overrides?.assertOwnership?.()
 		const event = this.deferredBatchFinishedEvent
 		if (!event) return
 		await this.options.onEvent?.({
@@ -2757,15 +3316,42 @@ export class ToolScheduler {
 			...(overrides?.status ? { status: overrides.status } : {}),
 			...(overrides?.batchSize !== undefined ? { batchSize: overrides.batchSize } : {}),
 		})
+		overrides?.assertOwnership?.()
 		this.deferredBatchFinishedEvent = undefined
 	}
 
 	/** Drop held output when the host rejects or abandons the speculative read batch. */
-	discardDeferredResults(): void {
+	async discardDeferredResults(): Promise<void> {
 		if (this.deferredCommitPromise) throw new Error("Committed deferred tool results cannot be discarded.")
+		// dispose synchronously closes each publication gate before its first await.
+		const cleanup = this.disposeCommandReads([...this.commandReadOwners.keys()])
 		this.deferredReadFinalizers.clear()
 		this.deferredResultCommit = undefined
 		this.deferredBatchFinishedEvent = undefined
+		await cleanup
+	}
+
+	private async disposeCommandReads(items: readonly PreparedCall[]): Promise<void> {
+		const snapshot = items.map((item) => ({ item, owner: this.commandReadOwners.get(item) }))
+		const outcomes = await Promise.allSettled(
+			snapshot.map(({ owner }) => {
+				try {
+					return owner?.dispose?.() ?? Promise.resolve()
+				} catch (error) {
+					return Promise.reject(error)
+				}
+			}),
+		)
+		for (const [index, outcome] of outcomes.entries()) {
+			if (
+				outcome.status === "fulfilled" &&
+				this.commandReadOwners.get(snapshot[index].item) === snapshot[index].owner
+			) {
+				this.commandReadOwners.delete(snapshot[index].item)
+			}
+		}
+		const failure = outcomes.find((outcome) => outcome.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
 	}
 
 	private retainDeferredResults(calls: AgentToolCall[], results: ToolSchedulerResult[]): void {
@@ -2825,6 +3411,7 @@ export class ToolScheduler {
 	}
 
 	private retryBlockResult(call: AgentToolCall): ToolSchedulerResult | undefined {
+		call = this.effectiveCall(call)
 		const failure = normalizeToolFailure(
 			this.executionHost.getToolRetryBlock?.(this.options.registry.canonicalName(call.name), call.arguments),
 		)

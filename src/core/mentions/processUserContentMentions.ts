@@ -6,6 +6,9 @@ import type { SkillLookup } from "../../services/skills/skillInvocation"
 import { getSkillLookupForInput } from "../../services/skills/skillInvocationProvenance"
 import type { TicketActivity } from "@alpha-code/types"
 import { sanitizeToolUseId } from "../../utils/tool-id"
+import { finalizeUserContentMentionAttachments } from "./attachmentBudget"
+
+export { finalizeUserContentMentionAttachments }
 
 // Internal aliases for the Anthropic content block subtypes used during processing.
 type TextPart = Anthropic.Messages.TextBlockParam
@@ -17,6 +20,8 @@ export interface ProcessUserContentMentionsResult {
 	content: Anthropic.Messages.ContentBlockParam[]
 	mode?: string // Mode from the first slash command that has one
 	blockOrigins?: ReadonlyMap<Anthropic.Messages.ContentBlockParam, InputOrigin>
+	/** Host-owned identities for one deferred batch admission; never persist these handles. */
+	deferredAttachmentParts?: ReadonlySet<TextPart>
 }
 
 /**
@@ -24,11 +29,12 @@ export interface ProcessUserContentMentionsResult {
  * Each file/folder mention becomes a separate text block formatted
  * to look like a read_file tool result.
  */
-function contentBlocksToTextParts(contentBlocks: MentionContentBlock[]): TextPart[] {
-	return contentBlocks.map((block) => ({
-		type: "text" as const,
-		text: block.content,
-	}))
+function contentBlocksToTextParts(contentBlocks: MentionContentBlock[], attachmentParts: Set<TextPart>): TextPart[] {
+	return contentBlocks.map((block) => {
+		const part: TextPart = { type: "text", text: block.content }
+		if (block.type === "file" || block.type === "folder") attachmentParts.add(part)
+		return part
+	})
 }
 
 /**
@@ -53,6 +59,7 @@ export async function processUserContentMentions({
 	currentMode = "code",
 	onTicketActivity,
 	signal,
+	deferAttachmentBudget = false,
 }: {
 	userContent: Anthropic.Messages.ContentBlockParam[]
 	cwd: string
@@ -71,6 +78,8 @@ export async function processUserContentMentions({
 	currentMode?: string
 	onTicketActivity?: (activity: TicketActivity) => Promise<void>
 	signal?: AbortSignal
+	/** The caller owns a larger queued-input batch and finalizes it before persistence/dispatch. */
+	deferAttachmentBudget?: boolean
 }): Promise<ProcessUserContentMentionsResult> {
 	signal?.throwIfAborted()
 	// Snapshot every origin before parsing can await or the caller can mutate its map.
@@ -78,6 +87,7 @@ export async function processUserContentMentions({
 		? userContent.map((block) => inputBlockOrigins.get(block) ?? "agent")
 		: undefined
 	const blockOrigins = sourceBlockOrigins ? new Map<Anthropic.Messages.ContentBlockParam, InputOrigin>() : undefined
+	const attachmentParts = new Set<TextPart>()
 	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
 	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
 		if (mode) {
@@ -126,7 +136,7 @@ export async function processUserContentMentions({
 
 						// Add file/folder content as separate blocks
 						if (result.contentBlocks.length > 0) {
-							blocks.push(...contentBlocksToTextParts(result.contentBlocks))
+							blocks.push(...contentBlocksToTextParts(result.contentBlocks, attachmentParts))
 						}
 
 						if (result.slashCommandHelp) {
@@ -171,12 +181,7 @@ export async function processUserContentMentions({
 							]
 
 							// Add file/folder content blocks
-							for (const contentBlock of result.contentBlocks) {
-								contentParts.push({
-									type: "text" as const,
-									text: contentBlock.content,
-								})
-							}
+							contentParts.push(...contentBlocksToTextParts(result.contentBlocks, attachmentParts))
 
 							if (result.slashCommandHelp) {
 								contentParts.push({
@@ -221,12 +226,7 @@ export async function processUserContentMentions({
 										]
 
 										// Add file/folder content blocks
-										for (const cb of result.contentBlocks) {
-											blocks.push({
-												type: "text" as const,
-												text: cb.content,
-											})
-										}
+										blocks.push(...contentBlocksToTextParts(result.contentBlocks, attachmentParts))
 
 										if (result.slashCommandHelp) {
 											blocks.push({
@@ -266,9 +266,11 @@ export async function processUserContentMentions({
 	const commandMode = commandModes.sort((a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex)[0]
 		?.mode
 
-	return {
+	const result: ProcessUserContentMentionsResult = {
 		content: content as Anthropic.Messages.ContentBlockParam[],
 		mode: commandMode,
 		...(blockOrigins ? { blockOrigins } : {}),
+		deferredAttachmentParts: attachmentParts,
 	}
+	return deferAttachmentBudget ? result : finalizeUserContentMentionAttachments([result])[0]!
 }

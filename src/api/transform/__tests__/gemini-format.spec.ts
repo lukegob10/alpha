@@ -1,8 +1,15 @@
 // npx vitest run src/api/transform/__tests__/gemini-format.spec.ts
 
 import { Anthropic } from "@anthropic-ai/sdk"
+import { beforeAll } from "vitest"
 
 import { convertAnthropicMessageToGemini } from "../gemini-format"
+import i18next from "../../../i18n"
+import toolTranslations from "../../../i18n/locales/en/tools.json"
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "tools", toolTranslations, true, true)
+})
 
 describe("convertAnthropicMessageToGemini", () => {
 	it.each([undefined, ""])("keeps an empty tool result paired with its call (%s)", (content) => {
@@ -343,16 +350,19 @@ describe("convertAnthropicMessageToGemini", () => {
 							name: "search",
 							response: {
 								name: "search",
-								content: "Search results:\n\n(See next part for image)",
+								content:
+									"Search results:\n\n[Image 1 is attached in the following content parts.]\n\n[Image 2 is attached in the following content parts.]",
 							},
 						},
 					},
+					{ text: "Image 1 from the preceding tool result:" },
 					{
 						inlineData: {
 							data: "image1data",
 							mimeType: "image/png",
 						},
 					},
+					{ text: "Image 2 from the preceding tool result:" },
 					{
 						inlineData: {
 							data: "image2data",
@@ -400,10 +410,11 @@ describe("convertAnthropicMessageToGemini", () => {
 							name: "imagesearch",
 							response: {
 								name: "imagesearch",
-								content: "\n\n(See next part for image)",
+								content: "[Image 1 is attached in the following content parts.]",
 							},
 						},
 					},
+					{ text: "Image 1 from the preceding tool result:" },
 					{
 						inlineData: {
 							data: "onlyimagedata",

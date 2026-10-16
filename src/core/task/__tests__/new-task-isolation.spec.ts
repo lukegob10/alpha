@@ -209,9 +209,22 @@ describe("tool batch isolation and scheduler fences", () => {
 	})
 
 	it.each([
-		{ label: "disabled", options: { disabledTools: ["attempt_completion"] }, arguments: {} },
-		{ label: "malformed", options: {}, arguments: null },
-	])("keeps neighboring calls runnable when a barrier is $label", async ({ options, arguments: args }) => {
+		{
+			label: "disabled",
+			options: { disabledTools: ["attempt_completion"] },
+			arguments: {},
+			expectedStatus: "denied",
+			failureReason: "policy_denied",
+		},
+		{
+			label: "malformed",
+			options: {},
+			arguments: null,
+			expectedStatus: "error",
+			failureReason: "invalid_arguments",
+		},
+	])("keeps neighboring calls runnable when a barrier is $label", async (testCase) => {
+		const { options, arguments: args, expectedStatus, failureReason } = testCase
 		const executed: string[] = []
 		const executeRead: ToolDescriptor["execute"] = async ({ call, callbacks }) => {
 			const callId = executionCallId(call)
@@ -246,7 +259,9 @@ describe("tool batch isolation and scheduler fences", () => {
 		expect(executeBarrier).not.toHaveBeenCalled()
 		expect(executed).toEqual(["before", "after"])
 		expect(outcome.results.map((result) => result.callId)).toEqual(calls.map((call) => call.id))
-		expect(outcome.results.map((result) => result.status)).toEqual(["success", "error", "success"])
+		expect(outcome.results.map((result) => result.status)).toEqual(["success", expectedStatus, "success"])
+		expect(outcome.results[1].failure).toMatchObject({ reason: failureReason, effectsStarted: "no" })
+		expect(receipts[1].is_error).toBe(true)
 		expect(receiptIds(receipts)).toEqual(calls.map((call) => call.id))
 		expect(new Set(receiptIds(receipts)).size).toBe(calls.length)
 	})

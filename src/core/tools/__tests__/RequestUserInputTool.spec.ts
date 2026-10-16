@@ -291,31 +291,60 @@ describe("RequestUserInputTool", () => {
 		expect(cb.pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ answers: {} }))
 	})
 
-	it("ends the active grouped Alpha ask when the scheduler signal aborts", async () => {
+	it("delegates scheduler cancellation to the owned Task ask without writing an uncorrelated reply", async () => {
 		const controller = new AbortController()
 		let resolveAsk: ((result: { response: "noButtonClicked" }) => void) | undefined
 		const task = {
 			taskKind: "primary",
 			abort: false,
 			ask: vi.fn(
-				() =>
+				(
+					_type: string,
+					_payload: string,
+					_partial?: boolean,
+					_progress?: unknown,
+					_protected?: boolean,
+					_explicit?: boolean,
+					_approvalRequest?: unknown,
+					_onCommandApproved?: (commandExecutionId: string) => void,
+					signal?: AbortSignal,
+				) =>
 					new Promise<{ response: "noButtonClicked" }>((resolve) => {
 						resolveAsk = resolve
+						signal?.addEventListener("abort", () => resolve({ response: "noButtonClicked" }), {
+							once: true,
+						})
 					}),
 			),
-			handleWebviewAskResponse: vi.fn(() => resolveAsk?.({ response: "noButtonClicked" })),
+			handleWebviewAskResponse: vi.fn(),
 			say: vi.fn(async () => {}),
 		}
 		const cb = callbacks({ signal: controller.signal, setResultMetadata: vi.fn() })
 		const running = new RequestUserInputTool().execute({ questions }, task as any, cb)
 
-		expect(task.ask).toHaveBeenCalledOnce()
-		controller.abort()
-		await running
+		try {
+			expect(task.ask).toHaveBeenCalledExactlyOnceWith(
+				"followup",
+				expect.any(String),
+				false,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				controller.signal,
+			)
+			controller.abort()
+			await running
 
-		expect(task.handleWebviewAskResponse).toHaveBeenCalledExactlyOnceWith("noButtonClicked")
-		expect(cb.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
-		expect(cb.pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ answers: {} }))
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+			expect(cb.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+			expect(cb.pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ answers: {} }))
+		} finally {
+			controller.abort()
+			resolveAsk?.({ response: "noButtonClicked" })
+			await running
+		}
 	})
 
 	it("rejects a partial structured response without returning successful answers", async () => {

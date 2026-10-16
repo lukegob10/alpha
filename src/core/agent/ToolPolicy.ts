@@ -3,6 +3,7 @@ import { canonicalizeToolName } from "../tools/ToolRegistry"
 import path from "path"
 import { isPathWithinRoot } from "../tools/pathSafety"
 import { getCommandDecision } from "../auto-approval/commands"
+import { createMcpApprovalPolicySnapshot, type McpApprovalPolicy } from "../auto-approval/mcpApprovalPolicy"
 
 import { digestValue } from "./StepContext"
 import type { ApprovalMode } from "@alpha-code/types"
@@ -38,6 +39,20 @@ export interface ToolExecutionPolicy {
 	cancellation: "abort-process"
 }
 
+export interface ToolReviewPolicy {
+	protectedWriteAllowed: boolean
+	mcp: McpApprovalPolicy
+}
+
+export function createToolReviewPolicySnapshot(policy?: ToolReviewPolicy): ToolReviewPolicy {
+	return Object.freeze({
+		protectedWriteAllowed: policy?.protectedWriteAllowed === true,
+		mcp: createMcpApprovalPolicySnapshot(policy?.mcp),
+	})
+}
+
+export const CLOSED_TOOL_REVIEW_POLICY = createToolReviewPolicySnapshot()
+
 export interface ToolPolicySnapshot {
 	visibleTools: readonly string[]
 	allowedTools: readonly string[]
@@ -47,6 +62,8 @@ export interface ToolPolicySnapshot {
 		mode?: ApprovalMode
 		autoApprovalEnabled: boolean
 		liveRevalidation: boolean
+		/** Missing legacy captures require review; global settings cannot broaden an admitted step. */
+		reviewPolicy?: ToolReviewPolicy
 	}
 	capabilities: Readonly<Record<string, ToolPolicyCapability>>
 	outputLimits: Readonly<Record<string, number>>
@@ -64,6 +81,7 @@ export interface ToolPolicyInput {
 	/** Approval tier captured at the turn boundary. Missing legacy inputs fail closed as Ask. */
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
+	reviewPolicy?: ToolReviewPolicy
 	capabilities?: Readonly<Record<string, ToolPolicyCapability>>
 	outputLimits?: Readonly<Record<string, number>>
 	execution?: {
@@ -143,6 +161,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 			mode: approvalMode,
 			autoApprovalEnabled: input.autoApprovalEnabled === true,
 			liveRevalidation: true,
+			reviewPolicy: createToolReviewPolicySnapshot(input.reviewPolicy),
 		}),
 		capabilities: Object.freeze(
 			Object.fromEntries(

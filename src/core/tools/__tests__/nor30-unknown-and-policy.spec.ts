@@ -94,7 +94,7 @@ describe("NOR-30 captured tool execution: unknown calls and policy", () => {
 			{ mode: "architect" },
 		)
 
-		expect(outcome.results[0].status).toBe("error")
+		expect(outcome.results[0].status).toBe("denied")
 		expect(String(outcome.results[0].content)).toContain("not allowed")
 		expect(handle).not.toHaveBeenCalled()
 		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()

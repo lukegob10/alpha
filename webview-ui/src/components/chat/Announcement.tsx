@@ -40,10 +40,10 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 						{t("chat:announcement.release.welcome", { version: Package.version })}
 					</DialogDescription>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>{t("chat:announcement.release.diagnosticEvidence")}</li>
-						<li>{t("chat:announcement.release.toolOutcomes")}</li>
-						<li>{t("chat:announcement.release.incidentReports")}</li>
-						<li>{t("chat:announcement.release.ticketSearch")}</li>
+						<li>{t("chat:announcement.release.taskContinuity")}</li>
+						<li>{t("chat:announcement.release.toolsAndProviders")}</li>
+						<li>{t("chat:announcement.release.delegation")}</li>
+						<li>{t("chat:announcement.release.workspaceExperience")}</li>
 					</ul>
 				</div>
 			</DialogContent>

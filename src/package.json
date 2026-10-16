@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.1.12",
+	"version": "3.2.0",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -565,6 +565,286 @@
 									}
 								}
 							}
+						},
+						"sessionStart": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"subagentStart": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"userPromptSubmit": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"preToolUse": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"postToolUse": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"permissionRequest": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"preCompact": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"postCompact": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"interrupt": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"sessionEnd": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
 						}
 					}
 				},
@@ -616,6 +896,30 @@
 					"type": "boolean",
 					"default": true,
 					"description": "%settings.useAgentRules.description%"
+				},
+				"alpha.projectRootMarkers": {
+					"type": "array",
+					"scope": "application",
+					"items": {
+						"type": "string",
+						"minLength": 1,
+						"pattern": "^(?!\\.{1,2}$)[^\\\\/\\u0000:]+$"
+					},
+					"default": [
+						".git"
+					],
+					"description": "%settings.projectRootMarkers.description%"
+				},
+				"alpha.projectDocFallbackFilenames": {
+					"type": "array",
+					"scope": "application",
+					"items": {
+						"type": "string",
+						"minLength": 1,
+						"pattern": "^(?!\\.{1,2}$)[^\\\\/\\u0000:]+$"
+					},
+					"default": [],
+					"description": "%settings.projectDocFallbackFilenames.description%"
 				},
 				"alpha.apiRequestTimeout": {
 					"type": "number",
@@ -680,6 +984,7 @@
 		"@anthropic-ai/sdk": "^0.37.0",
 		"@anthropic-ai/vertex-sdk": "^0.7.0",
 		"@google/genai": "^1.47.0",
+		"@imagemagick/magick-wasm": "0.0.44",
 		"@lancedb/lancedb": "^0.27.2",
 		"@modelcontextprotocol/sdk": "1.31.0",
 		"@qdrant/js-client-rest": "^1.14.0",

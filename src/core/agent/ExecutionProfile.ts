@@ -126,6 +126,7 @@ export function applyExecutionProfile(
 		disabledTools: policy.disabledTools,
 		approvalMode: policy.approval.mode,
 		autoApprovalEnabled: policy.approval.autoApprovalEnabled,
+		reviewPolicy: policy.approval.reviewPolicy,
 		capabilities: Object.fromEntries(
 			Object.entries(policy.capabilities).filter(([name]) => allowed.has(canonicalizeToolName(name))),
 		),

@@ -15,10 +15,11 @@ import {
 } from "@alpha-code/types"
 
 import { AlphaAskResponse } from "../../shared/WebviewMessage"
+import type { ToolReviewPolicy } from "../agent/ToolPolicy"
 
 import { isWriteToolAction, isReadOnlyToolAction } from "./tools"
-import { isMcpToolAlwaysAllowed } from "./mcp"
-import { getMcpToolApprovalDecision } from "./mcpApprovalPolicy"
+import { getMcpToolApprovalGrant } from "./mcp"
+import { captureMcpApprovalPolicy, getMcpToolApprovalDecision } from "./mcpApprovalPolicy"
 import { getCommandDecision, getSubagentCommandDecision } from "./commands"
 
 // We have auto-approval actions for different categories.
@@ -80,6 +81,19 @@ function effectiveCommandAllowlist(mode: ApprovalMode | undefined, allowedComman
 	return mode ? effectiveCommandAllowlistForMode(mode, allowedCommands) : allowedCommands
 }
 
+/** Capture optional review grants before request preparation can observe later global changes. */
+export function captureToolReviewPolicy(
+	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>,
+): ToolReviewPolicy {
+	const mode = resolveApprovalMode(state)
+	const flags = state ? flagsFromState(state, mode) : undefined
+	const enabled = flags?.autoApprovalEnabled === true
+	return Object.freeze({
+		protectedWriteAllowed: enabled && flags?.alwaysAllowWriteProtected === true,
+		mcp: captureMcpApprovalPolicy(enabled && flags?.alwaysAllowMcp === true, state?.mcpServers),
+	})
+}
+
 export type CheckAutoApprovalResult =
 	| { decision: "approve" }
 	| { decision: "deny" }
@@ -92,6 +106,8 @@ export type CheckAutoApprovalResult =
 
 export interface CheckAutoApprovalInput {
 	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
+	/** Optional only for legacy callers without an admitted model step. */
+	reviewPolicy?: ToolReviewPolicy
 	/** Invoking step's immutable command ceiling; live settings may only narrow this boundary. */
 	commandPolicy?: {
 		allowedPrefixes: readonly string[]
@@ -107,6 +123,7 @@ export interface CheckAutoApprovalInput {
 export async function checkAutoApproval({
 	state,
 	commandPolicy,
+	reviewPolicy,
 	ask,
 	text,
 	isProtected,
@@ -161,10 +178,21 @@ export async function checkAutoApproval({
 			const mcpServerUse = JSON.parse(text) as McpServerUse
 
 			if (mcpServerUse.type === "use_mcp_tool") {
-				const explicitMcpGrant = flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers)
-				return { decision: getMcpToolApprovalDecision(mode, mcpServerUse, explicitMcpGrant) }
+				const resolvedGrant = getMcpToolApprovalGrant(mcpServerUse, state.mcpServers)
+				const explicitMcpGrant = flags.alwaysAllowMcp && resolvedGrant !== undefined
+				return {
+					decision: getMcpToolApprovalDecision(
+						mode,
+						mcpServerUse,
+						explicitMcpGrant,
+						reviewPolicy?.mcp,
+						resolvedGrant,
+					),
+				}
 			} else if (mcpServerUse.type === "access_mcp_resource") {
-				return flags.alwaysAllowMcp ? { decision: "approve" } : { decision: "ask" }
+				return flags.alwaysAllowMcp && (!reviewPolicy || reviewPolicy.mcp.enabled)
+					? { decision: "approve" }
+					: { decision: "ask" }
 			}
 		} catch {
 			return { decision: "ask" }
@@ -288,6 +316,9 @@ export async function checkAutoApproval({
 		}
 
 		if (isWriteToolAction(tool)) {
+			if (isProtected && reviewPolicy && !reviewPolicy.protectedWriteAllowed) {
+				return { decision: "ask" }
+			}
 			if (isOutsideWorkspace) {
 				return mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
 			}
@@ -336,6 +367,13 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
 	if (liveMode === "ask" || inheritedMode === "ask") return { decision: "ask" }
 	if (liveMode === "bypass" && inheritedMode === "bypass") {
+		if (
+			input.reviewPolicy &&
+			(input.ask === "use_mcp_server" || (input.ask === "tool" && input.isProtected)) &&
+			liveResult.decision !== "approve"
+		) {
+			return { decision: "ask" }
+		}
 		// Full Access can skip per-action review only when both the live and captured
 		// grants authorize it. Auto still applies each action's narrower policy.
 		if (input.ask === "command") {

@@ -266,7 +266,7 @@ async function main() {
 	 */
 	const workerConfig = {
 		...buildOptions,
-		entryPoints: ["workers/countTokens.ts", "workers/sanitizeDocument.ts"],
+		entryPoints: ["workers/countTokens.ts", "workers/sanitizeDocument.ts", "workers/validateImage.ts"],
 		outdir: "dist/workers",
 	}
 

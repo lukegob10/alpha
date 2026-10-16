@@ -6,6 +6,7 @@ import { defaultMode, defaultModeSlug, getModeBySlug } from "../../shared/modes"
 import { getApiMetrics } from "../../shared/getApiMetrics"
 import { listFiles } from "../../services/glob/list-files"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
+import { commandSessionRegistry } from "../tools/CommandSessionRegistry"
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "../../integrations/terminal/types"
 import { arePathsEqual } from "../../utils/path"
 import { formatResponse } from "../prompts/responses"
@@ -263,6 +264,8 @@ export async function captureEnvironmentDetails(
 				) {
 					const processIndex = (startProcess + processOffset) % processes.length
 					const process = processes[processIndex]
+					// Session output belongs to write_stdin, including completed output awaiting a final poll.
+					if (commandSessionRegistry.ownsOutput(process)) continue
 					if (!process.hasUnretrievedOutput()) continue
 					const heading = `# Terminal ${terminal.id} New Output\nWorking Directory: \`${bounded(terminal.getCurrentWorkingDirectory(), 1000)}\`\nCommand: \`${bounded(process.command, 1000)}\`\n`
 					const availableOutput =

@@ -127,8 +127,12 @@ describe("context management tool metadata admission", () => {
 		expect(JSON.stringify(countTokens.mock.calls[0][0])).toContain("read_file")
 	})
 
-	it("reuses prepared metadata when summarization falls back to truncation", async () => {
+	it("reuses prepared metadata when over-limit retained input falls back to truncation", async () => {
 		const { options, prepareTools, countTokens } = fixture()
+		// Put the excess in a removable middle step, preserving the first step and latest user input.
+		countTokens.mockImplementation(async (blocks) =>
+			blocks.some((block) => block.type === "text" && block.text === "Three") ? 900 : 10,
+		)
 		vi.mocked(condense.summarizeConversation).mockResolvedValue({
 			messages: options.messages,
 			summary: "",
@@ -137,6 +141,8 @@ describe("context management tool metadata admission", () => {
 		})
 		const result = await manageContext({ ...options, totalTokens: 801 })
 		expect(result.messagesRemoved).toBeGreaterThan(0)
+		expect(result.prevContextTokens).toBeGreaterThan(800)
+		expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
 		expect(prepareTools).toHaveBeenCalledOnce()
 		expect(countTokens.mock.calls.some(([blocks]) => JSON.stringify(blocks).includes("read_file"))).toBe(true)
 	})

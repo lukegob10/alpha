@@ -1,6 +1,7 @@
 import { taskGoalUsageReceiptsSchema } from "@alpha-code/types"
 
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
+import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
 
 /**
  * Validate the stable provider-history protocol without discarding open-ended
@@ -133,7 +134,7 @@ function invalidReasoningRecord(value: Record<string, unknown>, requireEncrypted
 }
 
 function isHookPromptProvenance(value: unknown): boolean {
-	if (!isRecord(value) || (value.event !== "Stop" && value.event !== "SubagentStop")) return false
+	if (!isRecord(value) || !isLifecycleHookTarget(value.event)) return false
 	if (!Array.isArray(value.fragments) || value.fragments.length === 0) return false
 	return value.fragments.every(
 		(fragment) =>

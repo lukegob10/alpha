@@ -4,6 +4,13 @@ import {
 	toOpenAiResponsesTools,
 } from "../openai-responses"
 import type OpenAI from "openai"
+import { beforeAll } from "vitest"
+import i18next from "../../../i18n"
+import toolTranslations from "../../../i18n/locales/en/tools.json"
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "tools", toolTranslations, true, true)
+})
 
 describe("OpenAI Responses assistant message replay", () => {
 	it.each([false, true])(
@@ -416,10 +423,17 @@ describe("OpenAI Responses freeform apply_patch conversion", () => {
 				name: "view_image",
 				arguments: JSON.stringify({ path: "pixel.png" }),
 			},
-			{ type: "function_call_output", call_id: "view-image-call", output: "File: pixel.png" },
+			{
+				type: "function_call_output",
+				call_id: "view-image-call",
+				output: "File: pixel.png\n[Image 1 is attached in the following user message.]",
+			},
 			{
 				role: "user",
-				content: [{ type: "input_image", image_url: `data:image/png;base64,${imageData}`, detail: "auto" }],
+				content: [
+					{ type: "input_text", text: "Image 1 from the preceding tool result:" },
+					{ type: "input_image", image_url: `data:image/png;base64,${imageData}`, detail: "auto" },
+				],
 			},
 		])
 	})
@@ -484,10 +498,17 @@ describe("OpenAI Responses freeform apply_patch conversion", () => {
 				name: "apply_patch",
 				input: "*** Begin Patch\n*** End Patch",
 			},
-			{ type: "custom_tool_call_output", call_id: "patch_call_1", output: "Patch applied." },
+			{
+				type: "custom_tool_call_output",
+				call_id: "patch_call_1",
+				output: "Patch applied.\n[Image 1 is attached in the following user message.]",
+			},
 			{
 				role: "user",
-				content: [{ type: "input_image", image_url: "data:image/png;base64,aW1hZ2U=", detail: "auto" }],
+				content: [
+					{ type: "input_text", text: "Image 1 from the preceding tool result:" },
+					{ type: "input_image", image_url: "data:image/png;base64,aW1hZ2U=", detail: "auto" },
+				],
 			},
 		])
 	})

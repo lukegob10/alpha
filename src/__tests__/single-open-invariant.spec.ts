@@ -251,7 +251,7 @@ describe("Single-open-task invariant", () => {
 			getTaskOwner: (AlphaProvider.prototype as any).getTaskOwner,
 			taskSessions: new TaskSessionRegistry(),
 			getCurrentTask: vi.fn(() => undefined), // ensure not rehydrating
-			getLiveTask: vi.fn(() => undefined),
+			getLiveTask: AlphaProvider.prototype.getLiveTask,
 			removeTaskFromStack,
 			addTaskToStack,
 			updateGlobalState,
@@ -308,6 +308,7 @@ describe("Single-open-task invariant", () => {
 		expect(task).toBeTruthy()
 		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
 		expect(addTaskToStack).toHaveBeenCalledTimes(1)
+		expect(provider.getLiveTask(historyItem.id)).toBe(task)
 	})
 
 	it("IPC StartNewTask path closes current before new task", async () => {

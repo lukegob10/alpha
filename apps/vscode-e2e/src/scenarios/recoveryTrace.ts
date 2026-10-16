@@ -22,8 +22,20 @@ export interface RecoveryLifecycleEvidence {
 	taskId: string
 }
 
-function hasCompletedPhase(evidence: RecoveryLifecycleEvidence | undefined, phaseStart: number): boolean {
-	if (!evidence || !Array.isArray(evidence.events) || !Number.isFinite(phaseStart) || phaseStart < 0) return false
+function hasCompletedPhase(
+	evidence: RecoveryLifecycleEvidence | undefined,
+	phaseStart: number,
+	phaseEnd = Infinity,
+): boolean {
+	if (
+		!evidence ||
+		!Array.isArray(evidence.events) ||
+		!Number.isFinite(phaseStart) ||
+		phaseStart < 0 ||
+		(!Number.isFinite(phaseEnd) && phaseEnd !== Infinity) ||
+		phaseEnd <= phaseStart
+	)
+		return false
 	const events = evidence.events
 		.map(record)
 		.filter((event): event is Record<string, unknown> => event !== undefined && event.taskId === evidence.taskId)
@@ -35,10 +47,23 @@ function hasCompletedPhase(evidence: RecoveryLifecycleEvidence | undefined, phas
 	)
 		return false
 	const turnKey = (event: Record<string, unknown>) => JSON.stringify([event.runId, event.turnId])
+	// A following turn can start before its user admission is persisted. Any turn
+	// extending into that next phase cannot establish this phase's completion.
+	const laterTurns = new Set(
+		events.filter((event) => typeof event.occurredAt === "number" && event.occurredAt >= phaseEnd).map(turnKey),
+	)
 	// Task admission may follow turn_started. Include that containing turn's
 	// earlier start instead of fabricating terminality from a timestamp slice.
 	const phaseTurns = new Set(
-		events.filter((event) => typeof event.occurredAt === "number" && event.occurredAt >= phaseStart).map(turnKey),
+		events
+			.filter(
+				(event) =>
+					typeof event.occurredAt === "number" &&
+					event.occurredAt >= phaseStart &&
+					event.occurredAt < phaseEnd &&
+					!laterTurns.has(turnKey(event)),
+			)
+			.map(turnKey),
 	)
 	const inspected = inspectTaskLifecycle(
 		events.filter((event) => phaseTurns.has(turnKey(event))),
@@ -62,7 +87,7 @@ function textContent(value: unknown): string {
 		.join("\n")
 }
 
-/** Grade only the current phase; never expose arbitrary output in campaign summaries. */
+/** Grade the latest matching phase interval; later phase evidence never contributes to its outcome. */
 export function inspectRecoveryTrace(
 	history: unknown,
 	ui: unknown,
@@ -72,10 +97,11 @@ export function inspectRecoveryTrace(
 	const calls = new Map<string, { name: string; input: Record<string, unknown>; command?: string }>()
 	const receipts = new Map<string, { text: string; error: boolean }>()
 	let phaseHistory: unknown[] = []
-	let finalText = ""
 	let finalReport: string | undefined
 	let inPhase = false
 	let phaseStart = 0
+	let phaseEnd = Infinity
+	let phaseClosed = false
 	const marker =
 		phase === "devSearchScope"
 			? "search-scope"
@@ -90,15 +116,23 @@ export function inspectRecoveryTrace(
 			calls.clear()
 			receipts.clear()
 			phaseHistory = []
-			finalText = ""
 			finalReport = undefined
 			phaseStart = typeof message.ts === "number" ? message.ts : NaN
+			phaseEnd = Infinity
+			phaseClosed = false
+		} else if (
+			inPhase &&
+			!phaseClosed &&
+			message.role === "user" &&
+			/\[(?:development|workflow):[a-z-]+\]/.test(textContent(message.content))
+		) {
+			phaseEnd = typeof message.ts === "number" ? message.ts : NaN
+			phaseClosed = true
 		}
-		if (!inPhase) continue
+		if (!inPhase || phaseClosed) continue
 		phaseHistory.push(value)
 		if (message.role === "assistant") {
 			const text = textContent(message.content)
-			finalText += text
 			if (text.trim()) finalReport = text
 		}
 		for (const item of Array.isArray(message.content) ? message.content : []) {
@@ -135,7 +169,48 @@ export function inspectRecoveryTrace(
 	const exited = (command: string, exitCode: number) =>
 		commandResults(command).some((result) => result.exitCode === exitCode)
 	const reports = [...calls].filter(([id, call]) => call.name === "attempt_completion" && receipts.has(id))
-	for (const [, call] of reports) if (typeof call.input.result === "string") finalText += `\n${call.input.result}`
+	const completedPhase = hasCompletedPhase(lifecycle, phaseStart, phaseEnd)
+	const lastAssistant = [...phaseHistory]
+		.reverse()
+		.map(record)
+		.find((message) => message?.role === "assistant")
+	const finalBlocks = Array.isArray(lastAssistant?.content) ? lastAssistant.content.map(record) : []
+	const finalCalls = finalBlocks.filter((block) => block?.type === "tool_use")
+	const completionCall = finalCalls.length === 1 ? finalCalls[0] : undefined
+	const completionInput = record(completionCall?.input)
+	const completionReceipt = typeof completionCall?.id === "string" ? receipts.get(completionCall.id) : undefined
+	const lastResponseReport =
+		finalCalls.length === 0
+			? textContent(lastAssistant?.content)
+			: completionCall?.name === "attempt_completion" &&
+				  (completionInput?.outcome === undefined || completionInput.outcome === "completed") &&
+				  completionReceipt?.error === false &&
+				  typeof completionInput?.result === "string"
+				? completionInput.result
+				: undefined
+	const terminalReports = (Array.isArray(ui) ? ui : [])
+		.map(record)
+		.filter(
+			(message) =>
+				message?.type === "say" &&
+				message.say === "completion_result" &&
+				message.partial !== true &&
+				typeof message.ts === "number" &&
+				message.ts >= phaseStart &&
+				message.ts < phaseEnd &&
+				typeof message.text === "string",
+		)
+	const terminalReport = terminalReports.length === 1 ? terminalReports[0] : undefined
+	// Match the completed phase's canonical final UI row to its last assistant response.
+	// Earlier commentary, reasoning, and ordinary tool output cannot establish the final report.
+	const searchReport =
+		completedPhase &&
+		typeof lastResponseReport === "string" &&
+		lastResponseReport.trim() &&
+		typeof terminalReport?.text === "string" &&
+		terminalReport.text.trim() === lastResponseReport.trim()
+			? lastResponseReport
+			: undefined
 	const allowedErrors = new Set<string>(
 		phase === "devSearchScope"
 			? [RECOVERY_COMMANDS.rg, RECOVERY_COMMANDS.narrow]
@@ -184,7 +259,10 @@ export function inspectRecoveryTrace(
 			},
 			{
 				name: "search_report_identifies_matches",
-				passed: finalText.includes("docs/integrations.md") && finalText.includes("config/assistants.json"),
+				passed:
+					typeof searchReport === "string" &&
+					searchReport.includes("docs/integrations.md") &&
+					searchReport.includes("config/assistants.json"),
 			},
 		)
 	} else if (phase === "devSearchAbsent") {
@@ -192,9 +270,11 @@ export function inspectRecoveryTrace(
 			{ name: "search_absence_observed", passed: exited(RECOVERY_COMMANDS.absent, 1) },
 			{
 				name: "search_absence_reported",
-				passed: /no\s+(?:\w+(?:-\w+)*\s+){0,3}(?:match|occurrence|reference|result)|no\s+(?:tracked\s+)?(?:repository\s+)?files?\s+contain|not\s+found|does\s+not\s+(?:appear|exist)|absent|0\s+(?:match|occurrence)/i.test(
-					finalText,
-				),
+				passed:
+					typeof searchReport === "string" &&
+					/no\s+(?:\w+(?:-\w+)*\s+){0,3}(?:match|occurrence|reference|result)|no\s+(?:tracked\s+)?(?:repository\s+)?files?\s+contain|not\s+found|does\s+not\s+(?:appear|exist)|absent|0\s+(?:match|occurrence)/i.test(
+						searchReport,
+					),
 			},
 		)
 	} else {
@@ -209,7 +289,10 @@ export function inspectRecoveryTrace(
 		})
 		const messages = (Array.isArray(ui) ? ui : [])
 			.map(record)
-			.filter((message) => message && typeof message.ts === "number" && message.ts >= phaseStart)
+			.filter(
+				(message) =>
+					message && typeof message.ts === "number" && message.ts >= phaseStart && message.ts < phaseEnd,
+			)
 		// A physical turn can complete with an honest report that the requested
 		// integration is still unverified. Legacy reports remain readable, but
 		// neither their tool name nor its absence proves physical completion.
@@ -225,9 +308,7 @@ export function inspectRecoveryTrace(
 			},
 			{
 				name: "verification_one_blocked_handoff",
-				passed:
-					hasCompletedPhase(lifecycle, phaseStart) &&
-					(reports.length === 0 || (blocked.length === 1 && reports.length === 1)),
+				passed: completedPhase && (reports.length === 0 || (blocked.length === 1 && reports.length === 1)),
 			},
 			{
 				name: "verification_missing_evidence_reported",

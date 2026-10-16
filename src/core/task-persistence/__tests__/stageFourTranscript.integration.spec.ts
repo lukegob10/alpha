@@ -59,7 +59,7 @@ interface TaskPersistenceBoundaries {
 		state: undefined,
 		signal: AbortSignal,
 	): Promise<ToolSchedulerOutcome>
-	finalizeTerminationAfterAbort(abortPromise: Promise<void>): Promise<void>
+	finalizeTerminationAfterAbort: Task["finalizeTerminationAfterAbort"]
 }
 
 const boundaries = (task: Task) => task as unknown as TaskPersistenceBoundaries
@@ -114,7 +114,12 @@ async function createHarness() {
 			workspacePath: directory,
 			globalStoragePath: storagePath,
 			abort: false,
-			api: {},
+			api: {
+				getModel: vi.fn<Task["api"]["getModel"]>(() => ({
+					id: "gpt-4.1",
+					info: { contextWindow: 128_000, supportsPromptCache: false },
+				})),
+			},
 			apiConfiguration: { apiProvider: "openai", apiModelId: "gpt-4.1" },
 			apiConversationHistory: [],
 			apiConversationHistorySaveQueue: Promise.resolve(),
@@ -576,7 +581,8 @@ describe("Stage Four real Task transcript persistence", () => {
 				await writeRelease.promise
 			}
 		}
-		const termination = boundaries(task).finalizeTerminationAfterAbort(Promise.resolve())
+		const cancellation = task["captureTaskCancellationBoundary"]()
+		const termination = boundaries(task).finalizeTerminationAfterAbort(Promise.resolve(), cancellation)
 		Reflect.set(task, "taskTerminationPromise", termination)
 		let terminated = false
 		const joined = observe(

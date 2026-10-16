@@ -11,7 +11,7 @@ import {
 } from "../tools/commandOutputContract"
 
 /** Retain references in native inputs/results, summaries, and historical message representations. */
-function collectArtifactExecutionIds(messages: readonly (AlphaMessage | ApiMessage)[]): Set<string> {
+export function collectArtifactExecutionIds(messages: readonly (AlphaMessage | ApiMessage)[]): Set<string> {
 	const ids = new Set<string>()
 	const pending: unknown[] = [...messages]
 	const seen = new WeakSet<object>()

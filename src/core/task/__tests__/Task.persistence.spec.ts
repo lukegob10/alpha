@@ -2079,8 +2079,23 @@ describe("Task persistence", () => {
 			}
 			;(task as any).providerRef = { deref: () => lifecycleProvider }
 			await (task as any).beginCanonicalLifecycleTurn()
-			const step = { stepId: `${(task as any).agentTurnId}:step-1` }
-			;(task as any).currentAgentStep = step
+			const schemas = getNativeTools()
+			const surface = createTaskToolSurface({
+				registry: new ToolRegistry({ nativeTools: schemas }),
+				schemas,
+				mode: "code",
+			})
+			const step = task["captureAgentStep"](
+				0,
+				"Cancellation persistence fixture",
+				[],
+				[...surface.schemas],
+				undefined,
+				{ taskId: task.taskId },
+				"code",
+				task.api.getModel().info,
+				surface,
+			)
 			await (task as any).ensureCanonicalLifecycleStepStarted(step)
 			const calls = [
 				{ type: "tool_call", id: "call-1", name: "read_file", arguments: { path: "a.txt" } },

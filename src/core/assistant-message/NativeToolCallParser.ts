@@ -86,7 +86,7 @@ export class NativeToolCallParser {
 	private static isExecCommandArgs(value: unknown): value is NativeToolArgs["exec_command"] {
 		if (
 			!this.isArgumentObject(value) ||
-			!this.hasOnlyKeys(value, ["cmd", "workdir", "yield_time_ms", "max_output_tokens", "verification"])
+			!this.hasOnlyKeys(value, ["cmd", "workdir", "tty", "yield_time_ms", "max_output_tokens", "verification"])
 		) {
 			return false
 		}
@@ -96,6 +96,7 @@ export class NativeToolCallParser {
 				value.verification === null ||
 				this.parseCommandVerificationScope(value.verification) !== undefined) &&
 			(value.workdir === undefined || value.workdir === null || typeof value.workdir === "string") &&
+			(value.tty === undefined || value.tty === null || typeof value.tty === "boolean") &&
 			(value.yield_time_ms === undefined ||
 				value.yield_time_ms === null ||
 				(typeof value.yield_time_ms === "number" && Number.isInteger(value.yield_time_ms))) &&
@@ -927,10 +928,12 @@ export class NativeToolCallParser {
 				break
 
 			case "skill":
-				if (partialArgs.skill !== undefined) {
+				if (partialArgs.skill !== undefined || partialArgs.action === "list") {
 					nativeArgs = {
 						skill: partialArgs.skill,
 						args: partialArgs.args,
+						...(partialArgs.action === undefined ? {} : { action: partialArgs.action }),
+						...(partialArgs.cursor === undefined ? {} : { cursor: partialArgs.cursor }),
 					}
 				}
 				break
@@ -1478,10 +1481,12 @@ export class NativeToolCallParser {
 					break
 
 				case "skill":
-					if (args.skill !== undefined) {
+					if (args.skill !== undefined || args.action === "list") {
 						nativeArgs = {
 							skill: args.skill,
 							args: args.args,
+							...(args.action === undefined ? {} : { action: args.action }),
+							...(args.cursor === undefined ? {} : { cursor: args.cursor }),
 						} as NativeArgsFor<TName>
 					}
 					break

@@ -160,6 +160,7 @@ describe("write_stdin adapter", () => {
 			askApproval: vi.fn(),
 			handleError: vi.fn(),
 			pushToolResult,
+			toolCallId: "abc123",
 		} as unknown as ToolCallbacks
 
 		await descriptor!.execute({ task: {} as Task, call, callbacks })
@@ -170,7 +171,7 @@ describe("write_stdin adapter", () => {
 			getCommandToolResultLimit(wrappedCallbacks),
 			"abc123",
 		)
-		wrappedCallbacks.pushToolResult(content)
+		wrappedCallbacks.pushCommandResult!({ wall_time_seconds: 0.125, output: "x".repeat(1_000), exit_code: 0 })
 
 		expect(content).toMatch(/^Chunk ID: abc123\nWall time: 0\.1250 seconds\nProcess exited with code 0\nOutput:\n/)
 		const output = content.slice(content.indexOf("Output:\n") + "Output:\n".length)

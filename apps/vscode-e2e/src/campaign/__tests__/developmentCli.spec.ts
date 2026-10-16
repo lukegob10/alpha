@@ -4,7 +4,9 @@ import * as path from "node:path"
 import * as os from "node:os"
 import * as fs from "node:fs/promises"
 import { randomUUID } from "node:crypto"
+import { createRequire } from "node:module"
 import { main } from "../../runCampaign"
+import type { CampaignEvaluationIdentity } from "../types"
 
 test("suite CLI rejects ambiguous or unsafe selection before creating a campaign or launching a host", async () => {
 	const root = path.join(os.tmpdir(), "not-created-development-cli")
@@ -105,5 +107,86 @@ test("dry-run plans a live suite without creating directories or trying to execu
 test("dry-run rejects structurally unsafe roots just like execution", async () => {
 	for (const root of ["relative-root", os.homedir(), path.parse(os.tmpdir()).root]) {
 		await assert.rejects(main(["--suite", "smoke", "--provider", "scripted", "--root", root, "--dry-run"]))
+	}
+})
+
+test("a non-gated live campaign prepares its sidecar before capturing evaluation provenance", async (context) => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-live-provenance-")))
+	const require = createRequire(__filename)
+	const sidecar = require("../../liveHostProtocol") as typeof import("../../liveHostProtocol")
+	const identity = require("../evaluationIdentity") as typeof import("../evaluationIdentity")
+	const adapter = require("../extensionAdapter") as typeof import("../extensionAdapter")
+	let prepared = false
+	const capturedDigests: string[] = []
+	context.mock.method(sidecar, "prepareLiveSidecar", async () => {
+		prepared = true
+		return path.join(root, "sidecar")
+	})
+	context.mock.method(
+		identity,
+		"captureCampaignEvaluationIdentity",
+		async (): Promise<CampaignEvaluationIdentity> => {
+			const harnessDigest = prepared ? "prepared-sidecar" : "unprepared-sidecar"
+			capturedDigests.push(harnessDigest)
+			return {
+				extensionCommit: "commit",
+				workingTreeDigest: "source",
+				extensionBuildDigest: "build",
+				harnessDigest,
+				configDigest: "config",
+				taskSetDigest: "tasks",
+				sourceComponentsDigest: "components",
+				unchanged: false,
+				missing: [],
+			}
+		},
+	)
+	context.mock.method(
+		adapter,
+		"createExtensionCampaignOperations",
+		(options: Parameters<typeof adapter.createExtensionCampaignOperations>[0]) => ({
+			runScenario: async () => {
+				// The real runExtensionTests boundary also prepares the sidecar on its first launch.
+				await sidecar.prepareLiveSidecar()
+				return {
+					status: "blocked" as const,
+					failure: { class: "infrastructure" as const, fingerprint: "fixture-stop" },
+					usage: { requests: 0, inputTokens: null, outputTokens: null, cost: null },
+				}
+			},
+			preserveEvidence: async () => "fixture/manifest.json",
+			persistReport: options.persistReport,
+		}),
+	)
+	try {
+		assert.equal(
+			await main([
+				"--suite",
+				"smoke",
+				"--provider",
+				"live-copilot",
+				"--model-id",
+				"fixture-model",
+				"--effort",
+				"high",
+				"--id",
+				"live-provenance",
+				"--root",
+				root,
+				"--init-root",
+			]),
+			2,
+		)
+		assert.deepEqual(capturedDigests, ["prepared-sidecar", "prepared-sidecar"])
+		const directory = path.join(root, "live-provenance")
+		const reportFile = (await fs.readdir(directory))
+			.filter((file) => /^report-\d+\.json$/.test(file))
+			.sort()
+			.at(-1)!
+		const report = JSON.parse(await fs.readFile(path.join(directory, reportFile), "utf8"))
+		assert.equal(report.evaluationIdentity.unchanged, true)
+	} finally {
+		assert.match(path.basename(root), /^alpha-live-provenance-/)
+		await fs.rm(root, { recursive: true, force: true })
 	}
 })

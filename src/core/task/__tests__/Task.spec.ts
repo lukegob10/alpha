@@ -39,6 +39,7 @@ import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
 import { ToolScheduler } from "../../agent/ToolScheduler"
 import { createAgentLifecycleSnapshot } from "../../agent/lifecycle/reducer"
+import type { AgentLifecycleEventInput } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { parseProposedPlan } from "../../../shared/plan-mode"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
@@ -47,6 +48,16 @@ import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
 import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
+import {
+	clearTaskSessionApprovalGrants,
+	createTaskSessionApprovalKey,
+	grantTaskSessionApproval,
+	hasTaskSessionApproval,
+} from "../../auto-approval/taskSessionApprovalGrants"
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
+import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
+import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import * as contextManagement from "../../context-management"
 import type { AgentMessage } from "../../task-persistence/AgentMessageInbox"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
@@ -3581,12 +3592,29 @@ describe("Alpha", () => {
 			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
 			const saveSpy = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
 
+			const firstReceipt = task.beginTaskCancellation()
+			const firstTermination = firstReceipt.termination.then(
+				() => ({ status: "fulfilled" as const }),
+				(error: unknown) => ({ status: "rejected" as const, error }),
+			)
+			expect(Object.isFrozen(firstReceipt)).toBe(true)
+			expect(task.beginTaskCancellation()).toBe(firstReceipt)
 			await expect(task.abortTask()).rejects.toThrow("tree cleanup failed")
+			expect(await firstTermination).toMatchObject({
+				status: "rejected",
+				error: expect.objectContaining({ message: "tree cleanup failed" }),
+			})
 
 			expect(disposeSpy).toHaveBeenCalledOnce()
 			expect(saveSpy).toHaveBeenCalledOnce()
 
+			const retryReceipt = task.beginTaskCancellation()
+			expect(retryReceipt).not.toBe(firstReceipt)
+			expect(retryReceipt.abort).not.toBe(firstReceipt.abort)
+			expect(retryReceipt.termination).not.toBe(firstReceipt.termination)
+			expect(task.beginTaskCancellation()).toBe(retryReceipt)
 			await expect(task.abortTask()).resolves.toBeUndefined()
+			await expect(retryReceipt.termination).resolves.toBeUndefined()
 			expect(terminalProcess.abort).toHaveBeenCalledTimes(2)
 			expect(disposeSpy).toHaveBeenCalledTimes(2)
 			expect(saveSpy).toHaveBeenCalledTimes(2)
@@ -3732,6 +3760,1820 @@ describe("Alpha", () => {
 			// Restore console.error
 			consoleErrorSpy.mockRestore()
 		})
+		describe("captured resource cleanup", () => {
+			it.each(["same-instance turn handoff", "different-instance handoff", "already-superseded worker"] as const)(
+				"joins only old command resources after %s while retaining replacement services",
+				async (handoff) => {
+					let releaseGoal!: () => void
+					const goalShutdown = new Promise<void>((resolve) => (releaseGoal = resolve))
+					let releaseAbort!: () => void
+					const abortAcknowledgement = new Promise<void>((resolve) => (releaseAbort = resolve))
+					const oldProcess = Object.assign(new EventEmitter(), {
+						executionId: "old-owned-execution",
+						isSettled: false,
+						abort: vi.fn(() => abortAcknowledgement),
+						getUnretrievedOutput: vi.fn(() => "unread old output"),
+					})
+					const replacementProcess = Object.assign(new EventEmitter(), {
+						executionId: "replacement-execution",
+						isSettled: false,
+						abort: vi.fn(async () => undefined),
+						getUnretrievedOutput: vi.fn(() => "unread replacement output"),
+					})
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "old resource owner",
+						startTask: false,
+						enableCheckpoints: false,
+					})
+					Object.assign(task, {
+						taskKind: "subagent",
+						subagentRole: "worker",
+						goalShutdownPromise: goalShutdown,
+						...(handoff === "already-superseded worker" ? {} : { terminalProcess: oldProcess }),
+					})
+					task.beginCommandExecution("old-command", oldProcess.executionId, "old command")
+					const oldLifetime = task.getTaskLifetimeCancellationSignal()
+					const oldQueueDispose = vi.spyOn(task.messageQueueService, "dispose")
+					const oldTrackerDispose = vi.spyOn(task["fileContextTracker"], "dispose")
+					const oldDispose = vi.spyOn(task, "dispose")
+					task.isStreaming = true
+					task.diffViewProvider.isEditing = true
+					const oldRevert = vi.spyOn(task.diffViewProvider, "revertChanges").mockResolvedValue(undefined)
+					const registry = vi
+						.spyOn(TerminalRegistry, "getTerminals")
+						.mockReturnValue([
+							{ taskId: task.taskId, process: oldProcess, running: true },
+							...(handoff === "already-superseded worker"
+								? [{ taskId: task.taskId, process: replacementProcess, running: true }]
+								: []),
+						] as unknown as ReturnType<typeof TerminalRegistry.getTerminals>)
+					const releaseSharedTerminals = vi
+						.spyOn(TerminalRegistry, "releaseTerminalsForTask")
+						.mockImplementation(() => undefined)
+					const cleanupSharedOutput = vi.spyOn(OutputInterceptor, "cleanupByIds").mockResolvedValue(undefined)
+					const broadOutputCleanup = vi.spyOn(OutputInterceptor, "cleanup").mockResolvedValue(undefined)
+					let replacement: Task | undefined
+					let replacementQueueDispose: typeof oldQueueDispose | undefined
+					let replacementTrackerDispose: typeof oldTrackerDispose | undefined
+					let stopped: Promise<void> | undefined
+					let termination: Promise<void> | undefined
+					let stopSettled = false
+					const oldSessionId =
+						handoff === "already-superseded worker"
+							? commandSessionRegistry.register(task, oldProcess as unknown as AlphaTerminalProcess)
+							: undefined
+					let replacementSessionId: number | undefined
+					const installReplacement = () => {
+						if (handoff === "same-instance turn handoff") {
+							replacement = task
+							Object.assign(task, {
+								agentRunId: "replacement-run",
+								agentTurnId: "replacement-turn",
+								terminalProcess: replacementProcess,
+								taskCancellationController: new AbortController(),
+							})
+						} else {
+							replacement = new Task({
+								provider: mockProvider,
+								apiConfiguration: mockApiConfig,
+								taskId: task.taskId,
+								task: "replacement resource owner",
+								startTask: false,
+								enableCheckpoints: false,
+							})
+							Object.assign(replacement, { terminalProcess: replacementProcess })
+						}
+						replacement.beginCommandExecution("new-command", replacementProcess.executionId, "new command")
+						replacementQueueDispose = vi.spyOn(replacement.messageQueueService, "dispose")
+						replacementTrackerDispose = vi.spyOn(replacement["fileContextTracker"], "dispose")
+						if (handoff === "already-superseded worker") {
+							replacementSessionId = commandSessionRegistry.register(
+								replacement,
+								replacementProcess as unknown as AlphaTerminalProcess,
+							)
+						}
+					}
+					const approvalKey = createTaskSessionApprovalKey({
+						taskId: task.taskId,
+						toolName: "execute_command",
+						askType: "command",
+						argumentsValue: { command: "new command" },
+						cwd: task.cwd,
+					})!
+					try {
+						if (handoff === "already-superseded worker") installReplacement()
+						stopped = task.abortTask()
+						termination = task.waitForTermination()
+						void termination.catch(() => undefined)
+						void stopped.then(
+							() => (stopSettled = true),
+							() => (stopSettled = true),
+						)
+						expect(oldLifetime.aborted).toBe(true)
+						expect(oldProcess.abort).toHaveBeenCalledOnce()
+						if (!replacement) installReplacement()
+						expect(grantTaskSessionApproval(approvalKey, task.taskId, new AbortController().signal)).toBe(
+							true,
+						)
+						expect(replacementProcess.abort).not.toHaveBeenCalled()
+						releaseGoal()
+						await goalShutdown
+						await Promise.resolve()
+						expect(stopSettled).toBe(false)
+						releaseAbort()
+						await abortAcknowledgement
+						await Promise.resolve()
+						expect(stopSettled).toBe(false)
+						oldProcess.isSettled = true
+						oldProcess.emit("completed")
+						await stopped
+						await termination
+						expect(stopSettled).toBe(true)
+						expect(oldProcess.abort).toHaveBeenCalledOnce()
+						expect(oldProcess.listenerCount("completed")).toBe(0)
+						expect(oldProcess.listenerCount("error")).toBe(0)
+						expect(replacementProcess.abort).not.toHaveBeenCalled()
+						expect(replacement!.getTaskLifetimeCancellationSignal().aborted).toBe(false)
+						expect(replacementQueueDispose).not.toHaveBeenCalled()
+						expect(replacementTrackerDispose).not.toHaveBeenCalled()
+						expect(replacement!.getCommandExecutionEvidence()).toContainEqual(
+							expect.objectContaining({ toolCallId: "new-command", status: "running" }),
+						)
+						expect(hasTaskSessionApproval(approvalKey)).toBe(true)
+						expect(releaseSharedTerminals).not.toHaveBeenCalled()
+						expect(cleanupSharedOutput).not.toHaveBeenCalled()
+						expect(broadOutputCleanup).not.toHaveBeenCalled()
+						expect(oldRevert).not.toHaveBeenCalled()
+						if (handoff === "same-instance turn handoff") {
+							expect(oldDispose).not.toHaveBeenCalled()
+							expect(oldQueueDispose).not.toHaveBeenCalled()
+							expect(oldTrackerDispose).not.toHaveBeenCalled()
+						} else {
+							expect(oldDispose).toHaveBeenCalledExactlyOnceWith({
+								preserveSharedTaskResources: true,
+								preserveCommandOutputArtifacts: false,
+								commandOutputCleanup: {
+									guard: expect.any(Function),
+									outputs: expect.any(Array),
+									candidates: expect.any(Set),
+								},
+							})
+							expect(oldQueueDispose).toHaveBeenCalledOnce()
+							expect(oldTrackerDispose).toHaveBeenCalledOnce()
+						}
+						if (handoff === "already-superseded worker") {
+							expect(commandSessionRegistry.resolve(task, oldSessionId!)).toBeUndefined()
+							expect(
+								commandSessionRegistry.ownsOutput(oldProcess as unknown as AlphaTerminalProcess),
+							).toBe(false)
+							expect(commandSessionRegistry.resolve(replacement!, replacementSessionId!)?.process).toBe(
+								replacementProcess,
+							)
+							expect(
+								commandSessionRegistry.ownsOutput(
+									replacementProcess as unknown as AlphaTerminalProcess,
+								),
+							).toBe(true)
+							expect(oldProcess.getUnretrievedOutput).not.toHaveBeenCalled()
+							expect(replacementProcess.getUnretrievedOutput).not.toHaveBeenCalled()
+						}
+					} finally {
+						registry.mockReturnValue([])
+						releaseGoal()
+						releaseAbort()
+						oldProcess.isSettled = true
+						oldProcess.emit("completed")
+						replacementProcess.isSettled = true
+						replacementProcess.emit("completed")
+						try {
+							if (stopped) await stopped
+							if (termination) await termination
+						} finally {
+							try {
+								if (replacement) {
+									replacement.isStreaming = false
+									replacement.diffViewProvider.isEditing = false
+									replacement.dispose({ preserveSharedTaskResources: true })
+								}
+								if (!oldDispose.mock.calls.length) task.dispose({ preserveSharedTaskResources: true })
+							} finally {
+								clearTaskSessionApprovalGrants(task.taskId)
+								registry.mockRestore()
+								releaseSharedTerminals.mockRestore()
+								cleanupSharedOutput.mockRestore()
+								broadOutputCleanup.mockRestore()
+							}
+						}
+					}
+				},
+			)
+
+			it("joins owned command shutdown and performs ordinary task resource cleanup", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "ordinary owned Stop cleanup",
+					startTask: false,
+					enableCheckpoints: false,
+				})
+				let releaseGoal!: () => void
+				const goalShutdown = new Promise<void>((resolve) => (releaseGoal = resolve))
+				let releaseAbort!: () => void
+				const abortAcknowledgement = new Promise<void>((resolve) => (releaseAbort = resolve))
+				const process = Object.assign(new EventEmitter(), {
+					executionId: "ordinary-owned-command",
+					isSettled: false,
+					abort: vi.fn(() => abortAcknowledgement),
+					getUnretrievedOutput: vi.fn(() => "unread owned output"),
+				})
+				Object.assign(task, {
+					taskKind: "subagent",
+					subagentRole: "worker",
+					terminalProcess: process,
+					goalShutdownPromise: goalShutdown,
+				})
+				task.beginCommandExecution("owned-command", process.executionId, "owned command")
+				const registry = vi
+					.spyOn(TerminalRegistry, "getTerminals")
+					.mockReturnValue([{ taskId: task.taskId, process, running: true }] as unknown as ReturnType<
+						typeof TerminalRegistry.getTerminals
+					>)
+				const sessionId = commandSessionRegistry.register(task, process as unknown as AlphaTerminalProcess)
+				const lifetime = task.getTaskLifetimeCancellationSignal()
+				vi.spyOn(task, "getTokenUsage").mockReturnValue({ ...task.getTokenUsage(), totalTokensIn: 1 })
+				const usageUpdated = vi.fn()
+				const taskAborted = vi.fn()
+				task.on(AlphaCodeEventName.TaskTokenUsageUpdated, usageUpdated)
+				task.on(AlphaCodeEventName.TaskAborted, taskAborted)
+				const dispose = vi.spyOn(task, "dispose")
+				const queueDispose = vi.spyOn(task.messageQueueService, "dispose")
+				const trackerDispose = vi.spyOn(task["fileContextTracker"], "dispose")
+				const releaseTerminals = vi
+					.spyOn(TerminalRegistry, "releaseTerminalsForTask")
+					.mockImplementation(() => {})
+				const cleanupOutput = vi.spyOn(OutputInterceptor, "cleanupByIds").mockResolvedValue(undefined)
+				const broadOutputCleanup = vi.spyOn(OutputInterceptor, "cleanup").mockResolvedValue(undefined)
+				task.isStreaming = true
+				task.diffViewProvider.isEditing = true
+				const revert = vi.spyOn(task.diffViewProvider, "revertChanges").mockResolvedValue(undefined)
+				const approvalKey = createTaskSessionApprovalKey({
+					taskId: task.taskId,
+					toolName: "execute_command",
+					askType: "command",
+					argumentsValue: { command: "owned command" },
+					cwd: task.cwd,
+				})!
+				let stopped: Promise<void> | undefined
+				let termination: Promise<void> | undefined
+				let stopSettled = false
+				try {
+					expect(grantTaskSessionApproval(approvalKey, task.taskId, lifetime)).toBe(true)
+					const receipt = task.beginTaskCancellation()
+					stopped = receipt.abort
+					termination = receipt.termination
+					void termination.catch(() => undefined)
+					expect(Object.isFrozen(receipt)).toBe(true)
+					expect(receipt.isCurrent()).toBe(true)
+					expect(task.beginTaskCancellation()).toBe(receipt)
+					expect(task.abortTask()).toBe(receipt.abort)
+					void stopped.then(
+						() => (stopSettled = true),
+						() => (stopSettled = true),
+					)
+					expect(lifetime.aborted).toBe(true)
+					expect(process.abort).toHaveBeenCalledOnce()
+					releaseGoal()
+					releaseAbort()
+					await abortAcknowledgement
+					await Promise.resolve()
+					expect(stopSettled).toBe(false)
+					process.isSettled = true
+					process.emit("completed")
+					await stopped
+					await termination
+					expect(receipt.isCurrent()).toBe(true)
+					expect(usageUpdated).toHaveBeenCalledOnce()
+					expect(taskAborted).toHaveBeenCalledOnce()
+					expect(usageUpdated.mock.invocationCallOrder[0]).toBeLessThan(
+						taskAborted.mock.invocationCallOrder[0],
+					)
+					expect(dispose).toHaveBeenCalledExactlyOnceWith({
+						preserveCommandOutputArtifacts: false,
+						commandOutputCleanup: {
+							guard: expect.any(Function),
+							outputs: expect.any(Array),
+							candidates: expect.any(Set),
+						},
+					})
+					expect(queueDispose).toHaveBeenCalledOnce()
+					expect(trackerDispose).toHaveBeenCalledOnce()
+					expect(releaseTerminals).toHaveBeenCalledExactlyOnceWith(task.taskId)
+					expect(cleanupOutput).toHaveBeenCalledExactlyOnceWith(
+						path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", task.taskId, "command-output"),
+						expect.any(Set),
+						expect.any(Set),
+						expect.any(Function),
+					)
+					expect(broadOutputCleanup).not.toHaveBeenCalled()
+					expect(revert).toHaveBeenCalledOnce()
+					expect(hasTaskSessionApproval(approvalKey)).toBe(false)
+					expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+					expect(commandSessionRegistry.ownsOutput(process as unknown as AlphaTerminalProcess)).toBe(false)
+					expect(process.getUnretrievedOutput).not.toHaveBeenCalled()
+					expect(process.listenerCount("completed")).toBe(0)
+					expect(process.listenerCount("error")).toBe(0)
+				} finally {
+					registry.mockReturnValue([])
+					releaseGoal()
+					releaseAbort()
+					process.isSettled = true
+					process.emit("completed")
+					try {
+						if (stopped) await stopped
+						if (termination) await termination
+					} finally {
+						if (!dispose.mock.calls.length) task.dispose({ preserveSharedTaskResources: true })
+						clearTaskSessionApprovalGrants(task.taskId)
+						registry.mockRestore()
+						releaseTerminals.mockRestore()
+						cleanupOutput.mockRestore()
+						broadOutputCleanup.mockRestore()
+					}
+				}
+			})
+
+			it("withholds stale TaskAborted after an actual final-usage observer replaces the owner", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "final usage observer handoff",
+					startTask: false,
+					enableCheckpoints: false,
+				})
+				let releaseAbort!: () => void
+				const abortAcknowledgement = new Promise<void>((resolve) => (releaseAbort = resolve))
+				const process = Object.assign(new EventEmitter(), {
+					executionId: "usage-owner-command",
+					isSettled: false,
+					abort: vi.fn(() => abortAcknowledgement),
+				})
+				Object.assign(task, {
+					taskKind: "subagent",
+					subagentRole: "worker",
+					terminalProcess: process,
+					goalShutdownPromise: Promise.resolve(),
+				})
+				task.beginCommandExecution("usage-owner-call", process.executionId, "owned command")
+				vi.spyOn(task, "getTokenUsage").mockReturnValue({ ...task.getTokenUsage(), totalTokensIn: 1 })
+				const registry = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([])
+				const dispose = vi.spyOn(task, "dispose")
+				const taskAborted = vi.fn()
+				task.on(AlphaCodeEventName.TaskAborted, taskAborted)
+				const replacementHistory: ApiMessage[] = [
+					{ role: "user", content: [{ type: "text", text: "replacement history" }] },
+				]
+				const replacementPending: Anthropic.Messages.ContentBlockParam[] = [
+					{ type: "text", text: "replacement pending content" },
+				]
+				const replacementLifetime = new AbortController()
+				let callsAtHandoff = -1
+				let processSettledAtHandoff = false
+				const usageUpdated = vi.fn(() => {
+					processSettledAtHandoff = process.isSettled
+					callsAtHandoff = mockProvider.publishAgentLifecycleEvent.mock.calls.length
+					Object.assign(task, {
+						agentRunId: "usage-replacement-run",
+						agentTurnId: "usage-replacement-turn",
+						apiConversationHistory: replacementHistory,
+						userMessageContent: replacementPending,
+						userMessageContentReady: true,
+						isTaskLoopActive: true,
+						consecutiveNoToolUseCount: 42,
+						taskCancellationController: replacementLifetime,
+					})
+				})
+				task.on(AlphaCodeEventName.TaskTokenUsageUpdated, usageUpdated)
+				let stopped: Promise<void> | undefined
+				let termination: Promise<void> | undefined
+				try {
+					stopped = task.abortTask()
+					termination = task.waitForTermination()
+					void termination.catch(() => undefined)
+					expect(process.abort).toHaveBeenCalledOnce()
+					expect(usageUpdated).not.toHaveBeenCalled()
+					releaseAbort()
+					await abortAcknowledgement
+					await Promise.resolve()
+					expect(usageUpdated).not.toHaveBeenCalled()
+					process.isSettled = true
+					process.emit("completed")
+					await stopped
+					await termination
+					expect(usageUpdated).toHaveBeenCalledOnce()
+					expect(processSettledAtHandoff).toBe(true)
+					expect(taskAborted).not.toHaveBeenCalled()
+					expect(dispose).not.toHaveBeenCalled()
+					expect(task.apiConversationHistory).toBe(replacementHistory)
+					expect(task["userMessageContent"]).toBe(replacementPending)
+					expect(task["userMessageContent"]).toEqual([{ type: "text", text: "replacement pending content" }])
+					expect(task["userMessageContentReady"]).toBe(true)
+					expect(task["isTaskLoopActive"]).toBe(true)
+					expect(task["consecutiveNoToolUseCount"]).toBe(42)
+					expect(replacementLifetime.signal.aborted).toBe(false)
+					expect(mockProvider.publishAgentLifecycleEvent.mock.calls).toHaveLength(callsAtHandoff)
+					expect(process.listenerCount("completed")).toBe(0)
+					expect(process.listenerCount("error")).toBe(0)
+				} finally {
+					releaseAbort()
+					process.isSettled = true
+					process.emit("completed")
+					try {
+						if (stopped) await stopped
+						if (termination) await termination
+					} finally {
+						task.dispose({ preserveSharedTaskResources: true })
+						registry.mockRestore()
+					}
+				}
+			})
+
+			it.each([
+				{ suffix: "", firstFailure: new Error("first command tree could not stop") },
+				{ suffix: " (undefined rejection)", firstFailure: undefined },
+			])(
+				"joins a held background command before reporting an earlier command abort rejection$suffix",
+				async ({ firstFailure }) => {
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "all owned command shutdowns",
+						startTask: false,
+						enableCheckpoints: false,
+					})
+					await task.messageQueueService.ready
+					let releaseGoal!: () => void
+					const goalShutdown = new Promise<void>((resolve) => (releaseGoal = resolve))
+					let releaseBackgroundAbort!: () => void
+					const backgroundAcknowledgement = new Promise<void>((resolve) => (releaseBackgroundAbort = resolve))
+					let rejectReplacementGoal!: (error: unknown) => void
+					const replacementGoalFailure = new Error("replacement goal shutdown failed independently")
+					const replacementGoal = new Promise<void>((_resolve, reject) => (rejectReplacementGoal = reject))
+					const replacementGoalOutcome = replacementGoal.then(
+						() => ({ status: "fulfilled" as const }),
+						(error: unknown) => ({ status: "rejected" as const, error }),
+					)
+					const firstProcess = Object.assign(new EventEmitter(), {
+						executionId: "first-failing-command",
+						isSettled: false,
+						abort: vi.fn(() => {
+							Object.assign(task, {
+								agentRunId: "new-run",
+								agentTurnId: "new-turn",
+								goalShutdownPromise: replacementGoal,
+							})
+							throw firstFailure
+						}),
+					})
+					const backgroundProcess = Object.assign(new EventEmitter(), {
+						executionId: "held-background-command",
+						isSettled: false,
+						abort: vi.fn(() => backgroundAcknowledgement),
+					})
+					Object.assign(task, {
+						taskKind: "subagent",
+						subagentRole: "worker",
+						terminalProcess: firstProcess,
+						goalShutdownPromise: goalShutdown,
+					})
+					task.beginCommandExecution("first-call", firstProcess.executionId, "first command")
+					task.beginCommandExecution("background-call", backgroundProcess.executionId, "background command")
+					const registry = vi
+						.spyOn(TerminalRegistry, "getTerminals")
+						.mockReturnValue([{ process: backgroundProcess, running: true }] as unknown as ReturnType<
+							typeof TerminalRegistry.getTerminals
+						>)
+					let observed: Promise<{ status: "fulfilled" } | { status: "rejected"; error: unknown }> | undefined
+					let termination:
+						| Promise<{ status: "fulfilled" } | { status: "rejected"; error: unknown }>
+						| undefined
+					let stopOutcome: { status: "fulfilled" } | { status: "rejected"; error: unknown } | undefined
+					let terminationOutcome: { status: "fulfilled" } | { status: "rejected"; error: unknown } | undefined
+					vi.useFakeTimers()
+					try {
+						observed = task.abortTask().then(
+							() => (stopOutcome = { status: "fulfilled" }),
+							(error: unknown) => (stopOutcome = { status: "rejected", error }),
+						)
+						termination = task.waitForTermination().then(
+							() => (terminationOutcome = { status: "fulfilled" }),
+							(error: unknown) => (terminationOutcome = { status: "rejected", error }),
+						)
+						expect(firstProcess.abort).toHaveBeenCalledOnce()
+						expect(backgroundProcess.abort).toHaveBeenCalledOnce()
+						expect(task["goalShutdownPromise"]).toBe(replacementGoal)
+						releaseGoal()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(stopOutcome).toBeUndefined()
+						expect(vi.getTimerCount()).toBe(1)
+						releaseBackgroundAbort()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(stopOutcome).toBeUndefined()
+						backgroundProcess.isSettled = true
+						backgroundProcess.emit("completed")
+						const stopped = await observed
+						expect(stopped.status).toBe("rejected")
+						if (stopped.status !== "rejected") throw new Error("Stop unexpectedly accepted failed cleanup")
+						expect(stopped.error).toBe(firstFailure)
+						await vi.advanceTimersByTimeAsync(0)
+						expect(terminationOutcome).toMatchObject({ status: "rejected" })
+						const terminated = await termination
+						expect(terminated.status).toBe("rejected")
+						if (terminated.status !== "rejected") throw new Error("Termination lost failed command cleanup")
+						expect(terminated.error).toBe(firstFailure)
+						rejectReplacementGoal(replacementGoalFailure)
+						const replacementFailed = await replacementGoalOutcome
+						expect(replacementFailed.status).toBe("rejected")
+						if (replacementFailed.status !== "rejected")
+							throw new Error("Expected replacement goal rejection")
+						expect(replacementFailed.error).toBe(replacementGoalFailure)
+						expect((await termination).status).toBe("rejected")
+						expect(terminated.error).toBe(firstFailure)
+						expect(firstProcess.listenerCount("completed")).toBe(0)
+						expect(firstProcess.listenerCount("error")).toBe(0)
+						expect(backgroundProcess.listenerCount("completed")).toBe(0)
+						expect(backgroundProcess.listenerCount("error")).toBe(0)
+						expect(vi.getTimerCount()).toBe(0)
+					} finally {
+						registry.mockReturnValue([])
+						releaseGoal()
+						releaseBackgroundAbort()
+						rejectReplacementGoal(replacementGoalFailure)
+						backgroundProcess.isSettled = true
+						backgroundProcess.emit("completed")
+						try {
+							const replacementFailed = await replacementGoalOutcome
+							expect(replacementFailed.status).toBe("rejected")
+							if (replacementFailed.status === "rejected") {
+								expect(replacementFailed.error).toBe(replacementGoalFailure)
+							}
+							if (observed) await observed
+							if (termination) await termination
+						} finally {
+							task.dispose({ preserveSharedTaskResources: true })
+							registry.mockRestore()
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it.each(["goal invalidation", "lifetime abort", "process abort"] as const)(
+				"keeps original cancellation handles and coalesces reentrant Stop during synchronous %s replacement",
+				async (callback) => {
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "inline cancellation owner handoff",
+						startTask: false,
+						enableCheckpoints: false,
+					})
+					const original = {
+						currentRequestAbortController: new AbortController(),
+						agentWaitAbortController: new AbortController(),
+						stepInterruptionController: new AbortController(),
+						contextCondenseAbortController: new AbortController(),
+						postTurnCompactionAbortController: new AbortController(),
+						backgroundUsageDrainAbortController: new AbortController(),
+						taskCancellationController: task["taskCancellationController"],
+					}
+					const replacement = {
+						currentRequestAbortController: new AbortController(),
+						agentWaitAbortController: new AbortController(),
+						stepInterruptionController: new AbortController(),
+						contextCondenseAbortController: new AbortController(),
+						postTurnCompactionAbortController: new AbortController(),
+						backgroundUsageDrainAbortController: new AbortController(),
+						taskCancellationController: new AbortController(),
+					}
+					const replacementProcess = Object.assign(new EventEmitter(), {
+						executionId: "inline-new-command",
+						isSettled: false,
+						abort: vi.fn(async () => undefined),
+					})
+					let replacementInstalled = false
+					let nestedStop: Promise<void> | undefined
+					let nestedReceipt: ReturnType<Task["beginTaskCancellation"]> | undefined
+					const replaceOwner = () => {
+						if (replacementInstalled) return
+						replacementInstalled = true
+						Object.assign(task, replacement, {
+							agentRunId: "inline-replacement-run",
+							agentTurnId: "inline-replacement-turn",
+							terminalProcess: replacementProcess,
+						})
+						nestedReceipt = task.beginTaskCancellation()
+						nestedStop = task.abortTask()
+						void nestedStop.catch(() => undefined)
+					}
+					const originalProcess = Object.assign(new EventEmitter(), {
+						executionId: "inline-old-command",
+						isSettled: false,
+						abort: vi.fn(async () => {
+							if (callback === "process abort") replaceOwner()
+							originalProcess.isSettled = true
+							originalProcess.emit("completed")
+						}),
+					})
+					Object.assign(task, original, {
+						taskKind: "subagent",
+						subagentRole: "worker",
+						terminalProcess: originalProcess,
+						goalShutdownPromise: Promise.resolve(),
+					})
+					task.beginCommandExecution("inline-old-call", originalProcess.executionId, "old command")
+					const registry = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([])
+					const dispose = vi.spyOn(task, "dispose")
+					const goal = task["goalController"]!
+					const originalInvalidate = goal.invalidateContinuation.bind(goal)
+					const invalidate = vi.spyOn(goal, "invalidateContinuation").mockImplementation(() => {
+						originalInvalidate()
+						if (callback === "goal invalidation") replaceOwner()
+					})
+					const onLifetimeAbort = () => {
+						if (callback === "lifetime abort") replaceOwner()
+					}
+					original.taskCancellationController.signal.addEventListener("abort", onLifetimeAbort)
+					let stopped: Promise<void> | undefined
+					let termination: Promise<void> | undefined
+					try {
+						const receipt = task.beginTaskCancellation()
+						stopped = receipt.abort
+						termination = receipt.termination
+						void termination.catch(() => undefined)
+						expect(replacementInstalled).toBe(true)
+						expect(nestedStop).toBe(stopped)
+						expect(nestedReceipt).toBe(receipt)
+						expect(nestedReceipt!.abort).toBe(stopped)
+						expect(nestedReceipt!.termination).toBe(termination)
+						expect(Object.isFrozen(receipt)).toBe(true)
+						expect(receipt.isCurrent()).toBe(false)
+						await stopped
+						await termination
+						for (const controller of Object.values(original)) expect(controller.signal.aborted).toBe(true)
+						for (const controller of Object.values(replacement))
+							expect(controller.signal.aborted).toBe(false)
+						for (const [key, controller] of Object.entries(replacement)) {
+							expect(Reflect.get(task, key)).toBe(controller)
+						}
+						expect(originalProcess.abort).toHaveBeenCalledOnce()
+						expect(replacementProcess.abort).not.toHaveBeenCalled()
+						expect(originalProcess.listenerCount("completed")).toBe(0)
+						expect(originalProcess.listenerCount("error")).toBe(0)
+						expect(dispose).not.toHaveBeenCalled()
+					} finally {
+						original.taskCancellationController.signal.removeEventListener("abort", onLifetimeAbort)
+						invalidate.mockRestore()
+						replacementProcess.isSettled = true
+						replacementProcess.emit("completed")
+						originalProcess.isSettled = true
+						originalProcess.emit("completed")
+						try {
+							if (stopped) await stopped
+							if (nestedStop && nestedStop !== stopped) await nestedStop
+							if (termination) await termination
+						} finally {
+							task.dispose({ preserveSharedTaskResources: true })
+							registry.mockRestore()
+						}
+					}
+				},
+			)
+		})
+
+		describe("passive command archive cancellation", () => {
+			const gate = () => {
+				let resolve!: () => void
+				let reject!: (reason: unknown) => void
+				const promise = new Promise<void>((accept, refuse) => {
+					resolve = accept
+					reject = refuse
+				})
+				return { promise, resolve, reject }
+			}
+			type Settlement = { status: "fulfilled" } | { status: "rejected"; reason: unknown }
+			const observe = (promise: Promise<void>) => {
+				const state: { settlement?: Settlement } = {}
+				const settled = promise.then(
+					() => (state.settlement = { status: "fulfilled" as const }),
+					(reason: unknown) => (state.settlement = { status: "rejected" as const, reason }),
+				)
+				return { state, settled }
+			}
+			const archiveProcess = (index: number, physicallyExited = false) => {
+				const acknowledgement = gate()
+				const output = gate()
+				const outputObserved = observe(output.promise)
+				let closed = false
+				const executionId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+				const archiveExecutionId = `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+				const process = Object.assign(new EventEmitter(), {
+					executionId,
+					isSettled: physicallyExited,
+					isOutputFinalized: false,
+					abort: vi.fn(() => acknowledgement.promise),
+					waitForOutputFinalization: vi.fn(() => output.promise),
+					cancelPendingOutputWrite: vi.fn(),
+					finalizeOutput: vi.fn(async () => {
+						throw new Error("Task must observe the passive archive latch instead of forcing finalization")
+					}),
+					getUnretrievedOutput: vi.fn(() => "original unread output"),
+					then: vi.fn(() => {
+						throw new Error("Task must not assimilate a thenable process while joining its archive")
+					}),
+				})
+				return {
+					process,
+					executionId,
+					archiveExecutionId,
+					acknowledgement,
+					output,
+					outputObserved,
+					isClosed: () => closed,
+					finishPhysical: () => {
+						acknowledgement.resolve()
+						process.isSettled = true
+						process.emit("completed")
+					},
+					finishOutput: () => {
+						closed = true
+						process.isOutputFinalized = true
+						output.resolve()
+						process.emit("finalized")
+					},
+				}
+			}
+			const archiveTask = async (options: { actualCleanup?: boolean } = {}) => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "passive archive Stop boundary",
+					startTask: false,
+					enableCheckpoints: false,
+					taskKind: "subagent",
+					subagentRole: "worker",
+				})
+				await task.messageQueueService.ready
+				const terminals = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([])
+				const releaseTerminals = vi
+					.spyOn(TerminalRegistry, "releaseTerminalsForTask")
+					.mockImplementation(() => {})
+				const broadCleanup = vi.spyOn(OutputInterceptor, "cleanup").mockResolvedValue(undefined)
+				const cleanupImplementation = OutputInterceptor.cleanupByIds.bind(OutputInterceptor)
+				const cleanup = vi.spyOn(OutputInterceptor, "cleanupByIds")
+				if (!options.actualCleanup) cleanup.mockResolvedValue(undefined)
+				const dispose = vi.spyOn(task, "dispose")
+				vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+				return {
+					task,
+					terminals,
+					cleanup,
+					cleanupImplementation,
+					broadCleanup,
+					dispose,
+					track: (record: ReturnType<typeof archiveProcess>) => {
+						task.beginCommandExecution(
+							`call-${record.executionId}`,
+							record.executionId,
+							"controlled command",
+						)
+						commandSessionRegistry.trackTaskOutput(
+							task,
+							record.process as unknown as AlphaTerminalProcess,
+							record.executionId,
+							{ archiveExecutionId: record.archiveExecutionId, isClosed: record.isClosed },
+						)
+					},
+					cleanupFixture: () => {
+						task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+						terminals.mockRestore()
+						releaseTerminals.mockRestore()
+						cleanup.mockRestore()
+						broadCleanup.mockRestore()
+					},
+				}
+			}
+
+			it.each([
+				{ exited: false, outcome: "fulfilled" },
+				{ exited: true, outcome: "fulfilled" },
+				{ exited: false, outcome: "rejected" },
+				{ exited: true, outcome: "rejected" },
+			] as const)(
+				"joins a passive $outcome archive captured with physical exit=$exited",
+				async ({ exited, outcome }) => {
+					const fixture = await archiveTask()
+					const record = archiveProcess(1, exited)
+					fixture.track(record)
+					if (!exited) Object.assign(fixture.task, { terminalProcess: record.process })
+					const captured = commandSessionRegistry.capturePendingTaskOutput(fixture.task)
+					expect(captured).toHaveLength(1)
+					expect(captured[0]).toMatchObject({
+						process: record.process,
+						executionId: record.executionId,
+						archiveExecutionId: record.archiveExecutionId,
+					})
+					expect(captured[0].isCleanupSafe()).toBe(false)
+					const failure = new Error("Original output archive rejected")
+					let abort: ReturnType<typeof observe> | undefined
+					let termination: ReturnType<typeof observe> | undefined
+					vi.useFakeTimers()
+					try {
+						const receipt = fixture.task.beginTaskCancellation()
+						abort = observe(receipt.abort)
+						termination = observe(receipt.termination)
+						expect(record.process.abort).toHaveBeenCalledTimes(exited ? 0 : 1)
+						await vi.advanceTimersByTimeAsync(0)
+						expect(abort.state.settlement).toBeUndefined()
+						expect(termination.state.settlement).toBeUndefined()
+						if (!exited) record.finishPhysical()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(abort.state.settlement).toBeUndefined()
+						expect(fixture.dispose).not.toHaveBeenCalled()
+						if (outcome === "fulfilled") record.finishOutput()
+						else {
+							// A finalized flag is not proof that a rejected writer closed its sink.
+							record.process.isOutputFinalized = true
+							record.output.reject(failure)
+						}
+						await vi.advanceTimersByTimeAsync(0)
+						const expected: Settlement =
+							outcome === "fulfilled" ? { status: "fulfilled" } : { status: "rejected", reason: failure }
+						expect(await abort.settled).toEqual(expected)
+						expect(await termination.settled).toEqual(expected)
+						expect(await record.outputObserved.settled).toEqual(expected)
+						expect(captured[0].isCleanupSafe()).toBe(outcome === "fulfilled")
+						if (outcome === "rejected") {
+							expect(commandSessionRegistry.capturePendingTaskOutput(fixture.task)).toContainEqual(
+								captured[0],
+							)
+							for (const call of fixture.cleanup.mock.calls)
+								expect(call[3]?.(record.archiveExecutionId)).toBe(false)
+						}
+						expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+						expect(record.process.then).not.toHaveBeenCalled()
+						expect(fixture.broadCleanup).not.toHaveBeenCalled()
+						expect(vi.getTimerCount()).toBe(0)
+					} finally {
+						record.finishPhysical()
+						record.finishOutput()
+						try {
+							if (abort) await abort.settled
+							if (termination) await termination.settled
+							await record.outputObserved.settled
+						} finally {
+							fixture.cleanupFixture()
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it.each([
+				{ suffix: "Error", firstFailure: new Error("First physical worker rejected") },
+				{ suffix: "undefined", firstFailure: undefined },
+				{ suffix: "null", firstFailure: null },
+			])(
+				"settles physical workers then concurrent archives before preserving first $suffix failure",
+				async ({ firstFailure }) => {
+					const fixture = await archiveTask()
+					const first = archiveProcess(2)
+					const sibling = archiveProcess(3)
+					fixture.track(first)
+					fixture.track(sibling)
+					Object.assign(fixture.task, { terminalProcess: first.process })
+					first.process.abort.mockImplementation(() => {
+						throw firstFailure
+					})
+					fixture.terminals.mockReturnValue([
+						{ taskId: fixture.task.taskId, process: sibling.process, running: true },
+					] as unknown as ReturnType<typeof TerminalRegistry.getTerminals>)
+					let abort: ReturnType<typeof observe> | undefined
+					let termination: ReturnType<typeof observe> | undefined
+					vi.useFakeTimers()
+					try {
+						const receipt = fixture.task.beginTaskCancellation()
+						abort = observe(receipt.abort)
+						termination = observe(receipt.termination)
+						expect(first.process.abort).toHaveBeenCalledOnce()
+						expect(sibling.process.abort).toHaveBeenCalledOnce()
+						await vi.advanceTimersByTimeAsync(9_999)
+						expect(abort.state.settlement).toBeUndefined()
+						expect(vi.getTimerCount()).toBe(1)
+						sibling.finishPhysical()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(vi.getTimerCount()).toBe(2)
+						await vi.advanceTimersByTimeAsync(14_999)
+						expect(abort.state.settlement).toBeUndefined()
+						const laterArchiveFailure = new Error(
+							"Later archive rejection must not replace the first reason",
+						)
+						first.output.reject(laterArchiveFailure)
+						await vi.advanceTimersByTimeAsync(0)
+						expect(abort.state.settlement).toBeUndefined()
+						await vi.advanceTimersByTimeAsync(1)
+						const stopped = await abort.settled
+						const terminated = await termination.settled
+						expect(stopped.status).toBe("rejected")
+						expect(terminated.status).toBe("rejected")
+						if (stopped.status !== "rejected" || terminated.status !== "rejected") {
+							throw new Error("A rejected physical cleanup must remain rejected")
+						}
+						expect(stopped.reason).toBe(firstFailure)
+						expect(terminated.reason).toBe(firstFailure)
+						expect((await first.outputObserved.settled).status).toBe("rejected")
+						expect(sibling.outputObserved.state.settlement).toBeUndefined()
+						expect(commandSessionRegistry.capturePendingTaskOutput(fixture.task)).toEqual(
+							expect.arrayContaining([
+								expect.objectContaining({ archiveExecutionId: first.archiveExecutionId }),
+								expect.objectContaining({ archiveExecutionId: sibling.archiveExecutionId }),
+							]),
+						)
+						for (const record of [first, sibling]) {
+							expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+							expect(record.process.then).not.toHaveBeenCalled()
+						}
+						expect(vi.getTimerCount()).toBe(0)
+					} finally {
+						fixture.terminals.mockReturnValue([])
+						first.finishPhysical()
+						sibling.finishPhysical()
+						first.finishOutput()
+						sibling.finishOutput()
+						try {
+							if (abort) await abort.settled
+							if (termination) await termination.settled
+							await Promise.all([first.outputObserved.settled, sibling.outputObserved.settled])
+						} finally {
+							fixture.cleanupFixture()
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it("retains timed-out passive latches and retries after natural close without another physical interrupt", async () => {
+				const fixture = await archiveTask()
+				const records = [archiveProcess(4, true), archiveProcess(5, true)]
+				for (const record of records) fixture.track(record)
+				const captured = commandSessionRegistry.capturePendingTaskOutput(fixture.task)
+				let abort: ReturnType<typeof observe> | undefined
+				let termination: ReturnType<typeof observe> | undefined
+				let retriedAbort: ReturnType<typeof observe> | undefined
+				let retriedTermination: ReturnType<typeof observe> | undefined
+				vi.useFakeTimers()
+				try {
+					const receipt = fixture.task.beginTaskCancellation()
+					abort = observe(receipt.abort)
+					termination = observe(receipt.termination)
+					await vi.advanceTimersByTimeAsync(14_999)
+					expect(abort.state.settlement).toBeUndefined()
+					expect(termination.state.settlement).toBeUndefined()
+					expect(vi.getTimerCount()).toBe(2)
+					await vi.advanceTimersByTimeAsync(1)
+					const failed = await abort.settled
+					expect(failed.status).toBe("rejected")
+					if (failed.status !== "rejected") throw new Error("A pending archive cannot complete Stop")
+					expect(failed.reason).toEqual(
+						new Error(`Timed out waiting for command output for task ${fixture.task.taskId}`),
+					)
+					expect(await termination.settled).toEqual(failed)
+					for (const record of records) {
+						expect(record.outputObserved.state.settlement).toBeUndefined()
+						expect(record.process.isOutputFinalized).toBe(false)
+						expect(record.process.abort).not.toHaveBeenCalled()
+						expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+					}
+					expect(commandSessionRegistry.capturePendingTaskOutput(fixture.task)).toEqual(captured)
+					for (const record of captured) expect(record.isCleanupSafe()).toBe(false)
+					for (const record of records) record.finishOutput()
+					await vi.advanceTimersByTimeAsync(0)
+					const retry = fixture.task.beginTaskCancellation()
+					expect(retry).not.toBe(receipt)
+					retriedAbort = observe(retry.abort)
+					retriedTermination = observe(retry.termination)
+					await vi.advanceTimersByTimeAsync(0)
+					expect(await retriedAbort.settled).toEqual({ status: "fulfilled" })
+					expect(await retriedTermination.settled).toEqual({ status: "fulfilled" })
+					expect(await abort.settled).toEqual(failed)
+					for (const record of records) {
+						expect(await record.outputObserved.settled).toEqual({ status: "fulfilled" })
+						expect(record.process.abort).not.toHaveBeenCalled()
+						expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+					}
+					expect(vi.getTimerCount()).toBe(0)
+				} finally {
+					for (const record of records) record.finishOutput()
+					try {
+						for (const observed of [abort, termination, retriedAbort, retriedTermination]) {
+							if (observed) await observed.settled
+						}
+						await Promise.all(records.map((record) => record.outputObserved.settled))
+					} finally {
+						fixture.cleanupFixture()
+						vi.useRealTimers()
+					}
+				}
+			})
+
+			it("bounds physical, archive and all remaining failed producer joins as three shared phases", async () => {
+				const fixture = await archiveTask()
+				const record = archiveProcess(9)
+				fixture.track(record)
+				Object.assign(fixture.task, { terminalProcess: record.process })
+				const producer = gate()
+				const manual = gate()
+				const goal = gate()
+				const ownedProducer = fixture.task["ownBackgroundLifecycle"]("start", producer.promise)
+				fixture.task["manualContextCondenseSettlement"] = manual.promise
+				fixture.task["goalShutdownPromise"] = undefined
+				const requestedGoal = vi.spyOn(fixture.task["goalController"]!, "get").mockImplementation(async () => {
+					await goal.promise
+					return undefined
+				})
+				let abort: ReturnType<typeof observe> | undefined
+				let termination: ReturnType<typeof observe> | undefined
+				vi.useFakeTimers()
+				try {
+					const receipt = fixture.task.beginTaskCancellation()
+					abort = observe(receipt.abort)
+					termination = observe(receipt.termination)
+					expect(requestedGoal).toHaveBeenCalledOnce()
+					await vi.advanceTimersByTimeAsync(9_999)
+					expect(abort.state.settlement).toBeUndefined()
+					expect(vi.getTimerCount()).toBe(1)
+					await vi.advanceTimersByTimeAsync(1)
+					expect(abort.state.settlement).toBeUndefined()
+					expect(vi.getTimerCount()).toBe(1)
+					await vi.advanceTimersByTimeAsync(14_999)
+					expect(abort.state.settlement).toBeUndefined()
+					await vi.advanceTimersByTimeAsync(1)
+					const stopped = await abort.settled
+					expect(stopped).toEqual({
+						status: "rejected",
+						reason: new Error(`Timed out stopping a command for task ${fixture.task.taskId}`),
+					})
+					expect(termination.state.settlement).toBeUndefined()
+					expect(fixture.dispose).not.toHaveBeenCalled()
+					await vi.advanceTimersByTimeAsync(9_999)
+					expect(termination.state.settlement).toBeUndefined()
+					expect(vi.getTimerCount()).toBe(1)
+					producer.resolve()
+					manual.resolve()
+					await vi.advanceTimersByTimeAsync(0)
+					expect(termination.state.settlement).toBeUndefined()
+					expect(fixture.dispose).not.toHaveBeenCalled()
+					await vi.advanceTimersByTimeAsync(1)
+					expect(await termination.settled).toEqual(stopped)
+					expect(fixture.dispose).not.toHaveBeenCalled()
+					expect(fixture.cleanup).not.toHaveBeenCalled()
+					expect(record.outputObserved.state.settlement).toBeUndefined()
+					expect(commandSessionRegistry.capturePendingTaskOutput(fixture.task)[0].isCleanupSafe()).toBe(false)
+					expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+					expect(vi.getTimerCount()).toBe(0)
+				} finally {
+					producer.resolve()
+					manual.resolve()
+					goal.resolve()
+					record.finishPhysical()
+					record.finishOutput()
+					try {
+						await vi.advanceTimersByTimeAsync(0)
+						await ownedProducer
+						if (abort) await abort.settled
+						if (termination) await termination.settled
+						await record.outputObserved.settled
+					} finally {
+						fixture.cleanupFixture()
+						requestedGoal.mockRestore()
+						vi.useRealTimers()
+					}
+				}
+			})
+
+			it.each(["command artifacts", "shared task resources", "both"] as const)(
+				"preserves pending output while disposing with %s protection",
+				async (protection) => {
+					const fixture = await archiveTask()
+					const record = archiveProcess(6, true)
+					fixture.track(record)
+					const capture = commandSessionRegistry.capturePendingTaskOutput(fixture.task)
+					const queueDispose = vi.spyOn(fixture.task.messageQueueService, "dispose")
+					try {
+						fixture.task.dispose({
+							preserveCommandOutputArtifacts: protection !== "shared task resources",
+							preserveSharedTaskResources: protection !== "command artifacts",
+						})
+						await Promise.resolve()
+						expect(queueDispose).toHaveBeenCalledOnce()
+						expect(commandSessionRegistry.capturePendingTaskOutput(fixture.task)).toEqual(capture)
+						expect(capture[0].isCleanupSafe()).toBe(false)
+						expect(record.outputObserved.state.settlement).toBeUndefined()
+						expect(record.process.finalizeOutput).not.toHaveBeenCalled()
+						expect(fixture.cleanup).not.toHaveBeenCalled()
+						expect(fixture.broadCleanup).not.toHaveBeenCalled()
+					} finally {
+						record.finishOutput()
+						await record.outputObserved.settled
+						fixture.cleanupFixture()
+					}
+				},
+			)
+
+			it("rechecks original archive scope and owner at each removal after a replacement callback", async () => {
+				const fixture = await archiveTask()
+				const record = archiveProcess(7, true)
+				fixture.track(record)
+				const replacementOutput = archiveProcess(8, true)
+				let replacement: Task | undefined
+				let replacementQueueDispose: { mock: { calls: unknown[][] } } | undefined
+				let replacementLifetime: AbortSignal | undefined
+				const unlinkDecisions: boolean[] = []
+				fixture.cleanup.mockImplementation(async (_directory, keepIds, candidates, canRemove) => {
+					expect(candidates).toBeInstanceOf(Set)
+					expect(candidates?.has(record.archiveExecutionId)).toBe(true)
+					expect(candidates?.has(record.executionId)).toBe(false)
+					expect(keepIds.has(record.archiveExecutionId)).toBe(false)
+					expect(canRemove).toBeTypeOf("function")
+					unlinkDecisions.push(canRemove!(record.archiveExecutionId))
+					replacement = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						taskId: fixture.task.taskId,
+						task: "replacement archive owner",
+						startTask: false,
+						enableCheckpoints: false,
+					})
+					replacementQueueDispose = vi.spyOn(replacement.messageQueueService, "dispose")
+					replacementLifetime = replacement.getTaskLifetimeCancellationSignal()
+					commandSessionRegistry.trackTaskOutput(
+						replacement,
+						replacementOutput.process as unknown as AlphaTerminalProcess,
+						replacementOutput.executionId,
+						{
+							archiveExecutionId: replacementOutput.archiveExecutionId,
+							isClosed: replacementOutput.isClosed,
+						},
+					)
+					unlinkDecisions.push(canRemove!(record.archiveExecutionId))
+					unlinkDecisions.push(canRemove!(replacementOutput.archiveExecutionId))
+					expect(candidates?.has(replacementOutput.archiveExecutionId)).toBe(false)
+				})
+				let abort: ReturnType<typeof observe> | undefined
+				let termination: ReturnType<typeof observe> | undefined
+				vi.useFakeTimers()
+				try {
+					const receipt = fixture.task.beginTaskCancellation()
+					abort = observe(receipt.abort)
+					termination = observe(receipt.termination)
+					record.finishOutput()
+					await vi.advanceTimersByTimeAsync(0)
+					expect(await abort.settled).toEqual({ status: "fulfilled" })
+					expect(await termination.settled).toEqual({ status: "fulfilled" })
+					expect(fixture.cleanup).toHaveBeenCalledOnce()
+					expect(unlinkDecisions).toEqual([true, false, false])
+					expect(replacement).toBeDefined()
+					expect(replacementQueueDispose).not.toHaveBeenCalled()
+					expect(replacementLifetime?.aborted).toBe(false)
+					expect(replacementOutput.process.abort).not.toHaveBeenCalled()
+					expect(replacementOutput.process.finalizeOutput).not.toHaveBeenCalled()
+					expect(commandSessionRegistry.capturePendingTaskOutput(replacement!)).toHaveLength(1)
+					expect(fixture.broadCleanup).not.toHaveBeenCalled()
+					expect(receipt.isCurrent()).toBe(false)
+				} finally {
+					record.finishOutput()
+					replacementOutput.finishOutput()
+					try {
+						if (abort) await abort.settled
+						if (termination) await termination.settled
+						await Promise.all([record.outputObserved.settled, replacementOutput.outputObserved.settled])
+					} finally {
+						replacement?.dispose({
+							preserveSharedTaskResources: true,
+							preserveCommandOutputArtifacts: true,
+						})
+						fixture.cleanupFixture()
+						vi.useRealTimers()
+					}
+				}
+			})
+			it.each(["directory read", "earlier unlink"] as const)(
+				"fences actual scoped artifact cleanup when replacement arrives during %s",
+				async (handoff) => {
+					const fixture = await archiveTask({ actualCleanup: true })
+					const first = archiveProcess(10, true)
+					const later = archiveProcess(11, true)
+					const unsafe = archiveProcess(12, true)
+					const replacementOutput = archiveProcess(13, true)
+					for (const record of [first, later]) fixture.track(record)
+					fixture.track(unsafe)
+					const keptId = "40000000-0000-4000-8000-000000000001"
+					const untrackedId = "50000000-0000-4000-8000-000000000001"
+					fixture.task.apiConversationHistory = [
+						{ role: "assistant", content: [{ type: "text", text: `Keep cmd-${keptId}.txt` }] },
+					]
+					const directory = path.join(
+						mockExtensionContext.globalStorageUri.fsPath,
+						"tasks",
+						fixture.task.taskId,
+						"command-output",
+					)
+					const filenames = [
+						unsafe.archiveExecutionId,
+						first.archiveExecutionId,
+						later.archiveExecutionId,
+						keptId,
+						replacementOutput.archiveExecutionId,
+						untrackedId,
+					].map((id) => `cmd-${id}.txt`)
+					type DirectoryIO = {
+						readdir: (directory: fsSync.PathLike) => Promise<string[]>
+						unlink: (file: fsSync.PathLike) => Promise<void>
+					}
+					// OutputInterceptor imports the fs object's writable promises property.
+					// Narrow this fixture to the exact one-argument calls made by the real cleanup method.
+					const io = fsSync.promises as unknown as DirectoryIO
+					const actualReadDirectory = io.readdir.bind(io)
+					const actualUnlink = io.unlink.bind(io)
+					const releaseDirectory = gate()
+					const releaseUnlink = gate()
+					const cleanupFinished = gate()
+					let directoryEntered = false
+					let firstUnlinkEntered = false
+					let cleanupStarted = false
+					const unlinkPaths: string[] = []
+					const readDirectory = vi.spyOn(io, "readdir").mockImplementation(async (candidate) => {
+						if (path.resolve(String(candidate)) !== path.resolve(directory))
+							return actualReadDirectory(candidate)
+						directoryEntered = true
+						if (handoff === "directory read") await releaseDirectory.promise
+						return filenames
+					})
+					const unlink = vi.spyOn(io, "unlink").mockImplementation(async (candidate) => {
+						const filename = String(candidate)
+						if (path.dirname(path.resolve(filename)) !== path.resolve(directory))
+							return actualUnlink(candidate)
+						unlinkPaths.push(filename)
+						if (path.basename(filename) === `cmd-${first.archiveExecutionId}.txt`) {
+							firstUnlinkEntered = true
+							await releaseUnlink.promise
+						}
+					})
+					fixture.cleanup.mockImplementation(async (...args) => {
+						cleanupStarted = true
+						try {
+							await fixture.cleanupImplementation(...args)
+						} finally {
+							cleanupFinished.resolve()
+						}
+					})
+					const archiveFailure = new Error("An original output sink remains unclosed")
+					let replacement: Task | undefined
+					let replacementLifetime: AbortSignal | undefined
+					let replacementQueueDispose: { mock: { calls: unknown[][] } } | undefined
+					const replacementHistory: ApiMessage[] = [
+						{ role: "user", content: `Keep replacement cmd-${replacementOutput.archiveExecutionId}.txt` },
+					]
+					const replacementPending: Task["userMessageContent"] = [
+						{ type: "text", text: "B pending sentinel" },
+					]
+					let abort: ReturnType<typeof observe> | undefined
+					let termination: ReturnType<typeof observe> | undefined
+					vi.useFakeTimers()
+					try {
+						const receipt = fixture.task.beginTaskCancellation()
+						abort = observe(receipt.abort)
+						termination = observe(receipt.termination)
+						first.finishOutput()
+						later.finishOutput()
+						unsafe.process.isOutputFinalized = true
+						unsafe.output.reject(archiveFailure)
+						await vi.advanceTimersByTimeAsync(0)
+						expect(fixture.cleanup).toHaveBeenCalledOnce()
+						expect(directoryEntered).toBe(true)
+						expect(firstUnlinkEntered).toBe(handoff === "earlier unlink")
+						expect(unlinkPaths).toEqual(
+							handoff === "earlier unlink"
+								? [path.join(directory, `cmd-${first.archiveExecutionId}.txt`)]
+								: [],
+						)
+						const [cleanupDirectory, keepIds, candidates, canRemove] = fixture.cleanup.mock.calls[0]
+						expect(cleanupDirectory).toBe(directory)
+						expect(keepIds.has(keptId)).toBe(true)
+						expect(candidates?.has(first.archiveExecutionId)).toBe(true)
+						expect(candidates?.has(later.archiveExecutionId)).toBe(true)
+						expect(candidates?.has(first.executionId)).toBe(false)
+						expect(candidates?.has(replacementOutput.archiveExecutionId)).toBe(false)
+						expect(candidates?.has(untrackedId)).toBe(false)
+						// Both rows have a genuinely eligible A candidate before handoff.
+						// The keyed unsafe row cannot mask a missing original-owner fence.
+						expect(canRemove?.(first.archiveExecutionId)).toBe(true)
+						replacement = new Task({
+							provider: mockProvider,
+							apiConfiguration: mockApiConfig,
+							taskId: fixture.task.taskId,
+							task: "replacement during real cleanup effect boundary",
+							startTask: false,
+							enableCheckpoints: false,
+						})
+						Object.assign(replacement, {
+							apiConversationHistory: replacementHistory,
+							userMessageContent: replacementPending,
+							userMessageContentReady: true,
+						})
+						replacementLifetime = replacement.getTaskLifetimeCancellationSignal()
+						replacementQueueDispose = vi.spyOn(replacement.messageQueueService, "dispose")
+						commandSessionRegistry.trackTaskOutput(
+							replacement,
+							replacementOutput.process as unknown as AlphaTerminalProcess,
+							replacementOutput.executionId,
+							{
+								archiveExecutionId: replacementOutput.archiveExecutionId,
+								isClosed: replacementOutput.isClosed,
+							},
+						)
+						releaseDirectory.resolve()
+						releaseUnlink.resolve()
+						await vi.advanceTimersByTimeAsync(0)
+						await cleanupFinished.promise
+						expect(await abort.settled).toEqual({ status: "rejected", reason: archiveFailure })
+						expect(await termination.settled).toEqual(await abort.settled)
+						expect(unlinkPaths).toEqual(
+							handoff === "earlier unlink"
+								? [path.join(directory, `cmd-${first.archiveExecutionId}.txt`)]
+								: [],
+						)
+						expect(replacement.apiConversationHistory).toBe(replacementHistory)
+						expect(replacement["userMessageContent"]).toBe(replacementPending)
+						expect(replacement["userMessageContentReady"]).toBe(true)
+						expect(replacementLifetime.aborted).toBe(false)
+						expect(replacementQueueDispose).not.toHaveBeenCalled()
+						expect(replacementOutput.process.abort).not.toHaveBeenCalled()
+						expect(commandSessionRegistry.capturePendingTaskOutput(replacement)).toHaveLength(1)
+						const unsafeCapture = commandSessionRegistry
+							.capturePendingTaskOutput(fixture.task)
+							.find((item) => Object.is(item.process, unsafe.process))
+						expect(unsafeCapture).toBeDefined()
+						expect(unsafeCapture!.isCleanupSafe()).toBe(false)
+						expect(unsafeCapture!.archiveExecutionId).toBe(unsafe.archiveExecutionId)
+						expect(fixture.broadCleanup).not.toHaveBeenCalled()
+					} finally {
+						releaseDirectory.resolve()
+						releaseUnlink.resolve()
+						for (const record of [first, later, unsafe, replacementOutput]) record.finishOutput()
+						try {
+							await vi.advanceTimersByTimeAsync(0)
+							if (cleanupStarted) await cleanupFinished.promise
+							if (abort) await abort.settled
+							if (termination) await termination.settled
+							await Promise.all(
+								[first, later, unsafe, replacementOutput].map(
+									(record) => record.outputObserved.settled,
+								),
+							)
+						} finally {
+							replacement?.dispose({
+								preserveSharedTaskResources: true,
+								preserveCommandOutputArtifacts: true,
+							})
+							fixture.cleanupFixture()
+							readDirectory.mockRestore()
+							unlink.mockRestore()
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it("keeps an unmapped legacy output pin from authorizing any actual artifact unlink", async () => {
+				const fixture = await archiveTask({ actualCleanup: true })
+				const known = archiveProcess(14, true)
+				const legacy = archiveProcess(15, true)
+				fixture.track(known)
+				const legacySession = commandSessionRegistry.register(
+					fixture.task,
+					legacy.process as unknown as AlphaTerminalProcess,
+				)
+				const directory = path.join(
+					mockExtensionContext.globalStorageUri.fsPath,
+					"tasks",
+					fixture.task.taskId,
+					"command-output",
+				)
+				type DirectoryIO = {
+					readdir: (directory: fsSync.PathLike) => Promise<string[]>
+					unlink: (file: fsSync.PathLike) => Promise<void>
+				}
+				const io = fsSync.promises as unknown as DirectoryIO
+				const actualReadDirectory = io.readdir.bind(io)
+				const actualUnlink = io.unlink.bind(io)
+				const readDirectory = vi.spyOn(io, "readdir").mockImplementation(async (candidate) => {
+					if (path.resolve(String(candidate)) !== path.resolve(directory))
+						return actualReadDirectory(candidate)
+					return [`cmd-${known.archiveExecutionId}.txt`, `cmd-${legacy.executionId}.txt`]
+				})
+				const unlinkPaths: string[] = []
+				const unlink = vi.spyOn(io, "unlink").mockImplementation(async (candidate) => {
+					if (path.dirname(path.resolve(String(candidate))) !== path.resolve(directory))
+						return actualUnlink(candidate)
+					unlinkPaths.push(String(candidate))
+				})
+				const cleanupFinished = gate()
+				let cleanupStarted = false
+				fixture.cleanup.mockImplementation(async (...args) => {
+					cleanupStarted = true
+					try {
+						await fixture.cleanupImplementation(...args)
+					} finally {
+						cleanupFinished.resolve()
+					}
+				})
+				let abort: ReturnType<typeof observe> | undefined
+				let termination: ReturnType<typeof observe> | undefined
+				vi.useFakeTimers()
+				try {
+					const receipt = fixture.task.beginTaskCancellation()
+					abort = observe(receipt.abort)
+					termination = observe(receipt.termination)
+					known.finishOutput()
+					legacy.finishOutput()
+					await vi.advanceTimersByTimeAsync(0)
+					expect(await abort.settled).toEqual({ status: "fulfilled" })
+					expect(await termination.settled).toEqual({ status: "fulfilled" })
+					expect(fixture.cleanup).toHaveBeenCalledOnce()
+					await cleanupFinished.promise
+					expect(readDirectory).toHaveBeenCalledWith(directory)
+					expect(unlinkPaths).toEqual([])
+					const [, , candidates, canRemove] = fixture.cleanup.mock.calls[0]
+					expect(candidates?.has(known.archiveExecutionId)).toBe(true)
+					expect(candidates?.has(legacy.executionId)).toBe(false)
+					expect(canRemove?.(known.archiveExecutionId)).toBe(false)
+					const legacyCapture = commandSessionRegistry
+						.capturePendingTaskOutput(fixture.task)
+						.find((item) => Object.is(item.process, legacy.process))
+					expect(receipt.isCurrent()).toBe(true)
+					expect(legacy.process.isOutputFinalized).toBe(true)
+					expect(legacyCapture).toBeDefined()
+					expect(legacyCapture!.archiveExecutionId).toBeUndefined()
+					expect(legacyCapture!.isCleanupSafe()).toBe(false)
+					expect(known.process.finalizeOutput).not.toHaveBeenCalled()
+					expect(legacy.process.finalizeOutput).not.toHaveBeenCalled()
+				} finally {
+					known.finishOutput()
+					legacy.finishOutput()
+					try {
+						await vi.advanceTimersByTimeAsync(0)
+						if (cleanupStarted) await cleanupFinished.promise
+						if (abort) await abort.settled
+						if (termination) await termination.settled
+						await Promise.all([known.outputObserved.settled, legacy.outputObserved.settled])
+					} finally {
+						commandSessionRegistry.release(fixture.task, legacySession)
+						fixture.cleanupFixture()
+						readDirectory.mockRestore()
+						unlink.mockRestore()
+						vi.useRealTimers()
+					}
+				}
+			})
+		})
+
+		describe("native original-owner joins", () => {
+			const gate = () => {
+				let resolve!: () => void
+				let reject!: (reason: unknown) => void
+				const promise = new Promise<void>((accept, refuse) => {
+					resolve = accept
+					reject = refuse
+				})
+				return { promise, resolve, reject }
+			}
+			type Settlement = { status: "fulfilled" } | { status: "rejected"; reason: unknown }
+			const observe = (promise: Promise<void>) => {
+				const state: { settlement?: Settlement } = {}
+				const settled = promise.then(
+					() => (state.settlement = { status: "fulfilled" as const }),
+					(reason: unknown) => (state.settlement = { status: "rejected" as const, reason }),
+				)
+				return { state, settled }
+			}
+			const ownedTask = async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "native original-owner join boundary",
+					startTask: false,
+					enableCheckpoints: false,
+				})
+				await task.messageQueueService.ready
+				return task
+			}
+
+			it.each([
+				{ label: "successful", failed: false, reason: undefined },
+				{ label: "Error", failed: true, reason: new Error("Original lifecycle failed") },
+				{ label: "undefined", failed: true, reason: undefined },
+				{ label: "null", failed: true, reason: null },
+			])(
+				"joins captured lifecycle and goal after handoff while preserving $label settlement",
+				async ({ failed, reason }) => {
+					const task = await ownedTask()
+					const lifecycle = gate()
+					const goal = gate()
+					const replacementLifecycle = gate()
+					const replacementGoal = gate()
+					const ownedLifecycle = task["ownBackgroundLifecycle"]("start", lifecycle.promise)
+					const lifecycleObserved = observe(ownedLifecycle)
+					const goalObserved = observe(goal.promise)
+					task["goalShutdownPromise"] = goal.promise
+					const guard = task["captureAgentStepOwnership"]()
+					let waiting: ReturnType<typeof observe> | undefined
+					vi.useFakeTimers()
+					try {
+						waiting = observe(task.waitForTermination(guard))
+						Object.assign(task, {
+							agentRunId: "native-join-replacement-run",
+							agentTurnId: "native-join-replacement-turn",
+							ownedLifecyclePromise: replacementLifecycle.promise,
+							goalShutdownPromise: replacementGoal.promise,
+						})
+						expect(guard()).toBe(false)
+						if (failed) lifecycle.reject(reason)
+						else lifecycle.resolve()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(waiting.state.settlement).toBeUndefined()
+						if (failed)
+							goal.reject(new Error("Later original goal failure must not replace the lifecycle reason"))
+						else goal.resolve()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(waiting.state.settlement?.status).toBe(failed ? "rejected" : "fulfilled")
+						const result = await waiting.settled
+						if (failed) {
+							if (result.status !== "rejected")
+								throw new Error("Original failed lifecycle was treated as success")
+							expect(result.reason).toBe(reason)
+						}
+						expect(task["ownedLifecyclePromise"]).toBe(replacementLifecycle.promise)
+						expect(task["goalShutdownPromise"]).toBe(replacementGoal.promise)
+						expect(vi.getTimerCount()).toBe(0)
+					} finally {
+						lifecycle.resolve()
+						goal.resolve()
+						replacementLifecycle.resolve()
+						replacementGoal.resolve()
+						try {
+							if (waiting) await waiting.settled
+							await lifecycleObserved.settled
+							await goalObserved.settled
+						} finally {
+							task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it("keeps a captured native cancellation receipt authoritative over replacement lifecycle and goal joins", async () => {
+				const task = await ownedTask()
+				const cleanupEntered = gate()
+				const releaseCleanup = gate()
+				const replacementLifecycle = gate()
+				const replacementGoal = gate()
+				const originalFlush = task.flushApiConversationHistoryPersistence.bind(task)
+				const flush = vi
+					.spyOn(task, "flushApiConversationHistoryPersistence")
+					.mockImplementation(async (guard) => {
+						cleanupEntered.resolve()
+						await releaseCleanup.promise
+						await originalFlush(guard)
+					})
+				const dispose = vi.spyOn(task, "dispose")
+				const replacementLifetime = new AbortController()
+				let abort: ReturnType<typeof observe> | undefined
+				let termination: ReturnType<typeof observe> | undefined
+				let waiting: ReturnType<typeof observe> | undefined
+				let clockControlled = false
+				try {
+					const receipt = task.beginTaskCancellation()
+					abort = observe(receipt.abort)
+					termination = observe(receipt.termination)
+					expect(
+						await Promise.race([cleanupEntered.promise.then(() => true), abort.settled.then(() => false)]),
+					).toBe(true)
+					expect(receipt.isCurrent()).toBe(true)
+					waiting = observe(task.waitForTermination(receipt.isCurrent))
+					vi.useFakeTimers()
+					clockControlled = true
+					await vi.advanceTimersByTimeAsync(0)
+					expect(waiting.state.settlement).toBeUndefined()
+					Object.assign(task, {
+						agentRunId: "receipt-wait-replacement-run",
+						agentTurnId: "receipt-wait-replacement-turn",
+						ownedLifecyclePromise: replacementLifecycle.promise,
+						goalShutdownPromise: replacementGoal.promise,
+						taskCancellationController: replacementLifetime,
+					})
+					expect(receipt.isCurrent()).toBe(false)
+					releaseCleanup.resolve()
+					await vi.advanceTimersByTimeAsync(0)
+					expect(waiting.state.settlement).toEqual({ status: "fulfilled" })
+					expect(await waiting.settled).toEqual({ status: "fulfilled" })
+					expect(await abort.settled).toEqual({ status: "fulfilled" })
+					expect(await termination.settled).toEqual({ status: "fulfilled" })
+					expect(task["ownedLifecyclePromise"]).toBe(replacementLifecycle.promise)
+					expect(task["goalShutdownPromise"]).toBe(replacementGoal.promise)
+					expect(replacementLifetime.signal.aborted).toBe(false)
+					expect(dispose).not.toHaveBeenCalled()
+				} finally {
+					releaseCleanup.resolve()
+					replacementLifecycle.resolve()
+					replacementGoal.resolve()
+					try {
+						if (clockControlled) await vi.advanceTimersByTimeAsync(0)
+						if (waiting) await waiting.settled
+						if (abort) await abort.settled
+						if (termination) await termination.settled
+					} finally {
+						flush.mockRestore()
+						task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+						if (clockControlled) vi.useRealTimers()
+					}
+				}
+			})
+
+			it.each(["guarded", "legacy no-argument"] as const)(
+				"keeps the %s transcript drain contract across a held real queued operation",
+				async (mode) => {
+					const task = await ownedTask()
+					const originalEntered = gate()
+					const original = gate()
+					const replacementEntered = gate()
+					const replacement = gate()
+					const originalWrite = task["enqueueApiConversationHistoryPersistence"](async () => {
+						originalEntered.resolve()
+						await original.promise
+					})
+					await originalEntered.promise
+					const guard = task["captureAgentStepOwnership"]()
+					const foreignFailure = new Error("Replacement transcript failure must retain replacement ownership")
+					const replacementHistory: ApiMessage[] = [{ role: "user", content: "replacement history" }]
+					const replacementPending: Task["userMessageContent"] = [
+						{ type: "text", text: "replacement pending" },
+					]
+					let replacementWrite: Promise<void> | undefined
+					let waiting: ReturnType<typeof observe> | undefined
+					vi.useFakeTimers()
+					try {
+						waiting = observe(
+							mode === "guarded"
+								? task.flushApiConversationHistoryPersistence(guard)
+								: task.flushApiConversationHistoryPersistence(),
+						)
+						Object.assign(task, {
+							agentRunId: "drain-replacement-run",
+							agentTurnId: "drain-replacement-turn",
+							apiConversationHistory: replacementHistory,
+							userMessageContent: replacementPending,
+							providerTranscriptSidecarFailure: foreignFailure,
+						})
+						replacementWrite = task["enqueueApiConversationHistoryPersistence"](async () => {
+							replacementEntered.resolve()
+							await replacement.promise
+						})
+						const replacementQueue = task["apiConversationHistorySaveQueue"]
+						original.resolve()
+						await vi.advanceTimersByTimeAsync(0)
+						await originalWrite
+						await replacementEntered.promise
+						if (mode === "guarded") {
+							expect(waiting.state.settlement).toEqual({ status: "fulfilled" })
+						} else expect(waiting.state.settlement).toBeUndefined()
+						expect(task["apiConversationHistorySaveQueue"]).toBe(replacementQueue)
+						expect(task["providerTranscriptSidecarFailure"]).toBe(foreignFailure)
+						expect(task.apiConversationHistory).toBe(replacementHistory)
+						expect(task["userMessageContent"]).toBe(replacementPending)
+						replacement.resolve()
+						await vi.advanceTimersByTimeAsync(0)
+						expect(await waiting.settled).toEqual(
+							mode === "guarded"
+								? { status: "fulfilled" }
+								: { status: "rejected", reason: foreignFailure },
+						)
+						await replacementWrite
+						expect(task["providerTranscriptSidecarFailure"]).toBe(foreignFailure)
+					} finally {
+						original.resolve()
+						replacement.resolve()
+						try {
+							await originalWrite
+							await replacementWrite
+							if (waiting) await waiting.settled
+						} finally {
+							// This is an explicit new-owner recovery phase for the test-injected failure.
+							if (task["providerTranscriptSidecarFailure"] === foreignFailure) {
+								task["providerTranscriptSidecarFailure"] = undefined
+							}
+							task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+							vi.useRealTimers()
+						}
+					}
+				},
+			)
+
+			it.each([
+				{ label: "Error", reason: new Error("Original queue rejected before its observer resumed") },
+				{ label: "undefined", reason: undefined },
+				{ label: "null", reason: null },
+			])("retains an awaited original queue $label rejection after guard loss", async ({ reason }) => {
+				const task = await ownedTask()
+				const original = gate()
+				const replacement = gate()
+				const originalObserved = observe(original.promise)
+				const queues = Task["apiConversationHistorySaveQueues"]
+				const key = task["apiConversationHistoryPersistenceKey"]
+				const previous = queues.get(key)
+				queues.set(key, original.promise)
+				const guard = task["captureAgentStepOwnership"]()
+				let waiting: ReturnType<typeof observe> | undefined
+				vi.useFakeTimers()
+				try {
+					// Direct queue-fault injection covers the public drain's exact rejected-await contract.
+					// Normal enqueue operations use an observed, fulfilled bookkeeping tail instead.
+					waiting = observe(task.flushApiConversationHistoryPersistence(guard))
+					Object.assign(task, { agentRunId: "queue-failure-new-run", agentTurnId: "queue-failure-new-turn" })
+					queues.set(key, replacement.promise)
+					original.reject(reason)
+					await vi.advanceTimersByTimeAsync(0)
+					expect(waiting.state.settlement?.status).toBe("rejected")
+					const result = await waiting.settled
+					if (result.status !== "rejected") throw new Error("Original queue rejection was hidden by handoff")
+					expect(result.reason).toBe(reason)
+					expect(queues.get(key)).toBe(replacement.promise)
+				} finally {
+					original.resolve()
+					replacement.resolve()
+					try {
+						await originalObserved.settled
+						if (waiting) await waiting.settled
+					} finally {
+						if (queues.get(key) === replacement.promise) {
+							if (previous) queues.set(key, previous)
+							else queues.delete(key)
+						}
+						task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+						vi.useRealTimers()
+					}
+				}
+			})
+
+			it("does not read live join handles, queues or failure state when either native join guard is already stale", async () => {
+				const task = await ownedTask()
+				const reads: string[] = []
+				const fields = [
+					"taskTerminationPromise",
+					"ownedLifecyclePromise",
+					"goalShutdownPromise",
+					"providerTranscriptSidecarFailure",
+				] as const
+				const descriptors = new Map(fields.map((name) => [name, Object.getOwnPropertyDescriptor(task, name)]))
+				for (const name of fields) {
+					Object.defineProperty(task, name, {
+						configurable: true,
+						get: () => {
+							reads.push(name)
+							throw new Error(`Stale original join read replacement ${name}`)
+						},
+					})
+				}
+				const queueRead = vi.spyOn(Task["apiConversationHistorySaveQueues"], "get")
+				try {
+					await expect(task.waitForTermination(() => false)).resolves.toBeUndefined()
+					await expect(task.flushApiConversationHistoryPersistence(() => false)).resolves.toBeUndefined()
+					expect(reads).toEqual([])
+					expect(queueRead).not.toHaveBeenCalled()
+				} finally {
+					queueRead.mockRestore()
+					for (const name of fields) {
+						const descriptor = descriptors.get(name)
+						if (descriptor) Object.defineProperty(task, name, descriptor)
+						else Reflect.deleteProperty(task, name)
+					}
+					task.dispose({ preserveSharedTaskResources: true, preserveCommandOutputArtifacts: true })
+				}
+			})
+		})
+
 		describe("Stream Failure Retry", () => {
 			it("should not abort task on stream failure, only on user cancellation", async () => {
 				const task = new Task({
@@ -4483,11 +6325,20 @@ describe("Alpha", () => {
 
 		const startEarlyReadStream = async (scenario: {
 			barrier?: boolean
-			outcome?: "failed" | "cancelled"
-			mismatch?: boolean
+			outcome?: "failed" | "incomplete" | "cancelled"
+			mismatch?: boolean | "arguments"
+			failAssistantSave?: boolean
+			failReadFinalizer?: boolean
+			holdReadFinalizer?: boolean
+			publicationFailure?: "event" | "journal"
+			failReceiptSave?: boolean
+			realStoppingAwait?: boolean
+			unavailableReadPreparation?: boolean
 			command?: { command: string; arguments: string }
 			workdir?: (cwd: string) => string
 			timing?: { providerTailMs: number; readMs: number; assistantSaveMs: number }
+			failReadEffectFence?: boolean
+			laterCall?: "queued-read" | "serial-command"
 		}) => {
 			const task = createTask()
 			if (scenario.command || scenario.timing) {
@@ -4502,6 +6353,7 @@ describe("Alpha", () => {
 			let providerTimer: ReturnType<typeof setTimeout> | undefined
 			let assistantSaveTimer: ReturnType<typeof setTimeout> | undefined
 			const lifecyclePublications: Array<{ type: string; durable: boolean }> = []
+			const lifecycleEvents: AgentLifecycleEventInput[] = []
 			let lifecycleSnapshot: any
 			let sequence = 0
 			const acceptedCallId = "early-read-1"
@@ -4515,12 +6367,28 @@ describe("Alpha", () => {
 			const normalCommandStarted = deferred()
 			const releaseRead = deferred()
 			const releaseProvider = deferred()
+			const readFinalizerStarted = deferred()
+			const releaseReadFinalizer = deferred()
+			const stoppingWaitEntered = deferred()
+			const releaseStoppingWait = deferred()
+			const readEffectFenceEntered = deferred()
+			const releaseReadEffectFence = deferred()
+			const readEffectFenceFailure = new Error("Early read effect fence rejected before execution.")
+			let publicationFailureInjected = false
+			let receiptSaveAllowed = !scenario.failReceiptSave
 			const persistedAssistantHistory: any[] = []
 			const barrierExecute = vi.fn()
 			let normalCommandEffectCount = 0
 			let commandPreparationCount = 0
 			const registry = new ToolRegistry({ includeBuiltIns: false })
 			const readExecute = vi.fn()
+			if (scenario.laterCall === "serial-command") {
+				readExecute.mockImplementation(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+					normalCommandEffectCount += 1
+					normalCommandStarted.resolve()
+					callbacks.pushToolResult("later serial command completed")
+				})
+			}
 			if (!scenario.command)
 				registry.register({
 					name: "exec_command",
@@ -4544,24 +6412,34 @@ describe("Alpha", () => {
 						requiresApproval: true,
 						parallelCommandRead: true,
 					},
-					prepareParallelCommand: async () => ({
-						scope: path.resolve(task.cwd, "."),
-						run: async (callbacks) => {
-							readEffectCount += 1
-							eventOrder.push("read_started")
-							readStarted.resolve()
-							if (scenario.timing) {
-								readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
-							}
-							await releaseRead.promise
-							callbacks.pushToolResult("directory listing")
-							eventOrder.push("read_result_ready")
-							readResultReady.resolve()
-							return async () => {
-								eventOrder.push("read_published")
-							}
-						},
-					}),
+					prepareParallelCommand: async () => {
+						if (scenario.unavailableReadPreparation) return undefined
+						return {
+							scope: path.resolve(task.cwd, "."),
+							run: async (callbacks) => {
+								readEffectCount += 1
+								eventOrder.push("read_started")
+								readStarted.resolve()
+								if (scenario.timing) {
+									readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+								}
+								await releaseRead.promise
+								callbacks.pushToolResult("directory listing")
+								eventOrder.push("read_result_ready")
+								readResultReady.resolve()
+								return async () => {
+									readFinalizerStarted.resolve()
+									if (scenario.holdReadFinalizer) await releaseReadFinalizer.promise
+									if (scenario.failReadFinalizer) {
+										eventOrder.push("read_finalizer_failed")
+										throw new Error("Read output archive could not be finalized.")
+									}
+									eventOrder.push("read_published")
+								}
+							},
+						}
+					},
+					isParallelCommandReadReady: async () => true,
 					execute: readExecute,
 				})
 			if (scenario.command) {
@@ -4642,6 +6520,7 @@ describe("Alpha", () => {
 			mockProvider.getAgentLifecycleSnapshot = vi.fn(() => lifecycleSnapshot)
 			mockProvider.publishAgentLifecycleEvent = vi.fn(async (input: any, options?: { durable?: boolean }) => {
 				const event = { ...input, sequence: ++sequence }
+				lifecycleEvents.push(structuredClone(input))
 				lifecyclePublications.push({ type: event.type, durable: options?.durable === true })
 				eventOrder.push(`lifecycle:${event.type}`)
 				if (!lifecycleSnapshot) {
@@ -4673,18 +6552,42 @@ describe("Alpha", () => {
 				} else if (event.type === "tool_result_recorded") {
 					lifecycleSnapshot.items.push(event.payload.item)
 					lifecycleSnapshot.terminalToolCallIds.push(event.payload.item.toolCallId)
+					if (scenario.publicationFailure === "journal" && !publicationFailureInjected) {
+						publicationFailureInjected = true
+						throw new Error("Result journal acknowledgement failed after append.")
+					}
 				}
 				return { accepted: true, event, snapshot: lifecycleSnapshot }
 			})
 			await (task as any).beginCanonicalLifecycleTurn()
 			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
-			vi.spyOn(task, "recordToolCallForStopping").mockResolvedValue(undefined)
+			if (scenario.realStoppingAwait) {
+				task["pendingCommandVerification"] = releaseStoppingWait.promise
+				const originalWait: Task["waitForRequestControl"] = task["waitForRequestControl"].bind(task)
+				const controls = task as unknown as { waitForRequestControl: Task["waitForRequestControl"] }
+				vi.spyOn(controls, "waitForRequestControl").mockImplementation(function <T>(
+					operation: PromiseLike<T>,
+					signal?: AbortSignal,
+					absoluteDeadline?: number,
+				): Promise<T> {
+					if (Object.is(operation, releaseStoppingWait.promise)) stoppingWaitEntered.resolve()
+					return originalWait(operation, signal, absoluteDeadline)
+				})
+			} else vi.spyOn(task, "recordToolCallForStopping").mockResolvedValue(undefined)
 			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
 			vi.spyOn(task as any, "appendAgentTurnEvent").mockImplementation(async (...args: unknown[]) => {
 				const event = args[0] as AgentTurnEvent
 				events.push(event)
 				eventOrder.push(`event:${event.type}`)
+				if (
+					scenario.publicationFailure === "event" &&
+					event.type === "tool_result" &&
+					!publicationFailureInjected
+				) {
+					publicationFailureInjected = true
+					throw new Error("Result event acknowledgement failed after staging.")
+				}
 			})
 			const initialAssistantCount = task.apiConversationHistory.filter(
 				(message) => message.role === "assistant",
@@ -4703,11 +6606,22 @@ describe("Alpha", () => {
 						)
 					}
 					await releaseAssistantSave.promise
+					if (scenario.failAssistantSave) return false
+					const hasReadReceipt = task.apiConversationHistory.some(
+						(message) =>
+							message.role === "user" &&
+							Array.isArray(message.content) &&
+							message.content.some(
+								(block) => block.type === "tool_result" && block.tool_use_id === acceptedCallId,
+							),
+					)
+					if (hasReadReceipt && !receiptSaveAllowed) return false
 					persistedAssistantHistory.push(structuredClone(task.apiConversationHistory))
 					eventOrder.push("assistant_saved")
 				}
 				return true
 			})
+			if (scenario.failAssistantSave) vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
 			const executeCanonicalToolCalls = (task as any).executeCanonicalToolCalls.bind(task)
 			const earlyDispatchSettled = deferred()
 			vi.spyOn(task as any, "executeCanonicalToolCalls").mockImplementation(async (...args: any[]) => {
@@ -4715,6 +6629,24 @@ describe("Alpha", () => {
 				if (args[5]?.deferResultCommit) earlyDispatchSettled.resolve(outcome)
 				return outcome
 			})
+			if (scenario.failReadEffectFence) {
+				const controls = task as unknown as {
+					assertDurableAcceptedReadonlyToolCallBeforeEffects: Task["assertDurableAcceptedReadonlyToolCallBeforeEffects"]
+				}
+				const nativeReadFence = controls.assertDurableAcceptedReadonlyToolCallBeforeEffects.bind(task)
+				let readFenceChecks = 0
+				vi.spyOn(controls, "assertDurableAcceptedReadonlyToolCallBeforeEffects").mockImplementation(
+					async (...args) => {
+						await nativeReadFence(...args)
+						// The first check admits the scheduler; its next native beforeEffect check fails.
+						if (args[0].id === acceptedCallId && ++readFenceChecks === 2) {
+							readEffectFenceEntered.resolve()
+							await releaseReadEffectFence.promise
+							throw readEffectFenceFailure
+						}
+					},
+				)
+			}
 			let providerReachedEof = false
 			let mismatchFinishSpy: { mockRestore: () => void } | undefined
 			if (scenario.mismatch) {
@@ -4727,12 +6659,18 @@ describe("Alpha", () => {
 					) {
 						const response = await originalFinish.apply(this, args)
 						return createAgentResponse(
-							[{ type: "text", text: "The finalized response omitted its accepted tool call." }],
+							scenario.mismatch === "arguments"
+								? response.items.map((item) =>
+										item.type === "tool_call"
+											? { ...item, arguments: { cmd: "git diff --stat", workdir: "." } }
+											: item,
+									)
+								: [{ type: "text", text: "The finalized response omitted its accepted tool call." }],
 							response.outcome,
 						)
 					})
 			}
-			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					const attemptNumber = (attempt.mock.calls.length - 1) as number
 					const turnId = (task as any).agentTurnId as string
@@ -4743,11 +6681,16 @@ describe("Alpha", () => {
 						attemptId: `early-read-attempt-${attemptNumber + 1}`,
 						surface,
 						snapshot: {
-							context: { contextId: "early-read-context", provider: { apiProtocol: "openai" } },
+							context: {
+								contextId: "early-read-context",
+								provider: { apiProtocol: "openai" },
+								policy: surface.policy,
+							},
 							runtime: { getHandler: () => undefined },
 						},
 					}
 					Object.assign(task, { currentAgentStep: step, currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					await (task as any).ensureCanonicalLifecycleStepStarted(step)
 					if (attemptNumber > 0) {
 						yield { type: "text", text: "The directory inspection is complete." }
@@ -4763,11 +6706,29 @@ describe("Alpha", () => {
 							JSON.stringify({ cmd: "git status --short", workdir: scenario.workdir?.(task.cwd) ?? "." }),
 					}
 					yield { type: "tool_call_end", id: acceptedCallId }
+					if (scenario.laterCall === "queued-read") {
+						yield {
+							type: "tool_call",
+							id: "later-early-read",
+							name: "exec_command",
+							arguments: JSON.stringify({ cmd: "git diff --stat", workdir: "." }),
+						}
+						yield { type: "tool_call_end", id: "later-early-read" }
+					}
 					providerTailReached.resolve()
 					if (scenario.timing) {
 						providerTimer = setTimeout(() => releaseProvider.resolve(), scenario.timing.providerTailMs)
 					}
 					await releaseProvider.promise
+					if (scenario.laterCall === "serial-command") {
+						yield {
+							type: "tool_call",
+							id: "later-early-read",
+							name: "exec_command",
+							arguments: JSON.stringify({ cmd: "git add --all", workdir: "." }),
+						}
+						yield { type: "tool_call_end", id: "later-early-read" }
+					}
 					if (scenario.barrier) {
 						yield {
 							type: "tool_call",
@@ -4776,17 +6737,18 @@ describe("Alpha", () => {
 							arguments: JSON.stringify({ result: "done" }),
 						}
 						yield { type: "tool_call_end", id: "later-barrier-1" }
-					} else if (scenario.outcome === "failed") {
-						yield {
-							type: "error",
-							error: "provider_failed",
-							message: "Provider failed after the read completed.",
-							retryable: false,
-							semanticOutputObserved: true,
-						}
+					} else if (scenario.outcome === "failed" || scenario.outcome === "incomplete") {
+						if (scenario.outcome === "failed")
+							yield {
+								type: "error",
+								error: "provider_failed",
+								message: "Provider failed after the read completed.",
+								retryable: false,
+								semanticOutputObserved: true,
+							}
 						yield {
 							type: "outcome",
-							status: "failed",
+							status: scenario.outcome,
 							terminal: true,
 							semanticOutputObserved: true,
 							reason: "Provider failed after the read completed.",
@@ -4846,6 +6808,8 @@ describe("Alpha", () => {
 						historyRoles: task.apiConversationHistory.map((message) => message.role),
 					}),
 				lifecyclePublications,
+				lifecycleEvents,
+				publicationFailureInjected: () => publicationFailureInjected,
 				providerTailReached: providerTailReached.promise,
 				providerEof: providerEof.promise,
 				normalCommandStarted: normalCommandStarted.promise,
@@ -4862,10 +6826,18 @@ describe("Alpha", () => {
 				assistantSaveStarted: assistantSaveStarted.promise,
 				readStarted: readStarted.promise,
 				readResultReady: readResultReady.promise,
+				readFinalizerStarted: readFinalizerStarted.promise,
+				stoppingWaitEntered: stoppingWaitEntered.promise,
 				earlyDispatchSettled: earlyDispatchSettled.promise,
+				readEffectFenceEntered: readEffectFenceEntered.promise,
+				readEffectFenceFailure,
+				releaseReadEffectFence: () => releaseReadEffectFence.resolve(),
 				releaseRead: () => releaseRead.resolve(),
 				releaseProvider: () => releaseProvider.resolve(),
 				releaseAssistantSave: () => releaseAssistantSave.resolve(),
+				releaseReadFinalizer: () => releaseReadFinalizer.resolve(),
+				releaseStoppingWait: () => releaseStoppingWait.resolve(),
+				allowReceiptSave: () => (receiptSaveAllowed = true),
 			}
 		}
 
@@ -4875,22 +6847,114 @@ describe("Alpha", () => {
 			{ directory: "nested", workdir: () => "src" },
 		]
 
-		const stopEarlyReadStream = async (fixture?: Awaited<ReturnType<typeof startEarlyReadStream>>) => {
+		const stopEarlyReadStream = async (
+			fixture?: Awaited<ReturnType<typeof startEarlyReadStream>>,
+			options: { expectedRecoveryPersistenceFailure?: true } = {},
+		) => {
 			if (!fixture) return
 			const stopped = fixture.task.abortTask(true)
+			const expectedTermination = options.expectedRecoveryPersistenceFailure
+				? fixture.task.waitForTermination().then(
+						() => ({ status: "fulfilled" as const }),
+						(error: unknown) => ({ status: "rejected" as const, error }),
+					)
+				: undefined
+			fixture.releaseReadEffectFence()
 			fixture.releaseRead()
 			fixture.releaseProvider()
 			fixture.releaseAssistantSave()
+			fixture.releaseReadFinalizer()
+			fixture.releaseStoppingWait()
 			try {
 				await stopped
 			} finally {
 				try {
 					await fixture.run.catch(() => undefined)
 				} finally {
-					await fixture.task.waitForTermination()
+					if (expectedTermination) {
+						expect(await expectedTermination).toMatchObject({
+							status: "rejected",
+							error: {
+								name: "Error",
+								message:
+									"Recovery tool-result receipts could not be durably saved during task termination.",
+							},
+						})
+					} else await fixture.task.waitForTermination()
 				}
 			}
 		}
+
+		it.each([
+			{ label: "a queued read before EOF", laterCall: "queued-read" as const },
+			{ label: "a remaining serial command", laterCall: "serial-command" as const },
+			{ label: "a single accepted read", laterCall: undefined },
+		])("stops $label after a real failed early-read scheduler outcome", async ({ laterCall }) => {
+			const fixture = await startEarlyReadStream({ failReadEffectFence: true, laterCall })
+			try {
+				await waitForControlledSignal("provider tail", fixture.providerTailReached, fixture.debugState)
+				await waitForControlledSignal(
+					"native read effect fence",
+					fixture.readEffectFenceEntered,
+					fixture.debugState,
+				)
+				fixture.releaseReadEffectFence()
+				expect(
+					await waitForControlledSignal(
+						"failed early scheduler",
+						fixture.earlyDispatchSettled,
+						fixture.debugState,
+					),
+				).toMatchObject({
+					status: "failed",
+					failure: { kind: "effect_fence", message: fixture.readEffectFenceFailure.message },
+				})
+				// Let this fixture's ready promise work drain while the provider EOF gate remains held.
+				await new Promise<void>((resolve) => setImmediate(() => resolve()))
+				expect(fixture.providerReachedEof()).toBe(false)
+				expect(fixture.readEffectCount()).toBe(0)
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				const result = await waitForControlledSignal("failed task step", fixture.run, fixture.debugState)
+				expect(fixture.normalCommandEffectCount()).toBe(0)
+				expect(result).toMatchObject({ status: "failed", reason: fixture.readEffectFenceFailure.message })
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+				expect(fixture.readExecute).not.toHaveBeenCalled()
+				expect(fixture.eventOrder).not.toContain("read_published")
+				const expectedIds = [fixture.acceptedCallId, ...(laterCall ? ["later-early-read"] : [])]
+				const toolUses = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "assistant" && Array.isArray(message.content)
+						? message.content.filter(
+								(block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use",
+							)
+						: [],
+				)
+				const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "user" && Array.isArray(message.content)
+						? message.content.filter(
+								(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
+							)
+						: [],
+				)
+				expect(toolUses.map((block) => block.id)).toEqual(expectedIds)
+				expect(receipts).toHaveLength(expectedIds.length)
+				for (const id of expectedIds) {
+					expect(receipts.filter((block) => block.tool_use_id === id)).toEqual([
+						expect.objectContaining({ is_error: true }),
+					])
+					expect(
+						fixture.lifecycleSnapshot().terminalToolCallIds.filter((callId: string) => callId === id),
+					).toHaveLength(1)
+				}
+				expect(
+					fixture.events.filter(
+						(event) => event.type === "tool_result" && event.callId === fixture.acceptedCallId,
+					),
+				).toHaveLength(1)
+			} finally {
+				await stopEarlyReadStream(fixture)
+			}
+		})
 
 		it.each(earlyReadWorkdirs)(
 			"starts an audited read from $directory workdir before EOF and commits after durable history",
@@ -5250,10 +7314,11 @@ describe("Alpha", () => {
 		)
 
 		it.each(
-			earlyReadWorkdirs.flatMap((workdir) => [
-				{ ...workdir, outcome: "failed" as const, expectedStatus: "failed" },
-				{ ...workdir, outcome: "cancelled" as const, expectedStatus: "aborted" },
-			]),
+			earlyReadWorkdirs.map((workdir) => ({
+				...workdir,
+				outcome: "cancelled" as const,
+				expectedStatus: "aborted",
+			})),
 		)(
 			"withholds an early $directory read result when the provider ends $outcome",
 			async ({ outcome, expectedStatus, workdir }) => {
@@ -5295,6 +7360,579 @@ describe("Alpha", () => {
 				}
 			},
 		)
+
+		it.each(
+			earlyReadWorkdirs.flatMap((workdir) => [
+				{ ...workdir, outcome: "failed" as const },
+				{ ...workdir, outcome: "incomplete" as const },
+			]),
+		)(
+			"publishes an early $directory read receipt when the provider ends $outcome",
+			async ({ outcome, workdir }) => {
+				const fixture = await startEarlyReadStream({ outcome, workdir })
+				const state = fixture.debugState
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, state)
+					fixture.releaseRead()
+					await waitForControlledSignal("read result", fixture.readResultReady, state)
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+					expect(fixture.eventOrder).not.toContain("read_published")
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					expect(fixture.eventOrder).not.toContain("read_published")
+					fixture.releaseAssistantSave()
+					const result = await waitForControlledSignal("task run", fixture.run, state)
+					expect(result).toMatchObject({ status: outcome, response: { outcome: { status: outcome } } })
+					expect(fixture.task.isCompleted()).toBe(false)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.readExecute).not.toHaveBeenCalled()
+					expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(1)
+					expect(fixture.eventOrder.indexOf("read_published")).toBeGreaterThan(
+						fixture.eventOrder.indexOf("assistant_saved"),
+					)
+					const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(receipts).toEqual([
+						expect.objectContaining({ content: "directory listing", is_error: false }),
+					])
+					expect(fixture.events.filter((event) => event.type === "tool_result")).toEqual([
+						expect.objectContaining({
+							callId: fixture.acceptedCallId,
+							status: "success",
+							output: "directory listing",
+						}),
+					])
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(
+						fixture
+							.lifecycleSnapshot()
+							.items.filter((item: { type: string }) => item.type === "tool_result"),
+					).toEqual([expect.objectContaining({ toolCallId: fixture.acceptedCallId, status: "success" })])
+					const callIndex = fixture.task.apiConversationHistory.findIndex(
+						(message) =>
+							message.role === "assistant" &&
+							Array.isArray(message.content) &&
+							message.content.some(
+								(block) => block.type === "tool_use" && block.id === fixture.acceptedCallId,
+							),
+					)
+					const receiptIndex = fixture.task.apiConversationHistory.findIndex(
+						(message) =>
+							message.role === "user" &&
+							Array.isArray(message.content) &&
+							message.content.includes(receipts[0]),
+					)
+					expect(callIndex).toBeGreaterThanOrEqual(0)
+					expect(receiptIndex).toBeGreaterThan(callIndex)
+				} finally {
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it.each(
+			(["failed", "incomplete"] as const).flatMap((outcome) => [
+				{ outcome, mismatch: true as const, label: "omitted call" },
+				{ outcome, mismatch: "arguments" as const, label: "changed arguments" },
+			]),
+		)(
+			"withholds a settled early read for $label on a terminal $outcome response",
+			async ({ outcome, mismatch }) => {
+				const fixture = await startEarlyReadStream({ outcome, mismatch })
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+					fixture.releaseRead()
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					fixture.releaseAssistantSave()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: outcome,
+					})
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+					expect(fixture.eventOrder).not.toContain("read_published")
+					expect(
+						fixture.events.some((event) => event.type === "tool_result" && event.status === "success"),
+					).toBe(false)
+					const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(receipts).toEqual([expect.objectContaining({ is_error: true })])
+					expect(JSON.stringify(receipts)).not.toContain("directory listing")
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				} finally {
+					fixture.restoreMismatchSpy()
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it.each(["failed", "incomplete"] as const)(
+			"withholds a settled preparation error without an approved read effect after a %s provider outcome",
+			async (outcome) => {
+				const fixture = await startEarlyReadStream({ outcome, unavailableReadPreparation: true })
+				try {
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					fixture.releaseAssistantSave()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: outcome,
+					})
+					expect(fixture.readEffectCount()).toBe(0)
+					expect(fixture.readExecute).not.toHaveBeenCalled()
+					expect(fixture.eventOrder).not.toContain("read_started")
+					expect(fixture.eventOrder).not.toContain("read_published")
+					expect(fixture.eventOrder).not.toContain("read_finalizer_failed")
+					expect(fixture.lifecycleEvents.some((event) => event.type === "tool_effect_started")).toBe(false)
+					expect(
+						fixture.events.some((event) => event.type === "tool_result" && event.status === "success"),
+					).toBe(false)
+					const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(receipts).toEqual([
+						expect.objectContaining({
+							is_error: true,
+							content: expect.stringContaining("Tool call was not executed"),
+						}),
+					])
+					expect(JSON.stringify(receipts)).not.toContain("directory listing")
+					expect(JSON.stringify(receipts).toLowerCase()).not.toContain("read completed")
+					expect(JSON.stringify(receipts).toLowerCase()).not.toContain("outcome is unknown")
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(fixture.task.isCompleted()).toBe(false)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+				} finally {
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it.each(["failed", "incomplete"] as const)(
+			"withholds completed early read output when the %s assistant boundary cannot be saved",
+			async (outcome) => {
+				const fixture = await startEarlyReadStream({ outcome, failAssistantSave: true })
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+					fixture.releaseRead()
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					fixture.releaseAssistantSave()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: "failed",
+					})
+					expect(fixture.eventOrder).not.toContain("read_published")
+					expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+					expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+				} finally {
+					await stopEarlyReadStream(fixture, { expectedRecoveryPersistenceFailure: true })
+				}
+			},
+		)
+
+		it.each(["failed", "incomplete"] as const)(
+			"persists a real early-read archive error when the provider ends %s",
+			async (outcome) => {
+				const fixture = await startEarlyReadStream({ outcome, failReadFinalizer: true })
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+					fixture.releaseRead()
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					fixture.releaseAssistantSave()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: "failed",
+						response: { outcome: { status: outcome } },
+					})
+					expect(fixture.eventOrder.filter((event) => event === "read_finalizer_failed")).toHaveLength(1)
+					expect(fixture.eventOrder).not.toContain("read_published")
+					const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(receipts).toEqual([
+						expect.objectContaining({
+							is_error: true,
+							content: expect.stringContaining("archive could not be finalized"),
+						}),
+					])
+					expect(fixture.events.filter((event) => event.type === "tool_result")).toEqual([
+						expect.objectContaining({ callId: fixture.acceptedCallId, status: "error" }),
+					])
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+				} finally {
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it.each(["event", "journal"] as const)(
+			"preserves truthful early read output after a partial %s publication failure",
+			async (publicationFailure) => {
+				const fixture = await startEarlyReadStream({ outcome: "failed", publicationFailure })
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+					fixture.releaseRead()
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					fixture.releaseAssistantSave()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: "failed",
+						error: expect.any(Error),
+					})
+					expect(fixture.publicationFailureInjected()).toBe(true)
+					expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(1)
+					const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					)
+					expect(receipts).toEqual([
+						expect.objectContaining({ content: "directory listing", is_error: false }),
+					])
+					expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+					expect(
+						fixture
+							.lifecycleSnapshot()
+							.items.filter((item: { type: string }) => item.type === "tool_result"),
+					).toEqual([expect.objectContaining({ toolCallId: fixture.acceptedCallId, status: "success" })])
+					expect(fixture.events.filter((event) => event.type === "tool_result")).not.toContainEqual(
+						expect.objectContaining({ status: "error" }),
+					)
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+				} finally {
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it("retains a truthful early read receipt for explicit persistence repair without rerunning the finalizer", async () => {
+			const fixture = await startEarlyReadStream({ outcome: "incomplete", failReceiptSave: true })
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+				fixture.releaseRead()
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+				fixture.releaseAssistantSave()
+				expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+					status: "failed",
+				})
+				expect(fixture.task.userMessageContent.filter((block) => block.type === "tool_result")).toEqual([
+					expect.objectContaining({
+						tool_use_id: fixture.acceptedCallId,
+						content: "directory listing",
+						is_error: false,
+					}),
+				])
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				fixture.allowReceiptSave()
+				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+				const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "user" && Array.isArray(message.content)
+						? message.content.filter(
+								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+							)
+						: [],
+				)
+				expect(receipts).toEqual([expect.objectContaining({ content: "directory listing", is_error: false })])
+				expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(1)
+				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+			} finally {
+				fixture.allowReceiptSave()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("joins discarded early-read cleanup without clearing a replacement response step", async () => {
+			const fixture = await startEarlyReadStream({ mismatch: "arguments" })
+			const discardEntered = deferred()
+			const releaseDiscard = deferred()
+			const discardClosed = deferred()
+			const replacementAssistant: Task["assistantMessageContent"] = [
+				{ type: "text", content: "Replacement response", partial: true },
+			]
+			const replacementUser: Task["userMessageContent"] = [{ type: "text", text: "Replacement request" }]
+			let replacementInstalled = false
+			let replacementStep: Task["currentAgentStep"]
+			let replacementLifecycleReads = 0
+			let lifecycleCount = 0
+			let eventCount = 0
+			let historyBefore: Task["apiConversationHistory"] = []
+			let cleanupClosed = false
+			let cleanupSucceeded = false
+			const lifecycleOwner = fixture.task as unknown as {
+				getCanonicalLifecycleSnapshot: Task["getCanonicalLifecycleSnapshot"]
+			}
+			const originalSnapshot = lifecycleOwner.getCanonicalLifecycleSnapshot.bind(fixture.task)
+			const lifecycleRead = vi.spyOn(lifecycleOwner, "getCanonicalLifecycleSnapshot").mockImplementation(() => {
+				if (replacementInstalled) replacementLifecycleReads += 1
+				return originalSnapshot()
+			})
+			const originalDiscard = ToolScheduler.prototype.discardDeferredResults
+			const discard = vi
+				.spyOn(ToolScheduler.prototype, "discardDeferredResults")
+				.mockImplementation(async function (this: ToolScheduler) {
+					const step = fixture.task["currentAgentStep"]
+					const runId = fixture.task["agentRunId"]
+					if (!step || !runId || replacementInstalled)
+						throw new Error("Expected one original disposal owner.")
+					const turnId = `${step.turnId}-replacement`
+					replacementStep = {
+						...step,
+						stepId: `${step.stepId}-replacement`,
+						turnId,
+						requestId: `${step.requestId}-replacement`,
+						attemptId: `${step.attemptId}-replacement`,
+					}
+					historyBefore = structuredClone(fixture.task.apiConversationHistory)
+					lifecycleCount = fixture.lifecycleEvents.length
+					eventCount = fixture.events.length
+					Object.assign(fixture.task, {
+						currentAgentStep: replacementStep,
+						agentRunId: `${runId}-replacement`,
+						agentTurnId: turnId,
+						assistantMessageContent: replacementAssistant,
+						userMessageContent: replacementUser,
+						currentStreamingContentIndex: 7,
+						userMessageContentReady: false,
+					})
+					replacementInstalled = true
+					discardEntered.resolve(undefined)
+					try {
+						await releaseDiscard.promise
+						await originalDiscard.call(this)
+						cleanupSucceeded = true
+					} finally {
+						cleanupClosed = true
+						discardClosed.resolve(undefined)
+					}
+				})
+			const expectReplacementUntouched = () => {
+				expect(fixture.task["currentAgentStep"]).toBe(replacementStep)
+				expect(fixture.task.assistantMessageContent).toBe(replacementAssistant)
+				expect(fixture.task.userMessageContent).toBe(replacementUser)
+				expect(fixture.task.currentStreamingContentIndex).toBe(7)
+				expect(fixture.task.userMessageContentReady).toBe(false)
+				expect(fixture.task.apiConversationHistory).toEqual(historyBefore)
+				expect(fixture.lifecycleEvents).toHaveLength(lifecycleCount)
+				expect(fixture.events).toHaveLength(eventCount)
+				expect(replacementLifecycleReads).toBe(0)
+			}
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+				fixture.releaseRead()
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+				fixture.releaseAssistantSave()
+				fixture.releaseProvider()
+				await waitForControlledSignal("discard entry", discardEntered.promise, fixture.debugState)
+				expect(cleanupClosed).toBe(false)
+				expect(fixture.runCompletion()).toBeUndefined()
+				expectReplacementUntouched()
+				releaseDiscard.resolve(undefined)
+				await waitForControlledSignal("discard closure", discardClosed.promise, fixture.debugState)
+				expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+					status: "aborted",
+				})
+				expectReplacementUntouched()
+				expect(cleanupClosed).toBe(true)
+				expect(cleanupSucceeded).toBe(true)
+				expect(discard).toHaveBeenCalledOnce()
+				expect(fixture.eventOrder).not.toContain("read_published")
+				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+			} finally {
+				releaseDiscard.resolve(undefined)
+				try {
+					if (replacementInstalled) {
+						await waitForControlledSignal("discard cleanup", discardClosed.promise, fixture.debugState)
+					}
+				} finally {
+					discard.mockRestore()
+					lifecycleRead.mockRestore()
+					fixture.restoreMismatchSpy()
+					await stopEarlyReadStream(fixture)
+				}
+			}
+		})
+
+		it.each([
+			{ ownership: "step", boundary: "finalizer", provider: "failed", outcome: "failed" },
+			{ ownership: "identity", boundary: "finalizer", provider: "failed", outcome: "failed" },
+			{ ownership: "surface", boundary: "finalizer", provider: "failed", outcome: "failed" },
+			{ ownership: "transcript", boundary: "finalizer", provider: "failed", outcome: "failed" },
+			{ ownership: "step", boundary: "assistant save", provider: "failed", outcome: "failed" },
+			{ ownership: "step", boundary: "finalizer", provider: "healthy", outcome: undefined },
+			{ ownership: "transcript", boundary: "finalizer", provider: "healthy", outcome: undefined },
+		] as const)(
+			"fences $provider early read publication when $ownership ownership changes during its held $boundary",
+			async ({ ownership, boundary, outcome }) => {
+				const fixture = await startEarlyReadStream({ outcome, holdReadFinalizer: boundary === "finalizer" })
+				let replacement: Task | undefined
+				try {
+					await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+					fixture.releaseRead()
+					await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+					fixture.releaseProvider()
+					await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+					if (boundary === "finalizer") {
+						fixture.releaseAssistantSave()
+						expect(
+							await Promise.race([
+								fixture.readFinalizerStarted.then(() => true),
+								fixture.run.then(() => false),
+							]),
+						).toBe(true)
+					}
+					const accepted = fixture.lifecycleEvents.find((event) => event.type === "tool_call_accepted")!
+					expect(accepted).toBeDefined()
+					const historyBefore = structuredClone(fixture.task.apiConversationHistory)
+					const publicationCount = fixture.lifecycleEvents.length
+					const replacementContent: Task["userMessageContent"] = []
+					fixture.task.userMessageContent = replacementContent
+					vi.mocked(fixture.task.recordToolCallForStopping).mockClear()
+					if (ownership === "transcript") {
+						replacement = new Task({
+							provider: mockProvider,
+							apiConfiguration: mockApiConfig,
+							taskId: fixture.task.taskId,
+							task: "Replacement transcript owner",
+							startTask: false,
+							enableCheckpoints: false,
+						})
+					} else {
+						const step = fixture.task["currentAgentStep"]!
+						const nextTurn = `${step.turnId}-replacement`
+						const fields = {
+							stepId: `${step.stepId}-replacement`,
+							turnId: nextTurn,
+							requestId: `${step.requestId}-replacement`,
+							attemptId: `${step.attemptId}-replacement`,
+						}
+						fixture.task["agentRunId"] = `${fixture.task["agentRunId"]}-replacement`
+						fixture.task["agentTurnId"] = nextTurn
+						if (ownership === "identity") Object.assign(step, fields)
+						else if (ownership === "surface") {
+							const surface = createTaskToolSurface({ registry: step.surface!.registry, mode: "code" })
+							fixture.task["currentTaskToolSurface"] = surface
+							fixture.task["currentAgentStep"] = { ...step, ...fields, surface }
+						} else fixture.task["currentAgentStep"] = { ...step, ...fields }
+					}
+					fixture.releaseAssistantSave()
+					fixture.releaseReadFinalizer()
+					expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+						status: "aborted",
+					})
+					expect(fixture.task.isCompleted()).toBe(false)
+					expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(
+						boundary === "finalizer" ? 1 : 0,
+					)
+					expect(fixture.task.recordToolCallForStopping).not.toHaveBeenCalled()
+					expect(fixture.task.userMessageContent).toBe(replacementContent)
+					expect(fixture.task.userMessageContent).toEqual([])
+					expect(fixture.task.apiConversationHistory).toEqual(historyBefore)
+					expect(fixture.lifecycleEvents.slice(publicationCount)).toEqual([])
+					expect(fixture.lifecycleSnapshot()).toMatchObject({
+						runId: accepted.runId,
+						turnId: accepted.turnId,
+					})
+					expect(fixture.readEffectCount()).toBe(1)
+					expect(fixture.attempt).toHaveBeenCalledOnce()
+				} finally {
+					try {
+						await stopEarlyReadStream(fixture)
+					} finally {
+						await replacement?.abortTask(true)
+						await replacement?.waitForTermination()
+					}
+				}
+			},
+		)
+
+		it("fences the real Task stopping-evidence await after its captured owner is replaced", async () => {
+			const fixture = await startEarlyReadStream({ outcome: "failed", realStoppingAwait: true })
+			const recordOutcome = vi.spyOn(fixture.task["toolRepetitionDetector"], "recordOutcome")
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, fixture.debugState)
+				fixture.releaseRead()
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, fixture.debugState)
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, fixture.debugState)
+				fixture.releaseAssistantSave()
+				expect(
+					await Promise.race([fixture.stoppingWaitEntered.then(() => true), fixture.run.then(() => false)]),
+				).toBe(true)
+				const step = fixture.task["currentAgentStep"]!
+				const turnId = `${step.turnId}-replacement`
+				const surface = createTaskToolSurface({ registry: step.surface!.registry, mode: "code" })
+				const replacementContent: Task["userMessageContent"] = []
+				const historyBefore = structuredClone(fixture.task.apiConversationHistory)
+				const publicationCount = fixture.lifecycleEvents.length
+				const recoveryBefore = fixture.task["completionRecovery"]
+				fixture.task["agentRunId"] = `${fixture.task["agentRunId"]}-replacement`
+				fixture.task["agentTurnId"] = turnId
+				fixture.task["currentTaskToolSurface"] = surface
+				fixture.task["currentAgentStep"] = { ...step, surface, turnId, stepId: `${step.stepId}-replacement` }
+				fixture.task.userMessageContent = replacementContent
+				fixture.task.didToolFailInCurrentTurn = false
+				fixture.task["lastToolFailure"] = undefined
+				recordOutcome.mockClear()
+				fixture.releaseStoppingWait()
+				expect(await waitForControlledSignal("task run", fixture.run, fixture.debugState)).toMatchObject({
+					status: "aborted",
+				})
+				expect(recordOutcome).not.toHaveBeenCalled()
+				expect(fixture.task["completionRecovery"]).toBe(recoveryBefore)
+				expect(fixture.task["lastToolFailure"]).toBeUndefined()
+				expect(fixture.task.didToolFailInCurrentTurn).toBe(false)
+				expect(fixture.task.userMessageContent).toBe(replacementContent)
+				expect(fixture.task.userMessageContent).toEqual([])
+				expect(fixture.task.apiConversationHistory).toEqual(historyBefore)
+				expect(fixture.lifecycleEvents.slice(publicationCount)).toEqual([])
+				expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(1)
+				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+			} finally {
+				await stopEarlyReadStream(fixture)
+			}
+		})
 
 		it.each(earlyReadWorkdirs)(
 			"repairs an omitted accepted early $directory read in the final response",
@@ -5984,10 +8622,11 @@ describe("Alpha", () => {
 					snapshots.push([...task.userMessageContent])
 					return true
 				})
-			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					// A real request captures this surface before reading provider chunks.
 					Object.assign(task, { currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield { type: "reasoning", text: "Inspect the workspace first." }
 					yield { type: "text", text: "Preparing the tools." }
 					for (const [id, name] of [
@@ -6036,9 +8675,10 @@ describe("Alpha", () => {
 				return { status: "completed" }
 			})
 			const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
-			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					Object.assign(task, { currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield { type: "tool_call", id: "list-first", name: "list_agents", arguments: "{}" }
 					yield { type: "tool_call", id: "wait-second", name: "wait_agent", arguments: "{}" }
 				})(),
@@ -6126,9 +8766,10 @@ describe("Alpha", () => {
 				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
 				mode: "code",
 			})
-			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					Object.assign(task, { currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield { type: "text", text: "Inspecting the file." }
 					yield {
 						type: "tool_call",
@@ -6406,7 +9047,7 @@ describe("Alpha", () => {
 			const reserveToolCall = vi.spyOn(task as any, "reserveStreamingToolCall")
 			const executeToolTurn = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
 			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
-			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) => {
 				return (async function* (): AsyncGenerator<ApiStreamChunk> {
 					Object.assign(task, {
 						currentTaskToolSurface: createTaskToolSurface({
@@ -6414,6 +9055,7 @@ describe("Alpha", () => {
 							mode: "code",
 						}),
 					})
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield {
 						type: "tool_call",
 						id: "failed-stream-tool",
@@ -6497,9 +9139,10 @@ describe("Alpha", () => {
 				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
 				mode: "code",
 			})
-			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					Object.assign(task, { currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield {
 						type: "tool_call",
 						id: "before-error",
@@ -6550,9 +9193,10 @@ describe("Alpha", () => {
 				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
 				mode: "code",
 			})
-			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+			vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					Object.assign(task, { currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
 					yield {
 						type: "tool_call",
 						id: "truncated-stream-tool",
@@ -8684,7 +11328,7 @@ describe("Alpha", () => {
 })
 
 describe("Plan completion presentation", () => {
-	it("normalizes a primary Plan response to one exact proposed-plan block", async () => {
+	it("preserves a primary Plan response without inventing a proposed-plan block", async () => {
 		const message = { ts: 1, type: "say", say: "text", text: "streamed draft", partial: true }
 		const commitAlphaMessageMutation = vi.fn(
 			async (_timestamp: number, _context: string, mutate: (value: any) => any) => {
@@ -8708,9 +11352,15 @@ describe("Plan completion presentation", () => {
 
 		expect(message).toMatchObject({
 			say: "completion_result",
-			text: "<proposed_plan>\n# Provider plan\n- Update model lookup\n</proposed_plan>",
+			text: "# Provider plan\n- Update model lookup",
 			partial: false,
 		})
+		expect(commitAlphaMessageMutation).toHaveBeenCalledWith(
+			1,
+			"the completion result",
+			expect.any(Function),
+			undefined,
+		)
 		expect((task as any).say).not.toHaveBeenCalled()
 	})
 })
@@ -8845,38 +11495,56 @@ describe("Queued message processing after condense", () => {
 		const taskA = new Task({
 			provider: providerA,
 			apiConfiguration: apiConfig,
+			taskId: "queued-condense-task-a",
 			task: "task A",
 			startTask: false,
+			enableCheckpoints: false,
 		})
 		const taskB = new Task({
 			provider: providerB,
 			apiConfiguration: apiConfig,
+			taskId: "queued-condense-task-b",
 			task: "task B",
 			startTask: false,
+			enableCheckpoints: false,
 		})
-		prepareCompaction(taskA)
-		prepareCompaction(taskB)
+		try {
+			// The uuid mock is constant; separate tasks need distinct transcript ownership keys.
+			expect(taskA.taskId).not.toBe(taskB.taskId)
+			expect(taskA.messageQueueService).not.toBe(taskB.messageQueueService)
+			prepareCompaction(taskA)
+			prepareCompaction(taskB)
 
-		const spyA = vi.spyOn(taskA, "submitUserMessage").mockResolvedValue(undefined)
-		const spyB = vi.spyOn(taskB, "submitUserMessage").mockResolvedValue(undefined)
+			const spyA = vi.spyOn(taskA, "submitUserMessage").mockResolvedValue(undefined)
+			const spyB = vi.spyOn(taskB, "submitUserMessage").mockResolvedValue(undefined)
 
-		taskA.messageQueueService.addMessage("A message")
-		taskB.messageQueueService.addMessage("B message")
+			taskA.messageQueueService.addMessage("A message")
+			taskB.messageQueueService.addMessage("B message")
 
-		// Condense should not drain either task's queue.
-		await taskA.condenseContext()
+			// Condense should not drain either task's queue.
+			await taskA.condenseContext()
 
-		expect(spyA).not.toHaveBeenCalled()
-		expect(spyB).not.toHaveBeenCalled()
-		expect(taskA.messageQueueService.isEmpty()).toBe(false)
-		expect(taskB.messageQueueService.isEmpty()).toBe(false)
+			expect(spyA).not.toHaveBeenCalled()
+			expect(spyB).not.toHaveBeenCalled()
+			expect(taskA.messageQueueService.isEmpty()).toBe(false)
+			expect(taskB.messageQueueService.isEmpty()).toBe(false)
+			expect(taskA.messageQueueService.messages.map((message) => message.text)).toEqual(["A message"])
+			expect(taskB.messageQueueService.messages.map((message) => message.text)).toEqual(["B message"])
 
-		await taskB.condenseContext()
+			await taskB.condenseContext()
 
-		expect(spyA).not.toHaveBeenCalled()
-		expect(spyB).not.toHaveBeenCalled()
-		expect(taskA.messageQueueService.isEmpty()).toBe(false)
-		expect(taskB.messageQueueService.isEmpty()).toBe(false)
+			expect(spyA).not.toHaveBeenCalled()
+			expect(spyB).not.toHaveBeenCalled()
+			expect(taskA.messageQueueService.isEmpty()).toBe(false)
+			expect(taskB.messageQueueService.isEmpty()).toBe(false)
+			expect(taskA.messageQueueService.messages.map((message) => message.text)).toEqual(["A message"])
+			expect(taskB.messageQueueService.messages.map((message) => message.text)).toEqual(["B message"])
+		} finally {
+			taskA.dispose()
+			taskB.dispose()
+			await providerA.dispose()
+			await providerB.dispose()
+		}
 	})
 })
 

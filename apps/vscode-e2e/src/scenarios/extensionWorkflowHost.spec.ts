@@ -33,6 +33,67 @@ import { WorkflowFailure } from "./contracts"
 
 const workspace = process.cwd()
 
+for (const failCancellation of [false, true]) {
+	test(`workflow disposal restores the full original configuration after ${failCancellation ? "failed cancellation" : "completion"}`, async () => {
+		const original: AlphaCodeSettings = {
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: { vendor: "copilot", id: "gpt-6-luna" },
+			approvalMode: "ask",
+			autoApprovalEnabled: false,
+			allowedCommands: ["git status"],
+			deniedCommands: ["git push"],
+			terminalShellIntegrationDisabled: false,
+			enableCheckpoints: true,
+		}
+		const saved = structuredClone(original)
+		let active = original
+		let restorations = 0
+		let cancellations = 0
+		const cancellationFailure = new Error("Cancellation failed")
+		const provider = Object.assign(new EventEmitter(), {
+			getLiveTask: () => ({ didComplete: !failCancellation }),
+		})
+		const api = Object.assign(new EventEmitter(), {
+			sidebarProvider: provider,
+			getConfiguration: () => active,
+			setConfiguration: async (configuration: AlphaCodeSettings) => {
+				active = configuration
+				if (configuration === original) restorations++
+			},
+			startNewTask: async () => "fixture-task",
+			cancelCurrentTask: async () => {
+				cancellations++
+				if (failCancellation) throw cancellationFailure
+			},
+		})
+		const host = new ExtensionWorkflowHost(
+			api as unknown as AlphaCodeAPI,
+			workspace,
+			"live-copilot",
+			new WorkflowRequestBudget(10),
+			5_000,
+		)
+		await host.start("review")
+		assert.equal(active.apiProvider, original.apiProvider)
+		assert.deepEqual(active.vsCodeLmModelSelector, original.vsCodeLmModelSelector)
+		assert.notDeepEqual(active.deniedCommands, original.deniedCommands)
+		const firstDisposal = host.dispose()
+		const secondDisposal = host.dispose()
+		if (failCancellation) {
+			const retainsFailure = (error: unknown) =>
+				error instanceof AggregateError && error.errors.includes(cancellationFailure)
+			await assert.rejects(firstDisposal, retainsFailure)
+			await assert.rejects(secondDisposal, retainsFailure)
+		} else await Promise.all([firstDisposal, secondDisposal])
+		assert.deepEqual(active, saved)
+		assert.deepEqual(original, saved)
+		assert.equal(restorations, 1)
+		assert.equal(cancellations, failCancellation ? 1 : 0)
+		assert.equal(provider.listenerCount("taskCreated"), 0)
+		assert.equal(api.listenerCount(AlphaCodeEventName.TaskCompleted), 0)
+	})
+}
+
 for (const [name, later, attributed] of [
 	["current timeout", [], true],
 	["a newer main request", [{ type: "model_request_started", purpose: "task" }], false],
@@ -870,10 +931,16 @@ test("reload applies scenario policy before saved-task construction and reports 
 			live = true
 		},
 	})
+	const original: AlphaCodeSettings = { autoApprovalEnabled: false, enableCheckpoints: true }
+	let restored = false
 	const api = Object.assign(new EventEmitter(), {
 		sidebarProvider: provider,
-		getConfiguration: () => ({ autoApprovalEnabled: false, enableCheckpoints: true }),
+		getConfiguration: () => original,
 		setConfiguration: async (configuration: AlphaCodeSettings) => {
+			if (configuration === original) {
+				restored = true
+				return
+			}
 			assert.equal(configuration.autoApprovalEnabled, true)
 			assert.equal(configuration.alwaysAllowReadOnly, true)
 			assert.equal(configuration.alwaysAllowWrite, true)
@@ -914,6 +981,7 @@ test("reload applies scenario policy before saved-task construction and reports 
 	} finally {
 		await host.dispose()
 	}
+	assert.equal(restored, true, "reload disposal must restore the original profile policy")
 })
 
 test("problem solving denies an outside read and continues to completion", async () => {

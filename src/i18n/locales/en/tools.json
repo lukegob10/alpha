@@ -6,7 +6,15 @@
 		"definitionsOnly": " (definitions only)",
 		"maxLines": " (max {{max}} lines)",
 		"imageTooLarge": "Image file is too large ({{size}} MB). The maximum allowed size is {{max}} MB.",
-		"imageWithSize": "Image file ({{size}} KB)"
+		"imageWithSize": "Image file ({{size}} KB)",
+		"invalidImage": "unable to process image: invalid or unsupported image data",
+		"imageDecodeBusy": "Image validation is busy. Retry after current image reads finish.",
+		"imageDecodeCancelled": "Image validation was cancelled.",
+		"imageDecodeUnavailable": "Image validation could not complete.",
+		"imageDecodeInvalidResponse": "Image validation could not complete.",
+		"imageDecodeLimit": "Image decoding exceeds supported resource limits. Try a smaller image.",
+		"imageDecodeTimeout": "Image validation timed out. Try a smaller image.",
+		"imageChangedAfterValidation": "Image file changed after size validation and exceeds the allowed size limit."
 	},
 	"toolRepetitionLimitReached": "Alpha appears to be stuck in a loop, attempting the same action ({{toolName}}) repeatedly. This might indicate a problem with its current strategy. Consider rephrasing the task, providing more specific instructions, or guiding it towards a different approach.",
 	"unknownToolError": "Alpha tried to use an unknown tool: \"{{toolName}}\". Retrying...",
@@ -49,5 +57,17 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Delete operation was cancelled."
+	},
+	"mcpMedia": {
+		"imageUnsupported": "<image content omitted because you do not support image input>",
+		"audioUnsupported": "<audio content omitted because you do not support audio input>",
+		"imageInvalid": "<image content omitted because it could not be processed>",
+		"resourceUnsupported": "<unsupported MCP resource content omitted>",
+		"contentUnsupported": "<unsupported MCP content omitted>",
+		"imageSourceUnsupported": "<image content omitted because its source is not supported by this provider>",
+		"imageLabel": "Image {{index}}",
+		"imageAttachedFollowing": "[{{label}} is attached in the following user message.]",
+		"imageAttachedFollowingPart": "[{{label}} is attached in the following content parts.]",
+		"followingImageLabel": "{{label}} from the preceding tool result:"
 	}
 }

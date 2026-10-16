@@ -4,6 +4,7 @@ import { inspect } from "util"
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
 import type { ExitCodeDetails } from "./types"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
+import { terminalOutputSuffix } from "./TerminalOutputBuffer"
 import { Terminal } from "./Terminal"
 import { t } from "../../i18n"
 
@@ -65,6 +66,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 	public override async run(command: string) {
 		try {
 			await this.runWithShellIntegration(command)
+		} catch (error) {
+			// The reader ended before it could establish complete command output.
+			this.outputArchiveInterrupted = true
+			this.outputArtifactId = undefined
+			throw error
 		} finally {
 			this.disposeRunResources?.()
 			this.disposeRunResources = undefined
@@ -86,6 +92,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 			),
 		)
 		this.terminalClosedController.abort(error)
+		if (!this.isOutputFinalized && !this.isSettled) {
+			this.outputArchiveInterrupted = true
+			this.outputArtifactId = undefined
+		}
+		this.cancelOutputWriter()
 		this.disposeRunResources?.()
 		this.releaseOutputIterator()
 		if (this.terminal.process === this) {
@@ -97,6 +108,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		// The shell's terminal exit code does not prove this command's outcome.
 		// Retain one failed process outcome; late stream/end events are fenced.
 		if (!this.isSettled) this.emit("error", error)
+		this.emit("terminal_closed")
 		this.removeAllListeners("line")
 		this.removeAllListeners("completed")
 		this.removeAllListeners("continue")
@@ -276,6 +288,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 		let preOutput = ""
 		let startMarkerCarry = ""
 		let commandOutputStarted = false
+		let transcriptMarkerCarry = ""
+		let transcriptEnded = false
 
 		/*
 		 * Extract clean output from raw accumulated output. FYI:
@@ -299,7 +313,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			let data = next.value
 			// Check for command output start marker
 			if (!commandOutputStarted) {
-				preOutput += data
+				preOutput = terminalOutputSuffix(preOutput + data, 4_096)
 				// Output chunks may split the eight-character OSC start marker.
 				// Retain only its possible prefix instead of rescanning all pre-output.
 				const markerInput = startMarkerCarry + data
@@ -316,12 +330,25 @@ export class TerminalProcess extends BaseTerminalProcess {
 				}
 			}
 
-			// Command output started, accumulate data without filtering.
-			// notice to future programmers: do not add escape sequence
-			// filtering here: fullOutput cannot change in length (see getUnretrievedOutput),
-			// and chunks may not be complete so you cannot rely on detecting or removing escape sequences mid-stream.
-			this.fullOutput += data
-			this.emit("output_available")
+			// Preserve raw chunks for receipts and archival; cleanup belongs to
+			// committed consumer ranges, including split terminal controls.
+			let transcriptChunk = ""
+			if (!transcriptEnded) {
+				const markerInput = transcriptMarkerCarry + data
+				const beforeEnd = this.matchBeforeVsceEndMarkers(markerInput)
+				if (beforeEnd !== undefined) {
+					transcriptChunk = beforeEnd
+					transcriptMarkerCarry = ""
+					transcriptEnded = true
+				} else {
+					// Detect short D markers across chunk boundaries before output
+					// truncation can drop their position and retain shell prompt text.
+					const carryLength = Math.min(7, markerInput.length)
+					transcriptChunk = markerInput.slice(0, markerInput.length - carryLength)
+					transcriptMarkerCarry = markerInput.slice(-carryLength)
+				}
+			}
+			await this.appendOutput(data, transcriptChunk)
 
 			// For non-immediately returning commands we want to show loading spinner
 			// right away but this wouldn't happen until it emits a line break, so
@@ -335,6 +362,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 			this.startHotTimer(data)
 		}
+
+		if (!transcriptEnded && transcriptMarkerCarry) this.appendOutputTranscript(transcriptMarkerCarry)
 
 		// Set streamClosed immediately after stream ends.
 		this.terminal.setActiveStream(undefined)
@@ -352,7 +381,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 				"VSCE output start escape sequence (]633;C or ]133;C) not received, but the stream has started. Upstream VSCE Bug?"
 
 			const inspectPreOutput = inspect(preOutput, { colors: false, breakLength: Infinity })
-			console.error(`[Terminal Process] ${errorMsg} preOutput: ${inspectPreOutput}`)
+			console.error(`[Terminal Process] ${errorMsg} (${preOutput.length} buffered characters)`)
 
 			// Emit no_shell_integration event
 			this.emit("no_shell_integration", errorMsg)
@@ -377,6 +406,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		if (match !== undefined) {
 			this.fullOutput = match
+			this.outputOmissions = this.outputOmissions.filter((omission) => omission.end <= match.length)
 		}
 
 		// For now we don't want this delaying requests since we don't send
@@ -384,7 +414,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 		// command is finished, we still want to consider it 'hot' in case
 		// so that api request stalls to let diagnostics catch up").
 		this.stopHotTimer()
-		this.emit("completed", this.stripCursorSequences(this.removeVSCodeShellIntegration(this.fullOutput)))
+		const completionFailure = await this.emitCompletedAndWait(this.getOutputTranscript())
+		if (completionFailure) throw completionFailure
 		this.emit("continue")
 	}
 
@@ -399,6 +430,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		// A failed output reader settles its promise while the shell can still run.
 		if (this.aborted || (this.isSettled && !this.terminal.running)) return
 		this.aborted = true
+		this.cancelOutputWriter()
 		if (this.commandSubmitted && this.terminal.process === this) {
 			try {
 				// Send SIGINT using CTRL+C. Only an accepted interrupt is idempotent;
@@ -415,6 +447,12 @@ export class TerminalProcess extends BaseTerminalProcess {
 		if (!this.commandSubmitted || this.isSettled || this.terminal.process !== this)
 			throw new Error("Command is no longer accepting input")
 		this.terminal.terminal.sendText(input, false)
+	}
+
+	public interrupt(): void {
+		if (!this.commandSubmitted || !this.terminal.running || this.terminal.process !== this)
+			throw new Error("Command is no longer running")
+		this.terminal.terminal.sendText("\x03", false)
 	}
 
 	private completeCancellationBeforeLaunch(): boolean {
@@ -450,11 +488,10 @@ export class TerminalProcess extends BaseTerminalProcess {
 			endIndex = index133
 		}
 
-		// If no end markers were found yet (possibly due to VSCode bug#237208):
-		//   For active streams: return only complete lines (up to last \n).
-		//   For closed streams: return all remaining content.
+		// Explicit polls include partial prompts; legacy line consumers wait for
+		// a newline while their stream is active.
 		if (endIndex === -1) {
-			if (!this.terminal.isStreamClosed && !(includeTrailingOutput && this.isSettled)) {
+			if (!this.terminal.isStreamClosed && !includeTrailingOutput) {
 				// Stream still running - only process complete lines
 				endIndex = this.fullOutput.lastIndexOf("\n", this.fullOutput.length - 1)
 
@@ -472,7 +509,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		}
 
 		// Convert the relative cap to an absolute raw-buffer endpoint.
-		endIndex = Math.min(endIndex, startIndex + maxCharacters)
+		endIndex = this.safeOutputRangeEnd(Math.min(endIndex, startIndex + maxCharacters))
 		if (endIndex <= startIndex) {
 			return { endIndex: startIndex, output: "" }
 		}
@@ -482,6 +519,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 		const sanitized = this.sanitizeOutputRange(
 			this.fullOutput.slice(startIndex, endIndex),
 			endIndex >= this.fullOutput.length && (this.terminal.isStreamClosed || this.isSettled),
+			this.outputCleanupState,
+			startIndex,
 		)
 
 		return {
@@ -495,6 +534,32 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 	protected override onOutputBufferReset(): void {
 		this.outputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
+	}
+
+	protected override getOutputTranscript(): string {
+		const parts = this.getOutputTranscriptParts()
+		if (!parts.some((part) => part.omitted)) {
+			const raw = parts.map((part) => part.output).join("")
+			return this.sanitizeOutputRange(
+				this.matchBeforeVsceEndMarkers(raw) ?? raw,
+				true,
+				INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE,
+			).output
+		}
+		let state = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
+		let output = ""
+		for (let index = 0; index < parts.length; index++) {
+			const part = parts[index]
+			if (part.omitted) {
+				output += part.output
+				state = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
+				continue
+			}
+			const sanitized = this.sanitizeOutputRange(part.output, index === parts.length - 1, state)
+			output += sanitized.output
+			state = sanitized.state
+		}
+		return output
 	}
 
 	private emitRemainingBufferIfListening() {
@@ -588,12 +653,33 @@ export class TerminalProcess extends BaseTerminalProcess {
 	 * boundaries. The sequence payload is never retained, so a large marker
 	 * cannot turn a bounded receipt into an unbounded duplicate buffer.
 	 */
-	private sanitizeOutputRange(raw: string, finalize: boolean): { output: string; state: TerminalOutputCleanupState } {
-		let mode = this.outputCleanupState.mode
-		let pending = this.outputCleanupState.pending
+	private sanitizeOutputRange(
+		raw: string,
+		finalize: boolean,
+		initialState = this.outputCleanupState,
+		rawStartIndex?: number,
+	): { output: string; state: TerminalOutputCleanupState } {
+		let mode = initialState.mode
+		let pending = initialState.pending
 		let output = ""
 
 		for (let index = 0; index < raw.length; index++) {
+			// An omission is host evidence, so a discarded OSC/CSI prefix cannot
+			// swallow the marker or poison cleanup of the retained suffix.
+			const omission =
+				rawStartIndex === undefined
+					? undefined
+					: this.outputOmissions.find(
+							(item) => rawStartIndex + index >= item.start && rawStartIndex + index < item.end,
+						)
+			if (omission && rawStartIndex !== undefined) {
+				const end = Math.min(raw.length, omission.end - rawStartIndex)
+				output += raw.slice(index, end)
+				index = end - 1
+				mode = "normal"
+				pending = ""
+				continue
+			}
 			const character = raw[index]
 
 			switch (mode) {

@@ -183,6 +183,13 @@ export function copyWasms(srcDir: string, distDir: string): void {
 
 	console.log(`[copyWasms] Copied tiktoken WASMs to ${workersDir}`)
 
+	// The image validator uses the portable codec only in its bounded worker.
+	const imageCodecRoot = resolveNodeModulePath(srcDir, "@imagemagick", "magick-wasm")
+	fs.copyFileSync(path.join(imageCodecRoot, "dist", "x86", "magick.wasm"), path.join(workersDir, "magick.wasm"))
+	for (const license of ["LICENSE", "NOTICE"]) {
+		fs.copyFileSync(path.join(imageCodecRoot, license), path.join(workersDir, `magick-${license}`))
+	}
+
 	// Main tree-sitter WASM file.
 	fs.copyFileSync(
 		resolveNodeModulePath(srcDir, "web-tree-sitter", "tree-sitter.wasm"),

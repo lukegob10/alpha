@@ -31,13 +31,15 @@ describe("completion hooks", () => {
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
 			() =>
 				({
-					get: () => ({
-						stop: [
-							{ command: process.execPath },
-							{ command: "" },
-							{ command: "node" },
-							{ command: "invalid", args: [4] },
-						],
+					inspect: () => ({
+						globalValue: {
+							stop: [
+								{ command: process.execPath },
+								{ command: "" },
+								{ command: "node" },
+								{ command: "invalid", args: [4] },
+							],
+						},
 					}),
 				}) as any,
 		)

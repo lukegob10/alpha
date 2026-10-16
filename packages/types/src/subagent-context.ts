@@ -7,6 +7,19 @@ import {
 } from "./subagent-orchestration.js"
 
 export const SUBAGENT_CONTEXT_MANIFEST_VERSION = 1 as const
+export const SUBAGENT_SKILL_DESCRIPTION_MAX_LENGTH = 1_024
+export const SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES = 1_048_576
+
+/** Added JSON property bytes; every stored occurrence counts, including hidden or duplicate skills. */
+export function getSubagentSkillDescriptionsByteLength(skills: readonly { description?: string }[]): number {
+	const encoder = new TextEncoder()
+	let bytes = 0
+	for (const { description } of skills) {
+		if (description === undefined) continue
+		bytes += encoder.encode(`,"description":${JSON.stringify(description)}`).byteLength
+	}
+	return bytes
+}
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const CANONICAL_POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
@@ -86,6 +99,12 @@ export const subagentContextSkillSchema = z
 		name: z.string().min(1),
 		path: z.string().min(1),
 		digest: subagentContextDigestSchema,
+		/** Frozen relevance metadata; omission preserves legacy manifests without description capture. */
+		description: z
+			.string()
+			.max(SUBAGENT_SKILL_DESCRIPTION_MAX_LENGTH)
+			.refine((value) => value.trim().length > 0, "Captured skill description must not be blank")
+			.optional(),
 		/** Captured discovery policy; omission keeps legacy implicit invocation enabled. */
 		allowImplicitInvocation: z.boolean().optional(),
 	})
@@ -262,7 +281,12 @@ export const subagentContextManifestSchema = z
 		contextRefs: z.array(z.string().min(1)).min(1),
 		workspace: subagentContextWorkspaceSchema,
 		instructions: subagentContextInstructionsSchema,
-		skills: z.array(subagentContextSkillSchema),
+		skills: z
+			.array(subagentContextSkillSchema)
+			.refine(
+				(skills) => getSubagentSkillDescriptionsByteLength(skills) <= SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES,
+				"Captured skill descriptions exceed the metadata byte limit",
+			),
 		modelRoute: subagentModelRouteStateSchema.strict(),
 		runtimePolicy: subagentContextRuntimePolicySchema,
 		/**

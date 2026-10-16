@@ -1,7 +1,14 @@
 import type { AlphaAsk, AlphaAskResponse, CommandToolResult, ToolName, ToolProgressStatus } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
-import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
+import type {
+	ToolUse,
+	ToolResponse,
+	HandleError,
+	PushToolResult,
+	AskApproval,
+	NativeToolArgs,
+} from "../../shared/tools"
 import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 
 export type { ToolFailureMetadata } from "./ToolFailure"
@@ -18,6 +25,8 @@ export interface ToolApprovalResponse {
 	response: AlphaAskResponse
 	text?: string
 	images?: string[]
+	/** Presentation identity supplied only by the host that owns the command approval row. */
+	commandExecutionId?: string
 }
 
 export type AskApprovalResponse = (
@@ -51,6 +60,9 @@ export interface TrustedToolProgressObservation {
 
 export const MAX_TOOL_PROGRESS_OBSERVATIONS = 128
 
+/** Shared framing reserve for tools whose control metadata must survive harness truncation. */
+export const TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n[Tool output truncated by harness]"
+
 export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
 	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
@@ -74,10 +86,19 @@ export interface ToolResultMetadata {
 
 export interface ToolCallbacks {
 	askApproval: AskApproval
+	/** Image input capability captured with this step's executable tool catalog. */
+	readonly supportsImages?: boolean
+	/** Same approval policy as askApproval, with an optional host-owned command row receipt. */
+	askCommandApproval?: (...args: Parameters<AskApproval>) => Promise<{
+		approved: boolean
+		commandExecutionId?: string
+	}>
 	/** Optional rich approval channel for structured UI responses (for example, batch file permissions). */
 	askApprovalResponse?: AskApprovalResponse
 	handleError: HandleError
 	pushToolResult: PushToolResult
+	/** Native aliases format only host-issued command metadata outside their stdout cap. */
+	pushCommandResult?: (result: CommandToolResult, additionalContent?: Exclude<ToolResponse, string>) => void
 	/** Remaining text allowance after scheduler-owned approval feedback; read tools reserve their own framing. */
 	getRemainingOutputChars?: () => number
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
@@ -92,6 +113,22 @@ export interface ToolCallbacks {
 	commandResultMaxOutputTokens?: number
 	/** Present only for the native exec_command and write_stdin aliases. */
 	commandResultFormat?: "codex"
+}
+
+/** A character budget must not split a UTF-16 pair before UTF-8 transport. */
+export function truncateToolOutputText(value: string, maxCharacters: number): string {
+	let end = Math.min(value.length, Math.max(0, Math.floor(maxCharacters)))
+	if (
+		end > 0 &&
+		end < value.length &&
+		value.charCodeAt(end - 1) >= 0xd800 &&
+		value.charCodeAt(end - 1) <= 0xdbff &&
+		value.charCodeAt(end) >= 0xdc00 &&
+		value.charCodeAt(end) <= 0xdfff
+	) {
+		end--
+	}
+	return value.slice(0, end)
 }
 
 /**
@@ -116,7 +153,7 @@ export function serializeCommandToolResult(result: CommandToolResult, maxCharact
 	let best = empty
 	while (low <= high) {
 		const length = Math.floor((low + high) / 2)
-		const output = `${result.output.slice(0, length)}${marker}`
+		const output = `${truncateToolOutputText(result.output, length)}${marker}`
 		const candidate = serialize(output)
 		if (candidate.length <= budget) {
 			best = candidate
@@ -168,8 +205,8 @@ export function formatCommandToolResult(result: CommandToolResult, maxCharacters
 		result.output.length <= budget
 			? result.output
 			: budget <= marker.length
-				? result.output.slice(0, budget)
-				: `${result.output.slice(0, budget - marker.length)}${marker}`
+				? truncateToolOutputText(result.output, budget)
+				: `${truncateToolOutputText(result.output, budget - marker.length)}${marker}`
 	return `${prefix}${output}${artifactNote}${remainingOutputNote}`
 }
 

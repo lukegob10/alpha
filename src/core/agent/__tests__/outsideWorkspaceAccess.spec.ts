@@ -298,10 +298,16 @@ describe("outside workspace execution", () => {
 			},
 			false,
 		)
-		const result = await fixture.run(inspection("apply_patch"))
-		expect(result.results[0].status).toBe("error")
+		const effect = vi.fn(async () => {})
+		const result = await fixture.run(inspection("apply_patch", effect))
+		expect(result.results[0]).toMatchObject({
+			status: "denied",
+			failure: { reason: "policy_denied", affectedScope: { kind: "workspace" }, effectsStarted: "no" },
+		})
 		expect(result.results[0].content).toContain("outside the allowed workspace roots")
 		expect(fixture.host.askApproval).not.toHaveBeenCalled()
+		expect(effect).not.toHaveBeenCalled()
+		expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
 	})
 
 	it("requires approval for an outward junction and rejects a retargeted junction during approval", async () => {

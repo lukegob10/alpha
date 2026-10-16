@@ -11,7 +11,8 @@ import { record, runLiveCase } from "./live-file-tool-support"
 const file = "live-file-tools/command-diff.txt"
 const before = "before command\n"
 const after = "after command\n"
-const command = `node -e "require('node:fs').writeFileSync('${file}','after command\\n')"`
+const script = "live-file-tools/edit-command-diff.cjs"
+const command = `node ${script}`
 
 function appliedDiffs(messages: readonly AlphaMessage[]) {
 	return messages.flatMap((message) => {
@@ -34,7 +35,10 @@ suite("Live Copilot command file diff", function () {
 		await runLiveCase(
 			"command-file-diff-live",
 			["exec_command"],
-			{ [file]: before },
+			{
+				[file]: before,
+				[script]: `require("node:fs").writeFileSync(${JSON.stringify(file)}, ${JSON.stringify(after)})\n`,
+			},
 			`Run exactly one exec_command call with this cmd unchanged: ${JSON.stringify(command)}. It edits ${file}. Then finish.`,
 			async (calls, messages, workspace, _answer, task) => {
 				const commands = calls.filter((call) => call.name === "exec_command")
@@ -83,7 +87,7 @@ suite("Live Copilot command file diff", function () {
 				assert.deepEqual(savedDiff, liveDiff, "Saved diff content must match the completed UI message")
 			},
 			{
-				commands: ["node"],
+				commands: [command],
 				requestLimit: 6,
 				scope: "Make only the one described edit inside live-file-tools. Do not delegate, inspect other files, or run other commands.",
 			},

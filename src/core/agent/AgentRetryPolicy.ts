@@ -69,8 +69,10 @@ export interface AgentRetryRequest {
 	retryAfterMs?: number
 	/** Elapsed retry-sequence time at the failed attempt, in milliseconds. */
 	elapsedMs?: number
-	/** Semantic output has already been observed and must never be replayed. */
+	/** Semantic output has already been observed and must never be blindly replayed. */
 	hasSemanticOutput?: boolean
+	/** The host durably committed the interrupted response and will derive a new history boundary. */
+	recovery?: "committed-history"
 }
 
 export type AgentRetryExhaustionReason = "attempts" | "elapsed-budget" | "semantic-output"
@@ -213,7 +215,10 @@ export class AgentRetryPolicy {
 
 		let reason: AgentRetryExhaustionReason | undefined
 		let delayMs = 0
-		if (request.hasSemanticOutput) {
+		if (
+			request.hasSemanticOutput &&
+			(request.recovery !== "committed-history" || request.category !== "transport")
+		) {
 			reason = "semantic-output"
 		} else if (totalAttempt >= this.maxAttempts || attempt >= this.getMaxAttempts(request.category)) {
 			reason = "attempts"

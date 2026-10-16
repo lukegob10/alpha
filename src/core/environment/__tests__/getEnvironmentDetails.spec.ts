@@ -1,5 +1,6 @@
 // npx vitest core/environment/__tests__/getEnvironmentDetails.spec.ts
 
+import { EventEmitter } from "node:events"
 import path from "path"
 
 import pWaitFor from "p-wait-for"
@@ -13,6 +14,7 @@ import { isToolAllowedForMode } from "../../tools/validateToolUse"
 import { getApiMetrics } from "../../../shared/getApiMetrics"
 import { listFiles } from "../../../services/glob/list-files"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
+import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
 import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
 import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
@@ -683,6 +685,46 @@ describe("getEnvironmentDetails", () => {
 		expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
 		expect(terminal.getProcessesWithOutput).not.toHaveBeenCalled()
 		expect(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles).not.toHaveBeenCalled()
+	})
+
+	it.each([false, true])("preserves explicit command-session output when settled=%s", async (isSettled) => {
+		let unread = "SERVER_STOPPED\n"
+		const process = Object.assign(new EventEmitter(), {
+			executionId: "server-execution",
+			command: "node server.cjs",
+			isSettled,
+			hasUnretrievedOutput: () => unread.length > 0,
+			captureUnretrievedOutput: vi.fn(() => ({
+				output: unread,
+				commit: () => {
+					unread = ""
+				},
+				release: () => {},
+			})),
+		}) as unknown as AlphaTerminalProcess
+		const terminal = {
+			id: 1,
+			busy: !isSettled,
+			process: isSettled ? undefined : process,
+			getCurrentWorkingDirectory: () => mockCwd,
+			getLastCommand: () => process.command,
+			getProcessesWithOutput: () => (isSettled ? [process] : []),
+			cleanCompletedProcessQueue: vi.fn(),
+		}
+		vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
+		const sessionId = commandSessionRegistry.register(mockAlphaTask as Task, process)
+		try {
+			const environment = await getEnvironmentDetails(mockAlphaTask as Task)
+			expect(environment).not.toContain("SERVER_STOPPED")
+			expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
+			const poll = process.captureUnretrievedOutput()
+			expect(poll.output).toBe("SERVER_STOPPED\n")
+			poll.commit()
+			poll.release()
+			expect(process.hasUnretrievedOutput()).toBe(false)
+		} finally {
+			commandSessionRegistry.release(mockAlphaTask as Task, sessionId)
+		}
 	})
 
 	it("releases reserved output when a later synchronous capture fails", async () => {

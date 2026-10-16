@@ -26,23 +26,7 @@ import {
 	verifyDevelopmentFixture,
 } from "../scenarios/developmentFixture"
 import { runWorkflowScenario, type WorkflowCheckpoint } from "../scenarios/workflowDriver"
-
-async function writeNewArtifact(filePath: string, value: unknown): Promise<void> {
-	if (!path.isAbsolute(filePath)) throw new WorkflowFailure("configuration", "artifact_path_not_absolute", true)
-	const parent = path.dirname(filePath)
-	// Refuse symlink/reparse-directory destinations and never overwrite another run.
-	let current = path.parse(parent).root
-	for (const segment of path.relative(current, parent).split(path.sep).filter(Boolean)) {
-		current = path.join(current, segment)
-		await fs.mkdir(current).catch((error: NodeJS.ErrnoException) => {
-			if (error.code !== "EEXIST") throw error
-		})
-		const stat = await fs.lstat(current)
-		if (stat.isSymbolicLink() || !stat.isDirectory())
-			throw new WorkflowFailure("configuration", "unsafe_artifact_parent", true)
-	}
-	await fs.writeFile(filePath, JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 })
-}
+import { writeNewWorkflowArtifact } from "../scenarios/workflowArtifacts"
 
 function parseCheckpoint(value: unknown): WorkflowCheckpoint {
 	if (!value || typeof value !== "object") throw new WorkflowFailure("persistence", "invalid_checkpoint")
@@ -107,7 +91,7 @@ suite("Alpha realistic workflow scenarios", function () {
 					host,
 					reliability: (options, repository) =>
 						runReliabilityScenario(options, host, budget, repository, (name, value) =>
-							writeNewArtifact(path.join(process.env.ALPHA_E2E_ARTIFACTS_DIR!, name), value),
+							writeNewWorkflowArtifact(path.join(process.env.ALPHA_E2E_ARTIFACTS_DIR!, name), value),
 						),
 					development: {
 						create: (scenarioId) => createDevelopmentFixture(workspace, scenarioId),
@@ -130,7 +114,7 @@ suite("Alpha realistic workflow scenarios", function () {
 					},
 					checkpoint: {
 						read: async () => parseCheckpoint(await readBoundedJson(checkpointPath)),
-						write: (value) => writeNewArtifact(checkpointPath, value),
+						write: (value) => writeNewWorkflowArtifact(checkpointPath, value),
 					},
 				},
 			)
@@ -154,7 +138,7 @@ suite("Alpha realistic workflow scenarios", function () {
 				const output =
 					process.env.ALPHA_E2E_SCENARIO_RESULT_PATH ??
 					path.join(workspace, `.alpha-workflow-results-${selection.phase}.json`)
-				await writeNewArtifact(output, result)
+				await writeNewWorkflowArtifact(output, result)
 				console.log(`[alpha-workflow] ${JSON.stringify(result)}`)
 			}
 		}

@@ -119,7 +119,10 @@ class CommandReadAI {
 				type: "tool_call" as const,
 				id: call.id,
 				name: "exec_command",
-				arguments: JSON.stringify({ cmd: "rg -n ALPHA_EARLY_READ_SENTINEL .", workdir: call.workdir }),
+				arguments: JSON.stringify({
+					cmd: "rg -n -H ALPHA_EARLY_READ_SENTINEL sentinel.txt",
+					workdir: call.workdir,
+				}),
 			}
 			yield { type: "tool_call_end" as const, id: call.id }
 		}

@@ -531,9 +531,10 @@ describe("SkillsManager", () => {
 				[projectAgentsSkillsDir, ancestorSkillsDir, nestedSkillsDir].includes(dir),
 			)
 			mockRealpath.mockImplementation(async (candidate: string) => candidate)
-			mockReaddir.mockImplementation(async (dir: string) =>
-				dir === projectAgentsSkillsDir ? ["shared", "root-only"] : ["shared"],
-			)
+			mockReaddir.mockImplementation(async (dir: string) => {
+				if (dir === projectAgentsSkillsDir) return ["shared", "root-only"]
+				return dir === ancestorSkillsDir || dir === nestedSkillsDir ? ["shared"] : []
+			})
 			mockStat.mockResolvedValue({ isDirectory: () => true })
 			mockFileExists.mockImplementation(async (file: string) => skillFiles.has(file))
 			mockReadFile.mockImplementation(
@@ -544,9 +545,20 @@ describe("SkillsManager", () => {
 
 			try {
 				await scoped.discoverSkills()
+				// Recursive portable discovery sorts each root; nearer overrides retain their exact paths.
 				expect(scoped.getSkillsForMode("code")).toEqual([
-					expect.objectContaining({ name: "shared", description: "Nested", source: "project" }),
-					expect.objectContaining({ name: "root-only", description: "Root only", source: "project" }),
+					expect.objectContaining({
+						name: "root-only",
+						description: "Root only",
+						source: "project",
+						path: p(projectAgentsSkillsDir, "root-only", "SKILL.md"),
+					}),
+					expect.objectContaining({
+						name: "shared",
+						description: "Nested",
+						source: "project",
+						path: p(nestedSkillsDir, "shared", "SKILL.md"),
+					}),
 				])
 				expect(mockDirectoryExists).not.toHaveBeenCalledWith(p(path.dirname(PROJECT_DIR), ".agents", "skills"))
 			} finally {
@@ -564,15 +576,21 @@ describe("SkillsManager", () => {
 					(dir === projectAgentsSkillsDir && includePortable) || (dir === projectSkillsDir && includeAlpha),
 			)
 			mockRealpath.mockImplementation(async (candidate: string) => candidate)
-			mockReaddir.mockResolvedValue(["shared"])
+			mockReaddir.mockImplementation(async (dir: string) =>
+				dir === projectAgentsSkillsDir || dir === projectSkillsDir ? ["shared"] : [],
+			)
 			mockStat.mockResolvedValue({ isDirectory: () => true })
-			mockFileExists.mockResolvedValue(true)
+			mockFileExists.mockImplementation(
+				async (file: string) =>
+					(includePortable && file === portablePath) || (includeAlpha && file === alphaPath),
+			)
 			mockReadFile.mockImplementation(
 				async (file: string) =>
 					`---\nname: shared\ndescription: ${file === portablePath ? "Portable" : "Alpha"}\n---\n${file} instructions`,
 			)
 			await skillsManager.discoverSkills()
 			const captured = await skillsManager.getSkillContent("shared", "code")
+			expect(captured).toMatchObject({ path: portablePath, description: "Portable" })
 			includeAlpha = true
 			await skillsManager.refreshSkills()
 
@@ -599,9 +617,11 @@ describe("SkillsManager", () => {
 			const skillDir = p(scheduledDir, ".agents", "skills", "review")
 			mockDirectoryExists.mockImplementation(async (dir: string) => dir === p(scheduledDir, ".agents", "skills"))
 			mockRealpath.mockImplementation(async (dir: string) => dir)
-			mockReaddir.mockResolvedValue(["review"])
+			mockReaddir.mockImplementation(async (dir: string) =>
+				dir === p(scheduledDir, ".agents", "skills") ? ["review"] : [],
+			)
 			mockStat.mockResolvedValue({ isDirectory: () => true })
-			mockFileExists.mockResolvedValue(true)
+			mockFileExists.mockImplementation(async (file: string) => file === p(skillDir, "SKILL.md"))
 			mockReadFile.mockResolvedValue(
 				"---\nname: review\ndescription: Review work\nmodeSlugs: [architect]\n---\nUse the checklist.",
 			)

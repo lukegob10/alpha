@@ -578,7 +578,7 @@ describe("TaskToolCatalogCache", () => {
 			call(targetAlias),
 			call("use_mcp_tool", { server_name: "calendar", tool_name: "lookup_00" }),
 		])
-		expect(result.outcome.results.map((item) => item.status)).toEqual(["success", "error", "error", "error"])
+		expect(result.outcome.results.map((item) => item.status)).toEqual(["success", "denied", "denied", "error"])
 		expect(result.executionHost.userMessageContent.slice(1)).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ tool_use_id: target, is_error: true }),
@@ -896,7 +896,7 @@ describe("TaskToolCatalogCache", () => {
 			expect(fallback.allowedFunctionNames).not.toContain("tool_search")
 			expect(fallback.isCallable(target)).toBe(true)
 			const rejected = await execute(fallback, [call("tool_search", { query: "calendar" })])
-			expect(rejected.outcome.results[0].status).toBe("error")
+			expect(rejected.outcome.results[0].status).toBe("denied")
 			expect(rejected.executionHost.userMessageContent[0]).toMatchObject({ is_error: true })
 			const pushToolResult = vi.fn()
 			await expect(

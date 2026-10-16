@@ -110,6 +110,13 @@ const makeHarness = (
 		taskLifecycleHistoryWrites: new Map(),
 		agentFollowupAdmissions: new Map(),
 		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
+		agentLifecycleJournals: new Map(),
+		agentLifecycleProjector: { clear: vi.fn() },
+		agentLifecycleDegradedSignals: new Map(),
+		publishedTaskTranscriptRevisions: new Map(),
+		taskEventListeners: new Map(),
+		taskStack: [],
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: bounded,
@@ -119,6 +126,7 @@ const makeHarness = (
 			history.set(item.id, structuredClone(item))
 		}),
 		postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
+		postTaskSessionStateToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	}) as AlphaProvider
 	const launch = async () => {
@@ -131,7 +139,7 @@ const makeHarness = (
 			parentAbort.signal,
 		)
 		await runs.waitForResult(handle.taskId)
-		await Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId)
+		await ownedFinalization(Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId))
 		expect(store.getAgent(handle.taskId, parent.taskId)?.status).toBe("completed")
 		return { prepared, handle }
 	}
@@ -151,7 +159,11 @@ const rootUsage = ({ provider, parent }: ReturnType<typeof makeHarness>) =>
 
 const settleRun = async ({ provider, runs }: ReturnType<typeof makeHarness>, taskId: string) => {
 	await runs.waitForResult(taskId)
-	await Reflect.get(provider, "subagentRunFinalizations").get(taskId)
+	await ownedFinalization(Reflect.get(provider, "subagentRunFinalizations").get(taskId))
+}
+
+function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<void> } | undefined) {
+	return entry && ("promise" in entry ? entry.promise : entry)
 }
 
 describe("Astra delegation durability audit", () => {
@@ -162,7 +174,10 @@ describe("Astra delegation durability audit", () => {
 		const harness = makeHarness(setting)
 		const { provider, store, history, parent, launch } = harness
 		const first = await launch()
-		const manifest = Reflect.get(provider, "subagentDescriptors").get(first.handle.taskId).contextManifest
+		const record = store.getAgent(first.handle.taskId, parent.taskId)
+		if (!record || !record.snapshot) throw new Error("Missing completed child snapshot")
+		const manifest = record.snapshot.contextManifest
+		if (!manifest || !manifest.orchestration) throw new Error("Missing completed child orchestration")
 		history.set(first.handle.taskId, {
 			id: first.handle.taskId,
 			number: 2,
@@ -242,7 +257,7 @@ describe("Astra delegation durability audit", () => {
 				"Inspect the next case",
 			)
 			await runs.waitForResult(handle.taskId)
-			await Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId)
+			await ownedFinalization(Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId))
 			expect.soft(retried).toHaveProperty("runId")
 			expect.soft(runner).toHaveBeenCalledTimes(2)
 			expect(store.getAgent(handle.taskId, parent.taskId)?.status).toBe("completed")
@@ -514,11 +529,12 @@ describe("Astra delegation durability audit", () => {
 		const harness = makeHarness()
 		const { handle } = await harness.launch()
 		const previous = harness.store.getAgent(handle.taskId)
-		const attach = vi.spyOn(
-			harness.provider as unknown as { attachSubagentGroupToParentHistory: () => Promise<void> },
-			"attachSubagentGroupToParentHistory",
-		)
-		attach.mockRejectedValueOnce(new Error("Prelaunch history failed"))
+		// Fail the required transcript write before the native launch binding exists.
+		harness.parent.upsertSubagentGroup.mockImplementationOnce(async (group) => {
+			expect(group.status).toBe("pending")
+			expect(harness.runner).toHaveBeenCalledOnce()
+			throw new Error("Prelaunch history failed")
+		})
 		await expect(
 			harness.provider.followupAgentTask(harness.parent as unknown as Task, handle.taskId, "Try the next run"),
 		).rejects.toThrow("Prelaunch history failed")
@@ -526,7 +542,8 @@ describe("Astra delegation durability audit", () => {
 			...previous,
 			pendingFollowupEventId: expect.any(String),
 		})
-		attach.mockRestore()
+		expect(harness.runner).toHaveBeenCalledOnce()
+		expect(harness.runs.getRunId(handle.taskId)).toBe(handle.runId)
 		const original = Reflect.get(harness.provider, "startPreparedSubagentRun")
 		Reflect.set(harness.provider, "startPreparedSubagentRun", async (...args: unknown[]) => {
 			await original.apply(harness.provider, args)

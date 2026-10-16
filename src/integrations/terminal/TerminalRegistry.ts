@@ -4,6 +4,8 @@ import { arePathsEqual } from "../../utils/path"
 
 import { AlphaTerminal, AlphaTerminalProvider } from "./types"
 import { TerminalProcess } from "./TerminalProcess"
+import { BaseTerminal } from "./BaseTerminal"
+import type { AlphaTerminalProcess } from "./types"
 import { Terminal } from "./Terminal"
 import { ExecaTerminal } from "./ExecaTerminal"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -23,6 +25,18 @@ export class TerminalRegistry {
 	private static nextTerminalId = 1
 	private static disposables: vscode.Disposable[] = []
 	private static isInitialized = false
+	private static readonly removingTerminalIds = new Set<number>()
+
+	/** Session expiry also releases the terminal queue's reference to its output. */
+	public static releaseCompletedProcess(process: AlphaTerminalProcess): void {
+		if (!process.isSettled || process.isOutputFinalized === false || process.hasActiveOutputReceipt?.()) return
+		if (this.terminals.some((terminal) => terminal.running && terminal.process === process)) return
+		for (const terminal of this.terminals) {
+			if (terminal instanceof BaseTerminal) {
+				terminal.completedProcesses = terminal.completedProcesses.filter((candidate) => candidate !== process)
+			}
+		}
+	}
 
 	public static initialize() {
 		if (this.isInitialized) {
@@ -37,12 +51,10 @@ export class TerminalRegistry {
 		// Register handler for terminal close events to clean up temporary
 		// directories.
 		const closeDisposable = vscode.window.onDidCloseTerminal((vsceTerminal) => {
-			const terminal = this.getTerminalByVSCETerminal(vsceTerminal)
-
-			if (terminal) {
-				if (terminal instanceof Terminal) terminal.notifyTerminalClosed()
-				ShellIntegrationManager.zshCleanupTmpDir(terminal.id)
-			}
+			// exitStatus is already set on close; a filtered lookup would discard
+			// the owner before notifying its still-pending output reader.
+			const terminal = this.terminals.find((t) => t instanceof Terminal && t.terminal === vsceTerminal)
+			if (terminal) this.removeTerminal(terminal.id)
 		})
 
 		this.disposables.push(closeDisposable)
@@ -307,8 +319,10 @@ export class TerminalRegistry {
 	}
 
 	private static getAllTerminals(): AlphaTerminal[] {
-		this.terminals = this.terminals.filter((t) => !t.isClosed())
-		return this.terminals
+		for (const terminal of this.terminals) {
+			if (terminal.isClosed()) this.removeTerminal(terminal.id)
+		}
+		return this.terminals.filter((terminal) => !this.removingTerminalIds.has(terminal.id))
 	}
 
 	private static getTerminalById(id: number): AlphaTerminal | undefined {
@@ -339,7 +353,16 @@ export class TerminalRegistry {
 	}
 
 	private static removeTerminal(id: number) {
-		ShellIntegrationManager.zshCleanupTmpDir(id)
-		this.terminals = this.terminals.filter((t) => t.id !== id)
+		const terminal = this.terminals.find((candidate) => candidate.id === id)
+		if (!terminal || this.removingTerminalIds.has(id)) return
+		this.removingTerminalIds.add(id)
+		try {
+			if (terminal instanceof Terminal) terminal.notifyTerminalClosed()
+		} finally {
+			// Close notification can synchronously trigger registry pruning/lookups.
+			this.terminals = this.terminals.filter((candidate) => candidate !== terminal)
+			this.removingTerminalIds.delete(id)
+			ShellIntegrationManager.zshCleanupTmpDir(id)
+		}
 	}
 }

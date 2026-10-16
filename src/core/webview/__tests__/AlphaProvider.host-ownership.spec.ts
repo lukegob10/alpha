@@ -74,6 +74,8 @@ function makeProvider(storagePath: string) {
 		subagentNicknameRegistry: new SubagentNicknameRegistry(),
 		subagentDescriptors: new Map(),
 		subagentGroupControllers: new Map(),
+		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
 		reservedSubagentSlots: new Map(),
 		publishedSubagentResults: new Set(),
 		legacyHandoffInputBuffers: new Map(),

@@ -15,6 +15,7 @@ import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestRoot } from "../testProfile"
+import { assistantVisibleText } from "./live-transcript-support"
 import {
 	assertLiveFileToolBoundary,
 	createCompletionReviewAcknowledger,
@@ -208,7 +209,7 @@ export async function runLiveCase(
 			assert.ok(Array.isArray(history))
 			const assistantMessages = history
 				.filter((message) => record(message).role === "assistant")
-				.map((message) => text(record(message).content))
+				.map((message) => assistantVisibleText(record(message).content))
 				.filter((value) => value.trim())
 			answer = [
 				...assistantMessages,

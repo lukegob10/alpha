@@ -3,6 +3,17 @@ import * as path from "path"
 
 import { TerminalOutputPreviewSize, TERMINAL_PREVIEW_BYTES, PersistedCommandOutput } from "@alpha-code/types"
 import { getCommandArtifactExecutionId } from "../../core/tools/commandOutputContract"
+import { terminalOutputPrefix, terminalOutputSuffix } from "./TerminalOutputBuffer"
+
+const OUTPUT_ARTIFACT_FLUSH_TIMEOUT_MS = 5_000
+
+/** Expected interruption, reported only after the partial archive has closed. */
+export class OutputArchiveInterruptedError extends Error {
+	constructor(cause: Error) {
+		super("Command output archive was interrupted", { cause })
+		this.name = "OutputArchiveInterruptedError"
+	}
+}
 
 /**
  * Configuration options for creating an OutputInterceptor instance.
@@ -63,6 +74,7 @@ export class OutputInterceptor {
 	private tailBuffer: string = ""
 	/** Number of bytes currently in the head buffer */
 	private headBytes: number = 0
+	private headClosed = false
 	/** Number of bytes currently in the tail buffer */
 	private tailBytes: number = 0
 	/** Number of bytes omitted from the middle */
@@ -79,6 +91,10 @@ export class OutputInterceptor {
 	private artifactPath: string
 	private totalBytes: number = 0
 	private spilledToDisk: boolean = false
+	private writeFailure?: Error
+	private storagePrepared = false
+	private interrupted = false
+	private failureClose?: Promise<void>
 	private readonly previewBytes: number
 	/** Budget for the head buffer (50% of total preview) */
 	private readonly headBudget: number
@@ -115,6 +131,8 @@ export class OutputInterceptor {
 	 * ```
 	 */
 	write(chunk: string): void {
+		if (this.writeFailure) throw this.writeFailure
+		if (!chunk) return
 		const chunkBytes = Buffer.byteLength(chunk, "utf8")
 		this.totalBytes += chunkBytes
 
@@ -135,6 +153,68 @@ export class OutputInterceptor {
 		}
 	}
 
+	/** The command reader owns one awaited write, preventing a second output queue. */
+	async writeWithBackpressure(chunk: string, signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted()
+		if (
+			!this.spilledToDisk &&
+			!this.storagePrepared &&
+			this.totalBytes + Buffer.byteLength(chunk, "utf8") > this.previewBytes
+		) {
+			try {
+				await fs.promises.mkdir(path.dirname(this.artifactPath), { recursive: true })
+			} catch (error) {
+				this.writeFailure = error instanceof Error ? error : new Error(String(error))
+				throw this.writeFailure
+			}
+			this.storagePrepared = true
+			signal?.throwIfAborted()
+		}
+		try {
+			this.write(chunk)
+		} catch (error) {
+			this.writeFailure = error instanceof Error ? error : new Error(String(error))
+			throw this.writeFailure
+		}
+		const stream = this.writeStream
+		if (this.writeFailure) throw this.writeFailure
+		if (!stream?.writableNeedDrain) return
+		await new Promise<void>((resolve, reject) => {
+			const cleanup = () => {
+				stream.off("drain", onDrain)
+				stream.off("error", onError)
+				stream.off("close", onClose)
+				signal?.removeEventListener("abort", onAbort)
+			}
+			const onDrain = () => {
+				cleanup()
+				resolve()
+			}
+			const onError = (error: Error) => {
+				this.writeFailure = error
+				cleanup()
+				reject(error)
+			}
+			const onClose = () => onError(this.writeFailure ?? new Error("Command output artifact closed before drain"))
+			const onAbort = () => {
+				const error =
+					signal?.reason instanceof Error ? signal.reason : new Error("Command output write cancelled")
+				this.writeFailure = error
+				this.interrupted = true
+				stream.destroy(error)
+				onError(error)
+			}
+			stream.once("drain", onDrain)
+			stream.once("error", onError)
+			stream.once("close", onClose)
+			signal?.addEventListener("abort", onAbort, { once: true })
+			if (signal?.aborted) onAbort()
+			else if (this.writeFailure) onError(this.writeFailure)
+			else if (stream.destroyed) onClose()
+			else if (!stream.writableNeedDrain) onDrain()
+		})
+	}
+
 	/**
 	 * Add a chunk to the head/tail preview buffers using 50/50 split strategy.
 	 *
@@ -147,7 +227,7 @@ export class OutputInterceptor {
 		let remainingBytes = Buffer.byteLength(chunk, "utf8")
 
 		// First, fill the head buffer if there's room
-		if (this.headBytes < this.headBudget) {
+		if (!this.headClosed && this.headBytes < this.headBudget) {
 			const headRoom = this.headBudget - this.headBytes
 			if (remainingBytes <= headRoom) {
 				// Entire chunk fits in head
@@ -158,7 +238,8 @@ export class OutputInterceptor {
 			// Split: part goes to head, rest goes to tail
 			const headPortion = this.sliceByBytes(remaining, headRoom)
 			this.headBuffer += headPortion
-			this.headBytes += headRoom
+			this.headBytes += Buffer.byteLength(headPortion, "utf8")
+			this.headClosed = true
 			remaining = remaining.slice(headPortion.length)
 			remainingBytes = Buffer.byteLength(remaining, "utf8")
 		}
@@ -180,10 +261,10 @@ export class OutputInterceptor {
 
 		// If this single chunk is larger than the tail budget, keep only the last tailBudget bytes
 		if (chunkBytes >= this.tailBudget) {
-			const dropped = this.tailBytes + (chunkBytes - this.tailBudget)
-			this.omittedBytes += dropped
 			this.tailBuffer = this.sliceByBytesFromEnd(chunk, this.tailBudget)
-			this.tailBytes = this.tailBudget
+			const retainedBytes = Buffer.byteLength(this.tailBuffer, "utf8")
+			this.omittedBytes += this.tailBytes + chunkBytes - retainedBytes
+			this.tailBytes = retainedBytes
 			return
 		}
 
@@ -201,21 +282,11 @@ export class OutputInterceptor {
 	 * @private
 	 */
 	private trimTailToFit(): void {
-		while (this.tailBytes > this.tailBudget && this.tailBuffer.length > 0) {
-			const excess = this.tailBytes - this.tailBudget
-			// Remove characters from the front until we're under budget
-			// We need to be careful with multi-byte characters
-			let removed = 0
-			let removeChars = 0
-			while (removed < excess && removeChars < this.tailBuffer.length) {
-				const charBytes = Buffer.byteLength(this.tailBuffer[removeChars], "utf8")
-				removed += charBytes
-				removeChars++
-			}
-			this.omittedBytes += removed
-			this.tailBytes -= removed
-			this.tailBuffer = this.tailBuffer.slice(removeChars)
-		}
+		if (this.tailBytes <= this.tailBudget) return
+		this.tailBuffer = terminalOutputSuffix(this.tailBuffer, this.tailBudget)
+		const retainedBytes = Buffer.byteLength(this.tailBuffer, "utf8")
+		this.omittedBytes += this.tailBytes - retainedBytes
+		this.tailBytes = retainedBytes
 	}
 
 	/**
@@ -224,17 +295,7 @@ export class OutputInterceptor {
 	 * @private
 	 */
 	private sliceByBytes(str: string, maxBytes: number): string {
-		let bytes = 0
-		let i = 0
-		while (i < str.length && bytes < maxBytes) {
-			const charBytes = Buffer.byteLength(str[i], "utf8")
-			if (bytes + charBytes > maxBytes) {
-				break
-			}
-			bytes += charBytes
-			i++
-		}
-		return str.slice(0, i)
+		return terminalOutputPrefix(str, maxBytes)
 	}
 
 	/**
@@ -243,17 +304,7 @@ export class OutputInterceptor {
 	 * @private
 	 */
 	private sliceByBytesFromEnd(str: string, maxBytes: number): string {
-		let bytes = 0
-		let i = str.length - 1
-		while (i >= 0 && bytes < maxBytes) {
-			const charBytes = Buffer.byteLength(str[i], "utf8")
-			if (bytes + charBytes > maxBytes) {
-				break
-			}
-			bytes += charBytes
-			i--
-		}
-		return str.slice(i + 1)
+		return terminalOutputSuffix(str, maxBytes)
 	}
 
 	/**
@@ -268,11 +319,16 @@ export class OutputInterceptor {
 	private spillToDisk(): void {
 		// Ensure directory exists
 		const dir = path.dirname(this.artifactPath)
-		if (!fs.existsSync(dir)) {
+		if (!this.storagePrepared && !fs.existsSync(dir)) {
 			fs.mkdirSync(dir, { recursive: true })
 		}
+		this.storagePrepared = true
 
 		this.writeStream = fs.createWriteStream(this.artifactPath)
+		// Errors can arrive before finalize or while no producer waits for drain.
+		this.writeStream.on("error", (error) => {
+			this.writeFailure = error
+		})
 
 		// Write ALL pending chunks to disk for lossless storage.
 		// This ensures no content is lost, even if the preview buffers have dropped middle content.
@@ -310,14 +366,78 @@ export class OutputInterceptor {
 	 * }
 	 * ```
 	 */
-	async finalize(): Promise<PersistedCommandOutput> {
+	async finalize(signal?: AbortSignal): Promise<PersistedCommandOutput> {
+		if (signal?.aborted) {
+			const error = signal.reason instanceof Error ? signal.reason : new Error("Command output flush cancelled")
+			this.writeFailure = error
+			this.interrupted = true
+		}
+		if (this.writeFailure) {
+			const failure = this.writeFailure
+			await this.closeFailedStream(failure)
+			if (this.interrupted) throw new OutputArchiveInterruptedError(failure)
+			throw failure
+		}
 		// Close write stream if open and wait for it to fully flush.
 		// This ensures the artifact is completely written before we advertise the artifact_id.
 		if (this.writeStream) {
-			await new Promise<void>((resolve, reject) => {
-				this.writeStream!.end(() => resolve())
-				this.writeStream!.on("error", reject)
-			})
+			const stream = this.writeStream
+			try {
+				await new Promise<void>((resolve, reject) => {
+					const timeout = setTimeout(() => {
+						const error = new Error("Command output artifact did not finish flushing within 5000 ms")
+						this.writeFailure = error
+						stream.destroy(error)
+						onError(error)
+					}, OUTPUT_ARTIFACT_FLUSH_TIMEOUT_MS)
+					const cleanup = () => {
+						clearTimeout(timeout)
+						stream.off("finish", onFinish)
+						stream.off("error", onError)
+						stream.off("close", onClose)
+						signal?.removeEventListener("abort", onAbort)
+					}
+					const onFinish = () => {
+						if (!stream.closed) return
+						cleanup()
+						resolve()
+					}
+					const onError = (error: Error) => {
+						cleanup()
+						reject(error)
+					}
+					const onClose = () => {
+						if (stream.writableFinished) onFinish()
+						else onError(this.writeFailure ?? new Error("Command output artifact closed before flush"))
+					}
+					const onAbort = () => {
+						const error =
+							signal?.reason instanceof Error
+								? signal.reason
+								: new Error("Command output flush cancelled")
+						this.writeFailure = error
+						this.interrupted = true
+						stream.destroy(error)
+						onError(error)
+					}
+					stream.once("finish", onFinish)
+					stream.once("error", onError)
+					stream.once("close", onClose)
+					signal?.addEventListener("abort", onAbort, { once: true })
+					if (signal?.aborted) onAbort()
+					else if (stream.closed) onClose()
+					else if (stream.destroyed && !stream.writableFinished)
+						onError(this.writeFailure ?? new Error("Command output artifact was destroyed before flush"))
+					else if (stream.writableFinished) onFinish()
+					else stream.end()
+				})
+			} catch (error) {
+				const failure = error instanceof Error ? error : new Error(String(error))
+				this.writeFailure = failure
+				await this.closeFailedStream(failure)
+				if (this.interrupted) throw new OutputArchiveInterruptedError(failure)
+				throw failure
+			}
 		}
 
 		// Prepare preview: head + [omission indicator] + tail
@@ -336,6 +456,44 @@ export class OutputInterceptor {
 			artifactPath: this.spilledToDisk ? this.artifactPath : null,
 			truncated: this.spilledToDisk,
 		}
+	}
+
+	private closeFailedStream(error: Error): Promise<void> {
+		if (this.failureClose) return this.failureClose
+		const stream = this.writeStream
+		if (!stream || stream.closed) return Promise.resolve()
+		this.failureClose = new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				cleanup()
+				reject(new Error("Command output artifact did not close within 5000 ms", { cause: error }))
+			}, OUTPUT_ARTIFACT_FLUSH_TIMEOUT_MS)
+			const cleanup = () => {
+				clearTimeout(timeout)
+				stream.off("close", onClose)
+			}
+			const onClose = () => {
+				cleanup()
+				resolve()
+			}
+			stream.once("close", onClose)
+			try {
+				stream.destroy(error)
+				if (stream.closed) onClose()
+			} catch (failure) {
+				cleanup()
+				reject(failure)
+			}
+		})
+		return this.failureClose
+	}
+
+	/** Actual sink lifetime, independent of finalization-attempt success or failure. */
+	isOutputClosed(): boolean {
+		return !this.writeStream || this.writeStream.closed
+	}
+
+	isInterrupted(): boolean {
+		return this.interrupted
 	}
 
 	/**

@@ -773,6 +773,8 @@ export type SummarizeResponse = {
 }
 
 export type SummarizeConversationOptions = {
+	/** Host-owned lifecycle admission, after unchanged/invalid exits and before provider effects. */
+	beforeCompact?: () => Promise<void>
 	messages: ApiMessage[]
 	apiHandler: ApiHandler
 	systemPrompt: string
@@ -792,6 +794,8 @@ export type SummarizeConversationOptions = {
 	countContext?: TokenCountContext
 	/** A provider rejection requires progress even when the local estimate fits. */
 	forceCompaction?: boolean
+	/** Latest provider-reported summary cost, retained even when the result is discarded. */
+	observeCost?: (cost: number) => void
 }
 
 /**
@@ -1090,6 +1094,9 @@ ${commandBlocks}
 		)
 	}
 
+	// Keep host stop/cancellation outside the provider-error fallback boundary.
+	await options.beforeCompact?.()
+	signal?.throwIfAborted()
 	try {
 		// Historical tool blocks were converted to text above.  Do not let the
 		// active task tool registry leak into this summarization-only request.
@@ -1104,6 +1111,19 @@ ${commandBlocks}
 					break
 				}
 				const chunk = next.value
+				if (chunk.type === "usage") {
+					// Preserve delivered accounting before cancellation can discard the summary.
+					if (
+						typeof chunk.totalCost === "number" &&
+						Number.isFinite(chunk.totalCost) &&
+						chunk.totalCost >= 0
+					) {
+						cost = chunk.totalCost
+						options.observeCost?.(cost)
+					}
+					signal?.throwIfAborted()
+					continue
+				}
 				signal?.throwIfAborted()
 				if (chunk.type === "text") {
 					diagnostic.textParts++
@@ -1121,12 +1141,6 @@ ${commandBlocks}
 				}
 				if (chunk.type === "error") {
 					streamError ??= chunk
-					continue
-				}
-				if (chunk.type === "usage") {
-					// Keep accounting delivered before the terminal outcome, including
-					// usage after an explicit error while the transport drains.
-					cost = chunk.totalCost ?? 0
 					continue
 				}
 				if (chunk.type === "outcome") {

@@ -42,6 +42,7 @@ import {
 	type CustomInstructionPart,
 } from "./sections"
 import { resolveCodexModelPrompt } from "./codex-model-instructions"
+import { getSkillUsageGuidance } from "./sections/skills"
 
 export const SYSTEM_ENVIRONMENT_INSTRUCTION_ORIGIN = "system-environment" as const
 
@@ -224,12 +225,14 @@ async function generatePrompt(
 	const shouldIncludeMcp = hasMcpGroup && hasMcpServers
 
 	const [modesSection, skillsSection] = subagentRole
-		? ["", { catalog: "", guidance: "" }]
+		? ["", { catalog: "", guidance: settings?.subagentHasInheritedSkills ? getSkillUsageGuidance() : "" }]
 		: await Promise.all([
 				getModesSection(context, capturedModePrompts),
 				isPlanMode
 					? Promise.resolve({ catalog: "", guidance: "" })
-					: getSkillsSectionParts(skillsManager, mode),
+					: getSkillsSectionParts(skillsManager, mode, {
+							contextWindow: settings?.skillCatalogContextWindow,
+						}),
 			])
 
 	const resolvedCodexPrompt = resolveCodexModelPrompt(modelId)

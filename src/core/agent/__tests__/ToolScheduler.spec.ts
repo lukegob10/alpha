@@ -181,14 +181,14 @@ describe("ToolScheduler", () => {
 			task.ask = vi.fn(async () => ({ response: "noButtonClicked" })) as Task["ask"]
 			expect((await run("read_file", { path: reference })).results[0].status).toBe("denied")
 			execute.mockClear()
-			expect((await run("read_file", { path: reference }, extension, true)).results[0].status).toBe("error")
+			expect((await run("read_file", { path: reference }, extension, true)).results[0].status).toBe("denied")
 			expect(execute).not.toHaveBeenCalled()
 		})
 
 		it.each(["write_to_file", "list_files", "search_files"])(
 			"does not admit %s on an otherwise known resource",
 			async (name) => {
-				expect((await run(name, { path: reference })).results[0].status).toBe("error")
+				expect((await run(name, { path: reference })).results[0].status).toBe("denied")
 				expect(execute).not.toHaveBeenCalled()
 			},
 		)
@@ -198,13 +198,13 @@ describe("ToolScheduler", () => {
 				path.join(extension, "package.json"),
 				`${path.dirname(reference)}${path.sep}examples${path.sep}..${path.sep}reference.md`,
 			]) {
-				expect((await run("read_file", { path: candidate })).results[0].status).toBe("error")
+				expect((await run("read_file", { path: candidate })).results[0].status).toBe("denied")
 			}
 			expect(
 				(await run("read_file", { files: [{ path: reference }, { path: path.join(fixture, "secret") }] }))
 					.results[0].status,
-			).toBe("error")
-			expect((await run("read_file", { path: reference }, "")).results[0].status).toBe("error")
+			).toBe("denied")
+			expect((await run("read_file", { path: reference }, "")).results[0].status).toBe("denied")
 			expect(execute).not.toHaveBeenCalled()
 		})
 
@@ -220,7 +220,7 @@ describe("ToolScheduler", () => {
 			expect(
 				(await run("read_file", { path: path.join(path.dirname(reference), "examples/review.html") }))
 					.results[0].status,
-			).toBe("error")
+			).toBe("denied")
 			expect(execute).not.toHaveBeenCalled()
 		})
 	})
@@ -555,7 +555,7 @@ describe("ToolScheduler", () => {
 			}),
 		}).run(response({ id: `nested-${name}`, name, arguments: argumentsValue }))
 
-		expect(outcome.results[0].status).toBe("error")
+		expect(outcome.results[0].status).toBe("denied")
 		expect(String(outcome.results[0].content)).toContain("outside the allowed workspace roots")
 		expect(execute).not.toHaveBeenCalled()
 	})
@@ -666,7 +666,7 @@ describe("ToolScheduler", () => {
 					arguments: { command: `echo leaked > "${parentShellDest}"` },
 				}),
 			)
-			expect(rejectedShell.results[0].status).toBe("error")
+			expect(rejectedShell.results[0].status).toBe("denied")
 			expect(String(rejectedShell.results[0].content)).toMatch(/scope|outside/i)
 			expect(execute).not.toHaveBeenCalled()
 			await expect(fs.access(parentShellDest)).rejects.toMatchObject({ code: "ENOENT" })
@@ -696,7 +696,7 @@ describe("ToolScheduler", () => {
 					arguments: { path: path.join(tempRoot, "other", "file.ts"), content: "no" },
 				}),
 			)
-			expect(rejected.results[0].status).toBe("error")
+			expect(rejected.results[0].status).toBe("denied")
 			expect(String(rejected.results[0].content)).toContain("outside the allowed workspace roots")
 			expect(execute).not.toHaveBeenCalled()
 		} finally {
@@ -1501,7 +1501,7 @@ describe("ToolScheduler", () => {
 
 			expect(outcome.results[0]).toMatchObject({
 				name: "exec_command",
-				status: "error",
+				status: "denied",
 				failure: { reason: "policy_denied" },
 			})
 			expect(commandExecute).not.toHaveBeenCalled()
@@ -1530,7 +1530,7 @@ describe("ToolScheduler", () => {
 			const { commandExecute, patchExecute, run } = setup()
 			const outcome = await run(invocation.replace("note.txt", "../outside.txt"))
 
-			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure: { reason: "policy_denied" } })
 			expect(commandExecute).not.toHaveBeenCalled()
 			expect(patchExecute).not.toHaveBeenCalled()
 		})
@@ -1565,7 +1565,7 @@ describe("ToolScheduler", () => {
 				policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "apply_patch"] }),
 			}).run(response({ id: "plan-patch", name: "exec_command", arguments: { cmd: invocation } }))
 
-			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure: { reason: "policy_denied" } })
 			expect(execute).not.toHaveBeenCalled()
 		})
 
@@ -1588,7 +1588,7 @@ describe("ToolScheduler", () => {
 				policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "apply_patch"] }),
 			}).run(response({ id: "disabled-command", name: "exec_command", arguments: { cmd: invocation } }))
 
-			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure: { reason: "policy_denied" } })
 			expect(execute).not.toHaveBeenCalled()
 		})
 
@@ -3647,7 +3647,7 @@ describe("ToolScheduler", () => {
 			policy: { ...policy, visibleTools: [], allowedTools: [] },
 		}).run(response({ id: "2", name: "read" }))
 
-		expect(hiddenOutcome.results[0].status).toBe("error")
+		expect(hiddenOutcome.results[0].status).toBe("denied")
 		expect(String((hiddenTask.userMessageContent as any[])[0].content)).toContain("not allowed")
 	})
 

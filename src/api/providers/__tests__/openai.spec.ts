@@ -902,7 +902,14 @@ describe("OpenAiHandler", () => {
 					}))
 						chunks.push(chunk)
 				}).rejects.toThrow("incomplete")
-				expect(chunks).toEqual([])
+				expect(chunks).toEqual([
+					expect.objectContaining({
+						type: "outcome",
+						status: "incomplete",
+						terminal: true,
+						retryable: false,
+					}),
+				])
 			},
 		)
 

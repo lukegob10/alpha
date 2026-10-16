@@ -10,7 +10,7 @@ import { commandSessionRegistry } from "../CommandSessionRegistry"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry } from "../ToolRegistry"
 
-function completedCommand(output: string) {
+async function completedCommand(output: string) {
 	const cwd = process.cwd()
 	const taskId = "additional-astra-output-audit"
 	const terminal = {
@@ -26,6 +26,8 @@ function completedCommand(output: string) {
 	// Seed the real terminal receipt boundary after the foreground command yielded.
 	;(command as unknown as { fullOutput: string }).fullOutput = output
 	command.emit("completed")
+	// The completed event alone does not settle output; join the native finalization boundary.
+	await command.finalizeOutput()
 	const task = {
 		taskId,
 		cwd,
@@ -75,7 +77,7 @@ afterEach(() => {
 describe("additional Astra audit: completed command output discoverability", () => {
 	it("reports when a completed poll leaves unread output and identifies how to fetch it", async () => {
 		const tail = "FINAL_DIAGNOSTIC: migration removed the expected table\n"
-		const fixture = completedCommand(`${"build progress\n".repeat(600)}${tail}`)
+		const fixture = await completedCommand(`${"build progress\n".repeat(600)}${tail}`)
 		const first = (await fixture.poll("first")).results[0]!
 
 		expect(first.status).toBe("success")
@@ -96,7 +98,7 @@ describe("additional Astra audit: completed command output discoverability", () 
 	})
 
 	it("does not silently return no output when a small positive budget leaves the whole buffer unread", async () => {
-		const fixture = completedCommand("final diagnostic\n")
+		const fixture = await completedCommand("final diagnostic\n")
 		const first = (await fixture.poll("small-budget", 100)).results[0]!
 
 		expect(first.status).toBe("success")
@@ -108,7 +110,7 @@ describe("additional Astra audit: completed command output discoverability", () 
 	})
 
 	it("returns and retires a complete small receipt normally", async () => {
-		const fixture = completedCommand("final diagnostic\n")
+		const fixture = await completedCommand("final diagnostic\n")
 		const result = (await fixture.poll("complete")).results[0]!
 
 		expect(result.status).toBe("success")

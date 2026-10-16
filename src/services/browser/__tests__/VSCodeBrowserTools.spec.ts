@@ -153,6 +153,43 @@ describe("VSCodeBrowserTools", () => {
 		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
 	})
 
+	it("rejects a structured host error instead of reporting a successful browser action", async () => {
+		vscodeMock.tools.push({ name: "read_page" })
+		vscodeMock.invokeTool.mockResolvedValue({
+			hasError: true,
+			content: [{ value: "No page summary available." }],
+		})
+
+		await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" })).rejects.toThrow(
+			"No page summary available.",
+		)
+		expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+		expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
+		expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
+	})
+
+	it("retains a useful failure when the structured host error has no text", async () => {
+		vscodeMock.tools.push({ name: "read_page" })
+		vscodeMock.invokeTool.mockResolvedValue({ hasError: true, content: [] })
+
+		await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" })).rejects.toThrow(
+			/read_page.*reported an error/,
+		)
+		expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each([undefined, false, "true"])(
+		"does not infer a tool failure from unstructured page text (hasError=%j)",
+		async (hasError) => {
+			vscodeMock.tools.push({ name: "read_page" })
+			const pageText = "Snapshot: heading locator.click: Timeout 10000ms exceeded. Error: expected sample text"
+			vscodeMock.invokeTool.mockResolvedValue({ hasError, content: [{ value: pageText }] })
+
+			await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" })).resolves.toBe(pageText)
+			expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+		},
+	)
+
 	it("leaves approval configuration untouched when opening fails", async () => {
 		vscodeMock.tools.push({ name: "open_browser_page" })
 		vscodeMock.configurationValues.globalValue = { run_playwright_code: false }

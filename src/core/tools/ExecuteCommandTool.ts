@@ -10,6 +10,7 @@ import {
 	DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE,
 	PersistedCommandOutput,
 	type CommandToolResult,
+	type TerminalOutputPreviewSize,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -24,11 +25,12 @@ import {
 	AlphaTerminal,
 	AlphaTerminalCallbacks,
 	AlphaTerminalProcess,
+	DirectTerminalCommand,
 } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
-import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
+import { OutputArchiveInterruptedError, OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -37,7 +39,9 @@ import {
 	boundCommandToolResult,
 	formatCommandToolResult,
 	getCommandToolResultLimit,
+	TOOL_OUTPUT_TRUNCATION_SUFFIX,
 	ToolCallbacks,
+	ToolReadDeniedError,
 } from "./BaseTool"
 import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 import { isToolAllowedForMode } from "./validateToolUse"
@@ -55,6 +59,9 @@ import { getTrustedCommandExploration } from "./CommandExploration"
 import { getCommandDecision } from "../auto-approval/commands"
 
 class ShellIntegrationError extends Error {}
+class PreparedCommandCancelledError extends Error {}
+
+const PREPARED_COMMAND_CLEANUP_OBSERVATION_MS = 15_000
 
 const MAX_TURN_FILE_CHANGE_MESSAGE_BYTES = 2 * 1_024 * 1_024
 const fileChangeMessageBytesByTask = new WeakMap<Task, Map<number, number>>()
@@ -127,6 +134,7 @@ export class CommandOutputBookkeepingError extends Error {
 
 async function finalizeCommandMutationReceipt(
 	task: Task,
+	owner: ReturnType<Task["providerRef"]["deref"]>,
 	mutationBaseline: WorkspaceMutationState | undefined,
 	diffBaseline: WorkspaceMutationDiffBaseline | undefined,
 	physicalExecutionId: string,
@@ -147,7 +155,6 @@ async function finalizeCommandMutationReceipt(
 
 	if (changes && changes.changedPaths.length > 0) {
 		try {
-			const owner = task.providerRef.deref()
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			const receiptSettled = await owner.recordPrimaryMutation(task, changes.files, false, physicalExecutionId)
 			if (!receiptSettled) {
@@ -165,7 +172,6 @@ async function finalizeCommandMutationReceipt(
 	}
 
 	try {
-		const owner = task.providerRef.deref()
 		if (!owner) throw new Error("Primary mutation ledger is unavailable")
 		if (changes) {
 			await owner.releasePrimaryMutation(task, physicalExecutionId)
@@ -179,11 +185,164 @@ async function finalizeCommandMutationReceipt(
 	return []
 }
 
-interface ExecuteCommandParams {
+export interface ExecuteCommandParams {
 	command: string
+	tty?: boolean | null
 	cwd?: string | null
 	timeout?: number | null
 	verification?: { change_set_ids: string[] } | null
+}
+
+type CommandPresentationSlot =
+	| "started"
+	| "output-status"
+	| "command-output"
+	| "terminal-status"
+	| "evidence"
+	| "file-changes"
+	| "failure"
+	| "metadata"
+
+/** A fixed number of replaceable projections; raw output never waits on this boundary. */
+class DeferredCommandPresentation {
+	private state: "held" | "ready" | "open" | "discarded" = "held"
+	private readonly pending = new Map<
+		CommandPresentationSlot,
+		(assertOwnership?: () => void) => void | Promise<void>
+	>()
+	private opening?: Promise<void>
+	private draining?: Promise<void>
+	private backgroundGuard?: () => void
+	private backgroundFailure?: (error: unknown) => void
+	private readonly order: readonly CommandPresentationSlot[] = [
+		"started",
+		"output-status",
+		"command-output",
+		"terminal-status",
+		"evidence",
+		"file-changes",
+		"failure",
+		"metadata",
+	]
+
+	publish(
+		slot: CommandPresentationSlot,
+		operation: (assertOwnership?: () => void) => void | Promise<void>,
+	): Promise<void> {
+		if (this.state === "discarded") return Promise.resolve()
+		if (slot !== "failure" || !this.pending.has(slot)) {
+			this.pending.set(slot, operation)
+		}
+		if (this.state === "open") this.scheduleBackgroundDrain()
+		return Promise.resolve()
+	}
+
+	open(assertOwnership?: () => void): Promise<void> {
+		this.opening ??= (async () => {
+			if (this.state !== "held") return
+			this.state = "ready"
+			const initial = new Map(this.pending)
+			this.pending.clear()
+			// One fixed pass completes even if a yielded command streams forever.
+			// Updates during persistence coalesce for the later ordinary owner.
+			for (const slot of this.order) {
+				const operation = initial.get(slot)
+				if (!operation || this.state !== "ready") continue
+				assertOwnership?.()
+				await operation(assertOwnership)
+				assertOwnership?.()
+			}
+		})()
+		return this.opening
+	}
+
+	takeFailurePresentation(): (assertOwnership?: () => void) => Promise<void> {
+		const retained = ["evidence", "failure", "metadata"] as const
+		const snapshot = retained.map((slot) => this.pending.get(slot))
+		this.discard()
+		let finalization: Promise<void> | undefined
+		return (assertOwnership) => {
+			finalization ??= (async () => {
+				for (const operation of snapshot) {
+					if (!operation) continue
+					assertOwnership?.()
+					await operation(assertOwnership)
+					assertOwnership?.()
+				}
+			})()
+			return finalization
+		}
+	}
+
+	commit(assertBackgroundOwnership: () => void, onFailure: (error: unknown) => void): void {
+		if (this.state !== "ready") throw new Error("Prepared command presentation is not ready for handoff")
+		this.backgroundGuard = assertBackgroundOwnership
+		this.backgroundFailure = onFailure
+		this.state = "open"
+		// Only a microtask is scheduled here. The synchronous scheduler handoff
+		// itself publishes nothing and starts no additional process/effect.
+		this.scheduleBackgroundDrain()
+	}
+
+	private scheduleBackgroundDrain(): void {
+		if (this.draining || this.state !== "open" || this.pending.size === 0) return
+		this.draining = Promise.resolve()
+			.then(async () => {
+				while (this.state === "open" && this.pending.size > 0) {
+					const batch = new Map(this.pending)
+					this.pending.clear()
+					for (const slot of this.order) {
+						const operation = batch.get(slot)
+						if (!operation || this.state !== "open") continue
+						this.backgroundGuard?.()
+						await operation(this.backgroundGuard)
+						this.backgroundGuard?.()
+					}
+				}
+			})
+			.catch((error: unknown) => {
+				this.discard()
+				this.backgroundFailure?.(error)
+			})
+			.finally(() => {
+				this.draining = undefined
+				this.scheduleBackgroundDrain()
+			})
+		void this.draining.catch((error: unknown) =>
+			console.error("[ExecuteCommandTool] Background command projection failed", error),
+		)
+	}
+
+	discard(): void {
+		this.state = "discarded"
+		this.pending.clear()
+	}
+}
+
+export interface PreparedApprovedCommandRead {
+	/** Opens the existing collector once, after the scheduler's effect boundary. */
+	run(
+		callbacks: Pick<ToolCallbacks, "signal" | "pushToolResult" | "setResultMetadata">,
+	): Promise<(assertOwnership?: () => void) => Promise<void>>
+	dispose(): Promise<void>
+	settleRejectedRun(): {
+		cleanup: Promise<void>
+		finalize: (assertOwnership?: () => void) => Promise<void>
+	}
+	/** Synchronous acknowledgment after the scheduler's final cancellation check. */
+	commit(): void
+}
+
+interface PreparedCommandHost {
+	readonly directCommand: DirectTerminalCommand
+	readonly beforeLaunch: () => Promise<void>
+	readonly presentation: DeferredCommandPresentation
+	readonly awaitRun: () => Promise<void>
+	readonly onProcessCreated: (process: AlphaTerminalProcess, isArchiveClosed: () => boolean) => void
+	readonly onCreationHookFailure: (process: AlphaTerminalProcess) => void
+	readonly onSession: (sessionId: number | undefined) => void
+	readonly signal: AbortSignal
+	readonly isRunAdmitted: () => boolean
 }
 
 export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
@@ -193,14 +352,403 @@ export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined)
 export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	readonly name = "execute_command" as const
 
+	async prepareApprovedRead(
+		params: ExecuteCommandParams,
+		task: Task,
+		callbacks: ToolCallbacks,
+		launch: { readonly directCommand: DirectTerminalCommand; readonly beforeLaunch: () => Promise<void> },
+	): Promise<PreparedApprovedCommandRead | undefined> {
+		const presentation = new DeferredCommandPresentation()
+		const cancellation = new AbortController()
+		const lifetime = task.getTaskLifetimeCancellationSignal()
+		const externalSignal = callbacks.signal ? AbortSignal.any([callbacks.signal, lifetime]) : lifetime
+		const signal = AbortSignal.any([externalSignal, cancellation.signal])
+		const originalTaskId = task.taskId
+		let markReady!: () => void
+		const ready = new Promise<void>((resolve) => {
+			markReady = resolve
+		})
+		let start!: () => void
+		let stop!: (error: Error) => void
+		const launchGate = new Promise<void>((resolve, reject) => {
+			start = resolve
+			stop = reject
+		})
+		// Observe before preparation can fail without ever reaching the gate.
+		void launchGate.catch(() => undefined)
+		let reachedGate = false
+		let started = false
+		let committed = false
+		let presentationReady = false
+		let disposed = false
+		let rejectedProjectionRevoked = false
+		let rejectedProjectionReady = false
+		let rejectedRun: ReturnType<PreparedApprovedCommandRead["settleRejectedRun"]> | undefined
+		let process: AlphaTerminalProcess | undefined
+		let physicalExecutionId: string | undefined
+		let isArchiveClosed: (() => boolean) | undefined
+		let archiveSettled = false
+		let physicalCompleted = false
+		let confirmedPrelaunchFailure = false
+		let producerSettled = false
+		let sessionId: number | undefined
+		// Scheduler preparation and run share the exact collector. Keep its
+		// native output/format wrappers instead of rebinding to unbounded sinks.
+		const execution = this.executeApproved(params, task, callbacks, {
+			...launch,
+			signal,
+			isRunAdmitted: () => started,
+			presentation,
+			awaitRun: async () => {
+				reachedGate = true
+				markReady()
+				await launchGate
+			},
+			onProcessCreated: (created, closed) => {
+				process = created
+				physicalExecutionId = created.executionId
+				isArchiveClosed = closed
+				created.once("shell_execution_complete", () => {
+					physicalCompleted = true
+				})
+			},
+			onCreationHookFailure: (created) => {
+				if (created === process && created.executionId === physicalExecutionId) confirmedPrelaunchFailure = true
+			},
+			onSession: (created) => {
+				sessionId = created
+			},
+		})
+		void execution.then(
+			() => {
+				producerSettled = true
+				markReady()
+			},
+			() => {
+				producerSettled = true
+				markReady()
+			},
+		)
+		let cleanup: Promise<void> | undefined
+		let disposal: Promise<void> | undefined
+		let firstCleanupFailure: { reason: unknown } | undefined
+		const observeCleanup = <T>(operation: Promise<T>): Promise<T> =>
+			operation.catch((reason: unknown) => {
+				firstCleanupFailure ??= { reason }
+				throw reason
+			})
+		const releaseClosedOriginal = (): boolean => {
+			if (
+				!process ||
+				!producerSettled ||
+				!archiveSettled ||
+				!isArchiveClosed?.() ||
+				task.taskId !== originalTaskId ||
+				!physicalExecutionId ||
+				process.executionId !== physicalExecutionId ||
+				(!physicalCompleted && !confirmedPrelaunchFailure)
+			)
+				return false
+			const session = sessionId === undefined ? undefined : commandSessionRegistry.resolve(task, sessionId)
+			if (
+				sessionId !== undefined &&
+				session?.process === process &&
+				session.executionId === physicalExecutionId
+			) {
+				commandSessionRegistry.release(task, sessionId)
+			}
+			return true
+		}
+		const dispose = (retainFailure = false): Promise<void> => {
+			if (!retainFailure) rejectedProjectionRevoked = true
+			if (committed) return Promise.resolve()
+			if (disposal) return disposal
+			presentation.discard()
+			disposed = true
+			cancellation.abort()
+			stop(new PreparedCommandCancelledError("Prepared command execution was cancelled before presentation"))
+			const retry = cleanup !== undefined
+			cleanup ??= (async () => {
+				// Its rejection is already the scheduler's terminal tool failure.
+				// Cleanup joins it without reporting the same failure a second time.
+				const producer = execution.then(
+					() => undefined,
+					() => undefined,
+				)
+				// Disposal can win while admission awaits. Its local signal prevents
+				// dispatch; still recheck the creation hook after the producer joins.
+				if (!process) await Promise.allSettled([producer])
+				if (process) {
+					const original = process
+					const originalExecutionId = physicalExecutionId
+					const passive = observeCleanup(
+						Promise.resolve().then(() => {
+							if (!original.waitForOutputFinalization)
+								throw new Error("Command archive closure is unavailable")
+							return original.waitForOutputFinalization()
+						}),
+					)
+					void passive.then(
+						() => {
+							archiveSettled = true
+						},
+						() => {
+							archiveSettled = true
+						},
+					)
+					const physical = observeCleanup(
+						Promise.resolve().then(async () => {
+							if (
+								task.taskId !== originalTaskId ||
+								!originalExecutionId ||
+								original.executionId !== originalExecutionId
+							) {
+								throw new Error("Prepared command ownership changed before cleanup")
+							}
+							const owned = [
+								...TerminalRegistry.getTerminals(true, originalTaskId),
+								...TerminalRegistry.getTerminals(false, originalTaskId),
+							].some(
+								(terminal) =>
+									terminal.taskId === originalTaskId &&
+									terminal.process === original &&
+									terminal.running,
+							)
+							if (owned) await original.abort()
+						}),
+					)
+					await Promise.allSettled([physical, passive, producer])
+					if (!firstCleanupFailure && !releaseClosedOriginal()) {
+						firstCleanupFailure = {
+							reason: new Error("Command physical or archive closure is still unconfirmed"),
+						}
+					}
+				}
+				if (firstCleanupFailure) throw firstCleanupFailure.reason
+			})()
+			void cleanup.catch(() => undefined)
+			const originalCleanup = cleanup
+			// Join the same producer, physical-control and passive archive work
+			// before a retry checks proof. Observer flags may still be queued when
+			// the actual process run has just settled; never issue a second abort.
+			const observation = retry
+				? (async () => {
+						const [outcome] = await Promise.allSettled([originalCleanup])
+						try {
+							if (process ? releaseClosedOriginal() : outcome.status === "fulfilled") return
+						} catch (reason) {
+							throw firstCleanupFailure ? firstCleanupFailure.reason : reason
+						}
+						if (firstCleanupFailure) throw firstCleanupFailure.reason
+						if (outcome.status === "rejected") throw outcome.reason
+						throw new Error("Command physical or archive closure is still unconfirmed")
+					})()
+				: originalCleanup
+			let cleanupTimer: NodeJS.Timeout | undefined
+			disposal ??= new Promise<void>((resolve, reject) => {
+				cleanupTimer = setTimeout(() => {
+					const timeout = new Error(
+						"Prepared command cleanup remains unconfirmed after 15 seconds; original ownership was retained",
+					)
+					console.error(`[ExecuteCommandTool] ${timeout.message}`)
+					reject(firstCleanupFailure ? firstCleanupFailure.reason : timeout)
+				}, PREPARED_COMMAND_CLEANUP_OBSERVATION_MS)
+				observation.then(resolve, reject).catch(() => undefined)
+			}).finally(() => {
+				clearTimeout(cleanupTimer)
+				externalSignal.removeEventListener("abort", onAbort)
+				// A timeout observes this owner; it is not permanent producer truth.
+				// An explicit retry joins the same original cleanup without relaunch.
+				disposal = undefined
+			})
+			return disposal
+		}
+		const assertRejectedPresentationOwner = (assertOwnership?: () => void): void => {
+			if (
+				rejectedProjectionRevoked ||
+				task.abort ||
+				externalSignal.aborted ||
+				task.taskId !== originalTaskId ||
+				(process && process.executionId !== physicalExecutionId)
+			) {
+				throw new PreparedCommandCancelledError("Rejected command presentation ownership was revoked")
+			}
+			assertOwnership?.()
+		}
+		const onAbort = () => {
+			void dispose().catch(() => undefined)
+		}
+		externalSignal.addEventListener("abort", onAbort, { once: true })
+		await ready
+		if (!reachedGate || signal.aborted) {
+			await dispose()
+			externalSignal.removeEventListener("abort", onAbort)
+			await execution
+			return undefined
+		}
+		return {
+			run: async (runCallbacks) => {
+				if (disposed || runCallbacks.signal?.aborted) {
+					await dispose()
+					throw new Error("Prepared command was cancelled")
+				}
+				if (started) throw new Error("Prepared command execution cannot be started twice")
+				started = true
+				start()
+				await execution
+				return async (assertOwnership) => {
+					const assertPresentationOwner = () => {
+						if (disposed || task.abort || signal.aborted || task.taskId !== originalTaskId) {
+							throw new PreparedCommandCancelledError(
+								"Prepared command presentation ownership was revoked",
+							)
+						}
+						assertOwnership?.()
+					}
+					assertPresentationOwner()
+					await presentation.open(assertPresentationOwner)
+					assertPresentationOwner()
+					presentationReady = true
+				}
+			},
+			dispose: () => dispose(),
+			settleRejectedRun: () => {
+				if (rejectedRun) return rejectedRun
+				const snapshot = presentation.takeFailurePresentation()
+				const finalize = async (assertOwnership?: () => void) => {
+					const assertOwner = () => assertRejectedPresentationOwner(assertOwnership)
+					assertOwner()
+					await snapshot(assertOwner)
+					assertOwner()
+					rejectedProjectionReady = true
+				}
+				rejectedRun = { cleanup: dispose(true), finalize }
+				return rejectedRun
+			},
+			commit: () => {
+				if (committed) return
+				if (rejectedRun) {
+					assertRejectedPresentationOwner()
+					if (!rejectedProjectionReady) throw new Error("Rejected command presentation is not finalized")
+					committed = true
+					externalSignal.removeEventListener("abort", onAbort)
+					return
+				}
+				if (!presentationReady || disposed || task.abort || signal.aborted || task.taskId !== originalTaskId) {
+					throw new PreparedCommandCancelledError(
+						"Prepared command ownership changed before presentation handoff",
+					)
+				}
+				const ownsBackgroundPresentation = () =>
+					!task.abort &&
+					!lifetime.aborted &&
+					task.taskId === originalTaskId &&
+					(!process || process.executionId === physicalExecutionId)
+				presentation.commit(
+					() => {
+						if (!ownsBackgroundPresentation()) {
+							throw new PreparedCommandCancelledError(
+								"Background command presentation ownership was revoked",
+							)
+						}
+					},
+					(error) => {
+						if (error instanceof PreparedCommandCancelledError) return
+						if (ownsBackgroundPresentation()) {
+							if (callbacks.toolCallId)
+								task.failCommandExecution?.(callbacks.toolCallId, "failed", physicalExecutionId)
+							task.didToolFailInCurrentTurn = true
+							task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+						}
+						console.error("[ExecuteCommandTool] Background command projection failed", error)
+					},
+				)
+				committed = true
+				externalSignal.removeEventListener("abort", onAbort)
+			},
+		}
+	}
+
 	async execute(params: ExecuteCommandParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
-		const { command, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
+		return this.executeApproved(params, task, callbacks)
+	}
+
+	private async executeApproved(
+		params: ExecuteCommandParams,
+		task: Task,
+		callbacks: ToolCallbacks,
+		host?: PreparedCommandHost,
+	): Promise<void> {
+		const { command, tty, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
 		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
 		let commandResult: CommandToolResult | undefined
+		let unpublishedSessionId: number | undefined
 		let commandEvidenceId: string | undefined
 		let effectsStarted: ToolFailureMetadata["effectsStarted"] = "no"
 		let failure: ToolFailureMetadata | undefined
+		const sessionHeader = (sessionId: number) => `Process running with session ID ${sessionId}`
+		const assertSessionControlBudget = () => {
+			const remaining = callbacks.getRemainingOutputChars?.()
+			if (remaining === undefined) return
+			// Reserve control framing, including the harness suffix, before a command can create a session.
+			// The model's max_output_tokens applies to stdout; it must not remove the numeric handle.
+			const framing =
+				callbacks.commandResultFormat === "codex"
+					? formatCommandToolResult(
+							{
+								wall_time_seconds: Number.MAX_SAFE_INTEGER,
+								output: "",
+								session_id: Number.MAX_SAFE_INTEGER,
+							},
+							0,
+							callbacks.toolCallId ?? commandEvidenceId,
+						)
+					: sessionHeader(Number.MAX_SAFE_INTEGER) + "\n"
+			const required = framing.length + TOOL_OUTPUT_TRUNCATION_SUFFIX.length
+			if (remaining < required) {
+				throw new Error(
+					`Command was not started because its remaining tool output budget (${remaining} characters) cannot fit required session control information (${required} characters).`,
+				)
+			}
+		}
+		const pushCommandResult = (result: ToolResponse) => {
+			if (callbacks.commandResultFormat === "codex" && commandResult && callbacks.pushCommandResult) {
+				callbacks.pushCommandResult(
+					typeof result === "string" ? commandResult : { ...commandResult, output: "" },
+					typeof result === "string" ? undefined : result,
+				)
+				unpublishedSessionId = undefined
+				return
+			}
+			let content: ToolResponse = result
+			if (callbacks.commandResultFormat === "codex" && commandResult) {
+				content =
+					typeof result === "string"
+						? formatCommandToolResult(
+								commandResult,
+								getCommandToolResultLimit(callbacks),
+								callbacks.toolCallId ?? commandEvidenceId,
+							)
+						: [
+								{
+									type: "text",
+									text: formatCommandToolResult(
+										{ ...commandResult, output: "" },
+										0,
+										callbacks.toolCallId ?? commandEvidenceId,
+									),
+								},
+								...result,
+							]
+			} else if (unpublishedSessionId !== undefined) {
+				const header = sessionHeader(unpublishedSessionId)
+				content =
+					typeof content === "string" ? header + "\n" + content : [{ type: "text", text: header }, ...content]
+			}
+			pushToolResult(content)
+			unpublishedSessionId = undefined
+		}
 		const reportFailure = (metadata: ToolFailureMetadata) => {
 			failure = metadata
 			callbacks.setResultMetadata?.({
@@ -272,13 +820,16 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			task.consecutiveMistakeCount = 0
 
-			const didApprove = customCwd
-				? await askApproval("command", canonicalCommand, {
-						text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)),
-					})
-				: await askApproval("command", canonicalCommand)
+			const askCommandApproval: NonNullable<ToolCallbacks["askCommandApproval"]> =
+				callbacks.askCommandApproval ?? (async (...args) => ({ approved: await askApproval(...args) }))
+			const commandProgressStatus = customCwd
+				? { text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)) }
+				: undefined
+			const approval = customCwd
+				? await askCommandApproval("command", canonicalCommand, commandProgressStatus)
+				: await askCommandApproval("command", canonicalCommand)
 
-			if (!didApprove) {
+			if (!approval.approved) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
 				return
 			}
@@ -310,6 +861,9 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
+			const approvedExecutionId =
+				approval.commandExecutionId ??
+				(await task.presentApprovedCommand(canonicalCommand, commandProgressStatus))
 			const provider = await task.providerRef.deref()
 			const providerState = await provider?.getState()
 
@@ -330,58 +884,88 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				getCommandDecision(canonicalCommand, commandTimeoutAllowlist, []) === "auto_approve"
 
 			// Convert seconds to milliseconds for internal use, but skip timeout if command is allowlisted
-			const commandExecutionTimeout = isCommandAllowlisted ? 0 : commandExecutionTimeoutSeconds * 1000
+			const commandExecutionTimeout =
+				host && callbacks.resolveCommandTimeoutMs
+					? callbacks.resolveCommandTimeoutMs(0, canonicalCommand)
+					: isCommandAllowlisted
+						? 0
+						: commandExecutionTimeoutSeconds * 1000
 
 			// Convert agent-specified timeout from seconds to milliseconds
 			const agentTimeout = resolveAgentTimeoutMs(timeoutSeconds)
 
 			const options: ExecuteCommandOptions = {
-				executionId,
+				executionId: approvedExecutionId,
 				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
+				tty: tty ?? undefined,
 				customCwd,
 				verificationChangeSetIds: verification?.change_set_ids,
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
 				agentTimeout,
+				...(host
+					? {
+							directCommand: host.directCommand,
+							beforeLaunch: host.beforeLaunch,
+							presentation: host.presentation,
+							onProcessCreated: host.onProcessCreated,
+							onCreationHookFailure: host.onCreationHookFailure,
+							capturedExecutionMode: executionMode,
+							capturedProvider: provider,
+							capturedOutputPreviewSize: providerState?.terminalOutputPreviewSize,
+							signal: host.signal,
+						}
+					: {}),
 				onExecutionState: (state) => {
 					effectsStarted = state
 				},
 				onCommandResult: (result) => {
+					host?.onSession(result.session_id)
+					unpublishedSessionId = result.session_id
 					commandResult =
 						callbacks.commandResultMaxOutputTokens === undefined
 							? undefined
 							: boundCommandToolResult(result, getCommandToolResultLimit(callbacks))
+					if (host)
+						callbacks.setResultMetadata?.({
+							status: "success",
+							executionStatus: result.session_id
+								? "running"
+								: result.exit_code === 0
+									? "success"
+									: "error",
+							exitCode: result.exit_code,
+							...(commandResult ? { commandResult } : {}),
+						})
 				},
 				onFailure: reportFailure,
 			}
 
 			try {
+				assertSessionControlBudget()
+				// Serial preparation stops before collector admission, whose mutation
+				// probes must remain behind the scheduler's real effect boundary.
+				await host?.awaitRun()
 				const [rejected, result] = await executeCommandInTerminal(task, options)
 
 				if (rejected) {
 					task.didRejectTool = true
 				}
 
-				pushToolResult(
-					callbacks.commandResultFormat === "codex" && commandResult && typeof result === "string"
-						? formatCommandToolResult(
-								commandResult,
-								getCommandToolResultLimit(callbacks),
-								callbacks.toolCallId ?? commandEvidenceId,
-							)
-						: result,
-				)
+				pushCommandResult(result)
 			} catch (error: unknown) {
 				if (!(error instanceof ShellIntegrationError)) throw error
+				if (tty === true) throw error
 
-				const status: CommandExecutionStatus = { executionId, status: "fallback" }
+				const status: CommandExecutionStatus = { executionId: approvedExecutionId, status: "fallback" }
 				provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 				await task.say("shell_integration_warning")
 
 				// Invalidate pending ask from first execution to prevent race condition
 				task.supersedePendingAsk()
 
+				assertSessionControlBudget()
 				const [rejected, result] = await executeCommandInTerminal(task, {
 					...options,
 					terminalShellIntegrationDisabled: true,
@@ -391,19 +975,21 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 					task.didRejectTool = true
 				}
 
-				pushToolResult(
-					callbacks.commandResultFormat === "codex" && commandResult && typeof result === "string"
-						? formatCommandToolResult(
-								commandResult,
-								getCommandToolResultLimit(callbacks),
-								callbacks.toolCallId ?? commandEvidenceId,
-							)
-						: result,
-				)
+				pushCommandResult(result)
 			}
 
 			return
 		} catch (error) {
+			if (error instanceof PreparedCommandCancelledError) {
+				if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId, "cancelled")
+				return
+			}
+			// A failed feedback/response formatter can hide the numeric handle after the process yielded.
+			// Return unread output to terminal delivery only when its session result never reached the caller.
+			if (unpublishedSessionId !== undefined) {
+				commandSessionRegistry.release(task, unpublishedSessionId)
+				commandResult = undefined
+			}
 			if (!failure) {
 				const outcomeKnown =
 					effectsStarted === "no" ||
@@ -428,77 +1014,94 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 					}),
 				)
 			}
-			callbacks.setResultMetadata?.({ status: "error" })
-			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId)
+			callbacks.setResultMetadata?.({ status: error instanceof ToolReadDeniedError ? "denied" : "error" })
+			if (commandEvidenceId) {
+				const evidenceId = commandEvidenceId
+				const fail = () => {
+					task.failCommandExecution?.(evidenceId, error instanceof ToolReadDeniedError ? "denied" : "failed")
+				}
+				if (host?.isRunAdmitted()) await host.presentation.publish("evidence", fail)
+				else fail()
+			}
+			// The scheduler owns the speculative error receipt. Calling its ordinary
+			// UI error callback here would publish before assistant durability.
+			if (host) throw error
 			await handleError("executing command", error as Error)
 			return
 		} finally {
-			const evidence = task.getCommandExecutionEvidence?.().find((item) => item.toolCallId === commandEvidenceId)
-			if (evidence) {
-				const completedProcessFailure =
-					!failure &&
-					evidence.status === "failed" &&
-					typeof evidence.exitCode === "number" &&
-					evidence.signalName === undefined
-				if (
-					!failure &&
-					!completedProcessFailure &&
-					evidence.status !== "succeeded" &&
-					evidence.status !== "running"
-				) {
-					const unknown =
-						effectsStarted !== "no" &&
-						evidence.exitCode === undefined &&
-						evidence.status !== "denied" &&
-						evidence.status !== "cancelled"
-					reportFailure(
-						createToolFailure({
-							reason: unknown
-								? "outcome_unknown"
-								: evidence.status === "denied"
-									? "approval_denied"
-									: evidence.status === "cancelled"
-										? "cancelled"
-										: "execution_failed",
-							scopeKind: "operation",
-							scopeIdentity: ["execute_command", task.cwd, command, customCwd],
-							effectsStarted,
-							outcome: unknown ? "unknown" : "known",
-							recovery: { kind: unknown ? "verify-outcome" : "repair" },
-						}),
-					)
-				}
-				const trustedExploration =
-					evidence.command && evidence.cwd
-						? await getTrustedCommandExploration({
-								command: evidence.command,
-								workspaceRoot: task.cwd,
-								cwd: evidence.cwd,
-								executionStatus: evidence.status,
-								exitCode: evidence.exitCode,
-							})
-						: undefined
-				callbacks.setResultMetadata?.({
-					executionStatus:
-						evidence.status === "running"
-							? "running"
-							: evidence.status === "succeeded"
+			const publishMetadata = async (assertOwnership?: () => void) => {
+				const evidence = task
+					.getCommandExecutionEvidence?.()
+					.find((item) => item.toolCallId === commandEvidenceId)
+				if (evidence) {
+					const completedProcessFailure =
+						!failure &&
+						evidence.status === "failed" &&
+						typeof evidence.exitCode === "number" &&
+						evidence.signalName === undefined
+					if (
+						!failure &&
+						!completedProcessFailure &&
+						evidence.status !== "succeeded" &&
+						evidence.status !== "running"
+					) {
+						const unknown =
+							effectsStarted !== "no" &&
+							evidence.exitCode === undefined &&
+							evidence.status !== "denied" &&
+							evidence.status !== "cancelled"
+						reportFailure(
+							createToolFailure({
+								reason: unknown
+									? "outcome_unknown"
+									: evidence.status === "denied"
+										? "approval_denied"
+										: evidence.status === "cancelled"
+											? "cancelled"
+											: "execution_failed",
+								scopeKind: "operation",
+								scopeIdentity: ["execute_command", task.cwd, command, customCwd],
+								effectsStarted,
+								outcome: unknown ? "unknown" : "known",
+								recovery: { kind: unknown ? "verify-outcome" : "repair" },
+							}),
+						)
+					}
+					const trustedExploration =
+						evidence.command && evidence.cwd
+							? await getTrustedCommandExploration({
+									command: evidence.command,
+									workspaceRoot: task.cwd,
+									cwd: evidence.cwd,
+									executionStatus: evidence.status,
+									exitCode: evidence.exitCode,
+								})
+							: undefined
+					assertOwnership?.()
+					callbacks.setResultMetadata?.({
+						executionStatus:
+							evidence.status === "running"
+								? "running"
+								: evidence.status === "succeeded"
+									? "success"
+									: evidence.status === "denied" || evidence.status === "cancelled"
+										? evidence.status
+										: "error",
+						status:
+							evidence.status === "succeeded" || evidence.status === "running" || completedProcessFailure
 								? "success"
 								: evidence.status === "denied" || evidence.status === "cancelled"
 									? evidence.status
 									: "error",
-					status:
-						evidence.status === "succeeded" || evidence.status === "running" || completedProcessFailure
-							? "success"
-							: evidence.status === "denied" || evidence.status === "cancelled"
-								? evidence.status
-								: "error",
-					exitCode: evidence.exitCode,
-					...(commandResult ? { commandResult } : {}),
-					timedOut: evidence.status === "timed_out",
-					...(trustedExploration ? { trustedExploration } : {}),
-				})
+						exitCode: evidence.exitCode,
+						...(commandResult ? { commandResult } : {}),
+						timedOut: evidence.status === "timed_out",
+						...(trustedExploration ? { trustedExploration } : {}),
+					})
+				}
 			}
+			if (host) await host.presentation.publish("metadata", publishMetadata)
+			else await publishMetadata()
 		}
 	}
 
@@ -512,11 +1115,23 @@ export type ExecuteCommandOptions = {
 	executionId: string
 	toolCallId?: string
 	command: string
+	tty?: boolean
 	customCwd?: string
 	verificationChangeSetIds?: readonly string[]
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
 	agentTimeout?: number
+	/** Host-only audited transport; never read from model parameters. */
+	directCommand?: DirectTerminalCommand
+	beforeLaunch?: () => Promise<void>
+	signal?: AbortSignal
+	/** Internal presentation owner used only by an approved prepared read. */
+	presentation?: DeferredCommandPresentation
+	onProcessCreated?: (process: AlphaTerminalProcess, isArchiveClosed: () => boolean) => void
+	onCreationHookFailure?: (process: AlphaTerminalProcess) => void
+	capturedExecutionMode?: string
+	capturedProvider?: ReturnType<Task["providerRef"]["deref"]>
+	capturedOutputPreviewSize?: TerminalOutputPreviewSize
 	/** Trusted launch boundary for distinguishing rejection from an unknown process outcome. */
 	onExecutionState?: (state: ToolFailureMetadata["effectsStarted"]) => void
 	onCommandResult?: (result: CommandToolResult) => void
@@ -529,6 +1144,7 @@ export async function executeCommandInTerminal(
 		executionId,
 		toolCallId,
 		command,
+		tty,
 		customCwd,
 		verificationChangeSetIds,
 		terminalShellIntegrationDisabled = true,
@@ -537,9 +1153,25 @@ export async function executeCommandInTerminal(
 		onExecutionState,
 		onCommandResult,
 		onFailure,
+		directCommand,
+		beforeLaunch,
+		signal,
+		presentation,
+		onProcessCreated,
+		onCreationHookFailure,
+		capturedExecutionMode,
+		capturedProvider,
+		capturedOutputPreviewSize,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
 	const commandStartedAt = performance.now()
+	const project = (
+		slot: CommandPresentationSlot,
+		operation: (assertOwnership?: () => void) => void | Promise<void>,
+	): Promise<void> => {
+		if (presentation) return presentation.publish(slot, operation)
+		return Promise.resolve(operation())
+	}
 	// Convert milliseconds back to seconds for display purposes.
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
@@ -561,7 +1193,8 @@ export async function executeCommandInTerminal(
 	let fileChangesPublished = false
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
-	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+	const executionMode =
+		capturedExecutionMode ?? (typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug)
 	const isPlanMode = executionMode === planModeSlug
 	const rejectBeforeLaunch = (reason: ToolFailureMetadata["reason"], scope: unknown) =>
 		onFailure?.(
@@ -576,14 +1209,28 @@ export async function executeCommandInTerminal(
 		)
 	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
 	const cancellationResult = (): [boolean, ToolResponse] => {
-		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
+		if (toolCallId)
+			void project("evidence", () => {
+				task.failCommandExecution?.(toolCallId, "cancelled")
+			})
 		return [false, "Command was not started because the task was cancelled."]
 	}
-	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
+	const taskWasCancelled = () => task.abort || signal?.aborted || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
+	if (tty === true && (isManagedWorker || isPlanMode)) {
+		rejectBeforeLaunch("policy_denied", "interactive-terminal")
+		if (toolCallId)
+			void project("evidence", () => {
+				task.failCommandExecution?.(toolCallId, "denied")
+			})
+		return [false, "Interactive terminals require a foreground Code task; this command was not started."]
+	}
 	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
 		rejectBeforeLaunch("policy_denied", customCwd)
-		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		if (toolCallId)
+			void project("evidence", () => {
+				task.failCommandExecution?.(toolCallId)
+			})
 		return [
 			false,
 			isPlanMode
@@ -599,28 +1246,38 @@ export async function executeCommandInTerminal(
 		workingDir = path.resolve(task.cwd, customCwd)
 	}
 
+	let outsideWorkspaceDirectory: string | undefined
 	try {
 		await fs.access(workingDir)
 		if (restrictCommandCwdToWorkspace) {
 			const [realWorkspace, realWorkingDir] = await Promise.all([fs.realpath(task.cwd), fs.realpath(workingDir)])
 			const relative = path.relative(realWorkspace, realWorkingDir)
 			if (relative.startsWith("..") || path.isAbsolute(relative)) {
-				rejectBeforeLaunch("policy_denied", realWorkingDir)
-				if (toolCallId) task.failCommandExecution?.(toolCallId)
-				return [
-					false,
-					isPlanMode
-						? "Plan command directory resolves outside the task workspace."
-						: "Editing worker command directory is outside its isolated workspace.",
-				]
+				outsideWorkspaceDirectory = realWorkingDir
 			}
 		}
 	} catch (error) {
 		rejectBeforeLaunch("pre_launch_rejected", workingDir)
-		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		if (toolCallId)
+			void project("evidence", () => {
+				task.failCommandExecution?.(toolCallId)
+			})
 		return [
 			false,
 			`Working directory '${restrictCommandCwdToWorkspace ? customCwd || "." : workingDir}' does not exist.`,
+		]
+	}
+	if (outsideWorkspaceDirectory) {
+		rejectBeforeLaunch("policy_denied", outsideWorkspaceDirectory)
+		if (toolCallId)
+			void project("evidence", () => {
+				task.failCommandExecution?.(toolCallId)
+			})
+		return [
+			false,
+			isPlanMode
+				? "Plan command directory resolves outside the task workspace."
+				: "Editing worker command directory is outside its isolated workspace.",
 		]
 	}
 
@@ -637,8 +1294,20 @@ export async function executeCommandInTerminal(
 
 	// Managed workers run unattended and must use the terminal provider whose
 	// process tree can be deterministically terminated by task cancellation.
-	const terminalProvider = isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
-	const provider = await task.providerRef.deref()
+	const terminalProvider =
+		tty === true
+			? "vscode"
+			: tty === false || isManagedWorker || terminalShellIntegrationDisabled
+				? "execa"
+				: "vscode"
+	const provider = capturedProvider ?? (await task.providerRef.deref())
+	const postStatus = (status: CommandExecutionStatus): void => {
+		const slot =
+			status.status === "started" ? "started" : status.status === "output" ? "output-status" : "terminal-status"
+		void project(slot, async () => {
+			await provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+		}).catch((error) => console.error("[ExecuteCommandTool] Could not publish command status", error))
+	}
 	const handleCommandMutationFailure = (error: unknown): Promise<{ recoveryError?: unknown }> => {
 		commandMutationFailureHandling ??= (async () => {
 			const receiptError =
@@ -648,7 +1317,7 @@ export async function executeCommandInTerminal(
 			let recoveryError: unknown
 			if (receiptError.observationUnknown) {
 				try {
-					const owner = task.providerRef.deref()
+					const owner = provider
 					if (!owner) throw new Error("Primary mutation ledger is unavailable")
 					const receiptSettled = await owner.recordPrimaryMutation(
 						task,
@@ -667,13 +1336,15 @@ export async function executeCommandInTerminal(
 				}
 			}
 
-			if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
-			task.didToolFailInCurrentTurn = true
-			task.suspendAfterCurrentTurn(
-				receiptError.observationUnknown
-					? t("common:errors.command_mutation_observation_incomplete")
-					: t("common:errors.command_mutation_receipt_incomplete"),
-			)
+			await project("failure", () => {
+				if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+				task.didToolFailInCurrentTurn = true
+				task.suspendAfterCurrentTurn(
+					receiptError.observationUnknown
+						? t("common:errors.command_mutation_observation_incomplete")
+						: t("common:errors.command_mutation_receipt_incomplete"),
+				)
+			})
 			console.error(
 				`[ExecuteCommandTool] ${redactTaskPrivatePaths(task, receiptError.message)}`,
 				recoveryError
@@ -700,7 +1371,7 @@ export async function executeCommandInTerminal(
 		})
 	const ensureMutationReceipt = (): Promise<WorkspaceMutationDiff[]> => {
 		mutationReceiptCompletion ??= observeCommandMutationFailure(
-			finalizeCommandMutationReceipt(task, mutationBaseline, diffBaseline, physicalExecutionId, () => {
+			finalizeCommandMutationReceipt(task, provider, mutationBaseline, diffBaseline, physicalExecutionId, () => {
 				workspaceObservationIncomplete = true
 			}),
 		)
@@ -711,7 +1382,7 @@ export async function executeCommandInTerminal(
 	const releaseMutationReservationBeforeLaunch = async (primaryError: unknown): Promise<void> => {
 		if (!mutationReservationAcquired) return
 		try {
-			const owner = task.providerRef.deref()
+			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.releasePrimaryMutation(task, physicalExecutionId)
 		} catch (error) {
@@ -732,9 +1403,11 @@ export async function executeCommandInTerminal(
 	if (globalStoragePath) {
 		const taskDir = await getTaskDirectoryPath(globalStoragePath, task.taskId)
 		const storageDir = path.join(taskDir, "command-output")
-		const providerState = await provider?.getState()
+		const providerState = presentation ? undefined : await provider?.getState()
 		const terminalOutputPreviewSize =
-			providerState?.terminalOutputPreviewSize ?? DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
+			capturedOutputPreviewSize ??
+			providerState?.terminalOutputPreviewSize ??
+			DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
 
 		interceptor = new OutputInterceptor({
 			executionId,
@@ -743,6 +1416,21 @@ export async function executeCommandInTerminal(
 			storageDir,
 			previewSize: terminalOutputPreviewSize,
 		})
+	}
+	let archiveFinalization: Promise<void> | undefined
+	const finalizeOutputArchive = (process: AlphaTerminalProcess): Promise<void> => {
+		archiveFinalization ??= (async () => {
+			if (!interceptor) return
+			try {
+				const finalized = await interceptor.finalize()
+				if (process?.outputArchiveInterrupted) return
+				persistedResult = finalized
+				if (process && finalized.artifactPath) process.outputArtifactId = path.basename(finalized.artifactPath)
+			} catch (error) {
+				if (!(error instanceof OutputArchiveInterruptedError)) throw error
+			}
+		})()
+		return archiveFinalization
 	}
 
 	let accumulatedOutput = ""
@@ -762,17 +1450,22 @@ export async function executeCommandInTerminal(
 		}
 
 		lastQueuedCommandOutput = text
-		commandOutputSayChain = commandOutputSayChain
-			.then(async () => {
-				await task.say("command_output", text, undefined, partial, undefined, undefined, {
-					isNonInteractive: true,
-				})
-			})
-			.catch((error) => {
-				console.error("[ExecuteCommandTool] Failed to publish command output:", error)
+		return project("command-output", async (assertOwnership) => {
+			commandOutputSayChain = commandOutputSayChain.then(async () => {
+				assertOwnership?.()
+				try {
+					await task.say("command_output", text, undefined, partial, undefined, undefined, {
+						isNonInteractive: true,
+						commandExecutionId: executionId,
+					})
+				} catch (error) {
+					console.error("[ExecuteCommandTool] Failed to publish command output:", error)
+				}
+				assertOwnership?.()
 			})
 
-		return commandOutputSayChain
+			await commandOutputSayChain
+		})
 	}
 
 	const schedulePartialCommandOutputUpdate = () => {
@@ -810,16 +1503,23 @@ export async function executeCommandInTerminal(
 	const handleBackgroundOutputBookkeepingFailure = (): Promise<void> => {
 		if (!backgroundResultReturned || !outputBookkeepingFailure || !exitDetails) return Promise.resolve()
 		const failure = outputBookkeepingFailure
-		outputBookkeepingFailureHandling ??= (async () => {
-			// The terminal completion callback owns mutation settlement and may still be
-			// running. Wait for it before marking the already-returned command failed so
-			// its success projection cannot overwrite this bookkeeping failure.
-			await commandMutationCompletion.catch(() => undefined)
-			if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
-			task.didToolFailInCurrentTurn = true
-			task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
-			console.error(`[ExecuteCommandTool] ${redactTaskPrivatePaths(task, failure.message)}`, failure)
-		})()
+		if (!outputBookkeepingFailureHandling) {
+			outputBookkeepingFailureHandling = (async () => {
+				// The terminal completion callback owns mutation settlement and may still be
+				// running. Wait for it before marking the already-returned command failed so
+				// its success projection cannot overwrite this bookkeeping failure.
+				await commandMutationCompletion.catch(() => undefined)
+				await project("failure", () => {
+					if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+					task.didToolFailInCurrentTurn = true
+					task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+				})
+				console.error(`[ExecuteCommandTool] ${redactTaskPrivatePaths(task, failure.message)}`, failure)
+			})()
+			void outputBookkeepingFailureHandling.catch((error: unknown) => {
+				console.error("[ExecuteCommandTool] Failed to preserve background output bookkeeping failure", error)
+			})
+		}
 		return outputBookkeepingFailureHandling
 	}
 	onCompletedPromise = new Promise((resolve, reject) => {
@@ -846,7 +1546,47 @@ export async function executeCommandInTerminal(
 		}, 0)
 	}
 
+	let createdProcess: AlphaTerminalProcess | undefined
+	const outputArchive = {
+		archiveExecutionId: executionId,
+		isClosed: () => interceptor?.isOutputClosed() ?? true,
+	}
+	const bindCreatedProcess = (process: AlphaTerminalProcess): void => {
+		if (createdProcess) {
+			if (createdProcess !== process || process.executionId !== physicalExecutionId) {
+				throw new Error("Command process identity changed after its archival ownership was bound")
+			}
+			return
+		}
+		process.executionId = physicalExecutionId
+		createdProcess = process
+		onProcessCreated?.(process, outputArchive.isClosed)
+		commandSessionRegistry.trackTaskOutput(task, process, physicalExecutionId, outputArchive)
+	}
 	const callbacks: AlphaTerminalCallbacks = {
+		onProcessCreated: (process) => {
+			try {
+				bindCreatedProcess(process)
+			} catch (error) {
+				onCreationHookFailure?.(process)
+				throw error
+			}
+		},
+		onOutput: (chunk, _process, signal) => interceptor?.writeWithBackpressure(chunk, signal),
+		onOutputClosed: async (process) => {
+			try {
+				await finalizeOutputArchive(process)
+			} catch (error) {
+				process.outputArchiveInterrupted = true
+				process.outputArtifactId = undefined
+				outputBookkeepingFailure ??= new CommandOutputBookkeepingError(error)
+				rejectOnCompleted?.(outputBookkeepingFailure)
+				// A reader error already owns its actionable failure and unknown
+				// mutation receipt. Closing its archive must not replace that error.
+				if (!terminalProcessFailure) void handleBackgroundOutputBookkeepingFailure()
+				throw outputBookkeepingFailure
+			}
+		},
 		onLine: (lines: string, process: AlphaTerminalProcess) => {
 			accumulatedOutput += lines
 
@@ -855,17 +1595,14 @@ export async function executeCommandInTerminal(
 				accumulatedOutput = accumulatedOutput.slice(-maxAccumulatedOutputSize)
 			}
 
-			// Write to interceptor for persisted output
-			interceptor?.write(lines)
-
 			// Continue sending compressed output to webview for UI display (unchanged behavior)
 			const compressedOutput = Terminal.compressTerminalOutput(accumulatedOutput)
 			latestCompressedOutput = compressedOutput
 			const status: CommandExecutionStatus = { executionId, status: "output", output: compressedOutput }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			postStatus(status)
 			schedulePartialCommandOutputUpdate()
 
-			if (runInBackground || hasAskedForCommandOutput) {
+			if (presentation || runInBackground || hasAskedForCommandOutput) {
 				return
 			}
 
@@ -888,7 +1625,7 @@ export async function executeCommandInTerminal(
 				}
 			})()
 		},
-		onCompleted: async (output: string | undefined) => {
+		onCompleted: async (output: string | undefined, process: AlphaTerminalProcess) => {
 			onCompletedInvoked = true
 			clearTimeout(missingOutputCompletionTimer)
 			missingOutputCompletionTimer = undefined
@@ -899,18 +1636,22 @@ export async function executeCommandInTerminal(
 				// Finalize interceptor and get persisted result.
 				// We await finalize() to ensure the artifact file is fully flushed
 				// before we advertise the artifact_id to the LLM.
-				if (interceptor) {
-					persistedResult = await interceptor.finalize()
-				}
+				await finalizeOutputArchive(process)
 
 				// Continue using compressed output for UI display
 				result = Terminal.compressTerminalOutput(output ?? "")
+				if (interceptor?.isInterrupted() || process?.outputArchiveInterrupted) {
+					result += `\n${t("common:errors.command_output_archive_interrupted")}`
+				}
 				latestCompressedOutput = result
 
 				// Preserve order: wait for queued partial updates, then emit the final
 				// non-partial command_output update.
-				await commandOutputSayChain
-				await queueCommandOutputMessage(result, false, true)
+				if (!presentation) await commandOutputSayChain
+				const artifactNotice = process?.outputArtifactId
+					? `\nArtifact ID: ${process.outputArtifactId}\nUse write_stdin with this artifact_id to view more output.`
+					: ""
+				await queueCommandOutputMessage(result + artifactNotice, false, true)
 				completed = true
 				resolveOnCompleted?.()
 			} catch (error) {
@@ -921,11 +1662,11 @@ export async function executeCommandInTerminal(
 		},
 		onShellExecutionStarted: (pid: number | undefined) => {
 			const status: CommandExecutionStatus = { executionId, status: "started", pid, command }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			postStatus(status)
 		},
 		onShellExecutionComplete: (details: ExitCodeDetails) => {
 			const status: CommandExecutionStatus = { executionId, status: "exited", exitCode: details.exitCode }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			postStatus(status)
 			exitDetails = details
 			// A process-level failure already persisted unknown mutation debt and owns
 			// the terminal evidence. Late success callbacks may flush output, but must
@@ -943,32 +1684,38 @@ export async function executeCommandInTerminal(
 						return
 					if (toolCallId) {
 						try {
-							task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
+							await project("evidence", () => {
+								task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
+							})
 						} catch (error) {
 							throw new CommandMutationReceiptError("complete-command-evidence", false, error)
 						}
 					}
 					if (details.exitCode === 0 && !details.signalName && !taskWasCancelled() && !fileChangesPublished) {
 						fileChangesPublished = true
-						for (const change of fileChanges) {
-							const payload = JSON.stringify({
-								tool: "appliedDiff",
-								...change,
-								changeStatus: "applied",
-								commandExecutionId: physicalExecutionId,
-							})
-							if (!reserveFileChangeMessageBytes(task, fileChangeTurnKey, Buffer.byteLength(payload)))
-								break
-							await task
-								.say("tool", payload, undefined, false, undefined, undefined, {
-									isNonInteractive: true,
+						await project("file-changes", async (assertOwnership) => {
+							for (const change of fileChanges) {
+								assertOwnership?.()
+								const payload = JSON.stringify({
+									tool: "appliedDiff",
+									...change,
+									changeStatus: "applied",
+									commandExecutionId: physicalExecutionId,
 								})
-								.catch((error) =>
-									console.warn(
-										`[ExecuteCommandTool] Could not publish completed file change for ${redactTaskPrivatePaths(task, change.path)} (${physicalExecutionId}): ${redactTaskPrivatePaths(task, String(error)).slice(0, 256)}`,
-									),
-								)
-						}
+								if (!reserveFileChangeMessageBytes(task, fileChangeTurnKey, Buffer.byteLength(payload)))
+									break
+								await task
+									.say("tool", payload, undefined, false, undefined, undefined, {
+										isNonInteractive: true,
+									})
+									.catch((error) =>
+										console.warn(
+											`[ExecuteCommandTool] Could not publish completed file change for ${redactTaskPrivatePaths(task, change.path)} (${physicalExecutionId}): ${redactTaskPrivatePaths(task, String(error)).slice(0, 256)}`,
+										),
+									)
+								assertOwnership?.()
+							}
+						})
 					}
 				})(),
 			)
@@ -1025,7 +1772,7 @@ export async function executeCommandInTerminal(
 			return cancellationResult()
 		}
 		if (task.taskKind === "primary") {
-			const owner = task.providerRef.deref()
+			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.reservePrimaryMutation(task, physicalExecutionId)
 			mutationReservationAcquired = true
@@ -1061,15 +1808,50 @@ export async function executeCommandInTerminal(
 		await releaseMutationReservationBeforeLaunch(new Error("Command admission was cancelled"))
 		return cancellationResult()
 	}
+	try {
+		await beforeLaunch?.()
+	} catch (error) {
+		releaseTerminalReservation()
+		await releaseMutationReservationBeforeLaunch(error)
+		if (taskWasCancelled()) return cancellationResult()
+		if (error instanceof ToolReadDeniedError) {
+			rejectBeforeLaunch("policy_denied", workingDir)
+			if (toolCallId)
+				await project("evidence", () => {
+					task.failCommandExecution?.(toolCallId, "denied", physicalExecutionId)
+				})
+			throw error
+		}
+		throw new CommandExecutionLifecycleError("admit-command", error)
+	}
+	if (taskWasCancelled()) {
+		releaseTerminalReservation()
+		await releaseMutationReservationBeforeLaunch(new Error("Command launch was cancelled"))
+		return cancellationResult()
+	}
 	let process: ReturnType<AlphaTerminal["runCommand"]>
 	try {
 		onExecutionState?.("unknown")
-		process = terminal.runCommand(command, callbacks)
-		process.executionId = physicalExecutionId
+		process = terminal.runCommand(command, callbacks, directCommand)
+		// Canonical adapters already bound ownership before launch. Retain the
+		// same binding for older adapters/fixtures that omit the creation hook.
+		bindCreatedProcess(process)
 		onExecutionState?.("yes")
 	} catch (error) {
 		releaseTerminalReservation()
-		const launchError = new CommandExecutionLifecycleError("launch-command", error)
+		let launchCause = error
+		// A canonical creation-hook throw precedes spawn. Its adapter already owns
+		// finalization; join that exact archive without assimilating the process.
+		if (createdProcess?.waitForOutputFinalization) {
+			const [archive] = await Promise.allSettled([createdProcess.waitForOutputFinalization()])
+			if (archive.status === "rejected")
+				launchCause = new AggregateError(
+					[error, archive.reason],
+					"Command creation and archive closure failed",
+					{ cause: error },
+				)
+		}
+		const launchError = new CommandExecutionLifecycleError("launch-command", launchCause)
 		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
 			const { recoveryError } = await handleCommandMutationFailure(receiptError)
@@ -1080,7 +1862,9 @@ export async function executeCommandInTerminal(
 				)
 			}
 		} else if (toolCallId) {
-			task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			await project("evidence", () => {
+				task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			})
 		}
 		throw launchError
 	}
@@ -1110,10 +1894,12 @@ export async function executeCommandInTerminal(
 				const { recoveryError } = await handleCommandMutationFailure(receiptError)
 				if (recoveryError) throw recoveryError
 			} else {
-				if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
-				task.didToolFailInCurrentTurn = true
-				if (exitDetails && backgroundResultReturned)
-					task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+				await project("failure", () => {
+					if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+					task.didToolFailInCurrentTurn = true
+					if (exitDetails && backgroundResultReturned)
+						task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+				})
 			}
 		})()
 		void terminalProcessFailureHandling.catch((failure) =>
@@ -1204,7 +1990,7 @@ export async function executeCommandInTerminal(
 					agentTimeoutId = setTimeout(() => {
 						runInBackground = true
 						process.continue()
-						task.supersedePendingAsk()
+						if (!presentation) task.supersedePendingAsk()
 						resolve()
 					}, agentTimeout)
 				}),
@@ -1223,25 +2009,25 @@ export async function executeCommandInTerminal(
 						commandTerminalOutcomeFenced = true
 						const finalization = finalizeUserTimeout()
 						try {
-							if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
-							const status: CommandExecutionStatus = { executionId, status: "timeout" }
-							provider?.postMessageToWebview({
-								type: "commandExecutionStatus",
-								text: JSON.stringify(status),
+							void project("evidence", () => {
+								if (toolCallId)
+									task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
 							})
+							const status: CommandExecutionStatus = { executionId, status: "timeout" }
+							postStatus(status)
 						} catch (error) {
 							console.error("Failed to project a command timeout:", error)
 						}
 						if (runInBackground) {
-							task.didToolFailInCurrentTurn = true
-							void task
-								.say(
+							void project("failure", async (assertOwnership) => {
+								assertOwnership?.()
+								task.didToolFailInCurrentTurn = true
+								await task.say(
 									"error",
 									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
 								)
-								.catch((error) =>
-									console.error("Failed to report a background command timeout:", error),
-								)
+								assertOwnership?.()
+							}).catch((error) => console.error("Failed to report a background command timeout:", error))
 						}
 						void finalization.then(
 							() => reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)),
@@ -1262,9 +2048,13 @@ export async function executeCommandInTerminal(
 	} catch (error) {
 		if (isUserTimedOut) {
 			await finalizeUserTimeout()
-			await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
-			task.didToolFailInCurrentTurn = true
-			task.terminalProcess = undefined
+			await project("failure", async (assertOwnership) => {
+				assertOwnership?.()
+				await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
+				assertOwnership?.()
+				task.didToolFailInCurrentTurn = true
+			})
+			if (task.terminalProcess === process) task.terminalProcess = undefined
 
 			return [
 				false,
@@ -1291,9 +2081,14 @@ export async function executeCommandInTerminal(
 			if (outputResult[0].status === "rejected") failures.push(outputResult[0].reason)
 		}
 		if (toolCallId && !terminalProcessFailureHandling && !commandMutationFailureHandling)
-			task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			await project("evidence", () => {
+				task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			})
 		if (failures.length > 1) {
-			throw new AggregateError(failures, "Command process and completion bookkeeping failed")
+			throw new AggregateError(
+				failures,
+				`Command process and completion bookkeeping failed: ${processError.message}`,
+			)
 		}
 		throw processError
 	} finally {
@@ -1312,7 +2107,7 @@ export async function executeCommandInTerminal(
 			clearTimeout(userTimeoutId)
 		}
 		clearTimeout(pendingCommandOutputEmitTimer)
-		task.terminalProcess = undefined
+		if (task.terminalProcess === process) task.terminalProcess = undefined
 	}
 
 	if (shellIntegrationError) {
@@ -1320,7 +2115,10 @@ export async function executeCommandInTerminal(
 		const completions: Promise<unknown>[] = [ensureMutationReceipt()]
 		if (onCompletedInvoked && onCompletedPromise) completions.push(onCompletedPromise)
 		const completionResults = await Promise.allSettled(completions)
-		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+		if (toolCallId)
+			await project("evidence", () => {
+				task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			})
 		const failures = completionResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
 		if (failures.length > 0) {
 			throw new AggregateError(
@@ -1336,7 +2134,7 @@ export async function executeCommandInTerminal(
 	// for their associated messages to be sent to the webview, maintaining
 	// the correct order of messages (although the webview is smart about
 	// grouping command_output messages despite any gaps anyways).
-	await delay(50)
+	if (!presentation) await delay(50)
 	if (terminalProcessFailure) {
 		await terminalProcessFailureHandling
 		throw terminalProcessFailure
@@ -1367,7 +2165,9 @@ export async function executeCommandInTerminal(
 			? commandSessionRegistry.register(task, process)
 			: undefined
 	if (toolCallId && (message || (!completed && !exitDetails))) {
-		task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
+		await project("evidence", () => {
+			task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
+		})
 	}
 	if (!completed && !exitDetails) {
 		backgroundResultReturned = true

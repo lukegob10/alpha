@@ -2,6 +2,8 @@ import EventEmitter from "events"
 import fs from "fs/promises"
 import os from "os"
 import * as path from "path"
+import i18next from "i18next"
+import common from "../../../i18n/locales/en/common.json"
 
 import { managedSubagentWorktreeService } from "@alpha-code/core"
 import {
@@ -10,6 +12,8 @@ import {
 	AlphaCodeEventName,
 	subagentRootOrchestrationSummarySchema,
 	TaskLifecycleState,
+	TaskStatus,
+	subagentContextManifestSchema,
 	type SubagentGroupState,
 } from "@alpha-code/types"
 
@@ -21,10 +25,15 @@ import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
 import { buildInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
-import { captureSubagentContext } from "../../agent/SubagentContextCapture"
+import {
+	captureSubagentContext,
+	isValidSubagentContextManifest,
+	serializeSubagentContextManifest,
+} from "../../agent/SubagentContextCapture"
+import { digestValue } from "../../agent/StepContext"
 import { SUBAGENT_CALLSIGNS, SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
-import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
+import { WorkspaceMutationCancelledError, WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
 import { serializeAgentNotification } from "../../task-persistence/agentNotifications"
 import { getSkillsCatalogSection, type SkillCatalogEntry } from "../../prompts/sections/skills"
 import { GoalController } from "../../agent/goals/GoalController"
@@ -33,6 +42,10 @@ import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 
 afterEach(() => vi.restoreAllMocks())
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "common", common, true, true)
+})
 
 const makeProviderHarness = (
 	availableCapacity = 2,
@@ -131,6 +144,13 @@ const makeProviderHarness = (
 		taskLifecycleHistoryWrites: new Map(),
 		agentFollowupAdmissions: new Map(),
 		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
+		agentLifecycleJournals: new Map(),
+		agentLifecycleProjector: { clear: vi.fn() },
+		agentLifecycleDegradedSignals: new Map(),
+		publishedTaskTranscriptRevisions: new Map(),
+		taskEventListeners: new Map(),
+		taskStack: [],
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },
@@ -138,6 +158,10 @@ const makeProviderHarness = (
 			cancel: () => false,
 			getEvents: () => [],
 			getSnapshot: () => undefined,
+			getRunId: () => undefined,
+			acknowledgeEvents: () => false,
+			unload: () => false,
+			listSnapshots: () => [],
 			waitForResult: () => undefined,
 			resolveRunTaskId: () => undefined,
 		},
@@ -212,6 +236,10 @@ const makeMailboxRecipient = (provider: AlphaProvider, history: ApiMessage[] = [
 		),
 	) as Task
 	return task
+}
+
+function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<void> } | undefined) {
+	return entry && ("promise" in entry ? entry.promise : entry)
 }
 
 describe("AlphaProvider root lifecycle ownership", () => {
@@ -1333,58 +1361,246 @@ If complete, use attempt_completion.
 		expect((provider as any).subagentDescriptors.size).toBe(0)
 	})
 
-	it("keeps the frozen skill catalog and content digests through nested delegation", async () => {
+	it.each(["cached", "reloaded"] as const)(
+		"keeps durable descriptions, paths and content digests through %s nested delegation",
+		async (source) => {
+			const provider = makeProviderHarness(3, { subagentDelegationPolicy: "proactive", subagentMaxDepth: 2 })
+			const root = makeParent()
+			let skillBody = "Frozen skill body"
+			let catalog: SkillCatalogEntry[] = [
+				{
+					name: "review-repository",
+					path: "F:/workspace/.agents/skills/review-repository/SKILL.md",
+					description: "Frozen skill description",
+					allowImplicitInvocation: false,
+				},
+			]
+			const manager = {
+				getSkillsForMode: vi.fn(() => catalog),
+				getSkillContent: vi.fn(async () => ({ instructions: skillBody })),
+			}
+			;(provider as any).skillsManager = manager
+			const direct = await provider.prepareSubagentGroup(root as any, [
+				{ objective: "Inspect first layer", agent_kind: "review" },
+			])
+			const directDescriptor = (provider as any).subagentDescriptors.get(direct.envelopes[0].id)
+			const frozenSkills = structuredClone(directDescriptor.contextManifest.skills)
+			expect(frozenSkills[0].description).toBe("Frozen skill description")
+			catalog = [
+				{ ...catalog[0], description: "Live replacement description", allowImplicitInvocation: true },
+				{
+					name: "new-skill",
+					path: "F:/workspace/.agents/skills/new-skill/SKILL.md",
+					description: "New live skill",
+				},
+			]
+			skillBody = "Changed live skill body"
+			manager.getSkillContent.mockClear()
+			;(provider as any).getSkillsManager.mockClear()
+			directDescriptor.inheritedSkills = [{ ...catalog[0], description: "STALE_TEMPORARY_DESCRIPTOR" }]
+			const reloadedManifest = subagentContextManifestSchema.parse(
+				JSON.parse(serializeSubagentContextManifest(directDescriptor.contextManifest)),
+			)
+			if (source === "reloaded") (provider as any).subagentDescriptors.delete(direct.envelopes[0].id)
+			const child = {
+				...makeParent(),
+				taskId: direct.envelopes[0].id,
+				rootTaskId: root.taskId,
+				taskKind: "subagent",
+				subagentContextManifest: reloadedManifest,
+				subagentDelegationPolicy: "proactive",
+			}
+			const nested = await provider.prepareSubagentGroup(child as any, [
+				{ objective: "Inspect second layer", agent_kind: "explore" },
+			])
+			const nestedDescriptor = (provider as any).subagentDescriptors.get(nested.envelopes[0].id)
+
+			expect(nestedDescriptor.contextManifest.skills).toEqual(frozenSkills)
+			expect(isValidSubagentContextManifest(nestedDescriptor.contextManifest)).toBe(true)
+			expect(nestedDescriptor.inheritedSkills).toEqual([
+				{ ...catalog[0], description: "Frozen skill description", allowImplicitInvocation: false },
+			])
+			expect(getSkillsCatalogSection(nestedDescriptor.inheritedSkills, "code")).toBe("")
+			expect(nestedDescriptor.contextManifest.runtimePolicy.allowedTools).toContain("skill")
+			expect(manager.getSkillContent).not.toHaveBeenCalled()
+			expect((provider as any).getSkillsManager).not.toHaveBeenCalled()
+		},
+	)
+
+	it("preserves legacy description absence through nesting without temporary or live backfill", async () => {
 		const provider = makeProviderHarness(3, { subagentDelegationPolicy: "proactive", subagentMaxDepth: 2 })
 		const root = makeParent()
-		let skillBody = "Frozen skill body"
-		let catalog: SkillCatalogEntry[] = [
-			{
-				name: "review-repository",
-				path: "F:/workspace/.agents/skills/review-repository/SKILL.md",
-				description: "Frozen skill description",
-				allowImplicitInvocation: false,
-			},
-		]
-		const manager = {
-			getSkillsForMode: vi.fn(() => catalog),
-			getSkillContent: vi.fn(async () => ({ instructions: skillBody })),
+		const skill = {
+			name: "legacy-review",
+			path: "F:/workspace/.agents/skills/legacy-review/SKILL.md",
+			description: "Temporary descriptor description must not become durable",
 		}
-		;(provider as any).skillsManager = manager
+		;(provider as any).skillsManager = {
+			getSkillsForMode: vi.fn(() => [skill]),
+			getSkillContent: vi.fn(async () => ({ instructions: "Frozen legacy body" })),
+		}
 		const direct = await provider.prepareSubagentGroup(root as any, [
-			{ objective: "Inspect first layer", agent_kind: "review" },
+			{ objective: "Inspect the first layer", agent_kind: "review" },
 		])
 		const directDescriptor = (provider as any).subagentDescriptors.get(direct.envelopes[0].id)
-		const frozenSkills = structuredClone(directDescriptor.contextManifest.skills)
-		catalog = [
-			{ ...catalog[0], description: "Live replacement description", allowImplicitInvocation: true },
-			{
-				name: "new-skill",
-				path: "F:/workspace/.agents/skills/new-skill/SKILL.md",
-				description: "New live skill",
-			},
-		]
-		skillBody = "Changed live skill body"
-		manager.getSkillContent.mockClear()
+		const { manifestDigest: _manifestDigest, ...capturedFields } = directDescriptor.contextManifest
+		const legacyFields = {
+			...capturedFields,
+			skills: capturedFields.skills.map(
+				({
+					description: _description,
+					...identity
+				}: {
+					description?: string
+					name: string
+					path: string
+					digest: string
+				}) => identity,
+			),
+		}
+		const legacyManifest = subagentContextManifestSchema.parse({
+			...legacyFields,
+			manifestDigest: digestValue(legacyFields),
+		})
+		expect(isValidSubagentContextManifest(legacyManifest)).toBe(true)
 		const child = {
 			...makeParent(),
 			taskId: direct.envelopes[0].id,
 			rootTaskId: root.taskId,
 			taskKind: "subagent",
-			subagentContextManifest: directDescriptor.contextManifest,
+			subagentContextManifest: legacyManifest,
 			subagentDelegationPolicy: "proactive",
 		}
+		;(provider as any).getSkillsManager.mockRejectedValue(new Error("Live manager unavailable after reload"))
+		;(provider as any).getSkillsManager.mockClear()
 		const nested = await provider.prepareSubagentGroup(child as any, [
-			{ objective: "Inspect second layer", agent_kind: "explore" },
+			{ objective: "Inspect the second layer", agent_kind: "explore" },
 		])
-		const nestedDescriptor = (provider as any).subagentDescriptors.get(nested.envelopes[0].id)
+		const descriptor = (provider as any).subagentDescriptors.get(nested.envelopes[0].id)
 
-		expect(nestedDescriptor.contextManifest.skills).toEqual(frozenSkills)
-		expect(nestedDescriptor.inheritedSkills).toEqual([
-			{ ...catalog[0], description: "Frozen skill description", allowImplicitInvocation: false },
+		expect(descriptor.contextManifest.skills[0]).not.toHaveProperty("description")
+		expect(descriptor.contextManifest.skills).toEqual(legacyManifest.skills)
+		expect(descriptor.inheritedSkills).toEqual([{ name: skill.name, path: skill.path, description: "" }])
+		expect((provider as any).getSkillsManager).not.toHaveBeenCalled()
+	})
+
+	it("renders reloaded child startup metadata from the validated manifest rather than a cached display catalog", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const skill = {
+			name: "release-review",
+			path: "F:/workspace/.agents/skills/release-review/SKILL.md",
+			description: "Frozen release audit relevance",
+		}
+		;(provider as any).skillsManager = {
+			getSkillsForMode: vi.fn(() => [skill]),
+			getSkillContent: vi.fn(async () => ({ instructions: "Frozen body" })),
+		}
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect the release", agent_kind: "review", fork_turns: "none" },
 		])
-		expect(getSkillsCatalogSection(nestedDescriptor.inheritedSkills, "code")).toBe("")
-		expect(nestedDescriptor.contextManifest.runtimePolicy.allowedTools).toContain("skill")
-		expect(manager.getSkillContent).not.toHaveBeenCalled()
+		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		descriptor.contextManifest = subagentContextManifestSchema.parse(
+			JSON.parse(serializeSubagentContextManifest(descriptor.contextManifest)),
+		)
+		descriptor.inheritedSkills = [{ ...skill, description: "STALE_DISPLAY_DESCRIPTION" }]
+		skill.description = "MUTABLE_LIVE_DESCRIPTION"
+		const stopAfterCapture = new Error("Captured initial input before creating a child")
+		let initialContext: string | undefined
+		;(provider as any).createTask = vi.fn(
+			async (
+				_prompt: string,
+				_images: unknown,
+				_parent: unknown,
+				options: {
+					subagentInitialContext?: string
+				},
+			) => {
+				initialContext = options.subagentInitialContext
+				throw stopAfterCapture
+			},
+		)
+
+		await expect(
+			provider["executeSubagentEnvelope"](prepared.envelopes[0], new AbortController().signal),
+		).rejects.toBe(stopAfterCapture)
+		expect(initialContext).toContain("Frozen release audit relevance")
+		expect(initialContext).toContain("release-review")
+		expect(initialContext).not.toContain("STALE_DISPLAY_DESCRIPTION")
+		expect(initialContext).not.toContain("MUTABLE_LIVE_DESCRIPTION")
+		expect(isValidSubagentContextManifest(descriptor.contextManifest)).toBe(true)
+	})
+
+	it("releases capacity and alias after quota rejection before any child admission or worktree creation", async () => {
+		const provider = makeProviderHarness(1, { maxConcurrentSubagents: 1 })
+		const parent = makeParent()
+		const scope = {
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["src"],
+			gitRelativeScope: ["src"],
+			fileWriteScope: [],
+			gitRelativeFileScope: [],
+		}
+		const validateScope = vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue(scope)
+		const createWorktree = vi
+			.spyOn(managedSubagentWorktreeService, "create")
+			.mockRejectedValue(new Error("Quota rejection must not launch a worktree"))
+		;(provider as any).createTask = vi.fn(async () => {
+			throw new Error("Quota rejection must not create a child Task")
+		})
+		const createAgent = vi.spyOn((provider as any).agentControlStore, "createAgent")
+		const updateSnapshot = vi.spyOn((provider as any).agentControlStore, "updateAgentSnapshot")
+		let catalog = Array.from({ length: 1_008 }, (_, index) => ({
+			name: `quota-${index}`,
+			path: `F:/workspace/.agents/skills/quota-${index}/SKILL.md`,
+			description: "a".repeat(index === 1_007 ? 273 : 1_024),
+			allowImplicitInvocation: false,
+		}))
+		;(provider as any).skillsManager = {
+			getSkillsForMode: vi.fn(() => catalog),
+			getSkillContentByPath: vi.fn(async () => ({ instructions: "Frozen body" })),
+		}
+		await Reflect.get(provider, "agentControlStoreReady")
+		const availableBefore = (provider as any).taskSessions.getAvailableTaskCapacity()
+		const usageBefore = (provider as any).getSubagentRootUsage(parent.taskId)
+		const draft = {
+			task_name: "quota_retry",
+			objective: "Implement the approved bounded change",
+			agent_kind: "worker" as const,
+			write_scope: ["src"],
+		}
+
+		await expect(provider.prepareSubagentGroup(parent as any, [draft])).rejects.toThrow(
+			"Captured skill descriptions exceed 1048576 bytes. Reduce the available skill catalog before starting another child.",
+		)
+		expect(validateScope).toHaveBeenCalledOnce()
+		expect((provider as any).agentControlStore.getAgent(parent.taskId)).toMatchObject({ role: "root" })
+		expect(
+			(provider as any).agentControlStore.listAgents({ rootTaskId: parent.taskId, includeRoot: false }),
+		).toEqual([])
+		expect(createAgent).not.toHaveBeenCalled()
+		expect(updateSnapshot).not.toHaveBeenCalled()
+		expect((provider as any).createTask).not.toHaveBeenCalled()
+		expect(createWorktree).not.toHaveBeenCalled()
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+		expect((provider as any).preparedSubagentGroups.size).toBe(0)
+		expect((provider as any).subagentDescriptors.size).toBe(0)
+		expect((provider as any).reservedSubagentSlots.size).toBe(0)
+		expect((provider as any).taskSessions.getAvailableTaskCapacity()).toBe(availableBefore)
+		expect((provider as any).getSubagentRootUsage(parent.taskId)).toEqual(usageBefore)
+		expect([...(provider as any).__historyItems.keys()]).toEqual([parent.taskId])
+
+		catalog = [{ ...catalog[0], description: "Bounded retry relevance" }]
+		const retried = await provider.prepareSubagentGroup(parent as any, [draft])
+		expect(retried.group.agents[0].nickname).toBe("quota_retry")
+		expect((provider as any).reservedSubagentSlots.size).toBe(1)
+		expect(createWorktree).not.toHaveBeenCalled()
+		await provider.cancelPreparedSubagentGroup(parent as any, retried, "Fixture completed")
+		expect((provider as any).reservedSubagentSlots.size).toBe(0)
+		expect((provider as any).taskSessions.getAvailableTaskCapacity()).toBe(availableBefore)
 	})
 
 	it("freezes explicit skill policy and exact content identity across a discovery refresh during capture", async () => {
@@ -1529,6 +1745,7 @@ If complete, use attempt_completion.
 					const emitter = new EventEmitter()
 					const child = Object.assign(emitter, {
 						taskId: options.taskId,
+						getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 						clineMessages: [] as Task["clineMessages"],
 						abort: false,
 						getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
@@ -1630,6 +1847,7 @@ If complete, use attempt_completion.
 			const emitter = new EventEmitter()
 			const child = Object.assign(emitter, {
 				taskId: "",
+				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 				clineMessages: [] as Task["clineMessages"],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
@@ -2454,6 +2672,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				child = Object.assign(emitter, {
 					taskId: options.taskId,
+					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					taskKind: "subagent",
 					rootTaskId: parent.taskId,
 					clineMessages: [
@@ -2560,6 +2779,7 @@ If complete, use attempt_completion.
 			const emitter = new EventEmitter()
 			child = Object.assign(emitter, {
 				taskId,
+				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 				clineMessages: [
 					// Deliberately collides with the current run's startedAt. Runtime message
 					// boundaries, not timestamps, must keep this report out of the result.
@@ -2618,6 +2838,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				child = Object.assign(emitter, {
 					taskId: options.taskId,
+					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					taskKind: "subagent",
 					rootTaskId: parent.taskId,
 					clineMessages: [],
@@ -2695,6 +2916,7 @@ If complete, use attempt_completion.
 				const { provider, prepared, taskId } = await setupRetainedRun()
 				const child = Object.assign(new EventEmitter(), {
 					taskId,
+					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					clineMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -2770,6 +2992,7 @@ If complete, use attempt_completion.
 				const { provider, prepared, taskId } = await setupRetainedRun()
 				const child = Object.assign(new EventEmitter(), {
 					taskId,
+					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					clineMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -2811,6 +3034,7 @@ If complete, use attempt_completion.
 			const cleanup = new Promise<void>((resolve) => (releaseCleanup = resolve))
 			const child = Object.assign(new EventEmitter(), {
 				taskId,
+				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 				clineMessages: [],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -3856,7 +4080,24 @@ If complete, use attempt_completion.
 			const completed = new Promise<void>((resolve) => (reachedCompletion = resolve))
 			let releaseFinalization!: () => void
 			const finalization = new Promise<void>((resolve) => (releaseFinalization = resolve))
-			;(provider as any).subagentRunFinalizations.set(taskId, finalization)
+			const priorFinalization =
+				typeof Reflect.get(provider, "ownsSubagentFinalizationRecord") === "function"
+					? Object.freeze({
+							promise: finalization,
+							parent,
+							parentSignal: parent.getTaskLifetimeCancellationSignal(),
+							operation: Object.freeze({}),
+							admissionController: new AbortController(),
+							taskIds: Object.freeze([taskId]),
+							phase: "admitting",
+						})
+					: finalization
+			;(provider as any).subagentRunFinalizations.set(taskId, priorFinalization)
+			void finalization.then(() => {
+				if ((provider as any).subagentRunFinalizations.get(taskId) === priorFinalization) {
+					;(provider as any).subagentRunFinalizations.delete(taskId)
+				}
+			})
 			const completePriorRun = async () => {
 				prepared.group.status = "completed"
 				prepared.group.agents[0].status = "completed"
@@ -3893,7 +4134,7 @@ If complete, use attempt_completion.
 				expect(start).not.toHaveBeenCalled()
 				releaseFinalization()
 				await expect(followup).resolves.toMatchObject({ taskId, followup: true, runId: expect.any(String) })
-				await (provider as any).subagentRunFinalizations.get(taskId)
+				await ownedFinalization((provider as any).subagentRunFinalizations.get(taskId))
 				expect(start).toHaveBeenCalledOnce()
 				expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["message"] })).toEqual([])
 				expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["followup"] })).toEqual([
@@ -4347,7 +4588,20 @@ If complete, use attempt_completion.
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
 			{ objective: "Inspect the parser", agent_kind: "explore" },
 		])
+		const expectedManifest = structuredClone(
+			(provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest,
+		)
+		expect(prepared.requiresExplicitApproval).toBe(false)
+		expect(expectedManifest.orchestration.delegationPolicy).toEqual({
+			policy: "explicit-only",
+			source: "default",
+			authorization: "session-policy",
+			explicitUserRequest: false,
+		})
+		expect(finalizedSubagentContextManifestSchema.safeParse(expectedManifest).success).toBe(true)
 		const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, new AbortController().signal)
+		const finalization = ownedFinalization((provider as any).subagentRunFinalizations.get(handle.taskId))
+		expect(finalization).toBeDefined()
 
 		expect(handle).toMatchObject({
 			taskId: prepared.envelopes[0].id,
@@ -4365,6 +4619,8 @@ If complete, use attempt_completion.
 				true,
 			),
 		)
+		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(true)
+		expect((provider as any).subagentDescriptors.get(handle.taskId).contextManifest).toEqual(expectedManifest)
 
 		finish({
 			taskId: handle.taskId,
@@ -4377,14 +4633,17 @@ If complete, use attempt_completion.
 			usage: { durationMs: 10 },
 		})
 
-		await vi.waitFor(() => expect(updates.at(-1)?.status).toBe("completed"))
+		await finalization
+		await (provider as any).pruneRetainedSubagentRuntimes()
+		expect(updates.at(-1)?.status).toBe("completed")
 		expect(updates.at(-1)?.executionMode).toBe("async")
 		expect(updates.at(-1)?.agents[0]).toMatchObject({
 			status: "completed",
 			summary: "Parser inspected",
 		})
 		expect((provider as any).__historyItems.get(parent.taskId).childIds).toEqual([handle.taskId])
-		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(true)
+		expect((provider as any).preparedSubagentGroups.has(prepared.group.groupId)).toBe(false)
+		expect((provider as any).subagentDescriptors.has(handle.taskId)).toBe(false)
 		expect((provider as any).asyncSubagentRunManager.getSnapshot(handle.taskId)).toMatchObject({
 			status: "completed",
 		})
@@ -4392,7 +4651,7 @@ If complete, use attempt_completion.
 			path: handle.path,
 			status: "completed",
 			snapshot: {
-				contextManifest: (provider as any).subagentDescriptors.get(handle.taskId).contextManifest,
+				contextManifest: expectedManifest,
 			},
 		})
 	})
@@ -7206,6 +7465,9 @@ If complete, use attempt_completion.
 		const setupCompletedBatch = async (retainRuntime = false) => {
 			const provider = makeProviderHarness(3)
 			const parent = makeParent()
+			const sessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
+			sessions.register(parent as unknown as Task, { focus: false })
+			sessions.markLifecycle(parent.taskId, TaskLifecycleState.Running)
 			parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
 				const existing = parent.clineMessages.find(
 					(message) => message.subagentGroup?.groupId === group.groupId,
@@ -7213,8 +7475,6 @@ If complete, use attempt_completion.
 				if (existing) existing.subagentGroup = structuredClone(group)
 				else parent.clineMessages.push({ subagentGroup: structuredClone(group) })
 			})
-			;(provider as any).taskSessions.getTask = (taskId: string) =>
-				taskId === parent.taskId ? parent : undefined
 			const result = (taskId: string, summary: string) => ({
 				taskId,
 				status: "completed" as const,
@@ -7225,7 +7485,30 @@ If complete, use attempt_completion.
 				remainingRisks: [],
 				usage: { durationMs: 1 },
 			})
-			const bounded = new BoundedDelegationManager(async (envelope) => result(envelope.id, "Original report"))
+			const retainedTasks = new Map<string, { task: Task; lifetimeSignal: AbortSignal }>()
+			const bounded = new BoundedDelegationManager(async (envelope) => {
+				if (retainRuntime) {
+					// Registry component fixture: model terminal ownership without a Task loop or disposal.
+					const lifetimeSignal = new AbortController().signal
+					const child = {
+						taskId: envelope.id,
+						taskKind: "subagent",
+						taskStatus: TaskStatus.Idle,
+						subagentGroupId: prepared.group.groupId,
+						rootTaskId: parent.taskId,
+						parentTask: parent,
+						clineMessages: [],
+						isStreaming: false,
+						isCompleted: () => true,
+						getTaskCancellationSignal: () => lifetimeSignal,
+						getTaskLifetimeCancellationSignal: () => lifetimeSignal,
+					} as unknown as Task
+					sessions.register(child, { focus: false })
+					sessions.markLifecycle(child.taskId, TaskLifecycleState.Completed)
+					retainedTasks.set(child.taskId, { task: child, lifetimeSignal })
+				}
+				return result(envelope.id, "Original report")
+			})
 			;(provider as any).boundedDelegationManager = bounded
 			;(provider as any).asyncSubagentRunManager = new AsyncSubagentRunManager(bounded)
 			const prepared = await provider.prepareSubagentGroup(parent as any, [
@@ -7238,14 +7521,54 @@ If complete, use attempt_completion.
 					(provider as any).subagentDescriptors.get(envelope.id),
 				]),
 			)
-			await provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
-			if (retainRuntime) {
-				;(provider as any).preparedSubagentGroups.set(prepared.group.groupId, prepared)
-				for (const [taskId, descriptor] of descriptors) {
-					;(provider as any).subagentDescriptors.set(taskId, descriptor)
+			const frozenManifests = new Map(
+				[...descriptors].map(([taskId, descriptor]) => {
+					const manifest = structuredClone(descriptor.contextManifest)
+					expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(true)
+					return [taskId, manifest] as const
+				}),
+			)
+			expect((provider as any).preparedSubagentGroups.get(prepared.group.groupId)).toBe(prepared)
+			for (const [taskId, descriptor] of descriptors) {
+				expect((provider as any).subagentDescriptors.get(taskId)).toBe(descriptor)
+			}
+			const completion = provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
+			const finalization = ownedFinalization(
+				(provider as any).subagentRunFinalizations.get(prepared.envelopes[0].id),
+			)
+			expect(finalization).toBeDefined()
+			await completion
+			await finalization
+			await (provider as any).pruneRetainedSubagentRuntimes()
+			const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+			const expectCompletedBatchState = () => {
+				// Blocking completion releases preparation caches independently of resident child ownership.
+				expect((provider as any).preparedSubagentGroups.get(prepared.group.groupId)).toBeUndefined()
+				expect((provider as any).preparedSubagentGroups.size).toBe(0)
+				expect((provider as any).subagentDescriptors.size).toBe(0)
+				expect(sessions.getTerminalSubagentTasks()).toHaveLength(retainRuntime ? prepared.envelopes.length : 0)
+				for (const { id } of prepared.envelopes) {
+					const retained = retainedTasks.get(id)
+					expect(provider.getLiveTask(id)).toBe(retained?.task)
+					expect(sessions.ownsTask(id)).toBe(retainRuntime)
+					expect((provider as any).subagentDescriptors.get(id)).toBeUndefined()
+					if (retained) {
+						expect(retained.task.subagentGroupId).toBe(prepared.group.groupId)
+						expect(retained.task.parentTask).toBe(parent)
+						expect(retained.task.taskStatus).toBe(TaskStatus.Idle)
+						expect(retained.task.isStreaming).toBe(false)
+						expect(retained.task.isCompleted()).toBe(true)
+						expect(retained.task.getTaskCancellationSignal()).toBe(retained.lifetimeSignal)
+						expect(retained.task.getTaskLifetimeCancellationSignal()).toBe(retained.lifetimeSignal)
+						expect(retained.lifetimeSignal.aborted).toBe(false)
+					}
+					expect(store.getAgent(id, parent.taskId)?.snapshot?.contextManifest).toEqual(
+						frozenManifests.get(id),
+					)
 				}
 			}
-			return { provider, parent, prepared, result }
+			expectCompletedBatchState()
+			return { provider, parent, prepared, result, expectCompletedBatchState }
 		}
 
 		it.each(["persisted", "retained"] as const)(
@@ -7297,11 +7620,11 @@ If complete, use attempt_completion.
 						),
 					).toMatchObject({ subagentGroup: originalGroup })
 					pending.get(handles[0].taskId)!(result(handles[0].taskId, "First continuation report"))
-					await (provider as any).subagentRunFinalizations.get(handles[0].taskId)
+					await ownedFinalization((provider as any).subagentRunFinalizations.get(handles[0].taskId))
 					expect((provider as any).subagentGroupControllers.has(handles[0].groupId)).toBe(false)
 					expect((provider as any).subagentGroupControllers.has(handles[1].groupId)).toBe(true)
 					pending.get(handles[1].taskId)!(result(handles[1].taskId, "Second continuation report"))
-					await (provider as any).subagentRunFinalizations.get(handles[1].taskId)
+					await ownedFinalization((provider as any).subagentRunFinalizations.get(handles[1].taskId))
 					expect(
 						parent.clineMessages.find(
 							(message) => message.subagentGroup?.groupId === prepared.group.groupId,
@@ -7329,7 +7652,7 @@ If complete, use attempt_completion.
 					for (const handle of handles) {
 						runs.cancel(handle.taskId, "Test cleanup")
 						await runs.waitForResult(handle.taskId)
-						await (provider as any).subagentRunFinalizations.get(handle.taskId)
+						await ownedFinalization((provider as any).subagentRunFinalizations.get(handle.taskId))
 					}
 				}
 			},
@@ -7338,7 +7661,9 @@ If complete, use attempt_completion.
 		it.each(["persisted", "retained"] as const)(
 			"rolls back failed %s child admission without replacing the original group",
 			async (source) => {
-				const { provider, parent, prepared } = await setupCompletedBatch(source === "retained")
+				const { provider, parent, prepared, expectCompletedBatchState } = await setupCompletedBatch(
+					source === "retained",
+				)
 				const store = (provider as any).agentControlStore as AgentControlStore
 				const taskId = prepared.envelopes[1].id
 				const previous = store.getAgent(taskId, parent.taskId)!
@@ -7351,22 +7676,24 @@ If complete, use attempt_completion.
 				await expect(
 					provider.followupAgentTask(parent as any, taskId, "Continue after the batch"),
 				).rejects.toThrow("Continuation startup publication failed")
+				await (provider as any).pruneRetainedSubagentRuntimes()
 
 				expect(store.getAgent(taskId, parent.taskId)).toEqual({
 					...previous,
 					pendingFollowupEventId: expect.any(String),
 				})
 				expect(parent.clineMessages).toEqual(originalMessages)
-				expect((provider as any).preparedSubagentGroups.size).toBe(source === "retained" ? 1 : 0)
+				expect((provider as any).preparedSubagentGroups.size).toBe(0)
 				expect((provider as any).subagentDescriptors.get(taskId)).toBe(previousDescriptor)
 				expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["followup"] })).toEqual([
 					expect.objectContaining({ payload: { message: "Continue after the batch" } }),
 				])
+				expectCompletedBatchState()
 			},
 		)
 
-		it("releases a per-child continuation after rejected capacity while preserving its retained descriptor", async () => {
-			const { provider, parent, prepared } = await setupCompletedBatch(true)
+		it("releases a per-child continuation after capacity denial while preserving its resident child", async () => {
+			const { provider, parent, prepared, expectCompletedBatchState } = await setupCompletedBatch(true)
 			const taskId = prepared.envelopes[0].id
 			const store = (provider as any).agentControlStore as AgentControlStore
 			const previous = store.getAgent(taskId, parent.taskId)
@@ -7379,12 +7706,14 @@ If complete, use attempt_completion.
 			await expect(provider.followupAgentTask(parent as any, taskId, "Continue after the batch")).rejects.toThrow(
 				"No continuation capacity",
 			)
+			await (provider as any).pruneRetainedSubagentRuntimes()
 
 			expect(store.getAgent(taskId, parent.taskId)).toEqual(previous)
-			expect((provider as any).preparedSubagentGroups.size).toBe(1)
+			expect((provider as any).preparedSubagentGroups.size).toBe(0)
 			expect((provider as any).subagentDescriptors.get(taskId)).toBe(descriptor)
 			expect(parent.clineMessages).toEqual(originalMessages)
 			expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["followup"] })).toEqual([])
+			expectCompletedBatchState()
 		})
 
 		it("recovers a batch continuation after a crash between durable admission and runner launch", async () => {
@@ -7431,13 +7760,13 @@ If complete, use attempt_completion.
 				taskId,
 				"Resume the admitted continuation",
 			)) as any
-			await (provider as any).subagentRunFinalizations.get(taskId)
+			await ownedFinalization((provider as any).subagentRunFinalizations.get(taskId))
 
 			expect(resumed).toMatchObject({ taskId, groupId: interrupted.groupId, followup: true })
 			expect(
 				reloaded.getSnapshot().mailbox.filter((entry) => entry.eventId === interrupted.pendingFollowupEventId),
 			).toHaveLength(1)
-			expect((provider as any).subagentDescriptors.get(taskId).contextManifest).toEqual(manifest)
+			expect(reloaded.getAgent(taskId, parent.taskId)?.snapshot?.contextManifest).toEqual(manifest)
 			expect(
 				parent.clineMessages.find((message) => message.subagentGroup?.groupId === prepared.group.groupId),
 			).toEqual(originalMessages[0])
@@ -7556,7 +7885,7 @@ If complete, use attempt_completion.
 					releaseSummary()
 					runs.cancel(taskId, "Test cleanup")
 					await runs.waitForResult(taskId)
-					await (provider as any).subagentRunFinalizations.get(taskId)
+					await ownedFinalization((provider as any).subagentRunFinalizations.get(taskId))
 				}
 			},
 		)
@@ -7582,7 +7911,9 @@ If complete, use attempt_completion.
 				taskId,
 				"Resume after publication recovers",
 			)) as any
-			const finalization = (provider as any).subagentRunFinalizations.get(taskId) as Promise<void>
+			const finalization = ownedFinalization(
+				(provider as any).subagentRunFinalizations.get(taskId),
+			) as Promise<void>
 			try {
 				await summaryStarted
 				finishRun(result(taskId, "The child ran before the summary could commit"))
@@ -7869,23 +8200,332 @@ If complete, use attempt_completion.
 		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({ allowed: true })
 	})
 
-	it("preserves an already-requested parent cancellation as cancelled", async () => {
-		const provider = makeProviderHarness()
-		const parent = makeParent()
+	const prepareCancelledAdmission = async (
+		role: "explore" | "worker",
+		source: "invoking" | "lifetime",
+		abortBeforeEntry = true,
+	) => {
+		const provider = makeProviderHarness(3)
+		const committedCards = new Map<string, SubagentGroupState>()
+		const cancelledAttempts: SubagentGroupState[] = []
+		const publication: {
+			failure?: { reason: unknown }
+			beforeCommit?: (guard?: () => boolean) => Promise<void>
+		} = {}
+		const parent = {
+			...makeParent(),
+			upsertSubagentGroup: vi.fn(async (group: SubagentGroupState, guard?: () => boolean) => {
+				// Model Task's awaited persistence port; never retain its mutable preparation object.
+				const snapshot = structuredClone(group)
+				if (snapshot.status === "cancelled") {
+					cancelledAttempts.push(snapshot)
+					if (guard && !guard()) return
+					await publication.beforeCommit?.(guard)
+					if (guard && !guard()) return
+					if (publication.failure) throw publication.failure.reason
+				}
+				committedCards.set(snapshot.groupId, snapshot)
+			}),
+		}
+		const invoking = new AbortController()
+		const lifetime = new AbortController()
+		parent.getTaskCancellationSignal.mockReturnValue(invoking.signal)
+		parent.getTaskLifetimeCancellationSignal.mockReturnValue(lifetime.signal)
+		const sessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
+		sessions.register(parent as unknown as Task, { focus: false })
+		sessions.markLifecycle(parent.taskId, TaskLifecycleState.Running)
+		const availableBefore = sessions.getAvailableTaskCapacity()
+		if (role === "worker") {
+			vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+				gitRoot: parent.cwd,
+				logicalWorkspace: parent.cwd,
+				logicalWorkspaceFromRoot: "",
+				writeScope: ["src"],
+				gitRelativeScope: ["src"],
+				fileWriteScope: [],
+				gitRelativeFileScope: [],
+			})
+		}
+		const createWorktree = vi
+			.spyOn(managedSubagentWorktreeService, "create")
+			.mockRejectedValue(new Error("Cancelled admission must not create a worktree"))
+		const createTask = vi.fn(async () => {
+			throw new Error("Cancelled admission must not create a child Task")
+		})
+		;(provider as any).createTask = createTask
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
-			{ objective: "Inspect the parser", agent_kind: "explore" },
+			{
+				task_name: "cancelled_admission",
+				objective: "Inspect the parser",
+				agent_kind: role,
+				...(role === "worker" ? { write_scope: ["src"] } : {}),
+			},
 		])
+		const pendingCard = structuredClone(committedCards.get(prepared.group.groupId))
+		expect(pendingCard).toMatchObject({ status: "pending", agents: [{ status: "pending" }] })
+		expect(committedCards.get(prepared.group.groupId)).not.toBe(prepared.group)
+		expect((provider as any).preparedSubagentGroups.get(prepared.group.groupId)).toBe(prepared)
+		expect((provider as any).subagentDescriptors.has(prepared.envelopes[0].id)).toBe(true)
+		expect((provider as any).reservedSubagentSlots.has(prepared.group.groupId)).toBe(true)
+		expect(sessions.getReservedTaskSlots(parent.taskId, () => false)).toEqual({ total: 1, root: 1 })
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const storeBefore = structuredClone(store.getSnapshot())
 		const runner = vi.fn(async () => {
 			throw new Error("an already-cancelled child must not launch")
 		})
-		;(provider as any).boundedDelegationManager = new BoundedDelegationManager(runner)
-		const parentController = new AbortController()
-		parentController.abort(new Error("Parent task cancelled by user"))
+		const bounded = new BoundedDelegationManager(runner)
+		const runBatch = vi.spyOn(bounded, "runBatch")
+		const runs = new AsyncSubagentRunManager(bounded)
+		;(provider as any).boundedDelegationManager = bounded
+		;(provider as any).asyncSubagentRunManager = runs
+		const reason = new Error("Parent task cancelled by user")
+		if (abortBeforeEntry) (source === "invoking" ? invoking : lifetime).abort(reason)
+		const start = (execution: "blocking" | "async") => {
+			if (execution === "blocking") return provider.runSubagentGroup(parent as any, prepared, invoking.signal)
+			return provider.launchPreparedSubagentGroup(parent as any, prepared, invoking.signal)
+		}
+		const finalizations = Reflect.get(provider, "subagentRunFinalizations") as Map<
+			string,
+			Parameters<typeof ownedFinalization>[0]
+		>
+		const expectResourcesReleased = () => {
+			expect(runner).not.toHaveBeenCalled()
+			expect(runBatch).not.toHaveBeenCalled()
+			expect(createTask).not.toHaveBeenCalled()
+			expect(createWorktree).not.toHaveBeenCalled()
+			expect(runs.listSnapshots()).toEqual([])
+			expect(provider.getLiveTask(prepared.envelopes[0].id)).toBeUndefined()
+			expect(store.getAgent(prepared.envelopes[0].id, parent.taskId)).toBeUndefined()
+			expect(store.getSnapshot()).toEqual(storeBefore)
+			expect((provider as any).preparedSubagentGroups.size).toBe(0)
+			expect((provider as any).subagentDescriptors.size).toBe(0)
+			expect((provider as any).subagentGroupControllers.size).toBe(0)
+			expect((provider as any).reservedSubagentSlots.size).toBe(0)
+			expect(sessions.getReservedTaskSlots(parent.taskId, () => false)).toEqual({ total: 0, root: 0 })
+			expect(sessions.getAvailableTaskCapacity()).toBe(availableBefore)
+		}
+		const expectReleased = () => {
+			expectResourcesReleased()
+			expect(prepared.group).toMatchObject({
+				status: "cancelled",
+				completedAt: expect.any(Number),
+				agents: [{ status: "cancelled", completedAt: expect.any(Number) }],
+			})
+		}
+		return {
+			parent,
+			prepared,
+			committedCards,
+			pendingCard,
+			publication,
+			reason,
+			start,
+			finalizations,
+			expectReleased,
+			expectResourcesReleased,
+			invoking,
+			lifetime,
+			cancelledAttempts,
+			gate: Reflect.get(provider, "workspaceMutationGate") as WorkspaceMutationGate,
+		}
+	}
 
-		const result = await provider.runSubagentGroup(parent as any, prepared, parentController.signal)
+	it.each([
+		["blocking", "invoking", "explore"],
+		["blocking", "lifetime", "explore"],
+		["async", "invoking", "explore"],
+		["async", "lifetime", "explore"],
+		["blocking", "invoking", "worker"],
+		["blocking", "lifetime", "worker"],
+		["async", "invoking", "worker"],
+		["async", "lifetime", "worker"],
+	] as const)(
+		"publishes cancelled preparation after %s %s %s pre-admission cancellation",
+		async (execution, source, role) => {
+			const fixture = await prepareCancelledAdmission(role, source)
+			const admission = fixture.start(execution)
+			const finalization = ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))
+			const settlement = Promise.allSettled([admission, finalization])
+			expect(finalization).toBeDefined()
+			expect(fixture.finalizations.get(fixture.prepared.envelopes[0].id)).toMatchObject({ phase: "admitting" })
+			await settlement
+			await expect(admission).rejects.toBe(fixture.reason)
+			await expect(finalization).resolves.toBeUndefined()
+			fixture.expectReleased()
+			expect(fixture.cancelledAttempts).toHaveLength(1)
+			expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toMatchObject({
+				groupId: fixture.prepared.group.groupId,
+				status: "cancelled",
+				completedAt: expect.any(Number),
+				agents: [
+					{
+						taskId: fixture.prepared.envelopes[0].id,
+						status: "cancelled",
+						completedAt: expect.any(Number),
+					},
+				],
+			})
+			expect(fixture.finalizations.size).toBe(0)
+		},
+	)
 
-		expect(runner).not.toHaveBeenCalled()
-		expect(result).toMatchObject({ status: "cancelled", agents: [{ status: "cancelled" }] })
+	it.each([
+		["blocking", "explore", "distinct"],
+		["async", "explore", "distinct"],
+		["blocking", "explore", "same"],
+		["async", "explore", "same"],
+		["blocking", "worker", "undefined"],
+		["async", "worker", "undefined"],
+		["blocking", "worker", "null"],
+		["async", "worker", "null"],
+	] as const)(
+		"retains %s %s pre-admission publication failure %s after releasing resources",
+		async (execution, role, kind) => {
+			const fixture = await prepareCancelledAdmission(role, "invoking")
+			const failure =
+				kind === "same"
+					? fixture.reason
+					: kind === "undefined"
+						? undefined
+						: kind === "null"
+							? null
+							: new Error("Cancelled card persistence failed")
+			fixture.publication.failure = { reason: failure }
+			const admission = fixture.start(execution)
+			const finalization = ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))
+			const settlement = Promise.allSettled([admission, finalization])
+			expect(finalization).toBeDefined()
+			expect(fixture.finalizations.get(fixture.prepared.envelopes[0].id)).toMatchObject({ phase: "admitting" })
+			await settlement
+			await expect(admission).rejects.toBe(failure)
+			await expect(finalization).rejects.toBe(failure)
+			fixture.expectReleased()
+			expect(fixture.cancelledAttempts).toHaveLength(1)
+			expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toEqual(fixture.pendingCard)
+			expect(fixture.parent.upsertSubagentGroup.mock.calls.at(-1)?.[0]).toEqual(fixture.prepared.group)
+			expect(ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))).toBe(finalization)
+		},
+	)
+
+	it.each([
+		["blocking", "invoking"],
+		["blocking", "lifetime"],
+		["async", "invoking"],
+		["async", "lifetime"],
+	] as const)("publishes queued %s Worker cancellation after %s null signal", async (execution, first) => {
+		const fixture = await prepareCancelledAdmission("worker", first, false)
+		let entered!: () => void
+		const gateEntered = new Promise<void>((resolve) => (entered = resolve))
+		let release!: () => void
+		const held = new Promise<void>((resolve) => (release = resolve))
+		const holder = fixture.gate.run("gate-holder", "Hold Worker admission", async () => {
+			entered()
+			await held
+		})
+		await gateEntered
+		const admission = fixture.start(execution)
+		const finalization = ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))
+		const settlement = Promise.allSettled([admission, finalization])
+		try {
+			expect(fixture.finalizations.get(fixture.prepared.envelopes[0].id)).toMatchObject({ phase: "admitting" })
+			;(first === "invoking" ? fixture.invoking : fixture.lifetime).abort(null)
+			;(first === "invoking" ? fixture.lifetime : fixture.invoking).abort(new Error("Later cancellation"))
+			await settlement
+			await expect(admission).rejects.toBe(null)
+			await expect(finalization).resolves.toBeUndefined()
+			fixture.expectReleased()
+			expect(fixture.cancelledAttempts).toHaveLength(1)
+			expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toMatchObject({ status: "cancelled" })
+			expect(fixture.finalizations.size).toBe(0)
+		} finally {
+			release()
+			await holder
+			await settlement
+		}
+	})
+
+	it.each([
+		["blocking", "owned"],
+		["async", "owned"],
+		["blocking", "replaced"],
+		["async", "replaced"],
+	] as const)("joins %s cancelled card publication with %s parent ownership", async (execution, ownership) => {
+		const fixture = await prepareCancelledAdmission("explore", "invoking")
+		let entered!: (guard: (() => boolean) | undefined) => void
+		const publicationEntered = new Promise<(() => boolean) | undefined>((resolve) => (entered = resolve))
+		let release!: () => void
+		const held = new Promise<void>((resolve) => (release = resolve))
+		fixture.publication.beforeCommit = async (guard) => {
+			entered(guard)
+			await held
+		}
+		const admission = fixture.start(execution)
+		const finalization = ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))
+		let finalizationSettled = false
+		void finalization?.then(
+			() => {
+				finalizationSettled = true
+			},
+			() => {
+				finalizationSettled = true
+			},
+		)
+		const settlement = Promise.allSettled([admission, finalization])
+		try {
+			const first = await Promise.race([
+				publicationEntered.then((guard) => ({ kind: "publication" as const, guard })),
+				settlement.then(() => ({ kind: "settled" as const })),
+			])
+			expect(first.kind).toBe("publication")
+			if (first.kind !== "publication" || !first.guard) throw new Error("Missing publication ownership guard")
+			expect(first.guard()).toBe(true)
+			expect(finalizationSettled).toBe(false)
+			expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toEqual(fixture.pendingCard)
+			const replacementLifetime = new AbortController()
+			const replacement = structuredClone(fixture.pendingCard!)
+			if (ownership === "replaced") {
+				fixture.parent.getTaskLifetimeCancellationSignal.mockReturnValue(replacementLifetime.signal)
+				replacement.status = "running"
+				replacement.agents[0].summary = "Replacement owner card"
+				fixture.committedCards.set(replacement.groupId, replacement)
+				expect(first.guard()).toBe(false)
+			}
+			release()
+			await settlement
+			await expect(admission).rejects.toBe(fixture.reason)
+			await expect(finalization).resolves.toBeUndefined()
+			fixture.expectReleased()
+			expect(fixture.cancelledAttempts).toHaveLength(1)
+			expect(fixture.finalizations.size).toBe(0)
+			if (ownership === "replaced") {
+				expect(fixture.committedCards.get(replacement.groupId)).toBe(replacement)
+				expect(replacementLifetime.signal.aborted).toBe(false)
+			} else {
+				expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toMatchObject({
+					status: "cancelled",
+				})
+			}
+		} finally {
+			release()
+			await settlement
+		}
+	})
+
+	it.each(["blocking", "async"] as const)("retains typed %s Worker callback failure", async (execution) => {
+		const fixture = await prepareCancelledAdmission("worker", "invoking", false)
+		const failure = new WorkspaceMutationCancelledError(fixture.parent.taskId, "Mode callback persistence failure")
+		fixture.parent.getTaskMode.mockImplementationOnce(async () => {
+			fixture.invoking.abort(fixture.reason)
+			throw failure
+		})
+		const admission = fixture.start(execution)
+		const finalization = ownedFinalization(fixture.finalizations.get(fixture.prepared.envelopes[0].id))
+		await Promise.allSettled([admission, finalization])
+		await expect(admission).rejects.toBe(failure)
+		await expect(finalization).rejects.toBe(failure)
+		fixture.expectResourcesReleased()
+		expect(fixture.cancelledAttempts).toEqual([])
+		expect(fixture.committedCards.get(fixture.prepared.group.groupId)).toEqual(fixture.pendingCard)
 	})
 
 	it("registers children before publishing running state so immediate cancellation is not lost", async () => {

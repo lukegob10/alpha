@@ -453,7 +453,13 @@ describe("Stage Three durable completion integration", () => {
 		}
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
 			() =>
-				({ get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined) }) as any,
+				({
+					get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined),
+					inspect: (key: string) =>
+						key === "completionHooks"
+							? { key: "alpha.completionHooks", globalValue: { stop: [configuredHook] } }
+							: undefined,
+				}) as any,
 		)
 		await harness.run()
 		expect(harness.requests).toHaveLength(2)
@@ -470,7 +476,13 @@ describe("Stage Three durable completion integration", () => {
 		}
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
 			() =>
-				({ get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined) }) as any,
+				({
+					get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined),
+					inspect: (key: string) =>
+						key === "completionHooks"
+							? { key: "alpha.completionHooks", globalValue: { stop: [configuredHook] } }
+							: undefined,
+				}) as any,
 		)
 		const evaluate = harness.task.evaluateCompletionHooks.bind(harness.task)
 		vi.spyOn(harness.task, "evaluateCompletionHooks").mockImplementation(async (...args) => {
@@ -498,6 +510,10 @@ describe("Stage Three durable completion integration", () => {
 			() =>
 				({
 					get: (key: string) => (key === "completionHooks" ? { subagentStop: [configuredHook] } : undefined),
+					inspect: (key: string) =>
+						key === "completionHooks"
+							? { key: "alpha.completionHooks", globalValue: { subagentStop: [configuredHook] } }
+							: undefined,
 				}) as any,
 		)
 		Object.assign(harness.task, { taskKind: "subagent", parentTaskId: "parent", subagentRole: "worker" })
@@ -532,6 +548,10 @@ describe("Stage Three durable completion integration", () => {
 			() =>
 				({
 					get: (key: string) => (key === "completionHooks" ? { subagentStop: [configuredHook] } : undefined),
+					inspect: (key: string) =>
+						key === "completionHooks"
+							? { key: "alpha.completionHooks", globalValue: { subagentStop: [configuredHook] } }
+							: undefined,
 				}) as any,
 		)
 		await harness.run()
@@ -549,7 +569,13 @@ describe("Stage Three durable completion integration", () => {
 		}
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
 			() =>
-				({ get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined) }) as any,
+				({
+					get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined),
+					inspect: (key: string) =>
+						key === "completionHooks"
+							? { key: "alpha.completionHooks", globalValue: { stop: [configuredHook] } }
+							: undefined,
+				}) as any,
 		)
 		for (let attempt = 0; attempt < 3; attempt++) {
 			expect(await harness.task.evaluateCompletionHooks("done")).toMatchObject({ prompt: "Check again." })

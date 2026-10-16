@@ -1,13 +1,17 @@
+import { EventEmitter } from "node:events"
 import { ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
+import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 
 // Mock dependencies
 vi.mock("../../webview/AlphaProvider")
 vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
 		releaseTerminalsForTask: vi.fn(),
+		getTerminals: vi.fn(() => []),
 	},
 }))
 vi.mock("../../ignore/AlphaIgnoreController")
@@ -99,6 +103,24 @@ describe("Task dispose method", () => {
 		expect(task.listenerCount("TaskStarted")).toBe(0)
 		expect(task.listenerCount("TaskAborted")).toBe(0)
 		expect(task.listenerCount("TaskIdle")).toBe(0)
+	})
+
+	test("releases unread command output ownership when its task instance is disposed", () => {
+		const process = Object.assign(new EventEmitter(), {
+			executionId: "settled-command",
+			isSettled: true,
+			hasUnretrievedOutput: () => true,
+		}) as AlphaTerminalProcess
+		const sessionId = commandSessionRegistry.register(task, process)
+		expect(commandSessionRegistry.ownsOutput(process)).toBe(true)
+		try {
+			task.dispose()
+			expect(commandSessionRegistry.ownsOutput(process)).toBe(false)
+			expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+			expect(process.hasUnretrievedOutput()).toBe(true)
+		} finally {
+			commandSessionRegistry.release(task, sessionId)
+		}
 	})
 
 	test("should handle errors when removing event listeners", () => {

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { t } from "../../i18n"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 import type { Task } from "../task/Task"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
@@ -97,11 +98,24 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				sessionProcess.executionId === params.execution_id
 					? sessionProcess
 					: undefined)
+			const isPhysicallyRunning = () =>
+				terminal !== undefined &&
+				process !== undefined &&
+				terminal.taskId === task.taskId &&
+				terminal.process === process &&
+				process.executionId === params.execution_id &&
+				terminal.running
 			if (params.action !== "wait") {
-				if (!terminal || !process || !terminal.running || (params.action === "input" && process.isSettled))
+				const interrupt = params.action === "input" && params.input === "\x03" && process?.interrupt
+				if (
+					!terminal ||
+					!process ||
+					!isPhysicallyRunning() ||
+					(params.action === "input" && process.isSettled && !interrupt)
+				)
 					throw new Error("Command is no longer running")
 				assertSessionCurrent?.()
-				if (params.action === "input" && (!process.writeInput || params.input == null))
+				if (params.action === "input" && ((!process.writeInput && !interrupt) || params.input == null))
 					throw new Error("This command does not support input, or input was not supplied")
 				if (
 					!(await callbacks.askApproval(
@@ -132,16 +146,19 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 							terminal.taskId !== task.taskId ||
 							terminal.process !== process ||
 							process.executionId !== params.execution_id ||
-							process.isSettled
+							!terminal.running ||
+							(process.isSettled && !interrupt)
 						)
 							throw new Error("Command is no longer accepting input")
-						await process.writeInput!(params.input!)
+						if (interrupt) await interrupt.call(process)
+						else await process.writeInput!(params.input!)
 					})
 				} else await process.abort()
 			}
 			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
 			assertActive()
 			const current = evidence()!
+			const physicallyRunning = isPhysicallyRunning()
 			// A completed nonzero exit is a process failure, not a failed tool transaction.
 			const completedProcessFailure =
 				current.status === "failed" && typeof current.exitCode === "number" && current.signalName === undefined
@@ -151,14 +168,17 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 					: Math.max(0, Math.min(8_000, (callbacks.getRemainingOutputChars?.() ?? 9_000) - 1_000))
 			const receipt = process?.captureUnretrievedOutput(receiptOutputLimit)
 			try {
+				const output = `${receipt?.output ?? ""}${process?.outputArchiveInterrupted ? `\n${t("common:errors.command_output_archive_interrupted")}` : ""}`
 				const hasMoreOutput = receipt?.hasMoreOutput === true
 				let commandResult: CommandToolResult | undefined
 				if (callbacks.commandResultMaxOutputTokens !== undefined) {
 					commandResult = {
 						wall_time_seconds: Math.max(0, (performance.now() - startedAt) / 1000),
-						output: receipt?.output ?? "",
+						output,
 						...(typeof current.exitCode === "number" ? { exit_code: current.exitCode } : {}),
-						...((current.status === "running" || hasMoreOutput) && sessionId !== undefined
+						...(process?.outputArtifactId ? { artifact_id: process.outputArtifactId } : {}),
+						...((physicallyRunning || current.status === "running" || hasMoreOutput) &&
+						sessionId !== undefined
 							? { session_id: sessionId }
 							: {}),
 						...(hasMoreOutput ? { has_more_output: true } : {}),
@@ -169,21 +189,24 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 						commandResult = boundCommandToolResult(commandResult, getCommandToolResultLimit(callbacks))
 					}
 				}
-				callbacks.pushToolResult(
-					callbacks.commandResultFormat === "codex" && commandResult
-						? formatCommandToolResult(
-								commandResult,
-								getCommandToolResultLimit(callbacks),
-								callbacks.toolCallId ?? current.executionId,
-							)
-						: `${JSON.stringify({ execution_id: current.executionId, status: current.status, exit_code: current.exitCode ?? null, process_available: Boolean(process), stop_requested: params.action === "stop" })}\nOutput:\n${receipt?.output ?? ""}`,
-				)
+				if (callbacks.commandResultFormat === "codex" && commandResult && callbacks.pushCommandResult) {
+					callbacks.pushCommandResult(commandResult)
+				} else
+					callbacks.pushToolResult(
+						callbacks.commandResultFormat === "codex" && commandResult
+							? formatCommandToolResult(
+									commandResult,
+									getCommandToolResultLimit(callbacks),
+									callbacks.toolCallId ?? current.executionId,
+								)
+							: `${JSON.stringify({ execution_id: current.executionId, status: current.status, exit_code: current.exitCode ?? null, process_available: Boolean(process), stop_requested: params.action === "stop" })}\nOutput:\n${output}`,
+					)
 				callbacks.setResultMetadata?.({
-					...(hasMoreOutput ? { truncated: true } : {}),
+					...(hasMoreOutput || process?.outputArchiveInterrupted ? { truncated: true } : {}),
 					...(commandResult
 						? {
 								executionStatus:
-									current.status === "running"
+									physicallyRunning || current.status === "running"
 										? "running"
 										: current.status === "succeeded"
 											? "success"
@@ -202,7 +225,7 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 							}
 						: {}),
 					...(commandResult ? { commandResult } : {}),
-					waitOutcome: current.status === "running" ? "active" : "idle",
+					waitOutcome: physicallyRunning || current.status === "running" ? "active" : "idle",
 				})
 				receipt?.commit()
 			} finally {

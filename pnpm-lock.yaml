@@ -404,6 +404,9 @@ importers:
       '@google/genai':
         specifier: ^1.47.0
         version: 1.47.0(@modelcontextprotocol/sdk@1.31.0(supports-color@8.1.1)(zod@3.25.76))(supports-color@8.1.1)
+      '@imagemagick/magick-wasm':
+        specifier: 0.0.44
+        version: 0.0.44
       '@lancedb/lancedb':
         specifier: ^0.27.2
         version: 0.27.2(apache-arrow@18.1.0)
@@ -1445,6 +1448,9 @@ packages:
 
   '@iconify/utils@3.1.7':
     resolution: {integrity: sha512-JZHlwdID+dy+lTgbYC8NEC4zeugqeYsc6jewvzb4c58kHauJn+X7rNwQjxz5p2qSjqaEeQoLkCIQ9v/H4PK0/w==}
+
+  '@imagemagick/magick-wasm@0.0.44':
+    resolution: {integrity: sha512-J6oieSjlJzamANwtrNAlO+DKnRm49ILtSIWDhtkGn35f/5zS99AXta2gPsZuG9m2JvQbsu3h3CHe14ViXrFD/Q==}
 
   '@inquirer/external-editor@1.0.2':
     resolution: {integrity: sha512-yy9cOoBnx58TlsPrIxauKIFQTiyH+0MK4e97y4sV9ERbI+zDxw7i2hxHLCIEGIE/8PPvDxGhgzIOTSOWcs6/MQ==}
@@ -9040,6 +9046,8 @@ snapshots:
       '@antfu/install-pkg': 2.1.0
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
+
+  '@imagemagick/magick-wasm@0.0.44': {}
 
   '@inquirer/external-editor@1.0.2(@types/node@24.2.1)':
     dependencies:

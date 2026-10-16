@@ -148,6 +148,7 @@ function harness() {
 		environmentContext: { reset: vi.fn() },
 		refreshEnvironmentContext: vi.fn(async () => {}),
 		saveApiConversationHistory: save,
+		saveAlphaMessages: vi.fn(async () => true),
 		say: vi.fn(async () => undefined),
 		emit: vi.fn(),
 		messageQueueService: new MessageQueueService(),
@@ -1981,4 +1982,146 @@ describe("Task context recovery admission", () => {
 		expect(options.metadata?.allowedFunctionNames).toEqual(allowedFunctionNames)
 		expect(options.environmentDetails).toBeUndefined()
 	})
+	it.each([
+		[20_000, true],
+		[200_000, false],
+	] as const)(
+		"checks final schema overhead %s against the safe limit after failed proactive summary",
+		async (finalTokens, fits) => {
+			const { task, api, history, provider } = harness()
+			provider.getState.mockResolvedValue({ autoCondenseContextPercent: 5 })
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register({
+				name: "read_file",
+				aliases: [],
+				schema: {
+					type: "function",
+					function: {
+						name: "read_file",
+						description: "expanded-after-failed-summary",
+						parameters: { type: "object", properties: {} },
+					},
+				},
+				capabilities: {
+					concurrency: "serial",
+					sideEffects: "none",
+					controlFlow: false,
+					requiresApproval: false,
+				},
+				execute: async () => {},
+			})
+			const surface = createTaskToolSurface({ registry, applyProfile: false, approvalMode: "auto" })
+			vi.mocked(buildNativeToolsArrayWithRestrictions)
+				.mockResolvedValueOnce({ tools: [], surface })
+				.mockResolvedValueOnce({ tools: [...surface.schemas], surface })
+			vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
+				await prepareTools?.()
+				return {
+					messages: history,
+					summary: "",
+					cost: 0.01,
+					prevContextTokens: 100,
+					newContextTokens: 100,
+					error: "Summary unavailable",
+					status: "unchanged",
+				}
+			})
+			api.countTokens.mockImplementation(async (blocks) =>
+				JSON.stringify(blocks).includes("expanded-after-failed-summary") ? finalTokens : 10,
+			)
+			const running = runRecovery(task, "automatic")
+			if (fits) {
+				await running
+				expect(api.createMessage).toHaveBeenCalledOnce()
+			} else {
+				await expect(running).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError", retryable: false })
+				expect(api.createMessage).not.toHaveBeenCalled()
+			}
+			expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(2)
+			expect(
+				api.countTokens.mock.calls.some(([blocks]) =>
+					JSON.stringify(blocks).includes("expanded-after-failed-summary"),
+				),
+			).toBe(true)
+			expect(task.apiConversationHistory).toBe(history)
+		},
+	)
+
+	it("requests the next model step after a fitting proactive summary failure", async () => {
+		const { task, api, save, history, provider } = harness()
+		vi.mocked(manageContext).mockResolvedValue({
+			messages: history,
+			summary: "",
+			cost: 0.01,
+			prevContextTokens: 100,
+			newContextTokens: 100,
+			error: "Summary provider unavailable",
+			status: "unchanged",
+		})
+		await task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next()
+		expect(manageContext).toHaveBeenCalledOnce()
+		expect(api.createMessage).toHaveBeenCalledOnce()
+		expect(save).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toBe(history)
+		expect(task.say).toHaveBeenCalledWith(
+			"condense_context_error",
+			"Summary provider unavailable",
+			undefined,
+			false,
+			undefined,
+			undefined,
+			expect.objectContaining({ contextCondenseErrorCost: 0.01 }),
+		)
+		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "condenseTaskContextResponse",
+			text: task.taskId,
+		})
+	})
+	it.each([60_000, 200_000])(
+		"dispatches after actual proactive summary failure with reported usage %s",
+		async (contextTokens) => {
+			const { task, api, save, history, provider } = harness()
+			const { TelemetryService } = await import("@alpha-code/telemetry")
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const actualContext =
+				await vi.importActual<typeof import("../../context-management")>("../../context-management")
+			const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")
+			vi.mocked(manageContext).mockImplementation(actualContext.manageContext)
+			vi.mocked(summarizeConversation).mockImplementation(actualCondense.summarizeConversation)
+			provider.getState.mockResolvedValue({ autoCondenseContext: true, autoCondenseContextPercent: 5 })
+			vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens } as ReturnType<Task["getTokenUsage"]>)
+			history[1].content = "Earlier implementation details. ".repeat(1500)
+			api.countTokens.mockImplementation(async (blocks) => Math.ceil(JSON.stringify(blocks).length / 4))
+			api.createMessage
+				.mockImplementationOnce(async function* () {
+					yield { type: "usage", inputTokens: 1, outputTokens: 1, totalCost: 0.01 }
+					throw new Error("Summary provider unavailable")
+				})
+				.mockImplementationOnce(async function* () {
+					yield { type: "text", text: "Continue implementing the remaining requirements." }
+				})
+			const received: string[] = []
+			for await (const chunk of task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+			})) {
+				if (chunk.type === "text") received.push(chunk.text)
+			}
+			expect(api.createMessage).toHaveBeenCalledTimes(2)
+			expect(received).toContain("Continue implementing the remaining requirements.")
+			expect(save).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(history)
+			const result = await vi.mocked(manageContext).mock.results[0].value
+			expect(result.errorDetails).toContain("Summary provider unavailable")
+			expect(task.say).toHaveBeenCalledWith(
+				"condense_context_error",
+				result.error,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				expect.objectContaining({ contextCondenseErrorCost: 0.01 }),
+			)
+		},
+	)
 })

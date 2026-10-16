@@ -11,7 +11,9 @@ import { LANGUAGES } from "../../../shared/language"
 import {
 	getAllLegacyConfigDirectoriesForCwd,
 	getProjectInstructionDirectoriesForCwd,
+	getSafeProjectInstructionFilenames,
 	getLegacyGlobalConfigDirectory,
+	type ProjectInstructionDiscoveryOptions,
 } from "../../../services/config-paths"
 
 /**
@@ -289,12 +291,13 @@ interface InstructionDirectories {
 async function captureInstructionDirectories(
 	cwd: string,
 	enableSubfolderRules: boolean,
+	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<InstructionDirectories> {
 	const alphaDirectories = getAlphaDirectoriesForCwd(cwd)
 	const legacyDirectories = enableSubfolderRules
 		? await getAllLegacyConfigDirectoriesForCwd(cwd)
 		: [getLegacyGlobalConfigDirectory(), path.join(cwd, ".roo")]
-	const projectInstructions = await getProjectInstructionDirectoriesForCwd(cwd)
+	const projectInstructions = await getProjectInstructionDirectoriesForCwd(cwd, discoveryOptions)
 
 	const alphaSubfolders = legacyDirectories
 		.map((dir) => {
@@ -307,7 +310,7 @@ async function captureInstructionDirectories(
 		alpha: enableSubfolderRules ? [...alphaDirectories, ...alphaSubfolders] : alphaDirectories,
 		legacy: legacyDirectories,
 		projectAgents: projectInstructions.directories,
-		// Project instructions follow the nearest .git root through cwd. Alpha's
+		// Project instructions follow the captured project boundary through cwd. Alpha's
 		// optional .roo subfolder rule discovery remains scoped below cwd.
 		agents: [
 			...projectInstructions.directories,
@@ -424,10 +427,18 @@ async function readPreferredAgentRulesFile(
 	directory: string,
 	trustedRoot: string,
 	budget?: ProjectInstructionBudget,
+	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<{ ref: string; text: string } | undefined> {
 	if (budget && budget.remainingBytes <= 0) return undefined
 
-	for (const filename of ["AGENTS.override.md", "AGENTS.md", "AGENT.md"]) {
+	const fallbacks = discoveryOptions?.projectDocFallbackFilenames
+	const filenames = [
+		"AGENTS.override.md",
+		"AGENTS.md",
+		...(fallbacks?.length ? getSafeProjectInstructionFilenames(fallbacks) : []),
+		"AGENT.md",
+	]
+	for (const filename of new Set(filenames)) {
 		const ref = path.join(directory, filename)
 		try {
 			const source = await readAgentInstructionFile(ref, trustedRoot, budget)
@@ -456,15 +467,22 @@ async function loadAgentRulesFileFromDirectory(
 	cwd?: string,
 	trustedRoot?: string,
 	budget?: ProjectInstructionBudget,
+	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<string> {
 	const results: string[] = []
 	const displayPath = cwd ? path.relative(cwd, directory) : directory
-	const standard = await readPreferredAgentRulesFile(directory, trustedRoot ?? cwd ?? directory, budget)
+	const standard = await readPreferredAgentRulesFile(
+		directory,
+		trustedRoot ?? cwd ?? directory,
+		budget,
+		discoveryOptions,
+	)
 	if (standard?.text) {
 		const filename = path.basename(standard.ref)
+		const label = filename === "AGENTS.local.md" ? "Local" : "Standard"
 		const header = showPath
-			? `# Agent Rules Standard (${filename}) from ${displayPath}:`
-			: `# Agent Rules Standard (${filename}):`
+			? `# Agent Rules ${label} (${filename}) from ${displayPath}:`
+			: `# Agent Rules ${label} (${filename}):`
 		results.push(`${header}\n${standard.text}`)
 	}
 
@@ -472,7 +490,10 @@ async function loadAgentRulesFileFromDirectory(
 	try {
 		const localFilename = "AGENTS.local.md"
 		const localPath = path.join(directory, localFilename)
-		const localFile = await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
+		const localFile =
+			standard?.ref === localPath
+				? undefined
+				: await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
 
 		if (localFile?.text) {
 			const localHeader = showPath
@@ -510,6 +531,7 @@ async function loadAllAgentRulesFiles(
 	directories: readonly string[],
 	projectDirectories: readonly string[],
 	trustedRoot: string,
+	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<string> {
 	const agentRules: string[] = []
 	const budget = createProjectInstructionBudget()
@@ -526,6 +548,7 @@ async function loadAllAgentRulesFiles(
 			cwd,
 			trustedRoot,
 			isProjectDirectory ? budget : undefined,
+			discoveryOptions,
 		)
 		if (content && content.trim()) {
 			agentRules.push(content.trim())
@@ -544,8 +567,9 @@ async function loadAllAgentRulesFiles(
 export async function loadApplicableAgentInstructionSources(
 	cwd: string,
 	enableSubfolderRules: boolean = false,
+	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<Array<{ kind: "agents"; ref: string; text: string }>> {
-	const instructionDirectories = await captureInstructionDirectories(cwd, enableSubfolderRules)
+	const instructionDirectories = await captureInstructionDirectories(cwd, enableSubfolderRules, discoveryOptions)
 	const sources: Array<{ kind: "agents"; ref: string; text: string }> = []
 	const budget = createProjectInstructionBudget()
 
@@ -557,11 +581,15 @@ export async function loadApplicableAgentInstructionSources(
 			directory,
 			instructionDirectories.agentTrustRoot,
 			isProjectDirectory ? budget : undefined,
+			discoveryOptions,
 		)
 		if (standard?.text) sources.push({ kind: "agents", ref: standard.ref, text: standard.text })
 
 		const localRef = path.join(directory, "AGENTS.local.md")
-		const localFile = await readAgentInstructionFile(localRef, instructionDirectories.agentTrustRoot)
+		const localFile =
+			standard?.ref === localRef
+				? undefined
+				: await readAgentInstructionFile(localRef, instructionDirectories.agentTrustRoot)
 		if (localFile?.text) sources.push({ kind: "agents", ref: localFile.ref, text: localFile.text })
 	}
 
@@ -639,7 +667,11 @@ export async function addCustomInstructionParts(
 	const enableSubfolderRules = options.settings?.enableSubfolderRules ?? false
 	// One assembly owns discovery; subsequent requests capture fresh directories
 	// and reread rule contents, including rules added while the task is running.
-	const directories = await captureInstructionDirectories(cwd, enableSubfolderRules)
+	const directories = await captureInstructionDirectories(
+		cwd,
+		enableSubfolderRules,
+		options.settings?.projectInstructionDiscovery,
+	)
 
 	// Load mode-specific rules if mode is provided
 	let modeRuleContent = ""
@@ -770,6 +802,7 @@ export async function addCustomInstructionParts(
 						directories.agents,
 						directories.projectAgents,
 						directories.agentTrustRoot,
+						options.settings?.projectInstructionDiscovery,
 					)
 		if (agentRulesContent && agentRulesContent.trim()) {
 			rules.push({ role: "user", origin: "agent-rules", content: agentRulesContent.trim() })

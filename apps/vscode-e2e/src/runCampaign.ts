@@ -294,6 +294,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				},
 			)
 		}
+		// The first live launch materializes its fixed manifest inside the fingerprinted harness.
+		// Prepare it before the baseline even outside gate mode, so preparation is not reported as source drift.
+		if (!gate && config.provider.mode === "live-copilot") await prepareLiveSidecar()
 		const identityBefore = await captureCampaignEvaluationIdentity(repositoryRoot, config)
 		await fs.writeFile(
 			path.join(store.directory, "evaluation-identity-before.json"),

@@ -1,4 +1,5 @@
 import { truncateOutput, applyRunLengthEncoding } from "../misc/extract-text"
+import { MAX_RETAINED_TERMINAL_PROCESSES } from "./types"
 
 import type {
 	AlphaTerminalProvider,
@@ -81,6 +82,7 @@ export abstract class BaseTerminal implements AlphaTerminal {
 
 			this.process.emit("shell_execution_complete", exitDetails)
 			this.process = undefined
+			this.cleanCompletedProcessQueue()
 		}
 	}
 
@@ -108,10 +110,21 @@ export abstract class BaseTerminal implements AlphaTerminal {
 	 * or don't belong to the current task
 	 */
 	public cleanCompletedProcessQueue(): void {
+		let retained = 0
 		// Trim retrieved output from each process to free memory, then keep only those with remaining output
 		this.completedProcesses = this.completedProcesses.filter((process) => {
 			process.trimRetrievedOutput()
-			return process.hasUnretrievedOutput()
+			if (!process.hasUnretrievedOutput()) return false
+			// A shell end event can precede reader/persistence completion. Never
+			// prune a live reader or a reserved output transaction.
+			if (
+				!process.isSettled ||
+				(this.process === process && this.running) ||
+				process.isOutputFinalized === false ||
+				process.hasActiveOutputReceipt?.()
+			)
+				return true
+			return ++retained <= MAX_RETAINED_TERMINAL_PROCESSES
 		})
 	}
 

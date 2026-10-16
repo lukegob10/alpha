@@ -366,7 +366,9 @@ describe("getRulesSection shell-aware command chaining", () => {
 		].join("\n")
 
 		expect(combined).toContain("Use concise, workspace-scoped exec_command calls")
-		expect(combined).toContain("Runs a concise command in the task's host terminal")
+		expect(combined).toContain("Runs a command in a PTY")
+		expect(combined).toContain("output or a session ID for ongoing interaction")
+		expect(combined).toContain("Commands remain subject to the task's approval and execution policy")
 		expect(combined).toMatch(/\brg\b/)
 		expect(combined).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
 		expect(combined).not.toContain("`Select-String` for grep")

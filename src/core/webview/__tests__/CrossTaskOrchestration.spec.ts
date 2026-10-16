@@ -18,7 +18,10 @@ const temporaryDirectories: string[] = []
 
 afterEach(async () => {
 	for (const directory of temporaryDirectories.splice(0)) {
-		if (path.dirname(directory) !== os.tmpdir() || !path.basename(directory).startsWith("alpha-cross-task-"))
+		if (
+			path.dirname(path.resolve(directory)) !== path.resolve(os.tmpdir()) ||
+			!path.basename(directory).startsWith("alpha-cross-task-")
+		)
 			throw new Error("Unexpected cross-task test cleanup path")
 		await fs.rm(directory, { recursive: true, force: true })
 	}

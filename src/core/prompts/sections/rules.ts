@@ -87,7 +87,7 @@ export function getRulesSection(cwd: string, settings?: SystemPromptSettings, is
 			: ""
 		const delegationRules = settings?.subagentCanDelegate
 			? `
-- You may create only managed descendants with spawn_agent. Use list_agents, wait_agent, followup_task, and interrupt_agent only for your retained descendant subtree. Never control a parent, ancestor, sibling, or foreign branch.
+- You may create only managed descendants with spawn_agent. Use list_agents for read-only identity and status discovery within the same root task tree. Use wait_agent, followup_task, and interrupt_agent only for your retained descendant subtree. Never control a parent, ancestor, sibling, or foreign branch.
 - Managed delegation remains subject to the frozen depth, root-wide capacity, timeout, token, and cost limits.${
 					settings.subagentDelegationPolicy === "proactive"
 						? " The proactive policy permits delegation only when it materially advances the assigned objective."
@@ -120,7 +120,10 @@ RULES
 - Do not mutate files or external state, launch or advance Workers, or use legacy task delegation.
 - Ask for necessary decisions with request_user_input using concise, mutually exclusive options.
 - exec_command is limited by the host to one inspection or source-non-mutating verification process in a workspace-confined working directory. Verification may execute trusted repository test/config code and create ordinary tool caches, but cannot target output, temp, cache, config, or plugin paths. Do not use command metacharacters, chaining, pipes, redirection, substitution, expansion, watchers, package installation, or write/fix/update flags.
-- A terminal Plan response must contain exactly one non-empty <proposed_plan> block and nothing outside it.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
+- Only output the final plan when it is decision complete and leaves no decisions to the implementer.
+- When you present the official plan, wrap it in a <proposed_plan> block so the client can render it specially.
+- The opening tag must be on its own line. Start the plan content on the next line (no text on the same line as the tag). The closing tag must be on its own line. Use Markdown inside the block.
+- Only produce at most one <proposed_plan> block per turn, and only when you are presenting a complete spec.${settings?.isStealthModel ? getVendorConfidentialitySection() : ""}`
 	}
 
 	return `====

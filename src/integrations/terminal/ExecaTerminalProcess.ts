@@ -4,7 +4,7 @@ import process from "process"
 import { execFile, type ExecFileException } from "node:child_process"
 import { captureRejectionSymbol } from "node:events"
 
-import type { AlphaTerminal, ExitCodeDetails } from "./types"
+import type { AlphaTerminal, DirectTerminalCommand, ExitCodeDetails } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 
@@ -43,7 +43,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		return terminal
 	}
 
-	public override async run(command: string) {
+	public override async run(command: string, directCommand?: DirectTerminalCommand) {
 		this.command = command
 		let processSettlement: Promise<PromiseSettledResult<Awaited<ReturnType<typeof execa>>>> | undefined
 		let processFailure: Error | undefined
@@ -53,6 +53,8 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		let physicalProcessSettled = false
 		const stopAfterOutputFailure = (error: unknown): Promise<void> => {
 			if (outputFailureTermination) return outputFailureTermination
+			this.outputArchiveInterrupted = true
+			this.outputArtifactId = undefined
 			processFailure = error instanceof Error ? error : new Error(String(error))
 			if (error instanceof ExecaError) {
 				console.error("[ExecaTerminalProcess#run] command process failed", {
@@ -78,8 +80,9 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		try {
 			this.isHot = true
 
-			this.subprocess = execa({
-				shell: BaseTerminal.getExecaShellPath() || true,
+			const spawn = execa({
+				shell: directCommand ? false : BaseTerminal.getExecaShellPath() || true,
+				extendEnv: !directCommand,
 				windowsHide: true,
 				cwd: this.terminal.getCurrentWorkingDirectory(),
 				all: true,
@@ -88,14 +91,17 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				buffer: false,
 				// Ignore stdin to ensure non-interactive mode and prevent hanging
 				stdin: "ignore",
-				env: {
+				env: directCommand?.env ?? {
 					...process.env,
 					...this.terminal.commandEnv,
 					// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
 					LANG: "en_US.UTF-8",
 					LC_ALL: "en_US.UTF-8",
 				},
-			})`${command}`
+			})
+			this.subprocess = directCommand
+				? spawn(directCommand.executable, [...directCommand.args])
+				: spawn`${command}`
 			// Observe rejection immediately, and retain physical process ownership
 			// independently of the output iterator or its presentation callbacks.
 			processSettlement = Promise.allSettled([this.subprocess]).then(([outcome]) => outcome)
@@ -110,7 +116,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 			// When using shell: true, the PID is for the shell, not the actual command
 			// Find the actual command PID after a small delay
-			if (this.pid && process.platform !== "win32") {
+			if (!directCommand && this.pid && process.platform !== "win32") {
 				this.pidUpdatePromise = new Promise<void>((resolve) => {
 					setTimeout(() => {
 						void this.getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
@@ -148,8 +154,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				}
 
 				try {
-					this.fullOutput += line
-					this.emit("output_available")
+					await this.appendOutput(line)
 
 					const now = Date.now()
 
@@ -175,16 +180,20 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 			const outcome = await processSettlement
 			if (outcome.status === "rejected") throw outcome.reason
-			exitDetails = this.aborted ? { exitCode: 137, signalName: "SIGKILL" } : { exitCode: 0 }
+			exitDetails = { exitCode: outcome.value.exitCode, signalName: outcome.value.signal }
 		} catch (error) {
-			if (error instanceof ExecaError && !processFailure && (error.exitCode !== undefined || this.aborted)) {
+			if (
+				error instanceof ExecaError &&
+				!processFailure &&
+				(error.exitCode !== undefined || error.signal !== undefined || this.aborted)
+			) {
 				// Nonzero command exits are tool results, including rg's no-match exit 1.
 				// Execa's message duplicates the command and all captured output; sending
 				// it through the shared host console can copy megabytes of workspace data.
 				// An iterable error is not itself proof that the process has settled.
 				await processSettlement
 				exitDetails = {
-					exitCode: error.exitCode ?? 137,
+					exitCode: error.exitCode,
 					signalName: error.signal,
 				}
 			} else {
@@ -221,7 +230,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				reportFailure()
 			}
 			this.stopHotTimer()
-			const completionFailure = await this.emitCompletedAndWait()
+			const completionFailure = await this.emitCompletedAndWait(this.getOutputTranscript())
 			if (completionFailure) {
 				await stopAfterOutputFailure(completionFailure)
 			}
@@ -242,6 +251,13 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				this.terminal.running = false
 				this.terminal.busy = false
 			}
+			try {
+				await this.finalizeOutput()
+			} catch (error) {
+				await stopAfterOutputFailure(error)
+				reportFailure()
+			}
+			this.terminal.cleanCompletedProcessQueue?.()
 			this.emit("continue")
 		}
 	}
@@ -258,27 +274,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		}
 	}
 
-	private async emitCompletedAndWait(): Promise<Error | undefined> {
-		// Keep native once wrappers, listener order, and emitter context. Unlike
-		// streaming output callbacks, completion callbacks own the finalization
-		// barrier and must settle before the command promise can report success.
-		const pending = this.rawListeners("completed").map((listener) => {
-			try {
-				return Promise.resolve(listener.call(this, this.fullOutput))
-			} catch (error) {
-				return Promise.reject(error)
-			}
-		})
-		const failures = (await Promise.allSettled(pending)).flatMap((outcome) =>
-			outcome.status === "rejected"
-				? [outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason))]
-				: [],
-		)
-		if (failures.length === 1) return failures[0]
-		if (failures.length > 1) return new AggregateError(failures, "Command completion observers failed")
-		return undefined
-	}
-
 	public override continue() {
 		this.isListening = false
 		this.removeAllListeners("line")
@@ -287,7 +282,36 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 	public override abort(): Promise<void> {
 		this.aborted = true
+		this.cancelOutputWriter()
 		return this.startTermination()
+	}
+
+	/** Pipe sessions have closed stdin; Ctrl-C is a provider-owned interrupt. */
+	public async interrupt(): Promise<void> {
+		const subprocess = this.subprocess
+		if (!subprocess || !this.terminal.running || this.terminal.process !== this)
+			throw new Error("Command is no longer running")
+		if (process.platform === "win32") {
+			// Node cannot deliver console Ctrl-C to a detached pipe process on Windows.
+			// Use the existing owned-tree stop, retaining the actual exit evidence.
+			this.cancelOutputWriter()
+			await this.startTermination()
+			return
+		}
+		const roots = [this.pid, subprocess.pid].filter(
+			(pid, index, values): pid is number => typeof pid === "number" && pid > 0 && values.indexOf(pid) === index,
+		)
+		const targets = new Set(roots)
+		for (const root of roots) {
+			for (const descendant of await this.getDescendantPids(root)) targets.add(descendant)
+		}
+		for (const pid of [...targets].reverse()) {
+			try {
+				if (!process.kill(pid, "SIGINT")) throw new Error("process.kill returned false")
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+			}
+		}
 	}
 
 	private startTermination(): Promise<void> {
@@ -486,10 +510,9 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		const startIndex = Math.min(Math.max(0, this.lastRetrievedIndex), this.fullOutput.length)
 		let endIndex = this.fullOutput.length
 
-		// While the subprocess is active, retain the existing complete-line
-		// behavior. Once completed, include a final line even when it has no
-		// trailing newline so output is not silently lost.
-		if (!this.isSettled || !includeTrailingOutput) {
+		// Explicit session polls expose prompts before a newline. Legacy UI line
+		// consumers retain their complete-line behavior.
+		if (!includeTrailingOutput) {
 			const newlineIndex = this.fullOutput.lastIndexOf("\n", this.fullOutput.length - 1)
 			if (newlineIndex < startIndex) {
 				return { endIndex: startIndex, output: "" }
@@ -497,7 +520,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			endIndex = newlineIndex + 1
 		}
 
-		endIndex = Math.min(endIndex, startIndex + maxCharacters)
+		endIndex = this.safeOutputRangeEnd(Math.min(endIndex, startIndex + maxCharacters))
 		if (endIndex <= startIndex) {
 			return { endIndex: startIndex, output: "" }
 		}

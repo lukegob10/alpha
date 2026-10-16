@@ -25,9 +25,13 @@ describe("Task durable independent-agent steering", () => {
 	})
 	afterEach(async () => {
 		vi.restoreAllMocks()
-		if (path.dirname(directory) !== os.tmpdir() || !path.basename(directory).startsWith("alpha-agent-steering-"))
+		const resolved = path.resolve(directory)
+		if (
+			path.dirname(resolved) !== path.resolve(os.tmpdir()) ||
+			!path.basename(resolved).startsWith("alpha-agent-steering-")
+		)
 			throw new Error("Unexpected agent steering cleanup path")
-		await fs.rm(directory, { recursive: true, force: true })
+		await fs.rm(resolved, { recursive: true, force: true })
 	})
 
 	function fixture(overrides: Record<string, unknown> = {}) {

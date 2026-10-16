@@ -19,7 +19,7 @@ import { isLegacyReadFileParams, type AlphaSayTool } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { extractTextFromFile, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
+import { extractTextFromFileRaw, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
 import { FileReadSelectionError, prepareFileRead, renderFileRead, type FileReadContent } from "./readFileContent"
 import { DEFAULT_TOOL_OUTPUT_LIMIT } from "../agent/ToolPolicy"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
@@ -317,7 +317,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					const isBinary = await isBinaryFile(fullPath)
 					callbacks.signal?.throwIfAborted()
 
-					if (imageOnly || isBinary) {
+					if (
+						imageOnly ||
+						isBinary ||
+						getSupportedBinaryFormats().includes(path.extname(fullPath).toLowerCase())
+					) {
 						await this.handleBinaryFile(
 							task,
 							relPath,
@@ -519,8 +523,20 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					return
 				}
 
-				const imageResult = await processImageFile(fullPath)
-				if (imageOnly && !isSupportedImageContent(imageResult.buffer, fileExtension)) {
+				const imageResult = await processImageFile(
+					fullPath,
+					callbacks.signal,
+					Math.floor(
+						Math.min(maxImageFileSize, maxTotalImageSize - imageMemoryTracker.getTotalMemoryUsed()) *
+							1024 *
+							1024,
+					),
+				)
+				if (
+					imageOnly &&
+					(imageResult.sourceExtension !== fileExtension ||
+						!isSupportedImageContent(imageResult.buffer, imageResult.outputExtension))
+				) {
 					const error = `File content does not match the supported image format for ${fileExtension}.`
 					updateFileResult(relPath, {
 						status: "error",
@@ -558,9 +574,11 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		// Handle other supported binary formats (PDF, DOCX, etc.)
 		if (supportedBinaryFormats && supportedBinaryFormats.includes(fileExtension)) {
 			try {
-				const content = await extractTextFromFile(fullPath)
+				const content = await extractTextFromFileRaw(fullPath, callbacks.signal)
 
+				callbacks.signal?.throwIfAborted()
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
+				callbacks.signal?.throwIfAborted()
 
 				updateFileResult(relPath, {
 					preparedContent: prepareFileRead(content, fullPath, entry),

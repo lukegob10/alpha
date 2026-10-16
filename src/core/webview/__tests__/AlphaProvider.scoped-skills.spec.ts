@@ -72,6 +72,8 @@ function makeProvider(storagePath = workspace(crypto.randomUUID())) {
 		currentView: { type: "newTaskDraft" },
 		skillsManager: foregroundManager,
 		scopedSkillsManagers: new Map(),
+		subagentRunFinalizations: new Map(),
+		subagentResidencyEvictions: new Map(),
 		taskEventListeners: new WeakMap(),
 		publishedTaskTranscriptRevisions: new Map(),
 		webviewMessageQueue: Promise.resolve(),

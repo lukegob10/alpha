@@ -99,16 +99,26 @@ function formatFileReadResult(filePath: string, result: ExtractTextResult): stri
 		const [start, end] = result.linesShown
 		// A shortened line is not a complete read: advancing past it loses its tail.
 		const nextOffset = result.firstClippedLine ?? end + 1
-		const recovery =
-			result.firstClippedLine !== undefined
+		const clippedLineNotice =
+			result.firstClippedLine === undefined
+				? ""
+				: `One or more shown lines were shortened; the first shortened line is ${result.firstClippedLine}.\n`
+		const recovery = result.isExtractedDocument
+			? `${clippedLineNotice}Line numbers refer to extracted document text, not the original file bytes.
+If read_file is offered for this task, reread the document with offset=${nextOffset} and limit=${DEFAULT_LINE_LIMIT}; copy any returned Continuation exactly to recover remaining content, including partial-line tails.
+Otherwise, recover the missing text with an available approved document-extraction tool. Shell line offsets into the original file do not identify these extracted-text positions.`
+			: result.firstClippedLine !== undefined
 				? `One or more shown lines were shortened; the first shortened line is ${result.firstClippedLine}.
 To recover omitted content: Use the available exec_command tool to reread from line ${nextOffset} in bounded character chunks. Do not advance past a shortened line until its omitted tail is covered.`
 				: `To read more: Use the available exec_command tool to read bounded line ranges starting at line ${nextOffset}.`
+		const fileReadRecovery = result.isExtractedDocument
+			? ""
+			: `
+If read_file is already offered for this task, reread with offset=${nextOffset} and limit=${DEFAULT_LINE_LIMIT}; copy any returned Continuation exactly to recover remaining content, including partial-line tails.`
 		return `${header}
 IMPORTANT: File content truncated.
 Status: Showing lines ${start}-${end} of ${result.totalLines} total lines.
-${recovery}
-If read_file is already offered for this task, reread with offset=${nextOffset} and limit=${DEFAULT_LINE_LIMIT}; copy any returned Continuation exactly to recover remaining content, including partial-line tails.
+${recovery}${fileReadRecovery}
 
 File: ${filePath}
 ${result.content}`
@@ -264,6 +274,7 @@ export async function parseMentions(
 					alphaIgnoreController,
 					showRooIgnoredFiles,
 					fileContextTracker,
+					signal,
 				)
 				contentBlocks.push(fileResult)
 			} catch (error) {
@@ -343,7 +354,9 @@ async function getFileOrFolderContentWithMetadata(
 	alphaIgnoreController?: any,
 	showRooIgnoredFiles: boolean = false,
 	fileContextTracker?: FileContextTracker,
+	signal?: AbortSignal,
 ): Promise<MentionContentBlock> {
+	signal?.throwIfAborted()
 	const unescapedPath = unescapeSpaces(mentionPath)
 	const isFolder = mentionPath.endsWith("/")
 
@@ -370,12 +383,16 @@ async function getFileOrFolderContentWithMetadata(
 				}
 			}
 			try {
-				const result = await extractTextFromFileWithMetadata(absPath)
+				const result = signal
+					? await extractTextFromFileWithMetadata(absPath, DEFAULT_LINE_LIMIT, signal)
+					: await extractTextFromFileWithMetadata(absPath)
+				signal?.throwIfAborted()
 
 				// Track file context
 				if (fileContextTracker) {
 					await fileContextTracker.trackFileContext(mentionPath, "file_mentioned")
 				}
+				signal?.throwIfAborted()
 
 				return {
 					type: "file",
@@ -404,6 +421,7 @@ async function getFileOrFolderContentWithMetadata(
 			const LOCK_SYMBOL = "🔒"
 
 			for (let index = 0; index < entries.length; index++) {
+				signal?.throwIfAborted()
 				const entry = entries[index]
 				const isLast = index === entries.length - 1
 				const linePrefix = isLast ? "└── " : "├── "
@@ -431,7 +449,14 @@ async function getFileOrFolderContentWithMetadata(
 							)
 							const isBinary = await isBinaryFile(absoluteFilePath).catch(() => false)
 							if (!isBinary) {
-								const result = await extractTextFromFileWithMetadata(absoluteFilePath)
+								const result = signal
+									? await extractTextFromFileWithMetadata(
+											absoluteFilePath,
+											DEFAULT_LINE_LIMIT,
+											signal,
+										)
+									: await extractTextFromFileWithMetadata(absoluteFilePath)
+								signal?.throwIfAborted()
 								fileReadResults.push(formatFileReadResult(filePath.toPosix(), result))
 							}
 						} catch (error) {

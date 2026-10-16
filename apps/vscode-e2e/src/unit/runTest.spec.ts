@@ -229,6 +229,17 @@ test("live Copilot and explicit scripted diagnostics use the normal sidecar with
 						const shared = await fs.realpath(path.join(root, "profile", "1.125.0", "shared-data"))
 						assert.equal(options.extensionTestsEnv?.ALPHA_E2E_SHARED_DATA_DIR, shared)
 						assert.ok(options.launchArgs?.includes(`--shared-data-dir=${shared}`))
+						assert.ok(options.launchArgs?.includes("--disable-extension=vscode.git"))
+						const launchReceipt = JSON.parse(
+							await fs.readFile(
+								path.join(options.extensionTestsEnv!.ALPHA_E2E_ARTIFACTS_DIR!, "launch.json"),
+								"utf8",
+							),
+						)
+						assert.deepEqual(launchReceipt.fixtureIsolation, {
+							disabledExtensions: ["vscode.git"],
+							gitExecution: "native-cli",
+						})
 						await writeHostPreflight(options)
 						await writeNormalCompletion(options)
 						return 0

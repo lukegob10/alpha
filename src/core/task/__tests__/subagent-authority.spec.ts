@@ -17,7 +17,7 @@ describe("sub-agent task authority", () => {
 					runtimePolicy: { allowedTools: ["attempt_completion"], delegate: false },
 				},
 			}) as Task
-			expect(child.getTaskAllowedToolNames()).toEqual(["send_message", "attempt_completion"])
+			expect(child.getTaskAllowedToolNames()).toEqual(["send_message", "list_agents", "attempt_completion"])
 			expect(child.isToolAllowedForTask("send_message")).toBe(true)
 			expect(child.isToolAllowedForTask("spawn_agent")).toBe(false)
 			expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
@@ -156,7 +156,7 @@ describe("sub-agent task authority", () => {
 		const child = Object.assign(Object.create(Task.prototype), { taskKind: "subagent" }) as Task
 		const allowed = child.getTaskAllowedToolNames()
 
-		expect(allowed).toEqual(["exec_command", "write_stdin", "send_message", "attempt_completion"])
+		expect(allowed).toEqual(["exec_command", "write_stdin", "send_message", "list_agents", "attempt_completion"])
 		expect(child.isToolAllowedForTask("report_progress")).toBe(false)
 		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
@@ -208,6 +208,7 @@ describe("sub-agent task authority", () => {
 			"exec_command",
 			"write_stdin",
 			"send_message",
+			"list_agents",
 			"attempt_completion",
 		])
 		expect(child.getTaskToolDenialReason("write_stdin", { artifact_id: "cmd-1.txt" })).toBeUndefined()
@@ -255,7 +256,7 @@ describe("sub-agent task authority", () => {
 			},
 		}) as Task
 
-		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "send_message"])
+		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "send_message", "list_agents"])
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
 		expect(child.isToolAllowedForTask("search_and_replace")).toBe(false)
 		expect(child.isToolAllowedForTask("write_file")).toBe(false)

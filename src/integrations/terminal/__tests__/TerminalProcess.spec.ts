@@ -31,6 +31,7 @@ describe("TerminalProcess", () => {
 		}
 	}
 	let mockTerminalInfo: Terminal
+	let nextTerminalId = 1
 	let mockExecution: any
 	let mockStream: AsyncIterableIterator<string>
 
@@ -51,7 +52,7 @@ describe("TerminalProcess", () => {
 			sendText: vi.fn(),
 		} as unknown as TestVscodeTerminal
 
-		mockTerminalInfo = new Terminal(1, mockTerminal, "./")
+		mockTerminalInfo = new Terminal(nextTerminalId++, mockTerminal, "./")
 
 		// Create a process for testing
 		terminalProcess = new TestTerminalProcess(mockTerminalInfo)
@@ -60,6 +61,11 @@ describe("TerminalProcess", () => {
 
 		// Reset event listeners
 		terminalProcess.removeAllListeners()
+	})
+	afterEach(() => {
+		TerminalRegistry["terminals"] = TerminalRegistry["terminals"].filter(
+			(terminal) => terminal !== mockTerminalInfo,
+		)
 	})
 
 	describe("run", () => {
@@ -248,37 +254,58 @@ describe("TerminalProcess", () => {
 			onNoShellIntegration: vi.fn(),
 		})
 
+		function barrier() {
+			let release!: () => void
+			const promise = new Promise<void>((resolve) => (release = resolve))
+			return { promise, release }
+		}
+
 		it("fails a closed terminal while waiting for its output stream and clears pending resources", async () => {
 			vi.useFakeTimers()
+			const submitted = barrier()
+			const closeEntered = barrier()
+			const finishClose = barrier()
+			const observed = {
+				...callbacks(),
+				onOutputClosed: vi.fn(async () => {
+					closeEntered.release()
+					await finishClose.promise
+				}),
+			}
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => submitted.release())
+			const running = mockTerminalInfo.runCommand("echo test", observed)
+			const outcome = running.then(
+				() => ({ status: "success" as const }),
+				(error: unknown) => ({ status: "error" as const, error }),
+			)
+			if (!(running instanceof TerminalProcess)) throw new Error("Expected a VS Code terminal process")
 			try {
-				const observed = callbacks()
-				const running = mockTerminalInfo.runCommand("echo test", observed)
-				let settled = false
-				const outcome = running.then(
-					() => (settled = true),
-					(error) => {
-						settled = true
-						return error
-					},
-				)
-				await Promise.resolve()
-				const process = mockTerminalInfo.process
-				if (!(process instanceof TerminalProcess)) throw new Error("Expected a VS Code terminal process")
+				await submitted.promise
+				mockTerminal.exitStatus = { code: 0 }
 				closeTerminal(mockTerminal)
-				await vi.advanceTimersByTimeAsync(0)
-				expect(settled).toBe(true)
-				expect(await outcome).toEqual(
-					expect.objectContaining({ message: t("common:errors.command_terminal_closed") }),
-				)
+				expect(running.isSettled).toBe(true)
+				expect(await outcome).toEqual({
+					status: "error",
+					error: expect.objectContaining({ message: t("common:errors.command_terminal_closed") }),
+				})
+				await closeEntered.promise
+				expect(running.isOutputFinalized).toBe(false)
 				expect(observed.onCompleted).not.toHaveBeenCalled()
 				expect(observed.onShellExecutionComplete).not.toHaveBeenCalled()
-				expect(process.listenerCount("stream_available")).toBe(0)
-				expect(process.listenerCount("shell_execution_complete")).toBe(0)
+				expect(running.listenerCount("stream_available")).toBe(0)
+				expect(running.listenerCount("shell_execution_complete")).toBe(0)
 				expect(mockTerminalInfo.running).toBe(false)
 				expect(mockTerminalInfo.busy).toBe(false)
 				expect(mockTerminalInfo.process).toBeUndefined()
+				finishClose.release()
+				await running.finalizeOutput()
+				expect(running.isOutputFinalized).toBe(true)
+				expect(observed.onOutputClosed).toHaveBeenCalledOnce()
 				expect(vi.getTimerCount()).toBe(0)
 			} finally {
+				finishClose.release()
+				mockTerminalInfo.notifyTerminalClosed()
+				await running.finalizeOutput()
 				vi.useRealTimers()
 			}
 		})
@@ -290,6 +317,9 @@ describe("TerminalProcess", () => {
 				let readerWaiting!: () => void
 				const waiting = new Promise<void>((resolve) => (readerWaiting = resolve))
 				const pendingRead = new Promise<IteratorResult<string>>((resolve) => (finishRead = resolve))
+				const returnRequested = barrier()
+				const closeEntered = barrier()
+				const finishClose = barrier()
 				const iterator = {
 					next: vi
 						.fn()
@@ -298,50 +328,151 @@ describe("TerminalProcess", () => {
 							readerWaiting()
 							return pendingRead
 						}),
-					return: vi.fn().mockResolvedValue({ done: true }),
+					return: vi.fn(async () => {
+						returnRequested.release()
+						return { done: true as const, value: undefined }
+					}),
 				}
 				mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
 					mockTerminalInfo.setActiveStream({ [Symbol.asyncIterator]: () => iterator })
 				})
-				const observed = callbacks()
-				const running = mockTerminalInfo.runCommand("echo test", observed)
-				let settled = false
-				const outcome = running.then(
-					() => (settled = true),
-					(error) => {
-						settled = true
-						return error
-					},
-				)
-				await waiting
-				const process = mockTerminalInfo.process
-				if (!(process instanceof TerminalProcess)) throw new Error("Expected a VS Code terminal process")
-				const error = vi.fn()
-				process.on("error", error)
-				if (reportedExit) mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
-				closeTerminal(mockTerminal)
-				await Promise.resolve()
-				expect(settled).toBe(true)
-				expect(await outcome).toEqual(
-					expect.objectContaining({
-						message: t(
-							reportedExit
-								? "common:errors.command_terminal_closed_output"
-								: "common:errors.command_terminal_closed",
-						),
+				const observed = {
+					...callbacks(),
+					onOutputClosed: vi.fn(async () => {
+						closeEntered.release()
+						await finishClose.promise
 					}),
+				}
+				const running = mockTerminalInfo.runCommand("echo test", observed)
+				const outcome = running.then(
+					() => ({ status: "success" as const }),
+					(error: unknown) => ({ status: "error" as const, error }),
 				)
-				closeTerminal(mockTerminal)
-				finishRead({ done: false, value: "late output\n" })
-				mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
-				await Promise.resolve()
-				expect(error).toHaveBeenCalledOnce()
-				expect(iterator.return).toHaveBeenCalledOnce()
-				expect(observed.onCompleted).not.toHaveBeenCalled()
-				expect(observed.onShellExecutionComplete).toHaveBeenCalledTimes(reportedExit ? 1 : 0)
-				expect(process.isSettled).toBe(true)
-				expect(process.isHot).toBe(false)
-				expect(mockTerminalInfo.process).toBeUndefined()
+				if (!(running instanceof TerminalProcess)) throw new Error("Expected a VS Code terminal process")
+				try {
+					await waiting
+					const error = vi.fn()
+					running.on("error", error)
+					if (reportedExit) mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+					mockTerminal.exitStatus = { code: 0 }
+					closeTerminal(mockTerminal)
+					expect(running.isSettled).toBe(true)
+					expect(await outcome).toEqual({
+						status: "error",
+						error: expect.objectContaining({
+							message: t(
+								reportedExit
+									? "common:errors.command_terminal_closed_output"
+									: "common:errors.command_terminal_closed",
+							),
+						}),
+					})
+					await closeEntered.promise
+					await returnRequested.promise
+					expect(running.isOutputFinalized).toBe(false)
+					closeTerminal(mockTerminal)
+					finishRead({ done: false, value: "late output\n" })
+					await pendingRead
+					mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+					finishClose.release()
+					await running.finalizeOutput()
+					expect(error).toHaveBeenCalledOnce()
+					expect(iterator.return).toHaveBeenCalledOnce()
+					expect(observed.onCompleted).not.toHaveBeenCalled()
+					expect(observed.onShellExecutionComplete).toHaveBeenCalledTimes(reportedExit ? 1 : 0)
+					expect(observed.onOutputClosed).toHaveBeenCalledOnce()
+					expect(running.isOutputFinalized).toBe(true)
+					expect(running.isHot).toBe(false)
+					expect(mockTerminalInfo.running).toBe(false)
+					expect(mockTerminalInfo.busy).toBe(false)
+					expect(mockTerminalInfo.process).toBeUndefined()
+				} finally {
+					finishRead({ done: true, value: undefined })
+					finishClose.release()
+					mockTerminalInfo.notifyTerminalClosed()
+					await running.finalizeOutput()
+				}
+			},
+		)
+
+		it.each(["fulfilled", "rejected"] as const)(
+			"settles the public command after host close while a completed observer is %s",
+			async (observerOutcome) => {
+				const completedEntered = barrier()
+				const finishCompleted = barrier()
+				const closeEntered = barrier()
+				const finishClose = barrier()
+				const observerFailure = new Error("completed observer failed after terminal close")
+				const observed = {
+					...callbacks(),
+					onCompleted: vi.fn(async () => {
+						completedEntered.release()
+						await finishCompleted.promise
+						if (observerOutcome === "rejected") throw observerFailure
+					}),
+					onOutputClosed: vi.fn(async () => {
+						closeEntered.release()
+						await finishClose.promise
+					}),
+				}
+				mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+					mockTerminalInfo.setActiveStream(
+						(async function* () {
+							yield "\x1b]633;C\x07complete output\n\x1b]633;D\x07"
+							mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+						})(),
+					)
+				})
+				const running = mockTerminalInfo.runCommand("echo test", observed)
+				if (!(running instanceof TerminalProcess)) throw new Error("Expected a VS Code terminal process")
+				const settled = vi.fn()
+				void running.then(
+					() => settled({ status: "fulfilled" }),
+					(error: unknown) => settled({ status: "rejected", error }),
+				)
+				const errors = vi.fn()
+				running.on("error", errors)
+				const continued = vi.fn()
+				running.on("continue", continued)
+				try {
+					await completedEntered.promise
+					expect(running.isSettled).toBe(true)
+					expect(running.isOutputFinalized).toBe(false)
+					expect(continued).not.toHaveBeenCalled()
+					expect(settled).not.toHaveBeenCalled()
+					mockTerminal.exitStatus = { code: 0 }
+					closeTerminal(mockTerminal)
+					expect(settled).not.toHaveBeenCalled()
+					expect(running.listenerCount("continue")).toBe(0)
+					finishCompleted.release()
+					// The adapter enters this finalizer only after the real run has unwound.
+					await closeEntered.promise
+					expect(settled).toHaveBeenCalledExactlyOnceWith(
+						observerOutcome === "fulfilled"
+							? { status: "fulfilled" }
+							: { status: "rejected", error: observerFailure },
+					)
+					if (observerOutcome === "rejected") expect(settled.mock.calls[0][0].error).toBe(observerFailure)
+					expect(errors).not.toHaveBeenCalled()
+					expect(observed.onCompleted).toHaveBeenCalledExactlyOnceWith("complete output\n", running)
+					expect(observed.onShellExecutionComplete).toHaveBeenCalledExactlyOnceWith({ exitCode: 0 }, running)
+					expect(running.isOutputFinalized).toBe(false)
+					expect(mockTerminalInfo.running).toBe(false)
+					finishClose.release()
+					await running.finalizeOutput()
+					closeTerminal(mockTerminal)
+					expect(settled).toHaveBeenCalledOnce()
+					expect(observed.onOutputClosed).toHaveBeenCalledExactlyOnceWith(running)
+					expect(running.isOutputFinalized).toBe(true)
+					expect(running.outputArchiveInterrupted).toBe(observerOutcome === "rejected")
+					expect(mockTerminalInfo.process).toBeUndefined()
+				} finally {
+					finishCompleted.release()
+					finishClose.release()
+					mockTerminalInfo.notifyTerminalClosed()
+					await running.finalizeOutput()
+					running.off("continue", continued)
+				}
 			},
 		)
 

@@ -2,6 +2,7 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import { Content, Part } from "@google/genai"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { t } from "../../i18n"
 
 type ThoughtSignatureContentBlock = {
 	type: "thoughtSignature"
@@ -118,27 +119,30 @@ export function convertAnthropicContentToGemini(
 
 				const textParts: string[] = []
 				const imageParts: Part[] = []
+				let imageCount = 0
 
 				for (const item of block.content) {
 					if (item.type === "text") {
 						textParts.push(item.text)
 					} else if (item.type === "image" && item.source.type === "base64") {
 						const { data, media_type } = item.source
-						imageParts.push({ inlineData: { data, mimeType: media_type } })
+						const label = t("tools:mcpMedia.imageLabel", { index: ++imageCount })
+						textParts.push(t("tools:mcpMedia.imageAttachedFollowingPart", { label }))
+						imageParts.push(
+							{ text: t("tools:mcpMedia.followingImageLabel", { label }) },
+							{ inlineData: { data, mimeType: media_type } },
+						)
+					} else if (item.type === "image") {
+						textParts.push(t("tools:mcpMedia.imageSourceUnsupported"))
 					}
 				}
 
-				// Create content text with a note about images if present
-				const contentText =
-					textParts.join("\n\n") + (imageParts.length > 0 ? "\n\n(See next part for image)" : "")
-
-				// Return function response followed by any images
 				return [
 					{
 						functionResponse: {
 							id: block.tool_use_id,
 							name: toolName,
-							response: { name: toolName, content: contentText },
+							response: { name: toolName, content: textParts.join("\n\n") },
 						},
 					},
 					...imageParts,

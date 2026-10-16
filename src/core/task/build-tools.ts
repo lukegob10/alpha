@@ -77,6 +77,7 @@ export interface BuildToolsOptions {
 	execution?: ToolPolicyInput["execution"]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
+	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	readGrant?: TaskReadGrant
 	/** Task-owned cache, used only at a real new step boundary (never during a transport retry). */
 	catalogCache?: TaskToolCatalogCache
@@ -466,6 +467,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				modelPreference,
 				approvalMode: options.approvalMode,
 				autoApprovalEnabled: options.autoApprovalEnabled,
+				reviewPolicy: options.reviewPolicy,
 				readGrant: options.readGrant,
 				policy: options.policy,
 				execution: options.execution,
@@ -584,6 +586,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
 			nativeTools: taskNativeTools,
+			supportsImages,
 			mcpTools,
 			customTools,
 			mcpToolTargets: mcpCapture.targets,
@@ -654,6 +657,7 @@ function createCapturedToolSurface(input: {
 		execution: options.execution,
 		approvalMode: options.approvalMode,
 		autoApprovalEnabled: options.autoApprovalEnabled,
+		reviewPolicy: options.reviewPolicy,
 		readGrant: options.readGrant,
 		diagnosticSession: options.diagnosticSession,
 		diagnosticSourceTaskId: options.diagnosticSourceTaskId,

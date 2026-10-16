@@ -4,6 +4,7 @@ import * as path from "node:path"
 import * as vscode from "vscode"
 
 import { runLiveCase } from "./live-file-tool-support"
+import { isUnansweredCommandReview } from "./live-transcript-support"
 
 suite("Live Copilot GitHub CLI approval", function () {
 	this.timeout(230_000)
@@ -36,13 +37,7 @@ suite("Live Copilot GitHub CLI approval", function () {
 				assert.equal(commands[0]!.isError, false)
 				assert.match(commands[0]!.result, /gh version/i)
 				assert.equal(
-					messages.some(
-						(message) =>
-							message.type === "ask" &&
-							message.ask === "command" &&
-							message.partial !== true &&
-							!message.text?.includes("completion"),
-					),
+					messages.some(isUnansweredCommandReview),
 					false,
 					"Auto must not ask a human for gh --version",
 				)

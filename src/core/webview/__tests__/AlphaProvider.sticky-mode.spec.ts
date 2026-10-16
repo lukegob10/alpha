@@ -61,7 +61,7 @@ let taskIdCounter = 0
 vi.mock("../../task/Task", () => ({
 	Task: vi.fn().mockImplementation(function (options) {
 		const task = {
-			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
+			taskId: options.historyItem?.id ?? options.taskId ?? `test-task-id-${++taskIdCounter}`,
 			_taskMode: options.taskMode ?? options.historyItem?.mode ?? "code",
 			_taskApiConfigName: options.taskApiConfigName ?? options.historyItem?.apiConfigName ?? "default",
 			apiConfiguration: options.apiConfiguration,
@@ -80,6 +80,8 @@ vi.mock("../../task/Task", () => ({
 			setTaskNumber: vi.fn(),
 			setParentTask: vi.fn(),
 			setRootTask: vi.fn(),
+			on: vi.fn().mockReturnThis(),
+			off: vi.fn().mockReturnThis(),
 			emit: vi.fn(),
 			parentTask: options.parentTask,
 			updateApiConfiguration: vi.fn(function (this: any, providerSettings: any) {
@@ -98,6 +100,8 @@ vi.mock("../../task/Task", () => ({
 				this._taskApiConfigName = name
 			}),
 		}
+		// Match Task's synchronous registration before history restoration resumes.
+		options.onCreated?.(task)
 		return task
 	}),
 }))
@@ -1363,7 +1367,10 @@ describe("AlphaProvider - Sticky Mode", () => {
 			}
 
 			// Restore the task from history
-			await provider.createTaskWithHistoryItem(historyItem)
+			const task = await provider.createTaskWithHistoryItem(historyItem)
+			expect(task.taskId).toBe(historyItem.id)
+			expect(provider.getLiveTask(historyItem.id)).toBe(task)
+			expect(provider.getCurrentTask()).toBe(task)
 
 			// Verify that the mode was restored
 			const state = await provider.getState()

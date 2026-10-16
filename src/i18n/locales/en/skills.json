@@ -13,6 +13,10 @@
 		"missing_delete_fields": "Missing required fields: skillName or source",
 		"skill_not_found": "Skill \"{{name}}\" not found",
 		"ambiguous_skill": "More than one skill named \"{{name}}\" matches this selection. Refresh Skills settings and select the intended skill.",
-		"builtin_read_only": "Built-in skills are read-only. Create a personal or workspace skill to override them."
+		"builtin_read_only": "Built-in skills are read-only. Create a personal or workspace skill to override them.",
+		"catalog_invalid_cursor": "Invalid or stale skill catalog cursor. Restart with action \"list\" and no cursor.",
+		"catalog_output_budget": "Skill catalog output budget leaves no room for its pagination envelope.",
+		"catalog_more_available": "More skills are available through skill action \"list\".",
+		"unsupported_action": "Unknown skill action: {{action}}"
 	}
 }

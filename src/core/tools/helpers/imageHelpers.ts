@@ -1,7 +1,9 @@
 import path from "path"
 import * as fs from "fs/promises"
+import { constants as bufferConstants } from "buffer"
 import { t } from "../../../i18n"
 import prettyBytes from "pretty-bytes"
+import { prepareImageContent, type PreparedImageContent } from "./imageDecoder"
 
 /**
  * Default maximum allowed image file size in bytes (5MB)
@@ -34,19 +36,7 @@ export const SUPPORTED_IMAGE_FORMATS = [
 	".avif",
 ] as const
 
-export const IMAGE_MIME_TYPES: Record<string, string> = {
-	".png": "image/png",
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif": "image/gif",
-	".webp": "image/webp",
-	".svg": "image/svg+xml",
-	".bmp": "image/bmp",
-	".ico": "image/x-icon",
-	".tiff": "image/tiff",
-	".tif": "image/tiff",
-	".avif": "image/avif",
-}
+export { IMAGE_MIME_TYPES } from "./imageDecoder"
 
 /**
  * Result of image validation
@@ -58,29 +48,111 @@ export interface ImageValidationResult {
 	sizeInMB?: number
 }
 
+/** Bytes and format admitted for local publication, separate from the source file extension. */
+export type ImageReadResult = Pick<PreparedImageContent, "sourceExtension" | "outputExtension" | "mimeType"> & {
+	dataUrl: string
+	buffer: Buffer
+}
+
 /**
  * Result of image processing
  */
-export interface ImageProcessingResult {
-	dataUrl: string
-	buffer: Buffer
+export interface ImageProcessingResult extends ImageReadResult {
 	sizeInKB: number
 	sizeInMB: number
 	notice: string
 }
 
-/**
- * Reads an image file and returns both the data URL and buffer
- */
-export async function readImageAsDataUrlWithBuffer(filePath: string): Promise<{ dataUrl: string; buffer: Buffer }> {
-	const fileBuffer = await fs.readFile(filePath)
-	const base64 = fileBuffer.toString("base64")
+async function readImageFileWithinLimit(
+	filePath: string,
+	signal: AbortSignal | undefined,
+	maxBytes: number,
+): Promise<Buffer> {
+	signal?.throwIfAborted()
+	const byteLimit = Math.floor(maxBytes)
+	if (
+		!Number.isFinite(maxBytes) ||
+		byteLimit < 0 ||
+		!Number.isSafeInteger(byteLimit + 1) ||
+		byteLimit >= bufferConstants.MAX_LENGTH
+	) {
+		throw new Error(t("tools:readFile.imageChangedAfterValidation"))
+	}
+
+	const fileHandle = await fs.open(filePath, "r")
+	let readResult: { buffer: Buffer } | { error: unknown }
+	try {
+		signal?.throwIfAborted()
+		// One extra byte detects growth without reading or allocating the rest of the file.
+		const readBuffer = Buffer.alloc(byteLimit + 1)
+		let totalBytesRead = 0
+		while (totalBytesRead < readBuffer.length) {
+			signal?.throwIfAborted()
+			const { bytesRead } = await fileHandle.read(
+				readBuffer,
+				totalBytesRead,
+				readBuffer.length - totalBytesRead,
+				totalBytesRead,
+			)
+			signal?.throwIfAborted()
+			if (bytesRead === 0) {
+				break
+			}
+			totalBytesRead += bytesRead
+		}
+		if (totalBytesRead > byteLimit) {
+			throw new Error(t("tools:readFile.imageChangedAfterValidation"))
+		}
+		// A smaller published image must not retain the entire read allowance as backing storage.
+		const imageBuffer = Buffer.alloc(totalBytesRead)
+		readBuffer.copy(imageBuffer, 0, 0, totalBytesRead)
+		readResult = { buffer: imageBuffer }
+	} catch (error) {
+		readResult = { error }
+	}
+
+	try {
+		await fileHandle.close()
+	} catch (error) {
+		// Preserve the read, overflow or cancellation failure if cleanup also fails.
+		if ("buffer" in readResult) {
+			signal?.throwIfAborted()
+			throw error
+		}
+	}
+	if ("error" in readResult) {
+		throw readResult.error
+	}
+	return readResult.buffer
+}
+
+/** Reads bounded source bytes and prepares the representation admitted for local image publication. */
+export async function readImageAsDataUrlWithBuffer(
+	filePath: string,
+	signal?: AbortSignal,
+	maxBytes = DEFAULT_MAX_IMAGE_FILE_SIZE_MB * 1024 * 1024,
+): Promise<ImageReadResult> {
+	const fileBuffer = await readImageFileWithinLimit(filePath, signal, maxBytes)
+	signal?.throwIfAborted()
 	const ext = path.extname(filePath).toLowerCase()
+	const prepared = await prepareImageContent(fileBuffer, ext, signal, maxBytes)
+	if (!prepared) {
+		throw new Error(t("tools:readFile.invalidImage"))
+	}
+	signal?.throwIfAborted()
+	// The preparer owns this exact backing buffer after worker teardown; keep raster buffers by identity.
+	const buffer = Buffer.isBuffer(prepared.bytes)
+		? prepared.bytes
+		: Buffer.from(prepared.bytes.buffer, prepared.bytes.byteOffset, prepared.bytes.byteLength)
+	const dataUrl = `data:${prepared.mimeType};base64,${buffer.toString("base64")}`
 
-	const mimeType = IMAGE_MIME_TYPES[ext] || "image/png"
-	const dataUrl = `data:${mimeType};base64,${base64}`
-
-	return { dataUrl, buffer: fileBuffer }
+	return {
+		dataUrl,
+		buffer,
+		sourceExtension: prepared.sourceExtension,
+		outputExtension: prepared.outputExtension,
+		mimeType: prepared.mimeType,
+	}
 }
 
 /**
@@ -90,7 +162,7 @@ export function isSupportedImageFormat(extension: string): boolean {
 	return SUPPORTED_IMAGE_FORMATS.includes(extension.toLowerCase() as (typeof SUPPORTED_IMAGE_FORMATS)[number])
 }
 
-/** Checks the file signature after policy approval so a renamed text file is not returned as an image. */
+/** Checks prepared-format/signature compatibility after readImageAsDataUrlWithBuffer completes preparation. */
 export function isSupportedImageContent(buffer: Buffer, extension: string): boolean {
 	const ext = extension.toLowerCase()
 	switch (ext) {
@@ -191,16 +263,18 @@ export async function validateImageForProcessing(
 /**
  * Processes an image file and returns the result
  */
-export async function processImageFile(fullPath: string): Promise<ImageProcessingResult> {
-	const imageStats = await fs.stat(fullPath)
-	const { dataUrl, buffer } = await readImageAsDataUrlWithBuffer(fullPath)
-	const imageSizeInKB = Math.round(imageStats.size / 1024)
-	const imageSizeInMB = imageStats.size / (1024 * 1024)
+export async function processImageFile(
+	fullPath: string,
+	signal?: AbortSignal,
+	maxBytes?: number,
+): Promise<ImageProcessingResult> {
+	const image = await readImageAsDataUrlWithBuffer(fullPath, signal, maxBytes)
+	const imageSizeInKB = Math.round(image.buffer.length / 1024)
+	const imageSizeInMB = image.buffer.length / (1024 * 1024)
 	const noticeText = t("tools:readFile.imageWithSize", { size: imageSizeInKB })
 
 	return {
-		dataUrl,
-		buffer,
+		...image,
 		sizeInKB: imageSizeInKB,
 		sizeInMB: imageSizeInMB,
 		notice: noticeText,

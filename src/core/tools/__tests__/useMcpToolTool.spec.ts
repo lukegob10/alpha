@@ -1026,6 +1026,7 @@ describe("useMcpToolTool", () => {
 			})
 			await useMcpToolTool.execute({ server_name: "test_server", tool_name: "test_tool" }, mockTask as Task, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1050,6 +1051,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.execute({ server_name: "test_server", tool_name: "test_tool" }, mockTask as Task, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 				setResultMetadata,
@@ -1081,7 +1083,11 @@ describe("useMcpToolTool", () => {
 				],
 			})
 
-			expect(result).toEqual({ text: "", images: ["data:image/png;base64,iVBORw0KGgo="] })
+			expect(result).toEqual({
+				text: "",
+				images: ["data:image/png;base64,iVBORw0KGgo="],
+				content: [{ type: "image", dataUrl: "data:image/png;base64,iVBORw0KGgo=" }],
+			})
 		})
 
 		it("preserves metadata for embedded text resources", () => {
@@ -1181,6 +1187,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1237,6 +1244,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1293,6 +1301,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})
@@ -1353,6 +1362,7 @@ describe("useMcpToolTool", () => {
 
 			await useMcpToolTool.handle(mockTask as Task, block as any, {
 				askApproval: mockAskApproval,
+				supportsImages: true,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 			})

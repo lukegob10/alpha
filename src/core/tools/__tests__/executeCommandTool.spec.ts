@@ -1,6 +1,6 @@
 // npx vitest run src/core/tools/__tests__/executeCommandTool.spec.ts
 
-import type { ToolUsage } from "@alpha-code/types"
+import type { ToolProgressStatus, ToolUsage } from "@alpha-code/types"
 import { EventEmitter } from "events"
 import fs from "fs/promises"
 import path from "path"
@@ -78,6 +78,7 @@ describe("executeCommandTool", () => {
 
 		// Spy on executeCommandInTerminal and mock its return value
 		vitest.spyOn(executeCommandModule, "executeCommandInTerminal").mockResolvedValue([false, "Command executed"])
+		let presentationTimestamp = Date.now()
 
 		// Create mock implementations with eslint directives to handle the type issues
 		mockAlphaTask = {
@@ -85,6 +86,23 @@ describe("executeCommandTool", () => {
 			getTaskLifetimeCancellationSignal: vitest.fn(() => new AbortController().signal),
 			ask: vitest.fn().mockResolvedValue(undefined),
 			say: vitest.fn().mockResolvedValue(undefined),
+			clineMessages: [],
+			presentApprovedCommand: vitest.fn(async function (
+				this: Task,
+				command: string,
+				progressStatus?: ToolProgressStatus,
+			) {
+				presentationTimestamp = Math.max(Date.now(), presentationTimestamp + 1, (this.lastMessageTs ?? 0) + 1)
+				this.clineMessages.push({
+					ts: presentationTimestamp,
+					type: "ask",
+					ask: "command",
+					text: command,
+					progressStatus,
+					isAnswered: true,
+				})
+				return presentationTimestamp.toString()
+			}),
 			sayAndCreateMissingParamError: vitest.fn().mockResolvedValue("Missing parameter error"),
 			consecutiveMistakeCount: 0,
 			didRejectTool: false,

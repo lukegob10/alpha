@@ -65,6 +65,7 @@ export interface TaskToolSurfaceInput {
 	applyProfile?: boolean
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
+	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	/** Captured primary-task read settings. Omission keeps legacy approval execution. */
 	readGrant?: TaskReadGrant
 	/** Host-owned capability flag persisted with diagnostic tasks and restored on reload. */
@@ -112,6 +113,7 @@ interface PolicySource {
 	disabledTools: readonly string[]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled: boolean
+	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
 	outputLimits?: Readonly<Record<string, number>>
 	execution?: ToolPolicyInput["execution"] | ToolExecutionPolicy
@@ -130,6 +132,7 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 			disabledTools: policy.disabledTools,
 			approvalMode: policy.approval.mode,
 			autoApprovalEnabled: policy.approval.autoApprovalEnabled,
+			reviewPolicy: policy.approval.reviewPolicy,
 			capabilities: policy.capabilities,
 			outputLimits: policy.outputLimits,
 			execution: policy.execution,
@@ -141,6 +144,7 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 		disabledTools: policy.disabledTools ?? [],
 		approvalMode: policy.approvalMode,
 		autoApprovalEnabled: policy.autoApprovalEnabled === true,
+		reviewPolicy: policy.reviewPolicy,
 		capabilities: policy.capabilities,
 		outputLimits: policy.outputLimits,
 		execution: policy.execution,
@@ -420,6 +424,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		disabledTools: disabledNames,
 		approvalMode: input.approvalMode ?? source?.approvalMode,
 		autoApprovalEnabled: input.autoApprovalEnabled ?? source?.autoApprovalEnabled,
+		reviewPolicy: input.reviewPolicy ?? source?.reviewPolicy,
 		capabilities: descriptorCapabilities(registry, input.capabilities ?? source?.capabilities),
 		outputLimits: descriptorOutputLimits(registry, input.outputLimits ?? source?.outputLimits),
 		execution: diagnosticSession ? diagnosticExecutionInput(input, source) : executionInput(input, source),
@@ -461,6 +466,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		disabledTools: disabledNames,
 		approvalMode: basePolicy.approval.mode,
 		autoApprovalEnabled: basePolicy.approval.autoApprovalEnabled,
+		reviewPolicy: basePolicy.approval.reviewPolicy,
 		capabilities: descriptorCapabilities(registry, basePolicy.capabilities),
 		outputLimits: basePolicy.outputLimits,
 		execution: basePolicy.execution,

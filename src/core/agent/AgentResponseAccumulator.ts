@@ -435,7 +435,13 @@ export class AgentResponseAccumulator {
 		// calls here would silently erase malformed payloads and ID collisions,
 		// allowing visible text to complete a turn which actually failed parsing.
 		const exposeAllToolCalls = this.responseOutcome === undefined || this.responseOutcome.status === "completed"
-		const exposedTools = exposeAllToolCalls ? pendingTools : pendingTools.filter((pending) => pending.accepted)
+		// A normal response requesting continuation can end with unfinished intent.
+		// Discard only fragments; explicitly completed/ended malformed calls must still fail validation.
+		const exposedTools = exposeAllToolCalls
+			? this.responseOutcome?.requiresContinuation
+				? pendingTools.filter((pending) => pending.accepted || pending.hasCompletePayload || pending.ended)
+				: pendingTools
+			: pendingTools.filter((pending) => pending.accepted)
 
 		for (const pending of exposedTools) {
 			await this.emitToolCall(pending, onItem)
@@ -451,7 +457,7 @@ export class AgentResponseAccumulator {
 		for (const entry of this.orderedEntries) {
 			if ("kind" in entry) {
 				if (!entry.active) continue
-				if (!exposeAllToolCalls && !exposedToolIds.has(entry.id)) continue
+				if (!exposedToolIds.has(entry.id)) continue
 				const item = toolItems[nextToolItem++]
 				if (item) orderedItems.push(item)
 			} else {
