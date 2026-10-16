@@ -71,9 +71,9 @@ suite("Rendered file review", function () {
 		assert.ok(workspace)
 		const suffix = randomUUID()
 		const scriptName = `alpha-file-review-${suffix}.cjs`
-		const fileName = `alpha-file-review-${suffix}.txt`
+		const fileNames = [1, 2, 3].map((index) => `alpha-file-review-${suffix}-${index}.txt`)
 		const scriptPath = path.join(workspace, scriptName)
-		const filePath = path.join(workspace, fileName)
+		const filePaths = fileNames.map((fileName) => path.join(workspace, fileName))
 		const api = globalThis.api
 		const originalConfiguration = api.getConfiguration()
 		const host = (api as unknown as { sidebarProvider: ReviewHost }).sidebarProvider
@@ -86,10 +86,15 @@ suite("Rendered file review", function () {
 		const acknowledgeCompletion = createCompletionReviewAcknowledger()
 
 		await withBoundedFixtureCleanup(async () => {
-			await fs.writeFile(filePath, "before review\n", { flag: "wx" })
+			for (const filePath of filePaths) await fs.writeFile(filePath, "before review\n", { flag: "wx" })
 			await fs.writeFile(
 				scriptPath,
-				`require("node:fs").writeFileSync(${JSON.stringify(fileName)}, "after review\\n")\n`,
+				fileNames
+					.map(
+						(fileName) =>
+							`require("node:fs").writeFileSync(${JSON.stringify(fileName)}, "after review\\n")`,
+					)
+					.join("\n"),
 				{
 					flag: "wx",
 				},
@@ -122,7 +127,7 @@ suite("Rendered file review", function () {
 			)
 			await scripted.task!.waitForTermination()
 			assert.equal(scripted.requests, 2)
-			assert.equal(await fs.readFile(filePath, "utf8"), "after review\n")
+			for (const filePath of filePaths) assert.equal(await fs.readFile(filePath, "utf8"), "after review\n")
 			await api.clearCurrentTask()
 			await host.showTaskWithId(taskId)
 			await waitFor(
@@ -137,7 +142,7 @@ suite("Rendered file review", function () {
 					timeout: 10_000,
 				},
 			)
-			await uiFixtureBarrier("file-review", { version: vscode.version })
+			await uiFixtureBarrier("file-review", { version: vscode.version, fileNames })
 			await waitFor(
 				() =>
 					vscode.window.tabGroups.all.some((group) =>
@@ -156,7 +161,7 @@ suite("Rendered file review", function () {
 			() => scripted.removeFromCache?.(),
 			() => api.setConfiguration(originalConfiguration),
 			() => fs.rm(scriptPath, { force: true }),
-			() => fs.rm(filePath, { force: true }),
+			...filePaths.map((filePath) => () => fs.rm(filePath, { force: true })),
 		])
 	})
 })

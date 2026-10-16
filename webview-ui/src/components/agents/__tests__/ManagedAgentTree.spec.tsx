@@ -325,6 +325,21 @@ describe("ManagedAgentTree", () => {
 		expect(screen.getByRole("button", { name: /Open Iris · Timed out/i })).toHaveTextContent("Timed out")
 	})
 
+	it("uses a compact spinner and readable terminal state for dock-only descendants", () => {
+		render(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={hierarchyProjection()}
+				onShowTask={vi.fn()}
+				presentation="dock"
+			/>,
+		)
+		const running = screen.getByRole("button", { name: /Open Cinder · Working/i })
+		expect(running.querySelector(".lucide-loader-circle")).toHaveClass("motion-reduce:animate-none")
+		expect(running).not.toHaveTextContent("Working")
+		expect(screen.getByRole("button", { name: /Open Iris · Timed out/i })).toHaveTextContent("Timed out")
+	})
+
 	it("keeps completed status visible without relying on dot color", () => {
 		const projection = hierarchyProjection()
 		projection.nodes[2].status = "completed"

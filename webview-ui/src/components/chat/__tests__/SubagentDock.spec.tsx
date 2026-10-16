@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import i18next from "i18next"
 import { initReactI18next } from "react-i18next"
 
-import { render, screen } from "@/utils/test-utils"
+import { render, screen, within } from "@/utils/test-utils"
 import chat from "@/i18n/locales/en/chat.json"
 
 import { SubagentDock } from "../SubagentDock"
@@ -99,6 +99,103 @@ describe("SubagentDock", () => {
 		expect(toggle).toHaveAttribute("aria-expanded", "false")
 	})
 
+	it("keeps the menu centered at a fixed compact width in both states, capped by the sidebar", async () => {
+		const user = userEvent.setup()
+		render(
+			<div style={{ width: 240 }}>
+				<SubagentDock groups={[group()]} parentTaskId="parent-1" />
+			</div>,
+		)
+		const dock = screen.getByRole("region", { name: "Sub-agents" })
+		const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+		expect(dock).toHaveStyle({ width: "272px", maxWidth: "100%" })
+		expect(dock).toHaveClass("mx-auto", "self-center", "box-border")
+		expect(toggle.querySelector(".lucide-bot")).toBeInTheDocument()
+		expect(within(toggle).getByText("1 running")).toHaveClass("rounded-full", "shrink-0")
+		await user.click(toggle)
+		expect(dock).toHaveStyle({ width: "272px", maxWidth: "100%" })
+		const rows = document.getElementById(toggle.getAttribute("aria-controls")!)!
+		expect(rows).toHaveClass("max-h-[min(240px,32vh)]", "overflow-y-auto", "overflow-x-hidden")
+	})
+
+	it("keeps a running-count badge alongside total count, completed rows, and direct navigation", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const longName = "Maple coordinating a very long repository investigation"
+		render(
+			<SubagentDock
+				groups={[
+					group({
+						agents: [
+							agent({ nickname: longName }),
+							agent({ taskId: "child-2", nickname: "Iris", status: "completed", completedAt: 5 }),
+						],
+					}),
+				]}
+				parentTaskId="parent-1"
+				onShowTask={onShowTask}
+			/>,
+		)
+		const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+		expect(within(toggle).getByText("2 sub-agents")).toBeVisible()
+		expect(within(toggle).getByText("1 running")).toBeVisible()
+		await user.click(toggle)
+		const running = screen.getByRole("button", { name: new RegExp(`Open ${longName} · Working`) })
+		expect(running.querySelector(".lucide-loader-circle")).toHaveClass("motion-reduce:animate-none")
+		expect(within(running).queryByText("Working")).not.toBeInTheDocument()
+		expect(within(running).getByText(longName)).toHaveClass("truncate", "min-w-0", "flex-1")
+		const completed = screen.getByRole("button", { name: /Open Iris · Completed/ })
+		expect(completed).toHaveTextContent("Completed")
+		expect(completed.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+		await user.click(completed)
+		expect(onShowTask).toHaveBeenCalledWith("child-2")
+		await user.click(screen.getByRole("button", { name: `Actions for ${longName}` }))
+		await user.click(screen.getByRole("menuitem", { name: "Open task" }))
+		expect(onShowTask).toHaveBeenCalledWith("child-1")
+	})
+
+	it("counts only running agents while queued, stopping, and terminal agents retain their own row states", async () => {
+		const user = userEvent.setup()
+		const statuses: SubagentRunState["status"][] = [
+			"running",
+			"running",
+			"running",
+			"pending",
+			"pending",
+			"pending",
+			"cancelling",
+			"pending",
+			"completed",
+			"failed",
+		]
+		const groups = Array.from({ length: 5 }, (_, groupIndex) =>
+			group({
+				groupId: `group-${groupIndex}`,
+				status: groupIndex === 4 ? "partial" : groupIndex === 3 ? "cancelling" : "running",
+				agents: statuses.slice(groupIndex * 2, groupIndex * 2 + 2).map((status, index) =>
+					agent({
+						taskId: `child-${groupIndex * 2 + index}`,
+						nickname: `Agent ${groupIndex * 2 + index}`,
+						status,
+					}),
+				),
+			}),
+		)
+		render(<SubagentDock groups={groups} parentTaskId="parent-1" />)
+		const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+		expect(within(toggle).getByText("10 sub-agents")).toBeVisible()
+		expect(within(toggle).getByText("3 running")).toBeVisible()
+		expect(within(toggle).queryByText("8 running")).not.toBeInTheDocument()
+		await user.click(toggle)
+		for (const label of [/Open Agent 3 · Starting/, /Open Agent 6 · Stopping/]) {
+			expect(
+				screen.getByRole("button", { name: label }).querySelector(".lucide-loader-circle"),
+			).toBeInTheDocument()
+		}
+		expect(screen.getByRole("button", { name: /Open Agent 8 · Completed/ })).toHaveTextContent("Completed")
+		expect(screen.getByRole("button", { name: /Open Agent 9 · Failed/ })).toHaveTextContent("Failed")
+	})
+
 	it("keeps a pending approval visible while collapsed and routes review to its originating group", async () => {
 		const user = userEvent.setup()
 		const pending = group({
@@ -116,6 +213,7 @@ describe("SubagentDock", () => {
 		})
 		render(<SubagentDock groups={[pending]} parentTaskId="parent-1" />)
 		expect(screen.getByText("1 approval")).toBeVisible()
+		expect(screen.getByText("1 running")).toBeVisible()
 		expect(screen.queryByText("pnpm test")).not.toBeInTheDocument()
 		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
 		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
@@ -205,6 +303,6 @@ describe("SubagentDock", () => {
 		projected.nodes[0].attention = attention
 		render(<SubagentDock groups={[]} projection={projected} parentTaskId="parent-1" />)
 		expect(screen.getByText(summary)).toBeVisible()
-		expect(screen.queryByText("1 running")).not.toBeInTheDocument()
+		expect(screen.getByText("1 running")).toBeVisible()
 	})
 })

@@ -7,6 +7,7 @@
 - Show compact recent chats on New Chat, switch between chats, and preserve custom chat names across reloads.
 - Move sidebar actions into the native Alpha toolbar and align chat history, selectors, context details, and sub-agent controls with consistent typography and spacing.
 - Add Copy and Edit actions to user messages and keep the Send button visible when it is disabled.
+- Preserve opened and closed change-review sections during updates, start multi-file review with only the bottom file open, and center a compact sub-agent menu above the composer.
 - Allow sub-agents to launch in folders without an existing Git repository using Alpha-owned private Git metadata, preserving scoped isolation, approvals, and recovery.
 
 ## 3.2.0

@@ -319,6 +319,24 @@ describe("SubagentGroupCard", () => {
 		)
 	})
 
+	it("keeps dock completion status and change-set review actions together in compact rows", async () => {
+		const user = userEvent.setup()
+		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" presentation="dock" />)
+		const row = screen.getByRole("button", { name: /Open Maple · Completed · Review/i })
+		expect(row).toHaveTextContent("Completed")
+		expect(row).toHaveTextContent("Review")
+		expect(row.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+		await openActions(user, "Maple")
+		expect(screen.getByRole("menu")).toHaveClass("max-w-[calc(100vw-16px)]")
+		await user.click(screen.getByRole("menuitem", { name: "Open diff" }))
+		expect(postMessage).toHaveBeenCalledWith({
+			type: "openSubagentChangeSet",
+			taskId: "parent-1",
+			groupId: "group-1",
+			changeSetId: "change-1",
+		})
+	})
+
 	it("routes diff review and confirms Apply from the overflow menu", async () => {
 		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)

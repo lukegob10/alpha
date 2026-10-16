@@ -171,6 +171,7 @@ vi.mock("../ChatRow", () => ({
 
 vi.mock("../FileChangesPanel", () => ({
 	default: function MockFileChangesPanel({ clineMessages = [] }: { clineMessages?: AlphaMessage[] }) {
+		const [expanded, setExpanded] = React.useState(false)
 		const paths = clineMessages.flatMap((message) => {
 			if (!message.text) return []
 			try {
@@ -191,7 +192,14 @@ vi.mock("../FileChangesPanel", () => ({
 				return []
 			}
 		})
-		return <div data-testid="file-changes-panel">{paths.join(",")}</div>
+		return (
+			<div data-testid="file-changes-panel">
+				<button aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+					Review changes
+				</button>
+				{paths.join(",")}
+			</div>
+		)
 	},
 }))
 
@@ -1025,7 +1033,7 @@ describe("ChatView activity trace", () => {
 		for (const index of [0, 1, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
 	})
 
-	it("collapses an opened action group when the task completes and allows reopening it", async () => {
+	it("preserves an opened action group when the task completes and still allows closing it", async () => {
 		const view = renderChatView()
 		const taskId = "completed-actions"
 		const messages: AlphaMessage[] = [
@@ -1067,14 +1075,15 @@ describe("ChatView activity trace", () => {
 				},
 			},
 		})
-		await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"))
-		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
-		fireEvent.click(toggle)
+		await waitFor(() => expect(toggle).not.toHaveAttribute("aria-busy"))
 		expect(toggle).toHaveAttribute("aria-expanded", "true")
 		expect(view.getByTestId("chat-message-0")).toBeVisible()
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
 	})
 
-	it("collapses an opened action group at the completion prompt before lifecycle state catches up", async () => {
+	it("preserves an opened action group at the completion prompt before lifecycle state catches up", async () => {
 		const view = renderChatView()
 		const taskId = "completion-prompt-actions"
 		const messages: AlphaMessage[] = [
@@ -1095,8 +1104,79 @@ describe("ChatView activity trace", () => {
 				{ ts: 500, type: "ask", ask: "completion_result", text: "" },
 			],
 		})
-		await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"))
-		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+		await waitFor(() => expect(view.getByTestId("chat-message-2")).toBeVisible())
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
+	})
+
+	it("keeps independent action disclosure choices when a completed turn gains a worked summary", async () => {
+		const view = renderChatView()
+		const messages: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Check and edit" },
+			{ ts: 200, type: "say", say: "text", text: "Inspecting the implementation" },
+			{ ts: 300, type: "ask", ask: "command", text: "git status", isAnswered: true },
+			{ ts: 400, type: "say", say: "text", text: "Now updating the file" },
+			{
+				ts: 500,
+				type: "say",
+				say: "tool",
+				text: JSON.stringify({ tool: "appliedDiff", path: "src/one.ts", diff: "+one" }),
+			},
+		]
+		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: messages })
+		const commands = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		const edits = view.getByRole("button", { name: /chat:activityTrace.editingFiles/ })
+		fireEvent.click(commands)
+		fireEvent.click(commands)
+		fireEvent.click(edits)
+		const progressing: AlphaMessage[] = [
+			...messages,
+			{ ts: 550, type: "say", say: "text", text: "Verifying the edit", partial: true },
+			{ ts: 560, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
+		]
+		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: progressing })
+		await waitFor(() =>
+			expect(view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })).toHaveLength(2),
+		)
+		expect(commands).toHaveAttribute("aria-expanded", "false")
+		expect(edits).toHaveAttribute("aria-expanded", "true")
+		expect(view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })[1]).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		const completed: AlphaMessage[] = [
+			...progressing,
+			{ ts: 600, type: "say", say: "completion_result", text: "Done" },
+		]
+		mockPostMessage({
+			currentTaskId: "independent-actions",
+			clineMessages: completed,
+		})
+		await waitFor(() => expect(view.getByTestId("chat-message-6")).toBeVisible())
+		expect(commands).toBeInTheDocument()
+		expect(commands).toHaveAttribute("aria-expanded", "false")
+		expect(edits).toBeInTheDocument()
+		expect(edits).toHaveAttribute("aria-expanded", "true")
+		expect(view.getByTestId("chat-message-1")).not.toBeVisible()
+		expect(view.getByTestId("chat-message-3")).toBeVisible()
+		const nextTurn: AlphaMessage[] = [
+			...completed,
+			{ ts: 700, type: "say", say: "user_feedback", text: "Check the types too" },
+			{ ts: 800, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
+			{ ts: 900, type: "say", say: "completion_result", text: "Types checked" },
+		]
+		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: nextTurn })
+		const untouchedTurn = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+		expect(untouchedTurn).toHaveAttribute("aria-expanded", "false")
+		expect(commands).toHaveAttribute("aria-expanded", "false")
+		expect(edits).toHaveAttribute("aria-expanded", "true")
+		mockPostMessage({ currentTaskId: "another-actions-task", clineMessages: nextTurn })
+		await waitFor(() =>
+			expect(view.getAllByRole("button", { name: /chat:activityTrace.workedFor/ })).toHaveLength(2),
+		)
+		for (const toggle of view.getAllByRole("button", { name: /chat:activityTrace.workedFor/ })) {
+			expect(toggle).toHaveAttribute("aria-expanded", "false")
+		}
 	})
 
 	it("restores focus to the action toggle when collapsing focused details", async () => {
@@ -1154,6 +1234,66 @@ describe("ChatView activity trace", () => {
 })
 
 describe("ChatView file-change summaries", () => {
+	it("preserves each turn panel's disclosure while its last message changes", async () => {
+		const view = renderChatView()
+		const messages: AlphaMessage[] = [
+			{ type: "say", say: "task", ts: 100, text: "Edit a file" },
+			{
+				type: "say",
+				say: "tool",
+				ts: 200,
+				text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", diff: "+first" }),
+			},
+		]
+		const publish = (clineMessages: AlphaMessage[], taskId = "sticky-file-review") =>
+			mockPostMessage({ currentTaskId: taskId, clineMessages })
+		publish(messages)
+		const panel = await waitFor(() => view.getByTestId("file-changes-panel"))
+		const toggle = within(panel).getByRole("button", { name: "Review changes" })
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(toggle)
+		const progressing = [
+			...messages,
+			{ type: "say", say: "text", ts: 300, text: "Checking", partial: true } as AlphaMessage,
+		]
+		publish(progressing)
+		await waitFor(() => expect(view.getByTestId("chat-message-1")).toHaveTextContent("Checking"))
+		expect(view.getByTestId("file-changes-panel")).toBe(panel)
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		publish([
+			...progressing.slice(0, -1),
+			{ type: "say", say: "completion_result", ts: 300, text: "First response" },
+		])
+		await waitFor(() => expect(view.getByTestId("chat-message-1")).toHaveTextContent("First response"))
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		fireEvent.click(toggle)
+		const nextTurn: AlphaMessage[] = [
+			...messages,
+			{ type: "say", say: "completion_result", ts: 300, text: "First response" },
+			{ type: "say", say: "user_feedback", ts: 400, text: "Another file" },
+			{
+				type: "say",
+				say: "tool",
+				ts: 500,
+				text: JSON.stringify({ tool: "appliedDiff", path: "second.ts", diff: "+second" }),
+			},
+		]
+		publish(nextTurn)
+		await waitFor(() => expect(view.getAllByTestId("file-changes-panel")).toHaveLength(2))
+		expect(view.getAllByTestId("file-changes-panel")[0]).toBe(panel)
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		expect(within(view.getAllByTestId("file-changes-panel")[1]).getByRole("button")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		publish(messages, "another-task")
+		await waitFor(() => expect(view.getAllByTestId("file-changes-panel")).toHaveLength(1))
+		expect(within(view.getByTestId("file-changes-panel")).getByRole("button")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+	})
+
 	it("collapses a completed turn into one worked-for trace and leaves its summary and diff visible", async () => {
 		const view = renderChatView()
 		mockPostMessage({

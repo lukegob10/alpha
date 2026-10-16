@@ -4,6 +4,32 @@ Reviewed on 2026-10-16 against Alpha commit `094808748cfe1e41b54f7852ef0d66ad479
 implementation files. This change implements the reviewed chat mockup and preserves Alpha's existing runtime,
 approval, editing, and managed-agent contracts.
 
+## Review disclosure and compact sub-agent follow-up
+
+File-change panels retain a turn's stable identity when later messages move the panel down the transcript.
+New panels and file sections start closed. A reader's open or closed choices survive streaming, appended edits,
+and completion. Interacted action groups also retain their individual choices at completion; untouched turns
+still use the compact Worked-for summary. Changing tasks starts with fresh disclosure choices.
+
+Multi-file Review uses the existing Alpha file-change list, shows every file, and initially expands only its
+bottom displayed file. Explicit choices made before Review, subsequent updates, and repeated Review clicks
+preserve the reader's choices, including closing
+every file. New files start closed. Each file's native diff action still opens its immutable captured snapshots;
+single-file Review retains that native path.
+
+The native multi-file editor cannot express this initial disclosure policy through the supported VS Code
+1.125.0 API. The exact host was reviewed at [commit 93cfdd489c3b228840d0f86ec77c3636277c93ea](https://github.com/microsoft/vscode/commit/93cfdd489c3b228840d0f86ec77c3636277c93ea),
+retrieved on 2026-10-16. Its `vscode.changes` command accepts title and resources; the native commands collapse
+or expand every file. Its [multi-diff widget](https://github.com/microsoft/vscode/blob/93cfdd489c3b228840d0f86ec77c3636277c93ea/src/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidgetImpl.ts)
+can reveal an item without expanding it. Reusing Alpha's existing list provides the requested per-file behavior
+without changing host settings or depending on private editor state.
+
+The sub-agent dock is centered above the composer at a fixed 272 px width, capped by the available sidebar space.
+The expanded list retains that width and has a bounded scroll area. A robot icon identifies the menu, the label
+shows the total number of sub-agents, and a separate badge shows the running count. Compact rows retain names,
+status or a spinner, native task navigation, and existing controls. Approval, input, and change-review attention
+remain visible without replacing the running count.
+
 ## User-facing contract
 
 - New chat shows four recent chats above the centered Alpha watermark. Opening or starting a chat replaces that

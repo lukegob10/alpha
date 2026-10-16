@@ -59,7 +59,7 @@ describe("Announcement", () => {
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Use the native Alpha toolbar with consistent chat text, composer controls, and context details.",
+				"Use the native Alpha toolbar, compact sub-agent controls, and file reviews that keep your expansion choices.",
 			),
 		).toBeInTheDocument()
 		expect(

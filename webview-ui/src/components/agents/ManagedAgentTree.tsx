@@ -169,12 +169,8 @@ export function ManagedAgentTree({
 								status={node.status}
 								attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
 								detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
-								variant={presentation === "dock" ? "row" : "chip"}
-								className={
-									presentation === "dock"
-										? "h-6 min-h-6 w-full rounded-lg py-0 [&>span:nth-child(2)]:text-[length:var(--chat-ui-font-size,13px)] [&>span:nth-child(2)]:font-normal [&>svg]:hidden"
-										: undefined
-								}
+								variant={presentation === "dock" ? "dock" : "chip"}
+								className={presentation === "dock" ? "w-full" : undefined}
 								disabled={!onShowTask || taskUnavailable}
 								onOpen={() => onShowTask?.(node.taskId)}
 							/>

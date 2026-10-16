@@ -403,7 +403,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 				aria-label={`${group.agents.length} sub-agent task${group.agents.length === 1 ? "" : "s"}`}
 				className={cn(
 					cardPresentation === "dock"
-						? "subagent-dock-group rounded-lg"
+						? "subagent-dock-group min-w-0 break-words rounded-lg"
 						: "rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background/40 p-1",
 				)}>
 				<div className="flex min-w-0 items-start gap-1">
@@ -449,11 +449,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 											detail={taskUnavailable ? agent.error : agentDetail(agent)}
 											disabled={taskUnavailable}
 											onOpen={() => openTask(agent)}
-											className={
-												cardPresentation === "dock"
-													? "h-6 min-h-6 rounded-lg py-0 [&>span:nth-child(2)]:text-[length:var(--chat-ui-font-size,13px)] [&>span:nth-child(2)]:font-normal [&>svg]:hidden"
-													: undefined
-											}
+											variant={cardPresentation === "dock" ? "dock" : "row"}
 										/>
 										{hasOverflowActions && (
 											<DropdownMenu>
@@ -471,7 +467,12 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 														<MoreHorizontal className="size-4" aria-hidden="true" />
 													</button>
 												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end" className="w-64">
+												<DropdownMenuContent
+													align="end"
+													className={cn(
+														"w-64",
+														cardPresentation === "dock" && "max-w-[calc(100vw-16px)]",
+													)}>
 													{!taskUnavailable && (
 														<DropdownMenuItem onSelect={() => openTask(agent)}>
 															<ExternalLink aria-hidden="true" /> Open task
