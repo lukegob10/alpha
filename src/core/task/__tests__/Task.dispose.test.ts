@@ -293,6 +293,8 @@ describe("Task dispose artifact storage", () => {
 				ownedTask.dispose()
 				expect(lookupHeld).toBe(true)
 				expect(ownedCleanup).not.toHaveBeenCalled()
+				// Goal shutdown also reads storage; join it while output cleanup stays held.
+				await ownedTask.waitForTermination()
 				if (
 					path.dirname(resolvedStorageRoot) !== path.resolve(os.tmpdir()) ||
 					!path.basename(resolvedStorageRoot).startsWith("alpha-task-dispose-output-") ||
