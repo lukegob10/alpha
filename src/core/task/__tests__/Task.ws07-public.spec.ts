@@ -129,6 +129,18 @@ vi.mock("../../agent/goals/GoalAccountingBindingStore", async (importOriginal) =
 	}
 })
 
+// Only virtual history indexes share this fixture's mocked write boundary; physical writes stay durable.
+vi.mock("../../../utils/safeWriteJson", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../utils/safeWriteJson")>()
+	return {
+		...actual,
+		safeWriteJson: vi.fn(async (...args: Parameters<typeof actual.safeWriteJson>) => {
+			if (path.basename(args[0]) === "_index.json" && isVirtualTaskStoragePath(args[0])) return
+			await actual.safeWriteJson(...args)
+		}),
+	}
+})
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	const isPhysicalLifecycleFile = (filePath: unknown): boolean =>
@@ -275,10 +287,11 @@ vi.mock("../../condense", async (importOriginal) => {
 		}),
 	}
 })
-// Keep write paths virtual and expose only the validated read-only lookup needed for absent goal sidecars.
+// Keep task/settings creation virtual while retaining real base-path and read-only storage validation.
 vi.mock("../../../utils/storage", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../../utils/storage")>()
 	return {
+		getStorageBasePath: actual.getStorageBasePath,
 		resolveExistingTaskDirectoryPathReadOnly: actual.resolveExistingTaskDirectoryPathReadOnly,
 		getTaskDirectoryPath: vi
 			.fn()

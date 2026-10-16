@@ -90,7 +90,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		vertexJsonCredentials: "test-key",
 	} as ProviderSettings
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks()
 
 		// Setup mock extension context
@@ -187,6 +187,8 @@ describe("AlphaProvider flicker-free cancel", () => {
 			options.onCreated?.(mockTask2)
 			return mockTask2 as any
 		})
+		// Begin cancellation assertions only after this fixture's control-store startup.
+		await Reflect.get(provider, "agentControlStoreReady")
 	})
 
 	it("should not remove current task from stack when rehydrating same taskId", async () => {
