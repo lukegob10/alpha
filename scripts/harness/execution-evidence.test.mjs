@@ -248,3 +248,179 @@ test("receipt reads reject linked result paths through the existing evidence own
 		await rm(directory, { recursive: true, force: true })
 	}
 })
+
+function diagnosticReport(assertions, extraFiles = []) {
+	const testResults = [
+		{ name: path.join(root, "src/diagnostics.spec.ts"), assertionResults: assertions },
+		...extraFiles,
+	]
+	const all = testResults.flatMap((file) => file.assertionResults)
+	return {
+		success: !all.some((assertion) => assertion.status === "failed"),
+		numTotalTests: all.length,
+		numPassedTests: all.filter((assertion) => assertion.status === "passed").length,
+		numFailedTests: all.filter((assertion) => assertion.status === "failed").length,
+		numPendingTests: all.filter((assertion) => ["pending", "skipped"].includes(assertion.status)).length,
+		numTodoTests: all.filter((assertion) => assertion.status === "todo").length,
+		testResults,
+	}
+}
+
+test("Vitest diagnostics retain only bounded identities, ordinals, durations and native failure classes", () => {
+	const privateValue = "DO_NOT_RETAIN_PRIVATE_ASSERTION_CONTENT"
+	const raw = diagnosticReport([
+		{ status: "passed", duration: 1, fullName: privateValue },
+		{ status: "failed", duration: 20_000, failureMessages: ["Error: Test timed out in 20000ms.\n" + privateValue] },
+		{
+			status: "failed",
+			duration: 20_001.5,
+			failureMessages: ["Error: Hook timed out in 20000ms.\n" + privateValue],
+		},
+		{ status: "failed", duration: 2, failureMessages: ["AssertionError: " + privateValue] },
+		{ status: "failed", failureMessages: ["Error: " + privateValue] },
+		{ status: "pending", title: privateValue },
+	])
+	for (const assertion of raw.testResults[0].assertionResults)
+		Object.assign(assertion, {
+			fullName: privateValue,
+			ancestorTitles: [privateValue],
+			meta: { prompt: privateValue },
+		})
+	raw.environment = { SECRET: privateValue }
+	let diagnostics
+	const receipt = normalizeVitestEvidence(raw, root, {
+		onFailureDiagnostics: (value) => {
+			diagnostics = value
+		},
+	})
+	assert.deepEqual(receipt, normalizeVitestEvidence(raw, root))
+	assert.deepEqual(Object.keys(receipt), [
+		"schemaVersion",
+		"kind",
+		"runner",
+		"complete",
+		"success",
+		"counts",
+		"files",
+	])
+	assert.deepEqual(diagnostics, {
+		schemaVersion: 1,
+		kind: "alpha-vitest-failure-diagnostics",
+		maxFailures: 64,
+		totalFailures: 4,
+		retainedFailures: 4,
+		truncated: false,
+		failures: [
+			{ path: "src/diagnostics.spec.ts", assertionOrdinal: 2, durationMs: 20_000, classification: "timeout" },
+			{
+				path: "src/diagnostics.spec.ts",
+				assertionOrdinal: 3,
+				durationMs: 20_001.5,
+				classification: "hook_timeout",
+			},
+			{ path: "src/diagnostics.spec.ts", assertionOrdinal: 4, durationMs: 2, classification: "assertion" },
+			{ path: "src/diagnostics.spec.ts", assertionOrdinal: 5, durationMs: null, classification: "other" },
+		],
+	})
+	assert.equal(JSON.stringify({ receipt, diagnostics }).includes(privateValue), false)
+})
+
+test("Vitest diagnostics cap retained failures at64 and preserve complete counts across files", () => {
+	const failure = () => ({ status: "failed", duration: 3, failureMessages: ["Error: PRIVATE_BOUND_MARKER"] })
+	const raw = diagnosticReport(Array.from({ length: 40 }, failure), [
+		{
+			name: path.join(root, "src/second-diagnostics.spec.ts"),
+			assertionResults: Array.from({ length: 30 }, failure),
+		},
+	])
+	let diagnostics
+	normalizeVitestEvidence(raw, root, {
+		onFailureDiagnostics: (value) => {
+			diagnostics = value
+		},
+	})
+	assert.equal(diagnostics.totalFailures, 70)
+	assert.equal(diagnostics.retainedFailures, 64)
+	assert.equal(diagnostics.failures.length, 64)
+	assert.equal(diagnostics.truncated, true)
+	assert.deepEqual(diagnostics.failures[63], {
+		path: "src/second-diagnostics.spec.ts",
+		assertionOrdinal: 24,
+		durationMs: 3,
+		classification: "other",
+	})
+	assert.equal(JSON.stringify(diagnostics).includes("PRIVATE_BOUND_MARKER"), false)
+})
+
+test("Vitest diagnostics bound paths and replace invalid durations with null", () => {
+	const durations = [
+		undefined,
+		null,
+		-1,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		"7",
+		0,
+		1.25,
+		Number.MAX_SAFE_INTEGER + 1,
+	]
+	const raw = diagnosticReport(
+		durations.map((duration) => ({ status: "failed", duration, failureMessages: [] })),
+		[{ name: path.join(root, "src", "x".repeat(2048) + ".spec.ts"), assertionResults: [{ status: "failed" }] }],
+	)
+	let diagnostics
+	normalizeVitestEvidence(raw, root, {
+		onFailureDiagnostics: (value) => {
+			diagnostics = value
+		},
+	})
+	assert.equal(diagnostics.totalFailures, 10)
+	assert.equal(diagnostics.retainedFailures, 9)
+	assert.equal(diagnostics.truncated, true)
+	assert.deepEqual(
+		diagnostics.failures.map((failure) => failure.durationMs),
+		[null, null, null, null, null, null, 0, 1.25, null],
+	)
+	assert.ok(diagnostics.failures.every((failure) => failure.path.length <= 2048))
+})
+
+test("Vitest diagnostics are absent for passes and are never published from invalid receipts", () => {
+	let calls = 0
+	const options = {
+		onFailureDiagnostics: () => {
+			calls++
+		},
+	}
+	normalizeVitestEvidence(diagnosticReport([{ status: "passed" }]), root, options)
+	const invalidTotals = diagnosticReport([{ status: "failed", failureMessages: ["PRIVATE_INVALID_MARKER"] }])
+	invalidTotals.numTotalTests++
+	assert.throws(() => normalizeVitestEvidence(invalidTotals, root, options), /totals/)
+	const outside = diagnosticReport([{ status: "failed" }])
+	outside.testResults[0].name = path.resolve(root, "../outside.spec.ts")
+	assert.throws(() => normalizeVitestEvidence(outside, root, options), /outside/)
+	assert.equal(calls, 0)
+})
+
+test("Vitest diagnostics inspect bounded native first lines and give hook timeouts precedence", () => {
+	const messages = [
+		["Error: PRIVATE ordinary timeout wording"],
+		["Error: PRIVATE first line\nTest timed out in 20000ms."],
+		["\u001b[31mError: Hook timed out in 20000ms.\u001b[0m\nPRIVATE"],
+		["AssertionError: PRIVATE", "Error: Test timed out in 20000ms."],
+		["Error: Test timed out in 20000ms.", "Error: Hook timed out in 20000ms."],
+		["PRIVATE".repeat(100) + "Test timed out in 20000ms."],
+		[...Array.from({ length: 8 }, () => "Error: PRIVATE"), "Error: Hook timed out in 20000ms."],
+	]
+	const raw = diagnosticReport(messages.map((failureMessages) => ({ status: "failed", failureMessages })))
+	let diagnostics
+	normalizeVitestEvidence(raw, root, {
+		onFailureDiagnostics: (value) => {
+			diagnostics = value
+		},
+	})
+	assert.deepEqual(
+		diagnostics.failures.map((failure) => failure.classification),
+		["other", "other", "hook_timeout", "timeout", "hook_timeout", "other", "other"],
+	)
+	assert.equal(JSON.stringify(diagnostics).includes("PRIVATE"), false)
+})

@@ -31,20 +31,65 @@ export function executionState(counts) {
 	return "executed-pass"
 }
 
-export function normalizeVitestEvidence(value, root) {
+const failureDiagnosticLimit = 64
+const diagnosticPathLimit = 2048
+
+function classifyVitestFailure(assertion) {
+	// Inspect bounded native error headings only; never return messages, names or stacks.
+	const headings = (Array.isArray(assertion.failureMessages) ? assertion.failureMessages : [])
+		.slice(0, 8)
+		.filter((message) => typeof message === "string")
+		.map((message) =>
+			message
+				.slice(0, 512)
+				.split(/\r?\n/, 1)[0]
+				.replace(/\u001b\[[0-9;]*m/g, "")
+				.trim(),
+		)
+	if (headings.some((heading) => /^(?:Error: )?Hook timed out in \d+(?:\.\d+)?ms\.$/.test(heading)))
+		return "hook_timeout"
+	if (headings.some((heading) => /^(?:Error: )?Test timed out in \d+(?:\.\d+)?ms\.$/.test(heading))) return "timeout"
+	if (headings.some((heading) => /^AssertionError(?: \[[^\]]+\])?:/.test(heading))) return "assertion"
+	return "other"
+}
+
+export function normalizeVitestEvidence(value, root, { onFailureDiagnostics } = {}) {
 	if (!Array.isArray(value?.testResults) || typeof value.success !== "boolean")
 		throw new Error("Missing Vitest execution report")
+	const captureFailures = typeof onFailureDiagnostics === "function"
+	const failures = []
 	const files = value.testResults.map((file) => {
 		if (!Array.isArray(file.assertionResults)) throw new Error("Missing Vitest assertions")
+		const testPath = repositoryTestPath(root, file.name)
 		const counts = { total: file.assertionResults.length, passed: 0, failed: 0, skipped: 0, todo: 0, cancelled: 0 }
-		for (const assertion of file.assertionResults) {
+		for (const [index, assertion] of file.assertionResults.entries()) {
 			const field = { passed: "passed", failed: "failed", pending: "skipped", skipped: "skipped", todo: "todo" }[
 				assertion.status
 			]
 			if (!field) throw new Error("Unknown Vitest assertion outcome")
 			counts[field]++
+			if (
+				captureFailures &&
+				field === "failed" &&
+				failures.length < failureDiagnosticLimit &&
+				testPath.length <= diagnosticPathLimit
+			) {
+				const duration = assertion.duration
+				failures.push({
+					path: testPath,
+					assertionOrdinal: index + 1,
+					durationMs:
+						typeof duration === "number" &&
+						Number.isFinite(duration) &&
+						duration >= 0 &&
+						duration <= Number.MAX_SAFE_INTEGER
+							? duration
+							: null,
+					classification: classifyVitestFailure(assertion),
+				})
+			}
 		}
-		return { path: repositoryTestPath(root, file.name), counts: validateCounts(counts) }
+		return { path: testPath, counts: validateCounts(counts) }
 	})
 	const counts = Object.fromEntries(
 		countKeys.map((key) => [key, files.reduce((sum, file) => sum + file.counts[key], 0)]),
@@ -57,7 +102,7 @@ export function normalizeVitestEvidence(value, root) {
 		value.numTodoTests !== counts.todo
 	)
 		throw new Error("Vitest totals disagree with assertions")
-	return validateTestEvidence({
+	const receipt = validateTestEvidence({
 		schemaVersion: 1,
 		kind: "alpha-test-execution",
 		runner: "vitest",
@@ -66,6 +111,17 @@ export function normalizeVitestEvidence(value, root) {
 		counts,
 		files,
 	})
+	if (captureFailures && receipt.counts.failed > 0)
+		onFailureDiagnostics({
+			schemaVersion: 1,
+			kind: "alpha-vitest-failure-diagnostics",
+			maxFailures: failureDiagnosticLimit,
+			totalFailures: receipt.counts.failed,
+			retainedFailures: failures.length,
+			truncated: failures.length < receipt.counts.failed,
+			failures,
+		})
+	return receipt
 }
 
 export function validateTestEvidence(value) {
