@@ -891,27 +891,33 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		}
 	}, [])
 
-	const sections: { id: SectionName; icon: LucideIcon }[] = useMemo(
+	const sections: { id: SectionName; icon: LucideIcon; hasSearchableSettings: boolean }[] = useMemo(
 		() => [
-			{ id: "providers", icon: Plug },
-			{ id: "modes", icon: Users2 },
-			{ id: "skills", icon: GraduationCap },
-			{ id: "slashCommands", icon: SquareSlash },
-			{ id: "autoApprove", icon: CheckCheck },
-			{ id: "agents", icon: Bot },
-			{ id: "mcp", icon: Server },
-			{ id: "checkpoints", icon: GitCommitVertical },
-			{ id: "notifications", icon: Bell },
-			{ id: "contextManagement", icon: Database },
-			{ id: "terminal", icon: SquareTerminal },
-			{ id: "prompts", icon: MessageSquare },
-			{ id: "worktrees", icon: GitBranch },
-			{ id: "ui", icon: Glasses },
-			{ id: "experimental", icon: FlaskConical },
-			{ id: "language", icon: Globe },
-			{ id: "about", icon: Info },
+			{ id: "providers", icon: Plug, hasSearchableSettings: false },
+			{ id: "modes", icon: Users2, hasSearchableSettings: false },
+			{ id: "skills", icon: GraduationCap, hasSearchableSettings: false },
+			{ id: "slashCommands", icon: SquareSlash, hasSearchableSettings: false },
+			{ id: "autoApprove", icon: CheckCheck, hasSearchableSettings: true },
+			{ id: "agents", icon: Bot, hasSearchableSettings: true },
+			{ id: "mcp", icon: Server, hasSearchableSettings: false },
+			{ id: "checkpoints", icon: GitCommitVertical, hasSearchableSettings: true },
+			{ id: "notifications", icon: Bell, hasSearchableSettings: true },
+			{ id: "contextManagement", icon: Database, hasSearchableSettings: true },
+			{ id: "terminal", icon: SquareTerminal, hasSearchableSettings: true },
+			{ id: "prompts", icon: MessageSquare, hasSearchableSettings: true },
+			{ id: "worktrees", icon: GitBranch, hasSearchableSettings: false },
+			{ id: "ui", icon: Glasses, hasSearchableSettings: true },
+			{ id: "experimental", icon: FlaskConical, hasSearchableSettings: true },
+			{ id: "language", icon: Globe, hasSearchableSettings: true },
+			{ id: "about", icon: Info, hasSearchableSettings: true },
 		],
 		[], // No dependencies needed now
+	)
+	// Tabs without SearchableSetting controls only need their title registered. Mounting them
+	// for indexing would start unrelated model, skill, command, and worktree requests.
+	const searchableSections = useMemo(
+		() => sections.filter(({ hasSearchableSettings }) => hasSearchableSettings),
+		[sections],
 	)
 
 	// Update target section logic to set active tab
@@ -960,13 +966,13 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	// Track which tabs have been indexed (visited at least once)
 	const [indexingTabIndex, setIndexingTabIndex] = useState(0)
-	const isIndexing = indexingTabIndex < sectionNames.length
+	const isIndexing = indexingTabIndex < searchableSections.length
 	const isIndexingComplete = !isIndexing
 	const tabTitlesRegistered = useRef(false)
 
-	// Index all tabs in the background so the selected tab can paint immediately
+	// Index searchable controls in the background so the selected tab can paint immediately
 	useEffect(() => {
-		if (indexingTabIndex >= sectionNames.length) {
+		if (indexingTabIndex >= searchableSections.length) {
 			// All tabs indexed, now register tab titles as searchable items
 			if (!tabTitlesRegistered.current && searchContextValue) {
 				sections.forEach(({ id }) => {
@@ -987,9 +993,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		// Give the selected tab a frame to paint before mounting the next indexing tab.
 		const frameId = requestAnimationFrame(() => setIndexingTabIndex((prev) => prev + 1))
 		return () => cancelAnimationFrame(frameId)
-	}, [indexingTabIndex, searchContextValue, sections, t])
+	}, [indexingTabIndex, searchContextValue, searchableSections, sections, t])
 
-	const indexingSection = isIndexing ? sectionNames[indexingTabIndex] : undefined
+	const indexingSection = isIndexing ? searchableSections[indexingTabIndex].id : undefined
 
 	// Handle search navigation - switch to the correct tab and scroll to the element
 	const handleSearchNavigate = useCallback(

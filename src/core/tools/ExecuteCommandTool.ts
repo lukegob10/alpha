@@ -865,9 +865,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				approval.commandExecutionId ??
 				(await task.presentApprovedCommand(canonicalCommand, commandProgressStatus))
 			const provider = await task.providerRef.deref()
-			const providerState = await provider?.getState()
-
-			const { terminalShellIntegrationDisabled = true } = providerState ?? {}
+			// Terminal launch needs cached settings, not the full UI projection and its mode-file loading.
+			const terminalShellIntegrationDisabled = provider?.getValue("terminalShellIntegrationDisabled") ?? true
 
 			// Get command execution timeout from VSCode configuration (in seconds)
 			const commandExecutionTimeoutSeconds = vscode.workspace
@@ -913,7 +912,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 							onCreationHookFailure: host.onCreationHookFailure,
 							capturedExecutionMode: executionMode,
 							capturedProvider: provider,
-							capturedOutputPreviewSize: providerState?.terminalOutputPreviewSize,
+							capturedOutputPreviewSize: provider?.getValue("terminalOutputPreviewSize"),
 							signal: host.signal,
 						}
 					: {}),
@@ -1403,10 +1402,9 @@ export async function executeCommandInTerminal(
 	if (globalStoragePath) {
 		const taskDir = await getTaskDirectoryPath(globalStoragePath, task.taskId)
 		const storageDir = path.join(taskDir, "command-output")
-		const providerState = presentation ? undefined : await provider?.getState()
 		const terminalOutputPreviewSize =
 			capturedOutputPreviewSize ??
-			providerState?.terminalOutputPreviewSize ??
+			(presentation ? undefined : provider?.getValue("terminalOutputPreviewSize")) ??
 			DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
 
 		interceptor = new OutputInterceptor({

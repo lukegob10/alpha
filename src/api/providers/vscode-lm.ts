@@ -1544,7 +1544,17 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	}
 }
 
-export async function getVsCodeLmModels() {
+let pendingVsCodeLmModels: ReturnType<typeof discoverVsCodeLmModels> | undefined
+
+export function getVsCodeLmModels() {
+	// Settings can refresh from several panels while host discovery is pending.
+	// Share only that operation; a later refresh must always observe the live catalog.
+	return (pendingVsCodeLmModels ??= discoverVsCodeLmModels().finally(() => {
+		pendingVsCodeLmModels = undefined
+	}))
+}
+
+async function discoverVsCodeLmModels() {
 	try {
 		const models =
 			(await withApiRequestTimeout(

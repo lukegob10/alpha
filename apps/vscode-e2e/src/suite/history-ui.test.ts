@@ -46,6 +46,8 @@ class HistoryNavigationAI {
 
 const SYNTHETIC_TRANSCRIPT_MESSAGES = 1_200
 const TRANSCRIPT_SENTINEL = "history-ui-navigation-transcript-sentinel"
+const TICKET_PREVIEW_TEXT =
+	"Ticket mention layout fixture: " + "Review @ticket:BAS-65 and confirm the expected behavior. ".repeat(4)
 
 suite("Inline Chats rendered history", function () {
 	this.timeout(240_000)
@@ -177,6 +179,38 @@ suite("Inline Chats rendered history", function () {
 			await api.clearCurrentTask()
 			assert.equal(provider.getLiveTask(taskId), undefined, "Cold reopen must begin without an in-memory Task")
 			await uiFixtureBarrier("navigation-reopen-ready", { version: vscode.version, taskId })
+
+			// Exercise the production lazy bundle after navigation measurements have finished.
+			const reopenedTask = provider.getLiveTask(taskId)
+			assert.ok(reopenedTask)
+			await reopenedTask.overwriteAlphaMessages([
+				...reopenedTask.clineMessages,
+				{
+					type: "say",
+					say: "text",
+					ts: Math.max(Date.now(), reopenedTask.clineMessages.at(-1)?.ts ?? 0) + 1,
+					text: "```mermaid\ngraph TD\n    ready[Alpha lazy diagram ready] --> verified[Verified]\n```",
+					partial: false,
+				},
+			])
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("diagram-ready", { version: vscode.version, taskId })
+
+			await reopenedTask.overwriteAlphaMessages([
+				...reopenedTask.clineMessages,
+				{
+					type: "say",
+					say: "user_feedback",
+					ts: Math.max(Date.now(), reopenedTask.clineMessages.at(-1)?.ts ?? 0) + 1,
+					text: TICKET_PREVIEW_TEXT,
+				},
+			])
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("ticket-mention-ready", {
+				version: vscode.version,
+				taskId,
+				text: TICKET_PREVIEW_TEXT,
+			})
 		} finally {
 			await api.clearCurrentTask().catch(() => undefined)
 			navigationAI.removeFromCache?.()

@@ -174,6 +174,7 @@ describe("SubtaskRow", () => {
 			render(<SubtaskRow node={node} depth={1} onToggleExpand={vi.fn()} />)
 
 			expect(screen.getByTestId("nested-subtask-list")).toHaveAttribute("hidden")
+			expect(screen.queryByTestId("subtask-row-child-1")).not.toBeInTheDocument()
 			expect(screen.queryByRole("button", { name: "Open chat: Child 1" })).not.toBeInTheDocument()
 		})
 

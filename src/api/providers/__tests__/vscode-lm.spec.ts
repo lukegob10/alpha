@@ -3061,6 +3061,94 @@ describe("VsCodeLmHandler", () => {
 })
 
 describe("getVsCodeLmModels", () => {
+	it("shares one pending discovery across eight concurrent settings refreshes", async () => {
+		let resolveModels!: (models: (typeof mockLanguageModelChat)[]) => void
+		const selection = new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+			resolveModels = resolve
+		})
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset().mockReturnValue(selection)
+
+		const pendingRefreshes = Array.from({ length: 8 }, () => getVsCodeLmModels())
+		const selectionCount = selectChatModels.mock.calls.length
+		resolveModels([mockCopilotGpt55LanguageModelChat])
+		const results = await Promise.all(pendingRefreshes)
+
+		expect(selectionCount).toBe(1)
+		for (const models of results) {
+			expect(models).toEqual([expect.objectContaining({ id: mockCopilotGpt55LanguageModelChat.id })])
+		}
+	})
+
+	it("refreshes live discovery again after the previous refresh has settled", async () => {
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels
+			.mockReset()
+			.mockResolvedValueOnce([mockCopilotGpt55LanguageModelChat])
+			.mockResolvedValueOnce([mockCopilotGpt56TerraLanguageModelChat])
+
+		await expect(getVsCodeLmModels()).resolves.toEqual([
+			expect.objectContaining({ id: mockCopilotGpt55LanguageModelChat.id }),
+		])
+		await expect(getVsCodeLmModels()).resolves.toEqual([
+			expect.objectContaining({ id: mockCopilotGpt56TerraLanguageModelChat.id }),
+		])
+		expect(selectChatModels).toHaveBeenCalledTimes(2)
+	})
+
+	it("shares discovery failures without retaining them for the next refresh", async () => {
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset().mockRejectedValue(new Error("Copilot consent required"))
+
+		const failedRefreshes = await Promise.all([getVsCodeLmModels(), getVsCodeLmModels()])
+		expect(failedRefreshes).toEqual([[], []])
+		expect(selectChatModels).toHaveBeenCalledOnce()
+
+		selectChatModels.mockResolvedValueOnce([mockCopilotGpt55LanguageModelChat])
+		await expect(getVsCodeLmModels()).resolves.toEqual([
+			expect.objectContaining({ id: mockCopilotGpt55LanguageModelChat.id }),
+		])
+		expect(selectChatModels).toHaveBeenCalledTimes(2)
+	})
+
+	it("releases a timed out discovery and ignores its late result during the next refresh", async () => {
+		vi.useFakeTimers()
+		mockGetApiRequestTimeoutSetting.mockReturnValue(1)
+		try {
+			let resolveStaleModels!: (models: (typeof mockLanguageModelChat)[]) => void
+			let resolveFreshModels!: (models: (typeof mockLanguageModelChat)[]) => void
+			const staleSelection = new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+				resolveStaleModels = resolve
+			})
+			const freshSelection = new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+				resolveFreshModels = resolve
+			})
+			const selectChatModels = vscode.lm.selectChatModels as Mock
+			selectChatModels.mockReset().mockReturnValueOnce(staleSelection).mockReturnValue(freshSelection)
+
+			const timedOutRefresh = getVsCodeLmModels()
+			await vi.advanceTimersByTimeAsync(1_000)
+			await expect(timedOutRefresh).resolves.toEqual([])
+
+			const freshRefresh = getVsCodeLmModels()
+			resolveStaleModels([mockCopilotGpt55LanguageModelChat])
+			await Promise.resolve()
+			const concurrentRefresh = getVsCodeLmModels()
+			const selectionCount = selectChatModels.mock.calls.length
+			resolveFreshModels([mockCopilotGpt56TerraLanguageModelChat])
+
+			const results = await Promise.all([freshRefresh, concurrentRefresh])
+			expect(selectionCount).toBe(2)
+			for (const models of results) {
+				expect(models).toEqual([expect.objectContaining({ id: mockCopilotGpt56TerraLanguageModelChat.id })])
+			}
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			mockGetApiRequestTimeoutSetting.mockReturnValue(600)
+			vi.useRealTimers()
+		}
+	})
+
 	it("returns only Copilot API selectors discovered in the current VS Code window", async () => {
 		const unknownModel = {
 			...mockLanguageModelChat,

@@ -78,6 +78,7 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 			context: { globalStorageUri: { fsPath: storage } },
 			postMessageToWebview: () => undefined,
 			getState: async () => ({ terminalShellIntegrationDisabled: true }),
+			getValue: (key: string) => (key === "terminalShellIntegrationDisabled" ? true : undefined),
 		}
 		const task = {
 			taskId,

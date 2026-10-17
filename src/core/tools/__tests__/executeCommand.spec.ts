@@ -52,6 +52,7 @@ describe("executeCommand", () => {
 		// Create mock provider
 		mockProvider = {
 			postMessageToWebview: vitest.fn(),
+			getValue: vitest.fn((key: string) => (key === "terminalShellIntegrationDisabled" ? false : undefined)),
 			getState: vitest.fn().mockResolvedValue({
 				terminalShellIntegrationDisabled: false,
 			}),
@@ -1106,7 +1107,9 @@ describe("executeCommand", () => {
 			})
 			mockTask.recordToolError = vitest.fn()
 			mockTask.getCommandExecutionEvidence = () => [evidence]
-			mockProvider.getState.mockResolvedValue({ terminalShellIntegrationDisabled: false })
+			mockProvider.getValue.mockImplementation((key: string) =>
+				key === "terminalShellIntegrationDisabled" ? false : undefined,
+			)
 			vitest.mocked(Terminal.compressTerminalOutput).mockImplementation((output) => output)
 			Object.assign(mockTerminal, {
 				busy: true,

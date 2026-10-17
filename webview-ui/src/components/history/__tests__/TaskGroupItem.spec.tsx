@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { render, screen, fireEvent, within } from "@/utils/test-utils"
 
 import TaskGroupItem from "../TaskGroupItem"
 import type { TaskGroup, DisplayHistoryItem, SubtaskTreeNode } from "../types"
@@ -164,6 +164,64 @@ describe("TaskGroupItem", () => {
 	})
 
 	describe("expand/collapse behavior", () => {
+		it("mounts only expanded branches of a 420-descendant history tree", () => {
+			const subtasks = Array.from({ length: 20 }, (_, branch) =>
+				createMockSubtaskNode(
+					{ id: `branch-${branch}`, task: `Branch ${branch}` },
+					Array.from({ length: 20 }, (_, leaf) =>
+						createMockSubtaskNode({ id: `leaf-${branch}-${leaf}`, task: `Leaf ${branch}-${leaf}` }),
+					),
+				),
+			)
+			const group = createMockGroup({ subtasks })
+			const expandedGroup = {
+				...group,
+				isExpanded: true,
+				subtasks: subtasks.map((node, index) => (index === 0 ? { ...node, isExpanded: true } : node)),
+			}
+			const onOpenTask = vi.fn()
+			const onToggleExpand = vi.fn()
+			const onToggleSubtaskExpand = vi.fn()
+			const selectedTaskIds = new Set(["leaf-0-0"])
+			const view = (nextGroup: TaskGroup, isSelectionMode = true) => (
+				<TaskGroupItem
+					group={nextGroup}
+					variant="compact"
+					isSelectionMode={isSelectionMode}
+					selectedTaskIds={selectedTaskIds}
+					onOpenTask={onOpenTask}
+					onToggleExpand={onToggleExpand}
+					onToggleSubtaskExpand={onToggleSubtaskExpand}
+				/>
+			)
+			const { rerender } = render(view(group))
+			const mountedSubtasks = () => screen.queryAllByTestId(/^subtask-row-/).length
+
+			expect(mountedSubtasks()).toBe(0)
+			expect(screen.getByTestId("subtask-list")).toHaveAttribute("hidden")
+			expect(screen.getByText("420 Subtasks")).toBeInTheDocument()
+
+			rerender(view({ ...group, isExpanded: true }))
+			expect(mountedSubtasks()).toBe(20)
+			rerender(view(expandedGroup))
+			expect(mountedSubtasks()).toBe(40)
+
+			rerender(view({ ...expandedGroup, isExpanded: false }))
+			expect(mountedSubtasks()).toBe(0)
+			rerender(view(expandedGroup))
+			expect(mountedSubtasks()).toBe(40)
+			expect(screen.getByTestId("subtask-item-row-leaf-0-0")).toHaveAttribute("data-selected", "true")
+
+			rerender(view(expandedGroup, false))
+			fireEvent.click(
+				within(screen.getByTestId("subtask-item-row-leaf-0-0")).getByRole("button", {
+					name: "history:openChat",
+				}),
+			)
+			expect(onOpenTask).toHaveBeenCalledTimes(1)
+			expect(onOpenTask).toHaveBeenCalledWith("leaf-0-0")
+		})
+
 		it("keeps compact child history expandable", () => {
 			const onToggleExpand = vi.fn()
 			const group = createMockGroup({

@@ -218,40 +218,30 @@ describe("custom-instructions global .roo support", () => {
 	describe("addCustomInstructions mode-specific rules", () => {
 		it("should load global and project mode-specific rules", async () => {
 			const mode = "code"
-
-			// Mock directory existence for mode-specific rules
-			mockStat
-				.mockResolvedValueOnce({ isDirectory: () => true } as any) // global rules-code dir exists
-				.mockResolvedValueOnce({ isFile: () => true } as any) // global mode file check
-				.mockResolvedValueOnce({ isDirectory: () => true } as any) // project rules-code dir exists
-				.mockResolvedValueOnce({ isFile: () => true } as any) // project mode file check
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules dir doesn't exist (for generic rules)
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules dir doesn't exist (for generic rules)
-
-			// Mock directory reading for mode-specific rules
-			mockReaddir
-				.mockResolvedValueOnce([
-					{
-						name: "global-mode.md",
+			const globalDirectory = path.resolve(mockHomeDir, ".alpha", "rules-code")
+			const projectDirectory = path.resolve(mockCwd, ".alpha", "rules-code")
+			const modeFiles = new Map([
+				[path.join(globalDirectory, "global-mode.md"), "global mode rule content"],
+				[path.join(projectDirectory, "project-mode.md"), "project mode rule content"],
+			])
+			// Source reads can overlap; fixture metadata belongs to a path, not a call position.
+			mockStat.mockImplementation(async (filename: string) => {
+				const resolved = path.resolve(filename)
+				const isDirectory = resolved === globalDirectory || resolved === projectDirectory
+				const isFile = modeFiles.has(resolved)
+				if (!isDirectory && !isFile) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+				return { isDirectory: () => isDirectory, isFile: () => isFile }
+			})
+			mockReaddir.mockImplementation(async (directory: string) =>
+				[...modeFiles.keys()]
+					.filter((filename) => path.dirname(filename) === path.resolve(directory))
+					.map((filename) => ({
+						name: path.basename(filename),
 						isFile: () => true,
 						isSymbolicLink: () => false,
-					} as any,
-				])
-				.mockResolvedValueOnce([
-					{
-						name: "project-mode.md",
-						isFile: () => true,
-						isSymbolicLink: () => false,
-					} as any,
-				])
-
-			// Mock file reading for mode-specific rules
-			mockReadFile
-				.mockResolvedValueOnce("global mode rule content")
-				.mockResolvedValueOnce("project mode rule content")
-				.mockResolvedValueOnce("") // AGENTS.md file (empty)
-				.mockResolvedValueOnce("") // .alpharules legacy file (empty)
-				.mockResolvedValueOnce("") // .alpharules legacy file (empty)
+					})),
+			)
+			mockReadFile.mockImplementation(async (filename: string) => modeFiles.get(filename) ?? "")
 
 			const result = await addCustomInstructions("", "", mockCwd, mode)
 
@@ -264,20 +254,10 @@ describe("custom-instructions global .roo support", () => {
 
 		it("should fall back to legacy mode-specific files when no mode directories exist", async () => {
 			const mode = "code"
-
-			// Mock directory existence - mode-specific dirs don't exist
-			mockStat
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules-code dir doesn't exist
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules-code dir doesn't exist
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules dir doesn't exist
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules dir doesn't exist
-
-			// Mock legacy mode file reading
-			mockReadFile
-				.mockResolvedValueOnce("legacy mode rule content") // .alpharules-code
-				.mockResolvedValueOnce("") // AGENTS.md file (empty)
-				.mockResolvedValueOnce("") // generic .alpharules (empty)
-				.mockResolvedValueOnce("") // generic .alpharules (empty)
+			mockStat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+			mockReadFile.mockImplementation(async (filename: string) =>
+				filename === path.join(mockCwd, ".alpharules-code") ? "legacy mode rule content" : "",
+			)
 
 			const result = await addCustomInstructions("", "", mockCwd, mode)
 

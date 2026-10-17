@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from "react"
+import React, { lazy, memo, Suspense, useMemo } from "react"
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
 import { parseHtmlDocumentLink } from "@alpha-code/types"
 import styled from "styled-components"
@@ -8,9 +8,16 @@ import remarkMath from "remark-math"
 import remarkGfm from "remark-gfm"
 
 import { vscode } from "@src/utils/vscode"
+import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 import CodeBlock from "./CodeBlock"
-import MermaidBlock from "./MermaidBlock"
+
+const MermaidBlock = lazy(() => import("./MermaidBlock"))
+
+function MermaidLoading() {
+	const { t } = useAppTranslation()
+	return <div role="status">{t("common:mermaid.loading")}</div>
+}
 
 interface MarkdownBlockProps {
 	markdown?: string
@@ -305,7 +312,9 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 							{partial ? (
 								<CodeBlock source={codeString} language="mermaid" partial />
 							) : (
-								<MermaidBlock code={codeString} />
+								<Suspense fallback={<MermaidLoading />}>
+									<MermaidBlock code={codeString} />
+								</Suspense>
 							)}
 						</div>
 					)

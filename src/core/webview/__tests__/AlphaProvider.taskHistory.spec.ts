@@ -1,7 +1,12 @@
 // pnpm --filter alpha test core/webview/__tests__/AlphaProvider.taskHistory.spec.ts
 
 import * as vscode from "vscode"
-import { TaskLifecycleState, type HistoryItem, type ExtensionMessage } from "@alpha-code/types"
+import {
+	TaskLifecycleState,
+	type HistoryItem,
+	type ExtensionMessage,
+	type TaskReasoningProjection,
+} from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ContextProxy } from "../../config/ContextProxy"
@@ -416,6 +421,16 @@ describe("AlphaProvider Task History Synchronization", () => {
 	const findCallsByType = (calls: any[][], type: string) => {
 		return calls.filter((call) => call[0]?.type === type)
 	}
+
+	it.each([undefined, "small", "medium", "large"] as const)(
+		"projects the saved terminal output preview size %s into settings snapshots",
+		async (previewSize) => {
+			await provider.contextProxy.setValue("terminalOutputPreviewSize", previewSize)
+
+			expect((await provider.getState()).terminalOutputPreviewSize).toBe(previewSize ?? "medium")
+			expect((await provider.getStateToPostToWebview()).terminalOutputPreviewSize).toBe(previewSize ?? "medium")
+		},
+	)
 
 	it("projects a committed rename to sibling views in the same project without changing transcript state", async () => {
 		const renamed = createHistoryItem({ id: "renamed-chat", task: "Original prompt", displayName: "Named chat" })
@@ -870,6 +885,79 @@ describe("AlphaProvider Task History Synchronization", () => {
 	})
 
 	describe("task history is scoped to the current project", () => {
+		it("keeps history included for default getState callers", async () => {
+			const item = createHistoryItem({ id: "default-history", task: "Keep saved tasks available" })
+			const getHistory = vi.spyOn(provider.taskHistoryStore, "getByWorkspace").mockReturnValue([item])
+
+			const state = await provider.getState()
+
+			expect(state.taskHistory).toEqual([item])
+			expect(getHistory).toHaveBeenCalledExactlyOnceWith(provider.cwd)
+		})
+
+		it("reads workspace history once for a full state projection", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const getHistory = vi.spyOn(provider.taskHistoryStore, "getByWorkspace")
+
+			await provider.getStateToPostToWebview()
+
+			expect(getHistory).toHaveBeenCalledOnce()
+		})
+
+		it("captures history after asynchronous reasoning projection has settled", async () => {
+			let releaseReasoning!: () => void
+			let beginReasoning!: () => void
+			const reasoningPending = new Promise<void>((resolve) => (releaseReasoning = resolve))
+			const reasoningStarted = new Promise<void>((resolve) => (beginReasoning = resolve))
+			const reasoningProvider = provider as unknown as {
+				getReasoningProjection(): Promise<TaskReasoningProjection>
+			}
+			const resolveReasoning = reasoningProvider.getReasoningProjection.bind(provider)
+			vi.spyOn(reasoningProvider, "getReasoningProjection").mockImplementation(async () => {
+				beginReasoning()
+				await reasoningPending
+				return resolveReasoning()
+			})
+			const getHistory = vi.spyOn(provider.taskHistoryStore, "getByWorkspace")
+			const pendingState = provider.getStateToPostToWebview()
+			await reasoningStarted
+
+			try {
+				expect(getHistory).not.toHaveBeenCalled()
+				await provider.updateTaskHistory(
+					createHistoryItem({ id: "new-history", task: "Saved while reasoning resolves" }),
+					{ broadcast: false },
+				)
+			} finally {
+				releaseReasoning()
+			}
+
+			const state = await pendingState
+			expect(state.taskHistory.map((item) => item.id)).toEqual(["new-history"])
+			expect(getHistory).toHaveBeenCalledOnce()
+		})
+
+		it.each(["postStateToWebviewWithoutTaskHistory", "postStateToWebviewWithoutAlphaMessages"] as const)(
+			"does not read workspace history when %s omits it",
+			async (method) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				mockPostMessage.mockClear()
+				const getHistory = vi.spyOn(provider.taskHistoryStore, "getByWorkspace")
+
+				await provider[method]()
+
+				expect(getHistory).not.toHaveBeenCalled()
+				const state = mockPostMessage.mock.calls.find(([message]) => message.type === "state")?.[0].state
+				expect(state).toEqual(expect.objectContaining({ apiConfiguration: expect.any(Object), mode: "code" }))
+				expect(state).not.toHaveProperty("taskHistory")
+				if (method === "postStateToWebviewWithoutAlphaMessages") {
+					expect(state).not.toHaveProperty("clineMessages")
+				} else {
+					expect(state).toHaveProperty("clineMessages", [])
+				}
+			},
+		)
+
 		it("getStateToPostToWebview sends only the current project's tasks", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			Object.assign(provider, { currentWorkspacePath: "/path/to/workspace1" })

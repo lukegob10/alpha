@@ -4,23 +4,7 @@ import { TicketStore } from "./services/tickets/TicketStore"
 import { IncidentPanel } from "./core/webview/IncidentPanel"
 import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
-import * as dotenvx from "@dotenvx/dotenvx"
-import * as fs from "fs"
 import * as path from "path"
-
-// Load environment variables from .env file
-// The extension-level .env is optional (not shipped in production builds).
-// Avoid calling dotenvx when the file doesn't exist, otherwise dotenvx emits
-// a noisy [MISSING_ENV_FILE] error to the extension host console.
-const envPath = path.join(__dirname, "..", ".env")
-if (fs.existsSync(envPath)) {
-	try {
-		dotenvx.config({ path: envPath })
-	} catch (e) {
-		// Best-effort only: never fail extension activation due to optional env loading.
-		console.warn("Failed to load environment variables:", e)
-	}
-}
 
 import { TelemetryService } from "@alpha-code/telemetry"
 import { customToolRegistry } from "@alpha-code/core"
@@ -28,6 +12,7 @@ import { customToolRegistry } from "@alpha-code/core"
 import "./utils/path" // Necessary to have access to String.prototype.toPosix.
 import { initializeNetworkProxy } from "./utils/networkProxy"
 import { createLifecycleSafeOutputChannel } from "./utils/outputChannelLogger"
+import { loadExtensionEnvironment } from "./utils/loadEnvironment"
 
 import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
@@ -111,6 +96,7 @@ async function checkWorktreeAutoOpen(
 // Your extension is activated the very first time the command is executed.
 export async function activate(context: vscode.ExtensionContext) {
 	const activationStartedAt = performance.now()
+	await loadExtensionEnvironment(path.join(__dirname, "..", ".env"))
 	const performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
 	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
 	extensionContext = context

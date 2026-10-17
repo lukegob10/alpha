@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { lazy, Suspense, useCallback, useState } from "react"
 import { Trans } from "react-i18next"
 
 import type { ProviderSettings } from "@alpha-code/types"
@@ -8,11 +8,12 @@ import { validateApiConfiguration } from "@src/utils/validate"
 import { vscode } from "@src/utils/vscode"
 import { Button } from "@src/components/ui"
 
-import ApiOptions from "../settings/ApiOptions"
 import { Tab, TabContent } from "../common/Tab"
 
 import AlphaHero from "./AlphaHero"
 import { ArrowLeft, Brain } from "lucide-react"
+
+const ApiOptions = lazy(() => import("../settings/ApiOptions"))
 
 const WelcomeViewProvider = () => {
 	const { apiConfiguration, currentApiConfigName, setApiConfiguration, uriScheme } = useExtensionState()
@@ -85,14 +86,21 @@ const WelcomeViewProvider = () => {
 
 					<div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-4">
 						<div className="max-h-[calc(100vh_-_300px)] overflow-y-auto pr-2">
-							<ApiOptions
-								fromWelcomeView
-								apiConfiguration={apiConfiguration || {}}
-								uriScheme={uriScheme}
-								setApiConfigurationField={setApiConfigurationFieldForApiOptions}
-								errorMessage={errorMessage}
-								setErrorMessage={setErrorMessage}
-							/>
+							<Suspense
+								fallback={
+									<div role="status">
+										<Trans i18nKey="welcome:providerSignup.loading" />
+									</div>
+								}>
+								<ApiOptions
+									fromWelcomeView
+									apiConfiguration={apiConfiguration || {}}
+									uriScheme={uriScheme}
+									setApiConfigurationField={setApiConfigurationFieldForApiOptions}
+									errorMessage={errorMessage}
+									setErrorMessage={setErrorMessage}
+								/>
+							</Suspense>
 						</div>
 					</div>
 

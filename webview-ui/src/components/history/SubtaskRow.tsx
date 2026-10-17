@@ -152,19 +152,20 @@ const SubtaskRow = ({
 						style={{ left: `${rowIndent + 6}px` }}
 						aria-hidden="true"
 					/>
-					{children.map((child) => (
-						<SubtaskRow
-							key={child.item.id}
-							node={child}
-							depth={depth + 1}
-							onToggleExpand={onToggleExpand}
-							isSelectionMode={isSelectionMode}
-							selectedTaskIds={selectedTaskIds}
-							onToggleSelection={onToggleSelection}
-							onDelete={onDelete}
-							onOpenTask={onOpenTask}
-						/>
-					))}
+					{isExpanded &&
+						children.map((child) => (
+							<SubtaskRow
+								key={child.item.id}
+								node={child}
+								depth={depth + 1}
+								onToggleExpand={onToggleExpand}
+								isSelectionMode={isSelectionMode}
+								selectedTaskIds={selectedTaskIds}
+								onToggleSelection={onToggleSelection}
+								onDelete={onDelete}
+								onOpenTask={onOpenTask}
+							/>
+						))}
 				</div>
 			)}
 		</div>

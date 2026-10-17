@@ -5100,6 +5100,117 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 	})
 
+	it.each([
+		["followup", true],
+		["followup", false],
+		["mistake_limit_reached", true],
+		["mistake_limit_reached", false],
+		["api_req_failed", true],
+		["api_req_failed", false],
+	] as const)("answers the live %s boundary once (active turn: %s)", async (ask, isTurnActive) => {
+		const view = renderChatView()
+		const taskId = "active-recovery-boundary"
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "idle",
+					lifecycle: "waiting",
+					isActive: true,
+					isStreaming: false,
+					isTurnActive,
+					isWaitingForInput: true,
+					waitingReason: "idle",
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Inspect the parser" },
+				{ type: "ask", ask, ts: 2, text: "How should I continue?", partial: false },
+			],
+		})
+		const input = (await waitFor(() =>
+			view.getByTestId("chat-textarea").querySelector("input"),
+		)) as HTMLInputElement
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "Use the smaller repair" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "askResponse",
+				requestId: expect.any(String),
+				askMessageTs: 2,
+				askResponse: "messageResponse",
+				taskId,
+				text: "Use the smaller repair",
+			}),
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+
+		fireEvent.change(input, { target: { value: "Keep this for the next turn" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		expect(vi.mocked(vscode.postMessage).mock.calls.filter(([sent]) => sent.type === "askResponse")).toHaveLength(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "queueMessage", taskId, text: "Keep this for the next turn" }),
+		)
+	})
+
+	it.each([
+		["mistake_limit_reached", "partial"],
+		["mistake_limit_reached", "answered"],
+		["mistake_limit_reached", "superseded"],
+		["api_req_failed", "partial"],
+		["api_req_failed", "answered"],
+		["api_req_failed", "superseded"],
+	] as const)("keeps input queued behind a %s recovery ask that is %s", async (ask, boundaryState) => {
+		const view = renderChatView()
+		const taskId = "unavailable-recovery-boundary"
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isTurnActive: true,
+					isWaitingForInput: false,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Inspect the parser" },
+				{
+					type: "ask",
+					ask,
+					ts: 2,
+					text: "How should I continue?",
+					partial: boundaryState === "partial",
+					isAnswered: boundaryState === "answered",
+				},
+				...(boundaryState === "superseded"
+					? [{ type: "say" as const, say: "api_req_started", ts: 3, text: "{}" }]
+					: []),
+			],
+		})
+		const input = (await waitFor(() =>
+			view.getByTestId("chat-textarea").querySelector("input"),
+		)) as HTMLInputElement
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "Keep this for the next turn" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "queueMessage", taskId, text: "Keep this for the next turn" }),
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+	})
+
 	it.each(["completion_result", "followup"] as const)(
 		"shows a pending state while resuming a completed live task with a stale %s ask",
 		async (staleAsk) => {
@@ -5829,6 +5940,27 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 
 describe("ChatView chat-owned composer commands", () => {
 	beforeEach(() => vi.clearAllMocks())
+	const recoveryState = (id: string, ask: "mistake_limit_reached" | "api_req_failed"): Partial<ExtensionState> => ({
+		currentTaskId: id,
+		currentView: { type: "task", taskId: id },
+		currentTaskItem: { id, task: `Prompt ${id}`, ts: 1 },
+		liveTasksById: {
+			[id]: {
+				id,
+				status: "idle",
+				lifecycle: "waiting",
+				isActive: true,
+				isStreaming: false,
+				isTurnActive: true,
+				isWaitingForInput: true,
+			},
+		},
+		clineMessages: [
+			{ type: "say", say: "task", ts: 1, text: `Prompt ${id}` },
+			{ type: "ask", ask, ts: 2, text: "How should I continue?", partial: false },
+		],
+		messageQueue: [],
+	})
 	const runningState = (id: string, queue: Array<{ id: string; text: string }> = []): Partial<ExtensionState> => ({
 		currentTaskId: id,
 		currentView: { type: "task", taskId: id },
@@ -5850,6 +5982,94 @@ describe("ChatView chat-owned composer commands", () => {
 				}),
 			),
 		)
+	it.each([
+		["mistake_limit_reached", false],
+		["mistake_limit_reached", true],
+		["api_req_failed", false],
+		["api_req_failed", true],
+	] as const)(
+		"keeps an accepted %s recovery reply claimed until its transcript moves (switch chat: %s)",
+		async (ask, switchChat) => {
+			const view = renderChatView()
+			const stateA = recoveryState("a", ask)
+			mockPostMessage(stateA)
+			await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt a"))
+			const input = (await waitFor(() =>
+				view.getByTestId("chat-textarea").querySelector("input"),
+			)) as HTMLInputElement
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.change(input, { target: { value: "Recover chat A" } })
+			fireEvent.keyDown(input, { key: "Enter" })
+			const request = vi.mocked(vscode.postMessage).mock.calls.find(([sent]) => sent.type === "askResponse")![0]
+
+			if (switchChat) {
+				mockPostMessage(recoveryState("b", ask))
+				await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt b"))
+				fireEvent.change(input, { target: { value: "Recover chat B" } })
+				fireEvent.keyDown(input, { key: "Enter" })
+				const requestB = vi
+					.mocked(vscode.postMessage)
+					.mock.calls.find(([sent]) => sent.type === "askResponse" && sent.taskId === "b")![0]
+				receipt("askResponse", requestB.requestId!, "b", "accepted")
+				fireEvent.change(input, { target: { value: "Preserve B's draft" } })
+			}
+			receipt("askResponse", request.requestId!, "a", "accepted")
+			if (switchChat) {
+				mockPostMessage(stateA)
+				await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt a"))
+			}
+
+			fireEvent.change(input, { target: { value: "Then inspect the tests" } })
+			fireEvent.keyDown(input, { key: "Enter" })
+			expect(
+				vi
+					.mocked(vscode.postMessage)
+					.mock.calls.filter(([sent]) => sent.type === "askResponse" && sent.taskId === "a"),
+			).toHaveLength(1)
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "queueMessage", taskId: "a", text: "Then inspect the tests" }),
+			)
+			if (switchChat) {
+				mockPostMessage(recoveryState("b", ask))
+				await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt b"))
+				expect(input).toHaveValue("Preserve B's draft")
+			}
+		},
+	)
+
+	it.each(["mistake_limit_reached", "api_req_failed"] as const)(
+		"releases a rejected %s recovery reply for its owning background chat",
+		async (ask) => {
+			const view = renderChatView()
+			const stateA = recoveryState("a", ask)
+			mockPostMessage(stateA)
+			await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt a"))
+			const input = (await waitFor(() =>
+				view.getByTestId("chat-textarea").querySelector("input"),
+			)) as HTMLInputElement
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.change(input, { target: { value: "Recover chat A" } })
+			fireEvent.keyDown(input, { key: "Enter" })
+			const request = vi.mocked(vscode.postMessage).mock.calls.find(([sent]) => sent.type === "askResponse")![0]
+			mockPostMessage(recoveryState("b", ask))
+			await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt b"))
+			fireEvent.change(input, { target: { value: "Preserve B's draft" } })
+			receipt("askResponse", request.requestId!, "a", "rejected")
+			expect(input).toHaveValue("Preserve B's draft")
+
+			mockPostMessage(stateA)
+			await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Prompt a"))
+			expect(input).toHaveValue("Recover chat A")
+			fireEvent.keyDown(input, { key: "Enter" })
+			expect(
+				vi
+					.mocked(vscode.postMessage)
+					.mock.calls.filter(([sent]) => sent.type === "askResponse" && sent.taskId === "a"),
+			).toHaveLength(2)
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		},
+	)
+
 	it("shows a completed-chat follow-up immediately in the transcript throughout durable admission", async () => {
 		const view = renderChatView()
 		const completedState: Partial<ExtensionState> = {

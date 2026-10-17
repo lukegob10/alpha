@@ -1360,6 +1360,179 @@ Instructions here...`
 	})
 
 	describe("file watchers", () => {
+		describe("refresh coalescing", () => {
+			beforeEach(() => vi.stubEnv("NODE_ENV", "development"))
+			afterEach(() => vi.unstubAllEnvs())
+
+			const skillText = (description: string) =>
+				`---\nname: test-skill\ndescription: ${description}\n---\nInstructions`
+
+			async function prepareWatchers() {
+				mockDirectoryExists.mockImplementation(async (candidate: string) => candidate === globalSkillsDir)
+				mockRealpath.mockImplementation(async (candidate: string) => candidate)
+				mockReaddir.mockImplementation(async (candidate: string) =>
+					candidate === globalSkillsDir ? ["test-skill"] : [],
+				)
+				mockStat.mockResolvedValue({ isDirectory: () => true })
+				mockFileExists.mockResolvedValue(true)
+				mockReadFile.mockResolvedValue(skillText("Initial"))
+				await skillsManager.initialize()
+				mockProjectInstructionDirectories.mockClear()
+			}
+
+			function emitChange(index = 0) {
+				return mockWatchers[index % mockWatchers.length]!.onDidChange.mock.calls[0]![0]({
+					fsPath: p(globalSkillsDir, "test-skill", "SKILL.md"),
+				})
+			}
+
+			it("coalesces overlapping watcher bursts into one catalog refresh and publication", async () => {
+				await prepareWatchers()
+				await Promise.all(Array.from({ length: 50 }, (_, index) => emitChange(index)))
+
+				const measurements = {
+					events: 50,
+					projectRootLookups: mockProjectInstructionDirectories.mock.calls.length,
+					publications: vi.mocked(mockProvider.postMessageToWebview!).mock.calls.length,
+				}
+				console.info("SKILLS_WATCH_BURST_BENCHMARK", JSON.stringify(measurements))
+				expect(measurements).toEqual({ events: 50, projectRootLookups: 1, publications: 1 })
+				expect(skillsManager.getSkillsForMode("code")[0]?.description).toBe("Initial")
+			})
+
+			it("repeats one invalidated scan and publishes the latest catalog after edits during a read", async () => {
+				await prepareWatchers()
+				let release!: (value: string) => void
+				let reading!: () => void
+				const started = new Promise<void>((resolve) => {
+					reading = resolve
+				})
+				mockReadFile.mockImplementationOnce(() => {
+					reading()
+					return new Promise<string>((resolve) => {
+						release = resolve
+					})
+				})
+				const first = emitChange()
+				await started
+				const changed = Array.from({ length: 50 }, (_, index) => emitChange(index))
+				expect(mockProjectInstructionDirectories).toHaveBeenCalledTimes(1)
+				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+				mockReadFile.mockResolvedValue(skillText("Latest"))
+				release(skillText("Obsolete"))
+				await Promise.all([first, ...changed])
+
+				expect(mockProjectInstructionDirectories).toHaveBeenCalledTimes(2)
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledOnce()
+				expect(skillsManager.getSkillsForMode("code")[0]?.description).toBe("Latest")
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "skills",
+					skills: [expect.objectContaining({ description: "Latest" })],
+				})
+			})
+
+			it("allows a later watcher event to retry after discovery fails", async () => {
+				await prepareWatchers()
+				mockProjectInstructionDirectories.mockRejectedValueOnce(new Error("Root lookup failed"))
+				await expect(emitChange()).rejects.toThrow("Root lookup failed")
+				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+				mockReadFile.mockResolvedValue(skillText("Recovered"))
+				await emitChange()
+
+				expect(skillsManager.getSkillsForMode("code")[0]?.description).toBe("Recovered")
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledOnce()
+			})
+
+			it.each([
+				{ failure: "discovery", latestFails: false },
+				{ failure: "discovery", latestFails: true },
+				{ failure: "publication", latestFails: false },
+				{ failure: "publication", latestFails: true },
+			])(
+				"serves an explicit change queued behind a failed $failure (latest fails: $latestFails)",
+				async ({ failure, latestFails }) => {
+					await prepareWatchers()
+					let failOperation!: (error: Error) => void
+					let operationStarted!: () => void
+					const started = new Promise<void>((resolve) => {
+						operationStarted = resolve
+					})
+					const pendingOperation = () => {
+						operationStarted()
+						return new Promise<never>((_resolve, reject) => {
+							failOperation = reject
+						})
+					}
+					const publication = vi.mocked(mockProvider.postMessageToWebview!)
+					if (failure === "discovery") {
+						mockProjectInstructionDirectories.mockImplementationOnce(pendingOperation)
+					} else {
+						publication.mockImplementationOnce(pendingOperation)
+					}
+					const first = emitChange().catch(() => undefined)
+					await started
+					if (latestFails) {
+						const latestError = new Error("Latest operation failed")
+						if (failure === "discovery") {
+							mockProjectInstructionDirectories.mockRejectedValueOnce(latestError)
+						} else {
+							publication.mockRejectedValueOnce(latestError)
+						}
+					}
+					mockReadFile.mockResolvedValue(skillText("Latest"))
+					const latest = emitChange()
+					const completed = Promise.all([first, latest])
+					const expected = latestFails
+						? expect(completed).rejects.toThrow("Latest operation failed")
+						: expect(completed).resolves.toEqual([undefined, undefined])
+					failOperation(new Error("Obsolete operation failed"))
+					await expected
+
+					expect(mockProjectInstructionDirectories).toHaveBeenCalledTimes(2)
+					expect(publication).toHaveBeenCalledTimes(failure === "publication" ? 2 : latestFails ? 0 : 1)
+					expect(skillsManager.getSkillsForMode("code")[0]?.description).toBe(
+						failure === "discovery" && latestFails ? "Initial" : "Latest",
+					)
+				},
+			)
+
+			it("discards queued watcher work after disposal without starting discovery", async () => {
+				await prepareWatchers()
+				const refreshing = emitChange()
+				await skillsManager.dispose()
+				await refreshing
+
+				expect(mockProjectInstructionDirectories).not.toHaveBeenCalled()
+				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+				expect(skillsManager.getAllSkills()).toEqual([])
+			})
+
+			it("does not publish or rescan when disposed during a watcher read", async () => {
+				await prepareWatchers()
+				let release!: (value: string) => void
+				let reading!: () => void
+				const started = new Promise<void>((resolve) => {
+					reading = resolve
+				})
+				mockReadFile.mockImplementationOnce(() => {
+					reading()
+					return new Promise<string>((resolve) => {
+						release = resolve
+					})
+				})
+				const refreshing = emitChange()
+				await started
+				const changed = emitChange()
+				await skillsManager.dispose()
+				release(skillText("Disposed"))
+				await Promise.all([refreshing, changed])
+
+				expect(mockProjectInstructionDirectories).toHaveBeenCalledTimes(1)
+				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+				expect(skillsManager.getAllSkills()).toEqual([])
+			})
+		})
+
 		it("refreshes task-scoped watcher catalogs without publishing foreground skills", async () => {
 			const previousNodeEnv = process.env.NODE_ENV
 			process.env.NODE_ENV = "development"

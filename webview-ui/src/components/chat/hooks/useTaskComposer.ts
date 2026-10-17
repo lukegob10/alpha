@@ -18,6 +18,7 @@ export interface TaskComposerDraft {
 	pendingEditRequest: (ComposerSubmission & { messageId: string }) | null
 	pendingResumeRequest: ComposerSubmission | null
 	pendingAskRequests: (ComposerSubmission & { askMessageTs?: number; isNativeUserInput?: true })[]
+	submittedRecoveryAskTs?: number
 	chatCommandError?: string
 }
 
@@ -60,6 +61,7 @@ export function useTaskComposer(taskId: string | undefined) {
 				!nextDraft.pendingEditRequest &&
 				!nextDraft.pendingResumeRequest &&
 				!nextDraft.pendingAskRequests.length &&
+				nextDraft.submittedRecoveryAskTs === undefined &&
 				!nextDraft.chatCommandError
 			)
 				delete next[key]

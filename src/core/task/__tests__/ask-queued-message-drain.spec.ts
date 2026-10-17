@@ -287,6 +287,46 @@ describe("Task.ask queued message drain", () => {
 		expect(result.text).toBe("picked answer")
 	})
 
+	it.each(["mistake_limit_reached", "api_req_failed"] as const)(
+		"requires an explicit correlated reply to unblock %s and retains later-turn FIFO input",
+		async (askType) => {
+			vi.useFakeTimers()
+			const task = await createAskOnlyTask()
+			const pending = task.ask(askType, "How should I continue?", false)
+			let settled = false
+			void pending.then(() => {
+				settled = true
+			})
+			try {
+				await vi.advanceTimersByTimeAsync(0)
+				const askTs = task.getActiveAskTimestamp()
+				expect(askTs).toEqual(expect.any(Number))
+				const queue = task.messageQueueService
+				queue.addMessage("Keep this for the next turn")
+
+				await vi.advanceTimersByTimeAsync(500)
+				expect(settled).toBe(false)
+				expect(queue.messages.map((message) => message.text)).toEqual(["Keep this for the next turn"])
+
+				const reply = queue.addMessage("Use the smaller repair")!
+				queue.claimMessage(reply.id)
+				expect(task.handleWebviewAskResponse("messageResponse", reply.text, [], [reply.id], askTs)).toBe(true)
+				await vi.advanceTimersByTimeAsync(100)
+				await expect(pending).resolves.toMatchObject({
+					response: "messageResponse",
+					text: "Use the smaller repair",
+					queuedMessageIds: [reply.id],
+				})
+				expect(queue.messages.map((message) => message.text)).toEqual(["Keep this for the next turn"])
+			} finally {
+				task.handleWebviewAskResponse("noButtonClicked")
+				await vi.advanceTimersByTimeAsync(100)
+				await pending
+				vi.useRealTimers()
+			}
+		},
+	)
+
 	it("announces an interactive question with its task identity despite queued next-turn input", async () => {
 		vi.useFakeTimers()
 		const task = await createAskOnlyTask()
