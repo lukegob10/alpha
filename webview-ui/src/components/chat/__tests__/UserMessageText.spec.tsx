@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { act, fireEvent, render, screen } from "@/utils/test-utils"
 
+import { vscode } from "../../../utils/vscode"
 import { UserMessageText } from "../UserMessageText"
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }))
@@ -112,5 +113,83 @@ describe("long user message previews", () => {
 		textHeight = 800
 		rerender(<Message text="Replaced with a much longer log" />)
 		expect(screen.getByRole("button", { name: "chat:task.seeMore" })).toBeInTheDocument()
+	})
+
+	it.each(["ticket:BAS-65", "tickets:BAS-65", "BAS-65", "/src/task.ts"])(
+		"keeps the @%s preview stable when mention styling changes whether six lines fit",
+		(mention) => {
+			let width = 300
+			vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => width)
+			vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+				if (this.clientWidth >= 500) return 60
+				// A styled mention can wrap onto a seventh line where its undecorated text fits in six.
+				return this.querySelector("[class*='mention-context-highlight']") ? 140 : 120
+			})
+			const text = `Work on @${mention} and preserve the details.`
+			const { rerender } = render(<Message text={text} />)
+			const collapsedStates = [Boolean(screen.queryByRole("button", { name: "chat:task.seeMore" }))]
+
+			for (let update = 0; update < 4; update++) {
+				rerender(<Message text={text} />)
+				act(() => resize())
+				collapsedStates.push(Boolean(screen.queryByRole("button", { name: "chat:task.seeMore" })))
+			}
+			expect(collapsedStates).toEqual([true, true, true, true, true])
+			expect(screen.getByRole("button", { name: "chat:task.seeMore" })).toHaveAttribute("aria-expanded", "false")
+			if (!mention.startsWith("/")) expect(screen.getByRole("button", { name: `@${mention}` })).toBeDisabled()
+
+			rerender(<Message text={`${text} Updated details.`} />)
+			act(() => resize())
+			expect(screen.getByRole("button", { name: "chat:task.seeMore" })).toHaveAttribute("aria-expanded", "false")
+
+			width = 600
+			act(() => resize())
+			expect(screen.queryByRole("button", { name: "chat:task.seeMore" })).not.toBeInTheDocument()
+			expect(screen.getByText(`@${mention}`)).toHaveClass(
+				mention.startsWith("/") ? "mention-context-highlight-with-shadow" : "mention-context-highlight",
+			)
+			if (!mention.startsWith("/")) expect(screen.getByRole("button", { name: `@${mention}` })).not.toBeDisabled()
+
+			width = 300
+			act(() => resize())
+			expect(screen.getByRole("button", { name: "chat:task.seeMore" })).toHaveAttribute("aria-expanded", "false")
+			act(() => resize())
+			expect(screen.getByRole("button", { name: "chat:task.seeMore" })).toHaveAttribute("aria-expanded", "false")
+		},
+	)
+
+	it("keeps short ticket mentions interactive without editing the message", () => {
+		textHeight = 40
+		const post = vi.spyOn(vscode, "postMessage").mockImplementation(() => {})
+		render(<Message text="Work on @ticket:BAS-65." />)
+		fireEvent.click(screen.getByRole("button", { name: "@ticket:BAS-65" }))
+		expect(post).toHaveBeenCalledTimes(1)
+		expect(post).toHaveBeenCalledWith({ type: "openMention", text: "ticket:BAS-65" })
+		expect(onEdit).not.toHaveBeenCalled()
+	})
+
+	it("keeps clipped ticket controls out of keyboard navigation until the message expands", () => {
+		const post = vi.spyOn(vscode, "postMessage").mockImplementation(() => {})
+		render(<Message text={"Long ticket details ".repeat(40) + "@ticket:BAS-65"} />)
+		const expand = screen.getByRole("button", { name: "chat:task.seeMore" })
+		const content = document.getElementById(expand.getAttribute("aria-controls")!)!
+		expect(content.querySelector("button:not([disabled]):not([tabindex='-1']), a[href], [tabindex='0']")).toBeNull()
+		expect(screen.getByRole("button", { name: "@ticket:BAS-65" })).toBeDisabled()
+		expect(post).not.toHaveBeenCalled()
+
+		fireEvent.click(expand)
+		const mention = screen.getByRole("button", { name: "@ticket:BAS-65" })
+		expect(mention).not.toBeDisabled()
+		fireEvent.click(mention)
+		expect(post).toHaveBeenCalledTimes(1)
+		expect(post).toHaveBeenCalledWith({ type: "openMention", text: "ticket:BAS-65" })
+		expect(screen.getByRole("button", { name: "chat:task.seeLess" })).toHaveAttribute("aria-expanded", "true")
+		expect(onEdit).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.seeLess" }))
+		expect(screen.getByRole("button", { name: "@ticket:BAS-65" })).toBeDisabled()
+		expect(content.querySelector("button:not([disabled]):not([tabindex='-1']), a[href], [tabindex='0']")).toBeNull()
+		fireEvent.click(screen.getByRole("button", { name: "@ticket:BAS-65" }))
+		expect(post).toHaveBeenCalledTimes(1)
 	})
 })

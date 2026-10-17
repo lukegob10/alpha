@@ -174,9 +174,48 @@ getter or initialized the navigation-generation counter. Their assertions were r
 the current contracts, and all 97 tests across those four files passed locally. The shell-integration fallback fixture
 updates the same cached setting read by command admission. This repair changes test setup only.
 
+## Ticket mention preview stability
+
+The reported `@ticket:BAS-65` highlight and **See more** flicker was a presentation feedback loop in
+`UserMessageText`. Its `ResizeObserver` measured styled mentions, then overflow detection replaced those mentions with
+raw text. Mention font and padding change wrapping, so near the six-line cutoff the decorated text can overflow while
+the raw text fits. Each observer delivery then reverses the previous decision and moves the rest of the transcript.
+The user confirmed that the submitted prompt, its highlight, preview control and following rows were oscillating.
+
+The fix keeps the same mention elements, fonts and padding in both preview states. Collapsed ticket buttons are disabled
+and their pointer handlers are removed; expanding or widening the message restores interaction. Genuine width changes
+and text edits still recalculate overflow. The task engine, ticket hydration and ticket activity expansion are unchanged.
+This is an Alpha webview presentation invariant; it does not change agent behavior or persisted/wire contracts.
+
+A deterministic regression models decorated text at 140 px and raw text at 120 px with a 20 px line height. The original
+code produced `[true, false, true, false, true]` for preview visibility over an initial measurement and four controlled
+resize notifications. The corrected code retains `[true, true, true, true, true]` for all three ticket mention aliases
+and a file mention. All 12 `UserMessageText` tests passed, including wider/narrower widths, text edits, short/expanded
+mention interaction and clipped-control keyboard safety. The three existing mention alias tests, 12 ticket activity
+tests and 13 ticket hydration tests also passed.
+
+The exact `pnpm --filter @alpha-code/vscode-e2e test:smoke:1250` gate rebuilt the repair and passed all 42 tests across
+13 suites, with no failures or pending tests. The compiled history renderer driver then passed on VS Code 1.125.0 with
+a scripted provider and a dedicated, ownership-verified profile. Its real CSS fixture found a 288 px content width
+where plain text measured 125 px but highlighted mentions measured 149 px at a 20.8 px line height. Six states each
+retained identical geometry over 12 animation frames: narrow/collapsed, narrow/expanded, wide, restored narrow,
+recollapsed and expansion by trusted pointer input over a disabled mention. Collapsed mentions rejected keyboard focus;
+expanded mentions were enabled. The sidebar screenshot was visually inspected and retained readable ticket highlights.
+The original bundle failed the new rendered assertion because collapsing removed the highlights. The probe preserves
+unitless line-height inheritance so smaller mention fonts use the same metrics as the actual preview.
+
+For a fresh built run, use `pnpm --filter @alpha-code/vscode-e2e test:history-ui:1250`. The retained repair evidence is at
+`C:/Users/Luke Goblirsch/AppData/Local/Temp/alpha-ticket-flicker-fixed/chats-8d4df8b9-ca00-4d3f-b9b5-c2105638060c`, including
+`ticket-mention-preview-geometry.json` and the sidebar screenshot. These are deterministic correctness measurements,
+not an end-to-end speed claim. Webview and E2E-runner type checks passed.
+
+The external contract was checked against the W3C [Resize Observer processing model](https://www.w3.org/TR/resize-observer/)
+on 2026-10-16: observed geometry changes can cause further observation deliveries. The fix removes the changing geometry
+from the observation decision instead of delaying callbacks or suppressing genuine resize events.
+
 ## Closure ledger
 
-- **Fixed now:** the bounded issues above, including both navigation and saved-preview correctness defects. The final
+- **Fixed now:** the bounded issues above, including navigation, saved-preview and ticket-mention layout defects. The final
   review also repaired lost pending watcher changes when an older discovery or publication failed.
 - **Flagged for follow-up:** cold task-metadata saves await directory-size scans; profile that workload before changing
   size freshness. MCP catalog tools/resources/templates RPCs run serially; review pagination, cancellation and failure

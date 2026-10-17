@@ -68,6 +68,15 @@ interface RendererNavigationProbe {
 	openingFeedbackAt?: number
 }
 
+interface TicketPreviewFrame {
+	height: number
+	textHeight: number
+	textWidth: number
+	highlights: number
+	enabledMentions: number
+	expanded: string | null
+}
+
 type HistoryUiHost = Pick<
 	ExtensionTestRunResult,
 	"status" | "execution" | "ownershipGate" | "captureComplete" | "hostExitObserved" | "actualVSCodeVersion"
@@ -189,6 +198,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				{
 					expression: `(()=>{const d=${useActiveFrame ? "document.getElementById('active-frame')?.contentDocument??document" : "document"};return (${expression})})()`,
 					returnByValue: true,
+					awaitPromise: true,
 				},
 				targetSession,
 			)
@@ -849,6 +859,178 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		await writeJsonAtomically(path.join(directory, "ui-done-diagram-ready.json"), {
 			nonce,
 			stage: "diagram-ready",
+			status: "passed",
+		})
+		await ready("ticket-mention-ready")
+		const ticketReceipt = JSON.parse(
+			await fs.readFile(path.join(directory, "ui-stage-ticket-mention-ready.json"), "utf8"),
+		) as { taskId?: unknown; text?: unknown }
+		assert.equal(ticketReceipt.taskId, taskId)
+		assert.equal(typeof ticketReceipt.text, "string")
+		const ticketText = javascriptLiteral(ticketReceipt.text)
+		const ticketSelector = `[data-alpha-ticket-preview="${nonce}"]`
+		await check(
+			`Array.from(d.querySelectorAll('.user-message')).some(e=>e.textContent.includes('Ticket mention layout fixture:'))`,
+		)
+		const ticketGeometry = await evaluate<{
+			crossoverWidth: number
+			rawHeight: number
+			highlightedHeight: number
+			lineHeight: number
+		}>(
+			`(()=>{
+				const message=Array.from(d.querySelectorAll('.user-message')).find(e=>e.textContent.includes('Ticket mention layout fixture:'));
+				message.setAttribute('data-alpha-ticket-preview',${javascriptLiteral(nonce)});
+				message.dataset.originalStyle=message.getAttribute('style')??'';
+				const content=message.querySelector('.wrap-anywhere'),probe=d.createElement('div');
+				probe.style.cssText='position:absolute;visibility:hidden;pointer-events:none;max-width:none';
+				const computed=d.defaultView.getComputedStyle(content);
+				for(const key of ['fontFamily','fontSize','fontWeight','letterSpacing'])probe.style[key]=computed[key];
+				// Preserve unitless inheritance so smaller ticket buttons scale their line height as in the message.
+				probe.style.lineHeight=String(parseFloat(computed.lineHeight)/parseFloat(computed.fontSize));
+				probe.setAttribute('aria-hidden','true');probe.inert=true;
+				const raw=content.cloneNode(false),highlighted=content.cloneNode(false);
+				raw.textContent=${ticketText};
+				${ticketText}.split('@ticket:BAS-65').forEach((part,index)=>{
+					if(index){const mention=d.createElement('button');mention.type='button';mention.className='mention-context-highlight text-[0.9em] cursor-pointer';mention.textContent='@ticket:BAS-65';highlighted.appendChild(mention)}
+					highlighted.appendChild(d.createTextNode(part));
+				});
+				probe.append(raw,highlighted);message.appendChild(probe);
+				const lineHeight=parseFloat(d.defaultView.getComputedStyle(content).lineHeight),cutoff=lineHeight*6+1;
+				let match;
+				for(let width=160;width<=480;width+=8){
+					probe.style.width=width+'px';
+					const rawHeight=raw.scrollHeight,highlightedHeight=highlighted.scrollHeight;
+					if(rawHeight<=cutoff&&highlightedHeight>cutoff){match={crossoverWidth:width,rawHeight,highlightedHeight,lineHeight};break}
+				}
+				probe.remove();
+				if(!match)throw new Error('Ticket fixture must expose different six-line wrapping for highlighted and plain text');
+				return match;
+			})()`,
+		)
+		const sampleTicketFrames = async (width: number) =>
+			evaluate<TicketPreviewFrame[]>(
+				`(()=>{
+					const message=d.querySelector(${javascriptLiteral(ticketSelector)}),win=d.defaultView;
+					const style=win.getComputedStyle(message);
+					message.style.maxWidth='none';
+					message.style.width=(${width}+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+parseFloat(style.borderLeftWidth)+parseFloat(style.borderRightWidth))+'px';
+					return new Promise(resolve=>{
+						const frames=[];let remaining=14;
+						const sample=()=>{
+							if(remaining<=12){const content=message.querySelector('.wrap-anywhere'),toggle=message.querySelector('button[aria-controls]');frames.push({height:message.getBoundingClientRect().height,textHeight:content.scrollHeight,textWidth:content.clientWidth,highlights:content.querySelectorAll('.mention-context-highlight').length,enabledMentions:content.querySelectorAll('button:not(:disabled)').length,expanded:toggle?.getAttribute('aria-expanded')??null})}
+							if(--remaining===0)resolve(frames);else win.requestAnimationFrame(sample);
+						};win.requestAnimationFrame(sample);
+					});
+				})()`,
+			)
+		function assertStableTicketFrames(
+			frames: TicketPreviewFrame[],
+			expanded: string | null,
+		): asserts frames is [TicketPreviewFrame, ...TicketPreviewFrame[]] {
+			assert.equal(frames.length, 12)
+			for (const frame of frames) {
+				assert.deepEqual(frame, frames[0], "Ticket preview geometry and disclosure remain stable across frames")
+				assert.equal(frame.highlights, 4, "Collapsing preserves all ticket highlight geometry")
+				assert.equal(frame.expanded, expanded)
+			}
+		}
+		const narrowCollapsed = await sampleTicketFrames(ticketGeometry.crossoverWidth)
+		assertStableTicketFrames(narrowCollapsed, "false")
+		assert.equal(narrowCollapsed[0].textWidth, ticketGeometry.crossoverWidth)
+		assert.equal(narrowCollapsed[0].textHeight, ticketGeometry.highlightedHeight)
+		assert.equal(narrowCollapsed[0].enabledMentions, 0, "Collapsed ticket controls cannot receive focus")
+		assert.equal(
+			await evaluate<boolean>(
+				`Array.from(d.querySelector(${javascriptLiteral(ticketSelector)}).querySelectorAll('button.mention-context-highlight')).every(button=>{button.focus();return button.disabled&&d.activeElement!==button})`,
+			),
+			true,
+			"Disabled ticket mentions reject keyboard focus while their preview is collapsed",
+		)
+		await activateSelector(`${ticketSelector} button[aria-expanded="false"]`)
+		const narrowExpanded = await sampleTicketFrames(ticketGeometry.crossoverWidth)
+		assertStableTicketFrames(narrowExpanded, "true")
+		assert.equal(narrowExpanded[0].enabledMentions, 4)
+		const wideExpanded = await sampleTicketFrames(900)
+		assertStableTicketFrames(wideExpanded, null)
+		assert.equal(wideExpanded[0].enabledMentions, 4)
+		const narrowRestored = await sampleTicketFrames(ticketGeometry.crossoverWidth)
+		assertStableTicketFrames(narrowRestored, "true")
+		await activateSelector(`${ticketSelector} button[aria-expanded="true"]`)
+		const narrowRecollapsed = await sampleTicketFrames(ticketGeometry.crossoverWidth)
+		assertStableTicketFrames(narrowRecollapsed, "false")
+		assert.equal(narrowRecollapsed[0].enabledMentions, 0)
+		const mentionPoint = await evaluate<{ x: number; y: number }>(
+			`(()=>{
+				const message=d.querySelector(${javascriptLiteral(ticketSelector)});
+				message.scrollIntoView({block:'center',inline:'nearest'});
+				const clip=message.querySelector('.wrap-anywhere').parentElement.getBoundingClientRect();
+				const mention=Array.from(message.querySelectorAll('button.mention-context-highlight')).find(button=>{
+					const r=button.getBoundingClientRect();return r.top>=clip.top&&r.bottom<=clip.bottom&&r.right>0&&r.left<d.defaultView.innerWidth;
+				});
+				if(!mention)throw new Error('A collapsed ticket highlight must remain visible for pointer input');
+				const r=mention.getBoundingClientRect(),frame=document.getElementById('active-frame')?.getBoundingClientRect();
+				return {x:(Math.max(0,r.left)+Math.min(d.defaultView.innerWidth,r.right))/2+(frame?.left??0),y:r.top+r.height/2+(frame?.top??0)};
+			})()`,
+		)
+		await capture("ticket-mention-preview")
+		const { frameTree: ticketFrameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
+			"Page.getFrameTree",
+			{},
+			sessionId,
+		)
+		const { backendNodeId: ticketFrameNode } = await connection.request<{ backendNodeId: number }>(
+			"DOM.getFrameOwner",
+			{ frameId: ticketFrameTree.frame.id },
+			pageSession,
+		)
+		const { model: ticketFrameBounds } = await connection.request<{ model: { content: number[] } }>(
+			"DOM.getBoxModel",
+			{ backendNodeId: ticketFrameNode },
+			pageSession,
+		)
+		for (const type of ["mousePressed", "mouseReleased"]) {
+			await connection.request(
+				"Input.dispatchMouseEvent",
+				{
+					type,
+					x: ticketFrameBounds.content[0]! + mentionPoint.x,
+					y: ticketFrameBounds.content[1]! + mentionPoint.y,
+					button: "left",
+					clickCount: 1,
+				},
+				pageSession,
+			)
+		}
+		await check(
+			`d.querySelector(${javascriptLiteral(ticketSelector)}).querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')==='true'`,
+		)
+		const pointerExpanded = await sampleTicketFrames(ticketGeometry.crossoverWidth)
+		assertStableTicketFrames(pointerExpanded, "true")
+		await fs.writeFile(
+			path.join(directory, "ticket-mention-preview-geometry.json"),
+			JSON.stringify(
+				{
+					hostVersion: expectedHostVersion,
+					ticketGeometry,
+					narrowCollapsed,
+					narrowExpanded,
+					wideExpanded,
+					narrowRestored,
+					narrowRecollapsed,
+					pointerExpanded,
+				},
+				null,
+				2,
+			),
+			{ flag: "wx" },
+		)
+		await evaluate(
+			`(()=>{const message=d.querySelector(${javascriptLiteral(ticketSelector)});message.setAttribute('style',message.dataset.originalStyle);delete message.dataset.originalStyle;message.removeAttribute('data-alpha-ticket-preview')})()`,
+		)
+		await writeJsonAtomically(path.join(directory, "ui-done-ticket-mention-ready.json"), {
+			nonce,
+			stage: "ticket-mention-ready",
 			status: "passed",
 		})
 		const host = await running

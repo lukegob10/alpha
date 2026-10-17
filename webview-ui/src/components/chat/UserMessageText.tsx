@@ -50,6 +50,7 @@ export function UserMessageText({ text, isExpanded, onToggleExpand, onEdit }: Us
 						event.stopPropagation()
 						if (window.getSelection()?.toString()) return
 						if (
+							!isCollapsed &&
 							event.target instanceof Element &&
 							event.target.closest("button, [class*='mention-context-highlight']")
 						)
@@ -58,8 +59,8 @@ export function UserMessageText({ text, isExpanded, onToggleExpand, onEdit }: Us
 						else onEdit?.()
 					}}
 					title={!isCollapsed && onEdit ? t("chat:queuedMessages.clickToEdit") : undefined}>
-					{/* A collapsed preview has no clipped, focusable mention controls; expand to interact with mentions. */}
-					{isCollapsed ? text : <Mention text={text} withShadow />}
+					{/* Keep mention geometry stable while measuring overflow; only interaction changes when collapsed. */}
+					<Mention text={text} withShadow interactive={!isCollapsed} />
 				</div>
 			</div>
 			{overflows && (

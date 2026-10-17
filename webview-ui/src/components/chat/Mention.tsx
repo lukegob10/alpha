@@ -5,9 +5,10 @@ import { vscode } from "../../utils/vscode"
 interface MentionProps {
 	text?: string
 	withShadow?: boolean
+	interactive?: boolean
 }
 
-export const Mention = ({ text, withShadow = false }: MentionProps) => {
+export const Mention = ({ text, withShadow = false, interactive = true }: MentionProps) => {
 	if (!text) {
 		return <>{text}</>
 	}
@@ -22,16 +23,20 @@ export const Mention = ({ text, withShadow = false }: MentionProps) => {
 				return (
 					<button
 						key={index}
-						className="mention-context-highlight text-[0.9em] cursor-pointer"
-						onClick={() => vscode.postMessage({ type: "openMention", text: part })}>
+						type="button"
+						className={`mention-context-highlight text-[0.9em] ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
+						disabled={!interactive}
+						onClick={
+							interactive ? () => vscode.postMessage({ type: "openMention", text: part }) : undefined
+						}>
 						@{part}
 					</button>
 				)
 			return (
 				<span
 					key={index}
-					className={`${withShadow ? "mention-context-highlight-with-shadow" : "mention-context-highlight"} text-[0.9em] cursor-pointer`}
-					onClick={() => vscode.postMessage({ type: "openMention", text: part })}>
+					className={`${withShadow ? "mention-context-highlight-with-shadow" : "mention-context-highlight"} text-[0.9em] ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
+					onClick={interactive ? () => vscode.postMessage({ type: "openMention", text: part }) : undefined}>
 					@{part}
 				</span>
 			)
