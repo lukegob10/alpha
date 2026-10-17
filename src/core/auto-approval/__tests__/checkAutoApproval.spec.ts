@@ -100,7 +100,16 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision })
 	})
 
-	it.each(["send_task_message", "steer_task", "stop_task"])("lets Auto manage its own %s call", async (tool) => {
+	it.each([
+		"send_task_message",
+		"steer_task",
+		"stop_task",
+		"create_thread",
+		"fork_thread",
+		"send_message_to_thread",
+		"set_thread_title",
+		"set_thread_archived",
+	])("lets Auto manage its own %s call", async (tool) => {
 		await expect(
 			checkAutoApproval({ ask: "tool", text: JSON.stringify({ tool }), state: { approvalMode: "auto" } }),
 		).resolves.toEqual({ decision: "approve" })

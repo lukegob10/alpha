@@ -11,6 +11,7 @@ import {
 	discoverToolsParamsSchema,
 	toolSearchParamsSchema,
 	subagentSpawnAgentArgsSchema,
+	threadToolParamsSchemas,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
@@ -1087,6 +1088,20 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "list_threads":
+			case "list_archived_threads":
+			case "read_thread":
+			case "wait_threads":
+			case "create_thread":
+			case "fork_thread":
+			case "send_message_to_thread":
+			case "set_thread_title":
+			case "set_thread_archived": {
+				const parsed = threadToolParamsSchemas[name].safeParse(partialArgs)
+				if (parsed.success) nativeArgs = parsed.data
+				break
+			}
+
 			case "create_task":
 				if (
 					this.hasOnlyKeys(partialArgs, ["objective", "workspace_mode"]) &&
@@ -1694,6 +1709,21 @@ export class NativeToolCallParser {
 						} as NativeArgsFor<TName>
 					}
 					break
+
+				case "list_threads":
+				case "list_archived_threads":
+				case "read_thread":
+				case "wait_threads":
+				case "create_thread":
+				case "fork_thread":
+				case "send_message_to_thread":
+				case "set_thread_title":
+				case "set_thread_archived": {
+					const parsed =
+						threadToolParamsSchemas[resolvedName as keyof typeof threadToolParamsSchemas].safeParse(args)
+					if (parsed.success) nativeArgs = parsed.data as NativeArgsFor<TName>
+					break
+				}
 
 				case "create_task":
 					if (

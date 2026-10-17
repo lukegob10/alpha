@@ -43,9 +43,7 @@ isolation. Full Access skips outside-path review; explicit deny rules still bloc
 
 The saved allow-prefix list remains available for Ask mode. Rules match complete executable and argument tokens;
 arguments are case-sensitive, and any matching deny takes precedence over an allow. It is not required for normal Auto
-operation. See [command matching alignment](codex-alignment-command-matching-2026-10-11.md) for the upstream reference
-and compatibility contract. If Alpha later adds process confinement, keep the approval policy and the confinement
-boundary separate.
+operation. If Alpha later adds process confinement, keep the approval policy and the confinement boundary separate.
 
 ## Existing settings migration
 

@@ -743,6 +743,105 @@ describe("Alpha", () => {
 			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
 		})
 
+		it("generates a title outside the main task transcript for a new primary task", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Could you please fix chat naming?",
+				startTask: false,
+			})
+			const historyItem = {
+				id: alphaTask.taskId,
+				number: 1,
+				ts: 1,
+				task: "Could you please fix chat naming?",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue(historyItem)
+			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
+			const titleHandler = {
+				prepareModel: vi.fn().mockResolvedValue(undefined),
+				setReasoningOptions: vi.fn(),
+				createMessage: vi.fn(async function* () {
+					yield { type: "text", text: "Fix chat naming" }
+					yield { type: "outcome", status: "completed", terminal: true }
+				}),
+				dispose: vi.fn(),
+			}
+			vi.spyOn(alphaTask as any, "createReasoningSummaryHandler").mockReturnValue(titleHandler)
+
+			await (alphaTask as any).scheduleInitialTaskTitle("Could you please fix chat naming?")
+
+			expect(mockProvider.updateGeneratedTaskTitle).toHaveBeenCalledExactlyOnceWith(
+				alphaTask.taskId,
+				"Fix chat naming",
+			)
+			expect(alphaTask.clineMessages).toEqual([])
+			expect(alphaTask.apiConversationHistory).toEqual([])
+			expect(titleHandler.dispose).toHaveBeenCalledOnce()
+		})
+
+		it("does not request generated titles for managed sub-agents", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Implement delegated work",
+				taskKind: "subagent",
+				startTask: false,
+			})
+			const createHandler = vi.spyOn(alphaTask as any, "createReasoningSummaryHandler")
+			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
+
+			await (alphaTask as any).scheduleInitialTaskTitle("Implement delegated work")
+
+			expect(createHandler).not.toHaveBeenCalled()
+			expect(mockProvider.updateGeneratedTaskTitle).not.toHaveBeenCalled()
+		})
+
+		it("cancels an in-flight generated title when the task is renamed", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Implement delegated work",
+				startTask: false,
+			})
+			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue({
+				id: alphaTask.taskId,
+				number: 1,
+				ts: 1,
+				task: "Implement delegated work",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
+			let requestStarted!: () => void
+			const started = new Promise<void>((resolve) => (requestStarted = resolve))
+			const titleHandler = {
+				prepareModel: vi.fn().mockResolvedValue(undefined),
+				setReasoningOptions: vi.fn(),
+				createMessage: vi.fn((_systemPrompt: string, _messages: unknown, metadata: { signal: AbortSignal }) =>
+					(async function* () {
+						requestStarted()
+						await new Promise<void>((resolve) => metadata.signal.addEventListener("abort", () => resolve()))
+						yield { type: "outcome", status: "cancelled", terminal: true }
+					})(),
+				),
+				dispose: vi.fn(),
+			}
+			vi.spyOn(alphaTask as any, "createReasoningSummaryHandler").mockReturnValue(titleHandler)
+
+			const generation = (alphaTask as any).scheduleInitialTaskTitle("Implement delegated work")
+			await started
+			alphaTask.cancelAutomaticTaskTitle()
+			await generation
+
+			expect(mockProvider.updateGeneratedTaskTitle).not.toHaveBeenCalled()
+			expect(titleHandler.dispose).toHaveBeenCalledOnce()
+		})
+
 		it("publishes subsequent messages incrementally without rebuilding extension state", async () => {
 			const alphaTask = new Task({
 				provider: mockProvider,
@@ -8466,6 +8565,116 @@ describe("Alpha", () => {
 				else expect(ask).toHaveBeenCalledExactlyOnceWith("api_req_failed", "Provider failure")
 			},
 		)
+
+		it.each([false, true])(
+			"compacts a first-chunk context rejection independently of tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				const compact = vi.spyOn(task as any, "handleContextWindowExceededError").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							// Responses preserves this classification without a retryable flag.
+							throw Object.assign(new Error("Opaque provider context failure."), {
+								firstChunkFailure: true,
+								retryCategory: "context",
+							})
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield { type: "text", text: "Recovered after compaction." }
+						})(),
+					)
+
+				await expect(
+					task.runAgentRequests([{ type: "text", text: "follow up" }], false),
+				).resolves.toMatchObject({
+					status: "completed",
+				})
+				expect(compact).toHaveBeenCalledExactlyOnceWith(expect.any(Number))
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1]?.[1]).toMatchObject({
+					retryCategory: "context",
+					retryDeadline: expect.any(Number),
+				})
+				expect(ask).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(1)
+			},
+		)
+
+		it.each([undefined, false] as const)(
+			"bounds first-chunk context recovery and preserves retryable=%s",
+			async (retryable) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				const compact = vi.spyOn(task as any, "handleContextWindowExceededError").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						yield* []
+						throw Object.assign(new Error("Context still exceeds the provider limit."), {
+							firstChunkFailure: true,
+							retryCategory: "context",
+							retryable,
+						})
+					})(),
+				)
+
+				await expect(
+					task.runAgentRequests([{ type: "text", text: "follow up" }], false),
+				).resolves.toMatchObject({
+					status: "failed",
+				})
+				expect(request).toHaveBeenCalledTimes(retryable === false ? 1 : 2)
+				expect(compact).toHaveBeenCalledTimes(retryable === false ? 0 : 1)
+				if (retryable === false) expect(ask).not.toHaveBeenCalled()
+				else
+					expect(ask).toHaveBeenCalledExactlyOnceWith(
+						"api_req_failed",
+						"Context still exceeds the provider limit.",
+					)
+			},
+		)
+
+		it("preserves partial output without replaying a context rejection", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const compact = vi.spyOn(task as any, "handleContextWindowExceededError").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "text", text: "The answer began before the provider failed." }
+					throw Object.assign(new Error("Context rejected after output."), { retryCategory: "context" })
+				})(),
+			)
+
+			await expect(task.runAgentRequests([{ type: "text", text: "follow up" }], false)).resolves.toMatchObject({
+				status: "failed",
+				response: { text: "The answer began before the provider failed." },
+			})
+			expect(request).toHaveBeenCalledOnce()
+			expect(compact).not.toHaveBeenCalled()
+			expect(ask).not.toHaveBeenCalled()
+		})
 
 		it.each([false, true])(
 			"retries a provider-classified 429 independently of tool auto-approval=%s",

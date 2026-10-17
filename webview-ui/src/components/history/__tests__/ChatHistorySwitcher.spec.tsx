@@ -25,10 +25,11 @@ const context = (history: HistoryItem[]) =>
 		cwd: "/workspace",
 		getCachedTranscriptRevision: () => 12,
 	}) as unknown as ExtensionStateContextType
-const view = (onOpenTask = vi.fn(), onViewAll = vi.fn(), history = tasks, isVisible = true) => (
+const view = (onOpenTask = vi.fn(), onViewAll = vi.fn(), history = tasks, isVisible = true, onBackToHome = vi.fn()) => (
 	<ExtensionStateContext.Provider value={context(history)}>
 		<ChatHistorySwitcher
-			currentTask={history[0]}
+			currentTaskId={history[0]?.id}
+			onBackToHome={onBackToHome}
 			onOpenTask={onOpenTask}
 			onViewAll={onViewAll}
 			isVisible={isVisible}
@@ -38,6 +39,32 @@ const view = (onOpenTask = vi.fn(), onViewAll = vi.fn(), history = tasks, isVisi
 
 describe("ChatHistorySwitcher", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it("shows only the Back and Switch chat icons, in that order, without the active title", () => {
+		const { container } = render(view())
+		expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Back to main screen",
+			"Switch chat",
+		])
+		expect(screen.queryByText("Navigation cleanup")).not.toBeInTheDocument()
+		expect(screen.queryByText("Original prompt 0")).not.toBeInTheDocument()
+		expect(container.querySelector(".chat-history-switcher")).toHaveTextContent("")
+		expect(screen.queryByRole("button", { name: /Rename chat/ })).not.toBeInTheDocument()
+	})
+
+	it("returns to the main screen without opening the switcher or changing a chat", async () => {
+		const onOpenTask = vi.fn()
+		const onViewAll = vi.fn()
+		const onBackToHome = vi.fn()
+		const user = userEvent.setup()
+		render(view(onOpenTask, onViewAll, tasks, true, onBackToHome))
+		await user.click(screen.getByRole("button", { name: "Back to main screen" }))
+		expect(onBackToHome).toHaveBeenCalledTimes(1)
+		expect(onOpenTask).not.toHaveBeenCalled()
+		expect(onViewAll).not.toHaveBeenCalled()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(screen.queryByTestId("history-preview-list")).not.toBeInTheDocument()
+	})
 
 	it("opens the same four recent rows and uses the owning chat callback", async () => {
 		const onOpenTask = vi.fn()
@@ -62,9 +89,16 @@ describe("ChatHistorySwitcher", () => {
 		expect(screen.queryByTestId("history-preview-list")).not.toBeInTheDocument()
 	})
 
-	it("renames through the active title and refreshes history from the host projection", () => {
+	it("renames through a switcher row and refreshes history from the host projection", async () => {
+		const user = userEvent.setup()
 		const { rerender } = render(view())
-		fireEvent.click(screen.getByRole("button", { name: "Rename chat: Navigation cleanup" }))
+		await user.click(screen.getByRole("button", { name: "Switch chat" }))
+		await user.click(
+			within(screen.getByTestId("task-item-task-0")).getByRole("button", {
+				name: "Chat actions: Navigation cleanup",
+			}),
+		)
+		await user.click(screen.getByRole("menuitem", { name: "Rename chat" }))
 		fireEvent.change(screen.getByRole("textbox", { name: "Chat name" }), {
 			target: { value: "Release navigation" },
 		})
@@ -84,15 +118,16 @@ describe("ChatHistorySwitcher", () => {
 		)
 		expect(screen.queryByRole("dialog", { name: "Rename chat" })).not.toBeInTheDocument()
 		rerender(view(vi.fn(), vi.fn(), [{ ...tasks[0], displayName: "Release navigation" }, ...tasks.slice(1)]))
-		expect(screen.getByRole("button", { name: "Rename chat: Release navigation" })).toBeInTheDocument()
+		expect(within(screen.getByTestId("task-item-task-0")).getByText("Release navigation")).toBeInTheDocument()
 	})
 
-	it.each(["context", "keyboard"])("opens title actions using %s", async (entry) => {
+	it.each(["context", "keyboard"])("opens switcher row actions using %s", async (entry) => {
 		const user = userEvent.setup()
 		render(view())
-		const title = screen.getByRole("button", { name: "Rename chat: Navigation cleanup" })
-		if (entry === "context") fireEvent.contextMenu(title)
-		else fireEvent.keyDown(title, { key: "F10", shiftKey: true })
+		await user.click(screen.getByRole("button", { name: "Switch chat" }))
+		const row = screen.getByTestId("task-item-task-0")
+		if (entry === "context") fireEvent.contextMenu(row)
+		else fireEvent.keyDown(row, { key: "F10", shiftKey: true })
 		await user.click(screen.getByRole("menuitem", { name: "Rename chat" }))
 		expect(screen.getByRole("textbox", { name: "Chat name" })).toHaveValue("Navigation cleanup")
 		expect(vscode.postMessage).not.toHaveBeenCalled()
@@ -118,10 +153,11 @@ describe("ChatHistorySwitcher", () => {
 		async (entry) => {
 			const user = userEvent.setup()
 			const { rerender } = render(view())
-			if (entry === "switcher") await user.click(screen.getByRole("button", { name: "Switch chat" }))
-			else if (entry === "rename")
-				await user.click(screen.getByRole("button", { name: "Rename chat: Navigation cleanup" }))
-			else fireEvent.contextMenu(screen.getByRole("button", { name: "Rename chat: Navigation cleanup" }))
+			await user.click(screen.getByRole("button", { name: "Switch chat" }))
+			if (entry !== "switcher") {
+				fireEvent.contextMenu(screen.getByTestId("task-item-task-0"))
+				if (entry === "rename") await user.click(screen.getByRole("menuitem", { name: "Rename chat" }))
+			}
 			expect(screen.queryAllByRole("dialog").length + screen.queryAllByRole("menu").length).toBeGreaterThan(0)
 			rerender(view(vi.fn(), vi.fn(), tasks, false))
 			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
@@ -137,12 +173,13 @@ describe("ChatHistorySwitcher", () => {
 	it.each(["switcher", "rename", "actions"])("closes %s portals when the current chat changes", async (entry) => {
 		const user = userEvent.setup()
 		const { rerender } = render(view())
-		if (entry === "switcher") await user.click(screen.getByRole("button", { name: "Switch chat" }))
-		else if (entry === "rename")
-			await user.click(screen.getByRole("button", { name: "Rename chat: Navigation cleanup" }))
-		else fireEvent.contextMenu(screen.getByRole("button", { name: "Rename chat: Navigation cleanup" }))
+		await user.click(screen.getByRole("button", { name: "Switch chat" }))
+		if (entry !== "switcher") {
+			fireEvent.contextMenu(screen.getByTestId("task-item-task-0"))
+			if (entry === "rename") await user.click(screen.getByRole("menuitem", { name: "Rename chat" }))
+		}
 		rerender(view(vi.fn(), vi.fn(), [tasks[1], tasks[0], ...tasks.slice(2)]))
-		expect(screen.getByRole("button", { name: "Rename chat: Original prompt 1" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Switch chat" })).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 		expect(screen.queryByRole("menu")).not.toBeInTheDocument()
 		expect(vscode.postMessage).not.toHaveBeenCalled()

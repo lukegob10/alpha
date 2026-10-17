@@ -181,6 +181,7 @@ import {
 	taskReasoningPreferenceSchema,
 } from "@alpha-code/types"
 import { resolveTaskReasoning } from "../agent/TaskReasoning"
+import { fallbackTaskTitle, generateTaskTitle } from "./taskTitle"
 import {
 	ApiStreamDeadlineError,
 	createLinkedAbortController,
@@ -866,6 +867,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly diagnosticIncidentId?: string
 	readonly diagnosticSourceTaskId?: string
 	readonly orchestrationParentTaskId?: string
+	readonly orchestrationNotifyCompletion: boolean
 	readonly orchestrationWorkspaceMode?: "shared" | "worktree"
 	readonly orchestrationWorkspaceRelativePath?: string
 	readonly orchestrationWorkspaceBaselineCommit?: string
@@ -997,6 +999,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly globalStoragePath: string
 	private readonly agentMessageInbox: AgentMessageInbox
 	private readonly agentMessageAdmissions = new Set<Promise<unknown>>()
+	private agentStopMessageId?: string
 	/**
 	 * The legacy API-history file remains the provider/runtime authority during
 	 * the strangler rollout. This versioned transcript is an integrity-checked
@@ -1027,6 +1030,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private manualContextCondenseSettlement?: Promise<void>
 	private contextCondenseAbortController?: AbortController
 	private postTurnCompactionAbortController?: AbortController
+	private generatedTitleAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
 	private reasoningSummaries?: ReasoningSummary
 	private agentWaitAbortController?: AbortController
@@ -1045,6 +1049,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		images: string[]
 		queuedMessageIds?: string[]
 		inputOrigin?: "human" | "agent"
+		isAgentMessageWake?: boolean
 		onPersisted?: () => Promise<void> | void
 	}
 	private queuedInputBlockReceipts = new WeakMap<object, readonly string[]>()
@@ -1839,6 +1844,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		taskMode,
 		taskApiConfigName,
 		orchestrationParentTaskId,
+		orchestrationNotifyCompletion,
 		orchestrationWorkspaceMode,
 		orchestrationWorkspaceRelativePath,
 		orchestrationWorkspaceBaselineCommit,
@@ -1903,6 +1909,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		this.alphaMessagesHydrated = historyItem === undefined
 		this.orchestrationParentTaskId = historyItem?.orchestrationParentTaskId ?? orchestrationParentTaskId
+		this.orchestrationNotifyCompletion =
+			historyItem?.orchestrationNotifyCompletion ?? orchestrationNotifyCompletion ?? true
 		this.orchestrationWorkspaceMode = historyItem?.orchestrationWorkspaceMode ?? orchestrationWorkspaceMode
 		this.orchestrationWorkspaceRelativePath =
 			historyItem?.orchestrationWorkspaceRelativePath ?? orchestrationWorkspaceRelativePath
@@ -5135,7 +5143,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async replayCanonicalLifecycle(): Promise<void> {
 		const provider = this.providerRef.deref() as Partial<AlphaProvider> | undefined
 		if (typeof provider?.replayAgentLifecycle === "function") {
-			await provider.replayAgentLifecycle(this.taskId)
+			await provider.replayAgentLifecycle(this.taskId, { reuseUnchanged: true })
 		}
 	}
 
@@ -6331,6 +6339,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath, requireExisting })
 	}
 
+	private getLastNonAgentMessage(): AlphaMessage | undefined {
+		return this.clineMessages[findLastIndex(this.clineMessages, (message) => message.say !== "agent_message")]
+	}
+
 	private observeUiMessageTimestamps(messages: readonly AlphaMessage[] = this.clineMessages): void {
 		let latest = this.uiMessageTimestampHighWater ?? 0
 		if (this.uiMessageTimestampHighWater === undefined && messages !== this.clineMessages) {
@@ -6446,6 +6458,59 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return buildApiHandler(configuration)
 	}
 
+	private scheduleInitialTaskTitle(requestText: string): Promise<void> {
+		if (
+			!requestText.trim() ||
+			this.diagnosticSession ||
+			this.taskKind === "subagent" ||
+			this.parentTaskId ||
+			this.orchestrationParentTaskId
+		) {
+			return Promise.resolve()
+		}
+		const provider = this.providerRef.deref()
+		if (!provider || typeof provider.updateGeneratedTaskTitle !== "function") return Promise.resolve()
+		if (!provider.taskHistoryStore.get(this.taskId)) return Promise.resolve()
+		if (this.generatedTitleAbortController) return Promise.resolve()
+		const titleController = new AbortController()
+		this.generatedTitleAbortController = titleController
+		const signal = AbortSignal.any([this.getTaskLifetimeCancellationSignal(), titleController.signal])
+		const releaseTitleController = () => {
+			if (this.generatedTitleAbortController === titleController) this.generatedTitleAbortController = undefined
+		}
+		let handler: ApiHandler
+		try {
+			handler = this.createReasoningSummaryHandler(this.effectiveApiConfiguration)
+		} catch {
+			return Promise.resolve()
+				.then(async () => {
+					if (signal.aborted) return
+					await provider.updateGeneratedTaskTitle(
+						this.taskId,
+						fallbackTaskTitle(requestText) ?? "Untitled task",
+					)
+				})
+				.catch(() => undefined)
+				.finally(releaseTitleController)
+		}
+
+		return generateTaskTitle(handler, this.taskId, requestText, signal)
+			.catch(() => undefined)
+			.then(async (generatedTitle) => {
+				if (signal.aborted) return
+				const title = generatedTitle ?? fallbackTaskTitle(requestText) ?? "Untitled task"
+				await provider.updateGeneratedTaskTitle(this.taskId, title)
+			})
+			.catch(() => {
+				console.warn(`[Task#${this.taskId}] Automatic title could not be saved`)
+			})
+			.finally(releaseTitleController)
+	}
+
+	public cancelAutomaticTaskTitle(): void {
+		this.generatedTitleAbortController?.abort(new Error("The task was renamed"))
+	}
+
 	private recordProviderRequestTimeout(): void {
 		// appendAgentTurnEvent captures the current immutable step and request IDs
 		// before its first await, including when this timeout triggers cancellation.
@@ -6534,6 +6599,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					diagnosticIncidentId: this.diagnosticIncidentId,
 					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 					orchestrationParentTaskId: this.orchestrationParentTaskId,
+					orchestrationNotifyCompletion: this.orchestrationNotifyCompletion,
 					orchestrationWorkspaceMode: this.orchestrationWorkspaceMode,
 					orchestrationWorkspaceRelativePath: this.orchestrationWorkspaceRelativePath,
 					orchestrationWorkspaceBaselineCommit: this.orchestrationWorkspaceBaselineCommit,
@@ -7049,7 +7115,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (partial !== undefined) {
-			const lastMessage = this.clineMessages.at(-1)
+			const lastMessage = this.getLastNonAgentMessage()
 
 			const isUpdatingPreviousPartial =
 				lastMessage && lastMessage.partial && lastMessage.type === "ask" && lastMessage.ask === type
@@ -8861,8 +8927,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.flushApiConversationHistoryPersistence()
 			this.getMutableCompletionStageMetrics().persistenceSettledAt = Date.now()
 			const transcriptQueue = this.apiConversationHistorySaveQueue
-			const finalDecision = await this.getCompletionGateDecision()
-			if (!finalDecision.allowed || this.abort) {
+			const completionSignal = this.getTaskLifetimeCancellationSignal()
+			let finalDecision: CompletionGateDecision
+			try {
+				// Receipt publishers also need the mutation gate, so bound one snapshot
+				// read here without polling or joining their work inside the gate.
+				finalDecision = await this.waitForRequestControl(
+					this.getCompletionGateDecision(),
+					completionSignal,
+					Date.now() + 30_000,
+				)
+			} catch (error) {
+				if (error instanceof ApiStreamDeadlineError) {
+					verificationRejection = t("common:errors.completion_evidence_read_timeout")
+				} else if (completionSignal.aborted) {
+					verificationRejection = t("common:errors.completion_evidence_read_interrupted")
+				}
+				throw error
+			}
+			if (!finalDecision.allowed || this.abort || completionSignal.aborted) {
 				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
 				throw new Error(verificationRejection)
 			}
@@ -9911,13 +9994,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getUserRequestTextForCatalog(): string | undefined {
-		return extractUserRequestText(this.apiConversationHistory, this.metadata?.task)
+		return extractUserRequestText(
+			this.apiConversationHistory,
+			this.orchestrationParentTaskId ? undefined : this.metadata?.task,
+		)
 	}
 
 	private getCrossTaskRole(): "root" | "child" | "none" {
-		if (this.taskKind !== "primary") return "none"
-		if (this.orchestrationParentTaskId) return "child"
+		if (this.taskKind !== "primary" || this.diagnosticSession) return "none"
 		if (this.parentTaskId) return "none"
+		if (this.rootTaskId && this.rootTaskId !== this.taskId) return "none"
 		return "root"
 	}
 
@@ -10694,6 +10780,84 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public async receiveAgentMessage(message: AgentMessage): Promise<void> {
 		if (this.abort && !this.didComplete) throw new Error("The task is stopped and cannot accept an agent message")
 		await this.agentMessageInbox.receive(message)
+		await this.presentIncomingAgentMessage(message)
+	}
+
+	/** Record host-controlled stopping without admitting model input or waking this conversation. */
+	public async recordAgentStopRequest(senderTaskId: string, reason?: string): Promise<void> {
+		if (!this.alphaMessagesHydrated) throw new Error(t("common:tasks.peer_stop_loading"))
+		const ownership = {
+			guard: () => this.isCurrentApiConversationHistoryOwner() && !this.abort,
+			provider: this.providerRef.deref(),
+		}
+		await this.presentIncomingAgentMessage(
+			{
+				id: this.agentStopMessageId ?? uuidv7(),
+				senderTaskId,
+				text: reason?.trim().slice(0, 500) || t("common:tasks.peer_stop_request"),
+			},
+			"requested",
+			ownership,
+		)
+		if (!ownership.guard()) throw new Error(t("common:tasks.peer_stop_unavailable"))
+	}
+
+	private async presentIncomingAgentMessage(
+		message: AgentMessage,
+		stopStatus?: "requested",
+		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
+	): Promise<void> {
+		// Cold recipients hydrate their existing transcript before delivery. Structured
+		// managed-agent notifications keep their existing lifecycle presentation.
+		if (!this.alphaMessagesHydrated || message.notification) return
+		const matches = (entry: AlphaMessage) => entry.agentMessage?.id === message.id
+		if (this.clineMessages.some(matches)) return
+		const timestamp = this.reserveUiMessageTimestamp()
+		const committed = await this.commitAlphaMessageMutation(
+			timestamp,
+			"the incoming chat message",
+			(existing) =>
+				existing ?? {
+					ts: timestamp,
+					type: "say",
+					say: "agent_message",
+					text: redactTaskPrivatePaths(this, message.text),
+					agentMessage: {
+						id: message.id,
+						senderTaskId: message.senderTaskId,
+						...(stopStatus && { stopStatus }),
+					},
+					isProtected: true,
+				},
+			undefined,
+			matches,
+			ownership,
+		)
+		if (committed && stopStatus) this.agentStopMessageId = message.id
+		if (committed?.created) await this.publishAlphaMessageCreated(committed.message, undefined, ownership)
+	}
+
+	private async finalizeAgentStopMessage(ownership: {
+		guard: CanonicalLifecycleEventGuard
+		provider: AlphaProvider | undefined
+	}): Promise<void> {
+		const id = this.agentStopMessageId
+		if (!id) return
+		const receipt = this.clineMessages.find((message) => message.agentMessage?.id === id)
+		if (receipt?.agentMessage?.stopStatus !== "requested") return
+		const committed = await this.commitAlphaMessageMutation(
+			receipt.ts,
+			"the incoming chat stop receipt",
+			(message) =>
+				message?.agentMessage && {
+					...message,
+					agentMessage: { ...message.agentMessage, stopStatus: "stopped" },
+				},
+			undefined,
+			(message) => message.agentMessage?.id === id,
+			ownership,
+		)
+		if (committed) await this.updateAlphaMessage(committed.message, ownership)
 	}
 
 	/** Runs only between logical steps, after all preceding tool results have been persisted. */
@@ -10708,6 +10872,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		const persist = async (message: AgentMessage) => {
 			if (this.abort) throw new Error("Agent message delivery was cancelled")
+			// Repair the visible receipt on reload before acknowledging the inbox entry.
+			await this.presentIncomingAgentMessage(message)
 			// A crash between transcript commit and mailbox ACK must not duplicate input.
 			if (
 				getPersistedAgentNotificationIds(
@@ -10874,6 +11040,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			text: "Continue with the pending agent messages.",
 			images: [],
 			inputOrigin: "agent",
+			isAgentMessageWake: true,
 		}
 		this.steerMessageAwaitingPersistence = true
 		if (this.taskKind === "primary") this.interruptHookPending = true
@@ -10883,6 +11050,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.stepInterruptionController?.abort(interrupt)
 		this.currentRequestAbortController?.abort(interrupt)
 		return "steered"
+	}
+
+	private async presentSteeringInput(steering: NonNullable<Task["pendingSteerMessage"]>): Promise<void> {
+		// The actual attributed message already has its own bubble. The wake is internal.
+		if (!steering.isAgentMessageWake) await this.say("user_feedback", steering.text, steering.images)
 	}
 
 	public async steerUserMessage(
@@ -11649,7 +11821,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							message.say === type &&
 							message.commandExecutionId === commandOutputExecutionId,
 					)
-				: this.clineMessages.length - 1
+				: findLastIndex(this.clineMessages, (message) => message.say !== "agent_message")
 			const lastMessage = this.clineMessages[previousMessageIndex]
 			// Boolean publications are cumulative snapshots of one command invocation.
 			if (commandOutputExecutionId && lastMessage && !lastMessage.partial) return
@@ -12009,6 +12181,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// No need to add any messages - the todoList property is already set
 
 			await this.say("text", task, images, undefined, undefined, undefined, { stateUpdate: "task" })
+			const firstUserMessage = this.clineMessages[0]
+			void this.scheduleInitialTaskTitle(
+				firstUserMessage?.text?.trim() || (images?.length ? "Review the attached image" : ""),
+			)
 
 			// Internal sub-agents never receive MCP authority, so avoid initializing
 			// or counting foreground MCP servers for their isolated task startup.
@@ -12040,7 +12216,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				[
 					{
 						type: "text",
-						text: `<user_message>\n${task}\n</user_message>`,
+						text: this.orchestrationParentTaskId
+							? `<agent_message>\n${JSON.stringify({ sender_task_id: this.orchestrationParentTaskId, message: task })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`
+							: `<user_message>\n${task}\n</user_message>`,
 					},
 					...(this.subagentInitialContext
 						? ([{ type: "text", text: this.subagentInitialContext }] as Anthropic.TextBlockParam[])
@@ -12147,10 +12325,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// TaskCompleted is emitted before the old loop's terminal journal flush has
 			// necessarily returned. Join that owned lifecycle so the new turn cannot
-			// overlap the preceding terminal write.
-			await this.waitForOwnedLifecycle()
+			// overlap the preceding terminal write. A stuck owner must release this
+			// admission without giving a new turn access to its durability fence.
+			const admissionSignal = this.getTaskLifetimeCancellationSignal()
+			try {
+				await this.waitForRequestControl(this.waitForOwnedLifecycle(), admissionSignal, Date.now() + 30_000)
+			} catch (error) {
+				if (error instanceof ApiStreamDeadlineError) {
+					throw new Error(t("common:errors.completed_followup_finalize_timeout"))
+				}
+				if (admissionSignal.aborted) throw new Error(t("common:errors.completed_followup_cancelled"))
+				throw error
+			}
 			if ((isGoalStillActive && !(await isGoalStillActive())) || (isStillAdmissible && !isStillAdmissible())) {
-				this.steerMessageAwaitingPersistence = false
 				return
 			}
 			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
@@ -12161,7 +12348,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.prepareForRetainedLifecycle(queuedMessageIds)
 			await this.messageQueueService.flush()
 			if ((isGoalStillActive && !(await isGoalStillActive())) || (isStillAdmissible && !isStillAdmissible())) {
-				this.steerMessageAwaitingPersistence = false
 				return
 			}
 			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
@@ -12215,25 +12401,56 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			await persisted
 		} catch (error) {
+			if (!followupPersisted && completionStateReset) {
+				// No provider request was admitted, so restore the terminal flags
+				// without publishing a duplicate TaskCompleted event.
+				this.markCompleted()
+				this.didEmitTaskCompleted = true
+			}
+			throw error
+		} finally {
 			if (!followupPersisted) {
 				this.performanceRequestPending = false
 				this.performanceSubmissionStartedAt = undefined
-				if (completionStateReset) {
-					// No provider request was admitted, so restore the terminal flags
-					// without publishing a duplicate TaskCompleted event.
-					this.markCompleted()
-					this.didEmitTaskCompleted = true
+				try {
+					// Guard rejection also leaves input unconsumed. Keep admission owned
+					// while release publishes, so its queue callback cannot restart it.
+					for (const id of (queuedMessageIds ?? []).slice().reverse())
+						this.messageQueueService.releaseMessage(id)
+					await this.messageQueueService.flush()
+				} finally {
+					this.steerMessageAwaitingPersistence = false
 				}
-				this.steerMessageAwaitingPersistence = false
-				for (const id of (queuedMessageIds ?? []).slice().reverse()) this.messageQueueService.releaseMessage(id)
-				await this.messageQueueService.flush()
 			}
-			throw error
 		}
 	}
 
 	/** Start a rehydrated task with a replacement prompt after the host has rewound its history. */
 	public async resumeWithEditedMessage(text: string, images: string[] = []): Promise<void> {
+		await this.resumeRehydratedFollowup(text, images, "human")
+	}
+
+	/** Wake a saved independent conversation using its durable agent inbox, without answering a human ask. */
+	public async resumeWithAgentMessages(): Promise<void> {
+		if (this.taskKind !== "primary" || this.parentTaskId || this.diagnosticSession) {
+			throw new Error("Only independent primary tasks can accept thread messages")
+		}
+		if (
+			this.activeAsk &&
+			this.activeAsk.type !== "resume_task" &&
+			this.activeAsk.type !== "resume_completed_task"
+		) {
+			throw new Error("A thread message cannot answer a human approval or question")
+		}
+		if (!this.hasPendingAgentMessages()) throw new Error("No agent messages are pending")
+		await this.resumeRehydratedFollowup("Continue with the pending agent messages.", [], "agent")
+	}
+
+	private async resumeRehydratedFollowup(
+		text: string,
+		images: string[],
+		inputOrigin: "human" | "agent",
+	): Promise<void> {
 		if (this._started || this.abort) throw new Error("The task has already started or was cancelled")
 		if (!text.trim() && images.length === 0) throw new Error("A prompt or image is required")
 		this._started = true
@@ -12253,13 +12470,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				resolvePersisted()
 			},
 			images,
-			{ deferTaskStartedUntilInitialUserContentPersisted: true },
+			{ deferTaskStartedUntilInitialUserContentPersisted: true, inputOrigin },
 		)
 		this.ownBackgroundLifecycle("resume", lifecycle)
 		void lifecycle.then(() => {
 			if (!persisted) rejectPersisted(new Error("The edited prompt was not persisted"))
 		}, rejectPersisted)
-		await admission
+		try {
+			await admission
+		} catch (error) {
+			if (!persisted && !this.abort && !this.abandoned) this._started = false
+			throw error
+		}
 	}
 
 	private async resumeTaskFromHistory(
@@ -12413,16 +12635,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				responseText = followupText
 				responseImages = followupImages
 				responseQueuedMessageIds = options.queuedMessageIds
-				const messageType =
-					options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
-				if (options.queuedMessageIds?.length) {
-					await this.say(messageType, followupText, followupImages, undefined, undefined, undefined, {
-						queuedMessageIds: options.queuedMessageIds,
-					})
-				} else if (followupImages === undefined) {
-					await this.say(messageType, followupText)
-				} else {
-					await this.say(messageType, followupText, followupImages)
+				if (!(options.inputOrigin === "agent" && this.hasPendingAgentMessages())) {
+					const messageType =
+						options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
+					if (options.queuedMessageIds?.length) {
+						await this.say(messageType, followupText, followupImages, undefined, undefined, undefined, {
+							queuedMessageIds: options.queuedMessageIds,
+						})
+					} else if (followupImages === undefined) {
+						await this.say(messageType, followupText)
+					} else {
+						await this.say(messageType, followupText, followupImages)
+					}
 				}
 			} else {
 				let completedHistory = lastAlphaMessage?.ask === "completion_result"
@@ -12936,6 +13160,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (failureObserved) throw firstFailure
+		if (ownsCancellation())
+			await this.finalizeAgentStopMessage({ guard: ownsCancellation, provider: cancellation.provider })
 	}
 
 	private disposeCancelledTaskResources(cancellation: TaskCancellationBoundary): void {
@@ -14889,7 +15115,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const pendingSteer = this.pendingSteerMessage
 				if (pendingSteer) {
 					this.pendingSteerMessage = undefined
-					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+					await this.presentSteeringInput(pendingSteer)
 					// The failed turn may have re-armed the limit after steering was
 					// accepted. Reset again at durable consumption time so this exact
 					// guidance reaches the next model request.
@@ -15281,7 +15507,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (!pendingSteer) throw error
 
 					this.pendingSteerMessage = undefined
-					await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+					await this.presentSteeringInput(pendingSteer)
 					this.resetMistakeRecoveryState()
 					stack.push({
 						queuedMessageIds: pendingSteer.queuedMessageIds,
@@ -15384,6 +15610,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							cacheReads: cacheReadTokens,
 							cost: totalCost ?? costResult.totalCost,
 							cancelReason,
+							agentStopMessageId: cancelReason === "user_cancelled" ? this.agentStopMessageId : undefined,
 							streamingFailedMessage,
 						} satisfies AlphaApiReqInfo)
 						return true
@@ -15407,7 +15634,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 
 						// if last message is a partial we need to update and save it
-						const lastMessage = this.clineMessages.at(-1)
+						const lastMessage = this.getLastNonAgentMessage()
 
 						if (lastMessage && lastMessage.partial) {
 							// lastMessage.ts = Date.now() DO NOT update ts since it is used as a ChatRow key
@@ -15844,7 +16071,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										)
 									}
 									await this.say("reasoning", formattedReasoning, undefined, true)
-									this.summarizeReasoning(this.clineMessages.at(-1))
+									this.summarizeReasoning(this.getLastNonAgentMessage())
 									break
 								}
 								case "usage":
@@ -16188,7 +16415,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								this.pendingSteerMessage = undefined
 								await abortStream("user_cancelled", undefined, ownsResponseStep)
 								if (!ownsResponseStep()) return supersededResponseResult()
-								await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+								await this.presentSteeringInput(pendingSteer)
 
 								stack.push({
 									queuedMessageIds: pendingSteer.queuedMessageIds,
@@ -16368,13 +16595,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 							}
 
-							// Recover explicitly retryable provider failures independently of tool
-							// auto-approval. Unknown failures and exhausted automatic retries still
-							// offer the existing manual recovery boundary.
+							// Context recovery and explicitly retryable provider failures do not
+							// depend on tool auto-approval. Unknown failures and exhausted automatic
+							// retries still offer the existing manual recovery boundary.
 							if (
 								firstChunkFailure &&
 								!state?.autoApprovalEnabled &&
-								!(retryMetadata.retryable === true && decision.shouldRetry)
+								!((category === "context" || retryMetadata.retryable === true) && decision.shouldRetry)
 							) {
 								const askResponse = await this.ask("api_req_failed", retryError.message)
 								// The existing recovery boundary consumes only Retry. Keep a queued
@@ -16456,7 +16683,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								const pendingSteer = this.pendingSteerMessage
 								if (pendingSteer) {
 									this.pendingSteerMessage = undefined
-									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+									await this.presentSteeringInput(pendingSteer)
 									this.resetMistakeRecoveryState()
 									stack.push({
 										queuedMessageIds: pendingSteer.queuedMessageIds,
@@ -17466,7 +17693,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								if (pendingSteer) {
 									await this.restoreRemovedApiUserMessage(removedUserMessage)
 									this.pendingSteerMessage = undefined
-									await this.say("user_feedback", pendingSteer.text, pendingSteer.images)
+									await this.presentSteeringInput(pendingSteer)
 									this.resetMistakeRecoveryState()
 									stack.push({
 										queuedMessageIds: pendingSteer.queuedMessageIds,

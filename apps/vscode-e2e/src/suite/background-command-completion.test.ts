@@ -59,7 +59,11 @@ class LaunchAI {
 	set removeFromCache(value: (() => void) | undefined) {
 		observations.get(this)!.removeFromCache = value
 	}
-	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string; attemptId?: string }) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		const observation = observations.get(this)!
 		assert.ok(metadata?.taskId)
 		observation.task = observation.resolveTask(metadata.taskId)

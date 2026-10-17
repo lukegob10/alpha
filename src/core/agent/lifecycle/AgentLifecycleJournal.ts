@@ -147,9 +147,9 @@ interface JournalCache {
  * Durable JSONL journal for the provider-neutral lifecycle contract.
  *
  * Event records are append-only and snapshots are independent atomic files.
- * Every read validates the event/snapshot schema and then replays through the
- * canonical reducer, so a restart cannot silently continue from an invalid
- * or non-contiguous sequence.
+ * Recovery validates the event/snapshot schema and then replays through the
+ * canonical reducer. Refreshes may reuse that validated state while both
+ * durable file stamps are unchanged.
  */
 export class AgentLifecycleJournal {
 	private readonly now: () => number
@@ -237,6 +237,16 @@ export class AgentLifecycleJournal {
 			await this.initialize()
 			const paths = await this.ensurePaths()
 			await withFileLock(paths.eventsPath, () => this.loadAndCacheFromPaths(paths))
+			return this.getSnapshot()
+		})
+	}
+
+	/** Refresh the durable head without replaying unchanged, already-validated history. */
+	refresh(): Promise<AgentLifecycleSnapshot | undefined> {
+		return this.enqueueOrdered(async () => {
+			await this.initialize()
+			const paths = await this.ensurePaths()
+			await withFileLock(paths.eventsPath, () => this.loadForAppend(paths))
 			return this.getSnapshot()
 		})
 	}

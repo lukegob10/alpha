@@ -185,6 +185,7 @@ const ChatRow = memo(
 					"px-[15px]",
 					props.isTaskPrompt ||
 						props.message.say === "user_feedback" ||
+						props.message.say === "agent_message" ||
 						props.message.say === "completion_result" ||
 						props.message.say === "async_user_input" ||
 						props.message.ask === "completion_result" ||
@@ -270,8 +271,9 @@ const ChatRowContentInner = ({
 	} = environment
 	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
 	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
+	const isAgentMessage = message.type === "say" && message.say === "agent_message"
 	const userMessageActionsDisabled =
-		messageActionsDisabled || !currentTaskId || currentTaskItem?.taskKind === "subagent"
+		messageActionsDisabled || !currentTaskId || currentTaskItem?.taskKind === "subagent" || isAgentMessage
 	const clineMessages = getAlphaMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
@@ -377,13 +379,13 @@ const ChatRowContentInner = ({
 		vscode.postMessage({ type: "selectImages", context: "edit", messageTs: message.ts })
 	}, [message.ts])
 
-	const [cost, apiReqCancelReason, apiReqStreamingFailedMessage] = useMemo(() => {
+	const [cost, apiReqCancelReason, apiReqStreamingFailedMessage, apiReqAgentStopMessageId] = useMemo(() => {
 		if (message.text !== null && message.text !== undefined && message.say === "api_req_started") {
 			const info = safeJsonParse<AlphaApiReqInfo>(message.text)
-			return [info?.cost, info?.cancelReason, info?.streamingFailedMessage]
+			return [info?.cost, info?.cancelReason, info?.streamingFailedMessage, info?.agentStopMessageId] as const
 		}
 
-		return [undefined, undefined, undefined]
+		return [undefined, undefined, undefined, undefined] as const
 	}, [message.text, message.say])
 
 	// When resuming task, last won't be api_req_failed but a resume_task
@@ -491,7 +493,11 @@ const ChatRowContentInner = ({
 					apiReqCancelReason !== null && apiReqCancelReason !== undefined ? (
 						apiReqCancelReason === "user_cancelled" ? (
 							<span style={{ color: normalColor, fontWeight: "bold" }}>
-								{t("chat:apiRequest.cancelled")}
+								{t(
+									apiReqAgentStopMessageId
+										? "chat:apiRequest.stoppedByAnotherChat"
+										: "chat:apiRequest.cancelled",
+								)}
 							</span>
 						) : (
 							<span style={{ color: errorColor, fontWeight: "bold" }}>
@@ -525,6 +531,7 @@ const ChatRowContentInner = ({
 		message,
 		isMcpServerResponding,
 		apiReqCancelReason,
+		apiReqAgentStopMessageId,
 		cost,
 		apiRequestFailedMessage,
 		t,
@@ -1510,11 +1517,26 @@ const ChatRowContentInner = ({
 							)}
 						</article>
 					)
+				case "agent_message":
 				case "user_feedback":
 					return (
 						<article
 							className="group flex flex-col items-end gap-1"
-							aria-label={t("chat:feedback.youSaid")}>
+							aria-label={t(isAgentMessage ? "chat:feedback.fromAnotherChat" : "chat:feedback.youSaid")}>
+							{isAgentMessage && (
+								<span className="text-xs text-vscode-descriptionForeground">
+									{t("chat:feedback.fromAnotherChat")}
+								</span>
+							)}
+							{message.agentMessage?.stopStatus && (
+								<span role="status" className="text-xs text-vscode-descriptionForeground">
+									{t(
+										message.agentMessage.stopStatus === "stopped"
+											? "chat:feedback.stoppedByAnotherChat"
+											: "chat:feedback.stopRequestedByAnotherChat",
+									)}
+								</span>
+							)}
 							<div
 								className={cn(
 									"min-w-0 overflow-hidden whitespace-pre-wrap",
@@ -1562,10 +1584,10 @@ const ChatRowContentInner = ({
 								<div className="user-message-actions opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100">
 									<MessageActions
 										text={message.text || ""}
-										onEdit={handleEditClick}
+										onEdit={isAgentMessage ? undefined : handleEditClick}
 										disabled={userMessageActionsDisabled}
 										onDelete={
-											isTaskPrompt
+											isTaskPrompt || isAgentMessage
 												? undefined
 												: () => {
 														if (userMessageActionsDisabled) return

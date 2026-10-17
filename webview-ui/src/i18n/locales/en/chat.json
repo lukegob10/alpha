@@ -250,6 +250,7 @@
 		"failed": "API Request Failed",
 		"streaming": "API Request...",
 		"cancelled": "API Request Cancelled",
+		"stoppedByAnotherChat": "Stopped by another chat",
 		"streamingFailed": "API Streaming Failed",
 		"rateLimitWait": "Configured request pacing",
 		"completionWait": "Waiting before the task can finish",
@@ -403,7 +404,10 @@
 		"rooSaid": "Alpha said"
 	},
 	"feedback": {
-		"youSaid": "You said"
+		"youSaid": "You said",
+		"fromAnotherChat": "From another chat",
+		"stopRequestedByAnotherChat": "Stop requested by another chat",
+		"stoppedByAnotherChat": "Stopped by another chat"
 	},
 	"mcp": {
 		"wantsToUseTool": "Alpha wants to use a tool on the {{serverName}} MCP server",

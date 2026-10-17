@@ -1,8 +1,7 @@
 # Native question stepper
 
-Implemented the approved **Step by step** direction on 2026-10-13, following the
-[question review](request-user-input-review-2026-10-12.md). This changes the native `request_user_input` form shown in the
-chat. The nonblocking async question card keeps its existing presentation.
+The native `request_user_input` form uses a **Step by step** flow in chat. The nonblocking async question card keeps its
+existing presentation.
 
 ## Interaction
 

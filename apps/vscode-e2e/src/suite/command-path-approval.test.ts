@@ -31,7 +31,11 @@ class CommandPathAI {
 	) {
 		observations.set(this, observation)
 	}
-	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string; attemptId?: string }) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		assert.ok(metadata?.taskId)
 		const observation = observations.get(this)!
 		observation.task = this.resolveTask(metadata.taskId)

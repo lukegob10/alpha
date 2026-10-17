@@ -70,6 +70,10 @@ describe("Task durable independent-agent steering", () => {
 		const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 			assertCrossTaskRoot: vi.fn(),
 			getDirectCrossTask: vi.fn(async () => ({ task: child })),
+			getTaskOwner: () => undefined,
+			taskSessions: {
+				runOwnershipOperation: (_taskId: string, operation: () => Promise<unknown>) => operation(),
+			},
 		}) as AlphaProvider
 		const steer = () => provider.steerIndependentTask({ taskId: "parent" } as Task, "child", "New guidance")
 		return { child, inbox, request, wait, history, steer }

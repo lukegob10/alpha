@@ -140,6 +140,8 @@ export interface CreateTaskOptions {
 	preserveExisting?: boolean
 	/** Parent conversation for an independent primary task; separate from managed-agent parentTaskId. */
 	orchestrationParentTaskId?: string
+	/** New peer threads are observed explicitly; legacy independent tasks retain automatic final reports. */
+	orchestrationNotifyCompletion?: boolean
 	/** Whether this independent task shares the parent's workspace or gets a dedicated Git worktree. */
 	orchestrationWorkspaceMode?: "shared" | "worktree"
 	/** Workspace path below the Git root for restoring an isolated task worktree. Empty means Git root. */
@@ -227,6 +229,7 @@ export type CurrentTaskView =
 export interface LiveTaskMetadata {
 	id: string
 	orchestrationParentTaskId?: string
+	orchestrationNotifyCompletion?: boolean
 	orchestrationWorkspaceMode?: "shared" | "worktree"
 	orchestrationWorkspaceBaselineCommit?: string
 	orchestrationObjective?: string
@@ -268,6 +271,7 @@ export interface TaskLike {
 	readonly diagnosticIncidentId?: string
 	readonly diagnosticSourceTaskId?: string
 	readonly orchestrationParentTaskId?: string
+	readonly orchestrationNotifyCompletion?: boolean
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	readonly taskKind?: "primary" | "subagent"

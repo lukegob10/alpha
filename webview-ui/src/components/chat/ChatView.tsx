@@ -256,13 +256,14 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 								}}
 							/>
 						)}
-						{/* Live actions keep their listeners mounted while their details are visually folded. */}
+						{/* Live actions keep their listeners; completed turns stay unmounted during follow-ups. */}
 						<div
 							id={`activity-row-${index}`}
 							hidden={Boolean(trace) && !traceExpanded}
 							data-chat-message-index={index}
 							data-testid={`chat-message-${index}`}>
-							{(!trace || traceExpanded || isTurnActive) && itemContent(index, message)}
+							{(!trace || traceExpanded || (isTurnActive && trace.kind !== "worked")) &&
+								itemContent(index, message)}
 						</div>
 					</div>
 				)
@@ -741,8 +742,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// of these messages, we are deep comparing) i.e. the button state after
 	// hitting button sets enableButtons to false,  and this effect otherwise
 	// would have to true again even if messages didn't change.
-	const lastMessage = useMemo(() => activeMessages.at(-1), [activeMessages])
-	const secondLastMessage = useMemo(() => activeMessages.at(-2), [activeMessages])
+	const [lastMessage, secondLastMessage] = useMemo(() => {
+		const controls: AlphaMessage[] = []
+		for (let index = activeMessages.length - 1; index >= 0 && controls.length < 2; index--) {
+			const message = activeMessages[index]
+			// Incoming chat bubbles must not replace a pending human approval or question.
+			if (message.type !== "say" || message.say !== "agent_message") controls.push(message)
+		}
+		return controls
+	}, [activeMessages])
 	const isLastFollowUpAnswered = lastMessage?.ask === "followup" && lastMessage.isAnswered === true
 
 	const volume = typeof soundVolume === "number" ? soundVolume : 0.5
@@ -3299,10 +3307,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						task ? (
 							<ChatHistorySwitcher
 								isVisible={!isHidden}
-								currentTask={
-									visibleCurrentTaskItem ??
-									taskHistory.find((item) => item.id === visibleCurrentTaskId)
-								}
+								currentTaskId={visibleCurrentTaskId}
+								onBackToHome={() => startNewTask()}
 								onOpenTask={openTaskWithCache}
 								onViewAll={() => setIsHistoryExpanded(true)}
 							/>

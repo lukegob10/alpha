@@ -2,7 +2,13 @@ import * as fs from "fs/promises"
 import * as fsSync from "fs"
 import * as path from "path"
 
-import { historyItemSchema, taskDisplayNameSchema, type HistoryItem, type TaskRenameErrorCode } from "@alpha-code/types"
+import {
+	historyItemSchema,
+	taskDisplayNameSchema,
+	taskGeneratedTitleSchema,
+	type HistoryItem,
+	type TaskRenameErrorCode,
+} from "@alpha-code/types"
 import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
@@ -60,7 +66,7 @@ export class TaskRenameError extends Error {
 export interface TaskHistoryStoreOptions {
 	/**
 	 * Optional callback invoked inside the write lock after each mutation
-	 * (upsert, rename, delete, deleteMany). Used for serialized write-through to
+	 * (upsert, rename, generated title, delete, deleteMany). Used for serialized write-through to
 	 * globalState during the transition period.
 	 */
 	onWrite?: (items: HistoryItem[]) => Promise<void>
@@ -277,6 +283,60 @@ export class TaskHistoryStore {
 				}
 			}
 			return renamed
+		})
+	}
+
+	/** Persist a generated label only while the user has not supplied one. */
+	async setGeneratedTitle(taskId: string, title: string, workspace: string): Promise<HistoryItem | undefined> {
+		const parsed = taskGeneratedTitleSchema.safeParse(title)
+		if (!parsed.success) return undefined
+		return this.withLock(async () => {
+			let taskDirectory: string
+			try {
+				taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
+			} catch {
+				return undefined
+			}
+			const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+			if (!(await this.readHistoryForMutation(filePath, taskId))) return undefined
+			let updated: HistoryItem | undefined
+			let expectedContent: string | undefined
+			let changed = false
+			await safeWriteJson(filePath, null, {
+				atomicReplace: true,
+				prepareData: async () => {
+					const current = await this.readHistoryForMutation(filePath, taskId)
+					if (!current) throw new Error("Task history disappeared during title generation")
+					expectedContent = current.content
+					updated = current.item
+					if (
+						!this.isForWorkspace(current.item, workspace) ||
+						current.item.displayName ||
+						current.item.generatedTitle
+					) {
+						return current.item
+					}
+					changed = true
+					updated = { ...current.item, generatedTitle: parsed.data }
+					return updated
+				},
+				commitTempFile: (temporaryPath, destinationPath) => {
+					this.commitTaskFile(temporaryPath, destinationPath, expectedContent)
+				},
+			})
+			if (!updated) return undefined
+			this.cache.set(taskId, updated)
+			if (!changed) return undefined
+			this.scheduleIndexWrite()
+			if (this.onWrite) {
+				try {
+					await this.onWrite(this.getAll())
+				} catch {
+					// The task file is authoritative; a compatibility mirror cannot undo a generated label.
+					console.error("[TaskHistoryStore] Generated title compatibility projection failed")
+				}
+			}
+			return updated
 		})
 	}
 
@@ -658,8 +718,15 @@ export class TaskHistoryStore {
 			prepareData: async () => {
 				const current = await this.readHistoryForMutation(filePath, item.id)
 				expectedContent = current?.content
-				// Label authority belongs to renameTask. A stale full-record save may never undo it.
-				if (current) merged = { ...current.item, ...item, displayName: current.item.displayName }
+				// A stale full-record save may never undo user naming or generated-title state.
+				if (current) {
+					merged = {
+						...current.item,
+						...item,
+						displayName: current.item.displayName,
+						generatedTitle: current.item.generatedTitle,
+					}
+				}
 				return merged
 			},
 			commitTempFile: (temporaryPath, destinationPath) => {

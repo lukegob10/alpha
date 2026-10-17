@@ -44,9 +44,14 @@ owners, and hiding the feed never marks unseen events as read.
   description foreground; hover, keyboard focus, active chats, and status indicators preserve their distinct feedback.
 - A saved display name identifies a chat in history, search, the current title, and attention labels. Renaming is
   user-owned metadata; it does not replace the original prompt, change execution state, or update activity timestamps.
+- New primary chats receive a generated title after the first user request is saved. The title is a separate,
+  automatically generated field of at most 36 Unicode characters; a user rename takes precedence, and the original
+  prompt remains intact. The background request is bounded, uses low reasoning when supported, has no tools, and does
+  not add messages to the task transcript. Managed sub-agents and diagnostic sessions do not receive generated titles.
 - The native sidebar header provides New chat, Settings, Tickets, and More. More contains Scheduled Tasks and
   Marketplace, plus Alpha: Incident Dashboard when `alpha.debug` is enabled. Editor chats retain their webview toolbar.
   Existing command registrations remain available to their other callers.
+
 - The composer contains the context meter, draft input, text selectors, draft actions, and Send/Stop. Context details
   and the existing context-management actions remain available. Image paste/drop and attachment previews remain.
   Codebase indexing stays below the composer, using the existing status mapping rather than a permanently green dot.
@@ -63,6 +68,33 @@ owners, and hiding the feed never marks unseen events as read.
   apply to message modifications.
 - The existing chat palette remains authoritative. Layout uses VS Code theme tokens and preserves light and
   high-contrast behavior, keyboard focus, narrow sidebar layout, and reduced motion.
+
+## Automatic chat titles
+
+The current Codex CLI TUI implementation was reviewed on 2026-10-17 in
+[`thread_title.rs`](https://github.com/openai/codex/blob/main/codex-rs/tui/src/app/thread_title.rs) and its
+[`thread_title_tests.rs`](https://github.com/openai/codex/blob/main/codex-rs/tui/src/app/thread_title_tests.rs).
+It starts a hidden, structured title request separately from the user's conversation and asks for at most 36 characters,
+under five words where possible, beginning with an imperative verb. It keeps the user's language and ticket references,
+and omits quotes, markdown, and trailing punctuation. The prompt is capped at 960 bytes. When the OpenAI account has
+`gpt-5.6-luna` available, the TUI uses it with low reasoning effort; otherwise it uses the current model. Codex keeps
+automatic titles separate from saved manual names and cancels pending title generation after a manual rename.
+
+The [Codex IDE guide](https://developers.openai.com/codex/ide/) does not specify a separate automatic-title contract.
+The CLI TUI source is therefore the public behavior reference here, rather than a claim that the IDE extension uses
+that exact implementation.
+
+Alpha follows those display and ownership rules. It stores generated text in `HistoryItem.generatedTitle`, preserves
+the full first request in `HistoryItem.task`, and displays names in this order: manual `displayName`, generated title,
+then the original request. Generation starts after the initial request is persisted, runs independently from the task's
+main model request, is bounded to 960 UTF-8 bytes of prompt context and 15 seconds, disables tools, disables response
+storage, and uses low reasoning effort when the provider supports it. A short local title is saved if model generation
+fails. The title request only runs for new primary tasks, not managed sub-agents or diagnostic sessions.
+
+Alpha intentionally uses the task's configured provider and model through its shared streaming API instead of the
+Codex TUI's account-dependent model choice and structured-output transport. The shared provider contract does not offer
+one common structured-output schema, so Alpha validates and normalizes plain-text output before it is saved. This
+title-only request may incur provider usage independent of the main task turn.
 
 ## Current Codex CLI source review
 

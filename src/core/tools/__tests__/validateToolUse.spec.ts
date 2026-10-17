@@ -68,6 +68,10 @@ describe("mode-validator", () => {
 					...planManagedAgentTools,
 					"list_tasks",
 					"wait_task",
+					"list_threads",
+					"list_archived_threads",
+					"read_thread",
+					"wait_threads",
 				]
 				architectTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
@@ -83,7 +87,17 @@ describe("mode-validator", () => {
 				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("update_plan", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(false)
-				for (const name of ["create_task", "send_task_message", "steer_task", "stop_task"]) {
+				for (const name of [
+					"create_task",
+					"send_task_message",
+					"steer_task",
+					"stop_task",
+					"create_thread",
+					"fork_thread",
+					"send_message_to_thread",
+					"set_thread_title",
+					"set_thread_archived",
+				]) {
 					expect(isToolAllowedForMode(name, architectMode, [])).toBe(false)
 				}
 

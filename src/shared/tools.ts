@@ -21,6 +21,15 @@ import type {
 	SendTaskMessageParams,
 	SteerTaskParams,
 	StopTaskParams,
+	ListThreadsParams,
+	ListArchivedThreadsParams,
+	ReadThreadParams,
+	WaitThreadsParams,
+	CreateThreadParams,
+	ForkThreadParams,
+	SendMessageToThreadParams,
+	SetThreadTitleParams,
+	SetThreadArchivedParams,
 	SubagentForkTurns,
 	SubagentSpawnAgentArgs,
 	BrowserToolArgs,
@@ -176,6 +185,14 @@ export const toolParamNames = [
 	"tasks",
 	"task_name",
 	"task_id",
+	"threadId",
+	"targets",
+	"afterCursor",
+	"turnLimit",
+	"includeOutputs",
+	"maxOutputCharsPerItem",
+	"model",
+	"archived",
 	"workspace_mode",
 	"agent_type",
 	"fork_turns",
@@ -307,6 +324,15 @@ export type NativeToolArgs = BrowserToolArgs & {
 	send_task_message: SendTaskMessageParams
 	steer_task: SteerTaskParams
 	stop_task: StopTaskParams
+	list_threads: ListThreadsParams
+	list_archived_threads: ListArchivedThreadsParams
+	read_thread: ReadThreadParams
+	wait_threads: WaitThreadsParams
+	create_thread: CreateThreadParams
+	fork_thread: ForkThreadParams
+	send_message_to_thread: SendMessageToThreadParams
+	set_thread_title: SetThreadTitleParams
+	set_thread_archived: SetThreadArchivedParams
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -550,6 +576,15 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	send_task_message: "send a message to a task",
 	steer_task: "steer a task",
 	stop_task: "stop a task",
+	list_threads: "list active threads",
+	list_archived_threads: "list archived threads",
+	read_thread: "read a thread",
+	wait_threads: "wait for threads",
+	create_thread: "create a thread",
+	fork_thread: "fork a thread",
+	send_message_to_thread: "send a message to a thread",
+	set_thread_title: "rename a thread",
+	set_thread_archived: "archive or restore a thread",
 	list_agents: "list agents",
 	wait_agent: "wait for agent updates",
 	send_message: "message an agent",
@@ -639,6 +674,15 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"send_task_message",
 			"steer_task",
 			"stop_task",
+			"list_threads",
+			"list_archived_threads",
+			"read_thread",
+			"wait_threads",
+			"create_thread",
+			"fork_thread",
+			"send_message_to_thread",
+			"set_thread_title",
+			"set_thread_archived",
 		],
 	},
 	browser: {
@@ -690,6 +734,18 @@ export const TOOL_ALIASES: Record<string, ToolName> = {
 	write_file: "write_to_file",
 	search_and_replace: "edit",
 } as const
+
+const legacyThreadToolReplacements: Readonly<Record<string, readonly string[]>> = {
+	create_task: ["create_thread", "fork_thread"],
+	list_tasks: ["list_threads", "list_archived_threads"],
+	wait_task: ["wait_threads"],
+	send_task_message: ["send_message_to_thread"],
+}
+
+/** Preserve saved exclusions when a historical task control is replaced by the thread surface. */
+export function expandLegacyThreadToolDisables(names: readonly string[]): string[] {
+	return [...new Set(names.flatMap((name) => [name, ...(legacyThreadToolReplacements[name] ?? [])]))]
+}
 
 export type DiffResult =
 	| { success: true; content: string; failParts?: DiffResult[] }

@@ -32,6 +32,7 @@ interface AlphaMessage {
 	toolApprovalRequest?: ToolApprovalPrompt
 	asyncUserInput?: { questions: Array<{ title: string; options?: string[] }> }
 	queuedMessageIds?: string[]
+	agentMessage?: { id: string; senderTaskId: string }
 }
 
 interface ExtensionState {
@@ -573,9 +574,10 @@ describe("ChatView toolbar navigation", () => {
 				clineMessages: [{ type: "say", say: "task", ts: 1, text: `Original ${id}` }],
 			})
 			mockPostMessage(taskState("a"))
-			await view.findByText("Named a")
+			await view.findByRole("button", { name: "history:backToHome" })
 			const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
-			expect(within(toolbar).getByText("Named a")).toBeInTheDocument()
+			expect(within(toolbar).queryByText("Named a")).not.toBeInTheDocument()
+			expect(within(toolbar).getByRole("button", { name: "history:backToHome" })).toBeInTheDocument()
 			expect(within(view.getByTestId("chat-transcript-viewport")).getByText("Original a")).toBeInTheDocument()
 			const input = view.getByTestId("chat-textarea").querySelector("input")!
 			fireEvent.change(input, { target: { value: "Keep unsent guidance" } })
@@ -618,8 +620,14 @@ describe("ChatView toolbar navigation", () => {
 			],
 			clineMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
 		})
-		await view.findByText("Sidebar chat")
+		await view.findByRole("button", { name: "history:backToHome" })
 		const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
+		expect(within(toolbar).queryByText("Sidebar chat")).not.toBeInTheDocument()
+		expect(
+			within(toolbar)
+				.getAllByRole("button")
+				.map((button) => button.getAttribute("aria-label")),
+		).toEqual(["history:backToHome", "history:switchChat"])
 		for (const action of ["newChat", "settings", "tickets", "more"]) {
 			expect(
 				within(toolbar).queryByRole("button", { name: `common:chatToolbar.${action}` }),
@@ -632,6 +640,75 @@ describe("ChatView toolbar navigation", () => {
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "sidebar-other" })
 		expect(input).toHaveValue("Keep sidebar guidance")
 	})
+
+	it.each(["sidebar", "editor"])(
+		"returns from a running %s chat to home and restores its draft when reopened",
+		async (renderContext) => {
+			const view = renderChatView()
+			const currentTaskItem = {
+				id: `${renderContext}-running`,
+				task: "Keep the running task",
+				displayName: "A saved chat name",
+				ts: 1,
+			}
+			const taskState: Partial<ExtensionState> = {
+				renderContext,
+				showWorktreesInHomeScreen: false,
+				currentTaskId: currentTaskItem.id,
+				currentView: { type: "task", taskId: currentTaskItem.id },
+				currentTaskItem,
+				taskHistory: [currentTaskItem],
+				clineMessages: [
+					{ type: "say", say: "task", ts: 1, text: currentTaskItem.task },
+					{ type: "say", say: "api_req_started", ts: 2, text: "{}" },
+				],
+			}
+			mockPostMessage(taskState)
+			const back = await view.findByRole("button", { name: "history:backToHome" })
+			const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
+			expect(
+				within(toolbar)
+					.getAllByRole("button")
+					.slice(0, 2)
+					.map((button) => button.getAttribute("aria-label")),
+			).toEqual(["history:backToHome", "history:switchChat"])
+			expect(within(toolbar).queryByText(currentTaskItem.displayName)).not.toBeInTheDocument()
+			expect(
+				within(view.getByTestId("chat-transcript-viewport")).getByText(currentTaskItem.task),
+			).toBeInTheDocument()
+			fireEvent.change(view.getByTestId("chat-textarea").querySelector("input")!, {
+				target: { value: "Keep my task draft" },
+			})
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(back)
+			await view.findByTestId("alpha-home-brand")
+			expect(vi.mocked(vscode.postMessage).mock.calls).toEqual([[{ type: "startBlankTask" }]])
+			expect(view.queryByRole("button", { name: "history:backToHome" })).not.toBeInTheDocument()
+			expect(view.queryByRole("button", { name: "history:switchChat" })).not.toBeInTheDocument()
+			expect(view.getByTestId("chat-textarea").querySelector("input")).toHaveValue("")
+
+			mockPostMessage({
+				renderContext,
+				showWorktreesInHomeScreen: false,
+				currentTaskId: undefined,
+				currentView: { type: "newTaskDraft" },
+				currentTaskItem: undefined,
+				clineMessages: [],
+				taskHistory: [currentTaskItem],
+			})
+			fireEvent.click(await view.findByTestId(`task-item-${currentTaskItem.id}`))
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "showTaskWithId",
+				text: currentTaskItem.id,
+			})
+			mockPostMessage(taskState)
+			await view.findByRole("button", { name: "history:backToHome" })
+			expect(view.queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
+			expect(view.getByTestId("chat-textarea").querySelector("input")).toHaveValue("Keep my task draft")
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "clearTask" }))
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "cancelTask" }))
+		},
+	)
 
 	it("keeps the complete fallback toolbar on an empty editor chat without adding a New chat heading", async () => {
 		const view = renderChatView()
@@ -646,6 +723,8 @@ describe("ChatView toolbar navigation", () => {
 			expect(within(toolbar).getByRole("button", { name: `common:chatToolbar.${action}` })).toBeInTheDocument()
 		}
 		expect(within(toolbar).queryByText("common:chatToolbar.newChat")).not.toBeInTheDocument()
+		expect(within(toolbar).queryByRole("button", { name: "history:backToHome" })).not.toBeInTheDocument()
+		expect(within(toolbar).queryByRole("button", { name: "history:switchChat" })).not.toBeInTheDocument()
 	})
 
 	it("keeps the context meter inside the new-chat composer", () => {
@@ -1031,6 +1110,69 @@ describe("ChatView activity trace", () => {
 		publish([...firstTurn, ...followup])
 		await waitFor(() => expect(reloaded.getByTestId("chat-message-3")).toBeVisible())
 		for (const index of [0, 1, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+	})
+
+	it("keeps completed trace details unmounted during a live follow-up", async () => {
+		const view = renderChatView()
+		const taskId = "long-completed-trace"
+		const historicalDetailCount = 256
+		const firstTurn: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Inspect the implementation" },
+			...Array.from(
+				{ length: historicalDetailCount },
+				(_, index): AlphaMessage => ({
+					ts: 200 + index,
+					type: "say",
+					say: "reasoning",
+					text: `Inspection detail ${index}`,
+				}),
+			),
+			{ ts: 1000, type: "say", say: "completion_result", text: "Inspection complete." },
+		]
+		mockPostMessage({ currentTaskId: taskId, clineMessages: firstTurn })
+		fireEvent.click(await waitFor(() => view.getByTestId("chat-load-all")))
+		const completedTrace = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+		expect(view.getAllByTestId("chat-row")).toHaveLength(2)
+
+		mockPostMessage({
+			currentTaskId: taskId,
+			clineMessages: [
+				...firstTurn,
+				{ ts: 2000, type: "say", say: "user_feedback", text: "Now run the checks" },
+				{ ts: 3000, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
+			],
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isTurnActive: true,
+					isWaitingForInput: false,
+					lastUpdatedAt: 3000,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+		})
+		const liveAction = await waitFor(() => view.getByTestId(`chat-message-${historicalDetailCount + 2}`))
+		const liveRow = within(liveAction).getByTestId("chat-row")
+		expect(liveAction).not.toBeVisible()
+		expect(view.getAllByTestId("chat-row").length).toBe(4)
+		for (const index of [0, historicalDetailCount - 1]) {
+			expect(within(view.getByTestId(`chat-message-${index}`)).queryByTestId("chat-row")).not.toBeInTheDocument()
+		}
+
+		fireEvent.click(completedTrace)
+		expect(view.getAllByTestId("chat-row").length).toBe(historicalDetailCount + 4)
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
+		expect(within(liveAction).getByTestId("chat-row")).toBe(liveRow)
+		fireEvent.click(completedTrace)
+		expect(view.getAllByTestId("chat-row").length).toBe(4)
+		expect(within(liveAction).getByTestId("chat-row")).toBe(liveRow)
 	})
 
 	it("preserves an opened action group when the task completes and still allows closing it", async () => {
@@ -2450,6 +2592,48 @@ describe("ChatView - Message Queueing Tests", () => {
 			clineMessages: [taskMessage, followUp],
 			messageQueue: queuedMessages,
 		}
+
+		it.each(["followup", "tool"])("keeps the pending %s actionable behind an incoming chat bubble", async (ask) => {
+			const view = renderChatView()
+			const incoming: AlphaMessage = {
+				type: "say",
+				say: "agent_message",
+				ts: 103,
+				text: "A finding from another chat",
+				agentMessage: { id: "incoming-1", senderTaskId: "peer" },
+			}
+			mockPostMessage({
+				...waitingState,
+				clineMessages: [
+					taskMessage,
+					{
+						...followUp,
+						ask,
+						text: ask === "tool" ? JSON.stringify({ tool: "readFile", path: "parser.ts" }) : followUp.text,
+					},
+					incoming,
+				],
+			})
+			await waitFor(() => expect(view.getAllByTestId("chat-row").at(-1)).toHaveTextContent(incoming.text!))
+			if (ask === "tool") {
+				expect(view.getByRole("button", { name: "chat:approve.title" })).toBeEnabled()
+			} else {
+				expect(view.getByTestId("copy-mode-suggestion")).toBeInTheDocument()
+			}
+			vi.mocked(vscode.postMessage).mockClear()
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "invoke", invoke: "sendMessage", text: "My answer" } }),
+				)
+			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: ask === "followup" ? "askResponse" : "queueMessage",
+					text: "My answer",
+					taskId: waitingTask.id,
+				}),
+			)
+		})
 
 		it("waits for the reopened task transcript before dispatching a targeted host send", async () => {
 			const taskId = "reopened-completed-task"

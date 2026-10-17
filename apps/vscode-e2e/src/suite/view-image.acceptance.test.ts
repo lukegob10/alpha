@@ -16,7 +16,7 @@ const PNG_BYTES = Buffer.from(
 	"base64",
 )
 
-type RequestMetadata = { taskId?: string; tools?: unknown[] }
+type RequestMetadata = { taskId?: string; tools?: unknown[]; attemptId?: string }
 type ProviderMessage = { role?: unknown; content?: unknown }
 type ProviderBlock = Record<string, unknown>
 
@@ -27,6 +27,10 @@ class ViewImageScriptedAI {
 	removeFromCache?: () => void
 
 	async *createMessage(_system: string, messages: unknown[], metadata?: RequestMetadata) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		assert.ok(metadata?.taskId, "Every image acceptance request must belong to the real extension task")
 		this.requests.push(structuredClone(messages))
 		this.toolSchemas.push(structuredClone(metadata.tools ?? []))

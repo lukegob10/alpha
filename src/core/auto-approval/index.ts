@@ -267,6 +267,9 @@ export async function checkAutoApproval({
 		}
 
 		if (requiresExplicitApproval && mode !== "bypass") return { decision: "ask" }
+		if (toolName === "create_thread" || toolName === "fork_thread") {
+			return mode === "auto" || mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
+		}
 		if (toolName === "create_task") {
 			const workspaceMode = (tool as { workspaceMode?: unknown }).workspaceMode
 			if (workspaceMode !== "shared" && workspaceMode !== "worktree") return { decision: "ask" }
@@ -274,7 +277,14 @@ export async function checkAutoApproval({
 				? { decision: "approve" }
 				: { decision: "ask" }
 		}
-		if (toolName === "send_task_message" || toolName === "steer_task" || toolName === "stop_task") {
+		if (
+			toolName === "send_task_message" ||
+			toolName === "steer_task" ||
+			toolName === "stop_task" ||
+			toolName === "send_message_to_thread" ||
+			toolName === "set_thread_title" ||
+			toolName === "set_thread_archived"
+		) {
 			return mode === "auto" || mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
 		}
 

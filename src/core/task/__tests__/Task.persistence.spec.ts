@@ -1533,6 +1533,75 @@ describe("Task persistence", () => {
 			expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
 		})
 
+		it.each(["timeout", "cancellation"] as const)(
+			"releases final completion when its last evidence snapshot stalls until %s",
+			async (interruption) => {
+				vi.useFakeTimers()
+				const task = createTask()
+				mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				let enterGate!: () => void
+				const gateEntered = new Promise<void>((resolve) => {
+					enterGate = resolve
+				})
+				let releaseGate!: () => void
+				const gatePending = new Promise<void>((resolve) => {
+					releaseGate = resolve
+				})
+				const decision = vi.spyOn(task, "getCompletionGateDecision").mockImplementation(async () => {
+					enterGate()
+					await gatePending
+					return { allowed: true, modelCanResolveRejection: true }
+				})
+				const poll = vi.spyOn(task, "waitForCompletionGateDecision")
+				const completed = vi.spyOn(task, "markCompleted")
+				const retract = vi.spyOn(task, "retractCompletionResult")
+				const suspend = vi.spyOn(task, "suspendAfterCurrentTurn")
+				let finished = false
+				let result: boolean | undefined
+				let failure: unknown
+				const finalizing = task.finalizeTaskCompletion().then(
+					(value) => {
+						finished = true
+						result = value
+					},
+					(error: unknown) => {
+						finished = true
+						failure = error
+					},
+				)
+				await gateEntered
+				try {
+					if (interruption === "timeout") {
+						await vi.advanceTimersByTimeAsync(29_999)
+						expect(finished).toBe(false)
+						await vi.advanceTimersByTimeAsync(1)
+					} else {
+						task["taskCancellationController"].abort()
+						await vi.advanceTimersByTimeAsync(0)
+					}
+
+					expect(finished).toBe(true)
+					expect(failure).toBeUndefined()
+					expect(result).toBe(false)
+					expect(task.isCompleted()).toBe(false)
+					expect(task["didEmitTaskCompleted"]).toBe(false)
+					expect(completed).not.toHaveBeenCalled()
+					expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+					expect(retract).toHaveBeenCalledOnce()
+					expect(suspend).toHaveBeenCalledOnce()
+					expect(decision).toHaveBeenCalledOnce()
+					expect(poll).not.toHaveBeenCalled()
+				} finally {
+					releaseGate()
+					await finalizing
+					vi.useRealTimers()
+				}
+				expect(completed).not.toHaveBeenCalled()
+				expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+			},
+		)
+
 		it("rejects a save that starts and settles during the final verification gate", async () => {
 			const task = createTask()
 			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)

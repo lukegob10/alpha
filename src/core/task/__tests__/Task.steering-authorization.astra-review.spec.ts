@@ -140,7 +140,7 @@ async function assertCreationAuthority(task: Task, expected: boolean) {
 		userRequestText: task["getUserRequestTextForCatalog"](),
 	})
 	expect
-		.soft(catalog.tools.some((tool) => tool.type === "function" && tool.function.name === "create_task"))
+		.soft(catalog.tools.some((tool) => tool.type === "function" && tool.function.name === "create_thread"))
 		.toBe(expected)
 	Object.assign(task, { providerRef: { deref: () => provider } })
 	const results: string[] = []

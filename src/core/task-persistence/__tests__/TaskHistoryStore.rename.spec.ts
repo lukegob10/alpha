@@ -75,6 +75,37 @@ describe("TaskHistoryStore durable chat renaming", () => {
 		expect(reloaded.get(item.id)?.displayName).toBe("Cancellation fixes")
 	})
 
+	it("persists generated titles without changing the prompt and yields to user names", async () => {
+		const store = await makeStore()
+		await store.upsert(item)
+
+		const titled = await store.setGeneratedTitle(item.id, "Fix task naming", item.workspace!)
+		expect(titled).toEqual({ ...item, generatedTitle: "Fix task naming" })
+		await store.upsert({ ...item, tokensIn: 100 })
+		expect(await read()).toEqual({ ...item, tokensIn: 100, generatedTitle: "Fix task naming" })
+
+		const renamed = await store.renameTask(item.id, "User chosen name", item.workspace!)
+		expect(renamed).toMatchObject({
+			task: item.task,
+			displayName: "User chosen name",
+			generatedTitle: "Fix task naming",
+		})
+		await expect(store.setGeneratedTitle(item.id, "Late generated name", item.workspace!)).resolves.toBeUndefined()
+		expect(await read()).toMatchObject({
+			task: item.task,
+			displayName: "User chosen name",
+			generatedTitle: "Fix task naming",
+		})
+	})
+
+	it("does not replace an existing user name with a generated title", async () => {
+		const store = await makeStore()
+		await store.upsert({ ...item, displayName: "Manual title" })
+
+		await expect(store.setGeneratedTitle(item.id, "Generated title", item.workspace!)).resolves.toBeUndefined()
+		expect(await read()).toEqual({ ...item, displayName: "Manual title" })
+	})
+
 	it("preserves imported labels and unknown metadata without changing prompt, order, or timestamps", async () => {
 		const store = await makeStore()
 		await store.upsert({ ...item, displayName: "Imported name" })

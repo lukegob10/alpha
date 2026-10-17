@@ -1,8 +1,7 @@
 # Code index search settings
 
-Implemented October 8, 2026, following
-[the settings investigation](code-index-settings-research-2026-10-08.md). The baseline remains a semantic threshold of
-**0.4** and a maximum of **50 code chunks**. Search breadth and returned context now have separate bounds.
+The baseline is a semantic threshold of **0.4** and a maximum of **50 code chunks**. Search breadth and returned context
+have separate bounds.
 
 ## Settings and compatibility
 

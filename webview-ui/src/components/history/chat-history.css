@@ -53,8 +53,7 @@
 .chat-history-expanded .history-subtask-open > span,
 .chat-history-expanded [data-testid="subtask-collapsible-row"],
 .chat-history-text,
-.chat-history-view-all,
-.chat-history-current-title {
+.chat-history-view-all {
 	font: inherit;
 	line-height: 18px;
 }
@@ -74,38 +73,6 @@
 .chat-history-expanded .history-chat-actions {
 	width: 18px;
 	height: 18px;
-}
-
-.chat-history-current-title {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	min-width: 0;
-	border: 0;
-	border-radius: 6px;
-	background: transparent;
-	color: var(--chat-foreground, var(--vscode-foreground));
-	padding: 3px 4px;
-	text-align: left;
-	cursor: pointer;
-}
-
-.chat-history-current-title:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.chat-history-current-title:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
-.chat-history-current-title .chat-history-rename-hint {
-	opacity: 0;
-}
-
-.chat-history-current-title:hover .chat-history-rename-hint,
-.chat-history-current-title:focus-visible .chat-history-rename-hint {
-	opacity: 1;
 }
 
 @media (hover: none), (pointer: coarse) {

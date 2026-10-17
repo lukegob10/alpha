@@ -1,5 +1,5 @@
 import { EventEmitter } from "events"
-import * as fs from "fs/promises"
+import fs from "node:fs/promises"
 import * as os from "os"
 import * as path from "path"
 
@@ -12,6 +12,9 @@ import { AgentMessageInbox } from "../../task-persistence/AgentMessageInbox"
 import { TaskHistoryStore, saveTaskMessages } from "../../task-persistence"
 import { readApiMessages, saveApiMessages } from "../../task-persistence/apiMessages"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
+import { crossTaskWorktreeService } from "../CrossTaskWorktreeService"
+import * as threadTaskStorage from "../ThreadTaskStorage"
+import * as taskStorage from "../../../utils/storage"
 
 type FakeTask = EventEmitter & Record<string, any>
 const temporaryDirectories: string[] = []
@@ -48,14 +51,18 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		taskAsk: undefined,
 		getTaskMode: vi.fn(async () => "code"),
 		getTaskApiConfigName: vi.fn(async () => "profile-a"),
+		getTaskApprovalMode: vi.fn(() => "ask"),
 		isCompleted: vi.fn(() => false),
 		isTurnActive: vi.fn(() => true),
 		steerUserMessage: vi.fn(async () => undefined),
 		steerAgentMessage: vi.fn(async () => "steered"),
 		receiveAgentMessage: vi.fn(async () => undefined),
+		recordAgentStopRequest: vi.fn(async () => undefined),
+		resumeWithAgentMessages: vi.fn(async () => undefined),
 		resumeCompletedTaskFollowup: vi.fn(async () => undefined),
 		submitUserMessage: vi.fn(async () => undefined),
 		messageQueueService: { addMessage: vi.fn(() => true) },
+		updateApiConfiguration: vi.fn(),
 		...overrides,
 	}) as FakeTask
 }
@@ -155,7 +162,7 @@ describe("Cross-task orchestration host", () => {
 		})
 		internals.createTask = vi.fn()
 		await expect(provider.createIndependentTask(child as unknown as Task, "Next step", "shared")).rejects.toThrow(
-			"top-level primary task",
+			"explicit user request",
 		)
 		expect(internals.createTask).not.toHaveBeenCalled()
 	})
@@ -187,6 +194,7 @@ describe("Cross-task orchestration host", () => {
 				historyWorkspacePath: parent.historyWorkspacePath,
 				taskMode: "code",
 				taskApiConfigName: "profile-a",
+				taskApprovalMode: "ask",
 				apiConfiguration: parent.apiConfiguration,
 				orchestrationParentTaskId: parent.taskId,
 			}),
@@ -301,7 +309,7 @@ describe("Cross-task orchestration host", () => {
 	)
 
 	it.each([undefined, "tool", "followup"])(
-		"attributes child-to-parent input during ask %s, rejects unrelated IDs, and does not allow a child to steer its parent",
+		"attributes peer input during ask %s without answering the human input boundary",
 		async (taskAsk) => {
 			const { provider, tasks, history, metadata } = createProviderFixture()
 			const parent = createTask({ taskAsk })
@@ -332,10 +340,10 @@ describe("Cross-task orchestration host", () => {
 			expect(parent.submitUserMessage).not.toHaveBeenCalled()
 			await expect(
 				provider.sendIndependentTaskMessage(parent as unknown as Task, "unrelated", "Hello"),
-			).rejects.toThrow("direct child")
+			).rejects.toThrow("current workspace")
 			await expect(
 				provider.steerIndependentTask(child as unknown as Task, parent.taskId, "Take over"),
-			).rejects.toThrow("top-level primary task")
+			).resolves.toEqual({ task_id: parent.taskId, status: "steered" })
 		},
 	)
 
@@ -720,7 +728,7 @@ describe("Cross-task orchestration host", () => {
 		expect(child.steerUserMessage).not.toHaveBeenCalled()
 		await expect(
 			provider.steerIndependentTask(parent as unknown as Task, "unrelated", "Take over"),
-		).rejects.toThrow("direct child")
+		).rejects.toThrow("current workspace")
 	})
 
 	it("closes only direct children without rehydrating them and makes repeated stop requests idempotent", async () => {
@@ -747,5 +755,668 @@ describe("Cross-task orchestration host", () => {
 			status: "already_terminal",
 		})
 		expect(internals.removeTaskFromStack).toHaveBeenCalledTimes(1)
+		expect(child.recordAgentStopRequest).toHaveBeenCalledExactlyOnceWith(parent.taskId, undefined)
 	})
+
+	it("persists the peer stop notice before starting cancellation", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		let release!: () => void
+		let entered!: () => void
+		const noticeCommitted = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const noticeEntered = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const peer = createTask({
+			taskId: "peer",
+			recordAgentStopRequest: vi.fn(async () => {
+				entered()
+				await noticeCommitted
+			}),
+		})
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, caller.taskId))
+		const stopping = provider.stopIndependentTask(caller as unknown as Task, peer.taskId, "Work is complete")
+		try {
+			expect(await Promise.race([noticeEntered.then(() => "notice"), stopping.then(() => "stopped")])).toBe(
+				"notice",
+			)
+			expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(peer.abort).toBe(false)
+			release()
+			await expect(stopping).resolves.toEqual({ task_id: peer.taskId, status: "stopped" })
+			expect(peer.recordAgentStopRequest).toHaveBeenCalledExactlyOnceWith(caller.taskId, "Work is complete")
+		} finally {
+			release()
+			await stopping
+		}
+	})
+
+	it("does not cancel a peer when its stop notice fails to persist", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const peer = createTask({
+			taskId: "peer",
+			recordAgentStopRequest: vi.fn(async () => {
+				throw new Error("Stop notice persistence failed")
+			}),
+		})
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, caller.taskId))
+		await expect(provider.stopIndependentTask(caller as unknown as Task, peer.taskId)).rejects.toThrow(
+			"Stop notice persistence failed",
+		)
+		expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+		expect(peer.abort).toBe(false)
+	})
+
+	it("discovers unrelated independent peers with bounded, stable pages and excludes other authority scopes", async () => {
+		const { provider, tasks, history, metadata } = createProviderFixture()
+		const caller = createTask()
+		for (const id of ["peer-a", "peer-b", "peer-c", "archived", "foreign", "managed", "diagnostic", "legacy"]) {
+			const record = { ...taskHistoryItem(id, "other-parent"), orchestrationParentTaskId: undefined }
+			if (id === "foreign") record.workspace = "C:/other-repo"
+			if (id === "managed") record.taskKind = "subagent"
+			history.set(id, {
+				...record,
+				...(id === "peer-b" ? { generatedTitle: "Review parser" } : {}),
+				...(id === "archived" ? { archived: true } : {}),
+				...(id === "diagnostic" ? { diagnosticSession: true } : {}),
+				...(id === "legacy" ? { parentTaskId: "legacy-parent" } : {}),
+			})
+		}
+		tasks.set("peer-a", createTask({ taskId: "peer-a" }))
+		metadata.set("peer-a", { id: "peer-a", lifecycle: TaskLifecycleState.Running, lastUpdatedAt: 10 })
+
+		const first = await provider.listIndependentThreads(caller as unknown as Task, { limit: 2 })
+		expect(first.threads.map((thread) => thread.id)).toEqual(["peer-a", "peer-b"])
+		expect(first.threads[1]?.title).toBe("Review parser")
+		expect(first.nextCursor).toEqual(expect.any(String))
+		const next = await provider.listIndependentThreads(caller as unknown as Task, {
+			limit: 2,
+			cursor: first.nextCursor!,
+		})
+		expect(next.threads.map((thread) => thread.id)).toEqual(["peer-c"])
+		expect(next.nextCursor).toBeNull()
+		const archived = await provider.listIndependentThreads(caller as unknown as Task, { archived: true })
+		expect(archived.threads.map((thread) => thread.id)).toEqual(["archived"])
+		await expect(provider.listIndependentThreads(caller as unknown as Task, { cursor: "broken" })).rejects.toThrow(
+			"cursor",
+		)
+	})
+
+	it.each([
+		{ taskKind: "subagent" },
+		{ diagnosticSession: true },
+		{ parentTaskId: "legacy-parent" },
+		{ rootTaskId: "another-root" },
+	])("rejects model control from restricted callers %o", async (overrides) => {
+		const { provider } = createProviderFixture()
+		const caller = createTask(overrides) as unknown as Task
+		await expect(provider.listIndependentThreads(caller)).rejects.toThrow("independent primary")
+		await expect(provider.sendIndependentTaskMessage(caller, "peer", "Hello")).rejects.toThrow(
+			"independent primary",
+		)
+		await expect(provider.stopIndependentTask(caller, "peer")).rejects.toThrow("independent primary")
+	})
+
+	it("resumes an unrelated completed peer using its existing configuration and agent provenance", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const configuration = { apiProvider: "vertex", apiModelId: "target-model" }
+		const peer = createTask({ taskId: "peer", isCompleted: () => true, apiConfiguration: configuration })
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, { ...taskHistoryItem(peer.taskId, "other-parent"), status: "completed" })
+
+		await expect(
+			provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Follow up"),
+		).resolves.toEqual({
+			task_id: peer.taskId,
+			status: "resumed",
+		})
+		expect(peer.receiveAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ senderTaskId: caller.taskId, text: "Follow up" }),
+		)
+		expect(peer.resumeCompletedTaskFollowup).toHaveBeenCalledWith(
+			"Continue with the pending agent messages.",
+			[],
+			"agent",
+		)
+		expect(peer.apiConfiguration).toBe(configuration)
+		expect(peer.updateApiConfiguration).not.toHaveBeenCalled()
+	})
+
+	it("hydrates an unloaded peer in the background with its saved authority before agent continuation", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const saved = {
+			...taskHistoryItem("peer", "another-parent"),
+			status: "completed",
+			mode: "architect",
+			apiConfigName: "peer-profile",
+			approvalMode: "ask",
+		}
+		history.set("peer", saved)
+		const peer = createTask({ taskId: "peer", isTurnActive: () => false })
+		internals.createTaskWithHistoryItem = vi.fn(async () => {
+			tasks.set(peer.taskId, peer)
+			return peer
+		})
+
+		await expect(
+			provider.sendIndependentTaskMessage(caller as unknown as Task, "peer", "Inspect status"),
+		).resolves.toEqual({ task_id: "peer", status: "resumed" })
+		expect(internals.createTaskWithHistoryItem).toHaveBeenCalledWith(
+			saved,
+			expect.objectContaining({
+				startTask: false,
+				background: true,
+				preserveSelection: true,
+				preserveExisting: true,
+				requireSavedConfiguration: true,
+			}),
+		)
+		expect(peer.receiveAgentMessage).toHaveBeenCalledBefore(peer.resumeWithAgentMessages)
+		expect(peer.resumeWithAgentMessages).toHaveBeenCalledOnce()
+		expect(peer.submitUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("routes messages and steering to the peer owner across extension views", async () => {
+		const callerView = createProviderFixture()
+		const targetView = createProviderFixture()
+		const caller = createTask()
+		const peer = createTask({ taskId: "peer" })
+		targetView.tasks.set(peer.taskId, peer)
+		targetView.history.set(peer.taskId, taskHistoryItem(peer.taskId, "unrelated-parent"))
+		vi.spyOn(callerView.provider, "getTaskOwner").mockReturnValue(targetView.provider)
+
+		await callerView.provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Report back")
+		await callerView.provider.steerIndependentTask(caller as unknown as Task, peer.taskId, "Focus on current work")
+		expect(peer.receiveAgentMessage).toHaveBeenCalledOnce()
+		expect(peer.steerAgentMessage).toHaveBeenCalledOnce()
+	})
+
+	it("serializes concurrent stop requests for an unrelated peer", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const peer = createTask({ taskId: "peer" })
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, "other-parent"))
+		const results = await Promise.all([
+			provider.stopIndependentTask(caller as unknown as Task, peer.taskId),
+			provider.stopIndependentTask(caller as unknown as Task, peer.taskId),
+		])
+		expect(results.map((result) => result.status)).toEqual(["stopped", "already_terminal"])
+		expect(internals.removeTaskFromStack).toHaveBeenCalledOnce()
+	})
+
+	it("preserves the original parent's completion delivery when an unrelated thread waits", async () => {
+		const { provider, internals, tasks, history, metadata } = createProviderFixture()
+		const caller = createTask()
+		let completed = false
+		const peer = createTask({
+			taskId: "peer",
+			orchestrationParentTaskId: "original-parent",
+			isCompleted: () => completed,
+			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Peer result" }],
+		})
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, "original-parent"))
+		metadata.set(peer.taskId, { id: peer.taskId, lifecycle: TaskLifecycleState.Running })
+		const record = internals.getCrossTaskRecord.bind(provider)
+		internals.getCrossTaskRecord = vi.fn(async (...args: unknown[]) => {
+			const value = await record(...args)
+			if (peer.listenerCount(AlphaCodeEventName.TaskCompleted)) {
+				completed = true
+				peer.emit(AlphaCodeEventName.TaskCompleted, peer.taskId)
+			}
+			return value
+		})
+		const waiting = provider.waitForIndependentTask(caller as unknown as Task, peer.taskId, 0)
+		await expect(waiting).resolves.toMatchObject({ task_id: peer.taskId })
+		expect(await waiting).not.toHaveProperty("completion_receipt_id")
+		expect(internals.independentTaskWaiters.size).toBe(0)
+		expect(history.get(peer.taskId)?.orchestrationCompletionNotifications).toBeUndefined()
+	})
+
+	it("rejects self lifecycle control and foreign, missing, managed, or diagnostic thread targets", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		tasks.set(caller.taskId, caller)
+		for (const [id, overrides] of Object.entries({
+			foreign: { workspace: "C:/other" },
+			managed: { taskKind: "subagent" },
+			diagnostic: { diagnosticSession: true },
+		}))
+			history.set(id, { ...taskHistoryItem(id, "other"), ...overrides })
+		await expect(provider.stopIndependentTask(caller as unknown as Task, caller.taskId)).rejects.toThrow("itself")
+		for (const id of ["foreign", "managed", "diagnostic", "../../missing"])
+			await expect(provider.sendIndependentTaskMessage(caller as unknown as Task, id, "Hello")).rejects.toThrow(
+				"current workspace",
+			)
+	})
+
+	it("reads bounded peer conversation content without exposing provider state or hidden reasoning", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const peer = createTask({
+			taskId: "peer",
+			isCompleted: () => true,
+			apiConversationHistory: [
+				{ role: "user", content: "Inspect parser", ts: 10 },
+				{
+					role: "assistant",
+					content: "Parser is stable",
+					ts: 11,
+					encrypted_content: "opaque-provider-state",
+					reasoning_content: "hidden-reasoning",
+				},
+			],
+		})
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, { ...taskHistoryItem(peer.taskId, "other-parent"), status: "completed" })
+		const result = await provider.readIndependentThread(caller as unknown as Task, peer.taskId)
+		expect(result.thread).toMatchObject({ id: peer.taskId, kind: "alpha", status: { type: "idle" } })
+		expect(JSON.stringify(result)).toContain("Parser is stable")
+		expect(JSON.stringify(result)).not.toContain("opaque-provider-state")
+		expect(JSON.stringify(result)).not.toContain("hidden-reasoning")
+	})
+
+	it("forks committed peer history into an idle persisted task without launching a turn", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const api = [
+			{
+				role: "user",
+				input_origin: "human",
+				content: "Inspect parser",
+				ts: 10,
+				queued_message_ids: ["old-human-input"],
+			},
+			{ role: "assistant", content: "Parser is stable", ts: 11, encrypted_content: "opaque-provider-state" },
+		]
+		const peer = createTask({
+			taskId: "peer",
+			isCompleted: () => true,
+			isTurnActive: () => false,
+			apiConversationHistory: api,
+			clineMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Parser is stable" }],
+		})
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, {
+			...taskHistoryItem(peer.taskId, "original-parent"),
+			mode: "architect",
+			apiConfigName: "peer-profile",
+			approvalMode: "ask",
+			status: "completed",
+			tokensIn: 3000,
+			totalCost: 1,
+		})
+		internals.createTask = vi.fn()
+		internals.createTaskWithHistoryItem = vi.fn()
+		const result = await provider.forkIndependentTask(caller as unknown as Task, peer.taskId)
+		expect(result.task_id).not.toBe(peer.taskId)
+		expect(result).toMatchObject({ forked_from_id: peer.taskId, lifecycle: "closed" })
+		const saved = history.get(result.task_id)
+		expect(saved).toMatchObject({
+			mode: "architect",
+			apiConfigName: "peer-profile",
+			approvalMode: "ask",
+			tokensIn: 0,
+			totalCost: 0,
+		})
+		expect(saved).not.toHaveProperty("orchestrationParentTaskId")
+		const cloned = await readApiMessages({
+			taskId: result.task_id,
+			globalStoragePath: internals.contextProxy.globalStorageUri.fsPath,
+		})
+		expect(cloned).toHaveLength(2)
+		expect(cloned[1]).toHaveProperty("encrypted_content", "opaque-provider-state")
+		expect(cloned[0]).not.toHaveProperty("queued_message_ids")
+		expect(peer.apiConversationHistory).toEqual(api)
+		expect(tasks.has(result.task_id)).toBe(false)
+		expect(internals.createTask).not.toHaveBeenCalled()
+		expect(internals.createTaskWithHistoryItem).not.toHaveBeenCalled()
+	})
+
+	it("archives peers and their descendants and rejects archiving an ancestor of the caller", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		for (const [id, parent] of [
+			["peer", "other"],
+			["descendant", "peer"],
+		]) {
+			tasks.set(id, createTask({ taskId: id, orchestrationParentTaskId: parent }))
+			history.set(id, taskHistoryItem(id, parent))
+		}
+		await expect(
+			provider.setIndependentTaskArchived(caller as unknown as Task, "peer", true),
+		).resolves.toMatchObject({ archived: true })
+		expect(history.get("descendant")).toHaveProperty("archived", true)
+		expect(tasks.size).toBe(0)
+		expect((await provider.listIndependentThreads(caller as unknown as Task)).threads).toEqual([])
+		expect(
+			(await provider.listIndependentThreads(caller as unknown as Task, { archived: true })).threads,
+		).toHaveLength(2)
+		await provider.setIndependentTaskArchived(caller as unknown as Task, "peer", false)
+		expect(history.get("peer")).toHaveProperty("archived", false)
+		history.set(caller.taskId, taskHistoryItem(caller.taskId, "peer"))
+		await expect(provider.setIndependentTaskArchived(caller as unknown as Task, "peer", true)).rejects.toThrow(
+			"ancestor",
+		)
+	})
+
+	it("inspects unloaded legacy history without migrating or modifying source files", async () => {
+		const { provider, internals, history } = createProviderFixture()
+		const caller = createTask()
+		history.set("legacy-peer", { ...taskHistoryItem("legacy-peer", "other"), status: "completed" })
+		const storagePath = internals.contextProxy.globalStorageUri.fsPath
+		await saveApiMessages({
+			taskId: "legacy-peer",
+			globalStoragePath: storagePath,
+			messages: [
+				{ role: "user", content: "Original request" },
+				{ role: "assistant", content: "Original answer" },
+			],
+		})
+		const file = path.join(storagePath, "tasks", "legacy-peer", "api_conversation_history.json")
+		const legacyFile = path.join(path.dirname(file), "claude_messages.json")
+		await fs.rename(file, legacyFile)
+		const before = await fs.readFile(legacyFile, "utf8")
+		const result = await provider.readIndependentThread(caller as unknown as Task, "legacy-peer")
+		expect(JSON.stringify(result.turns)).toContain("Original answer")
+		expect(result.turns[0].status).toBe("completed")
+		expect(await fs.readFile(legacyFile, "utf8")).toBe(before)
+		await expect(fs.access(file)).rejects.toHaveProperty("code", "ENOENT")
+	})
+
+	it("routes a title change through the existing label owner without altering the task objective", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const peer = createTask({ taskId: "peer" })
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, "other"))
+		internals.renameTask = vi.fn(async (id: string, displayName: string) => {
+			const renamed = { ...history.get(id), displayName }
+			history.set(id, renamed)
+			return renamed
+		})
+		await expect(
+			provider.setIndependentTaskTitle(caller as unknown as Task, peer.taskId, "Parser review"),
+		).resolves.toMatchObject({ title: "Parser review", objective: "Child objective" })
+		expect(internals.renameTask).toHaveBeenCalledWith(peer.taskId, "Parser review")
+		await expect(provider.setIndependentTaskTitle(caller as unknown as Task, peer.taskId, " ")).rejects.toThrow(
+			"title",
+		)
+	})
+
+	it("requires human model intent and restricts peer model overrides to idle targets", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask({
+			apiConversationHistory: [
+				{ role: "user", input_origin: "human", content: "Send a follow up using target-model" },
+			],
+		})
+		const peer = createTask({ taskId: "peer" })
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, taskHistoryItem(peer.taskId, "other"))
+		await expect(
+			provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Hello", {
+				model: "unrequested",
+			}),
+		).rejects.toThrow("latest human request")
+		await expect(
+			provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Hello", {
+				model: "target-model",
+			}),
+		).rejects.toThrow("idle")
+		peer.isCompleted = () => true
+		await provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Hello", {
+			model: "target-model",
+		})
+		expect(history.get(peer.taskId)).toHaveProperty("threadModelOverride", "target-model")
+		expect(peer.updateApiConfiguration).toHaveBeenCalledWith(
+			expect.objectContaining({ apiProvider: "openai", openAiModelId: "target-model" }),
+		)
+	})
+
+	it("uses polling without automatic completion input for canonical created threads", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const parent = createTask()
+		const child = createTask({
+			taskId: "child",
+			orchestrationParentTaskId: parent.taskId,
+			orchestrationNotifyCompletion: false,
+			isCompleted: () => true,
+			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Done" }],
+		})
+		tasks.set(parent.taskId, parent)
+		tasks.set(child.taskId, child)
+		internals.createTask = vi.fn(async () => child)
+		await provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", undefined, {
+			notifyOnCompletion: false,
+		})
+		expect(internals.createTask).toHaveBeenCalledWith(
+			expect.any(String),
+			undefined,
+			undefined,
+			expect.objectContaining({ orchestrationNotifyCompletion: false }),
+		)
+		history.set(child.taskId, {
+			...taskHistoryItem(child.taskId, parent.taskId),
+			status: "completed",
+			orchestrationNotifyCompletion: false,
+		})
+		await internals.notifyIndependentTaskCompletion(child)
+		await internals.reconcileIndependentTaskCompletions(parent.taskId)
+		expect(parent.receiveAgentMessage).not.toHaveBeenCalled()
+		expect(history.get(child.taskId)?.orchestrationCompletionNotifications).toBeUndefined()
+	})
+
+	it("requires an archived peer to be restored before message delivery", async () => {
+		const { provider, internals, history } = createProviderFixture()
+		const parent = createTask()
+		history.set("peer", { ...taskHistoryItem("peer", "other"), archived: true })
+		internals.createTaskWithHistoryItem = vi.fn()
+		await expect(
+			provider.sendIndependentTaskMessage(parent as unknown as Task, "peer", "Resume work"),
+		).rejects.toThrow("archived")
+		expect(internals.createTaskWithHistoryItem).not.toHaveBeenCalled()
+	})
+
+	it("preserves a worktree fork's source owner and resolves its recorded execution directory when inspected", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask()
+		const source = createTask({
+			taskId: "source-worktree",
+			isCompleted: () => true,
+			isTurnActive: () => false,
+			orchestrationWorkspaceMode: "worktree",
+			workspacePath: "C:/isolated/packages/parser",
+			apiConversationHistory: [
+				{ role: "user", content: "Inspect", ts: 10 },
+				{ role: "assistant", content: "Done", ts: 11 },
+			],
+			clineMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Done" }],
+		})
+		tasks.set(source.taskId, source)
+		history.set(source.taskId, {
+			...taskHistoryItem(source.taskId, "other"),
+			status: "completed",
+			orchestrationWorkspaceMode: "worktree",
+			orchestrationWorkspaceRelativePath: "packages/parser",
+		})
+		const fork = await provider.forkIndependentTask(caller as unknown as Task, source.taskId)
+		expect(history.get(fork.task_id)).toHaveProperty("orchestrationWorkspaceTaskId", source.taskId)
+		const resolve = vi.spyOn(crossTaskWorktreeService, "resolve").mockResolvedValue("C:/isolated/packages/parser")
+		try {
+			const read = await provider.readIndependentThread(caller as unknown as Task, fork.task_id)
+			expect(resolve).toHaveBeenCalledWith(
+				internals.contextProxy.globalStorageUri.fsPath,
+				source.taskId,
+				"packages/parser",
+			)
+			expect(read.thread.cwd).toBe("C:/isolated/packages/parser")
+			expect(read.thread.createdAt).toBe(10)
+			resolve.mockRejectedValueOnce(new Error("The task worktree is missing"))
+			await expect(provider.readIndependentThread(caller as unknown as Task, fork.task_id)).rejects.toThrow(
+				"worktree is missing",
+			)
+		} finally {
+			resolve.mockRestore()
+		}
+	})
+
+	it("rejects a corrupt fallback provider transcript without replacing its evidence", async () => {
+		const { provider, internals, history } = createProviderFixture()
+		const caller = createTask()
+		history.set("peer", taskHistoryItem("peer", "other"))
+		const directory = path.join(internals.contextProxy.globalStorageUri.fsPath, "tasks", "peer")
+		await fs.mkdir(directory, { recursive: true })
+		const file = path.join(directory, "provider_transcript.json")
+		const contents = JSON.stringify({
+			version: 1,
+			taskId: "peer",
+			revision: 1,
+			writtenAt: 1,
+			digest: "0".repeat(64),
+			messages: [{ role: "user", content: "Original request" }],
+		})
+		await fs.writeFile(file, contents)
+		await expect(provider.readIndependentThread(caller as unknown as Task, "peer")).rejects.toThrow("digest")
+		expect(await fs.readFile(file, "utf8")).toBe(contents)
+	})
+
+	it("rejects an already cancelled history read before resolving storage or performing file I/O", async () => {
+		const resolve = vi.spyOn(taskStorage, "resolveExistingTaskDirectoryPathReadOnly")
+		const stat = vi.spyOn(fs, "lstat")
+		const read = vi.spyOn(fs, "readFile")
+		const controller = new AbortController()
+		const cancellation = new Error("The thread wait was cancelled")
+		controller.abort(cancellation)
+		try {
+			await expect(
+				threadTaskStorage.readThreadApiMessages("peer", "unused-storage", controller.signal),
+			).rejects.toBe(cancellation)
+			expect(resolve).not.toHaveBeenCalled()
+			expect(stat).not.toHaveBeenCalled()
+			expect(read).not.toHaveBeenCalled()
+		} finally {
+			resolve.mockRestore()
+			stat.mockRestore()
+			read.mockRestore()
+		}
+	})
+
+	it("forwards a thread read's cancellation signal to the disk reader", async () => {
+		const { provider, internals, history } = createProviderFixture()
+		const caller = createTask()
+		history.set("peer", taskHistoryItem("peer", "other"))
+		const controller = new AbortController()
+		const cancellation = new Error("Another peer completed first")
+		const read = vi
+			.spyOn(threadTaskStorage, "readThreadApiMessages")
+			.mockImplementation(async (_taskId, _storagePath, signal) => {
+				expect(signal).toBe(controller.signal)
+				controller.abort(cancellation)
+				signal?.throwIfAborted()
+				return []
+			})
+		try {
+			await expect(
+				provider.readIndependentThread(caller as unknown as Task, "peer", {}, controller.signal),
+			).rejects.toBe(cancellation)
+			expect(read).toHaveBeenCalledWith("peer", internals.contextProxy.globalStorageUri.fsPath, controller.signal)
+		} finally {
+			read.mockRestore()
+		}
+	})
+
+	it.each(["active", "blocked", "delegated", undefined])(
+		"rejects unloaded thread controls for saved status %s before any effects",
+		async (status) => {
+			const { provider, internals, history } = createProviderFixture()
+			const caller = createTask()
+			const saved = { ...taskHistoryItem("peer", "other"), status }
+			history.set("peer", saved)
+			internals.createTaskWithHistoryItem = vi.fn()
+			await expect(
+				provider.sendIndependentTaskMessage(caller as unknown as Task, "peer", "Continue work"),
+			).rejects.toThrow("owning VS Code window")
+			await expect(provider.stopIndependentTask(caller as unknown as Task, "peer")).rejects.toThrow(
+				"not terminal",
+			)
+			await expect(provider.setIndependentTaskArchived(caller as unknown as Task, "peer", true)).rejects.toThrow(
+				"not terminal",
+			)
+			expect(internals.createTaskWithHistoryItem).not.toHaveBeenCalled()
+			expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(internals.updateTaskHistory).not.toHaveBeenCalled()
+			expect(history.get("peer")).toEqual(saved)
+		},
+	)
+
+	it.each(["primary", "subagent"])(
+		"preflights an unloaded nonterminal %s descendant before stopping or archiving its live parent",
+		async (taskKind) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			const caller = createTask()
+			const peer = createTask({ taskId: "peer" })
+			tasks.set(peer.taskId, peer)
+			history.set(peer.taskId, taskHistoryItem(peer.taskId, "other"))
+			history.set("descendant", {
+				...taskHistoryItem("descendant", peer.taskId),
+				taskKind,
+				...(taskKind === "subagent" ? { parentTaskId: peer.taskId } : {}),
+			})
+			const before = structuredClone([...history])
+			await expect(
+				provider.setIndependentTaskArchived(caller as unknown as Task, peer.taskId, true),
+			).rejects.toThrow("not terminal")
+			expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(internals.updateTaskHistory).not.toHaveBeenCalled()
+			expect([...history]).toEqual(before)
+			expect(tasks.get(peer.taskId)).toBe(peer)
+		},
+	)
+
+	it.each(["completed", "failed", "interrupted", "cancelled", "timed_out"])(
+		"keeps known terminal saved status %s eligible for cold stop, archive, and resume",
+		async (status) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			const caller = createTask()
+			const saved = {
+				...taskHistoryItem("peer", "other"),
+				status,
+				mode: "architect",
+				apiConfigName: "peer-profile",
+			}
+			history.set("peer", saved)
+			await expect(provider.stopIndependentTask(caller as unknown as Task, "peer")).resolves.toEqual({
+				task_id: "peer",
+				status: "already_terminal",
+			})
+			expect(internals.updateTaskHistory).not.toHaveBeenCalled()
+			await expect(
+				provider.setIndependentTaskArchived(caller as unknown as Task, "peer", true),
+			).resolves.toMatchObject({ archived: true })
+			await provider.setIndependentTaskArchived(caller as unknown as Task, "peer", false)
+			const peer = createTask({ taskId: "peer", isTurnActive: () => false })
+			internals.createTaskWithHistoryItem = vi.fn(async () => {
+				tasks.set(peer.taskId, peer)
+				return peer
+			})
+			await expect(
+				provider.sendIndependentTaskMessage(caller as unknown as Task, "peer", "Continue work"),
+			).resolves.toEqual({ task_id: "peer", status: "resumed" })
+			expect(internals.createTaskWithHistoryItem).toHaveBeenCalledWith(
+				expect.objectContaining({ status, mode: "architect", apiConfigName: "peer-profile" }),
+				expect.objectContaining({ startTask: false, background: true, requireSavedConfiguration: true }),
+			)
+			expect(peer.receiveAgentMessage).toHaveBeenCalledOnce()
+			expect(peer.resumeWithAgentMessages).toHaveBeenCalledOnce()
+		},
+	)
 })

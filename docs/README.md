@@ -17,13 +17,11 @@ historical validation records apply only to their recorded revisions.
 | Evaluation corpus and historical results   | [Evaluation directory guide](../evals/README.md), [evaluator commands](../packages/evals/README.md)                                                                                                      |
 
 The [provider convergence record](convergence-context-provider-2026-10-03.md) retains provenance cited by source.
-The [October 3 findings](testing-suite-failures-2026-10-03.md) and [October 4 corrections](codex-cli-convergence-fixes-2026-10-04.md)
-retain acceptance criteria and validation limits. Recheck them against current tests before treating a historical defect
-or result as current.
 
-Completed research notes, migration prompts, dated reviews, and one-off investigation documents were removed from the
-working tree; their committed versions remain in Git history. Benchmark reports and old Frontier campaign snapshots
-are preserved under `evals/reports/` and `evals/archive/`.
+Maintain lasting architecture, compatibility, and operating guidance in the topic guides above. Keep temporary analysis,
+findings, fix summaries, and validation logs in change descriptions or local evidence. Completed dated reports are
+removed from this directory; their committed versions remain in Git history. Benchmark reports and old Frontier campaign
+snapshots are preserved under `evals/reports/` and `evals/archive/`.
 
 Local logs and superseded VSIX files are disposable build output. Keep release candidates and investigation evidence
 until their validation or comparison is complete. UI screenshots, host receipts, and generated workspaces in

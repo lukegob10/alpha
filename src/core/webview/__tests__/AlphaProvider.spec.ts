@@ -4319,6 +4319,42 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			vi.spyOn(provider, "postTaskSessionStateToWebview").mockResolvedValue(undefined)
 		}
 
+		it.each([false, true])(
+			"projects a durable lifecycle recovery with reuseUnchanged=%s",
+			async (reuseUnchanged) => {
+				const snapshot = makeSnapshot()
+				const journal = {
+					replay: vi.fn().mockResolvedValue(snapshot),
+					refresh: vi.fn().mockResolvedValue(snapshot),
+				}
+				installJournal(journal)
+
+				expect(
+					await provider.replayAgentLifecycle(taskId, reuseUnchanged ? { reuseUnchanged: true } : undefined),
+				).toEqual(snapshot)
+				expect(journal.replay).toHaveBeenCalledTimes(reuseUnchanged ? 0 : 1)
+				expect(journal.refresh).toHaveBeenCalledTimes(reuseUnchanged ? 1 : 0)
+				expect(provider.getAgentLifecycleSnapshot(taskId)).toEqual(snapshot)
+				expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "agentLifecycleSnapshot",
+					taskId,
+					payload: snapshot,
+				})
+			},
+		)
+
+		it("reports a failed warm lifecycle refresh without hiding the integrity error", async () => {
+			const error = new Error("lifecycle snapshot mismatch")
+			const journal = { refresh: vi.fn().mockRejectedValue(error), replay: vi.fn() }
+			installJournal(journal)
+
+			await expect(provider.replayAgentLifecycle(taskId, { reuseUnchanged: true })).rejects.toBe(error)
+			expect(journal.replay).not.toHaveBeenCalled()
+			expect(provider.getAgentLifecycleDegraded()).toMatchObject({
+				[taskId]: { degraded: true, reason: "replay_rejected", error: error.message },
+			})
+		})
+
 		it("persists terminal history only from the task lifecycle, not a terminal turn snapshot", async () => {
 			const completedTurn = makeSnapshot({
 				status: "completed",

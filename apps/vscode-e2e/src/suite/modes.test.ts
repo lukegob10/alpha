@@ -51,8 +51,12 @@ class ModeSwitchScriptedAI {
 	async *createMessage(
 		_systemPrompt: string,
 		_messages: unknown[],
-		metadata?: { taskId?: string },
+		metadata?: { taskId?: string; attemptId?: string },
 	): AsyncGenerator<ScriptChunk> {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		if (!metadata?.taskId) throw new Error("Scripted mode-switch E2E request is missing metadata.taskId")
 		this.requestedTaskIds.push(metadata.taskId)
 

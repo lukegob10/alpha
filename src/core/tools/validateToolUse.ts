@@ -7,7 +7,13 @@ import { customToolRegistry } from "@alpha-code/core"
 import { type Mode, FileRestrictionError, getModeBySlug, getGroupName, planModeSlug } from "../../shared/modes"
 import { EXPERIMENT_IDS } from "../../shared/experiments"
 import { isPlanCommandAllowed, isPlanCommandCwdAllowed } from "../../shared/plan-command"
-import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES, isCommandArtifactRead } from "../../shared/tools"
+import {
+	TOOL_GROUPS,
+	ALWAYS_AVAILABLE_TOOLS,
+	TOOL_ALIASES,
+	isCommandArtifactRead,
+	expandLegacyThreadToolDisables,
+} from "../../shared/tools"
 import { parseMcpToolName } from "../../utils/mcp-name"
 
 const executableNativeToolNames: readonly string[] = validToolNames
@@ -33,6 +39,10 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"interrupt_agent",
 	"list_tasks",
 	"wait_task",
+	"list_threads",
+	"list_archived_threads",
+	"read_thread",
+	"wait_threads",
 ])
 
 /**
@@ -177,6 +187,10 @@ export function isToolAllowedForMode(
 	// including ALWAYS_AVAILABLE_TOOLS. This ensures disabledTools works consistently
 	// at both the filtering layer and the execution-time validation layer.
 	if (toolRequirements && typeof toolRequirements === "object") {
+		const disabledNames = expandLegacyThreadToolDisables(
+			Object.keys(toolRequirements).filter((name) => toolRequirements[name] === false),
+		)
+		if (disabledNames.includes(resolvedTool)) return false
 		if (
 			(tool in toolRequirements && !toolRequirements[tool]) ||
 			(resolvedTool in toolRequirements && !toolRequirements[resolvedTool])

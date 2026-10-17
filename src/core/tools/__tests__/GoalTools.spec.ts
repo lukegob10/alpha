@@ -482,8 +482,8 @@ describe("canonical goal tool availability", () => {
 	it("keeps explicit independent-task creation alongside goals without reviving legacy delegation", () => {
 		const schemas = getNativeTools({ crossTaskRole: "root", includeCreateTaskSchema: true })
 		const surface = createTaskToolSurface({ schemas, mode: "code" })
-		expect(names(schemas)).toContain("create_task")
-		expect(surface.isCallable("create_task")).toBe(true)
+		expect(names(schemas)).toContain("create_thread")
+		expect(surface.isCallable("create_thread")).toBe(true)
 		for (const name of goals) expect(surface.isCallable(name)).toBe(true)
 		expect(names(schemas)).not.toContain("new_task")
 		expect(surface.resolve("new_task")).toBeUndefined()

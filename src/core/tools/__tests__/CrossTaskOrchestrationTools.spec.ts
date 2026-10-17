@@ -13,7 +13,17 @@ import {
 } from "../CrossTaskOrchestrationTools"
 import type { ToolCallbacks } from "../BaseTool"
 
-function createProvider(): CrossTaskOrchestrationProvider & { calls: string[] } {
+type LegacyProvider = Pick<
+	CrossTaskOrchestrationProvider,
+	| "createIndependentTask"
+	| "listIndependentTasks"
+	| "waitForIndependentTask"
+	| "sendIndependentTaskMessage"
+	| "steerIndependentTask"
+	| "stopIndependentTask"
+>
+
+function createProvider(): LegacyProvider & { calls: string[] } {
 	const calls: string[] = []
 	return {
 		calls,
@@ -39,7 +49,7 @@ function createProvider(): CrossTaskOrchestrationProvider & { calls: string[] } 
 	}
 }
 
-function createTask(provider: CrossTaskOrchestrationProvider): Task {
+function createTask(provider: LegacyProvider): Task {
 	return {
 		taskId: "parent-1",
 		taskKind: "primary",

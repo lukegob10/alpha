@@ -54,8 +54,7 @@ The October 8 convergence additionally reviewed Codex's
 [instant interruption](https://github.com/openai/codex/commit/406b0c44460cf71e90c21c7abe6e581add3a6421).
 The October 11 [queue preference](steering-queue-preference.md) makes that behavior opt-in, with ordinary submission
 queueing by default at the user's request. Explicit queueing and the dedicated steering command remain available.
-Approval boundaries keep their queued-input contract. See the earlier
-[steering implementation and validation](codex-steering-convergence-2026-10-08.md). VS Code task navigation uses Alpha's
+Approval boundaries keep their queued-input contract. VS Code task navigation uses Alpha's
 shared session registry rather than the CLI's terminal navigation. No execution policy or approval authority changes.
 
 The implementation uses stable command, webview messaging, and keybinding contracts for VS Code **1.125.0**. Consulted

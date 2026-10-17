@@ -2,7 +2,12 @@ import { restoreTaskMode } from "@alpha-code/types"
 import type OpenAI from "openai"
 import type { ModeConfig, ToolName, ToolGroup, ModelInfo } from "@alpha-code/types"
 import { getModeBySlug, getToolsForMode, planModeSlug } from "../../../shared/modes"
-import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS, TOOL_ALIASES } from "../../../shared/tools"
+import {
+	TOOL_GROUPS,
+	ALWAYS_AVAILABLE_TOOLS,
+	TOOL_ALIASES,
+	expandLegacyThreadToolDisables,
+} from "../../../shared/tools"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
 import type { McpHub } from "../../../services/mcp/McpHub"
 import { isToolAllowedForMode } from "../../../core/tools/validateToolUse"
@@ -125,7 +130,7 @@ export function applyModelToolCustomization(
 
 	// Apply excluded tools (remove from allowed set)
 	if (modelInfo.excludedTools && modelInfo.excludedTools.length > 0) {
-		modelInfo.excludedTools.forEach((tool) => {
+		expandLegacyThreadToolDisables(modelInfo.excludedTools).forEach((tool) => {
 			const resolvedTool = resolveToolAlias(tool)
 			result.delete(resolvedTool)
 		})
@@ -240,6 +245,15 @@ export function filterNativeToolsForMode(
 			"send_task_message",
 			"steer_task",
 			"stop_task",
+			"list_threads",
+			"list_archived_threads",
+			"read_thread",
+			"wait_threads",
+			"create_thread",
+			"fork_thread",
+			"send_message_to_thread",
+			"set_thread_title",
+			"set_thread_archived",
 		] as const) {
 			allowedToolNames.delete(tool)
 		}

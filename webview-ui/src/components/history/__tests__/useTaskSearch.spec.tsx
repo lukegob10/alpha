@@ -136,22 +136,22 @@ describe("useTaskSearch", () => {
 		expect((result.current.tasks[0] as any).highlight).toBe("<mark>Create a React component</mark>")
 	})
 
-	it("finds custom names and original prompts without changing the displayed name", () => {
+	it("finds generated titles and original prompts without changing the displayed title", () => {
 		mockUseExtensionState.mockReturnValue({
-			taskHistory: [{ ...mockTaskHistory[0], displayName: "Navigation cleanup" }],
+			taskHistory: [{ ...mockTaskHistory[0], generatedTitle: "Navigation cleanup" }],
 		})
 		const { result } = renderHook(() => useTaskSearch())
 		act(() => result.current.setSearchQuery("Navigation"))
 		expect(result.current.tasks).toHaveLength(1)
 		expect(result.current.tasks[0]).toMatchObject({
-			displayName: "Navigation cleanup",
+			generatedTitle: "Navigation cleanup",
 			task: "Create a React component",
 			highlight: "<mark>Navigation cleanup</mark>",
 		})
 		act(() => result.current.setSearchQuery("React"))
 		expect(result.current.tasks).toHaveLength(1)
 		expect(result.current.tasks[0].task).toBe("Create a React component")
-		expect(result.current.tasks[0].displayName).toBe("Navigation cleanup")
+		expect(result.current.tasks[0].generatedTitle).toBe("Navigation cleanup")
 	})
 
 	it("does not inject unescaped custom names when only the original prompt matches", () => {

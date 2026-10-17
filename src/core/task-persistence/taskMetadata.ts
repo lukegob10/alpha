@@ -32,6 +32,7 @@ export type TaskMetadataOptions = {
 	diagnosticIncidentId?: string
 	diagnosticSourceTaskId?: string
 	orchestrationParentTaskId?: string
+	orchestrationNotifyCompletion?: boolean
 	orchestrationWorkspaceMode?: "shared" | "worktree"
 	orchestrationWorkspaceRelativePath?: string
 	orchestrationWorkspaceBaselineCommit?: string
@@ -79,6 +80,7 @@ export async function taskMetadata({
 	diagnosticIncidentId,
 	diagnosticSourceTaskId,
 	orchestrationParentTaskId,
+	orchestrationNotifyCompletion,
 	orchestrationWorkspaceMode,
 	orchestrationWorkspaceRelativePath,
 	orchestrationWorkspaceBaselineCommit,
@@ -169,6 +171,7 @@ export async function taskMetadata({
 		...(diagnosticIncidentId ? { diagnosticIncidentId } : {}),
 		...(diagnosticSourceTaskId ? { diagnosticSourceTaskId } : {}),
 		...(orchestrationParentTaskId ? { orchestrationParentTaskId } : {}),
+		...(orchestrationNotifyCompletion !== undefined ? { orchestrationNotifyCompletion } : {}),
 		...(orchestrationWorkspaceMode ? { orchestrationWorkspaceMode } : {}),
 		...(orchestrationWorkspaceRelativePath !== undefined ? { orchestrationWorkspaceRelativePath } : {}),
 		...(orchestrationWorkspaceBaselineCommit ? { orchestrationWorkspaceBaselineCommit } : {}),

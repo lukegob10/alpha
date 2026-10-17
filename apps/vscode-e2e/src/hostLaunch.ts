@@ -54,13 +54,16 @@ export async function launchExtensionHost(
 		...(launchKind === "extension-test" ? [`--extensionTestsPath=${options.extensionTestsPath}`] : []),
 		...developments.map((directory) => `--extensionDevelopmentPath=${directory}`),
 	]
+	const extensionTestsEnv = { ...process.env, ...options.extensionTestsEnv }
+	// A GUI host must start the workbench, even when launched from an Electron Node process.
+	delete extensionTestsEnv.ELECTRON_RUN_AS_NODE
 	const child = spawn(executable, args, {
 		shell: false,
 		windowsHide: false,
 		// A retained unknown-close GUI must not keep the campaign runner's output pipes alive.
 		// Normal-host diagnostics live in its owned receipts/profile logs, not raw console capture.
 		stdio: launchKind === "development-sidecar" ? "ignore" : "inherit",
-		env: { ...process.env, ...options.extensionTestsEnv },
+		env: extensionTestsEnv,
 		signal,
 	})
 	return new Promise<number>((resolve, reject) => {

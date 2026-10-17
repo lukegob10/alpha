@@ -8,9 +8,18 @@ const legacy = { id: "task", number: 1, ts: 1, task: "Original prompt", tokensIn
 describe("chat display names", () => {
 	it("reads legacy records and retains the original prompt alongside a custom name", () => {
 		expect(getTaskDisplayName(historyItemSchema.parse(legacy))).toBe("Original prompt")
+		const generated = historyItemSchema.parse({ ...legacy, generatedTitle: "Summarize task" })
+		expect(getTaskDisplayName(generated)).toBe("Summarize task")
 		const renamed = historyItemSchema.parse({ ...legacy, displayName: "  Chat name  " })
 		expect(getTaskDisplayName(renamed)).toBe("Chat name")
 		expect(renamed.task).toBe("Original prompt")
+	})
+
+	it("limits generated titles to 36 Unicode characters", () => {
+		expect(historyItemSchema.safeParse({ ...legacy, generatedTitle: "x".repeat(36) }).success).toBe(true)
+		expect(historyItemSchema.safeParse({ ...legacy, generatedTitle: "x".repeat(37) }).success).toBe(false)
+		expect(historyItemSchema.safeParse({ ...legacy, generatedTitle: "😀".repeat(36) }).success).toBe(true)
+		expect(historyItemSchema.safeParse({ ...legacy, generatedTitle: "😀".repeat(37) }).success).toBe(false)
 	})
 
 	it("bounds and trims user labels, without allowing unrelated fields in a rename", () => {

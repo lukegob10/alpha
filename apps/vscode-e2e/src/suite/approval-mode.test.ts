@@ -82,7 +82,11 @@ class ApprovalModeAI {
 	) {
 		observations.set(this, observation)
 	}
-	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string; attemptId?: string }) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		assert.ok(metadata?.taskId)
 		this.rootTaskId ??= metadata.taskId
 		if (metadata.taskId !== this.rootTaskId) {

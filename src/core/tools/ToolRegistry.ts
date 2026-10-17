@@ -49,6 +49,17 @@ import {
 	steerTaskTool,
 	stopTaskTool,
 } from "./CrossTaskOrchestrationTools"
+import {
+	listThreadsTool,
+	listArchivedThreadsTool,
+	readThreadTool,
+	waitThreadsTool,
+	createThreadTool,
+	forkThreadTool,
+	sendMessageToThreadTool,
+	setThreadTitleTool,
+	setThreadArchivedTool,
+} from "./ThreadOrchestrationTools"
 import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
@@ -205,6 +216,12 @@ const BARRIER_TOOLS = new Set([
 	"send_task_message",
 	"steer_task",
 	"stop_task",
+	"wait_threads",
+	"create_thread",
+	"fork_thread",
+	"send_message_to_thread",
+	"set_thread_title",
+	"set_thread_archived",
 	"wait_agent",
 	"attempt_completion",
 	"ask_followup_question",
@@ -238,6 +255,11 @@ const TASK_TOOLS = new Set([
 	"send_task_message",
 	"steer_task",
 	"stop_task",
+	"create_thread",
+	"fork_thread",
+	"send_message_to_thread",
+	"set_thread_title",
+	"set_thread_archived",
 	"spawn_agent",
 	"wait_agent",
 	"send_message",
@@ -606,6 +628,15 @@ const TOOL_NAMES = [
 	"send_task_message",
 	"steer_task",
 	"stop_task",
+	"list_threads",
+	"list_archived_threads",
+	"read_thread",
+	"wait_threads",
+	"create_thread",
+	"fork_thread",
+	"send_message_to_thread",
+	"set_thread_title",
+	"set_thread_archived",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
@@ -697,7 +728,11 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 			name !== "list_tickets" &&
 			name !== "read_ticket" &&
 			name !== "list_tasks" &&
-			name !== "wait_task",
+			name !== "wait_task" &&
+			name !== "list_threads" &&
+			name !== "list_archived_threads" &&
+			name !== "read_thread" &&
+			name !== "wait_threads",
 	}
 }
 
@@ -993,6 +1028,15 @@ export class ToolRegistry {
 		this.registerBuiltIn("send_task_message", sendTaskMessageTool, schemas)
 		this.registerBuiltIn("steer_task", steerTaskTool, schemas)
 		this.registerBuiltIn("stop_task", stopTaskTool, schemas)
+		this.registerBuiltIn("list_threads", listThreadsTool, schemas)
+		this.registerBuiltIn("list_archived_threads", listArchivedThreadsTool, schemas)
+		this.registerBuiltIn("read_thread", readThreadTool, schemas)
+		this.registerBuiltIn("wait_threads", waitThreadsTool, schemas)
+		this.registerBuiltIn("create_thread", createThreadTool, schemas)
+		this.registerBuiltIn("fork_thread", forkThreadTool, schemas)
+		this.registerBuiltIn("send_message_to_thread", sendMessageToThreadTool, schemas)
+		this.registerBuiltIn("set_thread_title", setThreadTitleTool, schemas)
+		this.registerBuiltIn("set_thread_archived", setThreadArchivedTool, schemas)
 		this.registerBuiltIn("spawn_agent", spawnAgentTool, schemas)
 		this.registerBuiltIn("list_agents", listAgentsTool, schemas)
 		this.registerBuiltIn("wait_agent", waitAgentTool, schemas)
