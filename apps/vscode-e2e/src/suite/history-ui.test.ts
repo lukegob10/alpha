@@ -177,6 +177,22 @@ suite("Inline Chats rendered history", function () {
 			await api.clearCurrentTask()
 			assert.equal(provider.getLiveTask(taskId), undefined, "Cold reopen must begin without an in-memory Task")
 			await uiFixtureBarrier("navigation-reopen-ready", { version: vscode.version, taskId })
+
+			// Exercise the production lazy bundle after navigation measurements have finished.
+			const reopenedTask = provider.getLiveTask(taskId)
+			assert.ok(reopenedTask)
+			await reopenedTask.overwriteAlphaMessages([
+				...reopenedTask.clineMessages,
+				{
+					type: "say",
+					say: "text",
+					ts: Math.max(Date.now(), reopenedTask.clineMessages.at(-1)?.ts ?? 0) + 1,
+					text: "```mermaid\ngraph TD\n    ready[Alpha lazy diagram ready] --> verified[Verified]\n```",
+					partial: false,
+				},
+			])
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("diagram-ready", { version: vscode.version, taskId })
 		} finally {
 			await api.clearCurrentTask().catch(() => undefined)
 			navigationAI.removeFromCache?.()

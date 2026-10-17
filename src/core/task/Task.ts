@@ -2128,20 +2128,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private ownBackgroundLifecycle(operation: "start" | "resume", lifecycle: Promise<void>): Promise<void> {
 		this.ownedLifecyclePromise = lifecycle
-		void lifecycle.then(
-			() => {
-				if (this.ownedLifecyclePromise === lifecycle) this.ownedLifecyclePromise = undefined
-				void this.wakeQueuedInputWhenIdle().catch(() => {
-					console.warn(`[Task#${this.taskId}] Accepted input remains queued after lifecycle settlement`)
-				})
-			},
-			(error) => {
-				// A settled failure is diagnostic state, not a live owner that may fence
-				// every later admission. Joiners already holding this promise still fail.
-				if (this.ownedLifecyclePromise === lifecycle) this.ownedLifecyclePromise = undefined
-				console.error(`[Task#${this.taskId}] Background ${operation} failed:`, error)
-			},
-		)
+		const releaseOwner = () => {
+			if (this.ownedLifecyclePromise !== lifecycle) return
+			this.ownedLifecyclePromise = undefined
+			void this.wakeQueuedInputWhenIdle().catch(() => {
+				console.warn(`[Task#${this.taskId}] Accepted input remains queued after lifecycle settlement`)
+			})
+		}
+		void lifecycle.then(releaseOwner, (error) => {
+			// A settled failure is diagnostic state, not a live owner that may fence
+			// every later admission. Joiners already holding this promise still fail.
+			console.error(`[Task#${this.taskId}] Background ${operation} failed:`, error)
+			releaseOwner()
+		})
 		return lifecycle
 	}
 
@@ -7620,6 +7619,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	/** Published ask identity is authoritative before delayed attention status appears. */
 	public getActiveAskTimestamp(): number | undefined {
 		return this.activeAsk?.ts
+	}
+
+	/** A restored transcript can reach the UI before its owned resume ask does. */
+	public canAcceptHistoryResumeFollowup(): boolean {
+		return (
+			this.taskKind === "primary" &&
+			this.initialHistoryResumePending &&
+			!this.abort &&
+			!this.abandoned &&
+			!this.isTurnActive() &&
+			!this.activeToolApprovalRequest &&
+			!this.hasPendingSteerMessage() &&
+			this.askResponse === undefined &&
+			!this.deferredAskResponse &&
+			(!this.activeAsk ||
+				this.activeAsk.type === "resume_task" ||
+				this.activeAsk.type === "resume_completed_task")
+		)
 	}
 
 	handleWebviewAskResponse(
@@ -19186,12 +19203,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!lifecyclePreflightIsCurrent()) return
 			await this.publishCanonicalLifecyclePhase("working", lifecyclePreflightIsCurrent)
 			if (!lifecyclePreflightIsCurrent()) return
-			await this.appendAgentTurnEvent(
+			// Optional telemetry captures identity when queued and drains at turn/cancellation fences.
+			// Its storage latency must not delay provider admission after the canonical lifecycle above.
+			void this.appendAgentTurnEvent(
 				{ type: "model_request_started", attempt: retryAttempt + 1, purpose: "task" },
 				step.snapshot.context,
 			)
 			if (!lifecyclePreflightIsCurrent()) return
-			await this.appendAgentTurnEvent(
+			void this.appendAgentTurnEvent(
 				{ type: "policy_snapshot", digest: taskToolSurface?.policy.digest ?? "", toolCount: allTools.length },
 				step.snapshot.context,
 			)

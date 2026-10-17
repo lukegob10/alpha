@@ -10,7 +10,7 @@ import { MarketplaceViewStateManager } from "./components/marketplace/Marketplac
 import { vscode } from "./utils/vscode"
 import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
-import { ExtensionStateContextProvider, useExtensionState } from "./context/ExtensionStateContext"
+import { ExtensionStateContextProvider, useShellState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
 import ChatToolbar from "./components/chat/ChatToolbar"
 import { chatToolbarActions } from "./components/chat/chatToolbarActions"
@@ -74,7 +74,7 @@ const App = () => {
 		renderContext,
 		currentTaskId,
 		debug,
-	} = useExtensionState()
+	} = useShellState()
 	const { t } = useAppTranslation()
 	const didReportUiReady = useRef(false)
 

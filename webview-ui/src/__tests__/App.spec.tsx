@@ -3,11 +3,17 @@
 import React from "react"
 import { render, screen, act, cleanup, fireEvent } from "@/utils/test-utils"
 import { vscode } from "@src/utils/vscode"
+import {
+	ExtensionStateContext,
+	ShellStateContext,
+	type ExtensionStateContextType,
+} from "@src/context/ExtensionStateContext"
 
 import AppWithProviders from "../App"
 
 const mockChatCommands = vi.hoisted(() => ({ acceptInput: vi.fn(), sendAndSteer: vi.fn(), startNewChat: vi.fn() }))
 const mockCheckUnsavedChanges = vi.hoisted(() => vi.fn<(onContinue: () => void) => void>())
+const mockStateSubscriptionRead = vi.hoisted(() => vi.fn())
 
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
@@ -168,10 +174,24 @@ vi.mock("@src/i18n/TranslationContext", () => {
 	}
 })
 
-vi.mock("@src/context/ExtensionStateContext", () => ({
-	useExtensionState: () => mockUseExtensionState(),
-	ExtensionStateContextProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
+vi.mock("@src/context/ExtensionStateContext", async () => {
+	const React = await import("react")
+	const ExtensionStateContext = React.createContext<ExtensionStateContextType | undefined>(undefined)
+	const ShellStateContext = React.createContext<ExtensionStateContextType | undefined>(undefined)
+	return {
+		ExtensionStateContext,
+		ShellStateContext,
+		useExtensionState: () => {
+			mockStateSubscriptionRead()
+			return React.useContext(ExtensionStateContext) ?? mockUseExtensionState()
+		},
+		useShellState: () => {
+			mockStateSubscriptionRead()
+			return React.useContext(ShellStateContext) ?? mockUseExtensionState()
+		},
+		ExtensionStateContextProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+	}
+})
 
 // Mock environment variables
 vi.mock("process.env", () => ({
@@ -323,6 +343,49 @@ describe("App", () => {
 		expect(chatView).toBeInTheDocument()
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 	}, 10000)
+
+	it("keeps the app shell stable over transcript updates while observing task and welcome changes", () => {
+		const initialState = mockUseExtensionState()
+		const app = <AppWithProviders />
+		let updateTranscript: React.Dispatch<React.SetStateAction<ExtensionStateContextType>> | undefined
+		let updateShell: React.Dispatch<React.SetStateAction<ExtensionStateContextType>> | undefined
+		function StateUpdates() {
+			const [fullState, setFullState] = React.useState<ExtensionStateContextType>(initialState)
+			const [shellState, setShellState] = React.useState<ExtensionStateContextType>(initialState)
+			updateTranscript = setFullState
+			updateShell = setShellState
+			return (
+				<ExtensionStateContext.Provider value={fullState}>
+					<ShellStateContext.Provider value={shellState}>{app}</ShellStateContext.Provider>
+				</ExtensionStateContext.Provider>
+			)
+		}
+		render(<StateUpdates />)
+		expect(mockStateSubscriptionRead).toHaveBeenCalledTimes(1)
+		for (let sequence = 1; sequence <= 100; sequence++) {
+			act(() => updateTranscript?.((state) => ({ ...state, clineMessagesSeq: sequence })))
+		}
+		expect(mockStateSubscriptionRead).toHaveBeenCalledTimes(1)
+
+		act(() => updateShell?.((state) => ({ ...state, currentTaskId: "latest-task" })))
+		expect(mockStateSubscriptionRead).toHaveBeenCalledTimes(2)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "showDeleteMessageDialog", messageTs: 10 },
+				}),
+			),
+		)
+		fireEvent.click(screen.getByRole("button", { name: "common:confirmation.proceed" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "deleteMessageConfirm",
+			taskId: "latest-task",
+			messageTs: 10,
+		})
+		act(() => updateShell?.((state) => ({ ...state, showWelcome: true })))
+		expect(screen.getByText("Welcome to Alpha.")).toBeInTheDocument()
+		expect(screen.queryByTestId("chat-view")).not.toBeInTheDocument()
+	})
 
 	it("has no duplicate toolbar row on a new sidebar chat", () => {
 		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })

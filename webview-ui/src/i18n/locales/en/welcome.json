@@ -5,6 +5,7 @@
 	},
 	"providerSignup": {
 		"heading": "Choose your provider",
+		"loading": "Loading provider settings...",
 		"chooseProvider": "Alpha needs an LLM provider to work. Choose one to get started, you can add more later.",
 		"learnMore": "Learn more",
 		"useAnotherProvider": "3rd-party Provider",

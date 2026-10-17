@@ -55,6 +55,8 @@ export class SkillsManager {
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
 	private discoveryGeneration = 0
+	private watcherRefresh: Promise<void> | undefined
+	private watcherRefreshRequested = false
 	private readonly notifyWebview: boolean
 	private readonly projectInstructionDiscovery: ProjectInstructionDiscoveryOptions
 
@@ -119,11 +121,34 @@ export class SkillsManager {
 		return this.getSkillsMetadata()
 	}
 
-	private async refreshSkillsAndNotify(): Promise<void> {
-		const skills = await this.refreshSkills()
-		if (this.notifyWebview && !this.isDisposed) {
-			await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
+	private refreshSkillsAndNotify(): Promise<void> {
+		if (this.isDisposed) return Promise.resolve()
+		this.watcherRefreshRequested = true
+		// Changes during a scan invalidate it; only a complete, current catalog may be published.
+		this.discoveryGeneration++
+		if (!this.watcherRefresh) {
+			// Overlapping watcher patterns share one scan, including events delivered in the same turn.
+			this.watcherRefresh = Promise.resolve().then(async () => {
+				try {
+					while (this.watcherRefreshRequested && !this.isDisposed) {
+						this.watcherRefreshRequested = false
+						try {
+							const skills = await this.refreshSkills()
+							if (this.notifyWebview && !this.isDisposed && !this.watcherRefreshRequested) {
+								await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
+							}
+						} catch (error) {
+							// A newer event still requires a scan even if obsolete discovery or publication failed.
+							if (this.watcherRefreshRequested && !this.isDisposed) continue
+							throw error
+						}
+					}
+				} finally {
+					this.watcherRefresh = undefined
+				}
+			})
 		}
+		return this.watcherRefresh
 	}
 
 	/**
@@ -929,6 +954,7 @@ Add your skill instructions here.
 
 	async dispose(): Promise<void> {
 		this.isDisposed = true
+		this.watcherRefreshRequested = false
 		this.disposables.forEach((d) => d.dispose())
 		this.disposables = []
 		this.skills.clear()

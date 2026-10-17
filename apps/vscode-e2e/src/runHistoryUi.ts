@@ -819,9 +819,36 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			},
 			measurementBoundary: `VS Code ${expectedHostVersion} webview performance clock: New Chat DOM commit and frame after it; history-row click to opening feedback and transcript DOM/frame with persisted synthetic transcript; timings are one scripted sample, not a general speed claim.`,
 		}
+		const scriptRequestsBefore = await evaluate<string[]>(
+			"d.defaultView.performance.getEntriesByType('resource').map(entry=>entry.name).filter(name=>name.split('?')[0].endsWith('.js'))",
+		)
 		await writeJsonAtomically(path.join(directory, "ui-done-navigation-reopen-ready.json"), {
 			nonce,
 			stage: "navigation-reopen-ready",
+			status: "passed",
+		})
+		await ready("diagram-ready")
+		await check(
+			"Array.from(d.querySelectorAll('svg')).some(svg=>svg.textContent.includes('Alpha lazy diagram ready'))",
+		)
+		const scriptRequestsAfter = await evaluate<string[]>(
+			"d.defaultView.performance.getEntriesByType('resource').map(entry=>entry.name).filter(name=>name.split('?')[0].endsWith('.js'))",
+		)
+		const diagramScriptRequests = scriptRequestsAfter.filter((url) => !scriptRequestsBefore.includes(url))
+		assert.ok(diagramScriptRequests.length > 0, "The completed diagram loads its deferred JavaScript")
+		await capture("diagram-ready")
+		await fs.writeFile(
+			path.join(directory, "diagram-lazy-loading.json"),
+			JSON.stringify({
+				hostVersion: expectedHostVersion,
+				diagramScriptRequests,
+				rendered: true,
+			}),
+			{ flag: "wx" },
+		)
+		await writeJsonAtomically(path.join(directory, "ui-done-diagram-ready.json"), {
+			nonce,
+			stage: "diagram-ready",
 			status: "passed",
 		})
 		const host = await running

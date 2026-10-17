@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => {
 		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
+		loadEnvironment: vi.fn().mockResolvedValue(undefined),
+		initializeNetworkProxy: vi.fn().mockResolvedValue(undefined),
 		registerUriHandler: vi.fn((_handler: { handleUri: (uri: unknown) => unknown }) => ({
 			dispose: vi.fn(),
 		})),
@@ -50,8 +52,6 @@ vi.mock("vscode", () => ({
 	env: { language: "en" },
 }))
 
-vi.mock("fs", () => ({ existsSync: vi.fn(() => false) }))
-vi.mock("@dotenvx/dotenvx", () => ({ config: vi.fn() }))
 vi.mock("@alpha-code/core", () => ({ customToolRegistry: { setExtensionPath: vi.fn() } }))
 vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
@@ -62,7 +62,8 @@ vi.mock("@alpha-code/telemetry", () => ({
 		},
 	},
 }))
-vi.mock("../../utils/networkProxy", () => ({ initializeNetworkProxy: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("../../utils/networkProxy", () => ({ initializeNetworkProxy: mocks.initializeNetworkProxy }))
+vi.mock("../../utils/loadEnvironment", () => ({ loadExtensionEnvironment: mocks.loadEnvironment }))
 vi.mock("../../shared/package", () => ({ Package: { name: "alpha", outputChannel: "Alpha" } }))
 vi.mock("../../shared/language", () => ({ formatLanguage: vi.fn((language) => language) }))
 vi.mock("../../core/config/ContextProxy", () => ({
@@ -119,6 +120,31 @@ import { activate, deactivate } from "../../extension"
 describe("extension lifecycle", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it("loads the optional environment before network and provider initialization", async () => {
+		let finishEnvironment!: () => void
+		mocks.loadEnvironment.mockImplementationOnce(
+			() => new Promise<void>((resolve) => (finishEnvironment = resolve)),
+		)
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+
+		const activating = activate(context)
+		expect(mocks.loadEnvironment).toHaveBeenCalledOnce()
+		expect(mocks.initializeNetworkProxy).not.toHaveBeenCalled()
+		expect(mocks.getContextProxy).not.toHaveBeenCalled()
+
+		finishEnvironment()
+		await activating
+		expect(mocks.initializeNetworkProxy).toHaveBeenCalledWith(context, expect.anything())
+		expect(mocks.getContextProxy).toHaveBeenCalledWith(context)
+		await deactivate()
 	})
 
 	it("persists the default command policy before initializing provider state", async () => {

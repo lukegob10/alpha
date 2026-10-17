@@ -9,6 +9,7 @@ import type { HistoryItem } from "@alpha-code/types"
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { safeWriteJson, type SafeWriteJsonOptions } from "../../../utils/safeWriteJson"
+import { getStorageBasePath } from "../../../utils/storage"
 
 const { mockUnlink, mockSafeWriteJson } = vi.hoisted(() => ({
 	mockUnlink: vi.fn(),
@@ -365,6 +366,27 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("getByWorkspace()", () => {
+		it("preserves newest-first and stable equal-timestamp ordering before and after a save", async () => {
+			await store.initialize()
+			const workspace = path.join(tmpDir, "project")
+			await store.upsert(makeHistoryItem({ id: "old", workspace, ts: 100 }))
+			await store.upsert(makeHistoryItem({ id: "other", workspace: path.join(tmpDir, "other"), ts: 500 }))
+			await store.upsert(makeHistoryItem({ id: "equal-first", workspace, ts: 200 }))
+			await store.upsert(makeHistoryItem({ id: "equal-second", workspace, ts: 200 }))
+
+			expect(store.getByWorkspace(workspace).map((item) => item.id)).toEqual([
+				"equal-first",
+				"equal-second",
+				"old",
+			])
+			await store.upsert(makeHistoryItem({ id: "old", workspace, ts: 300 }))
+			expect(store.getByWorkspace(workspace).map((item) => item.id)).toEqual([
+				"old",
+				"equal-first",
+				"equal-second",
+			])
+		})
+
 		it("filters by workspace path", async () => {
 			await store.initialize()
 
@@ -523,6 +545,37 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("reconcile()", () => {
+		it("uses one configured root per scan and observes a changed root on the next scan", async () => {
+			const alternateStorage = path.join(tmpDir, "alternate-storage")
+			for (const [storagePath, task] of [
+				[tmpDir, "Original storage"],
+				[alternateStorage, "Changed storage"],
+			]) {
+				for (const id of ["root-task-a", "root-task-b"]) {
+					const taskDir = path.join(storagePath, "tasks", id)
+					await fs.mkdir(taskDir, { recursive: true })
+					await fs.writeFile(
+						path.join(taskDir, GlobalFileNames.historyItem),
+						JSON.stringify(makeHistoryItem({ id, task })),
+					)
+				}
+			}
+			const resolveStorage = vi.mocked(getStorageBasePath)
+			resolveStorage.mockClear()
+			resolveStorage.mockResolvedValueOnce(tmpDir).mockResolvedValue(alternateStorage)
+			try {
+				await store.reconcile()
+				expect(store.getAll().map((item) => item.task)).toEqual(["Original storage", "Original storage"])
+				expect(resolveStorage).toHaveBeenCalledTimes(1)
+
+				await store.reconcile()
+				expect(store.getAll().map((item) => item.task)).toEqual(["Changed storage", "Changed storage"])
+				expect(resolveStorage).toHaveBeenCalledTimes(2)
+			} finally {
+				resolveStorage.mockReset().mockImplementation(async (storagePath) => storagePath)
+			}
+		})
+
 		it("detects tasks on disk missing from index", async () => {
 			await store.initialize()
 
@@ -596,6 +649,29 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("migrateFromGlobalState()", () => {
+		it("resolves the configured root once for all legacy entries and the derived index", async () => {
+			const items = [makeHistoryItem({ id: "legacy-root-a" }), makeHistoryItem({ id: "legacy-root-b" })]
+			for (const item of items) {
+				await fs.mkdir(path.join(tmpDir, "tasks", item.id), { recursive: true })
+			}
+			const resolveStorage = vi.mocked(getStorageBasePath)
+			resolveStorage.mockClear()
+
+			await store.migrateFromGlobalState(items)
+
+			expect(resolveStorage).toHaveBeenCalledTimes(1)
+			expect(
+				store
+					.getAll()
+					.map((item) => item.id)
+					.sort(),
+			).toEqual(["legacy-root-a", "legacy-root-b"])
+			const index = JSON.parse(
+				await fs.readFile(path.join(tmpDir, "tasks", GlobalFileNames.historyIndex), "utf8"),
+			)
+			expect(index.entries).toHaveLength(2)
+		})
+
 		it("writes history_item.json for tasks with existing directories", async () => {
 			await store.initialize()
 

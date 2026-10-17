@@ -96,6 +96,7 @@ const messageResponseAskTypes = new Set<AlphaAsk>([
 	"resume_task",
 	"resume_completed_task",
 	"mistake_limit_reached",
+	"api_req_failed",
 ])
 const completedTaskResponseAskTypes = new Set<AlphaAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<AlphaAsk>(["tool", "command", "use_mcp_server"])
@@ -682,6 +683,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const userRespondedRef = useRef<boolean>(false)
 	const [currentFollowUpTs, setCurrentFollowUpTs] = useState<number | null>(null)
 	const submittedFollowUpRef = useRef<{ taskId: string | undefined; ts: number }>()
+	useLayoutEffect(() => {
+		if (!visibleCurrentTaskId) return
+		const submittedTs = getTaskDraft(visibleCurrentTaskId).submittedRecoveryAskTs
+		if (submittedTs === undefined) return
+		const boundary = activeMessages.findLast(
+			(message) =>
+				message.type === "ask" ||
+				(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+		)
+		if (boundary?.ts !== submittedTs || boundary.isAnswered) {
+			updateTaskDraft(visibleCurrentTaskId, (draft) => ({ ...draft, submittedRecoveryAskTs: undefined }))
+		}
+	}, [activeMessages, visibleCurrentTaskId, getTaskDraft, updateTaskDraft])
 	const [aggregatedCostsMap, setAggregatedCostsMap] = useState<
 		Map<
 			string,
@@ -1430,7 +1444,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				currentInputBoundary?.ask === "followup" &&
 				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
 				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
-			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
+			const isRecoveryLocallyAnswered =
+				(currentInputBoundary?.ask === "mistake_limit_reached" ||
+					currentInputBoundary?.ask === "api_req_failed") &&
+				visibleCurrentTaskId !== undefined &&
+				getTaskDraft(visibleCurrentTaskId).submittedRecoveryAskTs === currentInputBoundary.ts
+			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered || isRecoveryLocallyAnswered) {
 				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
 			}
 
@@ -1438,20 +1457,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				currentInputBoundary?.ask === "followup" &&
 				currentInputBoundary.partial !== true &&
 				currentInputBoundary.isAnswered !== true
+			const isCurrentRecoveryResponse =
+				(currentInputBoundary?.ask === "mistake_limit_reached" ||
+					currentInputBoundary?.ask === "api_req_failed") &&
+				currentInputBoundary.partial !== true &&
+				currentInputBoundary.isAnswered !== true
+			const isCurrentMessageResponse = isCurrentFollowUpResponse || isCurrentRecoveryResponse
+			const hasPendingCurrentAskResponse = pendingAskRequestsRef.current.some(
+				(request) => request.askMessageTs === currentInputBoundary?.ts,
+			)
 
-			// A follow-up answer unblocks the current turn, which remains active while
-			// waiting. Existing queued instructions belong to later turns, not this ask.
-			// Waiting metadata can lag the complete ask; use conversation boundaries
-			// instead so an immediate reply works without re-answering a stale question.
+			// Questions and recovery prompts keep their turn active while awaiting a
+			// reply, and unlike completion/resume asks they do not drain queued input.
+			// Answer their complete current boundary once; later input stays queued.
 			const shouldQueueMessage =
-				!isCurrentFollowUpResponse &&
-				(isTurnActive ||
-					pendingAskRequestsRef.current.some(
-						(request) => request.askMessageTs === currentInputBoundary?.ts,
-					) ||
-					visibleMessageQueue.length > 0 ||
-					alphaAskRef.current === "command_output" ||
-					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
+				hasPendingCurrentAskResponse ||
+				(!isCurrentMessageResponse &&
+					(isTurnActive ||
+						visibleMessageQueue.length > 0 ||
+						alphaAskRef.current === "command_output" ||
+						(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current))))
 
 			if (shouldQueueMessage) {
 				return postQueuedMessage(text, images, asyncUserInputMessageTs, steer && isStreaming)
@@ -1479,7 +1504,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
 				})
 			} else if (
-				isCurrentFollowUpResponse ||
+				isCurrentMessageResponse ||
 				!alphaAskRef.current ||
 				messageResponseAskTypes.has(alphaAskRef.current)
 			) {
@@ -1493,9 +1518,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: currentInputBoundary.ts }
 					markFollowUpAsAnswered()
 				}
+				if (isCurrentRecoveryResponse && visibleCurrentTaskId) {
+					// An accepted receipt can precede the next transcript projection.
+					// Keep this claim by task until that boundary moves or is rejected.
+					updateTaskDraft(visibleCurrentTaskId, (draft) => ({
+						...draft,
+						submittedRecoveryAskTs: currentInputBoundary.ts,
+					}))
+				}
 				const askMessageTs =
 					asyncUserInputMessageTs === undefined
-						? isCurrentFollowUpResponse
+						? isCurrentMessageResponse
 							? currentInputBoundary.ts
 							: getCurrentAskMessageTs()
 						: undefined
@@ -1562,6 +1595,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			mode,
 			draftTaskApprovalMode,
 			setMode,
+			getTaskDraft,
+			updateTaskDraft,
 		], // messagesRef and alphaAskRef are stable
 	)
 	const handleHostSendMessage = useCallback(
@@ -2092,6 +2127,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}
 						updateTaskDraft(owner, (current) => ({
 							...current,
+							...(result.status === "rejected" &&
+							current.submittedRecoveryAskTs === submission.askMessageTs
+								? { submittedRecoveryAskTs: undefined }
+								: {}),
 							pendingAskRequests: current.pendingAskRequests.filter(
 								(request) => request.requestId !== result.requestId,
 							),

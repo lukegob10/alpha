@@ -126,13 +126,7 @@ export default defineConfig(({ mode }) => {
 				},
 				output: {
 					entryFileNames: `assets/[name].js`,
-					chunkFileNames: (chunkInfo) => {
-						if (chunkInfo.name === "mermaid-bundle") {
-							return `assets/mermaid-bundle.js`
-						}
-						// Default naming for other chunks, ensuring uniqueness from entry
-						return `assets/chunk-[hash].js`
-					},
+					chunkFileNames: `assets/chunk-[hash].js`,
 					assetFileNames: (assetInfo) => {
 						const name = assetInfo.name || ""
 
@@ -149,28 +143,6 @@ export default defineConfig(({ mode }) => {
 							return "assets/[name]"
 						}
 						return "assets/[name][extname]"
-					},
-					manualChunks: (id, { getModuleInfo }) => {
-						// Consolidate mermaid and its graph dependencies into a single chunk.
-						if (
-							id.includes("node_modules/mermaid") ||
-							id.includes("node_modules/dagre-d3-es") ||
-							id.includes("node_modules/cytoscape") // another potential graph lib
-						) {
-							return "mermaid-bundle"
-						}
-
-						// Check if the module is part of any explicitly defined mermaid-related dynamic import
-						// This is a more advanced check if simple path matching isn't enough.
-						const moduleInfo = getModuleInfo(id)
-						if (moduleInfo?.importers.some((importer) => importer.includes("node_modules/mermaid"))) {
-							return "mermaid-bundle"
-						}
-						if (
-							moduleInfo?.dynamicImporters.some((importer) => importer.includes("node_modules/mermaid"))
-						) {
-							return "mermaid-bundle"
-						}
 					},
 				},
 			},

@@ -57,6 +57,7 @@ async function commandFixture(
 	await ignoreController.initialize()
 	const commandOutputOwners: string[] = []
 	const provider = {
+		getValue: (key: keyof typeof state) => state[key],
 		getValues: () => state,
 		getState: async () => state,
 		context: storage ? { globalStorageUri: { fsPath: storage } } : {},

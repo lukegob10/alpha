@@ -358,12 +358,75 @@ const renderSettingsView = (targetSection?: string) => {
 }
 
 describe("SettingsView - Startup rendering", () => {
+	beforeEach(() => vi.clearAllMocks())
+
 	it("opens the discoverable Agents route with its buffered controls", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
 		expect(sectionNames).toContain("agents")
 		expect(getSettingsContent()).toHaveTextContent("agents:title")
 		expect(within(getSettingsContent()).getByLabelText("agents:concurrency.label")).toBeInTheDocument()
 		expect(screen.getByTestId("tab-agents")).toHaveTextContent("settings:sections.agents")
+	})
+
+	it("indexes settings without loading resources for unrelated tabs", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("agents")
+		try {
+			let indexingFrames = 0
+			while (!screen.queryByTestId("settings-search-input") && indexingFrames <= sectionNames.length) {
+				await act(async () => vi.advanceTimersToNextFrame())
+				indexingFrames++
+			}
+			const resourceRequests = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message.type)
+				.filter((type) =>
+					["requestCommands", "requestSkills", "listWorktrees", "getWorktreeIncludeStatus"].includes(type),
+				)
+			expect(resourceRequests).toEqual([])
+			expect(indexingFrames).toBeLessThan(sectionNames.length)
+			expect(screen.getByTestId("settings-search-input")).toBeInTheDocument()
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps unindexed tab titles searchable and loads resources after navigation", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("agents")
+		try {
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			const search = screen.getByTestId("settings-search-input")
+			fireEvent.focus(search)
+			for (const section of ["providers", "slashCommands", "skills", "modes", "mcp", "worktrees"]) {
+				fireEvent.change(search, { target: { value: `settings:sections.${section}` } })
+				expect(screen.getByRole("option", { name: `settings:sections.${section}` })).toHaveAttribute(
+					"id",
+					`settings-search-result-tab-${section}`,
+				)
+			}
+
+			for (const { section, requests } of [
+				{ section: "slashCommands", requests: ["requestCommands"] },
+				{ section: "skills", requests: ["requestSkills"] },
+				{ section: "worktrees", requests: ["listWorktrees", "getWorktreeIncludeStatus"] },
+			]) {
+				vi.mocked(vscode.postMessage).mockClear()
+				fireEvent.change(search, { target: { value: `settings:sections.${section}` } })
+				fireEvent.click(screen.getByRole("option", { name: `settings:sections.${section}` }))
+				for (const type of requests) {
+					expect(vscode.postMessage).toHaveBeenCalledWith({ type })
+				}
+			}
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
 	})
 })
 

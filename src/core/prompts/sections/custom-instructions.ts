@@ -388,6 +388,66 @@ async function loadRuleFilesFromDirectories(cwd: string, directories: Instructio
 	return ""
 }
 
+async function loadModeRuleFilesFromDirectories(
+	cwd: string,
+	mode: string,
+	directories: InstructionDirectories,
+): Promise<{ content: string; source: string }> {
+	let modeRuleContent = ""
+	let usedRuleFile = ""
+
+	if (mode) {
+		const modeRules: string[] = []
+		const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
+
+		// Check Alpha directories before legacy directories, preserving their captured order.
+		for (const alphaDir of alphaDirectories) {
+			const modeRulesDir = path.join(alphaDir, `rules-${mode}`)
+			if (await directoryExists(modeRulesDir)) {
+				const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, alphaDir))
+				if (files.length > 0) {
+					const content = formatDirectoryContent(files, cwd)
+					modeRules.push(content)
+				}
+			}
+		}
+
+		if (modeRules.length > 0) {
+			modeRuleContent = "\n" + modeRules.join("\n\n")
+			usedRuleFile = `rules-${mode} directories`
+		} else {
+			for (const legacyDir of legacyDirectories) {
+				const modeRulesDir = path.join(legacyDir, `rules-${mode}`)
+				if (await directoryExists(modeRulesDir)) {
+					const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, legacyDir))
+					if (files.length > 0) {
+						modeRules.push(formatDirectoryContent(files, cwd))
+					}
+				}
+			}
+		}
+
+		if (!modeRuleContent && modeRules.length > 0) {
+			modeRuleContent = "\n" + modeRules.join("\n\n")
+			usedRuleFile = `legacy rules-${mode} directories`
+		} else if (!modeRuleContent) {
+			const legacyRooModeRuleFile = `.alpharules-${mode}`
+			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyRooModeRuleFile), cwd)
+			if (modeRuleContent) {
+				usedRuleFile = legacyRooModeRuleFile
+			} else {
+				const legacyClineModeRuleFile = `.clinerules-${mode}`
+				modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyClineModeRuleFile), cwd)
+				if (modeRuleContent) {
+					usedRuleFile = legacyClineModeRuleFile
+				}
+			}
+		}
+	}
+
+	return { content: modeRuleContent, source: usedRuleFile }
+}
+
 async function readAgentInstructionFile(
 	filePath: string,
 	trustedRoot: string,
@@ -673,61 +733,29 @@ export async function addCustomInstructionParts(
 		options.settings?.projectInstructionDiscovery,
 	)
 
-	// Load mode-specific rules if mode is provided
-	let modeRuleContent = ""
-	let usedRuleFile = ""
-
-	if (mode) {
-		const modeRules: string[] = []
-		// Use recursive discovery only if enableSubfolderRules is true
-		const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
-
-		// Check for .alpha/rules-${mode}/ directories in order (global, project-local, and optionally subfolders)
-		for (const alphaDir of alphaDirectories) {
-			const modeRulesDir = path.join(alphaDir, `rules-${mode}`)
-			if (await directoryExists(modeRulesDir)) {
-				const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, alphaDir))
-				if (files.length > 0) {
-					const content = formatDirectoryContent(files, cwd)
-					modeRules.push(content)
-				}
-			}
-		}
-
-		// If we found mode-specific rules in .alpha/rules-${mode}/ directories, use them
-		if (modeRules.length > 0) {
-			modeRuleContent = "\n" + modeRules.join("\n\n")
-			usedRuleFile = `rules-${mode} directories`
-		} else {
-			for (const legacyDir of legacyDirectories) {
-				const modeRulesDir = path.join(legacyDir, `rules-${mode}`)
-				if (await directoryExists(modeRulesDir)) {
-					const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, legacyDir))
-					if (files.length > 0) {
-						modeRules.push(formatDirectoryContent(files, cwd))
-					}
-				}
-			}
-		}
-
-		if (!modeRuleContent && modeRules.length > 0) {
-			modeRuleContent = "\n" + modeRules.join("\n\n")
-			usedRuleFile = `legacy rules-${mode} directories`
-		} else if (!modeRuleContent) {
-			// Fall back to existing behavior for legacy files
-			const legacyRooModeRuleFile = `.alpharules-${mode}`
-			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyRooModeRuleFile), cwd)
-			if (modeRuleContent) {
-				usedRuleFile = legacyRooModeRuleFile
-			} else {
-				const legacyClineModeRuleFile = `.clinerules-${mode}`
-				modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyClineModeRuleFile), cwd)
-				if (modeRuleContent) {
-					usedRuleFile = legacyClineModeRuleFile
-				}
-			}
-		}
-	}
+	// Each source owns its fallback order and byte budget. Overlap the three independent
+	// read branches, then preserve the original instruction and error precedence.
+	const [modeRules, agentRules, genericRules] = await Promise.allSettled([
+		loadModeRuleFilesFromDirectories(cwd, mode, directories),
+		options.settings?.useAgentRules === false
+			? ""
+			: options.agentInstructionSources !== undefined
+				? formatApplicableAgentInstructionSources(cwd, options.agentInstructionSources)
+				: loadAllAgentRulesFiles(
+						cwd,
+						directories.agents,
+						directories.projectAgents,
+						directories.agentTrustRoot,
+						options.settings?.projectInstructionDiscovery,
+					),
+		loadRuleFilesFromDirectories(cwd, directories),
+	])
+	if (modeRules.status === "rejected") throw modeRules.reason
+	if (agentRules.status === "rejected") throw agentRules.reason
+	if (genericRules.status === "rejected") throw genericRules.reason
+	const { content: modeRuleContent, source: usedRuleFile } = modeRules.value
+	const agentRulesContent = agentRules.value
+	const genericRuleContent = genericRules.value
 
 	// Add language preference if provided
 	if (options.language) {
@@ -791,26 +819,11 @@ export async function addCustomInstructionParts(
 		rules.push({ role: "user", origin: "alpha-ignore", content: options.alphaIgnoreInstructions })
 	}
 
-	// Add AGENTS.md content if enabled (default: true)
-	// Load from root and optionally subdirectories with .roo folders based on enableSubfolderRules setting
-	if (options.settings?.useAgentRules !== false) {
-		const agentRulesContent =
-			options.agentInstructionSources !== undefined
-				? formatApplicableAgentInstructionSources(cwd, options.agentInstructionSources)
-				: await loadAllAgentRulesFiles(
-						cwd,
-						directories.agents,
-						directories.projectAgents,
-						directories.agentTrustRoot,
-						options.settings?.projectInstructionDiscovery,
-					)
-		if (agentRulesContent && agentRulesContent.trim()) {
-			rules.push({ role: "user", origin: "agent-rules", content: agentRulesContent.trim() })
-		}
+	if (agentRulesContent && agentRulesContent.trim()) {
+		rules.push({ role: "user", origin: "agent-rules", content: agentRulesContent.trim() })
 	}
 
 	// Add generic rules
-	const genericRuleContent = await loadRuleFilesFromDirectories(cwd, directories)
 	if (genericRuleContent && genericRuleContent.trim()) {
 		rules.push({ role: "user", origin: "generic-rules", content: genericRuleContent.trim() })
 	}

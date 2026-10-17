@@ -269,6 +269,7 @@ async function fixture(
 	const ignoreController = new AlphaIgnoreController(root)
 	await ignoreController.initialize()
 	const provider = {
+		getValue: (key: keyof typeof state) => state[key],
 		getValues: () => state,
 		getState: async () => state,
 		context: { globalStorageUri: { fsPath: storage } },

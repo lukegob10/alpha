@@ -8,6 +8,8 @@ const { ExtensionStateContextProvider } = ExtensionStateContext
 import WelcomeViewProvider from "../WelcomeViewProvider"
 import { vscode } from "@src/utils/vscode"
 
+const apiOptionsModule = vi.hoisted(() => ({ loaded: false }))
+
 // Mock VSCode components
 vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	VSCodeLink: ({ children, onClick }: any) => (
@@ -41,9 +43,10 @@ vi.mock("@src/components/ui", () => ({
 }))
 
 // Mock ApiOptions
-vi.mock("../../settings/ApiOptions", () => ({
-	default: () => <div data-testid="api-options">API Options Component</div>,
-}))
+vi.mock("../../settings/ApiOptions", () => {
+	apiOptionsModule.loaded = true
+	return { default: () => <div data-testid="api-options">API Options Component</div> }
+})
 
 // Mock Tab components
 vi.mock("../../common/Tab", () => ({
@@ -122,6 +125,8 @@ describe("WelcomeViewProvider", () => {
 		it("renders landing screen by default", () => {
 			renderWelcomeViewProvider()
 
+			expect(apiOptionsModule.loaded).toBe(false)
+			expect(screen.queryByTestId("api-options")).not.toBeInTheDocument()
 			expect(screen.getByText("Welcome to Alpha.")).toBeInTheDocument()
 
 			expect(screen.getByTestId("trans-welcome:landing.introduction")).toBeInTheDocument()
@@ -131,47 +136,53 @@ describe("WelcomeViewProvider", () => {
 			expect(screen.getByText("Set up provider")).toBeInTheDocument()
 		})
 
-		it("navigates to provider selection when local provider setup is clicked", () => {
+		it("can leave provider setup while its settings code loads and reopen it", async () => {
 			renderWelcomeViewProvider()
 
 			const getStartedButton = screen.getByTestId("button-primary")
 			fireEvent.click(getStartedButton)
 
 			expect(screen.getByText("Set up provider")).toBeInTheDocument()
-			expect(screen.getByTestId("api-options")).toBeInTheDocument()
+			expect(screen.getByRole("status")).toHaveTextContent("welcome:providerSignup.loading")
+			fireEvent.click(screen.getByRole("button", { name: /Back$/ }))
+			expect(screen.getByText("Welcome to Alpha.")).toBeInTheDocument()
+			expect(screen.queryByTestId("api-options")).not.toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: "Set up provider" }))
+			expect(await screen.findByTestId("api-options")).toBeInTheDocument()
 		})
 	})
 
 	describe("Provider Selection Screen", () => {
-		const navigateToProviderSelection = () => {
+		const navigateToProviderSelection = async () => {
 			fireEvent.click(screen.getByTestId("button-primary"))
+			await screen.findByTestId("api-options")
 		}
 
-		it("shows embedded API options", () => {
+		it("shows embedded API options", async () => {
 			renderWelcomeViewProvider()
-			navigateToProviderSelection()
+			await navigateToProviderSelection()
 
 			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 			expect(screen.queryByTestId("radio-group")).not.toBeInTheDocument()
 		})
 
-		it("starts on provider setup", () => {
+		it("starts on provider setup", async () => {
 			renderWelcomeViewProvider()
-			navigateToProviderSelection()
+			await navigateToProviderSelection()
 
 			expect(screen.getByText("Set up provider")).toBeInTheDocument()
 		})
 
-		it("shows API options for custom provider", () => {
+		it("shows API options for custom provider", async () => {
 			renderWelcomeViewProvider()
-			navigateToProviderSelection()
+			await navigateToProviderSelection()
 
 			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 		})
 
-		it("saves custom provider config when Finish is clicked", () => {
+		it("saves custom provider config when Finish is clicked", async () => {
 			renderWelcomeViewProvider({ apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" } })
-			navigateToProviderSelection()
+			await navigateToProviderSelection()
 
 			const getStartedButton = screen.getByTestId("button-primary")
 			fireEvent.click(getStartedButton)

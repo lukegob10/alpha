@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
+import type { TerminalOutputPreviewSize } from "@alpha-code/types"
 
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { Task } from "../../task/Task"
@@ -75,6 +76,7 @@ async function createFixture(
 	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
 	const provider = {
 		postMessageToWebview: vi.fn(),
+		getValue: vi.fn((_key: string): unknown => undefined),
 		getState: vi.fn(async () => ({ terminalShellIntegrationDisabled: true })),
 		reservePrimaryMutation: vi.fn(async (_task: Task, token: string) => {
 			await store.reservePrimaryMutation("timeout-root", "timeout-root", cwd, token)
@@ -121,6 +123,8 @@ async function createFixture(
 		launch,
 		completionBarrier,
 		releaseProcess: resolveProcess,
+		reportArchiveOutput: (chunk: string) =>
+			callbacks.onOutput?.(chunk, process as unknown as AlphaTerminalProcess, lifetime.signal),
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
 		finishProcess: async (joinObservers = false) => {
 			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
@@ -142,6 +146,47 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it.each<{
+		cachedPreview: TerminalOutputPreviewSize | undefined
+		capturedPreview: TerminalOutputPreviewSize | undefined
+		spills: boolean
+	}>([
+		{ cachedPreview: "small", capturedPreview: undefined, spills: true },
+		{ cachedPreview: undefined, capturedPreview: undefined, spills: false },
+		{ cachedPreview: "small", capturedPreview: "large", spills: false },
+	])(
+		"initializes output from cached preview $cachedPreview with captured override $capturedPreview",
+		async ({ cachedPreview, capturedPreview, spills }) => {
+			const fixture = await createFixture()
+			const storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-command-preview-test-"))
+			directories.push(storage)
+			Object.assign(fixture.provider, { context: { globalStorageUri: { fsPath: storage } } })
+			fixture.provider.getValue.mockImplementation((key) =>
+				key === "terminalOutputPreviewSize" ? cachedPreview : undefined,
+			)
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "cached-preview",
+				toolCallId: "cached-preview-call",
+				command: "command",
+				terminalShellIntegrationDisabled: true,
+				capturedOutputPreviewSize: capturedPreview,
+			})
+			try {
+				await fixture.launch
+				await fixture.reportArchiveOutput("x".repeat(6 * 1024))
+				await fixture.finishProcess()
+				await execution
+				expect(fixture.provider.getState).not.toHaveBeenCalled()
+				expect(
+					"outputArtifactId" in fixture.process && typeof fixture.process.outputArtifactId === "string",
+				).toBe(spills)
+			} finally {
+				if (!fixture.process.isSettled) await fixture.finishProcess()
+				await execution.catch(() => undefined)
+			}
+		},
+	)
+
 	it("completes an exited thenable process before the foreground yield timer", async () => {
 		const fixture = await createFixture()
 		const execution = executeCommandInTerminal(fixture.task, {

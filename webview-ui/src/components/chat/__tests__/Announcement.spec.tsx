@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.1",
+		version: "3.2.2",
 	},
 }))
 
@@ -37,14 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.1" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.2" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.1")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.2")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v3.2.1 makes chats easier to navigate and supports sub-agents in folders without a Git repository.",
-			),
+			screen.getByText("Alpha v3.2.2 loads more quickly and improves follow-up reliability."),
 		).toBeInTheDocument()
 	})
 
@@ -53,24 +51,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText(
-				"See recent chats before starting, switch quickly between chats, and keep custom chat names across reloads.",
-			),
+			screen.getByText("Continue completed and reopened chats reliably, including replies to recovery prompts."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Use the native Alpha toolbar, compact sub-agent controls, and file reviews that keep your expansion choices.",
-			),
+			screen.getByText("Start model requests and terminal commands with less preparation work."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Copy or edit your messages, and keep the Send button visible when the draft cannot be sent yet.",
-			),
+			screen.getByText("Open settings and chat history with fewer unnecessary background loads."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Launch sub-agents in folders without a Git repository while keeping workspace isolation, approvals, and recovery.",
-			),
+			screen.getByText("Load diagrams when needed and preserve chat drafts and terminal preview preferences."),
 		).toBeInTheDocument()
 	})
 
@@ -78,14 +68,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText(
-				"Alpha v3.2.1 makes chats easier to navigate and supports sub-agents in folders without a Git repository.",
-			),
+			screen.getByText("Alpha v3.2.2 loads more quickly and improves follow-up reliability."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"See recent chats before starting, switch quickly between chats, and keep custom chat names across reloads.",
-			),
+			screen.getByText("Continue completed and reopened chats reliably, including replies to recovery prompts."),
 		).toBeInTheDocument()
 	})
 })

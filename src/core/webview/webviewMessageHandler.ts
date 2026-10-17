@@ -795,8 +795,14 @@ export const webviewMessageHandler = async (
 					await postAcceptedResumeResult()
 					break
 				}
+				const canAdmitFollowup = () =>
+					provider.getLiveTask(message.taskId) === task &&
+					!task.abort &&
+					!task.abandoned &&
+					(task.isCompleted() ||
+						(provider.canAcceptTaskInput(message.taskId) && task.canAcceptHistoryResumeFollowup?.()))
 				try {
-					if (message.requestId && !task.isCompleted()) {
+					if (message.requestId && !canAdmitFollowup()) {
 						await restoreDraft("the task has not completed")
 						break
 					}
@@ -806,6 +812,13 @@ export const webviewMessageHandler = async (
 						taskId: message.taskId,
 					})
 					if (message.requestId) {
+						// History restoration owns the FIFO while its transcript and resume ask
+						// arrive separately. Recheck after image resolution so a replaced task
+						// or resumed provider turn cannot receive a stale completed-task command.
+						if (!canAdmitFollowup()) {
+							await restoreDraft("the completed task is no longer available")
+							break
+						}
 						await task.submitUserMessage(
 							resolved.text ?? "",
 							resolved.images,

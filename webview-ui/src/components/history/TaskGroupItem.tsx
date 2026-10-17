@@ -101,19 +101,20 @@ const TaskGroupItem = ({
 					aria-label={t("history:subtasks", { count: totalSubtaskCount })}
 					hidden={!isExpanded}
 					className="overflow-hidden border-t border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-sunken)_88%,transparent)] py-1.5">
-					{subtasks.map((node) => (
-						<SubtaskRow
-							key={node.item.id}
-							node={node}
-							depth={1}
-							onToggleExpand={onToggleSubtaskExpand}
-							isSelectionMode={isSelectionMode}
-							selectedTaskIds={selectedTaskIds}
-							onToggleSelection={onToggleSelection}
-							onDelete={onDelete}
-							onOpenTask={onOpenTask}
-						/>
-					))}
+					{isExpanded &&
+						subtasks.map((node) => (
+							<SubtaskRow
+								key={node.item.id}
+								node={node}
+								depth={1}
+								onToggleExpand={onToggleSubtaskExpand}
+								isSelectionMode={isSelectionMode}
+								selectedTaskIds={selectedTaskIds}
+								onToggleSelection={onToggleSelection}
+								onDelete={onDelete}
+								onOpenTask={onOpenTask}
+							/>
+						))}
 				</div>
 			)}
 		</div>

@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.2
+
+### Patch Changes
+
+- Reduce extension and webview startup work, load diagrams and provider setup when needed, and avoid unnecessary settings and collapsed-history rendering.
+- Shorten model-request and command preparation by sharing pending discovery, overlapping independent instruction reads, and avoiding redundant history and settings projections.
+- Keep follow-up prompts moving after lifecycle failures, answer API-error and mistake-limit recovery prompts, and admit follow-ups while reopened chats finish restoring.
+- Preserve consecutive prompts and task-owned drafts across acknowledgements and task switches, and prevent obsolete navigation from restoring an older selection.
+- Preserve terminal output preview preferences across settings hydration and unrelated saves, and coalesce skill refreshes without losing newer changes after a failed scan.
+- Update the extension version and in-app release announcement together for Alpha 3.2.2.
+
 ## 3.2.1
 
 ### Patch Changes

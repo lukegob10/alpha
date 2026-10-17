@@ -113,6 +113,9 @@ describe("executeCommandTool", () => {
 			recordToolError: vitest.fn(),
 			providerRef: {
 				deref: vitest.fn().mockResolvedValue({
+					getValue: vitest.fn((key: string) =>
+						key === "terminalShellIntegrationDisabled" ? true : undefined,
+					),
 					getState: vitest.fn().mockResolvedValue({
 						terminalOutputLineLimit: 500,
 						terminalOutputCharacterLimit: 100000,
@@ -189,6 +192,51 @@ describe("executeCommandTool", () => {
 
 	// Now we can run these tests
 	describe("Basic functionality", () => {
+		it.each([false, true, undefined])(
+			"launches with cached terminal integration setting %s without waiting for unrelated state loading",
+			async (terminalShellIntegrationDisabled) => {
+				vitest.useFakeTimers()
+				try {
+					vitest.setSystemTime(0)
+					const provider = await mockAlphaTask.providerRef.deref()
+					provider.getValue.mockImplementation((key: string) =>
+						key === "terminalShellIntegrationDisabled" ? terminalShellIntegrationDisabled : undefined,
+					)
+					provider.getState.mockImplementation(
+						() =>
+							new Promise((resolve) => {
+								setTimeout(() => resolve({ terminalShellIntegrationDisabled }), 100)
+							}),
+					)
+					const launchTimes: number[] = []
+					const originalGetTerminal = vitest
+						.mocked(TerminalRegistry.getOrCreateTerminal)
+						.getMockImplementation()!
+					vitest.mocked(TerminalRegistry.getOrCreateTerminal).mockImplementationOnce((...args) => {
+						launchTimes.push(Date.now())
+						return originalGetTerminal(...args)
+					})
+					const execution = executeCommandTool.handle(mockAlphaTask, mockToolUse, {
+						askApproval: mockAskApproval,
+						handleError: mockHandleError,
+						pushToolResult: mockPushToolResult,
+					})
+					await vitest.advanceTimersByTimeAsync(1_000)
+					await execution
+
+					expect(launchTimes).toEqual([0])
+					expect(provider.getState).not.toHaveBeenCalled()
+					expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
+						mockAlphaTask.cwd,
+						mockAlphaTask.taskId,
+						terminalShellIntegrationDisabled === false ? "vscode" : "execa",
+					)
+				} finally {
+					vitest.useRealTimers()
+				}
+			},
+		)
+
 		it("distinguishes a terminal capability failure before process launch", async () => {
 			vitest
 				.mocked(TerminalRegistry.getOrCreateTerminal)
@@ -413,6 +461,7 @@ describe("executeCommandTool", () => {
 			const registry = new ToolRegistry({ nativeTools: schemas })
 			const surface = createTaskToolSurface({ registry, schemas, mode: "code" })
 			const provider = {
+				getValue: vitest.fn((key: string) => (key === "terminalShellIntegrationDisabled" ? true : undefined)),
 				getState: vitest.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
 				postMessageToWebview: vitest.fn(),
 				runWorkspaceMutation: vitest.fn(async (_task: Task, _label: string, run: () => Promise<void>) => run()),
@@ -492,6 +541,7 @@ describe("executeCommandTool", () => {
 			const registry = new ToolRegistry({ nativeTools: schemas })
 			const surface = createTaskToolSurface({ registry, schemas, mode: "code" })
 			const provider = {
+				getValue: vitest.fn((key: string) => (key === "terminalShellIntegrationDisabled" ? true : undefined)),
 				getState: vitest.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
 				postMessageToWebview: vitest.fn(),
 				runWorkspaceMutation: vitest.fn(async (_task: Task, _label: string, run: () => Promise<void>) => run()),

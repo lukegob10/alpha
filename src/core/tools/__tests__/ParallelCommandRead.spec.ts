@@ -62,7 +62,12 @@ describe("command-read classification and session execution boundary", () => {
 		})
 		const ignoreController = new AlphaIgnoreController(root)
 		await ignoreController.initialize()
-		const provider = { getState: async () => ({}), getValues: () => ({}), postMessageToWebview: vi.fn() }
+		const provider = {
+			getValue: () => undefined,
+			getState: async () => ({}),
+			getValues: () => ({}),
+			postMessageToWebview: vi.fn(),
+		}
 		const lifetime = new AbortController()
 		let currentProvider = provider
 		replaceProvider = () => {

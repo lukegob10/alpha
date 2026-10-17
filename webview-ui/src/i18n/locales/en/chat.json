@@ -501,11 +501,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} makes chats easier to navigate and supports sub-agents in folders without a Git repository.",
-			"taskContinuity": "See recent chats before starting, switch quickly between chats, and keep custom chat names across reloads.",
-			"toolsAndProviders": "Use the native Alpha toolbar, compact sub-agent controls, and file reviews that keep your expansion choices.",
-			"delegation": "Copy or edit your messages, and keep the Send button visible when the draft cannot be sent yet.",
-			"workspaceExperience": "Launch sub-agents in folders without a Git repository while keeping workspace isolation, approvals, and recovery."
+			"welcome": "Alpha v{{version}} loads more quickly and improves follow-up reliability.",
+			"taskContinuity": "Continue completed and reopened chats reliably, including replies to recovery prompts.",
+			"toolsAndProviders": "Start model requests and terminal commands with less preparation work.",
+			"delegation": "Open settings and chat history with fewer unnecessary background loads.",
+			"workspaceExperience": "Load diagrams when needed and preserve chat drafts and terminal preview preferences."
 		}
 	},
 	"crossTasks": {

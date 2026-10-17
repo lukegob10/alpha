@@ -788,7 +788,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.1-chat-navigation-and-subagent-launch"
+	public readonly latestAnnouncementId = "october-2026-v3.2.2-faster-loading-and-followup-recovery"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -4054,7 +4054,7 @@ export class AlphaProvider
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
-		const state = await this.getStateToPostToWebview()
+		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
 		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { taskHistory: _omit, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
@@ -4072,7 +4072,7 @@ export class AlphaProvider
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
-		const state = await this.getStateToPostToWebview()
+		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
 		Object.assign(state, { taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
@@ -4408,11 +4408,13 @@ export class AlphaProvider
 		await this.postTaskSessionStateToWebview()
 	}
 
-	async getStateToPostToWebview(): Promise<ExtensionState> {
+	async getStateToPostToWebview(options: { includeTaskHistory?: boolean } = {}): Promise<ExtensionState> {
 		// Wait for file loading, migration, and managed-agent recovery. Awaiting only
 		// TaskHistoryStore.initialized exposes a stale pre-migration/recovery state.
 		await this.taskHistoryStoreReady
 
+		// Capture history once after asynchronous projections, and skip its scan
+		// entirely for transports that omit it.
 		const {
 			apiConfiguration,
 			lastShownAnnouncementId,
@@ -4452,9 +4454,9 @@ export class AlphaProvider
 			ttsSpeed,
 			enableCheckpoints,
 			checkpointTimeout,
-			taskHistory,
 			soundVolume,
 			writeDelayMs,
+			terminalOutputPreviewSize,
 			terminalShellIntegrationTimeout,
 			terminalShellIntegrationDisabled,
 			terminalCommandDelay,
@@ -4502,7 +4504,7 @@ export class AlphaProvider
 			includeCurrentCost,
 			maxGitStatusFiles,
 			lockApiConfigAcrossModes,
-		} = await this.getState()
+		} = await this.getState({ includeTaskHistory: false })
 
 		const telemetryKey = undefined
 		const machineId = vscode.env.machineId
@@ -4620,7 +4622,10 @@ export class AlphaProvider
 			currentTaskTodos: currentTask?.todoList || [],
 			messageQueue:
 				currentTask?.messageQueueService?.visibleMessages ?? currentTask?.messageQueueService?.messages,
-			taskHistory: this.taskHistoryStore.getByWorkspace(cwd).filter((item: HistoryItem) => item.ts && item.task),
+			taskHistory:
+				options.includeTaskHistory === false
+					? []
+					: this.taskHistoryStore.getByWorkspace(cwd).filter((item: HistoryItem) => item.ts && item.task),
 			scheduledTasks: scheduledTaskState?.tasks ?? [],
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			soundEnabled: soundEnabled ?? false,
@@ -4634,6 +4639,7 @@ export class AlphaProvider
 			deniedCommands: mergedDeniedCommands,
 			soundVolume: soundVolume ?? 0.5,
 			writeDelayMs: writeDelayMs ?? DEFAULT_WRITE_DELAY_MS,
+			terminalOutputPreviewSize: terminalOutputPreviewSize ?? "medium",
 			terminalShellIntegrationTimeout: terminalShellIntegrationTimeout ?? Terminal.defaultShellIntegrationTimeout,
 			terminalShellIntegrationDisabled: terminalShellIntegrationDisabled ?? true,
 			terminalCommandDelay: terminalCommandDelay ?? 0,
@@ -4732,7 +4738,7 @@ export class AlphaProvider
 		return providerSettings
 	}
 
-	async getState(): Promise<
+	async getState({ includeTaskHistory = true }: { includeTaskHistory?: boolean } = {}): Promise<
 		Omit<
 			ExtensionState,
 			"clineMessages" | "renderContext" | "hasOpenedModeSelector" | "version" | "shouldShowAnnouncement"
@@ -4795,7 +4801,7 @@ export class AlphaProvider
 			autoCondenseContextScope: stateValues.autoCondenseContextScope ?? "full-context",
 			postTurnCondenseContextPercent:
 				stateValues.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
-			taskHistory: this.taskHistoryStore.getByWorkspace(this.cwd),
+			taskHistory: includeTaskHistory ? this.taskHistoryStore.getByWorkspace(this.cwd) : [],
 			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
 			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
@@ -4807,6 +4813,7 @@ export class AlphaProvider
 			checkpointTimeout: stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			soundVolume: stateValues.soundVolume,
 			writeDelayMs: stateValues.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS,
+			terminalOutputPreviewSize: stateValues.terminalOutputPreviewSize ?? "medium",
 			terminalShellIntegrationTimeout:
 				stateValues.terminalShellIntegrationTimeout ?? Terminal.defaultShellIntegrationTimeout,
 			terminalShellIntegrationDisabled: stateValues.terminalShellIntegrationDisabled ?? true,
@@ -6420,18 +6427,25 @@ export class AlphaProvider
 	}
 
 	public async startBlankTask(): Promise<void> {
+		const generation = ++this.taskNavigationGeneration
+		const stillCurrent = () => generation === this.taskNavigationGeneration
+		// Finalization remains mandatory even when a newer navigation takes selection.
 		await this.finalizeActiveCompletionCandidate()
+		if (!stillCurrent()) return
 		const previous = this.getActiveTask()
 		this.taskSessions.clearFocus()
 		this.currentView = { type: "newTaskDraft" }
 		this.resetNewTaskDraftMode()
 		previous?.emit(AlphaCodeEventName.TaskUnfocused)
+		if (!stillCurrent()) return
 		await this.postMessageToWebview({
 			type: "action",
 			action: "chatButtonClicked",
 			values: { force: true },
 		})
+		if (!stillCurrent()) return
 		await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		if (!stillCurrent()) return
 		void this.postStateToWebview().catch((error) => {
 			this.log(`[startBlankTask] Background state refresh failed: ${String(error)}`)
 		})

@@ -25,6 +25,11 @@ interface HistoryIndex {
  */
 const indexWriteQueues = new Map<string, Promise<void>>()
 
+function workspaceKey(workspace: string): string {
+	const resolved = path.resolve(workspace)
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
 function isStoredHistoryItem(value: unknown): value is HistoryItem {
 	// Validation proves the known fields; keep the raw representation and unknown metadata for a name-only edit.
 	return historyItemSchema.safeParse(value).success
@@ -182,17 +187,17 @@ export class TaskHistoryStore {
 	 * Get history items filtered by workspace path.
 	 */
 	getByWorkspace(workspace: string): HistoryItem[] {
-		return this.getAll().filter((item) => this.isForWorkspace(item, workspace))
+		if (!workspace) return []
+		const currentWorkspace = workspaceKey(workspace)
+		return Array.from(this.cache.values())
+			.filter((item) => item.workspace && workspaceKey(item.workspace) === currentWorkspace)
+			.sort((a, b) => b.ts - a.ts)
 	}
 
 	/** Compare persisted workspace identity without changing or migrating older records. */
 	isForWorkspace(item: Pick<HistoryItem, "workspace"> | undefined, workspace: string): boolean {
 		if (!item?.workspace || !workspace) return false
-		const savedPath = path.resolve(item.workspace)
-		const currentPath = path.resolve(workspace)
-		return process.platform === "win32"
-			? savedPath.toLowerCase() === currentPath.toLowerCase()
-			: savedPath === currentPath
+		return workspaceKey(item.workspace) === workspaceKey(workspace)
 	}
 
 	// ────────────────────────────── Mutations ──────────────────────────────
@@ -406,6 +411,7 @@ export class TaskHistoryStore {
 	async reconcile(): Promise<void> {
 		// Run through the write lock to prevent interleaving with upsert/delete
 		return this.withLock(async () => {
+			// Keep every read in this scan on the listed root, without revalidating custom storage per task.
 			const tasksDir = await this.getTasksDir()
 
 			let dirEntries: string[]
@@ -432,7 +438,7 @@ export class TaskHistoryStore {
 				const entries = await Promise.all(
 					batch.map(async (taskId) => {
 						try {
-							return { taskId, item: await this.readTaskFile(taskId) }
+							return { taskId, item: await this.readTaskFile(taskId, { tasksDir }) }
 						} catch {
 							// Corrupted or missing file, keep the last known-good cache entry.
 							return { taskId, item: null }
@@ -511,13 +517,14 @@ export class TaskHistoryStore {
 			return
 		}
 
+		// Legacy task files and their derived index must share the same configured root snapshot.
+		const tasksDir = await this.getTasksDir()
 		for (const item of taskHistoryEntries) {
 			if (!item.id) {
 				continue
 			}
 
 			// Check if task directory exists on disk
-			const tasksDir = await this.getTasksDir()
 			const taskDir = path.join(tasksDir, item.id)
 
 			try {
@@ -540,7 +547,7 @@ export class TaskHistoryStore {
 		}
 
 		// Write the index
-		await this.writeIndex()
+		await this.writeIndex(tasksDir)
 	}
 
 	// ────────────────────────────── Private: Index management ──────────────────────────────
@@ -571,8 +578,8 @@ export class TaskHistoryStore {
 	/**
 	 * Write the full index to disk.
 	 */
-	private async writeIndex(): Promise<void> {
-		const indexPath = await this.getIndexPath()
+	private async writeIndex(tasksDir?: string): Promise<void> {
+		const indexPath = await this.getIndexPath(tasksDir)
 		const previous = indexWriteQueues.get(indexPath) ?? Promise.resolve()
 		const write = previous
 			.catch(() => undefined)
@@ -713,9 +720,9 @@ export class TaskHistoryStore {
 	 */
 	private async readTaskFile(
 		taskId: string,
-		options: { requireExisting?: boolean } = {},
+		options: { requireExisting?: boolean; tasksDir?: string } = {},
 	): Promise<HistoryItem | null> {
-		const filePath = await this.getTaskFilePath(taskId)
+		const filePath = await this.getTaskFilePath(taskId, options.tasksDir)
 
 		try {
 			const raw = await fs.readFile(filePath, "utf8")
@@ -831,16 +838,14 @@ export class TaskHistoryStore {
 	/**
 	 * Get the path to a task's `history_item.json` file.
 	 */
-	private async getTaskFilePath(taskId: string): Promise<string> {
-		const tasksDir = await this.getTasksDir()
-		return path.join(tasksDir, taskId, GlobalFileNames.historyItem)
+	private async getTaskFilePath(taskId: string, tasksDir?: string): Promise<string> {
+		return path.join(tasksDir ?? (await this.getTasksDir()), taskId, GlobalFileNames.historyItem)
 	}
 
 	/**
 	 * Get the path to the `_index.json` file.
 	 */
-	private async getIndexPath(): Promise<string> {
-		const tasksDir = await this.getTasksDir()
-		return path.join(tasksDir, GlobalFileNames.historyIndex)
+	private async getIndexPath(tasksDir?: string): Promise<string> {
+		return path.join(tasksDir ?? (await this.getTasksDir()), GlobalFileNames.historyIndex)
 	}
 }
