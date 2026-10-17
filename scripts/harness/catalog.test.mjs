@@ -108,11 +108,11 @@ test("every evaluator test belongs to exactly one executable suite", async () =>
 		assert.equal(suites.length, 1, `${file} is selected by multiple suites: ${suites.join(", ")}`)
 })
 
-test("extended exact-host coverage is mandatory in QA and both release workflows", async () => {
+test("extended exact-host coverage is mandatory in QA and the release workflow", async () => {
 	assert.equal(lanes.extended.exclusiveBuild, true)
 	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1250"]])
 	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
-	for (const file of ["code-qa.yml", "release-vsix.yml", "release-vsix-v2-preview.yml"]) {
+	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
 		assert.match(workflow, /run: pnpm harness run extended/, `${file} must execute the extended host lane`)
 		assert.match(workflow, /--require extended/, `${file} must reject missing extended execution evidence`)

@@ -3,10 +3,10 @@ name: Code QA Alpha
 on:
     workflow_dispatch:
     push:
-        branches: [main, main-v2]
+        branches: [main]
     pull_request:
         types: [opened, reopened, ready_for_review, synchronize]
-        branches: [main, main-v2]
+        branches: [main]
 
 jobs:
     knip:
