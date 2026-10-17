@@ -169,6 +169,11 @@ not a general speedup claim. The artifact records host, provider, transcript con
 `node scripts/verify-vsix-contents.mjs bin/alpha-3.2.1.vsix` verified all 1,814 entries, required files and absence of `.env`.
 The package was built for validation; it was not installed or published.
 
+Release preparation for 3.2.2 exposed four additional integration-test fixtures that had not adopted the cached-setting
+getter or initialized the navigation-generation counter. Their assertions were retained, their provider fakes now model
+the current contracts, and all 97 tests across those four files passed locally. The shell-integration fallback fixture
+updates the same cached setting read by command admission. This repair changes test setup only.
+
 ## Closure ledger
 
 - **Fixed now:** the bounded issues above, including both navigation and saved-preview correctness defects. The final

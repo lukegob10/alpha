@@ -82,9 +82,13 @@ function commandFixture(
 	}
 	vi.spyOn(TerminalRegistry, "getOrCreateTerminal").mockResolvedValue(terminal as never)
 	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
+	const terminalSettings = { terminalShellIntegrationDisabled: true }
 	const provider = {
 		context: { globalStorageUri: { fsPath: options.globalStoragePath } },
-		getState: vi.fn(async () => ({ terminalShellIntegrationDisabled: true })),
+		getState: vi.fn(async () => ({ ...terminalSettings })),
+		getValue: vi.fn((key: string) =>
+			key === "terminalShellIntegrationDisabled" ? terminalSettings.terminalShellIntegrationDisabled : undefined,
+		),
 		postMessageToWebview: vi.fn(),
 		runWorkspaceMutation: async (_task: Task, _label: string, run: () => Promise<void>) => run(),
 	}
@@ -153,6 +157,7 @@ function commandFixture(
 		])
 	return {
 		task,
+		terminalSettings,
 		publishedMessages,
 		persistedMessages,
 		host,
@@ -911,8 +916,7 @@ describe("command-session publication is possible before effects", () => {
 		vi.useFakeTimers()
 		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		const fixture = commandFixture()
-		const provider = fixture.task.providerRef.deref()!
-		vi.mocked(provider.getState).mockResolvedValue({ terminalShellIntegrationDisabled: false } as never)
+		fixture.terminalSettings.terminalShellIntegrationDisabled = false
 		const fallback = await TerminalRegistry.getOrCreateTerminal(fixture.task.cwd, fixture.task.taskId, "execa")
 		const settled = Promise.resolve()
 		const firstProcess = Object.assign(new EventEmitter(), {

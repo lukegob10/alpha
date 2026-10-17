@@ -194,6 +194,7 @@ describe("Single-open-task invariant", () => {
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
+			taskNavigationGeneration: 0,
 			getActiveTask: vi.fn(() => activeTask),
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			taskSessions: { clearFocus },

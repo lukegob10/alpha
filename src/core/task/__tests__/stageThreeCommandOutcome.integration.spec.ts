@@ -350,6 +350,7 @@ type TaskHarness = {
 	provider: {
 		context: { globalStorageUri: { fsPath: string } }
 		getState: import("vitest").Mock
+		getValue: import("vitest").Mock
 		postMessageToWebview: import("vitest").Mock
 		runWorkspaceMutation: import("vitest").Mock
 		recordParentVerificationEvidence: import("vitest").Mock
@@ -368,6 +369,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 	const provider = {
 		context: { globalStorageUri: { fsPath: fixture.storagePath } },
 		getState: vi.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
+		getValue: vi.fn((key: string) => (key === "terminalShellIntegrationDisabled" ? true : undefined)),
 		postMessageToWebview: vi.fn(),
 		runWorkspaceMutation: vi.fn(async (_task: Task, _label: string, run: () => Promise<void>) => run()),
 		recordParentVerificationEvidence: vi.fn().mockResolvedValue(undefined),
