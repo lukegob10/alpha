@@ -188,9 +188,6 @@ export interface StepContextDigests {
 // not retain completed requests; legacy/structurally typed callers are rehashed.
 const capturedContextDigests = new WeakMap<StepContext, { value?: StepContextDigests }>()
 
-/** Backwards-friendly name for callers that describe this as a digest set. */
-export type StepContextDigestSet = StepContextDigests
-
 export interface RetryStepContextOptions {
 	/** Explicit retry number. Omitted values advance the current retry by one. */
 	retryAttempt?: number
@@ -356,9 +353,6 @@ export function getStepContextDigests(context: StepContext): StepContextDigests 
 	if (cached) cached.value = digests
 	return digests
 }
-
-/** Alias used by callers that prefer a verb describing the operation. */
-export const computeStepContextDigests = getStepContextDigests
 
 export function createStepContext(input: CreateStepContextInput): StepContext {
 	const sanitized = sanitizeValue(input) as Omit<StepContextData, "contextId" | "createdAt">
@@ -551,6 +545,3 @@ export function toStepContextMetadata(context: StepContext, retryAttempt = conte
 		stepContextMessagesRemoved: context.budget.compaction.messagesRemoved,
 	})
 }
-
-/** Alias retained for callers that use “metadata” as the snapshot boundary. */
-export const createStepContextMetadata = toStepContextMetadata

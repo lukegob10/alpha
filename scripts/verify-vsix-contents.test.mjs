@@ -1,10 +1,12 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
+import { zipSync } from "fflate"
 
 const repository = fileURLToPath(new URL("../", import.meta.url))
 const verifier = path.join(repository, "scripts/verify-vsix-contents.mjs")
@@ -40,7 +42,8 @@ const required = [
 if (["win32", "darwin"].includes(process.platform))
 	required.push(`extension/dist/node_modules/@vscode/ripgrep/bin/${process.platform === "win32" ? "rg.exe" : "rg"}`)
 
-const runVerifier = (args) => spawnSync(process.execPath, [verifier, ...args], { encoding: "utf8", windowsHide: true })
+const runVerifier = (args, options = {}) =>
+	spawnSync(process.execPath, [verifier, ...args], { encoding: "utf8", windowsHide: true, ...options })
 
 async function withArchive(entries, check) {
 	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-vsix-content-test-"))
@@ -51,22 +54,42 @@ async function withArchive(entries, check) {
 			await mkdir(path.dirname(target), { recursive: true })
 			await writeFile(target, "owned archive fixture\n")
 		}
-		// The checker owns archive entries and asset bytes. Use tar's portable
-		// fixture format; the real pnpm vsix gate separately validates packaging.
 		const archive = path.join(root, "fixture.vsix")
 		const pack = () => {
-			const result = spawnSync("tar", ["-cf", archive, "-C", content, "extension"], {
-				encoding: "utf8",
-				windowsHide: true,
-			})
-			assert.equal(result.error, undefined)
-			assert.equal(result.status, 0, result.stderr)
+			const files = Object.create(null)
+			const collect = (directory) => {
+				for (const item of readdirSync(path.join(content, directory), { withFileTypes: true })) {
+					const name = `${directory}/${item.name}`
+					if (item.isDirectory()) collect(name)
+					else files[name] = readFileSync(path.join(content, name))
+				}
+			}
+			collect("extension")
+			writeFileSync(archive, zipSync(files))
 		}
 		pack()
 		await check({ archive, content, pack })
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		const resolvedRoot = await realpath(root)
+		assert.equal(path.dirname(resolvedRoot), await realpath(os.tmpdir()))
+		assert.match(path.basename(resolvedRoot), /^alpha-vsix-content-test-/u)
+		await rm(resolvedRoot, { recursive: true, force: true })
 	}
+}
+
+function updateZipEntry(archive, name, update) {
+	const bytes = readFileSync(archive)
+	const end = bytes.length - 22
+	for (let offset = bytes.readUInt32LE(end + 16); bytes.readUInt32LE(offset) === 0x02014b50; ) {
+		const nameLength = bytes.readUInt16LE(offset + 28)
+		if (bytes.toString("utf8", offset + 46, offset + 46 + nameLength) === name) {
+			update(bytes, offset, bytes.readUInt32LE(offset + 42))
+			writeFileSync(archive, bytes)
+			return
+		}
+		offset += 46 + nameLength + bytes.readUInt16LE(offset + 30) + bytes.readUInt16LE(offset + 32)
+	}
+	assert.fail(`Missing ZIP fixture entry: ${name}`)
 }
 
 test("VSIX content verification fails without an archive, for a missing file, and for unreadable archive bytes", async () => {
@@ -82,15 +105,55 @@ test("VSIX content verification fails without an archive, for a missing file, an
 		await writeFile(archive, "invalid archive")
 		assert.notEqual(runVerifier([archive]).status, 0)
 	} finally {
-		await rm(root, { recursive: true, force: true })
+		const resolvedRoot = await realpath(root)
+		assert.equal(path.dirname(resolvedRoot), await realpath(os.tmpdir()))
+		assert.match(path.basename(resolvedRoot), /^alpha-vsix-invalid-test-/u)
+		await rm(resolvedRoot, { recursive: true, force: true })
 	}
 })
 
-test("VSIX content verification accepts the extension, webview, worker, skill, and platform assets", async () => {
+test("VSIX content verification reads genuine ZIP packages without a system archive command", async () => {
 	await withArchive(required, ({ archive }) => {
-		const result = runVerifier([archive])
+		assert.equal(readFileSync(archive).readUInt32LE(0), 0x04034b50)
+		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"))
+		const result = runVerifier([archive], { env: { ...env, PATH: "" } })
 		assert.equal(result.status, 0, result.stderr)
 		assert.match(result.stdout, /required files are present/)
+	})
+})
+
+test("VSIX inventory does not inflate arbitrary packaged payloads", async () => {
+	await withArchive(required, ({ archive }) => {
+		updateZipEntry(archive, "extension/dist/extension.js", (bytes, central, local) => {
+			bytes.writeUInt16LE(99, central + 10)
+			bytes.writeUInt16LE(99, local + 8)
+		})
+		const result = runVerifier([archive])
+		assert.equal(result.status, 0, result.stderr)
+	})
+})
+
+test("VSIX content verification rejects ambiguous duplicate entries", async () => {
+	const first = "extension/duplicate-a.txt"
+	const second = "extension/duplicate-b.txt"
+	await withArchive([...required, first, second], ({ archive }) => {
+		updateZipEntry(archive, second, (bytes, central, local) => {
+			bytes.write(first, central + 46, "utf8")
+			bytes.write(first, local + 30, "utf8")
+		})
+		const result = runVerifier([archive])
+		assert.equal(result.status, 1)
+		assert.match(result.stderr, /Duplicate VSIX archive entry/u)
+	})
+})
+
+test("VSIX content verification rejects a truncated ZIP directory", async () => {
+	await withArchive(required, ({ archive }) => {
+		const bytes = readFileSync(archive)
+		writeFileSync(archive, bytes.subarray(0, bytes.length - 22))
+		const result = runVerifier([archive])
+		assert.equal(result.status, 1)
+		assert.match(result.stderr, /Unable to inspect VSIX archive/u)
 	})
 })
 
@@ -156,5 +219,32 @@ test("VSIX source verification accepts fresh document assets and refuses stale c
 		assert.equal(stale.status, 1)
 		assert.match(stale.stderr, /Packaged asset differs from current source/)
 		assert.match(stale.stderr, /html-document\/viewer.js/)
+		const changed = readFileSync(path.join(repository, "webview-ui/public/html-document/viewer.js"))
+		changed[0] ^= 1
+		await writeFile(path.join(content, "extension/webview-ui/build/html-document/viewer.js"), changed)
+		pack()
+		const changedBytes = runVerifier([archive, "--check-source"])
+		assert.equal(changedBytes.status, 1)
+		assert.match(changedBytes.stderr, /Packaged asset differs from current source/u)
+		updateZipEntry(archive, "extension/webview-ui/build/html-document/viewer.js", (bytes, central, local) => {
+			bytes.writeUInt32LE(32 * 1024 * 1024, central + 24)
+			bytes.writeUInt32LE(32 * 1024 * 1024, local + 22)
+			bytes.writeUInt16LE(99, central + 10)
+			bytes.writeUInt16LE(99, local + 8)
+		})
+		const oversized = runVerifier([archive, "--check-source"])
+		assert.equal(oversized.status, 1)
+		assert.match(oversized.stderr, /Packaged asset differs from current source/u)
+		assert.doesNotMatch(oversized.stderr, /unknown compression/u)
+		pack()
+		updateZipEntry(archive, "extension/webview-ui/build/html-document/viewer.js", (bytes, central, local) => {
+			bytes.writeUInt32LE(32 * 1024 * 1024, central + 20)
+			bytes.writeUInt32LE(32 * 1024 * 1024, local + 18)
+			bytes.writeUInt16LE(0, central + 10)
+			bytes.writeUInt16LE(0, local + 8)
+		})
+		const oversizedStored = runVerifier([archive, "--check-source"])
+		assert.equal(oversizedStored.status, 1)
+		assert.match(oversizedStored.stderr, /Packaged asset differs from current source/u)
 	})
 })

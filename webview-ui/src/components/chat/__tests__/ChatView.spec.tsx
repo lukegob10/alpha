@@ -221,13 +221,6 @@ vi.mock("../Announcement", () => ({
 	},
 }))
 
-// Mock DismissibleUpsell component
-vi.mock("@/components/common/DismissibleUpsell", () => ({
-	default: function MockDismissibleUpsell({ children }: { children: React.ReactNode }) {
-		return <div data-testid="dismissible-upsell">{children}</div>
-	},
-}))
-
 // Mock QueuedMessages component
 vi.mock("../QueuedMessages", () => ({
 	QueuedMessages: function MockQueuedMessages({
@@ -2117,9 +2110,7 @@ describe("ChatView - Empty chat home", () => {
 
 		expect(getByTestId("alpha-home-brand")).toBeInTheDocument()
 		expect(getByTestId("roo-hero")).toBeInTheDocument()
-		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 		expect(queryByTestId("version-indicator")).not.toBeInTheDocument()
-		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 		expect(queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
 		expect(queryByRole("button", { name: "common:chatToolbar.newChat" })).not.toBeInTheDocument()
 
@@ -2127,99 +2118,6 @@ describe("ChatView - Empty chat home", () => {
 			expect(getByRole("region", { name: "history:chats" })).toBeInTheDocument()
 			expect(getByTestId("history-preview-list")).toBeInTheDocument()
 		}
-	})
-})
-
-describe("ChatView - DismissibleUpsell Display Tests", () => {
-	beforeEach(() => vi.clearAllMocks())
-
-	it("does not show DismissibleUpsell when user is authenticated to Cloud", () => {
-		const { queryByTestId } = renderChatView()
-
-		// Hydrate state with user authenticated to cloud
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 3000 },
-				{ id: "2", ts: Date.now() - 2000 },
-				{ id: "3", ts: Date.now() - 1000 },
-				{ id: "4", ts: Date.now() },
-			],
-			clineMessages: [], // No active task
-		})
-
-		// Should not show DismissibleUpsell when authenticated
-		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-	})
-
-	it("does not show DismissibleUpsell when user has only run 3 tasks in their history", () => {
-		const { queryByTestId } = renderChatView()
-
-		// Hydrate state with user not authenticated but only 3 tasks
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 2000 },
-				{ id: "2", ts: Date.now() - 1000 },
-				{ id: "3", ts: Date.now() },
-			],
-			clineMessages: [], // No active task
-		})
-
-		// Should not show DismissibleUpsell with less than 4 tasks
-		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-	})
-
-	it("does not show DismissibleUpsell when user has run 6 or more tasks", async () => {
-		const { queryByTestId } = renderChatView()
-
-		// Hydrate state with user not authenticated and 4 tasks
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 6000 },
-				{ id: "2", ts: Date.now() - 5000 },
-				{ id: "3", ts: Date.now() - 4000 },
-				{ id: "4", ts: Date.now() - 3000 },
-				{ id: "5", ts: Date.now() - 2000 },
-				{ id: "6", ts: Date.now() - 1000 },
-				{ id: "7", ts: Date.now() },
-			],
-			clineMessages: [], // No active task
-		})
-
-		// The empty home keeps its logo and chat history without an upsell panel.
-		await waitFor(() => {
-			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		})
-	})
-
-	it("does not show DismissibleUpsell when there is an active task (regardless of auth status)", async () => {
-		const { queryByTestId } = renderChatView()
-
-		// Hydrate state with active task
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 3000 },
-				{ id: "2", ts: Date.now() - 2000 },
-				{ id: "3", ts: Date.now() - 1000 },
-				{ id: "4", ts: Date.now() },
-			],
-			clineMessages: [
-				{
-					type: "say",
-					say: "task",
-					ts: Date.now(),
-					text: "Active task",
-				},
-			],
-		})
-
-		// Wait for component to render with active task
-		await waitFor(() => {
-			// Should not show DismissibleUpsell during active task
-			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-			// The empty-home logo should not appear in an active task.
-			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
-			expect(queryByTestId("roo-hero")).not.toBeInTheDocument()
-		})
 	})
 })
 

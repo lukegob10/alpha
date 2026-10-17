@@ -17,7 +17,7 @@ import {
 import { ExecaHarnessProcessRunner } from "../../orchestration/index"
 
 describe("M4 reconstruction contract", () => {
-	it("collects the final tracked and untracked workspace without mutating it", async () => {
+	it("collects modified, deleted, and untracked workspace files without mutating them", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "m4-workspace-"))
 		const workspace = path.join(root, "workspace")
 		const store = new FilesystemArtifactStore(path.join(root, "store"))
@@ -41,8 +41,9 @@ describe("M4 reconstruction contract", () => {
 			).toBe(0)
 		}
 		await fs.writeFile(path.join(workspace, "tracked.txt"), "initial")
+		await fs.writeFile(path.join(workspace, "deleted.txt"), "removed")
 		for (const args of [
-			["add", "tracked.txt"],
+			["add", "tracked.txt", "deleted.txt"],
 			["commit", "-m", "fixture"],
 		] as const) {
 			expect(
@@ -58,6 +59,7 @@ describe("M4 reconstruction contract", () => {
 			).toBe(0)
 		}
 		await fs.writeFile(path.join(workspace, "tracked.txt"), "changed")
+		await fs.unlink(path.join(workspace, "deleted.txt"))
 		await fs.writeFile(path.join(workspace, "untracked.txt"), "new")
 		const descriptors = await collectWorkspaceEvidence({
 			attemptId: "attempt",
@@ -74,6 +76,9 @@ describe("M4 reconstruction contract", () => {
 		})
 		expect(descriptors).toHaveLength(REQUIRED_ARTIFACT_KINDS.length)
 		expect(descriptors.every(({ uploadState }) => uploadState === "complete")).toBe(true)
+		const finalDiff = descriptors.find(({ kind }) => kind === "final_diff")!
+		expect(new TextDecoder().decode(await store.get(finalDiff))).toContain("deleted file mode")
+		await expect(fs.stat(path.join(workspace, "deleted.txt"))).rejects.toMatchObject({ code: "ENOENT" })
 		expect(await fs.readFile(path.join(workspace, "tracked.txt"), "utf8")).toBe("changed")
 		expect(await readEvidenceLog(path.join(root, "missing.log"))).toBe("")
 		const logPath = path.join(root, "extension.log")

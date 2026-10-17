@@ -85,14 +85,19 @@ export const waitUntilAborted = async ({ api, taskId, ...options }: WaitUntilAbo
 type WaitUntilCompletedOptions = WaitForOptions & {
 	api: AlphaCodeAPI
 	taskId: string
+	isCompleted: () => boolean
 }
 
-export const waitUntilCompleted = async ({ api, taskId, ...options }: WaitUntilCompletedOptions) => {
-	const set = new Set<string>()
-	const onTaskCompleted = (completedTaskId: string) => set.add(completedTaskId)
+export const waitUntilCompleted = async ({ api, taskId, isCompleted, ...options }: WaitUntilCompletedOptions) => {
+	let completed = false
+	const onTaskCompleted = (completedTaskId: string) => {
+		if (completedTaskId === taskId) completed = true
+	}
 	api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 	try {
-		await waitFor(() => set.has(taskId), {
+		// Task creation starts execution before it returns, so completion may precede this listener.
+		if (isCompleted() || completed) return
+		await waitFor(() => completed || isCompleted(), {
 			description: `task ${taskId} to complete`,
 			...options,
 		})

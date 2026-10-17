@@ -30,6 +30,9 @@ The machine-readable source of truth is
 discovers focused tests by stable repository paths, removes provider credentials from the test environment, detects
 declared skips/placeholders/source blockers, rejects cross-track test-file overlap, verifies the published count
 arithmetic/summaries, enforces a per-track regression floor totaling 903 tests, and emits stable row IDs and statuses.
+It reuses the [canonical structured execution receipt validation](../../scripts/harness/execution-evidence.mjs), and each
+track's executed-file inventory must exactly match its declared files; aggregate test floors cannot substitute for
+missing execution.
 Each executed run writes the
 gitignored `artifacts/certification/managed-agent-milestone-evidence.json` with the HEAD commit, dirty-source hash,
 source-stability check, per-track Vitest counts, deterministic row outcomes, and an explicit `liveAcceptance: NOT_RUN`.
@@ -79,14 +82,14 @@ Adapters, Settings controls, persistence, and tests use these names and semantic
 | `subagentDelegationPolicy` | <code>"explicit-only" &#124; "proactive"</code>, default `"explicit-only"`; per-task policy may only narrow |
 | `subagentMaxDepth`         | Integer `1..5`, default `1`                                                                                 |
 | `subagentRoleTimeoutsMs`   | Partial `explore/review/worker`, each `10_000..3_600_000`; defaults `120_000/120_000/900_000`               |
-| `subagentMaxInputTokens`   | Integer `1..10_000_000`, default `16_000`                                                                   |
-| `subagentMaxOutputTokens`  | Integer `1..10_000_000`, default `4_000`                                                                    |
+| `subagentMaxInputTokens`   | Integer `1..10_000_000`, default `250_000`                                                                  |
+| `subagentMaxOutputTokens`  | Integer `1..10_000_000`, default `16_000`                                                                   |
 | `subagentRootTokenBudget`  | Integer `1..10_000_000` or `null`, default `null`                                                           |
 | `subagentRootCostBudget`   | Positive finite number or `null`, default `null`                                                            |
 
 Every child freezes `contextManifest.orchestration = { ancestry, delegationPolicy, limits }`. A legacy manifest that
-omits it recovers with frozen legacy defaults, not current mutable Settings. Live/list projections expose `depth`,
-`maxDepth`, `delegationPolicy`, `effectiveLimits`, and terminal `stopReason`.
+omits it recovers with frozen legacy defaults, including `16_000` input and `4_000` output tokens, not current mutable
+Settings. Live/list projections expose `depth`, `maxDepth`, `delegationPolicy`, `effectiveLimits`, and terminal `stopReason`.
 
 Stop reasons cover timeout, input/output token limits, root token/cost budgets, depth/authority denial, ancestor
 cancellation, orphan/recovery failure, cancellation, failure, and completion.
@@ -177,11 +180,10 @@ Those rows remain pending until dedicated evidence proves:
 
 ## Run B prompt revision status
 
-- `MANAGED_AGENT_RUN_B_V5` completed successfully on 2026-08-20 in root task
-  `01a01d4f-a6a2-741d-abf2-5782bb201036`. The trace retained the exact completion markers, the prepared child recovered
-  as terminal Cancelled with `stopReason: never_launched`, the child had no durable AgentControl record, and the final
-  process/worktree/workspace checks were clean.
-- `MANAGED_AGENT_RUN_B_V3` remains valid historical evidence superseded by the stricter V5 run.
+- The [live acceptance playbook](managed-agent-live-acceptance.md) records `MANAGED_AGENT_RUN_B_V3` as the last valid
+  live pass.
+- `MANAGED_AGENT_RUN_B_V5` is the current static contract. Its live acceptance remains **unverified** until matching
+  retained evidence is reviewed; the previously reported pass is not supported by a linked receipt.
 - V4 exposed that an auto-selected follow-up suggestion could advance the reload checkpoint; it is invalid as
   acceptance evidence and did not approve or launch `approval_child`.
 - V5 requires the exact human marker `CONTINUE_PRELAUNCH_RELOAD` and uses the sole non-advancing sentinel

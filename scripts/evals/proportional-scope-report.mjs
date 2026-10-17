@@ -16,6 +16,7 @@ const toolCategories = new Map([
 	["edit", "mutation"],
 	["write_to_file", "mutation"],
 	["edit_file", "mutation"],
+	["exec_command", "terminal"],
 	["execute_command", "terminal"],
 	["shell", "terminal"],
 	["manage_command", "terminal"],
@@ -166,7 +167,7 @@ export function buildReport(input) {
 				tools.filter((event) => {
 					const payload = record(event.payload)
 					const tool = payload.name ?? payload.tool
-					return tool === "shell" || tool === "execute_command"
+					return tool === "exec_command" || tool === "shell" || tool === "execute_command"
 				}).length,
 				metricCoverage,
 			),

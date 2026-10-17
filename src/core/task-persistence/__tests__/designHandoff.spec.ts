@@ -10,7 +10,9 @@ import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { createDesignHandoff } from "../designHandoff"
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
 }))
 

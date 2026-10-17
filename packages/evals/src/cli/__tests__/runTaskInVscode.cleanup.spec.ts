@@ -21,7 +21,7 @@ vi.mock("execa", () => ({ execa: mocks.spawn }))
 vi.mock("p-wait-for", () => ({ default: mocks.wait }))
 vi.mock("../../db/index", () => ({
 	updateTask: vi.fn(),
-	createTaskMetrics: vi.fn(),
+	createTaskMetrics: vi.fn(async () => ({ id: 11 })),
 	updateTaskMetrics: vi.fn(),
 	createToolError: vi.fn(),
 }))
@@ -43,7 +43,7 @@ vi.mock("@alpha-code/ipc", () => ({
 		sendCommand = mocks.send
 	},
 }))
-import { IpcMessageType } from "@alpha-code/types"
+import { AlphaCodeEventName, IpcMessageType, type TaskEvent } from "@alpha-code/types"
 import { runTaskInVscode } from "../runTaskInVscode"
 
 const input = () =>
@@ -77,7 +77,31 @@ it("refuses a paid benchmark before dispatch when execution identity is missing"
 	await rejection
 	expect(mocks.send).not.toHaveBeenCalled()
 	expect(mocks.reap).toHaveBeenCalledOnce()
-	expect(mocks.close).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
+})
+
+it("preserves the caller's logger after successful execution", async () => {
+	const emit = async (event: TaskEvent) => {
+		const listener = mocks.listeners.get(IpcMessageType.TaskEvent) as unknown as (event: TaskEvent) => Promise<void>
+		await listener(event)
+	}
+	mocks.wait.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+		await emit({ eventName: AlphaCodeEventName.TaskStarted, payload: ["alpha-task"] })
+		await emit({
+			eventName: AlphaCodeEventName.TaskCompleted,
+			payload: [
+				"alpha-task",
+				{ totalCost: 0, totalTokensIn: 0, totalTokensOut: 0, contextTokens: 0 },
+				{},
+				{ isSubtask: false },
+			],
+		})
+	})
+	const pending = runTaskInVscode(input())
+	await vi.advanceTimersByTimeAsync(5_000)
+	await expect(pending).resolves.toBe("completed")
+	expect(mocks.reap).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
 })
 
 it("captures exact-host execution identity before dispatch, preserving process cleanup", async () => {
@@ -125,7 +149,7 @@ it("rejects another host version before dispatch", async () => {
 	expect(mocks.send).not.toHaveBeenCalled()
 })
 
-it("aborts and reaps the subprocess and closes the logger after all IPC connections fail", async () => {
+it("aborts and reaps the subprocess without closing the caller's logger after all IPC connections fail", async () => {
 	mocks.wait.mockRejectedValue(new Error("IPC unavailable"))
 	const pending = runTaskInVscode(input())
 	const rejection = expect(pending).rejects.toThrow("Unable to connect")
@@ -133,7 +157,7 @@ it("aborts and reaps the subprocess and closes the logger after all IPC connecti
 	await rejection
 	expect(mocks.spawn.mock.calls[0]![2].cancelSignal.aborted).toBe(true)
 	expect(mocks.reap).toHaveBeenCalledOnce()
-	expect(mocks.close).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
 	expect(mocks.disconnect).toHaveBeenCalled()
 })
 
@@ -147,7 +171,7 @@ it("preserves premature disconnect failure when cleanup also fails", async () =>
 	await vi.advanceTimersByTimeAsync(3000)
 	await rejection
 	expect(mocks.reap).toHaveBeenCalledOnce()
-	expect(mocks.close).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
 })
 
 it("observes early process rejection during startup and retains the spawn failure", async () => {
@@ -159,7 +183,7 @@ it("observes early process rejection during startup and retains the spawn failur
 	await rejection
 	expect(mocks.wait).not.toHaveBeenCalled()
 	expect(mocks.reap).toHaveBeenCalledOnce()
-	expect(mocks.close).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
 })
 
 it("still reaps the process when disconnect cleanup throws", async () => {
@@ -174,5 +198,5 @@ it("still reaps the process when disconnect cleanup throws", async () => {
 	await vi.advanceTimersByTimeAsync(3000)
 	await rejection
 	expect(mocks.reap).toHaveBeenCalledOnce()
-	expect(mocks.close).toHaveBeenCalledOnce()
+	expect(mocks.close).not.toHaveBeenCalled()
 })

@@ -759,11 +759,6 @@ function extractLegacyFrozenSubagentInstructions(
 	return undefined
 }
 
-interface PendingSpawnedSubagentResult {
-	taskId: string
-	block: Anthropic.Messages.TextBlockParam
-}
-
 interface GoalInputAdmission {
 	isStillCurrent(): boolean
 	canWake(): Promise<boolean>
@@ -1060,10 +1055,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	>()
 	private toolInputContext = new AsyncLocalStorage<string>()
 	private durableSteerAdmission: Promise<void> = Promise.resolve()
-	private pendingAutomaticResultClaimSettlement?: {
-		claimId: string
-		disposition: "acknowledge" | "release"
-	}
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
 	private readonly stagedWaitAgentNotifications = new Map<string, Anthropic.TextBlockParam[]>()
 	private readonly waitAgentClaimEntries = new Map<string, readonly AgentMailboxEntry[]>()
@@ -9880,59 +9871,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		else await this.updateAlphaMessage(committed.message, ownership)
 	}
 
-	private getPendingSpawnedSubagentResults(): PendingSpawnedSubagentResult[] {
-		// Lifecycle projections are not input receipts. Automatic delivery consumes
-		// the durable mailbox at the same safe boundary as ordinary agent messages.
-		// Keep the legacy synthetic-human-result seam inert.
-		return []
-	}
-
-	private buildUserContentWithPendingSpawnedSubagentResults(
-		content: Anthropic.Messages.ContentBlockParam[],
-		environmentDetails: string,
-		_allowedTaskIds?: ReadonlySet<string>,
-	): {
-		content: Anthropic.Messages.ContentBlockParam[]
-		pendingResults: PendingSpawnedSubagentResult[]
-	} {
-		return {
-			content: environmentDetails ? [...content, { type: "text", text: environmentDetails }] : [...content],
-			pendingResults: [],
-		}
-	}
-
-	private async markSpawnedSubagentResultsDelivered(_taskIds: readonly string[]): Promise<void> {
-		// Compatibility no-op for the legacy request loop. Native wait_agent
-		// receipts, not transcript presentation state, now own consumption.
-	}
-
-	private async settleAutomaticResultClaim(
-		provider: AlphaProvider,
-		claimId: string,
-		disposition: "acknowledge" | "release",
-	): Promise<void> {
-		if (disposition === "acknowledge") {
-			await provider.acknowledgeAutomaticSubagentResults(this, claimId)
-		} else {
-			await provider.releaseAutomaticSubagentResults(this, claimId)
-		}
-	}
-
-	private async retryPendingAutomaticResultClaimSettlement(provider: AlphaProvider | undefined): Promise<void> {
-		const pending = this.pendingAutomaticResultClaimSettlement
-		if (!pending) return
-		if (!provider) throw new Error("Cannot recover the pending automatic-result mailbox claim without a provider")
-
-		await this.settleAutomaticResultClaim(provider, pending.claimId, pending.disposition)
-		if (this.pendingAutomaticResultClaimSettlement === pending) {
-			this.pendingAutomaticResultClaimSettlement = undefined
-		}
-	}
-
-	private retainAutomaticResultClaimSettlement(claimId: string, disposition: "acknowledge" | "release"): void {
-		this.pendingAutomaticResultClaimSettlement = { claimId, disposition }
-	}
-
 	private async reconcileInterruptedSubagentGroups(): Promise<void> {
 		const liveTaskIds = new Set(this.providerRef.deref()?.getLiveTaskIds() ?? [])
 		let changed = false
@@ -13385,7 +13323,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!this.hasPendingSteerMessage() &&
 			!this.hasActiveCommandExecutions() &&
 			!this.messageQueueService.hasUnconsumedInput() &&
-			!this.pendingAutomaticResultClaimSettlement &&
 			this.pendingWaitAgentResultClaims.size === 0 &&
 			!this.userMessageContent.some((block) => block.type === "tool_result") &&
 			!this.diffViewProvider.isEditing &&
@@ -15335,29 +15272,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Requeued committed content can contain acknowledged terminal/file events.
 				// Keep those blocks intact; only a new logical step captures fresh events.
 
-				// Add environment details as its own text block, separate from tool
-				// results.
-				const deliveryProvider = this.providerRef.deref()
-				// A transient persistence failure while ACKing or releasing a durable
-				// mailbox claim must not wedge that result until extension restart.
-				await this.retryPendingAutomaticResultClaimSettlement(deliveryProvider)
-				const pendingSpawnedSubagentTaskIds = this.getPendingSpawnedSubagentResults().map(
-					({ taskId }) => taskId,
-				)
-				const automaticResultClaim =
-					pendingSpawnedSubagentTaskIds.length > 0 && deliveryProvider?.claimAutomaticSubagentResults
-						? await deliveryProvider.claimAutomaticSubagentResults(this, pendingSpawnedSubagentTaskIds)
-						: undefined
-				const claimedTaskIds = automaticResultClaim ? new Set(automaticResultClaim.taskIds) : undefined
-				const { content: finalUserContent, pendingResults: pendingSpawnedSubagentResults } =
-					this.buildUserContentWithPendingSpawnedSubagentResults(parsedUserContent, "", claimedTaskIds)
+				const finalUserContent = [...parsedUserContent]
 				// Only add user message to conversation history if:
 				// 1. This is the first attempt (retryAttempt === 0), AND
 				// 2. The original userContent was not empty (empty signals delegation resume where
 				//    the user message with tool_result and env details is already in history), OR
 				// 3. The message was removed in a previous iteration (userMessageWasRemoved === true)
 				// A committed retry reuses its saved input; fresh steering starts at attempt zero.
-				const isEmptyUserContent = currentUserContent.length === 0 && pendingSpawnedSubagentResults.length === 0
+				const isEmptyUserContent = currentUserContent.length === 0
 				const shouldAddUserMessage =
 					((currentItem.retryAttempt ?? 0) === 0 && !isEmptyUserContent) || currentItem.userMessageWasRemoved
 				if (shouldAddUserMessage) {
@@ -15415,43 +15337,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							lifecycleInputInvocation.guard,
 						)
 						this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-						await this.markSpawnedSubagentResultsDelivered(
-							pendingSpawnedSubagentResults.map(({ taskId }) => taskId),
-						)
-						this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-						if (automaticResultClaim && automaticResultClaim.taskIds.length > 0 && deliveryProvider) {
-							await deliveryProvider.acknowledgeAutomaticSubagentResults(
-								this,
-								automaticResultClaim.claimId,
-							)
-						}
 					} catch (error) {
 						this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-						if (automaticResultClaim && automaticResultClaim.taskIds.length > 0 && deliveryProvider) {
-							try {
-								if (historyPersisted) {
-									await deliveryProvider.acknowledgeAutomaticSubagentResults(
-										this,
-										automaticResultClaim.claimId,
-									)
-								} else {
-									await deliveryProvider.releaseAutomaticSubagentResults(
-										this,
-										automaticResultClaim.claimId,
-									)
-								}
-							} catch (settlementError) {
-								this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-								this.retainAutomaticResultClaimSettlement(
-									automaticResultClaim.claimId,
-									historyPersisted ? "acknowledge" : "release",
-								)
-								throw new AggregateError(
-									[error, settlementError],
-									"Failed to persist the user turn and settle its automatic-result mailbox claim",
-								)
-							}
-						}
 						if (
 							!historyPersisted &&
 							this.pendingSteerMessage &&
@@ -15466,14 +15353,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 					this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
 					TelemetryService.instance.captureConversationMessage(this.taskId, "user")
-				} else if (automaticResultClaim && automaticResultClaim.taskIds.length > 0 && deliveryProvider) {
-					try {
-						await deliveryProvider.releaseAutomaticSubagentResults(this, automaticResultClaim.claimId)
-					} catch (error) {
-						this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-						this.retainAutomaticResultClaimSettlement(automaticResultClaim.claimId, "release")
-						throw error
-					}
 				}
 				if ((currentItem.retryAttempt ?? 0) === 0) await this.deliverAgentMessages()
 				this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
@@ -16134,7 +16013,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									})
 
 									if (!toolUse) {
-										console.error(`Failed to parse tool call for task ${this.taskId}:`, chunk)
+										console.error(
+											`Failed to parse tool '${chunk.name}' (call ${chunk.id}) for task ${this.taskId}.`,
+										)
 										break
 									}
 

@@ -64,7 +64,14 @@ export async function digestWorkspaceTree(
 	const listing = await runGit(input, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
 	const entries: { path: string; digest: string }[] = []
 	for (const relative of listing.split("\0").filter(Boolean).sort()) {
-		const bytes = await fs.readFile(path.join(input.workspace, relative))
+		let bytes: Buffer
+		try {
+			bytes = await fs.readFile(path.join(input.workspace, relative))
+		} catch (error) {
+			// The index still lists tracked files deleted from the final workspace.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+			throw error
+		}
 		entries.push({ path: relative.replaceAll(path.sep, "/"), digest: sha256(bytes) })
 	}
 	return sha256(canonicalJson(entries))

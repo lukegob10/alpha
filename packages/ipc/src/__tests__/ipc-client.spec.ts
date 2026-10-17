@@ -149,6 +149,29 @@ describe("IpcClient transport contracts", () => {
 		expect(client.clientId).toBe("valid-client")
 	})
 
+	it("bounds rejected-message diagnostics without logging private values or validation inputs", () => {
+		const { client, backend, log } = createClient()
+		const privateValue = `ipc-client-secret-canary-${"x".repeat(8_192)}`
+		const acknowledged = vi.fn()
+		client.on(IpcMessageType.Ack, acknowledged)
+		for (const invalid of [
+			privateValue,
+			{ type: privateValue },
+			{ ...acknowledgement(), data: { clientId: privateValue, pid: privateValue, ppid: 100 } },
+		]) {
+			expect(() => backend.deliver("message", invalid)).not.toThrow()
+		}
+		expect(acknowledged).not.toHaveBeenCalled()
+		expect(log).toHaveBeenCalledTimes(3)
+		for (const args of log.mock.calls) {
+			const diagnostic = JSON.stringify(args)
+			expect(diagnostic).not.toContain("ipc-client-secret-canary")
+			expect(diagnostic.length).toBeLessThan(512)
+		}
+		backend.deliver("message", acknowledgement())
+		expect(acknowledged).toHaveBeenCalledOnce()
+	})
+
 	it("delivers validated task events in transport order and rejects malformed or client-origin events", () => {
 		const { client, backend } = createClient()
 		const event = vi.fn()

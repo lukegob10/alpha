@@ -42,7 +42,7 @@ import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
 import type { ApiInstructionFragment, SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { getApiRequestTimeout } from "./utils/timeout-config"
-import { handleOpenAIError } from "./utils/openai-error-handler"
+import { handleOpenAIError } from "./utils/error-handler"
 import {
 	buildOpenAiResponsesInput,
 	encodeOpenAiCustomToolInputDelta,

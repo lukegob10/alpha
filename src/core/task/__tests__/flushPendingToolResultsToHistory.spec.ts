@@ -207,7 +207,9 @@ vi.mock("../../condense", async (importOriginal) => {
 	}
 })
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getTaskDirectoryPath: vi
 		.fn()
 		.mockImplementation((globalStoragePath, taskId) => Promise.resolve(`${globalStoragePath}/tasks/${taskId}`)),

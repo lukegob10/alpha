@@ -38,7 +38,7 @@ runs prepare and persist their initial resolved state before starting the task.
 The September 20, 2026 ticket contracts are the implementation scope:
 
 - Copilot uses the verified catalog overlay for the exact live VS Code LM model. Missing overlay capabilities mean
-  unavailable. Request options remain compatible with VS Code 1.122.1; no host reasoning schema is assumed.
+  unavailable. Request options use the VS Code 1.125.0 contract; no host reasoning schema is assumed.
 - Vertex Gemini uses cataloged thinking levels. Unknown Gemini identifiers do not inherit another model's named levels.
 - Vertex Claude budget models retain the existing thinking-budget path. Models without verified reasoning flags do not
   acquire named effort options merely from belonging to the Claude family.
@@ -69,25 +69,25 @@ keyboard-accessible slider inside the existing popover. Binary and budget-only c
 the slider keeps provider-specific effort levels reachable without listing every choice. The effort popup shows only the
 slider and its selected value. It contains the provider's explicit `none` level when supported plus its named reasoning
 levels; that `none` level is labeled None.
-All new strings are localized in the 18 supported locales.
+User-visible labels use the English locale resources.
 
 Primary references retrieved September 20, 2026: [VS Code API](https://code.visualstudio.com/api/references/vscode-api),
 [VS Code language models](https://code.visualstudio.com/docs/agent-customization/language-models),
 [Vertex OpenAI compatibility](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library),
 [Google thinking controls](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/thinking), and
 [Vertex Claude](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude). These explain adapter
-boundaries; the repository's exact model catalog and VS Code 1.122.1 fixtures determine the supported menu and payload.
+boundaries; the repository's exact model catalog and VS Code 1.125.0 fixtures determine the supported menu and payload.
 
 ## Validation
 
 Run focused reasoning, provider payload, task/profile, schedule, and webview tests; shared package and affected consumer
 type checks and lint; and
-`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221`. The exact-host LM fixture verifies persistence and that an unverified
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1250`. The exact-host LM fixture verifies persistence and that an unverified
 LM model receives no effort override while retaining its exact identity. Provider unit fixtures cover supported
 named-level payloads.
 
-`pnpm --filter @alpha-code/vscode-e2e test:reasoning:1221` builds the real extension and webview, runs an owned disposable
-VS Code 1.122.1 host, and uses trusted keyboard input to select High in the composer. A local HTTP fixture independently
+`pnpm --filter @alpha-code/vscode-e2e test:reasoning:1250` builds the real extension and webview, runs an owned disposable
+VS Code 1.125.0 host, and uses trusted keyboard input to select High in the composer. A local HTTP fixture independently
 checks that the next request sends High while the saved profile, profile count, mode, and approvals stay unchanged.
 It also checks task reload, unsupported-model fallback, Escape/focus restoration, and the editor panel. Rendered
 screenshots cover dark, light, and narrow high-contrast layouts. The receipt in `artifacts/reasoning-ui/` links to the

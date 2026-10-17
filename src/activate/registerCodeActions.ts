@@ -14,8 +14,6 @@ export const registerCodeActions = (context: vscode.ExtensionContext) => {
 }
 
 const registerCodeAction = (context: vscode.ExtensionContext, command: CodeActionId, promptType: CodeActionName) => {
-	let userInput: string | undefined
-
 	context.subscriptions.push(
 		vscode.commands.registerCommand(getCodeActionCommand(command), async (...args: any[]) => {
 			// Handle both code action and direct command cases.
@@ -44,7 +42,6 @@ const registerCodeAction = (context: vscode.ExtensionContext, command: CodeActio
 				...(startLine !== undefined ? { startLine: startLine.toString() } : {}),
 				...(endLine !== undefined ? { endLine: endLine.toString() } : {}),
 				...(diagnostics ? { diagnostics } : {}),
-				...(userInput ? { userInput } : {}),
 			}
 
 			await AlphaProvider.handleCodeAction(command, promptType, params)

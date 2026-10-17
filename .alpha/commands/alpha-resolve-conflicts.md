@@ -19,20 +19,30 @@ Resolve merge conflicts for a specific pull request by analyzing git history, co
 
 ### 1. Initialize PR Resolution
 
+Record the current branch and HEAD with `git branch --show-current` and `git rev-parse HEAD`, then inspect
+`git status --porcelain`. Continue only with a clean working tree and no merge or rebase in progress. Otherwise stop and
+preserve the existing work. Use a fresh resolution branch so existing local branches keep their commits.
+
 ```bash
 # Fetch PR info
-gh pr view [PR_NUMBER] --json title,body,headRefName,baseRefName
+gh pr view [PR_NUMBER] --json title,body,headRefName,baseRefName,url
 
-# Checkout and rebase
-gh pr checkout [PR_NUMBER] --force
-git fetch origin main
-GIT_EDITOR=true git rebase origin/main
+# Check out the PR on a new local branch
+gh pr checkout [PR_NUMBER] --branch [NEW_RESOLUTION_BRANCH]
+
+# Fetch the actual PR base and rebase onto that fetched commit
+git fetch [BASE_REMOTE] [BASE_REF_NAME]
+git -c core.editor=true rebase FETCH_HEAD
 ```
+
+Use the PR's `baseRefName` for `[BASE_REF_NAME]` and the remote for its base repository for `[BASE_REMOTE]`; verify that
+remote against the PR URL. Choose an unused `[NEW_RESOLUTION_BRANCH]`, such as `codex/resolve-pr-123`. Do not force
+checkout, reset an existing branch, or stash unrelated changes automatically.
 
 ### 2. Identify Conflicts
 
 ```bash
-git status --porcelain | grep "^UU"
+git diff --name-only --diff-filter=U
 ```
 
 ### 3. Analyze Each Conflict
@@ -57,13 +67,14 @@ Based on the analysis:
 
 ```bash
 git add [resolved-files]
-GIT_EDITOR=true git rebase --continue
+git -c core.editor=true rebase --continue
 ```
 
 ## Key Guidelines
 
 - Always escape conflict markers with `\` when using `apply_diff`
 - Document resolution decisions in the summary
+- Report the new resolution branch and leave it available for review
 - Verify no syntax errors after resolution
 - Preserve valuable changes from both sides when possible
 

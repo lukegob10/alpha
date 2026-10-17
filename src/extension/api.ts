@@ -197,19 +197,18 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		images,
 		newTab,
 	}: {
-		configuration: AlphaCodeSettings
+		configuration?: AlphaCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
 	}) {
-		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
-		assertSupportedApiProvider(configuration.apiProvider)
+		if (configuration?.mode !== undefined) assertPrimaryMode(configuration.mode)
+		const apiConfiguration =
+			configuration ?? (await this.sidebarProvider.getState({ includeTaskHistory: false })).apiConfiguration
+		assertSupportedApiProvider(apiConfiguration.apiProvider)
 		let provider: AlphaProvider
 
 		if (newTab) {
-			await vscode.commands.executeCommand("workbench.action.files.revert")
-			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
-
 			provider = await openAlphaInNewTab({ context: this.context, outputChannel: this.outputChannel })
 			this.registerListeners(provider)
 		} else {
@@ -225,11 +224,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 
 		const options: CreateTaskOptions = {
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
-			// Keep the caller-supplied runtime configuration authoritative for this
-			// task. Persisting settings intentionally strips executable values such as
-			// FakeAI callbacks, so reading the configuration back from global state
-			// cannot faithfully reconstruct an in-process provider implementation.
-			apiConfiguration: configuration,
+			// Resolve omitted provider settings before changing task state.
+			// Explicit runtime settings retain executable values such as FakeAI callbacks.
+			apiConfiguration,
 		}
 
 		const task = await provider.createTask(text, images, undefined, options, configuration)

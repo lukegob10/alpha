@@ -1885,8 +1885,7 @@ export class NativeToolCallParser {
 			if (!nativeArgs && !customToolRegistry.has(resolvedName)) {
 				throw new Error(
 					`[NativeToolCallParser] Invalid arguments for tool '${resolvedName}'. ` +
-						`Native tool calls require a valid JSON payload matching the tool schema. ` +
-						`Received: ${JSON.stringify(args)}`,
+						`Native tool calls require a valid JSON payload matching the tool schema.`,
 				)
 			}
 
@@ -1909,12 +1908,9 @@ export class NativeToolCallParser {
 			}
 
 			return result
-		} catch (error) {
-			console.error(
-				`Failed to parse tool call arguments: ${error instanceof Error ? error.message : String(error)}`,
-			)
-
-			console.error(`Tool call: ${JSON.stringify(toolCall, null, 2)}`)
+		} catch {
+			// Parser errors can quote input fragments; arguments may contain private file contents or credentials.
+			console.error(`Failed to parse arguments for tool '${resolvedName}' (call ${toolCall.id}).`)
 			return null
 		}
 	}
@@ -1955,8 +1951,8 @@ export class NativeToolCallParser {
 			}
 
 			return result
-		} catch (error) {
-			console.error(`Failed to parse dynamic MCP tool:`, error)
+		} catch {
+			console.error(`Failed to parse arguments for dynamic MCP tool '${toolCall.name}' (call ${toolCall.id}).`)
 			return null
 		}
 	}

@@ -143,10 +143,8 @@ export const ChatTextArea = memo(
 				taskReasoning,
 				currentTaskId,
 			} = useShellState()
-			const draftActionsScope =
-				isTaskDraft || isNewTask
-					? "newTaskDraft"
-					: `task:${conversationClineMessages !== undefined ? (conversationTaskId ?? "") : (currentTaskId ?? "")}`
+			const composerTaskId = conversationClineMessages !== undefined ? conversationTaskId : currentTaskId
+			const draftActionsScope = isTaskDraft || isNewTask ? "newTaskDraft" : `task:${composerTaskId ?? ""}`
 			const [reasoningProfileLoading, setReasoningProfileLoading] = useState(false)
 			useEffect(() => setReasoningProfileLoading(false), [taskReasoning, currentTaskId, currentApiConfigName])
 
@@ -160,30 +158,30 @@ export const ChatTextArea = memo(
 			}, [listApiConfigMeta, currentApiConfigName])
 
 			const [gitCommits, setGitCommits] = useState<any[]>([])
-			const [showDropdown, setShowDropdown] = useState(false)
 			const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
 			const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
 			const searchRequestIdRef = useRef("")
+			const pendingEnhancementRef = useRef<{ requestId: string; scope: string; draft: string } | null>(null)
 
-			// Close dropdown when clicking outside.
-			useEffect(() => {
-				const handleClickOutside = () => {
-					if (showDropdown) {
-						setShowDropdown(false)
-					}
+			useLayoutEffect(() => {
+				const pending = pendingEnhancementRef.current
+				if (pending && (pending.scope !== draftActionsScope || pending.draft !== inputValue)) {
+					pendingEnhancementRef.current = null
+					setIsEnhancingPrompt(false)
 				}
-
-				document.addEventListener("mousedown", handleClickOutside)
-				return () => document.removeEventListener("mousedown", handleClickOutside)
-			}, [showDropdown])
+			}, [draftActionsScope, inputValue])
 
 			// Handle enhanced prompt response and search results.
 			useEffect(() => {
 				const messageHandler = (event: MessageEvent) => {
 					const message = event.data
 
-					if (message.type === "enhancedPrompt" && isEnhancingPrompt) {
-						if (message.text && textAreaRef.current) {
+					if (message.type === "enhancedPrompt") {
+						const pending = pendingEnhancementRef.current
+						if (!pending || message.requestId !== pending.requestId) return
+						pendingEnhancementRef.current = null
+						setIsEnhancingPrompt(false)
+						if (typeof message.text === "string" && message.text && textAreaRef.current) {
 							try {
 								// Use execCommand to replace text while preserving undo history
 								if (document.execCommand) {
@@ -195,7 +193,9 @@ export const ChatTextArea = memo(
 
 									// Select all text first
 									textarea.select()
-									document.execCommand("insertText", false, message.text)
+									if (!document.execCommand("insertText", false, message.text)) {
+										setInputValue(message.text)
+									}
 								} else {
 									setInputValue(message.text)
 								}
@@ -203,8 +203,6 @@ export const ChatTextArea = memo(
 								setInputValue(message.text)
 							}
 						}
-
-						setIsEnhancingPrompt(false)
 					} else if (message.type === "insertTextIntoTextarea") {
 						if (message.text && textAreaRef.current) {
 							// Insert the command text at the current cursor position
@@ -254,7 +252,7 @@ export const ChatTextArea = memo(
 
 				window.addEventListener("message", messageHandler)
 				return () => window.removeEventListener("message", messageHandler)
-			}, [setInputValue, inputValue, isEnhancingPrompt])
+			}, [setInputValue, inputValue])
 
 			const [isDraggingOver, setIsDraggingOver] = useState(false)
 			const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
@@ -306,19 +304,26 @@ export const ChatTextArea = memo(
 			}, [selectedType, searchQuery])
 
 			const handleEnhancePrompt = useCallback(() => {
-				if (isEnhancingPrompt) {
+				if (pendingEnhancementRef.current) {
 					return
 				}
 
 				const trimmedInput = inputValue.trim()
 
 				if (trimmedInput) {
+					const requestId = crypto.randomUUID()
+					pendingEnhancementRef.current = { requestId, scope: draftActionsScope, draft: inputValue }
 					setIsEnhancingPrompt(true)
-					vscode.postMessage({ type: "enhancePrompt" as const, text: trimmedInput })
+					vscode.postMessage({
+						type: "enhancePrompt",
+						requestId,
+						...(!isTaskDraft && !isNewTask && composerTaskId ? { taskId: composerTaskId } : {}),
+						text: trimmedInput,
+					})
 				} else {
 					setInputValue(t("chat:enhancePromptDescription"))
 				}
-			}, [inputValue, isEnhancingPrompt, setInputValue, t])
+			}, [inputValue, draftActionsScope, composerTaskId, isTaskDraft, isNewTask, setInputValue, t])
 
 			const allModes = useMemo(
 				() => getUserFacingModeOptions(getAllModes(customModes), mode),

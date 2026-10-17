@@ -197,7 +197,7 @@ pnpm --dir src test core/agent/__tests__/TaskWorkContext.spec.ts core/task/__tes
 pnpm --dir src test core/task/__tests__/Task.spec.ts core/tools/__tests__/ToolRepetitionDetector.progress.spec.ts core/tools/__tests__/ToolRepetitionDetector.failures.spec.ts
 pnpm --dir src test core/tools/__tests__/ToolRepetitionDetector.commands.spec.ts core/task/__tests__/stageThreeCompletion.integration.spec.ts
 pnpm --dir src check-types
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 The completion integration regressions exercise both final-answer paths through the real task loop, completion

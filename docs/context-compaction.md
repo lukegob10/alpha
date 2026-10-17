@@ -136,7 +136,7 @@ pnpm --filter @alpha-code/types test
 pnpm --dir webview-ui test src/components/chat/context-management/__tests__/CondensationResultRow.spec.tsx src/components/chat/__tests__/TaskHeader.spec.tsx src/components/settings/providers/__tests__/VSCodeLM.spec.tsx src/__tests__/ContextWindowProgress.spec.tsx src/__tests__/ContextWindowProgressLogic.spec.ts
 pnpm lint
 pnpm check-types
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 The repository-wide translation checker currently reports missing keys outside this change; the new unchanged-result

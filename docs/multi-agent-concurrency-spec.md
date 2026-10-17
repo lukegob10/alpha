@@ -184,65 +184,15 @@ The existing `clineMessagesSeq` guard protects against stale snapshots for one s
 
 Without this, a background task state push can overwrite the foreground chat.
 
-### Proposed top-level swarm settings
+### Concurrency settings
 
-Top-level task concurrency currently uses a conservative provider-enforced cap of `3` live non-terminal tasks.
+`maxConcurrentTasks` limits total live non-terminal task sessions. It is user-configurable from `1` to `50`, with a
+default of `3`. `TaskSessionRegistry` normalizes the limit, and `AlphaProvider` applies changes to the shared session
+pool. Completed tasks release their live-task slots.
 
-The shipped managed-agent settings are `maxConcurrentSubagents`, `subagentMaxDepth`,
-`subagentDelegationPolicy`, role-specific timeouts, per-child input/output limits, and optional root token/cost budgets.
-The names below belong only to the older, unimplemented top-level swarm proposal and are not current configuration
-contracts:
-
-- `maxConcurrentTasks`: maximum total live tasks that can run at once.
-- `maxConcurrentSwarmTasks`: maximum child tasks one Orchestrator swarm may run at once.
-- `swarmCostLimit`: optional cost ceiling for one swarm group.
-- `swarmRequireApproval`: whether Orchestrator must ask before spawning multiple children.
-
-Defaults should be conservative. A reasonable first default is two concurrent swarm children and a small total live task cap. The UI should show when queued swarm children are waiting for capacity.
-
-## Orchestrator Swarm Design
-
-The original proposal below is retained for architectural context. The shipped control plane uses one strict `spawn_agent` call per child (multiple calls may share a provider response), `AgentControlStore` for the tree/mailbox, and the lifecycle tools listed in Status; it does not use the proposed `delegateParentToChildren` API.
-
-Add a provider API:
-
-- `delegateParentToChildren(params): Promise<Task[]>`
-- Inputs: parent task id, child specs, mode/profile per child, initial todos, concurrency limit, optional cost limit.
-- Output: child task ids and initial metadata.
-
-The provider should enforce concurrency centrally. Orchestrator may request ten subtasks, but the provider should run only up to the configured maximum and queue the rest.
-
-Parent behavior:
-
-- Flush parent API history before spawning children.
-- Persist parent status as something richer than today's single-child `delegated`.
-- Add metadata for multiple awaited children:
-    - `childIds`
-    - `awaitingChildIds`
-    - `completedChildIds`
-    - `failedChildIds`
-    - `swarmId` or `delegationGroupId`
-- Pause parent execution until enough child results are available.
-- Emit swarm lifecycle events when children are created, started, queued, waiting for input, completed, failed, cancelled, or merged.
-
-Child behavior:
-
-- Each child is a live task.
-- Child completion writes a result record associated with the parent tool call and delegation group.
-- Child failure/cancel writes a structured failure result.
-- Each child updates runtime metadata frequently enough for monitoring without flooding the webview.
-
-Result merge:
-
-- For a single `new_task` tool call that spawns many children, the parent needs a coherent tool result.
-- If the model emitted multiple tool calls, each child can map to its own tool result.
-- If one orchestrator tool call maps to a swarm, the parent should receive one aggregated tool result after all required children finish.
-
-This likely requires a new tool or schema rather than overloading current `new_task` semantics too far. Possible names:
-
-- `new_tasks`
-- `delegate_tasks`
-- `orchestrate_tasks`
+The independent managed-child cap is `maxConcurrentSubagents`. `subagentMaxDepth`, `subagentDelegationPolicy`,
+role-specific timeouts, per-child input/output limits, and optional root token/cost budgets also constrain managed
+admission. Each `spawn_agent` call starts one child; the existing `AgentControlStore` owns the durable tree and mailbox.
 
 ### Managed-agent task UX
 
@@ -485,25 +435,6 @@ Remaining:
 4. Establish parent-plus-child latency, token, cost, and request-pacing benchmarks with regression thresholds and secret-safe telemetry for effective configuration and stop reasons.
 5. Complete real VS Code end-to-end certification of configuration, nesting, compact task navigation/actions, crash/reload recovery, and both Worker completion gates.
 6. Deprecate and retire `delegate_task` only after production callers and acceptance tests use the managed lifecycle path and the live certification is green.
-
-## Difficulty Estimate
-
-Milestone 1 was medium-large and is now implemented. The hard part was not creating multiple `Task` objects; it was untangling places where "current task" was implicit.
-
-Milestone 2 is partially complete for top-level sessions. The remaining work is mostly UX hardening and deeper operational safeguards.
-
-Milestone 3 was large and is complete at the original depth-one/live-certified boundary. Milestones 4-6 are implemented at deterministic boundaries; the remaining difficulty is integration risk rather than missing local architecture. Milestone 7 is large because it must prove process ownership, native-provider behavior, real filesystem recovery, and host/webview convergence under crash and race conditions before compatibility removal.
-
-## Suggested Non-Goals For First Pass
-
-- Do not run multiple agents writing to the same files without a lock or worktree isolation.
-- Do not change Orchestrator behavior in the first milestone.
-- Do not remove `taskStack` immediately; use compatibility wrappers first.
-- Do not make background tasks auto-approve actions invisibly. If user input is needed, mark the task as waiting.
-- Do not restore checkpoints while another task is live in the same workspace.
-- Do not allow unbounded swarm fan-out. Every parallel path needs a provider-enforced maximum before it ships.
-- Do not lose child spend accounting. Detailed per-child usage should remain available in the opened task without
-  forcing an aggregate dashboard into the parent.
 
 ## Resolved Decisions
 

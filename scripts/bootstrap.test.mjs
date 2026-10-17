@@ -22,6 +22,14 @@ test("local, extension, CI and evaluator toolchain pins agree", () => {
 	const runnerArg = (name) => new RegExp(`^ARG ${name}=([^\\r\\n]+)`, "m").exec(runner)?.[1]
 
 	assert.equal(read("../.nvmrc").trim(), `v${engines.node}`)
+	const toolVersions = new Map(
+		read("../.tool-versions")
+			.trim()
+			.split(/\r?\n/u)
+			.map((line) => line.trim().split(/\s+/u)),
+	)
+	assert.equal(toolVersions.get("nodejs"), engines.node)
+	assert.equal(toolVersions.get("pnpm"), requiredVersion)
 	assert.equal(extension.engines.node, engines.node)
 	assert.equal(inputDefault("node-version"), engines.node)
 	assert.equal(inputDefault("npm-version"), engines.npm)
@@ -46,6 +54,30 @@ test("local, extension, CI and evaluator toolchain pins agree", () => {
 			devDependencies["@types/node"],
 			workspace,
 		)
+	}
+})
+
+test("the evaluator install stage receives every configured dependency patch", () => {
+	const workspace = readFileSync(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8")
+	const patchFiles = [...workspace.matchAll(/^\s+[^:\r\n]+:\s+(patches\/[^\s]+)\s*$/gmu)].map((match) => match[1])
+	assert.ok(patchFiles.length > 0, "The workspace's dependency patches must be checked")
+	const runner = readFileSync(new URL("../packages/evals/Dockerfile.runner", import.meta.url), "utf8")
+	const install = runner.indexOf("RUN pnpm install --frozen-lockfile")
+	assert.notEqual(install, -1, "The evaluator must install from its frozen lockfile")
+	const installCopies = [...runner.slice(0, install).matchAll(/^COPY\s+\.\/(\S+)\s+\.\/(\S*)\s*$/gmu)]
+	const dockerignore = readFileSync(new URL("../.dockerignore", import.meta.url), "utf8").split(/\r?\n/u)
+	for (const patch of patchFiles) {
+		assert.ok(existsSync(new URL(`../${patch}`, import.meta.url)), `${patch} must exist`)
+		assert.ok(
+			installCopies.some(
+				([, source, destination]) =>
+					source === destination && (patch === source || patch.startsWith(`${source}/`)),
+			),
+			`${patch} must be copied to its configured path before the frozen install`,
+		)
+		const directory = patch.slice(0, patch.lastIndexOf("/"))
+		assert.ok(dockerignore.includes(`!${directory}/`), `${directory} must be allowed into the build context`)
+		assert.ok(dockerignore.includes(`!${directory}/**`), `${patch} must be allowed into the build context`)
 	}
 })
 

@@ -93,11 +93,6 @@ export class AgentStepRuntime<Handler = unknown, Executable = unknown> {
 		})
 	}
 
-	/** Alias for callers that describe derivation as a runtime fork. */
-	fork(context: string | StepContext): AgentStepRuntime<Handler, Executable> {
-		return this.forContext(context)
-	}
-
 	isForContext(context: string | StepContext): boolean {
 		return this.contextId === contextIdFrom(context)
 	}
@@ -106,11 +101,4 @@ export class AgentStepRuntime<Handler = unknown, Executable = unknown> {
 	toJSON(): undefined {
 		return undefined
 	}
-}
-
-export function createAgentStepRuntime<Handler = unknown, Executable = unknown>(
-	context: string | StepContext,
-	references: AgentStepRuntimeReferences<Handler, Executable> = {},
-): AgentStepRuntime<Handler, Executable> {
-	return new AgentStepRuntime(context, references)
 }

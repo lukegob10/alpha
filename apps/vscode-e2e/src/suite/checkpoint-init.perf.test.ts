@@ -211,7 +211,7 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 
 				const task = (activeTask = host.getLiveTask(taskId)!)
 				assert.ok(task)
-				const completion = waitUntilCompleted({ api, taskId })
+				const completion = waitUntilCompleted({ api, taskId, isCompleted: () => task.didComplete })
 				scripted.release()
 				await completion
 				assert.equal(task.didComplete, true)

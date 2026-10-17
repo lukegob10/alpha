@@ -1938,9 +1938,15 @@ export const webviewMessageHandler = async (
 			await updateGlobalState("autoApprovalEnabled", message.bool ?? false)
 			await provider.postStateToWebview()
 			break
-		case "enhancePrompt":
+		case "enhancePrompt": {
 			if (message.text) {
+				const response = {
+					type: "enhancedPrompt" as const,
+					...(message.requestId === undefined ? {} : { requestId: message.requestId }),
+				}
 				try {
+					// The selected task may change while configuration or the provider is awaited.
+					const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 					const state = await provider.getState()
 
 					const {
@@ -1960,8 +1966,6 @@ export const webviewMessageHandler = async (
 					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
 					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
-					const currentAlpha = provider.getCurrentTask()
-
 					const result = await MessageEnhancer.enhanceMessage({
 						text: message.text,
 						apiConfiguration,
@@ -1975,7 +1979,7 @@ export const webviewMessageHandler = async (
 
 					if (result.success && result.enhancedText) {
 						MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
-						await provider.postMessageToWebview({ type: "enhancedPrompt", text: result.enhancedText })
+						await provider.postMessageToWebview({ ...response, text: result.enhancedText })
 					} else {
 						throw new Error(result.error || "Unknown error")
 					}
@@ -1985,10 +1989,11 @@ export const webviewMessageHandler = async (
 					)
 
 					vscode.window.showErrorMessage(t("common:errors.enhance_prompt"))
-					await provider.postMessageToWebview({ type: "enhancedPrompt" })
+					await provider.postMessageToWebview(response)
 				}
 			}
 			break
+		}
 		case "getSystemPrompt":
 			try {
 				const systemPrompt = await generateSystemPrompt(provider, message)

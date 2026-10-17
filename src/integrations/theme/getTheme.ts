@@ -22,124 +22,96 @@ const defaultThemes: Record<string, string> = {
 	"Visual Studio Light": "light_vs",
 }
 
-function parseThemeString(themeString: string | undefined): any {
+type ThemeData = Parameters<typeof convertTheme>[0]
+type ThemeFile = Partial<ThemeData> & { include?: string }
+
+function parseThemeString(themeString: string): ThemeFile {
 	themeString = themeString
-		?.split("\n")
+		.split("\n")
 		.filter((line) => {
 			return !line.trim().startsWith("//")
 		})
 		.join("\n")
-	return JSON.parse(themeString ?? "{}")
+	const parsed: unknown = JSON.parse(themeString)
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Color theme must be an object")
+	}
+	return parsed as ThemeFile
+}
+
+async function loadThemeFile(themePath: string, includedFiles = new Set<string>()): Promise<ThemeData> {
+	const identity = await fs.realpath(themePath)
+	if (includedFiles.has(identity)) throw new Error("Circular theme include")
+	includedFiles.add(identity)
+
+	const theme = parseThemeString(await fs.readFile(themePath, "utf-8"))
+	if (theme.include !== undefined && typeof theme.include !== "string") {
+		throw new Error("Color theme include must be a path")
+	}
+	if (
+		theme.colors !== undefined &&
+		(!theme.colors || typeof theme.colors !== "object" || Array.isArray(theme.colors))
+	) {
+		throw new Error("Color theme colors must be an object")
+	}
+	if (theme.tokenColors !== undefined && !Array.isArray(theme.tokenColors)) {
+		throw new Error("Color theme token colors must be an array")
+	}
+	const base = theme.include
+		? await loadThemeFile(path.resolve(path.dirname(themePath), theme.include), includedFiles)
+		: undefined
+
+	// VS Code 1.125.0 loads the base first, then applies child colors and token rules.
+	return {
+		...base,
+		...theme,
+		$schema: "vscode://schemas/color-theme",
+		type: theme.type ?? base?.type ?? "dark",
+		colors: { ...base?.colors, ...theme.colors },
+		tokenColors: [...(base?.tokenColors ?? []), ...(theme.tokenColors ?? [])],
+	}
 }
 
 export async function getTheme() {
-	let currentTheme = undefined
+	let themePath: string | undefined
 	const colorTheme = vscode.workspace.getConfiguration("workbench").get<string>("colorTheme") || "Default Dark Modern"
 
 	try {
 		for (let i = vscode.extensions.all.length - 1; i >= 0; i--) {
-			if (currentTheme) {
+			if (themePath) {
 				break
 			}
 			const extension = vscode.extensions.all[i]
 			if (extension.packageJSON?.contributes?.themes?.length > 0) {
 				for (const theme of extension.packageJSON.contributes.themes) {
 					if (theme.label === colorTheme) {
-						const themePath = path.join(extension.extensionPath, theme.path)
-						currentTheme = await fs.readFile(themePath, "utf-8")
+						themePath = path.join(extension.extensionPath, theme.path)
 						break
 					}
 				}
 			}
 		}
 
-		if (currentTheme === undefined && defaultThemes[colorTheme]) {
+		if (themePath === undefined && defaultThemes[colorTheme]) {
 			const filename = `${defaultThemes[colorTheme]}.json`
-			currentTheme = await fs.readFile(
-				path.join(getExtensionUri().fsPath, "integrations", "theme", "default-themes", filename),
-				"utf-8",
-			)
+			themePath = path.join(getExtensionUri().fsPath, "integrations", "theme", "default-themes", filename)
 		}
 
-		// Strip comments from theme
-		let parsed = parseThemeString(currentTheme)
+		if (themePath === undefined) return undefined
+		// The converter rewrites comma-separated scopes, so give it an owned copy.
+		const converted = convertTheme(structuredClone(await loadThemeFile(themePath)))
 
-		if (parsed.include) {
-			const includeThemeString = await fs.readFile(
-				path.join(getExtensionUri().fsPath, "integrations", "theme", "default-themes", parsed.include),
-				"utf-8",
-			)
-			const includeTheme = parseThemeString(includeThemeString)
-			parsed = mergeJson(parsed, includeTheme)
-		}
-
-		const converted = convertTheme(parsed)
-
-		converted.base = (
-			["vs", "hc-black"].includes(converted.base)
-				? converted.base
-				: colorTheme.includes("Light")
-					? "vs"
-					: "vs-dark"
-		) as any
+		converted.base = ["vs", "hc-black"].includes(converted.base)
+			? converted.base
+			: colorTheme.includes("Light")
+				? "vs"
+				: "vs-dark"
 
 		return converted
 	} catch (e) {
 		console.log("Error loading color theme: ", e)
 	}
 	return undefined
-}
-
-type JsonObject = { [key: string]: any }
-export function mergeJson(
-	first: JsonObject,
-	second: JsonObject,
-	mergeBehavior?: "merge" | "overwrite",
-	mergeKeys?: { [key: string]: (a: any, b: any) => boolean },
-): any {
-	const copyOfFirst = JSON.parse(JSON.stringify(first))
-
-	try {
-		for (const key in second) {
-			const secondValue = second[key]
-
-			if (!(key in copyOfFirst) || mergeBehavior === "overwrite") {
-				// New value
-				copyOfFirst[key] = secondValue
-				continue
-			}
-
-			const firstValue = copyOfFirst[key]
-			if (Array.isArray(secondValue) && Array.isArray(firstValue)) {
-				// Array
-				if (mergeKeys?.[key]) {
-					// Merge keys are used to determine whether an item form the second object should override one from the first
-					const keptFromFirst: any[] = []
-					firstValue.forEach((item: any) => {
-						if (!secondValue.some((item2: any) => mergeKeys[key](item, item2))) {
-							keptFromFirst.push(item)
-						}
-					})
-					copyOfFirst[key] = [...keptFromFirst, ...secondValue]
-				} else {
-					copyOfFirst[key] = [...firstValue, ...secondValue]
-				}
-			} else if (typeof secondValue === "object" && typeof firstValue === "object") {
-				// Object
-				copyOfFirst[key] = mergeJson(firstValue, secondValue, mergeBehavior)
-			} else {
-				// Other (boolean, number, string)
-				copyOfFirst[key] = secondValue
-			}
-		}
-		return copyOfFirst
-	} catch (e) {
-		console.error("Error merging JSON", e, copyOfFirst, second)
-		return {
-			...copyOfFirst,
-			...second,
-		}
-	}
 }
 
 function getExtensionUri(): vscode.Uri {

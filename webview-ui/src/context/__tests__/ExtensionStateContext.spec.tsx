@@ -20,11 +20,9 @@ import {
 	useShellState,
 	mergeExtensionState,
 } from "../ExtensionStateContext"
-import { useAutoApprovalToggles } from "@/hooks/useAutoApprovalToggles"
 
 const TicketApprovalTestComponent = () => {
-	const { setAlwaysAllowTickets } = useExtensionState()
-	const { alwaysAllowTickets } = useAutoApprovalToggles()
+	const { setAlwaysAllowTickets, alwaysAllowTickets } = useExtensionState()
 	return <button onClick={() => setAlwaysAllowTickets(!alwaysAllowTickets)}>{String(alwaysAllowTickets)}</button>
 }
 

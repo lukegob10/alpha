@@ -156,10 +156,16 @@ export class ReadMcpResourceTool extends BaseTool<"read_mcp_resource"> {
 			const hub = mcpHub(task)
 			const server = connectedServers(hub).find((candidate) => candidate.name === params.server)
 			if (!server) throw new Error(`MCP server "${params.server}" is not connected or enabled`)
+			const assertCurrentServer = () => {
+				signal?.throwIfAborted()
+				if (!connectedServers(hub).includes(server)) {
+					throw new Error(`MCP server "${server.name}" changed during resource read`)
+				}
+			}
 			if (!(await approveResourceRequest(callbacks, server, params.uri))) return
-			signal?.throwIfAborted()
+			assertCurrentServer()
 			const result = await hub.readResource(server.name, params.uri, server.source, signal)
-			signal?.throwIfAborted()
+			assertCurrentServer()
 			const output = JSON.stringify({ ...result, server: server.name, uri: params.uri })
 			callbacks.pushToolResult(output)
 			callbacks.setResultMetadata?.({

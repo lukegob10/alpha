@@ -524,6 +524,81 @@ describe("MCP resource tools", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }))
 	})
 
+	it.each(["replaced", "disabled", "disconnected"] as const)(
+		"rejects a resource server %s while approval is pending",
+		async (change) => {
+			const context = fixture()
+			const approval = deferred<boolean>()
+			const started = deferred<void>()
+			context.callbacks.askApproval.mockImplementation(() => {
+				started.resolve()
+				return approval.promise
+			})
+			const reading = readMcpResourceTool.execute(
+				{ server: "docs", uri: "doc://one" },
+				context.task,
+				context.callbacks,
+			)
+			await started.promise
+			if (change === "replaced") context.servers[0] = server()
+			else if (change === "disabled") context.servers[0].disabled = true
+			else context.servers[0].status = "disconnected"
+			approval.resolve(true)
+			await reading
+			expect(context.readResource).not.toHaveBeenCalled()
+			expect(context.callbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		},
+	)
+
+	it("rejects a resource server replaced while its response is pending", async () => {
+		const context = fixture()
+		const response = deferred<{ contents: Array<{ uri: string; text: string }> }>()
+		const started = deferred<void>()
+		context.readResource.mockImplementation(() => {
+			started.resolve()
+			return response.promise
+		})
+		const reading = readMcpResourceTool.execute(
+			{ server: "docs", uri: "doc://one" },
+			context.task,
+			context.callbacks,
+		)
+		await started.promise
+		context.servers[0] = server()
+		response.resolve({ contents: [{ uri: "doc://one", text: "stale content" }] })
+		await reading
+		expect(context.readResource).toHaveBeenCalledOnce()
+		expect(context.callbacks.pushToolResult).not.toHaveBeenCalled()
+		expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+	})
+
+	it("does not read a resource after approval is declined", async () => {
+		const context = fixture(false)
+		await readMcpResourceTool.execute({ server: "docs", uri: "doc://one" }, context.task, context.callbacks)
+		expect(context.readResource).not.toHaveBeenCalled()
+		expect(context.callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "denied" })
+	})
+
+	it("does not dispatch a resource read cancelled during approval", async () => {
+		const context = fixture()
+		const controller = new AbortController()
+		const reason = new Error("cancelled resource approval")
+		context.callbacks.askApproval.mockImplementation(async () => {
+			controller.abort(reason)
+			return true
+		})
+		await expect(
+			readMcpResourceTool.execute({ server: "docs", uri: "doc://one" }, context.task, {
+				...context.callbacks,
+				signal: controller.signal,
+			}),
+		).rejects.toBe(reason)
+		expect(context.readResource).not.toHaveBeenCalled()
+		expect(context.callbacks.pushToolResult).not.toHaveBeenCalled()
+		expect(context.callbacks.handleError).not.toHaveBeenCalled()
+	})
+
 	it("stops after cancellation during resource listing approval", async () => {
 		const { task, callbacks, listResources } = fixture()
 		const controller = new AbortController()

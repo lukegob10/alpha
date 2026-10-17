@@ -132,15 +132,24 @@ async function runTask(context, job, api, configuration, model, workspaceAddedBy
 			} else {
 				pendingApprovalSince = undefined
 			}
-			if (ask === "completion_result") break
+			if (task?.isCompleted()) break
 			if (ask === "api_req_failed" || ask === "auto_approval_max_req_reached") {
 				throw new Error(`Alpha stopped at ${ask}`)
 			}
 			if (task?.abort) throw new Error("Alpha task was aborted")
 			await sleep(500)
 		}
-		if (task?.taskAsk?.ask !== "completion_result")
-			throw new Error("Alpha task did not reach completion before the deadline")
+		if (!task?.isCompleted()) throw new Error("Alpha task did not reach completion before the deadline")
+		// Canonical completion clears asks before the owned lifecycle finishes its durable writes.
+		await task.waitForTermination()
+		if (
+			!task.isCompleted() ||
+			!task.clineMessages.some(
+				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
+			)
+		) {
+			throw new Error("Alpha task completed without a final response")
+		}
 		outcome.messageCount = task.clineMessages.length
 		outcome.checkpoints = {
 			requested: true,
@@ -166,7 +175,6 @@ async function runTask(context, job, api, configuration, model, workspaceAddedBy
 		const beganNew = performance.now()
 		await vscode.commands.executeCommand("alpha.plusButtonClicked")
 		const newChatMs = performance.now() - beganNew
-		await task.waitForTermination()
 		const beganCold = performance.now()
 		await provider.showTaskWithId(taskId)
 		const coldReopenMs = performance.now() - beganCold
@@ -185,7 +193,7 @@ async function runTask(context, job, api, configuration, model, workspaceAddedBy
 		await events("failed", { error: outcome.error })
 	} finally {
 		const activeTask = taskId ? provider.getLiveTask(taskId) : undefined
-		if (activeTask && activeTask.taskAsk?.ask !== "completion_result") {
+		if (activeTask && !activeTask.isCompleted()) {
 			try {
 				await activeTask.abortTask()
 			} catch (error) {

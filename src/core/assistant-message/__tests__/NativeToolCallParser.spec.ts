@@ -43,6 +43,39 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		it.each(["malformed-json", "invalid-schema", "dynamic-mcp"] as const)(
+			"keeps private arguments out of parse failure diagnostics: %s",
+			(scenario) => {
+				const canary = "CANARYv7"
+				const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				try {
+					const result =
+						scenario === "dynamic-mcp"
+							? NativeToolCallParser.parseDynamicMcpTool({
+									id: "private-mcp-call",
+									name: "mcp--private-server--private-tool",
+									arguments: canary,
+								})
+							: NativeToolCallParser.parseToolCall({
+									id: "private-native-call",
+									name: "exec_command",
+									arguments:
+										scenario === "malformed-json" ? canary : JSON.stringify({ cmd: { canary } }),
+								})
+					expect(result).toBeNull()
+					expect(errors).toHaveBeenCalled()
+					expect(
+						errors.mock.calls
+							.flat()
+							.map((value) => (value instanceof Error ? value.message : JSON.stringify(value)))
+							.join("\n"),
+					).not.toContain(canary)
+				} finally {
+					errors.mockRestore()
+				}
+			},
+		)
+
 		it.each([
 			{ name: "read_ticket", args: { id: "ticket-123" } },
 			{

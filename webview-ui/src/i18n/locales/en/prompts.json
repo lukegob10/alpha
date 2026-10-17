@@ -3,6 +3,7 @@
 	"done": "Done",
 	"modes": {
 		"title": "Modes",
+		"planWorkflowDescription": "Plan uses Alpha's built-in planning workflow. Add shared preferences in Custom Instructions for All Modes below.",
 		"createNewMode": "Create new mode",
 		"importMode": "Import Mode",
 		"editModesConfig": "Edit modes configuration",

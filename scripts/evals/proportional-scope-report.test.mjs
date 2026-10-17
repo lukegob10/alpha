@@ -28,6 +28,7 @@ const event = (sequence, type, payload = {}) => ({
 
 test("classifies current tools while retaining historical command evidence", () => {
 	const names = [
+		"exec_command",
 		"shell",
 		"execute_command",
 		"manage_command",
@@ -43,8 +44,8 @@ test("classifies current tools while retaining historical command evidence", () 
 		"close_agent",
 	]
 	const report = buildReport(input({ trace: names.map((name, index) => event(index + 1, "tool_result", { name })) }))
-	assert.equal(report.observedTotal.commandCount.value, 2)
-	assert.equal(report.observedTotal.toolCategories.terminal.value, 4)
+	assert.equal(report.observedTotal.commandCount.value, 3)
+	assert.equal(report.observedTotal.toolCategories.terminal.value, 5)
 	assert.equal(report.observedTotal.toolCategories.mutation.value, 3)
 	assert.equal(report.observedTotal.toolCategories.delegation.value, 6)
 	assert.equal(report.observedTotal.toolCategories.other.value, 0)

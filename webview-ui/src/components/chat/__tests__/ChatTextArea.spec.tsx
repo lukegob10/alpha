@@ -41,6 +41,8 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 
 const mockPostMessage = vscode.postMessage as import("vitest").Mock
 const mockConvertToMentionPath = pathMentions.convertToMentionPath as import("vitest").Mock
+const getEnhancementRequest = () =>
+	mockPostMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt").at(-1)![0]
 
 const getEnhancePromptButton = () => {
 	const existing = screen.queryByRole("menuitem", { name: "Improve prompt" })
@@ -219,7 +221,7 @@ describe("ChatTextArea", () => {
 			)
 			const composer = container.querySelector(".chat-composer")!
 			expect(composer).toContainElement(screen.getByRole("button", { name: "Context usage" }))
-			expect(composer).toContainElement(screen.getByAltText("Thumbnail 1"))
+			expect(composer).toContainElement(screen.getByAltText("Attachment 1"))
 			expect(screen.queryByRole("button", { name: "Add images to message" })).not.toBeInTheDocument()
 			const indexing = screen.getByRole("button", { name: "Index ready" })
 			expect(container.querySelector(".chat-composer-utility")).toContainElement(indexing)
@@ -287,7 +289,13 @@ describe("ChatTextArea", () => {
 			view.rerender(<ChatTextArea {...defaultProps} inputValue="Original prompt" isVisible={false} />)
 			act(() => {
 				window.dispatchEvent(
-					new MessageEvent("message", { data: { type: "enhancedPrompt", text: "Improved prompt" } }),
+					new MessageEvent("message", {
+						data: {
+							type: "enhancedPrompt",
+							requestId: getEnhancementRequest().requestId,
+							text: "Improved prompt",
+						},
+					}),
 				)
 			})
 			expect(defaultProps.setInputValue).toHaveBeenCalledWith("Improved prompt")
@@ -613,6 +621,7 @@ describe("ChatTextArea", () => {
 
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "enhancePrompt",
+				requestId: expect.any(String),
 				text: "Test prompt",
 			})
 		})
@@ -712,7 +721,7 @@ describe("ChatTextArea", () => {
 
 			const textarea = container.querySelector("textarea")!
 			expect(textarea).toHaveValue(draft)
-			expect(screen.getByAltText("Thumbnail 1")).toHaveAttribute("src", selectedImages[0])
+			expect(screen.getByAltText("Attachment 1")).toHaveAttribute("src", selectedImages[0])
 			expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument()
 
 			const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
@@ -721,11 +730,119 @@ describe("ChatTextArea", () => {
 			expect(enter.defaultPrevented).toBe(true)
 			expect(onSend).toHaveBeenCalledTimes(1)
 			expect(textarea).toHaveValue(draft)
-			expect(screen.getByAltText("Thumbnail 1")).toBeInTheDocument()
+			expect(screen.getByAltText("Attachment 1")).toBeInTheDocument()
 		})
 	})
 
 	describe("enhanced prompt response", () => {
+		it.each(["Prompt for A", "Keep B's draft"])(
+			"keeps a delayed enhancement from replacing another chat's draft (%s)",
+			(otherDraft) => {
+				const setInputValue = vi.fn()
+				Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+				const view = render(
+					<ChatTextArea
+						{...defaultProps}
+						conversationClineMessages={[]}
+						conversationTaskId="task-a"
+						inputValue="Prompt for A"
+						setInputValue={setInputValue}
+					/>,
+				)
+				fireEvent.click(getEnhancePromptButton())
+				const request = getEnhancementRequest()
+				expect(request.taskId).toBe("task-a")
+				view.rerender(
+					<ChatTextArea
+						{...defaultProps}
+						conversationClineMessages={[]}
+						conversationTaskId="task-b"
+						inputValue={otherDraft}
+						setInputValue={setInputValue}
+					/>,
+				)
+				act(() => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "enhancedPrompt", requestId: request.requestId, text: "Enhanced A" },
+						}),
+					)
+				})
+				expect(setInputValue).not.toHaveBeenCalledWith("Enhanced A")
+				expect(screen.getByRole("textbox")).toHaveValue(otherDraft)
+			},
+		)
+
+		it("keeps a delayed enhancement from replacing a newer edit to the same draft", () => {
+			const setInputValue = vi.fn()
+			Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+			const view = render(
+				<ChatTextArea {...defaultProps} inputValue="Original draft" setInputValue={setInputValue} />,
+			)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			view.rerender(<ChatTextArea {...defaultProps} inputValue="New draft" setInputValue={setInputValue} />)
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "enhancedPrompt", requestId: request.requestId, text: "Enhanced original" },
+					}),
+				)
+			})
+			expect(setInputValue).not.toHaveBeenCalledWith("Enhanced original")
+		})
+
+		it("ignores out-of-order and ID-less replies while a newer enhancement remains pending", () => {
+			const setInputValue = vi.fn()
+			Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+			const view = render(
+				<ChatTextArea {...defaultProps} inputValue="Original draft" setInputValue={setInputValue} />,
+			)
+			fireEvent.click(getEnhancePromptButton())
+			const originalRequest = getEnhancementRequest()
+			view.rerender(<ChatTextArea {...defaultProps} inputValue="Updated draft" setInputValue={setInputValue} />)
+			fireEvent.click(getEnhancePromptButton())
+			const latestRequest = getEnhancementRequest()
+			expect(latestRequest.requestId).not.toBe(originalRequest.requestId)
+			act(() => {
+				for (const requestId of [originalRequest.requestId, undefined]) {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "enhancedPrompt", requestId, text: "Stale response" },
+						}),
+					)
+				}
+			})
+			expect(setInputValue).not.toHaveBeenCalledWith("Stale response")
+			expect(
+				screen.getByRole("button", { name: "Draft actions" }).querySelector(".animate-spin"),
+			).toBeInTheDocument()
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "enhancedPrompt", requestId: latestRequest.requestId, text: "Enhanced latest" },
+					}),
+				)
+			})
+			expect(setInputValue).toHaveBeenCalledWith("Enhanced latest")
+			expect(screen.getByRole("button", { name: "Draft actions" }).querySelector(".animate-spin")).toBeNull()
+		})
+
+		it("preserves the draft and permits retry after its own enhancement fails", () => {
+			render(<ChatTextArea {...defaultProps} inputValue="Keep my draft" />)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "enhancedPrompt", requestId: request.requestId } }),
+				)
+			})
+			expect(screen.getByRole("textbox")).toHaveValue("Keep my draft")
+			expect(screen.getByRole("button", { name: "Draft actions" }).querySelector(".animate-spin")).toBeNull()
+			fireEvent.click(getEnhancePromptButton())
+			expect(getEnhancementRequest().requestId).not.toBe(request.requestId)
+		})
+
 		it("should update input value using native browser methods when receiving enhanced prompt", () => {
 			const setInputValue = vi.fn()
 
@@ -754,6 +871,7 @@ describe("ChatTextArea", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "enhancedPrompt",
+						requestId: getEnhancementRequest().requestId,
 						text: "Enhanced test prompt",
 					},
 				}),
@@ -782,12 +900,32 @@ describe("ChatTextArea", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "enhancedPrompt",
+						requestId: getEnhancementRequest().requestId,
 						text: "Enhanced test prompt",
 					},
 				}),
 			)
 
 			// Verify fallback to setInputValue was used
+			expect(setInputValue).toHaveBeenCalledWith("Enhanced test prompt")
+		})
+
+		it("falls back to the controlled draft when native insertion declines the command", () => {
+			const setInputValue = vi.fn()
+			Object.defineProperty(document, "execCommand", { value: vi.fn().mockReturnValue(false), writable: true })
+			render(<ChatTextArea {...defaultProps} inputValue="Original prompt" setInputValue={setInputValue} />)
+			fireEvent.click(getEnhancePromptButton())
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "enhancedPrompt",
+							requestId: getEnhancementRequest().requestId,
+							text: "Enhanced test prompt",
+						},
+					}),
+				)
+			})
 			expect(setInputValue).toHaveBeenCalledWith("Enhanced test prompt")
 		})
 

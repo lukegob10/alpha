@@ -48,7 +48,6 @@ vi.mock("../common/TelemetryBanner", nullDefaultModule)
 vi.mock("../common/VersionIndicator", nullDefaultModule)
 vi.mock("../history/HistoryPreview", nullDefaultModule)
 vi.mock("@src/components/welcome/AlphaHero", nullDefaultModule)
-vi.mock("@src/components/welcome/AlphaTips", nullDefaultModule)
 vi.mock("../Announcement", nullDefaultModule)
 vi.mock("@src/components/agents/ManagedAgentTree", () => ({ ManagedAgentTree: () => null }))
 vi.mock("../TaskHeader", () => ({
@@ -58,7 +57,6 @@ vi.mock("../TaskHeader", () => ({
 		</button>
 	),
 }))
-vi.mock("../common/DismissibleUpsell", nullDefaultModule)
 vi.mock("../CheckpointWarning", () => ({ CheckpointWarning: () => null }))
 vi.mock("../QueuedMessages", () => ({ QueuedMessages: () => null }))
 vi.mock("../WorktreeSelector", () => ({ WorktreeSelector: () => null }))

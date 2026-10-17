@@ -1,14 +1,14 @@
 # Provider reduction
 
 Alpha supports four chat/model connections: GCP Vertex AI (`vertex`), VS Code LM API
-(`vscode-lm`), Stellar (`stellar`), and OpenAI Compatible (`openai`). GCP Vertex AI is
-the only embedding provider. Model vendors exposed through these connections do
-not create additional Alpha providers.
+(`vscode-lm`), Stellar (`stellar`), and OpenAI Compatible (`openai`). Indexing separately
+supports GCP Vertex AI (`vertex`) and Gemini Developer API (`gemini`). Model vendors
+exposed through chat connections do not create additional Alpha chat providers.
 
-The reduction removes dedicated Anthropic, Amazon Bedrock, Baseten, DeepSeek,
+The chat-provider reduction removes dedicated Anthropic, Amazon Bedrock, Baseten, DeepSeek,
 Fireworks, Gemini API/CLI, LiteLLM, LM Studio, MiniMax, Mistral, Moonshot, Ollama,
 OpenAI Codex, OpenAI Native, OpenRouter, Poe, Qwen Code, Requesty, SambaNova,
-Unbound, Vercel AI Gateway, xAI, and Z AI connections. Their authentication,
+Unbound, Vercel AI Gateway, xAI, and Z AI connections. Their chat-specific authentication,
 catalogs, model fetchers, UI controls, and exclusive tests are removed. The
 OpenRouter-only image-generation experiment is retired as well.
 
@@ -33,7 +33,7 @@ configuration, preventing old vectors from being treated as Vertex vectors.
 Task creation and history resume validate the provider before changing the active
 task lifecycle. Replacing a running task's API configuration constructs the new
 handler before committing the change, so an unsupported saved setup leaves the
-current handler intact. The exact VS Code 1.122.1 smoke gate checks that every
+current handler intact. The exact VS Code 1.125.0 smoke gate checks that every
 retired provider and an unknown provider reject execution while the extension
 stays active and can return to a supported connection.
 
@@ -49,15 +49,15 @@ Credentials are injected at execution rather than written into campaign settings
 Scripted and VS Code LM fixture harnesses remain available without live credentials.
 
 Regression coverage checks the public registry and factory, rejects retired and
-unknown IDs, preserves imported profile data, and verifies Vertex-only indexing
-reconfiguration. Invalid embedding settings retire the active services before
+unknown IDs, preserves imported profile data, and verifies Vertex and Gemini indexing
+configuration. Invalid embedding settings retire the active services before
 reporting an error; explicitly switching to Vertex resets the old model dimension.
 Constructing an unconfigured Vertex chat handler does not resolve Google ADC until
 the first request. Claude-on-Vertex requests forward the task cancellation signal.
 
 Use `pnpm test:core:confidence` for the combined exact-host and deterministic
 managed-agent gate. It runs the smoke, core-loop, completion-idle, and managed-agent
-acceptance suites on VS Code 1.122.1, then supplies the fresh completion capture to
+acceptance suites on VS Code 1.125.0, then supplies the fresh completion capture to
 certification. Standalone certification requires that capture via
 `ALPHA_COMPLETION_IDLE_EVIDENCE`; without it, the optional replay test is skipped
 and strict certification correctly refuses to report a pass. These scripted gates

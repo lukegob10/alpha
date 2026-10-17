@@ -103,10 +103,6 @@ export interface TaskToolSurface {
 	readonly isCallable: (name: string) => boolean
 }
 
-/** Backwards-friendly result/input names used by request-context builders. */
-export type TaskToolSurfaceResult = TaskToolSurface
-export type TaskToolSurfaceCaptureInput = TaskToolSurfaceInput
-
 interface PolicySource {
 	visibleTools: readonly string[]
 	allowedTools: readonly string[]
@@ -518,7 +514,5 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 	return Object.freeze(surface)
 }
 
-/** Backwards-friendly aliases for callers that describe capture as a build. */
-export const captureTaskToolSurface = createTaskToolSurface
+/** Build-tools captures the synchronous surface after its asynchronous catalog lookup. */
 export const buildTaskToolSurface = createTaskToolSurface
-export const createTaskToolSurfaceSnapshot = createTaskToolSurface

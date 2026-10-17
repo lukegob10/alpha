@@ -1,17 +1,10 @@
 export {
 	AgentLifecycleReducerError,
 	createAgentLifecycleSnapshot,
-	createInitialAgentLifecycleSnapshot,
-	createInitialLifecycleSnapshot,
-	createLifecycleSnapshot,
 	fingerprintAgentLifecycleEvent,
 	isAgentLifecycleReducerError,
-	reduceAgentLifecycle,
 	reduceAgentLifecycleEvent,
-	reduceLifecycleEvent,
-	safeReduceAgentLifecycleEvent,
 	tryReduceAgentLifecycleEvent,
-	applyAgentLifecycleEvent,
 } from "./reducer.js"
 
 export type {

@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { normalizeVitestEvidence, testEvidenceVerdict } from "../harness/execution-evidence.mjs"
 
 const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), "..", "..")
@@ -208,7 +209,10 @@ function runSelfCheck() {
 function runVitestSummarySelfCheck() {
 	const reportDirectory = mkdtempSync(path.join(tmpdir(), "alpha-managed-agent-certification-self-check-"))
 	const reportPath = path.join(reportDirectory, "vitest.json")
+	const track = { packageDir: "scripts/certification", files: ["self-check.spec.ts"], minimumTestCount: 1 }
+	const testPath = path.join(repositoryRoot, track.packageDir, track.files[0])
 	const report = {
+		success: false,
 		numTotalTestSuites: 3,
 		numPassedTestSuites: 1,
 		numFailedTestSuites: 1,
@@ -220,6 +224,7 @@ function runVitestSummarySelfCheck() {
 		numTodoTests: 1,
 		testResults: [
 			{
+				name: testPath,
 				assertionResults: [
 					{ fullName: "passed assertion", status: "passed" },
 					{ fullName: "failed assertion", status: "failed" },
@@ -239,6 +244,7 @@ function runVitestSummarySelfCheck() {
 				tests: { total: 5, passed: 1, failed: 1, skipped: 2, todo: 1 },
 				failedTests: ["failed assertion"],
 				skippedTests: ["skipped assertion", "legacy pending assertion", "todo assertion"],
+				receipt: normalizeVitestEvidence(report, repositoryRoot),
 			},
 			"Vitest diagnostics must retain skipped, legacy pending and todo names without changing counts",
 		)
@@ -246,6 +252,96 @@ function runVitestSummarySelfCheck() {
 		assert.deepStrictEqual(readVitestSummary("self-check", reportPath), {
 			error: "self-check emitted an invalid Vitest JSON count for numPendingTests",
 		})
+		writeFileSync(reportPath, JSON.stringify({ ...report, testResults: [] }))
+		assert.match(
+			readVitestSummary("self-check", reportPath).error,
+			/^self-check emitted invalid Vitest execution evidence:/,
+			"Claimed passing totals without executed test files must fail closed",
+		)
+		const passingReport = {
+			...report,
+			success: true,
+			numTotalTestSuites: 1,
+			numPassedTestSuites: 1,
+			numFailedTestSuites: 0,
+			numPendingTestSuites: 0,
+			numTotalTests: 1,
+			numPassedTests: 1,
+			numFailedTests: 0,
+			numPendingTests: 0,
+			numTodoTests: 0,
+			testResults: [{ name: testPath, assertionResults: [{ fullName: "passed assertion", status: "passed" }] }],
+		}
+		const invalidReports = [
+			{ ...passingReport, numTotalTests: 1000, numPassedTests: 1000 },
+			{ ...passingReport, success: undefined },
+			{
+				...passingReport,
+				numTotalTests: 2,
+				numPassedTests: 2,
+				testResults: [...passingReport.testResults, ...passingReport.testResults],
+			},
+		]
+		for (const invalidReport of invalidReports) {
+			writeFileSync(reportPath, JSON.stringify(invalidReport))
+			assert.match(
+				readVitestSummary("self-check", reportPath).error,
+				/^self-check emitted invalid Vitest execution evidence:/,
+			)
+		}
+		const skippedReport = {
+			...passingReport,
+			numTotalTests: 2,
+			numPendingTests: 1,
+			testResults: [
+				{
+					name: testPath,
+					assertionResults: [
+						...passingReport.testResults[0].assertionResults,
+						{ fullName: "skipped assertion", status: "skipped" },
+					],
+				},
+			],
+		}
+		const admissionCases = [
+			{ report: passingReport },
+			{ report: { ...passingReport, success: false }, reason: /test_execution_failed/ },
+			{ report, reason: /test_execution_failed/ },
+			{ report: skippedReport, reason: /skipped_hard_gate/ },
+			{ report: skippedReport, strict: false },
+			{ report: passingReport, track: { ...track, minimumTestCount: 2 }, reason: /regression floor/ },
+			{
+				report: passingReport,
+				track: { ...track, files: [...track.files, "missing.spec.ts"] },
+				reason: /declared file inventory/,
+			},
+			{
+				report: {
+					...passingReport,
+					testResults: [
+						{ ...passingReport.testResults[0], name: path.join(path.dirname(testPath), "other.spec.ts") },
+					],
+				},
+				reason: /declared file inventory/,
+			},
+			{
+				report: {
+					...passingReport,
+					numTotalTests: 0,
+					numPassedTests: 0,
+					testResults: [{ name: testPath, assertionResults: [] }],
+				},
+				reason: /no_tests_executed/,
+			},
+		]
+		for (const admission of admissionCases) {
+			writeFileSync(reportPath, JSON.stringify(admission.report))
+			const summary = readVitestSummary("self-check", reportPath)
+			assert.equal(summary.error, undefined)
+			const failures = trackEvidenceFailures(admission.track ?? track, summary, admission.strict !== false)
+			if (admission.reason) assert.ok(failures.some((failure) => admission.reason.test(failure)))
+			else assert.deepStrictEqual(failures, [])
+		}
 		writeFileSync(reportPath, "{")
 		assert.match(
 			readVitestSummary("self-check", reportPath).error,
@@ -256,7 +352,7 @@ function runVitestSummarySelfCheck() {
 			readVitestSummary("self-check", reportPath).error,
 			/^self-check did not emit readable Vitest JSON:/,
 		)
-		return 4
+		return 5 + invalidReports.length + admissionCases.length
 	} finally {
 		removeReportDirectory(reportDirectory)
 	}
@@ -649,16 +745,7 @@ function runTracks(resolvedTracks, strictMode) {
 				})
 				continue
 			}
-			const skipped = summary.tests.skipped + summary.tests.todo
-			const unexpectedSkips = strictMode && skipped > 0
-			const belowBaseline = summary.tests.total < track.minimumTestCount
-			const failures = []
-			if (unexpectedSkips) failures.push(`${skipped} skipped/todo tests are not allowed in strict mode`)
-			if (belowBaseline) {
-				failures.push(
-					`test count ${summary.tests.total} is below the declared regression floor ${track.minimumTestCount}`,
-				)
-			}
+			const failures = trackEvidenceFailures(track, summary, strictMode)
 			const status = result.status === 0 && failures.length === 0 ? "PASS" : "FAIL"
 			const detail = failures.length > 0 ? failures.join("; ") : undefined
 			console.log(
@@ -707,13 +794,16 @@ function readVitestSummary(trackId, reportPath) {
 			return { error: `${trackId} emitted an invalid Vitest JSON count for ${field}` }
 		}
 	}
+	let receipt
+	try {
+		receipt = normalizeVitestEvidence(report, repositoryRoot)
+	} catch (error) {
+		return { error: `${trackId} emitted invalid Vitest execution evidence: ${error.message}` }
+	}
 
-	const assertions = Array.isArray(report.testResults)
-		? report.testResults.flatMap((testResult) =>
-				Array.isArray(testResult.assertionResults) ? testResult.assertionResults : [],
-			)
-		: []
+	const assertions = report.testResults.flatMap((testResult) => testResult.assertionResults)
 	return {
+		receipt,
 		suites: {
 			total: report.numTotalTestSuites,
 			passed: report.numPassedTestSuites,
@@ -737,6 +827,23 @@ function readVitestSummary(trackId, reportPath) {
 			)
 			.map((assertion) => assertion.fullName),
 	}
+}
+
+function trackEvidenceFailures(track, summary, strictMode) {
+	const failures = []
+	const verdict = testEvidenceVerdict(summary.receipt, strictMode)
+	if (verdict.status !== "passed") failures.push(`test execution evidence failed: ${verdict.reason}`)
+	const expected = track.files.map((file) => normalizePath(path.join(track.packageDir, file))).sort()
+	const observed = summary.receipt.files.map((file) => file.path).sort()
+	if (JSON.stringify(expected) !== JSON.stringify(observed)) {
+		failures.push("test execution did not match the declared file inventory")
+	}
+	if (summary.tests.total < track.minimumTestCount) {
+		failures.push(
+			`test count ${summary.tests.total} is below the declared regression floor ${track.minimumTestCount}`,
+		)
+	}
+	return failures
 }
 
 function formatTestCounts(counts) {

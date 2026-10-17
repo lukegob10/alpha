@@ -58,7 +58,7 @@ Parse JSONL records into `trace` as an array. `buildReport` / `traceFromPersiste
 
 Allowlisted report fields: git SHA, dirty flag, model id, reasoning preference, cache warm/cold, declared sample count, `measurementKind`, `traceCoverage`, provider requests and retries, tool results by allowlisted name, distinct search tools (`codebase_search` / `search_files` / `list_files` / `shell`), first tool name, skill/ticket/spawn/todo/`attempt_completion` counts, completion rejection counts and allowlisted reason codes, adapter reasoning tokens **or** a separately labeled local estimate, wall time to first grounded answer, time to durable completion, and backgrounded commands still running at first answer.
 
-`shell` and historical `execute_command` count as the `shell` search tool. Command text is never inspected, so a Select-String-like search is visible only as `shell`. Unknown tool names become `other`.
+`exec_command`, `shell`, and historical `execute_command` count as the `shell` search tool. `update_plan` uses the existing `update_todo_list` report bucket and increments the todo workflow counter. Command text is never inspected, so a Select-String-like search is visible only as `shell`. Unknown tool names become `other`.
 
 ## Predeclared acceptance bar
 

@@ -118,6 +118,7 @@ RUN mkdir -p \
 COPY ./package.json                            ./
 COPY ./pnpm-lock.yaml                          ./
 COPY ./pnpm-workspace.yaml                     ./
+COPY ./patches                                 ./patches
 COPY ./scripts/bootstrap.mjs                   ./scripts/
 COPY ./packages/build/package.json             ./packages/build/
 COPY ./packages/config-eslint/package.json     ./packages/config-eslint/

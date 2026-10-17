@@ -39,13 +39,6 @@ function harness() {
 		providerRef: { deref: () => undefined },
 		getTaskMode: vi.fn(async () => "code"),
 		mergePendingToolResultsIntoUserContent: vi.fn((content: Content) => content),
-		getPendingSpawnedSubagentResults: vi.fn(() => []),
-		buildUserContentWithPendingSpawnedSubagentResults: vi.fn((content: Content) => ({
-			content,
-			pendingResults: [],
-		})),
-		retryPendingAutomaticResultClaimSettlement: vi.fn(async () => undefined),
-		markSpawnedSubagentResultsDelivered: vi.fn(async () => undefined),
 		deliverAgentMessages: vi.fn(async () => undefined),
 		waitForPendingSubagentChangeSetReviews: vi.fn(async () => undefined),
 		maybeWaitForProviderRateLimit: vi.fn(async () => undefined),

@@ -166,7 +166,7 @@ test("a focused hard gate requires the selected source inventory rather than an 
 	assert.deepEqual(expectedInventories[0], ["src/core/agent/__tests__/AgentTurnEngine.spec.ts"])
 	value.steps[0].evidence = { status: "passed", receipt: execution(expectedInventories[0][0]) }
 	assert.equal(admitHarnessReport(value, { ...context, expectedInventories }).state, "executed-pass")
-	value.steps[0].evidence.receipt.files[0].path = "src/services/ripgrep/__tests__/execution.spec.ts"
+	value.steps[0].evidence.receipt.files[0].path = "src/services/ripgrep/__tests__/index.spec.ts"
 	assert.equal(admitHarnessReport(value, { ...context, expectedInventories }).reason, "incomplete_test_inventory")
 })
 

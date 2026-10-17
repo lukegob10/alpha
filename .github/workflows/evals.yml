@@ -12,7 +12,7 @@ env:
 jobs:
     evals:
         # Run if triggered manually or if PR has 'evals' label.
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.label.name, 'evals')
+        if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'evals'
         runs-on: blacksmith-16vcpu-ubuntu-2404
         timeout-minutes: 45
 

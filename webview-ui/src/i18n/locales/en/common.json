@@ -63,6 +63,9 @@
 		}
 	},
 	"image": {
+		"attachment": "Attachment {{number}}",
+		"openAttachment": "Open attachment {{number}}",
+		"removeAttachment": "Remove attachment {{number}}",
 		"tabs": {
 			"view": "Image"
 		},

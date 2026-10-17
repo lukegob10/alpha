@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
 	findBenchmarkTask: vi.fn(),
 	submitGraderRequest: vi.fn(),
 	serveGraderRequest: vi.fn(),
+	closeOwnedLogger: vi.fn(),
 }))
 
 vi.mock("../../benchmark/index", () => ({
@@ -76,6 +77,14 @@ vi.mock("../redis", () => ({
 }))
 vi.mock("../runUnitTest", () => ({ runUnitTest: mocks.runUnitTest }))
 vi.mock("../runTaskInVscode", () => ({ runTaskInVscode: mocks.runTaskInVscode }))
+vi.mock("../utils", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../utils")>()),
+	Logger: class {
+		path = "/tmp/owned-test-evidence.log"
+		info() {}
+		close = mocks.closeOwnedLogger
+	},
+}))
 
 import { normalizeApiConversationTrace, processTask, processTaskInContainer } from "../processTask"
 import type { Logger } from "../utils"
@@ -412,6 +421,25 @@ describe("processTask lifecycle integration", () => {
 		)
 		expect(mocks.settleTrialAfterRetries).toHaveBeenCalledWith(task.id)
 		expect(mocks.deregisterRunner).toHaveBeenCalledOnce()
+		expect(logger.close).not.toHaveBeenCalled()
+	})
+
+	it.each(["completed", "execution_error", "cleanup_error"])("closes an owned logger after %s", async (outcome) => {
+		if (outcome === "execution_error") mocks.runTaskInVscode.mockRejectedValueOnce(new Error("execution failed"))
+		if (outcome === "cleanup_error") mocks.deregisterRunner.mockRejectedValueOnce(new Error("cleanup failed"))
+		const pending = processTask({ taskId: task.id, jobToken: null, processRunner })
+		if (outcome === "completed") await expect(pending).resolves.toBeUndefined()
+		else
+			await expect(pending).rejects.toThrow(outcome === "execution_error" ? "execution failed" : "cleanup failed")
+		expect(mocks.closeOwnedLogger).toHaveBeenCalledOnce()
+	})
+
+	it("preserves the caller's logger when execution fails", async () => {
+		mocks.runTaskInVscode.mockRejectedValueOnce(new Error("execution failed"))
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+			"execution failed",
+		)
+		expect(logger.close).not.toHaveBeenCalled()
 	})
 
 	it("runs benchmark agents and graders against one disposable workspace", async () => {
@@ -549,34 +577,37 @@ describe("processTask lifecycle integration", () => {
 })
 
 describe("Persisted conversation trace fallback", () => {
-	it.each(["shell", "execute_command"])("classifies %s completion as a verification result", (tool) => {
-		expect(
-			normalizeApiConversationTrace([
-				{
-					ts: 1_750_000_000_000,
-					content: [{ type: "tool_use", id: "read", name: "read_file" }],
-				},
-				{
-					ts: 1_750_000_000_001,
-					content: [{ type: "tool_result", tool_use_id: "read", content: "source" }],
-				},
-				{
-					ts: 1_750_000_000_002,
-					content: [{ type: "tool_use", id: "test", name: tool }],
-				},
-				{
-					ts: 1_750_000_000_003,
-					content: [{ type: "tool_result", tool_use_id: "test", content: "Exit code: 0" }],
-				},
-			]),
-		).toEqual([
-			expect.objectContaining({ type: "agent.turn.tool_call", payload: { tool: "read_file" } }),
-			expect.objectContaining({ type: "agent.turn.tool_result", payload: { tool: "read_file" } }),
-			expect.objectContaining({ type: "agent.turn.verification_started", payload: { tool } }),
-			expect.objectContaining({
-				type: "agent.turn.verification_result",
-				payload: { tool, ok: true },
-			}),
-		])
-	})
+	it.each(["exec_command", "shell", "execute_command"])(
+		"classifies %s completion as a verification result",
+		(tool) => {
+			expect(
+				normalizeApiConversationTrace([
+					{
+						ts: 1_750_000_000_000,
+						content: [{ type: "tool_use", id: "read", name: "read_file" }],
+					},
+					{
+						ts: 1_750_000_000_001,
+						content: [{ type: "tool_result", tool_use_id: "read", content: "source" }],
+					},
+					{
+						ts: 1_750_000_000_002,
+						content: [{ type: "tool_use", id: "test", name: tool }],
+					},
+					{
+						ts: 1_750_000_000_003,
+						content: [{ type: "tool_result", tool_use_id: "test", content: "Exit code: 0" }],
+					},
+				]),
+			).toEqual([
+				expect.objectContaining({ type: "agent.turn.tool_call", payload: { tool: "read_file" } }),
+				expect.objectContaining({ type: "agent.turn.tool_result", payload: { tool: "read_file" } }),
+				expect.objectContaining({ type: "agent.turn.verification_started", payload: { tool } }),
+				expect.objectContaining({
+					type: "agent.turn.verification_result",
+					payload: { tool, ok: true },
+				}),
+			])
+		},
+	)
 })

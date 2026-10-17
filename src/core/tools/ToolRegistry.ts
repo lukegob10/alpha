@@ -572,9 +572,6 @@ export function canonicalizeToolName(name: string): string {
 	return current
 }
 
-/** Backwards-friendly spelling for callers that use “canonical name”. */
-export const canonicalToolName = canonicalizeToolName
-
 function canonicalizeSchema(schema: OpenAI.Chat.ChatCompletionTool): OpenAI.Chat.ChatCompletionTool {
 	if (schema.type !== "function") return schema
 	const canonical = canonicalizeToolName(schema.function.name)

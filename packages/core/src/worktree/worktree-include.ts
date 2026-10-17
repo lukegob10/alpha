@@ -409,8 +409,9 @@ export class WorktreeIncludeService {
 				// Check if this path matches both patterns
 				// For .worktreeinclude, we want items that are "ignored" (matched)
 				// For .gitignore, we want items that are "ignored" (matched)
-				const matchesWorktreeInclude = includeMatcher.ignores(relativePath)
-				const matchesGitignore = gitignoreMatcher.ignores(relativePath)
+				const matchPath = entry.isDirectory() ? `${relativePath}/` : relativePath
+				const matchesWorktreeInclude = includeMatcher.ignores(matchPath)
+				const matchesGitignore = gitignoreMatcher.ignores(matchPath)
 
 				if (matchesWorktreeInclude && matchesGitignore) {
 					matchingItems.push(relativePath)

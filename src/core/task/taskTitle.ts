@@ -1,5 +1,6 @@
 import type { ApiHandler } from "../../api"
 import { taskGeneratedTitleSchema } from "@alpha-code/types"
+import { createLinkedAbortController, iterateApiStreamWithAbort, raceApiStreamAbort } from "../../api/transform/stream"
 
 const MAX_TITLE_CHARACTERS = 36
 const MAX_TITLE_REQUEST_BYTES = 960
@@ -83,11 +84,14 @@ export async function generateTaskTitle(
 	taskSignal: AbortSignal,
 ): Promise<string | undefined> {
 	const deadline = Date.now() + TITLE_REQUEST_TIMEOUT_MS
-	const signal = AbortSignal.any([taskSignal, AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS)])
+	const control = createLinkedAbortController({ signal: taskSignal, deadline })
+	const signal = control.signal
 	const requestId = `${taskId}:title`
 	try {
-		if (signal.aborted) return undefined
-		await handler.prepareModel?.({ signal, deadline, requestId })
+		// Optional background work must be able to stop with the task, including transport setup.
+		if (!handler.streamCapabilities?.cancellation || signal.aborted) return undefined
+		if (handler.prepareModel)
+			await raceApiStreamAbort(handler.prepareModel({ signal, deadline, requestId }), signal)
 		if (signal.aborted) return undefined
 		try {
 			handler.setReasoningOptions?.({ enableReasoningEffort: true, reasoningEffort: "low" })
@@ -97,7 +101,7 @@ export async function generateTaskTitle(
 
 		let response = ""
 		let outcome: "completed" | "failed" | "incomplete" | "cancelled" | undefined
-		for await (const chunk of handler.createMessage(
+		const stream = handler.createMessage(
 			titleInstructions,
 			[{ role: "user", content: buildTitleRequest(requestText) }],
 			{
@@ -112,7 +116,8 @@ export async function generateTaskTitle(
 				tool_choice: "none",
 				parallelToolCalls: false,
 			},
-		)) {
+		)
+		for await (const chunk of iterateApiStreamWithAbort(stream, signal)) {
 			if (chunk.type === "error") throw new Error("Title provider returned an error")
 			if (chunk.type === "outcome") {
 				outcome = chunk.status
@@ -134,5 +139,6 @@ export async function generateTaskTitle(
 		} catch {
 			// A title-only handler is short-lived; disposal must not affect the main task.
 		}
+		control.dispose()
 	}
 }

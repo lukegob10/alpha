@@ -566,6 +566,3 @@ export async function loadConfiguration(
 		merged: merged || "",
 	}
 }
-
-// Explicit alias for callers that load legacy configuration roots.
-export const loadLegacyConfiguration: typeof loadConfiguration = loadConfiguration

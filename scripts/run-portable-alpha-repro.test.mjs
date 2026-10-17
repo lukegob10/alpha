@@ -4,11 +4,176 @@ import * as os from "node:os"
 import * as path from "node:path"
 import test from "node:test"
 import { pathToFileURL } from "node:url"
+import { createHash } from "node:crypto"
+import { runInNewContext } from "node:vm"
 
 import { parseArguments, prepareRun, runPortableRepro } from "./run-portable-alpha-repro.mjs"
 import { writeReceipt } from "../apps/vscode-e2e/portable-automation/receipt.js"
 
 const absolute = (name) => path.join(os.tmpdir(), name)
+
+async function activatePortableTask(task) {
+	const source = await fs.readFile(
+		new URL("../apps/vscode-e2e/portable-automation/extension.js", import.meta.url),
+		"utf8",
+	)
+	const operations = []
+	const job = {
+		runId: "fixture-run",
+		mode: "task",
+		workspace: absolute("alpha-portable-fixture"),
+		promptFile: absolute("alpha-portable-prompt.md"),
+		timeoutMs: 60_000,
+	}
+	let now = 0
+	class FixtureDate extends Date {
+		static now() {
+			return now
+		}
+	}
+	const result = Promise.withResolvers()
+	const provider = {
+		getState: async () => ({}),
+		getLiveTask: () => task,
+		setValues: async () => operations.push("restore-settings"),
+		showTaskWithId: async () => operations.push("reopen"),
+		startBlankTask: async () => operations.push("blank-chat"),
+	}
+	const configuration = { apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "fixture-model" } }
+	const api = {
+		sidebarProvider: provider,
+		getConfiguration: () => configuration,
+		startNewTask: async () => "fixture-task",
+		isTaskInHistory: async () => true,
+	}
+	const vscode = {
+		version: "1.125.0",
+		extensions: {
+			getExtension: () => ({
+				packageJSON: { version: "fixture" },
+				extensionPath: absolute("alpha"),
+				activate: async () => api,
+			}),
+		},
+		workspace: {
+			workspaceFolders: [{ uri: { fsPath: job.workspace } }],
+			textDocuments: [],
+			getConfiguration: () => ({ inspect: () => undefined }),
+		},
+		commands: { executeCommand: async (command) => operations.push(command) },
+		lm: { selectChatModels: async () => [{ id: "fixture-model", family: "fixture", vendor: "copilot" }] },
+	}
+	const fileSystem = {
+		readFile: async (file) => {
+			if (file.endsWith("run.json")) return JSON.stringify(job)
+			if (file === job.promptFile) return "Complete the fixture task."
+			if (file.endsWith("extension.js")) return Buffer.from("fixture bundle")
+			throw new Error(`Unexpected sidecar read: ${file}`)
+		},
+		writeFile: async () => {},
+		appendFile: async () => {},
+	}
+	const dependencies = {
+		"node:fs/promises": fileSystem,
+		"node:path": path,
+		"node:crypto": { createHash },
+		vscode,
+		"./receipt": {
+			writeReceipt: async (file, value) => {
+				if (file.endsWith("task-result.json")) result.resolve(structuredClone(value))
+			},
+		},
+	}
+	const sandbox = {
+		exports: {},
+		require: (name) => {
+			if (!(name in dependencies)) throw new Error(`Unexpected sidecar dependency: ${name}`)
+			return dependencies[name]
+		},
+		Date: FixtureDate,
+		performance: { now: () => now },
+		console: { error: (error) => result.reject(new Error(String(error))) },
+		setTimeout: (callback, delay) => {
+			now += delay
+			queueMicrotask(callback)
+			return 0
+		},
+		clearTimeout: () => {},
+	}
+	runInNewContext(source, sandbox, { filename: "portable-automation/extension.js" })
+	await sandbox.exports.activate({ extensionPath: absolute("alpha-portable-sidecar") })
+	return { result: result.promise, operations }
+}
+
+function completedPortableTask(overrides = {}) {
+	return {
+		isCompleted: () => true,
+		clineMessages: [{ type: "say", say: "completion_result", text: "Done", partial: false }],
+		waitForTermination: async () => {},
+		abortTask: async () => {},
+		...overrides,
+	}
+}
+
+test("portable sidecar accepts canonical completion without a completion ask", async () => {
+	let aborted = 0
+	const fixture = await activatePortableTask(completedPortableTask({ abortTask: async () => aborted++ }))
+	const result = await fixture.result
+	assert.equal(result.status, "completed")
+	assert.equal(result.error, undefined)
+	assert.equal(result.messageCount, 1)
+	assert.equal(aborted, 0)
+	assert.ok(fixture.operations.includes("alpha.plusButtonClicked"))
+})
+
+test("portable sidecar joins completion persistence before navigating", { timeout: 5_000 }, async () => {
+	const termination = Promise.withResolvers()
+	const waiting = Promise.withResolvers()
+	const fixture = await activatePortableTask(
+		completedPortableTask({
+			waitForTermination: () => {
+				waiting.resolve()
+				return termination.promise
+			},
+		}),
+	)
+	try {
+		assert.equal(
+			await Promise.race([waiting.promise.then(() => "waiting"), fixture.result.then(() => "finished")]),
+			"waiting",
+		)
+		assert.equal(fixture.operations.includes("alpha.plusButtonClicked"), false)
+	} finally {
+		termination.resolve()
+	}
+	assert.equal((await fixture.result).status, "completed")
+})
+
+test("portable sidecar rejects a completion ask without authoritative completion", async () => {
+	let aborted = 0
+	const fixture = await activatePortableTask(
+		completedPortableTask({
+			isCompleted: () => false,
+			taskAsk: { type: "ask", ask: "completion_result" },
+			abortTask: async () => aborted++,
+		}),
+	)
+	const result = await fixture.result
+	assert.equal(result.status, "failed")
+	assert.match(result.error, /did not reach completion/)
+	assert.equal(aborted, 1)
+	assert.equal(fixture.operations.includes("alpha.plusButtonClicked"), false)
+})
+
+test("portable sidecar requires a complete visible final response", async () => {
+	for (const clineMessages of [[], [{ type: "say", say: "completion_result", text: "Done", partial: true }]]) {
+		const fixture = await activatePortableTask(completedPortableTask({ clineMessages }))
+		const result = await fixture.result
+		assert.equal(result.status, "failed")
+		assert.match(result.error, /final response/)
+		assert.equal(fixture.operations.includes("alpha.plusButtonClicked"), false)
+	}
+})
 
 test("portable receipts are invisible until complete and cannot replace an existing result", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-portable-runner-"))

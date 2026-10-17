@@ -116,9 +116,6 @@ export function getCompactionTargetTokens({
 	return Math.floor(fixed + ((limit - fixed) * normalizedPercent) / 100)
 }
 
-/** Alias for callers that describe the result as a target context budget. */
-export const getTargetContextTokens = getCompactionTargetTokens
-
 /** Returns the percentage reduction from `beforeTokens` to `afterTokens`. */
 export function calculateReductionPercent(beforeTokens: number, afterTokens: number): number {
 	const before = Number.isFinite(beforeTokens) ? Math.max(0, beforeTokens) : 0
@@ -194,21 +191,4 @@ export function evaluateCompactionProgress({
 		targetReached,
 		alreadyUnderTarget,
 	}
-}
-
-/** Convenience predicate for callers that only need the reduction decision. */
-export function hasMeasurableReduction(
-	beforeTokens: number,
-	afterTokens: number | null | undefined,
-	minReductionPercent = DEFAULT_MIN_REDUCTION_PERCENT,
-): boolean {
-	return evaluateCompactionProgress({ beforeTokens, afterTokens, minReductionPercent }).status === "reduced"
-}
-
-/** Alias that reads naturally at call sites enforcing the compaction policy. */
-export const isMeasurableReduction = hasMeasurableReduction
-
-/** Returns whether a measured request is at or below its target budget. */
-export function isWithinCompactionTarget(tokens: number | null | undefined, targetTokens: number): boolean {
-	return tokens !== null && tokens !== undefined && Number.isFinite(tokens) && tokens <= targetTokens
 }

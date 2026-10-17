@@ -11,6 +11,16 @@ existing read-only policy. The current Plan handoff contract is described below.
 Model-invoked slash commands load their instructions without applying mode metadata; user-entered commands may still
 select a supported mode through the host.
 
+The Modes settings editor offers workflow prompt overrides for Code. Plan keeps Alpha's canonical planning instructions,
+so its ignored role, workflow guidance, and mode-specific instruction editors are hidden. Plan's description in the mode
+selector remains editable, and global instructions still apply across both modes. Saved Plan overrides remain readable
+without changing its workflow. This reflects the runtime's existing override boundary rather than changing prompt policy.
+The source check on 2026-10-17 used Codex commit `ce0323f2f2d3b25e82806cd555237da3db4e1897`: its
+[mode discovery](https://github.com/openai/codex/blob/ce0323f2f2d3b25e82806cd555237da3db4e1897/codex-rs/tui/src/collaboration_modes.rs#L86-L88)
+clears restored instruction overrides so the server supplies current mode instructions, and its
+[Plan template](https://github.com/openai/codex/blob/ce0323f2f2d3b25e82806cd555237da3db4e1897/codex-rs/collaboration-mode-templates/templates/plan.md)
+keeps planning rules under host authority. Alpha retains its own canonical Plan prompt and read-only enforcement.
+
 ## Plan handoffs and questions
 
 Plan mode remains conversational. Clarification, limitation, empty, and malformed final output retain their original text;

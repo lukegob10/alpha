@@ -51,6 +51,62 @@ test("a failed command is terminal and leaves later commands unstarted", async (
 	assert.equal(saved.at(-1).status, "failed")
 })
 
+test("a surviving POSIX process group blocks evidence, subsequent steps, and build lease release", async () => {
+	for (const platform of ["linux", "darwin"]) {
+		let calls = 0
+		const input = fixture({
+			platform,
+			runProcess: async () => {
+				calls++
+				return { exitCode: 0, signal: null, cleanupVerified: false }
+			},
+			verify: async () => assert.fail("must not inspect evidence while the process group survives"),
+		})
+		await executeSteps(input)
+		assert.equal(calls, 1)
+		assert.equal(input.report.status, "failed")
+		assert.equal(input.report.steps[0].error, "cleanup_failed")
+		assert.equal(input.report.steps[0].evidence, undefined)
+		assert.equal(input.report.steps[1].status, "not_started")
+		assert.equal(input.report.cleanupUnverified, true)
+	}
+})
+
+test("ordinary Windows process closure retains its uncertain cleanup without failing successful commands", async () => {
+	let calls = 0
+	const input = fixture({
+		platform: "win32",
+		runProcess: async () => {
+			calls++
+			return { exitCode: 0, signal: null, cleanupVerified: false }
+		},
+		verify: async () => ({ status: "passed" }),
+	})
+	await executeSteps(input)
+	assert.equal(calls, 2)
+	assert.equal(input.report.status, "passed")
+	assert.equal(input.report.steps[0].cleanupVerified, false)
+	assert.equal(input.report.cleanupUnverified, undefined)
+})
+
+test("a signalled Windows root with uncertain descendant cleanup retains the build lease", async () => {
+	let calls = 0
+	const input = fixture({
+		platform: "win32",
+		runProcess: async () => {
+			calls++
+			return { exitCode: null, signal: "SIGTERM", cleanupVerified: false }
+		},
+		verify: async () => assert.fail("must not inspect evidence with unknown descendant ownership"),
+	})
+	await executeSteps(input)
+	assert.equal(calls, 1)
+	assert.equal(input.report.status, "failed")
+	assert.equal(input.report.steps[0].error, "cleanup_failed")
+	assert.equal(input.report.steps[1].status, "not_started")
+	assert.equal(input.report.cleanupUnverified, true)
+})
+
 test("pre-cancelled runs do not launch, and cancellation with uncertain cleanup retains the lease", async () => {
 	const before = fixture({ signal: AbortSignal.abort(), runProcess: async () => assert.fail("must not launch") })
 	await executeSteps(before)

@@ -111,7 +111,9 @@ vi.mock("delay", () => {
 
 vi.mock("../../prompts/sections/custom-instructions")
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),

@@ -518,7 +518,12 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				configuration,
 				text: "can you launch a test thread",
 			})
-			await waitUntilCompleted({ api, taskId: taskIds.root, timeout: 60_000 })
+			await waitUntilCompleted({
+				api,
+				taskId: taskIds.root,
+				isCompleted: () => provider.getLiveTask(taskIds.root!)?.didComplete === true,
+				timeout: 60_000,
+			})
 			taskIds.child = scripted.getChildTaskId()
 			assert.ok(taskIds.child, "The model-facing create_thread call did not return a child task ID")
 			await waitFor(async () => completions.filter((id) => id === taskIds.root).length === 1, {
@@ -613,7 +618,12 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			}
 			const peerTaskId = await api.startNewTask({ configuration, text: "Report the independent peer baseline." })
 			createdTaskIds.push(peerTaskId)
-			await waitUntilCompleted({ api, taskId: peerTaskId, timeout: 60_000 })
+			await waitUntilCompleted({
+				api,
+				taskId: peerTaskId,
+				isCompleted: () => provider.getLiveTask(peerTaskId)?.didComplete === true,
+				timeout: 60_000,
+			})
 			const peer = provider.getLiveTask(peerTaskId)
 			assert.ok(peer)
 			await peer.flushApiConversationHistoryPersistence()
@@ -626,7 +636,12 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				configuration,
 			)
 			createdTaskIds.push(orchestrator.taskId)
-			await waitUntilCompleted({ api, taskId: orchestrator.taskId, timeout: 60_000 })
+			await waitUntilCompleted({
+				api,
+				taskId: orchestrator.taskId,
+				isCompleted: () => orchestrator.didComplete,
+				timeout: 60_000,
+			})
 			await orchestrator.waitForTermination()
 			await peer.waitForTermination()
 			await orchestrator.flushApiConversationHistoryPersistence()

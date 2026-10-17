@@ -3,7 +3,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
 
-import { convertToVsCodeLmMessages, convertToAnthropicRole, extractTextCountFromMessage } from "../vscode-lm-format"
+import { convertToVsCodeLmMessages, extractTextCountFromMessage } from "../vscode-lm-format"
 
 // Mock crypto using Vitest
 vitest.stubGlobal("crypto", {
@@ -311,23 +311,6 @@ describe("convertToVsCodeLmMessages", () => {
 		expect(imagePart.type).toBe("data")
 		expect(imagePart.mimeType).toBe("image/png")
 		expect(Array.from(imagePart.data)).toEqual([104, 101, 108, 108, 111])
-	})
-})
-
-describe("convertToAnthropicRole", () => {
-	it("should convert assistant role correctly", () => {
-		const result = convertToAnthropicRole("assistant" as any)
-		expect(result).toBe("assistant")
-	})
-
-	it("should convert user role correctly", () => {
-		const result = convertToAnthropicRole("user" as any)
-		expect(result).toBe("user")
-	})
-
-	it("should return null for unknown roles", () => {
-		const result = convertToAnthropicRole("unknown" as any)
-		expect(result).toBeNull()
 	})
 })
 

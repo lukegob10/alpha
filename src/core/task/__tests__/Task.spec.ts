@@ -323,6 +323,7 @@ vi.mock("../../../utils/storage", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../../utils/storage")>()
 	return {
 		getStorageBasePath: actual.getStorageBasePath,
+		resolveTaskDirectoryPath: actual.resolveTaskDirectoryPath,
 		resolveExistingTaskDirectoryPathReadOnly: actual.resolveExistingTaskDirectoryPathReadOnly,
 		getTaskDirectoryPath: vi
 			.fn()
@@ -762,6 +763,7 @@ describe("Alpha", () => {
 			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue(historyItem)
 			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
 			const titleHandler = {
+				streamCapabilities: { cancellation: true },
 				prepareModel: vi.fn().mockResolvedValue(undefined),
 				setReasoningOptions: vi.fn(),
 				createMessage: vi.fn(async function* () {
@@ -820,6 +822,7 @@ describe("Alpha", () => {
 			let requestStarted!: () => void
 			const started = new Promise<void>((resolve) => (requestStarted = resolve))
 			const titleHandler = {
+				streamCapabilities: { cancellation: true },
 				prepareModel: vi.fn().mockResolvedValue(undefined),
 				setReasoningOptions: vi.fn(),
 				createMessage: vi.fn((_systemPrompt: string, _messages: unknown, metadata: { signal: AbortSignal }) =>
@@ -6349,6 +6352,86 @@ describe("Alpha", () => {
 			const unrelatedTask = createTask()
 			unrelatedTask.setTaskApprovalMode("ask")
 			expect(unrelatedTask["getApprovalModeForAsk"]()).toBe("ask")
+		})
+
+		it("leaves the next model-facing user content free of child-report injection", async () => {
+			const task = createTask()
+			const presentationSummary = "Retained child presentation is not model input."
+			const mailboxSummary = "Canonical child mailbox finding."
+			task.clineMessages.push({
+				ts: 1,
+				type: "say",
+				say: "subagent_group",
+				subagentGroup: {
+					groupId: "retained-child-group",
+					parentTaskId: task.taskId,
+					executionMode: "async",
+					status: "completed",
+					createdAt: 1,
+					completedAt: 2,
+					agents: [
+						{
+							taskId: "managed-child",
+							nickname: "Ada",
+							role: "explore",
+							objective: "Inspect the parser",
+							status: "completed",
+							summary: presentationSummary,
+							completedAt: 2,
+							usage: { durationMs: 1 },
+						},
+					],
+				},
+			})
+			await task.receiveAgentMessage({
+				id: "canonical-child-report",
+				senderTaskId: "managed-child",
+				text: mailboxSummary,
+				notification: {
+					eventId: "canonical-child-report",
+					sequence: 1,
+					rootTaskId: task.taskId,
+					senderTaskId: "managed-child",
+					senderPath: "/root/child",
+					recipientTaskId: task.taskId,
+					recipientPath: "/root",
+					kind: "result",
+					name: "agent_completed",
+					payload: { taskId: "managed-child", status: "completed", summary: mailboxSummary },
+					createdAt: 2,
+				},
+			})
+			expect(task.hasPendingAgentMessages()).toBe(true)
+			mockProvider.getState = vi.fn().mockResolvedValue({})
+			mockProvider.getValues = vi.fn().mockReturnValue({})
+			const requests: Anthropic.Messages.MessageParam[][] = []
+			vi.spyOn(task.api, "createMessage").mockImplementation(async function* (_system, messages) {
+				requests.push(structuredClone(messages))
+				yield { type: "text", text: "Read the canonical child finding." } as const
+			})
+
+			await expect(
+				task.runAgentRequests([{ type: "text", text: "Continue the parent work." }], false),
+			).resolves.toMatchObject({ status: "completed" })
+
+			expect(requests).toHaveLength(1)
+			const request = JSON.stringify(requests[0])
+			expect(request).not.toContain(presentationSummary)
+			expect(request).not.toContain("spawned_subagent_result")
+			expect(request).toContain("managed_agent_notification")
+			expect(request.split(mailboxSummary)).toHaveLength(2)
+			expect(
+				task.apiConversationHistory.filter((message) => message.agent_message_id === "canonical-child-report"),
+			).toEqual([expect.objectContaining({ role: "user", input_origin: "agent" })])
+			expect(
+				JSON.stringify(
+					task.apiConversationHistory.filter(
+						(message) => message.role === "user" && message.input_origin !== "agent",
+					),
+				),
+			).not.toContain(mailboxSummary)
+			expect(task.hasPendingAgentMessages()).toBe(false)
+			expect(JSON.stringify(task.clineMessages)).toContain(presentationSummary)
 		})
 
 		it("persists tool results before agent input and sends both to the next provider request", async () => {

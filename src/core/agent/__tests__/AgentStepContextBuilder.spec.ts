@@ -4,14 +4,7 @@ import type { ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ModelInfo } from "@alpha-code/types"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createToolPolicySnapshot } from "../ToolPolicy"
-import {
-	AgentStepContextBuilder,
-	buildAgentStepContext,
-	deriveChildAgentStep,
-	deriveCompactionAgentStep,
-	deriveRetryAgentStep,
-	type AgentStepSnapshot,
-} from "../AgentStepContextBuilder"
+import { AgentStepContextBuilder, type AgentStepSnapshot } from "../AgentStepContextBuilder"
 import { digestValue, type CreateStepContextInput } from "../StepContext"
 
 const modelInfo = { contextWindow: 16_000 } as ModelInfo
@@ -96,7 +89,7 @@ describe("AgentStepContextBuilder", () => {
 		const originalMessages = input.transcript.messages
 		const handler = { createMessage: vi.fn() }
 		const executable = vi.fn()
-		const step = buildAgentStepContext(input, { handler, executables: { read_file: executable } })
+		const step = new AgentStepContextBuilder().build(input, { handler, executables: { read_file: executable } })
 
 		input.provider.options.nested = { accessToken: "changed-after-capture" }
 		input.transcript.messages.push({ role: "user", content: "later" })
@@ -121,7 +114,7 @@ describe("AgentStepContextBuilder", () => {
 		const builder = new AgentStepContextBuilder({ handler })
 		const first = builder.build(capturedInput())
 		const retry = builder.retry(first)
-		const retryAgain = deriveRetryAgentStep(retry, { retryAttempt: 3 })
+		const retryAgain = builder.retry(retry, { retryAttempt: 3 })
 
 		expect(retry.context.contextId).toBe(first.context.contextId)
 		expect(retry.context.createdAt).toBe(first.context.createdAt)
@@ -165,7 +158,8 @@ describe("AgentStepContextBuilder", () => {
 	})
 
 	it("derives deterministic child contexts with explicit ancestry", () => {
-		const parent = buildAgentStepContext(capturedInput())
+		const builder = new AgentStepContextBuilder()
+		const parent = builder.build(capturedInput())
 		const options = {
 			childTaskId: "child-1",
 			mode: { slug: "review", profileName: "Review" },
@@ -174,8 +168,8 @@ describe("AgentStepContextBuilder", () => {
 				boundary: { startIndex: 0, endIndex: 1, messageCount: 1, digest: digestValue("Review only") },
 			},
 		}
-		const first = deriveChildAgentStep(parent, options)
-		const second = deriveChildAgentStep(parent, options)
+		const first = builder.child(parent, options)
+		const second = builder.child(parent, options)
 
 		expect(first.context.contextId).toBe(second.context.contextId)
 		expect(first.context.contextId).not.toBe(parent.context.contextId)
@@ -188,11 +182,12 @@ describe("AgentStepContextBuilder", () => {
 	})
 
 	it("creates a linked compaction context with deterministic metadata", () => {
-		const parent = buildAgentStepContext(capturedInput())
-		const first = deriveCompactionAgentStep(parent, {
+		const builder = new AgentStepContextBuilder()
+		const parent = builder.build(capturedInput())
+		const first = builder.compaction(parent, {
 			compaction: { action: "summary", attempted: true, summaryId: "summary-1", messagesRemoved: 4 },
 		})
-		const second = deriveCompactionAgentStep(parent, {
+		const second = builder.compaction(parent, {
 			compaction: { action: "summary", attempted: true, summaryId: "summary-1", messagesRemoved: 4 },
 		})
 

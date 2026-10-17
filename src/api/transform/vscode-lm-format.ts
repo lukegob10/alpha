@@ -173,17 +173,6 @@ export function convertToVsCodeLmMessages(
 	return vsCodeLmMessages
 }
 
-export function convertToAnthropicRole(vsCodeLmMessageRole: vscode.LanguageModelChatMessageRole): string | null {
-	switch (vsCodeLmMessageRole) {
-		case vscode.LanguageModelChatMessageRole.Assistant:
-			return "assistant"
-		case vscode.LanguageModelChatMessageRole.User:
-			return "user"
-		default:
-			return null
-	}
-}
-
 /**
  * Extracts the text content from a VS Code Language Model chat message.
  * @param message A VS Code Language Model chat message.

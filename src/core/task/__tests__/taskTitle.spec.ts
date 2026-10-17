@@ -7,6 +7,7 @@ async function* stream(chunks: Array<{ type: string; [key: string]: unknown }>) 
 
 function createHandler(chunks: Array<{ type: string; [key: string]: unknown }>) {
 	return {
+		streamCapabilities: { cancellation: true },
 		prepareModel: vi.fn().mockResolvedValue(undefined),
 		setReasoningOptions: vi.fn(),
 		createMessage: vi.fn(() => stream(chunks)),
@@ -18,6 +19,17 @@ function createHandler(chunks: Array<{ type: string; [key: string]: unknown }>) 
 		dispose: ReturnType<typeof vi.fn>
 	}
 }
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((settle) => (resolve = settle))
+	return { promise, resolve }
+}
+
+afterEach(() => {
+	vi.useRealTimers()
+	vi.restoreAllMocks()
+})
 
 describe("automatic task titles", () => {
 	it("normalizes provider formatting and bounds titles by Unicode characters", () => {
@@ -75,5 +87,65 @@ describe("automatic task titles", () => {
 		await expect(
 			generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
 		).resolves.toBe(undefined)
+	})
+
+	it.each([false, undefined])(
+		"skips optional requests on a transport without cancellation: %s",
+		async (cancellation) => {
+			const handler = createHandler([])
+			Object.assign(handler, { streamCapabilities: { cancellation } })
+
+			await expect(
+				generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
+			).resolves.toBeUndefined()
+
+			expect(handler.prepareModel).not.toHaveBeenCalled()
+			expect(handler.createMessage).not.toHaveBeenCalled()
+			expect(handler.dispose).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each([
+		["prepare", "parent-abort"],
+		["prepare", "deadline"],
+		["stream", "parent-abort"],
+		["stream", "deadline"],
+	] as const)("releases a stalled %s request after %s", async (stage, interruption) => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const entered = deferred()
+		const release = deferred()
+		const parent = new AbortController()
+		const handler = createHandler([])
+		if (stage === "prepare") {
+			handler.prepareModel.mockImplementation(async () => {
+				entered.resolve()
+				await release.promise
+			})
+		} else {
+			handler.createMessage.mockImplementation(async function* () {
+				entered.resolve()
+				await release.promise
+				yield { type: "text", text: "Late title" }
+			})
+		}
+		const completed = vi.fn()
+		const result = generateTaskTitle(handler, "title-task", "Summarize this", parent.signal).then((value) => {
+			completed(value)
+			return value
+		})
+		try {
+			await entered.promise
+			if (interruption === "parent-abort") parent.abort(new Error("The task was stopped"))
+			else await vi.advanceTimersByTimeAsync(15_000)
+			await vi.advanceTimersByTimeAsync(0)
+
+			expect(completed).toHaveBeenCalledWith(undefined)
+			expect(handler.dispose).toHaveBeenCalledOnce()
+			expect(vi.getTimerCount()).toBe(0)
+			if (stage === "prepare") expect(handler.createMessage).not.toHaveBeenCalled()
+		} finally {
+			release.resolve()
+			await result
+		}
 	})
 })

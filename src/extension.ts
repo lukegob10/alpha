@@ -135,15 +135,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	const contextProxy = await ContextProxy.getInstance(context)
 
 	// Initialize code index managers for all workspace folders.
-	const codeIndexManagers: CodeIndexManager[] = []
-
 	if (vscode.workspace.workspaceFolders) {
 		for (const folder of vscode.workspace.workspaceFolders) {
 			const manager = CodeIndexManager.getInstance(context, folder.uri.fsPath)
 
 			if (manager) {
-				codeIndexManagers.push(manager)
-
 				// Initialize in background; do not block extension activation
 				void manager.initialize(contextProxy).catch((error) => {
 					const message = error instanceof Error ? error.message : String(error)

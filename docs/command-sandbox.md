@@ -57,7 +57,7 @@ No settings reset or per-project setup is introduced. Runtime files left by 2.1.
 Codex installation or account data.
 
 Regression coverage lives in `commandPathScope.spec.ts`, `outsideWorkspaceAccess.spec.ts`, command/lifecycle tests,
-`CommandExecution.spec.tsx`, and the shared message-schema test. The exact VS Code 1.122.1 release gate is followed by
-`test:command-paths:1221:run`, which checks ordinary auto-approval, outside-path approval presentation, and actual command
+`CommandExecution.spec.tsx`, and the shared message-schema test. The exact VS Code 1.125.0 release gate is followed by
+`test:command-paths:1250:run`, which checks ordinary auto-approval, outside-path approval presentation, and actual command
 execution after a one-run approval. Unit tests verify that denying review prevents the effect, that junction retargeting
 is rejected, and that restricted child policy cannot be widened.

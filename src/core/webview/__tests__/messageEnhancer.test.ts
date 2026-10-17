@@ -101,9 +101,9 @@ describe("MessageEnhancer", () => {
 
 		it("should include task history when enabled", async () => {
 			const mockAlphaMessages: AlphaMessage[] = [
-				{ type: "ask", text: "Create a React component", ts: 1000 },
+				{ type: "say", say: "text", text: "Create a React component", ts: 1000 },
 				{ type: "say", say: "text", text: "I'll create a React component for you", ts: 2000 },
-				{ type: "ask", text: "Add props to the component", ts: 3000 },
+				{ type: "say", say: "user_feedback", text: "Add props to the component", ts: 3000 },
 				{ type: "say", say: "reasoning", text: "Using tool", ts: 4000 }, // Should be filtered out
 			]
 
@@ -128,11 +128,32 @@ describe("MessageEnhancer", () => {
 			expect(calledPrompt).not.toContain("Using tool") // reasoning messages should be filtered
 		})
 
+		it("preserves human roles and assistant questions in actual task transcripts", async () => {
+			await MessageEnhancer.enhanceMessage({
+				text: "Continue the work",
+				apiConfiguration: mockApiConfiguration,
+				listApiConfigMeta: mockListApiConfigMeta,
+				includeTaskHistoryInEnhance: true,
+				currentAlphaMessages: [
+					{ ts: 1, type: "say", say: "text", text: "Build the settings form" },
+					{ ts: 2, type: "ask", ask: "followup", text: "Which fields should it contain?", isAnswered: true },
+					{ ts: 3, type: "say", say: "user_feedback", text: "Add a model selector" },
+					{ ts: 4, type: "say", say: "text", text: "I will add the selector" },
+				],
+				providerSettingsManager: mockProviderSettingsManager,
+			})
+
+			const calledPrompt = mockSingleCompletionHandler.mock.calls[0][1]
+			expect(calledPrompt).toContain(
+				"User: Build the settings form\nAssistant: Which fields should it contain?\nUser: Add a model selector\nAssistant: I will add the selector",
+			)
+		})
+
 		it("should limit task history to last 10 messages", async () => {
 			// Create 15 messages
 			const mockAlphaMessages: AlphaMessage[] = Array.from({ length: 15 }, (_, i) => ({
-				type: i % 2 === 0 ? "ask" : "say",
-				say: i % 2 === 1 ? "text" : undefined,
+				type: "say",
+				say: i % 2 === 0 ? "user_feedback" : "text",
 				text: `Message ${i + 1}`,
 				ts: i * 1000,
 			})) as AlphaMessage[]
@@ -156,7 +177,7 @@ describe("MessageEnhancer", () => {
 
 		it("should truncate long messages in task history", async () => {
 			const longText = "A".repeat(600) // 600 characters
-			const mockAlphaMessages: AlphaMessage[] = [{ type: "ask", text: longText, ts: 1000 }]
+			const mockAlphaMessages: AlphaMessage[] = [{ type: "say", say: "text", text: longText, ts: 1000 }]
 
 			await MessageEnhancer.enhanceMessage({
 				text: "Test",
@@ -305,12 +326,12 @@ describe("MessageEnhancer", () => {
 	describe("extractTaskHistory", () => {
 		it("should filter and format messages correctly", () => {
 			const messages: AlphaMessage[] = [
-				{ type: "ask", text: "User message 1", ts: 1000 },
+				{ type: "say", say: "text", text: "User message 1", ts: 1000 },
 				{ type: "say", say: "text", text: "Assistant message 1", ts: 2000 },
 				{ type: "say", say: "reasoning", text: "Tool use", ts: 3000 },
 				{ type: "ask", text: "", ts: 4000 }, // Empty text
 				{ type: "say", say: "text", text: undefined, ts: 5000 }, // No text
-				{ type: "ask", text: "User message 2", ts: 6000 },
+				{ type: "say", say: "user_feedback", text: "User message 2", ts: 6000 },
 			]
 
 			// Access private method through any type assertion for testing
@@ -348,7 +369,7 @@ describe("MessageEnhancer", () => {
 			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
 			// Create a message with circular reference
-			const circularMessage: any = { type: "ask", text: "Test" }
+			const circularMessage: any = { type: "say", say: "user_feedback", text: "Test" }
 			circularMessage.self = circularMessage
 
 			const messages = [circularMessage] as AlphaMessage[]

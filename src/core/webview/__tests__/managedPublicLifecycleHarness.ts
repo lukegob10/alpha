@@ -287,6 +287,12 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 			countTokens: async (content) => Math.ceil(JSON.stringify(content).length / 4),
 			async *createMessage(_system, _messages, metadata) {
 				if (!metadata) throw new Error("Scripted transport requires real request metadata")
+				// Title generation shares the task ID, but must not consume a held agent turn.
+				if (metadata.attemptId === "title") {
+					yield { type: "text", text: "Verify lifecycle ownership" }
+					yield { type: "outcome", status: "completed", terminal: true, semanticOutputObserved: true }
+					return
+				}
 				const turn = turns.get(metadata.taskId)?.shift()
 				if (!turn) throw new Error(`No scripted response for ${metadata.taskId}`)
 				turn.request = metadata

@@ -9,7 +9,8 @@ import type { HistoryItem } from "@alpha-code/types"
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
 }))
 

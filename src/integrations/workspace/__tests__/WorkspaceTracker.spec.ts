@@ -59,11 +59,20 @@ vitest.mock("vscode", () => ({
 		},
 	},
 	FileType: { File: 1, Directory: 2 },
+	Uri: { file: vitest.fn((fsPath: string) => ({ fsPath })) },
 }))
 
 vitest.mock("../../../services/glob/list-files", () => ({
 	listFiles: vitest.fn(),
 }))
+
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
 
 describe("WorkspaceTracker", () => {
 	let workspaceTracker: WorkspaceTracker
@@ -72,6 +81,7 @@ describe("WorkspaceTracker", () => {
 	beforeEach(() => {
 		vitest.clearAllMocks()
 		vitest.useFakeTimers()
+		;(vscode.workspace.fs.stat as Mock).mockResolvedValue({ type: 1 })
 
 		// Reset all mock implementations
 		registeredTabChangeCallback = null
@@ -89,6 +99,12 @@ describe("WorkspaceTracker", () => {
 
 		// Ensure the tab change callback was registered
 		expect(registeredTabChangeCallback).not.toBeNull()
+	})
+
+	afterEach(() => {
+		workspaceTracker.dispose()
+		vitest.clearAllTimers()
+		vitest.useRealTimers()
 	})
 
 	it("should initialize with workspace files", async () => {
@@ -148,7 +164,7 @@ describe("WorkspaceTracker", () => {
 
 		expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "workspaceUpdated",
-			filePaths: expect.arrayContaining(["newdir"]),
+			filePaths: ["newdir/"],
 			openedTabs: [],
 		})
 		const lastCall = (mockProvider.postMessageToWebview as Mock).mock.calls.slice(-1)[0]
@@ -245,55 +261,117 @@ describe("WorkspaceTracker", () => {
 	})
 
 	it("should not update file paths if workspace changes during initialization", async () => {
-		// Setup initial workspace path
-		;(getWorkspacePath as Mock).mockReturnValue("/test/workspace")
-		workspaceTracker = new WorkspaceTracker(mockProvider)
-
-		// Clear any initialization calls
-		vitest.clearAllMocks()
-		;(mockProvider.postMessageToWebview as Mock).mockClear()
-
-		// Create a promise to control listFiles timing
-		let resolveListFiles: (value: [string[], boolean]) => void
-		const listFilesPromise = new Promise<[string[], boolean]>((resolve) => {
-			resolveListFiles = resolve
-		})
-
-		// Setup listFiles to use our controlled promise
-		;(listFiles as Mock).mockImplementation(() => {
-			// Change workspace path before listFiles resolves
-			;(getWorkspacePath as Mock).mockReturnValue("/test/changed-workspace")
-			return listFilesPromise
-		})
-
-		// Start initialization
+		const discovery = deferred<[string[], boolean]>()
+		;(listFiles as Mock).mockReturnValueOnce(discovery.promise)
 		const initPromise = workspaceTracker.initializeFilePaths()
-
-		// Resolve listFiles after workspace path change
-		resolveListFiles!([["/test/workspace/file1.ts", "/test/workspace/file2.ts"], false])
-
-		// Wait for initialization to complete
+		;(getWorkspacePath as Mock).mockReturnValue("/test/changed-workspace")
+		discovery.resolve([["/test/workspace/file1.ts", "/test/workspace/file2.ts"], false])
 		await initPromise
 		vitest.runAllTimers()
 
-		// Should not update file paths because workspace changed during initialization
-		expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "workspaceUpdated",
-				openedTabs: [],
-			}),
-		)
+		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
 
-		// Extract the actual file paths to verify format
-		const actualFilePaths = (mockProvider.postMessageToWebview as Mock).mock.calls[0][0].filePaths
+	it("should discard a superseded initialization in the same workspace", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		;(listFiles as Mock)
+			.mockReturnValueOnce(discovery.promise)
+			.mockResolvedValueOnce([["/test/workspace/current.ts"], false])
+		const staleInitialization = workspaceTracker.initializeFilePaths()
+		await workspaceTracker.initializeFilePaths()
+		discovery.resolve([["/test/workspace/stale.ts"], false])
+		await staleInitialization
+		vitest.runAllTimers()
 
-		// Verify file path array length
-		expect(actualFilePaths).toHaveLength(2)
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["current.ts"],
+			openedTabs: [],
+		})
+	})
 
-		// Verify file paths contain the expected file names regardless of platform specifics
-		expect(actualFilePaths.every((path: string) => path.includes("file1.ts") || path.includes("file2.ts"))).toBe(
-			true,
-		)
+	it("should not publish discovery completed after disposal", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		;(listFiles as Mock).mockReturnValueOnce(discovery.promise)
+		const initialization = workspaceTracker.initializeFilePaths()
+		workspaceTracker.dispose()
+		discovery.resolve([["/test/workspace/file.ts"], false])
+		await initialization
+
+		expect(vitest.getTimerCount()).toBe(0)
+		vitest.runAllTimers()
+		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("should not publish file creation completed after disposal", async () => {
+		const stat = deferred<{ type: number }>()
+		;(vscode.workspace.fs.stat as Mock).mockReturnValueOnce(stat.promise)
+		const [[callback]] = mockOnDidCreate.mock.calls
+		const creation = callback({ fsPath: "/test/workspace/file.ts" })
+		workspaceTracker.dispose()
+		stat.resolve({ type: 1 })
+		await creation
+
+		expect(vitest.getTimerCount()).toBe(0)
+		vitest.runAllTimers()
+		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("should not publish file creation from a previous workspace", async () => {
+		const stat = deferred<{ type: number }>()
+		;(vscode.workspace.fs.stat as Mock).mockReturnValueOnce(stat.promise)
+		const [[callback]] = mockOnDidCreate.mock.calls
+		const creation = callback({ fsPath: "/test/workspace/stale.ts" })
+		;(getWorkspacePath as Mock).mockReturnValue("/test/new-workspace")
+		;(listFiles as Mock).mockResolvedValueOnce([["/test/new-workspace/current.ts"], false])
+		await registeredTabChangeCallback!()
+		await vitest.advanceTimersByTimeAsync(300)
+		stat.resolve({ type: 1 })
+		await creation
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["current.ts"],
+			openedTabs: [],
+		})
+	})
+
+	it("should discard a pending update when the workspace changes before reset", async () => {
+		;(listFiles as Mock).mockResolvedValueOnce([["/test/workspace/stale.ts"], false])
+		await workspaceTracker.initializeFilePaths()
+		;(getWorkspacePath as Mock).mockReturnValue("/test/new-workspace")
+		vitest.runAllTimers()
+
+		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("should not resume a workspace reset after disposal", async () => {
+		const published = deferred<void>()
+		;(mockProvider.postMessageToWebview as Mock).mockReturnValueOnce(published.promise)
+		;(getWorkspacePath as Mock).mockReturnValue("/test/new-workspace")
+		await registeredTabChangeCallback!()
+		vitest.advanceTimersByTime(300)
+		workspaceTracker.dispose()
+		published.resolve()
+		await vitest.runAllTimersAsync()
+
+		expect(listFiles).not.toHaveBeenCalled()
+		expect(vitest.getTimerCount()).toBe(0)
+	})
+
+	it("should retain a pending workspace reset when discovery is requested", async () => {
+		;(getWorkspacePath as Mock).mockReturnValue("/test/new-workspace")
+		;(listFiles as Mock).mockResolvedValueOnce([["/test/new-workspace/current.ts"], false])
+		await registeredTabChangeCallback!()
+		await workspaceTracker.initializeFilePaths()
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["current.ts"],
+			openedTabs: [],
+		})
 	})
 
 	it("should clear resetTimer when calling workspaceDidReset multiple times", async () => {

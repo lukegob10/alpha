@@ -126,7 +126,9 @@ vi.mock("axios", () => ({
 
 vi.mock("../../../utils/safeWriteJson")
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getStorageBasePath: vi.fn().mockResolvedValue("/test/storage/path"),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
