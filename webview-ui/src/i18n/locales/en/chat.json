@@ -505,11 +505,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} loads more quickly and improves follow-up reliability.",
-			"taskContinuity": "Continue completed and reopened chats reliably, including replies to recovery prompts.",
-			"toolsAndProviders": "Start model requests and terminal commands with less preparation work.",
-			"delegation": "Open settings and chat history with fewer unnecessary background loads.",
-			"workspaceExperience": "Load diagrams when needed and preserve chat drafts and terminal preview preferences."
+			"welcome": "Alpha v{{version}} refines the chat experience and improves thread reliability.",
+			"taskContinuity": "Keep follow-ups and chat history reliable across task updates and recovery.",
+			"toolsAndProviders": "Coordinate work across threads with integrated orchestration tools.",
+			"delegation": "Keep task titles and cross-thread chat delivery consistent.",
+			"workspaceExperience": "Compose ticket mentions and long messages with stable previews and chat layouts."
 		}
 	},
 	"crossTasks": {

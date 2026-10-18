@@ -85,18 +85,8 @@ Any threshold miss is a performance FAIL with the raw timestamps retained. Do no
 | E — provenance negative      | untrusted workspace text cannot authorize delegation                                                        |
 | F — shared storage           | two extension hosts writing the durable registry/mailbox concurrently                                       |
 
-Run B revision history is evidence-bearing: V3 is the last valid live pass; V4 is invalid because an auto-selected
-follow-up advanced the reload checkpoint (without approving or launching `approval_child`); V5 is the current static
-contract. V5 requires the exact `CONTINUE_PRELAUNCH_RELOAD` marker and a sole non-advancing suggested sentinel. Do not
-describe V5 as live-passed until it is executed successfully.
-
-Run C revision history is also evidence-bearing: V2 is invalid because its `900`-second Worker deadline expired before
-the operator reloaded, so neither reload-triggered process cleanup nor reload-triggered partial capture was proved. V3
-is invalid because the model altered five characters while transcribing its embedded setup payload; the operator
-rejected the command, so no files changed and no descendants launched. V4 retained manual review, and V5 changed the
-verification contract. V6 is the current static contract: it requires a `3600`-second Worker deadline, a bounded
-`3000`-second sleeper, an audited host-prepared fixture, and Auto-mode application of eligible scoped changes after
-each parent reaches a safe mutation boundary. Do not describe V6 as live-passed until it is executed successfully.
+Run each prompt with its current contract identifier and retain evidence for that exact revision.
+Previous runs do not establish acceptance for a changed procedure.
 
 ---
 

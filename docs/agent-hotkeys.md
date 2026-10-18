@@ -43,20 +43,6 @@ task, selection remains unchanged.
 
 ## Reference behavior and compatibility
 
-Reviewed Codex CLI commit `d63a9b8344cfe58bc78bbe319b560378fc8756ef` on October 5, 2026:
-
-- [Keymap](https://github.com/openai/codex/blob/d63a9b8344cfe58bc78bbe319b560378fc8756ef/codex-rs/tui/src/keymap.rs):
-  distinct reasoning decrease/increase actions and distinct composer submit/queue actions.
-- [Composer tests](https://github.com/openai/codex/blob/d63a9b8344cfe58bc78bbe319b560378fc8756ef/codex-rs/tui/src/bottom_pane/chat_composer.rs):
-  separate submitted and queued outcomes with draft retirement after submission.
-
-The October 8 convergence additionally reviewed Codex's
-[instant interruption](https://github.com/openai/codex/commit/406b0c44460cf71e90c21c7abe6e581add3a6421).
-The October 11 [queue preference](steering-queue-preference.md) makes that behavior opt-in, with ordinary submission
-queueing by default at the user's request. Explicit queueing and the dedicated steering command remain available.
-Approval boundaries keep their queued-input contract. VS Code task navigation uses Alpha's
-shared session registry rather than the CLI's terminal navigation. No execution policy or approval authority changes.
-
 The implementation uses stable command, webview messaging, and keybinding contracts for VS Code **1.125.0**. Consulted
 [VS Code keybindings](https://code.visualstudio.com/docs/configure/keybindings) and
 [contribution points](https://code.visualstudio.com/api/references/contribution-points#contributes.keybindings) on

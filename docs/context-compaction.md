@@ -1,15 +1,10 @@
 # Context compaction policy
 
-Implemented on `codex/nor-56-tool-progress`, reviewed against current source on 2026-09-14.
-
 ## Optional post-turn compaction
 
-Post-turn compaction runs only at a settled model-turn boundary. Its default threshold is now `0` (disabled), matching
-the pinned Codex CLI configuration default inspected on 2026-09-26 at commit
-`e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1`. A saved nonzero threshold still opts a task into the same post-turn
-path, and automatic recovery from a provider context error retains its separate behavior. The setting change does not
-rewrite existing saved values. The `Task.compaction-safety.spec.ts` regression reaches a completed agent turn with no
-saved threshold and verifies that no post-turn summary is generated; another test covers an explicit saved threshold.
+Post-turn compaction runs only at a settled model-turn boundary. Its default threshold is `0` (disabled).
+A saved nonzero threshold opts a task into this path. Automatic recovery from a provider context error is separate.
+Existing saved values remain unchanged.
 
 ## Working budget
 
@@ -86,49 +81,7 @@ Existing non-destructive history tags, rewind readers, lifecycle completion, can
 preservation remain in use. The optional `ContextCondense.outcome` field is backward compatible: saved events without
 the field continue rendering as successful compactions. No configuration migration is required.
 
-## Upstream comparison
-
-The public Codex source was inspected at commit `3fa9039bd70d2e4f6b4e614e11b971e261e604e2` on 2026-09-14:
-
-- [Local compaction](https://github.com/openai/codex/blob/3fa9039bd70d2e4f6b4e614e11b971e261e604e2/codex-rs/core/src/compact.rs)
-  retains bounded user history and creates a handoff summary.
-- [Remote compaction v2](https://github.com/openai/codex/blob/3fa9039bd70d2e4f6b4e614e11b971e261e604e2/codex-rs/core/src/compact_remote_v2.rs)
-  uses a separate provider-supported compaction path with a bounded retained suffix.
-- [The compact prompt](https://github.com/openai/codex/blob/3fa9039bd70d2e4f6b4e614e11b971e261e604e2/codex-rs/prompts/templates/compact/prompt.md)
-  asks for concise continuation context.
-- [VS Code 1.122.1 API declarations](https://github.com/microsoft/vscode/blob/1.122.1/src/vscode-dts/vscode.d.ts)
-  define `LanguageModelChat.maxInputTokens` as the maximum number of input tokens.
-
-Alpha adopts bounded handoffs, explicit working budgets, retained complete steps, and measured progress in its existing
-provider-neutral path. This change does not add native encrypted compaction endpoints. Matching those would require
-provider capability, transport, persisted-state, and replay contracts, and should be evaluated separately.
-
-## Verification and limits
-
-The 2026-09-17 regression cases reproduce slow summary generation at 30% and 35% of a 1M window, refreshed environment
-content above the summary target but below the working limit across all three entry points, and contradictory automatic
-fallback reporting. Additional cases retain the cumulative tokenizer cap, absolute request deadline, profile threshold,
-and actual reduction requirement. These are deterministic reproductions; no trace from the reported incident was available.
-Validation for that correction passed 546 affected regression tests (one existing skipped test), the final 88-test focused
-rerun, extension type checking, lint on changed TypeScript files, formatting, and all 10 VS Code 1.122.1 smoke checks.
-
-Validation on 2026-09-14 passed: 614 extension tests (one existing skipped test), 293 shared-type tests, 63 webview tests,
-and six task/webview compaction-routing tests. Repository-wide lint and type checks, formatting with existing line
-endings preserved, and the VS Code 1.122.1 smoke gate passed. The final compaction-only rerun passed all 330 tests.
-
-Focused coverage includes threshold scaling across 32K, 200K, and 1M windows; effective output reservations; repeat-click
-no-ops; recompacting a saved summary; rejecting growth; file-context budgets; failed-summary truncation; tool-pair and
-opaque-state preservation; cancellation; persistence; and final environment overhead. The unchanged event is covered in
-shared-schema and webview tests and localized in all 18 webview locales.
-
-The existing deterministic recent-tail benchmark still retains exact evidence with 225 active tokens and no repeated
-file read (one scripted model round trip). Its summary-only control has 95 active tokens but needs a repeated read and
-two scripted model round trips. This is a continuation regression check, not evidence of live-model quality. The default
-condensing instruction text decreased from 5,653 to 1,068 characters with normalized line endings, measured against branch HEAD on the same date;
-the dynamically appended budget adds a short sentence. No live-provider cost, latency, or summary-quality improvement
-is claimed from these measurements.
-
-Useful validation commands:
+## Validation
 
 ```sh
 pnpm --dir src test core/context-management core/condense core/task/__tests__/Task.compaction-safety.spec.ts shared/__tests__/context-output-reservation.spec.ts shared/__tests__/api.spec.ts api/providers/__tests__/vscode-lm.spec.ts core/task-persistence core/agent/__tests__/AgentTurnEngine.spec.ts
@@ -139,7 +92,6 @@ pnpm check-types
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
-The repository-wide translation checker currently reports missing keys outside this change; the new unchanged-result
-key is present in every locale. Extremely small windows or triggers can still be insufficient for mandatory instructions
+Extremely small windows or triggers can still be insufficient for mandatory instructions
 and complete transactions. Compaction cannot manufacture capacity in that case. Provider token counts may also differ
 from local estimates; forced recovery therefore remains bounded and requires measured progress.

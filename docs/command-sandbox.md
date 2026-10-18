@@ -17,7 +17,7 @@ Alpha Ticket changes for the current project. It asks before launching sub-agent
 and detected outside-workspace or unresolved command writes. Ask requests approval for file changes and commands by
 default; saved non-wildcard prefixes can still allow matching commands. Full Access skips the ordinary per-action review
 for actions it permits, while explicit command denials remain in force. See the
-[approval-mode policy](approval-mode-policy.md) for the decision record and Codex comparison.
+[approval-mode policy](approval-mode-policy.md) for the approval contract.
 
 Earlier manifests seeded `git log`, `git diff`, and `git show` as allowed command prefixes. A one-time upgrade migration
 removes those exact entries from global state because they were product defaults, not a user's explicit opt-in. Other

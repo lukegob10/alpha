@@ -796,7 +796,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.2-faster-loading-and-followup-recovery"
+	public readonly latestAnnouncementId = "october-2026-v3.2.3-ux-and-thread-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

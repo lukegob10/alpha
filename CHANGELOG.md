@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.3
+
+### Patch Changes
+
+- Stabilize ticket mention previews and long-message overflow, keeping chat layouts steady while composing.
+- Integrate thread orchestration and improve task titles, chat delivery, follow-ups, and history recovery.
+- Remove dormant code and refresh repository guidance while preserving the shared extension runtime.
+- Update the extension version and in-app release announcement together for Alpha 3.2.3.
+
 ## 3.2.2
 
 ### Patch Changes

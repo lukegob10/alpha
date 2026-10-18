@@ -19,7 +19,6 @@ Alpha keeps delegated work visible, prevents search loops, and makes active trac
 - Managed-agent tasks open only after launch and retain accurate terminal reasons when startup fails
 - Repeated search-only steps trigger bounded evidence consolidation and concrete-action recovery
 - Folded command and edit traces pulse subtly while work is still running, with reduced-motion support
-- Plan tools, command outcomes, model prompts, and turn sequencing align more closely with Codex CLI
 - The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
 ---
@@ -34,8 +33,6 @@ Alpha keeps delegated work visible, prevents search loops, and makes active trac
 - Automate repetitive tasks
 - Run parallel task sessions so one agent can continue in the background while you start or inspect another
 - Utilize MCP Servers
-
-Developer note: concurrency architecture and implementation status are documented in [Multi-Agent Concurrency Spec](docs/multi-agent-concurrency-spec.md).
 
 Supported chat providers are GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible.
 Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. See [provider compatibility and recovery](docs/provider-reduction.md)

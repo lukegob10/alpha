@@ -16,20 +16,6 @@ failed task back into a spinner. Existing idle, closing, and closed labels remai
 their timestamp footer while sharing the status labels and symbols. Status tooltips and accessible names use the
 English history locale. This is a presentation change; lifecycle, session ownership, and persisted contracts are unchanged.
 
-## Reference behavior
-
-Retrieved the current Codex CLI source on **2026-10-05**:
-
-- [Status indicator and tests](https://github.com/openai/codex/blob/main/codex-rs/tui/src/status_indicator_widget.rs):
-  activity animation observes motion settings; `renders_without_spinner_when_animations_disabled` covers its static form.
-- [Terminal status surfaces](https://github.com/openai/codex/blob/main/codex-rs/tui/src/chatwidget/status_surfaces.rs):
-  active work and action-required status are distinct presentations.
-
-Alpha deliberately uses the user-approved history-slot design and colored dots rather than Codex CLI's terminal status
-layout. Alpha continues to project the existing canonical lifecycle. Colors come from the
-[VS Code theme color contract](https://code.visualstudio.com/api/references/theme-color), retrieved on the same date;
-the extension host baseline remains **1.125.0**.
-
 ## Validation
 
 ```sh

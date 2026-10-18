@@ -219,7 +219,6 @@ export const vscodeLlmModels = {
 	}),
 	// VS Code 1.125.0 / Copilot 0.53.0 catalog captured 2026-10-02. The observed
 	// prompt ceiling does not establish a configurable window or reasoning default.
-	// Provenance: docs/convergence-context-provider-2026-10-03.md.
 	"gpt-6.1-sol": copilotModel({
 		name: "GPT-6.1 Sol",
 		family: "gpt-6.1-sol",

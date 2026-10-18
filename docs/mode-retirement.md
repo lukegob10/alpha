@@ -15,11 +15,6 @@ The Modes settings editor offers workflow prompt overrides for Code. Plan keeps 
 so its ignored role, workflow guidance, and mode-specific instruction editors are hidden. Plan's description in the mode
 selector remains editable, and global instructions still apply across both modes. Saved Plan overrides remain readable
 without changing its workflow. This reflects the runtime's existing override boundary rather than changing prompt policy.
-The source check on 2026-10-17 used Codex commit `ce0323f2f2d3b25e82806cd555237da3db4e1897`: its
-[mode discovery](https://github.com/openai/codex/blob/ce0323f2f2d3b25e82806cd555237da3db4e1897/codex-rs/tui/src/collaboration_modes.rs#L86-L88)
-clears restored instruction overrides so the server supplies current mode instructions, and its
-[Plan template](https://github.com/openai/codex/blob/ce0323f2f2d3b25e82806cd555237da3db4e1897/codex-rs/collaboration-mode-templates/templates/plan.md)
-keeps planning rules under host authority. Alpha retains its own canonical Plan prompt and read-only enforcement.
 
 ## Plan handoffs and questions
 
@@ -34,19 +29,9 @@ continuing the task. A later conversational response preserves the prior handoff
 remain readable, including historical inline wrappers.
 No migration fabricates missing plans or answers; retired and unknown saved modes still resume in Plan as described below.
 
-The reference is Codex commit `bb64b894fd67158be0f874872e6d7bfe717e7368`:
-its [Plan template][codex-plan-template] makes official plans conditional, and the [TUI tests][codex-plan-tests] require
-proposed-plan output before offering implementation. Alpha retains its stricter exact, explicitly closed handoff contract.
-Codex's [display parser][codex-plan-parser] also accepts surrounding prose and closes an unterminated block at EOF;
-Alpha preserves those responses without creating a handoff.
-
 Unanswered primary-task followups remain pending in Ask and Auto approval modes regardless of whether the task is on screen.
 Explicitly configured autonomous followup timeouts, including Full Access, continue through the shared approval policy.
 A visibility change alone never supplies a user answer.
-
-[codex-plan-template]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/collaboration-mode-templates/templates/plan.md
-[codex-plan-tests]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/tui/src/chatwidget/tests/plan_mode.rs#L937-L982
-[codex-plan-parser]: https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/utils/stream-parser/src/proposed_plan.rs
 
 ## Existing data
 
@@ -77,23 +62,3 @@ delegation, prompt/tool filtering, mode selectors, and approval settings. The re
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
-
-## Validation record (2026-09-14)
-
-Repository-wide lint and typechecking passed. Focused tests cover the shared schemas, tool registry and parser,
-Code/Plan policy and restoration, provider identity, concurrent task transitions, delegation, automatic replies,
-mode selectors, and settings save/cancel behavior.
-
-`pnpm --filter @alpha-code/vscode-e2e test:core:1221` passed on the final runtime, including the required
-`test:smoke:1221` gate and the core-loop, completion-idle/follow-up, and managed-agent acceptance suites. All six host
-launches reported VS Code 1.122.1 and exit code 0.
-
-The broader `src/core/task/__tests__/Task.spec.ts` run has four existing compaction failures: the two successful-restore
-truncation cases under "preserves acknowledged context across empty retry", plus "keeps queued message after condense
-completes" and "does not cross-drain queues between separate tasks". All four reproduce using the saved pre-removal
-`Task.ts` from the user's working tree; 190 other cases pass on the final implementation. This removal does not change
-that compaction logic or weaken those assertions.
-
-The subsequent validation on 2026-09-14 corrected those four test fixtures:
-they now model a measured context reduction and retain real history replacement. The acknowledged-context and
-per-task queue assertions pass without changing compaction runtime behavior.

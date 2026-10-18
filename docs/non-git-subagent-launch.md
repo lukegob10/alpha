@@ -10,22 +10,6 @@ The owning boundary is `ManagedSubagentWorktreeService`: it validates worker pat
 change capture, conflict detection, Apply/Discard, and recovery. Changing the requested role or falling back to
 unrestricted shared-workspace writes would change authority or bypass those established protections.
 
-## Codex reference and intentional difference
-
-The current reference is [openai/codex commit 0e67502123b4c6952b9fa5d672d2907fe4059f56](https://github.com/openai/codex/commit/0e67502123b4c6952b9fa5d672d2907fe4059f56),
-retrieved on 2026-10-16. Its native
-[spawn path](https://github.com/openai/codex/blob/0e67502123b4c6952b9fa5d672d2907fe4059f56/codex-rs/core/src/thread_spawn.rs)
-passes the invoking step's environment into the child. The
-[child configuration](https://github.com/openai/codex/blob/0e67502123b4c6952b9fa5d672d2907fe4059f56/codex-rs/core/src/agent/child_config.rs)
-inherits the working directory and runtime approval/permission snapshot, including after role overrides.
-Neither introduces a Git repository admission requirement. The nearest
-[multi-agent configuration tests](https://github.com/openai/codex/blob/0e67502123b4c6952b9fa5d672d2907fe4059f56/codex-rs/core/src/tools/handlers/multi_agents_tests.rs)
-use a fresh temporary working directory and assert the resulting child configuration.
-
-Alpha aligns launch availability while deliberately retaining its existing Worker isolation and reviewed change sets.
-It reuses its TypeScript worker service and native Git operations; it does not introduce another agent runtime or
-change execution, approval, protected-path, or mutation-gate policy.
-
 ## Plain-folder behavior
 
 - Scope validation retains physical-path, exact-file, traversal, `.git`, and symlink checks. Only genuinely absent

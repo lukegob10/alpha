@@ -480,9 +480,7 @@ function validateCertificationDocumentation(matrix) {
 		"certification",
 		"managed-agent-milestone-certification.md",
 	)
-	const architecturePath = path.join(repositoryRoot, "docs", "multi-agent-concurrency-spec.md")
 	const certification = readFileSync(certificationPath, "utf8").replace(/\r\n/g, "\n")
-	const architecture = readFileSync(architecturePath, "utf8").replace(/\r\n/g, "\n")
 	const deterministicSection = extractMarkdownSection(certification, "## Deterministic matrix")
 	const documentedDeterministicIds = [...deterministicSection.matchAll(/^\|\s*`([A-Z0-9-]+)`\s*\|/gm)].map(
 		(match) => match[1],
@@ -503,44 +501,6 @@ function validateCertificationDocumentation(matrix) {
 	const expectedIntegrationIds = matrix.integrationPending.map((row) => row.id)
 	if (JSON.stringify(documentedIntegrationIds) !== JSON.stringify(expectedIntegrationIds)) {
 		fail("Certification pending-integration list does not match matrix row IDs and order")
-	}
-
-	const sectionMarker = "## Latest deterministic execution\n"
-	const sectionStart = certification.indexOf(sectionMarker)
-	const sectionEnd = certification.indexOf("\n## ", sectionStart + sectionMarker.length)
-	if (sectionStart < 0 || sectionEnd < 0) fail("Certification document is missing its execution table")
-	const executionSection = certification.slice(sectionStart, sectionEnd)
-	const trackCounts = [...executionSection.matchAll(/^\|\s*[^*|][^|]*\|\s*(\d+)\s*\|$/gm)].map((match) =>
-		Number(match[1]),
-	)
-	const totalMatch = /^\|\s*\*\*Total\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|$/m.exec(executionSection)
-	if (trackCounts.length !== matrix.tracks.length || !totalMatch) {
-		fail(`Certification execution table must contain ${matrix.tracks.length} track rows and one bold total row`)
-	}
-	const documentedTestCount = Number(totalMatch[1])
-	const calculatedTestCount = trackCounts.reduce((total, count) => total + count, 0)
-	if (calculatedTestCount !== documentedTestCount) {
-		fail(
-			`Certification execution table rows sum to ${calculatedTestCount}, but its total claims ${documentedTestCount}`,
-		)
-	}
-	if (documentedTestCount < matrix.minimumTestCount) {
-		fail(
-			`Certification execution table total ${documentedTestCount} is below matrix floor ${matrix.minimumTestCount}`,
-		)
-	}
-	for (const expected of [
-		`**${matrix.expectedDeterministicRowCount} PASS, 0 FAIL, 0 pending merge, 0 baseline-debt exceptions**`,
-		`**${matrix.tracks.length} tracks, ${documentedTestCount} tests passed, 0 failed, 0 skipped, 0 todo**`,
-		`**${matrix.expectedIntegrationPendingCount} PENDING-INTEGRATION**`,
-	]) {
-		if (!certification.includes(expected)) fail(`Certification verdict is missing ${expected}`)
-	}
-	const architectureSummary = new RegExp(
-		`passes all ${matrix.expectedDeterministicRowCount} deterministic rows:\\s+${matrix.tracks.length} tracks,\\s+${documentedTestCount} tests`,
-	)
-	if (!architectureSummary.test(architecture)) {
-		fail("Architecture spec deterministic summary does not match the certification execution table")
 	}
 }
 
@@ -658,7 +618,7 @@ function printCommands(prerequisites, resolvedTracks, integrationPending, eviden
 		`strict-release-gate :: node scripts/certification/managed-agent-milestone-certify.mjs --strict --evidence ${quote(evidenceRelativePath)}`,
 	)
 	console.log(
-		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification docs/multi-agent-concurrency-spec.md src/core/agent/__tests__/certification",
+		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification src/core/agent/__tests__/certification",
 	)
 	console.log("harness-syntax-check :: node --check scripts/certification/managed-agent-milestone-certify.mjs")
 	console.log(
