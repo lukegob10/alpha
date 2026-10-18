@@ -17,7 +17,7 @@ Alpha Ticket changes for the current project. It asks before launching sub-agent
 and detected outside-workspace or unresolved command writes. Ask requests approval for file changes and commands by
 default; saved non-wildcard prefixes can still allow matching commands. Full Access skips the ordinary per-action review
 for actions it permits, while explicit command denials remain in force. See the
-[approval-mode policy](approval-mode-policy.md) for the decision record and Codex comparison.
+[approval-mode policy](approval-mode-policy.md) for the approval contract.
 
 Earlier manifests seeded `git log`, `git diff`, and `git show` as allowed command prefixes. A one-time upgrade migration
 removes those exact entries from global state because they were product defaults, not a user's explicit opt-in. Other
@@ -57,7 +57,7 @@ No settings reset or per-project setup is introduced. Runtime files left by 2.1.
 Codex installation or account data.
 
 Regression coverage lives in `commandPathScope.spec.ts`, `outsideWorkspaceAccess.spec.ts`, command/lifecycle tests,
-`CommandExecution.spec.tsx`, and the shared message-schema test. The exact VS Code 1.122.1 release gate is followed by
-`test:command-paths:1221:run`, which checks ordinary auto-approval, outside-path approval presentation, and actual command
+`CommandExecution.spec.tsx`, and the shared message-schema test. The exact VS Code 1.125.0 release gate is followed by
+`test:command-paths:1250:run`, which checks ordinary auto-approval, outside-path approval presentation, and actual command
 execution after a one-run approval. Unit tests verify that denying review prevents the effect, that junction retargeting
 is rejected, and that restricted child policy cannot be widened.

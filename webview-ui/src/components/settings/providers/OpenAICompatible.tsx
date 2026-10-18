@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { useEvent } from "react-use"
 import { Checkbox } from "vscrui"
 import { VSCodeButton, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
@@ -87,18 +87,33 @@ export const OpenAICompatible = ({
 		const headers = apiConfiguration?.openAiHeaders || {}
 		return Object.entries(headers)
 	})
+	const headerSource = useRef({ id: apiConfiguration.id, headers: apiConfiguration.openAiHeaders })
 
 	useEffect(() => {
 		setAzureApiVersionSelected(!!apiConfiguration?.azureApiVersion)
+	}, [apiConfiguration?.azureApiVersion])
+
+	useEffect(() => {
+		if (
+			headerSource.current.id === apiConfiguration.id &&
+			headerSource.current.headers === apiConfiguration.openAiHeaders
+		) {
+			return
+		}
+
+		headerSource.current = { id: apiConfiguration.id, headers: apiConfiguration.openAiHeaders }
 		setCustomHeaders(Object.entries(apiConfiguration?.openAiHeaders || {}))
-	}, [apiConfiguration?.azureApiVersion, apiConfiguration?.openAiHeaders])
+	}, [apiConfiguration.id, apiConfiguration.openAiHeaders])
 
 	const commitCustomHeaders = useCallback(
 		(headers: [string, string][]) => {
+			const committed = convertHeadersToObject(headers)
+			// A settings-buffer echo must preserve unfinished rows and editing whitespace.
+			headerSource.current = { id: apiConfiguration.id, headers: committed }
 			setCustomHeaders(headers)
-			setApiConfigurationField("openAiHeaders", convertHeadersToObject(headers))
+			setApiConfigurationField("openAiHeaders", committed)
 		},
-		[setApiConfigurationField],
+		[apiConfiguration.id, setApiConfigurationField],
 	)
 
 	const handleAddCustomHeader = useCallback(() => {

@@ -8,6 +8,7 @@ import {
 	getRoleDefinition,
 	getWhenToUse,
 	modes,
+	planModeSlug,
 } from "@alpha/modes"
 
 import { Button, Input, Textarea } from "@/components/ui"
@@ -42,6 +43,7 @@ const ModesView = ({
 	const [selectedMode, setSelectedMode] = useState<UserFacingModeSlug>(codeModeSlug)
 	const userFacingModes = useMemo(() => getUserFacingModeOptions(modes), [])
 	const selectedModeName = getUserFacingModeName(selectedMode)
+	const isPlanMode = selectedMode === planModeSlug
 
 	const getPromptValue = (field: EditablePromptField): string =>
 		customModePrompts[selectedMode]?.[field] ?? DEFAULT_PROMPT_VALUE[field](selectedMode)
@@ -114,24 +116,33 @@ const ModesView = ({
 				</div>
 
 				<div key={selectedMode} className="flex flex-col gap-4" data-testid="primary-mode-setup">
-					<div>
-						<div className="mb-1 flex items-center justify-between gap-2">
-							<label htmlFor={`${selectedMode}-role-definition`} className="font-medium">
-								{t("prompts:roleDefinition.title")}
-							</label>
-							{resetButton("roleDefinition", t("prompts:roleDefinition.resetToDefault"))}
-						</div>
-						<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
-							{t("prompts:roleDefinition.description")}
+					{isPlanMode && (
+						<p className="m-0 text-sm text-vscode-descriptionForeground">
+							{t("prompts:modes.planWorkflowDescription")}
 						</p>
-						<Textarea
-							id={`${selectedMode}-role-definition`}
-							rows={5}
-							value={getPromptValue("roleDefinition")}
-							data-testid={`${selectedMode}-prompt-textarea`}
-							onChange={(event) => updatePromptField("roleDefinition", event.target.value || undefined)}
-						/>
-					</div>
+					)}
+					{!isPlanMode && (
+						<div>
+							<div className="mb-1 flex items-center justify-between gap-2">
+								<label htmlFor={`${selectedMode}-role-definition`} className="font-medium">
+									{t("prompts:roleDefinition.title")}
+								</label>
+								{resetButton("roleDefinition", t("prompts:roleDefinition.resetToDefault"))}
+							</div>
+							<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
+								{t("prompts:roleDefinition.description")}
+							</p>
+							<Textarea
+								id={`${selectedMode}-role-definition`}
+								rows={5}
+								value={getPromptValue("roleDefinition")}
+								data-testid={`${selectedMode}-prompt-textarea`}
+								onChange={(event) =>
+									updatePromptField("roleDefinition", event.target.value || undefined)
+								}
+							/>
+						</div>
+					)}
 
 					<div>
 						<div className="mb-1 flex items-center justify-between gap-2">
@@ -151,45 +162,51 @@ const ModesView = ({
 						/>
 					</div>
 
-					<div>
-						<div className="mb-1 flex items-center justify-between gap-2">
-							<label htmlFor={`${selectedMode}-when-to-use`} className="font-medium">
-								{t("prompts:whenToUse.title")}
-							</label>
-							{resetButton("whenToUse", t("prompts:whenToUse.resetToDefault"))}
-						</div>
-						<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
-							Describe when {selectedModeName} is the right workflow for a task.
-						</p>
-						<Textarea
-							id={`${selectedMode}-when-to-use`}
-							rows={4}
-							value={getPromptValue("whenToUse")}
-							data-testid={`${selectedMode}-when-to-use-textarea`}
-							onChange={(event) => updatePromptField("whenToUse", event.target.value || undefined)}
-						/>
-					</div>
+					{!isPlanMode && (
+						<>
+							<div>
+								<div className="mb-1 flex items-center justify-between gap-2">
+									<label htmlFor={`${selectedMode}-when-to-use`} className="font-medium">
+										{t("prompts:whenToUse.title")}
+									</label>
+									{resetButton("whenToUse", t("prompts:whenToUse.resetToDefault"))}
+								</div>
+								<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
+									Describe when {selectedModeName} is the right workflow for a task.
+								</p>
+								<Textarea
+									id={`${selectedMode}-when-to-use`}
+									rows={4}
+									value={getPromptValue("whenToUse")}
+									data-testid={`${selectedMode}-when-to-use-textarea`}
+									onChange={(event) =>
+										updatePromptField("whenToUse", event.target.value || undefined)
+									}
+								/>
+							</div>
 
-					<div>
-						<div className="mb-1 flex items-center justify-between gap-2">
-							<label htmlFor={`${selectedMode}-custom-instructions`} className="font-medium">
-								{t("prompts:customInstructions.title")}
-							</label>
-							{resetButton("customInstructions", t("prompts:customInstructions.resetToDefault"))}
-						</div>
-						<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
-							{t("prompts:customInstructions.description", { modeName: selectedModeName })}
-						</p>
-						<Textarea
-							id={`${selectedMode}-custom-instructions`}
-							rows={8}
-							value={getPromptValue("customInstructions")}
-							data-testid={`${selectedMode}-custom-instructions-textarea`}
-							onChange={(event) =>
-								updatePromptField("customInstructions", event.target.value || undefined)
-							}
-						/>
-					</div>
+							<div>
+								<div className="mb-1 flex items-center justify-between gap-2">
+									<label htmlFor={`${selectedMode}-custom-instructions`} className="font-medium">
+										{t("prompts:customInstructions.title")}
+									</label>
+									{resetButton("customInstructions", t("prompts:customInstructions.resetToDefault"))}
+								</div>
+								<p className="mt-0 mb-2 text-sm text-vscode-descriptionForeground">
+									{t("prompts:customInstructions.description", { modeName: selectedModeName })}
+								</p>
+								<Textarea
+									id={`${selectedMode}-custom-instructions`}
+									rows={8}
+									value={getPromptValue("customInstructions")}
+									data-testid={`${selectedMode}-custom-instructions-textarea`}
+									onChange={(event) =>
+										updatePromptField("customInstructions", event.target.value || undefined)
+									}
+								/>
+							</div>
+						</>
+					)}
 				</div>
 			</Section>
 

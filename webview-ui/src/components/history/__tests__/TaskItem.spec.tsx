@@ -76,6 +76,13 @@ describe("TaskItem", () => {
 		expect(screen.getByText("$0.00")).toBeInTheDocument() // Component shows $0.00 for small amounts
 	})
 
+	it("shows the generated title while preserving the original prompt", () => {
+		render(<TaskItem item={{ ...mockTask, generatedTitle: "Improve chat names" }} variant="full" />)
+
+		expect(screen.getByText("Improve chat names")).toBeInTheDocument()
+		expect(screen.queryByText("Test task")).not.toBeInTheDocument()
+	})
+
 	it("handles selection in selection mode", () => {
 		const onToggleSelection = vi.fn()
 		render(

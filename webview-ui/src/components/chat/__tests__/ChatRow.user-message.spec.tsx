@@ -65,6 +65,94 @@ function renderMessage(isStreaming = false, isTaskPrompt = false) {
 describe("user message bubbles", () => {
 	beforeEach(() => vi.clearAllMocks())
 
+	it.each([
+		["requested", "Stop requested by another chat"],
+		["stopped", "Stopped by another chat"],
+	] as const)("shows a %s stop with its reason in the attributed bubble", (stopStatus, label) => {
+		const incoming: AlphaMessage = {
+			ts: 11,
+			type: "say",
+			say: "agent_message",
+			text: "Stop: all requested work is complete.",
+			agentMessage: { id: "stop-1", senderTaskId: "peer-chat", stopStatus },
+		}
+		const { container } = render(
+			<ExtensionStateContextProvider>
+				<ChatRow
+					message={incoming}
+					environment={environment}
+					isExpanded={false}
+					isLast={true}
+					isStreaming={false}
+					onToggleExpand={() => {}}
+				/>
+			</ExtensionStateContextProvider>,
+		)
+		const article = screen.getByRole("article", { name: "From another chat" })
+		expect(within(article).getByRole("status")).toHaveTextContent(label)
+		expect(container.querySelector(".user-message")?.textContent).toBe(incoming.text)
+		expect(within(article).queryByRole("button", { name: "Edit and resend" })).not.toBeInTheDocument()
+		fireEvent.click(within(article).getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(incoming.text, expect.anything())
+	})
+
+	it.each([
+		[undefined, "API Request Cancelled"],
+		["stop-1", "Stopped by another chat"],
+	] as const)("identifies the cancellation source for API receipt %s", (agentStopMessageId, label) => {
+		const request: AlphaMessage = {
+			ts: 11,
+			type: "say",
+			say: "api_req_started",
+			text: JSON.stringify({ cancelReason: "user_cancelled", agentStopMessageId, cost: 0 }),
+		}
+		render(
+			<ExtensionStateContextProvider>
+				<ChatRow
+					message={request}
+					environment={environment}
+					isExpanded={false}
+					isLast={true}
+					isStreaming={false}
+					onToggleExpand={() => {}}
+				/>
+			</ExtensionStateContextProvider>,
+		)
+		expect(screen.getByText(label)).toBeInTheDocument()
+	})
+
+	it("shows incoming chat input in the same colored bubble with attribution and copy only", () => {
+		const incoming: AlphaMessage = {
+			ts: 11,
+			type: "say",
+			say: "agent_message",
+			text: "The parser review is ready.\nPlease check the result.",
+			agentMessage: { id: "message-1", senderTaskId: "peer-chat" },
+		}
+		const { container } = render(
+			<ExtensionStateContextProvider>
+				<ChatRow
+					message={incoming}
+					environment={environment}
+					isExpanded={false}
+					isLast={true}
+					isStreaming={false}
+					onToggleExpand={() => {}}
+				/>
+			</ExtensionStateContextProvider>,
+		)
+		const article = screen.getByRole("article", { name: "From another chat" })
+		expect(article).toHaveClass("items-end")
+		expect(container.querySelector(".user-message")?.textContent).toBe(incoming.text)
+		expect(within(article).getByText("From another chat")).toBeInTheDocument()
+		fireEvent.click(within(article).getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(incoming.text, expect.anything())
+		expect(within(article).queryByRole("button", { name: "Edit and resend" })).not.toBeInTheDocument()
+		expect(within(article).queryByRole("button", { name: "Delete Message" })).not.toBeInTheDocument()
+		fireEvent.click(within(article).getByText(/The parser review is ready/))
+		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+	})
+
 	it("lets the opening prompt be copied, edited and resent with its attachments", () => {
 		const { container } = renderMessage(false, true)
 		const article = screen.getByRole("article", { name: "You said" })

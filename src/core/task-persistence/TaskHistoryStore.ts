@@ -2,12 +2,23 @@ import * as fs from "fs/promises"
 import * as fsSync from "fs"
 import * as path from "path"
 
-import { historyItemSchema, taskDisplayNameSchema, type HistoryItem, type TaskRenameErrorCode } from "@alpha-code/types"
+import {
+	historyItemSchema,
+	taskDisplayNameSchema,
+	taskGeneratedTitleSchema,
+	type HistoryItem,
+	type TaskRenameErrorCode,
+} from "@alpha-code/types"
 import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
-import { getStorageBasePath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
+import {
+	getStorageBasePath,
+	resolveExistingTaskDirectoryPathReadOnly,
+	resolveTaskDirectoryPath,
+} from "../../utils/storage"
+import { withFileLock } from "./atomicWrite"
 
 /**
  * Index file format for fast startup reads.
@@ -60,7 +71,7 @@ export class TaskRenameError extends Error {
 export interface TaskHistoryStoreOptions {
 	/**
 	 * Optional callback invoked inside the write lock after each mutation
-	 * (upsert, rename, delete, deleteMany). Used for serialized write-through to
+	 * (upsert, rename, generated title, delete, deleteMany). Used for serialized write-through to
 	 * globalState during the transition period.
 	 */
 	onWrite?: (items: HistoryItem[]) => Promise<void>
@@ -277,6 +288,60 @@ export class TaskHistoryStore {
 				}
 			}
 			return renamed
+		})
+	}
+
+	/** Persist a generated label only while the user has not supplied one. */
+	async setGeneratedTitle(taskId: string, title: string, workspace: string): Promise<HistoryItem | undefined> {
+		const parsed = taskGeneratedTitleSchema.safeParse(title)
+		if (!parsed.success) return undefined
+		return this.withLock(async () => {
+			let taskDirectory: string
+			try {
+				taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
+			} catch {
+				return undefined
+			}
+			const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+			if (!(await this.readHistoryForMutation(filePath, taskId))) return undefined
+			let updated: HistoryItem | undefined
+			let expectedContent: string | undefined
+			let changed = false
+			await safeWriteJson(filePath, null, {
+				atomicReplace: true,
+				prepareData: async () => {
+					const current = await this.readHistoryForMutation(filePath, taskId)
+					if (!current) throw new Error("Task history disappeared during title generation")
+					expectedContent = current.content
+					updated = current.item
+					if (
+						!this.isForWorkspace(current.item, workspace) ||
+						current.item.displayName ||
+						current.item.generatedTitle
+					) {
+						return current.item
+					}
+					changed = true
+					updated = { ...current.item, generatedTitle: parsed.data }
+					return updated
+				},
+				commitTempFile: (temporaryPath, destinationPath) => {
+					this.commitTaskFile(temporaryPath, destinationPath, expectedContent)
+				},
+			})
+			if (!updated) return undefined
+			this.cache.set(taskId, updated)
+			if (!changed) return undefined
+			this.scheduleIndexWrite()
+			if (this.onWrite) {
+				try {
+					await this.onWrite(this.getAll())
+				} catch {
+					// The task file is authoritative; a compatibility mirror cannot undo a generated label.
+					console.error("[TaskHistoryStore] Generated title compatibility projection failed")
+				}
+			}
+			return updated
 		})
 	}
 
@@ -517,37 +582,56 @@ export class TaskHistoryStore {
 			return
 		}
 
-		// Legacy task files and their derived index must share the same configured root snapshot.
-		const tasksDir = await this.getTasksDir()
-		for (const item of taskHistoryEntries) {
-			if (!item.id) {
-				continue
+		return this.withLock(async () => {
+			// Legacy task files and their derived index share one configured root snapshot.
+			const tasksDir = await this.getTasksDir()
+			for (const item of taskHistoryEntries) {
+				if (!item.id) continue
+				const filePath = await this.getTaskFilePath(item.id, tasksDir)
+				try {
+					await fs.access(path.dirname(filePath))
+				} catch (error) {
+					// Preserve orphaned legacy records; only a missing directory permits skipping.
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+					throw error
+				}
+
+				await withFileLock(filePath, async () => {
+					// A sibling writer may have created canonical metadata while migration waited.
+					let currentContent: string | undefined
+					try {
+						const stats = await fs.lstat(filePath)
+						if (!stats.isFile() || stats.isSymbolicLink())
+							throw new Error("Task history is not a regular file")
+						currentContent = await fs.readFile(filePath, "utf8")
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+					}
+					if (currentContent !== undefined) {
+						// Existing evidence wins even when malformed or from an incompatible schema.
+						// Backfill must still recover other tasks; parsing tolerance never covers I/O.
+						let current: unknown
+						try {
+							current = JSON.parse(currentContent)
+						} catch {
+							return
+						}
+						if (isStoredHistoryItem(current) && current.id === item.id) this.cache.set(item.id, current)
+						return
+					}
+					await safeWriteJson(filePath, item, {
+						atomicReplace: true,
+						externalTransaction: true,
+						commitTempFile: (temporaryPath, destinationPath) => {
+							this.commitTaskFile(temporaryPath, destinationPath, undefined)
+						},
+					})
+					this.cache.set(item.id, item)
+				})
 			}
 
-			// Check if task directory exists on disk
-			const taskDir = path.join(tasksDir, item.id)
-
-			try {
-				await fs.access(taskDir)
-			} catch {
-				// Task directory doesn't exist; skip this entry as it's orphaned in globalState
-				continue
-			}
-
-			// Write history_item.json if it doesn't exist yet
-			const filePath = path.join(taskDir, GlobalFileNames.historyItem)
-			try {
-				await fs.access(filePath)
-				// File already exists, skip (don't overwrite existing per-task files)
-			} catch {
-				// File doesn't exist, write it
-				await safeWriteJson(filePath, item)
-				this.cache.set(item.id, item)
-			}
-		}
-
-		// Write the index
-		await this.writeIndex(tasksDir)
+			await this.writeIndex(tasksDir)
+		})
 	}
 
 	// ────────────────────────────── Private: Index management ──────────────────────────────
@@ -658,8 +742,15 @@ export class TaskHistoryStore {
 			prepareData: async () => {
 				const current = await this.readHistoryForMutation(filePath, item.id)
 				expectedContent = current?.content
-				// Label authority belongs to renameTask. A stale full-record save may never undo it.
-				if (current) merged = { ...current.item, ...item, displayName: current.item.displayName }
+				// A stale full-record save may never undo user naming or generated-title state.
+				if (current) {
+					merged = {
+						...current.item,
+						...item,
+						displayName: current.item.displayName,
+						generatedTitle: current.item.generatedTitle,
+					}
+				}
 				return merged
 			},
 			commitTempFile: (temporaryPath, destinationPath) => {
@@ -839,7 +930,8 @@ export class TaskHistoryStore {
 	 * Get the path to a task's `history_item.json` file.
 	 */
 	private async getTaskFilePath(taskId: string, tasksDir?: string): Promise<string> {
-		return path.join(tasksDir ?? (await this.getTasksDir()), taskId, GlobalFileNames.historyItem)
+		const tasksRoot = tasksDir ?? (await this.getTasksDir())
+		return path.join(resolveTaskDirectoryPath(path.dirname(tasksRoot), taskId), GlobalFileNames.historyItem)
 	}
 
 	/**

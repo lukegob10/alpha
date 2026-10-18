@@ -15,6 +15,9 @@ class WorkspaceTracker {
 	private updateTimer: NodeJS.Timeout | null = null
 	private prevWorkSpacePath: string | undefined
 	private resetTimer: NodeJS.Timeout | null = null
+	private disposed = false
+	private generation = 0
+	private discoveryGeneration = 0
 
 	get cwd() {
 		return this.providerRef?.deref()?.cwd ?? getWorkspacePath()
@@ -26,16 +29,22 @@ class WorkspaceTracker {
 
 	async initializeFilePaths() {
 		// should not auto get filepaths for desktop since it would immediately show permission popup before Alpha ever creates a file
-		if (!this.cwd) {
+		const cwd = this.cwd
+		if (this.disposed || !cwd || this.prevWorkSpacePath !== cwd) {
 			return
 		}
-		const tempCwd = this.cwd
-		const [files, _] = await listFiles(tempCwd, true, MAX_INITIAL_FILES)
-		if (this.prevWorkSpacePath !== tempCwd) {
+		const generation = this.generation
+		const discoveryGeneration = ++this.discoveryGeneration
+		const [files] = await listFiles(cwd, true, MAX_INITIAL_FILES)
+		if (!this.isCurrentWorkspace(cwd, generation) || this.discoveryGeneration !== discoveryGeneration) {
 			return
 		}
-		files.slice(0, MAX_INITIAL_FILES).forEach((file) => this.filePaths.add(this.normalizeFilePath(file)))
+		files.slice(0, MAX_INITIAL_FILES).forEach((file) => this.filePaths.add(this.normalizeFilePath(file, cwd)))
 		this.workspaceDidUpdate()
+	}
+
+	private isCurrentWorkspace(cwd: string | undefined, generation: number): boolean {
+		return !this.disposed && this.generation === generation && this.cwd === cwd
 	}
 
 	private registerListeners() {
@@ -73,7 +82,7 @@ class WorkspaceTracker {
 		)
 	}
 
-	private getOpenedTabsInfo() {
+	private getOpenedTabsInfo(cwd = this.cwd) {
 		return vscode.window.tabGroups.all.reduce(
 			(acc, group) => {
 				const groupTabs = group.tabs
@@ -81,7 +90,7 @@ class WorkspaceTracker {
 					.map((tab) => ({
 						label: tab.label,
 						isActive: tab.isActive,
-						path: toRelativePath((tab.input as vscode.TabInputText).uri.fsPath, this.cwd || ""),
+						path: toRelativePath((tab.input as vscode.TabInputText).uri.fsPath, cwd || ""),
 					}))
 
 				groupTabs.forEach((tab) => (tab.isActive ? acc.unshift(tab) : acc.push(tab)))
@@ -91,65 +100,80 @@ class WorkspaceTracker {
 		)
 	}
 
-	private async workspaceDidReset() {
+	private workspaceDidReset() {
+		if (this.disposed) return
+		const cwd = this.cwd
+		const generation = ++this.generation
 		if (this.resetTimer) {
 			clearTimeout(this.resetTimer)
 		}
+		if (this.updateTimer) {
+			clearTimeout(this.updateTimer)
+			this.updateTimer = null
+		}
 		this.resetTimer = setTimeout(async () => {
-			if (this.prevWorkSpacePath !== this.cwd) {
+			this.resetTimer = null
+			if (!this.isCurrentWorkspace(cwd, generation)) return
+			if (this.prevWorkSpacePath !== cwd) {
 				await this.providerRef.deref()?.postMessageToWebview({
 					type: "workspaceUpdated",
 					filePaths: [],
-					openedTabs: this.getOpenedTabsInfo(),
+					openedTabs: this.getOpenedTabsInfo(cwd),
 				})
+				if (!this.isCurrentWorkspace(cwd, generation)) return
 				this.filePaths.clear()
-				this.prevWorkSpacePath = this.cwd
+				this.prevWorkSpacePath = cwd
 				this.initializeFilePaths()
 			}
 		}, 300) // Debounce for 300ms
 	}
 
 	private workspaceDidUpdate() {
+		const cwd = this.cwd
+		const generation = this.generation
+		if (this.disposed || this.prevWorkSpacePath !== cwd) return
 		if (this.updateTimer) {
 			clearTimeout(this.updateTimer)
 		}
 		this.updateTimer = setTimeout(() => {
-			if (!this.cwd) {
+			this.updateTimer = null
+			if (!cwd || !this.isCurrentWorkspace(cwd, generation)) {
 				return
 			}
 
-			const relativeFilePaths = Array.from(this.filePaths).map((file) => toRelativePath(file, this.cwd))
+			const relativeFilePaths = Array.from(this.filePaths).map((file) => toRelativePath(file, cwd))
 			this.providerRef.deref()?.postMessageToWebview({
 				type: "workspaceUpdated",
 				filePaths: relativeFilePaths,
-				openedTabs: this.getOpenedTabsInfo(),
+				openedTabs: this.getOpenedTabsInfo(cwd),
 			})
-			this.updateTimer = null
 		}, 300) // Debounce for 300ms
 	}
 
-	private normalizeFilePath(filePath: string): string {
-		const resolvedPath = this.cwd ? path.resolve(this.cwd, filePath) : path.resolve(filePath)
+	private normalizeFilePath(filePath: string, cwd = this.cwd): string {
+		const resolvedPath = cwd ? path.resolve(cwd, filePath) : path.resolve(filePath)
 		return filePath.endsWith("/") ? resolvedPath + "/" : resolvedPath
 	}
 
-	private async addFilePath(filePath: string): Promise<string> {
+	private async addFilePath(filePath: string): Promise<void> {
+		const cwd = this.cwd
+		const generation = this.generation
 		// Allow for some buffer to account for files being created/deleted during a task
-		if (this.filePaths.size >= MAX_INITIAL_FILES * 2) {
-			return filePath
+		if (this.disposed || this.prevWorkSpacePath !== cwd || this.filePaths.size >= MAX_INITIAL_FILES * 2) {
+			return
 		}
 
-		const normalizedPath = this.normalizeFilePath(filePath)
+		const normalizedPath = this.normalizeFilePath(filePath, cwd)
 		try {
 			const stat = await vscode.workspace.fs.stat(vscode.Uri.file(normalizedPath))
+			if (!this.isCurrentWorkspace(cwd, generation)) return
 			const isDirectory = (stat.type & vscode.FileType.Directory) !== 0
 			const pathWithSlash = isDirectory && !normalizedPath.endsWith("/") ? normalizedPath + "/" : normalizedPath
 			this.filePaths.add(pathWithSlash)
-			return pathWithSlash
 		} catch {
+			if (!this.isCurrentWorkspace(cwd, generation)) return
 			// If stat fails, assume it's a file (this can happen for newly created files)
 			this.filePaths.add(normalizedPath)
-			return normalizedPath
 		}
 	}
 
@@ -159,6 +183,9 @@ class WorkspaceTracker {
 	}
 
 	public dispose() {
+		if (this.disposed) return
+		this.disposed = true
+		this.generation++
 		if (this.updateTimer) {
 			clearTimeout(this.updateTimer)
 			this.updateTimer = null

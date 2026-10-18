@@ -23,6 +23,7 @@ import {
 	type ChatCommand,
 	type ChatCommandErrorCode,
 	type ChatCommandResult,
+	TaskLifecycleState,
 	TelemetryEventName,
 	AlphaCodeSettings,
 	ExperimentId,
@@ -1937,9 +1938,15 @@ export const webviewMessageHandler = async (
 			await updateGlobalState("autoApprovalEnabled", message.bool ?? false)
 			await provider.postStateToWebview()
 			break
-		case "enhancePrompt":
+		case "enhancePrompt": {
 			if (message.text) {
+				const response = {
+					type: "enhancedPrompt" as const,
+					...(message.requestId === undefined ? {} : { requestId: message.requestId }),
+				}
 				try {
+					// The selected task may change while configuration or the provider is awaited.
+					const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 					const state = await provider.getState()
 
 					const {
@@ -1959,8 +1966,6 @@ export const webviewMessageHandler = async (
 					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
 					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
-					const currentAlpha = provider.getCurrentTask()
-
 					const result = await MessageEnhancer.enhanceMessage({
 						text: message.text,
 						apiConfiguration,
@@ -1974,7 +1979,7 @@ export const webviewMessageHandler = async (
 
 					if (result.success && result.enhancedText) {
 						MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
-						await provider.postMessageToWebview({ type: "enhancedPrompt", text: result.enhancedText })
+						await provider.postMessageToWebview({ ...response, text: result.enhancedText })
 					} else {
 						throw new Error(result.error || "Unknown error")
 					}
@@ -1984,10 +1989,11 @@ export const webviewMessageHandler = async (
 					)
 
 					vscode.window.showErrorMessage(t("common:errors.enhance_prompt"))
-					await provider.postMessageToWebview({ type: "enhancedPrompt" })
+					await provider.postMessageToWebview(response)
 				}
 			}
 			break
+		}
 		case "getSystemPrompt":
 			try {
 				const systemPrompt = await generateSystemPrompt(provider, message)
@@ -3712,13 +3718,35 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "steerQueuedMessage": {
-			const task = getRequiredTaskForMessage(provider, message, "steerQueuedMessage")
+			const task = getTaskForMessage(provider, message)
 			if (!task) {
+				provider.log("[webviewMessageHandler] Ignoring steerQueuedMessage: missing or unknown taskId")
+				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				break
+			}
+			const canResumeCompletedFollowup = () =>
+				task.taskKind === "primary" &&
+				task.isCompleted?.() === true &&
+				!task.abort &&
+				!task.abandoned &&
+				provider.getLiveTask(message.taskId) === task &&
+				provider.getLiveTaskMetadata()[task.taskId]?.lifecycle === TaskLifecycleState.Completed
+			const canAdmitSteer = () =>
+				provider.getLiveTask(message.taskId) === task &&
+				!task.abort &&
+				!task.abandoned &&
+				(task.isCompleted?.() ? canResumeCompletedFollowup() : provider.canAcceptTaskInput(message.taskId))
+			if (!canAdmitSteer()) {
+				provider.log(`[webviewMessageHandler] Ignoring steerQueuedMessage: task ${message.taskId} is terminal`)
 				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
 				break
 			}
 
 			await task.messageQueueService.ready
+			if (!canAdmitSteer()) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				break
+			}
 			// Selection stays recoverable until the containing transcript is committed.
 			const queued = task.messageQueueService.getMessage(message.text ?? "")
 
@@ -3726,13 +3754,33 @@ export const webviewMessageHandler = async (
 				await postChatCommandResult("steerQueuedMessage", "rejected", "message_not_found")
 				break
 			}
-			if (typeof task.canAcceptSteerMessage === "function" && !task.canAcceptSteerMessage()) {
+			const resumeCompletedFollowup = canResumeCompletedFollowup()
+			if (
+				!resumeCompletedFollowup &&
+				typeof task.canAcceptSteerMessage === "function" &&
+				!task.canAcceptSteerMessage()
+			) {
 				await postChatCommandResult("steerQueuedMessage", "rejected", "steer_pending")
 				break
 			}
 
 			try {
-				await task.steerQueuedUserMessage(queued.id)
+				if (resumeCompletedFollowup) {
+					// An accepted follow-up can return to the FIFO if its first wake
+					// fails. Retry that same receipt through the completed-task owner.
+					let admissionLost = false
+					await task.resumeCompletedTaskFollowup(queued.text, queued.images, "human", [queued.id], () => {
+						const admissible = canResumeCompletedFollowup()
+						if (!admissible) admissionLost = true
+						return admissible
+					})
+					if (admissionLost) {
+						await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+						break
+					}
+				} else {
+					await task.steerQueuedUserMessage(queued.id)
+				}
 				await postChatCommandResult("steerQueuedMessage", "accepted")
 			} catch (error) {
 				provider.log(

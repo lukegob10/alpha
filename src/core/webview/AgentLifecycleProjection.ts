@@ -12,7 +12,6 @@ import {
 import {
 	AgentLifecycleReducerError,
 	createAgentLifecycleSnapshot,
-	fingerprintAgentLifecycleEvent,
 	tryReduceAgentLifecycleEvent,
 } from "../agent/lifecycle/reducer"
 
@@ -201,18 +200,8 @@ export class AgentLifecycleProjector {
 		)
 	}
 
-	/** Alias used by state projection callers. */
-	getAllSnapshots(): Record<string, AgentLifecycleSnapshot> {
-		return this.getSnapshots()
-	}
-
 	needsSnapshotResync(taskId: string): boolean {
 		return this.states.get(taskId)?.needsSnapshot === true
-	}
-
-	/** Alias used by hosts that call the condition `isResyncRequired`. */
-	isSnapshotResyncRequired(taskId: string): boolean {
-		return this.needsSnapshotResync(taskId)
 	}
 
 	clear(taskId?: string): void {
@@ -353,15 +342,6 @@ export class AgentLifecycleProjector {
 		})
 	}
 
-	/** Compatibility aliases for providers that call the operation `apply`. */
-	applyEvent(value: unknown): AgentLifecycleProjectionResult {
-		return this.ingestEvent(value)
-	}
-
-	applyAgentLifecycleEvent(value: unknown): AgentLifecycleProjectionResult {
-		return this.ingestEvent(value)
-	}
-
 	/** Apply a full snapshot and clear any pending resync incident. */
 	ingestSnapshot(value: unknown): AgentLifecycleProjectionResult {
 		const { taskId: envelopeTaskId, snapshot: candidate } = snapshotFromMessage(value)
@@ -419,14 +399,6 @@ export class AgentLifecycleProjector {
 		})
 	}
 
-	applySnapshot(value: unknown): AgentLifecycleProjectionResult {
-		return this.ingestSnapshot(value)
-	}
-
-	applyAgentLifecycleSnapshot(value: unknown): AgentLifecycleProjectionResult {
-		return this.ingestSnapshot(value)
-	}
-
 	private markResync(
 		taskId: string,
 		request: AgentLifecycleSnapshotResyncRequest,
@@ -459,8 +431,6 @@ export class AgentLifecycleProjector {
 	}
 }
 
-export const AgentLifecycleProjection = AgentLifecycleProjector
-
 export interface AlphaMessageStatusProjection {
 	source: "lifecycle" | "legacy"
 	lifecycle: TaskLifecycleState
@@ -471,12 +441,6 @@ export interface AlphaMessageStatusProjection {
 	isWaitingForInput: boolean
 	waitingReason?: string
 }
-
-const terminalLifecycleStates = new Set<TaskLifecycleState>([
-	TaskLifecycleState.Completed,
-	TaskLifecycleState.Failed,
-	TaskLifecycleState.Closed,
-])
 
 function legacyProjection(
 	messages: readonly AlphaMessage[] = [],
@@ -493,6 +457,9 @@ function legacyProjection(
 			}
 		}
 	}
+	// Transcript records outlive their input slot. An answered or partial ask
+	// cannot restore a waiting boundary when canonical projection is unavailable.
+	if (ask?.isAnswered || ask?.partial === true) ask = undefined
 	const askType = ask?.type === "ask" ? ask.ask : undefined
 
 	if (askType === "resume_completed_task") {
@@ -677,29 +644,3 @@ export function projectAlphaMessageStatus(
 		? projectAgentLifecycleSnapshot(snapshot, { taskAsk, messages })
 		: legacyProjection(messages, taskAsk, taskStatus)
 }
-
-export function projectLifecycleSnapshotToTaskLifecycle(
-	snapshot: AgentLifecycleSnapshot,
-	taskAsk?: AlphaMessage,
-): TaskLifecycleState {
-	return projectAgentLifecycleSnapshot(snapshot, { taskAsk }).lifecycle
-}
-
-export function projectLifecycleSnapshotToHistoryStatus(
-	snapshot: AgentLifecycleSnapshot,
-): NonNullable<HistoryItem["status"]> {
-	return projectAgentLifecycleSnapshot(snapshot).historyStatus
-}
-
-export const projectLifecycleStatus = projectAgentLifecycleSnapshot
-export const projectTaskStatus = projectAlphaMessageStatus
-export const toTaskLifecycleState = projectLifecycleSnapshotToTaskLifecycle
-export const toHistoryStatus = projectLifecycleSnapshotToHistoryStatus
-
-/** Return whether a projection has reached one of the legacy terminal states. */
-export function isProjectedTaskTerminal(projection: AlphaMessageStatusProjection): boolean {
-	return projection.isTerminal || terminalLifecycleStates.has(projection.lifecycle)
-}
-
-/** The reducer fingerprint is re-exported at the extension boundary for tests and diagnostics. */
-export { fingerprintAgentLifecycleEvent }

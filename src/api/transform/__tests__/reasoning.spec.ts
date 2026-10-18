@@ -1,16 +1,14 @@
 // npx vitest run src/api/transform/__tests__/reasoning.spec.ts
 
-import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
+import type { ModelInfo } from "@alpha-code/types"
 
 import {
 	getAnthropicReasoning,
 	getOpenAiReasoning,
-	getAlphaReasoning,
 	getGeminiReasoning,
 	type GetModelReasoningOptions,
 	type AnthropicReasoningParams,
 	type OpenAiReasoningParams,
-	type AlphaReasoningParams,
 	type GeminiReasoningParams,
 } from "../reasoning"
 
@@ -137,29 +135,6 @@ describe("reasoning transforms", () => {
 				),
 			).toBeUndefined()
 			expect(getGeminiReasoning(options())).toBeUndefined()
-		})
-	})
-
-	describe("Alpha compatibility", () => {
-		it("enables required effort reasoning", () => {
-			const result: AlphaReasoningParams | undefined = getAlphaReasoning(
-				options({
-					model: { ...baseModel, supportsReasoningEffort: true, requiredReasoningEffort: true },
-				}),
-			)
-
-			expect(result).toEqual({ enabled: true, effort: "medium" })
-		})
-
-		it("returns an explicit disabled state when effort is turned off", () => {
-			const result = getAlphaReasoning(
-				options({
-					model: { ...baseModel, supportsReasoningEffort: true },
-					settings: { enableReasoningEffort: false } as ProviderSettings,
-				}),
-			)
-
-			expect(result).toEqual({ enabled: false })
 		})
 	})
 })

@@ -2,8 +2,9 @@
 
 const fs = require("fs")
 const path = require("path")
-const { execFileSync, execSync } = require("child_process")
+const { execFileSync } = require("child_process")
 const readline = require("readline")
+const { pnpmInvocation } = require("../../../scripts/harness/pnpm.mjs")
 
 const PACKAGE_NAME = "@alpha-code/types"
 const BRANCH_NAME = "alpha-code-types-v"
@@ -16,6 +17,22 @@ const npmPackagePath = path.join(npmDir, "package.json")
 
 const args = process.argv.slice(2)
 const publishOnly = args.includes("--publish-only")
+
+function git(args, options = {}) {
+	return execFileSync("git", args, { cwd: rootDir, stdio: "pipe", ...options })
+}
+
+function runPnpm(args, options = {}) {
+	const invocation = pnpmInvocation(process.env.npm_execpath, args)
+	return execFileSync(invocation.executable, invocation.args, { cwd: rootDir, ...options })
+}
+
+function assertCleanWorkingTree() {
+	const status = git(["status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" })
+	if (status.trim()) {
+		throw new Error("Publishing requires a clean Git working tree, including staged and untracked files.")
+	}
+}
 
 async function confirmPublish() {
 	const rl = readline.createInterface({
@@ -39,7 +56,7 @@ function updatePackageVersion(filePath, version) {
 		fs.writeFileSync(filePath, JSON.stringify(packageContent, null, 2) + "\n")
 
 		try {
-			execSync(`pnpm exec prettier --write "${filePath}"`, { stdio: "pipe" })
+			runPnpm(["exec", "prettier", "--write", filePath], { stdio: "pipe" })
 			console.log(`✨ Formatted ${path.basename(filePath)} with prettier`)
 		} catch (prettierError) {
 			console.warn(`⚠️  Could not format with prettier:`, prettierError.message)
@@ -59,35 +76,24 @@ function syncVersionToMetadata(version) {
 }
 
 function commitVersionChanges(version) {
-	try {
-		console.log("  📝 Committing version changes to git...")
-
-		try {
-			const status = execSync("git status --porcelain", { encoding: "utf8" })
-			const relevantChanges = status.split("\n").filter((line) => line.includes("packages/types/npm/package"))
-
-			if (relevantChanges.length === 0) {
-				console.log("  ⚠️  No version changes to commit")
-				return
-			}
-		} catch (error) {
-			console.warn("  ⚠️  Could not check git status:", error.message)
-		}
-
-		execSync("git add .", { stdio: "pipe" })
-		const commitMessage = `chore: bump version to v${version}`
-		execSync(`git commit -m "${commitMessage}"`, { stdio: "pipe" })
-		console.log(`  ✅ Committed: ${commitMessage}`)
-	} catch (error) {
-		console.warn("  ⚠️  Could not commit version changes:", error.message)
-		console.log("     You may need to commit these changes manually.")
+	console.log("  📝 Committing version changes to git...")
+	const metadata = "npm/package.metadata.json"
+	const status = git(["status", "--porcelain=v1", "--", metadata], { encoding: "utf8" })
+	if (!status.trim()) {
+		console.log("  ⚠️  No version changes to commit")
+		return
 	}
+	git(["add", "--", metadata])
+	const commitMessage = `chore: bump version to v${version}`
+	// An explicit path also excludes unrelated files staged during the build.
+	git(["commit", "--only", "-m", commitMessage, "--", metadata])
+	console.log(`  ✅ Committed: ${commitMessage}`)
 }
 
 function checkGitHubCLI() {
 	try {
-		execFileSync("gh", ["--version"], { stdio: "pipe" })
-		execFileSync("gh", ["auth", "status"], { stdio: "pipe" })
+		execFileSync("gh", ["--version"], { cwd: rootDir, stdio: "pipe" })
+		execFileSync("gh", ["auth", "status"], { cwd: rootDir, stdio: "pipe" })
 		return true
 	} catch (_error) {
 		return false
@@ -128,7 +134,7 @@ This PR contains the version bump for the SDK release v${version}.
 			const prUrl = execFileSync(
 				"gh",
 				["pr", "create", "--base", baseBranch, "--head", branchName, "--title", title, "--body-file", "-"],
-				{ encoding: "utf8", stdio: "pipe", input: body },
+				{ cwd: rootDir, encoding: "utf8", stdio: "pipe", input: body },
 			).trim()
 
 			console.log(`  ✅ Pull request created: ${prUrl}`)
@@ -151,33 +157,25 @@ function createVersionBranchAndCommit(version) {
 		const branchName = `${BRANCH_NAME}${version}`
 		console.log(`  🌿 Creating version branch: ${branchName}...`)
 
-		let currentBranch
+		const currentBranch = git(["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim()
 
-		try {
-			currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-				encoding: "utf8",
-			}).trim()
-		} catch (_error) {
-			console.warn("  ⚠️  Could not determine current branch")
-			currentBranch = "main"
-		}
-
-		execSync(`git checkout -b ${branchName}`, { stdio: "pipe" })
+		git(["checkout", "-b", branchName])
 		console.log(`  ✅ Created branch: ${branchName}`)
 		commitVersionChanges(version)
-		execSync(`git push --set-upstream origin ${branchName}`, { stdio: "pipe" })
+		git(["push", "--set-upstream", "origin", branchName])
 		console.log(`  ✅ Pushed branch to origin with upstream tracking`)
 		createPullRequest(branchName, currentBranch, version)
 
 		if (currentBranch) {
-			execSync(`git checkout ${currentBranch}`, { stdio: "pipe" })
+			git(["checkout", currentBranch])
 			console.log(`  ✅ Returned to branch: ${currentBranch}`)
 		}
 
 		console.log(`  🎯 Version branch created with commits: ${branchName}`)
 	} catch (error) {
-		console.error("  ❌ Failed to create version branch:", error.message)
-		console.log("     You may need to create the branch manually.")
+		throw new Error(`Package published, but its version branch could not be recorded: ${error.message}`, {
+			cause: error,
+		})
 	}
 }
 
@@ -230,9 +228,11 @@ async function publish() {
 	try {
 		console.log("\n🚀 NPM PUBLISH WORKFLOW")
 		if (publishOnly) {
-			console.log("📌 Mode: Publish only (no git operations)")
+			console.log("📌 Mode: Publish only (no git writes)")
 		}
 		console.log("=".repeat(60))
+		assertCleanWorkingTree()
+		pnpmInvocation(process.env.npm_execpath, [])
 
 		console.log("\n📦 Step 1: Generating npm package.json...")
 		generateNpmPackage()
@@ -245,7 +245,7 @@ async function publish() {
 		console.log("\n📈 Step 2: Bumping version (minor)...")
 
 		try {
-			execSync("npm version minor --no-git-tag-version", {
+			runPnpm(["version", "minor", "--no-git-tag-version"], {
 				cwd: npmDir,
 				stdio: "inherit",
 			})
@@ -261,9 +261,10 @@ async function publish() {
 		console.log("  This may take a moment...")
 
 		try {
-			execSync("NODE_ENV=production pnpm tsup --outDir npm/dist", {
+			runPnpm(["exec", "tsup", "--outDir", "npm/dist"], {
 				cwd: rootDir,
 				stdio: "inherit",
+				env: { ...process.env, NODE_ENV: "production" },
 			})
 
 			console.log("✅ Production build complete")
@@ -302,7 +303,7 @@ async function publish() {
 		console.log("\n🚀 Step 5: Publishing to npm...")
 
 		try {
-			execSync("npm publish", {
+			runPnpm(["publish", "--no-git-checks"], {
 				cwd: npmDir,
 				stdio: "inherit",
 			})
@@ -346,7 +347,11 @@ async function main() {
 	await publish()
 }
 
-main().catch((error) => {
-	console.error("Unexpected error:", error)
-	process.exit(1)
-})
+module.exports = { commitVersionChanges, createVersionBranchAndCommit, publish }
+
+if (require.main === module) {
+	main().catch((error) => {
+		console.error("Unexpected error:", error)
+		process.exit(1)
+	})
+}

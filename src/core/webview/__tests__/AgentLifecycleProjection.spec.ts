@@ -7,6 +7,7 @@ import {
 	type AgentLifecycleEvent,
 	type AgentLifecycleSnapshot,
 	TaskLifecycleState,
+	TaskStatus,
 } from "@alpha-code/types"
 
 import {
@@ -145,6 +146,29 @@ describe("AgentLifecycleProjector", () => {
 })
 
 describe("lifecycle status projection", () => {
+	it.each([{ isAnswered: true }, { partial: true }])(
+		"ignores inactive asks in legacy transcript and explicit ask projections: %j",
+		(flags) => {
+			const ask = { ts: 2, type: "ask" as const, ask: "followup" as const, text: "Question?", ...flags }
+			for (const taskAsk of [undefined, ask]) {
+				const projection = projectAlphaMessageStatus({
+					messages: [
+						{ ts: 1, type: "say", say: "text", text: "Initial task" },
+						ask,
+						{ ts: 3, type: "say", say: "text", text: "Continuing the task" },
+					],
+					taskAsk,
+					taskStatus: TaskStatus.Running,
+				})
+				expect(projection).toMatchObject({
+					lifecycle: TaskLifecycleState.Running,
+					isWaitingForInput: false,
+				})
+				expect(projection.waitingReason).toBeUndefined()
+			}
+		},
+	)
+
 	it("projects active turn phases without promoting a terminal turn to terminal task state", () => {
 		const waiting = projectAgentLifecycleSnapshot(emptySnapshot({ phase: "awaiting_approval" }))
 		expect(waiting).toMatchObject({

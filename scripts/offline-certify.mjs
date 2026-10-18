@@ -1,12 +1,13 @@
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync } from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { pnpmInvocation } from "./harness/pnpm.mjs"
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const full = process.argv.includes("--full")
 const skipPrivate = process.argv.includes("--skip-private")
-const pnpm = resolvePnpmExecutable()
+const pnpm = process.env.npm_execpath
 
 const providerSecrets = [
 	"ANTHROPIC_API_KEY",
@@ -99,21 +100,9 @@ for (const item of phases) run(item)
 const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1)
 console.log(`\nOffline certification passed (${phases.length} phases, ${elapsedSeconds}s, no provider credentials).`)
 
-function phase(label, command, args, cwd = repositoryRoot) {
-	return { label, command, args, cwd }
-}
-
-function resolvePnpmExecutable() {
-	if (process.platform !== "win32") return "pnpm"
-	const home = process.env.PNPM_HOME
-	if (!home) throw new Error("PNPM_HOME is required for structured pnpm execution on Windows")
-	const versionsRoot = path.join(home, ".tools", "pnpm-exe")
-	const executable = readdirSync(versionsRoot)
-		.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
-		.map((version) => path.join(versionsRoot, version, "pnpm.exe"))
-		.find(existsSync)
-	if (!executable) throw new Error(`Unable to locate pnpm.exe below ${versionsRoot}`)
-	return executable
+function phase(label, cliPath, args, cwd = repositoryRoot) {
+	const invocation = pnpmInvocation(cliPath, args)
+	return { label, command: invocation.executable, args: invocation.args, cwd }
 }
 
 function run(item) {

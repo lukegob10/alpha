@@ -39,6 +39,24 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 
 			task.consecutiveMistakeCount = 0
 
+			const mcpHub = task.providerRef.deref()?.getMcpHub()
+			if (!mcpHub) {
+				throw new Error("No MCP hub is available")
+			}
+			const server = mcpHub
+				.getServers()
+				.find(
+					(candidate) =>
+						candidate.name === server_name && !candidate.disabled && candidate.status === "connected",
+				)
+			if (!server) throw new Error(`MCP server "${server_name}" is not connected or enabled`)
+			const assertCurrentServer = () => {
+				signal?.throwIfAborted()
+				if (!mcpHub.getServers().includes(server) || server.disabled || server.status !== "connected") {
+					throw new Error(`MCP server "${server_name}" changed during resource read`)
+				}
+			}
+
 			const completeMessage = JSON.stringify({
 				type: "access_mcp_resource",
 				serverName: server_name,
@@ -53,17 +71,11 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 			}
 
 			// Now execute the tool
-			signal?.throwIfAborted()
-			const mcpHub = task.providerRef.deref()?.getMcpHub()
-			if (!mcpHub) {
-				throw new Error("No MCP hub is available")
-			}
+			assertCurrentServer()
 			await task.say("mcp_server_request_started")
-			signal?.throwIfAborted()
-			const resourceResult = await (signal === undefined
-				? mcpHub.readResource(server_name, uri)
-				: mcpHub.readResource(server_name, uri, undefined, signal))
-			signal?.throwIfAborted()
+			assertCurrentServer()
+			const resourceResult = await mcpHub.readResource(server.name, uri, server.source, signal)
+			assertCurrentServer()
 			if (!resourceResult) {
 				throw new Error("No response from MCP server")
 			}
@@ -92,9 +104,9 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 				}
 			})
 
-			signal?.throwIfAborted()
+			assertCurrentServer()
 			await task.say("mcp_server_response", resourceResultPretty, images)
-			signal?.throwIfAborted()
+			assertCurrentServer()
 			pushToolResult(formatResponse.toolResult(resourceResultPretty, images))
 			callbacks.setResultMetadata?.({
 				status: "success",

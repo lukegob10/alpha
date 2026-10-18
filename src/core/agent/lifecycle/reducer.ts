@@ -102,10 +102,6 @@ export function createAgentLifecycleSnapshot(input: AgentLifecycleSnapshotInput)
 	})
 }
 
-export const createInitialAgentLifecycleSnapshot = createAgentLifecycleSnapshot
-export const createInitialLifecycleSnapshot = createAgentLifecycleSnapshot
-export const createLifecycleSnapshot = createAgentLifecycleSnapshot
-
 function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value
 	if (typeof value === "number") return Number.isFinite(value) ? value : String(value)
@@ -646,10 +642,6 @@ export function reduceAgentLifecycleEvent(
 	return agentLifecycleSnapshotSchema.parse(next)
 }
 
-export const applyAgentLifecycleEvent = reduceAgentLifecycleEvent
-export const reduceLifecycleEvent = reduceAgentLifecycleEvent
-export const reduceAgentLifecycle = reduceAgentLifecycleEvent
-
 export type AgentLifecycleReductionSuccess = {
 	ok: true
 	applied: boolean
@@ -681,5 +673,3 @@ export function tryReduceAgentLifecycleEvent(
 		return { ok: false, applied: false, replayed: false, snapshot: inputSnapshot, error }
 	}
 }
-
-export const safeReduceAgentLifecycleEvent = tryReduceAgentLifecycleEvent

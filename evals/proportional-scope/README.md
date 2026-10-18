@@ -79,10 +79,10 @@ An observation document contains:
 `observedTotal` and all phase buckets expose model calls, terminal tool-result counts, categorized tool counts, command
 counts, polling/recovery counts, tool-output bytes, committed assistant-text bytes, repetitions, validation reruns, and
 completed compactions. Counts of `verification_result` are not added to tool counts because the same execution already
-emits `tool_result`. Command counts depend only on canonical `execute_command` identity (`payload.name`, falling back to
-`payload.tool`), independently of phase, category, and purpose. A discovery command categorized as a read still counts as a
-command; a noncommand validation tool does not. Output sizes count UTF-8 bytes of the observed tool output or committed
-visible assistant text; raw bytes are not retained. Repetition counts within a phase are local to that phase; total repetitions also detect matches
+emits `tool_result`. Command counts recognize `exec_command` and historical `shell` / `execute_command` identities
+(`payload.name`, falling back to `payload.tool`), independently of phase, category, and purpose. A discovery command
+categorized as a read still counts as a command; a noncommand validation tool does not. Output sizes count UTF-8 bytes of
+the observed tool output or committed visible assistant text; raw bytes are not retained. Repetition counts within a phase are local to that phase; total repetitions also detect matches
 across phases and therefore need not equal the sum of the phase repetition counts.
 
 Per-phase token metrics require canonical `request_usage` records matched by explicit request identity to each observed

@@ -64,16 +64,15 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 
 	private onMessage(data: unknown) {
 		if (typeof data !== "object") {
-			this.log(`[client#onMessage] invalid data -> ${JSON.stringify(data)}`)
+			this.log(`[client#onMessage] invalid data type -> ${typeof data}`)
 			return
 		}
 
 		const result = ipcMessageSchema.safeParse(data)
 
 		if (!result.success) {
-			this.log(
-				`[client#onMessage] invalid payload -> ${JSON.stringify(result.error.issues)} -> ${JSON.stringify(data)}`,
-			)
+			// Validation issues can include received values; keep payload contents out of diagnostics.
+			this.log(`[client#onMessage] invalid payload -> ${result.error.issues[0]?.code ?? "unknown"}`)
 			return
 		}
 

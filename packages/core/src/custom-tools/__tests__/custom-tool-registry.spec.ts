@@ -1,11 +1,16 @@
 // pnpm --filter @alpha-code/core test src/custom-tools/__tests__/custom-tool-registry.spec.ts
 
 import path from "path"
-import { fileURLToPath } from "url"
+import * as fs from "fs/promises"
+import os from "os"
+import { fileURLToPath, pathToFileURL } from "url"
+
+import { execa } from "execa"
 
 import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/types"
 
 import { CustomToolRegistry } from "../custom-tool-registry.js"
+import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -18,6 +23,52 @@ describe("CustomToolRegistry", () => {
 	beforeEach(() => {
 		registry = new CustomToolRegistry()
 	})
+
+	it("loads module URL characters through native imports and both compilation caches", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-paths-"))
+		try {
+			const toolDir = path.join(tempDir, "tools")
+			const cacheDir = path.join(tempDir, "compiled #100%")
+			const registryBundle = path.join(tempDir, "registry.mjs")
+			await fs.mkdir(toolDir)
+			await fs.writeFile(path.join(toolDir, "package.json"), JSON.stringify({ type: "module" }))
+			for (const [file, name] of [
+				["hash#.js", "hash_path"],
+				["percent%.js", "percent_path"],
+				["compiled.ts", "compiled_path"],
+			] as const) {
+				await fs.writeFile(
+					path.join(toolDir, file),
+					`export default { name: "${name}", description: "Encoded path", execute: async () => "loaded" }`,
+				)
+			}
+			// Exercise Node's actual file-URL loader; Vitest resolves dynamic imports through Vite.
+			await runEsbuild({
+				entryPoint: path.join(__dirname, "..", "custom-tool-registry.ts"),
+				outfile: registryBundle,
+				external: NODE_BUILTIN_MODULES,
+				banner: COMMONJS_REQUIRE_BANNER,
+			})
+			const script = `
+				import assert from "node:assert/strict"
+				import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(registryBundle).href)}
+				const toolDir = ${JSON.stringify(toolDir)}
+				const cacheDir = ${JSON.stringify(cacheDir)}
+				const registry = new CustomToolRegistry({ cacheDir })
+				for (const currentRegistry of [registry, registry, new CustomToolRegistry({ cacheDir })]) {
+					const result = await currentRegistry.loadFromDirectory(toolDir)
+					assert.deepEqual(result.failed, [])
+					assert.deepEqual(result.loaded.sort(), ["compiled_path", "hash_path", "percent_path"])
+					for (const name of result.loaded) {
+						assert.equal(await currentRegistry.get(name).execute({}, {}), "loaded")
+					}
+				}
+			`
+			await execa(process.execPath, ["--input-type=module", "--eval", script], { timeout: 25_000 })
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true })
+		}
+	}, 60_000)
 
 	describe("validation", () => {
 		it("should accept a valid tool definition", () => {

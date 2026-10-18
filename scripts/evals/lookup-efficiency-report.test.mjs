@@ -212,7 +212,7 @@ test("retries count from request attempts and never inspect command text", () =>
 	assert.equal(missingAttempt.providerRetries.coverage, "unavailable")
 })
 
-test("canonical shell and execute_command count as shell search without copying commands", () => {
+test("exec_command and historical command names count as shell search without copying commands", () => {
 	const report = buildReport(
 		input({
 			trace: [
@@ -221,14 +221,40 @@ test("canonical shell and execute_command count as shell search without copying 
 					arguments: { command: "Select-String -Pattern secret-symbol" },
 				}),
 				event(2, "tool_result", { tool: "execute_command", arguments: { command: "rg secret" } }),
+				event(3, "tool_result", { name: "exec_command", arguments: { cmd: "rg another-secret" } }),
 			],
 		}),
 	)
-	assert.equal(report.toolResultsByName.shell.value, 2)
+	assert.equal(report.toolResultsByName.shell.value, 3)
 	assert.equal(report.toolResultsByName.execute_command, undefined)
+	assert.equal(report.toolResultsByName.exec_command, undefined)
 	assert.deepEqual(report.distinctSearchTools.value, ["shell"])
 	assert.equal(report.firstTool.value, "shell")
 	assert.doesNotMatch(JSON.stringify(report), /Select-String|secret-symbol|\brg\b/)
+})
+
+test("update_plan and historical todo updates reject the lookup bar through the same workflow counter", () => {
+	for (const name of ["update_plan", "update_todo_list"]) {
+		const report = buildReport(
+			goldenObservations({
+				trace: [
+					event(1, "model_request_started", { attempt: 0 }),
+					event(2, "tool_result", { name: "search_files" }),
+					event(3, "tool_result", { name }),
+				],
+			}),
+		)
+		assert.equal(report.workflowTools.todo.value, 1, name)
+		assert.equal(report.toolResultsByName.update_todo_list.value, 1, name)
+		assert.equal(report.toolResultsByName.update_plan, undefined)
+		const acceptance = evaluateLookupBar(report)
+		assert.equal(acceptance.criteria.providerRequests.passed, true)
+		assert.equal(acceptance.criteria.toolResults.passed, true)
+		assert.equal(acceptance.criteria.firstTool.passed, true)
+		assert.equal(acceptance.criteria.completionRejections.passed, true)
+		assert.equal(acceptance.criteria.workflowTools.passed, false, name)
+		assert.equal(acceptance.passed, false, name)
+	}
 })
 
 test("unknown tools collapse to other and never leak their names", () => {
@@ -384,6 +410,43 @@ test("pairing helper rejects a missing candidate sample", () => {
 		{ declaredSampleCount: 2 },
 	)
 	assert.throws(() => pairReports(reference, candidate, { declaredSampleCount: 2, promptIds }), /missing candidate/)
+})
+
+test("pairing rejects sample identities that disagree with their declared run", () => {
+	for (const role of ["reference", "candidate"]) {
+		for (const [field, value] of Object.entries({
+			declaredSampleCount: 2,
+			modelId: "different-model",
+			reasoningPreference: "low",
+			cacheState: "warm",
+		})) {
+			const runs = {
+				reference: runEnvelope(promptIds.map((id) => sampleReport(id, 0))),
+				candidate: runEnvelope(promptIds.map((id) => sampleReport(id, 0))),
+			}
+			runs[role].reports[0] = sampleReport(promptIds[0], 0, { [field]: value })
+			assert.throws(
+				() => pairReports(runs.reference, runs.candidate, { declaredSampleCount: 1, promptIds }),
+				new RegExp(`${role} report ${field} mismatch`),
+			)
+		}
+	}
+})
+
+test("pairing rejects extra samples outside the predeclared range instead of omitting them", () => {
+	for (const role of ["reference", "candidate"]) {
+		for (const sampleIndex of [1, 99]) {
+			const runs = {
+				reference: runEnvelope(promptIds.map((id) => sampleReport(id, 0))),
+				candidate: runEnvelope(promptIds.map((id) => sampleReport(id, 0))),
+			}
+			runs[role].reports.push(sampleReport(promptIds[0], sampleIndex))
+			assert.throws(
+				() => pairReports(runs.reference, runs.candidate, { declaredSampleCount: 1, promptIds }),
+				new RegExp(`${role} sampleIndex exceeds declaredSampleCount`),
+			)
+		}
+	}
 })
 
 test("pairing keeps unavailable usage unavailable rather than inventing a zero delta", () => {

@@ -56,7 +56,8 @@
 		"missingExpectedFileState": "Missing expected file state before opening the diff preview"
 	},
 	"applyPatch": {
-		"deleteCancelled": "Delete operation was cancelled."
+		"deleteCancelled": "Delete operation was cancelled.",
+		"moveCancelledSourcePreserved": "Updated '{{destination}}', but the move was cancelled before original '{{source}}' could be removed; the source was preserved."
 	},
 	"mcpMedia": {
 		"imageUnsupported": "<image content omitted because you do not support image input>",

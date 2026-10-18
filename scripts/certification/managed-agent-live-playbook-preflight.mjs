@@ -325,11 +325,6 @@ function validatePlaybook(
 	if (promptB.includes("Do not offer a suggested response")) {
 		throw new Error("Run B requests an impossible suggestion-free follow-up question")
 	}
-	assertIncludes(
-		playbook,
-		"V3 is the last valid live pass; V4 is invalid because an auto-selected\nfollow-up advanced the reload checkpoint (without approving or launching `approval_child`); V5 is the current static\ncontract.",
-		"Run B revision history must distinguish valid V3 evidence from invalid V4 and unexecuted V5",
-	)
 	if (/\r|\n/.test(approvalParentObjective)) {
 		throw new Error("APPROVAL_PARENT_OBJECTIVE must remain one physical line")
 	}

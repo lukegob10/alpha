@@ -79,7 +79,6 @@ describe("Task managed runtime residency eligibility", () => {
 		["pending steering", { pendingSteerMessage: {} }],
 		["steering awaiting persistence", { steerMessageAwaitingPersistence: true }],
 		["unsettled command", { commandExecutionEvidence: new Map([["call", { status: "running" }]]) }],
-		["pending result settlement", { pendingAutomaticResultClaimSettlement: { claimId: "claim" } }],
 		["retained wait claim", { pendingWaitAgentResultClaims: new Map([["claim", {}]]) }],
 		[
 			"uncommitted tool result",

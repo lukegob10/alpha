@@ -7,66 +7,33 @@ requirements.
 
 ## Running the affected gates
 
-The 2026-10-02 toolchain alignment pins local development, both manifests, CI defaults and the evaluator runner to
-[Node 24.21.0 LTS](https://nodejs.org/en/blog/release/v24.21.0), with its bundled npm 11.19.0 from the
-[official distribution index](https://nodejs.org/dist/index.json) (retrieved 2026-10-02). pnpm remains 11.24.0.
-The bootstrap contract test checks these pins agree. Historical measurements retain the runtime actually used.
-All workspace Node typings now use the shared Node 24 specification, resolving to the existing 24.2.1 dependency;
-the deliberate lockfile update preserves every production package's metadata and version.
-VS Code stays exactly 1.125.0: its [host configuration](https://github.com/microsoft/vscode/blob/1.125.0/.npmrc)
-controls the embedded Electron runtime independently of development Node.
-The evaluator image also installs the versioned 1.125.0 Debian package and verifies its installed package version,
-following the [official Linux installation contract](https://code.visualstudio.com/docs/setup/linux) (retrieved
-2026-10-02), so its host cannot drift with the apt repository's latest package.
-
-The external CI actions now declare `runs.using: node24`: checkout, setup-node, cache and pnpm setup use v5, artifact
-upload uses v6, and CodeQL and Docker Buildx setup use v4. Their official action manifests and migration notes were
-retrieved 2026-10-02, following [GitHub's Node 20 retirement](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/).
-The [artifact v6 migration](https://github.com/actions/upload-artifact/tree/v6#v6---whats-new) requires runner 2.327.1
-or newer; the observed hosted release runner was 2.337.0. Setup-node's new automatic package-manager cache is explicitly
-disabled because the composite action already owns the pnpm store cache. Node 20 deprecation was a warning in the
-failed release, not the cause of its native integration failure.
-
-The Node 24.21.0 runner checks also reproduced a Windows cancellation deadline mismatch: the root fallback ran after
-about one second even though the owned `taskkill.exe /T /F` operation had a five-second deadline. The outer cleanup
-deadline now allows that operation's existing budget plus one second for close; an unfinished tree still rejects with
-`cleanupVerified=false`. A controlled-timer regression failed before the fix when the root was killed at 1.5 seconds
-while tree termination was pending, and a second regression retains bounded failure for a process that never closes.
-POSIX signal grace and all process-ownership checks are unchanged.
+Use the pinned Node 24.21.0, npm 11.19.0 and pnpm 11.24.0 toolchain. The
+[bootstrap contract tests](../scripts/bootstrap.test.mjs) check agreement across manifests, CI and the evaluator.
+VS Code's embedded runtime is independent of development Node. The evaluator image installs and verifies exact
+VS Code 1.125.0 rather than taking the latest package. Historical measurements retain the runtime actually used.
 
 On a fresh checkout, build the shared types before invoking the harness. Its reused host evidence helpers consume runtime
 schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
 QA and release workflows build the package before invoking any harness lane or matrix command.
 
-The unit lane also requires `rg` on `PATH` for its real subprocess/approval integration. QA and both release workflows
+The unit lane also requires `rg` on `PATH` for its real subprocess/approval integration. QA and the release workflow
 prepend the already installed `@vscode/ripgrep` binary directory through
 [`GITHUB_PATH`](https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions#adding-a-system-path)
-(contract retrieved 2026-10-02). This makes the bundled executable available to subsequent steps without relying on a
-runner's global installation. The first 3.1.4 release attempt failed this prerequisite while the QA job with the same
-source passed; release workflows now use the same setup. The strict integration assertion remains required.
+(contract retrieved 2026-10-02). Use that bundled binary locally when no approved global installation is available;
+do not weaken the real-process approval assertions to accommodate a missing executable.
 
-The worktree-copy integration group uses a bounded 30-second test deadline, matching the adjacent real Git integration.
-Release run `37025939027` reached Vitest's default five-second deadline during native Windows copying before its content
-assertions ran; the same real-process file passed locally (20 tests). The deadline is scoped to this integration group;
-its copied-content, pattern-intersection, protected `.git` and progress assertions remain required. Suite-option
-inheritance follows the [Vitest 3 API](https://v3.vitest.dev/api/#describe) (retrieved 2026-10-02).
-
-Windows ownership inspection has a 30-second process deadline to allow cold CIM initialization. The host must still
-prove its ancestry; unavailable inspection, incomplete chains, foreign owners and cycles cannot pass. A real child-process
-test exercises the OS lookup in addition to controlled ancestry tests. Host startup failures retain the inspector's
-bounded message so an inspection failure can be distinguished from a foreign process. The local COM lookup follows
-[Microsoft's Get-CimInstance contract](https://learn.microsoft.com/en-us/powershell/module/cimcmdlets/get-ciminstance?view=powershell-5.1),
-retrieved 2026-10-02; it records only process and parent IDs, without command lines or environment values.
-
-The installer child-process regression exercises the current platform's native invocation and names that platform in its
-receipt. Linux tooling therefore executes its own editor argument check rather than skipping a Windows-only test.
+Native filesystem and process integrations have scoped, bounded deadlines. Worktree-copy tests retain their content,
+pattern-intersection, protected `.git` and progress assertions. Windows ownership inspection allows 30 seconds for cold
+CIM initialization; unavailable inspection, incomplete ancestry, foreign owners and cycles cannot pass. It records only
+process and parent IDs. Cancellation must allow the owned `taskkill.exe /T /F` operation's five-second deadline plus
+one second for close; unfinished cleanup reports `cleanupVerified=false`. Controlled-timer and real-child tests cover
+these boundaries. Installer checks exercise and identify the current platform's native invocation.
 
 The webview build cache includes the extension manifest and shared runtime imports. Both Settings and the error UI embed
 the extension version at build time; restoring a webview cached before a release bump must not restore the old UX version.
-A disposable-workspace regression exercises the actual pinned
-[Turbo 2.5.6 root-relative inputs](https://github.com/vercel/turborepo/blob/v2.5.6/docs/site/content/docs/reference/configuration.mdx)
-contract (retrieved 2026-10-02), comparing cache keys before and after manifest and shared metadata changes. Rebuild the
-release package after a version bump and inspect both its manifest and compiled UI version.
+The [webview cache regression](../scripts/webview-preload.test.mjs) uses the pinned Turbo runner to compare actual cache
+keys before and after manifest and shared metadata changes. Rebuild the release package after a version bump and inspect
+both its manifest and compiled UI version.
 
 ```sh
 pnpm --filter @alpha-code/types build
@@ -167,9 +134,9 @@ retain their history; current evidence follows completion order so an older succ
 
 The host owner exports only actual extension-host results, never its unit-test seam. Required suites bind unique run IDs,
 the exact actual host version, each file's expected provider, complete test counts, ownership, capture and retention.
-Confidence requires all 18 host files from its existing smoke prerequisites and core checks. Extended requires its four
-selected feature files. Unit-runner children clear the host-receipt destination while retaining their separate Node
-execution collector, so negative unit fixtures cannot publish host evidence.
+Confidence requires all 18 host files from its existing smoke prerequisites and core checks. Extended requires its five
+selected feature files, including rich-document coverage. Unit-runner children clear the host-receipt destination while
+retaining their separate Node execution collector, so negative unit fixtures cannot publish host evidence.
 Outcome admission additionally binds unique scenario/attempt/run identities and the campaign's source, build and task
 configuration to captured task evidence. Completed capture alone is insufficient: task outcome, task IDs, required
 artifacts and their digests must agree. Saved reports are revalidated on matrix import instead of trusting a saved pass
@@ -192,11 +159,11 @@ Code QA runs the existing unit and tooling command gates on Linux, Windows and m
 checks for mechanical, offline evaluator, confidence, and smoke/extended/task-outcome jobs. Each job admits its own
 checkout and retains its evidence; results from different operating systems are not silently merged into one comparable run.
 
-Both stable and preview release workflows run mechanical, unit, tooling, offline, smoke/extended exact-host, managed-agent
-confidence and scripted-outcome checks, plus evaluator lint and type checks, before packaging and publication. They require
-current `static`, `offline`, `host`, `extended`, `confidence` and `outcomes` evidence in addition to command success. Each
-release owns its confidence gate because a separate QA workflow does not order publication. Existing command-path approval
-and VSIX-content checks remain required.
+The [VSIX release workflow](../.github/workflows/release-vsix.yml) runs mechanical, unit, tooling, offline, smoke/extended
+exact-host, managed-agent confidence and scripted-outcome checks, plus evaluator lint and type checks, before packaging
+and publication. It requires current `static`, `offline`, `host`, `extended`, `confidence` and `outcomes` evidence in
+addition to command success. Each release owns its confidence gate because a separate QA workflow does not order
+publication. Existing command-path approval and VSIX-content checks remain required.
 Upload steps run on failure too and retain reports/projected artifacts for 14 days, without uploading campaign profile or
 workspace directories.
 

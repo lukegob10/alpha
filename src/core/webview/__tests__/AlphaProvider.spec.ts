@@ -126,7 +126,9 @@ vi.mock("axios", () => ({
 
 vi.mock("../../../utils/safeWriteJson")
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getStorageBasePath: vi.fn().mockResolvedValue("/test/storage/path"),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
@@ -603,15 +605,15 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.2 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.2-faster-loading-and-followup-recovery"
+	test("shows the v3.2.3 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.3-ux-and-thread-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
 		await provider.contextProxy.setValue(
 			"lastShownAnnouncementId",
-			"october-2026-v3.2.1-chat-navigation-and-subagent-launch",
+			"october-2026-v3.2.2-faster-loading-and-followup-recovery",
 		)
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
@@ -4318,6 +4320,42 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
 			vi.spyOn(provider, "postTaskSessionStateToWebview").mockResolvedValue(undefined)
 		}
+
+		it.each([false, true])(
+			"projects a durable lifecycle recovery with reuseUnchanged=%s",
+			async (reuseUnchanged) => {
+				const snapshot = makeSnapshot()
+				const journal = {
+					replay: vi.fn().mockResolvedValue(snapshot),
+					refresh: vi.fn().mockResolvedValue(snapshot),
+				}
+				installJournal(journal)
+
+				expect(
+					await provider.replayAgentLifecycle(taskId, reuseUnchanged ? { reuseUnchanged: true } : undefined),
+				).toEqual(snapshot)
+				expect(journal.replay).toHaveBeenCalledTimes(reuseUnchanged ? 0 : 1)
+				expect(journal.refresh).toHaveBeenCalledTimes(reuseUnchanged ? 1 : 0)
+				expect(provider.getAgentLifecycleSnapshot(taskId)).toEqual(snapshot)
+				expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+					type: "agentLifecycleSnapshot",
+					taskId,
+					payload: snapshot,
+				})
+			},
+		)
+
+		it("reports a failed warm lifecycle refresh without hiding the integrity error", async () => {
+			const error = new Error("lifecycle snapshot mismatch")
+			const journal = { refresh: vi.fn().mockRejectedValue(error), replay: vi.fn() }
+			installJournal(journal)
+
+			await expect(provider.replayAgentLifecycle(taskId, { reuseUnchanged: true })).rejects.toBe(error)
+			expect(journal.replay).not.toHaveBeenCalled()
+			expect(provider.getAgentLifecycleDegraded()).toMatchObject({
+				[taskId]: { degraded: true, reason: "replay_rejected", error: error.message },
+			})
+		})
 
 		it("persists terminal history only from the task lifecycle, not a terminal turn snapshot", async () => {
 			const completedTurn = makeSnapshot({

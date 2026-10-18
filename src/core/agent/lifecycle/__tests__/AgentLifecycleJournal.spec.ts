@@ -4,6 +4,8 @@ import * as path from "path"
 
 import type { AgentLifecycleEvent } from "@alpha-code/types"
 
+vi.mock("fs/promises", { spy: true })
+
 vi.mock("../../../../utils/storage", () => ({
 	getTaskDirectoryPath: async (globalStoragePath: string, taskId: string) => {
 		const taskDirectory = path.join(globalStoragePath, taskId)
@@ -159,7 +161,7 @@ describe("AgentLifecycleJournal", () => {
 		expect((await readAgentLifecycleEvents(ids.taskId, storagePath)).map(({ sequence }) => sequence)).toEqual([1])
 	})
 
-	it("orders replay behind the accepted write queue", async () => {
+	it.each(["replay", "refresh"] as const)("orders %s behind the accepted write queue", async (operation) => {
 		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
 		await journal.initialize()
 		let releaseWrite!: () => void
@@ -169,7 +171,7 @@ describe("AgentLifecycleJournal", () => {
 		;(journal as any).writeQueue = queuedWrite
 
 		let replayed = false
-		const replay = journal.replay().then((snapshot) => {
+		const replay = journal[operation]().then((snapshot) => {
 			replayed = true
 			return snapshot
 		})
@@ -282,6 +284,69 @@ describe("AgentLifecycleJournal", () => {
 		await journal.close()
 	})
 
+	it("avoids rereading unchanged long-task history on follow-up refreshes", async () => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
+		const eventsPath = await journal.getEventsFilePath()
+		const events = Array.from({ length: 100 }, (_, turnIndex) => {
+			const identity = { taskId: ids.taskId, runId: `run-${turnIndex}`, turnId: `turn-${turnIndex}` }
+			return [
+				...Array.from({ length: 20 }, (_, eventIndex) => ({
+					...phaseEvent(`turn-${turnIndex}-event-${eventIndex}`),
+					...identity,
+					sequence: eventIndex + 1,
+				})),
+				{ ...terminalEvent(`turn-${turnIndex}-done`, identity), sequence: 21 },
+			]
+		}).flat()
+		const contents = events.map((event) => `${JSON.stringify(event)}\n`).join("")
+		await fs.writeFile(eventsPath, contents, "utf8")
+		await journal.initialize()
+		const expected = journal.getSnapshot()
+		const read = vi.spyOn(fs, "readFile").mockClear()
+		for (let index = 0; index < 10; index++) {
+			expect(await journal.refresh()).toEqual(expected)
+		}
+		const journalReads = read.mock.calls.filter(([filePath]) => filePath === eventsPath).length
+		read.mockRestore()
+
+		expect({ reads: journalReads, bytesRead: journalReads * Buffer.byteLength(contents) }).toEqual({
+			reads: 0,
+			bytesRead: 0,
+		})
+		const forcedRead = vi.spyOn(fs, "readFile").mockClear()
+		expect(await journal.replay()).toEqual(expected)
+		const forcedJournalReads = forcedRead.mock.calls.filter(([filePath]) => filePath === eventsPath).length
+		forcedRead.mockRestore()
+		expect(forcedJournalReads).toBe(1)
+		await journal.close()
+	})
+
+	it("refreshes from another writer before returning the durable head", async () => {
+		const first = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		const second = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await first.append(phaseEvent("event-1"))
+		await second.append(phaseEvent("event-2", "planning"))
+
+		await expect(first.refresh()).resolves.toMatchObject({ lastSequence: 2, phase: "planning" })
+		expect((await first.append(phaseEvent("event-3"))).sequence).toBe(3)
+		await first.close()
+		await second.close()
+	})
+
+	it("falls back to full recovery when file stamps cannot be read", async () => {
+		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await journal.append(phaseEvent("event-1"))
+		const eventsPath = await journal.getEventsFilePath()
+		const read = vi.spyOn(fs, "readFile").mockClear()
+		const stat = vi.spyOn(fs, "stat").mockRejectedValueOnce(new Error("stamp unavailable"))
+		await expect(journal.refresh()).resolves.toMatchObject({ lastSequence: 1 })
+		const journalReads = read.mock.calls.filter(([filePath]) => filePath === eventsPath).length
+		stat.mockRestore()
+		read.mockRestore()
+		expect(journalReads).toBe(1)
+		await journal.close()
+	})
+
 	it("invalidates cached state when another journal instance appends", async () => {
 		const first = await AgentLifecycleJournal.open(ids.taskId, storagePath)
 		const second = await AgentLifecycleJournal.open(ids.taskId, storagePath)
@@ -297,19 +362,22 @@ describe("AgentLifecycleJournal", () => {
 		await second.close()
 	})
 
-	it("detects same-size journal tampering after state was cached", async () => {
+	it.each(["append", "refresh"] as const)("detects same-size journal tampering before %s", async (operation) => {
 		const original = await AgentLifecycleJournal.open(ids.taskId, storagePath)
 		await original.append(phaseEvent("event-1"))
 		await original.close()
 
 		const restarted = await AgentLifecycleJournal.open(ids.taskId, storagePath)
 		const eventsPath = await restarted.getEventsFilePath()
+		const originalTimes = await fs.stat(eventsPath)
 		const contents = await fs.readFile(eventsPath, "utf8")
 		const tampered = contents.replace('"phase":"working"', '"phase":"waiting"')
 		expect(tampered).toHaveLength(contents.length)
 		await fs.writeFile(eventsPath, tampered, "utf8")
+		await fs.utimes(eventsPath, originalTimes.atime, originalTimes.mtime)
 
-		await expect(restarted.append(phaseEvent("event-2"))).rejects.toMatchObject({
+		const operationResult = operation === "append" ? restarted.append(phaseEvent("event-2")) : restarted.refresh()
+		await expect(operationResult).rejects.toMatchObject({
 			code: "snapshot_mismatch",
 			taskId: ids.taskId,
 		} satisfies Partial<AgentLifecycleRecoveryError>)

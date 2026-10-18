@@ -56,7 +56,18 @@ it("permits a separate lookup reply without consuming unfinished implementation 
 		get: (_key: string, fallback: unknown) => fallback,
 	} as unknown as vscode.WorkspaceConfiguration)
 	const task = fixture("Where is retryLimit defined?")
+	task.apiConversationHistory.unshift({ role: "user", content: plan.objective, input_origin: "human" })
 	expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true, classification: "ready" })
 	expect(task.workContext?.plan?.checks).toHaveLength(1)
 	expect(task.workContext?.receipts).toEqual([])
+})
+
+it("does not invent acceptance checks from a prose-only work plan", async () => {
+	vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+		get: (_key: string, fallback: unknown) => fallback,
+	} as unknown as vscode.WorkspaceConfiguration)
+	const task = fixture("Implement all product sections")
+	task.workContext = { plan: { ...plan, checks: [] }, receipts: [], skills: [] }
+
+	expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true, classification: "ready" })
 })

@@ -15,12 +15,7 @@ fixes the previous 20px label offset. Reasoning icons and elapsed time are verti
 
 ## References
 
-Inspected on October 12, 2026: Codex CLI main commit `12cca49c81c8aa6a37a5cc4e39964ee3b70f9458`,
-[`status_indicator_widget.rs`](https://github.com/openai/codex/blob/12cca49c81c8aa6a37a5cc4e39964ee3b70f9458/codex-rs/tui/src/status_indicator_widget.rs)
-and its inline tests. Codex uses Working for general activity and honors motion preferences. Alpha deliberately retains
-inline expandable activity groups and uses the user-selected border animation in its VS Code presentation.
-
-CSS contracts checked on the same date:
+CSS references:
 [`@property`](https://drafts.css-houdini.org/css-properties-values-api/#at-property-rule) and
 [`mask-composite`](https://drafts.csswg.org/css-masking-1/#the-mask-composite). Unsupported mask composition has a static
 border fallback. No proposed VS Code API is required.

@@ -23,6 +23,7 @@ export async function executeSteps({
 	signal,
 	save,
 	runProcess = runOwnedProcess,
+	platform = process.platform,
 	environment = () => ({}),
 	verify,
 }) {
@@ -58,8 +59,15 @@ export async function executeSteps({
 				: result.exitCode === 0 && result.signal === null
 					? "passed"
 					: "failed"
-			if ((signal.aborted || result.signal !== null) && !result.cleanupVerified) report.cleanupUnverified = true
-			if (!signal.aborted && verify) {
+			// Ordinary Windows closure cannot verify descendants; POSIX false means the owned group survived.
+			const cleanupFailed =
+				!result.cleanupVerified && (platform !== "win32" || signal.aborted || result.signal !== null)
+			if (cleanupFailed) {
+				report.cleanupUnverified = true
+				step.error = "cleanup_failed"
+				if (!signal.aborted) step.status = "failed"
+			}
+			if (!signal.aborted && !cleanupFailed && verify) {
 				verifying = true
 				step.evidence = await verify({ index, args, step })
 				if (step.evidence?.status !== "passed") step.status = "failed"

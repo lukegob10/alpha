@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { unzipSync } from "fflate"
 
 const archiveArgument = process.argv[2]
 
@@ -19,22 +19,46 @@ if (!existsSync(archivePath)) {
 	process.exit(1)
 }
 
-const listing = spawnSync("tar", ["-tf", archivePath], {
-	encoding: "utf8",
-	windowsHide: true,
-})
-
-if (listing.error || listing.status !== 0) {
-	console.error(listing.stderr || listing.error?.message || "Unable to inspect VSIX archive")
-	process.exit(listing.status ?? 1)
+const checkSource = process.argv.includes("--check-source")
+const sourceAssets = new Map()
+if (checkSource) {
+	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+	const publicRoot = join(repository, "webview-ui", "public")
+	function collect(relative) {
+		for (const item of readdirSync(join(publicRoot, relative), { withFileTypes: true })) {
+			const child = `${relative}/${item.name}`
+			if (item.isDirectory()) collect(child)
+			else if (item.isFile()) {
+				sourceAssets.set(`extension/webview-ui/build/${child}`, readFileSync(join(publicRoot, child)))
+			}
+		}
+	}
+	collect("artifact-kit/v1")
+	collect("html-document")
 }
 
-const entries = new Set(
-	listing.stdout
-		.split(/\r?\n/u)
-		.map((entry) => entry.trim().replaceAll("\\", "/").replace(/^\.\//u, ""))
-		.filter(Boolean),
-)
+const entries = new Set()
+let packagedAssets
+try {
+	packagedAssets = unzipSync(readFileSync(archivePath), {
+		filter: (entry) => {
+			const name = entry.name.trim().replaceAll("\\", "/").replace(/^\.\//u, "")
+			if (entries.has(name)) throw new Error(`Duplicate VSIX archive entry: ${name}`)
+			entries.add(name)
+			const source = sourceAssets.get(entry.name)
+			if (!source) return false
+			// Only trusted source names are inflated, and their declared size must
+			// match the source before fflate allocates a decompression buffer.
+			if (entry.originalSize !== source.length || (entry.compression === 0 && entry.size !== source.length)) {
+				throw new Error(`Packaged asset differs from current source: ${entry.name}`)
+			}
+			return true
+		},
+	})
+} catch (error) {
+	console.error(`Unable to inspect VSIX archive: ${error instanceof Error ? error.message : String(error)}`)
+	process.exit(1)
+}
 
 const requiredEntries = [
 	"extension/package.json",
@@ -103,33 +127,12 @@ console.log(`Verified ${entries.size} VSIX entries; required files are present a
 
 // Opt-in release check: listing files alone cannot detect stale copied public
 // assets restored from a build cache with incomplete inputs.
-if (process.argv.includes("--check-source")) {
-	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-	const publicRoot = join(repository, "webview-ui", "public")
-	const files = []
-	function collect(relative) {
-		for (const item of readdirSync(join(publicRoot, relative), { withFileTypes: true })) {
-			const child = `${relative}/${item.name}`
-			if (item.isDirectory()) collect(child)
-			else if (item.isFile()) files.push(child)
-		}
-	}
-	collect("artifact-kit/v1")
-	collect("html-document")
-	for (const relative of files) {
-		const entry = `extension/webview-ui/build/${relative}`
-		const extracted = spawnSync("tar", ["-xOf", archivePath, entry], {
-			windowsHide: true,
-			maxBuffer: 8 * 1024 * 1024,
-		})
-		if (
-			extracted.error ||
-			extracted.status !== 0 ||
-			!extracted.stdout.equals(readFileSync(join(publicRoot, relative)))
-		) {
+if (checkSource) {
+	for (const [entry, source] of sourceAssets) {
+		if (!packagedAssets[entry] || !source.equals(packagedAssets[entry])) {
 			console.error(`Packaged asset differs from current source: ${entry}`)
 			process.exit(1)
 		}
 	}
-	console.log(`Verified ${files.length} document assets match current source bytes.`)
+	console.log(`Verified ${sourceAssets.size} document assets match current source bytes.`)
 }

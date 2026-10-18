@@ -132,8 +132,7 @@ export const evidenceInventory = [
 		},
 	),
 	component("search", "search-grep", "src/services/ripgrep/index.ts", [
-		"src/services/ripgrep/__tests__/execution.spec.ts",
-		"src/core/tools/__tests__/SearchFilesTool.spec.ts",
+		"src/services/ripgrep/__tests__/index.spec.ts",
 		"src/services/search/__tests__/file-search.paths.spec.ts",
 	]),
 	component(
@@ -322,16 +321,22 @@ export const evidenceInventory = [
 		columns: ["e2e", "regression", "robustness", "security"],
 		layers: [2, 4, 7, 8],
 	}),
-	host("host-search", "search-grep", ["tool-search.acceptance.test", "tools/search-files.test"]),
-	host("host-reads", "file-reads", ["tools/read-file.test"]),
-	host("host-edits", "edits", ["command-file-diff.test", "tools/apply-diff.test", "tools/write-to-file.test"]),
-	host("host-shell", "shell", [
-		"command-settlement.test",
-		"command-path-approval.test",
-		"tools/execute-command.test",
-	]),
+	host("host-search", "search-grep", ["core-loop.test"], {
+		scope: "Bounded workspace rg inspection through actual exec_command calls and durable results",
+	}),
+	host("host-reads", "file-reads", ["core-loop.test"], {
+		scope: "Absolute and nested workspace reads through exec_command, including ordered durable tool results",
+	}),
+	host("host-edits", "edits", ["command-file-diff.test", "approval-mode.test", "diff-preview-ownership.test"], {
+		scope: "Command-produced edits, approved apply_patch writes, and diff preview/source-buffer ownership",
+	}),
+	host("host-shell", "shell", ["command-settlement.test", "command-path-approval.test"]),
 	host("host-verification", "test-execution", ["completion-idle.test", "proportional-completion.test"]),
-	host("host-tool-routing", "tool-routing", ["update-plan.acceptance.test", "view-image.acceptance.test"]),
+	host("host-tool-routing", "tool-routing", [
+		"tool-search.acceptance.test",
+		"update-plan.acceptance.test",
+		"view-image.acceptance.test",
+	]),
 	host(
 		"host-managed",
 		"subagents",

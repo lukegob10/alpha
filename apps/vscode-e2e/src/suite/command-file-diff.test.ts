@@ -63,7 +63,11 @@ class CommandFileDiffAI {
 		private readonly scriptName: string,
 	) {}
 
-	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string; attemptId?: string }) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		assert.ok(metadata?.taskId)
 		observedTasks.set(this, this.resolveTask(metadata.taskId))
 		const request = this.requests++

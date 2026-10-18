@@ -105,6 +105,9 @@ importers:
       eslint:
         specifier: ^9.27.0
         version: 9.28.0(jiti@2.4.2)(supports-color@8.1.1)
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       husky:
         specifier: ^9.1.7
         version: 9.1.7
@@ -164,10 +167,6 @@ importers:
         version: 6.0.1
 
   packages/build:
-    dependencies:
-      zod:
-        specifier: 3.25.76
-        version: 3.25.76
     devDependencies:
       '@alpha-code/config-eslint':
         specifier: workspace:^

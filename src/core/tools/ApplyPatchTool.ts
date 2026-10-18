@@ -632,13 +632,29 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				})
 			}
 
+			// The destination is committed even if cancellation or source cleanup
+			// prevents the move from finishing. Preserve that effect in the receipt.
+			onApplied()
+			await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
+			const cancelledMove = async (): Promise<ApplyPatchChangeOutcome> => {
+				await task.diffViewProvider.reset()
+				task.processQueuedMessages()
+				return {
+					status: "cancelled",
+					result: t("tools:applyPatch.moveCancelledSourcePreserved", {
+						destination: getTaskReadablePath(task, effectiveMovePath),
+						source: getTaskReadablePath(task, relPath),
+					}),
+				}
+			}
+			if (isPatchCancelled(task, callbacks)) return cancelledMove()
+
 			// Re-check immediately before removing the source. If it changed after
 			// the destination write, report the partial move and preserve the source.
 			try {
 				await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
 			} catch (error) {
-				await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
-				task.didEditFile = true
+				if (isPatchCancelled(task, callbacks)) return cancelledMove()
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_patch")
 				const errorMessage = `Updated '${effectiveMovePath}', but the source '${relPath}' changed before it could be removed; the source was preserved: ${
@@ -651,11 +667,10 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 
 			// Delete the original file
+			if (isPatchCancelled(task, callbacks)) return cancelledMove()
 			try {
 				await fs.unlink(absolutePath)
 			} catch (error) {
-				await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
-				task.didEditFile = true
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_patch")
 				const errorMessage = `Updated '${effectiveMovePath}', but failed to remove original '${relPath}': ${
@@ -666,9 +681,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				task.processQueuedMessages()
 				return { status: "error", result: formatResponse.toolError(errorMessage) }
 			}
-
-			onApplied()
-			await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
 		} else {
 			// Save changes to the same file
 			if (isPreventFocusDisruptionEnabled) {

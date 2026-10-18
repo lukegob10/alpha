@@ -1,5 +1,4 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
-import { convertHeadersToObject } from "./utils/headers"
 import { useDebounce } from "react-use"
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 
@@ -67,37 +66,6 @@ const ApiOptions = ({
 	const { t } = useAppTranslation()
 	const organizationAllowList = useMemo<OrganizationAllowList>(() => ({ allowAll: true, providers: {} }), [])
 
-	const [customHeaders, setCustomHeaders] = useState<[string, string][]>(() => {
-		const headers = apiConfiguration?.openAiHeaders || {}
-		return Object.entries(headers)
-	})
-
-	useEffect(() => {
-		const propHeaders = apiConfiguration?.openAiHeaders || {}
-
-		if (JSON.stringify(customHeaders) !== JSON.stringify(Object.entries(propHeaders))) {
-			setCustomHeaders(Object.entries(propHeaders))
-		}
-	}, [apiConfiguration?.openAiHeaders, customHeaders])
-
-	// Helper to convert array of tuples to object (filtering out empty keys).
-
-	// Debounced effect to update the main configuration when local
-	// customHeaders state stabilizes.
-	useDebounce(
-		() => {
-			const currentConfigHeaders = apiConfiguration?.openAiHeaders || {}
-			const newHeadersObject = convertHeadersToObject(customHeaders)
-
-			// Only update if the processed object is different from the current config.
-			if (JSON.stringify(currentConfigHeaders) !== JSON.stringify(newHeadersObject)) {
-				setApiConfigurationField("openAiHeaders", newHeadersObject, false)
-			}
-		},
-		300,
-		[customHeaders, apiConfiguration?.openAiHeaders, setApiConfigurationField],
-	)
-
 	const [isAdvancedSettingsOpen, setIsAdvancedSettingsOpen] = useState(false)
 	const [outputTokenLimitError, setOutputTokenLimitError] = useState<string | undefined>()
 
@@ -147,16 +115,13 @@ const ApiOptions = ({
 	useDebounce(
 		() => {
 			if (selectedProvider === "openai") {
-				// Use our custom headers state to build the headers object.
-				const headerObject = convertHeadersToObject(customHeaders)
-
 				vscode.postMessage({
 					type: "requestOpenAiModels",
 					values: {
 						baseUrl: apiConfiguration?.openAiBaseUrl,
 						apiKey: apiConfiguration?.openAiApiKey,
 						customHeaders: {}, // Reserved for any additional headers.
-						openAiHeaders: headerObject,
+						openAiHeaders: apiConfiguration.openAiHeaders ?? {},
 					},
 				})
 			} else if (selectedProvider === "vscode-lm") {
@@ -164,7 +129,12 @@ const ApiOptions = ({
 			}
 		},
 		250,
-		[selectedProvider, apiConfiguration?.openAiBaseUrl, apiConfiguration?.openAiApiKey, customHeaders],
+		[
+			selectedProvider,
+			apiConfiguration?.openAiBaseUrl,
+			apiConfiguration?.openAiApiKey,
+			apiConfiguration.openAiHeaders,
+		],
 	)
 
 	useEffect(() => {

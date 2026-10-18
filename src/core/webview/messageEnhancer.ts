@@ -1,9 +1,8 @@
-import { ProviderSettings, AlphaMessage, GlobalState, TelemetryEventName } from "@alpha-code/types"
+import { ProviderSettings, AlphaMessage, TelemetryEventName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { supportPrompt } from "../../shared/support-prompt"
 import { singleCompletionHandler } from "../../utils/single-completion-handler"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
-import { AlphaProvider } from "./AlphaProvider"
 
 export interface MessageEnhancerOptions {
 	text: string
@@ -100,11 +99,11 @@ export class MessageEnhancer {
 		try {
 			const relevantMessages = messages
 				.filter((msg) => {
-					// Include user messages (type: "ask" with text) and assistant messages (type: "say" with say: "text")
+					// Asks belong to the assistant; human replies are stored as user_feedback.
 					if (msg.type === "ask" && msg.text) {
 						return true
 					}
-					if (msg.type === "say" && msg.say === "text" && msg.text) {
+					if (msg.type === "say" && (msg.say === "text" || msg.say === "user_feedback") && msg.text) {
 						return true
 					}
 					return false
@@ -113,7 +112,11 @@ export class MessageEnhancer {
 
 			return relevantMessages
 				.map((msg) => {
-					const role = msg.type === "ask" ? "User" : "Assistant"
+					// A task's first say:text record is the initial human prompt.
+					const isUser =
+						msg.type === "say" &&
+						(msg.say === "user_feedback" || (msg === messages[0] && msg.say === "text"))
+					const role = isUser ? "User" : "Assistant"
 					const content = msg.text || ""
 					// Truncate long messages
 					return `${role}: ${content.slice(0, 500)}${content.length > 500 ? "..." : ""}`

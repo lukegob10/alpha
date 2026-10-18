@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.2",
+		version: "3.2.3",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.2" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.3" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.2")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.3")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.2 loads more quickly and improves follow-up reliability."),
+			screen.getByText("Alpha v3.2.3 refines the chat experience and improves thread reliability."),
 		).toBeInTheDocument()
 	})
 
@@ -51,16 +51,14 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Continue completed and reopened chats reliably, including replies to recovery prompts."),
+			screen.getByText("Keep follow-ups and chat history reliable across task updates and recovery."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Start model requests and terminal commands with less preparation work."),
+			screen.getByText("Coordinate work across threads with integrated orchestration tools."),
 		).toBeInTheDocument()
+		expect(screen.getByText("Keep task titles and cross-thread chat delivery consistent.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Open settings and chat history with fewer unnecessary background loads."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Load diagrams when needed and preserve chat drafts and terminal preview preferences."),
+			screen.getByText("Compose ticket mentions and long messages with stable previews and chat layouts."),
 		).toBeInTheDocument()
 	})
 
@@ -68,10 +66,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.2 loads more quickly and improves follow-up reliability."),
+			screen.getByText("Alpha v3.2.3 refines the chat experience and improves thread reliability."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Continue completed and reopened chats reliably, including replies to recovery prompts."),
+			screen.getByText("Keep follow-ups and chat history reliable across task updates and recovery."),
 		).toBeInTheDocument()
 	})
 })

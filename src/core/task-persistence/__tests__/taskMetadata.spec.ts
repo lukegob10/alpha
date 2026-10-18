@@ -20,6 +20,24 @@ describe("taskMetadata sub-agent routing", () => {
 		await fs.rm(storageRoot, { recursive: true, force: true })
 	})
 
+	it.each([false, true, undefined])(
+		"preserves thread completion delivery preference %s across reload",
+		async (notify) => {
+			const { historyItem } = await taskMetadata({
+				taskId: "independent-thread",
+				taskNumber: 1,
+				messages: [],
+				globalStoragePath: storageRoot,
+				workspace,
+				orchestrationParentTaskId: "creator",
+				orchestrationNotifyCompletion: notify,
+			})
+			const reloaded = historyItemSchema.parse(JSON.parse(JSON.stringify(historyItem)))
+			expect(reloaded.orchestrationNotifyCompletion).toBe(notify)
+			if (notify === undefined) expect(reloaded).not.toHaveProperty("orchestrationNotifyCompletion")
+		},
+	)
+
 	it("persists only the credential-free route snapshot", async () => {
 		const route = {
 			source: "role" as const,

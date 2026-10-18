@@ -1,11 +1,16 @@
 import * as assert from "assert"
+import { readFile } from "node:fs/promises"
 
 import {
 	AlphaCodeEventName,
+	alphaMessageSchema,
 	type AlphaCodeSettings,
 	type AlphaMessage,
 	type ExtensionState,
 	type HistoryItem,
+	type ThreadListResult,
+	type ThreadReadResult,
+	type ThreadWaitResult,
 } from "@alpha-code/types"
 
 import { waitFor, waitUntilCompleted } from "./utils"
@@ -17,12 +22,21 @@ type ScriptChunk =
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 
 interface CrossTaskHostProvider {
+	createTask(
+		text: string,
+		images: undefined,
+		history: undefined,
+		options: { preserveExisting: true; background: true; apiConfiguration: AlphaCodeSettings },
+		configuration: AlphaCodeSettings,
+	): Promise<HostTask>
+	removeTaskFromStack(options: { taskId: string; requireAbortSuccess: true }): Promise<void>
 	getLiveTask(taskId: string): HostTask | undefined
 	getTaskWithId(
 		taskId: string,
 		options?: { includeApiConversationHistory?: boolean },
 	): Promise<{
 		historyItem: HistoryItem
+		uiMessagesFilePath: string
 		apiConversationHistory: unknown[]
 	}>
 	getStateToPostToWebview(): Promise<ExtensionState>
@@ -38,6 +52,7 @@ interface CrossTaskHostProvider {
 
 interface HostTask {
 	taskId: string
+	clineMessages: AlphaMessage[]
 	taskAsk?: AlphaMessage
 	abort: boolean
 	didComplete: boolean
@@ -53,7 +68,15 @@ function findLatestToolResult(messages: unknown[]): string {
 		for (let contentIndex = content.length - 1; contentIndex >= 0; contentIndex--) {
 			const block = content[contentIndex] as { type?: string; content?: unknown } | undefined
 			if (block?.type === "tool_result") {
-				return typeof block.content === "string" ? block.content : JSON.stringify(block.content)
+				if (typeof block.content === "string") return block.content
+				if (Array.isArray(block.content)) {
+					return block.content
+						.flatMap((item: { type?: string; text?: unknown }) =>
+							item.type === "text" && typeof item.text === "string" ? [item.text] : [],
+						)
+						.join("\n")
+				}
+				return JSON.stringify(block.content)
 			}
 		}
 	}
@@ -123,20 +146,20 @@ class CrossTaskAcceptanceAI {
 			switch (turn) {
 				case 0:
 					assert.ok(
-						metadata?.tools?.some((tool) => tool.function?.name === "create_task"),
-						"The launch-thread request must expose create_task to the model",
+						metadata?.tools?.some((tool) => tool.function?.name === "create_thread"),
+						"The launch-thread request must expose create_thread to the model",
 					)
 					chunk = {
 						type: "tool_call",
 						id: `${taskId}-create-child`,
-						name: "create_task",
-						arguments: JSON.stringify({ objective: "Run until stopped", workspace_mode: "shared" }),
+						name: "create_thread",
+						arguments: JSON.stringify({ prompt: "Run until stopped" }),
 					}
 					break
 				case 1: {
-					const created = JSON.parse(findLatestToolResult(messages)) as { task_id: string }
-					state.childTaskId = created.task_id
-					state.childTask = state.host?.getLiveTask(created.task_id)
+					const created = JSON.parse(findLatestToolResult(messages)) as { threadId: string }
+					state.childTaskId = created.threadId
+					state.childTask = state.host?.getLiveTask(created.threadId)
 					await waitFor(() => state.childRequestStarted, {
 						timeout: 10_000,
 						interval: 20,
@@ -145,19 +168,14 @@ class CrossTaskAcceptanceAI {
 					chunk = {
 						type: "tool_call",
 						id: `${taskId}-list-children`,
-						name: "list_tasks",
+						name: "list_threads",
 						arguments: "{}",
 					}
 					break
 				}
 				case 2: {
-					const listed = JSON.parse(findLatestToolResult(messages)) as {
-						tasks: Array<{ task_id: string; lifecycle: string }>
-					}
-					assert.deepEqual(
-						listed.tasks.map(({ task_id, lifecycle }) => ({ task_id, lifecycle })),
-						[{ task_id: state.childTaskId, lifecycle: "running" }],
-					)
+					const listed = JSON.parse(findLatestToolResult(messages)) as ThreadListResult
+					assert.ok(listed.threads.some(({ id }) => id === state.childTaskId))
 					chunk = {
 						type: "tool_call",
 						id: `${taskId}-stop-child`,
@@ -175,14 +193,14 @@ class CrossTaskAcceptanceAI {
 					chunk = {
 						type: "tool_call",
 						id: `${taskId}-wait-child`,
-						name: "wait_task",
-						arguments: JSON.stringify({ task_id: state.childTaskId, timeout_ms: 5_000 }),
+						name: "wait_threads",
+						arguments: JSON.stringify({ targets: [{ threadId: state.childTaskId }], timeoutMs: 5_000 }),
 					}
 					break
 				}
 				case 4: {
-					const waited = JSON.parse(findLatestToolResult(messages)) as { lifecycle: string }
-					assert.equal(waited.lifecycle, "closed")
+					const waited = JSON.parse(findLatestToolResult(messages)) as ThreadWaitResult
+					assert.ok(waited.wake, "The stopped task must produce an actionable wait snapshot")
 					chunk = {
 						type: "text",
 						text: "Created, inspected, stopped, and verified the independent child task.",
@@ -253,16 +271,21 @@ class CompletingChildAI {
 			await this.childMayFinish
 			yield { type: "text", text: "Child test completed." }
 		} else if (turn === 0) {
-			assert.ok(metadata?.tools?.some((tool) => tool.function?.name === "create_task"))
+			assert.ok(metadata?.tools?.some((tool) => tool.function?.name === "create_thread"))
 			yield {
 				type: "tool_call",
 				id: `${taskId}-create-child`,
-				name: "create_task",
-				arguments: JSON.stringify({ objective: "Complete the test and report back", workspace_mode: "shared" }),
+				name: "create_thread",
+				arguments: JSON.stringify({ prompt: "Complete the test and report back" }),
 			}
 		} else if (turn === 1) {
-			this.childTaskId = (JSON.parse(findLatestToolResult(messages)) as { task_id: string }).task_id
-			yield { type: "text", text: "Launched the test task." }
+			this.childTaskId = (JSON.parse(findLatestToolResult(messages)) as { threadId: string }).threadId
+			yield {
+				type: "tool_call",
+				id: `${taskId}-wait-child`,
+				name: "wait_threads",
+				arguments: JSON.stringify({ targets: [{ threadId: this.childTaskId }], timeoutMs: 30_000 }),
+			}
 		} else if (turn === 2) {
 			assert.ok(
 				JSON.stringify(messages).includes("Child test completed."),
@@ -272,6 +295,165 @@ class CompletingChildAI {
 			yield { type: "text", text: "Integrated the child result." }
 		} else {
 			throw new Error(`Unexpected parent model turn ${turn + 1}`)
+		}
+		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
+	}
+
+	getModel() {
+		return {
+			id: this.id,
+			info: { contextWindow: 128_000, maxTokens: 8_192, supportsImages: false, supportsPromptCache: false },
+		}
+	}
+
+	async countTokens(content: unknown[]): Promise<number> {
+		return Math.max(1, Math.ceil(JSON.stringify(content).length / 4))
+	}
+
+	async completePrompt(): Promise<string> {
+		return ""
+	}
+}
+
+const PEER_BASELINE = "Independent peer baseline result."
+const PEER_FOLLOWUP = "Continue the existing independent peer."
+const PEER_STEERING = "Use this steering instruction for the peer."
+
+class IndependentThreadAI {
+	readonly id = "independent-thread-orchestration-e2e"
+	readonly calls: Array<{ taskId: string; name: string }> = []
+	private readonly turns = new Map<string, number>()
+	private peerTaskId?: string
+	private orchestratorTaskId?: string
+	forkTaskId?: string
+	peerFollowupStarted = false
+	peerSteeringStarted = false
+
+	async *createMessage(
+		_system: string,
+		messages: unknown[],
+		metadata?: {
+			taskId?: string
+			signal?: AbortSignal
+			tools?: Array<{ function?: { name?: string } }>
+		},
+	): AsyncGenerator<ScriptChunk> {
+		const taskId = metadata?.taskId
+		assert.ok(taskId)
+		this.peerTaskId ??= taskId
+		const turn = this.turns.get(taskId) ?? 0
+		this.turns.set(taskId, turn + 1)
+		if (taskId === this.peerTaskId) {
+			this.calls.push({ taskId, name: turn === 0 ? "peer_baseline" : "peer_pending" })
+			if (turn === 0) {
+				yield { type: "text", text: PEER_BASELINE }
+				yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
+				return
+			}
+			assert.ok(turn <= 2, "The peer must resume once for messaging and once for steering")
+			const expected = turn === 1 ? PEER_FOLLOWUP : PEER_STEERING
+			assert.ok(JSON.stringify(messages).includes(expected), "The peer must receive attributed guidance")
+			if (turn === 1) this.peerFollowupStarted = true
+			else this.peerSteeringStarted = true
+			const signal = metadata?.signal
+			assert.ok(signal, "Peer requests must remain cancellable during cross-thread controls")
+			await new Promise<void>((resolve) => {
+				if (signal.aborted) return resolve()
+				signal.addEventListener("abort", () => resolve(), { once: true })
+			})
+			return
+		}
+
+		this.orchestratorTaskId ??= taskId
+		assert.equal(taskId, this.orchestratorTaskId, "Forking must not start a model request")
+		const tool = (name: string, args: Record<string, unknown>): ScriptChunk => {
+			assert.ok(
+				metadata?.tools?.some(({ function: spec }) => spec?.name === name),
+				`${name} must be visible`,
+			)
+			this.calls.push({ taskId, name })
+			return { type: "tool_call", id: `${taskId}-peer-step-${turn}`, name, arguments: JSON.stringify(args) }
+		}
+		const result = (): unknown => JSON.parse(findLatestToolResult(messages))
+		switch (turn) {
+			case 0:
+				yield tool("list_threads", { limit: 50 })
+				break
+			case 1: {
+				const listed = result() as ThreadListResult
+				assert.ok(
+					listed.threads.some(({ id }) => id === this.peerTaskId),
+					"An unrelated peer must be listed",
+				)
+				yield tool("read_thread", { threadId: this.peerTaskId, turnLimit: 1 })
+				break
+			}
+			case 2: {
+				const read = result() as ThreadReadResult
+				assert.equal(read.thread.id, this.peerTaskId)
+				assert.ok(JSON.stringify(read.turns).includes(PEER_BASELINE), "Peer history must be readable")
+				yield tool("fork_thread", { threadId: this.peerTaskId })
+				break
+			}
+			case 3: {
+				const forked = result() as { threadId: string; sourceThreadId: string }
+				assert.equal(forked.sourceThreadId, this.peerTaskId)
+				assert.notEqual(forked.threadId, this.peerTaskId)
+				this.forkTaskId = forked.threadId
+				yield tool("read_thread", { threadId: this.forkTaskId, turnLimit: 1 })
+				break
+			}
+			case 4: {
+				const read = result() as ThreadReadResult
+				assert.equal(read.thread.id, this.forkTaskId)
+				assert.ok(
+					JSON.stringify(read.turns).includes(PEER_BASELINE),
+					"An idle fork must preserve completed history",
+				)
+				yield tool("set_thread_title", { threadId: this.forkTaskId, title: "Independent peer fork" })
+				break
+			}
+			case 5:
+				assert.equal((result() as { title: string }).title, "Independent peer fork")
+				yield tool("send_message_to_thread", { threadId: this.peerTaskId, prompt: PEER_FOLLOWUP })
+				break
+			case 6:
+				assert.equal((result() as { threadId: string }).threadId, this.peerTaskId)
+				await waitFor(() => this.peerFollowupStarted, { description: "independent peer follow-up request" })
+				yield tool("steer_task", { task_id: this.peerTaskId, message: PEER_STEERING })
+				break
+			case 7:
+				await waitFor(() => this.peerSteeringStarted, { description: "independent peer steering request" })
+				yield tool("stop_task", { task_id: this.peerTaskId, reason: "Independent peer acceptance complete" })
+				break
+			case 8:
+				assert.ok(["stopped", "stopping"].includes((result() as { status: string }).status))
+				yield tool("wait_threads", { targets: [{ threadId: this.peerTaskId }], timeoutMs: 0 })
+				break
+			case 9: {
+				const waited = result() as ThreadWaitResult
+				assert.ok(waited.polls.some(({ thread }) => thread.id === this.peerTaskId))
+				assert.ok(waited.wake, "A stopped peer must yield an actionable wait snapshot")
+				yield tool("set_thread_archived", { threadId: this.forkTaskId, archived: true })
+				break
+			}
+			case 10:
+				assert.equal((result() as { archived: boolean }).archived, true)
+				yield tool("list_archived_threads", { limit: 50 })
+				break
+			case 11: {
+				const listed = result() as ThreadListResult
+				assert.ok(listed.threads.some(({ id }) => id === this.forkTaskId))
+				yield tool("set_thread_archived", { threadId: this.forkTaskId, archived: false })
+				break
+			}
+			case 12:
+				assert.equal((result() as { archived: boolean }).archived, false)
+				this.calls.push({ taskId, name: "assistant_text" })
+				yield { type: "text", text: "Inspected, forked, messaged, steered, and stopped the independent peer." }
+				break
+			default:
+				throw new Error(`Unexpected independent orchestrator model step ${turn + 1}`)
 		}
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
@@ -336,9 +518,14 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				configuration,
 				text: "can you launch a test thread",
 			})
-			await waitUntilCompleted({ api, taskId: taskIds.root, timeout: 60_000 })
+			await waitUntilCompleted({
+				api,
+				taskId: taskIds.root,
+				isCompleted: () => provider.getLiveTask(taskIds.root!)?.didComplete === true,
+				timeout: 60_000,
+			})
 			taskIds.child = scripted.getChildTaskId()
-			assert.ok(taskIds.child, "The model-facing create_task call did not return a child task ID")
+			assert.ok(taskIds.child, "The model-facing create_thread call did not return a child task ID")
 			await waitFor(async () => completions.filter((id) => id === taskIds.root).length === 1, {
 				description: "exactly one parent completion",
 			})
@@ -359,11 +546,11 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			assert.deepEqual(
 				scripted.calls.map(({ taskId, name }) => [taskId === taskIds.root ? "parent" : "child", name]),
 				[
-					["parent", "create_task"],
+					["parent", "create_thread"],
 					["child", "child_pending"],
-					["parent", "list_tasks"],
+					["parent", "list_threads"],
 					["parent", "stop_task"],
-					["parent", "wait_task"],
+					["parent", "wait_threads"],
 					["parent", "assistant_text"],
 				],
 			)
@@ -380,7 +567,9 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			assert.equal(history.historyItem.status, "interrupted")
 			const records = await provider.listIndependentTasks(root)
 			assert.deepEqual(
-				records.map(({ task_id, lifecycle }) => ({ task_id, lifecycle })),
+				records
+					.filter(({ task_id }) => task_id === taskIds.child)
+					.map(({ task_id, lifecycle }) => ({ task_id, lifecycle })),
 				[{ task_id: taskIds.child, lifecycle: "closed" }],
 			)
 			const state = await provider.getStateToPostToWebview()
@@ -398,7 +587,156 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 		}
 	})
 
-	test("a completed child resumes its parent with the result", async () => {
+	test("a fresh conversation controls an unrelated peer and persists an idle completed-history fork", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const scripted = new IndependentThreadAI()
+		const createdTaskIds: string[] = []
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (
+				event.message.type === "ask" &&
+				(event.message.ask === "tool" || event.message.ask === "completion_result")
+			) {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		try {
+			const configuration: AlphaCodeSettings = {
+				...api.getConfiguration(),
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 8,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			const peerTaskId = await api.startNewTask({ configuration, text: "Report the independent peer baseline." })
+			createdTaskIds.push(peerTaskId)
+			await waitUntilCompleted({
+				api,
+				taskId: peerTaskId,
+				isCompleted: () => provider.getLiveTask(peerTaskId)?.didComplete === true,
+				timeout: 60_000,
+			})
+			const peer = provider.getLiveTask(peerTaskId)
+			assert.ok(peer)
+			await peer.flushApiConversationHistoryPersistence()
+
+			const orchestrator = await provider.createTask(
+				"Inspect and coordinate the existing independent conversation, preserving its separate identity.",
+				undefined,
+				undefined,
+				{ preserveExisting: true, background: true, apiConfiguration: configuration },
+				configuration,
+			)
+			createdTaskIds.push(orchestrator.taskId)
+			await waitUntilCompleted({
+				api,
+				taskId: orchestrator.taskId,
+				isCompleted: () => orchestrator.didComplete,
+				timeout: 60_000,
+			})
+			await orchestrator.waitForTermination()
+			await peer.waitForTermination()
+			await orchestrator.flushApiConversationHistoryPersistence()
+			await peer.flushApiConversationHistoryPersistence()
+			assert.equal(scripted.peerFollowupStarted, true)
+			assert.equal(scripted.peerSteeringStarted, true)
+			assert.equal(peer.abort, true)
+			assert.equal(provider.getLiveTask(peerTaskId), undefined, "Stopping a peer must release its live session")
+			const incoming = peer.clineMessages.filter((message) => message.say === "agent_message")
+			assert.deepEqual(
+				incoming.map((message) => message.text),
+				[PEER_FOLLOWUP, PEER_STEERING, "Independent peer acceptance complete"],
+				"Each incoming peer input must have one visible message bubble",
+			)
+			assert.ok(incoming.every((message) => message.agentMessage?.senderTaskId === orchestrator.taskId))
+			assert.ok(incoming.every((message) => message.isProtected === true))
+			const stopReceipt = incoming.at(-1)
+			assert.ok(stopReceipt?.agentMessage)
+			assert.equal(stopReceipt.agentMessage.stopStatus, "stopped", "The notice must confirm joined cleanup")
+			const stopMessageId = stopReceipt.agentMessage.id
+			const peerHistory = await provider.getTaskWithId(peerTaskId)
+			const savedMessages = alphaMessageSchema
+				.array()
+				.parse(JSON.parse(await readFile(peerHistory.uiMessagesFilePath, "utf8")))
+			assert.deepEqual(
+				savedMessages.find((message) => message.agentMessage?.id === stopMessageId),
+				stopReceipt,
+			)
+			assert.ok(
+				savedMessages.some(
+					(message) =>
+						message.say === "api_req_started" &&
+						JSON.parse(message.text ?? "{}").agentStopMessageId === stopMessageId,
+				),
+				"The cancelled API receipt must identify the peer stop",
+			)
+			assert.equal(
+				JSON.stringify(peerHistory.apiConversationHistory).includes(stopMessageId),
+				false,
+				"A stop receipt must not enqueue another model prompt",
+			)
+			assert.equal(
+				peer.clineMessages.some((message) => message.text === "Continue with the pending agent messages."),
+				false,
+				"Internal thread wake instructions must not appear as chat input",
+			)
+
+			const forkTaskId = scripted.forkTaskId
+			assert.ok(forkTaskId)
+			createdTaskIds.push(forkTaskId)
+			assert.equal(
+				scripted.calls.some(({ taskId }) => taskId === forkTaskId),
+				false,
+			)
+			assert.equal(provider.getLiveTask(forkTaskId), undefined, "An idle fork must not start a runtime")
+			const fork = await provider.getTaskWithId(forkTaskId)
+			assert.equal(fork.historyItem.displayName, "Independent peer fork")
+			assert.ok(JSON.stringify(fork.apiConversationHistory).includes(PEER_BASELINE))
+			for (const taskId of [peerTaskId, orchestrator.taskId]) {
+				const saved = await provider.getTaskWithId(taskId, { includeApiConversationHistory: false })
+				assert.equal(
+					saved.historyItem.orchestrationParentTaskId,
+					undefined,
+					"Peer control must not reparent tasks",
+				)
+			}
+			assert.deepEqual(
+				scripted.calls.filter(({ taskId }) => taskId === orchestrator.taskId).map(({ name }) => name),
+				[
+					"list_threads",
+					"read_thread",
+					"fork_thread",
+					"read_thread",
+					"set_thread_title",
+					"send_message_to_thread",
+					"steer_task",
+					"stop_task",
+					"wait_threads",
+					"set_thread_archived",
+					"list_archived_threads",
+					"set_thread_archived",
+					"assistant_text",
+				],
+			)
+		} finally {
+			for (const taskId of createdTaskIds.reverse()) {
+				if (provider.getLiveTask(taskId)) {
+					await provider.removeTaskFromStack({ taskId, requireAbortSuccess: true }).catch(() => undefined)
+				}
+			}
+			api.off(AlphaCodeEventName.Message, onMessage)
+		}
+	})
+
+	test("wait_threads returns a child result without automatically starting another parent turn", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
@@ -429,14 +767,19 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				enableCheckpoints: false,
 			}
 			rootTaskId = await api.startNewTask({ configuration, text: "can you launch a test thread" })
-			await waitUntilCompleted({ api, taskId: rootTaskId, timeout: 60_000 })
-			assert.ok(scripted.childTaskId)
+			await waitFor(() => scripted.childTaskId !== undefined, {
+				description: "canonical child creation to finish",
+			})
 			scripted.releaseChild()
 			await waitFor(
-				() => completions.filter((taskId) => taskId === rootTaskId).length === 2 && scripted.sawChildResult,
-				{ timeout: 60_000, description: "child result to resume and complete the parent" },
+				() => completions.filter((taskId) => taskId === rootTaskId).length === 1 && scripted.sawChildResult,
+				{ timeout: 60_000, description: "explicit thread wait to return the child result and complete once" },
 			)
 			assert.equal(completions.filter((taskId) => taskId === scripted.childTaskId).length, 1)
+			const root = provider.getLiveTask(rootTaskId)
+			assert.ok(root)
+			await root.waitForTermination()
+			assert.equal(completions.filter((taskId) => taskId === rootTaskId).length, 1)
 		} finally {
 			scripted.releaseChild()
 			api.off(AlphaCodeEventName.Message, onMessage)

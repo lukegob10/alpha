@@ -56,6 +56,7 @@ export const NotificationSettings = ({
 							</label>
 							<div className="flex items-center gap-2">
 								<Slider
+									aria-label={t("settings:notifications.tts.speedLabel")}
 									min={0.1}
 									max={2.0}
 									step={0.01}
@@ -95,6 +96,7 @@ export const NotificationSettings = ({
 							</label>
 							<div className="flex items-center gap-2">
 								<Slider
+									aria-label={t("settings:notifications.sound.volumeLabel")}
 									min={0}
 									max={1}
 									step={0.01}

@@ -1,6 +1,7 @@
-import React, { useState, useRef, useLayoutEffect, memo } from "react"
+import React, { useRef, useLayoutEffect, memo } from "react"
 import { useWindowSize } from "react-use"
 import { vscode } from "@src/utils/vscode"
+import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 interface ThumbnailsProps {
 	images: string[]
@@ -10,7 +11,7 @@ interface ThumbnailsProps {
 }
 
 const Thumbnails = ({ images, style, setImages, onHeightChange }: ThumbnailsProps) => {
-	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+	const { t } = useAppTranslation()
 	const containerRef = useRef<HTMLDivElement>(null)
 	const { width } = useWindowSize()
 
@@ -23,7 +24,6 @@ const Thumbnails = ({ images, style, setImages, onHeightChange }: ThumbnailsProp
 			}
 			onHeightChange?.(height)
 		}
-		setHoveredIndex(null)
 	}, [images, width, onHeightChange])
 
 	const handleDelete = (index: number) => {
@@ -48,26 +48,30 @@ const Thumbnails = ({ images, style, setImages, onHeightChange }: ThumbnailsProp
 				...style,
 			}}>
 			{images.map((image, index) => (
-				<div
-					key={index}
-					style={{ position: "relative" }}
-					onMouseEnter={() => setHoveredIndex(index)}
-					onMouseLeave={() => setHoveredIndex(null)}>
-					<img
-						src={image}
-						alt={`Thumbnail ${index + 1}`}
-						style={{
-							width: 34,
-							height: 34,
-							objectFit: "cover",
-							borderRadius: 4,
-							cursor: "pointer",
-						}}
-						onClick={() => handleImageClick(image)}
-					/>
-					{isDeletable && hoveredIndex === index && (
-						<div
-							onClick={() => handleDelete(index)}
+				<div key={index} className="group/thumbnail relative">
+					<button
+						type="button"
+						aria-label={t("common:image.openAttachment", { number: index + 1 })}
+						className="block cursor-pointer rounded border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder focus-visible:outline-offset-1"
+						onClick={(event) => {
+							event.stopPropagation()
+							handleImageClick(image)
+						}}>
+						<img
+							src={image}
+							alt={t("common:image.attachment", { number: index + 1 })}
+							style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 4 }}
+						/>
+					</button>
+					{isDeletable && (
+						<button
+							type="button"
+							aria-label={t("common:image.removeAttachment", { number: index + 1 })}
+							className="pointer-events-none border-0 p-0 opacity-0 group-hover/thumbnail:pointer-events-auto group-hover/thumbnail:opacity-100 group-focus-within/thumbnail:pointer-events-auto group-focus-within/thumbnail:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder focus-visible:outline-offset-1"
+							onClick={(event) => {
+								event.stopPropagation()
+								handleDelete(index)
+							}}
 							style={{
 								position: "absolute",
 								top: -4,
@@ -83,12 +87,13 @@ const Thumbnails = ({ images, style, setImages, onHeightChange }: ThumbnailsProp
 							}}>
 							<span
 								className="codicon codicon-close"
+								aria-hidden="true"
 								style={{
 									color: "var(--vscode-foreground)",
 									fontSize: 10,
 									fontWeight: "bold",
 								}}></span>
-						</div>
+						</button>
 					)}
 				</div>
 			))}

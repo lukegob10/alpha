@@ -18,6 +18,7 @@ import { send_message as sendMessage } from "./send_message"
 import { followup_task as followupTask } from "./followup_task"
 import { interrupt_agent as interruptAgent } from "./interrupt_agent"
 import { crossTaskOrchestrationTools } from "./cross_task_orchestration"
+import { threadOrchestrationTools } from "./thread_orchestration"
 import { createWriteStdinTool } from "./manage_command"
 import { createReadFileTool } from "./read_file"
 import { viewImageToolSchema } from "./view_image"
@@ -57,10 +58,14 @@ export interface NativeToolsOptions {
 	mcpResourcesAvailable?: boolean
 	/** Retain the retired resource declaration for provider history, without granting a new call. */
 	includeLegacyMcpResource?: boolean
-	/** Root tasks control direct children; an independent child can only message its parent. */
+	/** Independent primary tasks can inspect and coordinate peer conversations; managed children cannot. */
 	crossTaskRole?: "root" | "child" | "none"
-	/** Include the create_task declaration; the captured policy decides whether it is callable. */
+	/** Historical spelling for includeCreateThreadSchema. */
 	includeCreateTaskSchema?: boolean
+	/** Include create_thread only when the latest human request authorizes a separate task. */
+	includeCreateThreadSchema?: boolean
+	/** Retain declarations required by saved provider history without advertising them on fresh tasks. */
+	legacyCrossTaskToolNames?: readonly string[]
 }
 
 /** Schemas kept only for decoding and dispatching tool calls saved by older tasks. */
@@ -90,6 +95,8 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		includeLegacyMcpResource = false,
 		crossTaskRole = "none",
 		includeCreateTaskSchema = false,
+		includeCreateThreadSchema = includeCreateTaskSchema,
+		legacyCrossTaskToolNames = [],
 	} = options
 
 	const availableBrowserTools = browserTools.filter((tool) => {
@@ -115,13 +122,19 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(supportsImages ? [viewImageToolSchema] : []),
 		...availableBrowserTools,
 		createSpawnAgentTool(agentKinds, namedAgentTypes),
-		...(crossTaskRole === "root"
-			? crossTaskOrchestrationTools.filter(
-					(tool) => tool.function.name !== "create_task" || includeCreateTaskSchema,
-				)
-			: crossTaskRole === "child"
-				? [crossTaskOrchestrationTools[3]]
-				: []),
+		...(taskKind === "primary" && crossTaskRole !== "none"
+			? [
+					...threadOrchestrationTools.filter(
+						(tool) => tool.function.name !== "create_thread" || includeCreateThreadSchema,
+					),
+					...crossTaskOrchestrationTools.filter(
+						(tool) =>
+							tool.function.name === "steer_task" ||
+							tool.function.name === "stop_task" ||
+							legacyCrossTaskToolNames.includes(tool.function.name),
+					),
+				]
+			: []),
 		listAgents,
 		waitAgent,
 		sendMessage,

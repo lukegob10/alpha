@@ -27,24 +27,6 @@ so an older asynchronously assembled snapshot cannot restore a superseded choice
 `steerQueuedMessage` continue to use the existing durable claim and interruption path. Approval and policy authority
 are unaffected. No transcript or queue format migration is needed.
 
-## Current Codex reference and intentional difference
-
-On October 11, 2026, freshly fetched `openai/codex` main at
-[`a9b0815167c27ab13719dd12d13b63e02b70d221`](https://github.com/openai/codex/commit/a9b0815167c27ab13719dd12d13b63e02b70d221),
-committed at `2026-10-11T23:44:43Z`. Inspected current source and tests:
-
-- [`session/input_queue.rs::watch_user_input`](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/session/input_queue.rs)
-  subscribes before inspecting pending user input and signals sampling preemption when input arrives.
-- [`session/turn.rs::run_sampling_request`](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/src/session/turn.rs)
-  installs that watcher when step preemption is enabled and races response reads against its signal.
-- [`pending_input_persistence.rs::steered_input_checkpoint_controls_next_request`](https://github.com/openai/codex/blob/a9b0815167c27ab13719dd12d13b63e02b70d221/codex-rs/core/tests/suite/pending_input_persistence.rs)
-  holds the initial response until a follow-up request proves interruption advanced the turn. It covers synchronous and
-  background user-input checkpoints with instant interruption, and separates tool-output checkpoints.
-
-Alpha deliberately queues ordinary active-task submissions by default because the user explicitly requested control over
-interruption. `autoSteer: true` retains the previously implemented immediate-steering behavior; explicit steering remains
-available in either mode. The shared runtime and durable transaction protections remain the same.
-
 ## Validation
 
 Regression coverage exercises missing, false, and true preferences across textarea Enter, Send button, and the host Enter

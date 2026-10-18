@@ -79,6 +79,7 @@ export const processTask = async ({
 	let settled = false
 	let localSandboxRoot: string | undefined
 	let descriptors: ArtifactDescriptor[] = []
+	const ownsLogger = logger === undefined
 
 	logger ??= new Logger({
 		logDir: containerized
@@ -304,8 +305,15 @@ export const processTask = async ({
 		}
 		throw error
 	} finally {
-		if (registered) await deregisterRunner({ runId: run.id, taskId })
-		if (localSandboxRoot) await fs.rm(localSandboxRoot, { recursive: true, force: true })
+		try {
+			if (registered) await deregisterRunner({ runId: run.id, taskId })
+		} finally {
+			try {
+				if (localSandboxRoot) await fs.rm(localSandboxRoot, { recursive: true, force: true })
+			} finally {
+				if (ownsLogger) logger.close()
+			}
+		}
 	}
 }
 
@@ -644,16 +652,13 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 				events.push({
 					sequence: events.length + 1,
 					timestamp,
-					type:
-						content.name === "shell" || content.name === "execute_command"
-							? "agent.turn.verification_started"
-							: "agent.turn.tool_call",
+					type: isCommandTool(content.name) ? "agent.turn.verification_started" : "agent.turn.tool_call",
 					payload: { tool: content.name },
 				})
 			}
 			if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
 				const tool = toolNames.get(content.tool_use_id) ?? "unknown"
-				const isCommand = tool === "shell" || tool === "execute_command"
+				const isCommand = isCommandTool(tool)
 				const result =
 					typeof content.content === "string" ? content.content : JSON.stringify(content.content ?? "")
 				events.push({
@@ -669,6 +674,10 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 		}
 	}
 	return events
+}
+
+function isCommandTool(name: string): boolean {
+	return name === "exec_command" || name === "shell" || name === "execute_command"
 }
 
 function normalizeAgentTrace(records: unknown[]): EvalTraceEvent[] {

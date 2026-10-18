@@ -395,11 +395,6 @@ export const runTaskInVscode = async ({
 				} catch (error) {
 					failure ??= { error }
 				}
-				try {
-					logger.close()
-				} catch (error) {
-					failure ??= { error }
-				}
 			}
 		}
 	}

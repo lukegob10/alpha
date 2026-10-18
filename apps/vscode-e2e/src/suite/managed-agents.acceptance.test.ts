@@ -174,8 +174,12 @@ class ManagedAgentScriptedAI {
 	async *createMessage(
 		_systemPrompt: string,
 		messages: unknown[],
-		metadata?: { taskId?: string },
+		metadata?: { taskId?: string; attemptId?: string },
 	): AsyncGenerator<ScriptChunk> {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		const taskId = metadata?.taskId
 		if (!taskId) throw new Error("Scripted managed-agent E2E request is missing metadata.taskId")
 

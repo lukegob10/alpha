@@ -39,8 +39,12 @@ class AsyncInputScriptedAI {
 	async *createMessage(
 		_systemPrompt: string,
 		messages: unknown[],
-		metadata?: { taskId?: string; tools?: unknown[] },
+		metadata?: { taskId?: string; attemptId?: string; tools?: unknown[] },
 	) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		assert.ok(metadata?.taskId, "Every provider request must belong to the real task")
 		const tools = metadata.tools ?? []
 		this.requests.push({ messages: structuredClone(messages), tools: structuredClone(tools) })

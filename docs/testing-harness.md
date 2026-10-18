@@ -149,6 +149,5 @@ boundary; do not silently downgrade container isolation to a normal workstation 
 A green rerun does not explain the historical ticket-progress timeout. Preserve each incident's original evidence;
 the [evidence runbook](harness-evidence.md) describes report validation and retention.
 
-The [October 5 testing cycle](testing-cycle-2026-10-05.md) records the broad baseline, native feature coverage additions,
-suite-discovery guards and packaging regressions. CI runs the existing unit/tooling commands on Windows, Linux and macOS;
+CI runs the existing unit/tooling commands on Windows, Linux and macOS;
 the extended host lane remains pinned to VS Code 1.125.0 and requires complete execution receipts.

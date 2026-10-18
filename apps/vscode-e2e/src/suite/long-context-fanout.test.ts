@@ -104,7 +104,15 @@ class FanoutAI {
 	set removeFromCache(value: (() => void) | undefined) {
 		observations.get(this)!.removeFromCache = value
 	}
-	async *createMessage(systemPrompt: string, messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(
+		systemPrompt: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; attemptId?: string },
+	) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Fixture task" }
+			return
+		}
 		const observation = observations.get(this)!
 		assert.ok(metadata?.taskId)
 		const taskId = metadata.taskId

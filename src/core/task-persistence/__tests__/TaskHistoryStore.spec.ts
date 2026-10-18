@@ -10,6 +10,7 @@ import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { safeWriteJson, type SafeWriteJsonOptions } from "../../../utils/safeWriteJson"
 import { getStorageBasePath } from "../../../utils/storage"
+import * as atomicWrite from "../atomicWrite"
 
 const { mockUnlink, mockSafeWriteJson } = vi.hoisted(() => ({
 	mockUnlink: vi.fn(),
@@ -210,16 +211,16 @@ describe("TaskHistoryStore", () => {
 		})
 
 		it.each(["../outside", "..\\outside", "/absolute", "C:\\absolute"])(
-			"rejects path-shaped cached task identity %j before reading or writing a task file",
+			"rejects path-shaped task identity %j before caching, reading or writing a task file",
 			async (id) => {
 				await store.initialize()
-				// Simulate legacy cached metadata without letting the baseline upsert path touch that location.
-				mockSafeWriteJson.mockResolvedValueOnce(undefined)
-				await store.upsert(makeHistoryItem({ id, apiConfigName: "saved" }))
 				mockSafeWriteJson.mockClear()
 				const read = vi.spyOn(fs, "readFile")
 				try {
-					await expect(store.renameProviderProfile("saved", "renamed")).rejects.toThrow("Invalid task ID")
+					await expect(store.upsert(makeHistoryItem({ id, apiConfigName: "saved" }))).rejects.toThrow(
+						"Invalid task ID",
+					)
+					expect(store.get(id)).toBeUndefined()
 					expect(read).not.toHaveBeenCalled()
 					expect(mockSafeWriteJson).not.toHaveBeenCalled()
 				} finally {
@@ -649,6 +650,104 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("migrateFromGlobalState()", () => {
+		it.each([
+			["malformed", "{ incomplete canonical metadata"],
+			["schema-incompatible", JSON.stringify({ id: "bad", task: 17 })],
+		])("continues migrating other tasks while preserving %s canonical metadata", async (_kind, contents) => {
+			const bad = makeHistoryItem({ id: "bad", task: "Legacy mirror must not replace canonical evidence" })
+			const good = makeHistoryItem({ id: "good", task: "Recoverable legacy task" })
+			const badPath = path.join(tmpDir, "tasks", bad.id, GlobalFileNames.historyItem)
+			const goodPath = path.join(tmpDir, "tasks", good.id, GlobalFileNames.historyItem)
+			await fs.mkdir(path.dirname(badPath), { recursive: true })
+			await fs.mkdir(path.dirname(goodPath), { recursive: true })
+			await fs.writeFile(badPath, contents)
+			await store.initialize()
+
+			await expect(store.migrateFromGlobalState([bad, good])).resolves.toBeUndefined()
+
+			expect(await fs.readFile(badPath, "utf8")).toBe(contents)
+			expect(JSON.parse(await fs.readFile(goodPath, "utf8"))).toEqual(good)
+			expect(store.get(good.id)).toEqual(good)
+		})
+
+		it("does not treat an existing metadata read failure as permission to backfill", async () => {
+			const item = makeHistoryItem({ id: "unreadable" })
+			const filePath = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			const contents = JSON.stringify(item)
+			await fs.mkdir(path.dirname(filePath), { recursive: true })
+			await fs.writeFile(filePath, contents)
+			const failure = Object.assign(new Error("Canonical metadata cannot be read"), { code: "EACCES" })
+			const read = vi.spyOn(fs, "readFile").mockRejectedValueOnce(failure)
+			try {
+				await expect(store.migrateFromGlobalState([item])).rejects.toBe(failure)
+			} finally {
+				read.mockRestore()
+			}
+			expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+			expect(mockSafeWriteJson).not.toHaveBeenCalled()
+		})
+
+		it("propagates a migration lease failure without writing canonical metadata", async () => {
+			const item = makeHistoryItem({ id: "lease-failure" })
+			await fs.mkdir(path.join(tmpDir, "tasks", item.id), { recursive: true })
+			const failure = new Error("Migration lease unavailable")
+			const lease = vi.spyOn(atomicWrite, "withFileLock").mockRejectedValueOnce(failure)
+			try {
+				await expect(store.migrateFromGlobalState([item])).rejects.toBe(failure)
+				expect(mockSafeWriteJson).not.toHaveBeenCalled()
+			} finally {
+				lease.mockRestore()
+			}
+		})
+
+		it.each(["../outside-tasks", "..\\outside-tasks"])(
+			"rejects persisted task ID %s without writing outside task storage",
+			async (id) => {
+				const outsideDirectory = path.join(tmpDir, "outside-tasks")
+				await fs.mkdir(outsideDirectory, { recursive: true })
+				await expect(store.migrateFromGlobalState([makeHistoryItem({ id })])).rejects.toThrow("Invalid task ID")
+				expect(await fs.readdir(outsideDirectory)).toEqual([])
+			},
+		)
+
+		it("preserves a canonical history file created while the migration write is preparing", async () => {
+			const legacy = makeHistoryItem({ id: "migration-race", task: "Obsolete globalState mirror" })
+			const current = { ...legacy, task: "New canonical task state", tokensIn: 999 }
+			const filePath = path.join(tmpDir, "tasks", legacy.id, GlobalFileNames.historyItem)
+			await fs.mkdir(path.dirname(filePath), { recursive: true })
+			const write = mockSafeWriteJson.getMockImplementation()!
+			mockSafeWriteJson.mockImplementationOnce(
+				async (destination: string, data: unknown, options?: SafeWriteJsonOptions) => {
+					await fs.writeFile(destination, JSON.stringify(current))
+					await write(destination, data, options)
+				},
+			)
+
+			await expect(store.migrateFromGlobalState([legacy])).rejects.toThrow(
+				"Task history changed during metadata write",
+			)
+			expect(JSON.parse(await fs.readFile(filePath, "utf8"))).toEqual(current)
+		})
+
+		it("rechecks canonical metadata after acquiring the migration lease", async () => {
+			const legacy = makeHistoryItem({ id: "migration-lease", task: "Obsolete globalState mirror" })
+			const current = { ...legacy, task: "Canonical metadata from another extension host" }
+			const filePath = path.join(tmpDir, "tasks", legacy.id, GlobalFileNames.historyItem)
+			await fs.mkdir(path.dirname(filePath), { recursive: true })
+			const originalLock = atomicWrite.withFileLock
+			const lease = vi.spyOn(atomicWrite, "withFileLock").mockImplementationOnce(async (file, operation) => {
+				await fs.writeFile(file, JSON.stringify(current))
+				return originalLock(file, operation)
+			})
+			try {
+				await store.migrateFromGlobalState([legacy])
+				expect(JSON.parse(await fs.readFile(filePath, "utf8"))).toEqual(current)
+				expect(store.get(legacy.id)).toEqual(current)
+			} finally {
+				lease.mockRestore()
+			}
+		})
+
 		it("resolves the configured root once for all legacy entries and the derived index", async () => {
 			const items = [makeHistoryItem({ id: "legacy-root-a" }), makeHistoryItem({ id: "legacy-root-b" })]
 			for (const item of items) {
@@ -737,6 +836,27 @@ describe("TaskHistoryStore", () => {
 			await store.migrateFromGlobalState([item]) // Second call
 
 			expect(store.get("idem-task")).toBeDefined()
+		})
+	})
+
+	describe("task storage scope", () => {
+		it.each(["../outside-tasks", "..\\outside-tasks"])("rejects task writes for %s", async (id) => {
+			await expect(store.upsert(makeHistoryItem({ id }))).rejects.toThrow("Invalid task ID")
+			await expect(
+				fs.access(path.join(tmpDir, "outside-tasks", GlobalFileNames.historyItem)),
+			).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+		})
+
+		it("rejects a task deletion outside task storage", async () => {
+			const outsideDirectory = path.join(tmpDir, "outside-tasks")
+			const filePath = path.join(outsideDirectory, GlobalFileNames.historyItem)
+			await fs.mkdir(outsideDirectory, { recursive: true })
+			await fs.writeFile(filePath, "external task metadata")
+
+			await expect(store.delete("../outside-tasks")).rejects.toThrow("Invalid task ID")
+			expect(await fs.readFile(filePath, "utf8")).toBe("external task metadata")
 		})
 	})
 

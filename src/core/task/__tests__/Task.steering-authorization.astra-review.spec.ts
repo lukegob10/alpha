@@ -67,14 +67,7 @@ function harness(retained = false) {
 		}),
 		reconcileInterruptedSubagentGroups: vi.fn(async () => undefined),
 		mergePendingToolResultsIntoUserContent: vi.fn((content: Content) => content),
-		getPendingSpawnedSubagentResults: vi.fn(() => []),
-		buildUserContentWithPendingSpawnedSubagentResults: vi.fn((content: Content) => ({
-			content,
-			pendingResults: [],
-		})),
-		retryPendingAutomaticResultClaimSettlement: vi.fn(async () => undefined),
 		settleAllPersistedWaitAgentResultClaims: vi.fn(async () => undefined),
-		markSpawnedSubagentResultsDelivered: vi.fn(async () => undefined),
 		deliverAgentMessages: vi.fn(async () => undefined),
 		waitForPendingSubagentChangeSetReviews: vi.fn(async () => undefined),
 		maybeWaitForProviderRateLimit: vi.fn(async () => undefined),
@@ -140,7 +133,7 @@ async function assertCreationAuthority(task: Task, expected: boolean) {
 		userRequestText: task["getUserRequestTextForCatalog"](),
 	})
 	expect
-		.soft(catalog.tools.some((tool) => tool.type === "function" && tool.function.name === "create_task"))
+		.soft(catalog.tools.some((tool) => tool.type === "function" && tool.function.name === "create_thread"))
 		.toBe(expected)
 	Object.assign(task, { providerRef: { deref: () => provider } })
 	const results: string[] = []

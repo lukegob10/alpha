@@ -23,9 +23,6 @@ export interface AgentStepSnapshot<Handler = unknown, Executable = unknown> {
 	readonly runtime: AgentStepRuntime<Handler, Executable>
 }
 
-/** Short alias for code that calls the snapshot an agent step. */
-export type AgentStep<Handler = unknown, Executable = unknown> = AgentStepSnapshot<Handler, Executable>
-
 export type AgentStepRuntimeInput<Handler = unknown, Executable = unknown> = AgentStepRuntimeReferences<
 	Handler,
 	Executable
@@ -137,14 +134,6 @@ export class AgentStepContextBuilder<Handler = unknown, Executable = unknown> {
 		return freezeSnapshot(context, runtimeForContext(context, references))
 	}
 
-	/** Alias for callers that use “create” for the initial snapshot. */
-	create(
-		input: AgentStepBuilderInput<Handler, Executable>,
-		runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-	): AgentStepSnapshot<Handler, Executable> {
-		return this.build(input, runtime)
-	}
-
 	retry(
 		step: AgentStepLike<Handler, Executable>,
 		options: RetryStepContextOptions | number = {},
@@ -153,15 +142,6 @@ export class AgentStepContextBuilder<Handler = unknown, Executable = unknown> {
 		const context = deriveRetryStepContext(contextOf(step), options)
 		const references = runtime ?? runtimeOf(step) ?? this.defaultRuntime
 		return freezeSnapshot(context, runtimeForContext(context, references))
-	}
-
-	/** Explicitly named retry derivation for callers avoiding overloaded verbs. */
-	deriveRetry(
-		step: AgentStepLike<Handler, Executable>,
-		options: RetryStepContextOptions | number = {},
-		runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-	): AgentStepSnapshot<Handler, Executable> {
-		return this.retry(step, options, runtime)
 	}
 
 	child(
@@ -174,15 +154,6 @@ export class AgentStepContextBuilder<Handler = unknown, Executable = unknown> {
 		return freezeSnapshot(context, runtimeForContext(context, references))
 	}
 
-	/** Explicitly named child derivation for callers avoiding overloaded verbs. */
-	deriveChild(
-		parent: AgentStepLike<Handler, Executable>,
-		options: ChildStepContextOptions,
-		runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-	): AgentStepSnapshot<Handler, Executable> {
-		return this.child(parent, options, runtime)
-	}
-
 	compaction(
 		parent: AgentStepLike<Handler, Executable>,
 		options: CompactionStepContextOptions = {},
@@ -192,48 +163,4 @@ export class AgentStepContextBuilder<Handler = unknown, Executable = unknown> {
 		const references = runtime ?? runtimeOf(parent) ?? this.defaultRuntime
 		return freezeSnapshot(context, runtimeForContext(context, references))
 	}
-
-	/** Alias for code that calls compaction a derived context. */
-	deriveCompaction(
-		parent: AgentStepLike<Handler, Executable>,
-		options: CompactionStepContextOptions = {},
-		runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-	): AgentStepSnapshot<Handler, Executable> {
-		return this.compaction(parent, options, runtime)
-	}
-}
-
-/** Standalone builder for code that does not need a retained builder instance. */
-export function buildAgentStepContext<Handler = unknown, Executable = unknown>(
-	input: AgentStepBuilderInput<Handler, Executable>,
-	runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-): AgentStepSnapshot<Handler, Executable> {
-	return new AgentStepContextBuilder<Handler, Executable>().build(input, runtime)
-}
-
-export const createAgentStep = buildAgentStepContext
-export const buildAgentStep = buildAgentStepContext
-
-export function deriveRetryAgentStep<Handler = unknown, Executable = unknown>(
-	step: AgentStepLike<Handler, Executable>,
-	options: RetryStepContextOptions | number = {},
-	runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-): AgentStepSnapshot<Handler, Executable> {
-	return new AgentStepContextBuilder<Handler, Executable>().retry(step, options, runtime)
-}
-
-export function deriveChildAgentStep<Handler = unknown, Executable = unknown>(
-	parent: AgentStepLike<Handler, Executable>,
-	options: ChildStepContextOptions,
-	runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-): AgentStepSnapshot<Handler, Executable> {
-	return new AgentStepContextBuilder<Handler, Executable>().child(parent, options, runtime)
-}
-
-export function deriveCompactionAgentStep<Handler = unknown, Executable = unknown>(
-	parent: AgentStepLike<Handler, Executable>,
-	options: CompactionStepContextOptions = {},
-	runtime?: AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable>,
-): AgentStepSnapshot<Handler, Executable> {
-	return new AgentStepContextBuilder<Handler, Executable>().compaction(parent, options, runtime)
 }

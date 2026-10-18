@@ -37,6 +37,7 @@
 	"selectChat": "Select chat: {{task}}",
 	"chatActions": "Chat actions: {{task}}",
 	"openChat": "Open chat: {{task}}",
+	"backToHome": "Back to main screen",
 	"switchChat": "Switch chat",
 	"renameChat": "Rename chat",
 	"renameChatNamed": "Rename chat: {{task}}",

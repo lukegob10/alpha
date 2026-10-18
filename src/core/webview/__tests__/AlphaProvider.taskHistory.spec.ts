@@ -111,7 +111,9 @@ vi.mock("delay", () => {
 
 vi.mock("../../prompts/sections/custom-instructions")
 
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),
@@ -436,6 +438,8 @@ describe("AlphaProvider Task History Synchronization", () => {
 		const renamed = createHistoryItem({ id: "renamed-chat", task: "Original prompt", displayName: "Named chat" })
 		const rename = vi.spyOn(provider.taskHistoryStore, "renameTask").mockResolvedValue(renamed)
 		vi.spyOn(provider.taskHistoryStore, "get").mockReturnValue(renamed)
+		const cancelTitle = vi.fn()
+		vi.spyOn(provider as any, "getLiveTask").mockReturnValue({ cancelAutomaticTaskTitle: cancelTitle })
 		provider.isViewLaunched = true
 		const send = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
 		const siblingSend = vi.fn().mockResolvedValue(undefined)
@@ -459,8 +463,48 @@ describe("AlphaProvider Task History Synchronization", () => {
 		await expect(provider.renameTask(renamed.id, "Named chat")).resolves.toEqual(renamed)
 
 		expect(rename).toHaveBeenCalledExactlyOnceWith(renamed.id, "Named chat", "/test/workspace")
+		expect(cancelTitle).toHaveBeenCalledOnce()
 		expect(siblingInvalidate).toHaveBeenCalledWith(renamed.id, { requireExisting: true })
 		const projection = { type: "taskHistoryItemUpdated", taskHistoryItem: renamed }
+		expect(send).toHaveBeenCalledWith(projection)
+		expect(siblingSend).toHaveBeenCalledWith(projection)
+		expect(otherProject.postMessageToWebview).not.toHaveBeenCalled()
+		expect(transcript).not.toHaveBeenCalled()
+	})
+
+	it("projects a generated title to sibling history views", async () => {
+		const titled = createHistoryItem({
+			id: "generated-title-chat",
+			task: "Original prompt",
+			generatedTitle: "Improve chat titles",
+		})
+		const saveTitle = vi.spyOn(provider.taskHistoryStore, "setGeneratedTitle").mockResolvedValue(titled)
+		vi.spyOn(provider.taskHistoryStore, "get").mockReturnValue(titled)
+		provider.isViewLaunched = true
+		const send = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+		const siblingSend = vi.fn().mockResolvedValue(undefined)
+		const siblingInvalidate = vi.fn().mockResolvedValue(undefined)
+		const sibling = {
+			taskHistoryStoreReady: Promise.resolve(),
+			taskHistoryStore: {
+				invalidate: siblingInvalidate,
+				get: () => titled,
+				isForWorkspace: (_item: unknown, workspace: string) => workspace === "/test/workspace",
+			},
+			isViewLaunched: true,
+			cwd: "/test/workspace",
+			postMessageToWebview: siblingSend,
+			scheduleGlobalStateWriteThrough: vi.fn(),
+		}
+		const otherProject = { ...sibling, cwd: "/other/project", postMessageToWebview: vi.fn() }
+		vi.spyOn(provider as any, "getHostProviders").mockReturnValue([provider, sibling, otherProject])
+		const transcript = vi.spyOn(provider, "postTaskStateToWebview")
+
+		await expect(provider.updateGeneratedTaskTitle(titled.id, "Improve chat titles")).resolves.toEqual(titled)
+
+		expect(saveTitle).toHaveBeenCalledExactlyOnceWith(titled.id, "Improve chat titles", "/test/workspace")
+		expect(siblingInvalidate).toHaveBeenCalledWith(titled.id, { requireExisting: true })
+		const projection = { type: "taskHistoryItemUpdated", taskHistoryItem: titled }
 		expect(send).toHaveBeenCalledWith(projection)
 		expect(siblingSend).toHaveBeenCalledWith(projection)
 		expect(otherProject.postMessageToWebview).not.toHaveBeenCalled()

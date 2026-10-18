@@ -188,6 +188,8 @@ vi.mock("../../ignore/AlphaIgnoreController")
 
 // Expose validated read-only goal recovery alongside the existing virtual write paths.
 vi.mock("../../../utils/storage", async (importOriginal) => ({
+	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
+		.resolveTaskDirectoryPath,
 	resolveExistingTaskDirectoryPathReadOnly: (await importOriginal<typeof import("../../../utils/storage")>())
 		.resolveExistingTaskDirectoryPathReadOnly,
 	getTaskDirectoryPath: vi

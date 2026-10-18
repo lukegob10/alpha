@@ -591,10 +591,6 @@ export class TaskSessionRegistry {
 		session.waitingReason = projection.waitingReason
 	}
 
-	clearAllLifecycleDegraded(): void {
-		for (const taskId of Array.from(this.lifecycleDegradedTaskIds)) this.clearLifecycleDegraded(taskId)
-	}
-
 	isLifecycleDegraded(taskId: string | undefined): boolean {
 		return taskId !== undefined && this.lifecycleDegradedTaskIds.has(taskId)
 	}
@@ -607,16 +603,6 @@ export class TaskSessionRegistry {
 		if (!session) return
 
 		this.applyLifecycleSnapshotToSession(taskId, session, trustedSnapshot)
-	}
-
-	/** Compatibility alias for callers that call this operation `set`. */
-	setLifecycleSnapshot(taskId: string, snapshot: AgentLifecycleSnapshot): void {
-		this.markLifecycleSnapshot(taskId, snapshot)
-	}
-
-	/** Compatibility alias for callers that use an `apply` verb. */
-	applyLifecycleSnapshot(taskId: string, snapshot: AgentLifecycleSnapshot): void {
-		this.markLifecycleSnapshot(taskId, snapshot)
 	}
 
 	getLifecycleSnapshot(taskId: string | undefined): AgentLifecycleSnapshot | undefined {

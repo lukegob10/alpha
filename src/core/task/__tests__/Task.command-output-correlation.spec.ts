@@ -45,6 +45,7 @@ function createTask(seed: AlphaMessage[] = []) {
 		clineMessages: messages,
 		apiConversationHistory: [],
 		lastMessageTs: 900,
+		getLastNonAgentMessage: Task.prototype["getLastNonAgentMessage"],
 		observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
 		reserveUiMessageTimestamp: Task.prototype["reserveUiMessageTimestamp"],
 		isStreamingPreviewEpochCurrent: previewCurrent,

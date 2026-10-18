@@ -1384,6 +1384,8 @@ export interface AlphaApiReqInfo {
 	cacheReads?: number
 	cost?: number
 	cancelReason?: AlphaApiReqCancelReason
+	/** Durable incoming-chat receipt identifying a peer-requested cancellation. */
+	agentStopMessageId?: string
 	streamingFailedMessage?: string
 	apiProtocol?: "anthropic" | "openai"
 }

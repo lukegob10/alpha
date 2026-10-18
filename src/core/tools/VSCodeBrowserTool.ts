@@ -83,21 +83,3 @@ export const hoverElementTool = new VSCodeBrowserTool("hover_element")
 export const dragElementTool = new VSCodeBrowserTool("drag_element")
 export const handleDialogTool = new VSCodeBrowserTool("handle_dialog")
 export const runPlaywrightCodeTool = new VSCodeBrowserTool("run_playwright_code")
-
-const vscodeBrowserTools = {
-	open_browser_page: openBrowserPageTool,
-	list_browser_pages: listBrowserPagesTool,
-	read_page: readPageTool,
-	screenshot_page: screenshotPageTool,
-	navigate_page: navigatePageTool,
-	click_element: clickElementTool,
-	type_in_page: typeInPageTool,
-	hover_element: hoverElementTool,
-	drag_element: dragElementTool,
-	handle_dialog: handleDialogTool,
-	run_playwright_code: runPlaywrightCodeTool,
-} as const
-
-export function getVSCodeBrowserTool(name: BrowserToolName): VSCodeBrowserTool<BrowserToolName> {
-	return vscodeBrowserTools[name] as VSCodeBrowserTool<BrowserToolName>
-}

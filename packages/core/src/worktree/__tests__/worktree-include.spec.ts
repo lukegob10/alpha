@@ -199,6 +199,33 @@ describe("WorktreeIncludeService", () => {
 			expect(copiedContent).toBe('{"name": "test"}')
 		})
 
+		it.each([
+			["node_modules/", "node_modules"],
+			["node_modules", "node_modules/"],
+			["node_modules/", "node_modules/"],
+		])("copies directory-only patterns from %s and %s", async (includePattern, ignorePattern) => {
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), includePattern)
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), ignorePattern)
+			await fs.mkdir(path.join(sourceDir, "node_modules"))
+			await fs.writeFile(path.join(sourceDir, "node_modules", "dependency.js"), "export const value = 1")
+
+			const result = await service.copyWorktreeIncludeFiles(sourceDir, targetDir)
+
+			expect(result).toEqual(["node_modules"])
+			expect(await fs.readFile(path.join(targetDir, "node_modules", "dependency.js"), "utf8")).toBe(
+				"export const value = 1",
+			)
+		})
+
+		it("does not match files with directory-only patterns", async () => {
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "node_modules/")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "node_modules/")
+			await fs.writeFile(path.join(sourceDir, "node_modules"), "a file, not a directory")
+
+			expect(await service.copyWorktreeIncludeFiles(sourceDir, targetDir)).toEqual([])
+			await expect(fs.access(path.join(targetDir, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" })
+		})
+
 		it("should only copy intersection of patterns", async () => {
 			// .worktreeinclude: node_modules, dist
 			// .gitignore: node_modules, .env

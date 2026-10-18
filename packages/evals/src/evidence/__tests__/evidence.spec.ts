@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { vi } from "vitest"
 
 import {
 	canonicalJson,
@@ -274,6 +275,46 @@ describe("M4 evidence contracts", () => {
 		expect(second.digest).toBe(first.digest)
 		expect([...((await store.get(second)) ?? [])]).toEqual([...bytes])
 		expect(await fs.stat(`${target}.partial`).catch(() => undefined)).toBeUndefined()
+	})
+
+	it("publishes identical artifacts concurrently without sharing an upload file", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "evidence-concurrent-"))
+		const store = new FilesystemArtifactStore(root)
+		const bytes = new TextEncoder().encode("shared artifact")
+		const rename = fs.rename.bind(fs)
+		const releases: Array<() => void> = []
+		let releaseFirst: () => void
+		const firstPublished = new Promise<void>((resolve) => {
+			releaseFirst = resolve
+		})
+		const publishing = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+			const index = releases.length
+			await new Promise<void>((resolve) => {
+				releases.push(resolve)
+				if (releases.length === 2) releases.forEach((release) => release())
+			})
+			if (index > 0) await firstPublished
+			try {
+				await rename(from, to)
+			} finally {
+				if (index === 0) releaseFirst()
+			}
+		})
+		try {
+			const results = await Promise.allSettled(
+				["first", "second"].map((attemptId) =>
+					store.put({ attemptId, kind: "other", bytes, mediaType: "text/plain" }),
+				),
+			)
+			expect(results.every(({ status }) => status === "fulfilled")).toBe(true)
+			for (const result of results) {
+				if (result.status === "fulfilled") expect(await store.get(result.value)).toEqual(Buffer.from(bytes))
+			}
+			expect(publishing).toHaveBeenCalledTimes(2)
+		} finally {
+			publishing.mockRestore()
+			await fs.rm(root, { recursive: true, force: true })
+		}
 	})
 
 	it("rejects a corrupt existing object and reports an absent object", async () => {

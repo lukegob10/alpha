@@ -142,6 +142,7 @@ export function isNonBlockingAsk(ask: AlphaAsk): ask is NonBlockingAsk {
  * - `reasoning`: Assistant's reasoning or thought process (often hidden from user)
  * - `completion_result`: Final result of task completion
  * - `user_feedback`: Message containing user feedback
+ * - `agent_message`: Attributed input from another chat, displayed as an incoming message
  * - `user_feedback_diff`: Diff-formatted feedback from user showing requested changes
  * - `command_output`: Output from an executed command
  * - `shell_integration_warning`: Warning about shell integration issues or limitations
@@ -169,6 +170,7 @@ export const alphaSays = [
 	"reasoning",
 	"completion_result",
 	"user_feedback",
+	"agent_message",
 	"user_feedback_diff",
 	"async_user_input",
 	"command_output",
@@ -509,6 +511,15 @@ export const alphaMessageSchema = z
 		commandExecutionId: z.string().optional(),
 		/** Durable input identities represented by this transcript message. */
 		queuedMessageIds: z.array(z.string().min(1).max(256)).min(1).max(100).optional(),
+		/** Attributed input or host-control receipt; never a human input or approval receipt. */
+		agentMessage: z
+			.object({
+				id: z.string().min(1).max(256),
+				senderTaskId: z.string().min(1).max(256),
+				/** Stop receipts are presentation only and never enter the model inbox. */
+				stopStatus: z.enum(["requested", "stopped"]).optional(),
+			})
+			.optional(),
 		/** Exact child for this historical launch/result, independent of later launches. */
 		childTaskId: z.string().min(1).optional(),
 		/** Correlates a typed tool approval prompt with its one-shot response. */
@@ -559,6 +570,13 @@ export const alphaMessageSchema = z
 		isAnswered: z.boolean().optional(),
 	})
 	.superRefine((message, context) => {
+		if ((message.type === "say" && message.say === "agent_message") !== (message.agentMessage !== undefined)) {
+			context.addIssue({
+				code: "custom",
+				message: "Incoming chat messages require their sender and message identity.",
+				path: ["agentMessage"],
+			})
+		}
 		if ((message.type === "say" && message.say === "async_user_input") !== (message.asyncUserInput !== undefined)) {
 			context.addIssue({
 				code: "custom",

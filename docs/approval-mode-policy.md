@@ -30,11 +30,6 @@ exact session approval identity still includes the original review data. Command
 command amendments. The owning implementation and regression coverage are in
 [`AutoApprovalHandler`](../src/core/auto-approval/AutoApprovalHandler.ts) and its adjacent tests.
 
-The [official Codex sandbox and approvals guidance](https://developers.openai.com/codex/security/) checked on
-2026-09-26 describes Codex Auto as `workspace-write` plus `on-request`: routine commands can run inside the workspace
-because the OS-enforced sandbox constrains their file and network access. Approval policy and sandboxing are separate
-controls there.
-
 Alpha does not run model-generated shell commands in an OS-enforced workspace sandbox. Auto uses command path preflight
 to request review for detected writes outside the task root and unresolved destinations, and saved deny prefixes can
 block commands. The analyzer cannot confine a process, prevent arbitrary network access, or guarantee that an unknown
@@ -43,9 +38,7 @@ isolation. Full Access skips outside-path review; explicit deny rules still bloc
 
 The saved allow-prefix list remains available for Ask mode. Rules match complete executable and argument tokens;
 arguments are case-sensitive, and any matching deny takes precedence over an allow. It is not required for normal Auto
-operation. See [command matching alignment](codex-alignment-command-matching-2026-10-11.md) for the upstream reference
-and compatibility contract. If Alpha later adds process confinement, keep the approval policy and the confinement
-boundary separate.
+operation. If Alpha later adds process confinement, keep the approval policy and the confinement boundary separate.
 
 ## Existing settings migration
 

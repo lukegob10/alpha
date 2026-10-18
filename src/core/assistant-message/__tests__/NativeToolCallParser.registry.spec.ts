@@ -290,7 +290,15 @@ describe("NativeToolCallParser registry dispatch", () => {
 				task_id: taskId,
 				status: "stopped",
 			})),
-		} satisfies CrossTaskOrchestrationProvider
+		} satisfies Pick<
+			CrossTaskOrchestrationProvider,
+			| "createIndependentTask"
+			| "listIndependentTasks"
+			| "waitForIndependentTask"
+			| "sendIndependentTaskMessage"
+			| "steerIndependentTask"
+			| "stopIndependentTask"
+		>
 		const task = {
 			taskId: "parent-1",
 			taskKind: "primary",
@@ -304,7 +312,10 @@ describe("NativeToolCallParser registry dispatch", () => {
 			setResultMetadata: vi.fn(),
 		}
 		const registry = new ToolRegistry({
-			nativeTools: getNativeTools({ crossTaskRole: "root", includeCreateTaskSchema: true }),
+			nativeTools: getNativeTools({
+				crossTaskRole: "root",
+				legacyCrossTaskToolNames: ["create_task", "list_tasks", "wait_task", "send_task_message"],
+			}),
 		})
 		const invocations: Array<[string, Record<string, unknown>]> = [
 			["create_task", { objective: "Inspect the parser", workspace_mode: "worktree" }],

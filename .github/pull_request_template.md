@@ -3,7 +3,7 @@ Thank you for contributing to Alpha!
 
 Before submitting your PR, please ensure:
 - It's linked to an approved GitHub Issue.
-- You've reviewed [CONTRIBUTING.md](../CONTRIBUTING.md).
+- You've reviewed the [development setup](../README.md#local-setup--development) and [validation requirements](../AGENTS.md#validation-matrix).
 -->
 
 ### Related GitHub Issue
@@ -46,7 +46,7 @@ Detail the steps to test your changes. This helps reviewers verify your work.
 - [ ] **Self-Review**: I have performed a thorough self-review of my code.
 - [ ] **Testing**: New and/or updated tests have been added to cover my changes (if applicable).
 - [ ] **Documentation Impact**: I have considered if my changes require documentation updates (see "Documentation Updates" section below).
-- [ ] **Contribution Flow**: I have followed [CONTRIBUTING.md](/CONTRIBUTING.md).
+- [ ] **Contribution Flow**: I have followed the [contribution guidance](../README.md#contributing) and [validation requirements](../AGENTS.md#validation-matrix).
 
 ### Screenshots / Videos
 

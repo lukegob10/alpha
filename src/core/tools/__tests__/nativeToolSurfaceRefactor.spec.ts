@@ -9,6 +9,8 @@ import { TOOL_ALIASES, TOOL_DISPLAY_NAMES, TOOL_GROUPS, type NativeToolArgs } fr
 import { createAgentResponse, type AgentToolCall } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { ToolRegistry } from "../ToolRegistry"
+import { createTaskToolSurface } from "../TaskToolSurface"
+import { isToolAllowedForMode } from "../validateToolUse"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
 import type { Task } from "../../task/Task"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../../task/build-tools"
@@ -40,16 +42,29 @@ const retiredAdvertisedNames = [
 ] as const
 
 const crossTaskToolNames = [
-	"create_task",
-	"list_tasks",
-	"wait_task",
-	"send_task_message",
+	"list_threads",
+	"list_archived_threads",
+	"read_thread",
+	"wait_threads",
+	"create_thread",
+	"fork_thread",
+	"send_message_to_thread",
+	"set_thread_title",
+	"set_thread_archived",
 	"steer_task",
 	"stop_task",
 ] as const
 
-const crossTaskMutationToolNames = ["create_task", "send_task_message", "steer_task", "stop_task"] as const
-const planCrossTaskReadToolNames = ["list_tasks", "wait_task"] as const
+const crossTaskMutationToolNames = [
+	"create_thread",
+	"fork_thread",
+	"send_message_to_thread",
+	"set_thread_title",
+	"set_thread_archived",
+	"steer_task",
+	"stop_task",
+] as const
+const planCrossTaskReadToolNames = ["list_threads", "list_archived_threads", "read_thread", "wait_threads"] as const
 
 function namesOf(tools: ReturnType<typeof getNativeTools>): string[] {
 	return tools.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
@@ -355,10 +370,9 @@ describe("native tool-surface refactor contract", () => {
 			const childCode = await buildSurface("code", "child")
 			const childCodeNames = new Set(namesOf(childCode.tools))
 			for (const name of crossTaskToolNames) {
-				const isParentMessage = name === "send_task_message"
-				expect(childCodeNames.has(name)).toBe(isParentMessage)
-				expect(childCode.surface?.isCallable(name)).toBe(isParentMessage)
-				expect(childCode.surface?.resolve(name) !== undefined).toBe(isParentMessage)
+				expect(childCodeNames.has(name)).toBe(true)
+				expect(childCode.surface?.isCallable(name)).toBe(true)
+				expect(childCode.surface?.resolve(name) !== undefined).toBe(true)
 			}
 
 			const unscopedCode = await buildSurface("code", "none")
@@ -379,8 +393,42 @@ describe("native tool-surface refactor contract", () => {
 			const childPlan = await buildSurface("architect", "child")
 			const childPlanNames = new Set(namesOf(childPlan.tools))
 			for (const name of crossTaskToolNames) {
-				expect(childPlanNames.has(name)).toBe(false)
-				expect(childPlan.surface?.isCallable(name)).toBe(false)
+				const isPlanRead = (planCrossTaskReadToolNames as readonly string[]).includes(name)
+				expect(childPlanNames.has(name)).toBe(isPlanRead)
+				expect(childPlan.surface?.isCallable(name)).toBe(isPlanRead)
+			}
+		})
+
+		it("preserves historical thread-control exclusions across capture and execution", async () => {
+			const replacements = {
+				create_task: ["create_thread", "fork_thread"],
+				list_tasks: ["list_threads", "list_archived_threads"],
+				wait_task: ["wait_threads"],
+				send_task_message: ["send_message_to_thread"],
+			}
+			const schemas = getNativeTools({ crossTaskRole: "root", includeCreateThreadSchema: true })
+			for (const [historical, current] of Object.entries(replacements)) {
+				const captured = createTaskToolSurface({ schemas, mode: "code", disabledTools: [historical] })
+				for (const name of current) {
+					expect(captured.isCallable(name), `${historical} must exclude ${name}`).toBe(false)
+					expect(isToolAllowedForMode(name, "code", [], { [historical]: false })).toBe(false)
+				}
+			}
+			const provider = { context: {}, getMcpHub: () => ({ getServers: () => [] }) }
+			const built = await buildNativeToolsArrayWithRestrictions({
+				provider: provider as unknown as BuildToolsOptions["provider"],
+				cwd: process.cwd(),
+				mode: "code",
+				customModes: undefined,
+				experiments: {},
+				apiConfiguration: { apiProvider: "openai" },
+				crossTaskRole: "root",
+				userRequestText: "Create a new thread.",
+				disabledTools: Object.keys(replacements),
+			})
+			for (const name of Object.values(replacements).flat()) {
+				expect(namesOf(built.tools)).not.toContain(name)
+				expect(built.surface?.isCallable(name)).toBe(false)
 			}
 		})
 
@@ -491,7 +539,13 @@ describe("native tool-surface refactor contract", () => {
 				"followup_task",
 				"list_agents",
 				"interrupt_agent",
-				...crossTaskToolNames,
+				"create_task",
+				"list_tasks",
+				"wait_task",
+				"send_task_message",
+				"steer_task",
+				"stop_task",
+				...crossTaskToolNames.filter((name) => name !== "steer_task" && name !== "stop_task"),
 			])
 		})
 

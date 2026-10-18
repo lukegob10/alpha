@@ -179,3 +179,33 @@ test("pre-aborted launches create no child and cancellation waits for the owned 
 	assert.ok(observedPid)
 	assert.throws(() => process.kill(observedPid, 0), { code: "ESRCH" })
 })
+
+test("GUI hosts discard inherited Electron Node mode while preserving extension test environment", async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-host-environment-")))
+	const previous = process.env.ELECTRON_RUN_AS_NODE
+	try {
+		process.env.ELECTRON_RUN_AS_NODE = "1"
+		const output = path.join(root, "environment.json")
+		assert.equal(
+			await launchExtensionHost({
+				vscodeExecutablePath: process.execPath,
+				extensionDevelopmentPath: root,
+				extensionTestsPath: root,
+				launchArgs: [
+					"-e",
+					"require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ electronNodeMode: process.env.ELECTRON_RUN_AS_NODE, fixture: process.env.ALPHA_HOST_ENV_FIXTURE }))",
+					"--",
+					output,
+				],
+				extensionTestsEnv: { ELECTRON_RUN_AS_NODE: "1", ALPHA_HOST_ENV_FIXTURE: "preserved" },
+			}),
+			0,
+		)
+		assert.deepEqual(JSON.parse(await fs.readFile(output, "utf8")), { fixture: "preserved" })
+		assert.equal(process.env.ELECTRON_RUN_AS_NODE, "1")
+	} finally {
+		if (previous === undefined) delete process.env.ELECTRON_RUN_AS_NODE
+		else process.env.ELECTRON_RUN_AS_NODE = previous
+		await fs.rm(root, { recursive: true, force: true })
+	}
+})

@@ -56,6 +56,10 @@ function indexRun(run, promptIds, declaredSampleCount, role) {
 		if (!allowed.has(report.fixtureId)) throw new Error("Comparison not admitted: mismatched prompt sets")
 		seenIds.add(report.fixtureId)
 		requireCondition(finiteCount(report.sampleIndex), `${role} sampleIndex is required`)
+		requireCondition(report.sampleIndex < declaredSampleCount, `${role} sampleIndex exceeds declaredSampleCount`)
+		for (const field of ["declaredSampleCount", "modelId", "reasoningPreference", "cacheState"]) {
+			requireCondition(report[field] === run.identity[field], `${role} report ${field} mismatch`)
+		}
 		const key = `${report.fixtureId}:${report.sampleIndex}`
 		requireCondition(!indexed.has(key), `duplicate ${role} sample`)
 		indexed.set(key, report)
@@ -113,7 +117,11 @@ export function pairReports(reference, candidate, contract = {}) {
 					providerRequests:
 						leftRequests === null || rightRequests === null
 							? { value: null, coverage: "unavailable", reason: "Paired request counts are unavailable" }
-							: { reference: leftRequests, candidate: rightRequests, delta: rightRequests - leftRequests },
+							: {
+									reference: leftRequests,
+									candidate: rightRequests,
+									delta: rightRequests - leftRequests,
+								},
 					toolResults:
 						leftTools === null || rightTools === null
 							? { value: null, coverage: "unavailable", reason: "Paired tool counts are unavailable" }

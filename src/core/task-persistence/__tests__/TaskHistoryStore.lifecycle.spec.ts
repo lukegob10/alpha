@@ -22,7 +22,8 @@ vi.mock("fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("fs")>()),
 	watch: fixtures.watch,
 }))
-vi.mock("../../../utils/storage", () => ({
+vi.mock("../../../utils/storage", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: async (storagePath: string) => storagePath,
 }))
 vi.mock("../../../utils/safeWriteJson", () => ({

@@ -44,10 +44,6 @@ vi.mock("@src/components/welcome/RooCloudCTA", () => ({
 	default: () => null,
 }))
 
-vi.mock("@src/components/welcome/AlphaTips", () => ({
-	default: () => null,
-}))
-
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: () => null,
 }))

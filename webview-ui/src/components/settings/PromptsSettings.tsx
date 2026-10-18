@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent } from "react"
+import { useState, useEffect, useLayoutEffect, useRef, FormEvent } from "react"
 import { VSCodeTextArea, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 
 import { supportPrompt, SupportPromptType } from "@alpha/support-prompt"
@@ -38,17 +38,29 @@ const PromptsSettings = ({
 	setEnhancementApiConfigId,
 }: PromptsSettingsProps) => {
 	const { t } = useAppTranslation()
-	const { listApiConfigMeta } = useExtensionState()
+	const { listApiConfigMeta, currentTaskId } = useExtensionState()
 
 	const [testPrompt, setTestPrompt] = useState("")
 	const [isEnhancing, setIsEnhancing] = useState(false)
 	const [activeSupportOption, setActiveSupportOption] = useState<SupportPromptType>("ENHANCE")
+	const pendingEnhancementRef = useRef<{ requestId: string; draft: string; taskId?: string } | null>(null)
+
+	useLayoutEffect(() => {
+		const pending = pendingEnhancementRef.current
+		if (pending && (pending.draft !== testPrompt || pending.taskId !== currentTaskId)) {
+			pendingEnhancementRef.current = null
+			setIsEnhancing(false)
+		}
+	}, [testPrompt, currentTaskId])
 
 	useEffect(() => {
 		const handler = (event: MessageEvent) => {
 			const message = event.data
 			if (message.type === "enhancedPrompt") {
-				if (message.text) {
+				const pending = pendingEnhancementRef.current
+				if (!pending || message.requestId !== pending.requestId) return
+				pendingEnhancementRef.current = null
+				if (typeof message.text === "string" && message.text) {
 					setTestPrompt(message.text)
 				}
 				setIsEnhancing(false)
@@ -84,11 +96,15 @@ const PromptsSettings = ({
 	}
 
 	const handleTestEnhancement = () => {
-		if (!testPrompt.trim()) return
+		if (!testPrompt.trim() || pendingEnhancementRef.current) return
 
+		const requestId = crypto.randomUUID()
+		pendingEnhancementRef.current = { requestId, draft: testPrompt, taskId: currentTaskId }
 		setIsEnhancing(true)
 		vscode.postMessage({
 			type: "enhancePrompt",
+			requestId,
+			...(currentTaskId ? { taskId: currentTaskId } : {}),
 			text: testPrompt,
 			enhancementOptions: {
 				apiConfigId: enhancementApiConfigId ?? "",

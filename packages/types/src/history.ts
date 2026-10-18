@@ -13,6 +13,13 @@ export const diagnosticTaskIdentitySchema = z.string().trim().min(1).max(128)
 /** User-owned label; the original task prompt remains unchanged. */
 export const taskDisplayNameSchema = z.string().trim().min(1).max(96)
 
+/** Automatically generated short label; the original task prompt remains unchanged. */
+export const taskGeneratedTitleSchema = z
+	.string()
+	.trim()
+	.min(1)
+	.refine((value) => Array.from(value).length <= 36, "Generated titles must be at most 36 characters")
+
 /** Delivery receipts contain identities only; result text stays in the task transcript and recipient inbox. */
 export const orchestrationCompletionNotificationSchema = z.object({
 	id: z.string().min(1).max(256),
@@ -37,6 +44,8 @@ export const historyItemSchema = z.object({
 	diagnosticSourceTaskId: diagnosticTaskIdentitySchema.optional(),
 	/** Independent primary conversation launched by this task; distinct from managed-agent/delegation parentTaskId. */
 	orchestrationParentTaskId: z.string().min(1).optional(),
+	/** Legacy task creation reports automatically; native thread tools observe results with wait_threads. */
+	orchestrationNotifyCompletion: z.boolean().optional(),
 	/** Bounded durable completion outbox. Undelivered receipts must never be evicted. */
 	orchestrationCompletionNotifications: z.array(orchestrationCompletionNotificationSchema).max(100).optional(),
 	orchestrationWorkspaceMode: z.enum(["shared", "worktree"]).optional(),
@@ -52,6 +61,18 @@ export const historyItemSchema = z.object({
 	ts: z.number(),
 	task: z.string(),
 	displayName: taskDisplayNameSchema.optional(),
+	generatedTitle: taskGeneratedTitleSchema.optional(),
+	/** Archived conversations remain readable and restorable, outside the active thread inventory. */
+	archived: z.boolean().optional(),
+	/** Source conversation identity; a fork has its own lifecycle, mailbox, and accounting. */
+	forkedFromId: z.string().min(1).max(64).optional(),
+	/** A fork may share the source's managed worktree without claiming ownership of that directory. */
+	orchestrationWorkspaceTaskId: z
+		.string()
+		.regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/)
+		.optional(),
+	/** Explicit task-local model selection; provider credentials and policy remain in the saved profile. */
+	threadModelOverride: z.string().trim().min(1).max(256).optional(),
 	tokensIn: z.number(),
 	tokensOut: z.number(),
 	cacheWrites: z.number().optional(),
@@ -93,6 +114,8 @@ export const historyItemSchema = z.object({
 
 export type HistoryItem = z.infer<typeof historyItemSchema>
 
-export function getTaskDisplayName(item: Pick<HistoryItem, "task" | "displayName">): string {
-	return item.displayName?.trim() || item.task
+export function getTaskDisplayName(
+	item: Pick<HistoryItem, "task"> & Partial<Pick<HistoryItem, "displayName" | "generatedTitle">>,
+): string {
+	return item.displayName?.trim() || item.generatedTitle?.trim() || item.task
 }

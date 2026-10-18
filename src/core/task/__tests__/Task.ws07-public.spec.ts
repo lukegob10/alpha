@@ -292,6 +292,7 @@ vi.mock("../../../utils/storage", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../../utils/storage")>()
 	return {
 		getStorageBasePath: actual.getStorageBasePath,
+		resolveTaskDirectoryPath: actual.resolveTaskDirectoryPath,
 		resolveExistingTaskDirectoryPathReadOnly: actual.resolveExistingTaskDirectoryPathReadOnly,
 		getTaskDirectoryPath: vi
 			.fn()

@@ -395,7 +395,19 @@ describe("request-independent tool authority", () => {
 	})
 
 	it("captures root cross-task tools as both visible and callable in Code mode", async () => {
-		const names = ["create_task", "list_tasks", "wait_task", "send_task_message", "steer_task", "stop_task"]
+		const names = [
+			"list_threads",
+			"list_archived_threads",
+			"read_thread",
+			"wait_threads",
+			"create_thread",
+			"fork_thread",
+			"send_message_to_thread",
+			"set_thread_title",
+			"set_thread_archived",
+			"steer_task",
+			"stop_task",
+		]
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({
 				crossTaskRole: "root",
@@ -411,7 +423,7 @@ describe("request-independent tool authority", () => {
 		}
 	})
 
-	it("offers create_task across providers for direct new-task requests", async () => {
+	it("offers create_thread across providers for direct new-task requests", async () => {
 		for (const apiProvider of ["openai", "vscode-lm", "vertex"] as const) {
 			for (const userRequestText of [
 				"Could you please launch a test thread?",
@@ -427,16 +439,16 @@ describe("request-independent tool authority", () => {
 					}),
 				)
 
-				expect(namesOf(result.tools), `${apiProvider}: ${userRequestText}`).toContain("create_task")
+				expect(namesOf(result.tools), `${apiProvider}: ${userRequestText}`).toContain("create_thread")
 				expect(result.surface?.policy.visibleTools, `${apiProvider}: ${userRequestText}`).toContain(
-					"create_task",
+					"create_thread",
 				)
-				expect(result.surface?.isCallable("create_task"), `${apiProvider}: ${userRequestText}`).toBe(true)
+				expect(result.surface?.isCallable("create_thread"), `${apiProvider}: ${userRequestText}`).toBe(true)
 			}
 		}
 	})
 
-	it("hides create_task from an ordinary root work request, including after a prior authorized turn", async () => {
+	it("hides create_thread from an ordinary root work request, including after a prior authorized turn", async () => {
 		const catalogCache = new TaskToolCatalogCache()
 		const base = {
 			crossTaskRole: "root" as const,
@@ -445,7 +457,7 @@ describe("request-independent tool authority", () => {
 		const authorized = await buildNativeToolsArrayWithRestrictions(
 			options({ ...base, userRequestText: "Create a new thread for parser review." }),
 		)
-		expect(authorized.surface?.isCallable("create_task")).toBe(true)
+		expect(authorized.surface?.isCallable("create_thread")).toBe(true)
 
 		for (const apiProvider of ["openai", "vscode-lm", "vertex"] as const) {
 			const result = await buildNativeToolsArrayWithRestrictions(
@@ -456,10 +468,10 @@ describe("request-independent tool authority", () => {
 					userRequestText: "Fix the parser with managed sub-agents if useful.",
 				}),
 			)
-			expect(namesOf(result.tools), apiProvider).not.toContain("create_task")
-			expect(result.surface?.policy.visibleTools, apiProvider).not.toContain("create_task")
-			expect(result.surface?.isCallable("create_task"), apiProvider).toBe(false)
-			expect(result.surface?.resolve("create_task"), apiProvider).toBeUndefined()
+			expect(namesOf(result.tools), apiProvider).not.toContain("create_thread")
+			expect(result.surface?.policy.visibleTools, apiProvider).not.toContain("create_thread")
+			expect(result.surface?.isCallable("create_thread"), apiProvider).toBe(false)
+			expect(result.surface?.resolve("create_thread"), apiProvider).toBeUndefined()
 			expect(result.surface?.isCallable("spawn_agent"), apiProvider).toBe(true)
 		}
 	})
@@ -487,7 +499,19 @@ describe("request-independent tool authority", () => {
 	})
 
 	it("keeps Plan and retired custom-mode cross-task access read-only", async () => {
-		const names = ["create_task", "list_tasks", "wait_task", "send_task_message", "steer_task", "stop_task"]
+		const names = [
+			"list_threads",
+			"list_archived_threads",
+			"read_thread",
+			"wait_threads",
+			"create_thread",
+			"fork_thread",
+			"send_message_to_thread",
+			"set_thread_title",
+			"set_thread_archived",
+			"steer_task",
+			"stop_task",
+		]
 		const plan = await buildNativeToolsArrayWithRestrictions(
 			options({
 				mode: "architect",
@@ -505,7 +529,7 @@ describe("request-independent tool authority", () => {
 		)
 
 		for (const name of names) {
-			const readOnly = name === "list_tasks" || name === "wait_task"
+			const readOnly = ["list_threads", "list_archived_threads", "read_thread", "wait_threads"].includes(name)
 			expect(plan.surface?.isCallable(name)).toBe(readOnly)
 			expect(custom.surface?.isCallable(name)).toBe(readOnly)
 		}

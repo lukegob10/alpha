@@ -317,11 +317,6 @@
 	font-variant-numeric: tabular-nums;
 }
 
-.ticket-row-chevron {
-	flex: 0 0 auto;
-	color: var(--vscode-descriptionForeground);
-}
-
 .ticket-priority-cell,
 .ticket-type-cell,
 .ticket-updated-cell {

@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { normalizeVitestEvidence, testEvidenceVerdict } from "../harness/execution-evidence.mjs"
 
 const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), "..", "..")
@@ -208,7 +209,10 @@ function runSelfCheck() {
 function runVitestSummarySelfCheck() {
 	const reportDirectory = mkdtempSync(path.join(tmpdir(), "alpha-managed-agent-certification-self-check-"))
 	const reportPath = path.join(reportDirectory, "vitest.json")
+	const track = { packageDir: "scripts/certification", files: ["self-check.spec.ts"], minimumTestCount: 1 }
+	const testPath = path.join(repositoryRoot, track.packageDir, track.files[0])
 	const report = {
+		success: false,
 		numTotalTestSuites: 3,
 		numPassedTestSuites: 1,
 		numFailedTestSuites: 1,
@@ -220,6 +224,7 @@ function runVitestSummarySelfCheck() {
 		numTodoTests: 1,
 		testResults: [
 			{
+				name: testPath,
 				assertionResults: [
 					{ fullName: "passed assertion", status: "passed" },
 					{ fullName: "failed assertion", status: "failed" },
@@ -239,6 +244,7 @@ function runVitestSummarySelfCheck() {
 				tests: { total: 5, passed: 1, failed: 1, skipped: 2, todo: 1 },
 				failedTests: ["failed assertion"],
 				skippedTests: ["skipped assertion", "legacy pending assertion", "todo assertion"],
+				receipt: normalizeVitestEvidence(report, repositoryRoot),
 			},
 			"Vitest diagnostics must retain skipped, legacy pending and todo names without changing counts",
 		)
@@ -246,6 +252,96 @@ function runVitestSummarySelfCheck() {
 		assert.deepStrictEqual(readVitestSummary("self-check", reportPath), {
 			error: "self-check emitted an invalid Vitest JSON count for numPendingTests",
 		})
+		writeFileSync(reportPath, JSON.stringify({ ...report, testResults: [] }))
+		assert.match(
+			readVitestSummary("self-check", reportPath).error,
+			/^self-check emitted invalid Vitest execution evidence:/,
+			"Claimed passing totals without executed test files must fail closed",
+		)
+		const passingReport = {
+			...report,
+			success: true,
+			numTotalTestSuites: 1,
+			numPassedTestSuites: 1,
+			numFailedTestSuites: 0,
+			numPendingTestSuites: 0,
+			numTotalTests: 1,
+			numPassedTests: 1,
+			numFailedTests: 0,
+			numPendingTests: 0,
+			numTodoTests: 0,
+			testResults: [{ name: testPath, assertionResults: [{ fullName: "passed assertion", status: "passed" }] }],
+		}
+		const invalidReports = [
+			{ ...passingReport, numTotalTests: 1000, numPassedTests: 1000 },
+			{ ...passingReport, success: undefined },
+			{
+				...passingReport,
+				numTotalTests: 2,
+				numPassedTests: 2,
+				testResults: [...passingReport.testResults, ...passingReport.testResults],
+			},
+		]
+		for (const invalidReport of invalidReports) {
+			writeFileSync(reportPath, JSON.stringify(invalidReport))
+			assert.match(
+				readVitestSummary("self-check", reportPath).error,
+				/^self-check emitted invalid Vitest execution evidence:/,
+			)
+		}
+		const skippedReport = {
+			...passingReport,
+			numTotalTests: 2,
+			numPendingTests: 1,
+			testResults: [
+				{
+					name: testPath,
+					assertionResults: [
+						...passingReport.testResults[0].assertionResults,
+						{ fullName: "skipped assertion", status: "skipped" },
+					],
+				},
+			],
+		}
+		const admissionCases = [
+			{ report: passingReport },
+			{ report: { ...passingReport, success: false }, reason: /test_execution_failed/ },
+			{ report, reason: /test_execution_failed/ },
+			{ report: skippedReport, reason: /skipped_hard_gate/ },
+			{ report: skippedReport, strict: false },
+			{ report: passingReport, track: { ...track, minimumTestCount: 2 }, reason: /regression floor/ },
+			{
+				report: passingReport,
+				track: { ...track, files: [...track.files, "missing.spec.ts"] },
+				reason: /declared file inventory/,
+			},
+			{
+				report: {
+					...passingReport,
+					testResults: [
+						{ ...passingReport.testResults[0], name: path.join(path.dirname(testPath), "other.spec.ts") },
+					],
+				},
+				reason: /declared file inventory/,
+			},
+			{
+				report: {
+					...passingReport,
+					numTotalTests: 0,
+					numPassedTests: 0,
+					testResults: [{ name: testPath, assertionResults: [] }],
+				},
+				reason: /no_tests_executed/,
+			},
+		]
+		for (const admission of admissionCases) {
+			writeFileSync(reportPath, JSON.stringify(admission.report))
+			const summary = readVitestSummary("self-check", reportPath)
+			assert.equal(summary.error, undefined)
+			const failures = trackEvidenceFailures(admission.track ?? track, summary, admission.strict !== false)
+			if (admission.reason) assert.ok(failures.some((failure) => admission.reason.test(failure)))
+			else assert.deepStrictEqual(failures, [])
+		}
 		writeFileSync(reportPath, "{")
 		assert.match(
 			readVitestSummary("self-check", reportPath).error,
@@ -256,7 +352,7 @@ function runVitestSummarySelfCheck() {
 			readVitestSummary("self-check", reportPath).error,
 			/^self-check did not emit readable Vitest JSON:/,
 		)
-		return 4
+		return 5 + invalidReports.length + admissionCases.length
 	} finally {
 		removeReportDirectory(reportDirectory)
 	}
@@ -384,9 +480,7 @@ function validateCertificationDocumentation(matrix) {
 		"certification",
 		"managed-agent-milestone-certification.md",
 	)
-	const architecturePath = path.join(repositoryRoot, "docs", "multi-agent-concurrency-spec.md")
 	const certification = readFileSync(certificationPath, "utf8").replace(/\r\n/g, "\n")
-	const architecture = readFileSync(architecturePath, "utf8").replace(/\r\n/g, "\n")
 	const deterministicSection = extractMarkdownSection(certification, "## Deterministic matrix")
 	const documentedDeterministicIds = [...deterministicSection.matchAll(/^\|\s*`([A-Z0-9-]+)`\s*\|/gm)].map(
 		(match) => match[1],
@@ -407,44 +501,6 @@ function validateCertificationDocumentation(matrix) {
 	const expectedIntegrationIds = matrix.integrationPending.map((row) => row.id)
 	if (JSON.stringify(documentedIntegrationIds) !== JSON.stringify(expectedIntegrationIds)) {
 		fail("Certification pending-integration list does not match matrix row IDs and order")
-	}
-
-	const sectionMarker = "## Latest deterministic execution\n"
-	const sectionStart = certification.indexOf(sectionMarker)
-	const sectionEnd = certification.indexOf("\n## ", sectionStart + sectionMarker.length)
-	if (sectionStart < 0 || sectionEnd < 0) fail("Certification document is missing its execution table")
-	const executionSection = certification.slice(sectionStart, sectionEnd)
-	const trackCounts = [...executionSection.matchAll(/^\|\s*[^*|][^|]*\|\s*(\d+)\s*\|$/gm)].map((match) =>
-		Number(match[1]),
-	)
-	const totalMatch = /^\|\s*\*\*Total\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|$/m.exec(executionSection)
-	if (trackCounts.length !== matrix.tracks.length || !totalMatch) {
-		fail(`Certification execution table must contain ${matrix.tracks.length} track rows and one bold total row`)
-	}
-	const documentedTestCount = Number(totalMatch[1])
-	const calculatedTestCount = trackCounts.reduce((total, count) => total + count, 0)
-	if (calculatedTestCount !== documentedTestCount) {
-		fail(
-			`Certification execution table rows sum to ${calculatedTestCount}, but its total claims ${documentedTestCount}`,
-		)
-	}
-	if (documentedTestCount < matrix.minimumTestCount) {
-		fail(
-			`Certification execution table total ${documentedTestCount} is below matrix floor ${matrix.minimumTestCount}`,
-		)
-	}
-	for (const expected of [
-		`**${matrix.expectedDeterministicRowCount} PASS, 0 FAIL, 0 pending merge, 0 baseline-debt exceptions**`,
-		`**${matrix.tracks.length} tracks, ${documentedTestCount} tests passed, 0 failed, 0 skipped, 0 todo**`,
-		`**${matrix.expectedIntegrationPendingCount} PENDING-INTEGRATION**`,
-	]) {
-		if (!certification.includes(expected)) fail(`Certification verdict is missing ${expected}`)
-	}
-	const architectureSummary = new RegExp(
-		`passes all ${matrix.expectedDeterministicRowCount} deterministic rows:\\s+${matrix.tracks.length} tracks,\\s+${documentedTestCount} tests`,
-	)
-	if (!architectureSummary.test(architecture)) {
-		fail("Architecture spec deterministic summary does not match the certification execution table")
 	}
 }
 
@@ -562,7 +618,7 @@ function printCommands(prerequisites, resolvedTracks, integrationPending, eviden
 		`strict-release-gate :: node scripts/certification/managed-agent-milestone-certify.mjs --strict --evidence ${quote(evidenceRelativePath)}`,
 	)
 	console.log(
-		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification docs/multi-agent-concurrency-spec.md src/core/agent/__tests__/certification",
+		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification src/core/agent/__tests__/certification",
 	)
 	console.log("harness-syntax-check :: node --check scripts/certification/managed-agent-milestone-certify.mjs")
 	console.log(
@@ -649,16 +705,7 @@ function runTracks(resolvedTracks, strictMode) {
 				})
 				continue
 			}
-			const skipped = summary.tests.skipped + summary.tests.todo
-			const unexpectedSkips = strictMode && skipped > 0
-			const belowBaseline = summary.tests.total < track.minimumTestCount
-			const failures = []
-			if (unexpectedSkips) failures.push(`${skipped} skipped/todo tests are not allowed in strict mode`)
-			if (belowBaseline) {
-				failures.push(
-					`test count ${summary.tests.total} is below the declared regression floor ${track.minimumTestCount}`,
-				)
-			}
+			const failures = trackEvidenceFailures(track, summary, strictMode)
 			const status = result.status === 0 && failures.length === 0 ? "PASS" : "FAIL"
 			const detail = failures.length > 0 ? failures.join("; ") : undefined
 			console.log(
@@ -707,13 +754,16 @@ function readVitestSummary(trackId, reportPath) {
 			return { error: `${trackId} emitted an invalid Vitest JSON count for ${field}` }
 		}
 	}
+	let receipt
+	try {
+		receipt = normalizeVitestEvidence(report, repositoryRoot)
+	} catch (error) {
+		return { error: `${trackId} emitted invalid Vitest execution evidence: ${error.message}` }
+	}
 
-	const assertions = Array.isArray(report.testResults)
-		? report.testResults.flatMap((testResult) =>
-				Array.isArray(testResult.assertionResults) ? testResult.assertionResults : [],
-			)
-		: []
+	const assertions = report.testResults.flatMap((testResult) => testResult.assertionResults)
 	return {
+		receipt,
 		suites: {
 			total: report.numTotalTestSuites,
 			passed: report.numPassedTestSuites,
@@ -737,6 +787,23 @@ function readVitestSummary(trackId, reportPath) {
 			)
 			.map((assertion) => assertion.fullName),
 	}
+}
+
+function trackEvidenceFailures(track, summary, strictMode) {
+	const failures = []
+	const verdict = testEvidenceVerdict(summary.receipt, strictMode)
+	if (verdict.status !== "passed") failures.push(`test execution evidence failed: ${verdict.reason}`)
+	const expected = track.files.map((file) => normalizePath(path.join(track.packageDir, file))).sort()
+	const observed = summary.receipt.files.map((file) => file.path).sort()
+	if (JSON.stringify(expected) !== JSON.stringify(observed)) {
+		failures.push("test execution did not match the declared file inventory")
+	}
+	if (summary.tests.total < track.minimumTestCount) {
+		failures.push(
+			`test count ${summary.tests.total} is below the declared regression floor ${track.minimumTestCount}`,
+		)
+	}
+	return failures
 }
 
 function formatTestCounts(counts) {

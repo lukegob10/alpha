@@ -7,6 +7,7 @@ import { createMcpApprovalPolicySnapshot, type McpApprovalPolicy } from "../auto
 
 import { digestValue } from "./StepContext"
 import type { ApprovalMode } from "@alpha-code/types"
+import { expandLegacyThreadToolDisables } from "../../shared/tools"
 
 export const DEFAULT_TOOL_OUTPUT_LIMIT = 32_000
 
@@ -121,7 +122,7 @@ function canonicalizeRecord<T>(record: Readonly<Record<string, T>> | undefined):
 
 export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnapshot {
 	const visibleTools = uniqueNames(input.visibleTools)
-	const disabledTools = uniqueNames(input.disabledTools ?? [])
+	const disabledTools = uniqueNames(expandLegacyThreadToolDisables(input.disabledTools ?? []))
 	const disabled = new Set(disabledTools)
 	const visible = new Set(visibleTools)
 	const allowedTools = uniqueNames(input.allowedTools ?? visibleTools).filter(
@@ -197,10 +198,11 @@ export function isToolAllowed(policy: ToolPolicySnapshot | undefined, name: stri
 
 	const canonical = canonicalizeToolName(name)
 	const names = canonical === name ? [canonical] : [canonical, name]
+	const disabledNames = expandLegacyThreadToolDisables(policy.disabledTools)
 	return (
 		names.some((candidate) => policy.visibleTools.includes(candidate)) &&
 		names.some((candidate) => policy.allowedTools.includes(candidate)) &&
-		!names.some((candidate) => policy.disabledTools.includes(candidate))
+		!names.some((candidate) => disabledNames.includes(candidate))
 	)
 }
 

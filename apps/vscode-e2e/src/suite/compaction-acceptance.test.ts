@@ -13,6 +13,11 @@ const ARCHIVE_MARKER = "ARCHIVE_PAYLOAD_MARKER"
 const OVERFLOW_TOOL_CALL_ID = "compaction-overflow-read"
 const OVERFLOW_MARKER = "OVERFLOW_ARCHIVE_PAYLOAD"
 const STEERING_MARKER = "QUEUED_STEERING_AFTER_OVERFLOW"
+const RETAINED_TURNS = 12
+const RETAINED_PROMPT_PREFIX = "RETAINED_THREAD_PROMPT_"
+const RETAINED_ARCHIVE_MARKER = "RETAINED_THREAD_ARCHIVE_EVIDENCE"
+const RECOVERY_PROMPT = `${RETAINED_PROMPT_PREFIX}RECOVERY`
+const AFTER_RECOVERY_PROMPT = `${RETAINED_PROMPT_PREFIX}AFTER_RECOVERY`
 type HistoryMessage = {
 	role: string
 	content: unknown
@@ -28,8 +33,16 @@ class CompactionScriptedAI {
 	summaryRequests = 0
 	removeFromCache?: () => void
 
-	async *createMessage(systemPrompt: string, messages: unknown[], metadata?: { taskId?: string; tools?: unknown[] }) {
+	async *createMessage(
+		systemPrompt: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
+	) {
 		assert.ok(metadata?.taskId, "Every provider request must belong to the real task")
+		if (metadata.attemptId === "title") {
+			yield { type: "text" as const, text: "Check context recovery" }
+			return
+		}
 		if (systemPrompt.includes("tasked with summarizing conversations")) {
 			this.summaryRequests++
 			assert.equal(this.summaryRequests, 1, "The fixture permits one compaction request")
@@ -108,8 +121,16 @@ class OverflowCompactionScriptedAI {
 		this.releaseSummary()
 	}
 
-	async *createMessage(systemPrompt: string, messages: unknown[], metadata?: { taskId?: string; tools?: unknown[] }) {
+	async *createMessage(
+		systemPrompt: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
+	) {
 		assert.ok(metadata?.taskId, "Every provider request must belong to the real task")
+		if (metadata.attemptId === "title") {
+			yield { type: "text" as const, text: "Check context recovery" }
+			return
+		}
 		if (systemPrompt.includes("tasked with summarizing conversations")) {
 			this.summaryRequests.push(structuredClone(messages))
 			assert.equal(metadata.tools?.length ?? 0, 0, "The summary request must not expose task tools")
@@ -192,6 +213,115 @@ class OverflowCompactionScriptedAI {
 	}
 }
 
+class RetainedFollowupScriptedAI {
+	readonly id = "retained-followup-context-recovery-scripted"
+	readonly mainRequests: Array<{ taskId: string; prompt: string; messages: unknown[] }> = []
+	readonly summaryRequests: unknown[][] = []
+	removeFromCache?: () => void
+	private rejected = false
+
+	async *createMessage(
+		systemPrompt: string,
+		messages: unknown[],
+		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
+	) {
+		assert.ok(metadata?.taskId, "Every retained-thread request must belong to the real task")
+		if (metadata.attemptId === "title") {
+			yield { type: "text" as const, text: "Check context recovery" }
+			return
+		}
+		if (systemPrompt.includes("tasked with summarizing conversations")) {
+			this.summaryRequests.push(structuredClone(messages))
+			assert.equal(this.summaryRequests.length, 1, "One context rejection must cause one bounded compaction")
+			assert.equal(metadata.tools?.length ?? 0, 0, "Compaction must not expose task tools")
+			assert.ok(JSON.stringify(messages).includes(RETAINED_ARCHIVE_MARKER))
+			yield {
+				type: "text" as const,
+				text: "The completed thread established that the retained fixture answer is 42.",
+			}
+			return
+		}
+
+		const prompt = messages
+			.flatMap((message) => JSON.stringify(message).match(/RETAINED_THREAD_PROMPT_[A-Z_0-9]+/g) ?? [])
+			.at(-1)
+		assert.ok(prompt, "Each provider request must contain its submitted prompt marker")
+		this.mainRequests.push({ taskId: metadata.taskId, prompt, messages: structuredClone(messages) })
+		if (prompt === RECOVERY_PROMPT && !this.rejected) {
+			assert.equal(this.summaryRequests.length, 0, "The retained history must reach the provider before recovery")
+			const outgoingHistory = JSON.stringify(messages)
+			for (let turn = 0; turn < RETAINED_TURNS; turn++) {
+				assert.ok(
+					outgoingHistory.includes(`${RETAINED_PROMPT_PREFIX}${String(turn).padStart(2, "0")}`),
+					`The rejected request must retain earlier user prompt ${turn}`,
+				)
+			}
+			assert.equal(
+				messages.filter(
+					(message) =>
+						typeof message === "object" &&
+						message !== null &&
+						"role" in message &&
+						message.role === "assistant" &&
+						JSON.stringify(message).includes(RETAINED_ARCHIVE_MARKER),
+				).length,
+				RETAINED_TURNS,
+				"The rejected request must carry every earlier completed answer",
+			)
+			this.rejected = true
+			// Reject before yielding any chunk, as a provider can do when its actual context budget differs.
+			throw new Error("This model's maximum context length was exceeded (context_length_exceeded)")
+		}
+		if (prompt === RECOVERY_PROMPT || prompt === AFTER_RECOVERY_PROMPT) {
+			assert.equal(this.summaryRequests.length, 1)
+			assert.ok(JSON.stringify(messages).includes("## Conversation Summary"))
+			const isRetainedAnswer = (message: unknown) =>
+				typeof message === "object" &&
+				message !== null &&
+				"role" in message &&
+				message.role === "assistant" &&
+				JSON.stringify(message).includes(RETAINED_ARCHIVE_MARKER)
+			const retainedAnswers = messages.filter(isRetainedAnswer)
+			assert.ok(
+				retainedAnswers.length > 0 && retainedAnswers.length < RETAINED_TURNS,
+				"Compaction must retire older answers and retain a nonempty recent tail",
+			)
+			const rejectedRequest = this.mainRequests.find((request) => request.prompt === RECOVERY_PROMPT)
+			assert.ok(rejectedRequest, "The original rejected request must define the exact tail")
+			const originalAnswers = rejectedRequest.messages.filter(isRetainedAnswer)
+			assert.deepEqual(
+				retainedAnswers,
+				originalAnswers.slice(-retainedAnswers.length),
+				"Compaction must preserve the recent assistant suffix unchanged",
+			)
+			assert.ok(JSON.stringify(messages).includes("retained fixture answer is 42"))
+			yield { type: "text" as const, text: "The retained fixture answer remains 42 after context recovery." }
+			return
+		}
+
+		assert.equal(this.summaryRequests.length, 0, "Completed follow-ups must accumulate the original history")
+		yield {
+			type: "text" as const,
+			text: `${RETAINED_ARCHIVE_MARKER} Answer to ${prompt}: the retained fixture answer is 42. ${"retained answer evidence ".repeat(200)}`,
+		}
+	}
+
+	getModel() {
+		return {
+			id: this.id,
+			info: { contextWindow: 128_000, maxTokens: 1_000, supportsImages: false, supportsPromptCache: false },
+		}
+	}
+
+	async countTokens(content: unknown[]): Promise<number> {
+		return content.reduce<number>((tokens, block) => tokens + Math.ceil(JSON.stringify(block).length / 4), 0)
+	}
+
+	async completePrompt(): Promise<string> {
+		return ""
+	}
+}
+
 type CompactionHost = {
 	getLiveTask(taskId: string):
 		| {
@@ -199,6 +329,7 @@ type CompactionHost = {
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				clineMessages: Array<{
+					ask?: string
 					say?: string
 					text?: string
 					partial?: boolean
@@ -210,10 +341,126 @@ type CompactionHost = {
 		| undefined
 	getTaskWithId(taskId: string): Promise<{ apiConversationHistory: HistoryMessage[] }>
 	showTaskWithId(taskId: string): Promise<void>
+	getStateToPostToWebview(): Promise<{
+		currentTaskId?: string
+		agentLifecycleSnapshots?: Record<string, { status: string }>
+	}>
 }
 
 suite("Alpha native compaction acceptance", function () {
 	setDefaultSuiteTimeout(this)
+
+	test("recovers a long completed-thread follow-up in ask mode and accepts the next prompt", async () => {
+		assert.equal(vscode.version, "1.125.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const model = new RetainedFollowupScriptedAI()
+		const completions: string[] = []
+		const createdTasks: string[] = []
+		const onCompleted = (taskId: string) => completions.push(taskId)
+		const onCreated = (taskId: string) => createdTasks.push(taskId)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		api.on(AlphaCodeEventName.TaskCreated, onCreated)
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: model,
+				mode: "code",
+				approvalMode: "ask",
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 100,
+				autoCondenseContextScope: "full-context",
+				postTurnCondenseContextPercent: 0,
+			}
+			const firstPrompt = `${RETAINED_PROMPT_PREFIX}00`
+			const taskId = await api.startNewTask({ configuration, text: firstPrompt })
+			const instanceId = provider.getLiveTask(taskId)?.instanceId
+			assert.ok(instanceId)
+			const waitForCompletedTurn = async (count: number) => {
+				await waitFor(
+					() => {
+						const task = provider.getLiveTask(taskId)
+						assert.ok(task, "The same retained task must remain live")
+						assert.equal(task.instanceId, instanceId, "Follow-ups must reuse the retained task instance")
+						assert.ok(
+							!task.clineMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"),
+							"Context recovery must not require a manual Retry or resume prompt",
+						)
+						return completions.filter((id) => id === taskId).length === count
+					},
+					{
+						timeout: 30_000,
+						description: `retained-thread turn ${count} to complete without user intervention`,
+					},
+				)
+			}
+			await waitForCompletedTurn(1)
+			for (let turn = 1; turn < RETAINED_TURNS; turn++) {
+				await api.sendMessage(`${RETAINED_PROMPT_PREFIX}${String(turn).padStart(2, "0")}`)
+				await waitForCompletedTurn(turn + 1)
+			}
+			assert.equal(model.mainRequests.length, RETAINED_TURNS)
+			assert.equal(model.summaryRequests.length, 0)
+			const createdTaskCount = createdTasks.length
+
+			await api.sendMessage(RECOVERY_PROMPT)
+			await waitForCompletedTurn(RETAINED_TURNS + 1)
+			await api.sendMessage(AFTER_RECOVERY_PROMPT)
+			await waitForCompletedTurn(RETAINED_TURNS + 2)
+
+			assert.equal(createdTasks.length, createdTaskCount, "Recovery and follow-up must not create another task")
+			assert.equal(model.mainRequests.length, RETAINED_TURNS + 3, "Only the rejected request may be retried")
+			assert.equal(model.summaryRequests.length, 1, "Recovery must finish after one compaction")
+			assert.ok(model.mainRequests.every((request) => request.taskId === taskId))
+			for (let turn = 0; turn < RETAINED_TURNS; turn++) {
+				const prompt = `${RETAINED_PROMPT_PREFIX}${String(turn).padStart(2, "0")}`
+				assert.equal(model.mainRequests.filter((request) => request.prompt === prompt).length, 1)
+			}
+			assert.equal(model.mainRequests.filter((request) => request.prompt === RECOVERY_PROMPT).length, 2)
+			assert.equal(model.mainRequests.filter((request) => request.prompt === AFTER_RECOVERY_PROMPT).length, 1)
+			const rejected = model.mainRequests[RETAINED_TURNS]!
+			const recovered = model.mainRequests[RETAINED_TURNS + 1]!
+			assert.ok(
+				JSON.stringify(recovered.messages).length < JSON.stringify(rejected.messages).length,
+				"Compaction must reduce the effective provider history after the long follow-up is rejected",
+			)
+			const task = provider.getLiveTask(taskId)
+			assert.ok(task)
+			assert.equal(task.clineMessages.filter(({ say }) => say === "completion_result").length, RETAINED_TURNS + 2)
+			const receipt = task.clineMessages.find(
+				(message) => message.say === "condense_context" && !!message.contextCondense?.condenseId,
+			)?.contextCondense
+			assert.ok(receipt?.condenseId, "The long-thread recovery must publish a durable compaction receipt")
+			assert.ok(receipt.newContextTokens !== undefined && receipt.prevContextTokens !== undefined)
+			assert.ok(receipt.newContextTokens < receipt.prevContextTokens)
+			const persisted = (await provider.getTaskWithId(taskId)).apiConversationHistory
+			assert.ok(persisted.some((message) => message.isSummary && message.condenseId === receipt.condenseId))
+			assert.equal(
+				persisted.filter(
+					(message) =>
+						message.role === "assistant" && JSON.stringify(message).includes(RETAINED_ARCHIVE_MARKER),
+				).length,
+				RETAINED_TURNS,
+				"Compaction must preserve every completed answer in the rewind archive",
+			)
+			const state = await provider.getStateToPostToWebview()
+			assert.equal(state.currentTaskId, taskId)
+			assert.equal(state.agentLifecycleSnapshots?.[taskId]?.status, "completed")
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.TaskCreated, onCreated)
+			await api.clearCurrentTask().catch(() => undefined)
+			await api.setConfiguration(original)
+			model.removeFromCache?.()
+		}
+	})
 
 	test("compacts after a turn, reloads the archive, and sends reduced context on follow-up", async () => {
 		assert.equal(vscode.version, "1.125.0")

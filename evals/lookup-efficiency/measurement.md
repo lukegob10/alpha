@@ -24,6 +24,8 @@ Each sample projects allowlisted counters from existing `EvalTraceEvent` records
 
 Identity on every report: git SHA, dirty flag, model id, reasoning preference, cache warm/cold, sample count declared **before** the run, `measurementKind`, and `traceCoverage`.
 
+Current `exec_command` and `update_plan` results use the existing `shell` and `update_todo_list` report buckets. The latter also increments `workflowTools.todo` and fails the zero-workflow-tools acceptance criterion. Historical names keep their existing counts; the report schema and frozen workload are unchanged.
+
 `measurementKind` values: `scripted-harness` (CI shape), `reporter-contract-test` (golden/failure-mode fixtures), `runtime-observation` (production Task evidence), `live-supplemental` (recorded Copilot or other live samples). Scripted and contract traces must not be labeled live.
 
 ## Frozen prompt set
@@ -51,6 +53,8 @@ If the measured baseline is already near this bar, tighten it. Do not treat a si
 ## Pairing
 
 `scripts/evals/lookup-efficiency-pair.mjs` admits reference vs candidate reports on the **same prompt ids** and predeclared sample count. It reports medians and per-sample request/tool vectors. It rejects mismatched prompt sets and a missing candidate sample. Model id, reasoning preference, and known cache state must match. Revisions may differ. Unavailable paired counts stay `unavailable`; they are not a zero delta.
+
+Every sample's declared count, model, reasoning preference, and cache state must match its run envelope. Sample indices must be nonnegative safe integers below the declared count; extra samples are rejected rather than omitted from the comparison.
 
 ## Live capture without a NOR-48 adapter
 

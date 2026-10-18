@@ -1,8 +1,7 @@
 # Code index search settings
 
-Implemented October 8, 2026, following
-[the settings investigation](code-index-settings-research-2026-10-08.md). The baseline remains a semantic threshold of
-**0.4** and a maximum of **50 code chunks**. Search breadth and returned context now have separate bounds.
+The baseline is a semantic threshold of **0.4** and a maximum of **50 code chunks**. Search breadth and returned context
+have separate bounds.
 
 ## Settings and compatibility
 
@@ -45,18 +44,6 @@ This change tunes retrieval behavior and settings accuracy. It does not change d
 quotas, indexing concurrency or initial indexing throughput. Each search still invokes one logical query embedding
 operation; provider retries can add network requests.
 
-## Codex CLI reference
-
-Source and tests were rechecked before implementation at
-[`0ada5d8806cdad498230d5b1b2924091e04c8feb`](https://github.com/openai/codex/commit/0ada5d8806cdad498230d5b1b2924091e04c8feb),
-retrieved on October 8, 2026 in America/New_York. The
-[fuzzy filename score contract](https://github.com/openai/codex/blob/0ada5d8806cdad498230d5b1b2924091e04c8feb/codex-rs/file-search/src/lib.rs)
-and the
-[query/snapshot regression](https://github.com/openai/codex/blob/0ada5d8806cdad498230d5b1b2924091e04c8feb/codex-rs/file-search/src/matcher_tests.rs)
-remain distinct from Alpha's embedding scores. The file-search README and relevant app-server tests are unchanged from
-the research revision. Alpha's persistent semantic index remains an intentional extension capability; its thresholds
-are calibrated independently rather than copied from fuzzy filename search.
-
 ## Offline measurement and validation
 
 The deterministic measurement command is:
@@ -90,12 +77,6 @@ pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 Default calibration still requires labeled repository queries, frozen model/dimensions and query/document embeddings,
-and held-out relevance plus latency measurements, as specified in the investigation. Keep 0.4 and 50 until that evidence
+and held-out relevance plus latency measurements. Keep 0.4 and 50 until that evidence
 supports a change. Live provider measurements require the dedicated signed-in profile; deterministic tests and the
 offline measurement do not require sign-in.
-
-Validation on October 8, 2026 passed: 394 shared-package tests, 128 focused extension tests, 22 focused webview tests,
-`pnpm lint`, `pnpm check-types`, and the complete exact-host gate (13 suites, 42 executed tests, zero failures or pending
-tests, all reporting VS Code 1.125.0). The 20 offline fixture/limit combinations passed their evidence and budget checks.
-Evidence is stored locally at `F:/alpha-e2e/artifacts/code-index-settings-implementation-20261008/`. A diff comparison
-confirmed that all 33 unrelated tracked changes and the pre-existing chat translation edit were preserved.

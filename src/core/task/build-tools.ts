@@ -18,6 +18,7 @@ import type { AlphaProvider } from "../webview/AlphaProvider"
 import { getConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 import { planModeSlug } from "../../shared/modes"
+import { expandLegacyThreadToolDisables } from "../../shared/tools"
 
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { buildMcpServerTools } from "../prompts/tools/native-tools/mcp_server"
@@ -69,7 +70,7 @@ export interface BuildToolsOptions {
 	diagnosticSourceTaskId?: string
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
-	/** Root tasks control direct children; an independent child can only message its recorded parent. */
+	/** Independent primary tasks may coordinate peers; managed subagents remain outside this surface. */
 	crossTaskRole?: "root" | "child" | "none"
 	/** Optional caller policy values used when exposing the unified surface. */
 	policy?: ToolPolicySnapshot
@@ -382,11 +383,17 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 					),
 				}
 			: modelInfo
-	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
+	const disabledTools = orderedNames(
+		expandLegacyThreadToolDisables([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])]),
+	)!
 	const allowIndependentTaskCreation =
-		!diagnosticSession && crossTaskRole === "root" && isExplicitIndependentTaskRequest(options.userRequestText)
-	const retainHistoricalCreateTaskSchema =
-		includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, "create_task")
+		!diagnosticSession &&
+		taskKind === "primary" &&
+		crossTaskRole !== "none" &&
+		isExplicitIndependentTaskRequest(options.userRequestText)
+	const legacyCrossTaskToolNames = ["create_task", "list_tasks", "wait_task", "send_task_message"].filter(
+		(name) => includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, name),
+	)
 
 	const codeIndexManager = diagnosticSession
 		? undefined
@@ -454,7 +461,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				enableAgentLifecycleTools,
 				crossTaskRole,
 				allowIndependentTaskCreation,
-				retainHistoricalCreateTaskSchema,
+				legacyCrossTaskToolNames,
 				namedAgentTypes,
 				todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 				modelSchema: {
@@ -512,7 +519,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				includeAllToolsWithRestrictions === true &&
 				historyContainsToolName(options.discoveryHistory, "access_mcp_resource"),
 			crossTaskRole,
-			includeCreateTaskSchema: allowIndependentTaskCreation || retainHistoricalCreateTaskSchema,
+			includeCreateThreadSchema:
+				allowIndependentTaskCreation ||
+				(includeAllToolsWithRestrictions === true &&
+					historyContainsToolName(options.discoveryHistory, "create_thread")),
+			legacyCrossTaskToolNames,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			namedAgentTypes,
 			planMode: mode === planModeSlug,
@@ -556,7 +567,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		).filter((tool) => {
 			const name = getToolName(tool)
 			return (
-				(name !== "create_task" || allowIndependentTaskCreation) &&
+				(name !== "create_thread" || allowIndependentTaskCreation) &&
+				!legacyCrossTaskToolNames.includes(name) &&
 				name !== "access_mcp_resource" &&
 				(canDiscover || (name !== "tool_search" && name !== "discover_tools"))
 			)

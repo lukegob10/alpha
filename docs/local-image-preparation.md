@@ -8,13 +8,6 @@ is never rewritten.
 This contract applies to new local reads. Existing transcripts, user-supplied images, MCP images, and provider-history
 projections remain separate ingress paths. Passing the local tests does not establish a universal no-raw-SVG guarantee.
 
-## Reference and intentional extension behavior
-
-The source comparison used [Codex CLI commit f0c5077](https://github.com/openai/codex/tree/f0c5077c34ec7a76b4ad9134835925e6ae3d72ec)
-on October 15, 2026. SVG preparation is an intentional Alpha extension capability. Its implementation uses native
-TypeScript and the public `@imagemagick/magick-wasm` 0.0.44 API. It does not introduce another agent runtime or an OS
-execution sandbox. Existing workspace, approval, and tool-policy protections still own authority.
-
 ## Admission and output
 
 - The existing bounded file reader captures the smaller file and remaining aggregate allowance before decoding.

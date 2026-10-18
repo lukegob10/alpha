@@ -17,6 +17,7 @@ export const ConsecutiveMistakeLimitControl = ({ value, onChange }: ConsecutiveM
 			<label className="block font-medium mb-1">{t("settings:providers.consecutiveMistakeLimit.label")}</label>
 			<div className="flex items-center gap-2">
 				<Slider
+					aria-label={t("settings:providers.consecutiveMistakeLimit.label")}
 					value={[value ?? DEFAULT_CONSECUTIVE_MISTAKE_LIMIT]}
 					min={0}
 					max={10}

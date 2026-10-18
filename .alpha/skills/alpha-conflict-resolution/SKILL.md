@@ -36,23 +36,26 @@ Extract the PR number from input like "#123" or "PR #123". Validate that a PR nu
 ### Step 2: Fetch PR Information
 
 ```bash
-gh pr view [PR_NUMBER] --json title,body,headRefName,baseRefName
+gh pr view [PR_NUMBER] --json title,body,headRefName,baseRefName,url
 ```
 
 Get PR title and description to understand the intent and identify the source and target branches.
 
 ### Step 3: Checkout PR Branch and Prepare for Rebase
 
+Record the current branch and HEAD with `git branch --show-current` and `git rev-parse HEAD`, then inspect
+`git status --porcelain`. Continue only with a clean working tree and no merge or rebase in progress. Otherwise stop and
+preserve the existing work. Use a fresh resolution branch so existing local branches keep their commits.
+
 ```bash
-gh pr checkout [PR_NUMBER] --force
-git fetch origin main
-GIT_EDITOR=true git rebase origin/main
+gh pr checkout [PR_NUMBER] --branch [NEW_RESOLUTION_BRANCH]
+git fetch [BASE_REMOTE] [BASE_REF_NAME]
+git -c core.editor=true rebase FETCH_HEAD
 ```
 
-- Force checkout the PR branch to ensure clean state
-- Fetch the latest main branch
-- Attempt to rebase onto main to reveal conflicts
-- Use `GIT_EDITOR=true` to ensure non-interactive rebase
+Use the PR's `baseRefName` for `[BASE_REF_NAME]` and the remote for its base repository for `[BASE_REMOTE]`; verify that
+remote against the PR URL. Choose an unused `[NEW_RESOLUTION_BRANCH]`, such as `codex/resolve-pr-123`. Do not force
+checkout, reset an existing branch, or stash unrelated changes automatically.
 
 ### Step 4: Check for Merge Conflicts
 
@@ -61,7 +64,7 @@ git status --porcelain
 git diff --name-only --diff-filter=U
 ```
 
-Identify files with merge conflicts (marked with 'UU') and create a list of files that need resolution.
+Identify every unmerged file reported by `git diff --name-only --diff-filter=U`, including added or deleted conflicts.
 
 ## Main Workflow Phases
 
@@ -105,16 +108,16 @@ Verify the resolution and prepare for commit:
 
 ## Git Commands Reference
 
-| Command                                                          | Purpose                                           |
-| ---------------------------------------------------------------- | ------------------------------------------------- |
-| `gh pr checkout [PR_NUMBER] --force`                             | Force checkout the PR branch                      |
-| `git fetch origin main`                                          | Get the latest main branch                        |
-| `GIT_EDITOR=true git rebase origin/main`                         | Rebase current branch onto main (non-interactive) |
-| `git blame -L [start],[end] [commit] -- [file]`                  | Get commit information for specific lines         |
-| `git show --format="%H%n%an%n%ae%n%ad%n%s%n%b" --no-patch [sha]` | Get commit metadata                               |
-| `git show [sha] -- [file]`                                       | Get the actual changes made in a commit           |
-| `git ls-files -u`                                                | List unmerged files with stage information        |
-| `GIT_EDITOR=true git rebase --continue`                          | Continue rebase after resolving conflicts         |
+| Command                                                          | Purpose                                    |
+| ---------------------------------------------------------------- | ------------------------------------------ |
+| `gh pr checkout [PR_NUMBER] --branch [NEW_RESOLUTION_BRANCH]`    | Check out the PR on a new local branch     |
+| `git fetch [BASE_REMOTE] [BASE_REF_NAME]`                        | Fetch the PR's actual base branch          |
+| `git -c core.editor=true rebase FETCH_HEAD`                      | Rebase onto the fetched base commit        |
+| `git blame -L [start],[end] [commit] -- [file]`                  | Get commit information for specific lines  |
+| `git show --format="%H%n%an%n%ae%n%ad%n%s%n%b" --no-patch [sha]` | Get commit metadata                        |
+| `git show [sha] -- [file]`                                       | Get the actual changes made in a commit    |
+| `git ls-files -u`                                                | List unmerged files with stage information |
+| `git -c core.editor=true rebase --continue`                      | Continue rebase after resolving conflicts  |
 
 ## Best Practices
 
@@ -223,6 +226,7 @@ function mergedImplementation() {
 - Resolved files have been staged
 - No syntax errors in resolved code
 - Resolution decisions are documented
+- The new resolution branch is reported and remains available for review
 
 ## Communication Guidelines
 

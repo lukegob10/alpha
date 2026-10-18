@@ -679,6 +679,32 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.getMetadata()[task.taskId].lifecycle).toBe(TaskLifecycleState.Running)
 	})
 
+	it.each([false, true])("does not revive an answered ask in fallback metadata (degraded: %s)", (degraded) => {
+		const registry = new TaskSessionRegistry(1)
+		const task = createTask("answered-ask", {
+			clineMessages: [
+				{ ts: 1, type: "say", say: "text", text: "Initial task" },
+				{ ts: 2, type: "ask", ask: "followup", text: "Question?", isAnswered: true },
+				{ ts: 3, type: "say", say: "user_feedback", text: "The answer" },
+				{ ts: 4, type: "say", say: "text", text: "Continuing the task" },
+			],
+			getActiveAskTimestamp: () => undefined,
+		})
+		registry.register(task)
+		registry.markLifecycle(task.taskId, TaskLifecycleState.Running)
+		if (degraded) {
+			registry.markLifecycleSnapshot(task.taskId, createLifecycleSnapshot(task.taskId))
+			registry.markLifecycleDegraded(task.taskId)
+		}
+
+		expect(registry.getMetadata()[task.taskId]).toMatchObject({
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
+			isWaitingForInput: false,
+			waitingReason: undefined,
+		})
+	})
+
 	it("can clear focus without removing background tasks", () => {
 		const registry = new TaskSessionRegistry(3)
 		registry.register(createTask("task-a"))

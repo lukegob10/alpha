@@ -189,9 +189,6 @@ inform a specific decision, but they do not replace Codex CLI as the target for 
 - Keep prompts lean, stable, and non-duplicative. Measure prompt or tool-schema changes against representative evals and
   inspect cache/token effects rather than assuming more instructions improve performance.
 
-Relevant architectural context includes `docs/multi-agent-concurrency-spec.md`. Reconcile it with the current code before
-acting because completed phases may make older descriptions obsolete.
-
 ## State, concurrency, and messaging rules
 
 - Do not reintroduce a global single-active-task assumption. Route state and events by stable task/session/agent IDs and

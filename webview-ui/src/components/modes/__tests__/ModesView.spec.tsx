@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@/utils/test-utils"
+import promptsLocale from "@/i18n/locales/en/prompts.json"
 
 import type { CustomModePrompts } from "@alpha-code/types"
 
@@ -6,7 +7,12 @@ import ModesView from "../ModesView"
 
 vi.mock("@/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
-		t: (key: string, values?: { modeName?: string }) => (values?.modeName ? `${key} ${values.modeName}` : key),
+		t: (key: string, values?: { modeName?: string }) =>
+			key === "prompts:modes.planWorkflowDescription"
+				? promptsLocale.modes.planWorkflowDescription
+				: values?.modeName
+					? `${key} ${values.modeName}`
+					: key,
 	}),
 }))
 
@@ -54,8 +60,50 @@ describe("ModesView", () => {
 
 		expect(screen.getByTestId("code-prompt-textarea")).toBeInTheDocument()
 		fireEvent.click(screen.getByTestId("mode-setup-architect"))
-		expect(screen.getByTestId("architect-prompt-textarea")).toBeInTheDocument()
+		expect(screen.getByTestId("architect-description-textfield")).toBeInTheDocument()
 		expect(setCustomModePrompts).not.toHaveBeenCalled()
+	})
+
+	it("explains the canonical Plan workflow without offering ignored prompt editors", () => {
+		const setCustomModePrompts = vi.fn()
+		renderModesView({
+			customModePrompts: {
+				architect: {
+					roleDefinition: "Saved legacy Plan role",
+					whenToUse: "Saved legacy Plan guidance",
+					customInstructions: "Saved legacy Plan workflow",
+				},
+			},
+			setCustomModePrompts,
+		})
+		fireEvent.click(screen.getByTestId("mode-setup-architect"))
+
+		expect(screen.getByText(promptsLocale.modes.planWorkflowDescription)).toBeInTheDocument()
+		expect(screen.queryByTestId("architect-prompt-textarea")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("architect-when-to-use-textarea")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("architect-custom-instructions-textarea")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("architect-roleDefinition-reset")).not.toBeInTheDocument()
+		expect(screen.getByTestId("global-custom-instructions-textarea")).toBeInTheDocument()
+		expect(setCustomModePrompts).not.toHaveBeenCalled()
+	})
+
+	it("keeps Plan description edits separate from its canonical workflow and saved compatibility values", () => {
+		const setCustomModePrompts = vi.fn()
+		renderModesView({
+			customModePrompts: { architect: { customInstructions: "Saved legacy Plan workflow" } },
+			setCustomModePrompts,
+		})
+		fireEvent.click(screen.getByTestId("mode-setup-architect"))
+		fireEvent.change(screen.getByTestId("architect-description-textfield"), {
+			target: { value: "Explore a task before implementation" },
+		})
+
+		expect(setCustomModePrompts).toHaveBeenCalledWith({
+			architect: {
+				customInstructions: "Saved legacy Plan workflow",
+				description: "Explore a task before implementation",
+			},
+		})
 	})
 
 	it("updates a primary prompt while preserving compatibility records", () => {

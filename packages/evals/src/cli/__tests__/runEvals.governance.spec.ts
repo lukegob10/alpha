@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	stopHeartbeat: vi.fn(),
 	startHeartbeat: vi.fn(),
 	closeLogger: vi.fn(),
+	logInfo: vi.fn(),
 }))
 
 vi.mock("../../db/index", () => ({
@@ -22,7 +23,7 @@ vi.mock("../processTask", () => ({ processTask: mocks.processTask, processTaskIn
 vi.mock("../redis", () => ({ startHeartbeat: mocks.startHeartbeat, stopHeartbeat: mocks.stopHeartbeat }))
 vi.mock("../utils", () => ({
 	Logger: class {
-		info() {}
+		info = mocks.logInfo
 		error() {}
 		close() {
 			mocks.closeLogger()
@@ -95,6 +96,26 @@ describe("governed production scheduling", () => {
 		)
 		expect(mocks.settleTrialAfterRetries).toHaveBeenCalledWith(3)
 		expect(mocks.finishRun).toHaveBeenCalledWith(run.id)
+	})
+
+	it("logs only summary metrics instead of persisted credentials and provider settings", async () => {
+		mocks.finishRun.mockResolvedValue({
+			...run,
+			jobToken: "job-token-canary",
+			settings: { openAiApiKey: "provider-key-canary", customInstructions: "prompt-canary" },
+			passed: 2,
+			failed: 1,
+			taskMetrics: { cost: 0.11, duration: 1_000, requestUsage: [{ raw: "request-canary" }] },
+		})
+		await runEvals(run.id)
+		expect(mocks.logInfo).toHaveBeenCalledWith("result ->", {
+			runId: run.id,
+			passed: 2,
+			failed: 1,
+			costUsd: 0.11,
+			durationMs: 1_000,
+		})
+		expect(JSON.stringify(mocks.logInfo.mock.calls)).not.toContain("canary")
 	})
 
 	it("never resets or commits the source checkout for disposable benchmark tasks", async () => {

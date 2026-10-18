@@ -124,7 +124,13 @@ export const runEvals = async (runId: number) => {
 
 		logger.info("finishRun")
 		const result = await finishRun(run.id)
-		logger.info("result ->", result)
+		logger.info("result ->", {
+			runId: result.id,
+			passed: result.passed,
+			failed: result.failed,
+			costUsd: result.taskMetrics?.cost,
+			durationMs: result.taskMetrics?.duration,
+		})
 
 		// There's no need to commit the changes in the container since they
 		// will lost when the container is destroyed. I think we should

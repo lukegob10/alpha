@@ -18,6 +18,7 @@ function createTask(onScreen = true) {
 		instanceId: "completion-race-instance",
 		taskKind: "primary",
 		abort: false,
+		taskCancellationController: new AbortController(),
 		didComplete: false,
 		didEmitTaskCompleted: false,
 		isTaskLoopActive: false,
@@ -132,6 +133,97 @@ it("joins a successful preceding terminal lifecycle before resuming the same tas
 	await accepted
 	expect(resume).toHaveBeenCalledOnce()
 })
+
+it.each(["timeout", "cancellation"] as const)(
+	"preserves the old lifecycle and queued follow-up when its admission wait ends by %s",
+	async (interruption) => {
+		vi.useFakeTimers()
+		const { task, queue } = createTask()
+		task.markCompleted()
+		const guidance = queue.addMessage("Keep the follow-up while the old turn finalizes.")!
+		const ending = deferred()
+		task["ownBackgroundLifecycle"]("resume", ending.promise)
+		const resume = vi.fn(async (_text: string, persisted?: () => void) => {
+			queue.acknowledgeMessages([guidance.id])
+			persisted?.()
+		})
+		Object.assign(task, { resumeTaskFromHistory: resume })
+		let finished = false
+		let failure: unknown
+		const accepted = task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id]).then(
+			() => {
+				finished = true
+			},
+			(error: unknown) => {
+				finished = true
+				failure = error
+			},
+		)
+		try {
+			if (interruption === "timeout") {
+				await vi.advanceTimersByTimeAsync(29_999)
+				expect(finished).toBe(false)
+				await vi.advanceTimersByTimeAsync(1)
+			} else {
+				task["taskCancellationController"].abort()
+				await vi.advanceTimersByTimeAsync(0)
+			}
+
+			expect(finished).toBe(true)
+			expect(failure).toBeInstanceOf(Error)
+			expect(task["ownedLifecyclePromise"]).toBe(ending.promise)
+			expect(task["steerMessageAwaitingPersistence"]).toBe(false)
+			expect(task.isCompleted()).toBe(true)
+			expect(resume).not.toHaveBeenCalled()
+			expect(queue.getClaimedMessageIds()).toEqual([])
+			expect(queue.messages).toEqual([guidance])
+		} finally {
+			ending.resolve()
+			await accepted
+		}
+		expect(task["ownedLifecyclePromise"]).toBeUndefined()
+		expect(resume).not.toHaveBeenCalled()
+		if (interruption === "timeout") {
+			await task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id])
+			expect(resume).toHaveBeenCalledOnce()
+			expect(queue.hasUnconsumedInput()).toBe(false)
+		}
+	},
+)
+
+it.each((["task", "goal"] as const).flatMap((guard) => ([1, 2] as const).map((checkpoint) => ({ guard, checkpoint }))))(
+	"releases queued input when the $guard guard declines at checkpoint $checkpoint",
+	async ({ guard, checkpoint }) => {
+		const { task, queue } = createTask()
+		task.markCompleted()
+		Object.assign(task, { isInitialized: true, _started: true })
+		const guidance = queue.addMessage("Keep this accepted input available for explicit retry.")!
+		const resume = vi.fn(async (_text: string, persisted?: () => void) => {
+			queue.acknowledgeMessages([guidance.id])
+			persisted?.()
+		})
+		Object.assign(task, { resumeTaskFromHistory: resume })
+		queue.on("stateChanged", () => {
+			void task["wakeQueuedInputWhenIdle"]().catch(() => undefined)
+		})
+		let checks = 0
+		const admissible = () => ++checks !== checkpoint
+		const taskGuard = guard === "task" ? admissible : undefined
+		const goalGuard = guard === "goal" ? async () => admissible() : undefined
+
+		await task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id], taskGuard, goalGuard)
+		await task["queuedInputWakePromise"]
+		expect(queue.getClaimedMessageIds()).toEqual([])
+		expect(queue.messages).toEqual([guidance])
+		expect(task["steerMessageAwaitingPersistence"]).toBe(false)
+		expect(task.isCompleted()).toBe(true)
+		expect(resume).not.toHaveBeenCalled()
+
+		await task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id], taskGuard, goalGuard)
+		expect(resume).toHaveBeenCalledOnce()
+		expect(queue.hasUnconsumedInput()).toBe(false)
+	},
+)
 
 it("selects a completed-task follow-up for immediate delivery while the previous lifecycle drains", async () => {
 	const { task, queue } = createTask()

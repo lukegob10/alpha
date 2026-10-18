@@ -1,8 +1,8 @@
 import React from "react"
 import { expect } from "vitest"
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { render, screen, fireEvent, within } from "@/utils/test-utils"
 import { OpenAICompatible } from "../OpenAICompatible"
-import { ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
+import { ProviderSettings, ProviderSettingsWithId, openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
 const { thinkingBudgetProps } = vi.hoisted(() => ({ thinkingBudgetProps: [] as any[] }))
 
@@ -102,6 +102,38 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 		vi.clearAllMocks()
 		thinkingBudgetProps.length = 0
 	})
+
+	const ControlledHeaderSettings = () => {
+		const [configuration, setConfiguration] = React.useState<ProviderSettingsWithId>({
+			id: "profile-a",
+			openAiHeaders: {},
+		})
+
+		return (
+			<>
+				<OpenAICompatible
+					apiConfiguration={configuration}
+					setApiConfigurationField={(field, value) => {
+						mockSetApiConfigurationField(field, value)
+						setConfiguration((previous) => ({ ...previous, [field]: value }))
+					}}
+					organizationAllowList={mockOrganizationAllowList}
+				/>
+				<button onClick={() => setConfiguration((previous) => ({ ...previous, azureApiVersion: "test" }))}>
+					Update Azure version
+				</button>
+				<button onClick={() => setConfiguration((previous) => ({ ...previous, id: "profile-b" }))}>
+					Switch profile
+				</button>
+				<button
+					onClick={() =>
+						setConfiguration((previous) => ({ ...previous, openAiHeaders: { "X-External": "updated" } }))
+					}>
+					Replace headers externally
+				</button>
+			</>
+		)
+	}
 
 	it("keeps the custom model effort editor as the profile default and capability declaration", () => {
 		render(
@@ -498,6 +530,48 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			expect(mockSetApiConfigurationField).toHaveBeenCalledWith("openAiHeaders", {
 				Authorization: "Bearer new",
 			})
+		})
+
+		it("preserves a new header value until its name is entered through the settings edit buffer", () => {
+			render(<ControlledHeaderSettings />)
+			fireEvent.click(within(screen.getByTitle("settings:common.add")).getByRole("button"))
+			fireEvent.change(screen.getByPlaceholderText("settings:providers.headerValue"), {
+				target: { value: "Bearer new" },
+			})
+
+			expect(screen.getByPlaceholderText("settings:providers.headerValue")).toHaveValue("Bearer new")
+			fireEvent.change(screen.getByPlaceholderText("settings:providers.headerName"), {
+				target: { value: "Authorization" },
+			})
+
+			expect(mockSetApiConfigurationField).toHaveBeenLastCalledWith("openAiHeaders", {
+				Authorization: "Bearer new",
+			})
+		})
+
+		it("keeps unfinished header rows when another provider field changes", () => {
+			render(<ControlledHeaderSettings />)
+			fireEvent.click(within(screen.getByTitle("settings:common.add")).getByRole("button"))
+			fireEvent.click(screen.getByRole("button", { name: "Update Azure version" }))
+
+			expect(screen.getByPlaceholderText("settings:providers.headerName")).toHaveValue("")
+		})
+
+		it("discards unfinished header rows when a profile with the same headers is selected", () => {
+			render(<ControlledHeaderSettings />)
+			fireEvent.click(within(screen.getByTitle("settings:common.add")).getByRole("button"))
+			fireEvent.click(screen.getByRole("button", { name: "Switch profile" }))
+
+			expect(screen.queryByPlaceholderText("settings:providers.headerName")).not.toBeInTheDocument()
+		})
+
+		it("replaces unfinished header rows when headers are updated externally", () => {
+			render(<ControlledHeaderSettings />)
+			fireEvent.click(within(screen.getByTitle("settings:common.add")).getByRole("button"))
+			fireEvent.click(screen.getByRole("button", { name: "Replace headers externally" }))
+
+			expect(screen.getByPlaceholderText("settings:providers.headerName")).toHaveValue("X-External")
+			expect(screen.getByPlaceholderText("settings:providers.headerValue")).toHaveValue("updated")
 		})
 	})
 

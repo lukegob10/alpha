@@ -1,6 +1,6 @@
 import type { Socket } from "node:net"
 
-import { IpcMessageType, type ExecutionIdentity } from "@alpha-code/types"
+import { IpcMessageType, IpcOrigin, TaskCommandName, type ExecutionIdentity } from "@alpha-code/types"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 type BackendHandler = (...args: unknown[]) => void
@@ -161,6 +161,54 @@ describe("IpcServer disposal", () => {
 		expect(onConnect).toHaveBeenCalledOnce()
 		expect(mocks.backendServer.emit.mock.calls[0]?.[2].data.executionIdentity).toBeUndefined()
 		server.dispose()
+	})
+
+	it("bounds rejected-command diagnostics without logging prompts, credentials, or validation inputs", () => {
+		const log = vi.fn()
+		const onCommand = vi.fn()
+		const server = new IpcServer("test.sock", log)
+		const privateValue = `ipc-server-secret-canary-${"x".repeat(8_192)}`
+		server.on(IpcMessageType.TaskCommand, onCommand)
+		server.listen()
+		try {
+			for (const invalid of [
+				privateValue,
+				{ type: privateValue },
+				{
+					type: IpcMessageType.TaskCommand,
+					origin: IpcOrigin.Client,
+					clientId: "client-1",
+					data: {
+						commandName: TaskCommandName.StartNewTask,
+						data: {
+							configuration: { apiProvider: privateValue, openAiApiKey: privateValue },
+							text: privateValue,
+						},
+					},
+				},
+			]) {
+				expect(() => mocks.emitBackend("message", invalid)).not.toThrow()
+			}
+			expect(onCommand).not.toHaveBeenCalled()
+			expect(log).toHaveBeenCalledTimes(3)
+			for (const args of log.mock.calls) {
+				const diagnostic = JSON.stringify(args)
+				expect(diagnostic).not.toContain("ipc-server-secret-canary")
+				expect(diagnostic.length).toBeLessThan(512)
+			}
+			mocks.emitBackend("message", {
+				type: IpcMessageType.TaskCommand,
+				origin: IpcOrigin.Client,
+				clientId: "client-1",
+				data: { commandName: TaskCommandName.SendMessage, data: { text: "ordinary message" } },
+			})
+			expect(onCommand).toHaveBeenCalledExactlyOnceWith("client-1", {
+				commandName: TaskCommandName.SendMessage,
+				data: { text: "ordinary message" },
+			})
+		} finally {
+			server.dispose()
+		}
 	})
 
 	it("stops the backend, destroys clients, and detaches listeners exactly once", () => {

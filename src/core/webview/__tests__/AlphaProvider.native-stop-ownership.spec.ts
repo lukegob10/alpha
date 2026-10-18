@@ -38,6 +38,8 @@ async function startOriginal(harness: Harness) {
 	await turn.entered
 	const step = Reflect.get(harness.root, "currentAgentStep")
 	if (!step || !turn.request?.signal) throw new Error("The real Task did not enter its scripted request")
+	expect(turn.request.requestId).toBe(step.requestId)
+	expect(turn.request.attemptId).toBe(step.attemptId)
 	return { task: harness.root, turn, step }
 }
 

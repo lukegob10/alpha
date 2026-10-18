@@ -371,6 +371,30 @@ afterEach(async () => {
 })
 
 describe("Task committed partial stream recovery", () => {
+	it("keeps rejected complete tool arguments out of task diagnostics", async () => {
+		const canary = "CANARYt8"
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		const fixture = await harness(async function* (attempt) {
+			if (attempt === 1) {
+				yield { type: "tool_call", id: "private-call", name: "read_file", arguments: canary }
+			} else {
+				yield { type: "text", text: "Recovered from invalid tool arguments." }
+			}
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+
+		await fixture.run()
+
+		expect(errors).toHaveBeenCalled()
+		expect(
+			errors.mock.calls
+				.flat()
+				.map((value) => (value instanceof Error ? value.message : JSON.stringify(value)))
+				.join("\n"),
+		).not.toContain(canary)
+		expect(fixture.effect).not.toHaveBeenCalled()
+	})
+
 	it("recovers from committed text and opaque reasoning using history and the captured provider contract", async () => {
 		let fixture!: Awaited<ReturnType<typeof harness>>
 		fixture = await harness(async function* (attempt, task) {

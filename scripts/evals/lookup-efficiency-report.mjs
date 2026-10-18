@@ -160,7 +160,8 @@ function rawToolName(payload) {
 }
 
 function canonicalToolName(name) {
-	if (name === "execute_command") return "shell"
+	if (name === "exec_command" || name === "execute_command") return "shell"
+	if (name === "update_plan") return "update_todo_list"
 	if (KNOWN_TOOLS.has(name)) return name
 	return "other"
 }
@@ -185,14 +186,12 @@ function matchedRequestUsage(events, annotations) {
 	const requestIndexes = requests.map((event) => annotations.get(event.sequence)?.requestIndex)
 	const usageIndexes = usages.map((event) => record(event.payload).requestIndex)
 	const requestIdentities = new Set(requestIndexes)
-	return (
-		requestIndexes.every(finiteCount) &&
+	return requestIndexes.every(finiteCount) &&
 		usageIndexes.every(finiteCount) &&
 		requestIdentities.size === requests.length &&
 		new Set(usageIndexes).size === usages.length &&
 		requests.length === usages.length &&
 		usageIndexes.every((index) => requestIdentities.has(index))
-	)
 		? usages
 		: null
 }
@@ -253,12 +252,11 @@ function completionProjection(input, coverage) {
 	) {
 		codes.push(lastReasonCode)
 	}
-	const backgrounded =
-		finiteCount(stage.backgroundedCommandsAtFirstAnswer)
-			? count(stage.backgroundedCommandsAtFirstAnswer, coverage)
-			: finiteCount(record(input.timing).backgroundedCommandsAtFirstAnswer)
-				? count(record(input.timing).backgroundedCommandsAtFirstAnswer, coverage)
-				: unavailable("Backgrounded-command observer not supplied")
+	const backgrounded = finiteCount(stage.backgroundedCommandsAtFirstAnswer)
+		? count(stage.backgroundedCommandsAtFirstAnswer, coverage)
+		: finiteCount(record(input.timing).backgroundedCommandsAtFirstAnswer)
+			? count(record(input.timing).backgroundedCommandsAtFirstAnswer, coverage)
+			: unavailable("Backgrounded-command observer not supplied")
 	return {
 		candidateCount: finiteCount(stage.candidateCount)
 			? count(stage.candidateCount, coverage)
@@ -365,7 +363,9 @@ export function buildReport(input) {
 	}
 	const coverage = metricCoverage(input.traceCoverage)
 	const counters =
-		input.traceCoverage === "unavailable" ? unavailableCounters("Trace unavailable") : projectCounters(trace, coverage)
+		input.traceCoverage === "unavailable"
+			? unavailableCounters("Trace unavailable")
+			: projectCounters(trace, coverage)
 	const completionRejections = completionProjection(input, coverage)
 	if (input.traceCoverage === "unavailable") {
 		completionRejections.candidateCount = unavailable("Trace unavailable")
@@ -374,12 +374,13 @@ export function buildReport(input) {
 		completionRejections.reasonCodes = unavailable("Trace unavailable")
 		completionRejections.backgroundedCommandsAtFirstAnswer = unavailable("Trace unavailable")
 	}
-	const timing = input.traceCoverage === "unavailable"
-		? {
-				firstGroundedAnswerMs: unavailable("Trace unavailable"),
-				durableCompletionMs: unavailable("Trace unavailable"),
-			}
-		: timingProjection(input)
+	const timing =
+		input.traceCoverage === "unavailable"
+			? {
+					firstGroundedAnswerMs: unavailable("Trace unavailable"),
+					durableCompletionMs: unavailable("Trace unavailable"),
+				}
+			: timingProjection(input)
 	const decisions = ["passed", "outcome_failed", "safety_failed", "grader_error"]
 	const outcomes = ["completed", "blocked", "failed", "cancelled"]
 	return {
@@ -394,7 +395,9 @@ export function buildReport(input) {
 		revision: /^[a-f0-9]{40}$/.test(input.revision ?? "") ? input.revision : null,
 		workingTree: ["clean", "modified"].includes(input.workingTree) ? input.workingTree : "unknown",
 		modelId: typeof input.modelId === "string" && MODEL_ID.test(input.modelId) ? input.modelId : null,
-		reasoningPreference: REASONING_PREFERENCES.has(input.reasoningPreference) ? input.reasoningPreference : "unknown",
+		reasoningPreference: REASONING_PREFERENCES.has(input.reasoningPreference)
+			? input.reasoningPreference
+			: "unknown",
 		correctness: decisions.includes(input.graderDecision) ? input.graderDecision : "unavailable",
 		outcome: outcomes.includes(input.outcome) ? input.outcome : "unavailable",
 		...counters,
