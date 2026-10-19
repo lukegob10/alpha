@@ -1,6 +1,24 @@
+import * as fs from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+
 import { Task } from "../Task"
 
 describe("Task retained sub-agent follow-up", () => {
+	let storagePath: string
+
+	beforeEach(async () => {
+		storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-subagent-followup-"))
+	})
+
+	afterEach(async () => {
+		vi.restoreAllMocks()
+		const resolved = path.resolve(storagePath)
+		expect(path.dirname(resolved)).toBe(path.resolve(os.tmpdir()))
+		expect(path.basename(resolved)).toMatch(/^alpha-subagent-followup-/)
+		await fs.rm(resolved, { recursive: true, force: true })
+	})
+
 	it("cancels a bounded agent wait when the current turn is interrupted", () => {
 		const task = Object.assign(Object.create(Task.prototype), {
 			taskCancellationController: new AbortController(),
@@ -20,6 +38,7 @@ describe("Task retained sub-agent follow-up", () => {
 		const overwriteApiConversationHistory = vi.fn(async () => true)
 		const task = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-1",
+			globalStoragePath: storagePath,
 			taskKind: "subagent",
 			clineMessages: [],
 			apiConversationHistory: [],
@@ -96,6 +115,7 @@ describe("Task retained sub-agent follow-up", () => {
 		}
 		const task = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-1",
+			globalStoragePath: storagePath,
 			taskKind: "subagent",
 			clineMessages: [],
 			apiConversationHistory: [],

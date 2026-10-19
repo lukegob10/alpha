@@ -44,12 +44,12 @@ function reasoningState(effort: "low" | "medium" | "high"): TaskReasoningState {
 	}
 }
 
-function handler(id: string, effort: "low" | "medium" | "high") {
+function handler(id: string, effort: "low" | "medium" | "high", contextWindow = 128_000) {
 	return {
 		getModel: () => ({
 			id,
 			info: {
-				contextWindow: 128_000,
+				contextWindow,
 				maxTokens: 4096,
 				supportsImages: true,
 				supportsReasoningEffort: ["low", "medium", "high"],
@@ -97,6 +97,7 @@ function harness(initialEffort: "low" | "medium" | "high" = "high") {
 		abort: false,
 		abandoned: false,
 		isStreaming: false,
+		taskCancellationController: new AbortController(),
 		api: activeHandler,
 		apiConfiguration: baseConfiguration,
 		effectiveApiConfiguration: effectiveConfiguration,
@@ -153,6 +154,71 @@ describe("Task reasoning preference runtime boundaries", () => {
 		vi.mocked(buildNativeToolsArrayWithRestrictions).mockReset()
 		vi.mocked(manageContext).mockReset()
 		vi.mocked(willManageContext).mockReturnValue(false)
+	})
+
+	it.each([false, true])("retains a downshift summary handler until request cleanup (failure: %s)", async (fails) => {
+		const { task, activeHandler, baseConfiguration } = harness("high")
+		Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 100 }))
+		vi.mocked(willManageContext).mockReturnValue(true)
+		const small = handler("small-model", "high", 256_000)
+		const resolvedModel = { ...small.getModel(), info: { ...small.getModel().info, contextWindow: 32_000 } }
+		Object.assign(small, {
+			prepareModel: vi.fn(async () => {
+				small.getModel = () => resolvedModel
+			}),
+		})
+		const configuration = { ...baseConfiguration, apiModelId: "small-model" }
+		Reflect.set(task, "prepareReasoningConfiguration", () => ({
+			api: small,
+			configuration,
+			state: reasoningState("high"),
+		}))
+		task.updateApiConfiguration(configuration)
+		expect(activeHandler.dispose).not.toHaveBeenCalled()
+		if (fails) vi.mocked(manageContext).mockRejectedValueOnce(new Error("summary unavailable"))
+		const request = async () => {
+			for await (const _chunk of task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+			})) {
+			}
+		}
+		if (fails) await expect(request()).rejects.toThrow("summary unavailable")
+		else await request()
+		expect(manageContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiHandler: small,
+				compactionApiHandler: activeHandler,
+			}),
+		)
+		expect(activeHandler.dispose).toHaveBeenCalledOnce()
+		expect(small.dispose).not.toHaveBeenCalled()
+	})
+
+	it("does not reuse a previous account when changing model and credentials together", async () => {
+		const { task, activeHandler, baseConfiguration } = harness("high")
+		Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 100 }))
+		vi.mocked(willManageContext).mockReturnValue(true)
+		const small = handler("small-model", "high", 32_000)
+		const configuration = { ...baseConfiguration, apiModelId: "small-model", vertexProjectId: "different-account" }
+		Reflect.set(task, "prepareReasoningConfiguration", () => ({
+			api: small,
+			configuration,
+			state: reasoningState("high"),
+		}))
+		task.updateApiConfiguration(configuration)
+		expect(activeHandler.dispose).toHaveBeenCalledOnce()
+		for await (const _chunk of task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})) {
+		}
+		expect(manageContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiHandler: small,
+				compactionApiHandler: undefined,
+			}),
+		)
 	})
 
 	it("keeps the captured effective settings across an in-flight transport retry and adopts new settings on the next step", async () => {

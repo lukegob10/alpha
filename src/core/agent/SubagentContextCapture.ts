@@ -492,7 +492,7 @@ const nativeConversationMessagesSchema = z.array(
 				z.array(z.union([nativeTextBlockSchema, nativeImageBlockSchema, nativeDocumentBlockSchema])).min(1),
 			]),
 			input_origin: z.literal("agent"),
-			phase: z.literal("final_answer").optional(),
+			phase: z.enum(["partial_answer", "final_answer"]).optional(),
 			ts: z.number().finite().optional(),
 			isSummary: z.literal(true).optional(),
 			condenseId: z.string().optional(),
@@ -555,7 +555,10 @@ function projectNativeConversationMessage(
 	if (message.type === "reasoning" || message.isTruncationMarker || message.agent_message_id || message.hook_prompt) {
 		return undefined
 	}
-	if (message.role === "assistant" && !isFinalAssistant) return undefined
+	// Partial answers are committed conversation evidence even when the parent
+	// continues with tools. Preserve their phase rather than promoting them to final.
+	const isPartialAnswer = message.phase === "partial_answer"
+	if (message.role === "assistant" && !isFinalAssistant && !isPartialAnswer) return undefined
 
 	let content: ApiMessage["content"]
 	let retainedContentIndexes: number[] | undefined
@@ -563,6 +566,7 @@ function projectNativeConversationMessage(
 		? message.content.filter((block) => NATIVE_TOOL_BLOCK_TYPES.has(block.type))
 		: []
 	if (message.role === "assistant" && toolBlocks.length > 0) {
+		if (!isFinalAssistant) return undefined
 		// Alpha's legacy terminal tool carries its final report in arguments. Only
 		// canonical host finality permits this projection; ordinary tool steps vanish.
 		const completion = toolBlocks.length === 1 ? toolBlocks[0] : undefined
@@ -624,7 +628,7 @@ function projectNativeConversationMessage(
 		// it verbatim; token-shaped substrings can be legitimate base64 bytes.
 		content: structuredClone(content),
 		input_origin: "agent",
-		...(message.role === "assistant" ? { phase: "final_answer" } : {}),
+		...(message.role === "assistant" ? { phase: isPartialAnswer ? "partial_answer" : "final_answer" } : {}),
 	}
 }
 
@@ -782,7 +786,7 @@ export function assertSubagentHistoryFork(
 			(message.isSummary === true && (index !== 0 || manifest.requestedForkTurns !== "all")) ||
 			(message.isSummary === true && message.role !== "user") ||
 			(message.condenseId !== undefined && message.isSummary !== true) ||
-			(message.role === "assistant" && (message as ApiMessage & { phase?: unknown }).phase !== "final_answer") ||
+			(message.role === "assistant" && message.phase !== "final_answer" && message.phase !== "partial_answer") ||
 			(message.role === "user" && "phase" in message) ||
 			(annotations &&
 				annotations.content_item_kinds.length !==

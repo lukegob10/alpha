@@ -119,17 +119,20 @@ export class MessageManager {
 		// Step 1: Collect context event IDs from messages being removed
 		const removedIds = this.collectRemovedContextEventIds(toIndex)
 
-		// Step 2: Truncate clineMessages
-		const uiSaved = await this.truncateAlphaMessages(toIndex)
-
-		// Step 3: Truncate and clean API history (combined with cleanup for efficiency)
-		await this.truncateApiHistoryWithCleanup(
-			cutoffTs,
-			removedIds,
-			skipCleanup,
-			replacesOpeningPrompt,
-			uiSaved === true ? artifactCandidates : undefined,
-		)
+		// Calculate both projections before persisting either. The task commits the durable
+		// rollback receipt first, so reload can distinguish this deletion from crash damage.
+		const uiMessages = this.task.clineMessages.slice(0, toIndex)
+		const apiHistory = this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup, replacesOpeningPrompt)
+		if ((await this.task.commitConversationRewind(uiMessages, apiHistory)) !== true) {
+			throw new Error("Conversation rewind could not be persisted")
+		}
+		if (artifactCandidates && this.isArtifactCleanupIdle()) {
+			const retainedIds = collectArtifactExecutionIds([
+				...this.task.clineMessages,
+				...this.task.apiConversationHistory,
+			])
+			await this.cleanupOrphanedArtifacts(retainedIds, artifactCandidates)
+		}
 	}
 
 	/**
@@ -166,20 +169,8 @@ export class MessageManager {
 	}
 
 	/**
-	 * Truncate clineMessages to the specified index.
-	 */
-	private async truncateAlphaMessages(toIndex: number): Promise<boolean> {
-		return this.task.overwriteAlphaMessages(this.task.clineMessages.slice(0, toIndex))
-	}
-
-	/**
-	 * Truncate API history by timestamp, remove orphaned summaries/markers,
-	 * and clean up orphaned tags - all in a single write operation.
-	 *
-	 * This combined approach:
-	 * 1. Avoids multiple writes to API history
-	 * 2. Only writes if history changed or artifact cleanup needs a durable receipt
-	 * 3. Handles both truncation and cleanup atomically
+	 * Calculate the API rewind projection by timestamp and clean up context tags.
+	 * The caller commits this together with the UI projection through the task.
 	 *
 	 * Note on timestamp handling:
 	 * Due to async execution during streaming, clineMessage timestamps may not
@@ -189,13 +180,12 @@ export class MessageManager {
 	 * completion). To handle this race condition, we find the first API user
 	 * message at or after the cutoff and use its timestamp as the actual boundary.
 	 */
-	private async truncateApiHistoryWithCleanup(
+	private truncateApiHistoryWithCleanup(
 		cutoffTs: number,
 		removedIds: ContextEventIds,
 		skipCleanup: boolean,
 		replacesOpeningPrompt: boolean,
-		artifactCandidates?: ReadonlySet<string>,
-	): Promise<void> {
+	): ApiMessage[] {
 		const originalHistory = this.task.apiConversationHistory
 		let apiHistory = [...originalHistory]
 
@@ -262,25 +252,7 @@ export class MessageManager {
 			apiHistory = cleanupAfterTruncation(apiHistory)
 		}
 
-		const retainedIds = collectArtifactExecutionIds([...this.task.clineMessages, ...apiHistory])
-		const hasRemovedArtifacts =
-			artifactCandidates !== undefined && [...artifactCandidates].some((id) => !retainedIds.has(id))
-		const mayCleanArtifacts = !skipCleanup && hasRemovedArtifacts && this.isArtifactCleanupIdle()
-		const historyChanged =
-			apiHistory.length !== originalHistory.length || apiHistory.some((msg, i) => msg !== originalHistory[i])
-
-		// A failed earlier save can leave already-truncated memory ahead of disk. Even unchanged
-		// API history needs an affirmative save before removing artifacts from either transcript.
-		if (historyChanged || mayCleanArtifacts) {
-			const apiSaved = await this.task.overwriteApiConversationHistory(apiHistory)
-			if (apiSaved === true && mayCleanArtifacts && artifactCandidates && this.isArtifactCleanupIdle()) {
-				const currentIds = collectArtifactExecutionIds([
-					...this.task.clineMessages,
-					...this.task.apiConversationHistory,
-				])
-				await this.cleanupOrphanedArtifacts(currentIds, artifactCandidates)
-			}
-		}
+		return apiHistory
 	}
 
 	private isArtifactCleanupIdle(): boolean {

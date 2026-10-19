@@ -47,6 +47,7 @@ function harness() {
 			if (type === "api_req_started") throw stopBeforeProvider
 		}),
 		retrySaveApiConversationHistory: vi.fn(async () => false),
+		requireAlphaMessagesSaved: vi.fn(async () => undefined),
 		addToApiConversationHistory: vi.fn((message: ApiMessage, _reasoning: unknown, onPersisted?: () => void) => {
 			task.apiConversationHistory.push(message)
 			persisted.push(structuredClone(task.apiConversationHistory))
@@ -703,3 +704,27 @@ it("keeps the committed receipt after queue deletion fails, allowing reload dedu
 	expect(task.apiConversationHistory).toEqual(persisted[0])
 	expect(task.apiConversationHistory.at(-1)?.queued_message_ids).toEqual([queued.id])
 })
+
+it.each([false, true])(
+	"persists host-expanded skill identities before provider input (save fails=%s)",
+	async (fails) => {
+		const { task, persisted } = harness()
+		const skill = { name: "review", path: "/skills/review/SKILL.md", digest: digestValue("REVIEW_BODY") }
+		vi.mocked(processUserContentMentions).mockImplementation(async ({ userContent }) => ({
+			content: [...userContent, { type: "text", text: "REVIEW_BODY" }],
+			loadedSkills: [skill],
+		}))
+		const saveFailure = new Error("fixture: loaded identity persistence failed")
+		if (fails) vi.mocked(task["requireAlphaMessagesSaved"]).mockRejectedValue(saveFailure)
+		await expect(
+			task.runAgentRequests([{ type: "text", text: "<user_message>$review</user_message>" }], false),
+		).rejects.toBe(fails ? saveFailure : stopBeforeProvider)
+		expect(task["requireAlphaMessagesSaved"]).toHaveBeenCalledWith("loaded skill identity")
+		if (fails) {
+			expect(persisted).toEqual([])
+		} else {
+			expect(task.workContext?.skills).toEqual([skill])
+			expect(JSON.stringify(persisted[0])).toContain("REVIEW_BODY")
+		}
+	},
+)

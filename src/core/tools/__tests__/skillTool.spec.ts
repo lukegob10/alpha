@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { readFileSync } from "fs"
+import path from "path"
+import matter from "gray-matter"
 import { skillTool } from "../SkillTool"
 import { Task } from "../../task/Task"
 import { formatResponse } from "../../prompts/responses"
@@ -57,6 +60,51 @@ describe("skillTool", () => {
 		expect(mockTask.recordToolError).toHaveBeenCalledWith("skill")
 		expect(mockTask.sayAndCreateMissingParamError).toHaveBeenCalledWith("skill", "skill")
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith("Missing parameter error")
+	})
+
+	it.each(["root", "subagent"])("loads the packaged explicit reviewer through the approved %s path", async (kind) => {
+		const skillPath = path.join(__dirname, "../../../assets/skills/review-agent/SKILL.md")
+		const parsed = matter(readFileSync(skillPath, "utf8"))
+		if (typeof parsed.data.description !== "string") throw new Error("Missing packaged review description")
+		const instructions = parsed.content.trim()
+		const content = {
+			name: "review-agent",
+			description: parsed.data.description,
+			path: skillPath,
+			source: "builtin" as const,
+			allowImplicitInvocation: false,
+			instructions,
+		}
+		mockTask.taskKind = kind
+		mockTask.getTaskMode = vi.fn().mockResolvedValue("architect")
+		mockTask.recordLoadedSkill = vi.fn()
+		mockSkillsManager.getSkillContent.mockResolvedValue(content)
+		mockSkillsManager.getSkillContentByPath.mockResolvedValue(content)
+		if (kind === "subagent") {
+			mockTask.getInheritedSubagentSkill = vi.fn(() => ({
+				name: content.name,
+				path: content.path,
+				digest: digestValue(instructions),
+				allowImplicitInvocation: false,
+			}))
+		}
+
+		await skillTool.execute(
+			{ action: "load", skill: "review-agent", args: "Review the working changes", cursor: null },
+			mockTask as Task,
+			mockCallbacks,
+		)
+
+		expect(mockCallbacks.handleError).not.toHaveBeenCalled()
+		expect(mockCallbacks.askApproval).toHaveBeenCalledWith("tool", expect.stringContaining('"source":"builtin"'))
+		expect(mockTask.recordLoadedSkill).toHaveBeenCalledWith("review-agent", skillPath, digestValue(instructions))
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(instructions))
+		if (kind === "subagent") {
+			expect(mockSkillsManager.getSkillContentByPath).toHaveBeenCalledWith("review-agent", skillPath)
+			expect(mockSkillsManager.getSkillContent).not.toHaveBeenCalled()
+		} else {
+			expect(mockSkillsManager.getSkillContent).toHaveBeenCalledWith("review-agent", "architect")
+		}
 	})
 
 	it("loads the task's skill catalog and mode when foreground workspace state differs", async () => {

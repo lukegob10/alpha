@@ -11,6 +11,7 @@ import {
 	getVscodeLlmExtendedContextSize,
 	getVscodeLlmContextWindow,
 	mergeVscodeLlmModels,
+	snapshotVscodeLmThinking,
 } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
@@ -411,12 +412,12 @@ function getVsCodeLmMetadataMimeType(chunk: unknown): string | undefined {
 
 type VsCodeLmThinkingPartLike = {
 	value: string | string[]
-	id?: string
-	metadata?: { readonly [key: string]: unknown }
+	id?: unknown
+	metadata?: unknown
 }
 
 /**
- * Thinking parts are still typed as `unknown` on the stable 1.122 response
+ * Thinking parts are still typed as `unknown` on the stable 1.125 response
  * stream, but the bundled Copilot provider emits this exact runtime shape.
  * Check it before the broader `{ value: string }` text-part guard.
  */
@@ -431,12 +432,9 @@ function isVsCodeLmThinkingPartLike(chunk: unknown): chunk is VsCodeLmThinkingPa
 		return false
 	}
 
-	const { value, id, metadata } = chunk as { value?: unknown; id?: unknown; metadata?: unknown }
-	return (
-		(typeof value === "string" || (Array.isArray(value) && value.every((part) => typeof part === "string"))) &&
-		(id === undefined || typeof id === "string") &&
-		(metadata === undefined || (typeof metadata === "object" && metadata !== null))
-	)
+	const { value } = chunk as { value?: unknown }
+	// Preserve the display projection even when opaque state fails snapshot validation.
+	return typeof value === "string" || (Array.isArray(value) && value.every((part) => typeof part === "string"))
 }
 
 function getVsCodeLmThinkingText(chunk: VsCodeLmThinkingPartLike): string {
@@ -609,11 +607,45 @@ function decodeVsCodeLmStatefulMarker(value: unknown): Uint8Array | undefined {
 
 function convertToStatefulVsCodeLmMessages(
 	messages: Anthropic.Messages.MessageParam[],
+	model: Pick<vscode.LanguageModelChat, "id" | "vendor" | "version">,
 ): vscode.LanguageModelChatMessage[] {
 	return normalizeToolHistory(messages).flatMap((message) => {
-		const converted = convertToVsCodeLmMessages([message])
+		const content =
+			message.role === "assistant" && Array.isArray(message.content)
+				? message.content.filter((block) => {
+						const state = block as {
+							type: string
+							modelId?: unknown
+							modelVendor?: unknown
+							modelVersion?: unknown
+						}
+						return (
+							state.type !== "vscode_lm_thinking" ||
+							((state.modelId === undefined || state.modelId === model.id) &&
+								(state.modelVendor === undefined || state.modelVendor === model.vendor) &&
+								(state.modelVersion === undefined || state.modelVersion === model.version))
+						)
+					})
+				: message.content
+		// Model-specific signatures cannot migrate to a different selected model.
+		// Retain the saved envelope; the host separately scopes continuation markers.
+		const converted =
+			Array.isArray(content) &&
+			content.length === 0 &&
+			Array.isArray(message.content) &&
+			message.content.length > 0
+				? []
+				: convertToVsCodeLmMessages([{ ...message, content }])
 		const marker = decodeVsCodeLmStatefulMarker((message as VsCodeLmPersistedMessage).vscodeLmStatefulMarker)
 
+		if (message.role === "assistant" && marker && converted.length === 0) {
+			// Optional thinking support may be absent while marker replay is available.
+			return [
+				vscode.LanguageModelChatMessage.Assistant([
+					new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE),
+				]),
+			]
+		}
 		if (message.role !== "assistant" || !marker || converted.length !== 1) {
 			return converted
 		}
@@ -1197,7 +1229,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				...(metadata?.instructionFragments !== undefined
 					? toVsCodeLmInstructionMessages(metadata.instructionFragments)
 					: [vscode.LanguageModelChatMessage.User(systemPrompt)]),
-				...convertToStatefulVsCodeLmMessages(messages),
+				...convertToStatefulVsCodeLmMessages(messages, client),
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 			// Create the response stream with required options
@@ -1279,16 +1311,27 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					}
 				} else if (!isToolIntent && isVsCodeLmThinkingPartLike(chunk)) {
 					const thinkingText = getVsCodeLmThinkingText(chunk)
-					if (thinkingText.length === 0) {
+					const vscodeLmThinking = snapshotVscodeLmThinking({
+						value: chunk.value,
+						id: chunk.id,
+						metadata: chunk.metadata,
+						modelId: client.id,
+						modelVendor: client.vendor,
+						modelVersion: client.version,
+					})
+					if (thinkingText.length === 0 && !vscodeLmThinking) {
 						continue
 					}
 
-					accumulatedText.push(thinkingText)
-					semanticOutputObserved = true
-					reportedUsage = undefined
+					if (thinkingText.length > 0) {
+						accumulatedText.push(thinkingText)
+						semanticOutputObserved = true
+						reportedUsage = undefined
+					}
 					yield {
 						type: "reasoning",
 						text: thinkingText,
+						...(vscodeLmThinking ? { vscodeLmThinking } : {}),
 					}
 				} else if (!isToolIntent && isLanguageModelTextPartLike(chunk)) {
 					// Validate text part value

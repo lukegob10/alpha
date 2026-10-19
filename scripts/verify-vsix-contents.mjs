@@ -63,6 +63,8 @@ try {
 const requiredEntries = [
 	"extension/package.json",
 	"extension/assets/skills/debug/SKILL.md",
+	"extension/assets/skills/review-agent/SKILL.md",
+	"extension/assets/skills/review-agent/agents/openai.yaml",
 	"extension/assets/skills/rich-documents/SKILL.md",
 	"extension/assets/skills/skill-builder/SKILL.md",
 	"extension/assets/skills/skill-builder/references/evaluation.md",

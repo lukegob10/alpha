@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.4
+
+### Patch Changes
+
+- Preserve Copilot thinking state and ordered provider history across requests, persistence, and reloads.
+- Make conversation rewinds durable and recover eligible interrupted read-only turns without replaying completed tools.
+- Retain context when switching to a smaller model and carry committed partial answers into sub-agent context.
+- Make instruction loading and explicit skill selection reliable, and bundle the review-agent skill.
+- Preserve literal native command text through policy checks and execution, and reject stale turn command admission.
+- Keep queued steering, follow-up delivery, and stop ownership consistent across task surfaces.
+- Update the extension version and in-app release announcement together for Alpha 3.2.4.
+
 ## 3.2.3
 
 ### Patch Changes

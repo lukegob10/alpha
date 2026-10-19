@@ -185,8 +185,14 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		}
 	}
 
-	public async addMessageDurably(text: string, images?: string[], id = uuidv4()): Promise<QueuedMessage | undefined> {
+	public async addMessageDurably(
+		text: string,
+		images?: string[],
+		id = uuidv4(),
+		admit?: () => void,
+	): Promise<QueuedMessage | undefined> {
 		return this.enqueueDurableMutation(id, async () => {
+			admit?.()
 			const existing = this.claimed.get(id) ?? this.findMessage(id).message
 			if (existing) {
 				const result = this.addMessage(text, images, id)

@@ -572,32 +572,61 @@ describe("Task committed partial stream recovery", () => {
 		},
 	)
 
-	it("joins a completed approved early read and keeps its existing terminal receipt without replay", async () => {
-		let fixture!: Awaited<ReturnType<typeof harness>>
-		fixture = await harness(async function* () {
-			yield { type: "text", text: partialText }
-			yield {
-				type: "tool_call",
-				id: "early-read",
-				name: "exec_command",
-				arguments: '{"cmd":"git status --short"}',
+	it.each(
+		(["throw", "EOF"] as const).flatMap((boundary) =>
+			(["none", "identified", "anonymous"] as const).map((trailing) => ({ boundary, trailing })),
+		),
+	)(
+		"settles a completed read once after $boundary with $trailing trailing intent",
+		async ({ boundary, trailing }) => {
+			let fixture!: Awaited<ReturnType<typeof harness>>
+			fixture = await harness(async function* (attempt) {
+				if (attempt > 1) {
+					yield { type: "text", text: "The read result is available; the answer is complete." }
+					yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+					return
+				}
+				yield { type: "text", text: partialText }
+				yield {
+					type: "tool_call",
+					id: "early-read",
+					name: "exec_command",
+					arguments: '{"cmd":"git status --short"}',
+				}
+				yield { type: "tool_call_end", id: "early-read" }
+				await fixture.effectSettled
+				if (trailing !== "none") {
+					yield {
+						type: "tool_call_start",
+						id: trailing === "identified" ? "unfinished-after-read" : "",
+						name: "apply_patch",
+					}
+				}
+				if (boundary === "throw") throw transportFailure()
+			})
+			await fixture.run()
+			expect(fixture.task.isCompleted()).toBe(trailing === "none")
+			expect(fixture.createMessage).toHaveBeenCalledTimes(trailing === "none" ? 2 : 1)
+			expect(fixture.effect).toHaveBeenCalledOnce()
+			const results = (await fixture.history()).flatMap((message) =>
+				Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_result") : [],
+			)
+			expect(results).toEqual([
+				expect.objectContaining({ tool_use_id: "early-read", is_error: false, content: "read completed" }),
+			])
+			if (trailing === "none") {
+				const continuation = fixture.createMessage.mock.calls[1]![1]
+				expect(
+					continuation.flatMap((message) =>
+						Array.isArray(message.content)
+							? message.content.filter((block) => block.type === "tool_result")
+							: [],
+					),
+				).toEqual(results)
 			}
-			yield { type: "tool_call_end", id: "early-read" }
-			await fixture.effectSettled
-			throw transportFailure()
-		})
-		await fixture.run()
-		expect(fixture.task.isCompleted()).toBe(false)
-		expect(fixture.createMessage).toHaveBeenCalledOnce()
-		expect(fixture.effect).toHaveBeenCalledOnce()
-		const results = (await fixture.history()).flatMap((message) =>
-			Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_result") : [],
-		)
-		expect(results).toEqual([
-			expect.objectContaining({ tool_use_id: "early-read", is_error: false, content: "read completed" }),
-		])
-		expect((await fixture.journal.replay())?.terminalToolCallIds).toEqual(["early-read"])
-	})
+			expect((await fixture.journal.replay())?.terminalToolCallIds).toEqual(["early-read"])
+		},
+	)
 
 	it("carries the attempt budget across failed samples instead of starting a new allowance per recovery", async () => {
 		const fixture = await harness(async function* (attempt) {

@@ -101,6 +101,12 @@ export function getSkillLookupForInput(
 			const content = await skillsManager.getSkillContent(name, currentMode)
 			return content?.allowImplicitInvocation === false ? null : content
 		},
+		async getExplicitSkillContent(selector, currentMode) {
+			const content = skillsManager.getExplicitSkillContent
+				? await skillsManager.getExplicitSkillContent(selector, currentMode)
+				: await skillsManager.getSkillContent(selector, currentMode)
+			return content?.allowImplicitInvocation === false ? null : content
+		},
 	}
 }
 
@@ -125,6 +131,18 @@ export function getSkillLookupForCapturedCatalog(
 		return process.platform === "win32" ? resolved.toLowerCase() : resolved
 	}
 	return {
+		async getExplicitSkillContent(selector) {
+			const isPath = path.isAbsolute(selector)
+			const namespace = !isPath && selector.includes(":") ? selector.split(":") : undefined
+			const matches = [...capturedSkills.values()].filter((skill) =>
+				isPath
+					? normalizePath(skill.path) === normalizePath(selector)
+					: skill.name === (namespace?.[1] ?? selector),
+			)
+			if (matches.length !== 1) return null
+			const content = await this.getSkillContent(matches[0].name)
+			return namespace && (namespace.length !== 2 || content?.source !== namespace[0]) ? null : content
+		},
 		async getSkillContent(name) {
 			const captured = capturedSkills.get(name)
 			if (!captured) return null

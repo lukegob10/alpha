@@ -170,6 +170,20 @@ function callbackReplacement(task: Task, step: Record<string, unknown>) {
 }
 
 describe("AlphaProvider native Stop caller ownership", () => {
+	it("ignores a Stop addressed to an earlier turn before entering native cancellation", async () => {
+		const harness = await fixture()
+		const { task, turn } = await startOriginal(harness)
+		const cancel = vi.spyOn(task, "beginTaskCancellation")
+		const dispose = vi.spyOn(task, "dispose")
+		const rehydrate = vi.spyOn(harness.provider, "createTaskWithHistoryItem")
+		await harness.provider.cancelTask(task.taskId, "webview_stop", "earlier-turn")
+		expect(cancel).not.toHaveBeenCalled()
+		expect(dispose).not.toHaveBeenCalled()
+		expect(rehydrate).not.toHaveBeenCalled()
+		expect(turn.request?.signal?.aborted).toBe(false)
+		expect(harness.provider.getLiveTask(task.taskId)).toBe(task)
+	})
+
 	it("captures A before the first abort callback and joins A without cancelling, abandoning, closing or rehydrating B", async () => {
 		const harness = await fixture()
 		const { task, step } = await startOriginal(harness)

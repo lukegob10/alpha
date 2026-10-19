@@ -22,6 +22,7 @@ import {
 } from "@alpha-code/types"
 import { t } from "../../i18n"
 import { readSkillInvocationPolicy } from "./skillPolicy"
+import { SkillSelectionError } from "./SkillSelectionError"
 
 // Re-export for convenience
 export type { SkillMetadata, SkillContent, SkillSource }
@@ -486,6 +487,67 @@ export class SkillsManager {
 			...skill,
 			instructions: body.trim(),
 		}
+	}
+
+	/** Explicit selection retains normal overrides while checking path selectors against the live task catalog. */
+	async getExplicitSkillContent(selector: string, currentMode?: string): Promise<SkillContent | null> {
+		const assertAvailable = (skill: SkillMetadata) => {
+			if (!this.isSkillEnabled(skill)) throw new SkillSelectionError(t("skills:errors.explicit_disabled"))
+			if (currentMode !== undefined && !this.isSkillAvailableInMode(skill, currentMode)) {
+				throw new SkillSelectionError(t("skills:errors.explicit_mode_unavailable"))
+			}
+		}
+		// A path selects only an already discovered identity. Never read an arbitrary user-supplied path.
+		if (path.isAbsolute(selector)) {
+			const skill = this.skillsByPath.get(this.normalizeSkillPath(selector))
+			if (!skill) return null
+			assertAvailable(skill)
+			return this.getSkillContentByPath(skill.name, skill.path)
+		}
+
+		const qualified = /^(global|project|builtin):(.+)$/.exec(selector)
+		if (!qualified) {
+			if (selector.includes(":")) return null
+			const selected = Array.from(this.skills.values())
+				.filter(
+					(skill) =>
+						skill.name === selector &&
+						this.isSkillEnabled(skill) &&
+						(currentMode === undefined || this.isSkillAvailableInMode(skill, currentMode)),
+				)
+				.reduce<SkillMetadata | undefined>(
+					(previous, candidate) =>
+						!previous || this.shouldOverrideSkill(previous, candidate) ? candidate : previous,
+					undefined,
+				)
+			if (selected) return this.getExplicitSkillContent(`${selected.source}:${selector}`, currentMode)
+			const unavailable = Array.from(this.skills.values()).find((skill) => skill.name === selector)
+			if (unavailable) assertAvailable(unavailable)
+			return null
+		}
+		const [, source, name] = qualified
+		let candidates = Array.from(this.skills.values()).filter(
+			(skill) =>
+				skill.source === source &&
+				skill.name === name &&
+				this.isSkillEnabled(skill) &&
+				(currentMode === undefined || this.isSkillAvailableInMode(skill, currentMode)),
+		)
+		// Retain the existing mode-specific-over-generic precedence within the selected source.
+		if (candidates.some((skill) => skill.modeSlugs?.length)) {
+			candidates = candidates.filter((skill) => skill.modeSlugs?.length)
+		}
+		if (candidates.length > 1) {
+			throw new SkillSelectionError(t("skills:errors.explicit_ambiguous"))
+		}
+		const skill = candidates[0]
+		if (!skill) {
+			const unavailable = Array.from(this.skills.values()).find(
+				(entry) => entry.source === source && entry.name === name,
+			)
+			if (unavailable) assertAvailable(unavailable)
+		}
+		return skill ? this.getSkillContentByPath(skill.name, skill.path) : null
 	}
 
 	/** Resolve a previously captured skill by its exact path, independent of mutable mode overrides. */

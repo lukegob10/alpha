@@ -19,6 +19,15 @@ describe("direct steering wire contract", () => {
 		}
 	})
 
+	it("accepts historical callers and validates an optional expected turn", () => {
+		expect(sendAndSteerMessageSchema.parse({ ...submission, expectedTurnId: "turn-1" }).expectedTurnId).toBe(
+			"turn-1",
+		)
+		expect(sendAndSteerMessageSchema.safeParse({ ...submission, expectedTurnId: "" }).success).toBe(false)
+		expect(sendAndSteerMessageSchema.safeParse({ ...submission, expectedTurnId: 42 }).success).toBe(false)
+		expect(sendAndSteerMessageSchema.parse(submission).expectedTurnId).toBeUndefined()
+	})
+
 	it("rejects malformed text and attachments while allowing image-only input", () => {
 		expect(sendAndSteerMessageSchema.safeParse({ ...submission, text: 42 }).success).toBe(false)
 		expect(sendAndSteerMessageSchema.safeParse({ ...submission, images: [42] }).success).toBe(false)

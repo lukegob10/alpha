@@ -7,7 +7,6 @@ import type { ToolApprovalDecision, ToolApprovalRequest } from "@alpha-code/type
 import type { Task } from "../../task/Task"
 import { AskIgnoredError } from "../../task/AskIgnoredError"
 import { formatResponse } from "../../prompts/responses"
-import { unescapeHtmlEntities } from "../../../utils/text-normalization"
 import { ApplyPatchTool } from "../../tools/ApplyPatchTool"
 import { readFileTool } from "../../tools/ReadFileTool"
 import { ToolReadDeniedError } from "../../tools/BaseTool"
@@ -1364,39 +1363,42 @@ describe("ToolScheduler", () => {
 		expect(execute).not.toHaveBeenCalled()
 	})
 
-	it("applies a denied command prefix to the command text that the terminal executes", async () => {
-		const task = makeTask()
-		const requestToolApproval = vi.fn(async () => ({ decision: "approve_once" as const }))
-		const execute = vi.fn(async ({ call, callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
-			const command = unescapeHtmlEntities(String((call.nativeArgs as Record<string, unknown>).command))
-			if (await callbacks.askApproval("command", command)) callbacks.pushToolResult("ran")
-		})
-		const registry = new ToolRegistry({ includeBuiltIns: false })
-		registry.register(descriptor("exec_command", "serial", execute))
-		Object.assign(task, { requestToolApproval, cwd: path.join(tmpdir(), "encoded-denied-command-workspace") })
-		const policy = createToolPolicySnapshot({
-			visibleTools: ["exec_command"],
-			execution: { command: { deniedPrefixes: ["echo 'blocked'"] } },
-		})
+	it.each(["echo 'blocked'", "echo '&amp;amp;'"])(
+		"applies a denied prefix to literal command text: %s",
+		async (command) => {
+			const task = makeTask()
+			const requestToolApproval = vi.fn(async () => ({ decision: "approve_once" as const }))
+			const execute = vi.fn(async ({ call, callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				const command = String((call.nativeArgs as Record<string, unknown>).command)
+				if (await callbacks.askApproval("command", command)) callbacks.pushToolResult("ran")
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(descriptor("exec_command", "serial", execute))
+			Object.assign(task, { requestToolApproval, cwd: path.join(tmpdir(), "encoded-denied-command-workspace") })
+			const policy = createToolPolicySnapshot({
+				visibleTools: ["exec_command"],
+				execution: { command: { deniedPrefixes: [command] } },
+			})
 
-		const outcome = await new ToolScheduler({
-			task,
-			registry,
-			mode: "code",
-			policy,
-			validateCall: () => {},
-		}).run(
-			response({
-				id: "encoded-denied-command",
-				name: "exec_command",
-				arguments: { cmd: "echo &#39;blocked&#39;" },
-			}),
-		)
+			const outcome = await new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				policy,
+				validateCall: () => {},
+			}).run(
+				response({
+					id: "encoded-denied-command",
+					name: "exec_command",
+					arguments: { cmd: command },
+				}),
+			)
 
-		expect(outcome.results[0].status).toBe("denied")
-		expect(requestToolApproval).not.toHaveBeenCalled()
-		expect(execute).not.toHaveBeenCalled()
-	})
+			expect(outcome.results[0].status).toBe("denied")
+			expect(requestToolApproval).not.toHaveBeenCalled()
+			expect(execute).not.toHaveBeenCalled()
+		},
+	)
 
 	it("routes an intercepted patch through the canonical mutation gate", async () => {
 		const workspace = await fs.mkdtemp(path.join(tmpdir(), "alpha-intercepted-patch-gate-"))

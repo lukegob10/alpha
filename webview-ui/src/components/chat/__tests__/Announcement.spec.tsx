@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.3",
+		version: "3.2.4",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.3" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.4" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.3")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.4")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.3 refines the chat experience and improves thread reliability."),
+			screen.getByText("Alpha v3.2.4 improves task recovery, Copilot context, and skill reliability."),
 		).toBeInTheDocument()
 	})
 
@@ -51,14 +51,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Keep follow-ups and chat history reliable across task updates and recovery."),
+			screen.getByText("Recover rewound chats and interrupted turns while preserving conversation history."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Coordinate work across threads with integrated orchestration tools."),
+			screen.getByText("Preserve Copilot thinking state and command text across model requests."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Keep task titles and cross-thread chat delivery consistent.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Compose ticket mentions and long messages with stable previews and chat layouts."),
+			screen.getByText("Carry committed answers into sub-agent context and keep queued follow-ups consistent."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Load explicitly selected skills reliably and use the built-in review-agent skill."),
 		).toBeInTheDocument()
 	})
 
@@ -66,10 +68,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.3 refines the chat experience and improves thread reliability."),
+			screen.getByText("Alpha v3.2.4 improves task recovery, Copilot context, and skill reliability."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep follow-ups and chat history reliable across task updates and recovery."),
+			screen.getByText("Recover rewound chats and interrupted turns while preserving conversation history."),
 		).toBeInTheDocument()
 	})
 })

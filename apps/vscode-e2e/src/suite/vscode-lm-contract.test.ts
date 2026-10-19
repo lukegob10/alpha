@@ -17,17 +17,27 @@ import { sleep, waitFor } from "./utils"
 type FixtureScenario =
 	| "tool-followup"
 	| "tool-followup-tail"
+	| "thinking-tool-followup"
 	| "cancellation"
 	| "error-recovery"
 	| "no-choices-recovery"
 	| "completion"
 
 interface FixturePart {
-	kind: "tool_call" | "tool_result" | "text" | "unknown"
+	kind: "thinking" | "tool_call" | "tool_result" | "text" | "unknown"
 	callId?: string
 	name?: string
-	value?: string
+	value?: string | string[]
+	id?: string
+	metadata?: Record<string, unknown>
+	input?: unknown
 	content?: FixturePart[]
+}
+
+interface PersistedFixtureMessage {
+	role: string
+	content?: Array<{ type: string; id?: string }>
+	agentResponseItems?: Array<{ type: string; text?: string; vscodeLmThinking?: unknown }>
 }
 
 interface FixtureRequest {
@@ -450,6 +460,112 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 				"Ordinary assistant text from the same-task follow-up was not retained",
 			)
 		} finally {
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			await cleanupReadProof()
+		}
+	})
+
+	test("preserves host thinking fields before tools through persistence and task reload", async () => {
+		const provider = getHostProvider()
+		const cleanupReadProof = await createReadProofFile()
+		fixture.reset("thinking-tool-followup", { holdRequestIndexes: [1] })
+		const thinking = [
+			{
+				value: ["Read", "the fixture"],
+				id: "fixture-thinking-1",
+				metadata: { fixture: { signature: "synthetic-signature", ordinal: 1 } },
+			},
+			{
+				value: "",
+				id: "fixture-thinking-1",
+				metadata: { signature: "synthetic-final-signature", _completeThinking: true },
+			},
+		]
+		const callId = "alpha-e2e-command-read-1"
+		const persistedThinking = thinking.map((part) => ({
+			...part,
+			modelId: FIXTURE_MODEL_ID,
+			modelVendor: FIXTURE_VENDOR,
+			modelVersion: "1.0.0",
+		}))
+		const expectedParts = [
+			...thinking.map((part) => ({ kind: "thinking", ...part })),
+			{ kind: "tool_call", callId, name: "exec_command", input: { cmd: READ_COMMAND } },
+		]
+		const assertThinkingReplay = (request: FixtureRequest) => {
+			const assistantIndex = request.messages.findIndex((message) =>
+				message.parts.some((part) => part.kind === "tool_call" && part.callId === callId),
+			)
+			assert.ok(assistantIndex >= 0, "The VS Code LM request omitted the persisted assistant tool call")
+			assert.equal(request.messages[assistantIndex]!.role, vscode.LanguageModelChatMessageRole.Assistant)
+			assert.deepStrictEqual(
+				request.messages[assistantIndex]!.parts,
+				expectedParts,
+				"Host thinking values, IDs, metadata, and order must survive the provider round trip",
+			)
+			const resultIndex = request.messages.findIndex((message) =>
+				message.parts.some((part) => part.kind === "tool_result" && part.callId === callId),
+			)
+			assert.ok(resultIndex > assistantIndex, "The tool result must follow the complete thinking/tool message")
+			assert.ok(getToolResultText(request, callId).includes(READ_PROOF))
+		}
+		let completedCount = 0
+		const onTaskCompleted = () => completedCount++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Preserve the fixture thinking while reading the workspace proof, then finish.",
+			})
+			const initialTask = provider.getLiveTask(taskId)
+			await waitForRequestCount(provider, fixture, taskId, 2)
+			assertThinkingReplay(fixture.getRequests()[1]!)
+
+			const { taskDirPath } = await provider.getTaskWithId(taskId)
+			const history: PersistedFixtureMessage[] = JSON.parse(
+				await fs.readFile(path.join(taskDirPath, "api_conversation_history.json"), "utf8"),
+			)
+			const assistant = history.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.content?.some((part) => part.type === "tool_use" && part.id === callId),
+			)
+			assert.ok(assistant, "The authoritative transcript omitted the thinking/tool assistant message")
+			assert.deepStrictEqual(assistant.content, [
+				...persistedThinking.map((part) => ({ type: "vscode_lm_thinking", ...part })),
+				{ type: "tool_use", id: callId, name: "exec_command", input: { cmd: READ_COMMAND } },
+			])
+			const canonical = assistant.agentResponseItems?.filter(
+				(item) => item.type === "reasoning" || item.type === "tool_call",
+			)
+			assert.deepStrictEqual(
+				canonical?.map((item) => item.type),
+				["reasoning", "reasoning", "tool_call"],
+			)
+			assert.deepStrictEqual(
+				canonical?.filter((item) => item.type === "reasoning").map((item) => item.vscodeLmThinking),
+				persistedThinking,
+				"Canonical response evidence must retain both host parts even when their IDs match",
+			)
+			assert.deepStrictEqual(
+				canonical?.filter((item) => item.type === "reasoning").map((item) => item.text),
+				["Read\nthe fixture", ""],
+			)
+
+			fixture.releaseRequest(1)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			await globalThis.api.clearCurrentTask()
+			await provider.showTaskWithId(taskId)
+			assert.notStrictEqual(provider.getLiveTask(taskId), initialTask, "Reload must create a fresh task instance")
+			assert.equal(fixture.getRequests().length, 2, "Reload must not start an unsolicited provider request")
+			await globalThis.api.sendMessage("Continue from the saved thinking fixture and finish briefly.")
+			await waitForRequestCount(provider, fixture, taskId, 3)
+			assertThinkingReplay(fixture.getRequests()[2]!)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
+			assert.equal(fixture.getRequests().length, 3, "Thinking replay must not add task requests")
+		} finally {
+			fixture.releaseAll()
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 			await cleanupReadProof()
 		}

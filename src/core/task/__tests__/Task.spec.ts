@@ -933,6 +933,41 @@ describe("Alpha", () => {
 				})
 			})
 
+			it("replays host thinking only to VS Code assistant history and keeps the saved envelope intact", () => {
+				const alphaTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "test",
+					startTask: false,
+				})
+				const thinking = {
+					type: "vscode_lm_thinking",
+					value: ["summary"],
+					id: "host-1",
+					metadata: { signature: "opaque" },
+				}
+				const messages = [
+					{ role: "assistant", content: [thinking, { type: "text", text: "Answer." }] },
+					{ role: "user", content: [thinking, { type: "text", text: "Continue." }] },
+				]
+				const original = structuredClone(messages)
+				const foreignHistory = (alphaTask as any).buildCleanConversationHistory(messages)
+				expect(foreignHistory.map((message: { content: unknown }) => message.content)).toEqual([
+					[{ type: "text", text: "Answer." }],
+					[{ type: "text", text: "Continue." }],
+				])
+				alphaTask.apiConfiguration = { ...mockApiConfig, apiProvider: "vscode-lm" } as ProviderSettings
+				Reflect.set(alphaTask, "effectiveApiConfiguration", { ...alphaTask.apiConfiguration })
+				const hostHistory = (alphaTask as any).buildCleanConversationHistory(messages)
+				expect(hostHistory[0].content).toEqual(original[0].content)
+				expect(hostHistory[1].content).toEqual([{ type: "text", text: "Continue." }])
+				expect(messages).toEqual(original)
+				const hostOnlyMessage = { role: "assistant", content: [thinking] }
+				alphaTask.apiConfiguration = mockApiConfig
+				Reflect.set(alphaTask, "effectiveApiConfiguration", { ...mockApiConfig })
+				expect((alphaTask as any).buildCleanConversationHistory([hostOnlyMessage])).toEqual([])
+			})
+
 			it("should handle image blocks based on model capabilities", () => {
 				// Create two configurations - one with image support, one without
 				const configWithImages = {
@@ -8465,6 +8500,119 @@ describe("Alpha", () => {
 				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
 			},
 		)
+
+		it.each([
+			{ tail: "EOF", autoApprovalEnabled: true },
+			{ tail: "no-choices", autoApprovalEnabled: false },
+			{ tail: "no-choices", autoApprovalEnabled: true },
+		])(
+			"recovers metadata-only Copilot thinking followed by $tail with tool auto-approval=$autoApprovalEnabled",
+			async ({ tail, autoApprovalEnabled }) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield {
+								type: "reasoning",
+								text: "",
+								vscodeLmThinking: {
+									value: "",
+									id: "discarded-thinking",
+									metadata: { signature: "discarded-signature" },
+								},
+							}
+							if (tail === "no-choices") {
+								throw Object.assign(new Error("Response contained no choices."), {
+									retryable: true,
+									retryCategory: "empty-response",
+									semanticOutputObserved: false,
+								})
+							}
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield { type: "text", text: "Recovered answer." }
+						})(),
+					)
+
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "completed",
+					response: { text: "Recovered answer.", reasoning: "" },
+				})
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1]?.[1]).toMatchObject({ retryCategory: "empty-response" })
+				expect(ask).not.toHaveBeenCalled()
+				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
+				expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(1)
+				expect(JSON.stringify(task.apiConversationHistory)).not.toContain("discarded-thinking")
+				expect(JSON.stringify(task.apiConversationHistory)).not.toContain("discarded-signature")
+			},
+		)
+
+		it("does not retry or persist metadata-only Copilot thinking when its request is cancelled", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const requestController = new AbortController()
+			let markWaiting!: () => void
+			const waiting = new Promise<void>((resolve) => {
+				markWaiting = resolve
+			})
+			const closed = vi.fn()
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					task.currentRequestAbortController = requestController
+					Reflect.set(task, "currentRequestSignal", requestController.signal)
+					try {
+						yield {
+							type: "reasoning",
+							text: "",
+							vscodeLmThinking: {
+								value: [],
+								id: "cancelled-thinking",
+								metadata: { signature: "cancelled-signature" },
+							},
+						}
+						await new Promise<void>((_resolve, reject) => {
+							requestController.signal.addEventListener(
+								"abort",
+								() => reject(requestController.signal.reason),
+								{
+									once: true,
+								},
+							)
+							markWaiting()
+						})
+					} finally {
+						closed()
+					}
+				})(),
+			)
+			const pending = task.runAgentRequests([{ type: "text", text: "start" }], false)
+			await waiting
+			task.cancelCurrentRequest()
+
+			await expect(pending).resolves.toMatchObject({ status: "aborted" })
+			expect(requestController.signal.aborted).toBe(true)
+			expect(closed).toHaveBeenCalledOnce()
+			expect(request).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalled()
+			expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ type: "retry" }))
+			expect(JSON.stringify(task.apiConversationHistory)).not.toContain("cancelled-thinking")
+			expect(JSON.stringify(task.apiConversationHistory)).not.toContain("cancelled-signature")
+			expect(task.currentRequestAbortController).toBeUndefined()
+		})
 
 		it("persists queued receipt IDs from host mistake-limit feedback before acknowledging input", async () => {
 			const task = createTask()

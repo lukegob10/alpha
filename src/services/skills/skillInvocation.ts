@@ -4,6 +4,7 @@ import type { SkillContent } from "../../shared/skills"
 
 export interface SkillLookup {
 	getSkillContent(name: string, currentMode?: string): Promise<SkillContent | null>
+	getExplicitSkillContent?(selector: string, currentMode?: string): Promise<SkillContent | null>
 }
 
 export async function resolveSkillContentForMode(

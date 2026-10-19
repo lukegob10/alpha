@@ -7,7 +7,6 @@ import { canonicalRgInspection, tokenizeSingleCommand } from "./CommandExplorati
 import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
 import { ToolReadDeniedError, type ToolCallbacks } from "./BaseTool"
 import { resolveRipgrepLaunchEnvironment } from "../../integrations/terminal/ripgrepEnvironment"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { isPathWithinRoot } from "./pathSafety"
 const GIT_OPTIONS: Readonly<Record<string, RegExp>> = {
 	status: /^(?:--short|-s|--branch|-b|--porcelain(?:=(?:1|2|v1|v2))?|-z|--untracked-files(?:=(?:no|normal|all))?)$/,
@@ -193,7 +192,7 @@ async function captureRgRead(
 		return undefined
 	if (task.abort || !policy.allowedTools.includes("exec_command") || policy.disabledTools.includes("exec_command"))
 		return undefined
-	const command = unescapeHtmlEntities(args.cmd)
+	const command = args.cmd
 	const taskId = task.taskId
 	if (isCommandDeniedByPolicy(policy, command)) return undefined
 	const environment = launchEnvironment()

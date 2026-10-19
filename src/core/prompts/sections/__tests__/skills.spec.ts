@@ -80,6 +80,8 @@ describe("getSkillsSection", () => {
 		expect(result).toContain("you must use that skill for that turn. Multiple mentions mean use them all")
 		expect(result).toContain("choose the minimal set that covers the request and state the order you'll use them")
 		expect(result).toContain("the main agent must use the skill tool to load it by name")
+		expect(result).toContain("If the host attached complete skill instructions to this turn")
+		expect(result).toContain("use that selected source without reloading it")
 		expect(result).toContain("read its `SKILL.md` completely before taking task actions")
 		expect(result).toContain(
 			"Do not delegate reading, summarizing, or interpreting skill instructions to a subagent",

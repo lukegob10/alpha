@@ -1,4 +1,8 @@
-import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+import {
+	normalizeAssistantMessageMetadata,
+	snapshotVscodeLmThinking,
+	type AssistantMessageMetadata,
+} from "@alpha-code/types"
 
 import type { ApiStreamChunk } from "../../api/transform/stream"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -133,9 +137,11 @@ export class AgentResponseAccumulator {
 				return
 
 			case "reasoning": {
+				const vscodeLmThinking = snapshotVscodeLmThinking(chunk.vscodeLmThinking)
 				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
 					type: "reasoning",
 					text: chunk.text,
+					...(vscodeLmThinking ? { vscodeLmThinking } : {}),
 					...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
 					...(chunk.encryptedContent !== undefined ? { encryptedContent: chunk.encryptedContent } : {}),
 					...(chunk.redactedData !== undefined ? { redactedData: chunk.redactedData } : {}),

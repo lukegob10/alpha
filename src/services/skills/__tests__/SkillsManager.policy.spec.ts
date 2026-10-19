@@ -1,4 +1,5 @@
 import * as path from "path"
+import { readFileSync } from "fs"
 import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { getSkillsCatalogSection, getSkillsSection } from "../../../core/prompts/sections/skills"
 
@@ -105,6 +106,14 @@ describe("portable skill invocation policy", () => {
 	}
 
 	const policyPath = (skillDir: string) => path.join(skillDir, "agents", "openai.yaml")
+	function addPackagedReview() {
+		const packaged = path.join(__dirname, "../../../assets/skills/review-agent")
+		const installed = path.join(builtinSkills, "review-agent")
+		for (const relative of ["SKILL.md", path.join("agents", "openai.yaml")]) {
+			files.set(path.join(installed, relative), readFileSync(path.join(packaged, relative), "utf8"))
+		}
+		return path.join(installed, "SKILL.md")
+	}
 
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -285,6 +294,43 @@ describe("portable skill invocation policy", () => {
 		await manager.discoverSkills()
 		expect(await getSkillsSection(manager, "code")).toBe("")
 		expect(await manager.getSkillContent("debug", "code")).toMatchObject({ path: path.join(override, "SKILL.md") })
+	})
+
+	it.each(["code", "architect"])("discovers the packaged reviewer for explicit loading in %s", async (mode) => {
+		const installedPath = addPackagedReview()
+		addSkill(builtinSkills, "debug")
+		await manager.discoverSkills()
+
+		expect(manager.getSkillsMetadata()).toContainEqual(
+			expect.objectContaining({ name: "review-agent", source: "builtin", allowImplicitInvocation: false }),
+		)
+		expect(manager.getSkillsForMode(mode)).toContainEqual(expect.objectContaining({ name: "review-agent" }))
+		expect(await getSkillsSection(manager, mode)).not.toContain("review-agent")
+		expect(await getSkillsSection(manager, mode)).toContain("<name>debug</name>")
+		const content = await manager.getSkillContent("review-agent", mode)
+		if (!content) throw new Error("Packaged review skill was not discovered")
+		expect(content).toMatchObject({ path: installedPath, allowImplicitInvocation: false, source: "builtin" })
+		expect(content?.instructions).toContain("# Review Agent")
+		expect(await manager.getSkillContentByPath("review-agent", installedPath)).toEqual(content)
+		await expect(manager.assertSkillEditable(content)).rejects.toThrow()
+
+		disabledBuiltinSkills = ["review-agent"]
+		expect(await manager.getSkillContent("review-agent", mode)).toBeNull()
+		expect(manager.getSkillsForMode(mode)).not.toContainEqual(expect.objectContaining({ name: "review-agent" }))
+		expect(await manager.getSkillContent("debug", mode)).not.toBeNull()
+	})
+
+	it("resolves a project reviewer override before applying invocation policy", async () => {
+		addPackagedReview()
+		const override = addSkill(projectSkills, "review-agent", policyText(true))
+		await manager.discoverSkills()
+
+		expect(await manager.getSkillContent("review-agent", "code")).toMatchObject({
+			source: "project",
+			path: path.join(override, "SKILL.md"),
+			allowImplicitInvocation: true,
+		})
+		expect(await getSkillsSection(manager, "code")).toContain("<name>review-agent</name>")
 	})
 
 	it("refreshes metadata create, edit, and delete while preserving previously captured catalogs", async () => {

@@ -1,5 +1,7 @@
 import { MessageManager } from "./index"
 import * as condenseModule from "../condense"
+import type { AlphaMessage } from "@alpha-code/types"
+import type { ApiMessage } from "../task-persistence/apiMessages"
 
 describe("MessageManager", () => {
 	let mockTask: any
@@ -10,8 +12,12 @@ describe("MessageManager", () => {
 		mockTask = {
 			clineMessages: [],
 			apiConversationHistory: [],
-			overwriteAlphaMessages: vi.fn(),
-			overwriteApiConversationHistory: vi.fn(),
+			overwriteAlphaMessages: vi.fn().mockResolvedValue(true),
+			overwriteApiConversationHistory: vi.fn().mockResolvedValue(true),
+			commitConversationRewind: vi.fn(async (uiMessages: AlphaMessage[], apiHistory: ApiMessage[]) => {
+				if ((await mockTask.overwriteAlphaMessages(uiMessages)) !== true) return false
+				return mockTask.overwriteApiConversationHistory(apiHistory)
+			}),
 		}
 		manager = new MessageManager(mockTask)
 
@@ -718,8 +724,8 @@ describe("MessageManager", () => {
 			await manager.rewindToIndex(0)
 
 			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
-			// API history write is skipped when nothing changed (optimization)
-			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
+			// Both projections still require a durable receipt for an empty rewind.
+			expect(mockTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
 		})
 
 		it("should handle messages without timestamps in API history", async () => {

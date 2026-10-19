@@ -41,11 +41,15 @@ import crypto from "crypto"
 import { v7 as uuidv7 } from "uuid"
 import EventEmitter from "events"
 import { AsyncLocalStorage } from "node:async_hooks"
+import { isDeepStrictEqual } from "node:util"
+import { canContinueFromCommittedHistoryTools } from "../agent/CommittedHistoryRecoveryPolicy"
 
 import { AskIgnoredError } from "./AskIgnoredError"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
+import { TaskRewindStore, type TaskRewindRecord } from "../task-persistence/TaskRewindStore"
+import { replaceDeliberatelyRemovedToolResults } from "../task-persistence/rewindToolResults"
 import { TaskGoalStore } from "../task-persistence/TaskGoalStore"
 import { GoalController } from "../agent/goals/GoalController"
 import { GoalAccountingBindingStore } from "../agent/goals/GoalAccountingBindingStore"
@@ -536,6 +540,7 @@ type ContextCondenseAccounting = {
 
 type CapturedTaskProvider = {
 	apiHandler: ApiHandler
+	compactionApiHandler?: ApiHandler
 	apiConfiguration: ProviderSettings
 	profileConfiguration?: ProviderSettings
 	apiConfigName?: string
@@ -545,7 +550,7 @@ type TaskRequestOptions = {
 	skipProviderRateLimit?: boolean
 	state?: TaskRequestState
 	retryCategory?: AgentRetryCategory
-	/** Derive a new transcript boundary from this durably closed, effect-free response. */
+	/** Derive a new transcript boundary from this durably closed response with settled audited reads. */
 	recoveryStep?: CurrentAgentStep
 	/** Remaining absolute budget for a policy-approved automatic retry. */
 	retryDeadline?: number
@@ -1155,6 +1160,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly reasoningHandlerUsers = new Map<ApiHandler, number>()
 	private disposedReasoningHandlers?: WeakSet<ApiHandler>
 	private reasoningDisposed = false
+	/** One model transition, released after the next captured request finishes. */
+	private previousCompactionHandler?: ApiHandler
 	private static providerRateLimitLanes = new Map<string, ProviderRateLimitLane>()
 	/**
 	 * Transcript writes are shared by every live/re-hydrated Task instance for a
@@ -1808,6 +1815,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	// MessageManager for high-level message operations (lazy initialized)
 	private _messageManager?: MessageManager
+	private conversationRewindRecord?: TaskRewindRecord
+	private conversationRewindQueue?: Promise<unknown>
 
 	constructor({
 		provider,
@@ -2700,6 +2709,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (message.role === "assistant") {
 			const canonicalEncryptedReasoningProjected =
 				Array.isArray(message.content) && message.content.some(isCanonicalEncryptedReasoningHistoryItem)
+			const canonicalVscodeThinkingProjected =
+				Array.isArray(message.content) &&
+				message.content.some((block) => (block as { type: string }).type === "vscode_lm_thinking")
 			const responseId = handler.getResponseId?.()
 			const reasoningData = handler.getEncryptedContent?.()
 			const encryptedReasoningItems = (handler.getReasoningItems?.() ?? []).filter(
@@ -2783,6 +2795,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			} else if (
 				!canonicalAnthropicThinkingProjected &&
 				!canonicalEncryptedReasoningProjected &&
+				!canonicalVscodeThinkingProjected &&
 				reasoning &&
 				!reasoningDetails
 			) {
@@ -3229,6 +3242,84 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// NOTE: We intentionally do NOT mutate stored messages to merge consecutive user turns.
 	// For API requests, consecutive same-role messages are merged via mergeConsecutiveApiMessages()
 	// so rewind/edit behavior can still reference original message boundaries.
+
+	/** Commit deliberate history removal before either recoverable projection changes. */
+	public async commitConversationRewind(uiMessages: AlphaMessage[], apiHistory: ApiMessage[]): Promise<boolean> {
+		return this.enqueueConversationRewind(async () => {
+			await this.loadConversationRewind()
+			await this.flushApiConversationHistoryPersistence()
+			await this.canonicalLifecycleQueue
+			await this.replayCanonicalLifecycle()
+			const snapshot = this.getCanonicalLifecycleSnapshot()
+			apiHistory = replaceDeliberatelyRemovedToolResults(this.apiConversationHistory, apiHistory)
+			const retainedCalls = new Set(
+				apiHistory.flatMap((message) =>
+					Array.isArray(message.content)
+						? message.content
+								.filter((block) => block.type === "tool_use")
+								.map((block) => sanitizeToolUseId(block.id))
+						: [],
+				),
+			)
+			const store = new TaskRewindStore(this.globalStoragePath, this.taskId)
+			this.conversationRewindRecord = await store.begin(
+				structuredClone(uiMessages),
+				structuredClone(apiHistory),
+				snapshot
+					? {
+							runId: snapshot.runId,
+							turnId: snapshot.turnId,
+							toolCallIds: snapshot.acceptedToolCallIds.filter(
+								(id) => !retainedCalls.has(sanitizeToolUseId(id)),
+							),
+						}
+					: undefined,
+			)
+			await this.finishConversationRewind(store)
+			return true
+		})
+	}
+
+	private enqueueConversationRewind<T>(operation: () => Promise<T>): Promise<T> {
+		const pending = (this.conversationRewindQueue ?? Promise.resolve()).catch(() => undefined).then(operation)
+		this.conversationRewindQueue = pending
+		return pending
+	}
+
+	private recoverConversationRewind(): Promise<void> {
+		return this.enqueueConversationRewind(() => this.loadConversationRewind())
+	}
+
+	/** A crash between the legacy UI/API writes retries the exact write-ahead targets. */
+	private async loadConversationRewind(): Promise<void> {
+		const store = new TaskRewindStore(this.globalStoragePath, this.taskId)
+		this.conversationRewindRecord = await store.read()
+		await this.finishConversationRewind(store)
+	}
+
+	private async finishConversationRewind(store: TaskRewindStore): Promise<void> {
+		const record = this.conversationRewindRecord
+		if (!record?.pending) return
+		if ((await this.overwriteAlphaMessages(structuredClone(record.pending.uiMessages))) !== true) {
+			throw new TaskPersistenceError("Conversation rewind UI history could not be durably saved.")
+		}
+		if ((await this.overwriteApiConversationHistory(structuredClone(record.pending.apiHistory))) !== true) {
+			throw new TaskPersistenceError("Conversation rewind provider history could not be durably saved.")
+		}
+		await store.complete(record.rewindId)
+		delete record.pending
+	}
+
+	private isRewoundCanonicalToolCall(snapshot: AgentLifecycleSnapshot, toolCallId: string): boolean {
+		return (
+			this.conversationRewindRecord?.exclusions.some(
+				(exclusion) =>
+					exclusion.runId === snapshot.runId &&
+					exclusion.turnId === snapshot.turnId &&
+					exclusion.toolCallIds.includes(toolCallId),
+			) ?? false
+		)
+	}
 
 	async overwriteApiConversationHistory(
 		newHistory: ApiMessage[],
@@ -5497,6 +5588,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		const recoverySnapshot = snapshot
 
+		// Rollback suppresses provider replay, while the journal still closes every accepted call.
 		const unresolved = recoverySnapshot.acceptedToolCallIds.filter(
 			(toolCallId) => !recoverySnapshot.terminalToolCallIds.includes(toolCallId),
 		)
@@ -5562,7 +5654,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (guard && !guard()) return false
 		const acceptedCalls = snapshot.items.filter(
 			(item): item is Extract<AgentLifecycleSnapshot["items"][number], { type: "tool_call" }> =>
-				item.type === "tool_call" && snapshot.acceptedToolCallIds.includes(item.toolCallId),
+				item.type === "tool_call" &&
+				snapshot.acceptedToolCallIds.includes(item.toolCallId) &&
+				!this.isRewoundCanonicalToolCall(snapshot, item.toolCallId),
 		)
 		if (acceptedCalls.length === 0) return true
 
@@ -10342,11 +10436,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Build first so a rejected profile cannot leave the old handler paired with new settings.
 		const prepared = this.prepareReasoningConfiguration(newApiConfiguration, this.reasoningPreference)
 		const previous = this.api
+		const comparableConfiguration = (configuration: ProviderSettings) => {
+			const { apiModelId, openAiModelId, vsCodeLmModelSelector, ...rest } = configuration
+			return rest
+		}
+		const retained = this.previousCompactionHandler
+		this.previousCompactionHandler = undefined
+		if (
+			previous.getModel().id !== prepared.api.getModel().id &&
+			(previous.getModel().info.contextWindow > prepared.api.getModel().info.contextWindow ||
+				prepared.api.prepareModel !== undefined) &&
+			isDeepStrictEqual(
+				comparableConfiguration(this.apiConfiguration),
+				comparableConfiguration(newApiConfiguration),
+			)
+		) {
+			this.previousCompactionHandler = previous
+		}
 		this.apiConfiguration = newApiConfiguration
 		this.api = prepared.api
 		this.effectiveApiConfiguration = prepared.configuration
 		this.reasoningState = prepared.state
+		if (retained) this.retireReasoningHandler(retained)
 		this.retireReasoningHandler(previous)
+	}
+
+	private getCompactionHandler(selected: ApiHandler, previous: ApiHandler | undefined): ApiHandler | undefined {
+		return previous && previous.getModel().info.contextWindow > selected.getModel().info.contextWindow
+			? previous
+			: undefined
+	}
+
+	private captureCompactionHandler(selected: ApiHandler): ApiHandler | undefined {
+		// VS Code resolves the selected model asynchronously. Retain the candidate now,
+		// and compare real windows only after prepareCapturedReasoning has prepared it.
+		const handler = selected === this.api ? this.previousCompactionHandler : undefined
+		if (handler) this.reasoningHandlerUsers.set(handler, (this.reasoningHandlerUsers.get(handler) ?? 0) + 1)
+		return handler
+	}
+
+	private releaseCompactionHandler(handler: ApiHandler | undefined): void {
+		if (!handler) return
+		if (this.previousCompactionHandler === handler) this.previousCompactionHandler = undefined
+		const users = (this.reasoningHandlerUsers.get(handler) ?? 1) - 1
+		if (users) this.reasoningHandlerUsers.set(handler, users)
+		else this.reasoningHandlerUsers.delete(handler)
+		this.retireReasoningHandler(handler)
 	}
 
 	private prepareReasoningConfiguration(configuration: ProviderSettings, preference: TaskReasoningPreference) {
@@ -10420,6 +10555,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private retireReasoningHandler(handler: ApiHandler): void {
 		if (handler === this.api || this.disposedReasoningHandlers?.has(handler)) return
 		if (
+			handler === this.previousCompactionHandler ||
 			this.reasoningHandlerUsers.has(handler) ||
 			(handler === this.currentAgentStep?.snapshot.runtime.getHandler() &&
 				this.currentAgentStep?.hasRetainedRequest?.() !== false)
@@ -10585,12 +10721,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return accepted
 	}
 
-	public async steerUserMessageDurably(text: string, images: string[] = [], receiptId?: string): Promise<void> {
-		this.invalidateGoalContinuation()
+	public matchesExpectedTurn(expectedTurnId: string): boolean {
+		return (this.agentTurnId ?? this.getCanonicalLifecycleSnapshot()?.turnId) === expectedTurnId
+	}
+
+	public async steerUserMessageDurably(
+		text: string,
+		images: string[] = [],
+		receiptId?: string,
+		expectedTurnId?: string,
+	): Promise<void> {
+		const assertExpectedTurn = () => {
+			if (expectedTurnId !== undefined && !this.matchesExpectedTurn(expectedTurnId)) {
+				throw new Error("The active turn changed before steering admission")
+			}
+		}
+		// An ACK retry observes the original admission even after its turn has ended.
+		if (expectedTurnId !== undefined && !this.matchesExpectedTurn(expectedTurnId) && receiptId) {
+			if (await this.hasAcceptedQueuedUserMessage(receiptId)) return
+		}
+		assertExpectedTurn()
 		return this.enqueueDurableSteer(async () => {
 			text = (text ?? "").trim()
 			await this.messageQueueService.ready
 			if (receiptId && (await this.hasAcceptedQueuedUserMessage(receiptId))) return
+			assertExpectedTurn()
 			if (
 				this.abort ||
 				this.abandoned ||
@@ -10598,14 +10753,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				(!this.canAcceptSteerMessage() && !this.hasPendingSteerMessage())
 			)
 				throw new Error("The task cannot accept a steering message")
-			const message = await this.messageQueueService.addMessageDurably(text, images, receiptId)
+			const message = await this.messageQueueService.addMessageDurably(
+				text,
+				images,
+				receiptId,
+				assertExpectedTurn,
+			)
 			if (!message) throw new Error("A steering message or image is required")
 			await this.messageQueueService.flush()
 			// A rapid second submission belongs to the FIFO until the first input's
 			// transcript receipt commits; it cannot replace that selected input.
 			if (this.hasPendingSteerMessage()) return
 			try {
-				await this.applyQueuedSteeringMessage(message.id)
+				await this.applyQueuedSteeringMessage(message.id, assertExpectedTurn)
 			} catch (error) {
 				if (!this.pendingSteerMessage?.queuedMessageIds?.includes(message.id)) {
 					this.messageQueueService.releaseMessage(message.id)
@@ -10626,12 +10786,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return admission
 	}
 
-	private async applyQueuedSteeringMessage(messageId: string): Promise<void> {
+	private async applyQueuedSteeringMessage(messageId: string, assertExpectedTurn?: () => void): Promise<void> {
 		await this.messageQueueService.ready
 		if (!this.messageQueueService.getMessage(messageId)) {
 			if (await this.hasAcceptedQueuedUserMessage(messageId)) return
 			throw new Error("The queued steering message is unavailable")
 		}
+		assertExpectedTurn?.()
 		if (!this.canAcceptSteerMessage()) throw new Error("The task cannot accept a steering message")
 		const message = this.messageQueueService.claimMessage(messageId)
 		if (!message) {
@@ -10641,6 +10802,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.messageQueueService.flush()
 			// Command handoffs and approvals can change while the claim is persisted.
+			assertExpectedTurn?.()
 			if (!this.canAcceptSteerMessage()) throw new Error("The task cannot accept a steering message")
 			await this.steerUserMessage(message.text, message.images, undefined, [message.id])
 		} catch (error) {
@@ -11176,6 +11338,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const capturedProvider: CapturedTaskProvider = {
 			apiHandler: this.api,
+			compactionApiHandler: this.captureCompactionHandler(this.api),
 			apiConfiguration: this.effectiveApiConfiguration,
 			profileConfiguration: this.apiConfiguration,
 		}
@@ -11200,6 +11363,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw error
 		} finally {
 			contextControl.dispose()
+			this.releaseCompactionHandler(capturedProvider.compactionApiHandler)
 			this.reasoningHandlerUsers.delete(capturedProvider.apiHandler)
 			this.retireReasoningHandler(capturedProvider.apiHandler)
 			taskSignal.removeEventListener("abort", abortFromTask)
@@ -11232,6 +11396,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return
 			capturedProvider = {
 				apiHandler: this.api,
+				compactionApiHandler: this.captureCompactionHandler(this.api),
 				apiConfiguration: this.effectiveApiConfiguration,
 				profileConfiguration: this.apiConfiguration,
 			}
@@ -11271,6 +11436,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (this.postTurnCompactionAbortController === interruption)
 				this.postTurnCompactionAbortController = undefined
 			if (capturedProvider) {
+				this.releaseCompactionHandler(capturedProvider.compactionApiHandler)
 				const users = (this.reasoningHandlerUsers.get(capturedProvider.apiHandler) ?? 1) - 1
 				if (users) this.reasoningHandlerUsers.set(capturedProvider.apiHandler, users)
 				else this.reasoningHandlerUsers.delete(capturedProvider.apiHandler)
@@ -11455,6 +11621,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.runCompactionLifecycleHook("PreCompact", postTurn ? "auto" : "manual", signal),
 					messages: history,
 					apiHandler,
+					compactionApiHandler: this.getCompactionHandler(apiHandler, capturedProvider.compactionApiHandler),
 					systemPrompt,
 					taskId: this.taskId,
 					isAutomaticTrigger: postTurn !== undefined,
@@ -12443,6 +12610,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// resume cannot base its next request on an older snapshot.
 			await this.flushApiConversationHistoryPersistence()
 			if (this.abort || this.abandoned) return
+			await this.recoverConversationRewind()
+			if (this.abort || this.abandoned) return
 			// A retained completed Task already owns the authoritative in-memory
 			// transcripts. Its prior lifecycle was joined before entering this method,
 			// so re-reading and rewriting both full histories only adds startup latency.
@@ -13425,6 +13594,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.toolInputContext?.disable()
 		if (!options.preserveSharedTaskResources) clearTaskSessionApprovalGrants(this.taskId)
 		this.reasoningDisposed = true
+		this.previousCompactionHandler = undefined
 		this.currentAgentStep?.releaseRequest?.()
 		for (const handler of this.retainedReasoningHandlers) this.disposeReasoningHandler(handler)
 		this.retainedReasoningHandlers.clear()
@@ -15258,6 +15428,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 					}
 				}
+				// Host-expanded skills carry the same durable identity as skill-tool loads.
+				const recordedSkillPaths = new Set<string>()
+				for (const prepared of finalizedMentions) {
+					for (const skill of prepared.loadedSkills ?? []) {
+						this.getTaskCancellationSignal().throwIfAborted()
+						if (recordedSkillPaths.has(skill.path)) continue
+						recordedSkillPaths.add(skill.path)
+						await this.recordLoadedSkill(skill.name, skill.path, skill.digest)
+					}
+				}
+				this.getTaskCancellationSignal().throwIfAborted()
 				const parsedUserContent = preparedMessages.pop()!.content
 
 				// Switch mode if specified in a slash command's frontmatter
@@ -15642,10 +15823,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					let streamRequiresTerminalOutcome = false
 					let semanticOutputObserved = false
 					let toolIntentObserved = false
+					const observedToolCallIds = new Set<string>()
+					let unidentifiedToolIntentObserved = false
 					let providerErrorObserved = false
 					let providerErrorMessage: string | undefined
 					let providerErrorRetryable: boolean | undefined
 					const earlyReadDispatches: EarlyReadonlyDispatch[] = []
+					const committedToolsAllowRecovery = (response: AgentResponse) =>
+						!streamedEarlyReadMismatch &&
+						!unidentifiedToolIntentObserved &&
+						[...observedToolCallIds].every((id) => response.toolCalls.some((call) => call.id === id)) &&
+						canContinueFromCommittedHistoryTools({
+							response,
+							toolIntentObserved,
+							reservedToolCalls: streamedToolCallReservationOrder.map(
+								(id) => streamedToolCallReservations.get(id)!.call,
+							),
+							earlyReadDispatches: earlyReadDispatches.map((dispatch) => ({
+								...dispatch,
+								receiptPersisted: Boolean(
+									this.findPersistedProviderToolResult(sanitizeToolUseId(dispatch.call.id)),
+								),
+							})),
+						})
 					let earlyReadDispatchTail: Promise<void> = Promise.resolve()
 					let earlyReadLaneClosed = false
 					let earlyReadDispatchFailure: { status: "failed" | "aborted"; error: Error } | undefined
@@ -15883,7 +16083,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							// Normalize every provider chunk before the legacy parser/UI
 							// projection. The parser remains preview-only; the finished
 							// accumulator response below is authoritative for effects.
-							if (chunk.type.startsWith("tool_call")) toolIntentObserved = true
+							if (chunk.type.startsWith("tool_call")) {
+								toolIntentObserved = true
+								// Failed outcomes omit unaccepted fragments from the canonical response.
+								// Keep their identities so a settled earlier read cannot hide later intent.
+								if ("id" in chunk && typeof chunk.id === "string" && chunk.id)
+									observedToolCallIds.add(chunk.id)
+								else unidentifiedToolIntentObserved = true
+							}
 							if (providerErrorObserved && isApiStreamSemanticChunk(chunk)) {
 								item = await nextChunkWithAbort()
 								continue
@@ -16415,15 +16622,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 								if (
 									semanticOutputObserved &&
-									!toolIntentObserved &&
 									!providerErrorObserved &&
 									!explicitNonSuccessOutcome &&
 									providerOutcome?.terminal !== true &&
 									terminalRetryable &&
 									this.retryCategoryForError(error) === "transport" &&
-									canonicalResponse.toolCalls.length === 0 &&
-									streamedToolCallReservationOrder.length === 0 &&
-									earlyReadDispatches.length === 0 &&
+									committedToolsAllowRecovery(canonicalResponse) &&
 									persistence.assistantPersisted &&
 									persistence.receiptsPersisted &&
 									!persistence.error
@@ -16789,14 +16993,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// after its durable history and lifecycle boundary have closed.
 					if (
 						semanticOutputObserved &&
-						!toolIntentObserved &&
 						missingTerminalOutcome &&
 						!providerErrorObserved &&
 						(!providerOutcome || (providerOutcome.status === "completed" && !providerOutcome.terminal)) &&
 						canonicalResponse.outcome?.retryable !== false &&
-						canonicalResponse.toolCalls.length === 0 &&
-						streamedToolCallReservationOrder.length === 0 &&
-						earlyReadDispatches.length === 0
+						((!toolIntentObserved &&
+							canonicalResponse.toolCalls.length === 0 &&
+							streamedToolCallReservationOrder.length === 0) ||
+							earlyReadDispatches.length > 0)
 					) {
 						const reason =
 							canonicalResponse.outcome?.reason ??
@@ -16805,7 +17009,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							canonicalResponse,
 							canonicalResponse.outcome?.status === "incomplete" ? "incomplete" : "failed",
 							reason,
-							[],
+							earlyReadDispatches,
 							ownsResponseStep,
 						)
 						if (!ownsResponseStep()) return supersededResponseResult()
@@ -16813,7 +17017,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							!persistence.assistantPersisted ||
 							!persistence.receiptsPersisted ||
 							persistence.error ||
-							persistence.status === "aborted"
+							persistence.status === "aborted" ||
+							!committedToolsAllowRecovery(canonicalResponse)
 						) {
 							return {
 								status: persistence.status,
@@ -18556,10 +18761,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const captured = retainedStep?.getCapturedProvider?.()
 		const requestHandler = captured?.apiHandler ?? retainedStep?.snapshot.runtime.getHandler() ?? this.api
 		const apiConfiguration = captured?.apiConfiguration ?? this.effectiveApiConfiguration
+		const compactionApiHandler = this.captureCompactionHandler(requestHandler)
 		this.reasoningHandlerUsers.set(requestHandler, (this.reasoningHandlerUsers.get(requestHandler) ?? 0) + 1)
 		try {
 			yield* this.attemptCapturedApiRequest(retryAttempt, options, {
 				apiHandler: requestHandler,
+				compactionApiHandler,
 				apiConfiguration,
 				profileConfiguration: captured
 					? captured.profileConfiguration
@@ -18567,6 +18774,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiConfigName: captured ? captured.apiConfigName : this._taskApiConfigName,
 			})
 		} finally {
+			this.releaseCompactionHandler(compactionApiHandler)
 			const users = (this.reasoningHandlerUsers.get(requestHandler) ?? 1) - 1
 			if (users) this.reasoningHandlerUsers.set(requestHandler, users)
 			else this.reasoningHandlerUsers.delete(requestHandler)
@@ -18870,6 +19078,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							maxTokens,
 							contextWindow,
 							apiHandler,
+							compactionApiHandler: this.getCompactionHandler(
+								apiHandler,
+								capturedProvider.compactionApiHandler,
+							),
 							autoCondenseContext,
 							autoCondenseContextPercent,
 							autoCondenseContextScope,
@@ -19851,6 +20063,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		for (const msg of messages) {
+			// Host thinking is replayable only to VS Code, never as user content or
+			// another provider's reasoning/signature format. Keep saved history intact.
+			const requestContent = Array.isArray(msg.content)
+				? msg.content.filter(
+						(block) =>
+							(block as { type: string }).type !== "vscode_lm_thinking" ||
+							(msg.role === "assistant" && apiConfiguration.apiProvider === "vscode-lm"),
+					)
+				: msg.content
+			if (
+				Array.isArray(requestContent) &&
+				requestContent.length === 0 &&
+				Array.isArray(msg.content) &&
+				msg.content.length > 0
+			) {
+				continue
+			}
 			const sourceMetadata =
 				msg.role === "assistant"
 					? normalizeAssistantMessageMetadata({ id: msg.messageId, phase: msg.phase })
@@ -19883,7 +20112,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// Preferred path: assistant message with embedded reasoning as first content block
 			if (msg.role === "assistant") {
-				const rawContent = msg.content
+				const rawContent = requestContent
 
 				const contentArray: Anthropic.Messages.ContentBlockParam[] = Array.isArray(rawContent)
 					? (rawContent as Anthropic.Messages.ContentBlockParam[])
@@ -19979,7 +20208,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (msg.role) {
 				cleanConversationHistory.push({
 					role: msg.role,
-					content: msg.content as Anthropic.Messages.ContentBlockParam[] | string,
+					content: requestContent as Anthropic.Messages.ContentBlockParam[] | string,
 					...assistantSourceMetadata,
 					...vscodeLmMetadata,
 				} as Anthropic.Messages.MessageParam)

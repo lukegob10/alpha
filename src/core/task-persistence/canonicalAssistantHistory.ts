@@ -1,5 +1,10 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
-import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+import {
+	normalizeAssistantMessageMetadata,
+	snapshotVscodeLmThinking,
+	type AssistantMessageMetadata,
+	type VscodeLmThinkingHistoryBlock,
+} from "@alpha-code/types"
 
 import type { AgentResponse } from "../agent/AgentResponse"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -11,6 +16,7 @@ export type CanonicalAssistantHistoryItem =
 	| Anthropic.RedactedThinkingBlockParam
 	| { type: "reasoning"; text: string; signature?: string; outputIndex?: number }
 	| CanonicalEncryptedReasoningHistoryItem
+	| VscodeLmThinkingHistoryBlock
 
 /** Persisted source metadata is stripped only when projecting to a provider without message phases. */
 export type CanonicalAssistantTextHistoryItem = Anthropic.TextBlockParam & AssistantMessageMetadata
@@ -61,6 +67,11 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 			continue
 		}
 		if (item.type === "reasoning") {
+			const vscodeLmThinking = snapshotVscodeLmThinking(item.vscodeLmThinking)
+			if (vscodeLmThinking) {
+				items.push({ type: "vscode_lm_thinking", ...vscodeLmThinking })
+				continue
+			}
 			if (item.redactedData !== undefined) {
 				items.push({ type: "redacted_thinking", data: item.redactedData })
 				continue
@@ -134,6 +145,7 @@ export function buildCanonicalAnthropicAssistantHistoryContent(
 		| Anthropic.Messages.RedactedThinkingBlockParam
 	> = []
 	for (const item of items) {
+		if (item.type === "vscode_lm_thinking") continue
 		if (item.type === "reasoning") {
 			if ("encrypted_content" in item) return undefined
 			if (!item.signature) {
@@ -160,6 +172,7 @@ export function buildCanonicalAssistantHistoryContent(
 		| Anthropic.ToolUseBlockParam
 		| Anthropic.RedactedThinkingBlockParam
 		| CanonicalEncryptedReasoningHistoryItem
+		| VscodeLmThinkingHistoryBlock
 	> = []
 
 	for (const item of buildCanonicalAssistantHistoryItems(response)) {

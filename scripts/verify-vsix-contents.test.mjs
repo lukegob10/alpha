@@ -20,6 +20,8 @@ const required = [
 	"extension/dist/workers/magick-LICENSE",
 	"extension/dist/workers/magick-NOTICE",
 	"extension/assets/skills/debug/SKILL.md",
+	"extension/assets/skills/review-agent/SKILL.md",
+	"extension/assets/skills/review-agent/agents/openai.yaml",
 	"extension/assets/skills/rich-documents/SKILL.md",
 	"extension/assets/skills/skill-builder/SKILL.md",
 	"extension/assets/skills/skill-builder/references/evaluation.md",
@@ -165,6 +167,8 @@ for (const entry of [
 	"extension/dist/workers/magick-LICENSE",
 	"extension/dist/workers/magick-NOTICE",
 	"extension/assets/skills/skill-builder/references/evaluation.md",
+	"extension/assets/skills/review-agent/SKILL.md",
+	"extension/assets/skills/review-agent/agents/openai.yaml",
 	"extension/webview-ui/build/html-document/viewer.js",
 	"extension/webview-ui/build/html-document/purify.min.js",
 ])

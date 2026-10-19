@@ -80,6 +80,26 @@ export function getTicketMentionLocator(mention: string): string | undefined {
 // Regex to match command mentions like /command-name anywhere in text
 export const commandRegexGlobal = /(?:^|\s)\/([a-zA-Z0-9_\.-]+)(?=\s|$)/g
 
+export interface ExplicitSkillMention {
+	selector: string
+	name: string
+}
+
+/** Linked selections bind the path: an unavailable target must never fall back to its label. */
+export function extractExplicitSkillMentions(text: string): ExplicitSkillMention[] {
+	const mentions: ExplicitSkillMention[] = []
+	const pattern = /(?<!\\)\[\$([\w:-]+)\]\s*\(([^)]+)\)|(?<![\\\w$\[])\$([\w-]+(?::[\w-]+)*)(?![\w:-])/g
+	for (const match of text.matchAll(pattern)) {
+		const name = match[1] ?? match[3]
+		let selector = match[2]?.trim() ?? name
+		if (/^(?:app|mcp|plugin):\/\//.test(selector)) continue
+		if (selector.startsWith("skill://")) selector = selector.slice("skill://".length)
+		if (selector.startsWith("<") && selector.endsWith(">")) selector = selector.slice(1, -1)
+		if (selector) mentions.push({ name, selector })
+	}
+	return mentions
+}
+
 export interface MentionSuggestion {
 	type: "file" | "folder" | "git" | "problems"
 	label: string

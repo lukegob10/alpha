@@ -112,6 +112,19 @@ const {
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
 
+// These fixtures have no rewind sidecar; focused rewind tests use the real store.
+vi.mock("../../task-persistence/TaskRewindStore", () => ({
+	TaskRewindStore: class {
+		async read() {
+			return undefined
+		}
+		async begin(uiMessages: unknown[], apiHistory: unknown[]) {
+			return { rewindId: "fixture-rewind", exclusions: [], pending: { uiMessages, apiHistory } }
+		}
+		async complete() {}
+	},
+}))
+
 // Transcript lifecycle fixtures have no goal sidecar. Goal persistence and
 // recovery use the real store in the focused goal tests.
 vi.mock("../../task-persistence/TaskGoalStore", async (importOriginal) => ({
@@ -950,6 +963,7 @@ describe("Task persistence", () => {
 				refreshEnvironmentContext(state?: undefined, signal?: AbortSignal): Promise<void>
 				saveApiConversationHistory(): Promise<boolean>
 				settleAllPersistedWaitAgentResultClaims(): Promise<void>
+				replayCanonicalLifecycle(): Promise<void>
 				environmentContext: EnvironmentContext
 			}
 			const capture = {
@@ -1078,6 +1092,7 @@ describe("Task persistence", () => {
 
 		it("requires a full environment snapshot after same-instance rewind removes its baseline", async () => {
 			const { task, internal } = createEnvironmentTask()
+			vi.spyOn(internal, "replayCanonicalLifecycle").mockResolvedValue(undefined)
 			const fields = [{ name: "Workspace", value: "original workspace facts" }]
 			const baseline = internal.environmentContext.prepare("same-task", fields, "", [])
 			baseline.commit()
