@@ -64,6 +64,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			mockCurrentTask.submitUserMessage = vi.fn()
 			mockCurrentTask.overwriteAlphaMessages.mockImplementation(async (messages: AlphaMessage[]) => {
 				mockCurrentTask.clineMessages = messages
+				return true
 			})
 			mockAlphaProvider.postStateToWebview = vi.fn()
 			mockAlphaProvider.getLiveTask = vi.fn().mockReturnValue(mockCurrentTask)
@@ -133,8 +134,12 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			taskId: "test-task-id",
 			clineMessages: [] as AlphaMessage[],
 			apiConversationHistory: [] as ApiMessage[],
-			overwriteAlphaMessages: vi.fn(),
-			overwriteApiConversationHistory: vi.fn(),
+			overwriteAlphaMessages: vi.fn().mockResolvedValue(true),
+			overwriteApiConversationHistory: vi.fn().mockResolvedValue(true),
+			commitConversationRewind: vi.fn(async (uiMessages: AlphaMessage[], apiHistory: ApiMessage[]) => {
+				if ((await mockCurrentTask.overwriteAlphaMessages(uiMessages)) !== true) return false
+				return mockCurrentTask.overwriteApiConversationHistory(apiHistory)
+			}),
 			handleWebviewAskResponse: vi.fn(),
 			abortTask: vi.fn(),
 			waitForTermination: vi.fn(),
@@ -380,8 +385,14 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		// UI messages truncated
 		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
-		// API history should not be modified when no API messages meet the timestamp criteria
-		expect(mockCurrentTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
+		// The rewind transaction persists both projections, preserving all earlier API messages.
+		expect(mockCurrentTask.commitConversationRewind).toHaveBeenCalledWith(
+			[],
+			mockCurrentTask.apiConversationHistory,
+		)
+		expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith(
+			mockCurrentTask.apiConversationHistory,
+		)
 	})
 
 	it("should handle empty API conversation history gracefully", async () => {
@@ -408,8 +419,9 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		// UI messages should be truncated
 		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
-		// API history should not be modified when message not found
-		expect(mockCurrentTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
+		// An empty provider projection is still part of the durable rewind transaction.
+		expect(mockCurrentTask.commitConversationRewind).toHaveBeenCalledWith([], [])
+		expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
 	})
 
 	it("should correctly handle attempt_completion in API history", async () => {

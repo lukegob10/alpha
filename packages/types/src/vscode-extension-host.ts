@@ -293,6 +293,7 @@ export type ChatCommandErrorCode =
 	| "image_resolution_failed"
 	| "queue_full"
 	| "stale_ask"
+	| "stale_turn"
 	| "unknown"
 
 export interface ChatCommandResult {
@@ -307,6 +308,8 @@ export interface ChatCommandResult {
 
 export const sendAndSteerMessageSchema = z.object({
 	type: z.literal("sendAndSteer"),
+	/** Active turn observed by the composer; omitted by historical clients. */
+	expectedTurnId: z.string().min(1).optional(),
 	taskId: z.string().min(1),
 	requestId: z.string().min(1),
 	text: z.string(),
@@ -960,6 +963,8 @@ interface WebviewMessageBase {
 		| "startDebuggingTask"
 	text?: string
 	taskId?: string
+	/** Guard Stop and direct steering against a successor turn. */
+	expectedTurnId?: string
 	parentTaskId?: string
 	/** Digest of the current host-owned design handoff for Implement plan. */
 	planDigest?: string

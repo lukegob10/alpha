@@ -74,7 +74,7 @@ describe("custom-instructions global .roo support", () => {
 		mockGetProjectInstructionDirectoriesForCwd.mockResolvedValue({ root: mockCwd, directories: [mockCwd] })
 		mockGetLegacyGlobalConfigDirectory.mockReturnValue(legacyGlobalConfigDir)
 		// Default lstat to reject (file not found)
-		mockLstat.mockRejectedValue(new Error("ENOENT"))
+		mockLstat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
 		mockRealpath.mockImplementation(async (filePath) => filePath.toString())
 	})
 

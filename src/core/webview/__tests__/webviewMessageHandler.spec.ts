@@ -31,6 +31,7 @@ import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
+import * as taskPersistence from "../../task-persistence"
 import {
 	ProviderSettingsManager,
 	ProviderProfileRenameError,
@@ -75,6 +76,7 @@ const mockAlphaProvider = {
 	postTaskQueueToWebview: vi.fn(async () => undefined),
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
+	getAgentLifecycleSnapshot: vi.fn(),
 	canAcceptTaskInput: vi.fn(() => true),
 	queueMessageForTaskDurably: vi.fn(async (taskId: string, text: string, images?: string[]) => {
 		const task = mockAlphaProvider.getLiveTask(taskId)
@@ -1691,7 +1693,12 @@ describe("webviewMessageHandler - queued message steering", () => {
 				text: "Use the existing parser",
 				images: [],
 			})
-			expect(steerUserMessageDurably).toHaveBeenCalledWith("Use the existing parser", [], "direct-steer")
+			expect(steerUserMessageDurably).toHaveBeenCalledWith(
+				"Use the existing parser",
+				[],
+				"direct-steer",
+				undefined,
+			)
 			expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
 			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
 			finish()
@@ -1709,6 +1716,94 @@ describe("webviewMessageHandler - queued message steering", () => {
 			)
 		},
 	)
+
+	it.each([true, false])(
+		"rejects successor turns after delayed image resolution (explicit token: %s)",
+		async (explicit) => {
+			let releaseState!: (state: object) => void
+			const stateReady = new Promise<object>((resolve) => {
+				releaseState = resolve
+			})
+			vi.mocked(mockAlphaProvider.getState).mockReturnValueOnce(stateReady as never)
+			let turnId = "turn-original"
+			vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockImplementation(() => ({ turnId }) as never)
+			const task = {
+				taskId: "background",
+				steerUserMessageDurably: vi.fn(),
+				cwd: "/mock/workspace",
+				messageQueueService: { visibleMessages: [] },
+			}
+			vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as never)
+			const dispatch = webviewMessageHandler(mockAlphaProvider, {
+				type: "sendAndSteer",
+				taskId: task.taskId,
+				requestId: "late-steer",
+				text: "Keep this draft",
+				images: ["data:image/png;base64,eA=="],
+				...(explicit ? { expectedTurnId: turnId } : {}),
+			})
+			expect(mockAlphaProvider.getState).toHaveBeenCalled()
+			turnId = "turn-successor"
+			releaseState({})
+			await dispatch
+			expect(task.steerUserMessageDurably).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					chatCommandResult: expect.objectContaining({ status: "rejected", errorCode: "stale_turn" }),
+				}),
+			)
+			vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockReset()
+		},
+	)
+
+	it("rejects an already stale composer before resolving attachments", async () => {
+		vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockReturnValue({ turnId: "successor" } as never)
+		const task = { taskId: "background", steerUserMessageDurably: vi.fn() }
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as never)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: task.taskId,
+			requestId: "stale",
+			text: "Keep this draft",
+			expectedTurnId: "original",
+			images: ["data:image/png;base64,eA=="],
+		})
+		expect(mockAlphaProvider.getState).not.toHaveBeenCalled()
+		expect(task.steerUserMessageDurably).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ status: "rejected", errorCode: "stale_turn" }),
+			}),
+		)
+		vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockReset()
+	})
+
+	it("acknowledges a stale retry of durably accepted input without steering or refreshing the successor", async () => {
+		vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockReturnValue({ turnId: "successor" } as never)
+		const task = {
+			taskId: "background",
+			steerUserMessageDurably: vi.fn(),
+			matchesExpectedTurn: vi.fn(() => false),
+			hasAcceptedQueuedUserMessage: vi.fn(async () => true),
+		}
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as never)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "sendAndSteer",
+			taskId: task.taskId,
+			requestId: "already-accepted",
+			text: "Accepted earlier",
+			expectedTurnId: "original",
+		})
+		expect(task.hasAcceptedQueuedUserMessage).toHaveBeenCalledExactlyOnceWith("already-accepted")
+		expect(task.steerUserMessageDurably).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postTaskQueueToWebview).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ requestId: "already-accepted", status: "accepted" }),
+			}),
+		)
+		vi.mocked(mockAlphaProvider.getAgentLifecycleSnapshot).mockReset()
+	})
 
 	it("acknowledges a retained steering message as queued when the handoff fails", async () => {
 		const queue = [{ id: "retained-steer", text: "Keep this correction", timestamp: 1 }]
@@ -2434,6 +2529,70 @@ describe("webviewMessageHandler - Alpha project configuration", () => {
 	})
 })
 
+describe("non-checkpoint transcript deletion", () => {
+	it.each([false, true])("joins the captured task before rewinding (successor installed: %s)", async (replace) => {
+		vi.clearAllMocks()
+		let joined!: () => void
+		let finish!: () => void
+		const entering = new Promise<void>((resolve) => {
+			joined = resolve
+		})
+		const termination = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		const saved = vi.spyOn(taskPersistence, "saveTaskMessages").mockResolvedValue(undefined)
+		const task = {
+			taskId: "background",
+			abort: false,
+			abortTask: vi.fn(async () => {
+				task.abort = true
+			}),
+			waitForTermination: vi.fn(async () => {
+				joined()
+				await termination
+			}),
+			clineMessages: [
+				{ ts: 10, type: "say", say: "task", text: "Keep" },
+				{ ts: 20, type: "say", say: "text", text: "Delete" },
+			],
+			apiConversationHistory: [],
+			messageManager: { rewindToTimestamp: vi.fn(async () => undefined) },
+		}
+		const host = {
+			...mockAlphaProvider,
+			contextProxy: { ...mockAlphaProvider.contextProxy, globalStorageUri: { fsPath: "/mock/storage" } },
+		} as unknown as AlphaProvider
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as never)
+		const dispatch = webviewMessageHandler(host, {
+			type: "deleteMessageConfirm",
+			taskId: task.taskId,
+			messageTs: 20,
+		})
+		try {
+			expect(task.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			expect(saved).not.toHaveBeenCalled()
+			await entering
+			if (replace) vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({ ...task } as never)
+			finish()
+			await dispatch
+			expect(task.abortTask).toHaveBeenCalledExactlyOnceWith()
+			if (replace) {
+				expect(task.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+				expect(saved).not.toHaveBeenCalled()
+			} else {
+				expect(task.messageManager.rewindToTimestamp).toHaveBeenCalledExactlyOnceWith(20, {
+					includeTargetMessage: false,
+				})
+				expect(saved).toHaveBeenCalledOnce()
+			}
+		} finally {
+			finish()
+			await dispatch
+			saved.mockRestore()
+		}
+	})
+})
+
 describe("webviewMessageHandler - message dialog preferences", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -2577,7 +2736,19 @@ describe("webviewMessageHandler - task cancellation provenance", () => {
 			taskId: "parent-1",
 		})
 
-		expect(mockAlphaProvider.cancelTask).toHaveBeenCalledWith("parent-1", "webview_stop")
+		expect(mockAlphaProvider.cancelTask).toHaveBeenCalledWith("parent-1", "webview_stop", undefined)
+	})
+})
+
+describe("turn-scoped cancellation wire", () => {
+	it("forwards the composer's expected turn to the owning provider", async () => {
+		vi.clearAllMocks()
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "cancelTask",
+			taskId: "background",
+			expectedTurnId: "original",
+		})
+		expect(mockAlphaProvider.cancelTask).toHaveBeenCalledExactlyOnceWith("background", "webview_stop", "original")
 	})
 })
 

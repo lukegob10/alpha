@@ -91,6 +91,10 @@ describe("rewind command artifact retention", () => {
 				task.apiConversationHistory = messages
 				return true
 			}),
+			commitConversationRewind: vi.fn(async (messages: AlphaMessage[], history: ApiMessage[]) => {
+				if ((await task.overwriteAlphaMessages(messages)) !== true) return false
+				return task.overwriteApiConversationHistory(history)
+			}),
 		} as unknown as Task
 		manager = new MessageManager(task)
 	})
@@ -121,7 +125,7 @@ describe("rewind command artifact retention", () => {
 			})
 		}
 
-		await manager.rewindToTimestamp(400)
+		await expect(manager.rewindToTimestamp(400)).rejects.toThrow("Conversation rewind could not be persisted")
 
 		expect((await fs.readdir(artifactDirectory)).sort()).toEqual([...filenames].sort())
 	})
@@ -182,11 +186,13 @@ describe("rewind command artifact retention", () => {
 					return saved
 				})
 
-			await manager.rewindToTimestamp(400)
+			await expect(manager.rewindToTimestamp(400)).rejects.toThrow("Conversation rewind could not be persisted")
 			expect(task.apiConversationHistory).toHaveLength(1)
 			expect(durableHistory).toHaveLength(2)
 			expect(await fs.readdir(artifactDirectory)).toContain(artifactName(removedId))
-			await manager.rewindToTimestamp(200)
+			const retry = manager.rewindToTimestamp(200)
+			if (saved) await retry
+			else await expect(retry).rejects.toThrow("Conversation rewind could not be persisted")
 
 			expect(task.overwriteApiConversationHistory).toHaveBeenCalledTimes(2)
 			expect(durableHistory).toHaveLength(saved ? 1 : 2)
@@ -199,7 +205,7 @@ describe("rewind command artifact retention", () => {
 			task.clineMessages = messages
 			return undefined as unknown as boolean
 		})
-		await manager.rewindToTimestamp(400)
+		await expect(manager.rewindToTimestamp(400)).rejects.toThrow("Conversation rewind could not be persisted")
 		expect((await fs.readdir(artifactDirectory)).sort()).toEqual([...filenames].sort())
 	})
 

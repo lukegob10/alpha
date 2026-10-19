@@ -796,7 +796,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.3-ux-and-thread-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.4-continuity-and-skills"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -7386,15 +7386,20 @@ export class AlphaProvider
 		if (failureObserved) throw firstFailure
 	}
 
-	public async cancelTask(taskId?: string, source: TaskCancellationSource = "unknown"): Promise<void> {
+	public async cancelTask(
+		taskId?: string,
+		source: TaskCancellationSource = "unknown",
+		expectedTurnId?: string,
+	): Promise<void> {
 		const task = taskId ? this.getLiveTask(taskId) : this.getCurrentTask()
 
 		if (!task) {
 			return
 		}
+		if (expectedTurnId !== undefined && !task.matchesExpectedTurn(expectedTurnId)) return
 		const owner = this.getTaskOwner(task.taskId)
 		if (owner && owner !== this) {
-			await owner.cancelTask(task.taskId, source)
+			await owner.cancelTask(task.taskId, source, expectedTurnId)
 			await this.postTaskStateToWebview()
 			return
 		}

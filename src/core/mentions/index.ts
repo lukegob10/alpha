@@ -9,6 +9,7 @@ import {
 	commandRegexGlobal,
 	unescapeSpaces,
 	getTicketMentionLocator,
+	extractExplicitSkillMentions,
 } from "../../shared/context-mentions"
 
 import { getCommitInfo, getWorkingState } from "../../utils/git"
@@ -23,6 +24,8 @@ import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
+import { SkillSelectionError } from "../../services/skills/SkillSelectionError"
+import { digestValue } from "../agent/StepContext"
 import type { SkillContent } from "../../shared/skills"
 import { parsePlanModeCommand } from "../../shared/plan-mode"
 import { planModeSlug } from "../../shared/modes"
@@ -79,6 +82,12 @@ export interface MentionContentBlock {
 	}
 }
 
+export interface LoadedMentionSkill {
+	name: string
+	path: string
+	digest: string
+}
+
 export interface ParseMentionsResult {
 	/** User's text with @ mentions replaced by clean path references */
 	text: string
@@ -86,6 +95,7 @@ export interface ParseMentionsResult {
 	contentBlocks: MentionContentBlock[]
 	slashCommandHelp?: string
 	mode?: string // Mode from the first slash command that has one
+	loadedSkills?: readonly LoadedMentionSkill[]
 }
 
 /**
@@ -175,6 +185,7 @@ export async function parseMentions(
 	const validCommands: Map<string, Command> = new Map()
 	const validSkills: Map<string, SkillContent> = new Map()
 	const contentBlocks: MentionContentBlock[] = []
+	const explicitSkillHelp: string[] = []
 	const planCommand = parsePlanModeCommand(text)
 	let parsedText = planCommand?.rewrittenText ?? text
 	let commandMode: string | undefined = planCommand ? planModeSlug : undefined
@@ -216,6 +227,35 @@ export async function parseMentions(
 
 		if (skillContent) {
 			validSkills.set(commandName, skillContent)
+		}
+	}
+
+	// Resolve explicit skill requests in the host before the model sees the turn.
+	// The supplied lookup already carries human-input provenance and any frozen child scope.
+	const explicitSelectors = new Set<string>()
+	for (const { selector, name } of extractExplicitSkillMentions(parsedText)) {
+		if (explicitSelectors.has(selector) || !skillsManager) continue
+		explicitSelectors.add(selector)
+		signal?.throwIfAborted()
+		try {
+			const skillContent = skillsManager.getExplicitSkillContent
+				? await skillsManager.getExplicitSkillContent(selector, commandMode ?? currentMode)
+				: await skillsManager.getSkillContent(selector, commandMode ?? currentMode)
+			signal?.throwIfAborted()
+			if (skillContent) {
+				validSkills.set(skillContent.path, skillContent)
+			} else if (selector !== name || selector.includes(":")) {
+				explicitSkillHelp.push(
+					`Skill '${name}' could not be loaded for this task. Check its selected path, enabled state, mode, and task scope.`,
+				)
+			}
+		} catch (error) {
+			signal?.throwIfAborted()
+			explicitSkillHelp.push(
+				error instanceof SkillSelectionError
+					? error.message
+					: `Skill '${name}' could not be loaded. Check that the selection is unambiguous and its SKILL.md is readable.`,
+			)
 		}
 	}
 
@@ -331,15 +371,26 @@ export async function parseMentions(
 		}
 	}
 
-	for (const [skillName, skillContent] of validSkills) {
-		slashCommandHelp += `\n\n${buildSkillResult(skillName, undefined, skillContent)}`
+	const includedSkillPaths = new Set<string>()
+	const loadedSkills: LoadedMentionSkill[] = []
+	for (const skillContent of validSkills.values()) {
+		if (includedSkillPaths.has(skillContent.path)) continue
+		includedSkillPaths.add(skillContent.path)
+		loadedSkills.push({
+			name: skillContent.name,
+			path: skillContent.path,
+			digest: digestValue(skillContent.instructions),
+		})
+		slashCommandHelp += `\n\n${buildSkillResult(skillContent.name, undefined, skillContent)}`
 	}
+	if (explicitSkillHelp.length) slashCommandHelp += `\n\n${explicitSkillHelp.join("\n")}`
 
 	signal?.throwIfAborted()
 	return {
 		text: parsedText,
 		contentBlocks,
 		mode: commandMode,
+		...(loadedSkills.length ? { loadedSkills } : {}),
 		slashCommandHelp: slashCommandHelp.trim() || undefined,
 	}
 }

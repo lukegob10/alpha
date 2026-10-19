@@ -363,6 +363,8 @@ export type ContextManagementOptions = {
 	contextWindow: number
 	maxTokens?: number | null
 	apiHandler: ApiHandler
+	/** Optional previous model used only to summarize input that exceeds the selected model's window. */
+	compactionApiHandler?: ApiHandler
 	autoCondenseContext: boolean
 	autoCondenseContextPercent: number
 	autoCondenseContextScope?: AutoCondenseContextScope
@@ -423,6 +425,7 @@ export async function manageContext({
 	contextWindow,
 	maxTokens,
 	apiHandler,
+	compactionApiHandler,
 	autoCondenseContext,
 	autoCondenseContextPercent,
 	autoCondenseContextScope,
@@ -542,6 +545,7 @@ export async function manageContext({
 				beforeCompact: admitCompaction,
 				messages,
 				apiHandler,
+				compactionApiHandler,
 				systemPrompt,
 				taskId,
 				isAutomaticTrigger: true,

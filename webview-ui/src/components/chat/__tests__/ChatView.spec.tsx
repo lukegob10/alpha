@@ -3853,6 +3853,22 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
+			agentLifecycleSnapshots: {
+				"task-1": agentLifecycleSnapshotSchema.parse({
+					version: 1,
+					taskId: "task-1",
+					runId: "run-1",
+					turnId: "observed-turn",
+					status: "in_progress",
+					phase: "working",
+					lastSequence: 0,
+					items: [],
+					steps: [],
+					acceptedToolCallIds: [],
+					terminalToolCallIds: [],
+					processedEvents: [],
+				}),
+			},
 			clineMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
@@ -3873,9 +3889,16 @@ describe("ChatView - Message Queueing Tests", () => {
 		const request = requests[0]
 		expect(request).toMatchObject({
 			taskId: "task-1",
+			expectedTurnId: "observed-turn",
 			text: "Use the existing parser",
 			images: [],
 			requestId: expect.any(String),
+		})
+		fireEvent.click(view.getByTestId("mock-stop"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "cancelTask",
+			taskId: "task-1",
+			expectedTurnId: "observed-turn",
 		})
 		expect(input).toHaveValue("Use the existing parser")
 		fireEvent.change(input, { target: { value: "Next instruction" } })

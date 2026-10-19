@@ -96,6 +96,7 @@ vi.mock("vscode", () => {
 		},
 		LanguageModelChatMessageRole: { Assistant: "assistant", User: "user" },
 		LanguageModelTextPart: MockLanguageModelTextPart,
+		LanguageModelThinkingPart: undefined,
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
 		LanguageModelToolResultPart: MockLanguageModelToolResultPart,
 		LanguageModelDataPart: MockLanguageModelDataPart,
@@ -939,7 +940,7 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
-		it("should classify VS Code 1.122 Copilot thinking parts before generic text parts", async () => {
+		it("should classify VS Code 1.125 Copilot thinking parts before generic text parts", async () => {
 			mockVsCodeVersion.value = "1.125.0"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
@@ -954,7 +955,16 @@ describe("VsCodeLmHandler", () => {
 			}
 
 			expect(chunks.slice(0, 2)).toEqual([
-				{ type: "reasoning", text: "Working\nthrough the request" },
+				{
+					type: "reasoning",
+					text: "Working\nthrough the request",
+					vscodeLmThinking: {
+						value: ["Working", "through the request"],
+						modelId: mockLanguageModelChat.id,
+						modelVendor: mockLanguageModelChat.vendor,
+						modelVersion: mockLanguageModelChat.version,
+					},
+				},
 				{ type: "text", text: "Final answer" },
 			])
 		})
@@ -1049,6 +1059,26 @@ describe("VsCodeLmHandler", () => {
 			} finally {
 				encodeSpy.mockRestore()
 			}
+		})
+
+		it("preserves marker-only replay when optional thinking reconstruction is unavailable", async () => {
+			const marker = new TextEncoder().encode("synthetic-marker")
+			const messages = [
+				{
+					role: "assistant",
+					content: [{ type: "vscode_lm_thinking", value: "", id: "host" }],
+					vscodeLmStatefulMarker: Buffer.from(marker).toString("base64"),
+				},
+			] as unknown as Anthropic.Messages.MessageParam[]
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({ stream: (async function* () {})() })
+			for await (const _chunk of handler.createMessage("System", messages)) {
+				/* drain */
+			}
+			const requestMessages = mockLanguageModelChat.sendRequest.mock.calls.at(-1)?.[0]
+			const assistantMessage = requestMessages?.find((message: any) => message.role === "assistant")
+			expect(assistantMessage?.content).toHaveLength(1)
+			expect(assistantMessage?.content[0]).toMatchObject({ mimeType: "stateful_marker" })
+			expect(Array.from(assistantMessage.content[0].data)).toEqual(Array.from(marker))
 		})
 
 		it("should replay a persisted stateful marker on its assistant tool-call message", async () => {

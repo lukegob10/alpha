@@ -353,6 +353,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
 	const projectedMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
 	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
+	const visibleTurnId = visibleCurrentTaskId ? agentLifecycleSnapshots?.[visibleCurrentTaskId]?.turnId : undefined
 	const visibleTaskPayload = useMemo(
 		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
 		[visibleCurrentTaskId],
@@ -1318,6 +1319,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setChatCommandError(undefined)
 			vscode.postMessage({
 				type: steer ? "sendAndSteer" : "queueMessage",
+				...(steer && visibleTurnId ? { expectedTurnId: visibleTurnId } : {}),
 				text,
 				images,
 				taskId: visibleCurrentTaskId,
@@ -1327,7 +1329,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			})
 			return true
 		},
-		[visibleCurrentTaskId, setChatCommandError, setPendingQueueRequest],
+		[visibleCurrentTaskId, visibleTurnId, setChatCommandError, setPendingQueueRequest],
 	)
 
 	/**
@@ -1671,9 +1673,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
-		vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
+		vscode.postMessage({
+			type: "cancelTask",
+			...visibleTaskPayload,
+			...(visibleTurnId ? { expectedTurnId: visibleTurnId } : {}),
+		})
 		setDidClickCancel(true)
-	}, [visibleTaskPayload, setDidClickCancel])
+	}, [visibleTaskPayload, visibleTurnId, setDidClickCancel])
 
 	const handleComposerSend = useCallback(() => {
 		handleSendMessage(inputValue, selectedImages, undefined, autoSteer && !isManagedSubagent)
@@ -1888,7 +1894,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		userRespondedRef.current = true
 
 		if (isStreaming && !toolApprovalRequest) {
-			vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
+			vscode.postMessage({
+				type: "cancelTask",
+				...visibleTaskPayload,
+				...(visibleTurnId ? { expectedTurnId: visibleTurnId } : {}),
+			})
 			setDidClickCancel(true)
 			return
 		}
@@ -1933,6 +1943,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		getCurrentAskMessageTs,
 		setInputValue,
 		visibleTaskPayload,
+		visibleTurnId,
 		startNewTask,
 		isStreaming,
 		setDidClickCancel,

@@ -2,8 +2,11 @@
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
+import type { VscodeLmThinking } from "@alpha-code/types"
 
 import { convertToVsCodeLmMessages, extractTextCountFromMessage } from "../vscode-lm-format"
+
+const thinkingPartMock = vitest.hoisted(() => ({ enabled: true }))
 
 // Mock crypto using Vitest
 vitest.stubGlobal("crypto", {
@@ -45,6 +48,15 @@ vitest.mock("vscode", () => {
 	class MockLanguageModelTextPart {
 		type = "text"
 		constructor(public value: string) {}
+	}
+
+	class MockLanguageModelThinkingPart {
+		type = "thinking"
+		constructor(
+			public value: string | string[],
+			public id?: string,
+			public metadata?: Record<string, unknown>,
+		) {}
 	}
 
 	class MockLanguageModelToolCallPart {
@@ -95,6 +107,9 @@ vitest.mock("vscode", () => {
 		},
 		LanguageModelChatMessageRole,
 		LanguageModelTextPart: MockLanguageModelTextPart,
+		get LanguageModelThinkingPart() {
+			return thinkingPartMock.enabled ? MockLanguageModelThinkingPart : undefined
+		},
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
 		LanguageModelToolResultPart: MockLanguageModelToolResultPart,
 		LanguageModelDataPart: MockLanguageModelDataPart,
@@ -102,6 +117,218 @@ vitest.mock("vscode", () => {
 })
 
 describe("convertToVsCodeLmMessages", () => {
+	afterEach(() => {
+		thinkingPartMock.enabled = true
+	})
+
+	it("replays exact VS Code thinking parts in order with assistant text and tool calls", () => {
+		const firstThinking = {
+			type: "vscode_lm_thinking",
+			value: "Inspecting the file",
+			id: "thinking-1",
+			metadata: { signature: "opaque-signature", provider: { state: [1, true, null] } },
+		}
+		const secondThinking = {
+			type: "vscode_lm_thinking",
+			value: ["Checking the result", "Planning the next step"],
+			id: "thinking-2",
+			metadata: { encrypted: "opaque-state" },
+		}
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					firstThinking,
+					{ type: "text", text: "Before the tool" },
+					{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "README.md" } },
+					secondThinking,
+					{ type: "text", text: "After the tool" },
+				],
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "tool-1", content: "File contents" }],
+			},
+		] as unknown as Anthropic.Messages.MessageParam[]
+		const before = structuredClone(messages)
+
+		const result = convertToVsCodeLmMessages(messages)
+
+		expect(result).toHaveLength(2)
+		expect(result[0].content).toEqual([
+			{ ...firstThinking, type: "thinking" },
+			new vscode.LanguageModelTextPart("Before the tool"),
+			new vscode.LanguageModelToolCallPart("tool-1", "read_file", { path: "README.md" }),
+			{ ...secondThinking, type: "thinking" },
+			new vscode.LanguageModelTextPart("After the tool"),
+		])
+		expect(result[1].content).toEqual([
+			new vscode.LanguageModelToolResultPart("tool-1", [new vscode.LanguageModelTextPart("File contents")]),
+		])
+		expect(messages).toEqual(before)
+	})
+
+	it.each([{ value: "" }, { value: [] }])(
+		"replays metadata-only VS Code thinking with empty value %j",
+		({ value }) => {
+			const metadata = { signature: "opaque-signature", continuation: { token: "opaque-token" } }
+			const result = convertToVsCodeLmMessages([
+				{
+					role: "assistant",
+					content: [{ type: "vscode_lm_thinking", value, metadata }],
+				},
+			] as unknown as Anthropic.Messages.MessageParam[])
+
+			expect(result[0].content).toEqual([{ type: "thinking", value, id: undefined, metadata }])
+		},
+	)
+
+	it("snapshots thinking arrays and nested metadata independently for every replay", () => {
+		const value = ["First", "Second"]
+		const metadata = { signature: "opaque-signature", nested: { fragments: ["opaque-fragment"] } }
+		const messages = [
+			{ role: "assistant", content: [{ type: "vscode_lm_thinking", value, id: "thinking-1", metadata }] },
+		] as unknown as Anthropic.Messages.MessageParam[]
+
+		const first = convertToVsCodeLmMessages(messages)
+		const second = convertToVsCodeLmMessages(messages)
+		value[0] = "Changed"
+		value.push("Third")
+		metadata.nested.fragments[0] = "changed-fragment"
+		metadata.nested.fragments.push("extra-fragment")
+
+		const expected = [
+			{
+				type: "thinking",
+				value: ["First", "Second"],
+				id: "thinking-1",
+				metadata: { signature: "opaque-signature", nested: { fragments: ["opaque-fragment"] } },
+			},
+		]
+		expect(first[0].content).toEqual(expected)
+		expect(second[0].content).toEqual(expected)
+		const firstThinking = first[0].content[0] as unknown as VscodeLmThinking
+		const secondThinking = second[0].content[0] as unknown as VscodeLmThinking
+		expect(firstThinking).not.toBe(secondThinking)
+		expect(firstThinking.value).not.toBe(secondThinking.value)
+		expect(firstThinking.metadata).not.toBe(secondThinking.metadata)
+		expect(firstThinking.metadata?.nested).not.toBe(secondThinking.metadata?.nested)
+	})
+
+	it("omits opaque thinking when the host has no thinking constructor and preserves other ordered parts", () => {
+		thinkingPartMock.enabled = false
+		const result = convertToVsCodeLmMessages([
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "vscode_lm_thinking",
+						value: "Private reasoning",
+						id: "thinking-1",
+						metadata: { token: "opaque" },
+					},
+					{ type: "text", text: "Before" },
+					{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "README.md" } },
+					{ type: "vscode_lm_thinking", value: [], metadata: { token: "next" } },
+					{ type: "text", text: "After" },
+				],
+			},
+		] as unknown as Anthropic.Messages.MessageParam[])
+
+		expect(result[0].content).toEqual([
+			new vscode.LanguageModelTextPart("Before"),
+			new vscode.LanguageModelToolCallPart("tool-1", "read_file", { path: "README.md" }),
+			new vscode.LanguageModelTextPart("After"),
+		])
+	})
+
+	it("omits thinking-only assistant messages when the host cannot replay thinking", () => {
+		thinkingPartMock.enabled = false
+		const result = convertToVsCodeLmMessages([
+			{ role: "user", content: "Continue." },
+			{
+				role: "assistant",
+				content: [
+					{ type: "vscode_lm_thinking", value: "Private reasoning", id: "thinking-1" },
+					{ type: "vscode_lm_thinking", value: "", metadata: { signature: "opaque" } },
+				],
+			},
+			{ role: "assistant", content: [{ type: "text", text: "Visible answer" }] },
+		] as unknown as Anthropic.Messages.MessageParam[])
+
+		expect(result).toHaveLength(2)
+		expect(result[0].content).toEqual([new vscode.LanguageModelTextPart("Continue.")])
+		expect(result[1].content).toEqual([new vscode.LanguageModelTextPart("Visible answer")])
+	})
+
+	it("preserves existing empty-message behavior for content unrelated to host thinking", () => {
+		thinkingPartMock.enabled = false
+		const result = convertToVsCodeLmMessages([
+			{ role: "assistant", content: [] },
+			{ role: "assistant", content: [{ type: "thinking", thinking: "Other reasoning", signature: "other" }] },
+			{
+				role: "assistant",
+				content: [
+					{ type: "vscode_lm_thinking", value: "Host reasoning" },
+					{ type: "thinking", thinking: "Other reasoning", signature: "other" },
+				],
+			},
+			{ role: "assistant", content: "" },
+		] as unknown as Anthropic.Messages.MessageParam[])
+
+		expect(result.map((message) => message.content)).toEqual([[], [], [], [new vscode.LanguageModelTextPart("")]])
+	})
+
+	it.each([
+		{ value: undefined },
+		{ value: 42 },
+		{ value: ["Valid", 42] },
+		{ value: "Valid", id: 42 },
+		{ value: "Valid", metadata: null },
+		{ value: "Valid", metadata: [] },
+		{ value: "Valid", metadata: { unsupported: () => "value" } },
+	])("omits malformed persisted VS Code thinking %j without inventing text", (fields) => {
+		const result = convertToVsCodeLmMessages([
+			{
+				role: "assistant",
+				content: [
+					{ type: "vscode_lm_thinking", ...fields },
+					{ type: "text", text: "Visible answer" },
+				],
+			},
+		] as unknown as Anthropic.Messages.MessageParam[])
+
+		expect(result[0].content).toEqual([new vscode.LanguageModelTextPart("Visible answer")])
+	})
+
+	it("ignores user-injected thinking and does not reinterpret another provider's thinking", () => {
+		const result = convertToVsCodeLmMessages([
+			{
+				role: "user",
+				content: [
+					{
+						type: "vscode_lm_thinking",
+						value: "Injected reasoning",
+						id: "injected",
+						metadata: { token: "injected" },
+					},
+					{ type: "text", text: "User request" },
+				],
+			},
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Anthropic reasoning", signature: "anthropic-signature" },
+					{ value: "Untagged reasoning", id: "untagged", metadata: { token: "untagged" } },
+					{ type: "text", text: "Visible answer" },
+				],
+			},
+		] as unknown as Anthropic.Messages.MessageParam[])
+
+		expect(result[0].content).toEqual([new vscode.LanguageModelTextPart("User request")])
+		expect(result[1].content).toEqual([new vscode.LanguageModelTextPart("Visible answer")])
+	})
+
 	it("preserves enriched text and tool ordering without unsupported message metadata", () => {
 		const messages = [
 			{

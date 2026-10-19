@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { checkpointSave, checkpointRestore, checkpointDiff, getCheckpointService } from "../index"
 import { MessageManager } from "../../message-manager"
+import type { Task } from "../../task/Task"
 import * as vscode from "vscode"
 
 // Mock vscode
@@ -103,6 +104,13 @@ describe("Checkpoint functionality", () => {
 			say: vi.fn().mockResolvedValue(undefined),
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
+			commitConversationRewind: vi.fn(
+				async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+					await mockTask.overwriteAlphaMessages(uiMessages)
+					await mockTask.overwriteApiConversationHistory(apiHistory)
+					return true
+				},
+			),
 			combineMessages: vi.fn().mockReturnValue([]),
 		}
 		mockTask.messageManager = new MessageManager(mockTask)

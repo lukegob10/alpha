@@ -73,6 +73,103 @@ it.each(["command", "tool", "followup"] as const)(
 	},
 )
 
+it("rejects a direct steering request for a previous turn before admitting input", async () => {
+	const { task, queue } = harness()
+	Reflect.set(task, "agentTurnId", "successor")
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	await expect(task.steerUserMessageDurably("STALE_INPUT", [], "stale-receipt", "original")).rejects.toThrow(
+		"active turn changed",
+	)
+	expect(queue.visibleMessages).toEqual([])
+	expect(handoff).not.toHaveBeenCalled()
+})
+
+it("rejects direct steering when the turn changes during queue hydration", async () => {
+	const { task } = harness()
+	const loading = deferred()
+	const loaded = deferred()
+	const queue = new MessageQueueService({
+		load: async () => {
+			loading.resolve()
+			await loaded.promise
+			return []
+		},
+		save: async () => undefined,
+	})
+	Object.assign(task, { messageQueueService: queue, agentTurnId: "original" })
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	const steering = task.steerUserMessageDurably("STALE_INPUT", [], "stale-receipt", "original")
+	const rejected = expect(steering).rejects.toThrow("active turn changed")
+	await loading.promise
+	Reflect.set(task, "agentTurnId", "successor")
+	loaded.resolve()
+	await rejected
+	expect(queue.visibleMessages).toEqual([])
+	expect(handoff).not.toHaveBeenCalled()
+})
+
+it("checks the expected turn inside the serialized queue mutation", async () => {
+	const { task } = harness()
+	const saving = deferred()
+	const saved = deferred()
+	const queue = new MessageQueueService({
+		load: async () => [],
+		save: async () => {
+			saving.resolve()
+			await saved.promise
+		},
+	})
+	Object.assign(task, { messageQueueService: queue, agentTurnId: "original" })
+	const first = queue.addMessageDurably("EXISTING_QUEUE_INPUT", [], "stale-receipt")
+	await saving.promise
+	const adding = deferred()
+	const add = queue.addMessageDurably.bind(queue)
+	vi.spyOn(queue, "addMessageDurably").mockImplementation((...args) => {
+		adding.resolve()
+		return add(...args)
+	})
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	const steering = task.steerUserMessageDurably("EXISTING_QUEUE_INPUT", [], "stale-receipt", "original")
+	const rejected = expect(steering).rejects.toThrow("active turn changed")
+	await adding.promise
+	Reflect.set(task, "agentTurnId", "successor")
+	saved.resolve()
+	await first
+	await rejected
+	expect(queue.visibleMessages).toMatchObject([{ id: "stale-receipt", text: "EXISTING_QUEUE_INPUT" }])
+	expect(queue.visibleMessages).toHaveLength(1)
+	expect(handoff).not.toHaveBeenCalled()
+})
+
+it("retains admitted input without steering a successor when its claim persistence is delayed", async () => {
+	const { task } = harness()
+	const claiming = deferred()
+	const claimed = deferred()
+	const queue = new MessageQueueService({
+		load: async () => [],
+		save: async () => {
+			if (queue.getClaimedMessageIds().includes("admitted-receipt")) {
+				claiming.resolve()
+				await claimed.promise
+			}
+		},
+	})
+	Object.assign(task, { messageQueueService: queue, agentTurnId: "original" })
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	const request = new AbortController()
+	task.currentRequestAbortController = request
+	const steering = task.steerUserMessageDurably("RETAIN_ADMITTED_INPUT", [], "admitted-receipt", "original")
+	const rejected = expect(steering).rejects.toThrow("active turn changed")
+	await claiming.promise
+	Reflect.set(task, "agentTurnId", "successor")
+	claimed.resolve()
+	await rejected
+	expect(queue.visibleMessages).toMatchObject([{ id: "admitted-receipt", text: "RETAIN_ADMITTED_INPUT" }])
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	expect(handoff).not.toHaveBeenCalled()
+	expect(request.signal.aborted).toBe(false)
+})
+
 it("retains newly admitted steering as queued input when its later handoff fails", async () => {
 	const { task, queue } = harness()
 	vi.spyOn(task, "steerUserMessage").mockRejectedValueOnce(new Error("handoff became unavailable"))
@@ -244,4 +341,15 @@ it.each(["accepted", "deferred"] as const)("does not offer steering while an ask
 	if (state === "accepted") task["askResponse"] = "messageResponse"
 	else task["deferredAskResponse"] = { kind: "legacy", askResponse: "messageResponse", text: "INPUT" }
 	expect(task.canAcceptSteerMessage()).toBe(false)
+})
+
+it("acknowledges an already admitted steering receipt after a successor turn starts", async () => {
+	const { task, queue } = harness()
+	Object.assign(task, { agentTurnId: "successor" })
+	queue.addMessage("ORIGINAL_INPUT", [], "accepted-receipt")
+	const steer = vi.spyOn(task, "steerUserMessage")
+	await task.steerUserMessageDurably("ORIGINAL_INPUT", [], "accepted-receipt", "previous")
+	expect(steer).not.toHaveBeenCalled()
+	expect(queue.messages).toHaveLength(1)
+	expect(task["pendingSteerMessage"]).toBeUndefined()
 })

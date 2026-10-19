@@ -271,6 +271,16 @@ vi.mock("../../task/Task", () => ({
 		return {
 			api: undefined,
 			abortTask: vi.fn(),
+			waitForTermination: vi.fn().mockResolvedValue(undefined),
+			commitConversationRewind: vi.fn(async function (
+				this: Task,
+				uiMessages: AlphaMessage[],
+				apiHistory: Task["apiConversationHistory"],
+			) {
+				await this.overwriteAlphaMessages(uiMessages)
+				await this.overwriteApiConversationHistory(apiHistory)
+				return true
+			}),
 			handleWebviewAskResponse: vi.fn(),
 			clineMessages: [],
 			apiConversationHistory: [],
@@ -378,6 +388,14 @@ describe("AlphaProvider", () => {
 			const task: any = {
 				api: undefined,
 				abortTask: vi.fn(),
+				waitForTermination: vi.fn().mockResolvedValue(undefined),
+				commitConversationRewind: vi.fn(
+					async (uiMessages: AlphaMessage[], apiHistory: Task["apiConversationHistory"]) => {
+						await task.overwriteAlphaMessages(uiMessages)
+						await task.overwriteApiConversationHistory(apiHistory)
+						return true
+					},
+				),
 				handleWebviewAskResponse: vi.fn(),
 				clineMessages: [],
 				apiConversationHistory: [],
@@ -605,16 +623,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.3 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.3-ux-and-thread-reliability"
+	test("shows the v3.2.4 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.4-continuity-and-skills"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue(
-			"lastShownAnnouncementId",
-			"october-2026-v3.2.2-faster-loading-and-followup-recovery",
-		)
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.3-ux-and-thread-reliability")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -946,7 +961,7 @@ describe("AlphaProvider", () => {
 		const condenseMessage = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
 		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
 		const cancelMessage = messageHandler({ type: "cancelTask", taskId: "task-1" })
-		await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("task-1", "webview_stop"))
+		await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("task-1", "webview_stop", undefined))
 
 		releaseCondense()
 		await Promise.all([condenseMessage, cancelMessage])

@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk"
 
-import { parseMentions, ParseMentionsResult, MentionContentBlock } from "./index"
+import { parseMentions, ParseMentionsResult, MentionContentBlock, type LoadedMentionSkill } from "./index"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import type { SkillLookup } from "../../services/skills/skillInvocation"
 import { getSkillLookupForInput } from "../../services/skills/skillInvocationProvenance"
@@ -19,6 +19,7 @@ type InputOrigin = "human" | "agent"
 export interface ProcessUserContentMentionsResult {
 	content: Anthropic.Messages.ContentBlockParam[]
 	mode?: string // Mode from the first slash command that has one
+	loadedSkills?: readonly LoadedMentionSkill[]
 	blockOrigins?: ReadonlyMap<Anthropic.Messages.ContentBlockParam, InputOrigin>
 	/** Host-owned identities for one deferred batch admission; never persist these handles. */
 	deferredAttachmentParts?: ReadonlySet<TextPart>
@@ -89,10 +90,12 @@ export async function processUserContentMentions({
 	const blockOrigins = sourceBlockOrigins ? new Map<Anthropic.Messages.ContentBlockParam, InputOrigin>() : undefined
 	const attachmentParts = new Set<TextPart>()
 	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
-	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
-		if (mode) {
-			commandModes.push({ blockIndex, contentIndex, mode })
+	const expandedSkills: Array<{ blockIndex: number; contentIndex: number; skill: LoadedMentionSkill }> = []
+	const captureParseResult = (result: ParseMentionsResult, blockIndex: number, contentIndex: number) => {
+		if (result.mode) {
+			commandModes.push({ blockIndex, contentIndex, mode: result.mode })
 		}
+		for (const skill of result.loadedSkills ?? []) expandedSkills.push({ blockIndex, contentIndex, skill })
 	}
 
 	// Process userContent array, which contains text and image parts.
@@ -121,7 +124,7 @@ export async function processUserContentMentions({
 							onTicketActivity,
 							signal,
 						)
-						captureCommandMode(result.mode, blockIndex, 0)
+						captureParseResult(result, blockIndex, 0)
 
 						// Build the blocks array:
 						// 1. User's text (with @ mentions replaced by clean paths)
@@ -170,7 +173,7 @@ export async function processUserContentMentions({
 								onTicketActivity,
 								signal,
 							)
-							captureCommandMode(result.mode, blockIndex, 0)
+							captureParseResult(result, blockIndex, 0)
 
 							// Build content array with file blocks included
 							const contentParts: Array<{ type: "text"; text: string }> = [
@@ -215,7 +218,7 @@ export async function processUserContentMentions({
 											onTicketActivity,
 											signal,
 										)
-										captureCommandMode(result.mode, blockIndex, contentIndex)
+										captureParseResult(result, blockIndex, contentIndex)
 
 										// Build blocks array with file content
 										const blocks: Array<{ type: "text"; text: string }> = [
@@ -265,12 +268,22 @@ export async function processUserContentMentions({
 	signal?.throwIfAborted()
 	const commandMode = commandModes.sort((a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex)[0]
 		?.mode
+	const loadedSkills: LoadedMentionSkill[] = []
+	const loadedSkillPaths = new Set<string>()
+	for (const { skill } of expandedSkills.sort(
+		(a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex,
+	)) {
+		if (loadedSkillPaths.has(skill.path)) continue
+		loadedSkillPaths.add(skill.path)
+		loadedSkills.push(skill)
+	}
 
 	const result: ProcessUserContentMentionsResult = {
 		content: content as Anthropic.Messages.ContentBlockParam[],
 		mode: commandMode,
 		...(blockOrigins ? { blockOrigins } : {}),
 		deferredAttachmentParts: attachmentParts,
+		...(loadedSkills.length ? { loadedSkills } : {}),
 	}
 	return deferAttachmentBudget ? result : finalizeUserContentMentionAttachments([result])[0]!
 }

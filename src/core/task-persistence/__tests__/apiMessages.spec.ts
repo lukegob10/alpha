@@ -135,6 +135,13 @@ describe("apiMessages.readApiMessages", () => {
 					{ type: "redacted_thinking", data: "opaque-redacted" },
 					{ type: "thoughtSignature", thoughtSignature: "gemini-signature" },
 					{ type: "future_provider_block", opaque: { state: [1, 2] } },
+					{
+						type: "vscode_lm_thinking",
+						value: ["visible", "summary"],
+						id: "host-1",
+						metadata: { signature: "opaque-host" },
+					},
+					{ type: "vscode_lm_thinking", value: "", metadata: { vscode_reasoning_done: true } },
 					{ type: "text", text: "Answer." },
 				],
 				reasoning_details: [{ type: "future_provider_reasoning", opaque: { state: [1, 2] } }],

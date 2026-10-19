@@ -1,4 +1,4 @@
-import { taskGoalUsageReceiptsSchema } from "@alpha-code/types"
+import { snapshotVscodeLmThinking, taskGoalUsageReceiptsSchema } from "@alpha-code/types"
 
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
 import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
@@ -65,6 +65,11 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 				throw error
 			}
 			switch (block.type) {
+				case "vscode_lm_thinking":
+					if (candidate.role !== "assistant" || !snapshotVscodeLmThinking(block)) {
+						return `${blockLocation} has invalid VS Code thinking`
+					}
+					break
 				case "text":
 					if (typeof block.text !== "string") return `${blockLocation} has invalid text`
 					break

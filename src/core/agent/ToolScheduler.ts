@@ -12,7 +12,6 @@ import {
 } from "../auto-approval/taskSessionApprovalGrants"
 import { createPersistentCommandPrefixAmendment } from "../auto-approval/commandApprovalAmendment"
 import { assessCommandPaths } from "../auto-approval/commandPathScope"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 
 import { toolApprovalDecisionSchema, toolApprovalRequestSchema } from "@alpha-code/types"
 import type { AlphaAsk, AlphaSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
@@ -2045,7 +2044,7 @@ export class ToolScheduler {
 		const requestedArgumentsValue = argumentsValue
 		const requestedCanonicalName = canonicalName
 		if (canonicalName === "exec_command" && typeof argumentsValue.command === "string") {
-			const command = unescapeHtmlEntities(argumentsValue.command)
+			const command = argumentsValue.command
 			if (isCommandDeniedByPolicy(this.options.policy, command)) {
 				prepared.validationError = "This command is denied by the current execution policy."
 				prepared.preparationDenied = true
@@ -2118,11 +2117,7 @@ export class ToolScheduler {
 				const taskRoot = this.executionHost.cwd ?? ""
 				const roots = this.options.policy?.execution.workspaceRoots
 				const commandCwd = path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : ".")
-				const scope = assessCommandPaths(
-					unescapeHtmlEntities(args.command),
-					commandCwd,
-					roots?.length ? roots : [taskRoot],
-				)
+				const scope = assessCommandPaths(args.command, commandCwd, roots?.length ? roots : [taskRoot])
 				pathArguments.push(...scope.writePaths)
 				const outsidePaths = !isPathAllowed(this.options.policy, commandCwd, taskRoot)
 					? [...new Set([commandCwd, ...scope.outsidePaths])]

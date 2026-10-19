@@ -1,5 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
+import { snapshotVscodeLmThinking, type VscodeLmThinking } from "@alpha-code/types"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
 
@@ -34,6 +35,30 @@ type LanguageModelTextPartLike = vscode.LanguageModelTextPart | { value: string 
 type LanguageModelToolCallPartLike = vscode.LanguageModelToolCallPart | { callId: string; name: string; input: object }
 type LanguageModelToolResultPartLike = vscode.LanguageModelToolResultPart | { callId: string; content: unknown[] }
 type LanguageModelDataPartLike = vscode.LanguageModelDataPart | { mimeType: string; data: Uint8Array }
+
+function hasVsCodeLmThinkingType(value: unknown): boolean {
+	return typeof value === "object" && value !== null && "type" in value && value.type === "vscode_lm_thinking"
+}
+
+function toVsCodeLmThinkingPart(value: unknown): VscodeLmThinking | undefined {
+	if (!hasVsCodeLmThinkingType(value)) return undefined
+	const thinking = snapshotVscodeLmThinking(value)
+	if (!thinking) return undefined
+	const constructor = (
+		vscode as typeof vscode & {
+			LanguageModelThinkingPart?: new (
+				value: string | string[],
+				id?: string,
+				metadata?: VscodeLmThinking["metadata"],
+			) => VscodeLmThinking
+		}
+	).LanguageModelThinkingPart
+	// The exact host exposes this constructor at runtime, while stable typings
+	// still omit it. Unsupported hosts cannot reconstruct private provider state.
+	return typeof constructor === "function"
+		? new constructor(thinking.value, thinking.id, thinking.metadata)
+		: undefined
+}
 
 export function isLanguageModelTextPartLike(value: unknown): value is LanguageModelTextPartLike {
 	return (
@@ -145,10 +170,16 @@ export function convertToVsCodeLmMessages(
 
 			case "assistant": {
 				const contentParts: Array<
-					vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart | vscode.LanguageModelDataPart
+					| vscode.LanguageModelTextPart
+					| vscode.LanguageModelToolCallPart
+					| vscode.LanguageModelDataPart
+					| VscodeLmThinking
 				> = []
 				for (const part of anthropicMessage.content) {
-					if (part.type === "tool_use") {
+					const thinking = toVsCodeLmThinkingPart(part)
+					if (thinking) {
+						contentParts.push(thinking)
+					} else if (part.type === "tool_use") {
 						contentParts.push(
 							new vscode.LanguageModelToolCallPart(
 								part.id,
@@ -163,8 +194,24 @@ export function convertToVsCodeLmMessages(
 					}
 				}
 
+				// Unsupported host thinking must not fabricate an empty assistant turn.
+				if (
+					contentParts.length === 0 &&
+					anthropicMessage.content.length > 0 &&
+					anthropicMessage.content.every(hasVsCodeLmThinkingType)
+				) {
+					break
+				}
+
 				// Add the assistant message to the list of messages
-				vsCodeLmMessages.push(vscode.LanguageModelChatMessage.Assistant(contentParts))
+				vsCodeLmMessages.push(
+					vscode.LanguageModelChatMessage.Assistant(
+						contentParts as Exclude<
+							Parameters<typeof vscode.LanguageModelChatMessage.Assistant>[0],
+							string
+						>,
+					),
+				)
 				break
 			}
 		}

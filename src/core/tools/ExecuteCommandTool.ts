@@ -19,7 +19,6 @@ import { Task } from "../task/Task"
 import { ToolUse, ToolResponse } from "../../shared/tools"
 import { formatResponse } from "../prompts/responses"
 import { defaultModeSlug, planModeSlug } from "../../shared/modes"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import {
 	ExitCodeDetails,
 	AlphaTerminal,
@@ -793,7 +792,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const canonicalCommand = unescapeHtmlEntities(command)
+			// Native arguments already contain literal shell input; decoding changes approved intent.
+			const canonicalCommand = command
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
 			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)

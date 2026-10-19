@@ -1,4 +1,4 @@
-import type { AssistantMessageMetadata } from "@alpha-code/types"
+import type { AssistantMessageMetadata, VscodeLmThinking } from "@alpha-code/types"
 
 /**
  * The stream boundary is intentionally provider-neutral. Providers that have
@@ -189,6 +189,8 @@ export function isApiStreamAbortError(error: unknown, signal?: AbortSignal): boo
 
 /** Semantic model output is distinct from usage, status, and structural events. */
 export function isApiStreamSemanticChunk(chunk: ApiStreamChunk): boolean {
+	// Host-only completion/signature parts carry replay state, not visible output.
+	if (chunk.type === "reasoning" && chunk.vscodeLmThinking !== undefined && chunk.text.length === 0) return false
 	return (
 		chunk.type === "text" ||
 		chunk.type === "reasoning" ||
@@ -432,6 +434,8 @@ export interface ApiStreamMessageMetadataChunk extends AssistantMessageMetadata 
 export interface ApiStreamReasoningChunk {
 	type: "reasoning"
 	text: string
+	/** Original VS Code host part; display text is a separate projection. */
+	vscodeLmThinking?: VscodeLmThinking
 	/**
 	 * Signature for the thinking block (Anthropic extended thinking).
 	 * When present, this indicates a complete thinking block that should be

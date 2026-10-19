@@ -69,6 +69,8 @@ function harness(saved: ApiMessage[], retained = false) {
 		didComplete: false,
 		taskCancellationController: new AbortController(),
 		clineMessages: [],
+		// These fixtures own their in-memory transcript storage; rewind I/O has dedicated coverage.
+		recoverConversationRewind: vi.fn(async () => undefined),
 		apiConversationHistory: retained ? structuredClone(saved) : [],
 		userMessageContent: [],
 		isTaskLoopActive: false,

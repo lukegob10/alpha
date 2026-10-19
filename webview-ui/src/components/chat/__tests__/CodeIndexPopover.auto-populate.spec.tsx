@@ -1,6 +1,6 @@
 import type { IndexingStatus } from "@alpha-code/types"
 
-import { fireEvent, render, screen } from "@src/utils/test-utils"
+import { act, cleanup, fireEvent, render, screen } from "@src/utils/test-utils"
 import { PopoverTrigger } from "@src/components/ui"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
@@ -64,6 +64,19 @@ function renderPopover(
 describe("CodeIndexPopover Vertex configuration", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.useFakeTimers({ shouldAdvanceTime: true })
+	})
+
+	afterEach(async () => {
+		try {
+			// Radix defers unmount autofocus; flush it before JSDOM restores the Node realm.
+			cleanup()
+			await act(async () => {
+				await vi.runOnlyPendingTimersAsync()
+			})
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("offers only Vertex embedding settings and populates them from active Vertex chat settings", async () => {

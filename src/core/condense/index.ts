@@ -777,6 +777,8 @@ export type SummarizeConversationOptions = {
 	beforeCompact?: () => Promise<void>
 	messages: ApiMessage[]
 	apiHandler: ApiHandler
+	/** Host-selected previous model for summary input; the current handler still owns replacement budgets. */
+	compactionApiHandler?: ApiHandler
 	systemPrompt: string
 	taskId: string
 	isAutomaticTrigger?: boolean
@@ -864,6 +866,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		alphaIgnoreController,
 	} = options
 	const signal = metadata?.signal
+	const compactionApiHandler = options.compactionApiHandler ?? apiHandler
 	signal?.throwIfAborted()
 	const countContext =
 		options.countContext ??
@@ -916,7 +919,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			"invalid_history",
 		)
 	}
-	if (!apiHandler || typeof apiHandler.createMessage !== "function") {
+	if (!apiHandler || typeof compactionApiHandler?.createMessage !== "function") {
 		return finish(
 			{ ...response, error: t("common:errors.condense_handler_invalid"), status: "no_progress" },
 			"invalid_handler",
@@ -1066,7 +1069,7 @@ ${commandBlocks}
 	// when tool blocks are present. By converting them to text, we can send the conversation for
 	// summarization without needing to pass the tools parameter.
 	const messagesWithTextToolBlocks = transformMessagesForCondensing(
-		maybeRemoveImageBlocks([...messagesToSummarize, finalRequestMessage], apiHandler),
+		maybeRemoveImageBlocks([...messagesToSummarize, finalRequestMessage], compactionApiHandler),
 	)
 
 	const requestMessages = messagesWithTextToolBlocks.map(({ role, content }) => ({ role, content }))
@@ -1100,7 +1103,7 @@ ${commandBlocks}
 	try {
 		// Historical tool blocks were converted to text above.  Do not let the
 		// active task tool registry leak into this summarization-only request.
-		const stream = apiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
+		const stream = compactionApiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
 		const iterator = stream[Symbol.asyncIterator]()
 		let reachedEof = false
 		try {
@@ -1198,7 +1201,7 @@ ${commandBlocks}
 	}
 	signal?.throwIfAborted()
 	if (streamError) return getStreamErrorResponse(streamError)
-	diagnostic.lifecycleRequired = apiHandler.streamCapabilities?.lifecycle === true
+	diagnostic.lifecycleRequired = compactionApiHandler.streamCapabilities?.lifecycle === true
 	diagnostic.completedOutcomeObserved = completedOutcomeObserved
 	diagnostic.unsuccessfulOutcome = unsuccessfulOutcome?.status
 	if (unexpectedToolOutput) {
@@ -1211,7 +1214,10 @@ ${commandBlocks}
 	// Lifecycle-capable providers promise an explicit terminal outcome, so EOF
 	// without completed evidence must fail closed. Legacy providers have no such
 	// contract and retain their established text-at-EOF behavior.
-	if (unsuccessfulOutcome || (apiHandler.streamCapabilities?.lifecycle === true && !completedOutcomeObserved)) {
+	if (
+		unsuccessfulOutcome ||
+		(compactionApiHandler.streamCapabilities?.lifecycle === true && !completedOutcomeObserved)
+	) {
 		return finish(
 			{
 				...response,

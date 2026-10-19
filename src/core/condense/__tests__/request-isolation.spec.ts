@@ -49,6 +49,68 @@ const completed: ApiStreamChunk = {
 }
 
 describe("isolated summary requests", () => {
+	it("summarizes an oversized old window with the previous model and validates the selected model's budget", async () => {
+		const { options, handler: previous } = fixture([{ type: "text", text: "Complete summary." }, completed])
+		const { handler: selected } = fixture([])
+		selected.getModel = () => ({
+			id: "smaller-model",
+			info: { contextWindow: 2_000, supportsPromptCache: false },
+		})
+		vi.mocked(selected.createMessage).mockImplementation((_system, messages) => {
+			if (JSON.stringify(messages).length > 2_000) throw new Error("context window exceeded")
+			throw new Error("Unexpected selected-model summary request")
+		})
+
+		const failed = await summarizeConversation({ ...options, apiHandler: selected })
+		expect(failed.status).toBe("no_progress")
+		expect(failed.messages).toBe(options.messages)
+		vi.mocked(selected.createMessage).mockClear()
+
+		const result = await summarizeConversation({
+			...options,
+			apiHandler: selected,
+			compactionApiHandler: previous,
+		})
+		expect(result.status).toBe("reduced")
+		expect(result.newContextTokens).toBeLessThanOrEqual(options.maxContextTokens)
+		expect(previous.createMessage).toHaveBeenCalledOnce()
+		expect(JSON.stringify(vi.mocked(previous.createMessage).mock.calls[0][1]).length).toBeGreaterThan(2_000)
+		expect(selected.createMessage).not.toHaveBeenCalled()
+		expect(previous.countTokens).not.toHaveBeenCalled()
+		expect(selected.countTokens).toHaveBeenCalled()
+	})
+
+	it("uses the compactor's lifecycle contract even when the selected handler accepts text at EOF", async () => {
+		const { options, messages, handler: previous } = fixture([{ type: "text", text: "Partial handoff." }])
+		const { handler: selected } = fixture([])
+		const result = await summarizeConversation({
+			...options,
+			apiHandler: { ...selected, streamCapabilities: undefined },
+			compactionApiHandler: previous,
+		})
+		expect(result.status).toBe("no_progress")
+		expect(result.diagnostic?.reason).toBe("incomplete_outcome")
+		expect(result.messages).toBe(messages)
+		expect(selected.createMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not adopt a previous-model summary that exceeds the selected replacement budget", async () => {
+		const {
+			options,
+			messages,
+			handler: previous,
+		} = fixture([{ type: "text", text: "Summary. ".repeat(400) }, completed])
+		const { handler: selected } = fixture([])
+		const result = await summarizeConversation({
+			...options,
+			apiHandler: selected,
+			compactionApiHandler: previous,
+		})
+		expect(result.status).toBe("no_progress")
+		expect(result.diagnostic?.reason).toBe("candidate_over_budget")
+		expect(result.messages).toBe(messages)
+	})
+
 	it("replaces live instruction and continuation metadata while retaining caller controls", async () => {
 		const { options, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
 		const controller = new AbortController()

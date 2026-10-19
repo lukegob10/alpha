@@ -55,6 +55,7 @@ import { AlphaProvider } from "./AlphaProvider"
 import { ProviderProfileRenameError, ProviderProfileSaveError } from "../config/ProviderSettingsManager"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
+import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
 	handleRequestSkills,
@@ -365,20 +366,27 @@ export const webviewMessageHandler = async (
 			return
 		}
 
-		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
-		// Determine API truncation index with timestamp fallback if exact match not found
-		let apiIndexToUse = apiConversationHistoryIndex
-		const tsThreshold = currentAlpha.clineMessages[messageIndex]?.ts
-		if (apiIndexToUse === -1 && typeof tsThreshold === "number") {
-			apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentAlpha)
-		}
-
-		if (messageIndex === -1) {
-			await vscode.window.showErrorMessage(t("common:errors.message.message_not_found", { messageTs }))
-			return
-		}
-
 		try {
+			if (!restoreCheckpoint) {
+				const abortResult = currentAlpha.abort ? undefined : await currentAlpha.abortTask()
+				await awaitTaskCancellationBoundary(currentAlpha, abortResult)
+				if (provider.getLiveTask(currentAlpha.taskId) !== currentAlpha) {
+					throw new Error("The task changed before its messages could be deleted")
+				}
+			}
+			const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
+			// Determine API truncation index with timestamp fallback if exact match not found
+			let apiIndexToUse = apiConversationHistoryIndex
+			const tsThreshold = currentAlpha.clineMessages[messageIndex]?.ts
+			if (apiIndexToUse === -1 && typeof tsThreshold === "number") {
+				apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentAlpha)
+			}
+
+			if (messageIndex === -1) {
+				await vscode.window.showErrorMessage(t("common:errors.message.message_not_found", { messageTs }))
+				return
+			}
+
 			const targetMessage = currentAlpha.clineMessages[messageIndex]
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
@@ -1469,7 +1477,7 @@ export const webviewMessageHandler = async (
 				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
 				break
 			}
-			await provider.cancelTask(message.taskId, "webview_stop")
+			await provider.cancelTask(message.taskId, "webview_stop", message.expectedTurnId)
 			break
 		case "stopIndependentTask": {
 			if (!message.parentTaskId || !message.taskId) {
@@ -3585,6 +3593,30 @@ export const webviewMessageHandler = async (
 				await postChatCommandResult("sendAndSteer", "rejected", "task_unavailable")
 				break
 			}
+			// Historical clients lack the token, so capture it before attachment resolution.
+			const expectedTurnId = parsed.data.expectedTurnId ?? provider.getAgentLifecycleSnapshot(task.taskId)?.turnId
+			const isStaleTurn = () =>
+				provider.getLiveTask(task.taskId) !== task ||
+				(expectedTurnId !== undefined &&
+					(typeof task.matchesExpectedTurn === "function"
+						? !task.matchesExpectedTurn(expectedTurnId)
+						: provider.getAgentLifecycleSnapshot(task.taskId)?.turnId !== expectedTurnId))
+			const postStaleSteeringResult = async () => {
+				// A lost ACK may be retried after its original turn completed. Its receipt
+				// remains accepted, but must not steer or refresh a successor's transcript.
+				const accepted =
+					typeof task.hasAcceptedQueuedUserMessage === "function" &&
+					(await task.hasAcceptedQueuedUserMessage(parsed.data.requestId))
+				await postChatCommandResult(
+					"sendAndSteer",
+					accepted ? "accepted" : "rejected",
+					accepted ? undefined : "stale_turn",
+				)
+			}
+			if (isStaleTurn()) {
+				await postStaleSteeringResult()
+				break
+			}
 			let resolved = { text: parsed.data.text, images: parsed.data.images ?? [] }
 			try {
 				if (resolved.images.length || textHasImageMention(resolved.text)) {
@@ -3594,9 +3626,18 @@ export const webviewMessageHandler = async (
 				await postChatCommandResult("sendAndSteer", "rejected", "image_resolution_failed")
 				break
 			}
+			if (isStaleTurn()) {
+				await postStaleSteeringResult()
+				break
+			}
 			let deliveryState: ChatCommandResult["deliveryState"]
 			try {
-				await task.steerUserMessageDurably(resolved.text, resolved.images, parsed.data.requestId)
+				await task.steerUserMessageDurably(
+					resolved.text,
+					resolved.images,
+					parsed.data.requestId,
+					expectedTurnId,
+				)
 			} catch (error) {
 				provider.log(`[webviewMessageHandler] Direct steering failed for task ${task.taskId}: ${String(error)}`)
 				// A handoff can become unavailable after durable admission. Keep that
@@ -3613,7 +3654,7 @@ export const webviewMessageHandler = async (
 					await postChatCommandResult(
 						"sendAndSteer",
 						"rejected",
-						task.hasPendingSteerMessage() ? "steer_pending" : "unknown",
+						isStaleTurn() ? "stale_turn" : task.hasPendingSteerMessage() ? "steer_pending" : "unknown",
 					)
 					break
 				}

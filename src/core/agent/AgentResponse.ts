@@ -1,4 +1,4 @@
-import type { AssistantMessageMetadata } from "@alpha-code/types"
+import type { AssistantMessageMetadata, VscodeLmThinking } from "@alpha-code/types"
 
 /**
  * Provider-neutral source information attached to a response.
@@ -58,6 +58,7 @@ export type AgentResponseItem =
 	| {
 			type: "reasoning"
 			text: string
+			vscodeLmThinking?: VscodeLmThinking
 			signature?: string
 			encryptedContent?: string
 			redactedData?: string

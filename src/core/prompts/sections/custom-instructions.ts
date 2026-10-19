@@ -40,13 +40,22 @@ function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
 	)
 }
 
-async function resolvePathWithinRoot(filePath: string, trustedRoot: string): Promise<string | undefined> {
+async function resolvePathWithinRoot(
+	filePath: string,
+	trustedRoot: string,
+	reportReadFailures = false,
+): Promise<string | undefined> {
 	try {
 		const [realRoot, realPath] = await Promise.all([fs.realpath(trustedRoot), fs.realpath(filePath)])
 		return isPathWithinRoot(realRoot, realPath) ? realPath : undefined
-	} catch {
+	} catch (error) {
+		if (reportReadFailures && !isOptionalInstructionFileError(error)) throw error
 		return undefined
 	}
+}
+
+function isOptionalInstructionFileError(error: unknown): boolean {
+	return ["ENOENT", "EISDIR", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")
 }
 
 async function safeReadFileWithinRoot(filePath: string, trustedRoot: string): Promise<string> {
@@ -454,19 +463,14 @@ async function readAgentInstructionFile(
 	budget?: ProjectInstructionBudget,
 ): Promise<{ ref: string; text: string } | undefined> {
 	if (budget && budget.remainingBytes <= 0) return undefined
-	let isSymbolicLink: boolean
 	try {
 		const metadata = await fs.lstat(filePath)
-		isSymbolicLink = metadata.isSymbolicLink()
+		const isSymbolicLink = metadata.isSymbolicLink()
 		if (!isSymbolicLink && !metadata.isFile()) return undefined
-	} catch {
-		return undefined
-	}
 
-	const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot)
-	if (!resolvedPath) return undefined
+		const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot, true)
+		if (!resolvedPath) return undefined
 
-	try {
 		// Resolving a link establishes its path scope; its target must also be a
 		// regular file so optional instruction discovery cannot block on a FIFO.
 		if (isSymbolicLink && !(await fs.stat(resolvedPath)).isFile()) return undefined
@@ -477,9 +481,14 @@ async function readAgentInstructionFile(
 		if (text) budget.remainingBytes -= bounded.bytesUsed
 		return { ref: filePath, text }
 	} catch (error) {
+		if (isOptionalInstructionFileError(error)) return undefined
 		const errorCode = (error as NodeJS.ErrnoException).code
-		if (!errorCode || !["ENOENT", "EISDIR"].includes(errorCode)) throw error
-		return undefined
+		const diagnosticCode = errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode) ? errorCode : "filesystem error"
+		// Never fall through to weaker guidance after an access or I/O failure.
+		// Include the selected source and a bounded code, not provider/OS error text.
+		throw new Error(
+			`Unable to load agent instructions from "${filePath}" (${diagnosticCode}). Check file access and try again.`,
+		)
 	}
 }
 
@@ -500,12 +509,8 @@ async function readPreferredAgentRulesFile(
 	]
 	for (const filename of new Set(filenames)) {
 		const ref = path.join(directory, filename)
-		try {
-			const source = await readAgentInstructionFile(ref, trustedRoot, budget)
-			if (source) return source
-		} catch {
-			// Optional instruction files are best effort, like existing Alpha rules.
-		}
+		const source = await readAgentInstructionFile(ref, trustedRoot, budget)
+		if (source) return source
 	}
 
 	return undefined
@@ -547,22 +552,18 @@ async function loadAgentRulesFileFromDirectory(
 	}
 
 	// Always try to load AGENTS.local.md for personal overrides (even if AGENTS.md doesn't exist)
-	try {
-		const localFilename = "AGENTS.local.md"
-		const localPath = path.join(directory, localFilename)
-		const localFile =
-			standard?.ref === localPath
-				? undefined
-				: await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
+	const localFilename = "AGENTS.local.md"
+	const localPath = path.join(directory, localFilename)
+	const localFile =
+		standard?.ref === localPath
+			? undefined
+			: await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
 
-		if (localFile?.text) {
-			const localHeader = showPath
-				? `# Agent Rules Local (${localFilename}) from ${displayPath}:`
-				: `# Agent Rules Local (${localFilename}):`
-			results.push(`${localHeader}\n${localFile.text}`)
-		}
-	} catch (err) {
-		// Silently ignore errors - local agent rules file is optional
+	if (localFile?.text) {
+		const localHeader = showPath
+			? `# Agent Rules Local (${localFilename}) from ${displayPath}:`
+			: `# Agent Rules Local (${localFilename}):`
+		results.push(`${localHeader}\n${localFile.text}`)
 	}
 
 	return results.join("\n\n")

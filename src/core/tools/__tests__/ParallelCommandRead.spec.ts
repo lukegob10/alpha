@@ -9,6 +9,7 @@ import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
 import { classifyCommandRead, isParallelCommandReadReady } from "../ParallelCommandRead"
 import { AlphaIgnoreController } from "../../ignore/AlphaIgnoreController"
 import { AlphaProtectedController } from "../../protect/AlphaProtectedController"
+import { executeCommandTool } from "../ExecuteCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 
 const platform = vi.hoisted(() => ({ resolveRipgrep: vi.fn() }))
@@ -188,6 +189,38 @@ describe("command-read classification and session execution boundary", () => {
 			}
 		},
 	)
+
+	it("approves the same literal rg command captured for parallel execution", async () => {
+		const command = "rg -F '&amp;amp; &lt;tag&gt; &quot;quoted&quot;' src/example.ts"
+		const { policy: capturedPolicy } = native(command)
+		const prepared = await prepareWithRegistry(context, capturedPolicy)
+		try {
+			expect(prepared?.run).toBeTypeOf("function")
+			expect(context.callbacks.askCommandApproval).toHaveBeenCalledWith("command", command)
+			expect(context.task.getCommandExecutionEvidence()).toEqual([expect.objectContaining({ command })])
+			expect(execa).not.toHaveBeenCalled()
+		} finally {
+			await prepared?.dispose?.()
+		}
+	})
+
+	it("preserves literal entity text in prepared rg direct argv", async () => {
+		const command = "rg -F '&amp;amp; &lt;tag&gt; &quot;quoted&quot;' src/example.ts"
+		const { args, policy: capturedPolicy } = native(command)
+		const prepare = vi.spyOn(executeCommandTool, "prepareApprovedRead").mockResolvedValue(undefined)
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(true)
+		await prepareWithRegistry(context, capturedPolicy)
+		expect(prepare).toHaveBeenCalledOnce()
+		const [params, , , options] = prepare.mock.calls[0]
+		expect(params.command).toBe(command)
+		expect(options.directCommand?.executable).toBe(executable)
+		expect(options.directCommand?.args).toEqual([
+			"--no-config",
+			"-F",
+			"&amp;amp; &lt;tag&gt; &quot;quoted&quot;",
+			"src/example.ts",
+		])
+	})
 
 	it("allows the exact explicit target while a real nonempty ignore policy blocks an rg directory traversal", async () => {
 		await fs.writeFile(path.join(root, ".alphaignore"), "src/hidden.txt\n")

@@ -11,6 +11,13 @@ vi.mock("vscode", () => {
 	class TextPart {
 		constructor(public value: string) {}
 	}
+	class ThinkingPart {
+		constructor(
+			public value: string | string[],
+			public id?: string,
+			public metadata?: Record<string, unknown>,
+		) {}
+	}
 	class ToolPart {
 		constructor(
 			public callId: string,
@@ -48,6 +55,7 @@ vi.mock("vscode", () => {
 		},
 		lm: { selectChatModels, onDidChangeChatModels: vi.fn(() => ({ dispose() {} })) },
 		LanguageModelTextPart: TextPart,
+		LanguageModelThinkingPart: ThinkingPart,
 		LanguageModelToolCallPart: ToolPart,
 		LanguageModelToolResultPart: ResultPart,
 		LanguageModelDataPart: DataPart,
@@ -82,6 +90,7 @@ const client = {
 	countTokens: vi.fn(),
 	sendRequest,
 }
+const modelProvenance = { modelId: client.id, modelVendor: client.vendor, modelVersion: client.version }
 const tools = [
 	{
 		type: "function" as const,
@@ -128,6 +137,333 @@ describe("VS Code LM canonical contracts", () => {
 	afterEach(() => {
 		vi.mocked(vscode.lm.onDidChangeChatModels).mock.calls[0]?.[0]()
 		handler.dispose()
+	})
+
+	it("preserves every host thinking part in order with text and tool calls", async () => {
+		const firstThinking = {
+			value: "Inspect the request",
+			id: "segment-1",
+			metadata: { signature: "sig-1" },
+			modelId: "untrusted-response-route",
+			modelVendor: "untrusted-response-vendor",
+			modelVersion: "untrusted-response-version",
+		}
+		const arrayThinking = {
+			value: ["Check", "the result"],
+			id: "segment-2",
+			metadata: { provider: { signature: "sig-2", flags: [true, null] } },
+		}
+		const signatureOnly = { value: [], id: "segment-2", metadata: { signature: "sig-3" } }
+		const done = { value: "", id: "segment-2", metadata: { done: true } }
+		const { chunks } = await observe([
+			firstThinking,
+			new vscode.LanguageModelTextPart("Reading the file."),
+			new vscode.LanguageModelToolCallPart("read-1", "read_file", { path: "README.md" }),
+			arrayThinking,
+			signatureOnly,
+			done,
+			new vscode.LanguageModelTextPart("Complete."),
+		])
+
+		expect(chunks.filter((chunk) => chunk.type !== "usage")).toEqual([
+			{
+				type: "reasoning",
+				text: "Inspect the request",
+				vscodeLmThinking: { ...firstThinking, ...modelProvenance },
+			},
+			{ type: "text", text: "Reading the file." },
+			{ type: "tool_call", id: "read-1", name: "read_file", arguments: '{"path":"README.md"}' },
+			{ type: "tool_call_end", id: "read-1" },
+			{
+				type: "reasoning",
+				text: "Check\nthe result",
+				vscodeLmThinking: { ...arrayThinking, ...modelProvenance },
+			},
+			{ type: "reasoning", text: "", vscodeLmThinking: { ...signatureOnly, ...modelProvenance } },
+			{ type: "reasoning", text: "", vscodeLmThinking: { ...done, ...modelProvenance } },
+			{ type: "text", text: "Complete." },
+		])
+	})
+
+	it("snapshots host thinking before the provider reuses its value or metadata objects", async () => {
+		const part = {
+			value: ["First"],
+			id: "first-id",
+			metadata: { provider: { signature: "first-signature", flags: [true] } },
+		}
+		sendRequest.mockResolvedValueOnce(response([part, part]))
+		const stream = handler.createMessage("Instructions", messages)
+		try {
+			const first = await stream.next()
+			part.value.push("Second")
+			part.id = "second-id"
+			part.metadata.provider.signature = "second-signature"
+			part.metadata.provider.flags.push(false)
+			const second = await stream.next()
+
+			expect(first.value).toEqual({
+				type: "reasoning",
+				text: "First",
+				vscodeLmThinking: {
+					value: ["First"],
+					id: "first-id",
+					metadata: { provider: { signature: "first-signature", flags: [true] } },
+					...modelProvenance,
+				},
+			})
+			expect(second.value).toEqual({
+				type: "reasoning",
+				text: "First\nSecond",
+				vscodeLmThinking: { ...part, ...modelProvenance },
+			})
+		} finally {
+			await stream.return(undefined)
+		}
+	})
+
+	it("replays matching and legacy thinking while excluding known model, vendor, and version mismatches", async () => {
+		const marker = new TextEncoder().encode("continuation-marker")
+		const matching = {
+			type: "vscode_lm_thinking",
+			value: ["Current", "model"],
+			id: "matching-thinking",
+			metadata: { signature: "matching-signature" },
+			...modelProvenance,
+		}
+		const foreign = {
+			type: "vscode_lm_thinking",
+			value: "Another model's reasoning",
+			id: "foreign-thinking",
+			metadata: { signature: "foreign-signature" },
+			modelId: "different-host-route",
+		}
+		const foreignVendor = {
+			...matching,
+			id: "foreign-vendor-thinking",
+			metadata: { signature: "foreign-vendor-signature" },
+			modelVendor: "different-provider",
+		}
+		const foreignVersion = {
+			...matching,
+			id: "foreign-version-thinking",
+			metadata: { signature: "foreign-version-signature" },
+			modelVersion: "different-provider-version",
+		}
+		const legacy = {
+			type: "vscode_lm_thinking",
+			value: "",
+			id: "legacy-thinking",
+			metadata: { signature: "legacy-signature" },
+		}
+		const history = [
+			...messages,
+			{
+				role: "assistant",
+				content: [
+					matching,
+					{ type: "text", text: "Reading the file." },
+					foreign,
+					foreignVendor,
+					foreignVersion,
+					{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "README.md" } },
+					legacy,
+				],
+				vscodeLmStatefulMarker: Buffer.from(marker).toString("base64"),
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "read-1", content: "Read completed." }],
+			},
+		] as Anthropic.Messages.MessageParam[]
+		const savedHistory = structuredClone(history)
+		sendRequest.mockResolvedValueOnce(response([new vscode.LanguageModelTextPart("Complete.")]))
+
+		await collectAgentResponse(handler.createMessage("Instructions", history, { taskId: "lm-contract", tools }))
+
+		const projected = sendRequest.mock.calls[0]![0] as vscode.LanguageModelChatMessage[]
+		const assistant = projected.find((message) => String(message.role) === "assistant")!
+		expect(assistant.content).toEqual([
+			expect.objectContaining({ value: matching.value, id: matching.id, metadata: matching.metadata }),
+			expect.objectContaining({ value: "Reading the file." }),
+			expect.objectContaining({ callId: "read-1", name: "read_file", input: { path: "README.md" } }),
+			expect.objectContaining({ value: legacy.value, id: legacy.id, metadata: legacy.metadata }),
+			expect.objectContaining({ mimeType: "stateful_marker", data: expect.any(Uint8Array) }),
+		])
+		expect(Array.from((assistant.content.at(-1) as vscode.LanguageModelDataPart).data)).toEqual(Array.from(marker))
+		expect(assistant.content[0]).toBeInstanceOf(Reflect.get(vscode, "LanguageModelThinkingPart"))
+		expect(assistant.content[3]).toBeInstanceOf(Reflect.get(vscode, "LanguageModelThinkingPart"))
+		expect(assistant.content[0]).not.toHaveProperty("modelId")
+		expect(assistant.content[0]).not.toHaveProperty("modelVendor")
+		expect(assistant.content[0]).not.toHaveProperty("modelVersion")
+		expect(JSON.stringify(projected)).not.toContain("foreign-thinking")
+		expect(JSON.stringify(projected)).not.toContain("foreign-signature")
+		expect(JSON.stringify(projected)).not.toContain("foreign-vendor-thinking")
+		expect(JSON.stringify(projected)).not.toContain("foreign-vendor-signature")
+		expect(JSON.stringify(projected)).not.toContain("foreign-version-thinking")
+		expect(JSON.stringify(projected)).not.toContain("foreign-version-signature")
+		expect(projected.at(-1)?.content).toContainEqual(expect.objectContaining({ callId: "read-1" }))
+		expect(history).toEqual(savedHistory)
+	})
+
+	it.each(["circular", "bigint", "array", "primitive", "invalid-id"])(
+		"keeps visible reasoning when %s thinking state cannot be persisted",
+		async (variant) => {
+			const circular: Record<string, unknown> = {}
+			circular.self = circular
+			const metadata =
+				variant === "circular"
+					? circular
+					: variant === "bigint"
+						? { signature: 1n }
+						: variant === "array"
+							? []
+							: variant === "primitive"
+								? "invalid metadata"
+								: { signature: "valid" }
+			const id = variant === "invalid-id" ? 123 : "segment"
+			const { chunks } = await observe([
+				{ value: ["Visible", "reasoning"], id, metadata },
+				{ value: "", id, metadata },
+				new vscode.LanguageModelTextPart("Complete."),
+			])
+
+			expect(chunks.filter((chunk) => chunk.type !== "usage")).toEqual([
+				{ type: "reasoning", text: "Visible\nreasoning" },
+				{ type: "text", text: "Complete." },
+			])
+		},
+	)
+
+	it("keeps metadata-only thinking separate from semantic output for empty-response recovery", async () => {
+		const part = { value: "", id: "segment", metadata: { signature: "signature-only" } }
+		sendRequest.mockResolvedValueOnce({
+			stream: (async function* () {
+				yield part
+				throw new Error("Response contained no choices.")
+			})(),
+		})
+		const stream = handler.createMessage("Instructions", messages)
+		expect((await stream.next()).value).toEqual({
+			type: "reasoning",
+			text: "",
+			vscodeLmThinking: { ...part, ...modelProvenance },
+		})
+		await expect(stream.next()).rejects.toMatchObject({
+			retryCategory: "empty-response",
+			retryable: true,
+			semanticOutputObserved: false,
+		})
+	})
+
+	it("retains terminal host usage when followed by metadata-only thinking", async () => {
+		const { chunks } = await observe([
+			new vscode.LanguageModelTextPart("Complete."),
+			new vscode.LanguageModelDataPart(
+				new TextEncoder().encode(JSON.stringify({ prompt_tokens: 321, completion_tokens: 45 })),
+				"usage",
+			),
+			{ value: "", id: "segment", metadata: { signature: "terminal-signature" } },
+		])
+		expect(chunks.at(-1)).toEqual({
+			type: "usage",
+			usageSource: "provider",
+			inputTokens: 321,
+			outputTokens: 45,
+		})
+	})
+
+	it("isolates thinking and opaque state when a cancelled request is followed by a stalled successor", async () => {
+		vi.useFakeTimers()
+		const oldMarker = new TextEncoder().encode("cancelled-state")
+		const newMarker = new TextEncoder().encode("successor-state")
+		const oldThinking = { value: "Old reasoning", id: "old", metadata: { signature: "old-signature" } }
+		const newThinking = { value: "", id: "new", metadata: { signature: "new-signature" } }
+		const oldController = new AbortController()
+		let releaseOldRead!: (value: IteratorResult<unknown>) => void
+		const oldReadGate = new Promise<IteratorResult<unknown>>((resolve) => {
+			releaseOldRead = resolve
+		})
+		let oldReadStarted!: () => void
+		const oldReading = new Promise<void>((resolve) => {
+			oldReadStarted = resolve
+		})
+		let newReadStarted!: () => void
+		const newReading = new Promise<void>((resolve) => {
+			newReadStarted = resolve
+		})
+		const oldParts = [oldThinking, new vscode.LanguageModelDataPart(oldMarker, "stateful_marker")]
+		const oldIterator = {
+			[Symbol.asyncIterator]() {
+				return this
+			},
+			next() {
+				if (oldParts.length > 0) return Promise.resolve({ done: false as const, value: oldParts.shift() })
+				oldReadStarted()
+				return oldReadGate
+			},
+			return: vi.fn(async () => ({ done: true as const, value: undefined })),
+		}
+		const newParts = [new vscode.LanguageModelDataPart(newMarker, "stateful_marker"), newThinking]
+		const newIterator = {
+			[Symbol.asyncIterator]() {
+				return this
+			},
+			next() {
+				if (newParts.length > 0) return Promise.resolve({ done: false as const, value: newParts.shift() })
+				newReadStarted()
+				return new Promise<IteratorResult<unknown>>(() => undefined)
+			},
+			return: vi.fn(async () => ({ done: true as const, value: undefined })),
+		}
+		sendRequest.mockResolvedValueOnce({ stream: oldIterator }).mockResolvedValueOnce({ stream: newIterator })
+		try {
+			const oldStream = handler.createMessage("Instructions", messages, {
+				taskId: "cancelled-task",
+				signal: oldController.signal,
+			})
+			expect((await oldStream.next()).value).toEqual({
+				type: "reasoning",
+				text: "Old reasoning",
+				vscodeLmThinking: { ...oldThinking, ...modelProvenance },
+			})
+			const oldPending = oldStream.next().catch((error: unknown) => error)
+			await oldReading
+			oldController.abort()
+
+			const successor = handler.createMessage("Instructions", messages, {
+				taskId: "successor-task",
+				deadline: Date.now() + 1_000,
+			})
+			expect((await successor.next()).value).toEqual({
+				type: "reasoning",
+				text: "",
+				vscodeLmThinking: { ...newThinking, ...modelProvenance },
+			})
+			expect(await oldPending).toMatchObject({ message: expect.stringContaining("Request cancelled by user") })
+			expect(cancellationSources[1]!.token.isCancellationRequested).toBe(false)
+			expect(handler.getStatefulMarker()).toBeUndefined()
+			releaseOldRead({ done: false, value: oldThinking })
+
+			const stalledRead = successor.next()
+			const rejected = expect(stalledRead).rejects.toMatchObject({
+				name: "ApiStreamDeadlineError",
+				phase: "response-stream",
+			})
+			await newReading
+			await vi.advanceTimersByTimeAsync(1_000)
+			await rejected
+			expect(handler.getStatefulMarker()).toBe(Buffer.from(newMarker).toString("base64"))
+			expect(oldIterator.return).toHaveBeenCalledOnce()
+			expect(newIterator.return).toHaveBeenCalledOnce()
+			expect(vi.getTimerCount()).toBe(0)
+
+			const { chunks } = await observe([new vscode.LanguageModelTextPart("Recovered.")])
+			expect(chunks.filter((chunk) => chunk.type !== "usage")).toEqual([{ type: "text", text: "Recovered." }])
+			expect(handler.getStatefulMarker()).toBeUndefined()
+		} finally {
+			releaseOldRead({ done: true, value: undefined })
+			vi.useRealTimers()
+		}
 	})
 
 	it.each(["missing-id", "missing-name", "null-input", "array-input", "unserializable-input"])(

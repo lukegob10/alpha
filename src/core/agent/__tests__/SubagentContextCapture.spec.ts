@@ -344,6 +344,57 @@ describe("native sub-agent conversation forks", () => {
 		expect(serializeSubagentContextManifest(captured.manifest)).not.toContain("OLDEST_")
 	})
 
+	it.each(["all", "1"] as const)(
+		"preserves partial answers and their phase through a %s fork and nested reload",
+		(forkTurns) => {
+			const nativeHistory: ApiMessage[] = [
+				{ role: "user", content: "Investigate the issue" },
+				{ role: "assistant", content: "The first confirmed finding", phase: "partial_answer" },
+				{ role: "assistant", content: "Still investigating", phase: "commentary" },
+				{ role: "assistant", content: "Final finding", phase: "final_answer" },
+				{
+					role: "assistant",
+					phase: "partial_answer",
+					content: [
+						{
+							type: "tool_use",
+							id: "completion",
+							name: "attempt_completion",
+							input: { result: "Unaccepted report" },
+						},
+					],
+				},
+			]
+			const original = structuredClone(nativeHistory)
+			const captured = captureNative(forkTurns, nativeHistory, forkTurns === "all" ? [] : [1], {
+				...route,
+				modelId: "other-model",
+			})
+			if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+			expect(captured.historyFork.messages).toEqual([
+				{ role: "user", content: "Investigate the issue", input_origin: "agent" },
+				{
+					role: "assistant",
+					content: "The first confirmed finding",
+					phase: "partial_answer",
+					input_origin: "agent",
+				},
+				{ role: "assistant", content: "Final finding", phase: "final_answer", input_origin: "agent" },
+			])
+			expect(captured.historyFork.requiresContextRebuild).toBe(true)
+			expect(captured.selectedTurns[0].sourceMessageIndexes).toEqual([0, 1, 3])
+			expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+			const restored = JSON.parse(JSON.stringify(captured.historyFork))
+			expect(() =>
+				assertSubagentHistoryFork(restored, JSON.parse(serializeSubagentContextManifest(captured.manifest))),
+			).not.toThrow()
+			const nested = captureNative("all", restored.messages)
+			if (nested.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+			expect(nested.historyFork.messages).toEqual(captured.historyFork.messages)
+			expect(nativeHistory).toEqual(original)
+		},
+	)
+
 	it("filters paired and partial tool traffic, reasoning and unclassified assistant chatter", () => {
 		const nativeHistory: ApiMessage[] = [
 			{ role: "user", content: "First request" },
