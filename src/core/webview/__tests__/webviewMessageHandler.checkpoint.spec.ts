@@ -3,6 +3,7 @@ import { webviewMessageHandler } from "../webviewMessageHandler"
 import { saveTaskMessages } from "../../task-persistence"
 import { handleCheckpointRestoreOperation } from "../checkpointRestoreHandler"
 import { MessageManager } from "../../message-manager"
+import type { Task } from "../../task/Task"
 
 // Mock dependencies
 vi.mock("../../task-persistence")
@@ -41,11 +42,21 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 		}
+		mockAlphaTask.abortTask = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.waitForTermination = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.commitConversationRewind = vi.fn(
+			async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+				await mockAlphaTask.overwriteAlphaMessages(uiMessages)
+				await mockAlphaTask.overwriteApiConversationHistory(apiHistory)
+				return true
+			},
+		)
 		mockAlphaTask.messageManager = new MessageManager(mockAlphaTask)
 
 		// Setup mock provider
 		mockProvider = {
 			getCurrentTask: vi.fn(() => mockAlphaTask),
+			getLiveTask: vi.fn(() => mockAlphaTask),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
 				historyItem: { id: "test-task-123", messages: mockAlphaTask.clineMessages },

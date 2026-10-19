@@ -3,6 +3,7 @@ import { webviewMessageHandler } from "../webviewMessageHandler"
 import * as vscode from "vscode"
 import { AlphaProvider } from "../AlphaProvider"
 import { MessageManager } from "../../message-manager"
+import type { Task } from "../../task/Task"
 
 // Mock the saveTaskMessages function
 vi.mock("../../task-persistence", () => ({
@@ -66,11 +67,21 @@ describe("webviewMessageHandler delete functionality", () => {
 		}
 		// Add messageManager using a real MessageManager instance (must be added after object creation
 		// to avoid circular reference issues with 'this')
+		getCurrentTaskMock.abortTask = vi.fn().mockResolvedValue(undefined)
+		getCurrentTaskMock.waitForTermination = vi.fn().mockResolvedValue(undefined)
+		getCurrentTaskMock.commitConversationRewind = vi.fn(
+			async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+				await getCurrentTaskMock.overwriteAlphaMessages(uiMessages)
+				await getCurrentTaskMock.overwriteApiConversationHistory(apiHistory)
+				return true
+			},
+		)
 		getCurrentTaskMock.messageManager = new MessageManager(getCurrentTaskMock as any)
 
 		// Create mock provider
 		provider = {
 			getCurrentTask: vi.fn(() => getCurrentTaskMock),
+			getLiveTask: vi.fn(() => getCurrentTaskMock),
 			postMessageToWebview: vi.fn(),
 			contextProxy: {
 				getValue: vi.fn(),

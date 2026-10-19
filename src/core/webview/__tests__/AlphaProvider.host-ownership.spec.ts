@@ -424,7 +424,7 @@ describe("AlphaProvider host ownership", () => {
 		await borrower.focusTask(task.taskId)
 		const cancel = vi.spyOn(owner, "cancelTask").mockResolvedValue(undefined)
 		await borrower.cancelTask(task.taskId, "webview_stop")
-		expect(cancel).toHaveBeenCalledWith(task.taskId, "webview_stop")
+		expect(cancel).toHaveBeenCalledWith(task.taskId, "webview_stop", undefined)
 		expect(owner.getActiveTaskId()).toBe(other.taskId)
 		expect(borrower.getActiveTaskId()).toBe(task.taskId)
 	})
