@@ -164,7 +164,7 @@ suite("Rendered native question wizard", function () {
 	this.timeout(240_000)
 	test("preserves drafts, sends one packet, and keeps full receipts after task and webview reload", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const original = api.getConfiguration()

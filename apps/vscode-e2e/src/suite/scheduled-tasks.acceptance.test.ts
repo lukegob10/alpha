@@ -27,7 +27,7 @@ type ScheduledTaskHost = {
 }
 
 function host() {
-	assert.equal(vscode.version, "1.125.0")
+	assert.equal(vscode.version, "1.138.0")
 	assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE
 	assert.ok(workspace)

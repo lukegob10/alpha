@@ -212,7 +212,7 @@ export async function exerciseRenderedComposer(
 					await fs.readFile(path.join(directory, "ui-composer-editor-ready.json"), "utf8"),
 				)
 				assert.equal(receipt.nonce, nonce)
-				assert.equal(receipt.version, "1.125.0")
+				assert.equal(receipt.version, "1.138.0")
 				return true
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") return false

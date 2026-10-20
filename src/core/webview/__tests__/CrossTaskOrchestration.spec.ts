@@ -203,6 +203,53 @@ describe("Cross-task orchestration host", () => {
 		expect(created).toMatchObject({ task_id: "child-1", objective: "Inspect parser", lifecycle: "running" })
 	})
 
+	it("inherits the host presentation-call opt-out when creating an independent peer", async () => {
+		const { provider, internals, tasks, metadata } = createProviderFixture()
+		const parent = createTask({ presentationModelCalls: false })
+		const child = createTask({
+			taskId: "governed-peer",
+			orchestrationParentTaskId: parent.taskId,
+			presentationModelCalls: false,
+		})
+		tasks.set(parent.taskId, parent)
+		metadata.set(child.taskId, { id: child.taskId, lifecycle: TaskLifecycleState.Running })
+		internals.createTask = vi.fn(async () => child)
+
+		await provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared")
+
+		expect(internals.createTask).toHaveBeenCalledWith(
+			"Inspect parser",
+			undefined,
+			undefined,
+			expect.objectContaining({ presentationModelCalls: false }),
+		)
+	})
+
+	it.each(["caller", "source", "saved"])(
+		"preserves presentation-call suppression from the %s in a cold fork's history",
+		async (source) => {
+			const { provider, tasks, history } = createProviderFixture()
+			const caller = createTask({ ...(source === "caller" ? { presentationModelCalls: false } : {}) })
+			const peer = createTask({
+				taskId: "peer",
+				isCompleted: () => true,
+				isTurnActive: () => false,
+				apiConversationHistory: [{ role: "user", content: "Inspect parser", ts: 10 }],
+				...(source === "source" ? { presentationModelCalls: false } : {}),
+			})
+			tasks.set(peer.taskId, peer)
+			history.set(peer.taskId, {
+				...taskHistoryItem(peer.taskId, "original-parent"),
+				status: "completed",
+				...(source === "saved" ? { presentationModelCalls: false } : {}),
+			})
+
+			const fork = await provider.forkIndependentTask(caller as unknown as Task, peer.taskId)
+
+			expect(history.get(fork.task_id)).toHaveProperty("presentationModelCalls", false)
+		},
+	)
+
 	it("permanently stops a child if the create call is cancelled after the child starts", async () => {
 		const { provider, internals, tasks, history, metadata } = createProviderFixture()
 		const parent = createTask()

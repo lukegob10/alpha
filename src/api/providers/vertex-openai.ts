@@ -8,8 +8,9 @@ import {
 } from "@alpha-code/types"
 
 import type { ApiHandlerOptions } from "../../shared/api"
-import type { ApiHandlerCreateMessageMetadata } from "../index"
+import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadata } from "../index"
 import type { ApiStream, ApiStreamCapabilities } from "../transform/stream"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { OpenAiHandler } from "./openai"
@@ -119,14 +120,16 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 		}
 	}
 
-	override async completePrompt(prompt: string): Promise<string> {
+	override async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
+		throwIfSingleCompletionAborted(metadata)
 		let didRetryForAuth = false
 
 		while (true) {
 			try {
-				await this.prepareClient(didRetryForAuth)
-				return await super.completePrompt(prompt)
+				await this.prepareClient(didRetryForAuth, metadata)
+				return await super.completePrompt(prompt, metadata)
 			} catch (error) {
+				throwIfSingleCompletionAborted(metadata)
 				if (!didRetryForAuth && isAuthenticationFailure(error)) {
 					didRetryForAuth = true
 					continue
@@ -137,18 +140,30 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 		}
 	}
 
-	private async prepareClient(forceTokenRefresh: boolean): Promise<void> {
+	private async prepareClient(
+		forceTokenRefresh: boolean,
+		metadata?: ApiHandlerSingleCompletionMetadata,
+	): Promise<void> {
+		throwIfSingleCompletionAborted(metadata)
 		if (!this.transportSetupPromise) {
 			this.transportSetupPromise = configureVertexGatewayTransport(this.vertexSettings.pemCaBundlePath).then(
 				() => undefined,
 			)
 		}
 
-		await this.transportSetupPromise
+		const transportSetup = this.transportSetupPromise
+		await awaitSingleCompletion(
+			transportSetup.catch((error) => {
+				if (this.transportSetupPromise === transportSetup) this.transportSetupPromise = undefined
+				throw error
+			}),
+			metadata,
+		)
 
-		const token = forceTokenRefresh
-			? await this.helixTokenManager.forceRefreshToken()
-			: await this.helixTokenManager.getToken()
+		const token = await awaitSingleCompletion(
+			forceTokenRefresh ? this.helixTokenManager.forceRefreshToken() : this.helixTokenManager.getToken(),
+			metadata,
+		)
 
 		if (token === this.activeToken) {
 			return

@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 import delay from "delay"
 
-import type { CommandId } from "@alpha-code/types"
+import { editorChatStateSchema, type CommandId, type EditorChatState } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Package } from "../shared/package"
@@ -10,10 +10,10 @@ import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { ContextProxy } from "../core/config/ContextProxy"
 import { focusPanel } from "../utils/focusPanel"
 import { handleNewTask } from "./handleTask"
-import { CodeIndexManager } from "../services/code-index/manager"
 import { importSettingsWithFeedback } from "../core/config/importExport"
 import { t } from "../i18n"
 import { manageTaskGoal } from "./goalCommands"
+import { generateErrorDiagnostics } from "../core/webview/diagnosticsHandler"
 
 /**
  * Helper to get the visible AlphaProvider instance or log if not found.
@@ -161,6 +161,22 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		visibleProvider.postMessageToWebview({ type: "action", action: "marketplaceButtonClicked" })
 	},
 	newTask: handleNewTask,
+	exportDiagnostics: async () => {
+		const visibleProvider = getVisibleProviderOrLog(outputChannel)
+		if (!visibleProvider) return
+		const task = visibleProvider.getCurrentTask()
+		if (!task) {
+			await vscode.window.showInformationMessage(t("common:diagnostics.noTask"))
+			return
+		}
+		await generateErrorDiagnostics({
+			taskId: task.taskId,
+			globalStoragePath: visibleProvider.contextProxy.globalStorageUri.fsPath,
+			extension: visibleProvider.context.extension,
+			getRuntimeDiagnostics: () => visibleProvider.getTaskSettlementDiagnostics(task),
+			log: (message) => visibleProvider.log(message),
+		})
+	},
 	manageGoal: async (surface?: string) => {
 		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
 		if (visibleProvider) await manageTaskGoal(visibleProvider)
@@ -255,15 +271,81 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	},
 })
 
-export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<RegisterCommandOptions, "provider">) => {
-	// (This example uses webviewProvider activation event which is necessary to
-	// deserialize cached webview, but since we use retainContextWhenHidden, we
-	// don't need to use that event).
-	// https://github.com/microsoft/vscode-extension-samples/blob/main/webview-sample/src/extension.ts
-	const contextProxy = await ContextProxy.getInstance(context)
-	const codeIndexManager = CodeIndexManager.getInstance(context)
+class EditorPanelClosedError extends Error {}
 
-	const tabProvider = new AlphaProvider(context, outputChannel, "editor", contextProxy)
+async function attachAlphaEditorPanel(
+	{ context, outputChannel }: Omit<RegisterCommandOptions, "provider">,
+	panel: vscode.WebviewPanel,
+	state?: EditorChatState,
+): Promise<AlphaProvider> {
+	let closed = false
+	let provider: AlphaProvider | undefined
+	context.subscriptions.push(
+		panel.onDidDispose(() => {
+			closed = true
+			if (getPanel() === panel) setPanel(undefined, "tab")
+			void provider?.dispose().catch(() => outputChannel.appendLine("Failed to dispose editor chat provider"))
+		}),
+	)
+	try {
+		const contextProxy = await ContextProxy.getInstance(context)
+		if (closed) throw new EditorPanelClosedError()
+		provider = new AlphaProvider(context, outputChannel, "editor", contextProxy)
+		panel.iconPath = {
+			light: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-light.svg"),
+			dark: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-dark.svg"),
+		}
+		if (state?.currentView.type === "task") {
+			await provider.restoreEditorTask(state.currentView.taskId, () => !closed)
+		}
+		if (closed) throw new EditorPanelClosedError()
+		setPanel(panel, "tab")
+		await provider.resolveWebviewView(panel)
+		if (closed) throw new EditorPanelClosedError()
+		return provider
+	} catch (error) {
+		await provider?.dispose()
+		if (closed) throw new EditorPanelClosedError()
+		throw error
+	}
+}
+
+function showEditorRestoreError(panel: vscode.WebviewPanel, key: "missing" | "invalid" | "unavailable"): void {
+	const message = t(`common:editorChatRestore.${key}`).replace(
+		/[&<>"']/g,
+		(character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
+	)
+	panel.webview.options = { enableScripts: false }
+	panel.webview.html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'"><title>Alpha</title></head><body><p role="alert">${message}</p></body></html>`
+}
+
+/** retainContextWhenHidden covers tab hiding; a serializer owns restart restoration. */
+export function registerEditorChatSerializer(options: Omit<RegisterCommandOptions, "provider">): void {
+	options.context.subscriptions.push(
+		vscode.window.registerWebviewPanelSerializer(AlphaProvider.tabPanelId, {
+			async deserializeWebviewPanel(panel, savedState: unknown) {
+				const identity =
+					savedState && typeof savedState === "object" && "alphaEditorChat" in savedState
+						? savedState.alphaEditorChat
+						: undefined
+				const parsed = editorChatStateSchema.safeParse(identity)
+				if (!parsed.success) {
+					showEditorRestoreError(panel, identity === undefined ? "missing" : "invalid")
+					return
+				}
+				try {
+					await attachAlphaEditorPanel(options, panel, parsed.data)
+				} catch (error) {
+					if (error instanceof EditorPanelClosedError) return
+					options.outputChannel.appendLine("Could not restore editor chat; saved task data was retained")
+					showEditorRestoreError(panel, "unavailable")
+				}
+			},
+		}),
+	)
+}
+
+export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<RegisterCommandOptions, "provider">) => {
 	const lastCol = Math.max(...vscode.window.visibleTextEditors.map((editor) => editor.viewColumn || 0))
 
 	// Check if there are any visible text editors, otherwise open a new group
@@ -282,36 +364,7 @@ export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<Registe
 		localResourceRoots: [context.extensionUri],
 	})
 
-	// Save as tab type panel.
-	setPanel(newPanel, "tab")
-
-	newPanel.iconPath = {
-		light: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-light.svg"),
-		dark: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-dark.svg"),
-	}
-
-	await tabProvider.resolveWebviewView(newPanel)
-
-	// Add listener for visibility changes to notify webview
-	newPanel.onDidChangeViewState(
-		(e) => {
-			const panel = e.webviewPanel
-			if (panel.visible) {
-				panel.webview.postMessage({ type: "action", action: "didBecomeVisible" }) // Use the same message type as in SettingsView.tsx
-			}
-		},
-		null, // First null is for `thisArgs`
-		context.subscriptions, // Register listener for disposal
-	)
-
-	// Handle panel closing events.
-	newPanel.onDidDispose(
-		() => {
-			setPanel(undefined, "tab")
-		},
-		null,
-		context.subscriptions, // Also register dispose listener
-	)
+	const tabProvider = await attachAlphaEditorPanel({ context, outputChannel }, newPanel)
 
 	// Lock the editor group so clicking on files doesn't open them over the panel.
 	await delay(100)

@@ -267,7 +267,7 @@ suite("Native command artifact workflow", function () {
 				? "exec_command's real truncation hint recovers the tail through write_stdin and completes once"
 				: "Plan reads a seeded UUID task-owned artifact without command-session authority",
 			async () => {
-				assert.equal(vscode.version, "1.125.0")
+				assert.equal(vscode.version, "1.138.0")
 				assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 				const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 				const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR

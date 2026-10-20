@@ -6,12 +6,14 @@ import { resolveModelParameterApplicability, resolveStellarModelInfo, stellarDef
 import type { ApiHandlerOptions } from "../../shared/api"
 import { getModelParams } from "../transform/model-params"
 import type { ApiStream, ApiStreamCapabilities } from "../transform/stream"
-import type { ApiHandlerCreateMessageMetadata } from "../index"
+import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadata } from "../index"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { OpenAiHandler } from "./openai"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { getApiRequestTimeout } from "./utils/timeout-config"
+import { handleProviderError } from "./utils/error-handler"
 import { configurePemCaTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
@@ -122,14 +124,16 @@ export class StellarHandler extends OpenAiHandler {
 		}
 	}
 
-	override async completePrompt(prompt: string): Promise<string> {
+	override async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
+		throwIfSingleCompletionAborted(metadata)
 		let didRetryForAuth = false
 
 		while (true) {
 			try {
-				await this.prepareClient(didRetryForAuth)
-				return await super.completePrompt(prompt)
+				await this.prepareClient(didRetryForAuth, metadata)
+				return await super.completePrompt(prompt, metadata)
 			} catch (error) {
+				throwIfSingleCompletionAborted(metadata)
 				if (!didRetryForAuth && isAuthenticationFailure(error)) {
 					didRetryForAuth = true
 					continue
@@ -140,18 +144,31 @@ export class StellarHandler extends OpenAiHandler {
 		}
 	}
 
-	private async prepareClient(forceTokenRefresh: boolean): Promise<void> {
+	private async prepareClient(
+		forceTokenRefresh: boolean,
+		metadata?: ApiHandlerSingleCompletionMetadata,
+	): Promise<void> {
+		throwIfSingleCompletionAborted(metadata)
 		if (!this.transportSetupPromise) {
 			this.transportSetupPromise = configurePemCaTransport(this.stellarSettings.pemCaBundlePath, "Stellar").then(
 				() => undefined,
 			)
 		}
 
-		await this.transportSetupPromise
+		const transportSetup = this.transportSetupPromise
+		await awaitSingleCompletion(
+			transportSetup.catch((error) => {
+				// A repaired certificate file must be usable even if this caller cancelled its wait.
+				if (this.transportSetupPromise === transportSetup) this.transportSetupPromise = undefined
+				throw error
+			}),
+			metadata,
+		)
 
-		const token = forceTokenRefresh
-			? await this.helixTokenManager.forceRefreshToken()
-			: await this.helixTokenManager.getToken()
+		const token = await awaitSingleCompletion(
+			forceTokenRefresh ? this.helixTokenManager.forceRefreshToken() : this.helixTokenManager.getToken(),
+			metadata,
+		)
 
 		if (token === this.activeToken) {
 			return
@@ -228,18 +245,8 @@ function isAuthenticationFailure(error: unknown): boolean {
 }
 
 function asStellarError(error: unknown): Error {
-	if (!(error instanceof Error)) {
-		return new Error(`Stellar completion error: ${String(error)}`)
-	}
-
-	const message = error.message.replace(/^(?:OpenAI completion error:\s*)+/, "")
-	const wrapped = new Error(`Stellar completion error: ${message}`)
-	const errorRecord = error as Error & { status?: unknown; code?: unknown; errorDetails?: unknown }
-	const wrappedRecord = wrapped as Error & { status?: unknown; code?: unknown; errorDetails?: unknown }
-
-	wrappedRecord.status = errorRecord.status
-	wrappedRecord.code = errorRecord.code
-	wrappedRecord.errorDetails = errorRecord.errorDetails
-
-	return wrapped
+	return handleProviderError(error, "Stellar", {
+		messageTransformer: (message) =>
+			`Stellar completion error: ${message.replace(/^(?:OpenAI completion error:\s*)+/, "")}`,
+	})
 }

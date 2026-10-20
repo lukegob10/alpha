@@ -9,7 +9,7 @@ suite("Rendered composer", function () {
 	this.timeout(120_000)
 	test("holds the new-task composer for scrolling and clipping checks", async function () {
 		if (!process.env.ALPHA_UI_PROBE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		const provider = (
 			globalThis.api as unknown as {
 				sidebarProvider: {

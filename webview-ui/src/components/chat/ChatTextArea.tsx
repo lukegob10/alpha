@@ -161,15 +161,32 @@ export const ChatTextArea = memo(
 			const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
 			const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
 			const searchRequestIdRef = useRef("")
-			const pendingEnhancementRef = useRef<{ requestId: string; scope: string; draft: string } | null>(null)
+			const pendingEnhancementRef = useRef<{
+				requestId: string
+				scope: string
+				draft: string
+				taskId?: string
+			} | null>(null)
+			const cancelPendingEnhancement = useCallback((updateUi = true) => {
+				const pending = pendingEnhancementRef.current
+				if (!pending) return
+				pendingEnhancementRef.current = null
+				if (updateUi) setIsEnhancingPrompt(false)
+				vscode.postMessage({
+					type: "cancelEnhancePrompt",
+					requestId: pending.requestId,
+					...(pending.taskId ? { taskId: pending.taskId } : {}),
+				})
+			}, [])
 
 			useLayoutEffect(() => {
 				const pending = pendingEnhancementRef.current
-				if (pending && (pending.scope !== draftActionsScope || pending.draft !== inputValue)) {
-					pendingEnhancementRef.current = null
-					setIsEnhancingPrompt(false)
+				if (pending && (pending.scope !== draftActionsScope || pending.draft !== inputValue || isEditMode)) {
+					cancelPendingEnhancement()
 				}
-			}, [draftActionsScope, inputValue])
+			}, [draftActionsScope, inputValue, isEditMode, cancelPendingEnhancement])
+
+			useEffect(() => () => cancelPendingEnhancement(false), [cancelPendingEnhancement])
 
 			// Handle enhanced prompt response and search results.
 			useEffect(() => {
@@ -181,6 +198,7 @@ export const ChatTextArea = memo(
 						if (!pending || message.requestId !== pending.requestId) return
 						pendingEnhancementRef.current = null
 						setIsEnhancingPrompt(false)
+						if (message.enhancementStatus !== undefined && message.enhancementStatus !== "success") return
 						if (typeof message.text === "string" && message.text && textAreaRef.current) {
 							try {
 								// Use execCommand to replace text while preserving undo history
@@ -312,18 +330,28 @@ export const ChatTextArea = memo(
 
 				if (trimmedInput) {
 					const requestId = crypto.randomUUID()
-					pendingEnhancementRef.current = { requestId, scope: draftActionsScope, draft: inputValue }
+					const taskId = !isTaskDraft && !isNewTask ? composerTaskId : undefined
+					pendingEnhancementRef.current = { requestId, scope: draftActionsScope, draft: inputValue, taskId }
 					setIsEnhancingPrompt(true)
 					vscode.postMessage({
 						type: "enhancePrompt",
 						requestId,
-						...(!isTaskDraft && !isNewTask && composerTaskId ? { taskId: composerTaskId } : {}),
+						...(taskId ? { taskId } : {}),
 						text: trimmedInput,
 					})
 				} else {
 					setInputValue(t("chat:enhancePromptDescription"))
 				}
 			}, [inputValue, draftActionsScope, composerTaskId, isTaskDraft, isNewTask, setInputValue, t])
+
+			const handleSend = useCallback(() => {
+				cancelPendingEnhancement()
+				onSend()
+			}, [cancelPendingEnhancement, onSend])
+			const handleStop = useCallback(() => {
+				cancelPendingEnhancement()
+				onStop?.()
+			}, [cancelPendingEnhancement, onStop])
 
 			const allModes = useMemo(
 				() => getUserFacingModeOptions(getAllModes(customModes), mode),
@@ -542,6 +570,11 @@ export const ChatTextArea = memo(
 
 			const handleKeyDown = useCallback(
 				(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+					if (event.key === "Escape" && !event.nativeEvent?.isComposing && pendingEnhancementRef.current) {
+						event.preventDefault()
+						cancelPendingEnhancement()
+						return
+					}
 					if (showContextMenu) {
 						if (event.key === "Tab" && event.shiftKey) {
 							return
@@ -642,7 +675,7 @@ export const ChatTextArea = memo(
 							event.preventDefault()
 							if (!sendDisabled) {
 								resetHistoryNavigation()
-								onSend()
+								handleSend()
 							}
 						}
 					}
@@ -692,7 +725,8 @@ export const ChatTextArea = memo(
 					}
 				},
 				[
-					onSend,
+					handleSend,
+					cancelPendingEnhancement,
 					showContextMenu,
 					selectedMenuIndex,
 					handleMentionSelect,
@@ -737,6 +771,7 @@ export const ChatTextArea = memo(
 			const handleInputChange = useCallback(
 				(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 					const newValue = e.target.value
+					cancelPendingEnhancement()
 					cancelPendingFileSearch()
 					setInputValue(newValue)
 
@@ -814,7 +849,14 @@ export const ChatTextArea = memo(
 						setFileSearchResults([]) // Clear file search results.
 					}
 				},
-				[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange, selectedType],
+				[
+					cancelPendingEnhancement,
+					cancelPendingFileSearch,
+					setInputValue,
+					setFileSearchResults,
+					resetOnInputChange,
+					selectedType,
+				],
 			)
 
 			useEffect(() => {
@@ -1465,12 +1507,21 @@ export const ChatTextArea = memo(
 										</StandardTooltip>
 										<DropdownMenuContent container={portalContainer} align="end" side="top">
 											<DropdownMenuItem
-												disabled={isEnhancingPrompt}
-												onSelect={handleEnhancePrompt}>
-												<WandSparkles
-													className={cn("size-4", isEnhancingPrompt && "animate-spin")}
-												/>
-												{t("chat:composer.improvePrompt")}
+												onSelect={
+													isEnhancingPrompt
+														? () => cancelPendingEnhancement()
+														: handleEnhancePrompt
+												}>
+												{isEnhancingPrompt ? (
+													<X className="size-4" />
+												) : (
+													<WandSparkles className="size-4" />
+												)}
+												{t(
+													isEnhancingPrompt
+														? "chat:composer.cancelImprovePrompt"
+														: "chat:composer.improvePrompt",
+												)}
 											</DropdownMenuItem>
 										</DropdownMenuContent>
 									</DropdownMenu>
@@ -1502,7 +1553,7 @@ export const ChatTextArea = memo(
 									<button
 										aria-label={sendActionLabel}
 										disabled={sendDisabled}
-										onClick={sendDisabled ? undefined : isStopAction ? onStop : onSend}
+										onClick={sendDisabled ? undefined : isStopAction ? handleStop : handleSend}
 										className={cn(
 											"relative inline-flex items-center justify-center",
 											"border-none p-1.5",

@@ -19,6 +19,24 @@ test("tooling execution includes every Node test in its script owners", async ()
 	assert.deepEqual(observed, expected.sort())
 })
 
+test("reference-host manifests, types, and versioned gates agree on VS Code 1.138.0", () => {
+	const manifest = (file) => JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"))
+	const extension = manifest("src/package.json")
+	const runner = manifest("apps/vscode-e2e/package.json")
+	const fixture = manifest("apps/vscode-e2e/fixtures/vscode-lm-provider/package.json")
+	assert.equal(extension.engines.vscode, "^1.138.0")
+	assert.equal(fixture.engines.vscode, extension.engines.vscode)
+	assert.equal(extension.devDependencies["@types/vscode"], "1.138.0")
+	assert.equal(runner.devDependencies["@types/vscode"], "1.138.0")
+	for (const [name, command] of Object.entries(runner.scripts)) {
+		assert.ok(!name.includes(":1250"), `${name} still advertises the retired host`)
+		if (!name.includes(":1380")) continue
+		for (const [, version] of command.matchAll(/--vscode-version (\S+)/g)) {
+			assert.equal(version, "1.138.0", `${name} selected a different host`)
+		}
+	}
+})
+
 test("every lane delegates to an existing package command", () => {
 	for (const lane of Object.values(lanes)) {
 		for (const args of lane.commands) {
@@ -110,7 +128,7 @@ test("every evaluator test belongs to exactly one executable suite", async () =>
 
 test("extended exact-host coverage is mandatory in QA and the release workflow", async () => {
 	assert.equal(lanes.extended.exclusiveBuild, true)
-	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1250"]])
+	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1380"]])
 	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
 	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")

@@ -147,17 +147,28 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 	// One completed record replaces at most one matching approval preview. Distinct
 	// edits to the same path, including later command executions, remain separate.
 	const supersededPreviews = new Set<number>()
-	for (let completedIndex = 0; completedIndex < candidates.length; completedIndex++) {
-		const completed = candidates[completedIndex]
-		if (completed.source !== "say") continue
-		for (let previewIndex = completedIndex - 1; previewIndex >= 0; previewIndex--) {
-			const preview = candidates[previewIndex]
-			if (
-				preview.source === "ask" &&
-				!supersededPreviews.has(previewIndex) &&
-				matchesCompletedEdit(preview, completed)
-			) {
+	const pendingPreviewsByPath = new Map<string, number[]>()
+	for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+		const candidate = candidates[candidateIndex]
+		if (candidate.source === "ask") {
+			const path = normalizedFileChangePath(candidate.entry.path)
+			const pendingPreviews = pendingPreviewsByPath.get(path) ?? []
+			pendingPreviews.push(candidateIndex)
+			pendingPreviewsByPath.set(path, pendingPreviews)
+			continue
+		}
+		if (pendingPreviewsByPath.size === 0) continue
+		const path = normalizedFileChangePath(candidate.entry.path)
+		const pendingPreviews = pendingPreviewsByPath.get(path)
+		if (!pendingPreviews) continue
+		// Modern completed-only history has no previews to scan. Legacy previews
+		// remain nearest-first, but unrelated paths and consumed previews are skipped.
+		for (let pendingIndex = pendingPreviews.length - 1; pendingIndex >= 0; pendingIndex--) {
+			const previewIndex = pendingPreviews[pendingIndex]
+			if (matchesCompletedEdit(candidates[previewIndex], candidate)) {
 				supersededPreviews.add(previewIndex)
+				pendingPreviews.splice(pendingIndex, 1)
+				if (pendingPreviews.length === 0) pendingPreviewsByPath.delete(path)
 				break
 			}
 		}

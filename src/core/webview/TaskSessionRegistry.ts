@@ -690,77 +690,80 @@ export class TaskSessionRegistry {
 	}
 
 	getMetadata(): Record<string, LiveTaskMetadata> {
-		const entries = Array.from(this.sessions.values()).map((session) => {
-			const { task } = session
-			const tokenUsage = task.tokenUsage
-			const lifecycle = this.getEffectiveLifecycle(session)
-			const taskAsk = this.getCurrentTaskAsk(task)
-			const isTerminal = isTerminalLifecycle(lifecycle)
-			const projection = this.getTaskProjection(session, taskAsk)
-			const isWaitingForInput =
-				!isTerminal &&
-				(lifecycle === TaskLifecycleState.Waiting || projection.isWaitingForInput || Boolean(taskAsk))
-			const waitingReason = isTerminal
-				? undefined
-				: taskAsk
-					? (projection.waitingReason ?? session.waitingReason ?? taskAsk.ask)
-					: (session.waitingReason ?? projection.waitingReason)
-			const status = isTerminal
-				? TaskStatus.Idle
-				: isWaitingForInput
-					? waitingReason === "completion" || waitingReason === "completion_result"
-						? TaskStatus.Idle
-						: waitingReason === "resumable"
-							? TaskStatus.Resumable
-							: TaskStatus.Interactive
-					: session.lifecycleSnapshot
-						? TaskStatus.Running
-						: (task.taskStatus ?? TaskStatus.None)
-			const isTurnActive =
-				typeof task.isTurnActive === "function" ? task.isTurnActive() : Boolean(task.isStreaming)
-			const canInterrupt =
-				typeof task.canInterruptCurrentTurn === "function"
-					? task.canInterruptCurrentTurn()
-					: isTurnActive && !isWaitingForInput
-			const hasPendingSteer =
-				typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
-			const metadata: LiveTaskMetadata = {
-				id: task.taskId,
-				...(task.orchestrationParentTaskId
-					? { orchestrationParentTaskId: task.orchestrationParentTaskId }
-					: {}),
-				...(task.orchestrationWorkspaceMode
-					? { orchestrationWorkspaceMode: task.orchestrationWorkspaceMode }
-					: {}),
-				...(task.orchestrationParentTaskId
-					? { orchestrationObjective: task.metadata.task?.slice(0, 1200) ?? "" }
-					: {}),
-				transcriptRevision: session.transcriptRevision,
-				model: task.api?.getModel(),
-				status,
-				lifecycle,
-				isActive: task.taskId === this.activeTaskId,
-				isStreaming: task.isStreaming,
-				isTurnActive,
-				canInterrupt,
-				activityPhase: session.lifecycleSnapshot?.phase,
-				hasPendingSteer,
-				isWaitingForInput,
-				lastUpdatedAt: Math.max(
-					session.lastActivityAt,
-					session.lifecycleSnapshot?.terminalAt ?? 0,
-					task.clineMessages.at(-1)?.ts ?? 0,
-				),
-				waitingReason,
-				queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,
-				tokensIn: tokenUsage?.totalTokensIn ?? 0,
-				tokensOut: tokenUsage?.totalTokensOut ?? 0,
-				totalCost: tokenUsage?.totalCost ?? 0,
-			}
+		return Object.fromEntries(
+			Array.from(this.sessions.values()).map((session) => [session.task.taskId, this.projectMetadata(session)]),
+		)
+	}
 
-			return [task.taskId, metadata] as const
-		})
+	/** Incremental chat publications need only their current runtime's metadata. */
+	getMetadataForTask(taskId: string): LiveTaskMetadata | undefined {
+		const session = this.sessions.get(taskId)
+		return session ? this.projectMetadata(session) : undefined
+	}
 
-		return Object.fromEntries(entries)
+	private projectMetadata(session: TaskSession): LiveTaskMetadata {
+		const { task } = session
+		const tokenUsage = task.tokenUsage
+		const lifecycle = this.getEffectiveLifecycle(session)
+		const taskAsk = this.getCurrentTaskAsk(task)
+		const isTerminal = isTerminalLifecycle(lifecycle)
+		const projection = this.getTaskProjection(session, taskAsk)
+		const isWaitingForInput =
+			!isTerminal &&
+			(lifecycle === TaskLifecycleState.Waiting || projection.isWaitingForInput || Boolean(taskAsk))
+		const waitingReason = isTerminal
+			? undefined
+			: taskAsk
+				? (projection.waitingReason ?? session.waitingReason ?? taskAsk.ask)
+				: (session.waitingReason ?? projection.waitingReason)
+		const status = isTerminal
+			? TaskStatus.Idle
+			: isWaitingForInput
+				? waitingReason === "completion" || waitingReason === "completion_result"
+					? TaskStatus.Idle
+					: waitingReason === "resumable"
+						? TaskStatus.Resumable
+						: TaskStatus.Interactive
+				: session.lifecycleSnapshot
+					? TaskStatus.Running
+					: (task.taskStatus ?? TaskStatus.None)
+		const isTurnActive = typeof task.isTurnActive === "function" ? task.isTurnActive() : Boolean(task.isStreaming)
+		const canInterrupt =
+			typeof task.canInterruptCurrentTurn === "function"
+				? task.canInterruptCurrentTurn()
+				: isTurnActive && !isWaitingForInput
+		const hasPendingSteer =
+			typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
+		const metadata: LiveTaskMetadata = {
+			id: task.taskId,
+			...(task.orchestrationParentTaskId ? { orchestrationParentTaskId: task.orchestrationParentTaskId } : {}),
+			...(task.orchestrationWorkspaceMode ? { orchestrationWorkspaceMode: task.orchestrationWorkspaceMode } : {}),
+			...(task.orchestrationParentTaskId
+				? { orchestrationObjective: task.metadata.task?.slice(0, 1200) ?? "" }
+				: {}),
+			transcriptRevision: session.transcriptRevision,
+			model: task.api?.getModel(),
+			status,
+			lifecycle,
+			isActive: task.taskId === this.activeTaskId,
+			isStreaming: task.isStreaming,
+			isTurnActive,
+			canInterrupt,
+			activityPhase: session.lifecycleSnapshot?.phase,
+			hasPendingSteer,
+			isWaitingForInput,
+			lastUpdatedAt: Math.max(
+				session.lastActivityAt,
+				session.lifecycleSnapshot?.terminalAt ?? 0,
+				task.clineMessages.at(-1)?.ts ?? 0,
+			),
+			waitingReason,
+			queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,
+			tokensIn: tokenUsage?.totalTokensIn ?? 0,
+			tokensOut: tokenUsage?.totalTokensOut ?? 0,
+			totalCost: tokenUsage?.totalCost ?? 0,
+		}
+
+		return metadata
 	}
 }

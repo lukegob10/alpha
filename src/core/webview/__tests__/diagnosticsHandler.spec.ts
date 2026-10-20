@@ -9,7 +9,7 @@ vi.mock("vscode", () => {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
 
 	return {
-		version: "1.125.0",
+		version: "1.138.0",
 		window: {
 			showErrorMessage,
 			showTextDocument,
@@ -84,6 +84,9 @@ import * as vscode from "vscode"
 import * as fs from "fs/promises"
 import * as fsUtils from "../../../utils/fs"
 import { generateErrorDiagnostics } from "../diagnosticsHandler"
+import { hashAgentTurnEvidenceId } from "../../agent/AgentTurnEventLog"
+import { settlementDiagnostics } from "../../agent/SettlementDiagnostics"
+import type { Task } from "../../task/Task"
 
 describe("generateErrorDiagnostics", () => {
 	const mockLog = vi.fn()
@@ -121,16 +124,19 @@ describe("generateErrorDiagnostics", () => {
 		// Verify we wrote a diagnostics file with the expected content
 		expect(fs.writeFile).toHaveBeenCalledTimes(1)
 		const [writtenPath, writtenContent] = vi.mocked(fs.writeFile).mock.calls[0]
-		// taskId.slice(0, 8) = "test-tas" from "test-task-id"
-		expect(String(writtenPath)).toContain("alpha-diagnostics-test-tas")
+		expect(String(writtenPath)).toContain(
+			`alpha-diagnostics-${hashAgentTurnEvidenceId("test-task-id").slice(0, 8)}`,
+		)
 		expect(String(writtenContent)).toContain(
 			"// Please review this bounded report before sharing it with Alpha Support (support@alpha.invalid).",
 		)
 		expect(String(writtenContent)).toContain('"error":')
 		expect(String(writtenContent)).toContain('"history":')
 		expect(String(writtenContent)).toContain('"version": "1.2.3"')
-		expect(String(writtenContent)).toContain('"provider": "test-provider"')
-		expect(String(writtenContent)).toContain('"model": "test-model"')
+		expect(String(writtenContent)).toContain(hashAgentTurnEvidenceId("test-provider"))
+		expect(String(writtenContent)).toContain(hashAgentTurnEvidenceId("test-model"))
+		expect(String(writtenContent)).not.toContain("test-provider")
+		expect(String(writtenContent)).not.toContain("test-model")
 		expect(String(writtenContent)).toContain('"details": {')
 		expect(String(writtenContent)).not.toContain("Sample error details")
 		expect(String(writtenContent)).toContain('"included": false')
@@ -314,7 +320,7 @@ describe("generateErrorDiagnostics", () => {
 		const text = String(vi.mocked(fs.writeFile).mock.calls[0][1])
 		expect(text).toContain('"version": "2.1.18"')
 		expect(text).toContain('"manifestVersion": "2.1.28"')
-		expect(text).toContain('"vscodeVersion": "1.125.0"')
+		expect(text).toContain('"vscodeVersion": "1.138.0"')
 		expect(text).not.toContain("do not export")
 	})
 
@@ -334,6 +340,71 @@ describe("generateErrorDiagnostics", () => {
 		expect(text).toContain('"unavailable": true')
 		expect(text).toContain('"details": {')
 		expect(text).toContain('"runtimeVersion":')
+	})
+
+	it("awaits the selected task's backend support snapshot and keeps opaque identities out of the report", async () => {
+		const task = {
+			taskId: "task",
+			instanceId: "instance",
+			getCompletionStageMetrics: () => ({}),
+			getCommandExecutionEvidence: () => [],
+		} as unknown as Task
+		const result = await generateErrorDiagnostics({
+			taskId: task.taskId,
+			globalStoragePath: "/mock",
+			log: mockLog,
+			values: { provider: "openai", model: "client-reported-private-model" },
+			getRuntimeDiagnostics: async () =>
+				settlementDiagnostics(task, [], {
+					task: { id: task.taskId, status: "interactive", ask: "tool" },
+					provider: { name: "vscode-lm", modelId: "backend-private-model" },
+					queuedMessages: [{ id: "queue-receipt", deliveryState: "delivering", text: "private-prompt" }],
+					setup: { contextInitialized: true, subagentBudgetDefaultsMigration: "done" },
+				}),
+		})
+		expect(result.success).toBe(true)
+		const text = String(vi.mocked(fs.writeFile).mock.calls[0][1])
+		const report = JSON.parse(text.slice(text.indexOf("{")))
+		expect(report.runtime.incident).toMatchObject({
+			provider: { provider: "vscode-lm", modelIdSha256: hashAgentTurnEvidenceId("backend-private-model") },
+			humanInput: { deliveringCount: 1 },
+			setup: { subagentBudgetDefaultsMigration: "done" },
+		})
+		expect(report.error).toMatchObject({
+			provider: "openai",
+			modelIdSha256: hashAgentTurnEvidenceId("client-reported-private-model"),
+		})
+		expect(text).not.toMatch(/backend-private-model|client-reported-private-model|private-prompt|queue-receipt/)
+	})
+
+	it("omits custom installation paths, malformed metadata and credential-like reported identities", async () => {
+		const secret = "private-support-canary"
+		const result = await generateErrorDiagnostics({
+			taskId: secret,
+			globalStoragePath: "/mock",
+			log: mockLog,
+			values: {
+				timestamp: secret,
+				version: secret,
+				provider: `https://user:${secret}@private/`,
+				model: `C:\\private\\${secret}`,
+			},
+			extension: {
+				id: "AlphaInc.alpha",
+				isActive: true,
+				extensionPath: `/workspace/${secret}`,
+				packageJSON: { version: secret },
+			} as unknown as vscode.Extension<unknown>,
+		})
+		expect(result.success).toBe(true)
+		const [filePath, content] = vi.mocked(fs.writeFile).mock.calls[0]
+		expect(String(filePath)).not.toContain(secret)
+		expect(String(content)).not.toContain(secret)
+		const report = JSON.parse(String(content).slice(String(content).indexOf("{")))
+		expect(report.installation.extensionDirectorySha256).toBe(hashAgentTurnEvidenceId(`/workspace/${secret}`))
+		expect(report.installation.extensionDirectory).toBeUndefined()
+		expect(report.installation.manifestVersion).toBeUndefined()
+		expect(report.error.timestamp).toMatch(/^\d{4}-\d\d-\d\dT/)
 	})
 
 	it("does not export a malformed primitive runtime callback payload", async () => {

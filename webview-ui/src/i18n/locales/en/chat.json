@@ -229,6 +229,7 @@
 		"settings": "Composer settings",
 		"draftActions": "Draft actions",
 		"improvePrompt": "Improve prompt",
+		"cancelImprovePrompt": "Cancel prompt improvement",
 		"help": "@ context · Shift+Enter for a new line",
 		"helpSend": "@ context · {{keyCombination}} to send",
 		"mode": "Mode",
@@ -505,11 +506,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves task recovery, Copilot context, and skill reliability.",
-			"taskContinuity": "Recover rewound chats and interrupted turns while preserving conversation history.",
-			"toolsAndProviders": "Preserve Copilot thinking state and command text across model requests.",
-			"delegation": "Carry committed answers into sub-agent context and keep queued follow-ups consistent.",
-			"workspaceExperience": "Load explicitly selected skills reliably and use the built-in review-agent skill."
+			"welcome": "Alpha v{{version}} improves agent coordination, saved settings, and chat responsiveness on VS Code 1.138.",
+			"taskContinuity": "Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
+			"toolsAndProviders": "Retain saved provider profiles and report unavailable selections without silently switching providers.",
+			"delegation": "Deliver sub-agent results and reviews while preserving workspace and approval limits.",
+			"workspaceExperience": "Browse chats and file changes with less repeated work, and cancel prompt previews safely."
 		}
 	},
 	"crossTasks": {

@@ -476,6 +476,61 @@ describe("TerminalProcess", () => {
 			},
 		)
 
+		it.each(["completes", "fails"] as const)(
+			"keeps a replacement command's stream and reservation when the old reader %s",
+			async (readerOutcome) => {
+				const oldReading = barrier()
+				const finishOldReader = barrier()
+				const replacementReading = barrier()
+				const finishReplacementReader = barrier()
+				const readerFailure = new Error("old output reader failed")
+				mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+					mockTerminalInfo.setActiveStream(
+						(async function* () {
+							yield "\x1b]633;C\x07old output\n"
+							oldReading.release()
+							await finishOldReader.promise
+							if (readerOutcome === "fails") throw readerFailure
+						})(),
+					)
+				})
+				const original = mockTerminalInfo.runCommand("echo old", callbacks())
+				const originalOutcome = original.then(
+					() => undefined,
+					(error: unknown) => error,
+				)
+				await oldReading.promise
+				mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+				mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+					mockTerminalInfo.setActiveStream(
+						(async function* () {
+							yield "\x1b]633;C\x07new output\n"
+							replacementReading.release()
+							await finishReplacementReader.promise
+						})(),
+					)
+				})
+				const replacement = mockTerminalInfo.runCommand("echo replacement", callbacks())
+				try {
+					await replacementReading.promise
+					finishOldReader.release()
+					expect(await originalOutcome).toBe(readerOutcome === "fails" ? readerFailure : undefined)
+					await original.waitForOutputFinalization?.()
+					expect(mockTerminalInfo.process).toBe(replacement)
+					expect(mockTerminalInfo.running).toBe(true)
+					expect(mockTerminalInfo.busy).toBe(true)
+					expect(mockTerminalInfo.isStreamClosed).toBe(false)
+				} finally {
+					finishOldReader.release()
+					mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+					finishReplacementReader.release()
+					await originalOutcome
+					await replacement
+					await replacement.waitForOutputFinalization?.()
+				}
+			},
+		)
+
 		it("propagates process failures without reporting a shell integration timeout", async () => {
 			const failure = new Error("stream reader failed")
 			const run = vi.spyOn(TerminalProcess.prototype, "run").mockRejectedValueOnce(failure)

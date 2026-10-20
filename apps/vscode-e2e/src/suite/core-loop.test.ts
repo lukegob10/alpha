@@ -176,7 +176,7 @@ class CommandReadAI {
 suite("Workspace read streaming", function () {
 	this.timeout(120_000)
 	test("absolute and nested reads start before EOF with durable, ordered tool results", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -279,7 +279,7 @@ suite("Core loop proportional completion", function () {
 	this.timeout(120_000)
 	for (let sample = 1; sample <= 3; sample++) {
 		test(`small answer ${sample}: one request, zero tools, one durable completion`, async () => {
-			assert.equal(vscode.version, "1.125.0")
+			assert.equal(vscode.version, "1.138.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 			assert.ok(artifacts)

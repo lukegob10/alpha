@@ -345,15 +345,26 @@ export async function countHistoryTokens(
  */
 export function getLogicalStepStarts(messages: ApiMessage[]): number[] {
 	if (messages.length === 0) return []
-	const pairs = getToolCallResultPairs(messages)
 	const boundaryDeltas = new Array<number>(messages.length + 1).fill(0)
-	for (const pair of pairs.values()) {
-		const indexes = [...pair.callMessageIndexes, ...pair.resultMessageIndexes]
-		const first = Math.min(...indexes)
-		const last = Math.max(...indexes)
-		boundaryDeltas[first + 1]++
-		boundaryDeltas[last + 1]--
+	const openCalls = new Map<string, number>()
+	// Providers may reuse an ID after its terminal result. Only an open occurrence
+	// crosses a boundary; grouping all occurrences by ID joins independent steps.
+	for (let index = 0; index < messages.length; index++) {
+		const content = messages[index].content
+		if (!Array.isArray(content)) continue
+		for (const block of content) {
+			const callId = getToolCallId(block)
+			if (callId && !openCalls.has(callId)) openCalls.set(callId, index)
+			const resultId = getToolResultId(block)
+			if (!resultId) continue
+			const callIndex = openCalls.get(resultId)
+			if (callIndex === undefined) continue
+			boundaryDeltas[callIndex + 1]++
+			boundaryDeltas[index + 1]--
+			openCalls.delete(resultId)
+		}
 	}
+	for (const callIndex of openCalls.values()) boundaryDeltas[callIndex + 1]++
 	const hasResult = (message: ApiMessage) =>
 		Array.isArray(message.content) && message.content.some((block) => getToolResultId(block) !== undefined)
 	const hasUserInstruction = (message: ApiMessage) =>

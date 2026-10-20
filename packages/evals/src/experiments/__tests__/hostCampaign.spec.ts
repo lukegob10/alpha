@@ -11,7 +11,7 @@ function campaign() {
 		repairs: [],
 		requestedProvider: { mode: "scripted" },
 		retention: { status: "complete" },
-		evaluationPlan: { scenarioIds: ["cancel"], hostVersions: ["1.125.0"], samples: 1 },
+		evaluationPlan: { scenarioIds: ["cancel"], hostVersions: ["1.138.0"], samples: 1 },
 		evaluationIdentity: {
 			extensionCommit: "alpha-source-not-fixture",
 			workingTreeDigest: digest("a"),
@@ -31,12 +31,12 @@ function campaign() {
 					scenarioId: "cancel",
 					sample: 1,
 					phase: "sample",
-					host: { version: "1.125.0" },
+					host: { version: "1.138.0" },
 				},
 				result: {
 					failure: undefined as { class: string } | undefined,
 					status: "passed",
-					actualHostVersion: "1.125.0",
+					actualHostVersion: "1.138.0",
 					usage: { cost: null, inputTokens: null, outputTokens: null },
 				},
 				elapsedMs: 23,

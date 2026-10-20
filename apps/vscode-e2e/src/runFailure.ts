@@ -36,7 +36,7 @@ const CONFIGURATION_GUIDANCE = {
 	"profile-initialization-needs-profile":
 		"--init-profile requires --profile-dir, --workspace, and --artifacts-dir. Omit --init-profile for the default disposable test profile.",
 	"exact-profile-host-required":
-		"Persistent test profiles require an exact --vscode-version such as 1.125.0, not stable or insiders.",
+		"Persistent test profiles require an exact --vscode-version such as 1.138.0, not stable or insiders.",
 } as const
 
 export type TestRunDiagnostic = keyof typeof CONFIGURATION_GUIDANCE

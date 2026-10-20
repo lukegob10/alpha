@@ -71,7 +71,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		if (socketPath) {
 			const identity = readExecutionIdentity(this.context.extensionPath, vscode.version)
 			void identity.catch(() => undefined)
-			const ipc = (this.ipc = new IpcServer(socketPath, this.log, () => identity))
+			const ipc = (this.ipc = new IpcServer(socketPath, this.log, () => identity, {
+				capabilities: { targetedTaskCancellation: true, presentationModelCallOptOut: true },
+			}))
 			this.context.subscriptions.push(ipc)
 
 			ipc.listen()
@@ -93,7 +95,11 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 						break
 					case TaskCommandName.CancelTask:
 						this.log(`[API] CancelTask`)
-						await this.cancelCurrentTask()
+						if (command.data !== undefined) {
+							await this.sidebarProvider.cancelTask(command.data.taskId)
+						} else {
+							await this.cancelCurrentTask()
+						}
 						break
 					case TaskCommandName.CloseTask:
 						this.log(`[API] CloseTask`)
@@ -196,12 +202,17 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		text,
 		images,
 		newTab,
+		presentationModelCalls,
 	}: {
 		configuration?: AlphaCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
+		presentationModelCalls?: false
 	}) {
+		if (presentationModelCalls !== undefined && presentationModelCalls !== false) {
+			throw new Error("presentationModelCalls only supports false")
+		}
 		if (configuration?.mode !== undefined) assertPrimaryMode(configuration.mode)
 		const apiConfiguration =
 			configuration ?? (await this.sidebarProvider.getState({ includeTaskHistory: false })).apiConfiguration
@@ -227,6 +238,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			// Resolve omitted provider settings before changing task state.
 			// Explicit runtime settings retain executable values such as FakeAI callbacks.
 			apiConfiguration,
+			...(presentationModelCalls === false ? { presentationModelCalls } : {}),
 		}
 
 		const task = await provider.createTask(text, images, undefined, options, configuration)
@@ -308,9 +320,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			return
 		}
 
-		await currentTask.messageQueueService.ready
-		currentTask.messageQueueService.removeMessage(messageId)
-		await currentTask.messageQueueService.flush()
+		await currentTask.messageQueueService.removeMessageDurably(messageId)
 	}
 
 	public async pressPrimaryButton() {

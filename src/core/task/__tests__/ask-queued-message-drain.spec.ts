@@ -9,6 +9,7 @@ describe("Task.ask queued message drain", () => {
 	const createAskOnlyTask = async () => {
 		const task = Object.create(Task.prototype) as Task
 		;(task as any).abort = false
+		Object.assign(task, { taskCancellationController: new AbortController() })
 		;(task as any).taskId = "task-1"
 		;(task as any).clineMessages = []
 		;(task as any).askResponse = undefined
@@ -395,6 +396,124 @@ describe("Task.ask queued message drain", () => {
 			expect((task as any).messageQueueService.messages[0]?.text).toBe("second queued turn")
 		},
 	)
+
+	it.each(["resume_task", "resume_completed_task"] as const)(
+		"retains pre-Stop guidance until an explicit human response to %s",
+		async (askType) => {
+			vi.useFakeTimers()
+			const task = await createAskOnlyTask()
+			task["resumeRequiresExplicitInput"] = true
+			const queued = task.messageQueueService.addMessage("Guidance queued before Stop")!
+			const pending = task.ask(askType)
+			try {
+				await vi.advanceTimersByTimeAsync(100)
+				expect(task["askResponse"]).toBeUndefined()
+				expect(task.messageQueueService.messages).toEqual([queued])
+				expect(task.messageQueueService.getClaimedMessageIds()).toEqual([])
+				task.handleWebviewAskResponse("yesButtonClicked")
+				await vi.advanceTimersByTimeAsync(100)
+				await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
+				expect(task.messageQueueService.messages).toEqual([queued])
+			} finally {
+				task.handleWebviewAskResponse("noButtonClicked")
+				await vi.advanceTimersByTimeAsync(100)
+				await pending
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["resume_task", "resume_completed_task"] as const)(
+		"drains the existing FIFO only after fresh durable human queue intake at %s",
+		async (askType) => {
+			vi.useFakeTimers()
+			const task = await createAskOnlyTask()
+			task["resumeRequiresExplicitInput"] = true
+			await task.messageQueueService.addMessageDurably("Saved draft", [], "saved-draft")
+			const pending = task.ask(askType)
+			try {
+				await vi.advanceTimersByTimeAsync(100)
+				await task.messageQueueService.addMessageDurably("Passive guidance", [], "passive")
+				expect(await task.queueUserMessageDurably("Saved draft", [], "saved-draft")).toBe(true)
+				await vi.advanceTimersByTimeAsync(100)
+				expect(task["askResponse"]).toBeUndefined()
+				expect(task["resumeRequiresExplicitInput"]).toBe(true)
+				expect(await task.queueUserMessageDurably("Fresh human guidance", [], "fresh-human")).toBe(true)
+				await vi.advanceTimersByTimeAsync(100)
+				await expect(pending).resolves.toMatchObject({
+					response: "messageResponse",
+					text: "Saved draft",
+					queuedMessageIds: ["saved-draft"],
+				})
+				expect(task.messageQueueService.messages.map((message) => message.id)).toEqual([
+					"passive",
+					"fresh-human",
+				])
+			} finally {
+				task.handleWebviewAskResponse("noButtonClicked")
+				await vi.advanceTimersByTimeAsync(100)
+				await pending
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["stop", "lifetime", "replacement"] as const)(
+		"keeps a durable admission from lifting the resume fence after %s during its save",
+		async (cancellation) => {
+			const task = await createAskOnlyTask()
+			const { MessageQueueService } = await import("../../message-queue/MessageQueueService")
+			let release!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			let entered!: () => void
+			const saving = new Promise<void>((resolve) => (entered = resolve))
+			let ownsTask = true
+			Object.assign(task, { isCurrentApiConversationHistoryOwner: () => ownsTask })
+			task["resumeRequiresExplicitInput"] = true
+			Object.assign(task, {
+				messageQueueService: new MessageQueueService({
+					load: async () => [],
+					save: async () => {
+						entered()
+						await held
+					},
+				}),
+			})
+			const admission = task.queueUserMessageDurably("Fresh human guidance", [], "fresh-human")
+			await saving
+			expect(task["resumeRequiresExplicitInput"]).toBe(true)
+			if (cancellation === "stop") task.abort = true
+			else if (cancellation === "lifetime") task["taskCancellationController"].abort()
+			else ownsTask = false
+			release()
+			expect(await admission).toBe(true)
+			expect(task["resumeRequiresExplicitInput"]).toBe(true)
+			expect(task.messageQueueService.messages).toMatchObject([{ id: "fresh-human" }])
+		},
+	)
+
+	it("does not grant resume when fresh human queue persistence fails", async () => {
+		const task = await createAskOnlyTask()
+		const { MessageQueueService } = await import("../../message-queue/MessageQueueService")
+		let rejectFirst = true
+		task["resumeRequiresExplicitInput"] = true
+		Object.assign(task, {
+			messageQueueService: new MessageQueueService({
+				load: async () => [],
+				save: async () => {
+					if (rejectFirst) {
+						rejectFirst = false
+						throw new Error("disk full")
+					}
+				},
+			}),
+		})
+		await expect(task.queueUserMessageDurably("Fresh human guidance", [], "fresh-human")).rejects.toThrow(
+			"disk full",
+		)
+		expect(task["resumeRequiresExplicitInput"]).toBe(true)
+		expect(task.messageQueueService.messages).toEqual([])
+	})
 
 	it("retains host input sent before a restored task installs its resume ask", async () => {
 		const task = await createAskOnlyTask()

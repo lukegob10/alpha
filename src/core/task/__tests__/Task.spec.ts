@@ -802,6 +802,143 @@ describe("Alpha", () => {
 			expect(mockProvider.updateGeneratedTaskTitle).not.toHaveBeenCalled()
 		})
 
+		it("does not create a title provider for a task that opts out of presentation model calls", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Implement governed work",
+				presentationModelCalls: false,
+				startTask: false,
+			})
+			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue({ id: alphaTask.taskId })
+			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
+			const createHandler = vi.spyOn(alphaTask, "createReasoningSummaryHandler").mockImplementation(() => {
+				throw new Error("A presentation provider must not be created")
+			})
+
+			await (
+				alphaTask as unknown as { scheduleInitialTaskTitle(requestText: string): Promise<void> }
+			).scheduleInitialTaskTitle("Implement governed work")
+
+			expect(createHandler).not.toHaveBeenCalled()
+			expect(mockProvider.updateGeneratedTaskTitle).not.toHaveBeenCalled()
+		})
+
+		it("starts the primary task without an optional title request when presentation calls are disabled", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Implement governed work",
+				presentationModelCalls: false,
+				startTask: false,
+			})
+			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue({ id: alphaTask.taskId })
+			mockProvider.updateGeneratedTaskTitle = vi.fn().mockResolvedValue(undefined)
+			const createHandler = vi.spyOn(alphaTask, "createReasoningSummaryHandler")
+			const mainLoop = vi.fn(async (_content: Anthropic.Messages.ContentBlockParam[]) => undefined)
+			Object.assign(alphaTask, {
+				initiateTaskLoop: mainLoop,
+				getEnabledMcpToolsCount: async () => ({ enabledToolCount: 0, enabledServerCount: 0 }),
+			})
+			vi.spyOn(alphaTask, "say").mockImplementationOnce(async () => {
+				alphaTask.clineMessages.push({ ts: 1, type: "say", say: "text", text: "Implement governed work" })
+				return undefined
+			})
+
+			await (alphaTask as unknown as { startTask(task: string): Promise<void> }).startTask(
+				"Implement governed work",
+			)
+
+			expect(mainLoop).toHaveBeenCalledOnce()
+			expect(mainLoop.mock.calls[0][0]).toContainEqual({
+				type: "text",
+				text: "<user_message>\nImplement governed work\n</user_message>",
+			})
+			expect(createHandler).not.toHaveBeenCalled()
+			expect(alphaTask.isInitialized).toBe(true)
+		})
+
+		it("keeps streamed reasoning without scheduling a synopsis timer when presentation calls are disabled", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Implement governed work",
+				presentationModelCalls: false,
+				startTask: false,
+			})
+			const message: AlphaMessage = {
+				ts: 1,
+				type: "say",
+				say: "reasoning",
+				text: "Already-visible reasoning remains part of the task response.",
+			}
+			alphaTask.clineMessages.push(message)
+			const createHandler = vi.spyOn(alphaTask, "createReasoningSummaryHandler")
+			Object.assign(alphaTask, {
+				currentAgentStep: {
+					createReasoningSummaryHandler: createHandler,
+					snapshot: { context: { provider: { apiProtocol: "openai" } } },
+				},
+			})
+			vi.useFakeTimers()
+			try {
+				const timers = vi.getTimerCount()
+				;(
+					alphaTask as unknown as {
+						summarizeReasoning(message: AlphaMessage): void
+						reasoningSummaries?: { dispose(): void }
+					}
+				).summarizeReasoning(message)
+				expect(vi.getTimerCount()).toBe(timers)
+				expect(createHandler).not.toHaveBeenCalled()
+				expect(alphaTask.clineMessages).toEqual([message])
+				expect(message.text).toBe("Already-visible reasoning remains part of the task response.")
+				expect(message.reasoningSummary).toBeUndefined()
+			} finally {
+				;(alphaTask as unknown as { reasoningSummaries?: { dispose(): void } }).reasoningSummaries?.dispose()
+				vi.useRealTimers()
+			}
+		})
+
+		it.each(["explicit", "parent", "root", "history"] as const)(
+			"captures presentation model-call suppression from %s without widening a child",
+			(source) => {
+				const parent = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					taskId: "governed-parent",
+					task: "Governed parent",
+					presentationModelCalls: false,
+					startTask: false,
+				})
+				const child = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: source === "history" ? undefined : "Continue governed work",
+					startTask: false,
+					...(source === "explicit" ? { presentationModelCalls: false as const } : {}),
+					...(source === "parent" ? { parentTask: parent } : {}),
+					...(source === "root" ? { rootTask: parent } : {}),
+					...(source === "history"
+						? {
+								historyItem: {
+									id: "restored-governed",
+									number: 1,
+									ts: 1,
+									task: "Governed history",
+									tokensIn: 0,
+									tokensOut: 0,
+									totalCost: 0,
+									presentationModelCalls: false as const,
+								},
+							}
+						: {}),
+				})
+
+				expect(child).toHaveProperty("presentationModelCalls", false)
+			},
+		)
+
 		it("cancels an in-flight generated title when the task is renamed", async () => {
 			const alphaTask = new Task({
 				provider: mockProvider,

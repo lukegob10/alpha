@@ -10,6 +10,7 @@ import {
 import {
 	getArtifactDescriptors,
 	getEvalEvents,
+	getPresentationModelCallPolicyEvents,
 	getReconstructableEvidenceBundle,
 	persistArtifactDescriptors,
 	persistEvalEvent,
@@ -22,6 +23,64 @@ import { createRun } from "../runs"
 import { createTask } from "../tasks"
 
 describe("M4 evidence persistence", () => {
+	it("isolates presentation policy evidence by attempt and type without loading other event payloads", async () => {
+		const run = await createRun({ model: "test", socketPath: "policy-evidence.sock" })
+		const task = await createTask({ runId: run.id, language: "javascript", exercise: "policy-evidence" })
+		const attempt = await ensureAttempt(task.id, 1)
+		const foreignTask = await createTask({
+			runId: run.id,
+			language: "javascript",
+			exercise: "foreign-policy-evidence",
+		})
+		const foreignAttempt = await ensureAttempt(foreignTask.id, 1)
+		const journal = new EventJournal({ runId: String(run.id), trialId: "trial", attemptId: String(attempt.id) })
+		const foreignJournal = new EventJournal({
+			runId: String(run.id),
+			trialId: "foreign",
+			attemptId: String(foreignAttempt.id),
+		})
+		const policy = { schemaVersion: 1, presentationModelCalls: false, presentationModelCallOptOut: true }
+		await persistEvalEvent(
+			attempt.id,
+			journal.append("agent.turn.request_usage", { output: "unrelated-payload-canary" }),
+		)
+		await persistEvalEvent(
+			foreignAttempt.id,
+			foreignJournal.append("extension.presentation_model_call_policy", policy),
+		)
+		expect(await getPresentationModelCallPolicyEvents(attempt.id)).toEqual([])
+		const event = journal.append("extension.presentation_model_call_policy", policy)
+		await persistEvalEvent(attempt.id, event)
+		const rows = await getPresentationModelCallPolicyEvents(attempt.id)
+		expect(rows).toEqual([
+			{
+				attemptId: attempt.id,
+				type: event.type,
+				payload: policy,
+				payloadDigest: event.payloadDigest,
+				late: false,
+			},
+		])
+		expect(JSON.stringify(rows)).not.toContain("unrelated-payload-canary")
+	})
+
+	it("bounds duplicate policy retrieval to two ordered rows without deleting stored evidence", async () => {
+		const run = await createRun({ model: "test", socketPath: "duplicate-policy-evidence.sock" })
+		const task = await createTask({ runId: run.id, language: "javascript", exercise: "duplicate-policy-evidence" })
+		const attempt = await ensureAttempt(task.id, 1)
+		const journal = new EventJournal({ runId: String(run.id), trialId: "trial", attemptId: String(attempt.id) })
+		const policy = { schemaVersion: 1, presentationModelCalls: false, presentationModelCallOptOut: true }
+		for (const late of [false, true, false])
+			await persistEvalEvent(
+				attempt.id,
+				journal.append("extension.presentation_model_call_policy", policy, new Date().toISOString(), late),
+			)
+		const bounded = await getPresentationModelCallPolicyEvents(attempt.id)
+		expect(bounded).toHaveLength(2)
+		expect(bounded.map((row) => row.late)).toEqual([false, true])
+		expect(await getEvalEvents(attempt.id)).toHaveLength(3)
+	})
+
 	it("retrieves observed installed identities by their verified content identity", async () => {
 		const digest = `sha256:${"a".repeat(64)}`
 		const task: TaskManifest = {
@@ -46,7 +105,7 @@ describe("M4 evidence persistence", () => {
 			identityStatus: "observed_entrypoint",
 			executionIdentity: {
 				schemaVersion: 1,
-				hostVersion: "1.125.0",
+				hostVersion: "1.138.0",
 				extensionId: "Alpha.alpha",
 				extensionVersion: "1.0.0",
 				entrypointDigest: digest,

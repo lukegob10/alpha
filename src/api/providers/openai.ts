@@ -40,7 +40,13 @@ import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
-import type { ApiInstructionFragment, SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import type {
+	ApiInstructionFragment,
+	SingleCompletionHandler,
+	ApiHandlerCreateMessageMetadata,
+	ApiHandlerSingleCompletionMetadata,
+} from "../index"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { handleOpenAIError } from "./utils/error-handler"
 import {
@@ -1312,7 +1318,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 	}
 
-	async completePrompt(prompt: string): Promise<string> {
+	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
+		throwIfSingleCompletionAborted(metadata)
 		try {
 			const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 			const model = this.getModel()
@@ -1341,13 +1348,17 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			// Add max_tokens if needed
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
-			const response = await this.client.chat.completions.create(
-				requestOptions,
-				isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
+			const response = await awaitSingleCompletion(
+				this.client.chat.completions.create(requestOptions, {
+					...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(metadata?.signal ? { signal: metadata.signal } : {}),
+				}),
+				metadata,
 			)
 
 			return response.choices?.[0]?.message.content || ""
 		} catch (error) {
+			throwIfSingleCompletionAborted(metadata)
 			throw handleOpenAIError(error, this.providerName)
 		}
 	}

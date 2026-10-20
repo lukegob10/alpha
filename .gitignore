@@ -37,8 +37,10 @@ docs/_site/
 logs
 *.log
 /artifacts/certification/*.json
+/artifacts/certification/live-full-*/
 /artifacts/core-confidence/
 /artifacts/harness/
+/artifacts/testing-*/
 /artifacts/reasoning-ui/
 /artifacts/file-review-ui/
 /artifacts/tickets-ui/

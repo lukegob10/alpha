@@ -1,3 +1,5 @@
+import type { ProviderProfiles } from "../../core/config/ProviderSettingsManager"
+
 // Mock dependencies
 vi.mock("vscode", () => ({
 	workspace: {
@@ -64,7 +66,7 @@ vi.mock("../../core/config/ProviderSettingsManager", async (importOriginal) => {
 					modeApiConfigs: {},
 					currentApiConfigName: "default",
 				}),
-				import: vi.fn().mockResolvedValue({ success: true }),
+				import: vi.fn().mockImplementation(async (profiles: ProviderProfiles) => profiles),
 				listConfig: vi.fn().mockResolvedValue([]),
 			}
 		}),
@@ -101,7 +103,7 @@ describe("autoImportSettings", () => {
 				modeApiConfigs: {},
 				currentApiConfigName: "default",
 			}),
-			import: vi.fn().mockResolvedValue({ success: true }),
+			import: vi.fn().mockImplementation(async (profiles: ProviderProfiles) => profiles),
 			listConfig: vi.fn().mockResolvedValue([]),
 		}
 
@@ -220,6 +222,47 @@ describe("autoImportSettings", () => {
 		expect(vscode.window.showInformationMessage).toHaveBeenCalledWith("info.auto_import_success")
 		expect(mockProviderSettingsManager.import).toHaveBeenCalled()
 		expect(mockContextProxy.setValues).toHaveBeenCalled()
+	})
+
+	it("warns about retained setup issues without a success toast or raw payload and keeps the configured file authoritative", async () => {
+		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+			get: vi.fn().mockReturnValue("/absolute/path/to/legacy-config.json"),
+		} as unknown as ReturnType<typeof vscode.workspace.getConfiguration>)
+		vi.mocked(fileExistsAtPath).mockResolvedValue(true)
+		vi.mocked(fsPromises.readFile).mockResolvedValue(
+			JSON.stringify({
+				providerProfiles: {
+					currentApiConfigName: "legacy",
+					apiConfigs: {
+						legacy: {
+							id: "legacy-id",
+							apiProvider: "openai",
+							rateLimitSeconds: "invalid",
+							openAiApiKey: "test-secret-never-log",
+						},
+					},
+				},
+			}),
+		)
+		const options = {
+			providerSettingsManager: mockProviderSettingsManager,
+			contextProxy: mockContextProxy,
+			customModesManager: mockCustomModesManager,
+		}
+		await autoImportSettings(mockOutputChannel, options)
+		await autoImportSettings(mockOutputChannel, options)
+		expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
+		expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2)
+		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith("warnings.auto_import_requires_attention")
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("legacy-config.json with 1 profile warning"),
+		)
+		expect(JSON.stringify(mockOutputChannel.appendLine.mock.calls)).not.toContain("test-secret-never-log")
+		expect(JSON.stringify(vi.mocked(vscode.window.showWarningMessage).mock.calls)).not.toContain(
+			"test-secret-never-log",
+		)
+		expect(fsPromises.readFile).toHaveBeenCalledTimes(2)
+		expect(mockContextProxy.setProviderSettings).not.toHaveBeenCalled()
 	})
 
 	it("should handle invalid JSON gracefully", async () => {

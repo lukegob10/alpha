@@ -35,6 +35,7 @@ const items = Array.from({ length: 10_000 }, (_, index) => ({
 const files = new Map(
 	items.map((item) => [path.join(storage, "tasks", item.id, "history_item.json"), JSON.stringify(item)]),
 )
+const fixtureTaskIds = new Set(items.map((item) => item.id))
 const workspace = path.join(root, "workspace-1")
 const expectedIds = items
 	.filter((item) => item.workspace === workspace)
@@ -59,10 +60,18 @@ for (const [name, source] of Object.entries(sources)) {
 			GlobalFileNames: { historyItem: "history_item.json", historyIndex: "_index.json" },
 		},
 		"../../utils/safeWriteJson": { safeWriteJson: async () => undefined },
+		"./atomicWrite": {
+			withFileLock: () => assert.fail("Read-only history queries must not acquire a file lock"),
+		},
 		"../../utils/storage": {
 			getStorageBasePath: async () => {
 				storageResolutions++
 				return storage
+			},
+			resolveTaskDirectoryPath: (basePath, taskId) => {
+				assert.equal(basePath, storage, "Unexpected virtual storage root")
+				assert.ok(fixtureTaskIds.has(taskId), `Unexpected virtual task id: ${taskId}`)
+				return path.join(basePath, "tasks", taskId)
 			},
 		},
 	}

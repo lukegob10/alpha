@@ -14,11 +14,14 @@ import {
 	isRetiredProvider,
 	type ProviderProfileRenameErrorCode,
 	type ProviderProfileSaveResult,
+	PROVIDER_SETTINGS_KEYS,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Mode, modes } from "../../shared/modes"
 import { buildApiHandler } from "../../api"
+import { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
+export { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
 
 // Type-safe model migrations mapping
 type ModelMigrations = {
@@ -27,10 +30,30 @@ type ModelMigrations = {
 
 const MODEL_MIGRATIONS: ModelMigrations = {} as const satisfies ModelMigrations
 
+const retainedProviderConfigSchema = z.object({ id: z.string().min(1), value: z.unknown() })
+export type RetainedProviderConfig = { id: string; value: unknown }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value)
+
+// Profile display names are data keys, including __proto__, which z.record omits.
+const retainedApiConfigsSchema = z.custom<Record<string, RetainedProviderConfig>>(
+	(value) =>
+		isRecord(value) &&
+		Object.values(value).every(
+			(entry) =>
+				isRecord(entry) &&
+				Object.hasOwn(entry, "value") &&
+				entry.value !== undefined &&
+				retainedProviderConfigSchema.safeParse(entry).success,
+		),
+)
+
 export const providerProfilesSchema = z.object({
 	currentApiConfigName: z.string(),
 	apiConfigs: z.record(z.string(), providerSettingsWithIdSchema),
 	modeApiConfigs: z.record(z.string(), z.string()).optional(),
+	retainedApiConfigs: retainedApiConfigsSchema.optional(),
 
 	migrations: z
 		.object({
@@ -44,6 +67,115 @@ export const providerProfilesSchema = z.object({
 })
 
 export type ProviderProfiles = z.infer<typeof providerProfilesSchema>
+
+function profileIdentities(profiles: ProviderProfiles): [string, string][] {
+	return [
+		...Object.entries(profiles.apiConfigs).flatMap(([name, value]): [string, string][] =>
+			value.id && !Object.hasOwn(profiles.retainedApiConfigs ?? {}, name) ? [[name, value.id]] : [],
+		),
+		...Object.entries(profiles.retainedApiConfigs ?? {}).map(([name, value]): [string, string] => [name, value.id]),
+	]
+}
+
+/** Preserve reference identity after an explicit same-name import repairs saved settings. */
+export function createImportedProfileIdRemapper(
+	source: ProviderProfiles,
+	destination: ProviderProfiles,
+): (id: string) => string {
+	const finalIds = new Map(profileIdentities(destination))
+	const sourceIds = new Map<string, { target: string; count: number }>()
+	for (const [name, id] of profileIdentities(source)) {
+		const previous = sourceIds.get(id)
+		sourceIds.set(id, { target: finalIds.get(name) ?? id, count: (previous?.count ?? 0) + 1 })
+	}
+	return (id) => {
+		const entry = sourceIds.get(id)
+		if (entry && entry.count > 1) {
+			throw new ProviderProfileUnavailableError("invalid", { id, name: "Ambiguous imported profile identity" }, [
+				"id",
+			])
+		}
+		return entry?.target ?? id
+	}
+}
+
+export const persistedProviderProfilesSchema = providerProfilesSchema.extend({
+	apiConfigs: z.custom<Record<string, unknown>>(isRecord),
+})
+
+const knownProfileFields = new Set<string>([...PROVIDER_SETTINGS_KEYS, "id"])
+
+export function getInvalidProviderFields(value: unknown): string[] {
+	const parsed = persistedProviderSettingsWithIdSchema.safeParse(value)
+	if (parsed.success) return []
+	return [
+		...new Set(
+			parsed.error.issues.map(({ path }) => {
+				const key = String(path[0] ?? "configuration")
+				return knownProfileFields.has(key) ? key : "configuration"
+			}),
+		),
+	].slice(0, 10)
+}
+
+/** Separate durable opaque data from settings that passed the persisted reader. */
+export function readPersistedProviderProfiles(
+	value: unknown,
+	generateId: () => string,
+): {
+	profiles: ProviderProfiles
+	needsPersistence: boolean
+} {
+	const raw = persistedProviderProfilesSchema.parse(value)
+	const retained = { ...raw.retainedApiConfigs }
+	const configs: [string, ProviderSettingsWithId][] = []
+	let needsPersistence = false
+	const ids = new Set([
+		...Object.values(retained).map(({ id }) => id),
+		...Object.values(raw.apiConfigs).flatMap((config) =>
+			isRecord(config) && typeof config.id === "string" ? [config.id] : [],
+		),
+	])
+	for (const [name, config] of Object.entries(raw.apiConfigs)) {
+		const migratedConfig =
+			!raw.migrations?.consecutiveMistakeLimitMigrated &&
+			isRecord(config) &&
+			config.consecutiveMistakeLimit === null
+				? { ...config, consecutiveMistakeLimit: DEFAULT_CONSECUTIVE_MISTAKE_LIMIT }
+				: config
+		const result = persistedProviderSettingsWithIdSchema.safeParse(migratedConfig)
+		if (result.success) {
+			configs.push([name, result.data as ProviderSettingsWithId])
+			if (result.data.id) ids.add(result.data.id)
+		} else {
+			const previous = Object.hasOwn(retained, name) ? retained[name] : undefined
+			const storedId = isRecord(config) && typeof config.id === "string" && config.id ? config.id : undefined
+			let id = previous?.id ?? storedId
+			if (!id) {
+				for (let attempt = 0; attempt < 16; attempt++) {
+					const candidate = generateId()
+					if (!ids.has(candidate)) {
+						id = candidate
+						break
+					}
+				}
+				if (!id) throw new Error("Could not assign a unique saved provider profile identity")
+			}
+			Object.defineProperty(retained, name, {
+				value: { id, value: config },
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			})
+			ids.add(id)
+			needsPersistence = true
+		}
+	}
+	const profiles: ProviderProfiles = { ...raw, apiConfigs: Object.fromEntries(configs) }
+	if (Object.keys(retained).length) profiles.retainedApiConfigs = retained
+	else delete profiles.retainedApiConfigs
+	return { profiles, needsPersistence }
+}
 
 export class ProviderProfileRenameError extends Error {
 	constructor(
@@ -76,7 +208,8 @@ export class ProviderSettingsManager {
 	// Keep the existing SecretStorage namespace so a source rename cannot orphan saved profiles.
 	private static readonly SCOPE_PREFIX = "roo_cline_config_"
 	private static readonly storageLocks = new WeakMap<ExtensionContext["secrets"], Promise<void>>()
-	private readonly defaultConfigId = this.generateId()
+	// Fresh views must agree before the first settings write; persisted IDs remain authoritative.
+	private readonly defaultConfigId = "default"
 
 	private readonly defaultModeApiConfigs: Record<string, string> = Object.fromEntries(
 		modes.map((mode) => [mode.slug, this.defaultConfigId]),
@@ -128,38 +261,52 @@ export class ProviderSettingsManager {
 	public async initialize() {
 		try {
 			return await this.lock(async () => {
-				const providerProfiles = await this.load()
+				const { profiles: providerProfiles, needsPersistence } = await this.read()
 
 				if (!providerProfiles) {
 					await this.store(this.defaultProviderProfiles)
 					return
 				}
 
-				let isDirty = false
+				let isDirty = needsPersistence
+
+				// Bind modes only after legacy profiles have durable IDs. Otherwise the
+				// generated seed can point at no profile, or at an unrelated existing ID.
+				for (const apiConfig of Object.values(providerProfiles.apiConfigs)) {
+					if (!apiConfig.id) {
+						apiConfig.id = this.generateId()
+						isDirty = true
+					}
+				}
+
+				const currentName = providerProfiles.currentApiConfigName
+				const selectedId = this.profileEntries(providerProfiles).find(({ name }) => name === currentName)?.id
+				const seedId = selectedId ?? Object.values(providerProfiles.apiConfigs)[0]?.id
 
 				// Migrate existing installs to have per-mode API config map
-				if (!providerProfiles.modeApiConfigs) {
+				if (!providerProfiles.modeApiConfigs && seedId) {
 					// Use the currently selected config for all modes initially
-					const currentName = providerProfiles.currentApiConfigName
-					const seedId =
-						providerProfiles.apiConfigs[currentName]?.id ??
-						Object.values(providerProfiles.apiConfigs)[0]?.id ??
-						this.defaultConfigId
 					providerProfiles.modeApiConfigs = Object.fromEntries(modes.map((m) => [m.slug, seedId]))
 					isDirty = true
+				}
+
+				// Older migrations could persist a seed ID that never belonged to a
+				// profile. Repair only dangling executable-mode bindings, retaining
+				// valid per-mode choices and absent choices in existing maps.
+				if (providerProfiles.modeApiConfigs && seedId) {
+					const profileIds = new Set(this.profileEntries(providerProfiles).map(({ id }) => id))
+					for (const { slug } of modes) {
+						const boundId = providerProfiles.modeApiConfigs[slug]
+						if (boundId !== undefined && !profileIds.has(boundId)) {
+							providerProfiles.modeApiConfigs[slug] = seedId
+							isDirty = true
+						}
+					}
 				}
 
 				// Apply model migrations for all providers
 				if (this.applyModelMigrations(providerProfiles)) {
 					isDirty = true
-				}
-
-				// Ensure all configs have IDs.
-				for (const [_name, apiConfig] of Object.entries(providerProfiles.apiConfigs)) {
-					if (!apiConfig.id) {
-						apiConfig.id = this.generateId()
-						isDirty = true
-					}
 				}
 
 				// Ensure migrations field exists
@@ -369,12 +516,70 @@ export class ProviderSettingsManager {
 	}
 
 	private profileEntries(providerProfiles: ProviderProfiles): ProviderSettingsEntry[] {
-		return Object.entries(providerProfiles.apiConfigs).map(([name, apiConfig]) => ({
-			name,
-			id: apiConfig.id || "",
-			apiProvider: apiConfig.apiProvider,
-			modelId: this.cleanModelId(getModelId(apiConfig)),
-		}))
+		const validEntries: ProviderSettingsEntry[] = Object.entries(providerProfiles.apiConfigs)
+			.filter(([name]) => !Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name))
+			.map(([name, apiConfig]) => ({
+				name,
+				id: apiConfig.id || "",
+				apiProvider: apiConfig.apiProvider,
+				modelId: this.cleanModelId(getModelId(apiConfig)),
+				...(this.isUnsupportedProvider(apiConfig.apiProvider) ? { availability: "unsupported" as const } : {}),
+			}))
+		const retainedEntries: ProviderSettingsEntry[] = Object.entries(providerProfiles.retainedApiConfigs ?? {}).map(
+			([name, { id, value }]) => {
+				const invalidFields = getInvalidProviderFields(value)
+				return {
+					name,
+					id,
+					...(isRecord(value) && typeof value.apiProvider === "string" && value.apiProvider
+						? { apiProvider: value.apiProvider }
+						: {}),
+					availability: "invalid",
+					invalidFields: invalidFields.length ? invalidFields : ["configuration"],
+				}
+			},
+		)
+		return [...validEntries, ...retainedEntries]
+	}
+
+	private isUnsupportedProvider(value: unknown): boolean {
+		return typeof value === "string" && value !== "fake-ai" && (!isProviderName(value) || isRetiredProvider(value))
+	}
+
+	private resolveProfile(
+		providerProfiles: ProviderProfiles,
+		params: { name: string } | { id: string },
+	): ProviderSettingsEntry {
+		const entries = this.profileEntries(providerProfiles).filter((candidate) =>
+			"name" in params ? candidate.name === params.name : candidate.id === params.id,
+		)
+		if ("id" in params && entries.length > 1) throw this.ambiguousIdentityError(params.id)
+		const entry = entries[0]
+		if (!entry)
+			throw new Error(
+				"name" in params
+					? `Config with name '${params.name}' not found`
+					: `Config with ID '${params.id}' not found`,
+			)
+		return entry
+	}
+
+	private ambiguousIdentityError(id: string): ProviderProfileUnavailableError {
+		return new ProviderProfileUnavailableError("invalid", { id, name: "Ambiguous saved profile identity" }, ["id"])
+	}
+
+	private assertAvailable(entry: ProviderSettingsEntry): void {
+		if (entry.availability) {
+			throw new ProviderProfileUnavailableError(
+				entry.availability,
+				{ id: entry.id, name: entry.name },
+				entry.invalidFields,
+			)
+		}
+	}
+
+	public async assertProfileAvailable(params: { name: string } | { id: string }): Promise<void> {
+		return this.lock(async () => this.assertAvailable(this.resolveProfile(await this.load(), params)))
 	}
 
 	/** Rename only persisted identity metadata; provider settings never come from the UI edit buffer. */
@@ -388,20 +593,22 @@ export class ProviderSettingsManager {
 				const name = newName.trim()
 				if (!name) throw new ProviderProfileRenameError("invalid")
 				const providerProfiles = await this.load()
-				const entries = Object.entries(providerProfiles.apiConfigs)
-				const entry = entries.find(([existingName, config]) =>
-					"id" in params ? config.id === params.id : existingName === params.name,
+				const entries = this.profileEntries(providerProfiles)
+				if ("id" in params && entries.filter(({ id }) => id === params.id).length > 1) {
+					throw new ProviderProfileRenameError("invalid")
+				}
+				const entry = entries.find((config) =>
+					"id" in params ? config.id === params.id : config.name === params.name,
 				)
 				if (!entry) throw new ProviderProfileRenameError("notFound")
-				const [oldName, config] = entry
-				const id = config.id
+				const { name: oldName, id } = entry
 				if (!id) throw new ProviderProfileRenameError("notFound")
 				if (options.expectedName !== undefined && oldName !== options.expectedName) {
 					throw new ProviderProfileRenameError("invalid")
 				}
 				if (
 					entries.some(
-						([existingName]) =>
+						({ name: existingName }) =>
 							existingName !== oldName && existingName.toLowerCase() === name.toLowerCase(),
 					)
 				) {
@@ -413,8 +620,21 @@ export class ProviderSettingsManager {
 					currentApiConfigName: isActive ? name : providerProfiles.currentApiConfigName,
 					// Object.fromEntries retains arbitrary display names such as __proto__ as own data keys.
 					apiConfigs: Object.fromEntries(
-						entries.map(([key, value]) => [key === oldName ? name : key, value]),
+						Object.entries(providerProfiles.apiConfigs).map(([key, value]) => [
+							key === oldName ? name : key,
+							value,
+						]),
 					),
+					...(providerProfiles.retainedApiConfigs
+						? {
+								retainedApiConfigs: Object.fromEntries(
+									Object.entries(providerProfiles.retainedApiConfigs).map(([key, value]) => [
+										key === oldName ? name : key,
+										value,
+									]),
+								),
+							}
+						: {}),
 				}
 				if (name !== oldName) {
 					try {
@@ -450,20 +670,25 @@ export class ProviderSettingsManager {
 					name = target
 					const existingId = Object.hasOwn(providerProfiles.apiConfigs, name)
 						? providerProfiles.apiConfigs[name]?.id
-						: undefined
+						: Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name)
+							? providerProfiles.retainedApiConfigs?.[name].id
+							: undefined
 					id = config.id || existingId || this.generateId()
 				} else {
-					const entry = Object.entries(providerProfiles.apiConfigs).find(
-						([, saved]) => saved.id === target.id,
-					)
+					const matches = this.profileEntries(providerProfiles).filter(({ id }) => id === target.id)
+					if (matches.length > 1) throw new ProviderProfileSaveError("invalid")
+					const entry = matches[0]
 					if (!entry) throw new ProviderProfileSaveError("notFound")
-					name = entry[0]
+					name = entry.name
 					id = target.id
 					// Validate the original container; object spread would turn malformed wire values into empty profiles.
 					z.record(z.unknown()).parse(config)
 				}
 				// A draft's embedded ID cannot change the authority of an explicit existing-profile target.
 				const configToSave = typeof target === "string" ? config : { ...config, id }
+				if (Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name)) {
+					persistedProviderSettingsWithIdSchema.parse(configToSave)
+				}
 
 				// For active providers, filter out settings from other providers.
 				// For retired providers, preserve full profile fields (including legacy
@@ -487,6 +712,11 @@ export class ProviderSettingsManager {
 						[name]: { ...filteredConfig, id } as ProviderSettingsWithId,
 					},
 				}
+				if (updated.retainedApiConfigs) {
+					updated.retainedApiConfigs = { ...updated.retainedApiConfigs }
+					delete updated.retainedApiConfigs[name]
+					if (!Object.keys(updated.retainedApiConfigs).length) delete updated.retainedApiConfigs
+				}
 				await this.store(updated)
 				return typeof target === "string" ? id : { id, name }
 			})
@@ -505,35 +735,12 @@ export class ProviderSettingsManager {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
-				let name: string
-				let providerSettings: ProviderSettingsWithId
-
-				if ("name" in params) {
-					name = params.name
-
-					if (!Object.hasOwn(providerProfiles.apiConfigs, name)) {
-						throw new Error(`Config with name '${name}' not found`)
-					}
-
-					providerSettings = providerProfiles.apiConfigs[name]
-				} else {
-					const id = params.id
-
-					const entry = Object.entries(providerProfiles.apiConfigs).find(
-						([_, apiConfig]) => apiConfig.id === id,
-					)
-
-					if (!entry) {
-						throw new Error(`Config with ID '${id}' not found`)
-					}
-
-					name = entry[0]
-					providerSettings = entry[1]
-				}
-
-				return { name, ...providerSettings }
+				const entry = this.resolveProfile(providerProfiles, params)
+				if (entry.availability === "invalid") this.assertAvailable(entry)
+				return { ...providerProfiles.apiConfigs[entry.name], name: entry.name }
 			})
 		} catch (error) {
+			if (error instanceof ProviderProfileUnavailableError) throw error
 			throw new Error(`Failed to get profile: ${error instanceof Error ? error.message : error}`)
 		}
 	}
@@ -544,16 +751,17 @@ export class ProviderSettingsManager {
 	public async activateProfile(
 		params: { name: string } | { id: string },
 	): Promise<ProviderSettingsWithId & { name: string }> {
-		const { name, ...providerSettings } = await this.getProfile(params)
-
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
-				providerProfiles.currentApiConfigName = name
+				const entry = this.resolveProfile(providerProfiles, params)
+				this.assertAvailable(entry)
+				providerProfiles.currentApiConfigName = entry.name
 				await this.store(providerProfiles)
-				return { name, ...providerSettings }
+				return { ...providerProfiles.apiConfigs[entry.name], name: entry.name }
 			})
 		} catch (error) {
+			if (error instanceof ProviderProfileUnavailableError) throw error
 			throw new Error(`Failed to activate profile: ${error instanceof Error ? error.message : error}`)
 		}
 	}
@@ -561,21 +769,50 @@ export class ProviderSettingsManager {
 	/**
 	 * Delete a config by name.
 	 */
-	public async deleteConfig(name: string) {
+	public async deleteConfig(name: string, options: { expectedId?: string } = {}) {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
 
-				if (!Object.hasOwn(providerProfiles.apiConfigs, name)) {
+				const isRetained = Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name)
+				const removed = this.profileEntries(providerProfiles).find((entry) => entry.name === name)
+				if (!Object.hasOwn(providerProfiles.apiConfigs, name) && !isRetained) {
 					throw new Error(`Config '${name}' not found`)
 				}
+				if (options.expectedId !== undefined && removed?.id !== options.expectedId) {
+					throw new Error(
+						"Saved provider profile identity changed. Refresh the profile list before deleting it.",
+					)
+				}
 
-				if (Object.keys(providerProfiles.apiConfigs).length === 1) {
+				if (this.profileEntries(providerProfiles).length === 1) {
 					throw new Error(`Cannot delete the last remaining configuration`)
 				}
 
 				delete providerProfiles.apiConfigs[name]
+				if (providerProfiles.retainedApiConfigs) {
+					delete providerProfiles.retainedApiConfigs[name]
+					if (!Object.keys(providerProfiles.retainedApiConfigs).length)
+						delete providerProfiles.retainedApiConfigs
+				}
+				const entries = this.profileEntries(providerProfiles)
+				if (providerProfiles.currentApiConfigName === name) {
+					providerProfiles.currentApiConfigName = (
+						entries.find((entry) => !entry.availability) ?? entries[0]
+					).name
+				}
+				if (removed?.id && providerProfiles.modeApiConfigs) {
+					providerProfiles.modeApiConfigs = Object.fromEntries(
+						Object.entries(providerProfiles.modeApiConfigs).filter(([, id]) => id !== removed.id),
+					)
+				}
+				const selected = entries.find((entry) => entry.name === providerProfiles.currentApiConfigName)
+				const selectedProfile =
+					selected && !selected.availability
+						? { ...providerProfiles.apiConfigs[selected.name], name: selected.name }
+						: undefined
 				await this.store(providerProfiles)
+				return { currentApiConfigName: providerProfiles.currentApiConfigName, entries, selectedProfile }
 			})
 		} catch (error) {
 			throw new Error(`Failed to delete config: ${error}`)
@@ -589,7 +826,10 @@ export class ProviderSettingsManager {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
-				return Object.hasOwn(providerProfiles.apiConfigs, name)
+				return (
+					Object.hasOwn(providerProfiles.apiConfigs, name) ||
+					Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name)
+				)
 			})
 		} catch (error) {
 			throw new Error(`Failed to check config existence: ${error}`)
@@ -622,10 +862,15 @@ export class ProviderSettingsManager {
 	public async getModeConfigId(mode: Mode) {
 		try {
 			return await this.lock(async () => {
-				const { modeApiConfigs } = await this.load()
-				return modeApiConfigs?.[mode]
+				const profiles = await this.load()
+				const id = profiles.modeApiConfigs?.[mode]
+				if (id !== undefined && this.profileEntries(profiles).filter((entry) => entry.id === id).length > 1) {
+					throw this.ambiguousIdentityError(id)
+				}
+				return id
 			})
 		} catch (error) {
+			if (error instanceof ProviderProfileUnavailableError) throw error
 			throw new Error(`Failed to get mode config: ${error}`)
 		}
 	}
@@ -681,10 +926,64 @@ export class ProviderSettingsManager {
 		}
 	}
 
-	public async import(providerProfiles: ProviderProfiles) {
+	public async import(providerProfiles: ProviderProfiles, options: { referencedIds?: string[] } = {}) {
 		try {
-			return await this.lock(() => this.store(providerProfiles))
+			return await this.lock(async () => {
+				const previous = await this.load()
+				const { profiles: imported } = readPersistedProviderProfiles(providerProfiles, () => this.generateId())
+				const source: ProviderProfiles = {
+					...imported,
+					apiConfigs: { ...imported.apiConfigs },
+					retainedApiConfigs: imported.retainedApiConfigs ? { ...imported.retainedApiConfigs } : undefined,
+				}
+				const retained = { ...previous.retainedApiConfigs, ...imported.retainedApiConfigs }
+				for (const [name, entry] of Object.entries(imported.retainedApiConfigs ?? {})) {
+					const previousId = Object.hasOwn(previous.retainedApiConfigs ?? {}, name)
+						? previous.retainedApiConfigs?.[name].id
+						: Object.hasOwn(previous.apiConfigs, name)
+							? previous.apiConfigs[name].id
+							: undefined
+					if (previousId) {
+						retained[name] = { ...entry, id: previousId }
+					}
+				}
+				for (const name of Object.keys(imported.apiConfigs)) {
+					if (!Object.hasOwn(imported.retainedApiConfigs ?? {}, name)) {
+						const previousId = Object.hasOwn(previous.retainedApiConfigs ?? {}, name)
+							? previous.retainedApiConfigs?.[name].id
+							: undefined
+						if (previousId) {
+							imported.apiConfigs[name] = { ...imported.apiConfigs[name], id: previousId }
+						}
+						delete retained[name]
+					}
+				}
+				imported.apiConfigs = { ...previous.apiConfigs, ...imported.apiConfigs }
+				for (const name of Object.keys(imported.retainedApiConfigs ?? {})) delete imported.apiConfigs[name]
+				for (const [name, config] of Object.entries(imported.apiConfigs)) {
+					if (!config.id)
+						imported.apiConfigs[name] = {
+							...config,
+							id: Object.hasOwn(previous.apiConfigs, name)
+								? (previous.apiConfigs[name].id ?? this.generateId())
+								: this.generateId(),
+						}
+				}
+				if (Object.keys(retained).length) imported.retainedApiConfigs = retained
+				else delete imported.retainedApiConfigs
+				const remapId = createImportedProfileIdRemapper(source, imported)
+				for (const id of options.referencedIds ?? []) remapId(id)
+				imported.modeApiConfigs = {
+					...previous.modeApiConfigs,
+					...Object.fromEntries(
+						Object.entries(source.modeApiConfigs ?? {}).map(([mode, id]) => [mode, remapId(id)]),
+					),
+				}
+				await this.store(imported)
+				return imported
+			})
 		} catch (error) {
+			if (error instanceof ProviderProfileUnavailableError) throw error
 			throw new Error(`Failed to import provider profiles: ${error}`)
 		}
 	}
@@ -703,46 +1002,28 @@ export class ProviderSettingsManager {
 	}
 
 	private async load(): Promise<ProviderProfiles> {
+		return (await this.read()).profiles
+	}
+
+	private async read(): Promise<{ profiles: ProviderProfiles; needsPersistence: boolean }> {
 		try {
 			const content = await this.context.secrets.get(this.secretsKey)
 
 			if (!content) {
-				return this.defaultProviderProfiles
+				return { profiles: this.defaultProviderProfiles, needsPersistence: false }
 			}
 
-			const providerProfiles = providerProfilesSchema
-				.extend({
-					// Zod record parsing omits __proto__. Profile display names are data keys, so
-					// validate the record shape here and its values below without discarding that name.
-					apiConfigs: z.custom<Record<string, unknown>>(
-						(value) => typeof value === "object" && value !== null && !Array.isArray(value),
-					),
-				})
-				.parse(JSON.parse(content))
-
-			const apiConfigs = Object.entries(providerProfiles.apiConfigs).reduce(
-				(acc, [key, apiConfig]) => {
-					// Persisted readers accept unknown provider IDs and retain the full
-					// profile so callers can report the exact unsupported identifier.
-					const result = persistedProviderSettingsWithIdSchema.safeParse(apiConfig)
-					return result.success ? { ...acc, [key]: result.data as ProviderSettingsWithId } : acc
-				},
-				{} as Record<string, ProviderSettingsWithId>,
-			)
-
-			return {
-				...providerProfiles,
-				apiConfigs: Object.fromEntries(
-					Object.entries(apiConfigs).filter(([_, apiConfig]) => apiConfig !== null),
-				),
-			}
+			return readPersistedProviderProfiles(JSON.parse(content), () => this.generateId())
 		} catch (error) {
 			if (error instanceof ZodError) {
 				TelemetryService.instance.captureSchemaValidationError({
 					schemaName: "ProviderProfiles",
 					error,
 				})
+				throw new Error("Saved provider profile metadata is invalid. Its stored data was not changed.")
 			}
+			if (error instanceof SyntaxError)
+				throw new Error("Saved provider profiles are not valid JSON. Their stored data was not changed.")
 
 			throw new Error(`Failed to read provider profiles from secrets: ${error}`)
 		}

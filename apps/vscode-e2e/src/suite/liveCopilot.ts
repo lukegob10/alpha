@@ -5,6 +5,7 @@ import { writeJsonAtomically } from "./preflightEvidence"
 
 import {
 	configureLiveCopilot,
+	finalizePreflightArtifact,
 	type LiveCopilotAuthDependencies,
 	type LiveCopilotOptions,
 	type LiveCopilotPreflightMetadata,
@@ -36,13 +37,30 @@ export async function runLiveCopilotPreflight(
 	dependencies?: LiveCopilotAuthDependencies,
 ): Promise<LiveCopilotPreflightMetadata> {
 	const preflight = await configureLiveCopilot(api, options, dependencies)
-	if (options.setup || !preflight.ready) return preflight
-	if (!api.probeModel)
+	dependencies?.signal?.throwIfAborted()
+	if (preflight.artifact?.status === "failed")
+		throw new TestRunError("evidence-failed", "Live Copilot preflight evidence could not be recorded")
+	if (!preflight.ready) return preflight
+	const unavailable = async (): Promise<LiveCopilotPreflightMetadata> => {
+		const blocked = await finalizePreflightArtifact(
+			{ ...preflight, ok: false, ready: false, error: { code: "completion-unavailable" } },
+			options.artifactsDir,
+		)
+		dependencies?.signal?.throwIfAborted()
+		if (blocked.artifact?.status === "failed")
+			throw new TestRunError("evidence-failed", "Live Copilot completion evidence could not be recorded")
+		if (options.setup) return blocked
 		throw new TestRunError(
 			"provider-unavailable",
-			"The installed Alpha extension cannot perform a completion readiness probe",
+			"Actual Alpha completion readiness probe failed; inspect its run-owned receipt",
 		)
+	}
+	if (!api.probeModel) return unavailable()
+	// VS Code 1.138.0 returns true from canSendRequest without checking consent.
+	// Only Alpha's own bounded request can establish its access and actual readiness.
+	// Interactive setup reaches this path solely from the explicit Continue action.
 	const probe = await api.probeModel(dependencies?.signal)
+	dependencies?.signal?.throwIfAborted()
 	if (options.artifactsDir)
 		await writeJsonAtomically(path.join(options.artifactsDir, "live-completion-probe.json"), {
 			schemaVersion: 1,
@@ -51,11 +69,9 @@ export async function runLiveCopilotPreflight(
 			countsAsSolving: false,
 			...probe,
 		})
-	if (probe.status !== "completed" || probe.modelId !== preflight.discovery.selectedModel?.id)
-		throw new TestRunError(
-			"provider-unavailable",
-			"Actual Alpha completion readiness probe failed; inspect its run-owned receipt",
-		)
+	dependencies?.signal?.throwIfAborted()
+	if (probe.status !== "completed" || probe.requests !== 1 || probe.modelId !== preflight.discovery.selectedModel?.id)
+		return unavailable()
 	return preflight
 }
 

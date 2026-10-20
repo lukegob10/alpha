@@ -703,6 +703,26 @@ describe("ChatView toolbar navigation", () => {
 		},
 	)
 
+	it("reopens the same chat before the host acknowledges returning home", async () => {
+		const view = renderChatView()
+		const currentTaskItem = { id: "reopen-before-draft", task: "Reopen this chat", ts: 1 }
+		mockPostMessage({
+			currentTaskId: currentTaskItem.id,
+			currentView: { type: "task", taskId: currentTaskItem.id },
+			currentTaskItem,
+			taskHistory: [currentTaskItem],
+			clineMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
+		})
+		fireEvent.click(await view.findByRole("button", { name: "history:backToHome" }))
+		await view.findByTestId("alpha-home-brand")
+
+		// The home snapshot may still be awaiting host publication when the user reopens this chat.
+		fireEvent.click(await view.findByTestId(`task-item-${currentTaskItem.id}`))
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: currentTaskItem.id })
+		await view.findByRole("button", { name: "history:backToHome" })
+		expect(view.queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
+	})
+
 	it("keeps the complete fallback toolbar on an empty editor chat without adding a New chat heading", async () => {
 		const view = renderChatView()
 		mockPostMessage({

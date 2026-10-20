@@ -230,7 +230,7 @@ class FanoutAI {
 suite("Large ticket prompt and parallel agents", function () {
 	this.timeout(120_000)
 	test("admits five concurrent reviews, collects every result, and becomes idle once", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 		assert.ok(artifacts)

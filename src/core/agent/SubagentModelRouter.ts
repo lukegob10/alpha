@@ -5,6 +5,7 @@ import {
 	type ReasoningEffortExtended,
 	type SubagentModelRouteState,
 } from "@alpha-code/types"
+import { ProviderProfileUnavailableError } from "../config/ProviderProfileUnavailableError"
 
 export type SubagentRole = "explore" | "review" | "worker"
 
@@ -14,6 +15,7 @@ interface StoredProviderProfile extends ProviderSettingsWithId {
 
 export interface SubagentProfileLoader {
 	getProfile(params: { name: string } | { id: string }): Promise<StoredProviderProfile>
+	assertProfileAvailable?(params: { name: string } | { id: string }): Promise<void>
 }
 
 export interface ResolveSubagentModelRouteOptions {
@@ -112,8 +114,10 @@ async function resolveProfileRoute(options: ResolveSubagentModelRouteOptions): P
 
 	let profile: StoredProviderProfile
 	try {
+		await options.profileLoader.assertProfileAvailable?.({ id: requestedProfileId })
 		profile = await options.profileLoader.getProfile({ id: requestedProfileId })
-	} catch {
+	} catch (error) {
+		if (error instanceof ProviderProfileUnavailableError) throw error
 		return resolveParentRoute(options, source, {
 			requestedProfileId,
 			fallbackReason: "missing",

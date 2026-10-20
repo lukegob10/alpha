@@ -36,7 +36,9 @@ it.each(endpointForms)(
 			manifestDigest: `sha256:${"b".repeat(64)}`,
 			identityScope: "observed-entrypoint-and-manifest",
 		}
-		const server = new IpcServer(socketPath, vi.fn(), async () => identity)
+		const server = new IpcServer(socketPath, vi.fn(), async () => identity, {
+			capabilities: { targetedTaskCancellation: true, presentationModelCallOptOut: true },
+		})
 		const signal = AbortSignal.timeout(8_000)
 		let first: IpcClient | undefined
 		let second: IpcClient | undefined
@@ -56,6 +58,10 @@ it.each(endpointForms)(
 			expect(firstClientId).not.toBe(secondClientId)
 			expect(first.executionIdentity).toEqual(identity)
 			expect(second.executionIdentity).toEqual(identity)
+			expect(first.capabilities?.targetedTaskCancellation).toBe(true)
+			expect(second.capabilities?.targetedTaskCancellation).toBe(true)
+			expect(first.capabilities?.presentationModelCallOptOut).toBe(true)
+			expect(second.capabilities?.presentationModelCallOptOut).toBe(true)
 			expect(first.serverProcess).toEqual({ pid: process.pid, ppid: process.ppid })
 			const firstCommand = once(server, IpcMessageType.TaskCommand, { signal })
 			phase = "first command"
@@ -71,6 +77,28 @@ it.each(endpointForms)(
 				second.clientId,
 				{ commandName: TaskCommandName.DeleteQueuedMessage, data: "second queued message" },
 			])
+			phase = "suppressed presentation admission"
+			const taskStart = once(server, IpcMessageType.TaskCommand, { signal })
+			const startData = {
+				configuration: { apiProvider: "vertex" as const },
+				text: "Use only execution model calls",
+				presentationModelCalls: false as const,
+			}
+			first.sendCommand({ commandName: TaskCommandName.StartNewTask, data: startData })
+			expect(await taskStart).toEqual([
+				first.clientId,
+				{ commandName: TaskCommandName.StartNewTask, data: startData },
+			])
+			phase = "targeted cancellation"
+			const targetedCancellation = once(server, IpcMessageType.TaskCommand, { signal })
+			first.sendCommand({ commandName: TaskCommandName.CancelTask, data: { taskId: "first-task" } })
+			expect(await targetedCancellation).toEqual([
+				first.clientId,
+				{ commandName: TaskCommandName.CancelTask, data: { taskId: "first-task" } },
+			])
+			const legacyCancellation = once(server, IpcMessageType.TaskCommand, { signal })
+			second.sendCommand({ commandName: TaskCommandName.CancelTask })
+			expect(await legacyCancellation).toEqual([second.clientId, { commandName: TaskCommandName.CancelTask }])
 			const firstEvent: TaskEvent = { eventName: AlphaCodeEventName.TaskStarted, payload: ["first-task"] }
 			const secondEvent: TaskEvent = { eventName: AlphaCodeEventName.TaskAborted, payload: ["second-task"] }
 			const receivedFirst = once(first, IpcMessageType.TaskEvent, { signal })
@@ -101,6 +129,7 @@ it.each(endpointForms)(
 				expect(client.clientId).toBeUndefined()
 				expect(client.executionIdentity).toBeUndefined()
 				expect(client.serverProcess).toBeUndefined()
+				expect(client.capabilities).toBeUndefined()
 			}
 		} catch (error) {
 			throw new Error(`IPC round-trip failed during ${phase}`, { cause: error })

@@ -383,7 +383,7 @@ export async function buildEvidenceMatrix({
 		kind: "alpha-harness-evidence-matrix",
 		generatedAt: new Date(now).toISOString(),
 		source,
-		toolchain: { node, pnpm, referenceHost: "1.125.0" },
+		toolchain: { node, pnpm, referenceHost: "1.138.0" },
 		interpretation:
 			"Inventory is distinct from execution. Cells retain missing, skipped and unavailable scope; machinery tests do not establish live quality or production evidence.",
 		columns,

@@ -62,6 +62,8 @@ export const historyItemSchema = z.object({
 	task: z.string(),
 	displayName: taskDisplayNameSchema.optional(),
 	generatedTitle: taskGeneratedTitleSchema.optional(),
+	/** Persisted host opt-out of optional automatic title and reasoning-synopsis model calls. */
+	presentationModelCalls: z.literal(false).optional(),
 	/** Archived conversations remain readable and restorable, outside the active thread inventory. */
 	archived: z.boolean().optional(),
 	/** Source conversation identity; a fork has its own lifecycle, mailbox, and accounting. */

@@ -2,7 +2,13 @@ import { Anthropic } from "@anthropic-ai/sdk"
 
 import type { ModelInfo } from "@alpha-code/types"
 
-import type { ApiHandler, SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import type {
+	ApiHandler,
+	SingleCompletionHandler,
+	ApiHandlerCreateMessageMetadata,
+	ApiHandlerSingleCompletionMetadata,
+} from "../index"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import type { ApiHandlerOptions } from "../../shared/api"
 import { ApiStream } from "../transform/stream"
 
@@ -28,7 +34,7 @@ interface FakeAI {
 	): ApiStream
 	getModel(): { id: string; info: ModelInfo }
 	countTokens(content: Array<Anthropic.Messages.ContentBlockParam>): Promise<number>
-	completePrompt(prompt: string): Promise<string>
+	completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string>
 }
 
 /**
@@ -94,7 +100,8 @@ export class FakeAIHandler implements ApiHandler, SingleCompletionHandler {
 		return this.ai.countTokens(content)
 	}
 
-	completePrompt(prompt: string): Promise<string> {
-		return this.ai.completePrompt(prompt)
+	completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
+		throwIfSingleCompletionAborted(metadata)
+		return awaitSingleCompletion(this.ai.completePrompt(prompt, metadata), metadata)
 	}
 }

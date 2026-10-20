@@ -20,7 +20,7 @@ import {
 } from "../liveHostProtocol"
 import { TestRunError } from "../runFailure"
 
-const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.125.0" }
+const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.138.0" }
 const receipt: LiveHostReceipt = {
 	...expected,
 	schemaVersion: 1,

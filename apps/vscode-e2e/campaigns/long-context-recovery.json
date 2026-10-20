@@ -1,6 +1,6 @@
 {
 	"id": "long-context-recovery",
-	"hosts": [{ "version": "1.125.0" }],
+	"hosts": [{ "version": "1.138.0" }],
 	"scenarioIds": ["long-context-recovery", "long-context-empty-exhaustion"],
 	"samples": 1,
 	"provider": { "mode": "live-copilot", "modelId": "gpt-5.6-luna", "effort": "high" },

@@ -21,6 +21,7 @@ import { waitFor } from "./utils"
 
 const execFile = promisify(execFileCallback)
 const CHILD_COUNT = 2
+const MAX_ROOT_REQUESTS = CHILD_COUNT + 2
 const RESULT = "Both non-Git agents have returned their replies."
 
 interface LiveTask {
@@ -56,6 +57,7 @@ interface Observation {
 	workspace: string
 	root?: LiveTask
 	rootRequests: number
+	waitCalls: number
 	children: Map<string, { index: number; role: string; isolated: boolean }>
 	privateWorkspaces: Set<string>
 	completed: Map<string, number>
@@ -116,6 +118,7 @@ class NonGitAgentsAI {
 		assert.equal(task, observation.root, "The parent must retain the same live task")
 		assert.equal(path.relative(observation.workspace, task.cwd), "", "The parent must keep its source workspace")
 		const request = ++observation.rootRequests
+		assert.ok(request <= MAX_ROOT_REQUESTS, "Result collection must not enter an unbounded retry loop")
 		if (request === 1) {
 			for (let index = 1; index <= CHILD_COUNT; index++) {
 				yield {
@@ -131,18 +134,24 @@ class NonGitAgentsAI {
 			}
 			return
 		}
-		if (request === 2) {
+		const serialized = JSON.stringify(messages)
+		const missingReplies = Array.from({ length: CHILD_COUNT }, (_, index) => index + 1).filter(
+			(index) => !serialized.includes("NON_GIT_REPLY_" + index),
+		)
+		if (request === 2 || missingReplies.length > 0) {
 			await observation.childrenCompleted.promise
+			// Task completion precedes Worker capture and mailbox publication. A
+			// native wait returns the first available batch, so collect any remaining reply.
+			observation.waitCalls++
+			assert.ok(observation.waitCalls <= CHILD_COUNT, "Every wait must make bounded result-collection progress")
 			yield {
 				type: "tool_call" as const,
-				id: "non-git-wait",
+				id: "non-git-wait-" + observation.waitCalls,
 				name: "wait_agent",
-				arguments: JSON.stringify({ timeout_ms: 10_000 }),
+				arguments: JSON.stringify({ timeout_ms: 10_000, until_terminal: true }),
 			}
 			return
 		}
-		assert.equal(request, 3, "Result collection must not enter an unbounded retry loop")
-		const serialized = JSON.stringify(messages)
 		for (let index = 1; index <= CHILD_COUNT; index++) {
 			assert.ok(serialized.includes("NON_GIT_REPLY_" + index), "Every reply must reach the parent")
 		}
@@ -175,7 +184,7 @@ async function assertNonGitWorkspace(workspace: string): Promise<void> {
 suite("Managed agents in a plain folder", function () {
 	this.timeout(120_000)
 	test("runs two native default agents without creating source Git metadata or replacing the parent", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
@@ -189,6 +198,7 @@ suite("Managed agents in a plain folder", function () {
 			provider,
 			workspace,
 			rootRequests: 0,
+			waitCalls: 0,
 			children: new Map(),
 			privateWorkspaces: new Set(),
 			completed: new Map(),
@@ -245,6 +255,7 @@ suite("Managed agents in a plain folder", function () {
 					description: "two default agents in a non-Git folder and parent completion",
 					onTimeout: async () => ({
 						rootRequests: observation.rootRequests,
+						waitCalls: observation.waitCalls,
 						children: [...observation.children],
 						completed: [...observation.completed],
 						failures,
@@ -270,6 +281,7 @@ suite("Managed agents in a plain folder", function () {
 						hostVersion: vscode.version,
 						rootId,
 						rootRequests: observation.rootRequests,
+						waitCalls: observation.waitCalls,
 						children: [...observation.children],
 						privateWorkspaceCount: observation.privateWorkspaces.size,
 						completionCounts: [...observation.completed],
@@ -284,7 +296,8 @@ suite("Managed agents in a plain folder", function () {
 				{ flag: "wx" },
 			)
 			assert.deepEqual(failures, [])
-			assert.equal(observation.rootRequests, 3)
+			assert.ok(observation.rootRequests >= 3 && observation.rootRequests <= MAX_ROOT_REQUESTS)
+			assert.equal(observation.rootRequests, observation.waitCalls + 2)
 			assert.equal(observation.children.size, CHILD_COUNT)
 			assert.equal(observation.privateWorkspaces.size, CHILD_COUNT)
 			assert.equal(observation.completed.size, CHILD_COUNT + 1)
@@ -300,8 +313,8 @@ suite("Managed agents in a plain folder", function () {
 			assert.equal(root.didComplete, true)
 			assert.ok(root.clineMessages.some((message) => !message.partial && message.text === RESULT))
 			assert.deepEqual(transactions.errors, [])
-			assert.equal(transactions.callCount, CHILD_COUNT + 1)
-			assert.equal(transactions.resultCount, CHILD_COUNT + 1)
+			assert.equal(transactions.callCount, CHILD_COUNT + observation.waitCalls)
+			assert.equal(transactions.resultCount, CHILD_COUNT + observation.waitCalls)
 		}, [
 			() => {
 				observation.childrenEntered.resolve()

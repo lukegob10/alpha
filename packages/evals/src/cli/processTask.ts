@@ -42,6 +42,7 @@ import { Logger, getTag, isDockerContainer } from "./utils"
 import { redisClient, getPubSubKey, registerRunner, deregisterRunner } from "./redis"
 import { runUnitTest } from "./runUnitTest"
 import { runTaskInVscode } from "./runTaskInVscode"
+import { presentationModelCallPolicySchema } from "./types"
 import { captureWorkspaceBaseline, collectChangedPaths } from "./workspaceChanges"
 
 type ProcessTaskOptions = {
@@ -79,6 +80,7 @@ export const processTask = async ({
 	let settled = false
 	let localSandboxRoot: string | undefined
 	let descriptors: ArtifactDescriptor[] = []
+	let executionOutcome: Awaited<ReturnType<typeof runTaskInVscode>> | undefined
 	const ownsLogger = logger === undefined
 
 	logger ??= new Logger({
@@ -148,14 +150,20 @@ export const processTask = async ({
 			await redis.publish(getPubSubKey(run.id), JSON.stringify(event))
 		}
 		logger.info(`running task ${task.id} (${task.language}/${task.exercise}) via vscode...`)
-		const executionOutcome = await runTaskInVscode({
+		executionOutcome = await runTaskInVscode({
 			run,
 			task,
 			jobToken,
 			publish,
 			logger,
 			workspaceRoot,
-			onExecutionIdentity: async (executionIdentity) => {
+			onExecutionIdentity: async (executionIdentity, presentationPolicy) => {
+				const parsedPolicy =
+					typeof run.campaignHardCapUsd === "number"
+						? presentationModelCallPolicySchema.safeParse(presentationPolicy)
+						: undefined
+				if (parsedPolicy && !parsedPolicy.success)
+					throw new Error(`Governed task ${task.id} requires a validated presentation model-call opt-out`)
 				identities = await createRuntimeIdentities({ ...identityInput, executionIdentity })
 				await persistRuntimeIdentities(identities.taskManifest, identities.variantManifest)
 				await recordEvidenceIntegrity({
@@ -165,6 +173,7 @@ export const processTask = async ({
 					variantIdentity: identities.variantIdentity,
 				})
 				await record("extension.execution_identity", executionIdentity)
+				if (parsedPolicy?.success) await record("extension.presentation_model_call_policy", parsedPolicy.data)
 			},
 		})
 		await transition({ type: "agent_completed" })
@@ -315,6 +324,7 @@ export const processTask = async ({
 			}
 		}
 	}
+	return executionOutcome
 }
 
 export const processTaskInContainer = async ({

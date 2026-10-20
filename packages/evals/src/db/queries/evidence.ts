@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm"
+import { and, asc, eq } from "drizzle-orm"
 
 import {
 	canonicalJson,
@@ -61,6 +61,18 @@ export function getEvalEvents(attemptId: number) {
 	return db.query.evalEvents.findMany({
 		where: eq(evalEvents.attemptId, attemptId),
 		orderBy: asc(evalEvents.sequence),
+	})
+}
+
+export function getPresentationModelCallPolicyEvents(attemptId: number) {
+	return db.query.evalEvents.findMany({
+		where: and(
+			eq(evalEvents.attemptId, attemptId),
+			eq(evalEvents.type, "extension.presentation_model_call_policy"),
+		),
+		columns: { attemptId: true, type: true, payload: true, payloadDigest: true, late: true },
+		orderBy: asc(evalEvents.sequence),
+		limit: 2,
 	})
 }
 

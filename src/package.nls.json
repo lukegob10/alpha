@@ -61,5 +61,6 @@
 	"settings.debugProxy.tlsInsecure.deprecationMessage": "debugProxy.tlsInsecure is deprecated. TLS verification remains enabled; trust the proxy CA before launching the development host.",
 	"command.openTickets.title": "Alpha: Tickets",
 	"command.openIncidents.title": "Alpha: Incident Dashboard",
+	"command.exportDiagnostics.title": "Alpha: Export Chat Diagnostics",
 	"command.previewHtmlDocument.title": "Preview HTML Document"
 }

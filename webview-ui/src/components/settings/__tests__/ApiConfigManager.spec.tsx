@@ -6,7 +6,12 @@ import ApiConfigManager from "../ApiConfigManager"
 
 vi.mock("@/i18n/TranslationContext", async () => {
 	const { default: i18n } = await import("@/i18n/setup")
-	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+	return {
+		useAppTranslation: () => ({
+			t: (key: string, options?: { fields?: string }) => (options?.fields ? `${key}: ${options.fields}` : key),
+			i18n,
+		}),
+	}
 })
 
 // Mock VSCode components
@@ -104,7 +109,7 @@ vitest.mock("@/components/ui", () => ({
 			data-testid={dataTestId || "select-component"}>
 			<option value="">{placeholder || "settings:common.select"}</option>
 			{options?.map((option: any) => (
-				<option key={option.value} value={option.value}>
+				<option key={option.value} value={option.value} disabled={option.disabled}>
 					{option.label}
 				</option>
 			))}
@@ -136,6 +141,38 @@ describe("ApiConfigManager", () => {
 
 	const getRenameForm = () => screen.getByTestId("rename-form")
 	const getDialogContent = () => screen.getByTestId("dialog-content")
+
+	it("explains retained unavailable profiles and prevents selection while preserving profile management", () => {
+		render(
+			<ApiConfigManager
+				{...defaultProps}
+				listApiConfigMeta={[
+					...defaultProps.listApiConfigMeta,
+					{
+						id: "invalid",
+						name: "Invalid saved profile",
+						availability: "invalid",
+						invalidFields: ["modelTemperature", "apiModelId"],
+					},
+					{ id: "unsupported", name: "Unsupported saved profile", availability: "unsupported" },
+				]}
+			/>,
+		)
+
+		expect(screen.getByRole("option", { name: /Invalid saved profile/ })).toBeDisabled()
+		expect(screen.getByRole("option", { name: /Unsupported saved profile/ })).toBeDisabled()
+		fireEvent.change(screen.getByTestId("select-component"), { target: { value: "Invalid saved profile" } })
+		expect(mockOnSelectConfig).not.toHaveBeenCalled()
+		const notice = screen.getByTestId("unavailable-profiles")
+		expect(notice).toHaveTextContent("Invalid saved profile")
+		expect(notice).toHaveTextContent("modelTemperature, apiModelId")
+		expect(notice).toHaveTextContent("settings:providers.profileUnavailableHelp")
+		fireEvent.click(screen.getByTestId("delete-unavailable-profile-invalid"))
+		expect(mockOnDeleteConfig).toHaveBeenCalledTimes(1)
+		expect(mockOnDeleteConfig).toHaveBeenCalledWith("Invalid saved profile")
+		expect(screen.getByTestId("add-profile-button")).toBeEnabled()
+		expect(screen.getByTestId("rename-profile-button")).toBeEnabled()
+	})
 
 	it("opens new profile dialog when clicking add button", () => {
 		render(<ApiConfigManager {...defaultProps} />)

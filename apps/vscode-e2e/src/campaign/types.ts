@@ -1,6 +1,6 @@
 import type { PatchPlan, PatchReceipt } from "./patchPlan"
 
-export const HOST_VERSIONS = ["1.125.0"] as const
+export const HOST_VERSIONS = ["1.138.0"] as const
 export type HostVersion = (typeof HOST_VERSIONS)[number]
 export const FAILURE_CLASSES = [
 	"provider",

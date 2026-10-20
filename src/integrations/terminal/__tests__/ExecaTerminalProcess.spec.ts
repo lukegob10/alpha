@@ -94,6 +94,38 @@ describe("ExecaTerminalProcess", () => {
 	})
 
 	describe("trusted direct argv transport", () => {
+		it.each([false, true])(
+			"does not launch after cancellation in the creation hook (direct argv: %s)",
+			async (direct) => {
+				const terminal = new ExecaTerminal(90, "/test/cwd")
+				const completed = vitest.fn()
+				const exited = vitest.fn()
+				const closed = vitest.fn()
+				const command = terminal.runCommand(
+					"cancelled command",
+					{
+						onProcessCreated: (process) => void process.abort(),
+						onLine: vitest.fn(),
+						onCompleted: completed,
+						onOutputClosed: closed,
+						onShellExecutionStarted: vitest.fn(),
+						onShellExecutionComplete: exited,
+					},
+					direct ? { executable: "/trusted/rg", args: ["needle"], env: {} } : undefined,
+				)
+				await command
+				await command.waitForOutputFinalization?.()
+				expect(execa).not.toHaveBeenCalled()
+				expect(exited).toHaveBeenCalledExactlyOnceWith({ exitCode: 130, signalName: "SIGINT" }, command)
+				expect(completed).toHaveBeenCalledExactlyOnceWith("", command)
+				expect(closed).toHaveBeenCalledOnce()
+				expect(command.isSettled).toBe(true)
+				expect(terminal.process).toBeUndefined()
+				expect(terminal.running).toBe(false)
+				expect(terminal.busy).toBe(false)
+			},
+		)
+
 		it("executes the captured executable, argv and environment without a shell or ambient extension", async () => {
 			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {
 				iterable: () =>

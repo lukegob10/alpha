@@ -34,6 +34,7 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 	private readonly claimed = new Map<string, QueuedMessage>()
 	private readonly pendingDurableMutations = new Map<string, Promise<unknown>>()
 	private readonly persistencePendingIds = new Set<string>()
+	private readonly pendingDeletionIds = new Set<string>()
 	private loaded = false
 	private disposed = false
 	private revision = 0
@@ -62,7 +63,10 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 	}
 
 	private snapshot(): QueuedMessage[] {
-		return structuredClone([...this.claimed.values(), ...this._messages])
+		return structuredClone([
+			...this.claimed.values(),
+			...this._messages.filter((message) => !this.pendingDeletionIds.has(message.id)),
+		])
 	}
 
 	private schedulePersistence(): void {
@@ -189,11 +193,11 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		text: string,
 		images?: string[],
 		id = uuidv4(),
-		admit?: () => void,
+		admit?: (isNewAdmission: boolean) => void,
 	): Promise<QueuedMessage | undefined> {
 		return this.enqueueDurableMutation(id, async () => {
-			admit?.()
 			const existing = this.claimed.get(id) ?? this.findMessage(id).message
+			admit?.(!existing)
 			if (existing) {
 				const result = this.addMessage(text, images, id)
 				await this.flush()
@@ -234,6 +238,30 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 		this._messages.splice(index, 1)
 		this.changed()
 		return true
+	}
+
+	public async removeMessageDurably(id: string): Promise<boolean> {
+		return this.enqueueDurableMutation(id, async () => {
+			if (!this.findMessage(id).message) return false
+			await this.durableMutation(
+				() => {
+					// Retain the FIFO position until storage accepts the deletion. A
+					// later input cannot overtake a deletion that may still roll back.
+					this.pendingDeletionIds.add(id)
+					this.changed(false)
+				},
+				() => {
+					this.pendingDeletionIds.delete(id)
+					this.changed(false)
+				},
+			)
+			this.pendingDeletionIds.delete(id)
+			const { index } = this.findMessage(id)
+			if (index !== -1) this._messages.splice(index, 1)
+			// The deletion snapshot already committed. Releasing the durable
+			// mutation publishes the remaining entries without another write.
+			return true
+		})
 	}
 
 	public getMessage(id: string): QueuedMessage | undefined {
@@ -324,9 +352,11 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 	}
 
 	public get messages(): QueuedMessage[] {
+		const deletionIndex = this._messages.findIndex((message) => this.pendingDeletionIds.has(message.id))
+		const messages = deletionIndex === -1 ? this._messages : this._messages.slice(0, deletionIndex)
 		return this.persistencePendingIds.size
-			? this._messages.filter((message) => !this.persistencePendingIds.has(message.id))
-			: this._messages
+			? messages.filter((message) => !this.persistencePendingIds.has(message.id))
+			: messages
 	}
 
 	/** Project selected input without making it eligible for a second delivery. */
@@ -339,7 +369,7 @@ export class MessageQueueService extends EventEmitter<QueueEvents> {
 					deliveryState: "delivering",
 				}),
 			),
-			...this.messages,
+			...this._messages.filter((message) => !this.persistencePendingIds.has(message.id)),
 		]
 	}
 

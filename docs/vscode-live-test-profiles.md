@@ -1,6 +1,6 @@
 # Dedicated VS Code live-Copilot test profiles
 
-This guide documents dedicated live-Copilot profile setup and runner options. VS Code **1.125.0** remains the release-gating host; live-provider checks are supplemental and do not replace scripted or VS Code LM fixture gates. A successful setup or model discovery is not a passing Alpha task.
+This guide documents dedicated live-Copilot profile setup and runner options. VS Code **1.138.0** remains the release-gating host; live-provider checks are supplemental and do not replace scripted or VS Code LM fixture gates. A successful setup or model discovery is not a passing Alpha task.
 
 ## Persistent storage requires a normal development host
 
@@ -10,12 +10,12 @@ model selection, setup controls, tool execution, scenarios, assertions, and requ
 The fixed sidecar manifest is materialized atomically in the existing compiled `out/` directory before launch. That
 directory is the sidecar extension root, so compiled suite modules have a recognized VS Code API identity.
 
-`extensionTestsLocationURI` makes VS Code use in-memory application, shared, profile, and workspace storage. Authenticated live runs therefore use a normal development host; an on-disk test directory alone does not prove that profile state persists. Synthetic persistence probes do not read real authentication entries. See the [exact 1.125.0 storage implementation](https://github.com/microsoft/vscode/blob/1.125.0/src/vs/platform/storage/electron-main/storageMainService.ts#L98).
+`extensionTestsLocationURI` makes VS Code use in-memory application, shared, profile, and workspace storage. Authenticated live runs therefore use a normal development host; an on-disk test directory alone does not prove that profile state persists. Synthetic persistence probes do not read real authentication entries. See the [exact 1.138.0 storage implementation](https://github.com/microsoft/vscode/blob/1.138.0/src/vs/platform/storage/electron-main/storageMainService.ts#L98).
 
 Normal live hosts also receive an owned `--shared-data-dir` under `profiles/<exact-version>/shared-data`. Existing
 schema-1 profile markers and user-data/extensions directories remain intact; no credentials or stores are copied,
 migrated, or reset. Symlink/reparse escapes are rejected before creating shared data. The reference host supports this
-argument: [1.125.0 argv implementation](https://github.com/microsoft/vscode/blob/1.125.0/src/vs/platform/environment/node/argv.ts#L115).
+argument: [1.138.0 argv implementation](https://github.com/microsoft/vscode/blob/1.138.0/src/vs/platform/environment/node/argv.ts#L115).
 
 Deterministic scripted and LM-fixture gates retain their default `extension-test` launch. For an explicit, owned,
 scripted persistence diagnostic, programmatic callers may use
@@ -65,7 +65,7 @@ and fixed, actionable guidance; raw exception text and arbitrary option values a
 Run the following as one command, substituting your own absolute paths:
 
 ```sh
-node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.125.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --init-profile --setup
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --init-profile --setup
 ```
 
 An installed host can be selected with `--vscode-executable "C:\path with spaces\Code.exe"`. The actual extension host
@@ -76,6 +76,18 @@ In the dedicated window, install/enable GitHub Copilot if needed and sign in usi
 in the Alpha test-profile notification, or open **Copilot test setup** in the status bar and choose **Continue / Retry**.
 Each action performs one check. Empty catalogs and unready authentication keep the window open; concurrent clicks do not
 start overlapping checks. Dismissing either the notification or the picker does nothing. There is no default timeout.
+
+With an exact model selected, **Continue / Retry** also makes one bounded, tool-free readiness request through Alpha's
+actual provider adapter. If VS Code asks whether Alpha may use Copilot, choose **Allow** in that dedicated window.
+**Finish** becomes available only after the selected model produces a completed response. A failed request leaves the
+controls open for an explicit retry; cancellation aborts the request and prevents late readiness publication. These
+requests are recorded separately in `live-completion-probe.json` and do not count as solving a test case.
+
+This check is necessary on the reference host: the
+[VS Code 1.138.0 access implementation](https://github.com/microsoft/vscode/blob/1.138.0/src/vs/workbench/api/common/extHostLanguageModels.ts#L609)
+returns `true` from `canSendRequest` without verifying consent, while `sendRequest` still performs its authentication
+check. Verified against the exact host source on **2026-10-20**. A saved sign-in or a successful catalog-only setup can
+therefore precede an Alpha permission prompt; neither proves a real completion request succeeded.
 
 After a successful check, choose **Finish** in those status-bar controls to record success and close the test window.
 Readiness alone never closes it. **Cancel** aborts/drains the bounded active check and records a non-passing cancellation.
@@ -90,7 +102,7 @@ With no `--model-id`, setup only discovers the current Copilot model catalog. Re
 family, and an explicit supported effort:
 
 ```sh
-node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.125.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --setup --model-id EXACT_DISCOVERED_ID --model-family EXACT_DISCOVERED_FAMILY --reasoning-effort max
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --setup --model-id EXACT_DISCOVERED_ID --model-family EXACT_DISCOVERED_FAMILY --reasoning-effort max
 ```
 
 These model placeholders are not model aliases. No model name, prefix, or “close enough” family is substituted. Unknown
@@ -102,7 +114,7 @@ The optional setup probe requests consent only following the user's setup action
 receipt. Alpha's own extension-context access check must succeed; unknown access remains blocked. A genuine request
 through an Alpha workflow is the live-provider acceptance check.
 
-All automated host tests target exact VS Code 1.125.0. Profile state is separated as
+All automated host tests target exact VS Code 1.138.0. Profile state is separated as
 `profiles/<exact-version>/user-data` and `profiles/<exact-version>/extensions`; authentication may be required separately.
 Do not copy credential stores between versions. Persistent profiles and workspaces are never automatically deleted.
 
@@ -139,10 +151,10 @@ activation progress, query count, and whether a catalog event was observed. Empt
 Provider exceptions remain redacted and are not retried. Catalog readiness does **not** establish saved sign-in or Alpha
 consent; those checks remain separate. Reuse the dedicated profile, but verify authentication instead of assuming it.
 
-Implementation was checked against VS Code commit `1.125.0`:
-[stable activation and model-event APIs](https://github.com/microsoft/vscode/blob/1.125.0/src/vscode-dts/vscode.d.ts),
-[language-model service](https://github.com/microsoft/vscode/blob/1.125.0/src/vs/workbench/contrib/chat/common/languageModels.ts),
-and [extension-test startup ordering](https://github.com/microsoft/vscode/blob/1.125.0/src/vs/workbench/api/common/extHostExtensionService.ts).
+Implementation was checked against VS Code commit `1.138.0`:
+[stable activation and model-event APIs](https://github.com/microsoft/vscode/blob/1.138.0/src/vscode-dts/vscode.d.ts),
+[language-model service](https://github.com/microsoft/vscode/blob/1.138.0/src/vs/workbench/contrib/chat/common/languageModels.ts),
+and [extension-test startup ordering](https://github.com/microsoft/vscode/blob/1.138.0/src/vs/workbench/api/common/extHostExtensionService.ts).
 
 ## Run scenarios and preserve evidence
 
@@ -161,7 +173,7 @@ running the normal exact-host or managed-agent scripts:
 $env:ALPHA_E2E_PROFILE_ROOT = 'F:\alpha-e2e\profiles'
 $env:ALPHA_E2E_WORKSPACE_ROOT = 'F:\alpha-e2e\workspace'
 $env:ALPHA_E2E_ARTIFACTS_ROOT = 'F:\alpha-e2e\artifacts'
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
 These defaults do not initialize or erase a profile. Live Copilot runs still require the explicit provider and exact
@@ -170,7 +182,7 @@ discovered model ID. Each run retains its own artifact directory under the confi
 After authentication, use an explicit scenario, run ID, and request cap. NOR-41 owns the workflow implementation:
 
 ```sh
-node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.125.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --model-id EXACT_DISCOVERED_ID --reasoning-effort max --scenario-id review-edit-test-commit-followup --scenario-phase run --request-limit 60 --run-id live-review-1250-01
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --model-id EXACT_DISCOVERED_ID --reasoning-effort max --scenario-id review-edit-test-commit-followup --scenario-phase run --request-limit 60 --run-id live-review-1380-01
 ```
 
 `--scenario-id` defaults the test file to `workflow.test`; `--file` and `--grep` remain available for focused suites.
@@ -247,7 +259,7 @@ storage or lock metadata just to make a run pass.
 pnpm --dir apps/vscode-e2e test:unit
 pnpm --dir apps/vscode-e2e lint
 pnpm --dir apps/vscode-e2e check-types
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
 `runTest.ts` exports `readRunOptions` and `runExtensionTests` without launch-on-import side effects. The external campaign
@@ -262,6 +274,8 @@ event; Node's early `AbortError` alone is not an exit receipt. Cancellation repo
 exit leaves the profile lease for offline inspection. This is not a descendant-tree termination guarantee. Bounded
 recovery phases should supply an explicit installed/cached executable because the upstream host downloader does not
 accept an AbortSignal; cancellation is checked before and after download resolution.
+
+The current baseline is **1.138.0** as of 2026-10-19; see [the migration record](vscode-1.138-migration.md) for current validation. The section below records the previous migration and its historical results.
 
 Baseline migrated **2026-10-01** to exact VS Code **1.125.0**. Retired host profiles and historical evidence are not copied or reset. The dedicated 1.125.0 live profile needs its own interactive Copilot sign-in; scripted and fixture gates use isolated test state on the same host version.
 

@@ -183,6 +183,8 @@ export interface ToolExecutionHost {
 	pushToolResultToUserContent: (result: Anthropic.ToolResultBlockParam) => boolean
 	/** Query existing persisted/staged receipts without mutating the result transaction. */
 	hasToolResultForCall?: (callId: string) => boolean
+	/** Pure host ownership guard; a superseded scheduler cannot publish into its replacement's lifecycle. */
+	ownsLifecyclePublication?: () => boolean
 	/** Pure gate; checked before read preparation and immediately before execution. */
 	shouldStopRepeatedToolCall?: (name: string, args: unknown) => boolean
 	/** Trusted cause for a blocked retry; independent tools keep their normal authority. */
@@ -2338,6 +2340,28 @@ export class ToolScheduler {
 					recovery: { kind: "user-action" },
 				}),
 			})
+		let pendingApprovalRequestId: string | undefined
+		const publishApprovalResult = async (event: Extract<AgentTurnEvent, { type: "approval_result" }>) => {
+			// A failed presenter must not cause an already published decision to be
+			// replaced by another terminal outcome in the execution error path.
+			if (pendingApprovalRequestId === event.requestId) pendingApprovalRequestId = undefined
+			if (this.isCancelled() && this.executionHost.ownsLifecyclePublication?.() === false) return
+			try {
+				await this.options.onEvent?.(event)
+			} catch (error) {
+				if (
+					this.isCancelled() &&
+					this.executionHost.ownsLifecyclePublication?.() === false &&
+					error instanceof Error &&
+					error.name === "AbortError"
+				)
+					return
+				const failure = new ToolEffectFenceError(prepared.call, error)
+				this.effectFenceFailure ??= failure
+				this.batchController.abort(failure)
+				throw failure
+			}
+		}
 		const recordApprovalCancellation = async (
 			requestId: string,
 			reason: string,
@@ -2352,7 +2376,7 @@ export class ToolScheduler {
 				this.approvalAbortRequested = true
 				this.batchController.abort(new Error(reason))
 			}
-			await this.options.onEvent?.({ type: "approval_result", requestId, decision: "cancelled", reason })
+			await publishApprovalResult({ type: "approval_result", requestId, decision: "cancelled", reason })
 		}
 		const requestApproval = async (
 			args: Parameters<ToolCallbacks["askApproval"]>,
@@ -2360,360 +2384,349 @@ export class ToolScheduler {
 			captureCommandPresentation = false,
 		): Promise<ToolApprovalResponse | undefined> =>
 			this.approvalMutex.run(async () => {
-				const [type] = args
-				let commandExecutionId: string | undefined
-				const onCommandApproval =
-					captureCommandPresentation && type === "command"
-						? (id: string) => {
-								commandExecutionId ??= id
-							}
-						: undefined
-				if (prepared.mcpReadPrepared && type === "use_mcp_server" && responseMode === "boolean") {
+				try {
+					// A call stopped before this serialized lane opens has no approval
+					// request to resolve. Its cancelled tool receipt closes the call.
 					if (this.isCancelled()) return undefined
-					return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
-				}
-				if (this.isSelectableParallel(prepared)) {
-					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
-				}
-				const [, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
-				const progressStatus =
-					type === "command" && prepared.commandPathApproval
-						? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
-						: originalProgressStatus
-				assertPathIdentities(prepared)
-				if (
-					!prepareCommand &&
-					prepared.commandRead?.serialFallback &&
-					type === "command" &&
-					prepared.commandApproval &&
-					prepared.commandApproval.command === partialMessage
-				) {
-					return prepared.commandApproval.response
-				}
-				const explicitApproval: [boolean] | [] =
-					prepared.requiresExplicitApproval || callRequiresExplicit === true ? [true] : []
-				const requiresExplicitApproval = explicitApproval.length > 0
-				// Provider call IDs can repeat across turns; a typed approval needs a fresh
-				// correlation ID while task and call identity remain explicit fields.
-				const requestId = randomUUID()
-				this.approvalRequestCount += 1
-				const typedApprovalHost =
-					responseMode === "boolean"
-						? this.executionHost.requestToolApproval?.bind(this.executionHost)
-						: undefined
-				const approvalSessionKey =
-					typedApprovalHost && !requiresExplicitApproval && forceApproval !== true
-						? createTaskSessionApprovalKey({
+					const [type] = args
+					let commandExecutionId: string | undefined
+					const onCommandApproval =
+						captureCommandPresentation && type === "command"
+							? (id: string) => {
+									commandExecutionId ??= id
+								}
+							: undefined
+					if (prepared.mcpReadPrepared && type === "use_mcp_server" && responseMode === "boolean") {
+						if (this.isCancelled()) return undefined
+						return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
+					}
+					if (this.isSelectableParallel(prepared)) {
+						throw new ToolReadDeniedError(
+							"An approval request cannot run in an approval-free parallel lane.",
+						)
+					}
+					const [, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
+					const progressStatus =
+						type === "command" && prepared.commandPathApproval
+							? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
+							: originalProgressStatus
+					assertPathIdentities(prepared)
+					if (
+						!prepareCommand &&
+						prepared.commandRead?.serialFallback &&
+						type === "command" &&
+						prepared.commandApproval &&
+						prepared.commandApproval.command === partialMessage
+					) {
+						return prepared.commandApproval.response
+					}
+					const explicitApproval: [boolean] | [] =
+						prepared.requiresExplicitApproval || callRequiresExplicit === true ? [true] : []
+					const requiresExplicitApproval = explicitApproval.length > 0
+					// Provider call IDs can repeat across turns; a typed approval needs a fresh
+					// correlation ID while task and call identity remain explicit fields.
+					const requestId = randomUUID()
+					this.approvalRequestCount += 1
+					const typedApprovalHost =
+						responseMode === "boolean"
+							? this.executionHost.requestToolApproval?.bind(this.executionHost)
+							: undefined
+					const approvalSessionKey =
+						typedApprovalHost && !requiresExplicitApproval && forceApproval !== true
+							? createTaskSessionApprovalKey({
+									taskId: this.executionHost.taskId,
+									toolName: approvalToolName,
+									askType: type,
+									description: partialMessage,
+									argumentsValue: approvalArguments,
+									cwd: this.executionHost.cwd,
+									policyDigest: this.options.policy?.digest,
+								})
+							: undefined
+					const proposedAmendment: ToolApprovalRequest["proposedAmendment"] =
+						typedApprovalHost &&
+						approvalSessionKey &&
+						!requiresExplicitApproval &&
+						forceApproval !== true &&
+						type === "command" &&
+						!prepared.commandPathApproval &&
+						partialMessage &&
+						partialMessage.length <= 4096
+							? { kind: "exact_command", command: partialMessage }
+							: undefined
+					const proposedPersistentAmendment =
+						typedApprovalHost &&
+						this.executionHost.taskKind === "primary" &&
+						type === "command" &&
+						typeof this.executionHost.persistCommandApprovalPrefix === "function" &&
+						!requiresExplicitApproval &&
+						forceApproval !== true &&
+						!prepared.commandPathApproval &&
+						this.executionHost.cwd !== undefined &&
+						redactTaskPrivatePaths(this.toolTask as TaskPathContext, partialMessage ?? "") ===
+							partialMessage
+							? createPersistentCommandPrefixAmendment(partialMessage)
+							: undefined
+					const availableDecisions: ToolApprovalRequest["availableDecisions"] = [
+						"approve_once",
+						...(approvalSessionKey && !proposedAmendment ? ["approve_session" as const] : []),
+						...(proposedAmendment ? ["approve_with_amendment" as const] : []),
+						...(proposedPersistentAmendment ? ["approve_persistently" as const] : []),
+						"deny",
+						"abort",
+					]
+					const approvalWorkingDirectory =
+						type === "command" ? this.getApprovalWorkingDirectory(prepared.toolCall?.nativeArgs) : undefined
+					const description = describeToolApproval(approvalToolName, type, partialMessage)
+					const approvalRequest = typedApprovalHost
+						? toolApprovalRequestSchema.parse({
+								requestId,
 								taskId: this.executionHost.taskId,
+								callId: prepared.call.id,
 								toolName: approvalToolName,
 								askType: type,
-								description: partialMessage,
-								argumentsValue: approvalArguments,
-								cwd: this.executionHost.cwd,
-								policyDigest: this.options.policy?.digest,
+								...(description === undefined ? {} : { description }),
+								...(approvalWorkingDirectory === undefined ? {} : { cwd: approvalWorkingDirectory }),
+								forceApproval: forceApproval === true,
+								requiresExplicitApproval,
+								...(prepared.commandPathApproval
+									? { commandPathApproval: prepared.commandPathApproval }
+									: {}),
+								availableDecisions,
+								...(proposedAmendment ? { proposedAmendment } : {}),
+								...(proposedPersistentAmendment ? { proposedPersistentAmendment } : {}),
 							})
 						: undefined
-				const proposedAmendment: ToolApprovalRequest["proposedAmendment"] =
-					typedApprovalHost &&
-					approvalSessionKey &&
-					!requiresExplicitApproval &&
-					forceApproval !== true &&
-					type === "command" &&
-					!prepared.commandPathApproval &&
-					partialMessage &&
-					partialMessage.length <= 4096
-						? { kind: "exact_command", command: partialMessage }
-						: undefined
-				const proposedPersistentAmendment =
-					typedApprovalHost &&
-					this.executionHost.taskKind === "primary" &&
-					type === "command" &&
-					typeof this.executionHost.persistCommandApprovalPrefix === "function" &&
-					!requiresExplicitApproval &&
-					forceApproval !== true &&
-					!prepared.commandPathApproval &&
-					this.executionHost.cwd !== undefined &&
-					redactTaskPrivatePaths(this.toolTask as TaskPathContext, partialMessage ?? "") === partialMessage
-						? createPersistentCommandPrefixAmendment(partialMessage)
-						: undefined
-				const availableDecisions: ToolApprovalRequest["availableDecisions"] = [
-					"approve_once",
-					...(approvalSessionKey && !proposedAmendment ? ["approve_session" as const] : []),
-					...(proposedAmendment ? ["approve_with_amendment" as const] : []),
-					...(proposedPersistentAmendment ? ["approve_persistently" as const] : []),
-					"deny",
-					"abort",
-				]
-				const approvalWorkingDirectory =
-					type === "command" ? this.getApprovalWorkingDirectory(prepared.toolCall?.nativeArgs) : undefined
-				const description = describeToolApproval(approvalToolName, type, partialMessage)
-				const approvalRequest = typedApprovalHost
-					? toolApprovalRequestSchema.parse({
+
+					pendingApprovalRequestId = requestId
+					await this.options.onEvent?.({
+						type: "approval_request",
+						requestId,
+						callId: prepared.call.id,
+						toolName: interceptedPatch ? approvalToolName : prepared.call.name,
+					})
+					if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
+						await publishApprovalResult({
+							type: "approval_result",
 							requestId,
-							taskId: this.executionHost.taskId,
-							callId: prepared.call.id,
-							toolName: approvalToolName,
-							askType: type,
-							...(description === undefined ? {} : { description }),
-							...(approvalWorkingDirectory === undefined ? {} : { cwd: approvalWorkingDirectory }),
-							forceApproval: forceApproval === true,
-							requiresExplicitApproval,
-							...(prepared.commandPathApproval
-								? { commandPathApproval: prepared.commandPathApproval }
-								: {}),
-							availableDecisions,
-							...(proposedAmendment ? { proposedAmendment } : {}),
-							...(proposedPersistentAmendment ? { proposedPersistentAmendment } : {}),
+							decision: "approved",
+							reason: "Approved by an exact task-session grant.",
 						})
-					: undefined
-
-				if (this.isCancelled()) {
-					this.approvalCancelledCount += 1
-					collector.setStatus("cancelled")
-					collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
-					await this.options.onEvent?.({
-						type: "approval_result",
-						requestId,
-						decision: "cancelled",
-						reason: "Task aborted before approval",
-					})
-					return undefined
-				}
-
-				await this.options.onEvent?.({
-					type: "approval_request",
-					requestId,
-					callId: prepared.call.id,
-					toolName: interceptedPatch ? approvalToolName : prepared.call.name,
-				})
-				if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
-					await this.options.onEvent?.({
-						type: "approval_result",
-						requestId,
-						decision: "approved",
-						reason: "Approved by an exact task-session grant.",
-					})
-					return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
-				}
-
-				let approval: ToolApprovalResponse | undefined
-				let typedDecision: ToolApprovalDecision | undefined
-				let approvalEventReason: string | undefined
-				try {
-					if (this.options.permissionRequest) {
-						const hook = await this.options.permissionRequest(
-							{
-								...prepared.call,
-								name: approvalToolName,
-								arguments: structuredClone(prepared.toolCall?.nativeArgs ?? {}),
-							},
-							this.executionSignal,
-						)
-						if (this.isCancelled()) {
-							await recordApprovalCancellation(
-								requestId,
-								"Approval was cancelled while a permission hook was running.",
-							)
-							return undefined
-						}
-						if (hook.denied !== undefined) {
-							collector.setStatus("denied")
-							collector.pushApprovalResult(formatFailureResult(hook.denied, "denied"))
-							approvalFailure("denied")
-							this.approvalDeniedCount++
-							await this.options.onEvent?.({
-								type: "approval_result",
-								requestId,
-								decision: "denied",
-								reason: hook.denied,
-							})
-							return undefined
-						}
+						return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
 					}
-					if (typedApprovalHost && approvalRequest) {
-						const response = await this.raceCancellation(() =>
-							onCommandApproval
-								? typedApprovalHost(approvalRequest, partialMessage, onCommandApproval)
-								: typedApprovalHost(approvalRequest, partialMessage),
-						)
-						if (response !== undefined) {
-							const parsed = toolApprovalDecisionSchema.safeParse(response)
-							if (!parsed.success) throw new Error("Tool approval host returned an invalid decision.")
-							typedDecision = parsed.data
-						}
-					} else {
-						approval = await this.raceCancellation(async () => {
-							if (this.executionHost.askApproval) {
-								return this.executionHost.askApproval(
-									type,
-									partialMessage,
-									progressStatus,
-									forceApproval || false,
-									...explicitApproval,
+
+					let approval: ToolApprovalResponse | undefined
+					let typedDecision: ToolApprovalDecision | undefined
+					let approvalEventReason: string | undefined
+					try {
+						if (this.options.permissionRequest) {
+							const hook = await this.options.permissionRequest(
+								{
+									...prepared.call,
+									name: approvalToolName,
+									arguments: structuredClone(prepared.toolCall?.nativeArgs ?? {}),
+								},
+								this.executionSignal,
+							)
+							if (this.isCancelled()) {
+								await recordApprovalCancellation(
+									requestId,
+									"Approval was cancelled while a permission hook was running.",
 								)
+								return undefined
 							}
-							if (this.executionHost.ask) {
-								if (onCommandApproval) {
+							if (hook.denied !== undefined) {
+								collector.setStatus("denied")
+								collector.pushApprovalResult(formatFailureResult(hook.denied, "denied"))
+								approvalFailure("denied")
+								this.approvalDeniedCount++
+								await publishApprovalResult({
+									type: "approval_result",
+									requestId,
+									decision: "denied",
+									reason: hook.denied,
+								})
+								return undefined
+							}
+						}
+						if (typedApprovalHost && approvalRequest) {
+							const response = await this.raceCancellation(() =>
+								onCommandApproval
+									? typedApprovalHost(approvalRequest, partialMessage, onCommandApproval)
+									: typedApprovalHost(approvalRequest, partialMessage),
+							)
+							if (response !== undefined) {
+								const parsed = toolApprovalDecisionSchema.safeParse(response)
+								if (!parsed.success) throw new Error("Tool approval host returned an invalid decision.")
+								typedDecision = parsed.data
+							}
+						} else {
+							approval = await this.raceCancellation(async () => {
+								if (this.executionHost.askApproval) {
+									return this.executionHost.askApproval(
+										type,
+										partialMessage,
+										progressStatus,
+										forceApproval || false,
+										...explicitApproval,
+									)
+								}
+								if (this.executionHost.ask) {
+									if (onCommandApproval) {
+										return this.executionHost.ask(
+											type,
+											partialMessage,
+											false,
+											progressStatus,
+											forceApproval || false,
+											explicitApproval[0],
+											undefined,
+											onCommandApproval,
+										)
+									}
 									return this.executionHost.ask(
 										type,
 										partialMessage,
 										false,
 										progressStatus,
 										forceApproval || false,
-										explicitApproval[0],
-										undefined,
-										onCommandApproval,
+										...explicitApproval,
 									)
 								}
-								return this.executionHost.ask(
-									type,
-									partialMessage,
-									false,
-									progressStatus,
-									forceApproval || false,
-									...explicitApproval,
-								)
-							}
-							throw new Error("Tool execution host does not provide an approval callback.")
-						})
-					}
-					assertPathIdentities(prepared)
-				} catch (error) {
-					if (error instanceof AskIgnoredError) {
-						this.supersededAskCount += 1
-						this.approvalCancelledCount += 1
-						const status = this.isCancelled() ? "cancelled" : "error"
-						collector.setStatus(status)
-						collector.pushApprovalResult(
-							formatFailureResult(`Approval request was superseded: ${error.message}`, status),
-						)
-						await this.options.onEvent?.({
-							type: "approval_result",
-							requestId,
-							decision: "cancelled",
-							reason: error.message,
-						})
-						return undefined
-					}
-					throw error
-				}
-
-				// A host can settle the prompt in the same turn that task cancellation
-				// arrives. Cancellation wins over a late denial (and approval), so a
-				// stopped tool never reports the user's choice as the terminal outcome.
-				if (this.isCancelled()) {
-					await recordApprovalCancellation(requestId, "Approval was cancelled while waiting for a decision.")
-					return undefined
-				}
-
-				if (typedDecision) {
-					if (
-						typedDecision.decision === "approve_session" &&
-						!approvalRequest?.availableDecisions.includes("approve_session")
-					) {
-						throw new Error("Tool approval host selected an unavailable session grant.")
-					}
-					if (
-						typedDecision.decision === "approve_with_amendment" &&
-						(!approvalRequest?.availableDecisions.includes("approve_with_amendment") ||
-							approvalRequest.askType !== "command" ||
-							typedDecision.amendment.kind !== "exact_command" ||
-							typedDecision.amendment.command !== approvalRequest.proposedAmendment?.command)
-					) {
-						throw new Error("Tool approval host selected an unavailable or mismatched policy amendment.")
-					}
-					if (
-						typedDecision.decision === "approve_persistently" &&
-						(!approvalRequest?.availableDecisions.includes("approve_persistently") ||
-							approvalRequest.askType !== "command" ||
-							typedDecision.amendment.kind !== "command_prefix" ||
-							typedDecision.amendment.prefix !== approvalRequest.proposedPersistentAmendment?.prefix ||
-							!this.executionHost.persistCommandApprovalPrefix ||
-							this.executionHost.taskKind !== "primary")
-					) {
-						throw new Error(
-							"Tool approval host selected an unavailable or mismatched persistent command rule.",
-						)
-					}
-
-					if (typedDecision.decision === "deny") {
-						const feedback = typedDecision.feedback
-						if (feedback) {
-							await this.executionHost.say("user_feedback", feedback)
+								throw new Error("Tool execution host does not provide an approval callback.")
+							})
+						}
+						assertPathIdentities(prepared)
+					} catch (error) {
+						if (error instanceof AskIgnoredError) {
+							this.supersededAskCount += 1
+							this.approvalCancelledCount += 1
+							const status = this.isCancelled() ? "cancelled" : "error"
+							collector.setStatus(status)
 							collector.pushApprovalResult(
-								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(feedback)),
+								formatFailureResult(`Approval request was superseded: ${error.message}`, status),
 							)
-						} else {
-							collector.pushApprovalResult(formatResponse.toolDenied())
+							await publishApprovalResult({
+								type: "approval_result",
+								requestId,
+								decision: "cancelled",
+								reason: error.message,
+							})
+							return undefined
 						}
-						collector.setStatus("denied")
-						approvalFailure("denied")
-						this.approvalDeniedCount += 1
-						await this.options.onEvent?.({
-							type: "approval_result",
+						throw error
+					}
+
+					// A host can settle the prompt in the same turn that task cancellation
+					// arrives. Cancellation wins over a late denial (and approval), so a
+					// stopped tool never reports the user's choice as the terminal outcome.
+					if (this.isCancelled()) {
+						await recordApprovalCancellation(
 							requestId,
-							decision: "denied",
-							reason: feedback,
-						})
-						return undefined
-					}
-
-					if (typedDecision.decision === "abort") {
-						await recordApprovalCancellation(requestId, "Approval was aborted by the user.", {
-							abortBatch: true,
-						})
-						return undefined
-					}
-
-					if (typedDecision.decision === "timeout") {
-						await recordApprovalCancellation(requestId, "Approval request timed out.", { timedOut: true })
-						return undefined
-					}
-
-					if (
-						typedDecision.decision === "approve_with_amendment" &&
-						(!approvalSessionKey || !approvalRequest?.proposedAmendment)
-					) {
-						throw new Error("Tool approval host selected an unavailable exact-command session grant.")
-					}
-					if (
-						typedDecision.decision === "approve_persistently" &&
-						(!approvalRequest?.proposedPersistentAmendment ||
-							!this.executionHost.persistCommandApprovalPrefix)
-					) {
-						throw new Error("Tool approval host selected an unavailable persistent command rule.")
-					}
-					if (typedDecision.decision === "approve_persistently") {
-						if (this.isCancelled()) {
-							await recordApprovalCancellation(
-								requestId,
-								"Approval was cancelled before its persistent command rule was saved.",
-							)
-							return undefined
-						}
-						const saved = await this.executionHost.persistCommandApprovalPrefix!(
-							typedDecision.amendment.prefix,
+							"Approval was cancelled while waiting for a decision.",
 						)
-						if (!saved) throw new Error("Persistent command approval rule could not be saved.")
+						return undefined
 					}
-					if (
-						(typedDecision.decision === "approve_session" ||
-							typedDecision.decision === "approve_with_amendment") &&
-						approvalSessionKey
-					) {
-						if (this.isCancelled()) {
-							await recordApprovalCancellation(
-								requestId,
-								"Approval was cancelled before its session grant was saved.",
-							)
-							return undefined
+
+					if (typedDecision) {
+						if (
+							typedDecision.decision === "approve_session" &&
+							!approvalRequest?.availableDecisions.includes("approve_session")
+						) {
+							throw new Error("Tool approval host selected an unavailable session grant.")
 						}
 						if (
-							!grantTaskSessionApproval(
-								approvalSessionKey,
-								this.executionHost.taskId,
-								this.executionSignal!,
+							typedDecision.decision === "approve_with_amendment" &&
+							(!approvalRequest?.availableDecisions.includes("approve_with_amendment") ||
+								approvalRequest.askType !== "command" ||
+								typedDecision.amendment.kind !== "exact_command" ||
+								typedDecision.amendment.command !== approvalRequest.proposedAmendment?.command)
+						) {
+							throw new Error(
+								"Tool approval host selected an unavailable or mismatched policy amendment.",
 							)
+						}
+						if (
+							typedDecision.decision === "approve_persistently" &&
+							(!approvalRequest?.availableDecisions.includes("approve_persistently") ||
+								approvalRequest.askType !== "command" ||
+								typedDecision.amendment.kind !== "command_prefix" ||
+								typedDecision.amendment.prefix !==
+									approvalRequest.proposedPersistentAmendment?.prefix ||
+								!this.executionHost.persistCommandApprovalPrefix ||
+								this.executionHost.taskKind !== "primary")
+						) {
+							throw new Error(
+								"Tool approval host selected an unavailable or mismatched persistent command rule.",
+							)
+						}
+
+						if (typedDecision.decision === "deny") {
+							const feedback = typedDecision.feedback
+							if (feedback) {
+								await this.executionHost.say("user_feedback", feedback)
+								collector.pushApprovalResult(
+									formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(feedback)),
+								)
+							} else {
+								collector.pushApprovalResult(formatResponse.toolDenied())
+							}
+							collector.setStatus("denied")
+							approvalFailure("denied")
+							this.approvalDeniedCount += 1
+							await publishApprovalResult({
+								type: "approval_result",
+								requestId,
+								decision: "denied",
+								reason: feedback,
+							})
+							return undefined
+						}
+
+						if (typedDecision.decision === "abort") {
+							await recordApprovalCancellation(requestId, "Approval was aborted by the user.", {
+								abortBatch: true,
+							})
+							return undefined
+						}
+
+						if (typedDecision.decision === "timeout") {
+							await recordApprovalCancellation(requestId, "Approval request timed out.", {
+								timedOut: true,
+							})
+							return undefined
+						}
+
+						if (
+							typedDecision.decision === "approve_with_amendment" &&
+							(!approvalSessionKey || !approvalRequest?.proposedAmendment)
+						) {
+							throw new Error("Tool approval host selected an unavailable exact-command session grant.")
+						}
+						if (
+							typedDecision.decision === "approve_persistently" &&
+							(!approvalRequest?.proposedPersistentAmendment ||
+								!this.executionHost.persistCommandApprovalPrefix)
+						) {
+							throw new Error("Tool approval host selected an unavailable persistent command rule.")
+						}
+						if (typedDecision.decision === "approve_persistently") {
+							if (this.isCancelled()) {
+								await recordApprovalCancellation(
+									requestId,
+									"Approval was cancelled before its persistent command rule was saved.",
+								)
+								return undefined
+							}
+							const saved = await this.executionHost.persistCommandApprovalPrefix!(
+								typedDecision.amendment.prefix,
+							)
+							if (!saved) throw new Error("Persistent command approval rule could not be saved.")
+						}
+						if (
+							(typedDecision.decision === "approve_session" ||
+								typedDecision.decision === "approve_with_amendment") &&
+							approvalSessionKey
 						) {
 							if (this.isCancelled()) {
 								await recordApprovalCancellation(
@@ -2722,119 +2735,174 @@ export class ToolScheduler {
 								)
 								return undefined
 							}
-							throw new Error("Tool approval session grant could not be recorded.")
+							if (
+								!grantTaskSessionApproval(
+									approvalSessionKey,
+									this.executionHost.taskId,
+									this.executionSignal!,
+								)
+							) {
+								if (this.isCancelled()) {
+									await recordApprovalCancellation(
+										requestId,
+										"Approval was cancelled before its session grant was saved.",
+									)
+									return undefined
+								}
+								throw new Error("Tool approval session grant could not be recorded.")
+							}
 						}
-					}
-					approval = { response: "yesButtonClicked" }
-					approvalEventReason =
-						typedDecision.decision === "approve_session"
-							? "Approved for this exact request in the task session."
-							: typedDecision.decision === "approve_with_amendment"
-								? "Approved for this exact command and request in the task session."
-								: typedDecision.decision === "approve_persistently"
-									? "Approved and saved the command prefix to the persistent allowlist."
-									: undefined
-				}
-
-				if (onCommandApproval && commandExecutionId !== undefined && approval) {
-					approval = { ...approval, commandExecutionId }
-				}
-
-				if (!approval) {
-					this.approvalCancelledCount += 1
-					collector.setStatus("cancelled")
-					collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
-					await this.options.onEvent?.({
-						type: "approval_result",
-						requestId,
-						decision: "cancelled",
-						reason: "Task aborted while waiting for approval",
-					})
-					return undefined
-				}
-
-				const { response, text, images } = approval
-				if (responseMode === "structured") {
-					let decision: "approved" | "denied" | "cancelled"
-					if (response === "yesButtonClicked") {
-						decision = "approved"
-					} else if (response === "objectResponse") {
-						try {
-							const parsed: unknown = JSON.parse(text || "{}")
-							const values =
-								parsed && typeof parsed === "object" && !Array.isArray(parsed)
-									? Object.values(parsed as Record<string, unknown>)
-									: []
-							decision =
-								values.length > 0 && values.every((value) => value === true) ? "approved" : "denied"
-						} catch {
-							decision = "denied"
-						}
-					} else {
-						decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
+						approval = { response: "yesButtonClicked" }
+						approvalEventReason =
+							typedDecision.decision === "approve_session"
+								? "Approved for this exact request in the task session."
+								: typedDecision.decision === "approve_with_amendment"
+									? "Approved for this exact command and request in the task session."
+									: typedDecision.decision === "approve_persistently"
+										? "Approved and saved the command prefix to the persistent allowlist."
+										: undefined
 					}
 
-					if (decision !== "approved") {
+					if (onCommandApproval && commandExecutionId !== undefined && approval) {
+						approval = { ...approval, commandExecutionId }
+					}
+
+					if (!approval) {
+						this.approvalCancelledCount += 1
+						collector.setStatus("cancelled")
+						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						await publishApprovalResult({
+							type: "approval_result",
+							requestId,
+							decision: "cancelled",
+							reason: "Task aborted while waiting for approval",
+						})
+						return undefined
+					}
+
+					const { response, text, images } = approval
+					if (responseMode === "structured") {
+						let decision: "approved" | "denied" | "cancelled"
+						if (response === "yesButtonClicked") {
+							decision = "approved"
+						} else if (response === "objectResponse") {
+							try {
+								const parsed: unknown = JSON.parse(text || "{}")
+								const values =
+									parsed && typeof parsed === "object" && !Array.isArray(parsed)
+										? Object.values(parsed as Record<string, unknown>)
+										: []
+								decision =
+									values.length > 0 && values.every((value) => value === true) ? "approved" : "denied"
+							} catch {
+								decision = "denied"
+							}
+						} else {
+							decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
+						}
+
+						if (decision !== "approved") {
+							collector.setStatus(decision)
+							approvalFailure(decision)
+							if (decision === "denied") this.approvalDeniedCount += 1
+							else this.approvalCancelledCount += 1
+						}
+						await publishApprovalResult({
+							type: "approval_result",
+							requestId,
+							decision,
+							...(response !== "objectResponse" && text ? { reason: text } : {}),
+						})
+						if (decision === "cancelled") {
+							collector.pushApprovalResult(
+								formatFailureResult("Tool execution was cancelled.", "cancelled"),
+							)
+							return undefined
+						}
+						if (decision === "approved" && !(await startEffect())) return undefined
+						return approval
+					}
+
+					if (response !== "yesButtonClicked") {
+						const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
+						if (text) {
+							await this.executionHost.say("user_feedback", text, images)
+							collector.pushApprovalResult(
+								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
+							)
+						} else if (decision === "denied") {
+							collector.pushApprovalResult(formatResponse.toolDenied())
+						} else {
+							collector.pushApprovalResult(
+								formatFailureResult("Tool execution was cancelled.", "cancelled"),
+							)
+						}
 						collector.setStatus(decision)
 						approvalFailure(decision)
 						if (decision === "denied") this.approvalDeniedCount += 1
 						else this.approvalCancelledCount += 1
-					}
-					await this.options.onEvent?.({
-						type: "approval_result",
-						requestId,
-						decision,
-						...(response !== "objectResponse" && text ? { reason: text } : {}),
-					})
-					if (decision === "cancelled") {
-						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						await publishApprovalResult({
+							type: "approval_result",
+							requestId,
+							decision,
+							reason: text,
+						})
 						return undefined
 					}
-					if (decision === "approved" && !(await startEffect())) return undefined
-					return approval
-				}
 
-				if (response !== "yesButtonClicked") {
-					const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
 					if (text) {
 						await this.executionHost.say("user_feedback", text, images)
-						collector.pushApprovalResult(
-							formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
-						)
-					} else if (decision === "denied") {
-						collector.pushApprovalResult(formatResponse.toolDenied())
-					} else {
-						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
+						approvalFeedback(text, images)
 					}
-					collector.setStatus(decision)
-					approvalFailure(decision)
-					if (decision === "denied") this.approvalDeniedCount += 1
-					else this.approvalCancelledCount += 1
-					await this.options.onEvent?.({
+					await publishApprovalResult({
 						type: "approval_result",
 						requestId,
-						decision,
-						reason: text,
+						decision: "approved",
+						...(approvalEventReason ? { reason: approvalEventReason } : {}),
 					})
-					return undefined
+					if (prepareCommand && type === "command" && partialMessage) {
+						prepared.commandApproval = { command: partialMessage, response: approval }
+					}
+					if (!(await startEffect())) return undefined
+					if (this.effectFenceFailure) throw this.effectFenceFailure
+					return approval
+				} catch (error) {
+					if (pendingApprovalRequestId) {
+						if (!collector.getMetadata().failure && !this.effectStartedCallIds.has(callId)) {
+							collector.setMetadata({
+								failure: createToolFailure({
+									reason: this.isCancelled() ? "cancelled" : "pre_launch_rejected",
+									scopeKind: "operation",
+									scopeIdentity: [prepared.call.name, prepared.call.arguments],
+									effectsStarted: "no",
+									outcome: "known",
+									recovery: { kind: "repair" },
+								}),
+							})
+						}
+						this.approvalCancelledCount++
+						try {
+							await publishApprovalResult({
+								type: "approval_result",
+								requestId: pendingApprovalRequestId,
+								decision: "cancelled",
+								reason: "Approval request failed before a decision was accepted.",
+							})
+						} catch (publicationError) {
+							const failure = new ToolEffectFenceError(
+								prepared.call,
+								new AggregateError(
+									[error, publicationError],
+									"Approval failure could not be recorded in the task lifecycle.",
+								),
+							)
+							this.effectFenceFailure ??= failure
+							this.batchController.abort(failure)
+							throw failure
+						}
+					}
+					throw error
 				}
-
-				if (text) {
-					await this.executionHost.say("user_feedback", text, images)
-					approvalFeedback(text, images)
-				}
-				await this.options.onEvent?.({
-					type: "approval_result",
-					requestId,
-					decision: "approved",
-					...(approvalEventReason ? { reason: approvalEventReason } : {}),
-				})
-				if (prepareCommand && type === "command" && partialMessage) {
-					prepared.commandApproval = { command: partialMessage, response: approval }
-				}
-				if (!(await startEffect())) return undefined
-				if (this.effectFenceFailure) throw this.effectFenceFailure
-				return approval
 			})
 
 		const callbacks: ToolCallbacks = {

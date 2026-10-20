@@ -80,7 +80,7 @@ describe("M4 evidence contracts", () => {
 			expect(base.variantManifest.settingsDigest).toBeDefined()
 			const executionIdentity = {
 				schemaVersion: 1 as const,
-				hostVersion: "1.125.0",
+				hostVersion: "1.138.0",
 				extensionId: "Alpha.alpha",
 				extensionVersion: "1.0.0",
 				entrypointDigest: `sha256:${"a".repeat(64)}`,

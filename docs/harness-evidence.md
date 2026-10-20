@@ -1,7 +1,7 @@
 # Harness evidence runbook
 
 The local harness composes the existing package runners. It does not implement another agent, grader, task loop or test
-framework. Alpha's extension remains the system under test; exact-host runs use VS Code **1.125.0**. Node **24.21.0** and
+framework. Alpha's extension remains the system under test; exact-host runs use VS Code **1.138.0**. Node **24.21.0** and
 pnpm **11.24.0** are required. See [the testing workflow](testing-harness.md) for the supported commands and evidence
 requirements.
 
@@ -10,7 +10,7 @@ requirements.
 Use the pinned Node 24.21.0, npm 11.19.0 and pnpm 11.24.0 toolchain. The
 [bootstrap contract tests](../scripts/bootstrap.test.mjs) check agreement across manifests, CI and the evaluator.
 VS Code's embedded runtime is independent of development Node. The evaluator image installs and verifies exact
-VS Code 1.125.0 rather than taking the latest package. Historical measurements retain the runtime actually used.
+VS Code 1.138.0 rather than taking the latest package. Historical measurements retain the runtime actually used.
 
 On a fresh checkout, build the shared types before invoking the harness. Its reused host evidence helpers consume runtime
 schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
@@ -62,7 +62,7 @@ for the edited checkout. Repeat the required lanes after the final source change
 | `tooling`        | Repository Node tests and compiled host-runner Node tests; observed file counts and outcomes                  |
 | `offline`        | Evaluator unit, contract and certification suites; complete configured test inventory                         |
 | `focused`        | Selected extension Vitest files; observed execution for that selected scope                                   |
-| `host`           | The literal `test:smoke:1250` owner, including the LM fixture contract; every selected test required          |
+| `host`           | The literal `test:smoke:1380` owner, including the LM fixture contract; every selected test required          |
 | `extended`       | Instruction discovery, HTML previews, offline lock recovery and scheduled tasks; every selected test required |
 | `confidence`     | Core confidence owner, full smoke plus five core host suites, and deterministic managed-agent certification   |
 | `outcomes`       | Existing smoke campaign, one sample each of three independently asserted scripted workflows                   |
@@ -168,5 +168,5 @@ Upload steps run on failure too and retain reports/projected artifacts for 14 da
 workspace directories.
 
 Live Copilot work remains a separate opt-in owner: use a current successful preflight, exact model identity, a signed-in
-Alpha-owned 1.125.0 profile and an agreed request budget. A retained historical preflight is not current readiness. No
+Alpha-owned 1.138.0 profile and an agreed request budget. A retained historical preflight is not current readiness. No
 local or scripted receipt substitutes for that live evidence, service integration, or production rollout approval.

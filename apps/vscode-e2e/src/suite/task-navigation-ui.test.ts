@@ -71,7 +71,7 @@ suite("Task navigation renderer latency", function () {
 
 	test("persists across a cold process launch and reuses one Task through warm UI cycles", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-		assert.equal(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION ?? "1.125.0")
+		assert.equal(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION ?? "1.138.0")
 		assert.ok(process.env.ALPHA_UI_ACCEPTANCE_NONCE)
 		const artifactsDir = process.env.ALPHA_E2E_ARTIFACTS_DIR
 		assert.ok(artifactsDir)

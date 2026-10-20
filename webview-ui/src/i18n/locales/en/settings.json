@@ -368,6 +368,10 @@
 		"renameProfile": "Rename Profile",
 		"profileRefreshPending": "Waiting for updated profile names. You can save your settings edits while profiles refresh.",
 		"profileIdentityPending": "Waiting for the selected profile to load before saving.",
+		"profileUnavailableInvalid": "Invalid saved settings",
+		"profileUnavailableUnsupported": "Unsupported provider",
+		"profileUnavailableFields": "Fields to correct: {{fields}}",
+		"profileUnavailableHelp": "These profiles are saved but cannot be used. Export settings to keep a backup, then correct the saved configuration or create a supported replacement. You can also delete profiles you no longer need.",
 		"profileSavePending": "Saving profile…",
 		"saveErrors": {
 			"invalid": "Unable to save this profile. Your edits have been kept. Refresh the profiles and try again.",

@@ -6,9 +6,15 @@ import * as vscode from "vscode"
 import { Package } from "../../shared/package"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import type { settlementDiagnostics } from "../agent/SettlementDiagnostics"
+import { projectDiagnosticIdentity } from "../agent/IncidentDiagnostics"
+import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
 import { collectDiagnosticsEvidence, projectErrorDetails, projectRuntimeDiagnostics } from "./diagnosticsEvidence"
 
 const MAX_REPORT_BYTES = 8 * 1_024 * 1_024
+const safeVersion = (value: unknown): string | undefined =>
+	typeof value === "string" && /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][A-Za-z0-9.-]{1,32})?$/.test(value)
+		? value
+		: undefined
 
 export interface ErrorDiagnosticsValues {
 	timestamp?: string
@@ -24,7 +30,9 @@ export interface GenerateDiagnosticsParams {
 	values?: ErrorDiagnosticsValues
 	log: (message: string) => void
 	/** Evaluated only for the user-requested report; failures do not discard the original error. */
-	getRuntimeDiagnostics?: () => ReturnType<typeof settlementDiagnostics>
+	getRuntimeDiagnostics?: () =>
+		| ReturnType<typeof settlementDiagnostics>
+		| Promise<ReturnType<typeof settlementDiagnostics>>
 	extension?: vscode.Extension<unknown>
 }
 
@@ -53,28 +61,40 @@ export async function generateErrorDiagnostics(params: GenerateDiagnosticsParams
 
 		let runtime: unknown
 		try {
-			runtime = projectRuntimeDiagnostics(params.getRuntimeDiagnostics?.())
+			runtime = projectRuntimeDiagnostics(await params.getRuntimeDiagnostics?.())
 		} catch {
 			runtime = { unavailable: true }
 		}
 
+		const reportedIdentity = projectDiagnosticIdentity(values?.provider, values?.model)
 		const diagnostics = {
 			schemaVersion: 2,
 			runtime,
 			installation: {
-				vscodeVersion: vscode.version,
-				runtimeVersion: Package.version,
-				runtimeCommit: Package.sha,
-				extensionId: params.extension?.id,
-				manifestVersion: params.extension?.packageJSON?.version,
-				extensionDirectory: params.extension ? path.basename(params.extension.extensionPath) : undefined,
+				vscodeVersion: safeVersion(vscode.version),
+				runtimeVersion: safeVersion(Package.version),
+				runtimeCommit:
+					typeof Package.sha === "string" && /^[a-f0-9]{7,64}$/i.test(Package.sha) ? Package.sha : undefined,
+				extensionId:
+					params.extension && /^[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]{1,64}$/.test(params.extension.id)
+						? params.extension.id
+						: undefined,
+				manifestVersion: safeVersion(params.extension?.packageJSON?.version),
+				extensionDirectorySha256: params.extension
+					? hashAgentTurnEvidenceId(params.extension.extensionPath)
+					: undefined,
 				extensionActive: params.extension?.isActive,
 			},
 			error: {
-				timestamp: values?.timestamp ?? new Date().toISOString(),
-				version: values?.version ?? "",
-				provider: values?.provider ?? "",
-				model: values?.model ?? "",
+				timestamp:
+					typeof values?.timestamp === "string" &&
+					/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(values.timestamp)
+						? values.timestamp
+						: new Date().toISOString(),
+				version: safeVersion(values?.version) ?? "",
+				...reportedIdentity,
+				provider: reportedIdentity.provider ?? "",
+				model: reportedIdentity.model ?? "",
 				details: projectErrorDetails(values?.details),
 			},
 			history: collected.history,
@@ -92,7 +112,7 @@ export async function generateErrorDiagnostics(params: GenerateDiagnosticsParams
 			throw new Error("Diagnostics report exceeds the bounded report limit")
 		}
 
-		const tempFileName = `alpha-diagnostics-${taskId.slice(0, 8)}-${Date.now()}.json`
+		const tempFileName = `alpha-diagnostics-${hashAgentTurnEvidenceId(taskId).slice(0, 8)}-${Date.now()}.json`
 		const tempFilePath = path.join(os.tmpdir(), tempFileName)
 		await fs.writeFile(tempFilePath, fullContent, { encoding: "utf8", mode: 0o600, flag: "wx" })
 

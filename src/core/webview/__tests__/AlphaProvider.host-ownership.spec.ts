@@ -56,7 +56,16 @@ function makeProvider(storagePath: string) {
 		currentView: { type: "newTaskDraft" },
 		newTaskDraftMode: "code",
 		context: { globalState: { get: () => true } },
-		contextProxy: { globalStorageUri: { fsPath: storagePath }, getValues: () => ({}), getValue: () => "code" },
+		contextProxy: {
+			globalStorageUri: { fsPath: storagePath },
+			getValues: () => ({ currentApiConfigName: "default" }),
+			getValue: (key: string) =>
+				key === "currentApiConfigName" ? "default" : key === "mode" ? "code" : undefined,
+		},
+		providerSettingsManager: {
+			listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "openai" }]),
+			getProfile: vi.fn(async () => ({ id: "default-profile", name: "default", apiProvider: "openai" })),
+		},
 		taskHistoryStoreReady: Promise.resolve(),
 		taskHistoryStore: {
 			initialize: vi.fn(async () => undefined),
@@ -411,6 +420,40 @@ describe("AlphaProvider host ownership", () => {
 			return task
 		})
 		expect(await provider.createTaskWithHistoryItem(history, { preserveExisting: true })).toBe(task)
+	})
+
+	it.each(["allowedMaxCost", "allowedMaxRequests"] as const)(
+		"suppresses optional presentation calls before restoring a task with finite positive %s",
+		async (budget) => {
+			const provider = makeProvider(storage())
+			vi.spyOn(provider.contextProxy, "getValues").mockReturnValue({
+				currentApiConfigName: "default",
+				[budget]: 1,
+			})
+			const task = makeTask(history.id)
+			vi.mocked(Task).mockImplementationOnce(function (options) {
+				expect(options.presentationModelCalls).toBe(false)
+				options.onCreated?.(task)
+				return task
+			})
+
+			await provider.createTaskWithHistoryItem(history, { preserveExisting: true, startTask: false })
+		},
+	)
+
+	it("keeps a live task's presentation opt-out when its older history snapshot is restored", async () => {
+		const provider = makeProvider(storage())
+		const oldTask = makeTask(history.id)
+		Object.assign(oldTask, { presentationModelCalls: false })
+		await provider.addTaskToStack(oldTask)
+		const restored = makeTask(history.id)
+		vi.mocked(Task).mockImplementationOnce(function (options) {
+			expect(options.presentationModelCalls).toBe(false)
+			options.onCreated?.(restored)
+			return restored
+		})
+
+		await provider.createTaskWithHistoryItem(history, { preserveExisting: true, startTask: false })
 	})
 
 	it("routes explicit cancellation to the canonical owner without borrowing its focus", async () => {

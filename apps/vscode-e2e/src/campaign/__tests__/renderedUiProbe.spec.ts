@@ -23,7 +23,7 @@ for (const testFile of [
 			await assert.rejects(
 				runExtensionTests({
 					providerMode: "scripted",
-					vscodeVersion: "1.125.0",
+					vscodeVersion: "1.138.0",
 					rendererDebuggingPort: 0,
 					profileDir: "unused",
 					testFile,
@@ -41,7 +41,7 @@ for (const testFile of [
 			await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.125.0",
+					vscodeVersion: "1.138.0",
 					rendererDebuggingPort: 0,
 					testFile,
 					profileDir: path.join(root, "profile"),

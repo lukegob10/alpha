@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from "react"
 import { Fzf } from "fzf"
+import type { ProviderSettingsEntry } from "@alpha-code/types"
 
 import { cn } from "@/lib/utils"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
@@ -17,7 +18,7 @@ interface ApiConfigSelectorProps {
 	title: string
 	onChange: (value: string) => void
 	triggerClassName?: string
-	listApiConfigMeta: Array<{ id: string; name: string; modelId?: string }>
+	listApiConfigMeta: ProviderSettingsEntry[]
 	pinnedApiConfigs?: Record<string, boolean>
 	togglePinnedApiConfig: (id: string) => void
 }
@@ -73,11 +74,12 @@ export const ApiConfigSelector = ({
 
 	const handleSelect = useCallback(
 		(configId: string) => {
+			if (listApiConfigMeta.find(({ id }) => id === configId)?.availability) return
 			onChange(configId)
 			setOpen(false)
 			setSearchValue("")
 		},
-		[onChange],
+		[onChange, listApiConfigMeta],
 	)
 
 	const handleEditClick = useCallback(() => {
@@ -86,8 +88,15 @@ export const ApiConfigSelector = ({
 	}, [])
 
 	const renderConfigItem = useCallback(
-		(config: { id: string; name: string; modelId?: string }, isPinned: boolean) => {
+		(config: ProviderSettingsEntry, isPinned: boolean) => {
 			const isCurrentConfig = config.id === value
+			const unavailableLabel = config.availability
+				? t(
+						config.availability === "invalid"
+							? "settings:providers.profileUnavailableInvalid"
+							: "settings:providers.profileUnavailableUnsupported",
+					)
+				: undefined
 
 			return (
 				<div
@@ -99,11 +108,14 @@ export const ApiConfigSelector = ({
 					)}>
 					<button
 						type="button"
+						disabled={Boolean(config.availability)}
+						title={unavailableLabel}
 						onClick={() => handleSelect(config.id)}
 						aria-current={isCurrentConfig ? "true" : undefined}
-						className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent px-1.5 py-1 text-left text-vscode-foreground cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+						className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent px-1.5 py-1 text-left text-vscode-foreground cursor-pointer disabled:cursor-default disabled:text-vscode-descriptionForeground focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
 						<span className="flex-1 min-w-0 flex items-center gap-1 overflow-hidden">
 							<span className="flex-shrink-0">{config.name}</span>
+							{unavailableLabel && <span className="text-xs">{unavailableLabel}</span>}
 							{config.modelId && (
 								<span
 									className="text-vscode-descriptionForeground opacity-70 min-w-0 overflow-hidden"

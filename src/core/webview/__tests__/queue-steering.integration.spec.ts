@@ -168,6 +168,7 @@ it("leaves active-turn input queued until an explicit Steer selects it without c
 	const queue = new MessageQueueService(persistence)
 	const request = new AbortController()
 	const step = new AbortController()
+	const lifetime = new AbortController()
 	const task = Object.assign(Object.create(Task.prototype), {
 		taskId: "background-task",
 		taskKind: "primary",
@@ -179,6 +180,8 @@ it("leaves active-turn input queued until an explicit Steer selects it without c
 		steerMessageAwaitingPersistence: false,
 		currentRequestAbortController: request,
 		stepInterruptionController: step,
+		taskCancellationController: lifetime,
+		isCurrentApiConversationHistoryOwner: () => true,
 		apiConversationHistory: [],
 		messageQueueService: queue,
 		resetMistakeRecoveryState: vi.fn(),
@@ -216,6 +219,7 @@ it("leaves active-turn input queued until an explicit Steer selects it without c
 	expect(savedQueue.map(({ id }) => id)).toEqual(["older-input", "selected-input"])
 	expect(request.signal.aborted).toBe(false)
 	expect(step.signal.aborted).toBe(false)
+	expect(lifetime.signal.aborted).toBe(false)
 	expect(task.hasPendingSteerMessage()).toBe(false)
 
 	await webviewMessageHandler(provider, {
@@ -236,6 +240,7 @@ it("leaves active-turn input queued until an explicit Steer selects it without c
 	)
 	expect(request.signal.aborted).toBe(true)
 	expect(step.signal.aborted).toBe(true)
+	expect(lifetime.signal.aborted).toBe(false)
 	expect(task.abort).toBe(false)
 	expect(task.hasPendingSteerMessage()).toBe(true)
 	expect(queue.messages.map(({ id }) => id)).toEqual(["older-input"])

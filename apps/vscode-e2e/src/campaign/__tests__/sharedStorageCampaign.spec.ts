@@ -53,7 +53,7 @@ type Fault =
 	| "scan-incomplete"
 
 /** File receipts simulate the external hosts; no process, live provider or real-host evidence is manufactured. */
-async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.0", directoryName = "campaign") {
+async function exercise(fault: Fault, version: CampaignHost["version"] = "1.138.0", directoryName = "campaign") {
 	const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-pair-unit-")))
 	const root = path.join(temporary, directoryName)
 	const executable = await fs.realpath(process.execPath)
@@ -323,7 +323,7 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.
 	}
 }
 
-for (const version of ["1.125.0"] as const)
+for (const version of ["1.138.0"] as const)
 	test(`controller succeeds only after both durable receipts and cleanup (${version})`, async () => {
 		const { report, capture, leaseRetained } = await exercise("none", version)
 		assert.equal(report.status, "passed")
@@ -342,7 +342,7 @@ for (const version of ["1.125.0"] as const)
 	})
 
 test("raw failure details stay redacted when an owned report path contains private", async () => {
-	const { report } = await exercise("capture", "1.125.0", "private")
+	const { report } = await exercise("capture", "1.138.0", "private")
 	assert.equal(report.status, "failed")
 	assert.deepEqual(report.failure, { stage: "capture", code: "operation_failed" })
 	assert.ok(report.reportPath.split(path.sep).includes("private"))

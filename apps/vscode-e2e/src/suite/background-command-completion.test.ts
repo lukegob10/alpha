@@ -137,7 +137,7 @@ suite("Background application launch completion", function () {
 	for (const application of applications) {
 		for (const terminal of ["execa", "vscode"] as const) {
 			test(application + " via " + terminal + ": completes once while owned processes remain alive", async () => {
-				assert.equal(vscode.version, "1.125.0")
+				assert.equal(vscode.version, "1.138.0")
 				assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 				const workspace = process.env.ALPHA_E2E_WORKSPACE
 				const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR

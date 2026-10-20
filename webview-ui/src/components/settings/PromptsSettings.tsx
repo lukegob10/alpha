@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, FormEvent } from "react"
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, FormEvent } from "react"
 import { VSCodeTextArea, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 
 import { supportPrompt, SupportPromptType } from "@alpha/support-prompt"
@@ -43,15 +43,52 @@ const PromptsSettings = ({
 	const [testPrompt, setTestPrompt] = useState("")
 	const [isEnhancing, setIsEnhancing] = useState(false)
 	const [activeSupportOption, setActiveSupportOption] = useState<SupportPromptType>("ENHANCE")
-	const pendingEnhancementRef = useRef<{ requestId: string; draft: string; taskId?: string } | null>(null)
+	const enhancementConfigId = enhancementApiConfigId ?? ""
+	const enhancementSupportPrompt = supportPrompt.get(customSupportPrompts, "ENHANCE")
+	const pendingEnhancementRef = useRef<{
+		requestId: string
+		draft: string
+		taskId?: string
+		apiConfigId: string
+		includeTaskHistory: boolean
+		supportPrompt: string
+	} | null>(null)
+	const cancelPendingEnhancement = useCallback((updateUi = true) => {
+		const pending = pendingEnhancementRef.current
+		if (!pending) return
+		pendingEnhancementRef.current = null
+		if (updateUi) setIsEnhancing(false)
+		vscode.postMessage({
+			type: "cancelEnhancePrompt",
+			requestId: pending.requestId,
+			...(pending.taskId ? { taskId: pending.taskId } : {}),
+		})
+	}, [])
 
 	useLayoutEffect(() => {
 		const pending = pendingEnhancementRef.current
-		if (pending && (pending.draft !== testPrompt || pending.taskId !== currentTaskId)) {
-			pendingEnhancementRef.current = null
-			setIsEnhancing(false)
+		if (
+			pending &&
+			(pending.draft !== testPrompt ||
+				pending.taskId !== currentTaskId ||
+				pending.apiConfigId !== enhancementConfigId ||
+				pending.includeTaskHistory !== includeTaskHistoryInEnhance ||
+				pending.supportPrompt !== enhancementSupportPrompt ||
+				activeSupportOption !== "ENHANCE")
+		) {
+			cancelPendingEnhancement()
 		}
-	}, [testPrompt, currentTaskId])
+	}, [
+		testPrompt,
+		currentTaskId,
+		enhancementConfigId,
+		includeTaskHistoryInEnhance,
+		enhancementSupportPrompt,
+		activeSupportOption,
+		cancelPendingEnhancement,
+	])
+
+	useEffect(() => () => cancelPendingEnhancement(false), [cancelPendingEnhancement])
 
 	useEffect(() => {
 		const handler = (event: MessageEvent) => {
@@ -60,10 +97,11 @@ const PromptsSettings = ({
 				const pending = pendingEnhancementRef.current
 				if (!pending || message.requestId !== pending.requestId) return
 				pendingEnhancementRef.current = null
+				setIsEnhancing(false)
+				if (message.enhancementStatus !== undefined && message.enhancementStatus !== "success") return
 				if (typeof message.text === "string" && message.text) {
 					setTestPrompt(message.text)
 				}
-				setIsEnhancing(false)
 			}
 		}
 
@@ -72,6 +110,7 @@ const PromptsSettings = ({
 	}, [])
 
 	const updateSupportPrompt = (type: SupportPromptType, value: string | undefined) => {
+		if (type === "ENHANCE") cancelPendingEnhancement()
 		// Don't trim during editing to preserve intentional whitespace
 		// Use nullish coalescing to preserve empty strings
 		const finalValue = value ?? undefined
@@ -86,6 +125,7 @@ const PromptsSettings = ({
 	}
 
 	const handleSupportReset = (type: SupportPromptType) => {
+		if (type === "ENHANCE") cancelPendingEnhancement()
 		const updatedPrompts = { ...customSupportPrompts }
 		delete updatedPrompts[type]
 		setCustomSupportPrompts(updatedPrompts)
@@ -99,7 +139,14 @@ const PromptsSettings = ({
 		if (!testPrompt.trim() || pendingEnhancementRef.current) return
 
 		const requestId = crypto.randomUUID()
-		pendingEnhancementRef.current = { requestId, draft: testPrompt, taskId: currentTaskId }
+		pendingEnhancementRef.current = {
+			requestId,
+			draft: testPrompt,
+			taskId: currentTaskId,
+			apiConfigId: enhancementConfigId,
+			includeTaskHistory: includeTaskHistoryInEnhance,
+			supportPrompt: enhancementSupportPrompt,
+		}
 		setIsEnhancing(true)
 		vscode.postMessage({
 			type: "enhancePrompt",
@@ -107,9 +154,9 @@ const PromptsSettings = ({
 			...(currentTaskId ? { taskId: currentTaskId } : {}),
 			text: testPrompt,
 			enhancementOptions: {
-				apiConfigId: enhancementApiConfigId ?? "",
+				apiConfigId: enhancementConfigId,
 				includeTaskHistory: includeTaskHistoryInEnhance,
-				supportPrompt: getSupportPromptValue("ENHANCE"),
+				supportPrompt: enhancementSupportPrompt,
 			},
 		})
 	}
@@ -127,7 +174,10 @@ const PromptsSettings = ({
 					label={t("settings:sections.prompts")}>
 					<Select
 						value={activeSupportOption}
-						onValueChange={(type) => setActiveSupportOption(type as SupportPromptType)}>
+						onValueChange={(type) => {
+							cancelPendingEnhancement()
+							setActiveSupportOption(type as SupportPromptType)
+						}}>
 						<SelectTrigger className="w-full" data-testid="support-prompt-select-trigger">
 							<SelectValue placeholder={t("settings:common.select")} />
 						</SelectTrigger>
@@ -181,6 +231,7 @@ const PromptsSettings = ({
 								<Select
 									value={enhancementApiConfigId || "-"}
 									onValueChange={(value) => {
+										cancelPendingEnhancement()
 										const newConfigId = value === "-" ? "" : value
 										setEnhancementApiConfigId(newConfigId)
 									}}>
@@ -218,6 +269,7 @@ const PromptsSettings = ({
 											return
 										}
 
+										cancelPendingEnhancement()
 										setIncludeTaskHistoryInEnhance(target.checked)
 									}}>
 									<span className="font-medium">
@@ -236,16 +288,38 @@ const PromptsSettings = ({
 								<VSCodeTextArea
 									resize="vertical"
 									value={testPrompt}
-									onChange={(e) => setTestPrompt((e.target as HTMLTextAreaElement).value)}
+									onChange={(e) => {
+										cancelPendingEnhancement()
+										setTestPrompt((e.target as HTMLTextAreaElement).value)
+									}}
+									onKeyDown={(event) => {
+										if (
+											event.key === "Escape" &&
+											!event.nativeEvent?.isComposing &&
+											pendingEnhancementRef.current
+										) {
+											event.preventDefault()
+											cancelPendingEnhancement()
+										}
+									}}
 									placeholder={t("prompts:supportPrompts.enhance.testPromptPlaceholder")}
 									rows={3}
 									className="w-full"
 									data-testid="test-prompt-textarea"
 								/>
-								<div className="mt-2 flex justify-start items-center gap-2">
-									<Button variant="primary" onClick={handleTestEnhancement} disabled={isEnhancing}>
+								<div className="mt-2 flex flex-wrap justify-start items-center gap-2">
+									<Button
+										variant="primary"
+										onClick={handleTestEnhancement}
+										disabled={isEnhancing}
+										aria-busy={isEnhancing}>
 										{t("prompts:supportPrompts.enhance.previewButton")}
 									</Button>
+									{isEnhancing && (
+										<Button variant="secondary" onClick={() => cancelPendingEnhancement()}>
+											{t("prompts:supportPrompts.enhance.cancelButton")}
+										</Button>
+									)}
 								</div>
 							</div>
 						</div>

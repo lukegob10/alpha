@@ -1875,14 +1875,35 @@ export class AgentControlStore {
 		rootTaskId?: string,
 	): Promise<{ record: AgentRecord; event: AgentMailboxEntry; appended: boolean }> {
 		return this.transact((draft) => {
-			const record = this.applyAgentStatusTransition(draft, target, status, input, rootTaskId)
 			if (eventInput.eventId) {
 				const existing = draft.mailbox.find((entry) => entry.eventId === eventInput.eventId)
 				if (existing) {
 					this.assertIdempotentEvent(existing, eventInput)
+					const current = this.requireMutableRecord(draft, target, rootTaskId)
+					this.assertRecordOwned(draft, current, "replay its lifecycle")
+					const eventTarget =
+						existing.kind === "followup"
+							? existing.recipientTaskId
+							: (existing.senderTaskId ?? existing.recipientTaskId)
+					if (current.rootTaskId !== existing.rootTaskId || current.taskId !== eventTarget) {
+						throw new Error(`Mailbox event ID ${existing.eventId} belongs to a different agent lifecycle`)
+					}
+					// A committed event cannot replay an old transition over a successor turn.
+					// Only a rolled-back, unlaunched follow-up retains authority to readmit
+					// the same receipt; starting its runner consumes that explicit authority.
+					const readmitFollowup =
+						existing.kind === "followup" &&
+						status === "pending" &&
+						input.pendingFollowupEventId === existing.eventId &&
+						current.pendingFollowupEventId === existing.eventId &&
+						CLOSABLE_STATUSES.has(current.status)
+					const record = readmitFollowup
+						? this.applyAgentStatusTransition(draft, target, status, input, rootTaskId)
+						: current
 					return { record: clone(record), event: clone(existing), appended: false }
 				}
 			}
+			const record = this.applyAgentStatusTransition(draft, target, status, input, rootTaskId)
 
 			const recipient = this.requireOpenAddress(draft, eventInput.recipient, eventInput.rootTaskId)
 			const sender = eventInput.sender
@@ -3129,6 +3150,39 @@ export class AgentControlStore {
 			)
 			.sort((left, right) => left.sequence - right.sequence)
 			.map(clone)
+	}
+
+	/** Read receipt metadata for the selected task without cloning message bodies or provider data. */
+	getPendingMailboxDiagnostics(recipient: string, rootTaskId: string) {
+		this.assertInitialized()
+		const address = this.requireAddress(this.state, recipient, rootTaskId)
+		let pendingCount = 0
+		let claimedCount = 0
+		const entries: Array<
+			Pick<AgentMailboxEntry, "eventId" | "kind" | "sequence" | "claimId" | "claimChannel" | "createdAt">
+		> = []
+		for (let index = this.state.mailbox.length - 1; index >= 0; index--) {
+			const entry = this.state.mailbox[index]
+			if (
+				entry.rootTaskId !== address.rootTaskId ||
+				entry.recipientTaskId !== address.taskId ||
+				entry.acknowledgedAt !== undefined
+			)
+				continue
+			pendingCount++
+			if (entry.claimId !== undefined) claimedCount++
+			if (entries.length < 32) {
+				const { eventId, kind, sequence, claimId, claimChannel, createdAt } = entry
+				entries.push({ eventId, kind, sequence, claimId, claimChannel, createdAt })
+			}
+		}
+		return {
+			available: true,
+			pendingCount,
+			claimedCount,
+			entries: entries.reverse(),
+			truncated: pendingCount > entries.length,
+		}
 	}
 
 	/** Read only the bounded metadata window needed by the managed-tree UI. */

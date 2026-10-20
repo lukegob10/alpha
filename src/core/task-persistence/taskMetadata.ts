@@ -28,6 +28,7 @@ const taskSizeCache = new NodeCache({ stdTTL: 30, checkperiod: 5 * 60 })
 
 export type TaskMetadataOptions = {
 	taskId: string
+	presentationModelCalls?: false
 	diagnosticSession?: boolean
 	diagnosticIncidentId?: string
 	diagnosticSourceTaskId?: string
@@ -76,6 +77,7 @@ export type TaskMetadataOptions = {
 
 export async function taskMetadata({
 	taskId: id,
+	presentationModelCalls,
 	diagnosticSession,
 	diagnosticIncidentId,
 	diagnosticSourceTaskId,
@@ -167,6 +169,7 @@ export async function taskMetadata({
 	// where attempt_completion might run before a separate status update.
 	const historyItem: HistoryItem = {
 		id,
+		...(presentationModelCalls === false ? { presentationModelCalls } : {}),
 		...(diagnosticSession ? { diagnosticSession: true } : {}),
 		...(diagnosticIncidentId ? { diagnosticIncidentId } : {}),
 		...(diagnosticSourceTaskId ? { diagnosticSourceTaskId } : {}),

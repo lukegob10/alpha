@@ -13,6 +13,7 @@ export interface MessageEnhancerOptions {
 	includeTaskHistoryInEnhance?: boolean
 	currentAlphaMessages?: AlphaMessage[]
 	providerSettingsManager: ProviderSettingsManager
+	signal?: AbortSignal
 }
 
 export interface MessageEnhancerResult {
@@ -76,7 +77,9 @@ export class MessageEnhancer {
 			)
 
 			// Call the single completion handler to get the enhanced prompt
-			const enhancedText = await singleCompletionHandler(configToUse, enhancementPrompt)
+			const enhancedText = options.signal
+				? await singleCompletionHandler(configToUse, enhancementPrompt, { signal: options.signal })
+				: await singleCompletionHandler(configToUse, enhancementPrompt)
 
 			return {
 				success: true,

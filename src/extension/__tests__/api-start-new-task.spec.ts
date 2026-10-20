@@ -42,8 +42,51 @@ describe("API task creation", () => {
 		expect(parent).toBeUndefined()
 		expect(provider.getState).toHaveBeenCalledExactlyOnceWith({ includeTaskHistory: false })
 		expect(options.apiConfiguration).toBe(savedConfiguration)
+		expect(options).not.toHaveProperty("presentationModelCalls")
 		expect(configuration).toBeUndefined()
 	})
+
+	it.each([false, true])("forwards presentation suppression as a task option when newTab is %s", async (newTab) => {
+		const provider = createProvider("governed-task")
+		vi.mocked(openAlphaInNewTab).mockResolvedValue(provider as unknown as AlphaProvider)
+		const api = new API(
+			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+			provider as unknown as AlphaProvider,
+		)
+
+		await expect(
+			api.startNewTask({ text: "Use only execution model calls", newTab, presentationModelCalls: false }),
+		).resolves.toBe("governed-task")
+
+		const [, , , options, configuration] = provider.createTask.mock.calls[0]
+		expect(options.presentationModelCalls).toBe(false)
+		expect(options.apiConfiguration).not.toHaveProperty("presentationModelCalls")
+		expect(configuration).toBeUndefined()
+	})
+
+	it.each([true, null, "false", 0])(
+		"rejects unsupported presentation opt-out %j before changing task state",
+		async (value) => {
+			const provider = createProvider("unused-task")
+			const api = new API(
+				{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+				provider as unknown as AlphaProvider,
+			)
+			const request = {
+				text: "Keep the current task intact",
+				newTab: true,
+				presentationModelCalls: value,
+			} as unknown as Parameters<API["startNewTask"]>[0]
+
+			await expect(api.startNewTask(request)).rejects.toThrow("presentationModelCalls only supports false")
+
+			expect(provider.getState).not.toHaveBeenCalled()
+			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(provider.createTask).not.toHaveBeenCalled()
+			expect(openAlphaInNewTab).not.toHaveBeenCalled()
+			expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		},
+	)
 
 	it("opens a task in a new tab without reverting or closing existing editors", async () => {
 		const sidebar = createProvider("sidebar-task")

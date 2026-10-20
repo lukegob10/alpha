@@ -295,7 +295,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 	let hostSampleIndex = 0
 	for (const scenario of ["command-publication", "no-op-receipt"] as const) {
 		test(`${scenario} preserves the same conditional provider policy across revisions`, async () => {
-			assert.equal(vscode.version, "1.125.0")
+			assert.equal(vscode.version, "1.138.0")
 			const provenance = parseContextRunMetadata(process.env.ALPHA_SCOPE_RUN_METADATA)
 			const expectation = process.env.ALPHA_COMPLETION_EXPECTATION
 			assert.ok(expectation === "reference" || expectation === "candidate", "Declare the assertion role")

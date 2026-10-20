@@ -143,6 +143,7 @@ const ApiConfigManager = ({
 
 	const handleSelectConfig = (configName: string) => {
 		if (!configName || profileActionsDisabled) return
+		if (listApiConfigMeta.find(({ name }) => name === configName)?.availability) return
 		onSelectConfig(configName)
 	}
 
@@ -294,13 +295,20 @@ const ApiConfigManager = ({
 							disabled={profileActionsDisabled}
 							onValueChange={handleSelectConfig}
 							options={listApiConfigMeta.map((config) => {
-								const valid = isProfileValid(config)
+								const valid = !config.availability && isProfileValid(config)
+								const reason = config.availability
+									? t(
+											config.availability === "invalid"
+												? "settings:providers.profileUnavailableInvalid"
+												: "settings:providers.profileUnavailableUnsupported",
+										)
+									: t("settings:validation.profileInvalid")
 								return {
 									value: config.name,
-									label: config.name,
+									label: config.availability ? `${config.name} — ${reason}` : config.name,
 									disabled: !valid,
 									icon: !valid ? (
-										<StandardTooltip content={t("settings:validation.profileInvalid")}>
+										<StandardTooltip content={reason}>
 											<span>
 												<AlertTriangle size={16} className="mr-2 text-vscode-errorForeground" />
 											</span>
@@ -357,6 +365,43 @@ const ApiConfigManager = ({
 					<div className="text-vscode-descriptionForeground text-sm mt-1">
 						{t("settings:providers.description")}
 					</div>
+					{listApiConfigMeta.some(({ availability }) => availability) && (
+						<div
+							role="status"
+							className="rounded-md border border-vscode-panel-border p-3 mt-2 text-sm text-vscode-descriptionForeground"
+							data-testid="unavailable-profiles">
+							<ul className="m-0 pl-4">
+								{listApiConfigMeta
+									.filter(({ availability }) => availability)
+									.map((config) => (
+										<li key={config.id}>
+											<strong>{config.name}</strong>:{" "}
+											{t(
+												config.availability === "invalid"
+													? "settings:providers.profileUnavailableInvalid"
+													: "settings:providers.profileUnavailableUnsupported",
+											)}
+											{config.invalidFields?.length ? (
+												<div>
+													{t("settings:providers.profileUnavailableFields", {
+														fields: config.invalidFields.join(", "),
+													})}
+												</div>
+											) : null}
+											<Button
+												variant="ghost"
+												size="sm"
+												disabled={listApiConfigMeta.length <= 1 || profileActionsDisabled}
+												onClick={() => onDeleteConfig(config.name)}
+												data-testid={`delete-unavailable-profile-${config.id}`}>
+												{t("settings:providers.deleteProfile")}
+											</Button>
+										</li>
+									))}
+							</ul>
+							<p className="mb-0">{t("settings:providers.profileUnavailableHelp")}</p>
+						</div>
+					)}
 				</>
 			)}
 

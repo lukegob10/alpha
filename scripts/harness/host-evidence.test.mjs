@@ -16,9 +16,9 @@ import { hostReceipt, outcomeFixture } from "./fixtures/evidence.mjs"
 test("host inventory matches the canonical runner scripts and requires background launch receipts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
 	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
-	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1250:run"]))
-	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1250:run"])])
-	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1250:run"]))
+	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1380:run"]))
+	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1380:run"])])
+	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1380:run"]))
 	for (const [suite, expected] of [
 		["smoke", smokeHostFiles],
 		["confidence", confidenceHostFiles],
@@ -48,6 +48,8 @@ test("host gate revalidates receipts and refuses unknown, partial, skipped, or c
 	assert.equal(hostSuiteVerdict(receipts, "unknown").status, "failed")
 	assert.equal(hostSuiteVerdict(receipts.slice(1), "confidence").status, "failed")
 	for (const mutate of [
+		(value) => (value.actualHostVersion = "1.125.0"),
+		(value) => (value.requestedHostVersion = "1.125.0"),
 		(value) => (value.actualHostVersion = "1.126.0"),
 		(value) => (value.execution = "test-seam"),
 		(value) => (value.testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }),

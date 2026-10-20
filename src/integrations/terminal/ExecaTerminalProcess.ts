@@ -78,109 +78,115 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		this.handleListenerRejection = (error) => void stopAfterOutputFailure(error)
 
 		try {
-			this.isHot = true
+			// Stop can reach the owned process in onProcessCreated, before any
+			// subprocess exists. Keep that cancellation from launching new work.
+			if (this.aborted) {
+				exitDetails = { exitCode: 130, signalName: "SIGINT" }
+			} else {
+				this.isHot = true
 
-			const spawn = execa({
-				shell: directCommand ? false : BaseTerminal.getExecaShellPath() || true,
-				extendEnv: !directCommand,
-				windowsHide: true,
-				cwd: this.terminal.getCurrentWorkingDirectory(),
-				all: true,
-				// Alpha owns the complete output and receipts. Avoid Execa retaining
-				// another stdout/stderr/all copy of the same command output.
-				buffer: false,
-				// Ignore stdin to ensure non-interactive mode and prevent hanging
-				stdin: "ignore",
-				env: directCommand?.env ?? {
-					...process.env,
-					...this.terminal.commandEnv,
-					// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
-					LANG: "en_US.UTF-8",
-					LC_ALL: "en_US.UTF-8",
-				},
-			})
-			this.subprocess = directCommand
-				? spawn(directCommand.executable, [...directCommand.args])
-				: spawn`${command}`
-			// Observe rejection immediately, and retain physical process ownership
-			// independently of the output iterator or its presentation callbacks.
-			processSettlement = Promise.allSettled([this.subprocess]).then(([outcome]) => outcome)
-			const outputStream = this.subprocess.all
-			if (outputStream) {
-				const onOutputError = (error: unknown) => void stopAfterOutputFailure(error)
-				outputStream.once("error", onOutputError)
-				removeOutputFailureListener = () => outputStream.removeListener("error", onOutputError)
-			}
-
-			this.pid = this.subprocess.pid
-
-			// When using shell: true, the PID is for the shell, not the actual command
-			// Find the actual command PID after a small delay
-			if (!directCommand && this.pid && process.platform !== "win32") {
-				this.pidUpdatePromise = new Promise<void>((resolve) => {
-					setTimeout(() => {
-						void this.getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
-							.then((children) => {
-								const actualPid = children[0]
-								if (Number.isInteger(actualPid) && actualPid > 0) this.pid = actualPid
-							})
-							// PID refinement is optional. Tree termination still snapshots both
-							// the original shell PID and any descendants it can discover later.
-							.catch(() => undefined)
-							.finally(resolve)
-					}, 100)
+				const spawn = execa({
+					shell: directCommand ? false : BaseTerminal.getExecaShellPath() || true,
+					extendEnv: !directCommand,
+					windowsHide: true,
+					cwd: this.terminal.getCurrentWorkingDirectory(),
+					all: true,
+					// Alpha owns the complete output and receipts. Avoid Execa retaining
+					// another stdout/stderr/all copy of the same command output.
+					buffer: false,
+					// Ignore stdin to ensure non-interactive mode and prevent hanging
+					stdin: "ignore",
+					env: directCommand?.env ?? {
+						...process.env,
+						...this.terminal.commandEnv,
+						// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
+						LANG: "en_US.UTF-8",
+						LC_ALL: "en_US.UTF-8",
+					},
 				})
-			}
-
-			// Binary chunks avoid retaining an arbitrarily long line before yielding.
-			const rawStream = this.subprocess.iterable({ from: "all", binary: true })
-
-			// Wrap the stream to ensure all chunks are strings (execa can return Uint8Array)
-			const stream = (async function* () {
-				const decoder = new TextDecoder()
-				for await (const chunk of rawStream) {
-					const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true })
-					if (text) yield text
-				}
-				const tail = decoder.decode()
-				if (tail) yield tail
-			})()
-
-			this.terminal.setActiveStream(stream, this.pid)
-
-			for await (const line of stream) {
-				if (this.aborted) {
-					break
+				this.subprocess = directCommand
+					? spawn(directCommand.executable, [...directCommand.args])
+					: spawn`${command}`
+				// Observe rejection immediately, and retain physical process ownership
+				// independently of the output iterator or its presentation callbacks.
+				processSettlement = Promise.allSettled([this.subprocess]).then(([outcome]) => outcome)
+				const outputStream = this.subprocess.all
+				if (outputStream) {
+					const onOutputError = (error: unknown) => void stopAfterOutputFailure(error)
+					outputStream.once("error", onOutputError)
+					removeOutputFailureListener = () => outputStream.removeListener("error", onOutputError)
 				}
 
-				try {
-					await this.appendOutput(line)
+				this.pid = this.subprocess.pid
 
-					const now = Date.now()
+				// When using shell: true, the PID is for the shell, not the actual command
+				// Find the actual command PID after a small delay
+				if (!directCommand && this.pid && process.platform !== "win32") {
+					this.pidUpdatePromise = new Promise<void>((resolve) => {
+						setTimeout(() => {
+							void this.getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
+								.then((children) => {
+									const actualPid = children[0]
+									if (Number.isInteger(actualPid) && actualPid > 0) this.pid = actualPid
+								})
+								// PID refinement is optional. Tree termination still snapshots both
+								// the original shell PID and any descendants it can discover later.
+								.catch(() => undefined)
+								.finally(resolve)
+						}, 100)
+					})
+				}
 
-					if (this.isListening && (now - this.lastEmitTime_ms > 500 || this.lastEmitTime_ms === 0)) {
-						this.emitRemainingBufferIfListening()
-						this.lastEmitTime_ms = now
+				// Binary chunks avoid retaining an arbitrarily long line before yielding.
+				const rawStream = this.subprocess.iterable({ from: "all", binary: true })
+
+				// Wrap the stream to ensure all chunks are strings (execa can return Uint8Array)
+				const stream = (async function* () {
+					const decoder = new TextDecoder()
+					for await (const chunk of rawStream) {
+						const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true })
+						if (text) yield text
+					}
+					const tail = decoder.decode()
+					if (tail) yield tail
+				})()
+
+				this.terminal.setActiveStream(stream, this.pid)
+
+				for await (const line of stream) {
+					if (this.aborted) {
+						break
 					}
 
-					this.startHotTimer(line)
-					// Bound outstanding async output callbacks without awaiting every
-					// chunk or retaining a separate output queue. The active command
-					// consumer is synchronous; this only backpressures async observers.
-					if (this.pendingLineObservers.size >= MAX_PENDING_LINE_OBSERVERS) {
-						await Promise.race(this.pendingLineObservers)
-					}
-				} catch (error) {
-					// Execa's iterator.return() waits for process exit. Stop the
-					// process before throwing so iterator cleanup cannot deadlock.
-					await stopAfterOutputFailure(error)
-					throw error
-				}
-			}
+					try {
+						await this.appendOutput(line)
 
-			const outcome = await processSettlement
-			if (outcome.status === "rejected") throw outcome.reason
-			exitDetails = { exitCode: outcome.value.exitCode, signalName: outcome.value.signal }
+						const now = Date.now()
+
+						if (this.isListening && (now - this.lastEmitTime_ms > 500 || this.lastEmitTime_ms === 0)) {
+							this.emitRemainingBufferIfListening()
+							this.lastEmitTime_ms = now
+						}
+
+						this.startHotTimer(line)
+						// Bound outstanding async output callbacks without awaiting every
+						// chunk or retaining a separate output queue. The active command
+						// consumer is synchronous; this only backpressures async observers.
+						if (this.pendingLineObservers.size >= MAX_PENDING_LINE_OBSERVERS) {
+							await Promise.race(this.pendingLineObservers)
+						}
+					} catch (error) {
+						// Execa's iterator.return() waits for process exit. Stop the
+						// process before throwing so iterator cleanup cannot deadlock.
+						await stopAfterOutputFailure(error)
+						throw error
+					}
+				}
+
+				const outcome = await processSettlement
+				if (outcome.status === "rejected") throw outcome.reason
+				exitDetails = { exitCode: outcome.value.exitCode, signalName: outcome.value.signal }
+			}
 		} catch (error) {
 			if (
 				error instanceof ExecaError &&

@@ -25,12 +25,15 @@ import type { WebviewMessage } from "@alpha-code/types"
 import type { ExtensionContext } from "vscode"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
+import { MessageEnhancer } from "../messageEnhancer"
+import { beginPromptEnhancement } from "../promptEnhancementRequests"
 import { TaskRenameError } from "../../task-persistence/TaskHistoryStore"
 import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
+import type { Task } from "../../task/Task"
 import * as taskPersistence from "../../task-persistence"
 import {
 	ProviderSettingsManager,
@@ -75,6 +78,7 @@ const mockAlphaProvider = {
 	postStateToWebview: vi.fn(),
 	postTaskQueueToWebview: vi.fn(async () => undefined),
 	getCurrentTask: vi.fn(),
+	getTaskNavigationGeneration: vi.fn(() => 0),
 	getLiveTask: vi.fn(),
 	getAgentLifecycleSnapshot: vi.fn(),
 	canAcceptTaskInput: vi.fn(() => true),
@@ -96,6 +100,64 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("prompt enhancement cancellation messages", () => {
+	afterEach(() => vi.restoreAllMocks())
+
+	it("does not cancel an enhancement when a stale Stop targets a previous turn", async () => {
+		const host = {
+			...mockAlphaProvider,
+			getLiveTask: vi.fn(() => ({ matchesExpectedTurn: () => false })),
+		} as unknown as AlphaProvider
+		const request = beginPromptEnhancement(host, "current-enhancement", "task")
+		await webviewMessageHandler(host, { type: "cancelTask", taskId: "task", expectedTurnId: "previous-turn" })
+		expect(request.signal.aborted).toBe(false)
+		request.finish()
+	})
+
+	it.each(["cancelEnhancePrompt", "cancelTask"] as const)(
+		"%s cancels the owned request and rejects its late enhancement result",
+		async (control) => {
+			let enter!: () => void
+			let finish!: (result: { success: boolean; enhancedText: string }) => void
+			const entered = new Promise<void>((resolve) => (enter = resolve))
+			const response = new Promise<{ success: boolean; enhancedText: string }>((resolve) => (finish = resolve))
+			let requestSignal: AbortSignal | undefined
+			vi.spyOn(MessageEnhancer, "enhanceMessage").mockImplementationOnce((options) => {
+				requestSignal = options.signal
+				enter()
+				return response
+			})
+			const postMessageToWebview = vi.fn(async () => undefined)
+			const host = {
+				...mockAlphaProvider,
+				getState: vi.fn(async () => ({ apiConfiguration: { apiProvider: "vscode-lm" } })),
+				postMessageToWebview,
+			} as unknown as AlphaProvider
+			const pending = webviewMessageHandler(host, {
+				type: "enhancePrompt",
+				requestId: "enhance-cancelled",
+				taskId: "enhanced-task",
+				text: "Original draft",
+			})
+			await entered
+			await webviewMessageHandler(host, {
+				type: control,
+				requestId: "enhance-cancelled",
+				taskId: "enhanced-task",
+			})
+			finish({ success: true, enhancedText: "Late stale result" })
+			await pending
+
+			expect(requestSignal?.aborted).toBe(true)
+			expect(postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "enhancedPrompt",
+				requestId: "enhance-cancelled",
+				enhancementStatus: "cancelled",
+			})
+		},
+	)
+})
 
 describe("chat rename and toolbar host messages", () => {
 	const renamed = { id: "chat-1", displayName: "Useful name" }
@@ -1328,6 +1390,28 @@ describe("webviewMessageHandler - image mentions", () => {
 		)
 	})
 
+	it("retains a fresh human reply through the queue when its legacy ask is already answered", async () => {
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: "task-1",
+			handleWebviewAskResponse: vi.fn(() => false),
+		} as unknown as Task)
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValueOnce(true)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "askResponse",
+			askResponse: "messageResponse",
+			taskId: "task-1",
+			text: "Fresh human reply",
+			images: [],
+		})
+		expect(mockAlphaProvider.queueMessageForTaskDurably).toHaveBeenCalledWith(
+			"task-1",
+			"Fresh human reply",
+			["data:image/png;base64,from-mention"],
+			undefined,
+			{ source: "human" },
+		)
+	})
+
 	it("routes typed approval decisions with their request id", async () => {
 		const handleWebviewToolApprovalResponse = vi.fn().mockReturnValue(true)
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({ handleWebviewToolApprovalResponse } as any)
@@ -2094,6 +2178,13 @@ describe("webviewMessageHandler - queued message steering", () => {
 			clientSubmittedAt: Date.now() - 15,
 			asyncUserInputMessageTs: 42,
 		})
+		expect(mockAlphaProvider.queueMessageForTaskDurably).toHaveBeenCalledWith(
+			"task-1",
+			"keep this safe",
+			[],
+			"queue-request-1",
+			{ source: "human" },
+		)
 		expect(recordTaskPerformanceDuration).toHaveBeenCalledWith("queue_admission", expect.any(Number))
 		expect(markAsyncUserInputAnswered).toHaveBeenCalledExactlyOnceWith(42)
 
@@ -2288,6 +2379,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 describe("webviewMessageHandler - newTask", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.getTaskNavigationGeneration).mockReturnValue(0)
 		vi.mocked(mockAlphaProvider.createTask).mockResolvedValue({ taskId: "task-1" } as any)
 	})
 
@@ -2365,6 +2457,71 @@ describe("webviewMessageHandler - newTask", () => {
 			type: "invoke",
 			invoke: "newChat",
 		})
+	})
+
+	it("preserves a later navigation when task creation fails", async () => {
+		let rejectCreation!: (reason: Error) => void
+		const creation = new Promise<never>((_resolve, reject) => {
+			rejectCreation = reject
+		})
+		let signalCreation!: () => void
+		const enteredCreation = new Promise<void>((resolve) => {
+			signalCreation = resolve
+		})
+		vi.mocked(mockAlphaProvider.createTask).mockImplementationOnce(() => {
+			signalCreation()
+			return creation
+		})
+
+		const submission = webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+		})
+		await enteredCreation
+		// A navigation remains newer even if it returns to the same task or draft.
+		vi.mocked(mockAlphaProvider.getTaskNavigationGeneration).mockReturnValue(1)
+		rejectCreation(new Error("boom"))
+		await submission
+
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledTimes(1)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "newChat",
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("Failed to create task: boom")
+	})
+
+	it("does not reset a chat selected while failure recovery is being delivered", async () => {
+		vi.mocked(mockAlphaProvider.createTask).mockRejectedValueOnce(new Error("boom"))
+		let releaseRecovery!: () => void
+		const recovery = new Promise<void>((resolve) => {
+			releaseRecovery = resolve
+		})
+		let signalRecovery!: () => void
+		const enteredRecovery = new Promise<void>((resolve) => {
+			signalRecovery = resolve
+		})
+		vi.mocked(mockAlphaProvider.postMessageToWebview)
+			.mockResolvedValueOnce(undefined)
+			.mockImplementationOnce(() => {
+				signalRecovery()
+				return recovery
+			})
+
+		const submission = webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+		})
+		await enteredRecovery
+		vi.mocked(mockAlphaProvider.getTaskNavigationGeneration).mockReturnValue(1)
+		releaseRecovery()
+		await submission
+
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "newChat",
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("Failed to create task: boom")
 	})
 })
 

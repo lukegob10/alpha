@@ -16,7 +16,7 @@ import { CommandSettlementFixture } from "./commandSettlementFixture"
 import { applyFixturePatch } from "./fixturePatchTestHelper"
 
 async function createOwnedProfile() {
-	const profile = await prepareTestProfile({ vscodeVersion: "1.125.0" })
+	const profile = await prepareTestProfile({ vscodeVersion: "1.138.0" })
 	try {
 		await fs.writeFile(
 			path.join(profile.workspace, TEST_ROOT_OWNERSHIP_MARKER),

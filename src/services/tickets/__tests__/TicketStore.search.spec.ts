@@ -3,6 +3,7 @@ import { watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { TicketStatus } from "@alpha-code/types"
 import { TicketStore } from "../TicketStore"
 
 const notifications = vi.hoisted(() => new Map<string, (event: "rename" | "change", filename: string | null) => void>())
@@ -43,8 +44,8 @@ describe("ticket mention search", () => {
 		await fs.rm(home, { recursive: true, force: true })
 	})
 
-	async function seed(count: number) {
-		const directory = path.join(store.directory, "backlog")
+	async function seed(count: number, status: TicketStatus = "backlog") {
+		const directory = path.join(store.directory, status)
 		await fs.mkdir(directory, { recursive: true })
 		for (let offset = 0; offset < count; offset += 16) {
 			await Promise.all(
@@ -231,8 +232,7 @@ describe("ticket mention search", () => {
 	})
 
 	it("ranks exact titles and title prefixes without searching full ticket contents", async () => {
-		await seed(64)
-		await fs.rename(path.join(store.directory, "backlog"), path.join(store.directory, "in-progress"))
+		await seed(64, "in-progress")
 		const exact = await store.create({ name: "Implementation context" })
 		const prefix = await store.create({ name: "Implementation context cleanup" })
 		const words = await store.create({ name: "Audit implementation and context" })

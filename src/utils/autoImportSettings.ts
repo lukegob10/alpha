@@ -44,6 +44,17 @@ export async function autoImportSettings(
 		})
 
 		if (result.success) {
+			if (result.warnings?.length) {
+				const count = result.warnings.length > 99 ? "99+" : String(result.warnings.length)
+				const filename = path.basename(resolvedPath)
+				outputChannel.appendLine(
+					`[AutoImport] Imported ${filename} with ${count} profile warning(s); repair the configured auto-import file before the next launch.`,
+				)
+				void vscode.window.showWarningMessage(
+					t("common:warnings.auto_import_requires_attention", { filename, count }),
+				)
+				return
+			}
 			outputChannel.appendLine(`[AutoImport] Successfully imported settings from ${resolvedPath}`)
 
 			// Show a notification to the user

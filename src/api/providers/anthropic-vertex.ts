@@ -27,7 +27,12 @@ import {
 } from "../../core/prompts/tools/native-tools/converters"
 
 import { BaseProvider } from "./base-provider"
-import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import type {
+	SingleCompletionHandler,
+	ApiHandlerCreateMessageMetadata,
+	ApiHandlerSingleCompletionMetadata,
+} from "../index"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
@@ -548,13 +553,18 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		return nextClient
 	}
 
-	private async getRequestContext(model: string): Promise<AnthropicRequestContext> {
+	private async getRequestContext(
+		model: string,
+		metadata?: ApiHandlerSingleCompletionMetadata,
+	): Promise<AnthropicRequestContext> {
+		throwIfSingleCompletionAborted(metadata)
 		if (!this.vertexGatewaySettings) {
 			return { client: this.getOrCreateDirectClient(), model }
 		}
 
-		await this.ensureGatewayTransportConfigured()
-		const accessToken = await this.ensureGatewayAccessToken(false)
+		await awaitSingleCompletion(this.ensureGatewayTransportConfigured(), metadata)
+		throwIfSingleCompletionAborted(metadata)
+		const accessToken = await awaitSingleCompletion(this.ensureGatewayAccessToken(false), metadata)
 
 		const route =
 			this.vertexGatewaySettings.modelRoutingMap[model] ??
@@ -1215,7 +1225,8 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		}
 	}
 
-	async completePrompt(prompt: string) {
+	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata) {
+		throwIfSingleCompletionAborted(metadata)
 		try {
 			let {
 				id,
@@ -1230,7 +1241,8 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			let usePromptCache = supportsPromptCache
 
 			while (true) {
-				const requestContext = await this.getRequestContext(id)
+				throwIfSingleCompletionAborted(metadata)
+				const requestContext = await awaitSingleCompletion(this.getRequestContext(id, metadata), metadata)
 
 				const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
 					model: id,
@@ -1254,9 +1266,13 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				}
 
 				try {
-					const response = await requestContext.client.messages.create(
-						requestParams,
-						requestContext.requestOptions,
+					throwIfSingleCompletionAborted(metadata)
+					const response = await awaitSingleCompletion(
+						requestContext.client.messages.create(
+							requestParams,
+							this.mergeRequestOptions(undefined, requestContext.requestOptions, metadata?.signal),
+						),
+						metadata,
 					)
 					const content = response.content[0]
 
@@ -1266,7 +1282,11 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 					return ""
 				} catch (error) {
-					if (!didRetryForGatewayAuth && (await this.shouldRetryWithRefreshedGatewayToken(error))) {
+					throwIfSingleCompletionAborted(metadata)
+					if (
+						!didRetryForGatewayAuth &&
+						(await awaitSingleCompletion(this.shouldRetryWithRefreshedGatewayToken(error), metadata))
+					) {
 						didRetryForGatewayAuth = true
 						continue
 					}
@@ -1281,6 +1301,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				}
 			}
 		} catch (error) {
+			throwIfSingleCompletionAborted(metadata)
 			if (error instanceof Error) {
 				throw new Error(`Vertex completion error: ${error.message}`)
 			}

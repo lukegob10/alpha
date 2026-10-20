@@ -613,6 +613,160 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("all-messages")).toHaveTextContent("first-2|second-1")
 	})
 
+	it("retains the newest partial when an older update arrives before the animation frame", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 1
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		const message: AlphaMessage = { ts: 1, type: "say", say: "text", text: "start", partial: true }
+		render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({ currentTaskId: "task-1", clineMessages: [message], clineMessagesSeq: 1 })
+			for (const [clineMessagesSeq, text] of [
+				[3, "newest"],
+				[2, "older"],
+			] as const) {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "task-1",
+							clineMessagesSeq,
+							clineMessage: { ...message, text },
+						},
+					}),
+				)
+			}
+		})
+
+		act(() => frameCallback?.(0))
+		expect(screen.getByTestId("latest-message")).toHaveTextContent("newest")
+	})
+
+	it.each(["messageCreated", "messageUpdated"])(
+		"does not let a stale %s reopen a completed chat through tied activity metadata",
+		(type) => {
+			const message: AlphaMessage = { ts: 1, type: "say", say: "text", text: "complete" }
+			const completed = {
+				id: "lifecycle-task",
+				status: TaskStatus.Idle,
+				lifecycle: TaskLifecycleState.Completed,
+				isActive: true,
+				isStreaming: false,
+				isWaitingForInput: false,
+				lastUpdatedAt: 100,
+				queueCount: 0,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			render(
+				<ExtensionStateContextProvider>
+					<LifecycleStateTestComponent />
+				</ExtensionStateContextProvider>,
+			)
+
+			act(() => {
+				dispatchExtensionState({
+					currentTaskId: "lifecycle-task",
+					clineMessages: [message],
+					clineMessagesSeq: 10,
+					liveTasksById: { "lifecycle-task": completed },
+				})
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type,
+							taskId: "lifecycle-task",
+							clineMessagesSeq: 9,
+							clineMessage: { ...message, text: "older" },
+							liveTask: {
+								...completed,
+								status: TaskStatus.Running,
+								lifecycle: TaskLifecycleState.Running,
+								isStreaming: true,
+							},
+						},
+					}),
+				)
+			})
+
+			expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent(TaskLifecycleState.Completed)
+		},
+	)
+
+	it.each([
+		["messageCreated", 11],
+		["messageCreated", 12],
+		["messageUpdated", 11],
+		["messageUpdated", 12],
+	])("keeps background completion across %s at transcript revision %s", (type, staleRevision) => {
+		const completed = {
+			id: "lifecycle-task",
+			transcriptRevision: 12,
+			status: TaskStatus.Idle,
+			lifecycle: TaskLifecycleState.Completed,
+			isActive: false,
+			isStreaming: false,
+			isWaitingForInput: false,
+			lastUpdatedAt: 100,
+			queueCount: 0,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		const publishIncremental = (transcriptRevision: number, clineMessagesSeq: number) => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type,
+						taskId: "lifecycle-task",
+						clineMessagesSeq,
+						clineMessage: { ts: 2, type: "say", say: "text", text: "background" },
+						liveTask: {
+							...completed,
+							transcriptRevision,
+							status: TaskStatus.Running,
+							lifecycle: TaskLifecycleState.Running,
+							isStreaming: true,
+						},
+					},
+				}),
+			)
+		}
+		render(
+			<ExtensionStateContextProvider>
+				<LifecycleStateTestComponent />
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			dispatchExtensionState({
+				currentTaskId: "foreground-task",
+				clineMessages: [{ ts: 1, type: "say", say: "text", text: "foreground" }],
+				clineMessagesSeq: 100,
+				liveTasksById: { "lifecycle-task": completed },
+			})
+			publishIncremental(staleRevision, 99)
+		})
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent(TaskLifecycleState.Completed)
+
+		act(() => publishIncremental(13, 101))
+		expect(screen.getByTestId("lifecycle-task-state")).toHaveTextContent(TaskLifecycleState.Running)
+		expect(screen.getByTestId("all-messages")).toHaveTextContent("foreground")
+	})
+
 	it("appends new messages incrementally and rejects stale transcript snapshots", () => {
 		const baseMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "start" }
 		const createdMessage: AlphaMessage = { ts: 2, type: "say", say: "text", text: "created" }
@@ -1375,6 +1529,45 @@ describe("mergeExtensionState", () => {
 			})
 			expect(afterLifecycle.taskStateSeq).toBe(5)
 			expect(afterLifecycle.messageQueueSeq).toBe(8)
+		})
+
+		it.each([
+			[TaskLifecycleState.Completed, TaskLifecycleState.Running],
+			[TaskLifecycleState.Running, TaskLifecycleState.Completed],
+		])("keeps newer transcript metadata in %s across an older %s state projection", (lifecycle, staleLifecycle) => {
+			const metadata = {
+				id: "task-1",
+				transcriptRevision: 12,
+				status: lifecycle === TaskLifecycleState.Completed ? TaskStatus.Idle : TaskStatus.Running,
+				lifecycle,
+				isActive: true,
+				isStreaming: false,
+				isWaitingForInput: false,
+				lastUpdatedAt: 100,
+				queueCount: 0,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "task-1",
+				taskStateSeq: 1,
+				liveTasksById: { "task-1": metadata },
+			}
+			const projected = mergeExtensionState(previous, {
+				taskStateSeq: 2,
+				liveTasksById: { "task-1": { ...metadata, transcriptRevision: 11, lifecycle: staleLifecycle } },
+			})
+			expect(projected.liveTasksById?.["task-1"]).toEqual(metadata)
+
+			const refreshed = mergeExtensionState(projected, {
+				taskStateSeq: 3,
+				liveTasksById: { "task-1": { ...metadata, lifecycle: staleLifecycle } },
+			})
+			expect(refreshed.liveTasksById?.["task-1"]?.lifecycle).toBe(staleLifecycle)
+			const removed = mergeExtensionState(refreshed, { taskStateSeq: 4, liveTasksById: {} })
+			expect(removed.liveTasksById).toEqual({})
 		})
 
 		it("preserves host completion review across executing snapshots and releases it on host follow-up", () => {

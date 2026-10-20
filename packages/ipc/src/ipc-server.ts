@@ -11,6 +11,7 @@ import {
 	IpcMessageType,
 	type IpcMessage,
 	type ExecutionIdentity,
+	type Ack,
 	ipcMessageSchema,
 } from "@alpha-code/types"
 
@@ -32,6 +33,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		socketPath: string,
 		log = console.log,
 		private readonly getExecutionIdentity?: () => Promise<ExecutionIdentity>,
+		private readonly options: { capabilities?: Ack["capabilities"] } = {},
 	) {
 		super()
 
@@ -141,6 +143,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 				pid: process.pid,
 				ppid: process.ppid,
 				...(executionIdentity ? { executionIdentity } : {}),
+				...(this.options.capabilities ? { capabilities: this.options.capabilities } : {}),
 			},
 		})
 

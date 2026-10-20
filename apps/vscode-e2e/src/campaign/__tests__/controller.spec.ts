@@ -6,7 +6,7 @@ import type { CampaignConfig, CampaignOperations, CampaignReport, ScenarioResult
 
 const config = (): CampaignConfig => ({
 	id: "campaign-test",
-	hosts: [{ version: "1.125.0" }],
+	hosts: [{ version: "1.138.0" }],
 	scenarioIds: ["review", "review-secondary"],
 	samples: 1,
 	provider: { mode: "scripted" },
@@ -100,9 +100,9 @@ test("runs the reference host and records independent failures in report-only mo
 	assert.equal(report.usage.requests, 3)
 	assert.equal(report.usage.cost, null)
 	assert.deepEqual(events.slice(0, 4), [
-		"run:1.125.0:review:sample",
+		"run:1.138.0:review:sample",
 		"evidence:attempt-0001",
-		"run:1.125.0:review:reproduce",
+		"run:1.138.0:review:reproduce",
 		"evidence:attempt-0002",
 	])
 	assert.equal(reports[0]!.attempts.length, 0, "checkpoint snapshots must not mutate afterward")
@@ -286,7 +286,7 @@ test("monotonic time budget expires between scenarios without extra launches", a
 
 test("reviewed repair requires failed regression, preserves evidence, builds and verifies neighbors", async () => {
 	const settings = config()
-	settings.hosts = [{ version: "1.125.0" }]
+	settings.hosts = [{ version: "1.138.0" }]
 	settings.scenarioIds = ["review"]
 	settings.repair = {
 		enabled: true,
@@ -315,26 +315,26 @@ test("reviewed repair requires failed regression, preserves evidence, builds and
 	assert.equal(report.stopReason, "completed")
 	assert.equal(report.repairs[0]!.verified, true)
 	assert.deepEqual(events, [
-		"run:1.125.0:review:sample",
+		"run:1.138.0:review:sample",
 		"evidence:attempt-0001",
-		"run:1.125.0:review:reproduce",
+		"run:1.138.0:review:reproduce",
 		"evidence:attempt-0002",
-		"run:1.125.0:regression:regression-before",
+		"run:1.138.0:regression:regression-before",
 		"evidence:attempt-0003",
 		"patch",
 		"build",
-		"run:1.125.0:regression:verify-fix",
+		"run:1.138.0:regression:verify-fix",
 		"evidence:attempt-0004",
-		"run:1.125.0:review:verify-fix",
+		"run:1.138.0:review:verify-fix",
 		"evidence:attempt-0005",
-		"run:1.125.0:cancel:neighbor",
+		"run:1.138.0:cancel:neighbor",
 		"evidence:attempt-0006",
 	])
 })
 
 test("config parser rejects invalid budgets, duplicate hosts and implicit source repair", () => {
 	assert.throws(() => parseCampaignConfig({ ...config(), budgets: { ...config().budgets, maxIterations: 0 } }))
-	assert.throws(() => parseCampaignConfig({ ...config(), hosts: [{ version: "1.125.0" }, { version: "1.125.0" }] }))
+	assert.throws(() => parseCampaignConfig({ ...config(), hosts: [{ version: "1.138.0" }, { version: "1.138.0" }] }))
 	assert.throws(() => parseCampaignConfig({ ...config(), repair: { enabled: true } }))
 	assert.throws(() => parseCampaignConfig({ ...config(), provider: { mode: "live-copilot" } }))
 	assert.throws(() => parseCampaignConfig({ ...config(), id: "../user-profile" }))
@@ -355,7 +355,7 @@ test("config parser rejects invalid budgets, duplicate hosts and implicit source
 
 test("late cancellation after a source publication preserves its receipt without building", async () => {
 	const settings = config()
-	settings.hosts = [{ version: "1.125.0" }]
+	settings.hosts = [{ version: "1.138.0" }]
 	settings.scenarioIds = ["review"]
 	settings.repair = {
 		enabled: true,

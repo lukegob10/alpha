@@ -3008,6 +3008,139 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	describe("completePrompt", () => {
+		it.each(["chat", "enhancement"] as const)(
+			"closes a %s response admitted after caller cancellation",
+			async (kind) => {
+				handler["client"] = mockLanguageModelChat
+				let enter!: () => void
+				let admit!: (response: { stream: AsyncIterable<unknown> }) => void
+				const entered = new Promise<void>((resolve) => (enter = resolve))
+				const admitted = new Promise<{ stream: AsyncIterable<unknown> }>((resolve) => (admit = resolve))
+				mockLanguageModelChat.sendRequest.mockImplementationOnce(() => {
+					enter()
+					return admitted
+				})
+				const controller = new AbortController()
+				const pending =
+					kind === "chat"
+						? handler
+								.createMessage("Instructions", [], { taskId: "late", signal: controller.signal })
+								.next()
+						: handler.completePrompt("Original", { signal: controller.signal })
+				const rejected = expect(pending).rejects.toBeInstanceOf(Error)
+				await entered
+				controller.abort()
+				await rejected
+				const close = vi.fn().mockResolvedValue({ done: true })
+				admit({ stream: { [Symbol.asyncIterator]: () => ({ next: vi.fn(), return: close }) } })
+				await Promise.resolve()
+				await Promise.resolve()
+				expect(close).toHaveBeenCalledOnce()
+			},
+		)
+
+		it("does not select or contact a model for an already cancelled completion", async () => {
+			const controller = new AbortController()
+			const reason = new Error("Draft closed")
+			controller.abort(reason)
+			await expect(handler.completePrompt("Original", { signal: controller.signal })).rejects.toBe(reason)
+			expect(vscode.lm.selectChatModels).not.toHaveBeenCalled()
+			expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it("cancels a stalled completion read and releases the host iterator and deadline timer", async () => {
+			vi.useFakeTimers()
+			try {
+				handler["client"] = mockLanguageModelChat
+				let enter!: () => void
+				const entered = new Promise<void>((resolve) => (enter = resolve))
+				const closeResponseIterator = vi.fn(() => new Promise<IteratorResult<unknown>>(() => undefined))
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: {
+						[Symbol.asyncIterator]: () => ({
+							next: () => {
+								enter()
+								return new Promise<IteratorResult<unknown>>(() => undefined)
+							},
+							return: closeResponseIterator,
+						}),
+					},
+				})
+				const controller = new AbortController()
+				const reason = new Error("Enhancement cancelled")
+				const pending = handler.completePrompt("Original", { signal: controller.signal })
+				const rejected = expect(pending).rejects.toBe(reason)
+				await entered
+				controller.abort(reason)
+				await rejected
+				expect(closeResponseIterator).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("releases a failed completion stream without waiting for iterator cleanup", async () => {
+			handler["client"] = mockLanguageModelChat
+			const closeResponseIterator = vi.fn(() => new Promise<IteratorResult<unknown>>(() => undefined))
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: {
+					[Symbol.asyncIterator]: () => ({
+						next: vi.fn().mockRejectedValue(new Error("Connection lost")),
+						return: closeResponseIterator,
+					}),
+				},
+			})
+
+			await expect(handler.completePrompt("Enhance the prompt")).rejects.toThrow(
+				"VSCode LM completion error: Connection lost",
+			)
+
+			expect(closeResponseIterator).toHaveBeenCalledOnce()
+			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+			expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+		})
+
+		it("closes a timed out completion stream and allows a healthy follow-up", async () => {
+			vi.useFakeTimers()
+			try {
+				mockGetApiRequestTimeoutSetting.mockReturnValue(1)
+				handler["client"] = mockLanguageModelChat
+				const closeResponseIterator = vi.fn().mockRejectedValue(new Error("Iterator cleanup failed"))
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: {
+						[Symbol.asyncIterator]: () => ({
+							next: () => new Promise<IteratorResult<unknown>>(() => undefined),
+							return: closeResponseIterator,
+						}),
+					},
+				})
+
+				const pending = handler.completePrompt("Enhance the prompt")
+				const rejected = expect(pending).rejects.toThrow(
+					/VS Code LM completion stream .* timed out after 1 second/,
+				)
+				await vi.advanceTimersByTimeAsync(1_000)
+				await rejected
+				expect(closeResponseIterator).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Healthy enhancement")
+					})(),
+				})
+				await expect(handler.completePrompt("Try again")).resolves.toBe("Healthy enhancement")
+				expect(mockCancellationSources[1]?.cancel).not.toHaveBeenCalled()
+				expect(mockCancellationSources[1]?.dispose).toHaveBeenCalledOnce()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("should complete single prompt", async () => {
 			const mockModel = { ...mockLanguageModelChat }
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([mockModel])
@@ -3031,6 +3164,8 @@ describe("VsCodeLmHandler", () => {
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe(responseText)
 			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalled()
+			expect(mockCancellationSources[0]?.cancel).not.toHaveBeenCalled()
+			expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
 		})
 
 		it("should pass selected reasoning effort through single prompt completion request options", async () => {

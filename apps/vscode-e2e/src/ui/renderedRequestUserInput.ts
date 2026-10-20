@@ -27,6 +27,65 @@ interface CaptureBounds {
 	observations: Array<Omit<CaptureBounds, "settled" | "observations">>
 }
 
+type QuestionViewportSample<T> = { ready: false } | { ready: true; value: T }
+
+/** Sample the owned renderer rather than retaining a document across CDP requests. */
+export async function sampleQuestionViewport<T>(
+	cdp: Pick<CdpConnection, "request">,
+	sessionId: string,
+	expression: string,
+	reloadNonce?: string,
+	targetSelector?: string,
+): Promise<QuestionViewportSample<T>> {
+	const result = await cdp.request<{ result: { value: QuestionViewportSample<T> }; exceptionDetails?: unknown }>(
+		"Runtime.evaluate",
+		{
+			expression: `(async()=>{const frame=document.getElementById('active-frame'),d=frame?.contentDocument;
+				const viewport=d?.querySelector('[data-testid=chat-transcript-scroller]');
+				const reloadNonce=${reloadNonce === undefined ? "undefined" : javascriptLiteral(reloadNonce)};
+				const targetSelector=${targetSelector === undefined ? "undefined" : javascriptLiteral(targetSelector)};
+				const target=targetSelector===undefined?undefined:d?.querySelector(targetSelector);
+				const isCurrentQuestionViewport=()=>document.getElementById('active-frame')===frame&&
+					!!frame?.isConnected&&frame.contentDocument===d&&d?.readyState==='complete'&&
+					d.querySelector('[data-testid=chat-transcript-scroller]')===viewport&&
+					!!viewport?.isConnected&&viewport.ownerDocument===d&&
+					(reloadNonce===undefined||d.defaultView?.__alphaQuestionReloadNonce!==reloadNonce)&&
+					(targetSelector===undefined||!!target?.isConnected&&target.ownerDocument===d&&
+						d.querySelector(targetSelector)===target&&target.closest('[data-testid=chat-transcript-scroller]')===viewport);
+				if(!isCurrentQuestionViewport())return {ready:false};
+				const value=await (${expression});
+				return isCurrentQuestionViewport()?{ready:true,value}:{ready:false}})()`,
+			returnByValue: true,
+			awaitPromise: true,
+		},
+		sessionId,
+	)
+	assert.equal(result.exceptionDetails, undefined)
+	return result.result.value
+}
+
+/** Read the same screenshot geometry across controlled paint frames. */
+export function questionAlignmentExpression(selector: string, block: "start" | "end"): string {
+	return `new Promise(resolve=>{const e=d.querySelector(${javascriptLiteral(selector)});
+		if(!e||e.closest('[data-testid=chat-transcript-scroller]')!==viewport){resolve(null);return}
+		e.scrollIntoView({block:${javascriptLiteral(block)},behavior:'instant'});
+		const observations=[],deadline=d.defaultView.performance.now()+2000;
+		let previous='',stableFrames=0;
+		const observe=()=>{
+			if(!isCurrentQuestionViewport()){resolve(null);return}
+			const r=e.getBoundingClientRect(),v=viewport.getBoundingClientRect();
+			const current={top:r.top,bottom:r.bottom,height:r.height,viewportTop:v.top,
+				viewportBottom:v.bottom,viewportHeight:v.height,scrollTop:viewport.scrollTop};
+			observations.push(current);
+			const signature=JSON.stringify(current);
+			stableFrames=signature===previous?stableFrames+1:0;previous=signature;
+			if(stableFrames>=2||d.defaultView.performance.now()>=deadline){
+				resolve({...current,settled:stableFrames>=2,observations});return
+			}
+			d.defaultView.requestAnimationFrame(observe)
+		};d.defaultView.requestAnimationFrame(observe)})`
+}
+
 /** Real native input into the built webview; the host independently verifies pending asks and tool history. */
 export async function exerciseRenderedRequestUserInput(
 	cdp: CdpConnection,
@@ -37,6 +96,7 @@ export async function exerciseRenderedRequestUserInput(
 	signal?: AbortSignal,
 ): Promise<string[]> {
 	let sessionId = initialSession
+	let requiredReloadNonce: string | undefined
 	const form = "[data-testid=request-user-input-form]"
 	const receipt = "[data-testid=user-input-receipt]"
 	await cdp.request("Page.bringToFront", {}, workbenchSession)
@@ -56,6 +116,32 @@ export async function exerciseRenderedRequestUserInput(
 	}
 	const check = (expression: string) =>
 		waitUntil(() => evaluate<boolean>(expression), Date.now() + 15_000, `input_render_timeout: ${expression}`)
+	const readViewport = async <T>(
+		expression: string,
+		deadline: number,
+		accept: (value: T) => boolean = () => true,
+		targetSelector?: string,
+	): Promise<T> => {
+		let value!: T
+		await waitUntil(
+			async () => {
+				signal?.throwIfAborted()
+				const sample = await sampleQuestionViewport<T>(
+					cdp,
+					sessionId,
+					expression,
+					requiredReloadNonce,
+					targetSelector,
+				)
+				if (!sample.ready || !accept(sample.value)) return false
+				value = sample.value
+				return true
+			},
+			deadline,
+			"input_current_viewport_timeout",
+		)
+		return value
+	}
 	const ready = async (stage: string): Promise<InputStage> => {
 		let detail: InputStage | undefined
 		await waitUntil(
@@ -64,7 +150,7 @@ export async function exerciseRenderedRequestUserInput(
 				try {
 					detail = JSON.parse(await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"))
 					assert.equal(detail!.nonce, nonce)
-					assert.equal(detail!.version, "1.125.0")
+					assert.equal(detail!.version, "1.138.0")
 					return true
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
@@ -116,6 +202,8 @@ export async function exerciseRenderedRequestUserInput(
 		await check(`d.querySelector(${javascriptLiteral(selector)})?.checked===true`)
 	}
 	const capture = async (stage: string, selector?: string) => {
+		const deadline = Date.now() + 15_000
+		const read = <T>(expression: string) => readViewport<T>(expression, deadline)
 		const browse = async () => {
 			const { frameTree } = await cdp.request<{ frameTree: { frame: { id: string } } }>(
 				"Page.getFrameTree",
@@ -132,9 +220,8 @@ export async function exerciseRenderedRequestUserInput(
 				{ backendNodeId },
 				workbenchSession,
 			)
-			const point = await evaluate<{ x: number; y: number; scrollTop: number; focus: string }>(
-				`(()=>{const viewport=d.querySelector('[data-testid=chat-transcript-scroller]');
-				const r=viewport.getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();
+			const point = await read<{ x: number; y: number; scrollTop: number; focus: string }>(
+				`(()=>{const r=viewport.getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();
 				d.defaultView.__alphaQuestionCaptureWheel=undefined;
 				viewport.addEventListener('wheel',event=>{d.defaultView.__alphaQuestionCaptureWheel={
 					isTrusted:event.isTrusted,deltaY:event.deltaY}}, {once:true});
@@ -152,16 +239,20 @@ export async function exerciseRenderedRequestUserInput(
 				{ type: "mouseWheel", x, y, deltaX: 0, deltaY: -80 },
 				workbenchSession,
 			)
-			await check(
+			await readViewport<boolean>(
 				"d.defaultView.__alphaQuestionCaptureWheel?.isTrusted===true&&d.defaultView.__alphaQuestionCaptureWheel.deltaY<0",
+				deadline,
+				(value) => value,
 			)
 			if (point.scrollTop > 0) {
-				await check(
-					`d.querySelector('[data-testid=chat-transcript-scroller]').scrollTop<=${Math.max(0, point.scrollTop - 80) + 1}`,
+				await readViewport<boolean>(
+					`viewport.scrollTop<=${Math.max(0, point.scrollTop - 80) + 1}`,
+					deadline,
+					(value) => value,
 				)
 			}
-			const after = await evaluate<{ scrollTop: number; focus: string }>(
-				"({scrollTop:d.querySelector('[data-testid=chat-transcript-scroller]').scrollTop,focus:d.activeElement?.outerHTML??''})",
+			const after = await read<{ scrollTop: number; focus: string }>(
+				"({scrollTop:viewport.scrollTop,focus:d.activeElement?.outerHTML??''})",
 			)
 			await fs.writeFile(
 				path.join(directory, `ui-${stage}-scroll.json`),
@@ -170,25 +261,12 @@ export async function exerciseRenderedRequestUserInput(
 			assert.equal(after.focus, point.focus, "Native browsing must preserve the current keyboard focus")
 		}
 		const align = async (block: "start" | "end"): Promise<CaptureBounds> => {
-			const bounds = await evaluate<CaptureBounds | null>(
-				`new Promise(resolve=>{const e=d.querySelector(${javascriptLiteral(selector)});
-				const viewport=e?.closest('[data-testid=chat-transcript-scroller]');
-				if(!e||!viewport){resolve(null);return}
-				e.scrollIntoView({block:${javascriptLiteral(block)},behavior:'instant'});
-				const observations=[],deadline=d.defaultView.performance.now()+2000;
-				let previous='',stableFrames=0;
-				const observe=()=>{
-					const r=e.getBoundingClientRect(),v=viewport.getBoundingClientRect();
-					const current={top:r.top,bottom:r.bottom,height:r.height,viewportTop:v.top,
-						viewportBottom:v.bottom,viewportHeight:v.height,scrollTop:viewport.scrollTop};
-					observations.push(current);
-					const signature=JSON.stringify(current);
-					stableFrames=signature===previous?stableFrames+1:0;previous=signature;
-					if(stableFrames>=2||d.defaultView.performance.now()>=deadline){
-						resolve({...current,settled:stableFrames>=2,observations});return
-					}
-					d.defaultView.requestAnimationFrame(observe)
-				};d.defaultView.requestAnimationFrame(observe)})`,
+			assert.ok(selector)
+			const bounds = await readViewport<CaptureBounds | null>(
+				questionAlignmentExpression(selector, block),
+				deadline,
+				(value) => value !== null,
+				selector,
 			)
 			assert.ok(bounds, "Capture target must belong to the real transcript scroll viewport")
 			return bounds
@@ -356,6 +434,12 @@ export async function exerciseRenderedRequestUserInput(
 					flatten: true,
 				})
 				sessionId = attached.sessionId
+				requiredReloadNonce = nonce
+				await readViewport<boolean>(
+					`d.querySelectorAll('${receipt}').length===1&&d.querySelectorAll('${form}').length===0`,
+					Date.now() + 15_000,
+					(value) => value,
+				)
 			}
 			await check(`d.querySelectorAll('${receipt}').length===1&&d.querySelectorAll('${form}').length===0`)
 			await check(
@@ -393,6 +477,8 @@ export async function exerciseRenderedRequestUserInput(
 			await assertFits(receipt)
 			await capture(stage, receipt)
 			if (stage === "input-receipt-dark") await captureNarrow("input-receipt-narrow", receipt)
+			if (stage === "input-receipt-reopened")
+				await evaluate(`(d.defaultView.__alphaQuestionReloadNonce=${javascriptLiteral(nonce)})`)
 			await acknowledge(stage)
 		}
 	} catch (error) {

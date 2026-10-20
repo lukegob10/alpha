@@ -4,10 +4,37 @@ import {
 	persistedProviderSettingsSchema,
 	providerNames,
 	providerSettingsSchemaDiscriminated,
+	providerSettingsEntrySchema,
 } from "../provider-settings.js"
 import { stellarDefaultModelId } from "../providers/stellar.js"
 
 describe("supported provider settings", () => {
+	it("keeps old profile metadata compatible and preserves bounded availability metadata", () => {
+		expect(providerSettingsEntrySchema.parse({ id: "saved", name: "Saved" })).toEqual({
+			id: "saved",
+			name: "Saved",
+		})
+		expect(
+			providerSettingsEntrySchema.parse({
+				id: "saved",
+				name: "Saved",
+				availability: "invalid",
+				invalidFields: ["rateLimitSeconds"],
+				value: { openAiApiKey: "must-not-cross-metadata-boundary" },
+			}),
+		).toEqual({ id: "saved", name: "Saved", availability: "invalid", invalidFields: ["rateLimitSeconds"] })
+	})
+
+	it("rejects unknown availability states and unbounded field lists", () => {
+		expect(
+			providerSettingsEntrySchema.safeParse({ id: "saved", name: "Saved", availability: "enabled" }).success,
+		).toBe(false)
+		expect(
+			providerSettingsEntrySchema.safeParse({ id: "saved", name: "Saved", invalidFields: Array(11).fill("id") })
+				.success,
+		).toBe(false)
+	})
+
 	it("exposes exactly the four public provider IDs", () => {
 		expect(providerNames).toEqual(["vertex", "vscode-lm", "stellar", "openai"])
 		expect(Object.keys(MODELS_BY_PROVIDER)).toEqual(["vertex", "stellar", "vscode-lm"])

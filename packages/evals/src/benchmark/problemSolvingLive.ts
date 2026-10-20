@@ -17,7 +17,7 @@ import {
 	type ProblemSolvingPromptVariant,
 } from "./problemSolvingCampaign"
 
-const DEFAULT_HOST_VERSION = "1.125.0"
+const DEFAULT_HOST_VERSION = "1.138.0"
 const DEFAULT_MODEL_ID = "gpt-5.6-luna"
 const DEFAULT_EFFORT = "high"
 const DEFAULT_REQUEST_LIMIT = 40
@@ -386,10 +386,15 @@ export async function runLiveProblemSolvingCore(options: {
 						2,
 					) + "\n",
 				)
+				// Retained evidence does not repair provider/profile admission for the next automatic dispatch.
 				if (
 					report.failureClass === "authentication" ||
 					report.failureClass === "profile_busy" ||
-					(report.failureClass === "infrastructure" && report.tracePath === null)
+					report.failureClass === "provider" ||
+					report.failureClass === "infrastructure" ||
+					report.failureClass === "cancellation" ||
+					report.graderDecision === "grader_error" ||
+					Boolean(report.providerFailureCode)
 				) {
 					return {
 						runId,

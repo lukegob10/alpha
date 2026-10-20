@@ -105,7 +105,8 @@ export async function readApiMessages({
 		assertValidHistory(parsedData, taskId)
 		return parsedData
 	} else {
-		return withLegacyTranscriptMigration(filePath, taskId, async () => {
+		return withLegacyTranscriptMigration(filePath, taskId, async (existingAuthority) => {
+			if (existingAuthority !== undefined) return existingAuthority
 			const oldPath = path.join(taskDir, "claude_messages.json")
 
 			if (await fileExistsAtPath(oldPath)) {
