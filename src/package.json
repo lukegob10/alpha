@@ -3,14 +3,14 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.5",
+	"version": "3.2.6",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
 		"theme": "dark"
 	},
 	"engines": {
-		"vscode": "^1.138.0",
+		"vscode": "^1.125.0",
 		"node": "24.21.0"
 	},
 	"author": {
@@ -1057,7 +1057,7 @@
 		"@types/node": "^24.1.0",
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ps-tree": "^1.1.6",
-		"@types/vscode": "1.138.0",
+		"@types/vscode": "1.125.0",
 		"@vscode/vsce": "3.3.2",
 		"esbuild-wasm": "^0.28.1",
 		"execa": "^9.5.2",

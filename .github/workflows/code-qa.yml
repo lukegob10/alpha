@@ -152,6 +152,8 @@ jobs:
               run: pnpm --filter @alpha-code/types build
             - name: Run the exact reference-host smoke gate
               run: pnpm harness run host
+            - name: Verify VS Code 1.125.0 minimum-host compatibility
+              run: pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250:run
             - name: Run extended exact-host feature coverage
               run: pnpm harness run extended
             - name: Run independently asserted scripted task outcomes

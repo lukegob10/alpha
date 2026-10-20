@@ -19,6 +19,8 @@
 		"test:ci": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:run",
 		"test:run": "rimraf out && tsc -p tsconfig.json && pnpm exec dotenvx run -f .env.local -- node ./out/runTest.js",
 		"test:smoke:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:smoke:1380:run",
+		"test:compatibility:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:compatibility:1250:run",
+		"test:compatibility:1250:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file extension.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file modes.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file storage-recovery.test && node ./out/runTest.js --vscode-version 1.125.0 --provider vscode-lm-fixture --require-all-tests --file vscode-lm-contract.test",
 		"test:cross-task:1380": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.138.0 --provider scripted --require-all-tests --file cross-task-orchestration.acceptance.test",
 		"test:reasoning:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runReasoningUi.js",
 		"test:composer-ui:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runComposerUi.js",

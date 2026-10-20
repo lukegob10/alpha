@@ -3,15 +3,13 @@ import * as vscode from "vscode"
 
 import { retiredProviderNames, type AlphaCodeSettings } from "@alpha-code/types"
 
-import { setDefaultSuiteTimeout } from "./test-utils"
+import { assertRequestedHostVersion, setDefaultSuiteTimeout } from "./test-utils"
 
 suite("Alpha Extension", function () {
 	setDefaultSuiteTimeout(this)
 
-	test("Runs on the requested VS Code version", function () {
-		const expectedVersion = process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION
-		if (!expectedVersion) this.skip()
-		assert.equal(vscode.version, expectedVersion)
+	test("Runs on the requested VS Code version", () => {
+		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
 	})
 
 	test("Ticket editor opens once and can be closed", async () => {

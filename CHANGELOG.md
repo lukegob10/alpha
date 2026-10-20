@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.6
+
+### Patch Changes
+
+- Restore installation support for VS Code 1.125 and newer by setting the minimum editor version to `^1.125.0`.
+- Compile the extension against the VS Code 1.125 stable API while retaining exact VS Code 1.138.0 as the primary release test host.
+- Validate the minimum editor separately so a reference-host upgrade does not unnecessarily block older installations.
+- Update the extension version and in-app release announcement together for Alpha 3.2.6.
+
 ## 3.2.5
 
 ### Patch Changes

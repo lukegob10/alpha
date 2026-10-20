@@ -19,20 +19,28 @@ test("tooling execution includes every Node test in its script owners", async ()
 	assert.deepEqual(observed, expected.sort())
 })
 
-test("reference-host manifests, types, and versioned gates agree on VS Code 1.138.0", () => {
+test("the VS Code 1.125 minimum is independent from the exact 1.138 reference host", () => {
 	const manifest = (file) => JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"))
 	const extension = manifest("src/package.json")
 	const runner = manifest("apps/vscode-e2e/package.json")
 	const fixture = manifest("apps/vscode-e2e/fixtures/vscode-lm-provider/package.json")
-	assert.equal(extension.engines.vscode, "^1.138.0")
-	assert.equal(fixture.engines.vscode, extension.engines.vscode)
-	assert.equal(extension.devDependencies["@types/vscode"], "1.138.0")
+	assert.equal(extension.engines.vscode, "^1.125.0")
+	assert.equal(extension.devDependencies["@types/vscode"], "1.125.0")
+	assert.equal(fixture.engines.vscode, "^1.125.0")
 	assert.equal(runner.devDependencies["@types/vscode"], "1.138.0")
+	for (const name of [
+		"test:compatibility:1250",
+		"test:compatibility:1250:run",
+		"test:smoke:1380",
+		"test:smoke:1380:run",
+	]) {
+		assert.ok(runner.scripts[name], `${name} must remain available`)
+	}
 	for (const [name, command] of Object.entries(runner.scripts)) {
-		assert.ok(!name.includes(":1250"), `${name} still advertises the retired host`)
-		if (!name.includes(":1380")) continue
+		const expectedVersion = name.includes(":1380") ? "1.138.0" : name.includes(":1250") ? "1.125.0" : undefined
+		if (!expectedVersion) continue
 		for (const [, version] of command.matchAll(/--vscode-version (\S+)/g)) {
-			assert.equal(version, "1.138.0", `${name} selected a different host`)
+			assert.equal(version, expectedVersion, `${name} selected a different host`)
 		}
 	}
 })
@@ -126,12 +134,17 @@ test("every evaluator test belongs to exactly one executable suite", async () =>
 		assert.equal(suites.length, 1, `${file} is selected by multiple suites: ${suites.join(", ")}`)
 })
 
-test("extended exact-host coverage is mandatory in QA and the release workflow", async () => {
+test("minimum-host compatibility and extended reference-host coverage are mandatory in QA and release", async () => {
 	assert.equal(lanes.extended.exclusiveBuild, true)
 	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1380"]])
 	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
 	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
+		assert.match(
+			workflow,
+			/run: pnpm --filter @alpha-code\/vscode-e2e test:compatibility:1250:run/,
+			`${file} must execute the separate minimum-host compatibility gate`,
+		)
 		assert.match(workflow, /run: pnpm harness run extended/, `${file} must execute the extended host lane`)
 		assert.match(workflow, /--require extended/, `${file} must reject missing extended execution evidence`)
 	}

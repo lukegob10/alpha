@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.5",
+		version: "3.2.6",
 	},
 }))
 
@@ -37,15 +37,11 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.5" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.6" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.5")).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Alpha v3.2.5 improves agent coordination, saved settings, and chat responsiveness on VS Code 1.138.",
-			),
-		).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.6")).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.6 restores support for VS Code 1.125 and newer.")).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
@@ -75,11 +71,7 @@ describe("Announcement", () => {
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
-		expect(
-			screen.getByText(
-				"Alpha v3.2.5 improves agent coordination, saved settings, and chat responsiveness on VS Code 1.138.",
-			),
-		).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.6 restores support for VS Code 1.125 and newer.")).toBeInTheDocument()
 		expect(
 			screen.getByText(
 				"Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
