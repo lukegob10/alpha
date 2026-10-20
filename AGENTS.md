@@ -12,7 +12,7 @@ parallel implementations.
 Use this priority order when requirements compete:
 
 1. Correctness, data integrity, security, and the user's explicit intent.
-2. Compatibility with the exact reference host: **VS Code 1.138.0**.
+2. Compatibility with the minimum supported host **VS Code 1.125.0** and exact reference host **VS Code 1.138.0**.
 3. Close behavioral alignment with current Codex CLI across applicable agent capabilities.
 4. Provider-neutral behavior shared across all VS Code extension surfaces.
 5. Deterministic lifecycle, cancellation, persistence, and tool-policy semantics.
@@ -78,7 +78,7 @@ Before finishing:
 
 - Package manager: `pnpm@11.24.0`. Use pnpm only; do not create npm or Yarn lockfiles.
 - Development Node.js: `24.21.0`, with its bundled npm `11.19.0`, as declared in the root and extension manifests.
-  The extension's VS Code host compatibility contract remains `1.138.0`.
+  The extension supports VS Code `1.125.0` and newer; the exact reference and primary release host is `1.138.0`.
 - TypeScript: `5.8.3` through the workspace configuration.
 - Formatting: tabs, width 4, 120-column print width, and no semicolons; see `.prettierrc.json`.
 - Build orchestration: Turborepo. Prefer existing root or package scripts over hand-built command sequences.
@@ -95,35 +95,40 @@ Alpha is a VS Code extension. The standalone application in `apps/cli/` and its 
 tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data;
 see `docs/cli-retirement.md` for the removal and compatibility contract.
 
-## VS Code 1.138.0 is the compatibility contract
+## VS Code minimum and reference hosts
 
-VS Code **1.138.0** is the reference product and release-gating host, not merely a suggested minimum.
+VS Code **1.125.0** is the minimum supported editor. VS Code **1.138.0** is the exact reference product and primary
+release-gating host. Moving the reference host does not by itself raise the installation minimum.
 
-- Keep `src/package.json` compatible with `engines.vscode: ^1.138.0`.
-- Do not use an API, contribution point, behavior, or webview assumption unavailable in VS Code 1.138.0. A feature that
+- Keep `src/package.json` compatible with `engines.vscode: ^1.125.0` and compile the extension against `@types/vscode@1.125.0`.
+- Do not require an API, contribution point, behavior, or webview assumption unavailable in VS Code 1.125.0. A feature that
   exists in the developer's newer editor is not sufficient evidence.
 - Prefer stable APIs. The E2E runner's `--enable-proposed-api=Alpha.alpha` flag is a test facility, not permission to make
   production behavior depend on proposed APIs.
-- Feature-detect optional newer APIs and provide a tested 1.138.0 fallback. Keep version-specific behavior isolated at a
+- Feature-detect optional newer APIs and provide a tested 1.125.0 fallback. Keep version-specific behavior isolated at a
   VS Code adapter boundary rather than spreading checks through the agent core.
 - Treat VS Code Language Model behavior as a host contract. Preserve response-part ordering, opaque/provider state,
   reasoning metadata, tool-call IDs, usage accounting, late-cancellation behavior, and recovery semantics.
 - Do not block extension activation or the extension-host event loop with avoidable synchronous I/O or CPU-heavy work.
   Defer nonessential initialization and dispose subscriptions, watchers, terminals, processes, and timers.
-- A deliberate VS Code baseline migration must update the extension manifest, E2E runner/defaults, fixture manifest,
-  exact-host tests, workflows, compatible VS Code types, and documentation as one reviewed change.
-- All automated extension-host tests and live GitHub Copilot evaluations use exact VS Code 1.138.0. Live runs use
+- A deliberate reference-host migration must update E2E defaults, exact-host tests, workflows, runner types, and
+  documentation together. Raising the installation minimum additionally requires an explicit compatibility decision,
+  a demonstrated dependency, and corresponding extension manifest/types and minimum-host test updates.
+- Primary automated extension-host tests and live GitHub Copilot evaluations use exact VS Code 1.138.0. Explicit
+  minimum-host compatibility tests use exact VS Code 1.125.0 and cannot satisfy a 1.138.0 gate. Live runs use
   a dedicated, signed-in Alpha-owned 1.138.0 profile. Record the exact host version, selected model ID, profile, and run
   conditions with the result. A live run does not replace the deterministic exact-host gate:
 
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 ```
 
 Run that gate for changes involving extension activation, VS Code APIs or contributions, commands, webviews, VS Code LM,
 task lifecycle, cancellation, persistence/reload, modes, or extension packaging. If the gate cannot run in the current
 environment, say so explicitly and run the closest lower-level coverage; do not silently substitute another VS Code
-version.
+version. Changes to the installation minimum or host adapters also require the minimum-host compatibility gate
+documented in `docs/vscode-1.138-migration.md`.
 
 ## Repository map and ownership
 
@@ -287,7 +292,7 @@ Use the smallest relevant checks during development and the full affected-surfac
 | Webview                  | Focused webview Vitest file, then `pnpm --dir webview-ui check-types`                                    |
 | Shared package           | Package tests and typecheck, plus affected consumer tests                                                |
 | Provider/stream/history  | Provider transform tests, task persistence/turn tests, and cancellation/error cases                      |
-| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1380`                                                   |
+| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1380`; also `test:compatibility:1250` for minimum-host or adapter changes |
 | Managed agents           | Focused lifecycle/delegation tests and `pnpm certify:managed-agents:automated` when the contract changes |
 | Performance              | Focused correctness tests plus a recorded before/after benchmark on the same workload                    |
 | Release/package contents | `pnpm bundle`, `pnpm vsix`, then `node scripts/verify-vsix-contents.mjs <path-to-vsix>`                  |

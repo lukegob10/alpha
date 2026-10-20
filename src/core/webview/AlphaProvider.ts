@@ -808,7 +808,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.5-reliability-and-responsiveness"
+	public readonly latestAnnouncementId = "october-2026-v3.2.6-vscode-compatibility"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

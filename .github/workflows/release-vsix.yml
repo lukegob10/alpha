@@ -57,6 +57,9 @@ jobs:
             - name: Run exact VS Code 1.138.0 release gate
               run: pnpm harness run host
 
+            - name: Verify VS Code 1.125.0 minimum-host compatibility
+              run: pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250:run
+
             - name: Verify extended exact-host feature coverage
               run: pnpm harness run extended
 

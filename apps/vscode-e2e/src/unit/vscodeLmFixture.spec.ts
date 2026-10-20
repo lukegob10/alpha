@@ -210,3 +210,36 @@ test("ordinary no-tools and partial title lookalikes remain task requests", { ti
 		assert.equal(task.parts[0].value, "The VS Code LM contract turn completed.")
 	}
 })
+
+test(
+	"cancellation streams its startup barrier before waiting for explicit release or cancellation",
+	{ timeout: 5_000 },
+	async () => {
+		const fixture = await loadFixture()
+		for (const cancel of [false, true]) {
+			fixture.control.reset("cancellation")
+			const task = fixture.request([message("Hold this response after the first streamed part")])
+			try {
+				assert.equal(task.parts.length, 1)
+				assert.ok(task.parts[0] instanceof TextPart)
+				assert.equal(task.parts[0].value, "ALPHA_E2E_CANCELLATION_STREAM_STARTED")
+				assert.ok(fixture.control.getEvents().some(({ type }) => type === "provider-wait-started"))
+				assert.ok(!fixture.control.getEvents().some(({ type }) => type === "provider-request-returned"))
+				if (cancel) task.token.cancel()
+				else fixture.control.releaseRequest(0)
+				await task.done
+				assert.equal(fixture.control.getRequests()[0]!.cancelled, cancel)
+				assert.ok(
+					fixture.control
+						.getEvents()
+						.some(({ type }) => type === (cancel ? "provider-wait-cancelled" : "provider-wait-released")),
+				)
+				assert.ok(fixture.control.getEvents().some(({ type }) => type === "provider-request-returned"))
+				assert.equal(task.token.listenerCount, 0)
+			} finally {
+				fixture.control.releaseAll()
+				await task.done
+			}
+		}
+	},
+)

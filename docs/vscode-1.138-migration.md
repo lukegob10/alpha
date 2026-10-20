@@ -1,8 +1,38 @@
 # VS Code 1.138.0 baseline migration
 
-Started 2026-10-19. The reference host moves from exact VS Code 1.125.0 to exact **1.138.0**. This raises the
-extension's minimum supported editor to `^1.138.0`; extension and E2E TypeScript definitions are pinned to `1.138.0`.
-It does not change the Node 24.21.0, pnpm 11.24.0, or TypeScript 5.8.3 development baseline.
+Started 2026-10-19. The reference host moves from exact VS Code 1.125.0 to exact **1.138.0**. The initial migration also
+raised the installation minimum to `^1.138.0`; the 2026-10-20 compatibility correction below restores `^1.125.0` for
+Alpha 3.2.6. This does not change the Node 24.21.0, pnpm 11.24.0, or TypeScript 5.8.3 development baseline.
+
+## Minimum-host compatibility correction (2026-10-20)
+
+The user requested continued installation on VS Code 1.125. The 3.2.5 installer rejection was caused by the extension's
+`engines.vscode` range, rather than an established dependency on newer stable APIs. Microsoft's
+[extension manifest contract](https://code.visualstudio.com/api/references/extension-manifest), retrieved 2026-10-20,
+defines this field as the compatible VS Code version range. Alpha 3.2.6 restores `^1.125.0`; exact 1.138.0 remains the
+reference host and primary release gate.
+
+The installed `@types/vscode@1.125.0` and `@types/vscode@1.138.0` stable declarations were compared again on
+2026-10-20: their differences are documentation comments only. The extension compiles against 1.125.0 types, while
+the E2E runner retains 1.138.0 types. This split also satisfies the pinned `@vscode/vsce@3.3.2` packaging rule in
+`out/validation.js` (`validateVSCodeTypesCompatibility`), which rejects API types with a higher minor version than the
+extension's declared minimum. No production API check or packaging validation is bypassed.
+
+Minimum-host compatibility runs use exact 1.125.0 separately from the existing 1.138.0 suites. In particular, the LM
+fixture characterizes each host's actual late-cancellation behavior, while Alpha-owned cancellation must return
+promptly on both hosts. Historical 1.138.0 receipts remain reference-host evidence and cannot prove 1.125.0 support.
+Run the minimum-host gate with:
+
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
+```
+
+It covers activation and contributions, executable modes, offline storage recovery, and the eight deterministic LM
+contracts. QA and release workflows run its `:run` variant immediately after the primary 1.138.0 gate, reusing the
+fresh extension/webview build. A minimum-host result cannot satisfy reference-host receipt validation. The live
+Copilot sidecar remains restricted to 1.138.0; minimum-host testing uses the deterministic provider fixture.
+
+The subsequent sections retain the original migration's measurements and host identity.
 
 ## Sources and host identity
 

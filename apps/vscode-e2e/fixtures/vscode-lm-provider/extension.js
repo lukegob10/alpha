@@ -11,6 +11,7 @@ const MODEL = Object.freeze({
 })
 
 const READ_COMMAND = "rg --no-config -n ALPHA_E2E_EARLY_READ_PROOF alpha-e2e-stream-read-proof.txt"
+const CANCELLATION_PROOF = "ALPHA_E2E_CANCELLATION_STREAM_STARTED"
 
 let scenario = "tool-followup"
 let requests = []
@@ -177,6 +178,7 @@ const provider = {
 		try {
 			if (scenario === "cancellation") {
 				heldRequestIndexes.add(requestIndex)
+				progress.report(new vscode.LanguageModelTextPart(CANCELLATION_PROOF))
 				recordEvent("provider-wait-started", requestIndex, token)
 				const released = await waitForRelease(requestIndex, token)
 				recordEvent(released ? "provider-wait-released" : "provider-wait-cancelled", requestIndex, token)
