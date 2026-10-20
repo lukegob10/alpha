@@ -82,12 +82,56 @@ type HistoryUiHost = Pick<
 	"status" | "execution" | "ownershipGate" | "captureComplete" | "hostExitObserved" | "actualVSCodeVersion"
 >
 
+/** Bounded pointer observations only; this expression never changes focus, geometry or input. */
+export function historyPointerProbeExpression(selector: string, action: "install" | "snapshot" | "dispose"): string {
+	return `(()=>{
+		const key='__alphaHistoryPointerDiagnostic',action=${javascriptLiteral(action)};
+		const frame=document.getElementById('active-frame'),row=d.querySelector(${javascriptLiteral(selector)});
+		const bounds=e=>{if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height}};
+		const describe=(e,target)=>e?{tag:String(e.tagName??'').slice(0,32),testId:e.getAttribute?.('data-testid')?.slice(0,80)??null,connected:e.isConnected===true,target:!!target&&(e===target||target.contains(e))}:null;
+		let probe=window[key];
+		if(action==='install'){
+			probe?.dispose();
+			probe={events:[],eventCount:0,dispose:()=>{}};
+			if(row){
+				const receive=event=>{probe.eventCount=Math.min(1000000,probe.eventCount+1);if(probe.events.length<8)probe.events.push({type:String(event.type).slice(0,32),trusted:event.isTrusted===true,x:Number.isFinite(event.clientX)?event.clientX:null,y:Number.isFinite(event.clientY)?event.clientY:null,target:describe(event.target,row)})};
+				for(const type of ['pointerover','mouseover'])row.addEventListener(type,receive,true);
+				probe.dispose=()=>{for(const type of ['pointerover','mouseover'])row.removeEventListener(type,receive,true)};
+			}
+			window[key]=probe;
+		}
+		if(action==='dispose'){probe?.dispose();if(window[key]===probe)delete window[key]}
+		const r=bounds(row),f=bounds(frame),center=r?{x:r.left+r.width/2,y:r.top+r.height/2}:null;
+		const observed={document:{readyState:String(d.readyState).slice(0,16),focused:d.hasFocus()},frame:frame?{connected:frame.isConnected===true,currentDocument:frame.contentDocument===d,bounds:f,hit:center&&f?describe(document.elementFromPoint(center.x+f.left,center.y+f.top),frame):null}:null,row:row?{connected:row.isConnected===true,currentDocument:row.ownerDocument===d,hovered:row.matches(':hover'),bounds:r,center,hit:center?describe(d.elementFromPoint(center.x,center.y),row):null}:null,eventCount:probe?.eventCount??0,events:probe?.events.slice(0,8)??[]};
+		return observed;
+	})()`
+}
+
+/** Diagnostic failures must not replace the interaction's result or its original assertion. */
+export async function withHistoryPointerEvidence<T>(
+	operation: () => Promise<T>,
+	finish: (status: "passed" | "failed") => Promise<void>,
+): Promise<T> {
+	let status: "passed" | "failed" = "failed"
+	try {
+		const result = await operation()
+		status = "passed"
+		return result
+	} finally {
+		try {
+			await finish(status)
+		} catch {
+			// Optional diagnostics cannot change the authoritative interaction result.
+		}
+	}
+}
+
 export async function completeHistoryUiRun<T extends HistoryUiHost>(
 	host: T,
 	directory: string,
 	output: string,
 	runId: string,
-	expectedHostVersion = "1.125.0",
+	expectedHostVersion = "1.138.0",
 ) {
 	const savedDirectory = path.join(output, runId)
 	await fs.cp(directory, savedDirectory, { recursive: true })
@@ -104,7 +148,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 }
 
 /** Exercises the built extension in an isolated exact-host profile, with trusted renderer input. */
-export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.125.0") {
+export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.138.0") {
 	await fs.mkdir(output, { recursive: true })
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-chats-ui-"))
 	const nonce = randomUUID()
@@ -410,71 +454,118 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				)
 			}
 		}
+		let pointerInteractionSequence = 0
 		const inspectHistoryInteraction = async (taskId: string, baseline: HistoryStyleMetrics) => {
-			const selector = javascriptLiteral(`[data-testid="task-item-${taskId}"]`)
-			const point = await evaluate<{ x: number; y: number }>(
-				`(()=>{const r=d.querySelector(${selector}).getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();return {x:r.left+r.width/2+(f?.left??0),y:r.top+r.height/2+(f?.top??0)}})()`,
-			)
-			const { frameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
-				"Page.getFrameTree",
-				{},
-				sessionId,
-			)
-			const { backendNodeId } = await connection.request<{ backendNodeId: number }>(
-				"DOM.getFrameOwner",
-				{ frameId: frameTree.frame.id },
-				pageSession,
-			)
-			const { model } = await connection.request<{ model: { content: number[] } }>(
-				"DOM.getBoxModel",
-				{ backendNodeId },
-				pageSession,
-			)
-			const [originX, originY] = model.content
-			assert.ok(typeof originX === "number" && typeof originY === "number")
-			await connection.request(
-				"Input.dispatchMouseEvent",
-				{ type: "mouseMoved", x: originX + point.x, y: originY + point.y },
-				pageSession,
-			)
-			await check(`d.querySelector(${selector}).matches(':hover')`)
-			await check(
-				`d.defaultView.getComputedStyle(d.querySelector(${selector}).querySelector('[data-testid=task-content]')).color===${javascriptLiteral(baseline.expected.foreground)}`,
-			)
-			const hovered = await observeHistoryStyle(taskId)
-			await evaluate(`d.querySelector(${selector}).focus()`)
-			for (const modifiers of [0, 8]) {
-				for (const type of ["keyDown", "keyUp"]) {
-					await connection.request(
-						"Input.dispatchKeyEvent",
-						{ type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers },
+			const rowSelector = `[data-testid="task-item-${taskId}"]`
+			const errors: Array<{ phase: string; errorType: string }> = []
+			const diagnostic: Record<string, unknown> = { schemaVersion: 1, nonce, taskId, errors }
+			const record = async (phase: string, observe: () => Promise<unknown>) => {
+				try {
+					diagnostic[phase] = await observe()
+				} catch (error) {
+					errors.push({ phase, errorType: error instanceof Error ? error.name.slice(0, 64) : "UnknownError" })
+				}
+			}
+			await record("installed", () => evaluate(historyPointerProbeExpression(rowSelector, "install")))
+			return withHistoryPointerEvidence(
+				async () => {
+					const selector = javascriptLiteral(`[data-testid="task-item-${taskId}"]`)
+					const point = await evaluate<{ x: number; y: number }>(
+						`(()=>{const r=d.querySelector(${selector}).getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();return {x:r.left+r.width/2+(f?.left??0),y:r.top+r.height/2+(f?.top??0)}})()`,
+					)
+					const { frameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
+						"Page.getFrameTree",
+						{},
 						sessionId,
 					)
-				}
-			}
-			await check(`d.activeElement===d.querySelector(${selector}) && d.activeElement.matches(':focus-visible')`)
-			const focused = await observeHistoryStyle(taskId)
-			assert.ok(
-				focused.row.boxShadow !== "none" ||
-					(focused.row.outlineStyle !== "none" && parseFloat(focused.row.outlineWidth) > 0),
-				"History rows retain a visible keyboard focus indicator",
+					const { backendNodeId } = await connection.request<{ backendNodeId: number }>(
+						"DOM.getFrameOwner",
+						{ frameId: frameTree.frame.id },
+						pageSession,
+					)
+					const { model } = await connection.request<{ model: { content: number[] } }>(
+						"DOM.getBoxModel",
+						{ backendNodeId },
+						pageSession,
+					)
+					const [originX, originY] = model.content
+					assert.ok(typeof originX === "number" && typeof originY === "number")
+					diagnostic.localPoint = point
+					diagnostic.frameQuad = model.content.slice(0, 8)
+					diagnostic.dispatchedPoint = { x: originX + point.x, y: originY + point.y }
+					await record("beforeDispatch", () =>
+						evaluate(historyPointerProbeExpression(rowSelector, "snapshot")),
+					)
+					await record("workbenchHit", () =>
+						evaluate(
+							`(()=>{const point=${javascriptLiteral(diagnostic.dispatchedPoint)},e=document.elementFromPoint(point.x,point.y);return {focused:document.hasFocus(),hit:e?{tag:String(e.tagName).slice(0,32),testId:e.getAttribute('data-testid')?.slice(0,80)??null}:null}})()`,
+							pageSession,
+							false,
+						),
+					)
+					await connection.request(
+						"Input.dispatchMouseEvent",
+						{ type: "mouseMoved", x: originX + point.x, y: originY + point.y },
+						pageSession,
+					)
+					await Promise.all([
+						record("afterDispatch", () => evaluate(historyPointerProbeExpression(rowSelector, "snapshot"))),
+						check(`d.querySelector(${selector}).matches(':hover')`),
+					])
+					await check(
+						`d.defaultView.getComputedStyle(d.querySelector(${selector}).querySelector('[data-testid=task-content]')).color===${javascriptLiteral(baseline.expected.foreground)}`,
+					)
+					const hovered = await observeHistoryStyle(taskId)
+					await evaluate(`d.querySelector(${selector}).focus()`)
+					for (const modifiers of [0, 8]) {
+						for (const type of ["keyDown", "keyUp"]) {
+							await connection.request(
+								"Input.dispatchKeyEvent",
+								{ type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers },
+								sessionId,
+							)
+						}
+					}
+					await check(
+						`d.activeElement===d.querySelector(${selector}) && d.activeElement.matches(':focus-visible')`,
+					)
+					const focused = await observeHistoryStyle(taskId)
+					assert.ok(
+						focused.row.boxShadow !== "none" ||
+							(focused.row.outlineStyle !== "none" && parseFloat(focused.row.outlineWidth) > 0),
+						"History rows retain a visible keyboard focus indicator",
+					)
+					for (const state of [hovered, focused]) {
+						for (const key of ["fontFamily", "fontSize", "fontWeight", "lineHeight"] as const) {
+							assert.equal(
+								state.title[key],
+								baseline.title[key],
+								`History title ${key} survives hover/focus`,
+							)
+						}
+						assert.ok(
+							state.title.opacity > 0 &&
+								[baseline.expected.muted, baseline.expected.foreground].includes(state.title.color),
+							"History text stays visible in a readable theme color",
+						)
+						assert.deepEqual(state.row.statusLabels, baseline.row.statusLabels)
+						assert.equal(state.row.hasRunningSpinner, baseline.row.hasRunningSpinner)
+						assert.equal(state.row.hasTimestamp, baseline.row.hasTimestamp)
+						assert.equal(state.row.role, baseline.row.role)
+						assert.equal(state.row.label, baseline.row.label)
+					}
+					return { hovered, focused }
+				},
+				async (status) => {
+					diagnostic.status = status
+					await record("final", () => evaluate(historyPointerProbeExpression(rowSelector, "dispose")))
+					await fs.writeFile(
+						path.join(directory, `history-pointer-${++pointerInteractionSequence}.json`),
+						JSON.stringify(diagnostic, null, 2),
+						{ flag: "wx" },
+					)
+				},
 			)
-			for (const state of [hovered, focused]) {
-				for (const key of ["fontFamily", "fontSize", "fontWeight", "lineHeight"] as const) {
-					assert.equal(state.title[key], baseline.title[key], `History title ${key} survives hover/focus`)
-				}
-				assert.ok(
-					state.title.opacity > 0 &&
-						[baseline.expected.muted, baseline.expected.foreground].includes(state.title.color),
-					"History text stays visible in a readable theme color",
-				)
-				assert.deepEqual(state.row.statusLabels, baseline.row.statusLabels)
-				assert.equal(state.row.hasRunningSpinner, baseline.row.hasRunningSpinner)
-				assert.equal(state.row.hasTimestamp, baseline.row.hasTimestamp)
-				assert.equal(state.row.role, baseline.row.role)
-				assert.equal(state.row.label, baseline.row.label)
-			}
-			return { hovered, focused }
 		}
 		const installNavigationProbe = async (predicate: string, taskId?: string) =>
 			evaluate<boolean>(
@@ -1056,7 +1147,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 
 if (require.main === module) {
 	void (async () => {
-		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.125.0"
+		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.138.0"
 		const executable =
 			process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: expectedHostVersion }))
 		const output = process.env.ALPHA_HISTORY_UI_OUTPUT ?? path.join(os.tmpdir(), "alpha-code-history-ux")

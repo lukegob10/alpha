@@ -98,6 +98,8 @@ export type TaskProviderEvents = {
  */
 
 export interface CreateTaskOptions {
+	/** Host-only opt-out of optional automatic title and reasoning-synopsis model calls. */
+	presentationModelCalls?: false
 	/** Restrict this primary task to the host-owned read-only diagnostic tool surface. */
 	diagnosticSession?: boolean
 	/** Bounded host-generated incident identity used to deduplicate diagnostic tasks across reloads. */

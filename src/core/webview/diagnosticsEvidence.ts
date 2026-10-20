@@ -5,6 +5,7 @@ import type { Stats } from "fs"
 import { agentLifecycleEventSchema, toolNamesSchema } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
+import { incidentDiagnosticsSchema } from "../agent/IncidentDiagnostics"
 import {
 	hashAgentTurnEvidenceId,
 	projectPersistedAgentTurnEvent,
@@ -610,7 +611,13 @@ export function projectRuntimeDiagnostics(value: unknown): unknown {
 				return [projected]
 			})
 		: []
+	const incident = runtime.incident === undefined ? undefined : incidentDiagnosticsSchema.safeParse(runtime.incident)
 	return {
+		...(incident === undefined
+			? {}
+			: {
+					incident: incident.success ? incident.data : { unavailable: true },
+				}),
 		completion: projectedCompletion,
 		commands,
 		obligations,
@@ -622,12 +629,14 @@ export function projectRuntimeDiagnostics(value: unknown): unknown {
 	}
 }
 
-export function projectErrorDetails(value: string | undefined): Record<string, unknown> {
-	if (value === undefined || value.length === 0) return { present: false, bytes: 0 }
+export function projectErrorDetails(value: unknown): Record<string, unknown> {
+	if (typeof value !== "string" || value.length === 0) return { present: false, bytes: 0 }
+	const bounded = value.slice(-8_192)
 	return {
 		present: true,
-		bytes: Buffer.byteLength(value, "utf8"),
-		sha256: createHash("sha256").update(value, "utf8").digest("hex"),
+		bytes: Buffer.byteLength(bounded, "utf8"),
+		sha256: createHash("sha256").update(bounded, "utf8").digest("hex"),
+		truncated: value.length > bounded.length,
 	}
 }
 

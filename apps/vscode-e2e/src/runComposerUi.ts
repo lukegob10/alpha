@@ -3,7 +3,7 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runRenderedUiProbe } from "./campaign/renderedUiProbe"
 
 async function main() {
-	const executable = await downloadAndUnzipVSCode({ version: "1.125.0" })
+	const executable = await downloadAndUnzipVSCode({ version: "1.138.0" })
 	const output = path.resolve(__dirname, "../../../artifacts/composer-ui")
 	const result = await runRenderedUiProbe(executable, output, "composer")
 	console.log(JSON.stringify(result))

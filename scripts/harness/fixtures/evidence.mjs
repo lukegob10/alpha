@@ -11,8 +11,8 @@ export function hostReceipt(testFile = "core-loop.test") {
 		testFile,
 		scenarioId: null,
 		scenarioPhase: null,
-		requestedHostVersion: "1.125.0",
-		actualHostVersion: "1.125.0",
+		requestedHostVersion: "1.138.0",
+		actualHostVersion: "1.138.0",
 		providerMode: testFile === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted",
 		profile: { kind: "persistent", sha256: "a".repeat(64) },
 		status: "passed",
@@ -56,7 +56,7 @@ export function outcomeFixture(id = "campaign-test") {
 			unchanged: true,
 			missing: [],
 		},
-		evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.125.0"], samples: 1 },
+		evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.138.0"], samples: 1 },
 		counts: { passed: 3, failed: 0, blocked: 0 },
 		attempts: outcomeScenarioIds.map((scenarioId, index) => ({
 			request: {
@@ -65,10 +65,10 @@ export function outcomeFixture(id = "campaign-test") {
 				scenarioId,
 				phase: "sample",
 				sample: 1,
-				host: { version: "1.125.0" },
+				host: { version: "1.138.0" },
 				provider: { mode: "scripted" },
 			},
-			result: { status: "passed", actualHostVersion: "1.125.0", taskIds: [`task-${index + 1}`] },
+			result: { status: "passed", actualHostVersion: "1.138.0", taskIds: [`task-${index + 1}`] },
 			evidence: `attempt-000${index + 1}/evidence-index.json`,
 		})),
 	}

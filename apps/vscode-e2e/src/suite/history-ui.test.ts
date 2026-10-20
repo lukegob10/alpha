@@ -53,7 +53,7 @@ suite("Inline Chats rendered history", function () {
 	this.timeout(240_000)
 	test("retains the composer and searchable history across host themes", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, process.env.ALPHA_UI_EXPECTED_VSCODE_VERSION ?? "1.125.0")
+		assert.equal(vscode.version, process.env.ALPHA_UI_EXPECTED_VSCODE_VERSION ?? "1.138.0")
 		const api = globalThis.api
 		const originalConfiguration = api.getConfiguration()
 		const provider = (api as unknown as { sidebarProvider: NavigationFixtureHost }).sidebarProvider

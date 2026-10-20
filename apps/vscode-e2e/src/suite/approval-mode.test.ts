@@ -135,7 +135,7 @@ async function runScriptedApproval(options: {
 	modelInputs: unknown[][]
 	messages: AlphaMessage[]
 }> {
-	assert.equal(vscode.version, "1.125.0")
+	assert.equal(vscode.version, "1.138.0")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE
 	const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 	assert.ok(workspace && artifacts)

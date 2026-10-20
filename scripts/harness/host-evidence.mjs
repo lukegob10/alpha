@@ -50,8 +50,8 @@ export function validateHostReceipt(value) {
 		!Number.isFinite(Date.parse(value.startedAt)) ||
 		!Number.isFinite(Date.parse(value.completedAt)) ||
 		Date.parse(value.completedAt) < Date.parse(value.startedAt) ||
-		value.requestedHostVersion !== "1.125.0" ||
-		value.actualHostVersion !== "1.125.0" ||
+		value.requestedHostVersion !== "1.138.0" ||
+		value.actualHostVersion !== "1.138.0" ||
 		!["scripted", "vscode-lm-fixture"].includes(value.providerMode) ||
 		value.execution !== "extension-host" ||
 		value.hostExitObserved !== true ||
@@ -76,7 +76,7 @@ export function validateHostReceipt(value) {
 	return {
 		schemaVersion: 1,
 		kind: "alpha-extension-test-run",
-		requestedHostVersion: "1.125.0",
+		requestedHostVersion: "1.138.0",
 		status: "passed",
 		exitCode: 0,
 		hostExitObserved: true,
@@ -179,7 +179,7 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 		!Array.isArray(plan.scenarioIds) ||
 		plan.samples !== 1 ||
 		plan.hostVersions?.length !== 1 ||
-		plan.hostVersions[0] !== "1.125.0" ||
+		plan.hostVersions[0] !== "1.138.0" ||
 		plan.scenarioIds?.length !== outcomeScenarioIds.length ||
 		new Set(plan.scenarioIds).size !== outcomeScenarioIds.length ||
 		outcomeScenarioIds.some((id) => !plan.scenarioIds.includes(id)) ||
@@ -214,10 +214,10 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 			request.sample !== 1 ||
 			request.phase !== "sample" ||
 			!/^attempt-\d{4}$/.test(request.attemptId ?? "") ||
-			request.host?.version !== "1.125.0" ||
+			request.host?.version !== "1.138.0" ||
 			request.provider?.mode !== "scripted" ||
 			result?.status !== "passed" ||
-			result.actualHostVersion !== "1.125.0" ||
+			result.actualHostVersion !== "1.138.0" ||
 			result.failure != null ||
 			result.retentionFailed === true ||
 			attempt.evidenceFailed ||
@@ -281,7 +281,7 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 					"missing",
 				].map((key) => [key, identity[key]]),
 			),
-			evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.125.0"], samples: 1 },
+			evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.138.0"], samples: 1 },
 			counts: { passed: outcomeScenarioIds.length, failed: 0, blocked: 0 },
 			attempts: report.attempts.map((attempt) => ({
 				request: {
@@ -290,10 +290,10 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 					scenarioId: attempt.request.scenarioId,
 					sample: 1,
 					phase: "sample",
-					host: { version: "1.125.0" },
+					host: { version: "1.138.0" },
 					provider: { mode: "scripted" },
 				},
-				result: { status: "passed", actualHostVersion: "1.125.0", taskIds: attempt.result.taskIds },
+				result: { status: "passed", actualHostVersion: "1.138.0", taskIds: attempt.result.taskIds },
 				evidence: `${attempt.request.attemptId}/evidence-index.json`,
 			})),
 		},

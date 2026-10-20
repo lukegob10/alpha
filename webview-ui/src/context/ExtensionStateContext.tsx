@@ -12,6 +12,7 @@ import {
 	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
+	type EditorChatState,
 	type ApprovalMode,
 	type AlphaMessage,
 	settingsForApprovalMode,
@@ -178,6 +179,16 @@ type TaskTranscriptCache = Map<string, CachedTaskTranscript>
 
 const MAX_CACHED_TASK_TRANSCRIPTS = 2
 
+function shouldApplyIncrementalLiveTask(existing: LiveTaskMetadata | undefined, incoming: LiveTaskMetadata): boolean {
+	if (!existing) return true
+	// Every host message publication advances this task's revision. A state
+	// snapshot at the same revision may already contain a later lifecycle boundary.
+	if (existing.transcriptRevision !== undefined && incoming.transcriptRevision !== undefined) {
+		return incoming.transcriptRevision > existing.transcriptRevision
+	}
+	return incoming.lastUpdatedAt >= existing.lastUpdatedAt
+}
+
 function cacheTaskTranscript(
 	cache: TaskTranscriptCache,
 	taskId: string | undefined,
@@ -270,6 +281,22 @@ export const mergeExtensionState = (
 		rest.liveTasksById = prevState.liveTasksById
 		rest.managedAgentTree = prevState.managedAgentTree
 		rest.taskStateSeq = prevState.taskStateSeq
+	} else if (newState.liveTasksById && prevState.liveTasksById) {
+		// State assembly may await managed-agent projections after capturing live
+		// metadata. Preserve newer message publications until the host refreshes it.
+		let liveTasksById = newState.liveTasksById
+		for (const [taskId, incoming] of Object.entries(newState.liveTasksById)) {
+			const previous = prevState.liveTasksById[taskId]
+			if (
+				previous?.transcriptRevision !== undefined &&
+				incoming.transcriptRevision !== undefined &&
+				incoming.transcriptRevision < previous.transcriptRevision
+			) {
+				if (liveTasksById === newState.liveTasksById) liveTasksById = { ...liveTasksById }
+				liveTasksById[taskId] = previous
+			}
+		}
+		rest.liveTasksById = liveTasksById
 	}
 	// A late transcript from an older navigation can carry a higher message
 	// sequence. Reject it so it cannot replace the task that is now on screen.
@@ -621,14 +648,22 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			let liveTasksById = prevState.liveTasksById
 
 			for (const { taskId, clineMessage, clineMessagesSeq, liveTask } of updates) {
-				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
-				if (liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)) {
-					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
-				}
-				if (taskId && taskId !== prevState.currentTaskId) continue
-				if (clineMessagesSeq !== undefined && nextSequence !== undefined && clineMessagesSeq <= nextSequence) {
+				const isVisibleTask = !taskId || taskId === prevState.currentTaskId
+				// The live metadata belongs to the same publication as the transcript.
+				// Reject both before a delayed update can restore stale running controls.
+				if (
+					isVisibleTask &&
+					clineMessagesSeq !== undefined &&
+					nextSequence !== undefined &&
+					clineMessagesSeq <= nextSequence
+				) {
 					continue
 				}
+				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
+				if (liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)) {
+					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
+				}
+				if (!isVisibleTask) continue
 
 				const index = findLastIndex(nextMessages, (msg) => msg.ts === clineMessage.ts)
 				if (index === -1) {
@@ -656,19 +691,21 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const applyMessageCreation = useCallback(
 		({ taskId, clineMessage, clineMessagesSeq, liveTask }: IncrementalMessage) => {
 			setState((prevState) => {
-				const existingLiveTask = liveTask ? prevState.liveTasksById?.[liveTask.id] : undefined
-				const liveTasksById =
-					liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)
-						? { ...(prevState.liveTasksById ?? {}), [liveTask.id]: liveTask }
-						: prevState.liveTasksById
-				if (taskId && taskId !== prevState.currentTaskId) {
-					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
-				}
+				const isVisibleTask = !taskId || taskId === prevState.currentTaskId
 				if (
+					isVisibleTask &&
 					clineMessagesSeq !== undefined &&
 					prevState.clineMessagesSeq !== undefined &&
 					clineMessagesSeq <= prevState.clineMessagesSeq
 				) {
+					return prevState
+				}
+				const existingLiveTask = liveTask ? prevState.liveTasksById?.[liveTask.id] : undefined
+				const liveTasksById =
+					liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)
+						? { ...(prevState.liveTasksById ?? {}), [liveTask.id]: liveTask }
+						: prevState.liveTasksById
+				if (!isVisibleTask) {
 					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
 				}
 
@@ -723,6 +760,14 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			liveTask?: LiveTaskMetadata,
 		) => {
 			const key = `${taskId ?? ""}:${clineMessage.ts}`
+			const pending = pendingMessageUpdatesRef.current.get(key)
+			if (
+				clineMessagesSeq !== undefined &&
+				pending?.clineMessagesSeq !== undefined &&
+				clineMessagesSeq <= pending.clineMessagesSeq
+			) {
+				return
+			}
 			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq, liveTask })
 
 			if (messageUpdateFrameRef.current !== undefined) return
@@ -1008,6 +1053,29 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	useEffect(() => {
 		vscode.postMessage({ type: "webviewDidLaunch" })
 	}, [])
+
+	const editorViewType = state.currentView?.type
+	const editorTaskId = state.currentView?.type === "task" ? state.currentView.taskId : undefined
+	const hasAcceptedTaskState = typeof state.taskStateSeq === "number"
+	useEffect(() => {
+		if (!didHydrateState || state.renderContext !== "editor" || !hasAcceptedTaskState) return
+		if (editorViewType !== "newTaskDraft" && (editorViewType !== "task" || !editorTaskId)) return
+		// VS Code serializes this selection across reloads. Runtime state and the
+		// transcript are always restored by the host from the saved task instead.
+		const editorChatState: EditorChatState = {
+			version: 1,
+			currentView:
+				editorViewType === "task" && editorTaskId
+					? { type: "task", taskId: editorTaskId }
+					: { type: "newTaskDraft" },
+		}
+		const previousState = vscode.getState()
+		const retainedState =
+			typeof previousState === "object" && previousState !== null && !Array.isArray(previousState)
+				? previousState
+				: {}
+		vscode.setState({ ...retainedState, alphaEditorChat: editorChatState })
+	}, [didHydrateState, state.renderContext, hasAcceptedTaskState, editorViewType, editorTaskId])
 
 	// Provider setup is onboarding for a new-task draft, never an overlay for an
 	// established chat. Deriving the task guard from the sequence-aware merged

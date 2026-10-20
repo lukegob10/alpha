@@ -1,11 +1,17 @@
 import type { ParentVerificationObligation } from "@alpha-code/types"
 import type { Task } from "../task/Task"
+import { projectIncidentDiagnostics } from "./IncidentDiagnostics"
 
 /** Diagnostic projection only: never refresh, settle, or disclose workspace contents while reporting a failure. */
-export function settlementDiagnostics(task: Task, obligations: readonly ParentVerificationObligation[]) {
+export function settlementDiagnostics(
+	task: Task,
+	obligations: readonly ParentVerificationObligation[],
+	incidentContext?: unknown,
+) {
 	const allCommands = task.getCommandExecutionEvidence()
 	const commands = allCommands.slice(-32)
 	return {
+		...(incidentContext === undefined ? {} : { incident: projectIncidentDiagnostics(incidentContext) }),
 		taskId: task.taskId,
 		instanceId: task.instanceId,
 		completion: task.getCompletionStageMetrics(),

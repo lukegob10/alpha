@@ -101,6 +101,32 @@ describe("ApiConfigSelector", () => {
 		expect(trigger).toBeDisabled()
 	})
 
+	test("keeps retained unavailable profiles visible without activating them", () => {
+		render(
+			<ApiConfigSelector
+				{...defaultProps}
+				listApiConfigMeta={[
+					...defaultProps.listApiConfigMeta,
+					{ id: "invalid", name: "Invalid saved profile", availability: "invalid" },
+					{ id: "unsupported", name: "Unsupported saved profile", availability: "unsupported" },
+				]}
+			/>,
+		)
+
+		const invalid = screen.getByRole("button", { name: /Invalid saved profile/ })
+		const unsupported = screen.getByRole("button", { name: /Unsupported saved profile/ })
+		expect(invalid).toBeDisabled()
+		expect(unsupported).toBeDisabled()
+		expect(invalid).toHaveTextContent("settings:providers.profileUnavailableInvalid")
+		expect(unsupported).toHaveTextContent("settings:providers.profileUnavailableUnsupported")
+		fireEvent.click(invalid)
+		fireEvent.click(unsupported)
+		expect(mockOnChange).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: /Config 2/ }))
+		expect(mockOnChange).toHaveBeenCalledTimes(1)
+		expect(mockOnChange).toHaveBeenCalledWith("config2")
+	})
+
 	test("renders with custom title tooltip", () => {
 		const customTitle = "Custom tooltip text"
 		render(<ApiConfigSelector {...defaultProps} title={customTitle} />)

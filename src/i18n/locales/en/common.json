@@ -1,4 +1,12 @@
 {
+	"diagnostics": {
+		"noTask": "Open an Alpha chat before exporting its diagnostics."
+	},
+	"editorChatRestore": {
+		"missing": "This editor chat was saved before tab identity was supported. Open Alpha task history to select the chat; its saved data has been retained.",
+		"invalid": "This editor chat has an unsupported saved tab identity. Open Alpha task history to select the chat; its saved data has been retained.",
+		"unavailable": "Alpha could not reopen this editor chat. It may have been deleted or its storage or saved provider configuration may be unavailable. Check the Alpha output and open task history; no saved task data was reset."
+	},
 	"subagentContext": {
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
 	},
@@ -67,6 +75,7 @@
 	"errors": {
 		"completion_evidence_read_timeout": "Completion evidence could not be read within 30 seconds. Resume after the existing operation settles.",
 		"completion_evidence_read_interrupted": "Completion was interrupted; pending user guidance and unresolved evidence are preserved.",
+		"completion_review_pending": "Worker proposals still await review. Apply or discard the pending proposals before completing; you can send guidance to continue investigating.",
 		"completed_followup_finalize_timeout": "The previous turn is still finalizing after 30 seconds. Your follow-up is preserved. Wait for the existing operation to finish, then retry.",
 		"completed_followup_cancelled": "Completed-task follow-up was cancelled.",
 		"mutation_receipt_orphaned": "Task remains incomplete and unverified: a workspace change receipt is still missing after 30 seconds. No active operation is tracked for the missing receipt. Retrying completion or verification will not repair it. Use Get detailed error info to investigate the original tool or storage error before resuming.",
@@ -103,6 +112,8 @@
 		"create_api_config": "Failed to create api configuration",
 		"rename_api_config": "Failed to rename api configuration",
 		"load_api_config": "Failed to load api configuration",
+		"invalid_provider_profile": "This saved provider profile has invalid settings{{fields}}. It has been retained. Export settings, then correct the saved configuration or create a replacement before using it.",
+		"unsupported_provider_profile": "This saved provider profile uses a provider that this version does not support. It has been retained. Select a supported provider in Settings or create a replacement profile.",
 		"delete_api_config": "Failed to delete api configuration",
 		"list_api_config": "Failed to get list api configuration",
 		"update_server_timeout": "Failed to update server timeout",
@@ -207,7 +218,8 @@
 	"warnings": {
 		"no_terminal_content": "No terminal content selected",
 		"missing_task_files": "This task's files are missing. Would you like to remove it from the task list?",
-		"auto_import_failed": "Failed to auto-import Alpha settings: {{error}}"
+		"auto_import_failed": "Failed to auto-import Alpha settings: {{error}}",
+		"auto_import_requires_attention": "Alpha imported {{filename}} with profile warnings ({{count}}). Repair the configured auto-import file before the next launch. Alpha imports this file each time it starts."
 	},
 	"planHandoff": {
 		"tooLarge": "The proposed plan is too large to save (maximum 100,000 characters). The previous plan was retained.",

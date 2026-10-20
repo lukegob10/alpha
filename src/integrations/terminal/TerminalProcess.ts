@@ -38,7 +38,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.once("shell_execution_complete", () => (this.shellExecutionReported = true))
 
 		this.once("completed", () => {
-			this.terminal.busy = false
+			if (!this.terminal.process || this.terminal.process === this) this.terminal.busy = false
 		})
 		this.once("error", () => {
 			this.stopHotTimer()
@@ -47,8 +47,10 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		this.once("no_shell_integration", () => {
 			this.emit("completed", "<no shell integration>")
-			this.terminal.busy = false
-			this.terminal.setActiveStream(undefined)
+			if (!this.terminal.process || this.terminal.process === this) {
+				this.terminal.busy = false
+				this.terminal.setActiveStream(undefined)
+			}
 			this.continue()
 		})
 	}
@@ -278,7 +280,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 				"<VSCE shell integration stream did not start: terminal output and command execution status is unknown>",
 			)
 
-			this.terminal.busy = false
+			if (!this.terminal.process || this.terminal.process === this) this.terminal.busy = false
 
 			// Emit continue event to allow execution to proceed
 			this.emit("continue")
@@ -366,7 +368,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 		if (!transcriptEnded && transcriptMarkerCarry) this.appendOutputTranscript(transcriptMarkerCarry)
 
 		// Set streamClosed immediately after stream ends.
-		this.terminal.setActiveStream(undefined)
+		// A shell end event permits reuse before this reader finishes draining.
+		if (!this.terminal.process || this.terminal.process === this) this.terminal.setActiveStream(undefined)
 
 		// Wait for shell execution to complete.
 		await this.awaitTerminalOperation(shellExecutionComplete)

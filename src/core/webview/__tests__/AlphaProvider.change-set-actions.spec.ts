@@ -122,6 +122,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 			agentControlStore: store,
 			agentControlStoreReady: Promise.resolve(),
 			agentControlRootStatusWrites: new Map(),
+			preparedSubagentGroups: new Map(),
 			subagentDescriptors: new Map(),
 			getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 			updateTaskHistory: vi.fn(async (item: any) => {
@@ -302,6 +303,172 @@ describe("AlphaProvider Worker change-set actions", () => {
 		TEST_TIMEOUT_MS,
 	)
 
+	it.each(["auto-apply", "discard"] as const)(
+		"preserves a Worker %s across terminal publication with cloned transcript groups",
+		async (action) => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, historyItems } = await createHarness(artifact)
+			const prepared = { group: structuredClone(group), envelopes: [] }
+			prepared.group.status = "running"
+			delete prepared.group.completedAt
+			Object.assign(provider, {
+				preparedSubagentGroups: new Map([[group.groupId, prepared]]),
+				publishedSubagentResults: new Set(),
+				retainCompletedSubagentGroup: vi.fn(),
+			})
+			Object.assign(parent, {
+				// Keep Task's real commit/clone boundary; only filesystem persistence is isolated.
+				upsertSubagentGroup: Task.prototype.upsertSubagentGroup.bind(parent),
+				enqueueAlphaMessagesSave: vi.fn(async (snapshot: () => unknown, committed: () => void) => {
+					snapshot()
+					committed()
+					return true
+				}),
+				updateAlphaMessage: vi.fn(async () => undefined),
+			})
+			configureAutoApplyPolicy(provider, historyItems, action === "auto-apply" ? "auto" : "ask")
+			const result = {
+				taskId: "worker-1",
+				status: "completed",
+				summary: "Worker finished",
+				changedFiles: ["docs/worker.txt"],
+				changeSet: structuredClone(group.agents[0]!.changeSet),
+				usage: { durationMs: 1 },
+			}
+
+			await Reflect.get(provider, "applySubagentResult").call(provider, prepared, result)
+			if (action === "discard") {
+				await expect(
+					provider.discardSubagentChangeSet(parent.taskId, group.groupId, artifact.id),
+				).resolves.toMatchObject({ success: true })
+			}
+			const expectedStatus = action === "auto-apply" ? "applied" : "discarded"
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe(expectedStatus)
+			expect(parent.clineMessages[0]!.subagentGroup?.agents[0]?.changeSet?.status).toBe(expectedStatus)
+			expect(parent.clineMessages[0]!.subagentGroup).not.toBe(prepared.group)
+
+			await Reflect.get(provider, "finalizeSpawnedSubagent").call(
+				provider,
+				parent,
+				prepared,
+				{},
+				Promise.resolve(result),
+				() => Promise.resolve(),
+				vi.fn(),
+				vi.fn(),
+			)
+
+			expect(parent.clineMessages[0]!.subagentGroup?.agents[0]).toMatchObject({
+				changeSet: { status: expectedStatus },
+				parentVerification: { status: action === "auto-apply" ? "pending" : "not_applicable" },
+				requiresParentVerification: false,
+			})
+			expect(Reflect.get(parent, "hasPendingSubagentChangeSetReview").call(parent)).toBe(false)
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it.each(["applied", "discarded"] as const)(
+		"repairs a reloaded pending review from an already %s artifact without repeating the action",
+		async (status) => {
+			const artifact = await createArtifact()
+			if (status === "applied") await managedSubagentWorktreeService.apply(storage, artifact.id)
+			else await managedSubagentWorktreeService.discard(storage, artifact.id)
+			const { provider, parent, group, store, historyItems } = await createHarness(artifact)
+			configureAutoApplyPolicy(provider, historyItems, "ask")
+			const apply = vi.spyOn(managedSubagentWorktreeService, "apply")
+			const discard = vi.spyOn(managedSubagentWorktreeService, "discard")
+			try {
+				await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+				expect(group.agents[0]).toMatchObject({
+					changeSet: { status },
+					parentVerification: { status: status === "applied" ? "pending" : "not_applicable" },
+					requiresParentVerification: false,
+				})
+				expect(historyItems.get("worker-1").subagentChangeSet.status).toBe(status)
+				expect(Reflect.get(parent, "hasPendingSubagentChangeSetReview").call(parent)).toBe(false)
+				const obligations = store.getVerificationObligations({ parentTaskId: parent.taskId })
+				const mailbox = store.getSnapshot().mailbox
+
+				await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+				expect(store.getVerificationObligations({ parentTaskId: parent.taskId })).toEqual(obligations)
+				expect(store.getSnapshot().mailbox).toEqual(mailbox)
+				expect(apply).not.toHaveBeenCalled()
+				expect(discard).not.toHaveBeenCalled()
+			} finally {
+				apply.mockRestore()
+				discard.mockRestore()
+			}
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"does not undo a newer Worker apply with a delayed pending-review recovery read",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, store, historyItems } = await createHarness(artifact)
+			configureAutoApplyPolicy(provider, historyItems, "ask")
+			let entered!: () => void
+			const reading = new Promise<void>((resolve) => (entered = resolve))
+			let release!: (artifact: ManagedWorkerArtifact) => void
+			const staleRead = new Promise<ManagedWorkerArtifact>((resolve) => (release = resolve))
+			const load = vi.spyOn(managedSubagentWorktreeService, "load").mockImplementationOnce(() => {
+				entered()
+				return staleRead
+			})
+			const recovery = provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+			try {
+				await reading
+				await expect(
+					provider.applySubagentChangeSet(parent.taskId, group.groupId, artifact.id),
+				).resolves.toMatchObject({ success: true, changeSetStatus: "applied" })
+				release(artifact)
+				await recovery
+
+				expect(group.agents[0]).toMatchObject({
+					changeSet: { status: "applied" },
+					parentVerification: { status: "pending" },
+					requiresParentVerification: false,
+				})
+				expect(store.getVerificationObligations({ parentTaskId: parent.taskId })).toMatchObject([
+					{ status: "pending", review: { decision: "approved", source: "apply" } },
+				])
+			} finally {
+				release(artifact)
+				await recovery
+				load.mockRestore()
+			}
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"keeps an unresolved Worker review pending when its artifact cannot be recovered",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, store, historyItems } = await createHarness(artifact)
+			configureAutoApplyPolicy(provider, historyItems, "ask")
+			const load = vi
+				.spyOn(managedSubagentWorktreeService, "load")
+				.mockRejectedValue(new Error("Artifact metadata is unavailable"))
+			try {
+				await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+				expect(group.agents[0]?.changeSet?.status).toBe("pending_review")
+				expect(Reflect.get(parent, "hasPendingSubagentChangeSetReview").call(parent)).toBe(true)
+				expect(store.getVerificationObligations({ parentTaskId: parent.taskId })).toMatchObject([
+					{ status: "required" },
+				])
+			} finally {
+				load.mockRestore()
+			}
+		},
+		TEST_TIMEOUT_MS,
+	)
+
 	it(
 		"rechecks the live approval mode under the mutation gate before applying",
 		async () => {
@@ -432,6 +599,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 				agentControlStore: store,
 				agentControlStoreReady: Promise.resolve(),
 				agentControlRootStatusWrites: new Map(),
+				preparedSubagentGroups: new Map(),
 				subagentDescriptors: new Map(),
 				getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 				updateTaskHistory: vi.fn(async (item: any) => {

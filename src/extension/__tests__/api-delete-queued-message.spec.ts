@@ -19,7 +19,7 @@ describe("API - DeleteQueuedMessage Command", () => {
 			appendLine: vi.fn(),
 		} as unknown as vscode.OutputChannel
 
-		mockRemoveMessage = vi.fn().mockReturnValue(true)
+		mockRemoveMessage = vi.fn().mockResolvedValue(true)
 
 		mockProvider = {
 			context: {} as vscode.ExtensionContext,
@@ -28,8 +28,7 @@ describe("API - DeleteQueuedMessage Command", () => {
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
 			getCurrentTask: vi.fn().mockReturnValue({
 				messageQueueService: {
-					removeMessage: mockRemoveMessage,
-					flush: vi.fn().mockResolvedValue(undefined),
+					removeMessageDurably: mockRemoveMessage,
 				},
 			}),
 			viewLaunched: true,
@@ -62,9 +61,9 @@ describe("API - DeleteQueuedMessage Command", () => {
 	})
 
 	it("should handle non-existent message id gracefully", async () => {
-		mockRemoveMessage.mockReturnValue(false)
+		mockRemoveMessage.mockResolvedValue(false)
 
-		// Should not throw even when removeMessage returns false
+		// Should not throw even when the message no longer exists.
 		await expect(api.deleteQueuedMessage("non-existent-id")).resolves.toBeUndefined()
 		expect(mockRemoveMessage).toHaveBeenCalledWith("non-existent-id")
 	})

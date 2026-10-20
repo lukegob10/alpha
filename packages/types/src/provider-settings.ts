@@ -111,6 +111,8 @@ export type ProviderSettingsEntry = {
 	name: string
 	apiProvider?: string
 	modelId?: string
+	availability?: "invalid" | "unsupported"
+	invalidFields?: string[]
 }
 
 export const providerSettingsEntrySchema = z.object({
@@ -118,6 +120,8 @@ export const providerSettingsEntrySchema = z.object({
 	name: z.string(),
 	apiProvider: persistedProviderNameSchema.optional(),
 	modelId: z.string().optional(),
+	availability: z.enum(["invalid", "unsupported"]).optional(),
+	invalidFields: z.array(z.string()).max(10).optional(),
 })
 
 const baseProviderSettingsSchema = z.object({

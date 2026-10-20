@@ -1,6 +1,7 @@
 export * from "./api.js"
 export * from "./agent-control.js"
 export * from "./agent-lifecycle.js"
+export * from "./editor-chat-state.js"
 export * from "./agent-response.js"
 export * from "./browser.js"
 export * from "./managed-agent-tree.js"

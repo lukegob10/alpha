@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs"
 
 type ExtensionManifest = {
+	activationEvents: string[]
 	contributes: {
 		commands: Array<{
 			command: string
@@ -28,6 +29,10 @@ function localizationReferences(value: unknown): string[] {
 }
 
 describe("extension command manifest", () => {
+	it("activates to restore editor chat panels after a window reload", () => {
+		expect(manifest.activationEvents).toContain("onWebviewPanel:alpha.TabPanelProvider")
+	})
+
 	it("exposes scoped agent hotkeys without taking over Enter or Plan/Code switching", () => {
 		for (const command of [
 			"plusButtonClicked",

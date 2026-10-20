@@ -245,6 +245,123 @@ describe("fileChangesFromMessages", () => {
 		expect(fileChangesFromMessages([preview, completed])).toHaveLength(2)
 	})
 
+	it("consumes the nearest compatible prior preview without changing transcript order", () => {
+		const preview = (path: string, added: number) =>
+			msg({
+				type: "ask",
+				ask: "tool",
+				isAnswered: true,
+				text: JSON.stringify({
+					tool: "appliedDiff",
+					path,
+					diff: "-before\n+after",
+					diffStats: { added, removed: 0 },
+				}),
+			})
+		const result = fileChangesFromMessages([
+			preview("src/file.ts", 1),
+			preview("./src\\file.ts", 2),
+			preview("src/other.ts", 3),
+			completedCommandEdit("src/file.ts", "-before\n+after", "run-1"),
+			preview("src/file.ts", 4),
+		])
+
+		expect(
+			result.map(({ path, diffStats, commandExecutionId }) => [path, diffStats?.added, commandExecutionId]),
+		).toEqual([
+			["src/file.ts", 1, undefined],
+			["src/other.ts", 3, undefined],
+			["src/file.ts", 1, "run-1"],
+			["src/file.ts", 4, undefined],
+		])
+	})
+
+	it.each(["originalContent", "commandExecutionId"] as const)(
+		"skips a newer incompatible %s preview while matching an older one",
+		(field) => {
+			const preview = (value: string, added: number) =>
+				msg({
+					type: "ask",
+					ask: "tool",
+					isAnswered: true,
+					text: JSON.stringify({
+						tool: "appliedDiff",
+						path: "src/file.ts",
+						diff: "-before\n+after",
+						[field]: value,
+						diffStats: { added, removed: 0 },
+					}),
+				})
+			const compatibleValue = field === "originalContent" ? "before\n" : "run-1"
+			const result = fileChangesFromMessages([
+				preview(compatibleValue, 5),
+				preview("another execution or content", 9),
+				completedCommandEdit("src/file.ts", "-before\n+after", "run-1"),
+			])
+
+			expect(result).toHaveLength(2)
+			expect(result.map((entry) => entry.diffStats?.added)).toEqual([9, 1])
+		},
+	)
+
+	it("keeps case-distinct paths and never pairs a completion with a future preview", () => {
+		const completed = completedCommandEdit("src/file.ts", "-before\n+after", "run-1")
+		const preview = msg({ type: "ask", ask: "tool", isAnswered: true, text: completed.text! })
+		const caseDistinct = msg({ ...preview, text: preview.text!.replace("src/file.ts", "Src/file.ts") })
+
+		expect(fileChangesFromMessages([caseDistinct, completed, preview]).map((entry) => entry.path)).toEqual([
+			"Src/file.ts",
+			"src/file.ts",
+			"src/file.ts",
+		])
+	})
+
+	it("consumes batch preview entries independently and keeps unmatched entries in their original positions", () => {
+		const preview = msg({
+			type: "ask",
+			ask: "tool",
+			isAnswered: true,
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				batchDiffs: [
+					{ path: "src/file.ts", content: "-before\n+after", diffStats: { added: 5, removed: 0 } },
+					{ path: "src/other.ts", content: "-before\n+other", diffStats: { added: 6, removed: 0 } },
+					{ path: "./src\\file.ts", content: "-before\n+after", diffStats: { added: 7, removed: 0 } },
+				],
+			}),
+		})
+		const result = fileChangesFromMessages([
+			preview,
+			completedCommandEdit("src/file.ts", "-before\n+after", "run-1"),
+			completedCommandEdit("src/file.ts", "-before\n+after", "run-2"),
+		])
+
+		expect(
+			result.map(({ path, diffStats, commandExecutionId }) => [path, diffStats?.added, commandExecutionId]),
+		).toEqual([
+			["src/other.ts", 6, undefined],
+			["src/file.ts", 1, "run-1"],
+			["src/file.ts", 1, "run-2"],
+		])
+	})
+
+	it("preserves a long completed-only transcript and reflects a newly replaced record", () => {
+		const messages = Array.from({ length: 1_000 }, (_, index) =>
+			completedCommandEdit(`src/file-${index}.ts`, `-before-${index}\n+after-${index}`, `run-${index}`),
+		)
+		expect(fileChangesFromMessages(messages).map((entry) => entry.commandExecutionId)).toEqual(
+			messages.map((_, index) => `run-${index}`),
+		)
+		const replacement = completedCommandEdit("src/replaced.ts", "-old\n+new", "replacement")
+		const nextMessages = [...messages.slice(0, -1), replacement]
+		expect(fileChangesFromMessages(nextMessages).at(-1)).toMatchObject({
+			path: "src/replaced.ts",
+			diff: "-old\n+new",
+			commandExecutionId: "replacement",
+		})
+		expect(fileChangesFromMessages(messages).at(-1)?.path).toBe("src/file-999.ts")
+	})
+
 	it("ignores cancelled, incomplete, and empty command change records", () => {
 		const applied = completedCommandEdit("src/file.ts", "-before\n+after", "run-1")
 		const cancelled = msg({ ...applied, text: applied.text!.replace('"applied"', '"cancelled"') })

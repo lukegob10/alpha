@@ -3,7 +3,14 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const git = vi.hoisted(() => ({ revision: vi.fn(), status: vi.fn() }))
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	execSync: git.revision,
+	execFileSync: git.status,
+}))
 
 import { ExecaHarnessProcessRunner } from "../../orchestration/index"
 
@@ -17,6 +24,11 @@ import {
 const evalRoot = path.resolve(process.cwd(), "../../evals")
 const repositoryRoot = path.resolve(process.cwd(), "../..")
 const roots: string[] = []
+
+beforeEach(() => {
+	git.revision.mockReturnValue("a".repeat(40))
+	git.status.mockReturnValue(Buffer.alloc(0))
+})
 
 async function root() {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-live-runner-"))
@@ -35,12 +47,170 @@ function options(attemptRoot: string, overrides: Partial<Parameters<typeof runLi
 	}
 }
 
+async function campaignRepository() {
+	const directory = await root()
+	await fs.mkdir(path.join(directory, "src", "dist"), { recursive: true })
+	await fs.writeFile(path.join(directory, "src", "dist", "extension.js"), "controlled frozen extension fixture")
+	return directory
+}
+
+function campaignReceipts(input: {
+	failure?: { category: string; code: string; providerCode?: string }
+	grader?: "outcome" | "error"
+}) {
+	const dispatched: string[] = []
+	vi.spyOn(ExecaHarnessProcessRunner.prototype, "run").mockImplementation(async (request) => {
+		if (request.args.includes("--scenario-id")) {
+			const argument = (name: string) => request.args[request.args.indexOf(name) + 1]!
+			const runId = argument("--run-id")
+			dispatched.push(runId)
+			const receiptDir = path.join(argument("--artifacts-dir"), runId)
+			await fs.mkdir(receiptDir, { recursive: true })
+			await fs.writeFile(
+				path.join(receiptDir, "workflow-result.json"),
+				JSON.stringify({
+					status: input.failure ? "failed" : "passed",
+					requestsUsed: 1,
+					requestsByPurpose: { task: 1, "reasoning-summary": 0 },
+					model: { id: "controlled-model", reasoningEffort: "high" },
+					...(input.failure ? { failure: input.failure } : {}),
+				}),
+			)
+		} else if (input.grader === "error") throw new Error("controlled grader failure")
+		return {
+			exitCode: request.args.includes("--scenario-id") ? 0 : 1,
+			timedOut: false,
+			stdout: "",
+			stderr: "",
+			durationMs: 0,
+			outputTruncated: false,
+		}
+	})
+	return dispatched
+}
+
 afterEach(async () => {
 	vi.restoreAllMocks()
 	await Promise.all(roots.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })))
 })
 
 describe("live problem-solving runner configuration", () => {
+	it.each([
+		{
+			name: "provider timeout",
+			failure: { category: "provider", code: "other", providerCode: "request_timeout" },
+			failureClass: "provider",
+		},
+		{
+			name: "model admission",
+			failure: { category: "configuration", code: "model-unavailable" },
+			failureClass: "provider",
+		},
+		{
+			name: "provider timeout retained under a lifecycle assertion",
+			failure: { category: "lifecycle", code: "unexpected_resume_task", providerCode: "request_timeout" },
+			failureClass: "task",
+		},
+		{
+			name: "infrastructure with a retained trace",
+			failure: { category: "policy", code: "unexpected_tool_approval" },
+			failureClass: "infrastructure",
+		},
+		{
+			name: "cancellation",
+			failure: { category: "lifecycle", code: "task_cancelled" },
+			failureClass: "cancellation",
+		},
+		{
+			name: "grading infrastructure error",
+			failure: undefined,
+			grader: "error" as const,
+			failureClass: "task",
+		},
+	])(
+		"stops further live dispatch after $name while preserving the first attempt evidence",
+		async ({ failure, failureClass, grader }) => {
+			const parent = await root()
+			const attemptRoot = path.join(parent, "campaign")
+			const dispatched = campaignReceipts({ failure, grader })
+			const report = await runLiveProblemSolvingCore(
+				options(attemptRoot, {
+					repositoryRoot: await campaignRepository(),
+					runId: "controlled-terminal-stop",
+					taskIds: ["alpha-pr-comparison", "alpha-change-integration"],
+					repetitions: 2,
+					promptVariants: ["baseline", "single-command"],
+				}),
+			)
+			expect(dispatched).toEqual(["ps-alpha-pr-comparison-r1-baseline"])
+			expect(report.attempts).toHaveLength(1)
+			expect(report.attempts[0]).toMatchObject({ failureClass, countsAsSolving: false, usage: { requests: 1 } })
+			if (grader === "error") expect(report.attempts[0]!.graderDecision).toBe("grader_error")
+			const written = JSON.parse(await fs.readFile(path.join(attemptRoot, "report.json"), "utf8"))
+			expect(written.attempts).toEqual(report.attempts)
+			const trace = report.attempts[0]!.tracePath
+			expect(trace).not.toBeNull()
+			expect(JSON.parse(await fs.readFile(trace!, "utf8"))).toMatchObject({
+				...(failure ? { failure } : {}),
+				requestsUsed: 1,
+			})
+			expect(await fs.readdir(attemptRoot)).not.toContain("ps-alpha-change-integration-r1-baseline")
+		},
+	)
+
+	it.each([
+		{
+			name: "ordinary graded outcome",
+			failure: undefined,
+			grader: "outcome" as const,
+			failureClass: "task",
+			graderDecision: "outcome_failed",
+		},
+		{
+			name: "task assertion",
+			failure: { category: "assertion", code: "unexpected_completed_verification" },
+			grader: "outcome" as const,
+			failureClass: "task",
+			graderDecision: "outcome_failed",
+		},
+		{
+			name: "task request budget",
+			failure: { category: "timeout", code: "request_limit_reached" },
+			grader: "outcome" as const,
+			failureClass: "budget",
+			graderDecision: "outcome_failed",
+		},
+	])(
+		"continues distinct $name observations without treating them as provider admission failure",
+		async ({ failure, grader, failureClass, graderDecision }) => {
+			const parent = await root()
+			const attemptRoot = path.join(parent, "campaign")
+			const dispatched = campaignReceipts({ failure, grader })
+			const report = await runLiveProblemSolvingCore(
+				options(attemptRoot, {
+					repositoryRoot: await campaignRepository(),
+					runId: "controlled-observations",
+					taskIds: ["alpha-pr-comparison", "alpha-change-integration"],
+				}),
+			)
+			expect(dispatched).toEqual([
+				"ps-alpha-pr-comparison-r1-baseline",
+				"ps-alpha-change-integration-r1-baseline",
+			])
+			expect(report.attempts).toHaveLength(2)
+			for (const attempt of report.attempts)
+				expect(attempt).toMatchObject({
+					status: "failed",
+					countsAsSolving: false,
+					failureClass,
+					graderDecision,
+				})
+			expect(JSON.parse(await fs.readFile(path.join(attemptRoot, "report.json"), "utf8"))).toMatchObject({
+				attempts: report.attempts,
+			})
+		},
+	)
+
 	it("retains request purposes and provider failure attribution through the actual receipt reader", async () => {
 		const directory = await root()
 		const request = {
@@ -52,7 +222,7 @@ describe("live problem-solving runner configuration", () => {
 			provider: "live-copilot" as const,
 			modelId: "model",
 			effort: "high",
-			hostVersion: "1.125.0",
+			hostVersion: "1.138.0",
 			taskId: "fixture",
 			promptPath: path.join(directory, "prompt.md"),
 		}

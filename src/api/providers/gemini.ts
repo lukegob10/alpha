@@ -36,7 +36,12 @@ import {
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 
-import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
+import type {
+	SingleCompletionHandler,
+	ApiHandlerCreateMessageMetadata,
+	ApiHandlerSingleCompletionMetadata,
+} from "../index"
+import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { BaseProvider } from "./base-provider"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { formatApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
@@ -420,13 +425,18 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		})
 	}
 
-	private async getRequestContext(model: string): Promise<GeminiRequestContext> {
+	private async getRequestContext(
+		model: string,
+		metadata?: ApiHandlerSingleCompletionMetadata,
+	): Promise<GeminiRequestContext> {
+		throwIfSingleCompletionAborted(metadata)
 		if (!this.vertexGatewaySettings) {
 			return { client: this.client, model }
 		}
 
-		await this.ensureGatewayTransportConfigured()
-		const accessToken = await this.ensureGatewayAccessToken(false)
+		await awaitSingleCompletion(this.ensureGatewayTransportConfigured(), metadata)
+		throwIfSingleCompletionAborted(metadata)
+		const accessToken = await awaitSingleCompletion(this.ensureGatewayAccessToken(false), metadata)
 
 		const route =
 			this.vertexGatewaySettings.modelRoutingMap[model] ??
@@ -481,7 +491,14 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			).then(() => undefined)
 		}
 
-		await this.gatewayTransportSetupPromise
+		const transportSetup = this.gatewayTransportSetupPromise
+		try {
+			await transportSetup
+		} catch (error) {
+			// Retain successful setup, but let the next request retry repaired gateway configuration.
+			if (this.gatewayTransportSetupPromise === transportSetup) this.gatewayTransportSetupPromise = undefined
+			throw error
+		}
 	}
 
 	private async ensureGatewayAccessToken(forceRefresh: boolean): Promise<string> {
@@ -1207,15 +1224,17 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		return citationLinks.join(", ")
 	}
 
-	async completePrompt(prompt: string): Promise<string> {
+	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
+		throwIfSingleCompletionAborted(metadata)
 		const { id: model, info, maxTokens, reasoning: thinkingConfig } = this.getModel()
 		const maxOutputTokens = this.resolveMaxOutputTokens(info, maxTokens, thinkingConfig)
 		let didRetryForGatewayAuth = false
 		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
-			const requestContext = await this.getRequestContext(model)
-			const requestAbortController = requestTimeoutMs ? new AbortController() : undefined
+			throwIfSingleCompletionAborted(metadata)
+			const requestContext = await awaitSingleCompletion(this.getRequestContext(model, metadata), metadata)
+			const requestControl = createLinkedAbortController({ signal: metadata?.signal })
 
 			const { supportsTemperature } = resolveModelParameterApplicability({
 				provider: "vertex",
@@ -1232,7 +1251,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					requestContext.httpOptions,
 					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
 				),
-				...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),
+				abortSignal: requestControl.signal,
 				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 				...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
 			}
@@ -1244,11 +1263,14 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			}
 
 			try {
+				throwIfSingleCompletionAborted(metadata)
 				const result = await withApiRequestTimeout(
-					requestContext.client.models.generateContent(request),
+					awaitSingleCompletion(requestContext.client.models.generateContent(request), {
+						signal: requestControl.signal,
+					}),
 					`${this.providerName} completion request for ${requestContext.model}`,
 					requestTimeoutMs,
-					() => requestAbortController?.abort(),
+					() => requestControl.controller.abort(),
 				)
 
 				let text = result.text ?? ""
@@ -1263,7 +1285,11 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 				return text
 			} catch (error) {
-				if (!didRetryForGatewayAuth && (await this.shouldRetryWithRefreshedGatewayToken(error))) {
+				throwIfSingleCompletionAborted(metadata)
+				if (
+					!didRetryForGatewayAuth &&
+					(await awaitSingleCompletion(this.shouldRetryWithRefreshedGatewayToken(error), metadata))
+				) {
 					didRetryForGatewayAuth = true
 					continue
 				}
@@ -1286,6 +1312,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				}
 
 				throw error
+			} finally {
+				requestControl.dispose()
 			}
 		}
 	}

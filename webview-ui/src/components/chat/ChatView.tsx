@@ -360,6 +360,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 	const openTaskWithCache = useCallback(
 		(taskId: string) => {
+			// Explicitly reopening the loaded chat supersedes the local home overlay,
+			// even when its draft snapshot has not arrived from the host yet.
+			if (taskId === currentTaskId) {
+				setIsBlankTaskView(false)
+				isBlankTaskPendingRef.current = false
+			}
 			const cachedTranscriptRevision = getCachedTranscriptRevision(taskId)
 			vscode.postMessage({
 				type: "showTaskWithId",
@@ -367,7 +373,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
 			})
 		},
-		[getCachedTranscriptRevision],
+		[currentTaskId, getCachedTranscriptRevision],
 	)
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const isVisibleTaskLifecycleDegraded = Boolean(

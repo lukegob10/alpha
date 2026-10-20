@@ -125,6 +125,40 @@ describe("StellarHandler", () => {
 		expect(OpenAI).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: "refreshed-helix-token" }))
 	})
 
+	describe.each(["stream", "response", "single-prompt"])("failure metadata on %s", (surface) => {
+		it.each([
+			{
+				name: "RateLimitError",
+				status: 429,
+				retryAfterMs: 2_500,
+				retryable: true,
+				retryCategory: "rate-limit",
+			},
+			{
+				name: "QuotaError",
+				status: 429,
+				code: "insufficient_quota",
+				retryable: false,
+				retryCategory: "rate-limit",
+			},
+			{ name: "AbortError", retryable: false, retryCategory: "transport" },
+		])("preserves $name classification across the gateway wrapper", async (metadata) => {
+			mocks.create.mockRejectedValueOnce(Object.assign(new Error("fixture request failed"), metadata))
+			const handler = createHandler({ stellarStreamingEnabled: surface === "stream" })
+			const attempt =
+				surface === "single-prompt"
+					? handler.completePrompt("hello")
+					: handler.createMessage("system", []).next()
+
+			await expect(attempt).rejects.toMatchObject({
+				...metadata,
+				message: "Stellar completion error: fixture request failed",
+			})
+			expect(mocks.create).toHaveBeenCalledOnce()
+			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+		})
+	})
+
 	it("supports non-streaming chat completions", async () => {
 		mocks.create.mockResolvedValueOnce({
 			choices: [{ message: { content: "non-streamed response" }, finish_reason: "stop" }],

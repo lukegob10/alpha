@@ -20,6 +20,23 @@ describe("taskMetadata sub-agent routing", () => {
 		await fs.rm(storageRoot, { recursive: true, force: true })
 	})
 
+	it.each([false, undefined] as const)(
+		"preserves presentation model-call policy %s across a history serialization round trip",
+		async (presentationModelCalls) => {
+			const { historyItem } = await taskMetadata({
+				taskId: "governed-task",
+				taskNumber: 1,
+				messages: [],
+				globalStoragePath: storageRoot,
+				workspace,
+				presentationModelCalls,
+			})
+			const reloaded = historyItemSchema.parse(JSON.parse(JSON.stringify(historyItem)))
+			expect(reloaded.presentationModelCalls).toBe(presentationModelCalls)
+			if (presentationModelCalls === undefined) expect(historyItem).not.toHaveProperty("presentationModelCalls")
+		},
+	)
+
 	it.each([false, true, undefined])(
 		"preserves thread completion delivery preference %s across reload",
 		async (notify) => {

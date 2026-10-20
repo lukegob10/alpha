@@ -81,6 +81,26 @@ beforeEach(() => {
 })
 
 describe("exact recent working set", () => {
+	it("keeps closed occurrences of a reused provider call ID as independent steps", () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original task" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "old.ts" } }],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused", content: "Old result" }] },
+			{ role: "assistant", content: "Old conclusion" },
+			{ role: "user", content: "Continue with the current file" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "current.ts" } }],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused", content: "Current result" }] },
+		]
+		expect(hasToolCallResultIntegrity(messages)).toBe(true)
+		expect(getLogicalStepStarts(messages)).toEqual([0, 3, 4])
+	})
+
 	it.each(["result_before_call", "duplicate_result", "duplicate_call"])(
 		"rejects malformed complete-looking transactions before compaction (%s)",
 		async (malformation) => {
@@ -533,6 +553,49 @@ describe("exact recent working set", () => {
 })
 
 describe("budgeted truncation and cancellation", () => {
+	it("fits an exact recent transaction when the provider reused an older closed call ID", async () => {
+		const provider = new SummaryProvider()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original constraints", ts: 1 },
+			{ role: "assistant", content: "Acknowledged", ts: 2 },
+			{ role: "user", content: "Old context ".repeat(2000), ts: 3 },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "old.ts" } }],
+				ts: 4,
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused", content: "Old result" }], ts: 5 },
+			{ role: "assistant", content: "Old conclusion", ts: 6 },
+			{ role: "user", content: "Continue with the current file", ts: 7 },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "current.ts" } }],
+				ts: 8,
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "reused", content: "Current result" }],
+				ts: 9,
+			},
+		]
+		const before = structuredClone(messages)
+		const result = await manageContext({
+			...options(messages, provider),
+			totalTokens: 9000,
+			contextWindow: 3000,
+			maxTokens: 1000,
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 50,
+		})
+		expect(result.status).toBe("reduced")
+		const active = getEffectiveApiHistory(result.messages)
+		expect(active.slice(-3)).toEqual(messages.slice(-3))
+		expect(hasToolCallResultIntegrity(active)).toBe(true)
+		expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(result.targetContextTokens!)
+		expect(messages).toEqual(before)
+		expect(cleanupAfterTruncation(result.messages.filter((message) => !message.isTruncationMarker))).toEqual(before)
+	})
+
 	it("forces a real recovery when a provider rejects input below local trigger estimates", async () => {
 		const messages = history()
 		const provider = new SummaryProvider()

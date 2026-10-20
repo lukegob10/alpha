@@ -68,7 +68,7 @@ restrictions still apply.
 ### Release Automation
 
 The [release workflow](.github/workflows/release-vsix.yml) runs on `main` and publishes a verified VSIX GitHub release
-after the exact VS Code 1.125.0 host gate, outside-path command checks, packaging, and source-asset verification. It does
+after the exact VS Code 1.138.0 host gate, outside-path command checks, packaging, and source-asset verification. It does
 not publish to the VS Code Marketplace.
 
 1. **Clone** the repo:
@@ -85,7 +85,7 @@ pnpm install --frozen-lockfile
 
 The repository pins Node.js 24.21.0, npm 11.19.0, and pnpm 11.24.0. Use those versions for reproducible builds and
 checks. pnpm remains the package manager; npm is pinned for bootstrap and CI tooling. The development runtime does not
-change the extension's VS Code 1.125.0 compatibility contract.
+change the extension's VS Code 1.138.0 compatibility contract.
 
 3. **Run the extension**:
 
@@ -109,7 +109,7 @@ The Windows VS Code 1.139.1 / bundled JavaScript Debugger 1.117.0 combination wa
 before Alpha activation: the debugger reported `ECONNREFUSED ::1:<port>`, followed by the development host's
 60-second ready-message timeout. The debugger's [extension-host attachment code](https://github.com/microsoft/vscode-js-debug/blob/main/src/targets/node/extensionHostAttacher.ts)
 uses `localhost`, while the host inspector listens on IPv4 loopback. Running without the debugger avoids this
-attachment failure; it does not change Alpha's VS Code 1.125.0 compatibility requirement.
+attachment failure; it does not change Alpha's VS Code 1.138.0 compatibility requirement.
 
 ### Core checks
 
@@ -121,10 +121,11 @@ pnpm check-types
 pnpm test
 ```
 
-The release-host contract runs on VS Code 1.125.0:
+The release-host contract runs on VS Code 1.138.0, which is also the minimum supported editor version.
+See the [migration record](docs/vscode-1.138-migration.md) for compatibility changes and validation.
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
 Optional retained workspace and evaluator checks are explicit:

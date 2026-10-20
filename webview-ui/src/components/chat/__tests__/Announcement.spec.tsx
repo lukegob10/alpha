@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.4",
+		version: "3.2.5",
 	},
 }))
 
@@ -37,12 +37,14 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.4" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.5" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.4")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.5")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.4 improves task recovery, Copilot context, and skill reliability."),
+			screen.getByText(
+				"Alpha v3.2.5 improves agent coordination, saved settings, and chat responsiveness on VS Code 1.138.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -51,16 +53,22 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Recover rewound chats and interrupted turns while preserving conversation history."),
+			screen.getByText(
+				"Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Preserve Copilot thinking state and command text across model requests."),
+			screen.getByText(
+				"Retain saved provider profiles and report unavailable selections without silently switching providers.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Carry committed answers into sub-agent context and keep queued follow-ups consistent."),
+			screen.getByText("Deliver sub-agent results and reviews while preserving workspace and approval limits."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Load explicitly selected skills reliably and use the built-in review-agent skill."),
+			screen.getByText(
+				"Browse chats and file changes with less repeated work, and cancel prompt previews safely.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -68,10 +76,14 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.4 improves task recovery, Copilot context, and skill reliability."),
+			screen.getByText(
+				"Alpha v3.2.5 improves agent coordination, saved settings, and chat responsiveness on VS Code 1.138.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Recover rewound chats and interrupted turns while preserving conversation history."),
+			screen.getByText(
+				"Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
+			),
 		).toBeInTheDocument()
 	})
 })

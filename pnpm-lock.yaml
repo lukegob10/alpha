@@ -151,8 +151,8 @@ importers:
         specifier: ^24.1.0
         version: 24.2.1
       '@types/vscode':
-        specifier: 1.125.0
-        version: 1.125.0
+        specifier: 1.138.0
+        version: 1.138.0
       '@vscode/test-electron':
         specifier: ^2.4.0
         version: 2.5.2(supports-color@8.1.1)
@@ -591,8 +591,8 @@ importers:
         specifier: ^1.1.6
         version: 1.1.6
       '@types/vscode':
-        specifier: 1.125.0
-        version: 1.125.0
+        specifier: 1.138.0
+        version: 1.138.0
       '@vscode/vsce':
         specifier: 3.3.2
         version: 3.3.2(supports-color@8.1.1)
@@ -3047,8 +3047,8 @@ packages:
   '@types/vscode-webview@1.57.5':
     resolution: {integrity: sha512-iBAUYNYkz+uk1kdsq05fEcoh8gJmwT3lqqFPN7MGyjQ3HVloViMdo7ZJ8DFIP8WOK74PjOEilosqAyxV2iUFUw==}
 
-  '@types/vscode@1.125.0':
-    resolution: {integrity: sha512-0icm/ZQAaism87P0ekHqi4/Ju9du+Tm0RUW+y7vqRsxY2cY0FNRX1nAnaW7nT6npPt2tfHiheZ55Zm9UhqonFA==}
+  '@types/vscode@1.138.0':
+    resolution: {integrity: sha512-DhlvrucJa8n6EHst7qQcXOcjLKs/VRTQy55plLO+RN74jonYsr/t9dd66zBnAyz1tpDig0okQAxuoPHpVNje2g==}
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
@@ -10555,7 +10555,7 @@ snapshots:
 
   '@types/vscode-webview@1.57.5': {}
 
-  '@types/vscode@1.125.0': {}
+  '@types/vscode@1.138.0': {}
 
   '@types/ws@8.18.1':
     dependencies:

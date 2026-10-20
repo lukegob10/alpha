@@ -28,7 +28,13 @@ import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
 
-import { registerCommands, registerCodeActions, registerTerminalActions, CodeActionProvider } from "./activate"
+import {
+	registerCommands,
+	registerEditorChatSerializer,
+	registerCodeActions,
+	registerTerminalActions,
+	CodeActionProvider,
+} from "./activate"
 import { initializeI18n } from "./i18n"
 
 /**
@@ -75,7 +81,7 @@ async function checkWorktreeAutoOpen(
 			outputChannel.appendLine(`[Worktree] Auto-opening Alpha sidebar for worktree: ${worktreeAutoOpenPath}`)
 
 			// Open the Alpha sidebar with a slight delay to ensure UI is ready
-			setTimeout(async () => {
+			const autoOpenTimer = setTimeout(async () => {
 				try {
 					await vscode.commands.executeCommand("alpha.plusButtonClicked")
 				} catch (error) {
@@ -84,6 +90,7 @@ async function checkWorktreeAutoOpen(
 					)
 				}
 			}, 500)
+			context.subscriptions.push({ dispose: () => clearTimeout(autoOpenTimer) })
 		}
 	} catch (error) {
 		outputChannel.appendLine(
@@ -182,9 +189,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		}),
 	)
 
-	// Check for worktree auto-open path (set when switching to a worktree)
-	await checkWorktreeAutoOpen(context, outputChannel)
-
 	// Auto-import configuration if specified in settings.
 	try {
 		await autoImportSettings(outputChannel, {
@@ -199,6 +203,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	registerCommands({ context, outputChannel, provider })
+	registerEditorChatSerializer({ context, outputChannel })
+	// Auto-import may be slow; admit auto-open only once its target command exists.
+	await checkWorktreeAutoOpen(context, outputChannel)
 	registerHtmlDocumentViewer(context)
 
 	/**

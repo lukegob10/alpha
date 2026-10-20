@@ -13,7 +13,7 @@ test("harness receipts project final observed state and omit raw locations and e
 		const result: ExtensionTestRunResult = {
 			runId: "receipt-test",
 			providerMode: "scripted",
-			vscodeVersion: "1.125.0",
+			vscodeVersion: "1.138.0",
 			workspace: "PRIVATE_WORKSPACE",
 			userDataDir: "PRIVATE_PROFILE",
 			extensionsDir: "PRIVATE_EXTENSIONS",
@@ -26,13 +26,13 @@ test("harness receipts project final observed state and omit raw locations and e
 			hostExitObserved: false,
 			failure: "evidence-retention-failed",
 			guidance: "PRIVATE_ERROR",
-			actualVSCodeVersion: "1.125.0",
+			actualVSCodeVersion: "1.138.0",
 			captureComplete: true,
 			retention: { schemaVersion: 1, runId: "receipt-test", status: "failed", eligibility: "not-eligible" },
 		}
 		await writeHarnessReceipt(
 			root,
-			{ providerMode: "scripted", vscodeVersion: "1.125.0", testFile: "extension.test", requireAllTests: true },
+			{ providerMode: "scripted", vscodeVersion: "1.138.0", testFile: "extension.test", requireAllTests: true },
 			result,
 			"2026-10-02T00:00:00Z",
 		)
@@ -40,7 +40,7 @@ test("harness receipts project final observed state and omit raw locations and e
 		const receipt = JSON.parse(bytes)
 		assert.equal(receipt.kind, "alpha-extension-test-run")
 		assert.equal(receipt.schemaVersion, 1)
-		assert.equal(receipt.actualHostVersion, "1.125.0")
+		assert.equal(receipt.actualHostVersion, "1.138.0")
 		assert.equal(receipt.status, "blocked")
 		assert.equal(receipt.execution, "test-seam")
 		assert.equal(receipt.requireAllTests, false, "requested strict mode cannot replace an observed host receipt")
@@ -52,7 +52,7 @@ test("harness receipts project final observed state and omit raw locations and e
 		assert.match(receipt.profile.sha256, /^[a-f0-9]{64}$/)
 		assert.doesNotMatch(bytes, /PRIVATE/)
 		await assert.rejects(
-			writeHarnessReceipt(root, { providerMode: "scripted", vscodeVersion: "1.125.0" }, result, "same"),
+			writeHarnessReceipt(root, { providerMode: "scripted", vscodeVersion: "1.138.0" }, result, "same"),
 			{ code: "EEXIST" },
 		)
 		assert.equal(await fs.readFile(path.join(root, "receipt-test.json"), "utf8"), bytes)

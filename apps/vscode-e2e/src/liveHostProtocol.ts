@@ -148,7 +148,7 @@ export async function prepareLiveSidecar(): Promise<string> {
 		manifest.name !== "alpha-live-e2e-sidecar" ||
 		manifest.publisher !== "alpha-code-e2e" ||
 		manifest.main !== "./liveRunnerExtension.js" ||
-		manifest.engines?.vscode !== "^1.125.0" ||
+		manifest.engines?.vscode !== "^1.138.0" ||
 		Object.keys(manifest.engines).length !== 1 ||
 		manifest.version !== "1.0.0" ||
 		manifest.private !== true ||

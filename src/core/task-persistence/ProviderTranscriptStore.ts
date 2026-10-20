@@ -797,28 +797,57 @@ export async function assertAuthoritativeTranscriptMissing(filePath: string, tas
 	)
 }
 
-/** Old fallback data cannot replace a missing v2 authority, even during cold load. */
+/** A cold reader follows an authority published while it waited; fallback never replaces it. */
 export async function withLegacyTranscriptMigration<T>(
 	legacyPath: string,
 	taskId: string,
-	operation: () => Promise<T>,
+	operation: (existingAuthority?: ApiMessage[]) => Promise<T>,
 ): Promise<T> {
 	const sidecarPath = path.join(path.dirname(legacyPath), GlobalFileNames.providerTranscript)
 	return withFileLock(sidecarPath, async () => {
 		const record = await readRawRecord(sidecarPath, taskId)
 		if (record?.version === 2) {
-			throw new ProviderTranscriptStoreError(
-				"read_failed",
-				"Missing authoritative transcript cannot be replaced by an older fallback",
-				taskId,
-			)
+			// The initial missing-file observation can predate another writer's
+			// commit. Reuse the receipt reader so missing/conflicting v2 bytes still
+			// fail closed and retain external-conflict evidence.
+			const verified = await readRawEnvelope(sidecarPath, taskId)
+			if (!verified)
+				throw new ProviderTranscriptStoreError("read_failed", "Transcript receipt disappeared", taskId)
+			return operation(verified.messages)
 		}
 		// The migration's legacy lock nests inside this sidecar lock, matching all
-		// v2 readers. The writer rechecks absence before replacing anything.
-		// Another reader may have waited while migration removed Claude history;
-		// its now-missing fallback must not be mistaken for an empty transcript.
-		await withFileLock(legacyPath, () => assertAuthoritativeTranscriptMissing(legacyPath, taskId))
-		return operation()
+		// v2 readers. Another reader may have completed migration while this one
+		// waited. Read that canonical history instead of serving a stale fallback
+		// or requiring the user to reopen a successfully migrated chat.
+		const existingAuthority = await withFileLock(legacyPath, async () => {
+			let contents: string
+			try {
+				contents = await fs.readFile(legacyPath, "utf8")
+			} catch (cause) {
+				if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined
+				throw new ProviderTranscriptStoreError(
+					"read_failed",
+					"Unable to read authoritative transcript",
+					taskId,
+					{ cause },
+				)
+			}
+			let messages: unknown
+			try {
+				messages = JSON.parse(contents)
+			} catch (cause) {
+				throw new ProviderTranscriptStoreError(
+					"invalid_messages",
+					"Invalid authoritative transcript JSON",
+					taskId,
+					{ cause },
+				)
+			}
+			validateMessages(messages, taskId)
+			return messages
+		})
+		// The fallback writer still rechecks absence before replacing anything.
+		return operation(existingAuthority)
 	})
 }
 

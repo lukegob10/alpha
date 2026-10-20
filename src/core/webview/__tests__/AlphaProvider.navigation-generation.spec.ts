@@ -43,6 +43,50 @@ const createProvider = () => {
 }
 
 describe("blank-task navigation generations", () => {
+	it.each(["blank", "task"] as const)(
+		"does not focus a queued history restore after a newer %s navigation",
+		async (destination) => {
+			const { provider, taskSessions, publishTranscript } = createProvider()
+			const historyReady = barrier()
+			const restoreEntered = barrier()
+			Object.assign(provider, { taskHistoryStoreReady: historyReady.promise })
+			const historical = createTask("historical")
+			const next = createTask("next")
+			taskSessions.register(next, { focus: false })
+			vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
+				historyItem: { id: historical.taskId } as HistoryItem,
+				taskDirPath: "/task",
+				apiConversationHistoryFilePath: "/task/api.json",
+				uiMessagesFilePath: "/task/ui.json",
+				apiConversationHistory: [],
+			})
+			const restore = provider.createTaskWithHistoryItem.bind(provider)
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation((item, options) => {
+				const pending = restore(item, options)
+				restoreEntered.resolve()
+				return pending
+			})
+
+			const opening = provider.showTaskWithId(historical.taskId)
+			await restoreEntered.promise
+			// Another view hydrates the canonical runtime while this restore waits.
+			taskSessions.register(historical, { focus: false })
+			if (destination === "blank") await provider.startBlankTask()
+			else await provider.showTaskWithId(next.taskId)
+			publishTranscript.mockClear()
+			historyReady.resolve()
+			await opening
+
+			expect(provider.getActiveTaskId()).toBe(destination === "blank" ? undefined : next.taskId)
+			expect(publishTranscript).not.toHaveBeenCalled()
+			expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "taskOpenResult",
+				taskId: historical.taskId,
+				success: false,
+			})
+		},
+	)
+
 	it("discards an old history lookup after the user opens a blank task", async () => {
 		const { provider, taskSessions, publishTranscript } = createProvider()
 		const lookupEntered = barrier()

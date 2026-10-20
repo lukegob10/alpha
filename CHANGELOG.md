@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.2.5
+
+### Patch Changes
+
+- Move the extension compatibility and automated release gates to exact VS Code 1.138.0.
+- Keep sub-agent updates, reviews, queued steering, cancellation, and task completion consistent across chat surfaces.
+- Keep managed editing checkouts physically short when storage uses a junction to a long path, including on current Git for Windows.
+- Restore editor chats and drafts after reloads, and persist transcript updates atomically.
+- Retain invalid saved provider profiles, preserve stable selections through imports and repairs, and report unavailable profiles explicitly.
+- Cancel prompt previews safely and prevent late responses from overwriting newer requests or settings edits.
+- Reduce repeated work when projecting chat metadata and matching file-change previews.
+- Add bounded lifecycle diagnostics, require an actual Copilot setup request, and close evaluator database and Redis resources on exit.
+- Allow governed task runs to disable optional presentation model calls before dispatch while preserving ordinary interactive behavior.
+- Update the extension version and in-app release announcement together for Alpha 3.2.5.
+
+### Validation Notes
+
+- The preceding candidate passed 18,011 deterministic tests, exact VS Code 1.138.0 contract gates, and eight installed-package checks. Release CI validates the final versioned source and package separately.
+- Live Copilot acceptance still requires a successful actual-completion setup check. The native history hover investigation and eight manual managed-agent integration rows remain open.
+
 ## 3.2.4
 
 ### Patch Changes

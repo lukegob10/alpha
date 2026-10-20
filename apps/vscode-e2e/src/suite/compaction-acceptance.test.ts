@@ -351,7 +351,7 @@ suite("Alpha native compaction acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("recovers a long completed-thread follow-up in ask mode and accepts the next prompt", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -463,7 +463,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("compacts after a turn, reloads the archive, and sends reduced context on follow-up", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
@@ -606,7 +606,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("recovers an overflowed tool continuation before delivering queued steering", async () => {
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

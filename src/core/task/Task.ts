@@ -441,6 +441,7 @@ export interface CompletionGateDecision {
 		| "managed_results_pending"
 		| "descendants_running"
 		| "child_results_unconsumed"
+		| "review_pending"
 		| "todos_open"
 		| "persistence_unavailable"
 		| "runtime_timeout"
@@ -780,6 +781,8 @@ export interface TaskOptions extends CreateTaskOptions {
 	historyItem?: HistoryItem
 	experiments?: Record<string, boolean>
 	startTask?: boolean
+	/** Stop restoration preserves queued drafts until a new human response permits resuming. */
+	requireExplicitResume?: boolean
 	rootTask?: Task
 	parentTask?: Task
 	/** Captured at effect admission, before deferred launch outlives the invoking goal step. */
@@ -863,6 +866,8 @@ export function getSubagentAllowedToolNames(
 
 export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly taskId: string
+	/** Captured host policy: optional presentation requests never widen on resume or delegation. */
+	readonly presentationModelCalls?: false
 	readonly diagnosticSession: boolean
 	readonly diagnosticIncidentId?: string
 	readonly diagnosticSourceTaskId?: string
@@ -1016,12 +1021,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
 	private taskCancellationReceipt?: TaskCancellationReceipt
+	private retryTaskCancellationFinalization?: () => TaskCancellationReceipt
 	private subagentRuntimeUnloadStarted = false
 	private subagentRuntimeUnloadPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
 	private queuedInputWakePromise?: Promise<void>
 	/** Retains host input until a rehydrated task has installed its initial resume ask. */
 	private initialHistoryResumePending = false
+	private resumeRequiresExplicitInput = false
 	private taskTerminationPromise?: Promise<void>
 	currentRequestAbortController?: AbortController
 	/** Owns the whole model step, including preflight and automatic context compaction. */
@@ -1094,7 +1101,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		| { kind: "toolApproval"; requestId: string; decision: ToolApprovalDecision }
 	private activeToolApprovalRequest?: ToolApprovalRequest
 	private activeToolApprovalDecision?: ToolApprovalDecision
-	private subagentReviewBarrier?: { promise: Promise<void>; resolve: () => void }
+	private subagentReviewBarrier?: { promise: Promise<void>; resolve: () => void; resumeForInput: boolean }
+	private subagentReviewInputTurn?: { runId: string; turnId: string }
 	private isAwaitingSubagentReview = false
 	private isTaskLoopActive = false
 	private didComplete = false
@@ -1826,6 +1834,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		checkpointTimeout = DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 		consecutiveMistakeLimit = DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 		taskId,
+		presentationModelCalls,
 		diagnosticSession,
 		diagnosticIncidentId,
 		diagnosticSourceTaskId,
@@ -1834,6 +1843,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		historyItem,
 		experiments: experimentsConfig,
 		startTask = true,
+		requireExplicitResume = false,
 		rootTask,
 		parentTask,
 		goalAccountingBinding,
@@ -1893,6 +1903,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.taskId = historyItem ? historyItem.id : (taskId ?? uuidv7())
+		this.presentationModelCalls =
+			historyItem?.presentationModelCalls === false ||
+			presentationModelCalls === false ||
+			rootTask?.presentationModelCalls === false ||
+			parentTask?.presentationModelCalls === false
+				? false
+				: undefined
 		this.lifecycleHookStartSource = historyItem ? "resume" : "startup"
 		this.diagnosticSession = (historyItem?.diagnosticSession ?? diagnosticSession) === true
 		const incidentId = historyItem?.diagnosticIncidentId ?? diagnosticIncidentId
@@ -2124,7 +2141,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.ownBackgroundLifecycle("start", this.startTask(task, images))
 			} else if (historyItem) {
 				this.initialHistoryResumePending = true
-				const lifecycle = this.resumeTaskFromHistory().finally(() => {
+				const lifecycle = this.resumeTaskFromHistory(undefined, undefined, undefined, {
+					requireExplicitResume,
+				}).finally(() => {
 					this.initialHistoryResumePending = false
 				})
 				this.ownBackgroundLifecycle("resume", lifecycle)
@@ -2215,6 +2234,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this._started &&
 			!this.abort &&
 			!this.abandoned &&
+			!this.resumeRequiresExplicitInput &&
 			!this.initialHistoryResumePending &&
 			!this.ownedLifecyclePromise &&
 			!this.activeAsk &&
@@ -2299,6 +2319,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.abortTaskPromise = undefined
 		this.taskTerminationPromise = undefined
 		this.taskCancellationReceipt = undefined
+		this.retryTaskCancellationFinalization = undefined
 	}
 
 	/**
@@ -4539,6 +4560,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					taskKind: this.taskKind,
 					cwd: this.cwd,
 					taskFacade: this,
+					ownsLifecyclePublication: ownsHookBoundary,
 					get abort() {
 						return !admitsHookMutation() || getTask().abort
 					},
@@ -5235,6 +5257,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * turn so the task journal can begin a new local sequence at one.
 	 */
 	private async beginCanonicalLifecycleTurn(): Promise<void> {
+		this.subagentReviewInputTurn = undefined
 		try {
 			await this.replayCanonicalLifecycle()
 		} catch (error) {
@@ -6545,6 +6568,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private scheduleInitialTaskTitle(requestText: string): Promise<void> {
 		if (
+			this.presentationModelCalls === false ||
 			!requestText.trim() ||
 			this.diagnosticSession ||
 			this.taskKind === "subagent" ||
@@ -6604,7 +6628,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private summarizeReasoning(message: AlphaMessage | undefined): void {
 		const step = this.currentAgentStep
-		if (this.abort || !step || message?.say !== "reasoning") return
+		if (this.presentationModelCalls === false || this.abort || !step || message?.say !== "reasoning") return
 		this.reasoningSummaries ??= new ReasoningSummary(this.taskId, async (updated) => {
 			if (this.abort || !this.clineMessages.includes(updated)) return
 			await this.updateAlphaMessage(updated)
@@ -6680,6 +6704,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const { historyItem, tokenUsage } = await taskMetadata({
 					taskId: this.taskId,
+					presentationModelCalls: this.presentationModelCalls,
 					diagnosticSession: this.diagnosticSession,
 					diagnosticIncidentId: this.diagnosticIncidentId,
 					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
@@ -7357,13 +7382,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const isMessageQueued = !this.messageQueueService.isEmpty()
 			// Queued messages represent the next conversational turn. Only drain them
 			// at completion/resume boundaries unless the user explicitly steers one.
-			const shouldDrainQueuedMessageForAsk =
-				type === "completion_result" || type === "resume_task" || type === "resume_completed_task"
+			const shouldDrainQueuedMessageForAsk = () =>
+				type === "completion_result" ||
+				((type === "resume_task" || type === "resume_completed_task") && !this.resumeRequiresExplicitInput)
 			const isStatusMutable =
 				!partial &&
 				!signal?.aborted &&
 				isBlocking &&
-				(!shouldDrainQueuedMessageForAsk || !isMessageQueued) &&
+				(!shouldDrainQueuedMessageForAsk() || !isMessageQueued) &&
 				approval.decision === "ask"
 			if (
 				isStatusMutable &&
@@ -7425,7 +7451,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (this.askResponse !== undefined || this.deferredAskResponse || this.lastMessageTs !== askTs) {
 						return true
 					}
-					if (shouldDrainQueuedMessageForAsk && !this.messageQueueService.isEmpty()) {
+					if (shouldDrainQueuedMessageForAsk() && !this.messageQueueService.isEmpty()) {
 						const message = this.dequeueQueuedMessage()
 						if (message) {
 							const accepted = this.handleWebviewAskResponse(
@@ -9112,6 +9138,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
 		if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
+		const reviewDecision = this.getPendingSubagentReviewCompletionDecision()
+		if (reviewDecision) return reviewDecision
 		const todoDecision = this.getOpenTodoCompletionDecision()
 		if (todoDecision) return todoDecision
 
@@ -9147,6 +9175,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
 			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
+			const lateReviewDecision = this.getPendingSubagentReviewCompletionDecision()
+			if (lateReviewDecision) return lateReviewDecision
 			if (lateRuntimeDecision) return lateRuntimeDecision
 			if (
 				runtimeRevision !== this.completionRuntimeRevision ||
@@ -9337,7 +9367,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	/** Wait outside the workspace mutation gate: receipt publishers need that gate to settle. */
 	public async waitForCompletionGateDecision(): Promise<CompletionGateDecision> {
-		const lease = this.beginAgentWait()
+		let lease = this.beginAgentWait()
 		const startedAt = Date.now()
 		let orphanReceiptDeadline: number | undefined
 		let runningCommandDeadline: number | undefined
@@ -9359,6 +9389,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					throw error
 				}
 				if (lastDecision.classification !== "waiting") return lastDecision
+				if (lastDecision.reasonCode === "review_pending") {
+					// Review uses the same control lease as the pre-request pause.
+					// Release this observer before that wait owns steering and Stop.
+					waited = true
+					lease.dispose()
+					await this.waitForPendingSubagentChangeSetReviews()
+					lease = this.beginAgentWait()
+					continue
+				}
 				if (lastDecision.reasonCode === "command_running") {
 					runningCommandDeadline ??= Date.now() + 30_000
 					if (Date.now() >= runningCommandDeadline) {
@@ -10152,50 +10191,87 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private hasPendingSubagentChangeSetReview(): boolean {
-		return this.clineMessages.some((message) =>
+		return (this.clineMessages ?? []).some((message) =>
 			message.subagentGroup?.agents.some((agent) =>
 				["pending_review", "conflicted"].includes(agent.changeSet?.status ?? ""),
 			),
 		)
 	}
 
+	private getPendingSubagentReviewCompletionDecision(): CompletionGateDecision | undefined {
+		if (!this.externalMutationLease && !this.hasPendingSubagentChangeSetReview()) return undefined
+		return {
+			allowed: false,
+			classification: "waiting",
+			reasonCode: "review_pending",
+			modelCanResolveRejection: false,
+			message: t("common:errors.completion_review_pending"),
+		}
+	}
+
 	private releaseSubagentReviewBarrierIfSettled(force = false): void {
 		const barrier = this.subagentReviewBarrier
 		if (!barrier) return
-		if (!force && (this.externalMutationLease || this.hasPendingSubagentChangeSetReview())) return
+		if (
+			!force &&
+			(this.externalMutationLease ||
+				(this.hasPendingSubagentChangeSetReview() && !barrier.resumeForInput && !this.pendingSteerMessage))
+		)
+			return
 		this.subagentReviewBarrier = undefined
 		barrier.resolve()
 	}
 
-	private async waitForPendingSubagentChangeSetReviews(): Promise<void> {
-		while (!this.abort && this.hasPendingSubagentChangeSetReview()) {
+	private async waitForPendingSubagentChangeSetReviews(hasHumanInput = false): Promise<void> {
+		while (
+			!this.abort &&
+			!this.getTaskLifetimeCancellationSignal().aborted &&
+			(this.externalMutationLease ||
+				(this.hasPendingSubagentChangeSetReview() && !hasHumanInput && !this.pendingSteerMessage))
+		) {
 			if (!this.subagentReviewBarrier) {
 				let resolve!: () => void
 				const promise = new Promise<void>((resolveBarrier) => {
 					resolve = resolveBarrier
 				})
-				this.subagentReviewBarrier = { promise, resolve }
+				this.subagentReviewBarrier = { promise, resolve, resumeForInput: hasHumanInput }
 			}
 
 			const barrier = this.subagentReviewBarrier
+			barrier.resumeForInput ||= hasHumanInput
+			const wait = this.beginAgentWait()
 			this.isAwaitingSubagentReview = true
 			try {
-				await this.providerRef.deref()?.autoApplyPendingSubagentChangeSets?.(this.taskId)
+				try {
+					await this.providerRef.deref()?.autoApplyPendingSubagentChangeSets?.(this.taskId)
+				} catch (error) {
+					console.error(
+						`[Task#waitForPendingSubagentChangeSetReviews] Automatic Worker apply failed: ${String(error)}`,
+					)
+				}
+				this.releaseSubagentReviewBarrierIfSettled()
+				if (this.hasPendingSubagentChangeSetReview()) {
+					const publication = this.providerRef
+						.deref()
+						?.postStateToWebviewWithoutTaskHistory()
+						.catch(() => undefined)
+					if (publication) await this.waitForRequestControl(publication, wait.signal)
+				}
+				await this.waitForRequestControl(barrier.promise, wait.signal)
 			} catch (error) {
-				console.error(
-					`[Task#waitForPendingSubagentChangeSetReviews] Automatic Worker apply failed: ${String(error)}`,
-				)
-			}
-			this.releaseSubagentReviewBarrierIfSettled()
-			if (this.hasPendingSubagentChangeSetReview()) {
-				await this.providerRef
-					.deref()
-					?.postStateToWebviewWithoutTaskHistory()
-					.catch(() => undefined)
-			}
-			try {
-				await barrier.promise
+				if (
+					!this.abort &&
+					!this.getTaskLifetimeCancellationSignal().aborted &&
+					wait.signal.aborted &&
+					this.pendingSteerMessage
+				) {
+					// Input interrupts the pause, not the quarantined proposal or an
+					// admitted Apply/Discard. Its mutation lease still drains first.
+					this.releaseSubagentReviewBarrierIfSettled()
+					await barrier.promise
+				} else if (!this.abort && !this.getTaskLifetimeCancellationSignal().aborted) throw error
 			} finally {
+				wait.dispose()
 				if (this.subagentReviewBarrier === barrier) this.subagentReviewBarrier = undefined
 				this.isAwaitingSubagentReview = false
 			}
@@ -10609,6 +10685,43 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Fresh human queue intake resumes the existing FIFO without selecting a newer entry over its head. */
+	public async queueUserMessageDurably(
+		text: string,
+		images?: string[],
+		receiptId?: string,
+		admit?: () => void,
+	): Promise<boolean> {
+		if (!text?.trim() && !images?.length) return false
+		const lifetime = this.taskCancellationController
+		const ownsAdmission = () =>
+			!this.abort &&
+			!this.abandoned &&
+			!lifetime.signal.aborted &&
+			this.taskCancellationController === lifetime &&
+			this.isCurrentApiConversationHistoryOwner()
+		await this.messageQueueService.ready
+		if (receiptId && (await this.hasAcceptedQueuedUserMessage(receiptId))) return true
+		let isNewAdmission = false
+		const message = await this.messageQueueService.addMessageDurably(text, images, receiptId, (isNew) => {
+			admit?.()
+			if (!ownsAdmission()) throw new Error("The task cannot accept queued input")
+			isNewAdmission = isNew
+		})
+		if (!message) return false
+		// The per-receipt queue lane distinguishes retries before persistence. A
+		// stopped/replaced owner cannot transfer its resume intent to a successor.
+		if (isNewAdmission && ownsAdmission()) {
+			this.resumeRequiresExplicitInput = false
+			void this.wakeQueuedInputWhenIdle().catch(() => {
+				console.warn(
+					`[Task#${this.taskId}] Accepted human input remains queued after follow-up admission failed`,
+				)
+			})
+		}
+		return true
+	}
+
 	public async submitUserMessage(
 		text: string,
 		images?: string[],
@@ -10657,6 +10770,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			: await this.messageQueueService.addMessageDurably(text, images, receiptId)
 		const ids = queuedMessageIds ?? (message ? [message.id] : [])
 		await this.messageQueueService.flush()
+		// Only a fresh durable human admission can lift a Stop restore's fence.
+		// Receipt retries returned above without reauthorizing the retained queue.
+		this.resumeRequiresExplicitInput = false
 		this.postTurnCompactionAbortController?.abort(new SteerRequestInterruptError())
 		if (this.didComplete) {
 			if (this.taskKind !== "primary") throw new Error("Use managed follow-up to resume a completed sub-agent")
@@ -12595,12 +12711,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		followupImages?: string[],
 		options: {
 			deferTaskStartedUntilInitialUserContentPersisted?: boolean
+			requireExplicitResume?: boolean
 			reuseRetainedHistory?: boolean
 			queuedMessageIds?: string[]
 			inputOrigin?: "human" | "agent"
 			goalAdmission?: GoalInputAdmission
 		} = {},
 	) {
+		if (options.requireExplicitResume) this.resumeRequiresExplicitInput = true
 		try {
 			const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
 			const useRetainedHistory = options.reuseRetainedHistory === true && hasDirectFollowup
@@ -12769,6 +12887,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const askType: AlphaAsk = completedHistory ? "resume_completed_task" : "resume_task"
 				const { response, text, images, queuedMessageIds } = await this.ask(askType) // Calls `postStateToWebview`.
+				this.resumeRequiresExplicitInput = false
 				responseGoalAdmission = this.consumeGoalAskAdmission(text)
 
 				if (response === "messageResponse") {
@@ -13060,6 +13179,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const existing = this.taskCancellationReceipt
 		if (existing && this.abortTaskPromise === existing.abort) {
 			if (isAbandoned && existing.isCurrent()) this.abandoned = true
+			if (existing.isCurrent() && this.retryTaskCancellationFinalization) {
+				return this.retryTaskCancellationFinalization()
+			}
 			return existing
 		}
 		const cancellation = this.captureTaskCancellationBoundary()
@@ -13076,6 +13198,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Publish both transitions before callbacks can reenter Stop. Starting the
 		// actual async operation below still delivers cancellation synchronously.
 		this.abortTaskPromise = abortPromise
+		// Coalesce one in-flight transition, but let an operator retry process
+		// cleanup after an observable failure instead of caching a rejection forever.
+		void abortPromise.catch(() => {
+			if (this.abortTaskPromise === abortPromise) {
+				this.abortTaskPromise = undefined
+				if (this.taskCancellationReceipt?.abort === abortPromise) this.taskCancellationReceipt = undefined
+				this.retryTaskCancellationFinalization = undefined
+			}
+		})
+		const receipt = this.publishTaskCancellationReceipt(abortPromise, cancellation)
+		void this.performAbortTask(cancellation).then(resolveAbort, rejectAbort)
+		return receipt
+	}
+
+	private publishTaskCancellationReceipt(
+		abortPromise: Promise<void>,
+		cancellation: TaskCancellationBoundary,
+	): TaskCancellationReceipt {
+		this.retryTaskCancellationFinalization = undefined
 		const terminationPromise = this.finalizeTerminationAfterAbort(abortPromise, cancellation)
 		this.taskTerminationPromise = terminationPromise
 		const receipt: TaskCancellationReceipt = Object.freeze({
@@ -13084,19 +13225,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			isCurrent: cancellation.guard,
 		})
 		this.taskCancellationReceipt = receipt
-		// The explicit waitForTermination boundary observes this promise. Attach a
-		// handler immediately as well so a caller that only requests cancellation
-		// cannot create an unhandled rejection while the host is unwinding.
-		void terminationPromise.catch(() => undefined)
-		// Coalesce one in-flight transition, but let an operator retry process
-		// cleanup after an observable failure instead of caching a rejection forever.
-		void abortPromise.catch(() => {
-			if (this.abortTaskPromise === abortPromise) {
-				this.abortTaskPromise = undefined
-				if (this.taskCancellationReceipt === receipt) this.taskCancellationReceipt = undefined
+		void terminationPromise.catch(() => {
+			// A late persistence failure must remain observable to its original
+			// joiners. A new explicit Stop can retry that captured finalization,
+			// without repeating process abort, disposal, or TaskAborted events.
+			if (
+				this.abortTaskPromise === abortPromise &&
+				this.taskCancellationReceipt === receipt &&
+				cancellation.guard()
+			) {
+				this.retryTaskCancellationFinalization = () =>
+					this.publishTaskCancellationReceipt(abortPromise, cancellation)
 			}
 		})
-		void this.performAbortTask(cancellation).then(resolveAbort, rejectAbort)
 		return receipt
 	}
 
@@ -13384,6 +13525,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const ownsCancellation = cancellation.guard
 
 		this.abort = true
+		this.subagentReviewInputTurn = undefined
 		this.activeToolApprovalRequest = undefined
 		this.activeToolApprovalDecision = undefined
 		this.failActiveCommandExecutions("cancelled")
@@ -14393,6 +14535,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const engine = new AgentTurnEngine(host)
 		const runAgentTurn = async (input: TaskTurnInput) => {
+			let reviewTurnOwner: { runId: string; turnId: string } | undefined
 			if (this.contextCondenseAbortController) {
 				throw new Error("Context compaction is in progress")
 			}
@@ -14419,6 +14562,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				await this.beginCanonicalLifecycleTurn()
 				const runId = this.agentRunId
 				const turnId = this.agentTurnId
+				reviewTurnOwner = runId && turnId ? { runId, turnId } : undefined
 				ownsTurnBoundary = () =>
 					this.isCurrentApiConversationHistoryOwner() &&
 					this.agentRunId === runId &&
@@ -14489,6 +14633,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				return outcome
 			} finally {
+				if (
+					reviewTurnOwner &&
+					this.subagentReviewInputTurn?.runId === reviewTurnOwner.runId &&
+					this.subagentReviewInputTurn.turnId === reviewTurnOwner.turnId
+				)
+					this.subagentReviewInputTurn = undefined
 				try {
 					if (ownsTurnAndSample()) await this.settleGoalStep(this.activeGoalStep)
 				} finally {
@@ -15539,12 +15689,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
 				await this.persistLifecycleHookContexts(lifecycleInputInvocation.guard, stepInterruptionSignal)
 
-				// A nested Worker proposal targets this task's working tree. Suspend
-				// before the next provider request so explicit Apply/Discard cannot race
-				// model generation or a workspace mutation. The action lease releases
-				// this barrier only after the artifact and transcript have settled.
-				await this.waitForPendingSubagentChangeSetReviews()
-
 				// Persist locally produced tool and child results before entering the
 				// interruptible provider throttle. The same profile lane still serializes
 				// parent and child requests, but stopping during the wait can no longer
@@ -15554,6 +15698,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const pacingWaitCountBefore = this.requestPacingWaitCount
 				try {
+					// Automated continuation pauses for Worker review. A captured human
+					// instruction can proceed without approving that proposal; an
+					// already admitted Apply/Discard must still finish before sampling.
+					const hasHumanInput = inputBlocksToAcknowledge.some(
+						(block) =>
+							(block.type === "text" || block.type === "image") &&
+							this.inputBlockOrigins.get(block) === "human",
+					)
+					if (hasHumanInput && this.hasPendingSubagentChangeSetReview()) {
+						const runId = this.agentRunId
+						const turnId = this.agentTurnId
+						if (!runId || !turnId) {
+							throw new Error("Cannot continue pending Worker review without a canonical turn owner.")
+						}
+						this.subagentReviewInputTurn = { runId, turnId }
+					}
+					const reviewInputTurn = this.subagentReviewInputTurn
+					const humanGuidedReviewTurn =
+						reviewInputTurn !== undefined &&
+						reviewInputTurn.runId === this.agentRunId &&
+						reviewInputTurn.turnId === this.agentTurnId
+					await this.waitForPendingSubagentChangeSetReviews(hasHumanInput || humanGuidedReviewTurn)
 					this.throwIfStepInterrupted(stepInterruptionSignal)
 					await this.maybeWaitForProviderRateLimit(
 						currentItem.retryAttempt ?? 0,
@@ -20282,6 +20448,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const taskSignal = this.taskCancellationController.signal
 		const cancelFromTask = () => controller.abort(taskSignal.reason)
 		if (taskSignal.aborted) cancelFromTask()
+		// Mailbox admission can await persistence before opening the wait. Steering
+		// accepted during those awaits must also interrupt this newly created lease.
+		else if (this.pendingSteerMessage) controller.abort(new SteerRequestInterruptError())
 		else taskSignal.addEventListener("abort", cancelFromTask, { once: true })
 
 		return {

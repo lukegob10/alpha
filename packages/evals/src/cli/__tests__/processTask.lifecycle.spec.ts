@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { ExecutionIdentity } from "@alpha-code/types"
 import type { HarnessProcessSpec } from "../../orchestration/index"
 
 import {
@@ -87,10 +88,25 @@ vi.mock("../utils", async (importOriginal) => ({
 }))
 
 import { normalizeApiConversationTrace, processTask, processTaskInContainer } from "../processTask"
+import type { RunTaskOptions } from "../types"
 import type { Logger } from "../utils"
 
 const task = { id: 41, runId: 7, language: "javascript", exercise: "lifecycle", iteration: 1 }
 const run = { id: 7, executionMethod: "vscode", timeout: 5 }
+const executionIdentity: ExecutionIdentity = {
+	schemaVersion: 1,
+	hostVersion: "1.138.0",
+	extensionId: "Alpha.alpha",
+	extensionVersion: "3.2.4",
+	entrypointDigest: `sha256:${"a".repeat(64)}`,
+	manifestDigest: `sha256:${"b".repeat(64)}`,
+	identityScope: "observed-entrypoint-and-manifest",
+}
+const presentationPolicy = {
+	schemaVersion: 1,
+	presentationModelCalls: false,
+	presentationModelCallOptOut: true,
+} as const
 const logger = {
 	info: vi.fn(),
 	error: vi.fn(),
@@ -424,6 +440,137 @@ describe("processTask lifecycle integration", () => {
 		expect(logger.close).not.toHaveBeenCalled()
 	})
 
+	it("persists governed presentation policy before allowing the execution callback to dispatch", async () => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: 0.5 })
+		let announcePolicyPersistence!: () => void
+		let releasePolicyPersistence!: () => void
+		const policyPersistenceStarted = new Promise<void>((resolve) => (announcePolicyPersistence = resolve))
+		const policyPersistenceBlocked = new Promise<void>((resolve) => (releasePolicyPersistence = resolve))
+		const order: string[] = []
+		const dispatch = vi.fn(() => order.push("dispatch"))
+		mocks.persistEvalEvent.mockImplementation(async (_attemptId, event) => {
+			if (event.type === "extension.presentation_model_call_policy") {
+				announcePolicyPersistence()
+				await policyPersistenceBlocked
+			}
+			order.push(event.type)
+			return []
+		})
+		mocks.runTaskInVscode.mockImplementationOnce(async ({ onExecutionIdentity }: RunTaskOptions) => {
+			if (!onExecutionIdentity) throw new Error("Execution identity callback is required")
+			await Reflect.apply(onExecutionIdentity, undefined, [executionIdentity, presentationPolicy])
+			dispatch()
+			return "completed"
+		})
+
+		const pending = processTask({ taskId: task.id, jobToken: null, logger, processRunner })
+		try {
+			const first = await Promise.race([
+				policyPersistenceStarted.then(() => "policy_persistence"),
+				pending.then(() => "finished"),
+			])
+			expect(first).toBe("policy_persistence")
+			expect(dispatch).not.toHaveBeenCalled()
+			expect(mocks.persistEvalEvent).toHaveBeenCalledWith(
+				101,
+				expect.objectContaining({
+					type: "extension.presentation_model_call_policy",
+					payload: presentationPolicy,
+				}),
+			)
+		} finally {
+			releasePolicyPersistence()
+		}
+		await expect(pending).resolves.toBe("completed")
+		expect(dispatch).toHaveBeenCalledOnce()
+		expect(order.indexOf("extension.execution_identity")).toBeLessThan(
+			order.indexOf("extension.presentation_model_call_policy"),
+		)
+		expect(order.indexOf("extension.presentation_model_call_policy")).toBeLessThan(order.indexOf("dispatch"))
+		expect(mocks.persistEvalEvent).toHaveBeenCalledWith(
+			101,
+			expect.objectContaining({ type: "extension.execution_identity", payload: executionIdentity }),
+		)
+		expect(mocks.createRuntimeIdentities.mock.lastCall?.[0].executionIdentity).toEqual(executionIdentity)
+		expect(mocks.createRuntimeIdentities.mock.lastCall?.[0]).not.toHaveProperty("presentationPolicy")
+	})
+
+	it.each([
+		undefined,
+		null,
+		{ ...presentationPolicy, schemaVersion: 2 },
+		{ ...presentationPolicy, presentationModelCalls: true },
+		{ ...presentationPolicy, presentationModelCallOptOut: false },
+		{ schemaVersion: 1, presentationModelCalls: false },
+	])("rejects missing or invalid governed presentation policy before dispatch: %j", async (policy) => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: 0.5 })
+		const dispatch = vi.fn()
+		mocks.runTaskInVscode.mockImplementationOnce(async ({ onExecutionIdentity }: RunTaskOptions) => {
+			if (!onExecutionIdentity) throw new Error("Execution identity callback is required")
+			await Reflect.apply(onExecutionIdentity, undefined, [executionIdentity, policy])
+			dispatch()
+			return "completed"
+		})
+
+		await expect(processTask({ taskId: task.id, jobToken: null, processRunner })).rejects.toThrow(
+			/presentation.*opt-out/i,
+		)
+		expect(dispatch).not.toHaveBeenCalled()
+		expect(mocks.createRuntimeIdentities).toHaveBeenCalledOnce()
+		expect(mocks.persistRuntimeIdentities).toHaveBeenCalledOnce()
+		expect(mocks.persistEvalEvent.mock.calls.some(([, event]) => event.type.startsWith("extension."))).toBe(false)
+		expect(mocks.runUnitTest).not.toHaveBeenCalled()
+		expect(state).toMatchObject({ phase: "agent_execution", terminalStatus: "agent_error" })
+		expect(mocks.deregisterRunner).toHaveBeenCalledOnce()
+		expect(mocks.closeOwnedLogger).toHaveBeenCalledOnce()
+	})
+
+	it("rejects failed governed policy persistence before dispatch and still releases task resources", async () => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: 0.5 })
+		const persistenceFailure = new Error("presentation policy persistence failed")
+		const dispatch = vi.fn()
+		mocks.persistEvalEvent.mockImplementation(async (_attemptId, event) => {
+			if (event.type === "extension.presentation_model_call_policy") throw persistenceFailure
+			return []
+		})
+		mocks.runTaskInVscode.mockImplementationOnce(async ({ onExecutionIdentity }: RunTaskOptions) => {
+			if (!onExecutionIdentity) throw new Error("Execution identity callback is required")
+			await Reflect.apply(onExecutionIdentity, undefined, [executionIdentity, presentationPolicy])
+			dispatch()
+			return "completed"
+		})
+
+		await expect(processTask({ taskId: task.id, jobToken: null, processRunner })).rejects.toBe(persistenceFailure)
+		expect(dispatch).not.toHaveBeenCalled()
+		expect(mocks.runUnitTest).not.toHaveBeenCalled()
+		expect(state).toMatchObject({ phase: "agent_execution", terminalStatus: "agent_error" })
+		expect(mocks.deregisterRunner).toHaveBeenCalledOnce()
+		expect(mocks.closeOwnedLogger).toHaveBeenCalledOnce()
+	})
+
+	it("keeps non-governed identity callbacks compatible when presentation policy is omitted", async () => {
+		const dispatch = vi.fn()
+		mocks.runTaskInVscode.mockImplementationOnce(async ({ onExecutionIdentity }: RunTaskOptions) => {
+			if (!onExecutionIdentity) throw new Error("Execution identity callback is required")
+			await onExecutionIdentity(executionIdentity)
+			dispatch()
+			return "completed"
+		})
+
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).resolves.toBe("completed")
+		expect(dispatch).toHaveBeenCalledOnce()
+		expect(state.terminalStatus).toBe("passed")
+		expect(mocks.persistEvalEvent).toHaveBeenCalledWith(
+			101,
+			expect.objectContaining({ type: "extension.execution_identity", payload: executionIdentity }),
+		)
+		expect(
+			mocks.persistEvalEvent.mock.calls.some(
+				([, event]) => event.type === "extension.presentation_model_call_policy",
+			),
+		).toBe(false)
+	})
+
 	it.each(["completed", "execution_error", "cleanup_error"])("closes an owned logger after %s", async (outcome) => {
 		if (outcome === "execution_error") mocks.runTaskInVscode.mockRejectedValueOnce(new Error("execution failed"))
 		if (outcome === "cleanup_error") mocks.deregisterRunner.mockRejectedValueOnce(new Error("cleanup failed"))
@@ -525,6 +672,52 @@ describe("processTask lifecycle integration", () => {
 		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "cancelled" })
 		expect(mocks.runUnitTest).toHaveBeenCalledOnce()
+	})
+
+	it.each(["grader_error", "safety_failed"])(
+		"returns the cancelled execution after cleanup while preserving a %s trial decision",
+		async (decision) => {
+			let announceCleanup!: () => void
+			let releaseCleanup!: () => void
+			const cleanupStarted = new Promise<void>((resolve) => (announceCleanup = resolve))
+			const cleanupBlocked = new Promise<void>((resolve) => (releaseCleanup = resolve))
+			mocks.runTaskInVscode.mockResolvedValue("cancelled")
+			mocks.runUnitTest.mockResolvedValue({ decision, results: [] })
+			mocks.deregisterRunner.mockImplementationOnce(async () => {
+				announceCleanup()
+				await cleanupBlocked
+			})
+
+			let settled = false
+			const pending = processTask({ taskId: task.id, jobToken: null, processRunner })
+			void pending.then(
+				() => (settled = true),
+				() => (settled = true),
+			)
+			await cleanupStarted
+			expect(state).toMatchObject({ phase: "grading", terminalStatus: decision })
+			expect(mocks.runUnitTest).toHaveBeenCalledOnce()
+			expect(mocks.settleTrialAfterRetries).toHaveBeenCalledOnce()
+			expect(settled).toBe(false)
+			expect(mocks.closeOwnedLogger).not.toHaveBeenCalled()
+
+			releaseCleanup()
+			await expect(pending).resolves.toBe("cancelled")
+			expect(mocks.closeOwnedLogger).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each(["grading", "cleanup"])("rejects a %s failure after execution cancellation", async (stage) => {
+		const failure = new Error(`${stage} failed after cancellation`)
+		mocks.runTaskInVscode.mockResolvedValue("cancelled")
+		if (stage === "grading") mocks.runUnitTest.mockRejectedValueOnce(failure)
+		else mocks.deregisterRunner.mockRejectedValueOnce(failure)
+
+		await expect(processTask({ taskId: task.id, jobToken: null, processRunner })).rejects.toBe(failure)
+		expect(state).toMatchObject({ terminalStatus: stage === "grading" ? "grader_error" : "cancelled" })
+		expect(mocks.settleTrialAfterRetries).toHaveBeenCalledOnce()
+		expect(mocks.deregisterRunner).toHaveBeenCalledOnce()
+		expect(mocks.closeOwnedLogger).toHaveBeenCalledOnce()
 	})
 
 	it("classifies wall-budget termination separately from safety and outcome failures", async () => {

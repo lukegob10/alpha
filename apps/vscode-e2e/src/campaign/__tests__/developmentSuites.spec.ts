@@ -74,7 +74,7 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 		assert.equal(config.maxReproductions, 2)
 	}
 
-	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.125.0" } }))
+	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.138.0" } }))
 	assert.equal(singleHost.budgets.maxIterations, 36)
 })
 
@@ -90,7 +90,7 @@ test("core acceptance uses Copilot on the reference host with explicit bounded s
 			maxRequests: 100,
 		}),
 	)
-	assert.deepEqual(config.hosts, [{ version: "1.125.0" }])
+	assert.deepEqual(config.hosts, [{ version: "1.138.0" }])
 	assert.equal(config.samples, 3)
 	assert.equal(config.budgets.maxRequests, 100)
 	assert.equal(config.budgets.maxIterations, 81)
@@ -112,8 +112,8 @@ test("core acceptance uses Copilot on the reference host with explicit bounded s
 })
 
 test("defaults to the exact supported hosts in compatibility order and accepts one host", () => {
-	assert.deepEqual(createDevelopmentSuite(options()).hosts, [{ version: "1.125.0" }])
-	assert.deepEqual(createDevelopmentSuite(options({ host: { version: "1.125.0" } })).hosts, [{ version: "1.125.0" }])
+	assert.deepEqual(createDevelopmentSuite(options()).hosts, [{ version: "1.138.0" }])
+	assert.deepEqual(createDevelopmentSuite(options({ host: { version: "1.138.0" } })).hosts, [{ version: "1.138.0" }])
 })
 
 test("requires an exact live model and an explicit supported effort", () => {
@@ -148,17 +148,17 @@ test("rejects invalid suite, provider, host, and path inputs", () => {
 		/Invalid development suite provider/,
 	)
 	assert.throws(
-		() => createDevelopmentSuite(options({ host: { version: "stable" as "1.125.0" } })),
+		() => createDevelopmentSuite(options({ host: { version: "stable" as "1.138.0" } })),
 		/Unsupported host version/,
 	)
 	assert.throws(
-		() => createDevelopmentSuite(options({ host: { version: "1.125.0", executable: "relative/vscode" } })),
+		() => createDevelopmentSuite(options({ host: { version: "1.138.0", executable: "relative/vscode" } })),
 		/Host executable must be absolute/,
 	)
 	assert.throws(() => createDevelopmentSuite(options({ id: "../outside-campaign" })), /Invalid campaign identifier/)
 
 	const absoluteExecutable = createDevelopmentSuite(
-		options({ host: { version: "1.125.0", executable: path.resolve("vscode.exe") } }),
+		options({ host: { version: "1.138.0", executable: path.resolve("vscode.exe") } }),
 	)
 	assert.equal(absoluteExecutable.hosts[0]?.executable, path.resolve("vscode.exe"))
 })
@@ -170,7 +170,7 @@ test("returns an existing parser-compatible campaign config without source repai
 
 	const existing: CampaignConfig = {
 		id: "existing-campaign",
-		hosts: [{ version: "1.125.0" }],
+		hosts: [{ version: "1.138.0" }],
 		scenarioIds: ["review-edit-test-commit-followup"],
 		samples: 1,
 		provider: { mode: "scripted" },

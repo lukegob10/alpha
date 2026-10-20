@@ -4,7 +4,7 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runRenderedUiProbe } from "./campaign/renderedUiProbe"
 
 async function main() {
-	const executable = await downloadAndUnzipVSCode({ version: "1.125.0" })
+	const executable = await downloadAndUnzipVSCode({ version: "1.138.0" })
 	const output = path.resolve(__dirname, "../../../artifacts/request-user-input-ui")
 	const result = await runRenderedUiProbe(executable, output, "request-user-input")
 	const directory = path.join(output, result.host.runId)

@@ -17,8 +17,13 @@ import { assertSupportedApiProvider, type TaskReasoningRuntimeOptions } from "..
 import { FakeAIHandler } from "./providers/fake-ai"
 import type { ModelToolIdentity } from "./providers/utils/router-tool-preferences"
 
+export interface ApiHandlerSingleCompletionMetadata {
+	/** Terminal caller cancellation; adapters must also cancel the underlying transport. */
+	signal?: AbortSignal
+}
+
 export interface SingleCompletionHandler {
-	completePrompt(prompt: string): Promise<string>
+	completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string>
 }
 
 export interface ApiInstructionFragment {

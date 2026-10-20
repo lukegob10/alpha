@@ -17,6 +17,7 @@ import { AgentControlStore, FileAgentControlPersistence } from "../../agent/Agen
 import { EnvironmentContext } from "../../environment/EnvironmentContext"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { readApiMessages, saveTaskMessages } from "../../task-persistence"
+import * as apiMessagePersistence from "../../task-persistence/apiMessages"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { ProviderTranscriptStore } from "../../task-persistence/ProviderTranscriptStore"
 import { readTaskMessages } from "../../task-persistence/taskMessages"
@@ -471,6 +472,223 @@ describe("Stage Three legacy delegated handoff integration", () => {
 		await expect(harness.gate.runIfIdle(PARENT_ID, "released probe", async () => "released")).resolves.toBe(
 			"released",
 		)
+	})
+
+	it.each(["receipt lookup", "receipt lane", "completed alias"] as const)(
+		"retains human queue admission across handoff during its %s",
+		async (boundary) => {
+			const harness = await setup()
+			const gateEntered = deferred(),
+				releaseGate = deferred()
+			const abortEntered = deferred(),
+				releaseAbort = deferred()
+			const admissionEntered = deferred(),
+				releaseAdmission = deferred()
+			harness.getDecision.mockImplementationOnce(async (task) => {
+				gateEntered.resolve()
+				await releaseGate.promise
+				return harness.ledger.getParentCompletionDecision(task.taskId, CHILD_ID)
+			})
+			vi.mocked(harness.child.abortTask).mockImplementationOnce(async () => {
+				harness.child.abort = true
+				abortEntered.resolve()
+				await releaseAbort.promise
+			})
+			const operation = observe(harness.handoff())
+			let admission: ReturnType<typeof observe> | undefined
+			let lane: Promise<unknown> | undefined
+			let accepted = false
+			try {
+				await reachBarrier(gateEntered.promise, operation)
+				await harness.parent.messageQueueService.addMessageDurably(
+					"Earlier parent guidance",
+					[],
+					"parent-earlier",
+				)
+				if (boundary === "receipt lane") {
+					lane = harness.child.messageQueueService["enqueueDurableMutation"]("handoff-input", async () => {
+						await releaseAdmission.promise
+					})
+					const add = harness.child.messageQueueService.addMessageDurably.bind(
+						harness.child.messageQueueService,
+					)
+					vi.spyOn(harness.child.messageQueueService, "addMessageDurably").mockImplementation((...args) => {
+						const result = add(...args)
+						admissionEntered.resolve()
+						return result
+					})
+				} else {
+					const read = apiMessagePersistence.readApiMessages
+					let held = false
+					vi.spyOn(apiMessagePersistence, "readApiMessages").mockImplementation(async (options) => {
+						if (options.taskId === CHILD_ID && !held) {
+							held = true
+							admissionEntered.resolve()
+							await releaseAdmission.promise
+						}
+						return read(options)
+					})
+				}
+				admission = observe(
+					harness.provider
+						.queueMessageForTaskDurably(CHILD_ID, "Keep the human instruction", [], "handoff-input", {
+							source: "human",
+						})
+						.then((result) => {
+							accepted = result
+						}),
+				)
+				await reachBarrier(admissionEntered.promise, admission)
+				releaseGate.resolve()
+				await reachBarrier(abortEntered.promise, operation)
+				expect(harness.buffers.get(CHILD_ID)?.phase).toBe("committing")
+				if (boundary === "completed alias") {
+					releaseAbort.resolve()
+					expect(await operation).toMatchObject({ status: "fulfilled" })
+					expect(harness.buffers.has(CHILD_ID)).toBe(false)
+				}
+				releaseAdmission.resolve()
+				expect(await admission).toMatchObject({ status: "fulfilled" })
+				expect(accepted).toBe(true)
+				expect(
+					await harness.provider.queueMessageForTaskDurably(
+						PARENT_ID,
+						"Keep the human instruction",
+						[],
+						"handoff-input",
+						{ source: "human" },
+					),
+				).toBe(true)
+			} finally {
+				releaseAdmission.resolve()
+				releaseGate.resolve()
+				releaseAbort.resolve()
+				await Promise.allSettled([operation, admission, lane])
+			}
+			expect(harness.parent.messageQueueService.messages).toMatchObject([
+				{ id: "parent-earlier", text: "Earlier parent guidance" },
+				{ id: "handoff-input", text: "Keep the human instruction" },
+			])
+			expect(harness.child.messageQueueService.visibleMessages).toEqual([])
+			expect(harness.parent.resumeAfterDelegation).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("does not transfer human resume intent after Stop without a handoff route change", async () => {
+		const harness = await setup()
+		const gateEntered = deferred(),
+			releaseGate = deferred()
+		const lookupEntered = deferred(),
+			releaseLookup = deferred()
+		harness.getDecision.mockImplementationOnce(async (task) => {
+			gateEntered.resolve()
+			await releaseGate.promise
+			return harness.ledger.getParentCompletionDecision(task.taskId, CHILD_ID)
+		})
+		const operation = observe(harness.handoff())
+		let admission: ReturnType<typeof observe> | undefined
+		try {
+			await reachBarrier(gateEntered.promise, operation)
+			const read = apiMessagePersistence.readApiMessages
+			vi.spyOn(apiMessagePersistence, "readApiMessages").mockImplementation(async (options) => {
+				if (options.taskId === CHILD_ID) {
+					lookupEntered.resolve()
+					await releaseLookup.promise
+				}
+				return read(options)
+			})
+			admission = observe(
+				harness.provider
+					.queueMessageForTaskDurably(CHILD_ID, "Keep this instruction", [], "stopped-input", {
+						source: "human",
+					})
+					.then(() => undefined),
+			)
+			await reachBarrier(lookupEntered.promise, admission)
+			harness.child.abort = true
+			harness.child["resumeRequiresExplicitInput"] = true
+			releaseLookup.resolve()
+			expect(await admission).toMatchObject({
+				status: "rejected",
+				error: expect.objectContaining({ message: "The task cannot accept queued input" }),
+			})
+			expect(harness.child["resumeRequiresExplicitInput"]).toBe(true)
+			expect(harness.buffers.get(CHILD_ID)?.phase).toBe("preparing")
+		} finally {
+			releaseLookup.resolve()
+			releaseGate.resolve()
+			await Promise.allSettled([operation, admission])
+		}
+		expect(harness.parent.messageQueueService.visibleMessages).toEqual([])
+		expect(harness.child.messageQueueService.visibleMessages).toEqual([])
+	})
+
+	it("propagates a durable storage failure after rerouting without repeating admission", async () => {
+		const harness = await setup()
+		const gateEntered = deferred(),
+			releaseGate = deferred()
+		const abortEntered = deferred(),
+			releaseAbort = deferred()
+		const lookupEntered = deferred(),
+			releaseLookup = deferred()
+		const storageFailure = new Error("Queue storage unavailable")
+		let rejectFirst = true
+		const save = vi.fn(async () => {
+			if (rejectFirst) {
+				rejectFirst = false
+				throw storageFailure
+			}
+		})
+		Object.assign(harness.parent, {
+			messageQueueService: new MessageQueueService({ load: async () => [], save }),
+		})
+		harness.parent["resumeRequiresExplicitInput"] = true
+		harness.getDecision.mockImplementationOnce(async (task) => {
+			gateEntered.resolve()
+			await releaseGate.promise
+			return harness.ledger.getParentCompletionDecision(task.taskId, CHILD_ID)
+		})
+		vi.mocked(harness.child.abortTask).mockImplementationOnce(async () => {
+			harness.child.abort = true
+			abortEntered.resolve()
+			await releaseAbort.promise
+		})
+		const operation = observe(harness.handoff())
+		let admission: ReturnType<typeof observe> | undefined
+		try {
+			await reachBarrier(gateEntered.promise, operation)
+			const read = apiMessagePersistence.readApiMessages
+			let held = false
+			vi.spyOn(apiMessagePersistence, "readApiMessages").mockImplementation(async (options) => {
+				if (options.taskId === CHILD_ID && !held) {
+					held = true
+					lookupEntered.resolve()
+					await releaseLookup.promise
+				}
+				return read(options)
+			})
+			admission = observe(
+				harness.provider
+					.queueMessageForTaskDurably(CHILD_ID, "Keep this instruction", [], "failed-input", {
+						source: "human",
+					})
+					.then(() => undefined),
+			)
+			await reachBarrier(lookupEntered.promise, admission)
+			releaseGate.resolve()
+			await reachBarrier(abortEntered.promise, operation)
+			releaseLookup.resolve()
+			expect(await admission).toEqual({ status: "rejected", error: storageFailure })
+			expect(save).toHaveBeenCalledTimes(2)
+			expect(harness.parent["resumeRequiresExplicitInput"]).toBe(true)
+		} finally {
+			releaseLookup.resolve()
+			releaseGate.resolve()
+			releaseAbort.resolve()
+			await Promise.allSettled([operation, admission])
+		}
+		expect(harness.parent.messageQueueService.visibleMessages).toEqual([])
+		expect(harness.child.messageQueueService.visibleMessages).toEqual([])
 	})
 
 	it("rejects cancellation that arrives while the final gate is awaiting evidence", async () => {

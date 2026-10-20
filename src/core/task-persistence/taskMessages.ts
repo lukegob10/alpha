@@ -56,5 +56,7 @@ export type SaveTaskMessagesOptions = {
 export async function saveTaskMessages({ messages, taskId, globalStoragePath }: SaveTaskMessagesOptions) {
 	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
 	const filePath = path.join(taskDir, GlobalFileNames.uiMessages)
-	await safeWriteJson(filePath, messages)
+	// Reopen and background readers do not hold the writer's lease. Keep the
+	// previous snapshot at its canonical path until the replacement commits.
+	await safeWriteJson(filePath, messages, { atomicReplace: true })
 }

@@ -36,11 +36,13 @@ import {
 	taskReasoningUpdateSchema,
 	sendAndSteerMessageSchema,
 	webviewFocusChangedMessageSchema,
+	cancelEnhancePromptMessageSchema,
 	subagentAgentTypesSchema,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
 	type ProviderProfileSaveResult,
+	type ProviderSettingsEntry,
 	taskRenameRequestSchema,
 	type TaskRenameResult,
 } from "@alpha-code/types"
@@ -52,7 +54,12 @@ import { saveTaskMessages } from "../task-persistence"
 import { TaskRenameError } from "../task-persistence/TaskHistoryStore"
 
 import { AlphaProvider } from "./AlphaProvider"
-import { ProviderProfileRenameError, ProviderProfileSaveError } from "../config/ProviderSettingsManager"
+import {
+	ProviderProfileRenameError,
+	ProviderProfileSaveError,
+	ProviderProfileUnavailableError,
+} from "../config/ProviderSettingsManager"
+import { getProviderProfileUnavailableMessage } from "./providerProfileErrors"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
@@ -68,6 +75,8 @@ import {
 import { changeLanguage, t } from "../../i18n"
 import { Package } from "../../shared/package"
 import { MessageEnhancer } from "./messageEnhancer"
+import { beginPromptEnhancement, cancelPromptEnhancement, cancelPromptEnhancements } from "./promptEnhancementRequests"
+import { awaitSingleCompletion } from "../../api/transform/single-completion"
 
 import { CodeIndexManager } from "../../services/code-index/manager"
 import { checkExistKey } from "../../shared/checkExistApiConfig"
@@ -715,7 +724,7 @@ export const webviewMessageHandler = async (
 
 			provider.isViewLaunched = true
 			break
-		case "newTask":
+		case "newTask": {
 			if (
 				message.taskApprovalMode !== undefined &&
 				!approvalModeSchema.safeParse(message.taskApprovalMode).success
@@ -723,6 +732,8 @@ export const webviewMessageHandler = async (
 				vscode.window.showErrorMessage("Invalid task approval mode")
 				break
 			}
+			const navigationGeneration = provider.getTaskNavigationGeneration()
+			const stillCurrent = () => provider.getTaskNavigationGeneration() === navigationGeneration
 			// Initializing new instance of Alpha will make sure that any
 			// agentically running promises in old instance don't affect our new
 			// task. This essentially creates a fresh slate for the new task.
@@ -747,19 +758,22 @@ export const webviewMessageHandler = async (
 					message.taskConfiguration,
 				)
 			} catch (error) {
-				// For all errors, reset the UI and show error
-				await provider.postMessageToWebview({
-					type: "action",
-					action: "chatButtonClicked",
-					values: { force: true },
-				})
-				await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+				// Failure recovery belongs to this submission, never a later navigation.
+				if (stillCurrent()) {
+					await provider.postMessageToWebview({
+						type: "action",
+						action: "chatButtonClicked",
+						values: { force: true },
+					})
+					if (stillCurrent()) await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+				}
 				// Show error to user
 				vscode.window.showErrorMessage(
 					`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
 				)
 			}
 			break
+		}
 		case "resumeCompletedTask":
 			{
 				const restoreDraft = async (reason: string) => {
@@ -946,6 +960,7 @@ export const webviewMessageHandler = async (
 							resolved.text ?? "",
 							resolved.images,
 							message.requestId,
+							{ source: "human" },
 						)
 						await postChatCommandResult(
 							"askResponse",
@@ -1477,6 +1492,12 @@ export const webviewMessageHandler = async (
 				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
 				break
 			}
+			if (
+				message.expectedTurnId === undefined ||
+				provider.getLiveTask(message.taskId)?.matchesExpectedTurn?.(message.expectedTurnId)
+			) {
+				cancelPromptEnhancements(provider, message.taskId)
+			}
 			await provider.cancelTask(message.taskId, "webview_stop", message.expectedTurnId)
 			break
 		case "stopIndependentTask": {
@@ -1946,16 +1967,37 @@ export const webviewMessageHandler = async (
 			await updateGlobalState("autoApprovalEnabled", message.bool ?? false)
 			await provider.postStateToWebview()
 			break
+		case "cancelEnhancePrompt": {
+			const parsed = cancelEnhancePromptMessageSchema.safeParse(message)
+			if (parsed.success) cancelPromptEnhancement(provider, parsed.data.requestId, parsed.data.taskId)
+			else provider.log("[PromptEnhancement] Ignoring invalid cancellation request")
+			break
+		}
 		case "enhancePrompt": {
 			if (message.text) {
+				if (
+					message.requestId !== undefined &&
+					!cancelEnhancePromptMessageSchema.shape.requestId.safeParse(message.requestId).success
+				) {
+					provider.log("[PromptEnhancement] Ignoring invalid request ID")
+					break
+				}
 				const response = {
 					type: "enhancedPrompt" as const,
 					...(message.requestId === undefined ? {} : { requestId: message.requestId }),
 				}
+				let request: ReturnType<typeof beginPromptEnhancement> | undefined
+				let outcome: { text?: string; enhancementStatus: "success" | "error" | "cancelled" }
 				try {
 					// The selected task may change while configuration or the provider is awaited.
 					const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
-					const state = await provider.getState()
+					request = beginPromptEnhancement(
+						provider,
+						message.requestId,
+						message.taskId ?? currentAlpha?.taskId,
+					)
+					const metadata = { signal: request.signal }
+					const state = await awaitSingleCompletion(provider.getState(), metadata)
 
 					const {
 						apiConfiguration,
@@ -1974,30 +2016,46 @@ export const webviewMessageHandler = async (
 					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
 					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
-					const result = await MessageEnhancer.enhanceMessage({
-						text: message.text,
-						apiConfiguration,
-						customSupportPrompts: effectiveCustomSupportPrompts,
-						listApiConfigMeta,
-						enhancementApiConfigId: effectiveEnhancementApiConfigId,
-						includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
-						currentAlphaMessages: currentAlpha?.clineMessages,
-						providerSettingsManager: provider.providerSettingsManager,
-					})
+					const result = await awaitSingleCompletion(
+						MessageEnhancer.enhanceMessage({
+							text: message.text,
+							apiConfiguration,
+							customSupportPrompts: effectiveCustomSupportPrompts,
+							listApiConfigMeta,
+							enhancementApiConfigId: effectiveEnhancementApiConfigId,
+							includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
+							currentAlphaMessages: currentAlpha?.clineMessages,
+							providerSettingsManager: provider.providerSettingsManager,
+							signal: request.signal,
+						}),
+						metadata,
+					)
 
 					if (result.success && result.enhancedText) {
-						MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
-						await provider.postMessageToWebview({ ...response, text: result.enhancedText })
+						if (request.isOwned()) {
+							MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
+						}
+						outcome = { text: result.enhancedText, enhancementStatus: "success" }
 					} else {
 						throw new Error(result.error || "Unknown error")
 					}
-				} catch (error) {
-					provider.log(
-						`Error enhancing prompt: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-					)
-
-					vscode.window.showErrorMessage(t("common:errors.enhance_prompt"))
-					await provider.postMessageToWebview(response)
+				} catch {
+					if (request?.signal.aborted) {
+						outcome = { enhancementStatus: "cancelled" }
+					} else {
+						provider.log("[PromptEnhancement] Request failed")
+						vscode.window.showErrorMessage(t("common:errors.enhance_prompt"))
+						outcome = { enhancementStatus: "error" }
+					}
+				}
+				try {
+					if (!request || request.isOwned()) {
+						await provider.postMessageToWebview({ ...response, ...outcome })
+					}
+				} catch {
+					provider.log("[PromptEnhancement] Acknowledgement delivery failed")
+				} finally {
+					request?.finish()
 				}
 			}
 			break
@@ -2278,9 +2336,14 @@ export const webviewMessageHandler = async (
 					await provider.activateProviderProfile({ name: message.text })
 				} catch (error) {
 					provider.log(
-						`Error load api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
+						`[ProviderProfileLoad] ${error instanceof ProviderProfileUnavailableError ? error.code : "load_failed"}`,
 					)
-					vscode.window.showErrorMessage(t("common:errors.load_api_config"))
+					void vscode.window.showErrorMessage(
+						error instanceof ProviderProfileUnavailableError
+							? getProviderProfileUnavailableMessage(error)
+							: t("common:errors.load_api_config"),
+					)
+					await provider.postStateToWebview()
 				}
 			}
 			break
@@ -2290,9 +2353,13 @@ export const webviewMessageHandler = async (
 					await provider.activateProviderProfile({ id: message.text })
 				} catch (error) {
 					provider.log(
-						`Error load api configuration by ID: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
+						`[ProviderProfileLoad] ${error instanceof ProviderProfileUnavailableError ? error.code : "load_failed"}`,
 					)
-					vscode.window.showErrorMessage(t("common:errors.load_api_config"))
+					void vscode.window.showErrorMessage(
+						error instanceof ProviderProfileUnavailableError
+							? getProviderProfileUnavailableMessage(error)
+							: t("common:errors.load_api_config"),
+					)
 					// Release the composer's loading state with the still-accepted profile/capabilities.
 					await provider.postStateToWebview()
 				}
@@ -2387,6 +2454,22 @@ export const webviewMessageHandler = async (
 		}
 		case "deleteApiConfiguration":
 			if (message.text) {
+				// Capture authoritative identity before confirmation yields. A reused
+				// display name cannot grant deletion authority over its successor.
+				let profile: ProviderSettingsEntry | undefined
+				try {
+					profile = (await provider.providerSettingsManager.listConfig()).find(
+						({ name }) => name === message.text,
+					)
+				} catch {
+					provider.log("[ProviderProfileDelete] identity_read_failed")
+					void vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
+					break
+				}
+				if (!profile) {
+					void vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
+					break
+				}
 				const answer = await vscode.window.showInformationMessage(
 					t("common:confirmation.delete_config_profile"),
 					{ modal: true },
@@ -2397,27 +2480,11 @@ export const webviewMessageHandler = async (
 					break
 				}
 
-				const oldName = message.text
-				const profiles = await provider.providerSettingsManager.listConfig()
-				const deletedProfileId = profiles.find((profile) => profile.name === oldName)?.id
-
-				const newName = profiles.filter((c) => c.name !== oldName)[0]?.name
-
-				if (!newName) {
-					vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
-					return
-				}
-
 				try {
-					await provider.providerSettingsManager.deleteConfig(oldName)
-					if (deletedProfileId) await provider.clearSubagentProfileReferences(deletedProfileId)
-					await provider.activateProviderProfile({ name: newName })
-				} catch (error) {
-					provider.log(
-						`Error delete api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-					)
-
-					vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
+					await provider.deleteProviderProfile(profile)
+				} catch {
+					provider.log("[ProviderProfileDelete] delete_failed")
+					void vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
 				}
 			}
 			break
@@ -3705,6 +3772,7 @@ export const webviewMessageHandler = async (
 					resolvedText,
 					resolvedImages,
 					message.requestId,
+					{ source: "human" },
 				)
 			} catch (error) {
 				provider.log(`[webviewMessageHandler] Queue admission failed: ${String(error)}`)
@@ -3752,9 +3820,7 @@ export const webviewMessageHandler = async (
 		case "removeQueuedMessage": {
 			const queue = getRequiredTaskForMessage(provider, message, "removeQueuedMessage")?.messageQueueService
 			if (queue) {
-				await queue.ready
-				queue.removeMessage(message.text ?? "")
-				await queue.flush()
+				await queue.removeMessageDurably(message.text ?? "")
 			}
 			break
 		}

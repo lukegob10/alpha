@@ -21,7 +21,7 @@ import {
 const request: ScenarioRequest = {
 	campaignId: "test",
 	attemptId: "attempt-0001",
-	host: { version: "1.125.0" },
+	host: { version: "1.138.0" },
 	scenarioId: "review-edit-test-commit-followup",
 	sample: 1,
 	phase: "sample",
@@ -36,7 +36,7 @@ const workflow = () => ({
 	status: "passed",
 	checks: [{ name: "file-effect", passed: true }],
 	taskIds: ["task-1"],
-	hostVersion: "1.125.0",
+	hostVersion: "1.138.0",
 	providerMode: "scripted",
 	model: { id: "fake-model" },
 	requestsUsed: 2,
@@ -153,7 +153,7 @@ test("real storage admission counts prior campaigns and blocks launch, patch and
 test("projects verified metadata and rejects failed checks behind a passed claim", () => {
 	const projected = projectWorkflowResult(workflow(), request, "run")
 	assert.equal(projected.result.status, "passed")
-	assert.equal(projected.result.actualHostVersion, "1.125.0")
+	assert.equal(projected.result.actualHostVersion, "1.138.0")
 	assert.equal(projected.result.usage.requests, 2)
 	assert.equal(projected.result.usage.inputTokens, null)
 	assert.equal(projected.result.usage.outputTokens, null)

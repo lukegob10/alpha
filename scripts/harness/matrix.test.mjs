@@ -174,9 +174,13 @@ test("focused inventory honors the configured generated and dependency excludes"
 	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-focused-inventory-"))
 	try {
 		for (const file of [
+			"src/activate/__tests__/exportDiagnostics.spec.ts",
 			"src/core/export.spec.ts",
+			"src/core/unrelated.spec.ts",
 			"src/node_modules/dependency/export.spec.ts",
 			"src/webview-ui/build/archive/export.spec.ts",
+			"src/out/archive/export.spec.ts",
+			"src/dist/archive/export.spec.ts",
 		]) {
 			const absolute = path.join(directory, file)
 			await mkdir(path.dirname(absolute), { recursive: true })
@@ -184,14 +188,7 @@ test("focused inventory honors the configured generated and dependency excludes"
 		}
 		assert.deepEqual(
 			await expectedTestFiles(directory, { runner: "vitest" }, [...lanes.focused.commands[0], "export"]),
-			["src/core/export.spec.ts"],
-		)
-		assert.deepEqual(
-			await expectedTestFiles(root, { runner: "vitest" }, [...lanes.focused.commands[0], "export"]),
-			[
-				"src/core/config/__tests__/CustomModesManager.exportImportSlugChange.spec.ts",
-				"src/integrations/misc/__tests__/export-markdown.spec.ts",
-			],
+			["src/activate/__tests__/exportDiagnostics.spec.ts", "src/core/export.spec.ts"],
 		)
 	} finally {
 		await rm(directory, { recursive: true, force: true })

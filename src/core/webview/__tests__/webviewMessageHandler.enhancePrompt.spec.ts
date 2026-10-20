@@ -39,7 +39,11 @@ describe("webviewMessageHandler enhancePrompt", () => {
 			type: "enhancedPrompt",
 			requestId: "enhance-a",
 			text: "Improved",
+			enhancementStatus: "success",
 		})
+		expect(MessageEnhancer.enhanceMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		)
 	})
 
 	it("captures the requested task before asynchronous state loading", async () => {
@@ -88,7 +92,11 @@ describe("webviewMessageHandler enhancePrompt", () => {
 			requestId: "enhance-a",
 			text: "Original",
 		})
-		expect(provider.postMessageToWebview).toHaveBeenCalledWith({ type: "enhancedPrompt", requestId: "enhance-a" })
+		expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "enhancedPrompt",
+			requestId: "enhance-a",
+			enhancementStatus: "error",
+		})
 	})
 
 	it("preserves ID-less requests from older webviews without an active task", async () => {
@@ -98,6 +106,10 @@ describe("webviewMessageHandler enhancePrompt", () => {
 		expect(MessageEnhancer.enhanceMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ currentAlphaMessages: undefined }),
 		)
-		expect(provider.postMessageToWebview).toHaveBeenCalledWith({ type: "enhancedPrompt", text: "Improved" })
+		expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "enhancedPrompt",
+			text: "Improved",
+			enhancementStatus: "success",
+		})
 	})
 })

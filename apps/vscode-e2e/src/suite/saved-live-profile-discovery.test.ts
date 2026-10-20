@@ -20,8 +20,8 @@ suite("Saved live profile model discovery", function () {
 			"Saved-profile discovery requires --provider scripted; live-copilot runs a separate readiness preflight",
 		)
 		assert.notEqual(process.env.ALPHA_E2E_SETUP, "1", "Run the discovery fixture without --setup")
-		assert.equal(vscode.version, "1.125.0", "Saved-profile discovery requires the exact reference host")
-		assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.125.0")
+		assert.equal(vscode.version, "1.138.0", "Saved-profile discovery requires the exact reference host")
+		assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.138.0")
 		const profileDir = process.env.ALPHA_E2E_PROFILE_DIR
 		const artifactsDir = process.env.ALPHA_E2E_ARTIFACTS_DIR
 		const runId = process.env.ALPHA_E2E_RUN_ID

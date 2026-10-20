@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import PromptsSettings from "../PromptsSettings"
 
-const { postMessage } = vi.hoisted(() => ({ postMessage: vi.fn() }))
+const { postMessage, extensionState } = vi.hoisted(() => ({
+	postMessage: vi.fn(),
+	extensionState: { currentTaskId: undefined as string | undefined },
+}))
 
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage } }))
 
 vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		listApiConfigMeta: [{ id: "config-1", name: "Config 1" }],
+		...extensionState,
 	}),
 }))
 
@@ -23,10 +27,11 @@ vi.mock("@src/components/ui", () => ({
 	),
 	Select: ({ value, onValueChange }: { value: string; onValueChange: (value: string) => void }) => (
 		<select
-			data-testid={value === "ENHANCE" ? "support-prompt-type" : "enhancement-api-config"}
+			data-testid={["ENHANCE", "EXPLAIN"].includes(value) ? "support-prompt-type" : "enhancement-api-config"}
 			value={value}
 			onChange={(event) => onValueChange(event.target.value)}>
 			<option value="ENHANCE">Enhance</option>
+			<option value="EXPLAIN">Explain</option>
 			<option value="-">Current configuration</option>
 			<option value="config-1">Config 1</option>
 		</select>
@@ -63,6 +68,151 @@ vi.mock("../SearchableSetting", () => ({
 describe("PromptsSettings buffering", () => {
 	beforeEach(() => {
 		postMessage.mockClear()
+		extensionState.currentTaskId = undefined
+	})
+
+	const createProps = () => ({
+		customSupportPrompts: { ENHANCE: "Buffered support prompt" },
+		setCustomSupportPrompts: vi.fn(),
+		includeTaskHistoryInEnhance: false,
+		setIncludeTaskHistoryInEnhance: vi.fn(),
+		enhancementApiConfigId: "config-1",
+		setEnhancementApiConfigId: vi.fn(),
+	})
+	const startPreview = () => {
+		fireEvent.change(screen.getByTestId("test-prompt-textarea"), { target: { value: "Keep my preview" } })
+		fireEvent.click(screen.getByText("prompts:supportPrompts.enhance.previewButton"))
+		return postMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt").at(-1)![0]
+	}
+	const reply = (requestId: string, data: Record<string, string> = {}) => {
+		act(() =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "enhancedPrompt", requestId, ...data } })),
+		)
+	}
+
+	it("cancels preview without editing settings or replacing the draft with a late result", () => {
+		const props = createProps()
+		render(<PromptsSettings {...props} />)
+		const request = startPreview()
+		fireEvent.click(screen.getByText("prompts:supportPrompts.enhance.cancelButton"))
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+		reply(request.requestId, { text: "Late preview" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+		expect(screen.getByText("prompts:supportPrompts.enhance.previewButton")).toBeEnabled()
+		expect(props.setCustomSupportPrompts).not.toHaveBeenCalled()
+		expect(props.setEnhancementApiConfigId).not.toHaveBeenCalled()
+		expect(props.setIncludeTaskHistoryInEnhance).not.toHaveBeenCalled()
+	})
+
+	it("cancels once on Escape while keeping the preview draft", () => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+		fireEvent(screen.getByTestId("test-prompt-textarea"), escape)
+		fireEvent.keyDown(screen.getByTestId("test-prompt-textarea"), { key: "Escape" })
+		expect(escape.defaultPrevented).toBe(true)
+		expect(postMessage.mock.calls.filter(([message]) => message.type === "cancelEnhancePrompt")).toEqual([
+			[{ type: "cancelEnhancePrompt", requestId: request.requestId }],
+		])
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+	})
+
+	it("cancels a request when its preview draft is edited", () => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		fireEvent.change(screen.getByTestId("test-prompt-textarea"), { target: { value: "Newer preview" } })
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+		reply(request.requestId, { text: "Late preview" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Newer preview")
+	})
+
+	it.each([
+		{ enhancementApiConfigId: "" },
+		{ includeTaskHistoryInEnhance: true },
+		{ customSupportPrompts: { ENHANCE: "New buffered instructions" } },
+	])("cancels when buffered enhancement options change: %j", (changed) => {
+		const props = createProps()
+		const view = render(<PromptsSettings {...props} />)
+		const request = startPreview()
+		view.rerender(<PromptsSettings {...props} {...changed} />)
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+		reply(request.requestId, { text: "Stale options" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+		expect(screen.getByText("prompts:supportPrompts.enhance.previewButton")).toBeEnabled()
+	})
+
+	it.each(["configuration", "history", "support"])("cancels synchronously on native %s edits", (control) => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		if (control === "configuration") {
+			fireEvent.change(screen.getByTestId("enhancement-api-config"), { target: { value: "-" } })
+		} else if (control === "history") {
+			fireEvent.click(screen.getByRole("checkbox"))
+		} else {
+			fireEvent.input(screen.getAllByRole("textbox")[0], { target: { value: "New buffered instructions" } })
+		}
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+		reply(request.requestId, { text: "Stale options" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+		expect(
+			postMessage.mock.calls.every(([message]) =>
+				["enhancePrompt", "cancelEnhancePrompt"].includes(message.type),
+			),
+		).toBe(true)
+	})
+
+	it("cancels the originating task request on navigation", () => {
+		extensionState.currentTaskId = "task-a"
+		const props = createProps()
+		const view = render(<PromptsSettings {...props} />)
+		const request = startPreview()
+		extensionState.currentTaskId = "task-b"
+		view.rerender(<PromptsSettings {...props} />)
+		expect(postMessage).toHaveBeenCalledWith({
+			type: "cancelEnhancePrompt",
+			requestId: request.requestId,
+			taskId: "task-a",
+		})
+		reply(request.requestId, { text: "Other task" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+	})
+
+	it("cancels on unmount", () => {
+		const view = render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		view.unmount()
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+	})
+
+	it("cancels when leaving the enhancement section", () => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		fireEvent.change(screen.getByTestId("support-prompt-type"), { target: { value: "EXPLAIN" } })
+		expect(postMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+	})
+
+	it.each(["error", "cancelled"])("keeps %s diagnostic text out of the preview", (enhancementStatus) => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		reply(request.requestId, { enhancementStatus, text: "Diagnostic text" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+		expect(screen.getByText("prompts:supportPrompts.enhance.previewButton")).toBeEnabled()
+	})
+
+	it("keeps a retry pending when the cancelled request replies late", () => {
+		render(<PromptsSettings {...createProps()} />)
+		const request = startPreview()
+		fireEvent.keyDown(screen.getByTestId("test-prompt-textarea"), { key: "Escape" })
+		fireEvent.click(screen.getByText("prompts:supportPrompts.enhance.previewButton"))
+		const retry = postMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt").at(-1)![0]
+		expect(retry.requestId).not.toBe(request.requestId)
+		reply(request.requestId, { enhancementStatus: "cancelled" })
+		reply(request.requestId, { text: "Late preview" })
+		expect(screen.getByText("prompts:supportPrompts.enhance.previewButton")).toBeDisabled()
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Keep my preview")
+		reply(retry.requestId, { enhancementStatus: "success", text: "Improved retry" })
+		expect(screen.getByTestId("test-prompt-textarea")).toHaveValue("Improved retry")
+		expect(screen.getByText("prompts:supportPrompts.enhance.previewButton")).toBeEnabled()
 	})
 
 	it("keeps unrelated enhancement responses out of the buffered preview", () => {

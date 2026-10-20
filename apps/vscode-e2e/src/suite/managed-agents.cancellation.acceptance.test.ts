@@ -127,7 +127,7 @@ suite("Managed-agent cancellation Extension Host acceptance", function () {
 			this.skip()
 			return
 		}
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 		assert.ok(workspace, "ALPHA_E2E_WORKSPACE was not provided")

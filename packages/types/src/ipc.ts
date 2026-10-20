@@ -44,6 +44,12 @@ export const ackSchema = z.object({
 	pid: z.number(),
 	ppid: z.number(),
 	executionIdentity: executionIdentitySchema.optional(),
+	capabilities: z
+		.object({
+			targetedTaskCancellation: z.boolean().optional(),
+			presentationModelCallOptOut: z.boolean().optional(),
+		})
+		.optional(),
 })
 
 export type Ack = z.infer<typeof ackSchema>
@@ -76,10 +82,12 @@ export const taskCommandSchema = z.discriminatedUnion("commandName", [
 			text: z.string(),
 			images: z.array(z.string()).optional(),
 			newTab: z.boolean().optional(),
+			presentationModelCalls: z.literal(false).optional(),
 		}),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.CancelTask),
+		data: z.object({ taskId: z.string().min(1) }).optional(),
 	}),
 	z.object({
 		commandName: z.literal(TaskCommandName.CloseTask),

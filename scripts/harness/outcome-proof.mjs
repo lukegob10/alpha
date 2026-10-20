@@ -289,8 +289,8 @@ export function outcomeProofVerdict(proofs, campaign, receipts, build) {
 			manifest.warnings.length ||
 			manifest.bundleSha256 !== build.bundleSha256 ||
 			metadata?.scenarioId !== attempt.request.scenarioId ||
-			metadata.hostVersion !== "1.125.0" ||
-			metadata.requestedHostVersion !== "1.125.0" ||
+			metadata.hostVersion !== "1.138.0" ||
+			metadata.requestedHostVersion !== "1.138.0" ||
 			metadata.provider !== "scripted" ||
 			metadata.outcome !== "passed" ||
 			!sameIds(proof.taskIds, metadata.taskIds) ||

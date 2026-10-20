@@ -242,13 +242,13 @@ const acceptCompletionBoundary = async (
 	})
 }
 
-suite("Alpha VS Code LM 1.125.0 contract", function () {
+suite("Alpha VS Code LM 1.138.0 contract", function () {
 	setDefaultSuiteTimeout(this)
 
 	let fixture: VsCodeLmFixtureControl
 
 	suiteSetup(async () => {
-		assert.equal(vscode.version, "1.125.0", "The VS Code LM contract must run on the exact supported host")
+		assert.equal(vscode.version, "1.138.0", "The VS Code LM contract must run on the exact supported host")
 		fixture = await getFixture()
 	})
 
@@ -292,7 +292,7 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 		}
 	})
 
-	test("characterizes VS Code 1.125.0 late cancellation at the direct LM boundary", async () => {
+	test("forwards VS Code 1.138.0 late cancellation at the direct LM boundary", async () => {
 		fixture.reset("cancellation")
 		const [model] = await vscode.lm.selectChatModels({
 			vendor: FIXTURE_VENDOR,
@@ -306,7 +306,7 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 
 		try {
 			const response = await model.sendRequest(
-				[vscode.LanguageModelChatMessage.User("Characterize late cancellation on VS Code 1.125.0.")],
+				[vscode.LanguageModelChatMessage.User("Characterize late cancellation on VS Code 1.138.0.")],
 				{ justification: "Alpha exact-host cancellation contract test" },
 				cancellation.token,
 			)
@@ -320,23 +320,22 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 			})
 
 			cancellation.cancel()
-			await sleep(250)
+			await waitFor(() => fixture.getEvents().some(({ type }) => type === "provider-token-cancelled"), {
+				timeout: 10_000,
+				interval: 25,
+				description: "VS Code to forward cancellation after sendRequest returned",
+				onTimeout: () => ({ events: fixture.getEvents() }),
+			})
 			assert.equal(
 				fixture.getRequests()[0]?.cancelled,
-				false,
-				"VS Code 1.125.0 unexpectedly forwarded cancellation after sendRequest returned; update this exact-host characterization",
-			)
-			assert.equal(
-				fixture.getEvents().some(({ type }) => type === "provider-token-cancelled"),
-				false,
-				"The direct fixture provider observed a late cancellation token on VS Code 1.125.0",
+				true,
+				"VS Code 1.138.0 must forward late cancellation to the provider token",
 			)
 
-			fixture.releaseRequest(0)
 			await waitFor(() => fixture.getEvents().some(({ type }) => type === "provider-request-returned"), {
 				timeout: 10_000,
 				interval: 25,
-				description: "the direct fixture request to return after release",
+				description: "the direct fixture request to return after cancellation without manual release",
 				onTimeout: () => ({ events: fixture.getEvents() }),
 			})
 			await pendingRead
@@ -722,7 +721,7 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 		}
 	})
 
-	test("settles Alpha cancellation across VS Code 1.125.0's late-token boundary and starts a healthy recovery task", async () => {
+	test("forwards Alpha cancellation through VS Code 1.138.0 and starts a healthy recovery task", async () => {
 		const provider = getHostProvider()
 		fixture.reset("cancellation")
 
@@ -743,10 +742,16 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 				onTimeout: () => getTaskDiagnostics(provider, fixture, cancelledTaskId),
 			})
 			await cancelPromise
+			await waitFor(() => fixture.getEvents().some(({ type }) => type === "provider-token-cancelled"), {
+				timeout: 10_000,
+				interval: 25,
+				description: "Alpha cancellation to reach the provider token",
+				onTimeout: () => getTaskDiagnostics(provider, fixture, cancelledTaskId),
+			})
 			assert.equal(
 				fixture.getRequests()[0]?.cancelled,
-				false,
-				"VS Code 1.125.0 should retain the provider token after its startup RPC returns",
+				true,
+				"VS Code 1.138.0 must cancel the provider token after its startup RPC returns",
 			)
 			await waitFor(() => provider.getLiveTask(cancelledTaskId)?.taskAsk?.ask === "resume_task", {
 				timeout: 10_000,
@@ -754,11 +759,10 @@ suite("Alpha VS Code LM 1.125.0 contract", function () {
 				description: "the cancelled task to expose its resumable boundary",
 				onTimeout: () => getTaskDiagnostics(provider, fixture, cancelledTaskId),
 			})
-			fixture.releaseRequest(0)
 			await waitFor(() => fixture.getEvents().some(({ type }) => type === "provider-request-returned"), {
 				timeout: 10_000,
 				interval: 25,
-				description: "the cancelled task fixture request to return after release",
+				description: "the cancelled task fixture request to return without manual release",
 				onTimeout: () => getTaskDiagnostics(provider, fixture, cancelledTaskId),
 			})
 			await globalThis.api.clearCurrentTask().catch(() => undefined)

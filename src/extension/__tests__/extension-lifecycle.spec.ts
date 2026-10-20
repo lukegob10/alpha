@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => {
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
 		loadEnvironment: vi.fn().mockResolvedValue(undefined),
 		initializeNetworkProxy: vi.fn().mockResolvedValue(undefined),
+		autoImportSettings: vi.fn().mockResolvedValue(undefined),
+		registerCommands: vi.fn(),
+		workspaceFolders: undefined as undefined | Array<{ uri: { fsPath: string } }>,
 		registerUriHandler: vi.fn((_handler: { handleUri: (uri: unknown) => unknown }) => ({
 			dispose: vi.fn(),
 		})),
@@ -37,7 +40,9 @@ vi.mock("vscode", () => ({
 		registerUriHandler: mocks.registerUriHandler,
 	},
 	workspace: {
-		workspaceFolders: undefined,
+		get workspaceFolders() {
+			return mocks.workspaceFolders
+		},
 		getConfiguration: vi.fn(() => ({ get: vi.fn(() => []) })),
 		onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
 		registerTextDocumentContentProvider: vi.fn(() => ({ dispose: vi.fn() })),
@@ -100,13 +105,14 @@ vi.mock("../../services/tickets/TicketPanel", () => ({
 	}),
 }))
 vi.mock("../../utils/migrateSettings", () => ({ migrateSettings: vi.fn().mockResolvedValue(undefined) }))
-vi.mock("../../utils/autoImportSettings", () => ({ autoImportSettings: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("../../utils/autoImportSettings", () => ({ autoImportSettings: mocks.autoImportSettings }))
 vi.mock("../api", () => ({ API: vi.fn() }))
 vi.mock("../../activate", () => {
 	const CodeActionProvider = vi.fn()
 	Object.assign(CodeActionProvider, { providedCodeActionKinds: [] })
 	return {
-		registerCommands: vi.fn(),
+		registerCommands: mocks.registerCommands,
+		registerEditorChatSerializer: vi.fn(),
 		registerCodeActions: vi.fn(),
 		registerTerminalActions: vi.fn(),
 		CodeActionProvider,
@@ -115,11 +121,77 @@ vi.mock("../../activate", () => {
 vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))
 
 import type * as vscode from "vscode"
+import { commands } from "vscode"
 import { activate, deactivate } from "../../extension"
 
 describe("extension lifecycle", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mocks.workspaceFolders = undefined
+	})
+
+	it("waits for command registration before auto-opening a switched worktree", async () => {
+		vi.useFakeTimers()
+		let finishImport!: () => void
+		let startImport!: () => void
+		const importStarted = new Promise<void>((resolve) => (startImport = resolve))
+		mocks.autoImportSettings.mockImplementationOnce(() => {
+			startImport()
+			return new Promise<void>((resolve) => (finishImport = resolve))
+		})
+		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: {
+				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
+				update: vi.fn().mockResolvedValue(undefined),
+			},
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		const activating = activate(context)
+		try {
+			await importStarted
+			await vi.advanceTimersByTimeAsync(500)
+			expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
+			finishImport()
+			await activating
+			expect(mocks.registerCommands).toHaveBeenCalledOnce()
+			await vi.advanceTimersByTimeAsync(500)
+			expect(commands.executeCommand).toHaveBeenCalledWith("alpha.plusButtonClicked")
+		} finally {
+			finishImport()
+			await activating
+			await deactivate()
+			vi.useRealTimers()
+		}
+	})
+
+	it("cancels delayed worktree auto-open when the extension subscriptions are disposed", async () => {
+		vi.useFakeTimers()
+		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: {
+				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
+				update: vi.fn().mockResolvedValue(undefined),
+			},
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		try {
+			await activate(context)
+			for (const subscription of context.subscriptions) {
+				if (typeof subscription.dispose === "function") subscription.dispose()
+			}
+			await vi.advanceTimersByTimeAsync(500)
+			expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
+		} finally {
+			await deactivate()
+			vi.useRealTimers()
+		}
 	})
 
 	it("loads the optional environment before network and provider initialization", async () => {

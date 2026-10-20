@@ -132,7 +132,7 @@ describe("runBenchmarkModelCampaign", () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campaign-installation-export-"))
 		const executionIdentity = {
 			schemaVersion: 1,
-			hostVersion: "1.125.0",
+			hostVersion: "1.138.0",
 			extensionId: "Alpha.alpha",
 			extensionVersion: "1.0.0",
 			entrypointDigest: `sha256:${"a".repeat(64)}`,

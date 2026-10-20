@@ -1,6 +1,27 @@
-import { TaskCommandName, taskCommandSchema } from "../ipc.js"
+import { ackSchema, TaskCommandName, taskCommandSchema } from "../ipc.js"
 
 describe("IPC Types", () => {
+	describe("ackSchema capabilities", () => {
+		const acknowledgement = { clientId: "client", pid: 101, ppid: 100 }
+
+		it("keeps legacy acknowledgements valid without inventing capabilities", () => {
+			expect(ackSchema.parse(acknowledgement)).toEqual(acknowledgement)
+		})
+
+		it.each([false, true])("preserves explicit targeted cancellation support %s", (supported) => {
+			const ack = { ...acknowledgement, capabilities: { targetedTaskCancellation: supported } }
+
+			expect(ackSchema.parse(ack)).toEqual(ack)
+		})
+
+		it.each([null, "true", 1])("rejects malformed targeted cancellation support %j", (supported) => {
+			expect(
+				ackSchema.safeParse({ ...acknowledgement, capabilities: { targetedTaskCancellation: supported } })
+					.success,
+			).toBe(false)
+		})
+	})
+
 	describe("TaskCommandName", () => {
 		it("should include ResumeTask command", () => {
 			expect(TaskCommandName.ResumeTask).toBe("ResumeTask")
@@ -47,6 +68,30 @@ describe("IPC Types", () => {
 	})
 
 	describe("taskCommandSchema", () => {
+		it("preserves legacy CancelTask commands without a target", () => {
+			const command = { commandName: TaskCommandName.CancelTask }
+
+			expect(taskCommandSchema.parse(command)).toEqual(command)
+		})
+
+		it("preserves an explicit CancelTask target", () => {
+			const command = {
+				commandName: TaskCommandName.CancelTask,
+				data: { taskId: "background-root" },
+			}
+
+			expect(taskCommandSchema.parse(command)).toEqual(command)
+		})
+
+		it.each([null, "background-root", {}, { taskId: "" }, { taskId: 123 }])(
+			"rejects malformed explicit CancelTask data %j instead of losing its target",
+			(data) => {
+				expect(taskCommandSchema.safeParse({ commandName: TaskCommandName.CancelTask, data }).success).toBe(
+					false,
+				)
+			},
+		)
+
 		it("should validate ResumeTask command with taskId", () => {
 			const resumeTaskCommand = {
 				commandName: TaskCommandName.ResumeTask,

@@ -93,6 +93,7 @@ import {
 	type AgentRuntimeSnapshot,
 	type AgentTerminalResultMetadata,
 	type AgentLifecycleSnapshot,
+	type ParentVerificationObligation,
 	type AgentLifecycleDegradedSignal,
 	agentLifecycleEventSchema,
 	type ManagedAgentTreeProjection,
@@ -111,6 +112,7 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
+	PROVIDER_SETTINGS_KEYS,
 	vertexModels,
 	vertexDefaultModelId,
 	stellarModels,
@@ -188,9 +190,11 @@ import {
 	ProviderSettingsManager,
 	ProviderProfileRenameError,
 	ProviderProfileSaveError,
+	ProviderProfileUnavailableError,
 	type ProviderProfileRename,
 	type ProviderProfileSaved,
 } from "../config/ProviderSettingsManager"
+import { getProviderProfileUnavailableMessage } from "./providerProfileErrors"
 import { CustomModesManager } from "../config/CustomModesManager"
 import { Task, getSubagentAllowedToolNames } from "../task/Task"
 import { WorkspaceMutationCancelledError, WorkspaceMutationGate } from "../task/WorkspaceMutationGate"
@@ -292,6 +296,7 @@ import {
 	type AgentLifecycleSnapshotResyncRequest,
 } from "./AgentLifecycleProjection"
 import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
+import { cancelPromptEnhancements } from "./promptEnhancementRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
 import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
@@ -505,6 +510,13 @@ type ManagedAgentCancellationTarget = Readonly<{
 	blockingCompletion: Promise<InternalTaskResult> | undefined
 	finalization: SubagentFinalizationRecord | undefined
 }>
+
+/** Optional model work cannot consume a request or spend allowance outside the task's admission path. */
+function hasFiniteTaskCallLimit(state: Pick<GlobalState, "allowedMaxCost" | "allowedMaxRequests">): boolean {
+	return [state.allowedMaxCost, state.allowedMaxRequests].some(
+		(limit) => typeof limit === "number" && Number.isFinite(limit) && limit > 0,
+	)
+}
 
 export class AlphaProvider
 	extends EventEmitter<TaskProviderEvents>
@@ -796,7 +808,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.4-continuity-and-skills"
+	public readonly latestAnnouncementId = "october-2026-v3.2.5-reliability-and-responsiveness"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1271,6 +1283,7 @@ export class AlphaProvider
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
 		this.log("Disposing AlphaProvider...")
+		cancelPromptEnhancements(this)
 
 		// Stop accepting webview work, then let the last already-accepted message
 		// settle before removing tasks it may have created.
@@ -1615,6 +1628,9 @@ export class AlphaProvider
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
 		options?: {
 			startTask?: boolean
+			requireExplicitResume?: boolean
+			/** A restored editor may close or change selection while storage is loading. */
+			isRestoreCurrent?: () => boolean
 			preserveExisting?: boolean
 			background?: boolean
 			/** Agent-driven restoration must not change the selected view's mode or profile. */
@@ -1629,6 +1645,8 @@ export class AlphaProvider
 			}
 			/** The caller publishes the transcript after its own acknowledgement. */
 			deferTranscript?: boolean
+			/** Keep queued history restoration bound to the navigation that requested it. */
+			navigationGeneration?: number
 			subagentRuntime?: Pick<
 				CreateTaskOptions,
 				| "workspacePath"
@@ -1643,6 +1661,7 @@ export class AlphaProvider
 		const observedTask = this.getLiveTask(historyItem.id)
 		const supersededCancellation = new Error("The originating task cancellation was superseded")
 		const assertCancellationOwner = () => {
+			if (options?.isRestoreCurrent && !options.isRestoreCurrent()) throw supersededCancellation
 			if (
 				options?.cancellation &&
 				(!options.cancellation.isCurrent() || this.getLiveTask(historyItem.id) !== observedTask)
@@ -1661,7 +1680,9 @@ export class AlphaProvider
 					// A view opened while hydration was pending borrows the canonical runtime.
 					if (existing && ((owner && owner !== this) || existing !== observedTask)) {
 						if (!options?.background)
-							await this.focusTask(historyItem.id, undefined, { underOwnership: true })
+							await this.focusTask(historyItem.id, options?.navigationGeneration, {
+								underOwnership: true,
+							})
 						assertCancellationOwner()
 						return existing
 					}
@@ -1689,6 +1710,11 @@ export class AlphaProvider
 	): Promise<Task> {
 		assertCancellationOwner?.()
 		let restoredApiConfiguration: ProviderSettings | undefined
+		const savedProfileEntries = historyItem.apiConfigName
+			? await this.providerSettingsManager.listConfig()
+			: undefined
+		assertCancellationOwner?.()
+		this.assertProviderProfileAvailable(savedProfileEntries?.find(({ name }) => name === historyItem.apiConfigName))
 
 		// Check if we're replacing an already-live task. Foreground replacement avoids
 		// flicker; background replacement must not steal the selected chat.
@@ -1696,7 +1722,7 @@ export class AlphaProvider
 			this.getLiveTask(historyItem.id) ?? this.taskStack?.find((task) => task.taskId === historyItem.id)
 		const isRehydratingCurrentTask = Boolean(existingTask)
 		const shouldFocus = !options?.background
-		const navigationGeneration = this.taskNavigationGeneration
+		const navigationGeneration = options?.navigationGeneration ?? this.taskNavigationGeneration
 		const focusThisRestore = () => shouldFocus && this.taskNavigationGeneration === navigationGeneration
 
 		// If the history item has a saved mode, restore it and its associated API configuration.
@@ -1726,6 +1752,7 @@ export class AlphaProvider
 				// If this mode has a saved config, use it.
 				if (savedConfigId) {
 					const profile = listApiConfig.find(({ id }) => id === savedConfigId)
+					this.assertProviderProfileAvailable(profile)
 
 					if (profile?.name) {
 						try {
@@ -1745,6 +1772,7 @@ export class AlphaProvider
 							}
 						} catch (error) {
 							assertCancellationOwner?.()
+							if (error instanceof ProviderProfileUnavailableError) throw error
 							// Log the error but continue with task restoration.
 							this.log(
 								`Failed to restore API configuration for mode '${historyItem.mode}': ${
@@ -1762,7 +1790,7 @@ export class AlphaProvider
 		// This overrides any mode-based config restoration above, because the task's
 		// specific provider profile takes precedence over mode defaults.
 		if (historyItem.apiConfigName) {
-			const listApiConfig = await this.providerSettingsManager.listConfig()
+			const listApiConfig = savedProfileEntries ?? []
 			assertCancellationOwner?.()
 			// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
 			if (!options?.preserveSelection) await this.updateGlobalState("listApiConfigMeta", listApiConfig)
@@ -1775,6 +1803,7 @@ export class AlphaProvider
 					assertCancellationOwner?.()
 				} catch (error) {
 					assertCancellationOwner?.()
+					if (error instanceof ProviderProfileUnavailableError) throw error
 					if (options?.requireSavedConfiguration) throw error
 					// Log the error but continue with task restoration.
 					this.log(
@@ -1817,8 +1846,19 @@ export class AlphaProvider
 		const enableCheckpoints = stateValues.enableCheckpoints ?? true
 		const checkpointTimeout = stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS
 		const experiments = stateValues.experiments ?? experimentDefault
-		const apiConfiguration =
+		let apiConfiguration =
 			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
+		if (!options?.subagentRuntime?.apiConfiguration && !restoredApiConfiguration) {
+			const entries = await this.providerSettingsManager.listConfig()
+			assertCancellationOwner?.()
+			const selected = entries.find(({ name }) => name === stateValues.currentApiConfigName)
+			this.assertProviderProfileAvailable(selected)
+			if (selected) {
+				apiConfiguration =
+					(await this.getProviderSettingsForProfileName(selected.name, entries)) ?? apiConfiguration
+				assertCancellationOwner?.()
+			}
+		}
 		const restoredConfiguration = historyItem.threadModelOverride
 			? this.applyIndependentTaskModel(
 					apiConfiguration,
@@ -1901,6 +1941,12 @@ export class AlphaProvider
 		const task = new Task({
 			provider: this,
 			apiConfiguration: restoredConfiguration,
+			presentationModelCalls:
+				historyItem.presentationModelCalls === false ||
+				existingTask?.presentationModelCalls === false ||
+				hasFiniteTaskCallLimit(stateValues)
+					? false
+					: undefined,
 			taskApprovalMode,
 			taskApiConfigName: historyItem.apiConfigName,
 			enableCheckpoints,
@@ -1924,6 +1970,7 @@ export class AlphaProvider
 				if (this.getLiveTask(instance.taskId) === instance) this.taskCreationCallback(instance)
 			},
 			startTask: options?.startTask ?? true,
+			requireExplicitResume: options?.requireExplicitResume,
 			// Preserve the status from the history item to avoid overwriting it when the task saves messages
 			initialStatus: historyItem.status,
 			// Legacy history predates per-task policy freezing. Restore it with the
@@ -2027,6 +2074,8 @@ export class AlphaProvider
 			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
+			"enhancePrompt",
+			"cancelEnhancePrompt",
 			"webviewFocusChanged",
 			"cancelTask",
 			"cancelSubagent",
@@ -2034,6 +2083,7 @@ export class AlphaProvider
 			// Task switches must not wait behind settings or other global commands.
 			// Overlapping opens are coalesced by taskNavigationGeneration.
 			"showTaskWithId",
+			"startBlankTask",
 		])
 		const logFailure = (message: WebviewMessage, error: unknown) => {
 			this.log(
@@ -2048,6 +2098,11 @@ export class AlphaProvider
 				const processing = run(message)
 				const tracked = processing.catch((error) => logFailure(message, error))
 				this.immediateWebviewOperations.add(tracked)
+				if (messageType === "startBlankTask") {
+					// Start navigation at receipt time, while keeping later submissions
+					// behind its completion and any already accepted global operation.
+					this.webviewMessageQueue = Promise.all([this.webviewMessageQueue, tracked]).then(() => undefined)
+				}
 				void tracked.finally(() => this.immediateWebviewOperations.delete(tracked))
 				return tracked
 			}
@@ -2227,7 +2282,21 @@ export class AlphaProvider
 		}
 	}
 
-	private async getProviderSettingsForProfileName(name: string): Promise<ProviderSettings | undefined> {
+	private assertProviderProfileAvailable(entry: ProviderSettingsEntry | undefined): void {
+		if (!entry?.availability) return
+		throw new ProviderProfileUnavailableError(
+			entry.availability,
+			{ id: entry.id ?? entry.name, name: entry.name },
+			entry.invalidFields,
+		)
+	}
+
+	private async getProviderSettingsForProfileName(
+		name: string,
+		entries?: ProviderSettingsEntry[],
+	): Promise<ProviderSettings | undefined> {
+		const profiles = entries ?? (await this.providerSettingsManager.listConfig())
+		this.assertProviderProfileAvailable(profiles.find((entry) => entry.name === name))
 		const { name: _name, id: _id, ...providerSettings } = await this.providerSettingsManager.getProfile({ name })
 		return providerSettings.apiProvider ? providerSettings : undefined
 	}
@@ -2259,6 +2328,7 @@ export class AlphaProvider
 
 			return { name: profile.name, providerSettings }
 		} catch (error) {
+			if (error instanceof ProviderProfileUnavailableError) throw error
 			this.log(
 				`Failed to resolve provider profile for mode ${mode}: ${
 					error instanceof Error ? error.message : String(error)
@@ -2624,27 +2694,68 @@ export class AlphaProvider
 	}
 
 	async deleteProviderProfile(profileToDelete: ProviderSettingsEntry) {
-		const globalSettings = this.contextProxy.getValues()
-		let profileToActivate: string | undefined = globalSettings.currentApiConfigName
+		const task = this.getCurrentTask()
+		return this.enqueueConfiguration(async () => {
+			const profiles = await this.providerSettingsManager.listConfig()
+			const target = profiles.find(({ id, name }) => id === profileToDelete.id && name === profileToDelete.name)
+			if (!target) throw new Error("The saved profile identity changed or no longer exists")
+			if (profiles.length <= 1) throw new Error("You cannot delete the last profile")
+			const selectedBeforeDelete = this.contextProxy.getValue("currentApiConfigName")
+			const deleted = await this.providerSettingsManager.deleteConfig(target.name, { expectedId: target.id })
+			const peers = this.getHostProviders()
+			const selectionChanged = deleted.currentApiConfigName !== selectedBeforeDelete
+			const selected = deleted.entries.find(({ name }) => name === deleted.currentApiConfigName)
+			const selectedProfile = deleted.selectedProfile
+			const { name: _selectedName, id: _selectedId, ...settings } = selectedProfile ?? {}
+			let projectionFailed = false
+			for (const peer of peers) {
+				const projection = {
+					currentApiConfigName: deleted.currentApiConfigName,
+					listApiConfigMeta: deleted.entries,
+				}
+				try {
+					if (selectionChanged) await peer.contextProxy.setProviderSettings(settings, projection)
+					else await peer.contextProxy.setValues(projection)
+					await peer.clearSubagentProfileReferences(target.id)
+				} catch {
+					projectionFailed = true
+					this.log("[ProviderProfileDelete] projection_failed")
+				}
+			}
 
-		if (profileToDelete.name === profileToActivate) {
-			profileToActivate = this.getProviderProfileEntries().find(({ name }) => name !== profileToDelete.name)?.name
-		}
-
-		if (!profileToActivate) {
-			throw new Error("You cannot delete the last profile")
-		}
-
-		const entries = this.getProviderProfileEntries().filter(({ name }) => name !== profileToDelete.name)
-
-		await this.contextProxy.setValues({
-			...globalSettings,
-			currentApiConfigName: profileToActivate,
-			listApiConfigMeta: entries,
-			...this.getClearedSubagentRouteSettings(profileToDelete.id, globalSettings),
+			if (selectionChanged) {
+				if (selected?.availability) {
+					// The deleted profile's cached settings must not impersonate a retained
+					// unavailable selection. Admission remains blocked until explicitly repaired.
+					void vscode.window.showWarningMessage(
+						getProviderProfileUnavailableMessage(
+							new ProviderProfileUnavailableError(
+								selected.availability,
+								selected,
+								selected.invalidFields,
+							),
+						),
+					)
+				} else if (selectedProfile && !projectionFailed) {
+					const ownedTask =
+						task && this.getCurrentTask() === task && this.getLiveTask(task.taskId) === task
+							? task
+							: undefined
+					try {
+						if (ownedTask)
+							this.updateTaskApiHandlerIfNeeded(settings, { forceRebuild: true, task: ownedTask })
+						await this.persistStickyProviderProfileToCurrentTask(selectedProfile.name, ownedTask)
+					} catch {
+						projectionFailed = true
+						this.log("[ProviderProfileDelete] task_projection_failed")
+					}
+				}
+			}
+			// The saved deletion already committed. Projection errors cannot turn its
+			// acknowledgement into a failure that a retry might apply to a successor.
+			if (projectionFailed) void vscode.window.showErrorMessage(t("common:errors.load_api_config"))
+			for (const peer of peers) await peer.postStateToWebview()
 		})
-
-		await this.postStateToWebview()
 	}
 
 	/** Remove routing references to a deleted profile while preserving unrelated role selections. */
@@ -2865,6 +2976,30 @@ export class AlphaProvider
 		return { historyItem, aggregatedCosts }
 	}
 
+	/** Restore panel identity without consuming queued input or starting a model turn. */
+	public async restoreEditorTask(id: string, isPanelCurrent: () => boolean): Promise<boolean> {
+		const generation = ++this.taskNavigationGeneration
+		const isCurrent = () => !this._disposed && isPanelCurrent() && generation === this.taskNavigationGeneration
+		try {
+			await this.taskHistoryStoreReady
+			if (!isCurrent()) return false
+			if (await this.focusTask(id, generation)) return isCurrent()
+			if (!isCurrent()) return false
+			const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
+			if (!isCurrent()) return false
+			await this.createTaskWithHistoryItem(historyItem, {
+				requireExplicitResume: true,
+				preserveExisting: true,
+				navigationGeneration: generation,
+				isRestoreCurrent: isCurrent,
+			})
+			return isCurrent()
+		} catch (error) {
+			if (!isCurrent()) return false
+			throw error
+		}
+	}
+
 	async showTaskWithId(id: string, cachedTranscriptRevision?: number) {
 		const generation = ++this.taskNavigationGeneration
 		const stillCurrent = () => generation === this.taskNavigationGeneration
@@ -2889,6 +3024,7 @@ export class AlphaProvider
 					await this.createTaskWithHistoryItem(historyItem, {
 						preserveExisting: true,
 						deferTranscript: true,
+						navigationGeneration: generation,
 					})
 					if (!stillCurrent()) {
 						await this.postTaskOpenResult(id, false)
@@ -3104,7 +3240,9 @@ export class AlphaProvider
 	}
 
 	async postStateToWebview() {
-		const visibleTaskId = this.currentView.type === "task" ? this.currentView.taskId : undefined
+		const navigationGeneration = this.taskNavigationGeneration
+		const currentView = this.currentView
+		const visibleTaskId = currentView.type === "task" ? currentView.taskId : undefined
 		const transcriptRevision = visibleTaskId ? this.taskSessions.markTranscriptChanged(visibleTaskId) : undefined
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
@@ -3112,7 +3250,9 @@ export class AlphaProvider
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview()
 		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
-		const publications = [this.postMessageToWebview({ type: "state", state })]
+		const selectionIsCurrent =
+			navigationGeneration === this.taskNavigationGeneration && currentView === this.currentView
+		const publications = selectionIsCurrent ? [this.postMessageToWebview({ type: "state", state })] : []
 		// Save, import, and reset all refresh here. Propagate only the global submission
 		// preference so another composer cannot retain steering after it is disabled.
 		// Dispatch every view before awaiting transport; a late send cannot defer peers.
@@ -3126,7 +3266,7 @@ export class AlphaProvider
 			)
 		}
 		await Promise.all(publications)
-		this.recordPublishedTaskTranscript(visibleTaskId, transcriptRevision)
+		if (selectionIsCurrent) this.recordPublishedTaskTranscript(visibleTaskId, transcriptRevision)
 	}
 
 	/**
@@ -3141,7 +3281,7 @@ export class AlphaProvider
 	): Promise<void> {
 		this.taskSessions.markActivity(taskId)
 		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
-		const liveTask = this.getLiveTaskMetadata()[taskId]
+		const liveTask = this.taskSessions.getMetadataForTask(taskId)
 		const publications: Promise<void>[] = []
 		// Reserve every view's sequence before a transport can yield, keeping an
 		// older broadcast from superseding a newer update on a later view.
@@ -3917,7 +4057,10 @@ export class AlphaProvider
 	async postTaskStateToWebview(
 		options: { clearManagedAgentTree?: boolean; includeTranscript?: boolean } = {},
 	): Promise<void> {
-		const currentTaskId = this.currentView.type === "task" ? this.currentView.taskId : undefined
+		const navigationGeneration = this.taskNavigationGeneration
+		const currentView = this.currentView
+		const activeTaskId = this.getActiveTaskId()
+		const currentTaskId = currentView.type === "task" ? currentView.taskId : undefined
 		const transcriptRevision =
 			options.includeTranscript === false || !currentTaskId
 				? undefined
@@ -3926,9 +4069,9 @@ export class AlphaProvider
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
-		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const currentTask = currentTaskId ? this.getLiveTask(currentTaskId) : undefined
 		let mode =
-			this.currentView.type === "newTaskDraft"
+			currentView.type === "newTaskDraft"
 				? this.newTaskDraftMode
 				: restoreTaskMode(this.contextProxy.getValue("mode"))
 
@@ -3939,9 +4082,13 @@ export class AlphaProvider
 				// A rehydrating task may not have finished loading its frozen mode yet.
 			}
 		}
+		const taskReasoning = await this.getReasoningProjection(currentTask)
+		// Async projections belong to the selection that requested them. A newer
+		// navigation owns every task-scoped field, including mode and model config.
+		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
 
 		const state: Partial<ExtensionState> = {
-			taskReasoning: await this.getReasoningProjection(currentTask),
+			taskReasoning,
 			apiConfiguration: currentTask?.apiConfiguration ?? this.getProviderSettingsSnapshot(),
 			currentApiConfigName:
 				currentTask?.taskApiConfigName ?? this.contextProxy.getValue("currentApiConfigName") ?? "default",
@@ -3949,8 +4096,8 @@ export class AlphaProvider
 			currentTaskId: currentTask?.taskId,
 			currentTaskItem: currentTask ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
 			currentTaskTodos: currentTask?.todoList ?? [],
-			currentView: this.currentView,
-			activeTaskId: this.getActiveTaskId(),
+			currentView,
+			activeTaskId,
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
 			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
@@ -4044,10 +4191,12 @@ export class AlphaProvider
 	}
 
 	private async postLocalTaskSessionStateToWebview(): Promise<void> {
+		const navigationGeneration = this.taskNavigationGeneration
+		const currentView = this.currentView
 		const taskStateSeq = ++this.taskStateSeq
-		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const currentTask = currentView.type === "task" ? this.getLiveTask(currentView.taskId) : undefined
 		const state: Partial<ExtensionState> = {
-			currentView: this.currentView,
+			currentView,
 			activeTaskId: this.getActiveTaskId(),
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
@@ -4071,6 +4220,7 @@ export class AlphaProvider
 			}
 		}
 
+		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
 		await this.postMessageToWebview({ type: "state", state })
 	}
 
@@ -4083,11 +4233,14 @@ export class AlphaProvider
 	 *   `taskHistoryUpdated` / `taskHistoryItemUpdated`.
 	 */
 	async postStateToWebviewWithoutTaskHistory(): Promise<void> {
+		const navigationGeneration = this.taskNavigationGeneration
+		const currentView = this.currentView
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
+		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
 		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { taskHistory: _omit, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
@@ -4102,10 +4255,13 @@ export class AlphaProvider
 	 *   overwrites newer messages the task has streamed in the meantime.
 	 */
 	async postStateToWebviewWithoutAlphaMessages(): Promise<void> {
+		const navigationGeneration = this.taskNavigationGeneration
+		const currentView = this.currentView
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
+		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
 		Object.assign(state, { taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
@@ -4544,7 +4700,10 @@ export class AlphaProvider
 		const mergedAllowedCommands = this.mergeAllowedCommands(allowedCommands)
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
-		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const currentView = this.currentView
+		const newTaskDraftMode = this.newTaskDraftMode
+		const activeTaskId = this.getActiveTaskId()
+		const currentTask = currentView.type === "task" ? this.getLiveTask(currentView.taskId) : undefined
 		const currentTaskAutoApprovalRestricted =
 			currentTask?.taskKind === "subagent"
 				? isSubagentApprovalNarrowerThanParent(
@@ -4642,9 +4801,9 @@ export class AlphaProvider
 				postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
-			currentView: this.currentView,
+			currentView,
 			currentTaskAutoApprovalRestricted,
-			activeTaskId: this.getActiveTaskId(),
+			activeTaskId,
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
 			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
@@ -4687,9 +4846,7 @@ export class AlphaProvider
 			currentApiConfigName: currentTaskApiConfigName ?? currentApiConfigName ?? "default",
 			listApiConfigMeta: listApiConfigMeta ?? [],
 			pinnedApiConfigs: pinnedApiConfigs ?? {},
-			mode: restoreTaskMode(
-				currentTaskMode ?? (this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : mode),
-			),
+			mode: restoreTaskMode(currentTaskMode ?? (currentView.type === "newTaskDraft" ? newTaskDraftMode : mode)),
 			customModePrompts: customModePrompts ?? {},
 			customSupportPrompts: customSupportPrompts ?? {},
 			enhancementApiConfigId,
@@ -5586,6 +5743,10 @@ export class AlphaProvider
 		}
 	}
 
+	public getTaskNavigationGeneration(): number {
+		return this.taskNavigationGeneration
+	}
+
 	public getCurrentTask(): Task | undefined {
 		return this.getActiveTask()
 	}
@@ -5688,6 +5849,7 @@ export class AlphaProvider
 				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
 			const child = await this.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
+				presentationModelCalls: parent.presentationModelCalls,
 				preserveExisting: true,
 				background: true,
 				workspacePath,
@@ -5898,6 +6060,11 @@ export class AlphaProvider
 			// goal, child, mailbox, journal, or completion-notification producer.
 			const forkHistory: HistoryItem = {
 				id: taskId,
+				...(caller.presentationModelCalls === false ||
+				source.task?.presentationModelCalls === false ||
+				history.presentationModelCalls === false
+					? { presentationModelCalls: false as const }
+					: {}),
 				number: 0,
 				ts: Date.now(),
 				task: history.task,
@@ -6722,6 +6889,7 @@ export class AlphaProvider
 		if (existing) return existing
 		const history: HistoryItem = {
 			id: task.taskId,
+			...(task.presentationModelCalls === false ? { presentationModelCalls: false as const } : {}),
 			number: 0,
 			ts: Date.now(),
 			task: task.metadata.task ?? "",
@@ -6934,37 +7102,52 @@ export class AlphaProvider
 		text: string,
 		images?: string[],
 		requestId?: string,
+		options?: { source: "human" },
 	): Promise<boolean> {
 		if (!taskId || (!text && !images?.length)) return false
 		const owner =
 			this.getTaskOwner(taskId) ??
 			this.getHostProviders().find((provider) => provider.legacyHandoffInputBuffers?.has(taskId))
-		if (owner && owner !== this) return owner.queueMessageForTaskDurably(taskId, text, images, requestId)
+		if (owner && owner !== this) return owner.queueMessageForTaskDurably(taskId, text, images, requestId, options)
 		const handoff = this.legacyHandoffInputBuffers.get(taskId)
-		const destinationId =
+		// Retain this admitted handoff's destination after its child alias retires.
+		const resolveDestinationId = () =>
 			handoff?.forwardToTaskId ?? (handoff?.phase === "committing" ? handoff.parentTaskId : taskId)
-		const task = this.getLiveTask(destinationId) ?? (destinationId === taskId ? handoff?.sourceTask : undefined)
-		if (!task) return false
-		await task.messageQueueService.ready
-		// Recheck after restore: the handoff may have advanced while its queue loaded.
-		const currentDestinationId =
-			handoff?.forwardToTaskId ?? (handoff?.phase === "committing" ? handoff.parentTaskId : taskId)
-		if (currentDestinationId !== destinationId)
-			return this.queueMessageForTaskDurably(taskId, text, images, requestId)
-		if (
-			requestId &&
-			task.apiConversationHistory?.some((message) => message.queued_message_ids?.includes(requestId))
-		)
-			return true
-		if (requestId) {
-			const persisted = await readApiMessages({
-				taskId: task.taskId,
-				globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-			})
-			if (persisted.some((message) => message.queued_message_ids?.includes(requestId))) return true
+		const routeChanged = new Error("The delegated input destination changed")
+		for (;;) {
+			const destinationId = resolveDestinationId()
+			const task = this.getLiveTask(destinationId) ?? (destinationId === taskId ? handoff?.sourceTask : undefined)
+			if (!task) return false
+			const assertRoute = () => {
+				if (resolveDestinationId() !== destinationId) throw routeChanged
+			}
+			try {
+				await task.messageQueueService.ready
+				assertRoute()
+				if (
+					requestId &&
+					task.apiConversationHistory?.some((message) => message.queued_message_ids?.includes(requestId))
+				)
+					return true
+				if (requestId) {
+					const persisted = await readApiMessages({
+						taskId: task.taskId,
+						globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
+					})
+					if (persisted.some((message) => message.queued_message_ids?.includes(requestId))) return true
+				}
+				assertRoute()
+				if (!handoff && !this.canAcceptTaskInput(taskId)) return false
+				if (options?.source === "human") {
+					return await task.queueUserMessageDurably(text, images, requestId, assertRoute)
+				}
+				return Boolean(await task.messageQueueService.addMessageDurably(text, images, requestId, assertRoute))
+			} catch (error) {
+				// Only an observed handoff transition before admission may select a
+				// different owner. Stop and storage failures retain their own outcome.
+				if (error !== routeChanged || resolveDestinationId() === destinationId) throw error
+			}
 		}
-		if (!handoff && !this.canAcceptTaskInput(taskId)) return false
-		return Boolean(await task.messageQueueService.addMessageDurably(text, images, requestId))
 	}
 
 	public isTaskOnScreen(taskId: string): boolean {
@@ -7241,8 +7424,28 @@ export class AlphaProvider
 			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
 			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		}).delegationPolicy
-		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
+		let apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
+		if (!options.apiConfiguration) {
+			const entries = await this.providerSettingsManager.listConfig()
+			const selected = entries.find(({ name }) => name === taskApiConfigName)
+			this.assertProviderProfileAvailable(selected)
+			if (selected) {
+				const savedConfiguration = await this.getProviderSettingsForProfileName(selected.name, entries)
+				if (savedConfiguration) {
+					// The profile owns its settings; ContextProxy may contain a partially
+					// persisted projection after an earlier write failed. Explicit API
+					// overrides still apply to this admission's immutable configuration.
+					const explicitProviderSettings = Object.fromEntries(
+						PROVIDER_SETTINGS_KEYS.filter((key) => Object.hasOwn(configuration, key)).map((key) => [
+							key,
+							configuration[key],
+						]),
+					)
+					apiConfiguration = { ...savedConfiguration, ...explicitProviderSettings }
+				}
+			}
+		}
 		assertSupportedApiProvider(apiConfiguration.apiProvider)
 
 		if (!parentTask && options.preserveExisting && !options.background) {
@@ -7301,6 +7504,7 @@ export class AlphaProvider
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
 			...taskOptions,
+			presentationModelCalls: hasFiniteTaskCallLimit(stateValues) ? false : taskOptions.presentationModelCalls,
 			taskApprovalMode,
 			reasoningPreference,
 			taskMode: topLevelTaskMode,
@@ -7536,6 +7740,7 @@ export class AlphaProvider
 			{ ...historyItem, rootTask, parentTask },
 			{
 				preserveExisting: true,
+				requireExplicitResume: true,
 				background: !this.isTaskSelected(task.taskId),
 				cancellation,
 			},
@@ -9389,16 +9594,31 @@ export class AlphaProvider
 			return
 		await this.agentControlStoreReady
 		for (const message of parent.clineMessages) {
-			const group = message.subagentGroup
-			if (!group || group.parentTaskId !== parent.taskId) continue
-			let changed = false
+			const projectedGroup = message.subagentGroup
+			if (!projectedGroup || projectedGroup.parentTaskId !== parent.taskId) continue
+			const retainedGroup = this.preparedSubagentGroups.get(projectedGroup.groupId)?.group
+			const group =
+				retainedGroup?.parentTaskId === parent.taskId &&
+				retainedGroup.agents.length === projectedGroup.agents.length &&
+				retainedGroup.agents.every(
+					(agent, index) =>
+						agent.taskId === projectedGroup.agents[index]?.taskId &&
+						agent.changeSet?.id === projectedGroup.agents[index]?.changeSet?.id,
+				)
+					? retainedGroup
+					: projectedGroup
+			let changed = !isDeepStrictEqual(group, projectedGroup)
 			for (const agent of group.agents) {
 				if (agent.role !== "worker" || !agent.changeSet) continue
+				const capturedChangeSet = agent.changeSet
 				try {
 					const artifact = await managedSubagentWorktreeService.load(
 						this.context.globalStorageUri.fsPath,
-						agent.changeSet.id,
+						capturedChangeSet.id,
 					)
+					// Apply/Discard can settle while this read is pending. Its newer
+					// artifact and ledger projection own this agent, not the stale read.
+					if (agent.changeSet !== capturedChangeSet) continue
 					const recoveredChangeSet = this.toSubagentChangeSetState(artifact)
 					if (!isDeepStrictEqual(agent.changeSet, recoveredChangeSet)) {
 						agent.changeSet = recoveredChangeSet
@@ -9734,12 +9954,73 @@ export class AlphaProvider
 		}
 	}
 
-	/** Last in-memory ledger projection; diagnostics must not retry or settle the failing operation. */
-	public getTaskSettlementDiagnostics(parent: Task) {
-		return settlementDiagnostics(
-			parent,
-			this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId }),
-		)
+	/** Read-only support snapshot; diagnostics must not retry or settle the failing operation. */
+	public getTaskSettlementDiagnostics(parent: Task): ReturnType<typeof settlementDiagnostics> {
+		const owner = this.getTaskOwner(parent.taskId)
+		if (owner && owner !== this) return owner.getTaskSettlementDiagnostics(parent)
+		let modelId: string | undefined
+		try {
+			modelId = parent.api.getModel().id
+		} catch {
+			// A broken or uninitialized provider must not prevent exporting task receipts.
+		}
+		let profiles: { available: boolean; total?: number; invalid?: number; unsupported?: number } = {
+			available: false,
+		}
+		try {
+			const entries = this.contextProxy.getValue("listApiConfigMeta")
+			if (entries)
+				profiles = {
+					available: true,
+					total: entries.length,
+					invalid: entries.filter((entry) => entry.availability === "invalid").length,
+					unsupported: entries.filter((entry) => entry.availability === "unsupported").length,
+				}
+		} catch {
+			// Use existing backend metadata; diagnostics must not wait on profile migration/storage locks.
+		}
+		let migration: unknown = "unavailable"
+		try {
+			migration = this.context.globalState.get("subagentBudgetDefaultsMigrationV1")
+		} catch {
+			// Distinguish a missing marker from an unreadable installation state.
+		}
+		let obligations: ParentVerificationObligation[] = []
+		let mailbox: unknown = { available: false }
+		try {
+			obligations = this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId })
+			mailbox = this.agentControlStore.getPendingMailboxDiagnostics(
+				parent.taskId,
+				this.getAgentControlRootTaskId(parent),
+			)
+		} catch {
+			// Preserve the rest of the export when the control store is unavailable.
+		}
+		let lifecycle: AgentLifecycleSnapshot | undefined
+		try {
+			lifecycle = this.getAgentLifecycleSnapshot(parent.taskId)
+		} catch {
+			// A failed lifecycle projection must not hide input or mailbox receipts.
+		}
+		return settlementDiagnostics(parent, obligations, {
+			task: {
+				id: parent.taskId,
+				status: parent.taskStatus,
+				kind: parent.taskKind,
+				ask: parent.taskAsk?.ask,
+				aborted: parent.abort,
+				abandoned: parent.abandoned,
+			},
+			provider: { name: parent.apiConfiguration.apiProvider, modelId },
+			lifecycle,
+			queuedMessages: parent.queuedMessages,
+			mailbox,
+			setup: {
+				contextInitialized: this.contextProxy.isInitialized,
+				subagentBudgetDefaultsMigration: migration,
+				profiles,
+			},
+		})
 	}
 
 	/** Authoritative production completion gate used by attempt_completion. */
@@ -11469,6 +11750,7 @@ export class AlphaProvider
 				if (!restored) throw new Error(`Provider profile ${apiConfigName} is unavailable`)
 				apiConfiguration = restored
 			} catch (error) {
+				if (error instanceof ProviderProfileUnavailableError) throw error
 				if (capturedRoute.source !== "parent") throw error
 				apiConfiguration = snapshotProviderSettings(parent.apiConfiguration)
 			}
@@ -13056,7 +13338,17 @@ export class AlphaProvider
 			(message) => message.say === "subagent_group" && message.subagentGroup?.groupId === groupId,
 		)?.subagentGroup
 		const agent = group?.agents.find((item) => item.changeSet?.id === changeSetId)
-		return parent && group && agent ? { parent, group, agent } : undefined
+		if (!parent || !group || !agent) return undefined
+
+		// Transcript groups are cloned projections. Apply/Discard must also advance
+		// the retained group that pending lifecycle publishers will project next.
+		const retainedGroup = this.preparedSubagentGroups.get(groupId)?.group
+		const retainedAgent = retainedGroup?.agents.find(
+			(item) => item.taskId === agent.taskId && item.changeSet?.id === changeSetId,
+		)
+		return retainedGroup?.parentTaskId === parentTaskId && retainedAgent
+			? { parent, group: retainedGroup, agent: retainedAgent }
+			: { parent, group, agent }
 	}
 
 	private buildSubagentChangeSetActionCapability(
@@ -13150,6 +13442,10 @@ export class AlphaProvider
 		if (owner && owner !== this) return owner.autoApplyPendingSubagentChangeSets(parentTaskId)
 		const parent = this.getLiveTask(parentTaskId)
 		if (!parent) return
+		// A prior host may have persisted a stale pending-review projection after
+		// the artifact was already settled. Repair it before opening a review wait,
+		// including when current policy requires explicit approval for new writes.
+		await this.synchronizeParentVerificationObligations(parent)
 
 		const pendingChangeSets = parent.clineMessages.flatMap((message) => {
 			const group = message.subagentGroup

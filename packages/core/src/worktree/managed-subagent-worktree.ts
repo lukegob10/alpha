@@ -12,9 +12,11 @@ const MAX_GIT_OUTPUT = 100 * 1024 * 1024
 // Managed storage can exceed MAX_PATH even when every path component is valid.
 // Override only our Git invocations; never change the user's repository/global config.
 const GIT_PLATFORM_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : []
-// Git for Windows 2.43 reserves 40 characters from its 260-character startup path
+// Git for Windows 2.43 reserves 40 bytes from its 260-byte startup path
 // limit before loading core.longpaths. This conservative reserve is host-derived.
 const MAX_GIT_SETUP_PATH = 260 - 40
+const needsShortGitPath = (value: string | undefined): boolean =>
+	value !== undefined && Buffer.byteLength(value, "utf8") >= MAX_GIT_SETUP_PATH
 const GLOB_PATTERN = /[*?[\]{}!]/
 // Match the extension's bounded atomic-replacement allowance: six attempts, 775 ms total backoff.
 const METADATA_RETRY_DELAYS_MS = [25, 50, 100, 200, 400] as const
@@ -270,18 +272,16 @@ export class ManagedSubagentWorktreeService {
 
 	private async prepareGitPaths(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitPathInvocation> {
 		const invocation: GitPathInvocation = { cwd, args, env, prefix: [], links: [] }
+		if (process.platform !== "win32") return invocation
 		const explicitGitDir =
 			args.find((arg) => arg.startsWith("--git-dir="))?.slice("--git-dir=".length) ?? env?.GIT_DIR
 		const addedWorktree =
 			args[0] === "worktree" && args[1] === "add" && args[2] === "--detach" ? args[3] : undefined
-		if (
-			process.platform !== "win32" ||
-			![cwd, explicitGitDir, env?.GIT_WORK_TREE, addedWorktree].some(
-				(value) => value && value.length >= MAX_GIT_SETUP_PATH,
-			)
-		)
-			return invocation
 		const paths = await this.resolveGitPaths(cwd, explicitGitDir)
+		// A short linked checkout can resolve to longer administration. Git's setup
+		// guard measures that physical directory in UTF-8 bytes before core.longpaths.
+		if (![cwd, explicitGitDir, env?.GIT_WORK_TREE, addedWorktree, paths.root, paths.gitDir].some(needsShortGitPath))
+			return invocation
 		const ownerDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-git-"))
 		invocation.ownerDirectory = ownerDirectory
 		try {
@@ -292,7 +292,7 @@ export class ManagedSubagentWorktreeService {
 				JSON.stringify({ kind: "managed-worker-git-paths", cwd, worktree: env?.GIT_WORK_TREE, addedWorktree }),
 				"utf8",
 			)
-			if (path.join(ownerDirectory, "repository", "worktrees", "x".repeat(36)).length >= MAX_GIT_SETUP_PATH) {
+			if (needsShortGitPath(path.join(ownerDirectory, "repository", "worktrees", "x".repeat(36)))) {
 				throw new Error(`The temporary directory is too long for Git repository setup: ${ownerDirectory}`)
 			}
 			const alias = async (target: string, name: string): Promise<string> => {
@@ -305,18 +305,18 @@ export class ManagedSubagentWorktreeService {
 				return link
 			}
 			let gitDir = paths.gitDir
-			if (gitDir.length >= MAX_GIT_SETUP_PATH) {
+			if (needsShortGitPath(gitDir)) {
 				if (!isWithin(paths.commonDir, gitDir))
 					throw new Error("Linked Git administration is outside its common directory")
 				gitDir = path.join(await alias(paths.commonDir, "repository"), path.relative(paths.commonDir, gitDir))
 			}
 			const sourceRoot =
-				paths.root && paths.root.length >= MAX_GIT_SETUP_PATH ? await alias(paths.root, "worktree") : paths.root
+				paths.root && needsShortGitPath(paths.root) ? await alias(paths.root, "worktree") : paths.root
 			const worktree = env?.GIT_WORK_TREE ?? paths.root
 			const worktreeAlias =
 				worktree && paths.root && samePath(worktree, paths.root)
 					? sourceRoot
-					: worktree && worktree.length >= MAX_GIT_SETUP_PATH
+					: worktree && needsShortGitPath(worktree)
 						? await alias(worktree, "result")
 						: worktree
 			// Keep the native repository-relative prefix for scoped callers. Temporary
@@ -979,7 +979,7 @@ export class ManagedSubagentWorktreeService {
 			if (artifact.privateGitDir) {
 				if (
 					process.platform === "win32" &&
-					path.join(await fs.realpath(dir), "repository.git").length >= MAX_GIT_SETUP_PATH
+					needsShortGitPath(path.join(await fs.realpath(dir), "repository.git"))
 				) {
 					await this.prepareShortPrivateRepository(storagePath, artifact)
 					await this.persist(storagePath, artifact)
@@ -1011,11 +1011,17 @@ export class ManagedSubagentWorktreeService {
 			// Recent Git for Windows resolves junctions to their physical paths during
 			// setup, defeating the invocation adapter's short aliases. Keep durable
 			// proposals in extension storage, but allocate an owned short checkout.
-			if (process.platform === "win32" && worktreePath.length >= MAX_GIT_SETUP_PATH) {
+			if (
+				process.platform === "win32" &&
+				(needsShortGitPath(worktreePath) ||
+					needsShortGitPath(
+						path.join(await fs.realpath(path.dirname(worktreePath)), path.basename(worktreePath)),
+					))
+			) {
 				worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-checkout-"))
 				ownsWorktreePath = true
 				artifact.worktreePath = worktreePath
-				if ((await fs.realpath(worktreePath)).length >= MAX_GIT_SETUP_PATH)
+				if (needsShortGitPath(await fs.realpath(worktreePath)))
 					throw new Error("The temporary directory is too long for a managed Git checkout")
 			}
 			await this.persist(storagePath, artifact)

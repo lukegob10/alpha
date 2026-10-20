@@ -5,7 +5,8 @@ import pMap from "p-map"
 import { stringify } from "yaml"
 
 import { EVALS_REPO_PATH } from "../exercises/index"
-import { findRun, findTrialForTask, getTasks } from "../db/index"
+import { disconnect, findRun, findTrialForTask, getTasks } from "../db/index"
+import { disconnectRedis } from "../cli/redis"
 import {
 	buildPairedExperimentReport,
 	reportCampaignPair,
@@ -643,7 +644,17 @@ function count<T extends Record<string, unknown>, K extends keyof T>(values: T[]
 	}, {})
 }
 
-main().catch((error) => {
-	console.error(error)
-	process.exitCode = 1
-})
+main()
+	.catch((error) => {
+		console.error(error)
+		process.exitCode = 1
+	})
+	.finally(async () => {
+		const cleanup = await Promise.allSettled([disconnect(), disconnectRedis()])
+		const failures = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+		if (failures.length) throw new AggregateError(failures, "Benchmark connection cleanup failed")
+	})
+	.catch((error) => {
+		console.error(error)
+		process.exitCode = 1
+	})

@@ -623,13 +623,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.4 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.4-continuity-and-skills"
+	test("shows the v3.2.5 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.5-reliability-and-responsiveness"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.3-ux-and-thread-reliability")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.4-continuity-and-skills")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -983,6 +983,36 @@ describe("AlphaProvider", () => {
 		expect(focus).toHaveBeenCalledExactlyOnceWith(true)
 		releaseCondense()
 		await pending
+	})
+
+	test("does not let an earlier home navigation replace a task selected during a global operation", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		let releaseCondense!: () => void
+		const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+			new Promise<void>((resolve) => {
+				releaseCondense = resolve
+			}),
+		)
+		vi.spyOn(
+			provider as unknown as { finalizeActiveCompletionCandidate(): Promise<void> },
+			"finalizeActiveCompletionCandidate",
+		).mockResolvedValue(undefined)
+		vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebviewWithoutAlphaMessages").mockResolvedValue(undefined)
+		const task = new Task(defaultTaskOptions)
+		await provider.addTaskToStack(task)
+
+		const pending = messageHandler({ type: "condenseTaskContextRequest", text: task.taskId })
+		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith(task.taskId))
+		const blank = messageHandler({ type: "startBlankTask" })
+		await messageHandler({ type: "showTaskWithId", text: task.taskId })
+		releaseCondense()
+		await Promise.all([pending, blank])
+
+		expect(provider.getCurrentTask()?.taskId).toBe(task.taskId)
+		expect(mockPostMessage).not.toHaveBeenCalledWith({ type: "invoke", invoke: "newChat" })
 	})
 
 	test("waits for an accepted webview message before draining tasks during disposal", async () => {

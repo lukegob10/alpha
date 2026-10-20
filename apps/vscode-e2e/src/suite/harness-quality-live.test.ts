@@ -93,7 +93,7 @@ suite("Live Copilot harness quality", function () {
 			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 			await waitFor(() => vscode.lm.tools.some((tool) => tool.name === "open_browser_page"), {
 				timeout: 15_000,
-				description: "VS Code 1.125.0 browser tools",
+				description: "VS Code 1.138.0 browser tools",
 			})
 		}
 		await runLiveCase(

@@ -140,8 +140,10 @@ export class Terminal extends BaseTerminal {
 					}
 					// A stream failure does not prove the shell command stopped. Keep a
 					// running terminal reserved until its physical end event arrives.
-					if (!this.running) this.busy = false
-					this.setActiveStream(undefined)
+					if (!this.process || this.process === process) {
+						if (!this.running) this.busy = false
+						this.setActiveStream(undefined)
+					}
 					process.emit("error", error instanceof Error ? error : new Error(String(error)))
 				})
 				.finally(async () => {

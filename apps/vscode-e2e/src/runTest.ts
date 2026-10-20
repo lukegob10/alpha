@@ -178,7 +178,7 @@ export function readRunOptions(
 	validateLiveSetupTimeout(setupTimeoutMs, parsed.has("--setup"))
 	return {
 		providerMode: providerMode as ProviderMode,
-		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.125.0",
+		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.138.0",
 		vscodeExecutablePath: parsed.get("--vscode-executable") ?? env.VSCODE_EXECUTABLE_PATH,
 		workspace: parsed.get("--workspace") ?? env.ALPHA_E2E_WORKSPACE_ROOT,
 		profileDir: parsed.get("--profile-dir") ?? env.ALPHA_E2E_PROFILE_ROOT,
@@ -304,6 +304,7 @@ export async function runExtensionTests(
 				"reasoning-ui.test",
 				"history-ui.test",
 				"task-navigation-ui.test",
+				"editor-chat-reload.test",
 				"tickets-ui.test",
 			].includes(options.testFile ?? ""))
 	) {

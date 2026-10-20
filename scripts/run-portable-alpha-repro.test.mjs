@@ -47,7 +47,7 @@ async function activatePortableTask(task) {
 		isTaskInHistory: async () => true,
 	}
 	const vscode = {
-		version: "1.125.0",
+		version: "1.138.0",
 		extensions: {
 			getExtension: () => ({
 				packageJSON: { version: "fixture" },
@@ -186,7 +186,7 @@ test("portable receipts are invisible until complete and cannot replace an exist
 		opened = resolve
 	})
 	const target = path.join(root, "result.json")
-	const value = { runId: "atomic-run", hostVersion: "1.125.0", status: "completed" }
+	const value = { runId: "atomic-run", hostVersion: "1.138.0", status: "completed" }
 	const publication = writeReceipt(target, value, {
 		...fs,
 		writeFile: async (file, bytes, options) => {
@@ -341,7 +341,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					const sidecar = args[2].slice("--extensionDevelopmentPath=".length)
 					void writeReceipt(path.join(sidecar, "run-2-task-result.json"), {
 						runId: "run-2",
-						hostVersion: "1.125.0",
+						hostVersion: "1.138.0",
 						status: "completed",
 						taskId: "task-1",
 						workspaceAddedByAutomation: true,
@@ -376,7 +376,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					const sidecar = args[2].slice("--extensionDevelopmentPath=".length)
 					void writeReceipt(path.join(sidecar, "run-3-probe-result.json"), {
 						runId: "run-3",
-						hostVersion: "1.125.0",
+						hostVersion: "1.138.0",
 						stage: "ready",
 					})
 					return { unref() {} }
@@ -393,7 +393,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					const sidecar = args[3].slice("--extensionDevelopmentPath=".length)
 					void writeReceipt(path.join(sidecar, "run-4-probe-result.json"), {
 						runId: "run-4",
-						hostVersion: "1.125.0",
+						hostVersion: "1.138.0",
 						stage: "ready",
 					})
 					return { unref() {} }
@@ -406,7 +406,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 			["malformed", "{", SyntaxError],
 			[
 				"wrong-run",
-				JSON.stringify({ runId: "another-run", hostVersion: "1.125.0", stage: "ready" }),
+				JSON.stringify({ runId: "another-run", hostVersion: "1.138.0", stage: "ready" }),
 				/receipt identity/,
 			],
 			[

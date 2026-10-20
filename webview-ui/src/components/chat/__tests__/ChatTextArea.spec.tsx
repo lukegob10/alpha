@@ -51,6 +51,13 @@ const getEnhancePromptButton = () => {
 	return screen.getByRole("menuitem", { name: "Improve prompt" })
 }
 
+const getCancelEnhancementButton = () => {
+	const existing = screen.queryByRole("menuitem", { name: "Cancel prompt improvement" })
+	if (existing) return existing
+	fireEvent.keyDown(screen.getByRole("button", { name: "Draft actions" }), { key: "ArrowDown" })
+	return screen.getByRole("menuitem", { name: "Cancel prompt improvement" })
+}
+
 describe("ChatTextArea", () => {
 	const defaultProps = {
 		inputValue: "",
@@ -735,6 +742,145 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("enhanced prompt response", () => {
+		it("cancels prompt improvement without changing or submitting the draft and ignores its late result", () => {
+			const setInputValue = vi.fn()
+			render(
+				<ChatTextArea
+					{...defaultProps}
+					conversationClineMessages={[]}
+					conversationTaskId="task-a"
+					inputValue="Keep my draft"
+					setInputValue={setInputValue}
+				/>,
+			)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			fireEvent.click(getCancelEnhancementButton())
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "cancelEnhancePrompt",
+				requestId: request.requestId,
+				taskId: "task-a",
+			})
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "enhancedPrompt", requestId: request.requestId, text: "Too late" },
+					}),
+				)
+			})
+			expect(setInputValue).not.toHaveBeenCalled()
+			expect(defaultProps.onSend).not.toHaveBeenCalled()
+			expect(screen.getByRole("textbox")).toHaveValue("Keep my draft")
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-busy", "false")
+		})
+
+		it("cancels an enhancement immediately on a native edit before the controlled draft rerenders", () => {
+			const setInputValue = vi.fn()
+			Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+			render(<ChatTextArea {...defaultProps} inputValue="Original draft" setInputValue={setInputValue} />)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			fireEvent.change(screen.getByRole("textbox"), { target: { value: "Newer draft" } })
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "enhancedPrompt", requestId: request.requestId, text: "Stale enhancement" },
+					}),
+				)
+			})
+			expect(mockPostMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+			expect(setInputValue).toHaveBeenCalledWith("Newer draft")
+			expect(setInputValue).not.toHaveBeenCalledWith("Stale enhancement")
+		})
+
+		it("cancels once on Escape and preserves input without submitting", () => {
+			render(<ChatTextArea {...defaultProps} inputValue="Keep my draft" />)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+			fireEvent(screen.getByRole("textbox"), escape)
+			fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" })
+			expect(escape.defaultPrevented).toBe(true)
+			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "cancelEnhancePrompt")).toEqual([
+				[{ type: "cancelEnhancePrompt", requestId: request.requestId }],
+			])
+			expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+			expect(defaultProps.onSend).not.toHaveBeenCalled()
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-busy", "false")
+		})
+
+		it("keeps a retry pending when a prior cancellation or result arrives late", () => {
+			Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+			render(<ChatTextArea {...defaultProps} inputValue="Keep my draft" />)
+			fireEvent.click(getEnhancePromptButton())
+			const original = getEnhancementRequest()
+			fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" })
+			fireEvent.click(getEnhancePromptButton())
+			const retry = getEnhancementRequest()
+			expect(retry.requestId).not.toBe(original.requestId)
+			act(() => {
+				for (const response of [{ enhancementStatus: "cancelled" }, { text: "Late original" }]) {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: { type: "enhancedPrompt", requestId: original.requestId, ...response },
+						}),
+					)
+				}
+			})
+			expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-busy", "true")
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "enhancedPrompt",
+							requestId: retry.requestId,
+							enhancementStatus: "success",
+							text: "Improved retry",
+						},
+					}),
+				)
+			})
+			expect(defaultProps.setInputValue).toHaveBeenCalledWith("Improved retry")
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-busy", "false")
+		})
+
+		it("cancels the originating request when the composer unmounts", () => {
+			const view = render(<ChatTextArea {...defaultProps} inputValue="Keep my draft" />)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			view.unmount()
+			expect(mockPostMessage).toHaveBeenCalledWith({ type: "cancelEnhancePrompt", requestId: request.requestId })
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "enhancedPrompt", requestId: request.requestId, text: "Too late" },
+				}),
+			)
+			expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+		})
+
+		it.each(["error", "cancelled"])("does not insert %s result text into the draft", (enhancementStatus) => {
+			Object.defineProperty(document, "execCommand", { value: undefined, writable: true })
+			render(<ChatTextArea {...defaultProps} inputValue="Keep my draft" />)
+			fireEvent.click(getEnhancePromptButton())
+			const request = getEnhancementRequest()
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "enhancedPrompt",
+							requestId: request.requestId,
+							enhancementStatus,
+							text: "Provider diagnostic text",
+						},
+					}),
+				)
+			})
+			expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+			expect(screen.getByRole("button", { name: "Draft actions" })).toHaveAttribute("aria-busy", "false")
+			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "cancelEnhancePrompt")).toEqual([])
+		})
+
 		it.each(["Prompt for A", "Keep B's draft"])(
 			"keeps a delayed enhancement from replacing another chat's draft (%s)",
 			(otherDraft) => {
@@ -770,6 +916,11 @@ describe("ChatTextArea", () => {
 				})
 				expect(setInputValue).not.toHaveBeenCalledWith("Enhanced A")
 				expect(screen.getByRole("textbox")).toHaveValue(otherDraft)
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "cancelEnhancePrompt",
+					requestId: request.requestId,
+					taskId: "task-a",
+				})
 			},
 		)
 
@@ -804,6 +955,10 @@ describe("ChatTextArea", () => {
 			fireEvent.click(getEnhancePromptButton())
 			const latestRequest = getEnhancementRequest()
 			expect(latestRequest.requestId).not.toBe(originalRequest.requestId)
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "cancelEnhancePrompt",
+				requestId: originalRequest.requestId,
+			})
 			act(() => {
 				for (const requestId of [originalRequest.requestId, undefined]) {
 					window.dispatchEvent(
@@ -951,7 +1106,7 @@ describe("ChatTextArea", () => {
 			fireEvent.click(enhanceButton)
 
 			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "enhancePrompt")).toHaveLength(1)
-			expect(getEnhancePromptButton()).toHaveAttribute("data-disabled")
+			expect(getCancelEnhancementButton()).not.toHaveAttribute("data-disabled")
 		})
 	})
 

@@ -122,7 +122,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 
 		// Setup mock context proxy
 		const mockContextProxy = {
-			getValues: vi.fn().mockReturnValue({}),
+			getValues: vi.fn().mockReturnValue({ currentApiConfigName: "default" }),
 			getValue: vi.fn().mockReturnValue(undefined),
 			setValue: vi.fn().mockResolvedValue(undefined),
 			getProviderSettings: vi.fn().mockReturnValue(mockApiConfig),
@@ -132,6 +132,14 @@ describe("AlphaProvider flicker-free cancel", () => {
 
 		// Create provider instance
 		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", mockContextProxy as any)
+		vi.mocked(provider.providerSettingsManager.listConfig).mockResolvedValue([
+			{ id: "default-profile", name: "default", apiProvider: "vertex" },
+		])
+		vi.mocked(provider.providerSettingsManager.getProfile).mockResolvedValue({
+			id: "default-profile",
+			name: "default",
+			...mockApiConfig,
+		})
 
 		// Mock provider methods
 		provider.getState = vi.fn().mockResolvedValue({

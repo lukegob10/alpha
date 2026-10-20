@@ -8,7 +8,13 @@ import * as vscode from "vscode"
 import type { ProviderName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
-import { importSettings, importSettingsFromFile, importSettingsWithFeedback, exportSettings } from "../importExport"
+import {
+	importSettings,
+	importSettingsFromPath,
+	importSettingsFromFile,
+	importSettingsWithFeedback,
+	exportSettings,
+} from "../importExport"
 import { ProviderSettingsManager } from "../ProviderSettingsManager"
 import { ContextProxy } from "../ContextProxy"
 import { CustomModesManager } from "../CustomModesManager"
@@ -136,6 +142,120 @@ describe("importExport", () => {
 	})
 
 	describe("importSettings", () => {
+		it.each([false, true])(
+			"remaps enhancement and delegated profile references after retained import repair (still invalid: %s)",
+			async (stillInvalid) => {
+				const migrations = {
+					rateLimitSecondsMigrated: true,
+					openAiHeadersMigrated: true,
+					consecutiveMistakeLimitMigrated: true,
+					todoListEnabledMigrated: true,
+					claudeCodeLegacySettingsMigrated: true,
+				}
+				await mockExtensionContext.secrets.store(
+					"roo_cline_config_api_config",
+					JSON.stringify({
+						currentApiConfigName: "kept",
+						apiConfigs: {},
+						modeApiConfigs: { code: "stable-id" },
+						migrations,
+						retainedApiConfigs: {
+							kept: { id: "stable-id", value: { id: "stable-id", rateLimitSeconds: "old-invalid" } },
+						},
+					}),
+				)
+				const manager = new ProviderSettingsManager(mockExtensionContext)
+				await manager.initialize()
+				;(fs.readFile as Mock).mockResolvedValue(
+					JSON.stringify({
+						providerProfiles: {
+							currentApiConfigName: "kept",
+							apiConfigs: {
+								kept: {
+									id: "import-id",
+									apiProvider: "vscode-lm",
+									...(stillInvalid ? { rateLimitSeconds: "new-invalid" } : {}),
+								},
+							},
+						},
+						globalSettings: {
+							enhancementApiConfigId: "import-id",
+							subagentDefaultApiConfigId: "import-id",
+							subagentApiConfigByRole: { explore: "import-id", review: "import-id", worker: "import-id" },
+						},
+					}),
+				)
+				const result = await importSettingsFromPath("/mock/settings.json", {
+					providerSettingsManager: manager,
+					contextProxy: mockContextProxy,
+					customModesManager: mockCustomModesManager,
+				})
+				expect(result.success).toBe(true)
+				expect(mockContextProxy.setValues).toHaveBeenCalledWith({
+					enhancementApiConfigId: "stable-id",
+					subagentDefaultApiConfigId: "stable-id",
+					subagentApiConfigByRole: { explore: "stable-id", review: "stable-id", worker: "stable-id" },
+				})
+				expect(await manager.getModeConfigId("code")).toBe("stable-id")
+				if (stillInvalid) {
+					expect(mockContextProxy.setProviderSettings).not.toHaveBeenCalled()
+					await expect(manager.assertProfileAvailable({ id: "stable-id" })).rejects.toMatchObject({
+						code: "invalid",
+					})
+				} else
+					await expect(manager.getProfile({ id: "stable-id" })).resolves.toMatchObject({
+						apiProvider: "vscode-lm",
+					})
+			},
+		)
+
+		it("rejects ambiguous imported delegated references before committing profiles or global settings", async () => {
+			const migrations = {
+				rateLimitSecondsMigrated: true,
+				openAiHeadersMigrated: true,
+				consecutiveMistakeLimitMigrated: true,
+				todoListEnabledMigrated: true,
+				claudeCodeLegacySettingsMigrated: true,
+			}
+			await mockExtensionContext.secrets.store(
+				"roo_cline_config_api_config",
+				JSON.stringify({
+					currentApiConfigName: "first",
+					apiConfigs: {},
+					modeApiConfigs: {},
+					migrations,
+					retainedApiConfigs: {
+						first: { id: "first-id", value: null },
+						second: { id: "second-id", value: null },
+					},
+				}),
+			)
+			const manager = new ProviderSettingsManager(mockExtensionContext)
+			await manager.initialize()
+			const before = await mockExtensionContext.secrets.get("roo_cline_config_api_config")
+			;(fs.readFile as Mock).mockResolvedValue(
+				JSON.stringify({
+					providerProfiles: {
+						currentApiConfigName: "first",
+						apiConfigs: {
+							first: { id: "duplicate-id", apiProvider: "vscode-lm" },
+							second: { id: "duplicate-id", apiProvider: "openai" },
+						},
+					},
+					globalSettings: { subagentDefaultApiConfigId: "duplicate-id" },
+				}),
+			)
+			const result = await importSettingsFromPath("/mock/settings.json", {
+				providerSettingsManager: manager,
+				contextProxy: mockContextProxy,
+				customModesManager: mockCustomModesManager,
+			})
+			expect(result.success).toBe(false)
+			expect(result.error).toContain("Ambiguous imported profile identity")
+			expect(await mockExtensionContext.secrets.get("roo_cline_config_api_config")).toBe(before)
+			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
+		})
+
 		it("should return success: false when user cancels file selection", async () => {
 			;(vscode.window.showOpenDialog as Mock).mockResolvedValue(undefined)
 
@@ -341,7 +461,7 @@ describe("importExport", () => {
 
 		it("should return success: false when file content is not valid JSON", async () => {
 			;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
-			const mockInvalidJson = "{ this is not valid JSON }"
+			const mockInvalidJson = "private-test-value-is-not-json"
 			;(fs.readFile as Mock).mockResolvedValue(mockInvalidJson)
 
 			const result = await importSettings({
@@ -351,7 +471,8 @@ describe("importExport", () => {
 			})
 
 			expect(result.success).toBe(false)
-			expect(result.error).toMatch(/^Expected property name or '}' in JSON at position 2/)
+			expect(result.error).toBe("Settings file is not valid JSON. Existing settings were not changed.")
+			expect(result.error).not.toContain("private-test-value")
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
 			expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
@@ -385,7 +506,7 @@ describe("importExport", () => {
 			const mockFileContent = JSON.stringify({
 				globalSettings: { mode: "code" },
 				providerProfiles: {
-					currentApiConfigName: "anthropic",
+					currentApiConfigName: "default",
 					apiConfigs: { default: { apiProvider: "anthropic" as const, id: "anthropic" } },
 				},
 			})
@@ -696,7 +817,7 @@ describe("importExport", () => {
 				expect(importedProfiles.apiConfigs["invalid-profile"].apiProvider).toBe("claude-code")
 			})
 
-			it("should skip completely invalid profiles and return warnings", async () => {
+			it("retains invalid imported profiles outside executable settings and returns warnings", async () => {
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				const mockFileContent = JSON.stringify({
@@ -740,7 +861,7 @@ describe("importExport", () => {
 				// Should have warnings about the skipped profile
 				expect((result as { warnings?: string[] }).warnings).toBeDefined()
 				expect((result as { warnings?: string[] }).warnings!.some((w) => w.includes("type-invalid"))).toBe(true)
-				expect((result as { warnings?: string[] }).warnings!.some((w) => w.includes("skipped"))).toBe(true)
+				expect((result as { warnings?: string[] }).warnings!.some((w) => w.includes("retained"))).toBe(true)
 
 				// The valid profile should be imported
 				const importedProfiles = mockProviderSettingsManager.import.mock.calls[0][0]
@@ -748,9 +869,13 @@ describe("importExport", () => {
 
 				// The type-invalid profile should NOT be imported
 				expect(importedProfiles.apiConfigs["type-invalid"]).toBeUndefined()
+				expect(importedProfiles.retainedApiConfigs?.["type-invalid"]).toEqual({
+					id: "type-invalid-id",
+					value: { modelTemperature: "not-a-number", id: "type-invalid-id" },
+				})
 			})
 
-			it("should fail when NO valid profiles can be imported", async () => {
+			it("rejects an import whose selected profile is absent instead of substituting another profile", async () => {
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				const mockFileContent = JSON.stringify({
@@ -787,7 +912,8 @@ describe("importExport", () => {
 
 				// Import should fail since all profiles have schema validation errors
 				expect(result.success).toBe(false)
-				expect(result.error).toContain("No valid profiles could be imported")
+				expect(result.error).toContain('Selected profile "invalid-profile" was not found')
+				expect(result.error).toContain("No provider was substituted")
 
 				// Should NOT have called import since there were no valid profiles
 				expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
@@ -937,7 +1063,7 @@ describe("importExport", () => {
 				expect(importedProfiles.apiConfigs["another-invalid"].apiProvider).toBe("some-old-provider")
 			})
 
-			it("should fallback currentApiConfigName when the imported current profile was skipped", async () => {
+			it("retains an invalid selected import without substituting another provider", async () => {
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				// Import file where currentApiConfigName points to an invalid profile that gets skipped
@@ -982,22 +1108,20 @@ describe("importExport", () => {
 				// Should have warnings about the skipped profile AND the fallback
 				const warnings = (result as { warnings?: string[] }).warnings!
 				expect(warnings).toBeDefined()
-				expect(warnings.some((w) => w.includes("invalid-current-profile") && w.includes("skipped"))).toBe(true)
-				expect(
-					warnings.some(
-						(w) =>
-							w.includes("invalid-current-profile") &&
-							w.includes("not available") &&
-							w.includes("valid-fallback-profile"),
-					),
-				).toBe(true)
+				expect(warnings.some((w) => w.includes("invalid-current-profile") && w.includes("retained"))).toBe(true)
+				expect(warnings.some((w) => w.includes("defaulting"))).toBe(false)
 
 				// The currentApiConfigName should be set to the valid fallback profile, not the invalid one
 				const importedProfiles = mockProviderSettingsManager.import.mock.calls[0][0]
-				expect(importedProfiles.currentApiConfigName).toBe("valid-fallback-profile")
+				expect(importedProfiles.currentApiConfigName).toBe("invalid-current-profile")
 
 				// contextProxy should also be set with the fallback profile name
-				expect(mockContextProxy.setValue).toHaveBeenCalledWith("currentApiConfigName", "valid-fallback-profile")
+				expect(mockContextProxy.setValue).toHaveBeenCalledWith(
+					"currentApiConfigName",
+					"invalid-current-profile",
+				)
+				expect(mockContextProxy.setProviderSettings).not.toHaveBeenCalled()
+				expect(importedProfiles.retainedApiConfigs?.["invalid-current-profile"].id).toBe("invalid-current-id")
 
 				// The invalid profile should NOT be imported
 				expect(importedProfiles.apiConfigs["invalid-current-profile"]).toBeUndefined()
@@ -1005,7 +1129,7 @@ describe("importExport", () => {
 				expect(importedProfiles.apiConfigs["valid-fallback-profile"]).toBeDefined()
 			})
 
-			it("should keep previous currentApiConfigName when all imported profiles are invalid", async () => {
+			it("retains an all-invalid selected import and reports that it requires repair", async () => {
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				// All profiles in the import are invalid, but we have existing profiles
@@ -1038,8 +1162,15 @@ describe("importExport", () => {
 				})
 
 				// Import should fail because no valid profiles could be imported
-				expect(result.success).toBe(false)
-				expect(result.error).toContain("No valid profiles could be imported")
+				expect(result.success).toBe(true)
+				expect(
+					mockProviderSettingsManager.import.mock.calls[0][0].retainedApiConfigs?.["invalid-profile"].id,
+				).toBe("invalid-id")
+				expect(mockContextProxy.setValue).toHaveBeenCalledWith("currentApiConfigName", "invalid-profile")
+				expect(mockContextProxy.setProviderSettings).not.toHaveBeenCalled()
+				expect(
+					(result as { warnings?: string[] }).warnings?.some((warning) => warning.includes("retained")),
+				).toBe(true)
 			})
 
 			it("should show plural summary for multiple profile warnings via importSettingsWithFeedback", async () => {

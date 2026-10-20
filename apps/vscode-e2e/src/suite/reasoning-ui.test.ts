@@ -1,5 +1,7 @@
 import * as assert from "node:assert/strict"
 import { createServer, type ServerResponse } from "node:http"
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
 import * as vscode from "vscode"
 import {
 	AlphaCodeEventName,
@@ -11,6 +13,8 @@ import {
 } from "@alpha-code/types"
 import { uiFixtureBarrier } from "../ui/fixtureBarrier"
 import { waitFor } from "./utils"
+import { isOpenAiTaskTitleRequest } from "../scenarios/openAiTaskTitleRequest"
+import { writeJsonAtomically } from "./preflightEvidence"
 
 interface ReasoningTask {
 	taskId: string
@@ -45,10 +49,12 @@ suite("Rendered reasoning controls", function () {
 	this.timeout(300_000)
 	test("uses acknowledged reasoning and scoped Windows hotkeys without saving a profile", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.125.0")
+		assert.equal(vscode.version, "1.138.0")
 		const provider = (globalThis.api as unknown as { sidebarProvider: ReasoningHost }).sidebarProvider
 		const originalAutoSteer = provider.contextProxy.getValue("autoSteer")
 		const requests: Array<{ model: string; reasoning_effort?: string }> = []
+		const titleRequests: Array<{ model: string; reasoning_effort?: string }> = []
+		let firstTwoTaskTurns: { task: number; title: number; total: number } | undefined
 		const requestMessages: string[] = []
 		let heldResponse: ServerResponse | undefined
 		let heldRequestCancelled = false
@@ -58,6 +64,27 @@ suite("Rendered reasoning controls", function () {
 				const chunks: Buffer[] = []
 				for await (const chunk of request) chunks.push(Buffer.from(chunk))
 				const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+				if (isOpenAiTaskTitleRequest(body)) {
+					titleRequests.push({ model: body.model, reasoning_effort: body.reasoning_effort })
+					response.writeHead(200, { "Content-Type": "application/json" })
+					response.end(
+						JSON.stringify({
+							id: `fixture-title-${titleRequests.length}`,
+							object: "chat.completion",
+							created: 1,
+							model: body.model,
+							choices: [
+								{
+									index: 0,
+									message: { role: "assistant", content: "Fixture task" },
+									finish_reason: "stop",
+								},
+							],
+							usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+						}),
+					)
+					return
+				}
 				requests.push({ model: body.model, reasoning_effort: body.reasoning_effort })
 				const messages = JSON.stringify(body.messages)
 				requestMessages.push(messages)
@@ -182,6 +209,11 @@ suite("Rendered reasoning controls", function () {
 			await acceptCompletion(2)
 			assert.equal(requests.length, 2)
 			assert.deepEqual(requests[1], { model: "gpt-5.6-luna", reasoning_effort: "high" })
+			firstTwoTaskTurns = {
+				task: requests.length,
+				title: titleRequests.length,
+				total: requests.length + titleRequests.length,
+			}
 			assert.deepEqual(await provider.providerSettingsManager.getProfile({ name: "GPT 6 Luna" }), profile)
 			assert.equal((await provider.providerSettingsManager.listConfig()).length, count)
 			assert.equal(globalThis.api.getConfiguration().mode, before.mode)
@@ -360,6 +392,21 @@ suite("Rendered reasoning controls", function () {
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
 			server.closeAllConnections()
 			await new Promise<void>((resolve) => server.close(() => resolve()))
+			await writeJsonAtomically(
+				path.join(process.env.ALPHA_E2E_ARTIFACTS_DIR!, "ui-reasoning-provider-requests.json"),
+				{
+					nonce: process.env.ALPHA_UI_ACCEPTANCE_NONCE,
+					firstTwoTaskTurns,
+					counts: {
+						task: requests.length,
+						title: titleRequests.length,
+						total: requests.length + titleRequests.length,
+					},
+					taskRequests: requests.slice(0, 64),
+					titleRequests: titleRequests.slice(0, 64),
+				},
+				{ rename: fs.link },
+			)
 		}
 	})
 })

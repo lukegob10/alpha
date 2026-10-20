@@ -68,6 +68,44 @@ describe("IpcServer disposal", () => {
 		vi.clearAllMocks()
 		mocks.reset()
 	})
+	it("does not advertise targeted cancellation for a generic server", () => {
+		const server = new IpcServer("test.sock", vi.fn())
+		server.listen()
+		try {
+			mocks.emitBackend("connect", createSocket())
+			expect(mocks.backendServer.emit.mock.calls[0]?.[2].data.capabilities).toBeUndefined()
+		} finally {
+			server.dispose()
+		}
+	})
+
+	it.each([false, true])("advertises only explicitly supplied cancellation support %s", (supported) => {
+		const server = new IpcServer("test.sock", vi.fn(), undefined, {
+			capabilities: { targetedTaskCancellation: supported },
+		})
+		server.listen()
+		try {
+			mocks.emitBackend("connect", createSocket())
+			expect(mocks.backendServer.emit.mock.calls[0]?.[2].data.capabilities).toEqual({
+				targetedTaskCancellation: supported,
+			})
+		} finally {
+			server.dispose()
+		}
+	})
+
+	it("preserves an explicitly advertised presentation opt-out alongside targeted cancellation", () => {
+		const capabilities = { targetedTaskCancellation: true, presentationModelCallOptOut: true }
+		const server = new IpcServer("test.sock", vi.fn(), undefined, { capabilities })
+		server.listen()
+		try {
+			mocks.emitBackend("connect", createSocket())
+			expect(mocks.backendServer.emit.mock.calls[0]?.[2].data.capabilities).toEqual(capabilities)
+		} finally {
+			server.dispose()
+		}
+	})
+
 	it.each([
 		["win32", "\\\\.\\pipe\\evals-fixture.sock", "evals-fixture.sock"],
 		["win32", "evals-fixture.sock", "evals-fixture.sock"],

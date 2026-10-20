@@ -9,10 +9,12 @@ const taskMocks = vi.hoisted(() => {
 		instanceId = "instance-1"
 		parentTask?: any
 		taskApprovalMode?: string
+		presentationModelCalls?: false
 
 		constructor(options: any) {
 			this.parentTask = options.parentTask
 			this.taskApprovalMode = options.taskApprovalMode
+			this.presentationModelCalls = options.presentationModelCalls
 			instances.push(this)
 		}
 
@@ -68,6 +70,16 @@ describe("AlphaProvider.createTask start control", () => {
 				apiModelId: "gpt-4.1",
 				consecutiveMistakeLimit: 3,
 			})),
+			providerSettingsManager: {
+				listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "openai" }]),
+				getProfile: vi.fn(async () => ({
+					id: "default-profile",
+					name: "default",
+					apiProvider: "openai",
+					apiModelId: "gpt-4.1",
+					consecutiveMistakeLimit: 3,
+				})),
+			},
 			contextProxy: {
 				getValues: vi.fn(() => ({
 					currentApiConfigName: "default",
@@ -85,16 +97,39 @@ describe("AlphaProvider.createTask start control", () => {
 			log: vi.fn(),
 		}) as unknown as AlphaProvider
 
+	it.each(["allowedMaxCost", "allowedMaxRequests"] as const)(
+		"disables presentation model calls at admission with finite positive %s",
+		async (budget) => {
+			const provider = createProvider()
+			vi.mocked(provider.contextProxy.getValues).mockReturnValue({ [budget]: 0.1 })
+
+			const task = await provider.createTask("Governed work", undefined, undefined, { startTask: false })
+
+			expect(task).toHaveProperty("presentationModelCalls", false)
+		},
+	)
+
+	it.each([0, null, undefined, Number.POSITIVE_INFINITY, Number.NaN])(
+		"keeps the existing interactive default for a non-finite-positive budget %s",
+		async (budget) => {
+			const provider = createProvider()
+			vi.mocked(provider.contextProxy.getValues).mockReturnValue({ allowedMaxCost: budget })
+
+			const task = await provider.createTask("Interactive work", undefined, undefined, { startTask: false })
+
+			expect(task).toHaveProperty("presentationModelCalls", undefined)
+		},
+	)
+
 	it.each([...retiredProviderNames, "future-provider"])(
 		"rejects %s before closing the current task",
 		async (apiProvider) => {
 			const provider = createProvider()
-			vi.mocked(provider["getProviderSettingsSnapshot"]).mockReturnValue({
-				apiProvider: apiProvider as ProviderSettings["apiProvider"],
-			})
-			await expect(AlphaProvider.prototype.createTask.call(provider, "New work")).rejects.toThrow(
-				`Unsupported API provider: ${apiProvider}`,
-			)
+			await expect(
+				AlphaProvider.prototype.createTask.call(provider, "New work", undefined, undefined, {
+					apiConfiguration: { apiProvider: apiProvider as ProviderSettings["apiProvider"] },
+				}),
+			).rejects.toThrow(`Unsupported API provider: ${apiProvider}`)
 			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
 			expect(taskMocks.instances).toHaveLength(0)
 		},
@@ -104,16 +139,29 @@ describe("AlphaProvider.createTask start control", () => {
 		"rejects restored %s before closing the current task",
 		async (apiProvider) => {
 			const provider = createProvider()
-			vi.mocked(provider["getProviderSettingsSnapshot"]).mockReturnValue({
-				apiProvider: apiProvider as ProviderSettings["apiProvider"],
-			})
 			await expect(
-				AlphaProvider.prototype.createTaskWithHistoryItem.call(provider, { id: "saved-task" } as HistoryItem),
+				AlphaProvider.prototype.createTaskWithHistoryItem.call(provider, { id: "saved-task" } as HistoryItem, {
+					subagentRuntime: {
+						apiConfiguration: { apiProvider: apiProvider as ProviderSettings["apiProvider"] },
+					},
+				}),
 			).rejects.toThrow(`Unsupported API provider: ${apiProvider}`)
 			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
 			expect(taskMocks.instances).toHaveLength(0)
 		},
 	)
+
+	it("rejects an explicit public API provider override over a valid saved profile before closing the current task", async () => {
+		const provider = createProvider()
+		const configuration = { apiProvider: "future-provider" as ProviderSettings["apiProvider"] }
+
+		await expect(provider.createTask("New work", undefined, undefined, {}, configuration)).rejects.toThrow(
+			"Unsupported API provider: future-provider",
+		)
+		expect(provider.providerSettingsManager.getProfile).toHaveBeenCalledWith({ name: "default" })
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+		expect(taskMocks.instances).toHaveLength(0)
+	})
 
 	it("does not start a task when startTask is false", async () => {
 		const provider = createProvider()

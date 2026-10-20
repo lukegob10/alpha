@@ -5,6 +5,7 @@ const makePausedTask = (overrides: Record<string, unknown> = {}) =>
 		abort: false,
 		didComplete: false,
 		isTaskLoopActive: true,
+		taskCancellationController: new AbortController(),
 		externalMutationLease: undefined,
 		activeAsk: { type: "followup" },
 		askResponse: undefined,

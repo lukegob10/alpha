@@ -9,15 +9,18 @@ import {
 	findTrialForTask,
 	finishRun,
 	getTasks,
+	getPresentationModelCallPolicyEvents,
 	settleTrialAfterRetries,
 	updateTask,
 } from "../db/index"
 import { CampaignCostLedger } from "../benchmark/budgets"
+import { canonicalJson, sha256 } from "../evidence/index"
 import { EVALS_REPO_PATH } from "../exercises/index"
 
 import { Logger, getTag, isDockerContainer, resetEvalsRepo, commitEvalsRepoChanges } from "./utils"
 import { startHeartbeat, stopHeartbeat } from "./redis"
 import { processTask, processTaskInContainer } from "./processTask"
+import { presentationModelCallPolicySchema } from "./types"
 
 export const runEvals = async (runId: number) => {
 	const run = await findRun(runId)
@@ -79,19 +82,24 @@ export const runEvals = async (runId: number) => {
 			try {
 				if (task.benchmarkPartition === "holdout") await assertVisibleGatePassed(run.id)
 				if (containerized) {
-					await processTaskInContainer({ taskId: task.id, jobToken: run.jobToken, logger })
+					return await processTaskInContainer({ taskId: task.id, jobToken: run.jobToken, logger })
 				} else {
-					await processTask({ taskId: task.id, jobToken: run.jobToken, logger })
+					return await processTask({ taskId: task.id, jobToken: run.jobToken, logger })
 				}
 			} catch (error) {
 				logger.error("error processing task", error)
+				// A failed governed attempt cannot establish known spend or authorize another paid dispatch.
+				if (run.campaignHardCapUsd !== null) throw error
 			}
 		}
 
 		if (run.campaignHardCapUsd !== null && run.taskCostCapUsd !== null) {
 			const ledger = new CampaignCostLedger(run.campaignHardCapUsd)
-			for (const completed of tasks.filter(({ finishedAt }) => finishedAt !== null))
-				ledger.settle(0, completed.taskMetrics?.cost ?? 0)
+			for (const completed of tasks.filter(({ finishedAt }) => finishedAt !== null)) {
+				const actualCost = requireActualTaskCost(completed.id, completed.taskMetrics?.cost)
+				await assertGovernedContinuationAllowed(completed.id)
+				ledger.settle(0, actualCost)
+			}
 			for (let index = 0; index < filteredTasks.length; index++) {
 				const task = filteredTasks[index]!
 				try {
@@ -100,16 +108,18 @@ export const runEvals = async (runId: number) => {
 					await finalizeCampaignBudgetExhausted(filteredTasks.slice(index))
 					break
 				}
-				await createTaskRunner(task)()
+				const executionOutcome = await createTaskRunner(task)()
 				const refreshed = (await getTasks(run.id)).find(({ id }) => id === task.id)
+				const actualCost = requireActualTaskCost(task.id, refreshed?.taskMetrics?.cost)
 				try {
-					ledger.settle(run.taskCostCapUsd, refreshed?.taskMetrics?.cost ?? 0)
+					ledger.settle(run.taskCostCapUsd, actualCost)
 				} catch (error) {
 					logger.error("campaign hard cap exceeded after provider accounting", error)
 					await finalizeCampaignBudgetExhausted(filteredTasks.slice(index + 1))
 					break
 				}
 				logger.info("campaign budget", ledger.snapshot())
+				await assertGovernedContinuationAllowed(task.id, executionOutcome)
 			}
 		} else {
 			// Legacy, non-governed campaigns retain concurrent scheduling.
@@ -155,6 +165,50 @@ export const runEvals = async (runId: number) => {
 		}
 	}
 	if (failure) throw failure.error
+}
+
+function requireActualTaskCost(taskId: number, cost: number | null | undefined): number {
+	if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0)
+		throw new Error(`Known finite actual cost is required for governed task ${taskId}`)
+	return cost
+}
+
+async function assertGovernedContinuationAllowed(
+	taskId: number,
+	executionOutcome?: Awaited<ReturnType<typeof processTask>>,
+): Promise<void> {
+	const trial = await findTrialForTask(taskId)
+	const status = executionOutcome === "cancelled" ? "cancelled" : trial?.status
+	if (
+		!trial ||
+		status === undefined ||
+		status === "pending" ||
+		status === "running" ||
+		status === "cancelled" ||
+		status === "safety_failed" ||
+		status === "grader_error" ||
+		status === "infrastructure_error"
+	) {
+		throw new Error(`Governed campaign stopped after task ${taskId}: ${status ?? "missing trial"}`)
+	}
+	const missingPolicyProof = () =>
+		new Error(
+			`Governed campaign stopped after task ${taskId}: missing or invalid presentation model call policy proof`,
+		)
+	if (!trial.attempts?.length) throw missingPolicyProof()
+	for (const attempt of trial.attempts) {
+		const records = await getPresentationModelCallPolicyEvents(attempt.id)
+		const record = records.length === 1 ? records[0] : undefined
+		if (
+			!record ||
+			record.attemptId !== attempt.id ||
+			record.type !== "extension.presentation_model_call_policy" ||
+			record.late !== false ||
+			!presentationModelCallPolicySchema.safeParse(record.payload).success ||
+			record.payloadDigest !== sha256(canonicalJson(record.payload))
+		)
+			throw missingPolicyProof()
+	}
 }
 
 async function finalizeCampaignBudgetExhausted(tasks: Array<{ id: number }>): Promise<void> {

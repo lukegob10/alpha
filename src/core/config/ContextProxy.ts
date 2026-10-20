@@ -442,7 +442,10 @@ export class ContextProxy {
 		return sanitizedValues
 	}
 
-	public async setProviderSettings(values: ProviderSettings) {
+	public async setProviderSettings(
+		values: ProviderSettings,
+		projection: Pick<AlphaCodeSettings, "currentApiConfigName" | "listApiConfigMeta"> = {},
+	) {
 		// Explicitly clear out any old API configuration values before that
 		// might not be present in the new configuration.
 		// If a value is not present in the new configuration, then it is assumed
@@ -463,6 +466,7 @@ export class ContextProxy {
 				.filter((key) => this.stateCache[key] !== undefined)
 				.reduce((acc, key) => ({ ...acc, [key]: undefined }), {} as ProviderSettings),
 			...values,
+			...projection,
 		})
 	}
 

@@ -24,7 +24,7 @@
 			"packageDir": "packages/types",
 			"minimumTestCount": 79,
 			"include": [
-				"^src/__tests__/(?:agent-control|global-settings|message|provider-settings|subagent|vscode-extension-host).*\\.(?:spec|test)\\.ts$"
+				"^src/__tests__/(?:agent-control|editor-chat-state|global-settings|message|provider-settings|subagent|vscode-extension-host).*\\.(?:spec|test)\\.ts$"
 			]
 		},
 		{
@@ -50,10 +50,19 @@
 			"minimumTestCount": 195,
 			"include": [
 				"^core/task/__tests__/(?:Task\\.spec|Task\\.subagent-context\\.spec|async-subagent-result-delivery\\.spec|subagent-(?:authority|followup)\\.spec)\\.ts$",
+				"^core/task/__tests__/Task\\.lifecycle-hook-owner\\.public\\.spec\\.ts$",
+				"^core/task/__tests__/ask-queued-message-drain\\.spec\\.ts$",
+				"^core/message-queue/__tests__/MessageQueueService\\.spec\\.ts$",
+				"^__tests__/(?:provider-create-task-start|single-open-invariant)\\.spec\\.ts$",
+				"^core/webview/__tests__/AlphaProvider\\.host-ownership\\.spec\\.ts$",
+				"^core/webview/__tests__/queue-steering\\.integration\\.spec\\.ts$",
+				"^core/webview/__tests__/stageThreeLegacyHandoff\\.integration\\.spec\\.ts$",
+				"^core/config/__tests__/(?:ProviderSettingsManager\\.(?:retention(?:-review)?|upgrade)|ContextProxy\\.profile-projection)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:AlphaProvider\\.(?:unavailable-profile-admission|profile-delete\\.availability|prompt-enhancement|pending-review-steering|diagnostics)|webviewMessageHandler\\.(?:profile-availability|enhancePrompt)|promptEnhancementRequests)\\.spec\\.ts$",
 				"^core/task/__tests__/.*(?:agent|descendant|nested).*\\.spec\\.ts$",
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
-				"^core/webview/__tests__/(?:AlphaProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry(?:\\.published-ask)?)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:AlphaProvider\\.(?:editor-restore(?:\\.integration)?|flicker-free-cancel|native-stop-ownership|stop-finalization-retry|stop-queued-input|task-state-navigation|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry(?:\\.published-ask)?)\\.spec\\.ts$",
 				"^__tests__/(?:delegation-events|history-resume-delegation|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
 			]
 		},
@@ -99,6 +108,9 @@
 			"include": [
 				"^api/providers/__tests__/(?:openai|vscode-lm|vertex|anthropic-vertex|vertex-provider-outcomes)\\.spec\\.ts$",
 				"^api/transform/__tests__/openai-format\\.spec\\.ts$",
+				"^api/transform/__tests__/single-completion\\.spec\\.ts$",
+				"^api/providers/__tests__/(?:single-completion-cancellation\\.openai|vertex-single-completion-cancellation)\\.spec\\.ts$",
+				"^utils/__tests__/single-completion-handler\\.lifecycle\\.spec\\.ts$",
 				"^core/assistant-message/__tests__/(?:NativeToolCallParser|spawn-agent-native-pipeline)\\.spec\\.ts$"
 			]
 		},
@@ -109,8 +121,8 @@
 			"minimumTestCount": 164,
 			"include": [
 				"^src/components/(?:agents?|chat|history)/.*(?:agent|groupedtasks|livetree|live-tree|subagent|taskheader|taskitem).*\\.spec\\.tsx?$",
-				"^src/components/chat/__tests__/ChatView\\.spec\\.tsx$",
-				"^src/context/__tests__/ExtensionStateContext\\.spec\\.tsx$"
+				"^src/components/chat/__tests__/(?:ChatView|ChatTextArea)\\.spec\\.tsx$",
+				"^src/context/__tests__/ExtensionStateContext(?:\\.(?:editor-persistence|refresh))?\\.spec\\.tsx$"
 			]
 		},
 		{
@@ -118,7 +130,10 @@
 			"label": "Settings buffered-edit and managed-agent configuration regressions",
 			"packageDir": "webview-ui",
 			"minimumTestCount": 32,
-			"include": ["^src/components/settings/__tests__/(?:AgentsSettings|SettingsView.*)\\.spec\\.tsx$"]
+			"include": [
+				"^src/components/settings/__tests__/(?:AgentsSettings|SettingsView.*|ApiConfigManager|PromptsSettings\\.buffering)\\.spec\\.tsx$",
+				"^src/components/chat/__tests__/ApiConfigSelector\\.spec\\.tsx$"
+			]
 		}
 	],
 	"rows": [

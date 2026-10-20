@@ -15,6 +15,36 @@ const memoryPersistence = (initial: QueuedMessage[] = []) => {
 }
 
 describe("MessageQueueService", () => {
+	it("captures fresh versus duplicate admission inside the existing receipt lane", async () => {
+		let release!: () => void
+		const held = new Promise<void>((resolve) => (release = resolve))
+		let entered!: () => void
+		const saving = new Promise<void>((resolve) => (entered = resolve))
+		const queue = new MessageQueueService({
+			load: async () => [],
+			save: async () => {
+				entered()
+				await held
+			},
+		})
+		const provenance: boolean[] = []
+		const first = queue.addMessageDurably("Human instruction", [], "receipt", (isNew) => provenance.push(isNew))
+		await saving
+		const retry = queue.addMessageDurably("Human instruction", [], "receipt", (isNew) => provenance.push(isNew))
+		expect(provenance).toEqual([true])
+		release()
+		await Promise.all([first, retry])
+		expect(provenance).toEqual([true, false])
+		expect(queue.messages).toHaveLength(1)
+		await expect(
+			queue.addMessageDurably("Human instruction", [], "receipt", (isNew) => {
+				expect(isNew).toBe(false)
+				throw new Error("Authorization changed")
+			}),
+		).rejects.toThrow("Authorization changed")
+		expect(queue.messages).toHaveLength(1)
+	})
+
 	it("keeps selected input visible until its containing transcript acknowledges it", async () => {
 		const store = memoryPersistence()
 		const queue = new MessageQueueService(store.persistence)

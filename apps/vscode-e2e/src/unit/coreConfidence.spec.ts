@@ -29,7 +29,7 @@ async function fixture(context: TestContext) {
 				exitCode: 0,
 				providerMode: options.providerMode,
 				vscodeVersion: options.vscodeVersion!,
-				actualVSCodeVersion: "1.125.0",
+				actualVSCodeVersion: "1.138.0",
 				requireAllTests: true,
 				testCounts: { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 },
 				ownershipGate: "verified",
@@ -105,7 +105,7 @@ test("core confidence composes offline owners and replays this run's completion 
 		],
 	)
 	assert.ok(
-		run.hosts.every((host) => host.providerMode === "scripted" && host.vscodeVersion === "1.125.0" && host.signal),
+		run.hosts.every((host) => host.providerMode === "scripted" && host.vscodeVersion === "1.138.0" && host.signal),
 	)
 	assert.equal(
 		run.certificationEvidence,

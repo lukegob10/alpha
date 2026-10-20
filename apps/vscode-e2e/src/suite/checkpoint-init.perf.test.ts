@@ -99,7 +99,7 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 	this.timeout(180_000)
 
 	test("records task and service latency and verifies save/restore on a disposable workspace", async () => {
-		assert.equal(vscode.version, "1.125.0", "This benchmark must run on the reference VS Code host")
+		assert.equal(vscode.version, "1.138.0", "This benchmark must run on the reference VS Code host")
 		assert.equal(
 			process.env.ALPHA_E2E_PROVIDER_MODE,
 			"scripted",

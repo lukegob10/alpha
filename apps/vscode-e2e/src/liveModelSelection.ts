@@ -262,6 +262,7 @@ export type LiveCopilotPreflightErrorCode =
 	| "effort-unknown"
 	| "authentication-required"
 	| "authentication-unknown"
+	| "completion-unavailable"
 	| "configuration-failed"
 	| "artifact-write-failed"
 
@@ -662,7 +663,7 @@ async function finalizeDiscoveryArtifact(
 	}
 }
 
-async function finalizePreflightArtifact(
+export async function finalizePreflightArtifact(
 	metadata: LiveCopilotPreflightMetadata,
 	artifactsDir: string | undefined,
 ): Promise<LiveCopilotPreflightMetadata> {

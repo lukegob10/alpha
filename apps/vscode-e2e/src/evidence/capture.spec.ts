@@ -16,7 +16,7 @@ import type { CaptureRunEvidenceOptions, EvidenceManifest, RunEvidenceMetadata }
 let root: string
 const metadata = (): RunEvidenceMetadata => ({
 	scenarioId: "review-edit-test-commit-followup",
-	hostVersion: "1.125.0",
+	hostVersion: "1.138.0",
 	provider: "live-copilot",
 	modelId: "gpt-5.6-luna",
 	reasoningEffort: "max",

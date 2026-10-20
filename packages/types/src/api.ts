@@ -48,11 +48,14 @@ export interface AlphaCodeAPI extends EventEmitter<AlphaCodeAPIEvents> {
 		text,
 		images,
 		newTab,
+		presentationModelCalls,
 	}: {
 		configuration?: AlphaCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
+		/** Host-only opt-out of optional automatic title and reasoning-synopsis model calls. */
+		presentationModelCalls?: false
 	}): Promise<string>
 	/**
 	 * Resumes a task with the given ID.

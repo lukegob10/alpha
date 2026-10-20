@@ -321,6 +321,12 @@ export const webviewFocusChangedMessageSchema = z.object({
 	focused: z.boolean(),
 })
 
+export const cancelEnhancePromptMessageSchema = z.object({
+	type: z.literal("cancelEnhancePrompt"),
+	requestId: z.string().min(1).max(128),
+	taskId: z.string().min(1).optional(),
+})
+
 /**
  * ExtensionMessage
  * Extension -> Webview
@@ -488,6 +494,8 @@ export interface ExtensionMessage {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	values?: Record<string, any>
 	requestId?: string
+	/** Terminal prompt-enhancement outcome; absent on older extension hosts. */
+	enhancementStatus?: "success" | "error" | "cancelled"
 	/** Task-scoped queue/steer acceptance result. */
 	chatCommandResult?: ChatCommandResult
 	/** Fresh task activity metadata attached to incremental transcript messages. */
@@ -844,6 +852,7 @@ interface WebviewMessageBase {
 		| "toggleMcpServer"
 		| "updateMcpTimeout"
 		| "enhancePrompt"
+		| "cancelEnhancePrompt"
 		| "enhancedPrompt"
 		| "draggedImages"
 		| "deleteMessage"

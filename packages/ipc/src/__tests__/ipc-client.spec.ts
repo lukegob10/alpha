@@ -113,7 +113,67 @@ describe("IpcClient transport contracts", () => {
 		backend.deliver("message", acknowledgement())
 		expect(client.isReady).toBe(true)
 		expect(client.executionIdentity).toBeUndefined()
+		expect(client.capabilities).toBeUndefined()
 		expect(client.serverProcess).toEqual({ pid: 101, ppid: 100 })
+	})
+
+	it("exposes targeted cancellation only when a validated acknowledgement explicitly supports it", () => {
+		const { client, backend } = createClient()
+		backend.deliver("connect")
+		for (const capabilities of [undefined, {}, { unknownCapability: true }, { targetedTaskCancellation: false }]) {
+			backend.deliver("message", {
+				...acknowledgement(),
+				data: { ...acknowledgement().data, ...(capabilities ? { capabilities } : {}) },
+			})
+			expect(client.isReady).toBe(true)
+			expect(client.capabilities?.targetedTaskCancellation === true).toBe(false)
+		}
+		backend.deliver("message", {
+			...acknowledgement(),
+			data: { ...acknowledgement().data, capabilities: { targetedTaskCancellation: true } },
+		})
+		expect(client.capabilities).toEqual({ targetedTaskCancellation: true })
+		backend.deliver("message", acknowledgement())
+		expect(client.capabilities).toBeUndefined()
+	})
+
+	it("rejects malformed advertised support instead of treating it as a valid acknowledgement", () => {
+		const { client, backend } = createClient()
+		backend.deliver("connect")
+		backend.deliver("message", {
+			...acknowledgement(),
+			data: { ...acknowledgement().data, capabilities: { targetedTaskCancellation: "true" } },
+		})
+		expect(client.isReady).toBe(false)
+		expect(client.capabilities).toBeUndefined()
+	})
+
+	it("exposes presentation suppression only when explicitly supported and resets it on disconnect", () => {
+		const { client, backend } = createClient()
+		backend.deliver("connect")
+		for (const capabilities of [
+			{ targetedTaskCancellation: true },
+			{ targetedTaskCancellation: true, unknownCapability: true },
+			{ targetedTaskCancellation: true, presentationModelCallOptOut: false },
+		]) {
+			backend.deliver("message", {
+				...acknowledgement(),
+				data: { ...acknowledgement().data, capabilities },
+			})
+			expect(client.isReady).toBe(true)
+			expect(client.capabilities?.targetedTaskCancellation).toBe(true)
+			expect(client.capabilities?.presentationModelCallOptOut === true).toBe(false)
+		}
+		backend.deliver("message", {
+			...acknowledgement(),
+			data: {
+				...acknowledgement().data,
+				capabilities: { targetedTaskCancellation: true, presentationModelCallOptOut: true },
+			},
+		})
+		expect(client.capabilities).toEqual({ targetedTaskCancellation: true, presentationModelCallOptOut: true })
+		backend.deliver("disconnect")
+		expect(client.capabilities).toBeUndefined()
 	})
 
 	const invalidHandshakes = [
@@ -217,7 +277,14 @@ describe("IpcClient transport contracts", () => {
 		const disconnected = vi.fn()
 		client.on(IpcMessageType.Disconnect, disconnected)
 		backend.deliver("connect")
-		backend.deliver("message", acknowledgement("old-client", identity))
+		backend.deliver("message", {
+			...acknowledgement("old-client", identity),
+			data: {
+				...acknowledgement("old-client", identity).data,
+				capabilities: { targetedTaskCancellation: true },
+			},
+		})
+		expect(client.capabilities?.targetedTaskCancellation).toBe(true)
 		backend.deliver("disconnect")
 		backend.deliver("disconnect")
 		expect(disconnected).toHaveBeenCalledOnce()
@@ -226,12 +293,14 @@ describe("IpcClient transport contracts", () => {
 		expect(client.clientId).toBeUndefined()
 		expect(client.executionIdentity).toBeUndefined()
 		expect(client.serverProcess).toBeUndefined()
+		expect(client.capabilities).toBeUndefined()
 		backend.deliver("connect")
 		expect(client.isReady).toBe(false)
 		backend.deliver("message", acknowledgement("new-client"))
 		expect(client.isReady).toBe(true)
 		expect(client.clientId).toBe("new-client")
 		expect(client.executionIdentity).toBeUndefined()
+		expect(client.capabilities).toBeUndefined()
 	})
 
 	it("isolates clients sharing a socket, including commands and disconnects", () => {
@@ -260,11 +329,19 @@ describe("IpcClient transport contracts", () => {
 	})
 
 	it("reports backend disconnect errors without throwing to cleanup callers", () => {
-		const { client, log } = createClient()
+		const { client, backend, log } = createClient()
+		backend.deliver("connect")
+		backend.deliver("message", {
+			...acknowledgement(),
+			data: { ...acknowledgement().data, capabilities: { targetedTaskCancellation: true } },
+		})
+		expect(client.capabilities?.targetedTaskCancellation).toBe(true)
+		log.mockClear()
 		mocks.ipc.disconnect.mockImplementationOnce(() => {
 			throw new Error("transport cleanup failed")
 		})
 		expect(() => client.disconnect()).not.toThrow()
+		expect(client.capabilities).toBeUndefined()
 		expect(log).toHaveBeenCalledExactlyOnceWith(
 			"[client#disconnect] error disconnecting -> transport cleanup failed",
 		)

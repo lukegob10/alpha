@@ -71,10 +71,10 @@ export async function runCoreConfidence(
 		]) {
 			signal.throwIfAborted()
 			report.stage = testFile
-			process.stdout.write(`Core confidence: ${testFile} on VS Code 1.125.0\n`)
+			process.stdout.write(`Core confidence: ${testFile} on VS Code 1.138.0\n`)
 			const result = await dependencies.runExtensionTests({
 				signal: AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]),
-				vscodeVersion: "1.125.0",
+				vscodeVersion: "1.138.0",
 				providerMode: "scripted",
 				testFile,
 				requireAllTests: true,
@@ -88,7 +88,7 @@ export async function runCoreConfidence(
 			if (
 				result.status !== "passed" ||
 				result.exitCode !== 0 ||
-				result.actualVSCodeVersion !== "1.125.0" ||
+				result.actualVSCodeVersion !== "1.138.0" ||
 				result.providerMode !== "scripted" ||
 				result.execution !== "extension-host" ||
 				!result.hostExitObserved ||

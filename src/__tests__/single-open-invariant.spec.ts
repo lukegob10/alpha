@@ -36,6 +36,18 @@ describe("Single-open-task invariant", () => {
 	const serializedTaskCreation = () => ({
 		taskCreationQueue: Promise.resolve(),
 		createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
+		assertProviderProfileAvailable: Reflect.get(AlphaProvider.prototype, "assertProviderProfileAvailable"),
+		getProviderSettingsForProfileName: Reflect.get(AlphaProvider.prototype, "getProviderSettingsForProfileName"),
+	})
+	const providerSettingsManager = () => ({
+		getModeConfigId: vi.fn().mockResolvedValue(undefined),
+		listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "vertex" }]),
+		getProfile: vi.fn(async () => ({
+			id: "default-profile",
+			name: "default",
+			apiProvider: "vertex",
+			consecutiveMistakeLimit: 0,
+		})),
 	})
 
 	it("User-initiated create: closes existing before opening new", async () => {
@@ -65,7 +77,7 @@ describe("Single-open-task invariant", () => {
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
 			getStateToPostToWebview: vi.fn(),
-			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+			providerSettingsManager: providerSettingsManager(),
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
@@ -114,7 +126,7 @@ describe("Single-open-task invariant", () => {
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
-			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+			providerSettingsManager: providerSettingsManager(),
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
@@ -160,7 +172,7 @@ describe("Single-open-task invariant", () => {
 			addTaskToStack,
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
-			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
+			providerSettingsManager: providerSettingsManager(),
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
 			taskCreationCallback: vi.fn(),
 			contextProxy: {
@@ -247,6 +259,11 @@ describe("Single-open-task invariant", () => {
 
 		const provider = {
 			taskCreationCallback: vi.fn(),
+			assertProviderProfileAvailable: Reflect.get(AlphaProvider.prototype, "assertProviderProfileAvailable"),
+			getProviderSettingsForProfileName: Reflect.get(
+				AlphaProvider.prototype,
+				"getProviderSettingsForProfileName",
+			),
 			createTaskWithHistoryItemUnderOwnership: (AlphaProvider.prototype as any)
 				.createTaskWithHistoryItemUnderOwnership,
 			getTaskOwner: (AlphaProvider.prototype as any).getTaskOwner,
@@ -258,10 +275,7 @@ describe("Single-open-task invariant", () => {
 			updateGlobalState,
 			log: vi.fn(),
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
-			providerSettingsManager: {
-				getModeConfigId: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi.fn().mockResolvedValue([]),
-			},
+			providerSettingsManager: providerSettingsManager(),
 			agentControlStore: {
 				retryPendingMailboxClaimSettlements: vi.fn().mockResolvedValue(undefined),
 			},
