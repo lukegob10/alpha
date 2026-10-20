@@ -326,6 +326,7 @@ describe("Managed workers in folders without Git", () => {
 					"aliased-storage",
 					await service.validateScope(workspace, ["notes.txt"]),
 				)
+				expect(Buffer.byteLength(await fs.realpath(worker.workspacePath), "utf8")).toBeLessThan(220)
 				await write("notes.txt", "aliased proposal\n", worker.workspacePath)
 				const reloaded = new ManagedSubagentWorktreeService()
 				const captured = await reloaded.capture(aliasedStorage, worker.artifact.id)

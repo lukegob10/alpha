@@ -1011,7 +1011,13 @@ export class ManagedSubagentWorktreeService {
 			// Recent Git for Windows resolves junctions to their physical paths during
 			// setup, defeating the invocation adapter's short aliases. Keep durable
 			// proposals in extension storage, but allocate an owned short checkout.
-			if (process.platform === "win32" && needsShortGitPath(worktreePath)) {
+			if (
+				process.platform === "win32" &&
+				(needsShortGitPath(worktreePath) ||
+					needsShortGitPath(
+						path.join(await fs.realpath(path.dirname(worktreePath)), path.basename(worktreePath)),
+					))
+			) {
 				worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-checkout-"))
 				ownsWorktreePath = true
 				artifact.worktreePath = worktreePath

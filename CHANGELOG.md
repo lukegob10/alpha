@@ -6,6 +6,7 @@
 
 - Move the extension compatibility and automated release gates to exact VS Code 1.138.0.
 - Keep sub-agent updates, reviews, queued steering, cancellation, and task completion consistent across chat surfaces.
+- Keep managed editing checkouts physically short when storage uses a junction to a long path, including on current Git for Windows.
 - Restore editor chats and drafts after reloads, and persist transcript updates atomically.
 - Retain invalid saved provider profiles, preserve stable selections through imports and repairs, and report unavailable profiles explicitly.
 - Cancel prompt previews safely and prevent late responses from overwriting newer requests or settings edits.
