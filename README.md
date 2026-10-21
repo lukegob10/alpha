@@ -6,8 +6,8 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-Download Alpha from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest). Choose the `.vsix` for your
-operating system and architecture, then run **Extensions: Install from VSIX...** in VS Code 1.125 or newer.
+Download the Windows x64 `.vsix` for Intel/AMD PCs from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest),
+then run **Extensions: Install from VSIX...** in VS Code 1.125 or newer.
 
 ## Welcome to Alpha
 
@@ -70,7 +70,7 @@ restrictions still apply.
 
 ### Release Automation
 
-The [release workflow](.github/workflows/release-vsix.yml) runs on `main` and publishes a verified VSIX GitHub release
+The [release workflow](.github/workflows/release-vsix.yml) runs on `main` and publishes a verified Windows x64 VSIX GitHub release
 after the exact VS Code 1.138.0 host gate, outside-path command checks, packaging, and source-asset verification. It does
 not publish to the VS Code Marketplace.
 
@@ -178,8 +178,7 @@ If you prefer to install the VSIX package manually:
     code --install-extension bin/alpha-<version>-<target>.vsix
     ```
 
-Use the package matching your operating system and architecture. The Intel macOS package supports core features and
-Qdrant code indexing; this LanceDB version has no Intel macOS native binding for local indexing.
+GitHub releases provide the Windows x64 package for Intel/AMD PCs. Local builds remain targeted to the build host.
 
 ---
 
