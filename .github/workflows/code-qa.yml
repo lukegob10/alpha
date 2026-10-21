@@ -10,6 +10,7 @@ on:
 
 jobs:
     knip:
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
@@ -20,6 +21,7 @@ jobs:
               run: pnpm knip
 
     compile:
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
@@ -42,6 +44,7 @@ jobs:
                   retention-days: 14
 
     unit-test:
+        if: github.event_name != 'workflow_dispatch'
         name: platform-unit-test (${{ matrix.name }})
         runs-on: ${{ matrix.os }}
         strategy:
@@ -84,6 +87,7 @@ jobs:
                   retention-days: 14
 
     offline-evaluator:
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v5
@@ -104,6 +108,7 @@ jobs:
                   retention-days: 14
 
     vscode-1380-smoke:
+        if: github.event_name != 'workflow_dispatch'
         name: VS Code 1.138.0 extension-host contract
         runs-on: windows-latest
         timeout-minutes: 45
@@ -141,7 +146,53 @@ jobs:
                   retention-days: 14
                   if-no-files-found: error
 
+    windows-native-diagnostics:
+        if: github.event_name == 'workflow_dispatch'
+        runs-on: windows-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Prepare the unchanged extension bundle
+              run: pnpm bundle
+            - name: Trace native children through the existing process owner
+              env:
+                  ALPHA_TRACE_CUSTOM_TOOLS: "1"
+                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/windows-native-traces
+                  ALPHA_HARNESS_REPOSITORY_ROOT: ${{ github.workspace }}
+                  VITEST_MAX_WORKERS: "2"
+                  VITEST_MAX_FORKS: "2"
+                  VITEST_MIN_FORKS: "1"
+                  VITEST_MAX_THREADS: "2"
+                  VITEST_MIN_THREADS: "1"
+              shell: pwsh
+              run: |
+                  $diagnosticRoot = 'artifacts/harness/release-3.2.7'
+                  New-Item -ItemType Directory -Path $diagnosticRoot -Force | Out-Null
+                  @'
+                  import path from "node:path"
+                  import { tsImport } from "tsx/esm/api"
+                  const { runOwnedProcess, pnpmCommand } = await tsImport("../../../apps/vscode-e2e/src/campaign/ownedProcess.ts", import.meta.url)
+                  const command = pnpmCommand(process.env.npm_execpath, ["--dir", "packages/core", "test", "--bail=1", "--reporter=dot", "--reporter=json", `--outputFile=${path.resolve("artifacts/harness/release-3.2.7/windows-core-native.raw.json")}`])
+                  const result = await runOwnedProcess({ ...command, cwd: process.cwd(), env: process.env }, { output: "inherit", signal: new AbortController().signal })
+                  console.log("[native-diagnostic-owner]", JSON.stringify({ exitCode: result.exitCode, signal: result.signal, cleanupVerified: result.cleanupVerified }))
+                  process.exitCode = result.exitCode ?? 1
+                  '@ | Set-Content -LiteralPath "$diagnosticRoot/windows-native-run.mjs" -Encoding utf8
+                  pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/windows-native-diagnostic.log"
+                  exit $LASTEXITCODE
+            - name: Retain bounded child and native loader evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: windows-native-diagnostics-${{ github.run_id }}
+                  path: artifacts/harness/release-3.2.7/
+                  retention-days: 7
+                  if-no-files-found: error
+
     vscode-1380-outcomes:
+        if: github.event_name != 'workflow_dispatch'
         name: VS Code 1.138.0 smoke and independent task outcomes
         runs-on: windows-latest
         timeout-minutes: 60

@@ -12,6 +12,7 @@ import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/ty
 
 import { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
+import { createRegistryProcessTrace, type RegistryProcessTrace } from "./registry-process-trace.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -42,34 +43,55 @@ describe("CustomToolRegistry", () => {
 		registry = new CustomToolRegistry()
 	})
 
-	async function runNativeScenario(body: string, signal: AbortSignal): Promise<void> {
+	async function runNativeScenario(body: string, signal: AbortSignal, trace?: RegistryProcessTrace): Promise<void> {
+		trace?.stage("parent cache mkdir begin")
 		const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-case-"))
-		// A fresh Node process has no Vitest module hooks; require(esm) inside this worker still has them.
-		const script = `
+		trace?.stage("parent cache mkdir complete", cacheDir)
+		try {
+			if (trace) await trace.instrumentBundle(nativeRegistryBundle)
+			// A fresh Node process has no Vitest module hooks; require(esm) inside this worker still has them.
+			const script = `
 			import assert from "node:assert/strict"
-			import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(nativeRegistryBundle).href)}
+			import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(trace?.bundle ?? nativeRegistryBundle).href)}
 			const registry = new CustomToolRegistry({ cacheDir: ${JSON.stringify(cacheDir)} })
 			const TEST_FIXTURES_DIR = ${JSON.stringify(TEST_FIXTURES_DIR)}
 			const TEST_FIXTURES_OVERRIDE_DIR = ${JSON.stringify(TEST_FIXTURES_OVERRIDE_DIR)}
 			${body}
 		`
-		try {
-			await execa(process.execPath, ["--input-type=module", "--eval", script], {
-				stdin: "ignore",
-				cancelSignal: signal,
-			})
+			const child = execa(
+				process.execPath,
+				[
+					...(trace ? ["--require", trace.preload] : []),
+					"--input-type=module",
+					"--eval",
+					trace ? trace.wrapScript(script) : script,
+				],
+				{
+					stdin: "ignore",
+					cancelSignal: signal,
+					...(trace ? { env: trace.env } : {}),
+				},
+			)
+			trace?.observe(child)
+			await child
+			trace?.stage("parent child await complete")
 		} finally {
+			trace?.stage("parent cache cleanup begin")
 			await fs.rm(cacheDir, { recursive: true, force: true })
+			trace?.stage("parent cache cleanup complete")
 		}
 	}
 
 	it("keeps file-loading scenarios outside test-worker module hooks", async ({ signal }) => {
+		const trace = createRegistryProcessTrace("worker-hook")
+		trace?.bindSignal(signal)
 		const hooks = registerHooks({
 			load(url, context, nextLoad) {
 				if (url.endsWith("/bundle.mjs")) throw new Error("Test-worker loader intercepted a custom tool")
 				return nextLoad(url, context)
 			},
 		})
+		trace?.stage("parent hook registered")
 		try {
 			await runNativeScenario(
 				`
@@ -79,13 +101,17 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.failed[0].file, "invalid.ts")
 			`,
 				signal,
+				trace,
 			)
 		} finally {
 			hooks.deregister()
+			trace?.stage("parent hook deregistered")
+			trace?.dispose()
 		}
 	}, 60_000)
 
 	it("loads module URL characters through native imports and both compilation caches", async () => {
+		const trace = createRegistryProcessTrace("encoded-paths")
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-paths-"))
 		try {
 			const toolDir = path.join(tempDir, "tools")
@@ -107,15 +133,18 @@ describe("CustomToolRegistry", () => {
 				)
 			}
 			// Exercise Node's actual file-URL loader; Vitest resolves dynamic imports through Vite.
+			trace?.stage("parent registry compile begin")
 			await runEsbuild({
 				entryPoint: path.join(__dirname, "..", "custom-tool-registry.ts"),
 				outfile: registryBundle,
 				external: NODE_BUILTIN_MODULES,
 				banner: COMMONJS_REQUIRE_BANNER,
 			})
+			trace?.stage("parent registry compile complete")
+			if (trace) await trace.instrumentBundle(registryBundle)
 			const script = `
 				import assert from "node:assert/strict"
-				import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(registryBundle).href)}
+				import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(trace?.bundle ?? registryBundle).href)}
 				const toolDir = ${JSON.stringify(toolDir)}
 				const cacheDir = ${JSON.stringify(cacheDir)}
 				const registry = new CustomToolRegistry({ cacheDir })
@@ -129,9 +158,24 @@ describe("CustomToolRegistry", () => {
 					assert.deepEqual(currentRegistry.get("compiled_path").parameters.parse({}), {})
 				}
 			`
-			await execa(process.execPath, ["--input-type=module", "--eval", script], { timeout: 25_000 })
+			const child = execa(
+				process.execPath,
+				[
+					...(trace ? ["--require", trace.preload] : []),
+					"--input-type=module",
+					"--eval",
+					trace ? trace.wrapScript(script) : script,
+				],
+				{ timeout: 25_000, ...(trace ? { env: trace.env } : {}) },
+			)
+			trace?.observe(child)
+			await child
+			trace?.stage("parent child await complete")
 		} finally {
+			trace?.stage("parent temporary cleanup begin")
 			await fs.rm(tempDir, { recursive: true, force: true })
+			trace?.stage("parent temporary cleanup complete")
+			trace?.dispose()
 		}
 	}, 60_000)
 
