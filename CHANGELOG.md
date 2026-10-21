@@ -16,6 +16,7 @@
 - Require complete test selection and validated benchmark evidence before accepting release and promotion results.
 - Parse VSIX platform metadata as XML so comments, CDATA, malformed markup, and misplaced identity tags cannot satisfy package verification.
 - Update MCP and HTTP redirect dependencies to prevent cross-origin credential forwarding, retain same-origin redirect support, and patch development tooling advisories.
+- Disable background JavaScript compilation in custom-tool compiler subprocesses to avoid Node's documented shutdown deadlock.
 - Update the extension version and in-app release announcement together for Alpha 3.2.7. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
 
 ### Validation Notes

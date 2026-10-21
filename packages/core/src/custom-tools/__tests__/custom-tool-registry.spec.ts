@@ -12,7 +12,6 @@ import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/ty
 
 import { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
-import { createRegistryProcessTrace } from "./registry-process-trace.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -43,54 +42,24 @@ describe("CustomToolRegistry", () => {
 		registry = new CustomToolRegistry()
 	})
 
-	async function runNativeScenario(
-		body: string,
-		signal: AbortSignal,
-		scenario: { name: string; timeoutMs: number; deadlineAt?: number },
-	): Promise<void> {
-		const trace = createRegistryProcessTrace(scenario.name)
-		trace?.setSnapshotDeadline(scenario.deadlineAt ?? Date.now() + scenario.timeoutMs)
-		trace?.bindSignal(signal)
-		let cacheDir: string | undefined
+	async function runNativeScenario(body: string, signal: AbortSignal): Promise<void> {
+		const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-case-"))
 		try {
-			trace?.stage("parent cache mkdir begin")
-			cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-case-"))
-			trace?.stage("parent cache mkdir complete", cacheDir)
-			if (trace) await trace.instrumentBundle(nativeRegistryBundle)
 			// A fresh Node process has no Vitest module hooks; require(esm) inside this worker still has them.
 			const script = `
 			import assert from "node:assert/strict"
-			import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(trace?.bundle ?? nativeRegistryBundle).href)}
+			import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(nativeRegistryBundle).href)}
 			const registry = new CustomToolRegistry({ cacheDir: ${JSON.stringify(cacheDir)} })
 			const TEST_FIXTURES_DIR = ${JSON.stringify(TEST_FIXTURES_DIR)}
 			const TEST_FIXTURES_OVERRIDE_DIR = ${JSON.stringify(TEST_FIXTURES_OVERRIDE_DIR)}
 			${body}
 		`
-			const child = execa(
-				process.execPath,
-				[
-					...(trace ? ["--require", trace.preload] : []),
-					"--input-type=module",
-					"--eval",
-					trace ? trace.wrapScript(script) : script,
-				],
-				{
-					stdin: "ignore",
-					cancelSignal: signal,
-					...(trace ? { env: trace.env } : {}),
-				},
-			)
-			trace?.observe(child)
-			await child
-			trace?.stage("parent child await complete")
+			await execa(process.execPath, ["--input-type=module", "--eval", script], {
+				stdin: "ignore",
+				cancelSignal: signal,
+			})
 		} finally {
-			trace?.stage("parent cache cleanup begin")
-			try {
-				if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true })
-				trace?.stage("parent cache cleanup complete")
-			} finally {
-				trace?.dispose()
-			}
+			await fs.rm(cacheDir, { recursive: true, force: true })
 		}
 	}
 
@@ -115,7 +84,6 @@ describe("CustomToolRegistry", () => {
 	}
 
 	it("keeps file-loading scenarios outside test-worker module hooks", async ({ signal }) => {
-		const deadlineAt = Date.now() + 60_000
 		const toolDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-hook-source-"))
 		try {
 			await fs.writeFile(path.join(toolDir, "package.json"), JSON.stringify({ type: "module" }))
@@ -135,7 +103,6 @@ describe("CustomToolRegistry", () => {
 					assert.equal(await registry.get("isolated_js").execute({}, {}), "isolated execution")
 				`,
 					signal,
-					{ name: "worker-hook", timeoutMs: 60_000, deadlineAt },
 				)
 			} finally {
 				deregister()
@@ -146,7 +113,6 @@ describe("CustomToolRegistry", () => {
 	}, 60_000)
 
 	it("loads module URL characters through native imports and both compilation caches", async () => {
-		const trace = createRegistryProcessTrace("encoded-paths")
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-paths-"))
 		try {
 			const toolDir = path.join(tempDir, "tools")
@@ -168,18 +134,15 @@ describe("CustomToolRegistry", () => {
 				)
 			}
 			// Exercise Node's actual file-URL loader; Vitest resolves dynamic imports through Vite.
-			trace?.stage("parent registry compile begin")
 			await runEsbuild({
 				entryPoint: path.join(__dirname, "..", "custom-tool-registry.ts"),
 				outfile: registryBundle,
 				external: NODE_BUILTIN_MODULES,
 				banner: COMMONJS_REQUIRE_BANNER,
 			})
-			trace?.stage("parent registry compile complete")
-			if (trace) await trace.instrumentBundle(registryBundle)
 			const script = `
 				import assert from "node:assert/strict"
-				import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(trace?.bundle ?? registryBundle).href)}
+				import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(registryBundle).href)}
 				const toolDir = ${JSON.stringify(toolDir)}
 				const cacheDir = ${JSON.stringify(cacheDir)}
 				const registry = new CustomToolRegistry({ cacheDir })
@@ -193,25 +156,9 @@ describe("CustomToolRegistry", () => {
 					assert.deepEqual(currentRegistry.get("compiled_path").parameters.parse({}), {})
 				}
 			`
-			trace?.setSnapshotDeadline(Date.now() + 25_000)
-			const child = execa(
-				process.execPath,
-				[
-					...(trace ? ["--require", trace.preload] : []),
-					"--input-type=module",
-					"--eval",
-					trace ? trace.wrapScript(script) : script,
-				],
-				{ timeout: 25_000, ...(trace ? { env: trace.env } : {}) },
-			)
-			trace?.observe(child)
-			await child
-			trace?.stage("parent child await complete")
+			await execa(process.execPath, ["--input-type=module", "--eval", script], { timeout: 25_000 })
 		} finally {
-			trace?.stage("parent temporary cleanup begin")
 			await fs.rm(tempDir, { recursive: true, force: true })
-			trace?.stage("parent temporary cleanup complete")
-			trace?.dispose()
 		}
 	}, 60_000)
 
@@ -461,7 +408,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(registry.has("simple"), true)
 			`,
 				signal,
-				{ name: "load-ts", timeoutMs: 120_000 },
 			)
 		}, 120_000)
 
@@ -473,7 +419,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(result.loaded.includes("multi_toolB"))
 			`,
 				signal,
-				{ name: "named-exports", timeoutMs: 30000 },
 			)
 		}, 30000)
 
@@ -486,7 +431,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(invalidFailure?.error.includes("Invalid tool definition"))
 			`,
 				signal,
-				{ name: "invalid-definition", timeoutMs: 30000 },
 			)
 		}, 30000)
 
@@ -498,7 +442,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.failed.length, 0)
 			`,
 				signal,
-				{ name: "missing-directory", timeoutMs: 5000 },
 			)
 		})
 
@@ -512,7 +455,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.loaded.includes("mixed_someObject"), false)
 			`,
 				signal,
-				{ name: "skip-nontools", timeoutMs: 30000 },
 			)
 		}, 30000)
 
@@ -524,7 +466,6 @@ describe("CustomToolRegistry", () => {
 				assert.notEqual(registry.get("legacy")?.parameters, undefined)
 			`,
 				signal,
-				{ name: "args-alias", timeoutMs: 30000 },
 			)
 		}, 30000)
 	})
@@ -540,7 +481,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(result.loaded.includes("cached"))
 			`,
 				signal,
-				{ name: "clear-cache", timeoutMs: 120_000 },
 			)
 		}, 120_000)
 	})
@@ -555,7 +495,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(result.loaded.includes("multi_toolA"))
 			`,
 				signal,
-				{ name: "multiple-directories", timeoutMs: 60000 },
 			)
 		}, 60000)
 
@@ -568,7 +507,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(simpleTool?.description, "Simple tool - OVERRIDDEN")
 			`,
 				signal,
-				{ name: "later-overrides", timeoutMs: 60000 },
 			)
 		}, 60000)
 
@@ -581,7 +519,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(simpleTool?.description, "Simple tool")
 			`,
 				signal,
-				{ name: "reverse-precedence", timeoutMs: 60000 },
 			)
 		}, 60000)
 
@@ -595,7 +532,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.failed.length, 1)
 			`,
 				signal,
-				{ name: "includes-missing", timeoutMs: 60000 },
 			)
 		}, 60000)
 
@@ -607,7 +543,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.failed.length, 0)
 			`,
 				signal,
-				{ name: "empty-directories", timeoutMs: 5000 },
 			)
 		})
 
@@ -618,7 +553,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(result.loaded.filter(name => name === "simple").length, 2)
 			`,
 				signal,
-				{ name: "duplicate-results", timeoutMs: 60000 },
 			)
 		}, 60000)
 	})
@@ -632,7 +566,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(result.loaded.includes("unique_override"))
 			`,
 				signal,
-				{ name: "stale-multiple", timeoutMs: 60000 },
 			)
 		}, 60000)
 
@@ -646,7 +579,6 @@ describe("CustomToolRegistry", () => {
 				assert.equal(registry.has("simple"), true)
 			`,
 				signal,
-				{ name: "stale-cleared", timeoutMs: 30000 },
 			)
 		}, 30000)
 
@@ -659,7 +591,6 @@ describe("CustomToolRegistry", () => {
 				assert.ok(result.loaded.includes("unique_override"))
 			`,
 				signal,
-				{ name: "mixed-stale", timeoutMs: 60000 },
 			)
 		}, 60000)
 	})

@@ -58,6 +58,39 @@ describe("runEsbuild", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true })
 	})
 
+	it("disables background JavaScript compilation only in the compiler child", async () => {
+		const parentExecArgv = [...process.execArgv]
+		const parentNodeOptions = process.env.NODE_OPTIONS
+		const binDir = path.join(tempDir, "dist", "bin")
+		const entryPoint = path.join(tempDir, "input.ts")
+		const outfile = path.join(tempDir, "invocation.json")
+		fs.mkdirSync(binDir, { recursive: true })
+		fs.writeFileSync(
+			path.join(binDir, "esbuild"),
+			`
+			const fs = require("node:fs")
+			const args = process.argv.slice(2)
+			const outfile = args.find(arg => arg.startsWith("--outfile=")).slice("--outfile=".length)
+			fs.writeFileSync(outfile, JSON.stringify({ nodeFlags: process.execArgv, compilerArgs: args }))
+			`,
+		)
+
+		await runEsbuild({ entryPoint, outfile }, tempDir)
+
+		const invocation = JSON.parse(fs.readFileSync(outfile, "utf8"))
+		expect(invocation.nodeFlags).toEqual(["--no-concurrent-recompilation", "--no-concurrent-sparkplug"])
+		expect(invocation.compilerArgs).toEqual([
+			entryPoint,
+			`--outfile=${outfile}`,
+			"--format=esm",
+			"--platform=node",
+			"--target=node18",
+			"--bundle",
+		])
+		expect(process.execArgv).toEqual(parentExecArgv)
+		expect(process.env.NODE_OPTIONS).toBe(parentNodeOptions)
+	})
+
 	it("should compile a TypeScript file to ESM", async () => {
 		// Create a simple TypeScript file.
 		const inputFile = path.join(tempDir, "input.ts")

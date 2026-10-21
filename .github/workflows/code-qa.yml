@@ -10,7 +10,6 @@ on:
 
 jobs:
     knip:
-        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
@@ -21,7 +20,6 @@ jobs:
               run: pnpm knip
 
     compile:
-        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
@@ -44,7 +42,6 @@ jobs:
                   retention-days: 14
 
     unit-test:
-        if: github.event_name != 'workflow_dispatch'
         name: platform-unit-test (${{ matrix.name }})
         runs-on: ${{ matrix.os }}
         strategy:
@@ -87,7 +84,6 @@ jobs:
                   retention-days: 14
 
     offline-evaluator:
-        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v5
@@ -108,7 +104,6 @@ jobs:
                   retention-days: 14
 
     vscode-1380-smoke:
-        if: github.event_name != 'workflow_dispatch'
         name: VS Code 1.138.0 extension-host contract
         runs-on: windows-latest
         timeout-minutes: 45
@@ -146,52 +141,7 @@ jobs:
                   retention-days: 14
                   if-no-files-found: error
 
-    catalog-native-diagnostics:
-        if: github.event_name == 'workflow_dispatch'
-        name: native compiler stacks (${{ matrix.os }})
-        runs-on: ${{ matrix.os }}
-        strategy:
-            fail-fast: false
-            matrix:
-                os: [ubuntu-latest]
-        timeout-minutes: 20
-        steps:
-            - uses: actions/checkout@v5
-            - uses: ./.github/actions/setup-node-pnpm
-            - name: Build workspace types
-              run: pnpm --filter @alpha-code/types build
-            - name: Prepare the unchanged extension bundle
-              run: pnpm bundle
-            - name: Prepare bounded native stack collection
-              shell: bash
-              run: |
-                  if ! command -v gdb >/dev/null; then
-                    sudo -n apt-get update -qq
-                    sudo -n apt-get install -y --no-install-recommends gdb
-                  fi
-                  sudo -n gdb --batch --nx --nh -iex "set auto-load off" -iex "set debuginfod enabled off" -ex "show version"
-            - name: Capture a native stack from a bounded compiler workload
-              env:
-                  ALPHA_TRACE_CUSTOM_TOOLS: "owner-only"
-                  ALPHA_CUSTOM_TOOL_NATIVE_STACKS: "1"
-                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/compiler-stress-traces
-              shell: pwsh
-              run: |
-                  $diagnosticRoot = 'artifacts/harness/release-3.2.7'
-                  New-Item -ItemType Directory -Path $diagnosticRoot -Force | Out-Null
-                  pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/compiler-stack-diagnostic.log"
-                  exit $LASTEXITCODE
-            - name: Retain bounded child and native loader evidence
-              if: always()
-              uses: actions/upload-artifact@v6
-              with:
-                  name: catalog-stack-diagnostics-${{ matrix.os }}-${{ github.run_id }}
-                  path: artifacts/harness/release-3.2.7/
-                  retention-days: 7
-                  if-no-files-found: error
-
     vscode-1380-outcomes:
-        if: github.event_name != 'workflow_dispatch'
         name: VS Code 1.138.0 smoke and independent task outcomes
         runs-on: windows-latest
         timeout-minutes: 60
