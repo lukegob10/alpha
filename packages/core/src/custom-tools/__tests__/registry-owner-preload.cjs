@@ -1,5 +1,5 @@
 // Diagnostic-only observer; compiler commands and registry bundle bytes remain unchanged.
-/* global require, process, module, setTimeout */
+/* global require, process, module, setTimeout, Buffer */
 /* eslint-disable @typescript-eslint/no-require-imports -- Node --require loads this fixture before ESM linking. */
 const fs = require("node:fs")
 const path = require("node:path")
@@ -62,9 +62,84 @@ function procState(pid) {
 	}
 	return result
 }
+function captureNativeStack(child, launch = childProcess.spawnSync) {
+	const record = [...children.values()].find((record) => record.child === child)
+	const pid = child?.pid
+	if (!record || !Number.isSafeInteger(pid) || pid <= 1 || child.exitCode !== null || child.signalCode !== null)
+		throw new Error("Native stack target must be a live owned child")
+	const owner = () => {
+		try {
+			const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+			return Number(/^\d+ \(.+\) \S (\d+) /.exec(stat)?.[1]) === process.pid
+		} catch {
+			return false
+		}
+	}
+	if (!owner()) return { code: "CHILD_NO_LONGER_OWNED" }
+	const stackFile = path.join(directory, `${process.pid}.compiler-${record.id}-${pid}.gdb.txt`)
+	const started = Date.now()
+	let result
+	try {
+		result = launch(
+			"sudo",
+			[
+				"-n",
+				"gdb",
+				"--batch",
+				"--nx",
+				"--nh",
+				"-iex",
+				"set auto-load off",
+				"-iex",
+				"set debuginfod enabled off",
+				"-iex",
+				"set print frame-arguments none",
+				"--pid",
+				String(pid),
+				"-ex",
+				"set pagination off",
+				"-ex",
+				"thread apply all bt 30",
+				"-ex",
+				"detach",
+			],
+			{
+				cwd: directory,
+				env: { ...process.env, DEBUGINFOD_URLS: "" },
+				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 4_000,
+				maxBuffer: 256 * 1024,
+				killSignal: "SIGKILL",
+			},
+		)
+	} catch (error) {
+		result = { error: { code: error.code ?? "UNKNOWN" } }
+	} finally {
+		// A failed debugger must not leave the owned compiler stopped by ptrace.
+		if (owner()) {
+			try {
+				process.kill(pid, "SIGCONT")
+			} catch (error) {
+				if (error.code !== "ESRCH") stage("debugger resume error", error.code ?? "UNKNOWN")
+			}
+		}
+	}
+	const bytes = (value) => (Buffer.isBuffer(value) ? value : Buffer.from(String(value ?? "")))
+	const output = Buffer.concat([bytes(result.stdout), bytes(result.stderr)]).subarray(0, 256 * 1024)
+	fs.writeFileSync(stackFile, output)
+	return {
+		file: path.basename(stackFile),
+		bytes: output.length,
+		status: result.status,
+		signal: result.signal,
+		code: result.error?.code,
+		elapsedMs: Date.now() - started,
+	}
+}
 function flush(phase) {
 	const start = Math.max(0, total - events.length)
 	let inspected = 0
+	let stackAttempts = 0
 	const snapshot = {
 		phase,
 		at: Date.now(),
@@ -94,6 +169,16 @@ function flush(phase) {
 					? ++inspected <= 4
 						? procState(child.pid)
 						: { code: "LIVE_PROCESS_LIMIT" }
+					: undefined,
+			nativeStack:
+				phase === "deadline snapshot" &&
+				process.env.ALPHA_CUSTOM_TOOL_NATIVE_STACKS === "1" &&
+				process.platform === "linux" &&
+				child.pid &&
+				child.exitCode === null &&
+				child.signalCode === null &&
+				++stackAttempts <= 1
+					? captureNativeStack(child)
 					: undefined,
 		})),
 		events: Array.from(
@@ -138,7 +223,7 @@ function armSnapshot(at) {
 	).unref()
 }
 if (Number.isFinite(snapshotAt)) armSnapshot(snapshotAt)
-module.exports = { armSnapshot }
+module.exports = { armSnapshot, captureNativeStack }
 process.on("beforeExit", (code) => {
 	stage("beforeExit", code)
 	flush("beforeExit")

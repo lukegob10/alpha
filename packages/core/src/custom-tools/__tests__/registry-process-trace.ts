@@ -72,7 +72,9 @@ export class RegistryProcessTrace {
 
 	setSnapshotDeadline(deadlineAt: number): void {
 		// Observe just before the existing deadline; this timer never cancels or extends execution.
-		this.env.ALPHA_REGISTRY_PROCESS_SNAPSHOT_AT = String(deadlineAt - 1_000)
+		const margin =
+			process.env.ALPHA_CUSTOM_TOOL_NATIVE_STACKS === "1" && deadlineAt - Date.now() > 10_000 ? 10_000 : 1_000
+		this.env.ALPHA_REGISTRY_PROCESS_SNAPSHOT_AT = String(deadlineAt - margin)
 	}
 
 	bindSignal(signal: AbortSignal): void {

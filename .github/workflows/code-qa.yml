@@ -148,12 +148,12 @@ jobs:
 
     catalog-native-diagnostics:
         if: github.event_name == 'workflow_dispatch'
-        name: native owner diagnostics (${{ matrix.os }})
+        name: native compiler stacks (${{ matrix.os }})
         runs-on: ${{ matrix.os }}
         strategy:
             fail-fast: false
             matrix:
-                os: [ubuntu-latest, windows-latest]
+                os: [ubuntu-latest]
         timeout-minutes: 20
         steps:
             - uses: actions/checkout@v5
@@ -162,10 +162,19 @@ jobs:
               run: pnpm --filter @alpha-code/types build
             - name: Prepare the unchanged extension bundle
               run: pnpm bundle
+            - name: Prepare bounded native stack collection
+              shell: bash
+              run: |
+                  if ! command -v gdb >/dev/null; then
+                    sudo -n apt-get update -qq
+                    sudo -n apt-get install -y --no-install-recommends gdb
+                  fi
+                  sudo -n gdb --batch --nx --nh -iex "set auto-load off" -iex "set debuginfod enabled off" -ex "show version"
             - name: Observe unchanged compilers through the native owner
               env:
                   ALPHA_TRACE_CUSTOM_TOOLS: "owner-only"
-                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/catalog-owner-traces
+                  ALPHA_CUSTOM_TOOL_NATIVE_STACKS: "1"
+                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/catalog-stack-traces
                   ALPHA_HARNESS_REPOSITORY_ROOT: ${{ github.workspace }}
                   VITEST_MAX_WORKERS: "2"
                   VITEST_MAX_FORKS: "2"
@@ -188,7 +197,7 @@ jobs:
                   '@ | Set-Content -LiteralPath "$diagnosticRoot/catalog-native-run.mjs" -Encoding utf8
                   for ($diagnosticSample = 1; $diagnosticSample -le 2; $diagnosticSample++) {
                     $env:ALPHA_NATIVE_DIAGNOSTIC_SAMPLE = [string]$diagnosticSample
-                    $env:ALPHA_CUSTOM_TOOL_TRACE_DIR = "$env:GITHUB_WORKSPACE/$diagnosticRoot/catalog-owner-traces/sample-$diagnosticSample"
+                    $env:ALPHA_CUSTOM_TOOL_TRACE_DIR = "$env:GITHUB_WORKSPACE/$diagnosticRoot/catalog-stack-traces/sample-$diagnosticSample"
                     pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/catalog-native-diagnostic.log" -Append
                     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   }
@@ -196,7 +205,7 @@ jobs:
               if: always()
               uses: actions/upload-artifact@v6
               with:
-                  name: catalog-owner-diagnostics-${{ matrix.os }}-${{ github.run_id }}
+                  name: catalog-stack-diagnostics-${{ matrix.os }}-${{ github.run_id }}
                   path: artifacts/harness/release-3.2.7/
                   retention-days: 7
                   if-no-files-found: error
