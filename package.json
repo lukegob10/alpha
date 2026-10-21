@@ -47,7 +47,8 @@
 		"test:evals:services": "pnpm --filter @alpha-code/evals test:services",
 		"test:evals:infrastructure": "pnpm --filter @alpha-code/evals test:docker",
 		"test:evals:offline": "pnpm --filter @alpha-code/evals test:unit && pnpm --filter @alpha-code/evals test:contract && pnpm --filter @alpha-code/evals test:certification",
-		"test:tooling": "node --require=tsx/cjs --test --test-reporter=spec --test-reporter=./scripts/harness/node-reporter.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout scripts/*.test.js scripts/*.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs scripts/evals/*.test.ts"
+		"test:tooling": "node --require=tsx/cjs --test --test-reporter=spec --test-reporter=./scripts/harness/node-reporter.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout scripts/*.test.js scripts/*.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs scripts/evals/*.test.ts",
+		"diagnostic:catalog": "node artifacts/harness/release-3.2.7/catalog-native-run.mjs"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.27.10",
