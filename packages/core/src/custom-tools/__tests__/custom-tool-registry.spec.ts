@@ -12,6 +12,7 @@ import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/ty
 
 import type { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
+import { traceRegistryBundle } from "./registry-stage-trace.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -32,6 +33,7 @@ describe("CustomToolRegistry", () => {
 			external: NODE_BUILTIN_MODULES,
 			banner: COMMONJS_REQUIRE_BANNER,
 		})
+		if (process.env.ALPHA_TRACE_CUSTOM_TOOLS === "1") await traceRegistryBundle(bundle)
 		// Production tool imports must use Node's ESM cache, not Vitest's transformed module graph.
 		// Keep all public-method assertions against the current source, compiled fresh for this suite.
 		NativeCustomToolRegistry = (
