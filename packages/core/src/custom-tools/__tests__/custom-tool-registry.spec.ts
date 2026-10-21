@@ -3,7 +3,7 @@
 import path from "path"
 import * as fs from "fs/promises"
 import os from "os"
-import { registerHooks } from "module"
+import { createRequire, registerHooks } from "module"
 import { fileURLToPath, pathToFileURL } from "url"
 
 import { execa } from "execa"
@@ -82,30 +82,59 @@ describe("CustomToolRegistry", () => {
 		}
 	}
 
-	it("keeps file-loading scenarios outside test-worker module hooks", async ({ signal }) => {
-		const trace = createRegistryProcessTrace("worker-hook")
-		trace?.bindSignal(signal)
+	function installWorkerLoaderGuard(signal: AbortSignal, moduleUrl: string): () => void {
 		const hooks = registerHooks({
 			load(url, context, nextLoad) {
-				if (url.endsWith("/bundle.mjs")) throw new Error("Test-worker loader intercepted a custom tool")
+				if (url === moduleUrl || url.startsWith(`${moduleUrl}?`))
+					throw new Error("Test-worker loader intercepted a custom tool")
 				return nextLoad(url, context)
 			},
 		})
-		trace?.stage("parent hook registered")
-		try {
-			await runNativeScenario(
-				`
-				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-				assert.ok(result.loaded.includes("simple"))
-				assert.equal(result.failed.length, 1)
-				assert.equal(result.failed[0].file, "invalid.ts")
-			`,
-				signal,
-				trace,
-			)
-		} finally {
+		let active = true
+		const deregister = () => {
+			if (!active) return
+			active = false
+			signal.removeEventListener("abort", deregister)
 			hooks.deregister()
-			trace?.stage("parent hook deregistered")
+		}
+		signal.addEventListener("abort", deregister, { once: true })
+		if (signal.aborted) deregister()
+		return deregister
+	}
+
+	it("keeps file-loading scenarios outside test-worker module hooks", async ({ signal }) => {
+		const deadlineAt = Date.now() + 60_000
+		const trace = createRegistryProcessTrace("worker-hook")
+		trace?.setSnapshotDeadline(deadlineAt)
+		trace?.bindSignal(signal)
+		const toolDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-hook-source-"))
+		try {
+			await fs.writeFile(path.join(toolDir, "package.json"), JSON.stringify({ type: "module" }))
+			const toolFile = path.join(toolDir, "isolated.js")
+			await fs.writeFile(
+				toolFile,
+				'export default { name: "isolated_js", description: "Native loader guard", execute: async () => "isolated execution" }',
+			)
+			const toolUrl = pathToFileURL(await fs.realpath(toolFile)).href
+			const deregister = installWorkerLoaderGuard(signal, toolUrl)
+			trace?.stage("parent hook registered", toolUrl)
+			try {
+				await runNativeScenario(
+					`
+					const result = await registry.loadFromDirectory(${JSON.stringify(toolDir)})
+					assert.deepEqual(result.loaded, ["isolated_js"])
+					assert.deepEqual(result.failed, [])
+					assert.equal(await registry.get("isolated_js").execute({}, {}), "isolated execution")
+				`,
+					signal,
+					trace,
+				)
+			} finally {
+				deregister()
+				trace?.stage("parent hook deregistered")
+			}
+		} finally {
+			await fs.rm(toolDir, { recursive: true, force: true })
 			trace?.dispose()
 		}
 	}, 60_000)
@@ -158,6 +187,7 @@ describe("CustomToolRegistry", () => {
 					assert.deepEqual(currentRegistry.get("compiled_path").parameters.parse({}), {})
 				}
 			`
+			trace?.setSnapshotDeadline(Date.now() + 25_000)
 			const child = execa(
 				process.execPath,
 				[
@@ -178,6 +208,41 @@ describe("CustomToolRegistry", () => {
 			trace?.dispose()
 		}
 	}, 60_000)
+
+	it("deregisters worker loader hooks on abort before pending work settles", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-hook-abort-"))
+		const bundle = path.join(tempDir, "bundle.mjs")
+		const alreadyAbortedDir = path.join(tempDir, "already-aborted")
+		const alreadyAbortedBundle = path.join(alreadyAbortedDir, "bundle.mjs")
+		await fs.writeFile(bundle, 'export const guardProbe = "loaded"')
+		await fs.mkdir(alreadyAbortedDir)
+		await fs.writeFile(alreadyAbortedBundle, 'export const guardProbe = "loaded"')
+		const controller = new AbortController()
+		let finishWork!: () => void
+		const pending = new Promise<void>((resolve) => {
+			finishWork = resolve
+		})
+		const deregister = installWorkerLoaderGuard(controller.signal, pathToFileURL(await fs.realpath(bundle)).href)
+		const operation = pending.finally(deregister)
+		try {
+			controller.abort()
+			const nativeRequire = createRequire(import.meta.url)
+			expect(nativeRequire(bundle).guardProbe).toBe("loaded")
+			const disposeAborted = installWorkerLoaderGuard(
+				controller.signal,
+				pathToFileURL(await fs.realpath(alreadyAbortedBundle)).href,
+			)
+			try {
+				expect(nativeRequire(alreadyAbortedBundle).guardProbe).toBe("loaded")
+			} finally {
+				disposeAborted()
+			}
+		} finally {
+			finishWork()
+			await operation
+			await fs.rm(tempDir, { recursive: true, force: true })
+		}
+	})
 
 	describe("validation", () => {
 		it("should accept a valid tool definition", () => {

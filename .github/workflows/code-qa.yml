@@ -175,13 +175,18 @@ jobs:
                   import path from "node:path"
                   import { tsImport } from "tsx/esm/api"
                   const { runOwnedProcess, pnpmCommand } = await tsImport("../../../apps/vscode-e2e/src/campaign/ownedProcess.ts", import.meta.url)
-                  const command = pnpmCommand(process.env.npm_execpath, ["--dir", "packages/core", "test", "--bail=1", "--reporter=dot", "--reporter=json", `--outputFile=${path.resolve("artifacts/harness/release-3.2.7/windows-core-native.raw.json")}`])
+                  const sample = process.env.ALPHA_NATIVE_DIAGNOSTIC_SAMPLE
+                  const command = pnpmCommand(process.env.npm_execpath, ["--dir", "packages/core", "test", "--bail=1", "--reporter=dot", "--reporter=json", `--outputFile=${path.resolve(`artifacts/harness/release-3.2.7/windows-core-native-${sample}.raw.json`)}`])
                   const result = await runOwnedProcess({ ...command, cwd: process.cwd(), env: process.env }, { output: "inherit", signal: new AbortController().signal })
                   console.log("[native-diagnostic-owner]", JSON.stringify({ exitCode: result.exitCode, signal: result.signal, cleanupVerified: result.cleanupVerified }))
                   process.exitCode = result.exitCode ?? 1
                   '@ | Set-Content -LiteralPath "$diagnosticRoot/windows-native-run.mjs" -Encoding utf8
-                  pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/windows-native-diagnostic.log"
-                  exit $LASTEXITCODE
+                  for ($diagnosticSample = 1; $diagnosticSample -le 3; $diagnosticSample++) {
+                    $env:ALPHA_NATIVE_DIAGNOSTIC_SAMPLE = [string]$diagnosticSample
+                    $env:ALPHA_CUSTOM_TOOL_TRACE_DIR = "$env:GITHUB_WORKSPACE/$diagnosticRoot/windows-native-traces/sample-$diagnosticSample"
+                    pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/windows-native-diagnostic.log" -Append
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  }
             - name: Retain bounded child and native loader evidence
               if: always()
               uses: actions/upload-artifact@v6

@@ -23,7 +23,11 @@ function flush(phase) {
 globalThis.__alphaRegistryProcessStage = stage
 stage("preload", { executable: process.execPath, entry: process.argv[1] ?? "eval" })
 flush("preload")
-setInterval(() => flush("heartbeat"), 1000).unref()
+const snapshotAt = Number(process.env.ALPHA_REGISTRY_PROCESS_SNAPSHOT_AT)
+if (Number.isFinite(snapshotAt)) setTimeout(() => {
+	stage("deadline snapshot", { resources: process.getActiveResourcesInfo(), cpu: process.cpuUsage() })
+	flush("deadline snapshot")
+}, Math.max(1, snapshotAt - Date.now())).unref()
 process.on("beforeExit", code => { stage("beforeExit", code); flush("beforeExit") })
 process.on("exit", code => { stage("exit", code); flush("exit") })
 process.on("uncaughtExceptionMonitor", error => { stage("uncaught", { name: error.name, message: error.message }); flush("uncaught") })
@@ -36,9 +40,8 @@ export class RegistryProcessTrace {
 	readonly env: Record<string, string>
 	private events: unknown[] = new Array(512)
 	private total = 0
-	private children = new Map<number, Record<string, unknown>>()
+	private children = new Map<number, ChildProcess>()
 	private file: string
-	private timer: NodeJS.Timeout
 	private removeAbortListener?: () => void
 
 	constructor(readonly directory: string) {
@@ -49,12 +52,15 @@ export class RegistryProcessTrace {
 		fs.writeFileSync(this.preload, TRACE_PRELOAD)
 		this.stage("parent trace start")
 		this.flush("start")
-		this.timer = setInterval(() => this.flush("heartbeat"), 1000)
-		this.timer.unref()
 	}
 
 	stage(stage: string, value?: unknown): void {
 		this.events[this.total++ % this.events.length] = [Date.now(), stage, value ?? ""]
+	}
+
+	setSnapshotDeadline(deadlineAt: number): void {
+		// Observe just before the existing deadline; this timer never cancels or extends execution.
+		this.env.ALPHA_REGISTRY_PROCESS_SNAPSHOT_AT = String(deadlineAt - 250)
 	}
 
 	bindSignal(signal: AbortSignal): void {
@@ -67,36 +73,29 @@ export class RegistryProcessTrace {
 	}
 
 	observe(child: ChildProcess): void {
-		const state: Record<string, unknown> = { pid: child.pid, stdoutBytes: 0, stderrBytes: 0 }
-		this.children.set(child.pid ?? -1, state)
+		this.children.set(child.pid ?? -1, child)
 		this.stage("parent child created", child.pid)
-		child.on("spawn", () => this.stage("parent child spawn", child.pid))
+		this.flush("child created")
+		child.on("spawn", () => {
+			this.stage("parent child spawn", child.pid)
+			this.flush("child spawn")
+		})
 		child.on("exit", (code, signal) => {
-			Object.assign(state, { exitCode: code, signal })
-			this.stage("parent child exit", { ...state })
+			this.stage("parent child exit", { pid: child.pid, code, signal })
 			this.flush("child exit")
 		})
 		child.on("close", (code, signal) => {
-			Object.assign(state, { closed: true, closeCode: code, closeSignal: signal })
-			this.stage("parent child close", { ...state })
+			this.stage("parent child close", { pid: child.pid, code, signal })
 			this.flush("child close")
 		})
 		child.on("error", (error: NodeJS.ErrnoException) => {
 			this.stage("parent child error", { name: error.name, code: error.code })
 			this.flush("child error")
 		})
-		child.stdout?.on("data", (data: Buffer) => {
-			state.stdoutBytes = Number(state.stdoutBytes) + data.length
-		})
-		child.stderr?.on("data", (data: Buffer) => {
-			state.stderrBytes = Number(state.stderrBytes) + data.length
-		})
 		child.stdout?.on("end", () => {
-			state.stdoutEnded = true
 			this.stage("parent child stdout end", child.pid)
 		})
 		child.stderr?.on("end", () => {
-			state.stderrEnded = true
 			this.stage("parent child stderr end", child.pid)
 		})
 	}
@@ -118,7 +117,29 @@ export class RegistryProcessTrace {
 				total: this.total,
 				resources: process.getActiveResourcesInfo(),
 				cpu: process.cpuUsage(),
-				children: [...this.children.values()],
+				children: [...this.children.values()].map((child) => ({
+					pid: child.pid,
+					exitCode: child.exitCode,
+					signalCode: child.signalCode,
+					killed: child.killed,
+					stdin: {
+						writableLength: child.stdin?.writableLength,
+						writableEnded: child.stdin?.writableEnded,
+						destroyed: child.stdin?.destroyed,
+					},
+					stdout: {
+						readableLength: child.stdout?.readableLength,
+						readableEnded: child.stdout?.readableEnded,
+						readableFlowing: child.stdout?.readableFlowing,
+						destroyed: child.stdout?.destroyed,
+					},
+					stderr: {
+						readableLength: child.stderr?.readableLength,
+						readableEnded: child.stderr?.readableEnded,
+						readableFlowing: child.stderr?.readableFlowing,
+						destroyed: child.stderr?.destroyed,
+					},
+				})),
 				events: Array.from(
 					{ length: Math.min(this.total, this.events.length) },
 					(_, index) => this.events[(start + index) % this.events.length],
@@ -128,7 +149,6 @@ export class RegistryProcessTrace {
 	}
 
 	dispose(): void {
-		clearInterval(this.timer)
 		this.removeAbortListener?.()
 		this.stage("parent trace disposed")
 		this.flush("disposed")
