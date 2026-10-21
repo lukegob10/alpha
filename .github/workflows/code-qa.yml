@@ -170,37 +170,17 @@ jobs:
                     sudo -n apt-get install -y --no-install-recommends gdb
                   fi
                   sudo -n gdb --batch --nx --nh -iex "set auto-load off" -iex "set debuginfod enabled off" -ex "show version"
-            - name: Observe unchanged compilers through the native owner
+            - name: Capture a native stack from a bounded compiler workload
               env:
                   ALPHA_TRACE_CUSTOM_TOOLS: "owner-only"
                   ALPHA_CUSTOM_TOOL_NATIVE_STACKS: "1"
-                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/catalog-stack-traces
-                  ALPHA_HARNESS_REPOSITORY_ROOT: ${{ github.workspace }}
-                  VITEST_MAX_WORKERS: "2"
-                  VITEST_MAX_FORKS: "2"
-                  VITEST_MIN_FORKS: "1"
-                  VITEST_MAX_THREADS: "2"
-                  VITEST_MIN_THREADS: "1"
+                  ALPHA_CUSTOM_TOOL_TRACE_DIR: ${{ github.workspace }}/artifacts/harness/release-3.2.7/compiler-stress-traces
               shell: pwsh
               run: |
                   $diagnosticRoot = 'artifacts/harness/release-3.2.7'
                   New-Item -ItemType Directory -Path $diagnosticRoot -Force | Out-Null
-                  @'
-                  import path from "node:path"
-                  import { tsImport } from "tsx/esm/api"
-                  const { runOwnedProcess, pnpmCommand } = await tsImport("../../../apps/vscode-e2e/src/campaign/ownedProcess.ts", import.meta.url)
-                  const sample = process.env.ALPHA_NATIVE_DIAGNOSTIC_SAMPLE
-                  const command = pnpmCommand(process.env.npm_execpath, ["--dir", "packages/core", "test", "--bail=1", "--reporter=dot", "--reporter=json", `--outputFile=${path.resolve(`artifacts/harness/release-3.2.7/catalog-core-native-${sample}.raw.json`)}`])
-                  const result = await runOwnedProcess({ ...command, cwd: process.cwd(), env: process.env }, { output: "inherit", signal: new AbortController().signal })
-                  console.log("[native-diagnostic-owner]", JSON.stringify({ exitCode: result.exitCode, signal: result.signal, cleanupVerified: result.cleanupVerified }))
-                  process.exitCode = result.exitCode ?? 1
-                  '@ | Set-Content -LiteralPath "$diagnosticRoot/catalog-native-run.mjs" -Encoding utf8
-                  for ($diagnosticSample = 1; $diagnosticSample -le 2; $diagnosticSample++) {
-                    $env:ALPHA_NATIVE_DIAGNOSTIC_SAMPLE = [string]$diagnosticSample
-                    $env:ALPHA_CUSTOM_TOOL_TRACE_DIR = "$env:GITHUB_WORKSPACE/$diagnosticRoot/catalog-stack-traces/sample-$diagnosticSample"
-                    pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/catalog-native-diagnostic.log" -Append
-                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                  }
+                  pnpm diagnostic:catalog 2>&1 | Tee-Object -FilePath "$diagnosticRoot/compiler-stack-diagnostic.log"
+                  exit $LASTEXITCODE
             - name: Retain bounded child and native loader evidence
               if: always()
               uses: actions/upload-artifact@v6

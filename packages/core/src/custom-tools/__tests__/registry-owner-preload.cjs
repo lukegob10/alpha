@@ -80,10 +80,15 @@ function captureNativeStack(child, launch = childProcess.spawnSync) {
 	const started = Date.now()
 	let result
 	try {
+		// Bound the elevated debugger itself; killing only sudo may leave its child attached.
 		result = launch(
 			"sudo",
 			[
 				"-n",
+				"timeout",
+				"--signal=TERM",
+				"--kill-after=1s",
+				"3s",
 				"gdb",
 				"--batch",
 				"--nx",
@@ -107,7 +112,7 @@ function captureNativeStack(child, launch = childProcess.spawnSync) {
 				cwd: directory,
 				env: { ...process.env, DEBUGINFOD_URLS: "" },
 				stdio: ["ignore", "pipe", "pipe"],
-				timeout: 4_000,
+				timeout: 6_000,
 				maxBuffer: 256 * 1024,
 				killSignal: "SIGKILL",
 			},
