@@ -80,7 +80,7 @@ test("packaging rejects cross-host targets and ambiguous or unsupported argument
 		)
 })
 
-test("release publication waits for the complete supported desktop target matrix", () => {
+test("release publication waits for the verified Windows x64 package only", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../src/package.json", import.meta.url), "utf8"))
 	assert.equal(manifest.scripts.vsix, "node ../scripts/package-vsix.mjs")
 	assert.equal(manifest.scripts["publish:marketplace"], undefined)
@@ -88,13 +88,21 @@ test("release publication waits for the complete supported desktop target matrix
 	const packaging = workflow.split("    package-vsix:")[1]?.split("    publish-release:")[0]
 	assert.ok(packaging)
 	assert.match(packaging, /needs: release-vsix/u)
-	const targets = [...packaging.matchAll(/^\s+target: ([a-z0-9-]+)\r?$/gmu)].map((match) => match[1]).sort()
-	assert.deepEqual(targets, ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"])
-	assert.match(packaging, /os: windows-11-arm\s+target: win32-arm64/u)
-	assert.match(packaging, /os: ubuntu-24\.04-arm\s+target: linux-arm64/u)
-	assert.match(packaging, /os: macos-15-intel\s+target: darwin-x64\s+native_index: false/u)
+	assert.match(packaging, /runs-on: windows-latest/u)
+	assert.doesNotMatch(packaging, /matrix:|matrix\./u)
 	assert.match(packaging, /run: pnpm vsix\s/u)
-	assert.ok(packaging.includes('--target "${{ matrix.target }}"'))
+	assert.match(
+		packaging,
+		/run: pnpm --dir src test services\/code-index\/vector-store\/__tests__\/lancedb-native\.spec\.ts/u,
+	)
+	assert.ok(packaging.includes('--check-source --target "win32-x64"'))
+	assert.match(packaging, /name: alpha-vsix-win32-x64/u)
 	assert.doesNotMatch(packaging, /gh release create/u)
-	assert.match(workflow.split("    publish-release:")[1], /needs: package-vsix/u)
+	const publication = workflow.split("    publish-release:")[1]
+	assert.match(publication, /needs: package-vsix/u)
+	assert.match(publication, /name: alpha-vsix-win32-x64/u)
+	assert.ok(publication.includes('$targets = @("win32-x64")'))
+	assert.ok(publication.includes(".Count -ne $targets.Count"))
+	assert.match(publication, /Download the Windows x64 VSIX/u)
+	assert.doesNotMatch(workflow, /darwin-|linux-|win32-arm64|Intel macOS/u)
 })
