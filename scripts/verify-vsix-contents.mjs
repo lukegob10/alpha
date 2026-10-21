@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unzipSync } from "fflate"
+import { SaxesParser } from "saxes"
 
 import { lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
 
@@ -122,17 +123,39 @@ let nativeBinding
 try {
 	if (!packagedAssets["extension.vsixmanifest"]) throw new Error("VSIX is missing required extension.vsixmanifest")
 	const manifest = new TextDecoder("utf-8", { fatal: true }).decode(packagedAssets["extension.vsixmanifest"])
-	const identities = manifest.replace(/<!--[\s\S]*?-->/gu, "").match(/<Identity\b[^<>]*\/>/gu) ?? []
+	// Parse original XML: stripping comments can manufacture markup, while regexes
+	// can mistake CDATA text for a real Identity element.
+	const identities = []
+	const elements = []
+	const parser = new SaxesParser({ xmlns: true })
+	parser.on("doctype", () => {
+		throw new Error("VSIX manifest must not declare a DOCTYPE")
+	})
+	parser.on("opentag", (element) => {
+		if (
+			elements.length === 0 &&
+			(element.local !== "PackageManifest" ||
+				!["", "http://schemas.microsoft.com/developer/vsx-schema/2011"].includes(element.uri))
+		) {
+			throw new Error("Invalid VSIX PackageManifest root")
+		}
+		if (element.local === "Identity") {
+			if (
+				elements.length !== 2 ||
+				elements[1].local !== "Metadata" ||
+				elements[1].uri !== elements[0].uri ||
+				element.uri !== elements[0].uri
+			) {
+				throw new Error("VSIX Identity must belong to PackageManifest/Metadata in the manifest namespace")
+			}
+			identities.push(element.attributes)
+		}
+		elements.push({ local: element.local, uri: element.uri })
+	})
+	parser.on("closetag", () => elements.pop())
+	parser.write(manifest).close()
 	if (identities.length !== 1) throw new Error("VSIX manifest must contain exactly one Identity")
-	let remaining = identities[0].slice("<Identity".length, -2)
-	const attributes = new Map()
-	while (remaining.trim().length > 0) {
-		const attribute = /^\s+([\w:.-]+)\s*=\s*(?:"([^"<]*)"|'([^'<]*)')/u.exec(remaining)
-		if (!attribute || attributes.has(attribute[1])) throw new Error("Invalid VSIX Identity attributes")
-		attributes.set(attribute[1], attribute[2] ?? attribute[3])
-		remaining = remaining.slice(attribute[0].length)
-	}
-	target = attributes.get("TargetPlatform")
+	target = identities[0].TargetPlatform?.value
 	if (!target) throw new Error("VSIX must declare a TargetPlatform; a host-only native binding is not universal")
 	nativeBinding = lanceDbBindingForTarget(target)
 	if (expectedTarget !== undefined && expectedTarget !== target) {

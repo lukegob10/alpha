@@ -223,12 +223,12 @@ test("VSIX verification refuses untargeted, unsupported, mismatched and ambiguou
 		for (const [attributes, error] of [
 			['Id="alpha"', /must declare a TargetPlatform/u],
 			['Id="alpha" TargetPlatform="universal"', /Unsupported VSIX target/u],
-			[`TargetPlatform="${hostTarget}" TargetPlatform="${otherTarget}"`, /Invalid VSIX Identity attributes/u],
+			[`TargetPlatform="${hostTarget}" TargetPlatform="${otherTarget}"`, /duplicate attribute/u],
 			[`Id="alpha TargetPlatform='${hostTarget}'"`, /must declare a TargetPlatform/u],
 		]) {
 			await writeFile(
 				path.join(content, "extension.vsixmanifest"),
-				`<PackageManifest><Identity ${attributes}/></PackageManifest>`,
+				`<PackageManifest><Metadata><Identity ${attributes}/></Metadata></PackageManifest>`,
 			)
 			pack()
 			const result = runVerifier([archive])
@@ -237,6 +237,52 @@ test("VSIX verification refuses untargeted, unsupported, mismatched and ambiguou
 		}
 	})
 })
+
+test("VSIX verification reads Identity elements while ignoring XML comments", async () => {
+	await withArchive(required, async ({ archive, content, pack }) => {
+		await writeFile(
+			path.join(content, "extension.vsixmanifest"),
+			`<PackageManifest><Metadata><!-- <Identity TargetPlatform="universal"/> --><Identity Id="alpha" TargetPlatform="${hostTarget}"/></Metadata></PackageManifest>`,
+		)
+		pack()
+		const result = runVerifier([archive, "--target", hostTarget])
+		assert.equal(result.status, 0, result.stderr)
+	})
+})
+
+for (const [label, manifest] of [
+	[
+		"CDATA identity lookalikes",
+		`<PackageManifest><Metadata><![CDATA[<Identity Id="alpha" TargetPlatform="${hostTarget}"/>]]></Metadata></PackageManifest>`,
+	],
+	[
+		"comment delimiters manufactured by stripping",
+		`<PackageManifest><Metadata><!<!-- removed -->--><Identity Id="alpha" TargetPlatform="${hostTarget}"/>--></Metadata></PackageManifest>`,
+	],
+	[
+		"identity outside Metadata",
+		`<PackageManifest><Assets><Identity Id="alpha" TargetPlatform="${hostTarget}"/></Assets></PackageManifest>`,
+	],
+	["an unclosed manifest", `<PackageManifest><Metadata><Identity Id="alpha" TargetPlatform="${hostTarget}"/>`],
+	[
+		"DOCTYPE declarations",
+		`<!DOCTYPE PackageManifest><PackageManifest><Metadata><Identity Id="alpha" TargetPlatform="${hostTarget}"/></Metadata></PackageManifest>`,
+	],
+	[
+		"foreign Identity namespaces",
+		`<PackageManifest><Metadata><other:Identity xmlns:other="urn:other" Id="alpha" TargetPlatform="${hostTarget}"/></Metadata></PackageManifest>`,
+	],
+]) {
+	test(`VSIX verification refuses ${label}`, async () => {
+		await withArchive(required, async ({ archive, content, pack }) => {
+			await writeFile(path.join(content, "extension.vsixmanifest"), manifest)
+			pack()
+			const result = runVerifier([archive, "--target", hostTarget])
+			assert.equal(result.status, 1, result.stdout)
+			assert.match(result.stderr, /Invalid VSIX platform contract/u)
+		})
+	})
+}
 
 test("VSIX verification refuses extra native platforms and oversized manifest allocations", async () => {
 	const otherBinding =
