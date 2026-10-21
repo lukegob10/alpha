@@ -1,6 +1,12 @@
 import assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 
+export interface RegistryStageSnapshot {
+	pid: number
+	total: number
+	events: readonly unknown[]
+}
+
 /** Diagnostic-only instrumentation of the fresh test bundle; production source stays unchanged. */
 export async function traceRegistryBundle(bundle: string): Promise<void> {
 	let source = await fs.readFile(bundle, "utf8")
@@ -13,8 +19,19 @@ export async function traceRegistryBundle(bundle: string): Promise<void> {
 		source = source.replace(expression, replacement)
 	}
 	source =
-		'function __alphaStage(stage, value) { console.error("[registry-stage]", process.pid, Date.now(), stage, value ?? ""); }\n' +
-		source
+		`const __alphaStages = new Array(512);
+let __alphaStageCount = 0;
+function __alphaStage(stage, value) {
+	__alphaStages[__alphaStageCount++ % __alphaStages.length] = [Date.now(), stage, value ?? ""];
+}
+function __alphaStageSnapshot() {
+	const length = Math.min(__alphaStageCount, __alphaStages.length);
+	const start = Math.max(0, __alphaStageCount - length);
+	return { pid: process.pid, total: __alphaStageCount,
+		events: Array.from({ length }, (_, index) => __alphaStages[(start + index) % __alphaStages.length]) };
+}
+export { __alphaStageSnapshot };
+` + source
 	inject(
 		"async importSource(absolutePath, sourceFingerprint, force) {",
 		'async importSource(absolutePath, sourceFingerprint, force) { __alphaStage("source", absolutePath);',
@@ -31,9 +48,10 @@ export async function traceRegistryBundle(bundle: string): Promise<void> {
 		'await execa(process.execPath, args, { env, stdin: "ignore" });',
 		'const child = execa(process.execPath, args, { env, stdin: "ignore" }); child.on("spawn", () => __alphaStage("child spawn", [child.pid, options.entryPoint])); child.on("exit", (code, signal) => __alphaStage("child exit", [child.pid, code, signal])); child.on("close", (code, signal) => __alphaStage("child close", [child.pid, code, signal])); await child; __alphaStage("compile complete", options.entryPoint);',
 	)
+	replace(/return import\((url\d*)\);/, '__alphaStage("native import begin", $1); return import($1);')
 	replace(
-		/return import\((url\d*)\);/,
-		'__alphaStage("native import begin", $1); const mod = await import($1); __alphaStage("native import complete", $1); return mod;',
+		/const (mod\d*) = await this\.importModule\((url\d*(?:\.href)?)\);/g,
+		'const $1 = await this.importModule($2); __alphaStage("native import complete", $2);',
 	)
 	inject(
 		"await this.ensureCacheDirectory();",

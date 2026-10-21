@@ -12,7 +12,7 @@ import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/ty
 
 import type { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
-import { traceRegistryBundle } from "./registry-stage-trace.js"
+import { traceRegistryBundle, type RegistryStageSnapshot } from "./registry-stage-trace.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -23,6 +23,16 @@ describe("CustomToolRegistry", () => {
 	let registry: CustomToolRegistry
 	let nativeRegistryRoot: string
 	let NativeCustomToolRegistry: typeof CustomToolRegistry
+	let stageSnapshot: (() => RegistryStageSnapshot) | undefined
+	const dumpStages = (phase: string, test?: string) => {
+		if (!stageSnapshot) return
+		const { events, ...snapshot } = stageSnapshot()
+		console.error(
+			"[registry-stage-buffer]",
+			JSON.stringify({ phase, test, ...snapshot }),
+			"\n" + events.map((event) => JSON.stringify(event)).join("\n"),
+		)
+	}
 
 	beforeAll(async () => {
 		nativeRegistryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-registry-"))
@@ -36,13 +46,19 @@ describe("CustomToolRegistry", () => {
 		if (process.env.ALPHA_TRACE_CUSTOM_TOOLS === "1") await traceRegistryBundle(bundle)
 		// Production tool imports must use Node's ESM cache, not Vitest's transformed module graph.
 		// Keep all public-method assertions against the current source, compiled fresh for this suite.
-		NativeCustomToolRegistry = (
-			createRequire(import.meta.url)(bundle) as typeof import("../custom-tool-registry.js")
-		).CustomToolRegistry
+		const nativeModule = createRequire(import.meta.url)(bundle) as typeof import("../custom-tool-registry.js") & {
+			__alphaStageSnapshot?: () => RegistryStageSnapshot
+		}
+		NativeCustomToolRegistry = nativeModule.CustomToolRegistry
+		stageSnapshot = nativeModule.__alphaStageSnapshot
 	})
 
 	afterAll(async () => {
+		dumpStages("complete")
 		if (nativeRegistryRoot) await fs.rm(nativeRegistryRoot, { recursive: true, force: true })
+	})
+	afterEach(({ task }) => {
+		if (task.result?.state === "fail") dumpStages("failure", task.name)
 	})
 
 	beforeEach(() => {
