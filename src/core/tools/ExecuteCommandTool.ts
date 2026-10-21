@@ -868,27 +868,18 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			// Terminal launch needs cached settings, not the full UI projection and its mode-file loading.
 			const terminalShellIntegrationDisabled = provider?.getValue("terminalShellIntegrationDisabled") ?? true
 
-			// Get command execution timeout from VSCode configuration (in seconds)
-			const commandExecutionTimeoutSeconds = vscode.workspace
-				.getConfiguration(Package.name)
-				.get<number>("commandExecutionTimeout", 0)
-
-			// Get command timeout allowlist from VSCode configuration
-			const commandTimeoutAllowlist = vscode.workspace
-				.getConfiguration(Package.name)
-				.get<string[]>("commandTimeoutAllowlist", [])
-
-			// Every executable in a command chain must match a complete-token timeout rule.
-			const isCommandAllowlisted =
-				getCommandDecision(canonicalCommand, commandTimeoutAllowlist, []) === "auto_approve"
-
-			// Convert seconds to milliseconds for internal use, but skip timeout if command is allowlisted
-			const commandExecutionTimeout =
-				host && callbacks.resolveCommandTimeoutMs
-					? callbacks.resolveCommandTimeoutMs(0, canonicalCommand)
-					: isCommandAllowlisted
-						? 0
-						: commandExecutionTimeoutSeconds * 1000
+			let commandExecutionTimeout: number
+			if (callbacks.resolveCommandTimeoutMs) {
+				// Ordinary and prepared commands use the same immutable step policy.
+				commandExecutionTimeout = callbacks.resolveCommandTimeoutMs(0, canonicalCommand)
+			} else {
+				// Historical direct callers have no scheduler snapshot.
+				const configuration = vscode.workspace.getConfiguration(Package.name)
+				const timeoutSeconds = configuration.get<number>("commandExecutionTimeout", 0)
+				const timeoutAllowlist = configuration.get<string[]>("commandTimeoutAllowlist", [])
+				const allowlisted = getCommandDecision(canonicalCommand, timeoutAllowlist, []) === "auto_approve"
+				commandExecutionTimeout = allowlisted ? 0 : timeoutSeconds * 1_000
+			}
 
 			// Convert agent-specified timeout from seconds to milliseconds
 			const agentTimeout = resolveAgentTimeoutMs(timeoutSeconds)
@@ -903,6 +894,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
 				agentTimeout,
+				signal: host?.signal ?? callbacks.signal,
 				...(host
 					? {
 							directCommand: host.directCommand,
@@ -913,7 +905,6 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 							capturedExecutionMode: executionMode,
 							capturedProvider: provider,
 							capturedOutputPreviewSize: provider?.getValue("terminalOutputPreviewSize"),
-							signal: host.signal,
 						}
 					: {}),
 				onExecutionState: (state) => {
@@ -1123,6 +1114,7 @@ export type ExecuteCommandOptions = {
 	/** Host-only audited transport; never read from model parameters. */
 	directCommand?: DirectTerminalCommand
 	beforeLaunch?: () => Promise<void>
+	/** Cancels admission; a successfully launched resumable process belongs to the task. */
 	signal?: AbortSignal
 	/** Internal presentation owner used only by an approved prepared read. */
 	presentation?: DeferredCommandPresentation
@@ -1214,7 +1206,9 @@ export async function executeCommandInTerminal(
 			})
 		return [false, "Command was not started because the task was cancelled."]
 	}
-	const taskWasCancelled = () => task.abort || signal?.aborted || task.getTaskLifetimeCancellationSignal().aborted
+	let stepOwnsLaunch = true
+	const taskWasCancelled = () =>
+		task.abort || (stepOwnsLaunch && signal?.aborted) || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
 	if (tty === true && (isManagedWorker || isPlanMode)) {
 		rejectBeforeLaunch("policy_denied", "interactive-terminal")
@@ -1834,6 +1828,9 @@ export async function executeCommandInTerminal(
 		// Canonical adapters already bound ownership before launch. Retain the
 		// same binding for older adapters/fixtures that omit the creation hook.
 		bindCreatedProcess(process)
+		// A valid resumable process survives request steering. Prepared reads keep
+		// their separate disposal owner until the scheduler commits presentation.
+		stepOwnsLaunch = false
 		onExecutionState?.("yes")
 	} catch (error) {
 		releaseTerminalReservation()

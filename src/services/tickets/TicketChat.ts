@@ -26,15 +26,22 @@ function attachedMention(store: TicketStore, ticket: Ticket): TicketMentionResul
 	}
 }
 
-export async function searchTicketMentions(cwd: string, request: unknown): Promise<TicketSearchResponse | undefined> {
+export async function searchTicketMentions(
+	cwd: string,
+	request: unknown,
+	signal?: AbortSignal,
+): Promise<TicketSearchResponse | undefined> {
+	signal?.throwIfAborted()
 	const parsed = ticketSearchRequestSchema.safeParse(request)
 	if (!parsed.success) return undefined
 	const { requestId, query } = parsed.data
 	try {
-		const store = await TicketStore.forWorkspace(cwd)
-		const tickets = await store.search(query)
+		const store = await TicketStore.forWorkspace(cwd, undefined, signal)
+		const tickets = await store.search(query, signal)
+		signal?.throwIfAborted()
 		return { type: "ticketSearchResults", requestId, tickets }
 	} catch {
+		signal?.throwIfAborted()
 		return { type: "ticketSearchResults", requestId, tickets: [], error: true }
 	}
 }

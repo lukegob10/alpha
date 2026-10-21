@@ -16,6 +16,7 @@ import { DEFAULT_HEADERS } from "./constants"
 import { OpenAiHandler } from "./openai"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { getApiRequestTimeout } from "./utils/timeout-config"
+import { handleProviderError } from "./utils/error-handler"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
@@ -267,18 +268,8 @@ function isAuthenticationFailure(error: unknown): boolean {
 }
 
 function asVertexOpenAiError(error: unknown): Error {
-	if (!(error instanceof Error)) {
-		return new Error(`Vertex OpenAI-compatible completion error: ${String(error)}`)
-	}
-
-	const message = error.message.replace(/^(?:OpenAI completion error:\s*)+/, "")
-	const wrapped = new Error(`Vertex OpenAI-compatible completion error: ${message}`)
-	const errorRecord = error as Error & { status?: unknown; code?: unknown; errorDetails?: unknown }
-	const wrappedRecord = wrapped as Error & { status?: unknown; code?: unknown; errorDetails?: unknown }
-
-	wrappedRecord.status = errorRecord.status
-	wrappedRecord.code = errorRecord.code
-	wrappedRecord.errorDetails = errorRecord.errorDetails
-
-	return wrapped
+	return handleProviderError(error, "Vertex OpenAI-compatible", {
+		messageTransformer: (message) =>
+			`Vertex OpenAI-compatible completion error: ${message.replace(/^(?:OpenAI completion error:\s*)+/, "")}`,
+	})
 }

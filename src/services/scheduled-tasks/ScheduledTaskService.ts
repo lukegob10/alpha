@@ -1,7 +1,5 @@
 import * as crypto from "crypto"
-import { execFile } from "child_process"
 import * as vscode from "vscode"
-import { promisify } from "util"
 import * as path from "path"
 
 import {
@@ -37,12 +35,12 @@ import { buildSkillResult, resolveSkillContentForMode } from "../skills/skillInv
 import { ScheduledTaskStore } from "./ScheduledTaskStore"
 import { checkAutoApproval } from "../../core/auto-approval"
 import { getNextRunAt, isRecurringSchedule } from "./schedule"
+import { runScheduledCommand } from "./runScheduledCommand"
 
 const ACTIVE_RUN_STATUSES = new Set(["pending", "queued", "running", "waiting_for_approval"])
 const DEFAULT_TICK_MS = 60 * 1000
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_COMMAND_OUTPUT_CHARS = 12_000
-const execFileAsync = promisify(execFile)
 
 const defaultPermissions: ScheduledTaskPermissionSet = {
 	readFiles: true,
@@ -118,6 +116,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 	private timer: ReturnType<typeof setTimeout> | undefined
 	private disposed = false
 	private readonly commandControllers = new Set<AbortController>()
+	private readonly commandCompletions = new Map<AbortController, Promise<void>>()
 	private readonly activeAlphaTasks = new Map<
 		string,
 		{ alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>>; task: ScheduledTask; run: ScheduledTaskRun }
@@ -190,6 +189,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	dispose(): void {
+		if (this.disposed) return
 		this.disposed = true
 		if (this.timer) {
 			clearTimeout(this.timer)
@@ -202,7 +202,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.stopWatching?.()
 		this.stopWatching = undefined
 		for (const controller of this.commandControllers) controller.abort()
-		this.commandControllers.clear()
 		for (const { alphaTask, run } of this.activeAlphaTasks.values()) {
 			if (this.pendingRunCompletions.has(run.id)) continue
 			void alphaTask.abortTask().catch((error) => {
@@ -220,7 +219,11 @@ export class ScheduledTaskService implements vscode.Disposable {
 		const release = this.releaseOwnerLease
 		this.releaseOwnerLease = undefined
 		if (release) {
-			void release().catch((error) => {
+			// A second window must not recover a run while this owner is still
+			// stopping its process tree or attempting its terminal write.
+			const commands = [...this.commandCompletions.values()]
+			const releasing = commands.length ? Promise.allSettled(commands).then(() => release()) : release()
+			void releasing.catch((error) => {
 				this.outputChannel.appendLine(`[ScheduledTaskService] Could not release owner lease: ${String(error)}`)
 			})
 		}
@@ -685,14 +688,18 @@ export class ScheduledTaskService implements vscode.Disposable {
 		if (this.disposed) return
 		const controller = new AbortController()
 		this.commandControllers.add(controller)
+		let complete!: () => void
+		this.commandCompletions.set(
+			controller,
+			new Promise<void>((resolve) => {
+				complete = resolve
+			}),
+		)
 		try {
-			const result = await execFileAsync(execution.command, {
+			const result = await runScheduledCommand(execution.command, {
 				cwd: task.workspace || getWorkspacePath(),
 				signal: controller.signal,
-				timeout: execution.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-				maxBuffer: 2 * 1024 * 1024,
-				windowsHide: true,
-				shell: true,
+				timeoutMs: execution.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
 			})
 			const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"))
 			await this.finishRun(task, {
@@ -716,6 +723,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 			})
 		} finally {
 			this.commandControllers.delete(controller)
+			this.commandCompletions.delete(controller)
+			complete()
 		}
 	}
 

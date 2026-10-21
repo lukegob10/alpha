@@ -56,6 +56,7 @@ type TaskSlotReservation = {
 	rootTaskId: string
 	count: number
 	taskIds?: readonly string[]
+	admission?: true
 }
 
 const createSharedTaskSessions = (maxLiveTasks: number): SharedTaskSessions => ({
@@ -162,9 +163,16 @@ export class TaskSessionRegistry {
 	): { total: number; root: number } {
 		let total = 0
 		let root = 0
+		const admittedTaskIds = new Set(
+			[...this.shared.slotReservations]
+				.filter(([id, reservation]) => id !== excludedReservationId && reservation.admission)
+				.flatMap(([, reservation]) => reservation.taskIds ?? []),
+		)
 		for (const [id, reservation] of this.shared.slotReservations) {
 			if (id === excludedReservationId) continue
-			const unregistered = reservation.taskIds?.filter((taskId) => !this.sessions.has(taskId))
+			const unregistered = reservation.taskIds?.filter(
+				(taskId) => !this.sessions.has(taskId) && (reservation.admission || !admittedTaskIds.has(taskId)),
+			)
 			total += unregistered ? Math.min(reservation.count, unregistered.length) : reservation.count
 			if (reservation.rootTaskId === rootTaskId) {
 				root += unregistered
@@ -173,6 +181,38 @@ export class TaskSessionRegistry {
 			}
 		}
 		return { total, root }
+	}
+
+	/** Hold host capacity across asynchronous construction, reusing an owned prepared child slot. */
+	reserveTaskAdmission(taskId: string): () => void {
+		const reservationId = `task-admission:${taskId}`
+		if (this.sessions.has(taskId) || this.shared.slotReservations.has(reservationId)) {
+			throw new Error(`Task ${taskId} already has a registered or admitting runtime owner`)
+		}
+		const prepared = [...this.shared.slotReservations.values()].find((reservation) =>
+			reservation.taskIds?.includes(taskId),
+		)
+		if (prepared && prepared.owner !== this) {
+			throw new Error(`Task ${taskId} capacity reservation requires its current owner`)
+		}
+		if (!prepared && !this.canCreateTask()) {
+			throw new Error(
+				`Maximum live task limit reached (${this.maxLiveTasks}). Close a running task before starting another.`,
+			)
+		}
+		// Prepared reservations exclude this admitted identity while the claim is
+		// held. Releasing a cancelled group therefore cannot free an in-flight slot.
+		const reservation: TaskSlotReservation = {
+			owner: this,
+			rootTaskId: prepared?.rootTaskId ?? taskId,
+			count: 1,
+			taskIds: [taskId],
+			admission: true,
+		}
+		this.shared.slotReservations.set(reservationId, reservation)
+		return () => {
+			if (this.shared.slotReservations.get(reservationId) === reservation) this.releaseTaskSlots(reservationId)
+		}
 	}
 
 	/** Claim prepared-child capacity synchronously, before approval/context preparation can yield. */

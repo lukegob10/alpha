@@ -4,7 +4,14 @@ import { spawnSync } from "child_process"
 import * as path from "path"
 import * as os from "os"
 import Mocha from "mocha"
-import { TestRunError, describeTestRunFailure, TEST_RUN_FAILURE_CODES, testSuiteOutcome } from "../runFailure"
+import {
+	TestRunError,
+	describeTestRunFailure,
+	TEST_RUN_FAILURE_CODES,
+	testSuiteMochaOptions,
+	testSuiteOutcome,
+} from "../runFailure"
+import { readRunOptions } from "../runTest"
 
 test("closed failure guidance covers every code and never publishes arbitrary exception fields", () => {
 	for (const code of TEST_RUN_FAILURE_CODES) {
@@ -30,6 +37,7 @@ test("actual CLI reports malformed options and incomplete path groups without an
 	for (const args of [
 		["--PRIVATE_SENTINEL"],
 		["--provider", "scripted", "--artifacts-dir", path.join(os.tmpdir(), "PRIVATE_SENTINEL")],
+		["--provider", "scripted", "--require-all-tests", "--grep", "PRIVATE_SENTINEL"],
 	]) {
 		const child = spawnSync(process.execPath, [runner, ...args], {
 			encoding: "utf8",
@@ -42,6 +50,10 @@ test("actual CLI reports malformed options and incomplete path groups without an
 		assert.equal(result.status, "blocked")
 		assert.ok(result.guidance.length > 20)
 		if (args.includes("--artifacts-dir")) assert.equal(result.diagnostic, "profile-paths-required")
+		if (args.includes("--require-all-tests")) {
+			assert.equal(result.diagnostic, "unfiltered-suite-required")
+			assert.match(result.guidance, /Remove --grep and TEST_GREP/)
+		}
 	}
 })
 
@@ -103,4 +115,49 @@ test("required suites reject partial skips and incoherent success counts", () =>
 	])
 		assert.equal(testSuiteOutcome(0, stats).failure, "invalid-test-counts")
 	assert.equal(testSuiteOutcome(1, partial, { requireAllTests: true }).failure, "host-failed")
+})
+
+test("a passing real Mocha grep subset cannot satisfy a strict gate", async () => {
+	const focused = readRunOptions([], { TEST_GREP: "passing case" })
+	const mocha = new Mocha({ ...testSuiteMochaOptions(focused), reporter: class extends Mocha.reporters.Base {} })
+	mocha.suite.addTest(new Mocha.Test("passing case", () => {}))
+	mocha.suite.addTest(new Mocha.Test("omitted failing case", () => assert.fail("must execute")))
+	const focusedOutcome = await new Promise<ReturnType<typeof testSuiteOutcome>>((resolve) => {
+		const runner = mocha.run((failures) => resolve(testSuiteOutcome(failures, runner.stats, focused)))
+	})
+	assert.equal(focusedOutcome.failure, undefined)
+	assert.equal(focusedOutcome.counts.total, 1, "the real grep subset remains available for diagnostic runs")
+	await assert.rejects(async () => {
+		const options = readRunOptions(["--require-all-tests"], { TEST_GREP: "passing case" })
+		const mocha = new Mocha({ grep: options.testGrep, reporter: class extends Mocha.reporters.Base {} })
+		mocha.suite.addTest(new Mocha.Test("passing case", () => {}))
+		mocha.suite.addTest(new Mocha.Test("omitted failing case", () => assert.fail("must execute")))
+		const outcome = await new Promise<ReturnType<typeof testSuiteOutcome>>((resolve) => {
+			const runner = mocha.run((failures) => resolve(testSuiteOutcome(failures, runner.stats, options)))
+		})
+		if (outcome.failure) throw new TestRunError(outcome.failure, "Strict gate failed")
+	})
+})
+
+test("a real Mocha only test cannot hide an assertion in a strict suite", async () => {
+	for (const focus of ["test", "suite"] as const) {
+		const mocha = new Mocha({
+			...testSuiteMochaOptions({ requireAllTests: true }),
+			reporter: class extends Mocha.reporters.Base {},
+		})
+		const context: Record<string, unknown> = {}
+		await assert.rejects(async () => {
+			mocha.suite.emit("pre-require", context, "strict-only-fixture.cjs", mocha)
+			const declare = context.test as Mocha.TestFunction
+			if (focus === "test") declare.only("passing case", () => {})
+			else (context.suite as Mocha.SuiteFunction).only("focused suite", () => declare("passing case", () => {}))
+			declare("omitted failing case", () => assert.fail("must execute"))
+			const outcome = await new Promise<ReturnType<typeof testSuiteOutcome>>((resolve) => {
+				const runner = mocha.run((failures) =>
+					resolve(testSuiteOutcome(failures, runner.stats, { requireAllTests: true })),
+				)
+			})
+			if (outcome.failure) throw new TestRunError(outcome.failure, "Strict gate failed")
+		})
+	}
 })

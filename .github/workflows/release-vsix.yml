@@ -76,65 +76,6 @@ jobs:
             - name: Verify command auto-approval and outside-path review
               run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
 
-            - name: Package extension
-              run: pnpm vsix
-
-            - name: Collect release metadata
-              id: release
-              shell: pwsh
-              run: |
-                  $version = node -p "require('./src/package.json').version"
-                  $shortSha = "${{ github.sha }}".Substring(0, 7)
-                  $tag = "vsix-v$version-$shortSha"
-                  $vsix = Get-Item -LiteralPath "bin/alpha-$version.vsix" -ErrorAction Stop
-
-                  if (-not $vsix) {
-                    throw "No VSIX package found in bin."
-                  }
-
-                  "version=$version" >> $env:GITHUB_OUTPUT
-                  "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
-                  "tag=$tag" >> $env:GITHUB_OUTPUT
-                  "vsix_path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
-                  "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
-
-            - name: Verify VSIX contents
-              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}" --check-source
-
-            - name: Create GitHub release
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              shell: pwsh
-              run: |
-                  $tag = "${{ steps.release.outputs.tag }}"
-                  $version = "${{ steps.release.outputs.version }}"
-                  $shortSha = "${{ steps.release.outputs.short_sha }}"
-                  $vsix = "${{ steps.release.outputs.vsix_path }}"
-                  $releaseTitle = "Alpha VSIX v$version ($shortSha)"
-                  $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
-                  $versionHeading = [regex]::Escape("## $version")
-                  $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
-                  if (-not $entry.Success -or [string]::IsNullOrWhiteSpace($entry.Groups["body"].Value)) {
-                    throw "No changelog entry found for release version $version."
-                  }
-                  $highlights = $entry.Groups["body"].Value.Trim()
-                  $notes = @"
-                  $highlights
-
-                  Commit: ${{ github.sha }}
-
-                  Download the VSIX asset below. Install it from a terminal with: code --install-extension ${{ steps.release.outputs.vsix_name }}
-                  "@
-
-                  gh release view "$tag" --json tagName 2>$null
-                  if ($LASTEXITCODE -eq 0) {
-                    throw "Release $tag already exists; refusing to overwrite its published artifact."
-                  }
-                  gh release create "$tag" "$vsix" --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
-                  if ($LASTEXITCODE -ne 0) {
-                    throw "Release creation failed."
-                  }
-
             - name: Retain release validation evidence
               if: always()
               uses: actions/upload-artifact@v6
@@ -153,3 +94,119 @@ jobs:
                       ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
                   retention-days: 14
                   if-no-files-found: error
+
+    package-vsix:
+        needs: release-vsix
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            max-parallel: 3
+            matrix:
+                include:
+                    - os: windows-latest
+                      target: win32-x64
+                      native_index: true
+                    - os: windows-11-arm
+                      target: win32-arm64
+                      native_index: true
+                    - os: macos-14
+                      target: darwin-arm64
+                      native_index: true
+                    # LanceDB 0.27.2 has no Intel macOS native package; core features remain supported.
+                    - os: macos-15-intel
+                      target: darwin-x64
+                      native_index: false
+                    - os: ubuntu-latest
+                      target: linux-x64
+                      native_index: true
+                    - os: ubuntu-24.04-arm
+                      target: linux-arm64
+                      native_index: true
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v5
+
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+
+            - name: Package the native host target
+              run: pnpm vsix
+
+            - name: Verify platform inventory and optional backend isolation
+              run: pnpm --dir src test __tests__/lancedb-native.spec.mjs services/code-index/vector-store/__tests__/lancedb-loading.spec.ts
+
+            - name: Verify local native indexing
+              if: matrix.native_index
+              run: pnpm --dir src test services/code-index/vector-store/__tests__/lancedb-native.spec.ts
+
+            - name: Locate and verify target artifact
+              id: artifact
+              shell: pwsh
+              run: |
+                  $version = node -p "require('./src/package.json').version"
+                  $vsix = Get-Item -LiteralPath "bin/alpha-$version-${{ matrix.target }}.vsix" -ErrorAction Stop
+                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --target "${{ matrix.target }}"
+                  if ($LASTEXITCODE -ne 0) { throw "VSIX target verification failed." }
+                  "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
+
+            - name: Retain verified target artifact
+              uses: actions/upload-artifact@v6
+              with:
+                  name: alpha-vsix-${{ matrix.target }}
+                  path: ${{ steps.artifact.outputs.path }}
+                  if-no-files-found: error
+
+    publish-release:
+        needs: package-vsix
+        runs-on: windows-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout release metadata
+              uses: actions/checkout@v5
+
+            - name: Download verified target artifacts
+              uses: actions/download-artifact@v7
+              with:
+                  pattern: alpha-vsix-*
+                  path: bin
+                  merge-multiple: true
+
+            - name: Create GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: pwsh
+              run: |
+                  $version = (Get-Content -LiteralPath src/package.json -Raw | ConvertFrom-Json).version
+                  $shortSha = "${{ github.sha }}".Substring(0, 7)
+                  $tag = "vsix-v$version-$shortSha"
+                  $targets = @("win32-x64", "win32-arm64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64")
+                  $vsixPaths = @($targets | ForEach-Object {
+                    (Get-Item -LiteralPath "bin/alpha-$version-$_.vsix" -ErrorAction Stop).FullName
+                  })
+                  if (@(Get-ChildItem -LiteralPath bin -Filter *.vsix).Count -ne $targets.Count) {
+                    throw "Release artifacts differ from the supported platform matrix."
+                  }
+                  $releaseTitle = "Alpha VSIX v$version ($shortSha)"
+                  $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
+                  $versionHeading = [regex]::Escape("## $version")
+                  $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
+                  if (-not $entry.Success -or [string]::IsNullOrWhiteSpace($entry.Groups["body"].Value)) {
+                    throw "No changelog entry found for release version $version."
+                  }
+                  $highlights = $entry.Groups["body"].Value.Trim()
+                  $notes = @"
+                  $highlights
+
+                  Commit: ${{ github.sha }}
+
+                  Download the VSIX for your operating system and architecture. Install it with: code --install-extension <downloaded-file.vsix>
+                  Intel macOS supports core features; select Qdrant for code indexing because this LanceDB version has no Intel macOS binding.
+                  "@
+
+                  gh release view "$tag" --json tagName 2>$null
+                  if ($LASTEXITCODE -eq 0) {
+                    throw "Release $tag already exists; refusing to overwrite its published artifacts."
+                  }
+                  gh release create "$tag" @vsixPaths --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  if ($LASTEXITCODE -ne 0) { throw "Release creation failed." }

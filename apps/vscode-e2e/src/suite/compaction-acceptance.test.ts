@@ -3,7 +3,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
 
-import { AlphaCodeEventName, type AlphaCodeSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, getVscodeLlmContextWindow, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
@@ -322,10 +322,71 @@ class RetainedFollowupScriptedAI {
 	}
 }
 
+class SmallWindowExhaustionScriptedAI {
+	readonly id = "small-copilot-window-exhaustion-scripted"
+	readonly requests: Array<{ summary: boolean; tokens: number; rejected: boolean }> = []
+	private answers = 0
+
+	getModel() {
+		return {
+			id: this.id,
+			info: {
+				contextWindow: getVscodeLlmContextWindow(
+					{ vendor: "copilot", family: "claude-sonnet-4.6", maxInputTokens: 936_000 },
+					200_000,
+				),
+				contextWindowIncludesOutput: false,
+				maxTokens: 128_000,
+				supportsPromptCache: false,
+			},
+		}
+	}
+
+	async countTokens(content: unknown[]): Promise<number> {
+		return Math.ceil(JSON.stringify(content).length / 4)
+	}
+
+	async *createMessage(
+		systemPrompt: string,
+		messages: unknown[],
+		metadata?: { attemptId?: string; tools?: unknown[] },
+	) {
+		if (metadata?.attemptId === "title") {
+			yield { type: "text" as const, text: "Check small-window overflow" }
+			return
+		}
+		const summary = systemPrompt.includes("tasked with summarizing conversations")
+		const tokens = Math.ceil(
+			(systemPrompt.length + JSON.stringify(messages).length + JSON.stringify(metadata?.tools ?? []).length) / 4,
+		)
+		const rejected = tokens > this.getModel().info.contextWindow
+		this.requests.push({ summary, tokens, rejected })
+		if (rejected)
+			throw new Error("Request exceeds the maximum context length of 200000 tokens (context_length_exceeded)")
+		let text = "The fixture answer is 42. Continue with the most recent instruction."
+		if (!summary) {
+			const answerIndex = this.answers++
+			text =
+				answerIndex === 1 || answerIndex === 2
+					? `SMALL_WINDOW_ARCHIVE ${"data".repeat(110_000)}`
+					: "The fixture answer is 42; the panel can accept another prompt."
+		}
+		yield { type: "text" as const, text }
+		yield { type: "usage" as const, inputTokens: tokens, outputTokens: Math.ceil(text.length / 4), totalCost: 0 }
+	}
+
+	async completePrompt(): Promise<string> {
+		return ""
+	}
+}
+
 type CompactionHost = {
 	getLiveTask(taskId: string):
 		| {
 				instanceId: string
+				isStreaming?: boolean
+				isWaitingForFirstChunk?: boolean
+				isTaskLoopActive?: boolean
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				clineMessages: Array<{
@@ -349,6 +410,154 @@ type CompactionHost = {
 
 suite("Alpha native compaction acceptance", function () {
 	setDefaultSuiteTimeout(this)
+
+	for (const automatic of [true, false]) {
+		test(`settles a full 200k Copilot window and accepts another prompt (automatic summary=${automatic})`, async () => {
+			assert.equal(vscode.version, "1.138.0")
+			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+			const api = globalThis.api
+			const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
+			assert.ok(provider)
+			const original = api.getConfiguration()
+			const model = new SmallWindowExhaustionScriptedAI()
+			const completions: string[] = []
+			const onCompleted = (taskId: string) => completions.push(taskId)
+			api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+			try {
+				const taskId = await api.startNewTask({
+					configuration: {
+						...original,
+						apiProvider: "fake-ai",
+						fakeAi: model,
+						mode: "code",
+						approvalMode: "auto",
+						requestDelaySeconds: 0,
+						writeDelayMs: 0,
+						enableCheckpoints: false,
+						autoCondenseContext: automatic,
+						autoCondenseContextPercent: 100,
+						autoCondenseContextScope: "full-context",
+						postTurnCondenseContextPercent: 0,
+					},
+					text: "Retain fixture answer=42 while filling the small context window.",
+				})
+				const instanceId = provider.getLiveTask(taskId)?.instanceId
+				for (let turn = 1; turn <= 5; turn++) {
+					if (turn > 1) await api.sendMessage(`Continue small-window test turn ${turn}; answer=42.`)
+					await waitFor(
+						() => {
+							const task = provider.getLiveTask(taskId)
+							if (task?.taskAsk?.ask === "completion_result") task.approveAsk()
+							return completions.filter((id) => id === taskId).length === turn
+						},
+						{ timeout: 30_000, description: `small-window turn ${turn} to settle` },
+					)
+					const state = await provider.getStateToPostToWebview()
+					assert.equal(state.currentTaskId, taskId)
+					assert.equal(state.agentLifecycleSnapshots?.[taskId]?.status, "completed")
+					const task = provider.getLiveTask(taskId)!
+					assert.equal(task.instanceId, instanceId)
+					assert.equal(task.isStreaming, false)
+					assert.equal(task.isWaitingForFirstChunk, false)
+					assert.equal(task.isTaskLoopActive, false)
+				}
+				const summaries = model.requests.filter(({ summary }) => summary)
+				assert.equal(summaries.length, automatic ? 1 : 0)
+				if (automatic) assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
+				const task = provider.getLiveTask(taskId)!
+				assert.ok(task.clineMessages.some(({ say }) => say === "sliding_window_truncation"))
+				assert.ok(!task.clineMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"))
+				const persisted = (await provider.getTaskWithId(taskId)).apiConversationHistory
+				assert.equal(
+					persisted.filter(
+						(message) =>
+							message.role === "assistant" &&
+							JSON.stringify(message.content).includes("SMALL_WINDOW_ARCHIVE"),
+					).length,
+					2,
+				)
+				assert.ok(
+					persisted.some((message) =>
+						JSON.stringify(message.content).includes("panel can accept another prompt"),
+					),
+				)
+			} finally {
+				api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+				await api.clearCurrentTask().catch(() => undefined)
+				await api.setConfiguration(original)
+			}
+		})
+	}
+
+	test("makes irreducible 200k overflow resumable and can start a healthy task", async () => {
+		assert.equal(vscode.version, "1.138.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const model = new SmallWindowExhaustionScriptedAI()
+		const completions: string[] = []
+		const onCompleted = (taskId: string) => completions.push(taskId)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: model,
+				mode: "code",
+				approvalMode: "auto",
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 100,
+				postTurnCondenseContextPercent: 0,
+			}
+			const oversized = `IRREDUCIBLE_SMALL_WINDOW_INPUT ${"data".repeat(220_000)}`
+			const failedId = await api.startNewTask({ configuration, text: oversized })
+			await waitFor(() => provider.getLiveTask(failedId)?.taskAsk?.ask === "resume_task", {
+				timeout: 30_000,
+				description: "irreducible overflow to reach visible recovery instead of hanging",
+			})
+			const failed = provider.getLiveTask(failedId)!
+			assert.equal(failed.isStreaming, false)
+			assert.equal(failed.isWaitingForFirstChunk, false)
+			const requestRow = failed.clineMessages.find(({ say }) => say === "api_req_started")
+			assert.ok(requestRow?.text, "The rejected request must retain its visible error row")
+			const requestError = JSON.parse(requestRow.text) as {
+				cancelReason?: string
+				streamingFailedMessage?: string
+			}
+			assert.equal(requestError.cancelReason, "streaming_failed")
+			assert.ok(requestError.streamingFailedMessage?.includes("context_length_exceeded"))
+			assert.equal(model.requests.length, 2, "Only the original input and one rejected summary may be requested")
+			assert.ok(model.requests.every(({ rejected }) => rejected))
+			assert.equal(completions.length, 0, "Exhaustion must not report successful completion")
+			const persisted = (await provider.getTaskWithId(failedId)).apiConversationHistory
+			assert.ok(persisted.some((message) => JSON.stringify(message.content).includes(oversized)))
+			await provider.getStateToPostToWebview()
+			await api.clearCurrentTask()
+			const healthyId = await api.startNewTask({
+				configuration,
+				text: "Complete a short healthy task after overflow.",
+			})
+			await waitFor(() => completions.includes(healthyId), {
+				timeout: 30_000,
+				description: "a fresh task to complete after irreducible context exhaustion",
+			})
+			assert.equal(model.requests.length, 3)
+			assert.equal(model.requests[2]!.rejected, false)
+			assert.equal(
+				(await provider.getStateToPostToWebview()).agentLifecycleSnapshots?.[healthyId]?.status,
+				"completed",
+			)
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await api.clearCurrentTask().catch(() => undefined)
+			await api.setConfiguration(original)
+		}
+	})
 
 	test("recovers a long completed-thread follow-up in ask mode and accepts the next prompt", async () => {
 		assert.equal(vscode.version, "1.138.0")

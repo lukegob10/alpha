@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.6",
+		version: "3.2.7",
 	},
 }))
 
@@ -37,11 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.6" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.7" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.6")).toBeInTheDocument()
-		expect(screen.getByText("Alpha v3.2.6 restores support for VS Code 1.125 and newer.")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.7")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.7 improves task reliability, responsiveness, and Codex CLI alignment."),
+		).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
@@ -50,31 +52,31 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
+				"Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Retain saved provider profiles and report unavailable selections without silently switching providers.",
+				"Run bounded command-output searches, isolate custom tools, and preserve provider responses and usage.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Deliver sub-agent results and reviews while preserving workspace and approval limits."),
+			screen.getByText("Validate worker changes and deliver results after Apply and verification have settled."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Browse chats and file changes with less repeated work, and cancel prompt previews safely.",
-			),
+			screen.getByText("Track files with less repeated work and protect concurrent skill edits."),
 		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
-		expect(screen.getByText("Alpha v3.2.6 restores support for VS Code 1.125 and newer.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.7 improves task reliability, responsiveness, and Codex CLI alignment."),
+		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
+				"Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
 			),
 		).toBeInTheDocument()
 	})

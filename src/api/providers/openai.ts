@@ -204,6 +204,11 @@ interface OpenAiResponsesToolCallState {
 	functionArguments: string
 }
 
+interface OpenAiResponsesMessageTextState {
+	parts: Map<number, { type: "output_text" | "refusal"; text: string }>
+	lastContentIndex: number
+}
+
 export interface OpenAiResponsesReasoningItem {
 	id: string
 	encrypted_content: string
@@ -745,7 +750,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
 		const messageMetadata = new Map<number, AssistantMessageMetadata>()
 		const handledOutputIdentities = new Map<number, string>()
-		const textDeltaParts = new Set<string>()
+		const messageText = new Map<number, OpenAiResponsesMessageTextState>()
 		let reasoningSummary = ""
 		let receivedTerminalEvent = false
 		let incompleteOutputItemObserved = false
@@ -811,30 +816,21 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					}
 					break
 				}
-				case "response.output_text.delta": {
-					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield {
-						type: "text",
-						text: event.delta,
-						...this.captureOpenAiResponsesMessageMetadata(
-							{ id: event.item_id },
-							event.output_index,
-							messageMetadata,
-						),
-					}
-					break
-				}
+				case "response.output_text.delta":
 				case "response.refusal.delta": {
-					textDeltaParts.add(`${event.output_index}:${event.content_index}`)
-					yield {
-						type: "text",
-						text: event.delta,
-						...this.captureOpenAiResponsesMessageMetadata(
-							{ id: event.item_id },
-							event.output_index,
-							messageMetadata,
-						),
-					}
+					const metadata = this.captureOpenAiResponsesMessageMetadata(
+						{ id: event.item_id },
+						event.output_index,
+						messageMetadata,
+					)
+					const text = this.reconcileOpenAiResponsesTextPart(
+						event.output_index,
+						event.content_index,
+						event.type === "response.output_text.delta" ? "output_text" : "refusal",
+						event.delta,
+						messageText,
+					)
+					if (text !== undefined) yield { type: "text", text, ...metadata }
 					break
 				}
 				case "response.reasoning_summary_text.delta": {
@@ -856,24 +852,14 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					const handled = handledOutputIdentities.get(event.output_index)
 					if (handled !== undefined) {
 						if (handled !== identity) throw new Error("OpenAI Responses output item changed identity")
-						if (event.item.type === "message") {
-							yield {
-								type: "message_metadata",
-								...this.captureOpenAiResponsesMessageMetadata(
-									event.item,
-									event.output_index,
-									messageMetadata,
-								),
-							}
-						}
-						break
+						if (event.item.type !== "message") break
 					}
 					handledOutputIdentities.set(event.output_index, identity)
 					yield* this.emitOpenAiResponsesOutputItem(
 						event.item,
 						event.output_index,
 						toolCalls,
-						textDeltaParts,
+						messageText,
 						messageMetadata,
 					)
 					break
@@ -885,7 +871,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						event.response,
 						toolCalls,
 						handledOutputIdentities,
-						textDeltaParts,
+						messageText,
 						messageMetadata,
 						reasoningSummary,
 						event.type === "response.incomplete" ? "incomplete" : "completed",
@@ -914,15 +900,15 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
-		const textDeltaParts = new Set<string>()
-		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), textDeltaParts, new Map(), "")
+		const messageText = new Map<number, OpenAiResponsesMessageTextState>()
+		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), messageText, new Map(), "")
 	}
 
 	private async *finishOpenAiResponsesResult(
 		response: Partial<OpenAI.Responses.Response> & { end_turn?: boolean },
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		handledOutputIdentities: Map<number, string>,
-		textDeltaParts: Set<string>,
+		messageText: Map<number, OpenAiResponsesMessageTextState>,
 		messageMetadata: Map<number, AssistantMessageMetadata>,
 		reasoningSummary: string,
 		terminalEvent?: "completed" | "incomplete",
@@ -992,6 +978,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					throw new Error("OpenAI Responses completed item did not match its final output")
 				}
 			}
+			for (const index of messageText.keys()) {
+				if (!output[index] && interrupted) continue
+				if (output[index]?.type !== "message") {
+					throw new Error("OpenAI Responses streamed message did not match its final output")
+				}
+			}
 		}
 		for (const [index, item] of output.entries()) {
 			// An interrupted terminal is not a completion receipt for an unfinished tool.
@@ -1003,14 +995,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			) {
 				continue
 			}
-			if (handledOutputIdentities.has(index)) {
-				if (item.type === "message") {
-					yield {
-						type: "message_metadata",
-						...this.captureOpenAiResponsesMessageMetadata(item, index, messageMetadata),
-					}
-					continue
-				}
+			if (handledOutputIdentities.has(index) && item.type !== "message") {
 				if (item.type !== "reasoning" || !item.encrypted_content) continue
 				const streamed = this.responsesReasoningItems.get(index)
 				if (
@@ -1021,7 +1006,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					continue
 				}
 			}
-			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, textDeltaParts, messageMetadata)
+			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, messageText, messageMetadata)
 		}
 		if (toolCalls.size > 0 && !interrupted) {
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
@@ -1057,7 +1042,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		item: OpenAI.Responses.ResponseOutputItem,
 		outputIndex: number,
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
-		textDeltaParts: Set<string>,
+		messageText: Map<number, OpenAiResponsesMessageTextState>,
 		messageMetadata: Map<number, AssistantMessageMetadata>,
 	): ApiStream {
 		const active = toolCalls.get(outputIndex)
@@ -1141,23 +1126,62 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		if (item.type !== "message") return
 		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata)
+		const previous = messageText.get(outputIndex)
+		for (const [contentIndex, part] of previous?.parts ?? []) {
+			if (item.content[contentIndex]?.type !== part.type) {
+				throw new Error("OpenAI Responses streamed text part did not match its final content")
+			}
+		}
 		// Some providers attach phase only when the item or response completes.
 		// Update prior deltas without emitting the same visible text a second time.
 		yield { type: "message_metadata", ...metadata }
-		if (item.content.length === 0 && !textDeltaParts.has(`${outputIndex}:empty`)) {
-			textDeltaParts.add(`${outputIndex}:empty`)
+		if (item.content.length === 0 && !previous) {
+			messageText.set(outputIndex, { parts: new Map(), lastContentIndex: -1 })
 			yield { type: "text", text: "", ...metadata }
 		}
 		for (const [contentIndex, content] of item.content.entries()) {
-			const key = `${outputIndex}:${contentIndex}`
-			if (content.type === "output_text" && !textDeltaParts.has(key)) {
-				textDeltaParts.add(key)
-				yield { type: "text", text: content.text, ...metadata }
-			} else if (content.type === "refusal" && !textDeltaParts.has(key)) {
-				textDeltaParts.add(key)
-				yield { type: "text", text: content.refusal, ...metadata }
-			}
+			const text = this.reconcileOpenAiResponsesTextPart(
+				outputIndex,
+				contentIndex,
+				content.type,
+				content.type === "output_text" ? content.text : content.refusal,
+				messageText,
+				true,
+			)
+			if (text !== undefined) yield { type: "text", text, ...metadata }
 		}
+	}
+
+	private reconcileOpenAiResponsesTextPart(
+		outputIndex: number,
+		contentIndex: number,
+		type: "output_text" | "refusal",
+		text: string,
+		messages: Map<number, OpenAiResponsesMessageTextState>,
+		complete = false,
+	): string | undefined {
+		if (!Number.isSafeInteger(contentIndex) || contentIndex < 0) {
+			throw new Error("OpenAI Responses text part has an invalid index")
+		}
+		if (typeof text !== "string") throw new Error("OpenAI Responses text part has invalid text")
+		const message: OpenAiResponsesMessageTextState = messages.get(outputIndex) ?? {
+			parts: new Map(),
+			lastContentIndex: -1,
+		}
+		const previous = message.parts.get(contentIndex)
+		if (previous && (previous.type !== type || (complete && !text.startsWith(previous.text)))) {
+			throw new Error("OpenAI Responses streamed text part did not match its final content")
+		}
+		const remainder = complete ? text.slice(previous?.text.length ?? 0) : text
+		// Text chunks append to one source message. An earlier part cannot be
+		// extended after a later part without corrupting its canonical order.
+		if (remainder && contentIndex < message.lastContentIndex) {
+			throw new Error("OpenAI Responses text part changed its emitted content order")
+		}
+		messages.set(outputIndex, message)
+		message.parts.set(contentIndex, { type, text: complete ? text : (previous?.text ?? "") + text })
+		if (remainder) message.lastContentIndex = contentIndex
+		return remainder || previous === undefined ? remainder : undefined
 	}
 
 	private captureOpenAiResponsesMessageMetadata(
@@ -1221,6 +1245,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			type: "usage",
 			inputTokens: providerTokenCount(source?.input_tokens) ?? 0,
 			outputTokens: providerTokenCount(source?.output_tokens) ?? 0,
+			cacheWriteTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cache_write_tokens),
 			cacheReadTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens),
 			reasoningTokens: providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens),
 		}

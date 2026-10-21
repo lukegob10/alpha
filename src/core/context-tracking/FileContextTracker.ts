@@ -33,69 +33,59 @@ export class FileContextTracker {
 	private fileWatchers = new Map<string, vscode.FileSystemWatcher>()
 	private recentlyModifiedFiles = new Map<string, number>()
 	private recentlyModifiedFilesVersion = 0
-	private recentlyEditedByAlpha = new Set<string>()
 	private checkpointPossibleFiles = new Set<string>()
 	private metadataUpdateQueue: Promise<void> = Promise.resolve()
+	private pendingMetadataUpdate?: {
+		taskId: string
+		filePath: string
+		source: RecordSource
+		promise: Promise<void>
+	}
+	private disposed = false
 
-	constructor(provider: AlphaProvider, taskId: string) {
+	constructor(
+		provider: AlphaProvider,
+		taskId: string,
+		private readonly cwd: string,
+	) {
 		this.providerRef = new WeakRef(provider)
 		this.taskId = taskId
-	}
-
-	// Gets the current working directory or returns undefined if it cannot be determined
-	private getCwd(): string | undefined {
-		const cwd = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath).at(0)
-		if (!cwd) {
-			console.info("No workspace folder available - cannot determine current working directory")
-		}
-		return cwd
 	}
 
 	// File watchers are set up for each file that is tracked in the task metadata.
 	async setupFileWatcher(filePath: string) {
 		// Only setup watcher if it doesn't already exist for this file
-		if (this.fileWatchers.has(filePath)) {
-			return
-		}
-
-		const cwd = this.getCwd()
-		if (!cwd) {
+		if (this.disposed || this.fileWatchers.has(filePath)) {
 			return
 		}
 
 		// Create a file system watcher for this specific file
-		const fileUri = vscode.Uri.file(path.resolve(cwd, filePath))
+		const fileUri = vscode.Uri.file(path.resolve(this.cwd, filePath))
 		const watcher = vscode.workspace.createFileSystemWatcher(
 			new vscode.RelativePattern(path.dirname(fileUri.fsPath), path.basename(fileUri.fsPath)),
 		)
+		this.fileWatchers.set(filePath, watcher)
 
 		// Track file changes
 		watcher.onDidChange(() => {
-			if (this.recentlyEditedByAlpha.has(filePath)) {
-				this.recentlyEditedByAlpha.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
-			} else {
-				this.markRecentlyModifiedFile(filePath) // This was a user edit, we will inform Alpha
-				this.trackFileContext(filePath, "user_edited") // Update the task metadata with file tracking
-			}
-		})
+			if (this.disposed || this.fileWatchers.get(filePath) !== watcher) return
 
-		// Store the watcher so we can dispose it later
-		this.fileWatchers.set(filePath, watcher)
+			// A watcher event has no writer identity. Conservatively retain it rather than
+			// letting an unmatched Alpha-write marker acknowledge an external change.
+			void this.trackFileContext(filePath, "user_edited")
+		})
 	}
 
 	// Tracks a file operation in metadata and sets up a watcher for the file
 	// This is the main entry point for FileContextTracker and is called when a file is passed to Alpha via a tool, mention, or edit.
 	async trackFileContext(filePath: string, operation: RecordSource) {
 		try {
-			const cwd = this.getCwd()
-			if (!cwd) {
-				return
-			}
+			if (this.disposed) return
 
 			await this.addFileToFileContextTracker(this.taskId, filePath, operation)
 
 			// Set up file watcher for this file
-			await this.setupFileWatcher(filePath)
+			if (!this.disposed) await this.setupFileWatcher(filePath)
 		} catch (error) {
 			console.error("Failed to track file operation:", error)
 		}
@@ -148,46 +138,73 @@ export class FileContextTracker {
 	// This handles the business logic of determining if the file is new, stale, or active.
 	// It also updates the metadata with the latest read/edit dates.
 	async addFileToFileContextTracker(taskId: string, filePath: string, source: RecordSource) {
-		const update = this.metadataUpdateQueue.then(() => this.updateFileContextMetadata(taskId, filePath, source))
+		if (this.disposed) return
+		// Publish each observation before queued storage work. A receipt must not be
+		// rearmed later merely because persistence for an already-observed event settles.
+		if (source === "user_edited") this.markRecentlyModifiedFile(filePath)
+
+		const pending = this.pendingMetadataUpdate
+		if (pending?.taskId === taskId && pending.filePath === filePath && pending.source === source) {
+			return pending.promise
+		}
+
+		// Only adjacent identical operations can share work: crossing a different
+		// source would reorder read/edit authority. An in-flight save cannot absorb
+		// a later observation, so remove it from admission before its first await.
+		const update: Promise<void> = this.metadataUpdateQueue.then(() => {
+			if (this.pendingMetadataUpdate?.promise === update) this.pendingMetadataUpdate = undefined
+			return this.updateFileContextMetadata(taskId, filePath, source)
+		})
+		this.pendingMetadataUpdate = { taskId, filePath, source, promise: update }
 		this.metadataUpdateQueue = update.catch(() => {})
 		await update
 	}
 
 	private async updateFileContextMetadata(taskId: string, filePath: string, source: RecordSource) {
 		try {
+			if (this.disposed) return
 			const metadata = await this.getTaskMetadata(taskId)
+			if (this.disposed) return
 			const now = Date.now()
 
-			// Mark existing entries for this file as stale
-			metadata.files_in_context.forEach((entry) => {
-				if (entry.path === filePath && entry.record_state === "active") {
-					entry.record_state = "stale"
+			const otherEntries: FileMetadataEntry[] = []
+			const entriesBySource = new Map<string, FileMetadataEntry>()
+			let latestRead: number | null = null
+			let latestEdit: number | null = null
+			let latestUserEdit: number | null = null
+			for (const entry of metadata.files_in_context) {
+				if (entry.path !== filePath) {
+					otherEntries.push(entry)
+					continue
 				}
-			})
 
-			// Helper to get the latest date for a specific field and file
-			const getLatestDateForField = (path: string, field: keyof FileMetadataEntry): number | null => {
-				const relevantEntries = metadata.files_in_context
-					.filter((entry) => entry.path === path && entry[field])
-					.sort((a, b) => (b[field] as number) - (a[field] as number))
-
-				return relevantEntries.length > 0 ? (relevantEntries[0][field] as number) : null
+				latestRead = latestTimestamp(latestRead, entry.roo_read_date)
+				latestEdit = latestTimestamp(latestEdit, entry.roo_edit_date)
+				latestUserEdit = latestTimestamp(latestUserEdit, entry.user_edit_date)
+				const key = metadataSourceKey(entry)
+				const previous = entriesBySource.get(key)
+				entriesBySource.set(key, {
+					...entry,
+					record_state: "stale",
+					roo_read_date: latestTimestamp(previous?.roo_read_date, entry.roo_read_date),
+					roo_edit_date: latestTimestamp(previous?.roo_edit_date, entry.roo_edit_date),
+					user_edit_date: latestTimestamp(previous?.user_edit_date, entry.user_edit_date),
+				})
 			}
 
-			let newEntry: FileMetadataEntry = {
+			const newEntry: FileMetadataEntry = {
 				path: filePath,
 				record_state: "active",
 				record_source: source,
-				roo_read_date: getLatestDateForField(filePath, "roo_read_date"),
-				roo_edit_date: getLatestDateForField(filePath, "roo_edit_date"),
-				user_edit_date: getLatestDateForField(filePath, "user_edit_date"),
+				roo_read_date: latestRead,
+				roo_edit_date: latestEdit,
+				user_edit_date: latestUserEdit,
 			}
 
 			switch (source) {
 				// user_edited: The user has edited the file
 				case "user_edited":
 					newEntry.user_edit_date = now
-					this.markRecentlyModifiedFile(filePath)
 					break
 
 				// roo_edited: Alpha has edited the file
@@ -195,7 +212,6 @@ export class FileContextTracker {
 					newEntry.roo_read_date = now
 					newEntry.roo_edit_date = now
 					this.checkpointPossibleFiles.add(filePath)
-					this.markFileAsEditedByAlpha(filePath)
 					break
 
 				// read_tool/file_mentioned: Alpha has read the file via a tool or file mention
@@ -205,7 +221,20 @@ export class FileContextTracker {
 					break
 			}
 
-			metadata.files_in_context.push(newEntry)
+			// Keep the existing wire shape while retaining the newest evidence for each
+			// source. Undated legacy reads have a separate bucket because the reader
+			// conservatively includes them for every sinceTimestamp. This bounds a
+			// tracked path to four source records plus two undated read records.
+			const key = metadataSourceKey(newEntry)
+			const previous = entriesBySource.get(key)
+			entriesBySource.set(key, {
+				...previous,
+				...newEntry,
+				roo_read_date: latestTimestamp(previous?.roo_read_date, newEntry.roo_read_date),
+				roo_edit_date: latestTimestamp(previous?.roo_edit_date, newEntry.roo_edit_date),
+				user_edit_date: latestTimestamp(previous?.user_edit_date, newEntry.user_edit_date),
+			})
+			metadata.files_in_context = [...otherEntries, ...entriesBySource.values()]
 			await this.saveTaskMetadata(taskId, metadata)
 		} catch (error) {
 			console.error("Failed to add file to metadata:", error)
@@ -325,18 +354,27 @@ export class FileContextTracker {
 		return files
 	}
 
-	// Marks a file as edited by Alpha to prevent false positives in file watchers
-	markFileAsEditedByAlpha(filePath: string): void {
-		this.recentlyEditedByAlpha.add(filePath)
-	}
-
 	// Disposes all file watchers
 	dispose(): void {
+		if (this.disposed) return
+		this.disposed = true
+		this.pendingMetadataUpdate = undefined
 		for (const watcher of this.fileWatchers.values()) {
 			watcher.dispose()
 		}
 		this.fileWatchers.clear()
 	}
+}
+
+function latestTimestamp(first: number | null | undefined, second: number | null | undefined): number | null {
+	if (first == null) return second ?? null
+	if (second == null) return first
+	return Math.max(first, second)
+}
+
+function metadataSourceKey(entry: FileMetadataEntry): string {
+	const isRead = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
+	return isRead && !entry.roo_read_date ? `${entry.record_source}:undated` : entry.record_source
 }
 
 function normalizeCaptureLimit(limit: number): number {

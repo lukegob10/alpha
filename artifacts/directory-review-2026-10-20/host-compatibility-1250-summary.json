@@ -1,0 +1,73 @@
+{
+	"expectedVersion": "1.125.0",
+	"expectedSuiteCount": 4,
+	"suiteCount": 4,
+	"totalPassed": 18,
+	"allPassed": false,
+	"suites": [
+		{
+			"file": "extension.test.js",
+			"actualVSCodeVersion": "1.125.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 5,
+				"passed": 5,
+				"pending": 0,
+				"executed": 5,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "modes.test.js",
+			"actualVSCodeVersion": "1.125.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 2,
+				"passed": 2,
+				"pending": 0,
+				"executed": 2,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "storage-recovery.test.js",
+			"actualVSCodeVersion": "1.125.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 4,
+				"passed": 4,
+				"pending": 0,
+				"executed": 4,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "vscode-lm-contract.test.js",
+			"actualVSCodeVersion": "1.125.0",
+			"providerMode": "vscode-lm-fixture",
+			"status": "failed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 8,
+				"passed": 7,
+				"pending": 0,
+				"executed": 8,
+				"failed": 1
+			},
+			"hostExitObserved": true,
+			"exitCode": 1
+		}
+	]
+}

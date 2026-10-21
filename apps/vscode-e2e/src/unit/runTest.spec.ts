@@ -33,6 +33,26 @@ test("strict suite selection is an explicit runner flag", () => {
 	assert.equal(readRunOptions(["--provider", "scripted"], {}).requireAllTests, false)
 })
 
+test("strict runs reject explicit and inherited grep while focused runs retain it", async () => {
+	for (const [args, env] of [
+		[["--grep", "passing case"], {}],
+		[[], { TEST_GREP: "passing case" }],
+	] as const) {
+		assert.throws(() => readRunOptions(["--require-all-tests", ...args], env), /grep/i)
+	}
+	assert.equal(readRunOptions(["--grep", "passing case"], {}).testGrep, "passing case")
+	assert.equal(readRunOptions([], { TEST_GREP: "passing case" }).testGrep, "passing case")
+	await assert.rejects(
+		runExtensionTests({
+			providerMode: "scripted",
+			vscodeVersion: "1.138.0",
+			requireAllTests: true,
+			testGrep: "passing case",
+		}),
+		/grep/i,
+	)
+})
+
 test("actual disposable completion cannot pass without observed host ownership", async (context) => {
 	// Intercept the production launch module to exercise completion validation without starting VS Code.
 	const launcher = createRequire(__filename)("../hostLaunch") as typeof import("../hostLaunch")
@@ -60,6 +80,10 @@ test("strict launches require terminal coherent test counts even after a zero ho
 		"missing-stage",
 		"missing-policy",
 		"missing-counts",
+		"missing-selection",
+		"filtered-selection",
+		"focused-selection",
+		"different-file",
 		"pending",
 		"incoherent",
 	] as const) {
@@ -88,9 +112,14 @@ test("strict launches require terminal coherent test counts even after a zero ho
 						receipt.stage = "suite-complete"
 						receipt.requireAllTests = true
 						receipt.testCounts = { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 }
+						receipt.testSelection = { testFile: "extension.test", grep: null, forbidOnly: true }
 						if (variant === "missing-stage") delete receipt.stage
 						if (variant === "missing-policy") delete receipt.requireAllTests
 						if (variant === "missing-counts") delete receipt.testCounts
+						if (variant === "missing-selection") delete receipt.testSelection
+						if (variant === "filtered-selection") receipt.testSelection.grep = "passing"
+						if (variant === "focused-selection") receipt.testSelection.forbidOnly = false
+						if (variant === "different-file") receipt.testSelection.testFile = "another.test"
 						if (variant === "pending")
 							receipt.testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }
 						if (variant === "incoherent") receipt.testCounts.passed = 2

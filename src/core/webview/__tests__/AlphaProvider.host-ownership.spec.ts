@@ -16,8 +16,11 @@ import { Task } from "../../task/Task"
 import { readTaskMessages } from "../../task-persistence/taskMessages"
 import { TaskHistoryStore, saveTaskMessages } from "../../task-persistence"
 import { AgentMessageInbox } from "../../task-persistence/AgentMessageInbox"
+import { API } from "../../../extension/api"
+import { openAlphaInNewTab } from "../../../activate/registerCommands"
 
 vi.mock("../../task/Task", () => ({ Task: vi.fn() }))
+vi.mock("../../../activate/registerCommands", () => ({ openAlphaInNewTab: vi.fn() }))
 
 const barrier = () => {
 	let resolve!: () => void
@@ -65,7 +68,9 @@ function makeProvider(storagePath: string) {
 		providerSettingsManager: {
 			listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "openai" }]),
 			getProfile: vi.fn(async () => ({ id: "default-profile", name: "default", apiProvider: "openai" })),
+			getAvailableProfile: vi.fn(async () => ({ apiProvider: "openai" })),
 		},
+		taskCreationQueue: Promise.resolve(),
 		taskHistoryStoreReady: Promise.resolve(),
 		taskHistoryStore: {
 			initialize: vi.fn(async () => undefined),
@@ -706,5 +711,252 @@ describe("AlphaProvider final history disposal", () => {
 		expect(result).toEqual({ status: "rejected", reason: failure })
 		await owner.dispose()
 		expect(dispose).toHaveBeenCalledTimes(2)
+	})
+})
+
+describe("AlphaProvider task admission", () => {
+	beforeEach(() => vi.mocked(Task).mockReset())
+
+	function prepareTask(taskId: string) {
+		const task = Object.assign(makeTask(taskId), {
+			start: vi.fn(),
+			persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+		})
+		vi.mocked(Task).mockImplementationOnce(function () {
+			return task
+		})
+		return task
+	}
+
+	it("joins direct task admission before disposing resources and rejects after configuration resumes", async () => {
+		const owner = makeProvider(storage())
+		const entered = barrier()
+		const configuration = barrier()
+		Object.defineProperty(owner, "configurationQueue", {
+			value: {
+				then(resolve: () => void) {
+					entered.resolve()
+					return configuration.promise.then(resolve)
+				},
+			},
+		})
+		const task = prepareTask("late-task")
+		const admission = owner.createTask("late admission", undefined, undefined, { taskId: task.taskId })
+		const outcome = Promise.allSettled([admission])
+		await entered.promise
+		const history = Reflect.get(owner, "taskHistoryStore") as TaskHistoryStore
+		const disposing = owner.dispose()
+		await new Promise<void>((resolve) => setImmediate(resolve))
+		const disposedHistoryBeforeRelease = vi.mocked(history.dispose).mock.calls.length
+		configuration.resolve()
+		const [result] = await outcome
+		await disposing
+
+		expect(disposedHistoryBeforeRelease).toBe(0)
+		expect(result).toMatchObject({
+			status: "rejected",
+			reason: expect.objectContaining({ message: expect.stringContaining("disposed provider") }),
+		})
+		expect(task.start).not.toHaveBeenCalled()
+		expect(owner.getLiveTask(task.taskId)).toBeUndefined()
+	})
+
+	it("does not start a registered task after its presentation wait is interrupted by disposal", async () => {
+		const owner = makeProvider(storage())
+		const entered = barrier()
+		const presentation = barrier()
+		vi.mocked(owner.postTaskStateToWebview).mockImplementationOnce(async () => {
+			entered.resolve()
+			await presentation.promise
+		})
+		const task = prepareTask("registered-task")
+		const admission = owner.createTask("prepared", undefined, undefined, { taskId: task.taskId })
+		const outcome = Promise.allSettled([admission])
+		await entered.promise
+		const disposing = owner.dispose()
+		presentation.resolve()
+		const [result] = await outcome
+		await disposing
+
+		expect(result.status).toBe("rejected")
+		expect(task.start).not.toHaveBeenCalled()
+		expect(task.abortTask).toHaveBeenCalledOnce()
+		expect(owner.getLiveTask(task.taskId)).toBeUndefined()
+	})
+
+	it.each([false, true])(
+		"enforces shared capacity in a fresh editor with preserveExisting=%s",
+		async (preserveExisting) => {
+			const host = storage()
+			const sidebar = makeProvider(host)
+			const editor = makeProvider(host)
+			sessions(sidebar).setMaxLiveTasks(1)
+			await sidebar.addTaskToStack(makeTask("running-root"))
+			const task = prepareTask("over-capacity")
+
+			await expect(
+				editor.createTask("new editor", undefined, undefined, { taskId: task.taskId, preserveExisting }),
+			).rejects.toThrow("Maximum live task limit reached")
+			expect(task.start).not.toHaveBeenCalled()
+			expect(sessions(editor).getLiveTaskIds()).toEqual(["running-root"])
+		},
+	)
+
+	it("enforces shared capacity when the public API opens a fresh editor", async () => {
+		const host = storage()
+		const sidebar = makeProvider(host)
+		const editor = makeProvider(host)
+		sessions(sidebar).setMaxLiveTasks(1)
+		const running = makeTask("running-root")
+		await sidebar.addTaskToStack(running)
+		const task = prepareTask("api-over-capacity")
+		vi.mocked(openAlphaInNewTab).mockResolvedValueOnce(editor)
+		vi.spyOn(editor, "postStateToWebview").mockResolvedValue(undefined)
+		vi.spyOn(editor, "setValues").mockResolvedValue(undefined)
+		const api = new API({ appendLine: vi.fn() } as unknown as vscode.OutputChannel, sidebar)
+
+		await expect(
+			api.startNewTask({ newTab: true, text: "new editor", configuration: { apiProvider: "openai" } }),
+		).rejects.toThrow("Maximum live task limit reached")
+		expect(task.start).not.toHaveBeenCalled()
+		expect(running.abortTask).not.toHaveBeenCalled()
+		expect(sessions(sidebar).getLiveTaskIds()).toEqual([running.taskId])
+	})
+
+	it("joins disposal requested synchronously by task construction without waiting on itself", async () => {
+		const owner = makeProvider(storage())
+		const task = Object.assign(makeTask("construction-disposal"), { start: vi.fn() })
+		let disposing: Promise<void> | undefined
+		vi.mocked(Task).mockImplementationOnce(function () {
+			disposing = owner.dispose()
+			return task
+		})
+
+		await expect(
+			owner.createTask("dispose during construction", undefined, undefined, { taskId: task.taskId }),
+		).rejects.toThrow("disposed provider")
+		await disposing
+		expect(task.start).not.toHaveBeenCalled()
+		expect(task.abortTask).toHaveBeenCalledOnce()
+		expect(owner.getLiveTask(task.taskId)).toBeUndefined()
+	})
+
+	it("routes opposite cross-view child admissions before taking either creation queue", async () => {
+		const host = storage()
+		const first = makeProvider(host)
+		const second = makeProvider(host)
+		sessions(first).setMaxLiveTasks(4)
+		const firstParent = makeTask("first-parent")
+		const secondParent = makeTask("second-parent")
+		await first.addTaskToStack(firstParent)
+		await second.addTaskToStack(secondParent)
+		const children = new Map(
+			["first-child", "second-child"].map((id) => [id, Object.assign(makeTask(id), { start: vi.fn() })]),
+		)
+		vi.mocked(Task).mockImplementation(function (options) {
+			return children.get(options?.taskId ?? "")!
+		})
+
+		const tasks = await Promise.all([
+			first.createTask("second child", undefined, secondParent, { taskId: "second-child" }),
+			second.createTask("first child", undefined, firstParent, { taskId: "first-child" }),
+		])
+		expect(tasks.map(({ taskId }) => taskId)).toEqual(["second-child", "first-child"])
+		expect(sessions(first).getOwner("first-child")).toBe(sessions(first))
+		expect(sessions(second).getOwner("second-child")).toBe(sessions(second))
+	})
+
+	it("reuses a released replacement slot at the shared maximum", async () => {
+		const owner = makeProvider(storage())
+		sessions(owner).setMaxLiveTasks(1)
+		const previous = makeTask("previous")
+		await owner.addTaskToStack(previous)
+		const replacement = prepareTask("replacement")
+
+		await expect(
+			owner.createTask("replacement", undefined, undefined, { taskId: replacement.taskId }),
+		).resolves.toBe(replacement)
+		expect(previous.abortTask).toHaveBeenCalledOnce()
+		expect(replacement.start).toHaveBeenCalledOnce()
+		expect(sessions(owner).getLiveTaskIds()).toEqual([replacement.taskId])
+	})
+
+	it("retains a failed construction cleanup for a later disposal retry", async () => {
+		const owner = makeProvider(storage())
+		sessions(owner).setMaxLiveTasks(1)
+		const task = prepareTask("failed-cleanup")
+		task.persistFrozenSubagentInstructions.mockRejectedValueOnce(new Error("instruction write failed"))
+		vi.mocked(task.abortTask).mockRejectedValueOnce(new Error("process still running"))
+		await expect(
+			owner.createTask("preparing", undefined, undefined, {
+				taskId: task.taskId,
+				subagentInstructionPlacement: "system",
+			}),
+		).rejects.toThrow("process still running")
+		expect(owner.getLiveTask(task.taskId)).toBe(task)
+		expect(sessions(owner).getAvailableTaskCapacity()).toBe(0)
+
+		await owner.dispose()
+		expect(task.abortTask).toHaveBeenCalledTimes(2)
+		expect(owner.getLiveTask(task.taskId)).toBeUndefined()
+	})
+
+	it("keeps explicit start requests behind runtime registration", async () => {
+		const owner = makeProvider(storage())
+		const task = prepareTask("explicit-start")
+		await owner.createTask("start", undefined, undefined, { taskId: task.taskId, startTask: true })
+
+		expect(Task).toHaveBeenLastCalledWith(expect.objectContaining({ startTask: false }))
+		expect(task.start).toHaveBeenCalledOnce()
+	})
+
+	it("admits an owned prepared child at the shared maximum", async () => {
+		const owner = makeProvider(storage())
+		sessions(owner).setMaxLiveTasks(2)
+		const parent = makeTask("parent")
+		await owner.addTaskToStack(parent)
+		sessions(owner).reserveTaskSlots("group", {
+			rootTaskId: parent.taskId,
+			count: 1,
+			maxTotalTasks: 2,
+			maxRootTasks: 1,
+			activeRootTasks: 0,
+			isRootTaskRegistered: () => false,
+		})
+		sessions(owner).setReservedTaskIds("group", ["reserved-child"])
+		const task = prepareTask("reserved-child")
+		await expect(owner.createTask("child", undefined, parent, { taskId: task.taskId })).resolves.toBe(task)
+		expect(task.start).toHaveBeenCalledOnce()
+		expect(sessions(owner).getAvailableTaskCapacity()).toBe(0)
+	})
+
+	it("counts in-flight construction against other views and releases a failed admission", async () => {
+		const host = storage()
+		const first = makeProvider(host)
+		const second = makeProvider(host)
+		sessions(first).setMaxLiveTasks(1)
+		const entered = barrier()
+		const instructions = barrier()
+		const task = prepareTask("preparing")
+		task.persistFrozenSubagentInstructions.mockImplementationOnce(async () => {
+			entered.resolve()
+			await instructions.promise
+			throw new Error("instruction write failed")
+		})
+		const admission = first.createTask("preparing", undefined, undefined, {
+			taskId: task.taskId,
+			subagentInstructionPlacement: "system",
+			preserveExisting: true,
+		})
+		const outcome = Promise.allSettled([admission])
+		await entered.promise
+		const availableDuringPreparation = sessions(second).getAvailableTaskCapacity()
+		instructions.resolve()
+		const [result] = await outcome
+
+		expect(availableDuringPreparation).toBe(0)
+		expect(result).toMatchObject({ status: "rejected", reason: new Error("instruction write failed") })
+		expect(task.abortTask).toHaveBeenCalledOnce()
+		expect(sessions(second).getAvailableTaskCapacity()).toBe(1)
 	})
 })

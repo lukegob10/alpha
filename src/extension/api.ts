@@ -42,6 +42,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	private readonly ipc?: IpcServer
 	private readonly log: (...args: unknown[]) => void
 	private logfile?: string
+	private readonly observedProviders = new WeakSet<AlphaProvider>()
 
 	constructor(
 		outputChannel: vscode.OutputChannel,
@@ -350,7 +351,21 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	}
 
 	private registerListeners(provider: AlphaProvider) {
+		if (this.observedProviders.has(provider)) return
+		this.observedProviders.add(provider)
+		const subtaskById = new Map<string, boolean>()
+		provider.on(AlphaCodeEventName.TaskCompleted, (taskId, tokenUsage, toolUsage) => {
+			// The provider accepts managed completion only after the result and parent
+			// mailbox commit. Raw TaskCompleted is a candidate at that boundary.
+			const isSubtask = subtaskById.get(taskId) ?? Boolean(provider.getLiveTask(taskId)?.parentTaskId)
+			subtaskById.delete(taskId)
+			this.emit(AlphaCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage, { isSubtask })
+			void this.fileLog(
+				`[${new Date().toISOString()}] taskCompleted -> ${taskId} | ${JSON.stringify(tokenUsage, null, 2)} | ${JSON.stringify(toolUsage, null, 2)}\n`,
+			)
+		})
 		provider.on(AlphaCodeEventName.TaskCreated, (task) => {
+			subtaskById.set(task.taskId, !!task.parentTaskId)
 			// Task Lifecycle
 
 			task.on(AlphaCodeEventName.TaskStarted, async () => {
@@ -358,17 +373,8 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 				await this.fileLog(`[${new Date().toISOString()}] taskStarted -> ${task.taskId}\n`)
 			})
 
-			task.on(AlphaCodeEventName.TaskCompleted, async (_, tokenUsage, toolUsage) => {
-				this.emit(AlphaCodeEventName.TaskCompleted, task.taskId, tokenUsage, toolUsage, {
-					isSubtask: !!task.parentTaskId,
-				})
-
-				await this.fileLog(
-					`[${new Date().toISOString()}] taskCompleted -> ${task.taskId} | ${JSON.stringify(tokenUsage, null, 2)} | ${JSON.stringify(toolUsage, null, 2)}\n`,
-				)
-			})
-
 			task.on(AlphaCodeEventName.TaskAborted, () => {
+				subtaskById.delete(task.taskId)
 				this.emit(AlphaCodeEventName.TaskAborted, task.taskId)
 			})
 
@@ -381,6 +387,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			})
 
 			task.on(AlphaCodeEventName.TaskActive, () => {
+				subtaskById.set(task.taskId, !!task.parentTaskId)
 				this.emit(AlphaCodeEventName.TaskActive, task.taskId)
 			})
 

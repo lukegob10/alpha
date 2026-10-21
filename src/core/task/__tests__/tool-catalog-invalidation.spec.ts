@@ -131,7 +131,11 @@ let initialCustomTools: CustomToolDefinition[]
 
 beforeEach(() => {
 	initialCustomTools = customToolRegistry.getAll()
-	vi.spyOn(customToolRegistry, "loadFromDirectoriesIfStale").mockResolvedValue({ loaded: [], failed: [] })
+	vi.spyOn(customToolRegistry, "loadFromDirectoriesIfStale").mockImplementation(async () => ({
+		loaded: [],
+		failed: [],
+		catalog: customToolRegistry.getAll(),
+	}))
 	testState.browserToolNames = []
 	testState.codeIndex = {
 		isFeatureEnabled: false,

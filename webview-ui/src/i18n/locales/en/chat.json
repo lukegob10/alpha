@@ -506,11 +506,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} restores support for VS Code 1.125 and newer.",
-			"taskContinuity": "Keep agent updates, queued messages, and chat recovery consistent across cancellation and reloads.",
-			"toolsAndProviders": "Retain saved provider profiles and report unavailable selections without silently switching providers.",
-			"delegation": "Deliver sub-agent results and reviews while preserving workspace and approval limits.",
-			"workspaceExperience": "Browse chats and file changes with less repeated work, and cancel prompt previews safely."
+			"welcome": "Alpha v{{version}} improves task reliability, responsiveness, and Codex CLI alignment.",
+			"taskContinuity": "Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
+			"toolsAndProviders": "Run bounded command-output searches, isolate custom tools, and preserve provider responses and usage.",
+			"delegation": "Validate worker changes and deliver results after Apply and verification have settled.",
+			"workspaceExperience": "Track files with less repeated work and protect concurrent skill edits."
 		}
 	},
 	"crossTasks": {
@@ -741,6 +741,10 @@
 		"failed": "The instruction was not accepted. Your draft is still available.",
 		"unavailable": "This agent is no longer running. Your draft is still available to copy.",
 		"sending": "Sending steering…"
+	},
+	"taskStartup": {
+		"starting": "Preparing your request…",
+		"failed": "The chat could not start. Your draft is still available."
 	},
 	"modelResponseDelayed": "Waiting for the model's next update. Longer reasoning can take time.",
 	"contextMenu": {

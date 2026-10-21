@@ -12,7 +12,7 @@ import {
 	type ToolName,
 	type McpServer,
 } from "@alpha-code/types"
-import { customToolRegistry, formatNative } from "@alpha-code/core"
+import { customToolRegistry, formatNative, serializeCustomTool } from "@alpha-code/core"
 
 import type { AlphaProvider } from "../webview/AlphaProvider"
 import { getConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
@@ -408,15 +408,10 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	let customTools: NonNullable<ToolRegistryOptions["customTools"]> = []
 	if (!diagnosticSession && experiments?.customTools && mode !== planModeSlug) {
 		const toolDirs = getConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
-		await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
+		const catalog = await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
-		const serialized = new Map(customToolRegistry.getAllSerialized().map((tool) => [tool.name, tool]))
-		customTools = customToolRegistry
-			.getAll()
-			.flatMap((definition) => {
-				const schema = serialized.get(definition.name)
-				return schema ? [{ definition, schema: formatNative(schema) }] : []
-			})
+		customTools = catalog.catalog
+			.map((definition) => ({ definition, schema: formatNative(serializeCustomTool(definition)) }))
 			.sort((a, b) =>
 				a.definition.name < b.definition.name ? -1 : a.definition.name > b.definition.name ? 1 : 0,
 			)

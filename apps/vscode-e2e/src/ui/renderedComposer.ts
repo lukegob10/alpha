@@ -5,6 +5,7 @@ import * as path from "node:path"
 import type { CdpConnection } from "./cdp"
 import { requireNativeChatHeader } from "./nativeChatHeader"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
+import { exerciseRenderedFirstPrompt } from "./renderedFirstPrompt"
 
 interface ComposerSendState {
 	disabled: boolean
@@ -283,7 +284,9 @@ export async function exerciseRenderedComposer(
 		path.join(directory, "ui-composer-editor-toolbar.png"),
 		Buffer.from(editorScreenshot.data, "base64"),
 	)
+	await exerciseRenderedFirstPrompt(cdp, editorSession, workbenchSession, directory, nonce, signal)
 	return [
+		"composer-first-prompt-admission",
 		"composer-persistent-send",
 		"composer-native-sidebar-header",
 		"composer-editor-toolbar-fallback",

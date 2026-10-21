@@ -177,7 +177,7 @@ async function main() {
 	const buildDir = __dirname
 	const distDir = path.join(buildDir, "dist")
 	// Resolve before cleaning outputs. Externalization and copied runtime bindings must share one inventory.
-	const lanceDbNative = resolveLanceDbNativeDependencies()
+	const lanceDbNative = resolveLanceDbNativeDependencies(undefined, process.env.ALPHA_VSIX_TARGET)
 
 	if (fs.existsSync(distDir)) {
 		console.log(`[${name}] Cleaning dist directory: ${distDir}`)
@@ -266,7 +266,12 @@ async function main() {
 	 */
 	const workerConfig = {
 		...buildOptions,
-		entryPoints: ["workers/countTokens.ts", "workers/sanitizeDocument.ts", "workers/validateImage.ts"],
+		entryPoints: [
+			"workers/countTokens.ts",
+			"workers/sanitizeDocument.ts",
+			"workers/validateImage.ts",
+			"workers/searchCommandOutput.ts",
+		],
 		outdir: "dist/workers",
 	}
 

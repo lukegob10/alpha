@@ -1,4 +1,4 @@
-import { customToolRegistry } from "@alpha-code/core"
+import { customToolRegistry, type CatalogLoadResult } from "@alpha-code/core"
 import { parametersSchema as z, type CustomToolDefinition, type McpServer } from "@alpha-code/types"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -17,9 +17,13 @@ import type { AlphaProvider } from "../../webview/AlphaProvider"
 import type { Task } from "../Task"
 import type { ToolCallbacks } from "../../tools/BaseTool"
 import type { ToolUse } from "../../../shared/tools"
+import type { ToolDescriptor } from "../../tools/ToolRegistry"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../build-tools"
 
-afterEach(() => customToolRegistry.clear())
+afterEach(() => {
+	customToolRegistry.clear()
+	vi.restoreAllMocks()
+})
 
 function register(name: string) {
 	const execute = vi.fn(async () => `${name} result`)
@@ -45,7 +49,64 @@ function options(): BuildToolsOptions {
 	}
 }
 
+async function invoke(descriptor: ToolDescriptor) {
+	const outputs: unknown[] = []
+	await descriptor.execute({
+		task: { getTaskMode: async () => "code" } as Task,
+		mode: "code",
+		call: {
+			type: "tool_use",
+			id: "custom-call",
+			name: "custom_tool",
+			params: {},
+			partial: false,
+			nativeArgs: {},
+		} as ToolUse,
+		callbacks: {
+			askApproval: async () => true,
+			pushToolResult: (value: unknown) => outputs.push(value),
+		} as unknown as ToolCallbacks,
+	})
+	return outputs
+}
+
 describe("custom tool catalog names", () => {
+	it("captures each overlapping workspace load's owned definitions", async () => {
+		const definitionA: CustomToolDefinition = {
+			name: "workspace_a_tool",
+			description: "workspace A",
+			execute: async () => "A",
+		}
+		const definitionB: CustomToolDefinition = {
+			name: "workspace_b_tool",
+			description: "workspace B",
+			execute: async () => "B",
+		}
+		let enterA!: () => void
+		const enteredA = new Promise<void>((resolve) => (enterA = resolve))
+		let releaseA!: (value: CatalogLoadResult) => void
+		const loadingA = new Promise<CatalogLoadResult>((resolve) => (releaseA = resolve))
+		vi.spyOn(customToolRegistry, "loadFromDirectoriesIfStale").mockImplementation(async (directories) => {
+			if (directories.some((directory) => directory.includes("workspace-a"))) {
+				enterA()
+				return loadingA
+			}
+			return { loaded: [definitionB.name], failed: [], catalog: [definitionB] }
+		})
+		const pendingA = buildNativeToolsArrayWithRestrictions({ ...options(), cwd: "workspace-a" })
+		await enteredA
+		const capturedB = await buildNativeToolsArrayWithRestrictions({ ...options(), cwd: "workspace-b" })
+		releaseA({ loaded: [definitionA.name], failed: [], catalog: [definitionA] })
+		const capturedA = await pendingA
+
+		expect(capturedB.surface?.resolve(definitionA.name)).toBeUndefined()
+		expect(capturedA.surface?.resolve(definitionB.name)).toBeUndefined()
+		expect(capturedA.surface?.resolve(definitionA.name)).toBeDefined()
+		expect(capturedB.surface?.resolve(definitionB.name)).toBeDefined()
+		expect(await invoke(capturedA.surface!.resolve(definitionA.name)!)).toEqual(["A"])
+		expect(await invoke(capturedB.surface!.resolve(definitionB.name)!)).toEqual(["B"])
+	})
+
 	it.each([
 		"exec_command",
 		"execute_command",

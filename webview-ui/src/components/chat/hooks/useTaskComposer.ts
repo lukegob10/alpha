@@ -12,6 +12,7 @@ export interface ComposerSubmission {
 export interface TaskComposerDraft {
 	inputValue: string
 	selectedImages: string[]
+	pendingNewTaskRequest: ComposerSubmission | null
 	editingQueuedMessage: { taskId: string; id: string; priorText: string; priorImages: string[] } | null
 	pendingQueueRequest: (ComposerSubmission & { command?: "sendAndSteer" }) | null
 	pendingSteerRequest: { requestId: string; taskId: string; messageId: string } | null
@@ -25,6 +26,7 @@ export interface TaskComposerDraft {
 const EMPTY_DRAFT: TaskComposerDraft = {
 	inputValue: "",
 	selectedImages: [],
+	pendingNewTaskRequest: null,
 	editingQueuedMessage: null,
 	pendingQueueRequest: null,
 	pendingSteerRequest: null,
@@ -55,6 +57,7 @@ export function useTaskComposer(taskId: string | undefined) {
 			if (
 				!nextDraft.inputValue &&
 				!nextDraft.selectedImages.length &&
+				!nextDraft.pendingNewTaskRequest &&
 				!nextDraft.editingQueuedMessage &&
 				!nextDraft.pendingQueueRequest &&
 				!nextDraft.pendingSteerRequest &&
@@ -81,7 +84,6 @@ export function useTaskComposer(taskId: string | undefined) {
 	)
 	const [setters] = useState(() => ({
 		setInputValue: (action: SetStateAction<string>) => setField("inputValue", action),
-		setSelectedImages: (action: SetStateAction<string[]>) => setField("selectedImages", action),
 		setEditingQueuedMessage: (action: SetStateAction<TaskComposerDraft["editingQueuedMessage"]>) =>
 			setField("editingQueuedMessage", action),
 		setPendingQueueRequest: (action: SetStateAction<TaskComposerDraft["pendingQueueRequest"]>) =>
@@ -96,5 +98,21 @@ export function useTaskComposer(taskId: string | undefined) {
 			setField("pendingAskRequests", action),
 		setChatCommandError: (action: SetStateAction<string | undefined>) => setField("chatCommandError", action),
 	}))
-	return { ...(drafts[draftKey(taskId)] ?? EMPTY_DRAFT), ...setters, getTaskDraft, updateTaskDraft }
+	// File reads retain this callback while navigation can select another draft.
+	const setSelectedImages = useCallback(
+		(action: SetStateAction<string[]>) => {
+			updateTaskDraft(taskId, (draft) => ({
+				...draft,
+				selectedImages: typeof action === "function" ? action(draft.selectedImages) : action,
+			}))
+		},
+		[taskId, updateTaskDraft],
+	)
+	return {
+		...(drafts[draftKey(taskId)] ?? EMPTY_DRAFT),
+		...setters,
+		setSelectedImages,
+		getTaskDraft,
+		updateTaskDraft,
+	}
 }

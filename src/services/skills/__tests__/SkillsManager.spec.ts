@@ -19,6 +19,7 @@ const {
 	mockCreateFileSystemWatcher,
 	mockWatchers,
 	mockProjectInstructionDirectories,
+	mockUpdateSkillModesInDocument,
 } = vi.hoisted(() => {
 	const watchers: Array<{
 		onDidChange: import("vitest").Mock
@@ -41,6 +42,7 @@ const {
 		mockRename: vi.fn(),
 		mockRmdir: vi.fn(),
 		mockProjectInstructionDirectories: vi.fn(),
+		mockUpdateSkillModesInDocument: vi.fn(),
 		mockWatchers: watchers,
 		mockCreateFileSystemWatcher: vi.fn(() => {
 			const watcher = {
@@ -100,6 +102,9 @@ vi.mock("vscode", () => ({
 	},
 	RelativePattern: vi.fn(),
 }))
+
+// Document transactions have real-file/version coverage in SkillsManager.mutation.spec.ts.
+vi.mock("../skillMutation", () => ({ updateSkillModesInDocument: mockUpdateSkillModesInDocument }))
 
 // @alpha-code/types imports provider defaults as value exports; keep this unit test independent
 // of optional provider package resolution.
@@ -491,7 +496,7 @@ describe("SkillsManager", () => {
 				candidate === userFile ? p(`${builtinSkillsDir}-personal`, "rich-documents", "SKILL.md") : candidate,
 			)
 			await skillsManager.updateSkillModes("rich-documents", "global", ["architect"])
-			expect(mockWriteFile).toHaveBeenCalledWith(userFile, expect.stringContaining("  - architect"), "utf-8")
+			expect(mockUpdateSkillModesInDocument).toHaveBeenCalledWith(userFile, ["architect"], expect.any(Function))
 		})
 
 		it("rejects bundled mutations before touching disk, including a no-op move", async () => {

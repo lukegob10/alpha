@@ -37,6 +37,8 @@ const CONFIGURATION_GUIDANCE = {
 		"--init-profile requires --profile-dir, --workspace, and --artifacts-dir. Omit --init-profile for the default disposable test profile.",
 	"exact-profile-host-required":
 		"Persistent test profiles require an exact --vscode-version such as 1.138.0, not stable or insiders.",
+	"unfiltered-suite-required":
+		"Full host gates require an unfiltered suite. Remove --grep and TEST_GREP when using --require-all-tests; omit --require-all-tests for a focused diagnostic run.",
 } as const
 
 export type TestRunDiagnostic = keyof typeof CONFIGURATION_GUIDANCE
@@ -115,6 +117,43 @@ export type TestExecutionCounts = {
 	pending: number
 	executed: number
 	failed: number
+}
+
+export type TestSuiteSelection = {
+	testFile: string | null
+	grep: string | null
+	forbidOnly: boolean
+}
+
+export function isTestSuiteSelection(value: unknown): value is TestSuiteSelection {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	const selection = value as Record<string, unknown>
+	return (
+		(selection.testFile === null || typeof selection.testFile === "string") &&
+		(selection.grep === null || typeof selection.grep === "string") &&
+		typeof selection.forbidOnly === "boolean"
+	)
+}
+
+/** Strict gates cover the entire selected file; grep remains available for diagnostic runs. */
+export function testSuiteMochaOptions(options: { requireAllTests?: boolean; testGrep?: string }): {
+	ui: "tdd"
+	timeout: number
+	forbidOnly: boolean
+	grep?: string
+} {
+	if (options.requireAllTests && options.testGrep)
+		throw new TestRunError(
+			"invalid-options",
+			"A required test suite cannot use --grep or TEST_GREP",
+			"unfiltered-suite-required",
+		)
+	return {
+		ui: "tdd",
+		timeout: 20 * 60 * 1_000,
+		forbidOnly: options.requireAllTests === true,
+		...(options.testGrep ? { grep: options.testGrep } : {}),
+	}
 }
 
 /** Validate receipts at the runner boundary; hook failures may outnumber ended tests. */

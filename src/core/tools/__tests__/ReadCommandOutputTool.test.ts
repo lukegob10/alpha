@@ -1,6 +1,6 @@
 import * as fs from "fs/promises"
 import * as path from "path"
-import { vi, describe, it, expect, beforeEach, afterEach } from "vitest"
+import { vi, describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest"
 
 import { ReadCommandOutputTool } from "../ReadCommandOutputTool"
 import {
@@ -16,6 +16,45 @@ import {
 import { Task } from "../../task/Task"
 import readCommandOutput from "../../prompts/tools/native-tools/read_command_output"
 import manageCommand, { createWriteStdinTool } from "../../prompts/tools/native-tools/manage_command"
+import i18next from "../../../i18n"
+import toolTranslations from "../../../i18n/locales/en/tools.json"
+
+const searchWorkers = vi.hoisted(() => ({
+	instances: [] as import("node:worker_threads").Worker[],
+	onPost: undefined as (() => void) | undefined,
+}))
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "tools", toolTranslations, true, true)
+})
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:worker_threads")>()
+	const nodePath = await import("node:path")
+	const { readFileSync } = await import("node:fs")
+	const { transformSync } = await import("esbuild")
+	const source = transformSync(
+		readFileSync(nodePath.resolve(process.cwd(), "workers/searchCommandOutput.ts"), "utf8"),
+		{
+			loader: "ts",
+			format: "cjs",
+		},
+	).code
+	class SearchTestWorker extends original.Worker {
+		constructor(filename: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+			// Execute the current entry source so focused tests need no prior bundle.
+			const isSearchWorker =
+				typeof filename === "string" && nodePath.basename(filename) === "searchCommandOutput.js"
+			super(isSearchWorker ? source : filename, isSearchWorker ? { ...options, eval: true } : options)
+			searchWorkers.instances.push(this)
+		}
+		override postMessage(value: unknown) {
+			super.postMessage(value)
+			searchWorkers.onPost?.()
+		}
+	}
+	return { ...original, Worker: SearchTestWorker }
+})
 
 // Mock filesystem operations
 vi.mock("fs/promises", () => ({
@@ -48,6 +87,8 @@ describe("ReadCommandOutputTool", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		searchWorkers.instances.length = 0
+		searchWorkers.onPost = undefined
 
 		tool = new ReadCommandOutputTool()
 		globalStoragePath = "/mock/global/storage"
@@ -672,6 +713,64 @@ describe("ReadCommandOutputTool", () => {
 			const result = mockCallbacks.pushToolResult.mock.calls[0][0]
 			expect(result).toContain("Total matches: 1")
 			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+		})
+
+		it("bounds an accepted nonmatching regex and emits one error receipt", async () => {
+			setupSearchMock(`${"a".repeat(READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES - 1)}!`)
+
+			await tool.execute({ artifact_id: "cmd-123.txt", search: "a+$" }, mockTask, mockCallbacks)
+
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("timed out"))
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockFileHandle.close).toHaveBeenCalledOnce()
+			expect(mockTask.say).not.toHaveBeenCalledWith("tool", expect.anything())
+			const worker = searchWorkers.instances[0]
+			expect(worker.threadId).toBe(-1)
+			for (const event of ["message", "error", "exit"]) expect(worker.listenerCount(event)).toBe(0)
+		})
+
+		it("cancels a regex batch, closes the artifact and awaits worker termination", async () => {
+			setupSearchMock(`${"a".repeat(READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES - 1)}!`)
+			const controller = new AbortController()
+			const reason = new Error("cancelled artifact search")
+			let posted!: () => void
+			const batchPosted = new Promise<void>((resolve) => {
+				posted = resolve
+			})
+			searchWorkers.onPost = posted
+			const execution = tool.execute({ artifact_id: "cmd-123.txt", search: "a+$" }, mockTask, {
+				...mockCallbacks,
+				signal: controller.signal,
+			})
+			const cancelled = expect(execution).rejects.toBe(reason)
+			await batchPosted
+			controller.abort(reason)
+			await cancelled
+
+			expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(mockCallbacks.setResultMetadata).not.toHaveBeenCalled()
+			expect(mockFileHandle.close).toHaveBeenCalledOnce()
+			const worker = searchWorkers.instances[0]
+			expect(worker.threadId).toBe(-1)
+			for (const event of ["message", "error", "exit"]) expect(worker.listenerCount(event)).toBe(0)
+		})
+
+		it("stops a regex batch at the output budget before an expensive later nonmatch", async () => {
+			const firstLine = "a".repeat(56)
+			setupSearchMock(`${firstLine}\n${"a".repeat(60_000)}!\n`)
+
+			await tool.execute(
+				{ artifact_id: "cmd-123.txt", search: "a+$", limit: READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES },
+				mockTask,
+				mockCallbacks,
+			)
+
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(firstLine))
+			const telemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+			expect(telemetry.nextOffset).toBe(firstLine.length + 1)
+			expect(telemetry.searchTruncated).toBe(true)
 		})
 
 		it.each(["test\\d+", "a{8}b+"])(

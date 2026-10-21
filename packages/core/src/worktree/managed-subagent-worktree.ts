@@ -4,6 +4,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 import { promisify } from "util"
+import { z } from "zod"
 
 import { worktreeIncludeService } from "./worktree-include.js"
 
@@ -133,6 +134,76 @@ class GitStartupPathCleanupError extends GitPathCleanupError {
 class GitRepositoryNotFoundError extends Error {}
 
 type ArtifactGitContext = Pick<ManagedWorkerArtifact, "gitRoot" | "privateGitDir">
+
+const artifactString = z.string().regex(/^[^\0]*$/)
+const absoluteArtifactPath = artifactString.refine((value) => path.isAbsolute(value))
+const relativeArtifactPath = artifactString.refine(
+	(value) =>
+		value.length > 0 &&
+		!path.posix.isAbsolute(value) &&
+		path.win32.parse(value).root === "" &&
+		value.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== ".."),
+)
+const artifactScope = z.union([z.literal("."), relativeArtifactPath])
+const managedWorkerArtifactSchema = z
+	.object({
+		id: artifactString.min(1),
+		taskId: artifactString.min(1),
+		status: z.enum(["active", "pending_review", "conflicted", "applied", "discarded", "scope_violation"]),
+		createdAt: z.number().finite().nonnegative(),
+		updatedAt: z.number().finite().nonnegative(),
+		gitRoot: absoluteArtifactPath,
+		privateGitDir: absoluteArtifactPath.optional(),
+		privateGitOwner: z
+			.object({
+				token: artifactString.min(1),
+				dev: z.string().regex(/^\d+$/),
+				ino: z.string().regex(/^\d+$/),
+				gitDev: z.string().regex(/^\d+$/),
+				gitIno: z.string().regex(/^\d+$/),
+			})
+			.strict()
+			.optional(),
+		sourceGitCommonDir: absoluteArtifactPath.optional(),
+		logicalWorkspace: absoluteArtifactPath,
+		logicalWorkspaceFromRoot: z.union([z.literal(""), relativeArtifactPath]),
+		worktreePath: absoluteArtifactPath.optional(),
+		baselineCommit: artifactString,
+		resultCommit: artifactString.min(1).optional(),
+		writeScope: z.array(artifactScope).min(1),
+		gitRelativeScope: z.array(artifactScope).min(1),
+		// Preserve the legacy directory-authority fallback when exact-file scopes are absent.
+		fileWriteScope: z.array(artifactScope).default([]),
+		gitRelativeFileScope: z.array(artifactScope).default([]),
+		patchFile: z.literal("changes.patch").optional(),
+		changes: z.array(
+			z
+				.object({
+					status: artifactString.min(1),
+					path: relativeArtifactPath,
+					previousPath: relativeArtifactPath.optional(),
+					beforeHash: artifactString.min(1).optional(),
+					afterHash: artifactString.min(1).optional(),
+					beforeMode: artifactString.min(1).optional(),
+					afterMode: artifactString.min(1).optional(),
+					beforeFile: z
+						.string()
+						.regex(/^\d+-before$/)
+						.optional(),
+					afterFile: z
+						.string()
+						.regex(/^\d+-after$/)
+						.optional(),
+					binary: z.boolean(),
+				})
+				.passthrough(),
+		),
+		partial: z.boolean().optional(),
+		conflictPaths: z.array(relativeArtifactPath).optional(),
+		error: artifactString.optional(),
+	})
+	.passthrough()
+	.refine((artifact) => !artifact.privateGitOwner || Boolean(artifact.privateGitDir))
 
 /** Native, platform-neutral quarantine lifecycle for one editing sub-agent. */
 export class ManagedSubagentWorktreeService {
@@ -617,6 +688,7 @@ export class ManagedSubagentWorktreeService {
 			artifactId === "." ||
 			artifactId === ".." ||
 			artifactId.includes("\0") ||
+			artifactId.includes(":") ||
 			path.posix.basename(artifactId) !== artifactId ||
 			path.win32.basename(artifactId) !== artifactId
 		) {
@@ -629,10 +701,53 @@ export class ManagedSubagentWorktreeService {
 		return path.join(this.artifactDir(storagePath, artifactId), "metadata.json")
 	}
 
+	private async validateArtifactDirectory(storagePath: string, artifactId: string): Promise<string> {
+		const directory = this.artifactDir(storagePath, artifactId)
+		const [directoryStat, realStorage, realDirectory] = await Promise.all([
+			fs.lstat(directory),
+			fs.realpath(storagePath),
+			fs.realpath(directory),
+		])
+		if (
+			!directoryStat.isDirectory() ||
+			directoryStat.isSymbolicLink() ||
+			!samePath(realDirectory, path.join(realStorage, "subagent-change-sets", artifactId))
+		) {
+			throw new Error("Managed worker artifact directory ownership changed")
+		}
+		return directory
+	}
+
+	private async artifactFilePath(
+		storagePath: string,
+		artifactId: string,
+		name: string,
+		allowMissing = true,
+	): Promise<string> {
+		if (!/^(?:metadata\.json|changes\.patch|\d+-(?:before|after))$/.test(name)) {
+			throw new Error("Invalid managed worker artifact file reference")
+		}
+		const directory = await this.validateArtifactDirectory(storagePath, artifactId)
+		const file = path.join(directory, name)
+		const stat = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+			// A committed discard can retain a reference after its patch was already removed.
+			if (allowMissing && error.code === "ENOENT") return undefined
+			throw error
+		})
+		if (!stat) return file
+		if (
+			!stat.isFile() ||
+			stat.isSymbolicLink() ||
+			!samePath(await fs.realpath(file), path.join(await fs.realpath(directory), name))
+		) {
+			throw new Error("Managed worker artifact file ownership changed")
+		}
+		return file
+	}
+
 	private async persist(storagePath: string, artifact: ManagedWorkerArtifact): Promise<void> {
 		artifact.updatedAt = Date.now()
-		const dir = this.artifactDir(storagePath, artifact.id)
-		await fs.mkdir(dir, { recursive: true })
+		await this.validateArtifactDirectory(storagePath, artifact.id)
 		const metadataPath = this.metadataPath(storagePath, artifact.id)
 		const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`
 		try {
@@ -658,9 +773,17 @@ export class ManagedSubagentWorktreeService {
 	}
 
 	async load(storagePath: string, artifactId: string): Promise<ManagedWorkerArtifact> {
-		const artifact = JSON.parse(
-			await fs.readFile(this.metadataPath(storagePath, artifactId), "utf8"),
-		) as ManagedWorkerArtifact
+		const metadata = await this.artifactFilePath(storagePath, artifactId, "metadata.json", false)
+		const value: unknown = JSON.parse(await fs.readFile(metadata, "utf8"))
+		const parsed = managedWorkerArtifactSchema.safeParse(value)
+		if (!parsed.success) throw new Error("Invalid managed worker artifact metadata")
+		const artifact: ManagedWorkerArtifact = parsed.data
+		if (artifact.id !== artifactId) throw new Error("Invalid managed worker artifact identity")
+		if (artifact.patchFile) await this.artifactFilePath(storagePath, artifactId, artifact.patchFile)
+		for (const change of artifact.changes) {
+			if (change.beforeFile) await this.artifactFilePath(storagePath, artifactId, change.beforeFile)
+			if (change.afterFile) await this.artifactFilePath(storagePath, artifactId, change.afterFile)
+		}
 		await this.validatePrivateRepositoryOwnership(storagePath, artifact, artifactId)
 		return artifact
 	}
@@ -788,7 +911,7 @@ export class ManagedSubagentWorktreeService {
 			let other: ManagedWorkerArtifact
 			try {
 				other = JSON.parse(
-					await fs.readFile(this.metadataPath(storagePath, id), "utf8"),
+					await fs.readFile(await this.artifactFilePath(storagePath, id, "metadata.json", false), "utf8"),
 				) as ManagedWorkerArtifact
 			} catch (error) {
 				if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") continue
@@ -1121,8 +1244,8 @@ export class ManagedSubagentWorktreeService {
 		name: string,
 		cwd = artifact.gitRoot,
 	): Promise<string | undefined> {
+		const target = await this.artifactFilePath(storagePath, artifactId, name)
 		try {
-			const target = path.join(this.artifactDir(storagePath, artifactId), name)
 			await fs.writeFile(target, await this.artifactGitBuffer(artifact, ["show", `${commit}:${filePath}`], cwd))
 			return name
 		} catch {
@@ -1245,7 +1368,7 @@ export class ManagedSubagentWorktreeService {
 			}
 			const patchName = "changes.patch"
 			await fs.writeFile(
-				path.join(this.artifactDir(storagePath, artifact.id), patchName),
+				await this.artifactFilePath(storagePath, artifact.id, patchName),
 				await this.artifactGitBuffer(
 					artifact,
 					["diff", "--binary", "--full-index", "-M", artifact.baselineCommit, artifact.resultCommit],
@@ -1427,7 +1550,7 @@ export class ManagedSubagentWorktreeService {
 			return { status: "conflicted", conflictPaths: artifact.conflictPaths }
 		}
 
-		const patchPath = path.join(this.artifactDir(storagePath, artifact.id), artifact.patchFile)
+		const patchPath = await this.artifactFilePath(storagePath, artifact.id, artifact.patchFile, false)
 		try {
 			await this.artifactGit(artifact, ["apply", "--check", "--binary", "--whitespace=nowarn", patchPath])
 		} catch {
@@ -1457,7 +1580,7 @@ export class ManagedSubagentWorktreeService {
 			await this.persist(storagePath, artifact)
 		}
 		if (artifact.patchFile) {
-			await fs.rm(path.join(this.artifactDir(storagePath, artifact.id), artifact.patchFile), { force: true })
+			await fs.rm(await this.artifactFilePath(storagePath, artifact.id, artifact.patchFile), { force: true })
 			delete artifact.patchFile
 			await this.persist(storagePath, artifact)
 		}
@@ -1469,12 +1592,19 @@ export class ManagedSubagentWorktreeService {
 		artifactId: string,
 	): Promise<Array<ManagedWorkerChange & { beforePath?: string; afterPath?: string }>> {
 		const artifact = await this.load(storagePath, artifactId)
-		const dir = this.artifactDir(storagePath, artifact.id)
-		return artifact.changes.map((change) => ({
-			...change,
-			beforePath: change.beforeFile ? path.join(dir, change.beforeFile) : undefined,
-			afterPath: change.afterFile ? path.join(dir, change.afterFile) : undefined,
-		}))
+		const files: Array<ManagedWorkerChange & { beforePath?: string; afterPath?: string }> = []
+		for (const change of artifact.changes) {
+			files.push({
+				...change,
+				beforePath: change.beforeFile
+					? await this.artifactFilePath(storagePath, artifact.id, change.beforeFile)
+					: undefined,
+				afterPath: change.afterFile
+					? await this.artifactFilePath(storagePath, artifact.id, change.afterFile)
+					: undefined,
+			})
+		}
+		return files
 	}
 
 	async recoverOrphans(
@@ -1546,18 +1676,19 @@ export class ManagedSubagentWorktreeService {
 	async deleteArtifact(storagePath: string, artifactId: string): Promise<void> {
 		const artifact = await this.load(storagePath, artifactId).catch(async (error: unknown) => {
 			try {
-				await fs.access(this.metadataPath(storagePath, artifactId))
+				await fs.lstat(this.artifactDir(storagePath, artifactId))
 			} catch (missing) {
 				if ((missing as NodeJS.ErrnoException).code === "ENOENT") return undefined
 				throw missing
 			}
 			throw error
 		})
+		if (!artifact) return
 		if (artifact?.worktreePath) await this.cleanupWorktreeWithRetry(artifact)
 		if (artifact?.privateGitDir && !artifact.privateGitOwner)
 			await this.assertPrivateRepositoryUnreferenced(storagePath, artifact)
 		if (artifact?.privateGitOwner) await this.removeShortPrivateRepository(storagePath, artifact)
-		await fs.rm(this.artifactDir(storagePath, artifactId), { recursive: true, force: true })
+		await fs.rm(await this.validateArtifactDirectory(storagePath, artifactId), { recursive: true, force: true })
 	}
 
 	/** Delete every owned record for removed chats, including no-op workers with no published change set. */
@@ -1575,7 +1706,9 @@ export class ManagedSubagentWorktreeService {
 		for (const id of ids) {
 			let value: unknown
 			try {
-				value = JSON.parse(await fs.readFile(this.metadataPath(storagePath, id), "utf8"))
+				value = JSON.parse(
+					await fs.readFile(await this.artifactFilePath(storagePath, id, "metadata.json", false), "utf8"),
+				)
 			} catch (error) {
 				if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") continue
 				throw error

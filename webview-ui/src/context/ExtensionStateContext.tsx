@@ -265,10 +265,24 @@ export const mergeExtensionState = (
 
 	const taskStateIsStale = isStale(incomingTaskStateSeq, previousTaskStateSeq)
 	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
+	const acceptedTaskSnapshot = !taskStateIsStale && !patchHasNoTaskStateSequence
+	// Task maps replace host membership; lifecycle-only state envelopes remain deltas.
+	const authoritativeTasks =
+		acceptedTaskSnapshot && newState.liveTasksById !== undefined
+			? newState.liveTasksById
+			: prevState.taskStateSeq !== undefined
+				? prevState.liveTasksById
+				: undefined
 	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
 		prevState.agentLifecycleSnapshots,
 		taskStateIsStale || patchHasNoTaskStateSequence ? undefined : newState.agentLifecycleSnapshots,
 		incomingTaskStateSeq !== undefined && !taskStateIsStale && !patchHasNoTaskStateSequence,
+		authoritativeTasks
+			? {
+					taskIds: new Set(Object.keys(authoritativeTasks)),
+					replaceSnapshots: acceptedTaskSnapshot && newState.liveTasksById !== undefined,
+				}
+			: undefined,
 	)
 	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
@@ -313,7 +327,6 @@ export const mergeExtensionState = (
 
 	const targetsDifferentTask =
 		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
-	const acceptedTaskSnapshot = !taskStateIsStale && !patchHasNoTaskStateSequence
 	if (
 		acceptedTaskSnapshot &&
 		"currentTaskId" in newState &&

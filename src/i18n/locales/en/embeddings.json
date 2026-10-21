@@ -35,6 +35,7 @@
 	"vectorStore": {
 		"qdrantConnectionFailed": "Failed to connect to Qdrant vector database. Please ensure Qdrant is running and accessible at {{qdrantUrl}}. Error: {{errorMessage}}",
 		"vectorDimensionMismatch": "Failed to update vector index for new model. Please try clearing the index and starting again. Details: {{errorMessage}}",
+		"lanceBackendUnavailable": "Local LanceDB indexing is unavailable on {{platform}}. Select Qdrant in code indexing settings, or reinstall a matching Alpha package where local indexing is supported. Details: {{errorMessage}}",
 		"lanceConnectionFailed": "Failed to initialize local LanceDB vector index at {{indexPath}}. Error: {{errorMessage}}"
 	},
 	"validation": {

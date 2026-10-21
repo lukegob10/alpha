@@ -243,6 +243,10 @@ function applyEvent(snapshot: AgentLifecycleSnapshot, event: AgentLifecycleEvent
 			}
 			return
 		case "turn_terminal":
+			snapshot.status = event.payload.status
+			snapshot.terminalEventId = event.eventId
+			snapshot.terminalAt = event.occurredAt
+			return
 		case "turn_completed":
 		case "turn_interrupted":
 		case "turn_cancelled":
@@ -303,16 +307,30 @@ function shouldReplaceSnapshot(
 	return allowTurnReplacement || previous.status !== "in_progress"
 }
 
-/** Merge full snapshots without allowing delayed state messages to roll back a task. */
+/** Merge deltas, or replace the snapshot set alongside authoritative host task membership. */
 export function mergeAgentLifecycleSnapshots(
 	previous: AgentLifecycleSnapshots | undefined,
 	incoming: AgentLifecycleSnapshots | undefined,
 	allowTurnReplacement = false,
+	membership?: { taskIds: ReadonlySet<string>; replaceSnapshots: boolean },
 ): AgentLifecycleSnapshots {
-	if (!incoming || Object.keys(incoming).length === 0) return previous ?? {}
-
 	let merged = previous ?? {}
+	const authoritativeTaskIds = membership?.taskIds
+	if (authoritativeTaskIds) {
+		for (const taskId of Object.keys(merged)) {
+			if (
+				!authoritativeTaskIds.has(taskId) ||
+				(membership?.replaceSnapshots &&
+					incoming !== undefined &&
+					!Object.prototype.hasOwnProperty.call(incoming, taskId))
+			) {
+				if (merged === previous) merged = { ...merged }
+				delete merged[taskId]
+			}
+		}
+	}
 	for (const [taskId, value] of Object.entries(incoming ?? {})) {
+		if (authoritativeTaskIds && !authoritativeTaskIds.has(taskId)) continue
 		const snapshot = parseAgentLifecycleSnapshot(value)
 		if (
 			snapshot &&
@@ -324,6 +342,12 @@ export function mergeAgentLifecycleSnapshots(
 		}
 	}
 	return merged
+}
+
+function acceptsLifecycleTask(state: ExtensionState, taskId: string): boolean {
+	// Older envelopes and initial lifecycle packets may precede host membership.
+	// Once a sequenced task map arrives, only the host can admit a task again.
+	return state.taskStateSeq === undefined || state.liveTasksById === undefined || !!state.liveTasksById[taskId]
 }
 
 export interface ProjectedLifecycleMetadata {
@@ -366,6 +390,7 @@ export function applyLifecycleSnapshotsToExtensionState(
 	let liveTasksById = state.liveTasksById
 	let liveTaskIds = state.liveTaskIds
 	for (const snapshot of Object.values(snapshots)) {
+		if (!acceptsLifecycleTask(state, snapshot.taskId)) continue
 		if (state.agentLifecycleDegraded?.[snapshot.taskId]?.degraded) continue
 		const projection = projectLifecycleMetadata(snapshot)
 		const existing = liveTasksById?.[snapshot.taskId]
@@ -532,7 +557,7 @@ export function projectLegacyLiveTaskMetadata(
 /** Apply a task-scoped lifecycle fallback/recovery signal. */
 export function applyLifecycleDegradedToExtensionState(state: ExtensionState, signalValue: unknown): ExtensionState {
 	const signal = parseAgentLifecycleDegraded(signalValue)
-	if (!signal) return state
+	if (!signal || !acceptsLifecycleTask(state, signal.taskId)) return state
 
 	const degraded = { ...(state.agentLifecycleDegraded ?? {}) }
 	if (signal.degraded) degraded[signal.taskId] = clone(signal)
@@ -564,7 +589,7 @@ export const applyAgentLifecycleDegradedToExtensionState = applyLifecycleDegrade
 
 export function applyLifecycleSnapshotToExtensionState(state: ExtensionState, snapshotValue: unknown): ExtensionState {
 	const snapshot = parseAgentLifecycleSnapshot(snapshotValue)
-	if (!snapshot) return state
+	if (!snapshot || !acceptsLifecycleTask(state, snapshot.taskId)) return state
 	const snapshots = mergeAgentLifecycleSnapshots(state.agentLifecycleSnapshots, { [snapshot.taskId]: snapshot })
 	if (snapshots === state.agentLifecycleSnapshots) return state
 	return applyLifecycleSnapshotsToExtensionState({ ...state, agentLifecycleSnapshots: snapshots }, snapshots)
@@ -572,7 +597,7 @@ export function applyLifecycleSnapshotToExtensionState(state: ExtensionState, sn
 
 export function applyLifecycleEventToExtensionState(state: ExtensionState, eventValue: unknown): ExtensionState {
 	const event = parseAgentLifecycleEvent(eventValue)
-	if (!event) return state
+	if (!event || !acceptsLifecycleTask(state, event.taskId)) return state
 	const attachedSnapshotValue = asRecord(eventValue)?.agentLifecycleSnapshot
 	if (attachedSnapshotValue !== undefined) {
 		const attachedSnapshot = parseAgentLifecycleSnapshot(attachedSnapshotValue)

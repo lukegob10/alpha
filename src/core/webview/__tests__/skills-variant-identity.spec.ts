@@ -9,13 +9,89 @@ import { SkillsManager } from "../../../services/skills/SkillsManager"
 import { handleDeleteSkill, handleOpenSkillFile, handleUpdateSkillModes } from "../skillsMessageHandler"
 import { openFile } from "../../../integrations/misc/open-file"
 
-const fixture = vi.hoisted(() => ({ home: "", projectDirectories: [] as string[] }))
+type FixtureDocument = {
+	uri: { scheme: string; fsPath: string }
+	version: number
+	isDirty: boolean
+	isClosed: boolean
+	eol: number
+	getText: () => string
+	positionAt: (offset: number) => { offset: number }
+	save: ReturnType<typeof vi.fn>
+	text: string
+}
+
+type FixtureReplacement = {
+	uri: FixtureDocument["uri"]
+	range: { start: { offset: number }; end: { offset: number } }
+	text: string
+}
+
+const fixture = vi.hoisted(() => ({
+	home: "",
+	projectDirectories: [] as string[],
+	documents: new Map<string, FixtureDocument>(),
+}))
 vi.mock("vscode", async (importOriginal) => {
 	const original = await importOriginal<typeof import("vscode")>()
 	return {
 		...original,
 		Uri: { ...original.Uri, from: vi.fn((properties) => properties) },
-		workspace: { ...original.workspace, openTextDocument: vi.fn().mockResolvedValue({}) },
+		EndOfLine: { LF: 1, CRLF: 2 },
+		WorkspaceEdit: class {
+			replacement?: FixtureReplacement
+			replace(uri: FixtureDocument["uri"], range: FixtureReplacement["range"], text: string) {
+				this.replacement = { uri, range, text }
+			}
+		},
+		workspace: {
+			...original.workspace,
+			get textDocuments() {
+				return [...fixture.documents.values()]
+			},
+			openTextDocument: vi.fn(async (uri: { scheme: string; fsPath: string }) => {
+				if (uri.scheme !== "file") return { uri }
+				const existing = fixture.documents.get(uri.fsPath)
+				if (existing && !existing.isClosed) return existing
+				let diskText = await fs.readFile(uri.fsPath, "utf8")
+				const bom = diskText.startsWith("\uFEFF") ? "\uFEFF" : ""
+				const document: FixtureDocument = {
+					uri,
+					version: 1,
+					isDirty: false,
+					isClosed: false,
+					eol: diskText.includes("\r\n") ? 2 : 1,
+					text: diskText.slice(bom.length),
+					getText: () => document.text,
+					positionAt: (offset) => ({ offset }),
+					save: vi.fn(async () => {
+						// Match the mutation fixture's host contract: reject a newer disk snapshot.
+						if (document.isClosed || (await fs.readFile(uri.fsPath, "utf8")) !== diskText) return false
+						await fs.writeFile(uri.fsPath, bom + document.text, "utf8")
+						diskText = bom + document.text
+						document.isDirty = false
+						return true
+					}),
+				}
+				fixture.documents.set(uri.fsPath, document)
+				return document
+			}),
+			applyEdit: vi.fn(async (edit: { replacement?: FixtureReplacement }) => {
+				const replacement = edit.replacement!
+				const document = fixture.documents.get(replacement.uri.fsPath)!
+				// Capture before dispatch and reject a changed document in the modeled host.
+				const version = document.version
+				await Promise.resolve()
+				if (document.isClosed || document.version !== version) return false
+				document.text =
+					document.text.slice(0, replacement.range.start.offset) +
+					replacement.text.replace(/\r?\n/g, document.eol === 2 ? "\r\n" : "\n") +
+					document.text.slice(replacement.range.end.offset)
+				document.version++
+				document.isDirty = true
+				return true
+			}),
+		},
 		window: { ...original.window, showErrorMessage: vi.fn(), showTextDocument: vi.fn() },
 	}
 })
@@ -60,6 +136,7 @@ describe("skill settings variant identity", () => {
 	] as const
 
 	beforeEach(async () => {
+		fixture.documents.clear()
 		tmpDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-skill-identity-")))
 		fixture.home = path.join(tmpDir, "home")
 		fixture.projectDirectories = []

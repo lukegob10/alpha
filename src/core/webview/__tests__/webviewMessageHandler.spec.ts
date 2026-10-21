@@ -2383,6 +2383,51 @@ describe("webviewMessageHandler - newTask", () => {
 		vi.mocked(mockAlphaProvider.createTask).mockResolvedValue({ taskId: "task-1" } as any)
 	})
 
+	it("acknowledges a correlated first-prompt admission after task creation", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			taskId: "task-1",
+			requestId: "initial-submission",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chatCommandResult",
+				chatCommandResult: {
+					command: "newTask",
+					requestId: "initial-submission",
+					taskId: "task-1",
+					status: "accepted",
+				},
+			}),
+		)
+	})
+
+	it("rejects failed first-prompt admission without navigating away from the recoverable draft", async () => {
+		vi.mocked(mockAlphaProvider.createTask).mockRejectedValueOnce(new Error("boom"))
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			taskId: "task-1",
+			requestId: "initial-submission",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chatCommandResult",
+				chatCommandResult: {
+					command: "newTask",
+					requestId: "initial-submission",
+					taskId: "task-1",
+					status: "rejected",
+					errorCode: "unknown",
+				},
+			}),
+		)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "invoke", invoke: "newChat" }),
+		)
+	})
+
 	it("captures a draft approval choice on the new task without updating the global default", async () => {
 		await webviewMessageHandler(mockAlphaProvider, {
 			type: "newTask",

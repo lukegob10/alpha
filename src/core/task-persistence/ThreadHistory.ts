@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type {
+	AgentLifecycleEvent,
 	AlphaMessage,
 	ThreadReadOptions,
 	ThreadReadResult,
@@ -11,7 +12,19 @@ import type {
 import type { ApiMessage } from "./apiMessages"
 import { parseProposedPlan } from "../../shared/plan-mode"
 
-type HistoryTurn = { start: number; messages: ApiMessage[]; id: string }
+type HistoryTurn = {
+	messages: ApiMessage[]
+	id: string
+	status?: ThreadTurnSummary["status"]
+	lifecycle?: LifecycleTurn
+}
+
+type LifecycleTurn = {
+	id: string
+	startedAt: number
+	terminalAt?: number
+	status: ThreadTurnSummary["status"]
+}
 
 function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -76,30 +89,190 @@ function completionTexts(messages: readonly AlphaMessage[]): ReadonlySet<string>
 	)
 }
 
+function responseTerminalStatus(
+	message: ApiMessage,
+	completedText: ReadonlySet<string>,
+): ThreadTurnSummary["status"] | undefined {
+	if (message.role !== "assistant") return undefined
+	const outcome = message.agentResponseOutcome
+	if (outcome?.status === "cancelled") return "interrupted"
+	if (outcome?.status === "failed") return outcome.retryable ? undefined : "failed"
+	if (outcome?.status === "incomplete" || outcome?.requiresContinuation) return undefined
+	return isFinalResponse(message, completedText) ? "completed" : undefined
+}
+
+function historyIdentity(taskId: string, identity: unknown[]): string {
+	return `${taskId}:${createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 20)}`
+}
+
+/** Journal identities/statuses are authoritative; response IDs correlate timestamp-less envelopes. */
+function lifecycleOwners(
+	taskId: string,
+	messages: readonly ApiMessage[],
+	events: readonly AgentLifecycleEvent[],
+	completedText: ReadonlySet<string>,
+): (LifecycleTurn | undefined)[] {
+	if (events.length === 0) return []
+	const turns = new Map<string, LifecycleTurn>()
+	const anchors = new Map<string, Set<LifecycleTurn>>()
+	const anchor = (id: string, turn: LifecycleTurn) => {
+		const owners = anchors.get(id) ?? new Set<LifecycleTurn>()
+		owners.add(turn)
+		anchors.set(id, owners)
+	}
+	for (const event of events) {
+		if (event.taskId !== taskId) continue
+		const key = JSON.stringify([event.runId, event.turnId])
+		let turn = turns.get(key)
+		if (!turn) {
+			turn = {
+				id: historyIdentity(taskId, [taskId, event.runId, event.turnId]),
+				startedAt: event.occurredAt,
+				status: "inProgress",
+			}
+			turns.set(key, turn)
+		}
+		switch (event.type) {
+			case "turn_status_changed":
+			case "turn_terminal":
+				if (event.payload.status !== "in_progress") {
+					turn.status = event.payload.status
+					turn.terminalAt = event.occurredAt
+				}
+				break
+			case "turn_completed":
+			case "turn_interrupted":
+			case "turn_failed":
+				turn.status = event.payload.status
+				turn.terminalAt = event.occurredAt
+				break
+			case "turn_cancelled":
+				turn.status = "interrupted"
+				turn.terminalAt = event.occurredAt
+				break
+			case "tool_call_accepted":
+			case "tool_result_recorded":
+				anchor(`tool:${event.payload.item.toolCallId}`, turn)
+				break
+			case "item_added":
+			case "item_updated": {
+				const item = event.payload.item
+				if (item.type === "assistant_text" && item.messageId) anchor(`message:${item.messageId}`, turn)
+				if (item.type === "tool_call" || item.type === "tool_result") anchor(`tool:${item.toolCallId}`, turn)
+				break
+			}
+		}
+	}
+	if (turns.size === 0) return []
+	const ordered = [...turns.values()].sort((left, right) => left.startedAt - right.startedAt)
+	const owners = messages.map((message) => {
+		const ids = [
+			...(message.messageId ? [`message:${message.messageId}`] : []),
+			...(message.agentResponseItems ?? []).flatMap((item) =>
+				item.type === "text" && item.id ? [`message:${item.id}`] : [],
+			),
+			...blocks(message).flatMap((block) =>
+				block.type === "tool_use" && typeof block.id === "string"
+					? [`tool:${block.id}`]
+					: block.type === "tool_result" && typeof block.tool_use_id === "string"
+						? [`tool:${block.tool_use_id}`]
+						: [],
+			),
+		]
+		const matched = new Set(ids.flatMap((id) => [...(anchors.get(id) ?? [])]))
+		const [matchedOwner] = matched
+		if (matched.size === 1 && matchedOwner) {
+			if (message.ts === undefined || message.ts >= matchedOwner.startedAt) return matchedOwner
+		}
+		if (message.ts === undefined) return undefined
+		// Locate the latest start without scanning every prior turn for each message.
+		let left = 0
+		let right = ordered.length
+		while (left < right) {
+			const middle = (left + right) >>> 1
+			if (ordered[middle].startedAt <= message.ts) left = middle + 1
+			else right = middle
+		}
+		const turn = ordered[left - 1]
+		// Equal timestamps cannot establish which of two starts owns an unstamped
+		// envelope. Retain the legacy boundary fallback unless an ID matched above.
+		if (turn && ordered[left - 2]?.startedAt === turn.startedAt && message.ts === turn.startedAt) return undefined
+		if (turn?.terminalAt !== undefined && message.ts > turn.terminalAt && beginsHumanInput(message)) {
+			return undefined
+		}
+		return turn
+	})
+	// Input may be committed just before turn_started. Attach only its unfinished
+	// prefix; a completed legacy turn preceding the journal retains its own identity.
+	let pendingStart = 0
+	for (let index = 0; index < messages.length; index++) {
+		const owner = owners[index]
+		if (owner) {
+			for (let pending = pendingStart; pending < index; pending++) owners[pending] = owner
+			pendingStart = index + 1
+		} else if (responseTerminalStatus(messages[index], completedText)) {
+			pendingStart = index + 1
+		}
+	}
+	const latest = ordered.at(-1)
+	if (
+		latest &&
+		ordered.at(-2)?.startedAt !== latest.startedAt &&
+		!owners.includes(latest) &&
+		messages.slice(pendingStart).some(beginsHumanInput) &&
+		messages.slice(pendingStart).every((message) => message.ts !== undefined && message.ts <= latest.startedAt)
+	) {
+		for (let pending = pendingStart; pending < messages.length; pending++) owners[pending] = latest
+	}
+	return owners
+}
+
+function beginsHumanInput(message: ApiMessage): boolean {
+	return (
+		message.role === "user" &&
+		message.input_origin !== "agent" &&
+		!message.isSummary &&
+		!message.agent_message_id &&
+		!blocks(message).some((item) => item.type === "tool_result")
+	)
+}
+
 function partitionTurns(
 	taskId: string,
 	messages: readonly ApiMessage[],
 	completedText: ReadonlySet<string>,
+	events: readonly AgentLifecycleEvent[],
 ): HistoryTurn[] {
 	const turns: HistoryTurn[] = []
-	let completed = false
+	const owners = lifecycleOwners(taskId, messages, events, completedText)
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]
-		const beginsTurn =
-			message.role === "user" &&
-			!message.isSummary &&
-			!message.agent_message_id &&
-			!blocks(message).some((item) => item.type === "tool_result")
-		if (turns.length === 0 || (beginsTurn && completed)) {
-			const identity = createHash("sha256")
-				.update(JSON.stringify([taskId, index, message.ts, textContent(message.content).slice(0, 256)]))
-				.digest("hex")
-				.slice(0, 20)
-			turns.push({ start: index, messages: [], id: `${taskId}:${identity}` })
-			completed = false
+		const owner = owners[index]
+		const previous = turns.at(-1)
+		if (
+			!previous ||
+			(owner
+				? owner !== previous.lifecycle
+				: beginsHumanInput(message) && previous.status !== undefined && previous.status !== "inProgress")
+		) {
+			turns.push({
+				messages: [],
+				id:
+					owner?.id ??
+					historyIdentity(taskId, [taskId, index, message.ts, textContent(message.content).slice(0, 256)]),
+				...(owner ? { lifecycle: owner, status: owner.status } : {}),
+			})
 		}
-		turns[turns.length - 1].messages.push(message)
-		if (message.role === "assistant") completed = isFinalResponse(message, completedText)
+		const turn = turns[turns.length - 1]
+		turn.messages.push(message)
+		if (
+			!turn.lifecycle &&
+			message.role === "assistant" &&
+			turn.status !== "failed" &&
+			turn.status !== "interrupted"
+		) {
+			turn.status = responseTerminalStatus(message, completedText)
+		}
 	}
 	return turns
 }
@@ -164,6 +337,7 @@ export interface ThreadHistoryReadInput {
 	status: ThreadRuntimeStatus
 	lastTurnStatus?: ThreadTurnSummary["status"]
 	apiMessages: readonly ApiMessage[]
+	lifecycleEvents?: readonly AgentLifecycleEvent[]
 	uiMessages?: readonly AlphaMessage[]
 	options?: ThreadReadOptions
 }
@@ -179,28 +353,24 @@ export function buildThreadReadResult(input: ThreadHistoryReadInput): ThreadRead
 		throw new Error("maxOutputCharsPerItem must be between 0 and 20000")
 	}
 	const completedText = completionTexts(input.uiMessages ?? [])
-	const all = partitionTurns(input.taskId, input.apiMessages, completedText)
+	const all = partitionTurns(input.taskId, input.apiMessages, completedText, input.lifecycleEvents ?? [])
 	let end = all.length
 	if (options.cursor !== undefined) {
 		end = all.findIndex((turn) => turn.id === options.cursor)
 		if (end < 0) throw new Error("Unknown thread history cursor")
 	}
 	const selected = all.slice(Math.max(0, end - turnLimit), end).reverse()
-	const turns: ThreadTurnSummary[] = selected.map((turn) => ({
-		id: turn.id,
-		status: isFinalResponse(turn.messages.at(-1)!, completedText)
-			? "completed"
-			: turn === all.at(-1) && input.lastTurnStatus
-				? input.lastTurnStatus
-				: turn !== all.at(-1) || input.status.type === "idle"
-					? "completed"
-					: input.status.type === "active"
-						? "inProgress"
-						: input.status.type === "systemError"
-							? "failed"
-							: "interrupted",
-		items: visibleItems(turn, options),
-	}))
+	const latest = all.at(-1)
+	const turns: ThreadTurnSummary[] = selected.map((turn) => {
+		let status = turn.lifecycle?.status ?? (turn === latest ? input.lastTurnStatus : undefined) ?? turn.status
+		if (status === undefined) {
+			if (turn !== latest || input.status.type === "idle") status = "completed"
+			else if (input.status.type === "active") status = "inProgress"
+			else if (input.status.type === "systemError") status = "failed"
+			else status = "interrupted"
+		}
+		return { id: turn.id, status, items: visibleItems(turn, options) }
+	})
 	const hasMore = end > selected.length
 	return {
 		schemaVersion: 1,

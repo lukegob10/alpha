@@ -6,6 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
+Download Alpha from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest). Choose the `.vsix` for your
+operating system and architecture, then run **Extensions: Install from VSIX...** in VS Code 1.125 or newer.
+
 ## Welcome to Alpha
 
 Alpha keeps delegated work visible, prevents search loops, and makes active traces easier to follow.
@@ -121,11 +124,12 @@ pnpm check-types
 pnpm test
 ```
 
-The release-host contract runs on VS Code 1.138.0, which is also the minimum supported editor version.
+VS Code 1.125.0 is the minimum supported editor. The exact release-host contract runs on VS Code 1.138.0.
 See the [migration record](docs/vscode-1.138-migration.md) for compatibility changes and validation.
 
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 ```
 
 Optional retained workspace and evaluator checks are explicit:
@@ -168,11 +172,14 @@ If you prefer to install the VSIX package manually:
     ```sh
     pnpm vsix
     ```
-2.  A `.vsix` file will be generated in the `bin/` directory (e.g., `bin/alpha-<version>.vsix`).
+2.  A host-targeted `.vsix` file will be generated in `bin/` (e.g., `bin/alpha-<version>-win32-x64.vsix` on Windows x64).
 3.  Install it manually using the VSCode CLI:
     ```sh
-    code --install-extension bin/alpha-<version>.vsix
+    code --install-extension bin/alpha-<version>-<target>.vsix
     ```
+
+Use the package matching your operating system and architecture. The Intel macOS package supports core features and
+Qdrant code indexing; this LanceDB version has no Intel macOS native binding for local indexing.
 
 ---
 

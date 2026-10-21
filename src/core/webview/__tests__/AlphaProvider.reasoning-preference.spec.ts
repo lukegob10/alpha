@@ -207,7 +207,9 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 		postTaskStateToWebview: vi.fn(async () => undefined),
 		postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 		removeTaskFromStack: vi.fn(async () => undefined),
-		addTaskToStack: vi.fn(async () => undefined),
+		addTaskToStack: vi.fn(async (task: Task, options: { focus?: boolean } = {}) => {
+			taskSessions.register(task, options)
+		}),
 		updateGlobalState: vi.fn(async (key: string, value: unknown) => {
 			state[key] = value
 		}),
@@ -223,6 +225,7 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 			experiments: {},
 		})),
 		providerSettingsManager: {
+			getAvailableProfile: vi.fn(async () => undefined),
 			listConfig: vi.fn(async () => []),
 			getModeConfigId: vi.fn(async () => undefined),
 			getProfile: vi.fn(async () => ({ ...baseConfiguration })),

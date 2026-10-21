@@ -42,6 +42,7 @@ export async function writeHarnessReceipt(
 		ownershipGate: result.ownershipGate ?? null,
 		requireAllTests: result.requireAllTests === true,
 		testCounts: result.testCounts ?? null,
+		testSelection: result.testSelection ?? null,
 		captureComplete: result.captureComplete === true,
 		retentionStatus: result.retention?.status ?? null,
 		failure: result.failure ?? null,

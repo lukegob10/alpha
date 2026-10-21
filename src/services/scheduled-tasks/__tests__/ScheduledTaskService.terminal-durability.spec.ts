@@ -14,11 +14,7 @@ const commandRunner = vi.hoisted(() =>
 	vi.fn<(command: string, options: { signal: AbortSignal }) => Promise<{ stdout: string; stderr: string }>>(),
 )
 
-vi.mock("child_process", async (importOriginal) => {
-	const original = await importOriginal<typeof import("child_process")>()
-	const { promisify } = await import("util")
-	return { ...original, execFile: Object.assign(vi.fn(), { [promisify.custom]: commandRunner }) }
-})
+vi.mock("../runScheduledCommand", () => ({ runScheduledCommand: commandRunner }))
 vi.mock("../../../utils/storage", () => ({ getStorageBasePath: (base: string) => base }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 
@@ -420,6 +416,58 @@ describe("scheduled terminal result durability", () => {
 		expect(completeSpy).toHaveBeenCalledOnce()
 		expect(output).toHaveBeenCalledWith(expect.stringContaining("Could not finalize run"))
 		expect(output.mock.calls.at(-1)?.[0]).not.toContain("will retry")
+	})
+
+	it("retains the owner through command cleanup and its terminal write when disposal repeats", async () => {
+		const schedule = await service.createTask(
+			payload({
+				execution: { type: "command", command: "node --version" },
+				autoApproval: { approvalMode: "bypass" },
+			}),
+		)
+		const executing = deferred()
+		const aborted = deferred()
+		const cleanup = deferred()
+		const writing = deferred()
+		const releaseWrite = deferred()
+		commandRunner.mockImplementationOnce(async (_command, { signal }) => {
+			signal.addEventListener("abort", () => aborted.resolve(), { once: true })
+			executing.resolve()
+			await cleanup.promise
+			throw new Error("Command aborted during shutdown")
+		})
+		const completeRun = ScheduledTaskStore.prototype.completeRun
+		vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockImplementationOnce(async function (
+			this: ScheduledTaskStore,
+			run,
+		) {
+			writing.resolve()
+			await releaseWrite.promise
+			return completeRun.call(this, run)
+		})
+		const processQueue = vi.spyOn(service as unknown as { processQueue: () => Promise<void> }, "processQueue")
+		await service.runNow(schedule.id)
+		await executing.promise
+		try {
+			service.dispose()
+			service.dispose()
+			await aborted.promise
+			expect(leaseReleases.size).toBe(0)
+			expect((Reflect.get(service, "commandControllers") as Set<AbortController>).size).toBe(1)
+			cleanup.resolve()
+			await writing.promise
+			expect(leaseReleases.size).toBe(0)
+			expect(service.getState().runs[0].status).toBe("running")
+			releaseWrite.resolve()
+			await processQueue.mock.results[0].value
+			expect(leaseReleases.size).toBe(1)
+			expect(service.getState().runs[0].status).toBe("failed")
+			expect((Reflect.get(service, "commandControllers") as Set<AbortController>).size).toBe(0)
+		} finally {
+			cleanup.resolve()
+			releaseWrite.resolve()
+			await processQueue.mock.results[0].value
+		}
 	})
 
 	it("stops retry timers and detaches listeners when disposed with a pending terminal intent", async () => {

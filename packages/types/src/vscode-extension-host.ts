@@ -278,6 +278,7 @@ export const extensionAgentLifecycleSnapshotMessageSchema = agentLifecycleSnapsh
 export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegradedMessageSchema
 
 export type ChatCommand =
+	| "newTask"
 	| "askResponse"
 	| "queueMessage"
 	| "sendAndSteer"

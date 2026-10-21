@@ -26,7 +26,7 @@ const responseUsage = {
 	input_tokens: 120,
 	output_tokens: 30,
 	total_tokens: 150,
-	input_tokens_details: { cached_tokens: 40 },
+	input_tokens_details: { cached_tokens: 40, cache_write_tokens: 60 },
 	output_tokens_details: { reasoning_tokens: 12 },
 }
 
@@ -238,7 +238,14 @@ describe("WS06 provider terminal errors and usage", () => {
 			const { chunks, failure } = await consume(provider())
 			expect(failure).toMatchObject({ code: "unknown_failure" })
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
-				{ type: "usage", inputTokens: 120, outputTokens: 30, cacheReadTokens: 40, reasoningTokens: 12 },
+				{
+					type: "usage",
+					inputTokens: 120,
+					outputTokens: 30,
+					cacheReadTokens: 40,
+					cacheWriteTokens: 60,
+					reasoningTokens: 12,
+				},
 			])
 		})
 
@@ -290,7 +297,14 @@ describe("WS06 provider terminal errors and usage", () => {
 				const { chunks, failure, canonical } = await consume(handler)
 				expect(failure).toMatchObject({ retryable: false })
 				expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
-					{ type: "usage", inputTokens: 120, outputTokens: 30, cacheReadTokens: 40, reasoningTokens: 12 },
+					{
+						type: "usage",
+						inputTokens: 120,
+						outputTokens: 30,
+						cacheReadTokens: 40,
+						cacheWriteTokens: 60,
+						reasoningTokens: 12,
+					},
 				])
 				expect(handler.getResponseId()).toBe("response-incomplete")
 				expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
@@ -336,10 +350,78 @@ describe("WS06 provider terminal errors and usage", () => {
 			const { chunks, failure, canonical } = await consume(handler)
 			expect(failure).toBeUndefined()
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toHaveLength(1)
+			expect(chunks.filter((chunk) => chunk.type === "usage")[0]).toMatchObject({ cacheWriteTokens: 60 })
 			expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
 			expect(handler.getResponseId()).toBe("response-interrupted")
 			expect(responsesCreate).toHaveBeenCalledOnce()
 		})
+
+		it.each([0, 60])("preserves completed cache writes of %s exactly once", async (cacheWriteTokens) => {
+			const response = {
+				id: "response-completed-cache-write",
+				status: "completed",
+				output: [],
+				usage: {
+					...responseUsage,
+					input_tokens_details: { cached_tokens: 40, cache_write_tokens: cacheWriteTokens },
+				},
+			}
+			mockResponse(streaming, response, [{ type: "response.completed", response }])
+			const { chunks, failure, canonical } = await consume(provider())
+			expect(failure).toBeUndefined()
+			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+				{
+					type: "usage",
+					inputTokens: 120,
+					outputTokens: 30,
+					cacheReadTokens: 40,
+					cacheWriteTokens,
+					reasoningTokens: 12,
+				},
+			])
+			expect(canonical.items.filter((item) => item.type === "usage")).toHaveLength(1)
+		})
+
+		it.each(["failed", "incomplete", "interrupted"])("preserves zero cache writes on %s once", async (status) => {
+			mockResponse(streaming, {
+				id: "response-zero-cache-write",
+				status: status === "interrupted" ? "incomplete" : status,
+				error: { code: "unknown_failure", message: "Opaque provider failure." },
+				incomplete_details: { reason: status === "interrupted" ? "interrupted" : "max_output_tokens" },
+				output: [],
+				usage: { ...responseUsage, input_tokens_details: { cached_tokens: 40, cache_write_tokens: 0 } },
+			})
+			const { chunks, failure } = await consume(provider())
+			expect(failure === undefined).toBe(status === "interrupted")
+			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+				{
+					type: "usage",
+					inputTokens: 120,
+					outputTokens: 30,
+					cacheReadTokens: 40,
+					cacheWriteTokens: 0,
+					reasoningTokens: 12,
+				},
+			])
+		})
+
+		it.each([undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY, "60", Number.MAX_SAFE_INTEGER + 1])(
+			"ignores invalid cache-write usage (%j) while retaining valid counters",
+			async (cache_write_tokens) => {
+				mockResponse(streaming, {
+					id: "response-invalid-cache-write",
+					status: "completed",
+					output: [],
+					usage: { ...responseUsage, input_tokens_details: { cached_tokens: 40, cache_write_tokens } },
+				})
+				const { chunks, failure } = await consume(provider())
+				expect(failure).toBeUndefined()
+				const usages = chunks.filter((chunk) => chunk.type === "usage")
+				expect(usages).toHaveLength(1)
+				expect(usages[0]).toMatchObject({ inputTokens: 120, outputTokens: 30, cacheReadTokens: 40 })
+				expect(usages[0].cacheWriteTokens).toBeUndefined()
+			},
+		)
 
 		it.each(
 			["function_call", "custom_tool_call"].flatMap((type) =>

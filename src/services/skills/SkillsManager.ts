@@ -23,6 +23,7 @@ import {
 import { t } from "../../i18n"
 import { readSkillInvocationPolicy } from "./skillPolicy"
 import { SkillSelectionError } from "./SkillSelectionError"
+import { updateSkillModesInDocument } from "./skillMutation"
 
 // Re-export for convenience
 export type { SkillMetadata, SkillContent, SkillSource }
@@ -716,8 +717,16 @@ Add your skill instructions here.
 			},
 		)
 
-		// Write the SKILL.md file
-		await fs.writeFile(skillMdPath, skillContent, "utf-8")
+		// A skill created after the existence check belongs to its creator.
+		await this.assertWritablePath(skillMdPath)
+		try {
+			await fs.writeFile(skillMdPath, skillContent, { encoding: "utf-8", flag: "wx" })
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+				throw new Error(t("skills:errors.already_exists", { name, path: skillMdPath }))
+			}
+			throw error
+		}
 
 		// Refresh skills list
 		await this.discoverSkills()
@@ -847,17 +856,10 @@ Add your skill instructions here.
 		}
 
 		await this.assertWritablePath(skill.path)
-		// Read the current SKILL.md file
-		const fileContent = await fs.readFile(skill.path, "utf-8")
-		const { data: frontmatter, content: body } = matter(fileContent)
-
 		// An explicit empty array overrides skills-{mode}/ defaults during rediscovery.
-		frontmatter.modeSlugs = newModeSlugs ?? []
-		delete frontmatter.mode
-
-		// Serialize back to SKILL.md format
-		const newContent = matter.stringify(body, frontmatter)
-		await fs.writeFile(skill.path, newContent, "utf-8")
+		await updateSkillModesInDocument(skill.path, [...(newModeSlugs ?? [])], (candidate) =>
+			this.assertWritablePath(candidate),
+		)
 
 		// Refresh skills list
 		await this.discoverSkills()

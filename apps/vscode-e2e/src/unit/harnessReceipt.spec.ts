@@ -45,6 +45,7 @@ test("harness receipts project final observed state and omit raw locations and e
 		assert.equal(receipt.execution, "test-seam")
 		assert.equal(receipt.requireAllTests, false, "requested strict mode cannot replace an observed host receipt")
 		assert.equal(receipt.testCounts, null)
+		assert.equal(receipt.testSelection, null, "requested options cannot establish observed selection")
 		assert.equal(receipt.actualModelId, null)
 		assert.equal(receipt.actualReasoningEffort, null)
 		assert.equal(receipt.retentionStatus, "failed")
@@ -56,6 +57,15 @@ test("harness receipts project final observed state and omit raw locations and e
 			{ code: "EEXIST" },
 		)
 		assert.equal(await fs.readFile(path.join(root, "receipt-test.json"), "utf8"), bytes)
+		const testSelection = { testFile: "extension.test", grep: "focused diagnostic", forbidOnly: false }
+		await writeHarnessReceipt(
+			root,
+			{ providerMode: "scripted", vscodeVersion: "1.138.0", testFile: "extension.test", requireAllTests: true },
+			{ ...result, runId: "selection-test", testSelection },
+			"2026-10-02T00:00:00Z",
+		)
+		const observed = JSON.parse(await fs.readFile(path.join(root, "selection-test.json"), "utf8"))
+		assert.deepEqual(observed.testSelection, testSelection)
 	} finally {
 		assert.equal(await fs.realpath(path.dirname(root)), await fs.realpath(os.tmpdir()))
 		assert.match(path.basename(root), /^alpha-harness-receipt-/)

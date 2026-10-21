@@ -735,7 +735,7 @@ describe("TaskToolCatalogCache", () => {
 			expect(removeListener.mock.calls.map((args) => args[1])).toEqual(
 				addListener.mock.calls.map((args) => args[1]),
 			)
-			if (settle === "resolve") load.resolve({ loaded: [], failed: [] })
+			if (settle === "resolve") load.resolve({ loaded: [], failed: [], catalog: [] })
 			else load.reject(new Error("Late shared load failure"))
 			await new Promise((resolve) => setImmediate(resolve))
 			expect(captureSpy).not.toHaveBeenCalled()
