@@ -3,13 +3,14 @@
 import path from "path"
 import * as fs from "fs/promises"
 import os from "os"
+import { createRequire } from "module"
 import { fileURLToPath, pathToFileURL } from "url"
 
 import { execa } from "execa"
 
 import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/types"
 
-import { CustomToolRegistry } from "../custom-tool-registry.js"
+import type { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -19,9 +20,31 @@ const TEST_FIXTURES_OVERRIDE_DIR = path.join(__dirname, "fixtures-override")
 
 describe("CustomToolRegistry", () => {
 	let registry: CustomToolRegistry
+	let nativeRegistryRoot: string
+	let NativeCustomToolRegistry: typeof CustomToolRegistry
+
+	beforeAll(async () => {
+		nativeRegistryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-registry-"))
+		const bundle = path.join(nativeRegistryRoot, "registry.mjs")
+		await runEsbuild({
+			entryPoint: path.join(__dirname, "..", "custom-tool-registry.ts"),
+			outfile: bundle,
+			external: NODE_BUILTIN_MODULES,
+			banner: COMMONJS_REQUIRE_BANNER,
+		})
+		// Production tool imports must use Node's ESM cache, not Vitest's transformed module graph.
+		// Keep all public-method assertions against the current source, compiled fresh for this suite.
+		NativeCustomToolRegistry = (
+			createRequire(import.meta.url)(bundle) as typeof import("../custom-tool-registry.js")
+		).CustomToolRegistry
+	})
+
+	afterAll(async () => {
+		if (nativeRegistryRoot) await fs.rm(nativeRegistryRoot, { recursive: true, force: true })
+	})
 
 	beforeEach(() => {
-		registry = new CustomToolRegistry()
+		registry = new NativeCustomToolRegistry()
 	})
 
 	it("loads module URL characters through native imports and both compilation caches", async () => {
@@ -39,7 +62,10 @@ describe("CustomToolRegistry", () => {
 			] as const) {
 				await fs.writeFile(
 					path.join(toolDir, file),
-					`export default { name: "${name}", description: "Encoded path", execute: async () => "loaded" }`,
+					`${file.endsWith(".ts") ? 'import { parametersSchema } from "@alpha-code/types"; ' : ""}
+					export default { name: "${name}", description: "Encoded path",
+					${file.endsWith(".ts") ? "parameters: parametersSchema.object({})," : ""}
+					execute: async () => "loaded" }`,
 				)
 			}
 			// Exercise Node's actual file-URL loader; Vitest resolves dynamic imports through Vite.
@@ -62,6 +88,7 @@ describe("CustomToolRegistry", () => {
 					for (const name of result.loaded) {
 						assert.equal(await currentRegistry.get(name).execute({}, {}), "loaded")
 					}
+					assert.deepEqual(currentRegistry.get("compiled_path").parameters.parse({}), {})
 				}
 			`
 			await execa(process.execPath, ["--input-type=module", "--eval", script], { timeout: 25_000 })

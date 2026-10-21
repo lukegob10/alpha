@@ -6,6 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
+Download Alpha from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest). Choose the `.vsix` for your
+operating system and architecture, then run **Extensions: Install from VSIX...** in VS Code 1.125 or newer.
+
 ## Welcome to Alpha
 
 Alpha keeps delegated work visible, prevents search loops, and makes active traces easier to follow.

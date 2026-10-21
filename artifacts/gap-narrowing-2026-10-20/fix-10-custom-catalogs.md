@@ -77,3 +77,33 @@ The registry now distinguishes pending generation reservations from retained imp
 - Core `check-types`: **passed**, 6.20 seconds. Focused ESLint for `custom-tool-registry.ts` and `custom-tool-registry.catalog.spec.ts`: **passed**, 4.04 seconds. Touched-file Prettier passed.
 
 The final full native catalog suite passed **16 / 16**, 65.47 seconds, including interrupted-write recovery and preservation after module-evaluation failure. Production source is stable after the focused regression, full native suite, typecheck, ESLint, formatting and diff checks; only evidence documentation changed afterward.
+
+## Release 3.2.7 Linux fixture-loader follow-up (2026-10-21)
+
+The first Ubuntu release QA job at `9dd5287bb` reported **225 passed, 12 failed, 8 platform skips** in core, taking 691.95 seconds. All twelve failures were deadlines in `custom-tool-registry.spec.ts`; the first two forced full-fixture loads passed, later loads logged the expected `invalid.ts` validation error and then stopped completing. The independent native catalog cases passed. Evidence: `artifacts/harness/release-3.2.7/ubuntu-first-job.log`, lines 1560–1785. The production registry is unchanged between that source and the investigation baseline **`e768c567d94cca61154e09ab70f77a772f4726b1`**.
+
+The legacy suite had loaded the registry through Vitest, which routes its dynamic tool imports through Vite's transformed module graph. The passing catalog scenarios load a fresh registry bundle through Node. [Vitest's feature documentation](https://vitest.dev/guide/features.html), inspected 2026-10-21 alongside the pinned Vitest 4.1.11/Vite 6.4.3 module-runner code, confirms that its transform/resolver infrastructure differs from Node's native ESM loader. The timeout pattern and native Linux reproduction below implicate that transformed import path; the exact unresolved internal Vite module-graph promise was not instrumented, and this is not a claim that every arbitrary custom dependency graph was proven safe.
+
+The test-only correction compiles the current registry source once per suite and loads the resulting ESM bundle with Node's `createRequire` (supported by the development Node 24.21.0 host). Its tool imports therefore use the same native loader as the extension. Every existing public-method assertion and deadline is preserved. No production runtime, module semantics, cache behavior, test skip, private-method spy, or timeout increase was added. The existing encoded-path/native-cache case now also imports a real `@alpha-code/types` Zod schema and parses it after each of its three forced loads, including the fresh-registry disk-cache path.
+
+Retained diagnostic `registry-native-linux-probe.mjs` compiles the current source and exercises all original fixture modules through native Node: four forced directory loads, including a new registry sharing the cache; exact six-tool catalogs and the one intended validation failure; execution of the legacy, mixed, named and default definitions; schema parsing; and later-directory override precedence. It succeeded under WSL Ubuntu **Node v22.21.1**, with sources/dependencies on `/mnt/f`. This is an additional Linux-native diagnostic, not the pinned Node 24 release gate. The Windows dependency tree lacks Linux Rollup's optional binary; a complete Linux Vitest run was not attempted through dependency installation.
+
+Exact WSL command (from the Windows workspace):
+
+```powershell
+wsl -d Ubuntu --cd /mnt/f/roo-fork/Alpha-Code/packages/core --exec /home/luke_goblirsch/.nvm/versions/node/v22.21.1/bin/node /mnt/f/roo-fork/Alpha-Code/artifacts/gap-narrowing-2026-10-20/registry-native-linux-probe.mjs /mnt/f/roo-fork/Alpha-Code
+```
+
+Observed exit **0** with four `Native Linux load N: six tools and one expected invalid definition` messages and final `Native Linux override load passed on v22.21.1 (linux)`. The script owns and removes only its newly created temporary directory.
+
+Windows verification on the investigation baseline plus the test-only correction:
+
+- Focused legacy registry suite: **34 passed / 1 file**, 107.44 seconds; all original deadlines unchanged.
+- Full core `pnpm --filter @alpha-code/core test --maxWorkers=2`: **246 passed / 17 files**, 186.96 seconds.
+- Separate native catalog `pnpm --filter @alpha-code/core test src/custom-tools/__tests__/custom-tool-registry.catalog.spec.ts --maxWorkers=1`: **16 passed / 1 file**, 40.15 seconds.
+- Core `check-types`: **passed**, 3.825 seconds. Focused ESLint on the touched registry spec: **passed**, 3.29 seconds.
+- Touched-file Prettier and `git diff --check`: **passed**. All pnpm invocations use `PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=warn`.
+
+Final follow-up files: `packages/core/src/custom-tools/__tests__/custom-tool-registry.spec.ts`, this report, and `artifacts/gap-narrowing-2026-10-20/registry-native-linux-probe.mjs`. No production, release, dependency, lockfile or unrelated source edits were made in this follow-up. Test sources are stable after validation; only this evidence report was amended with completed results.
+
+The parent agent owns committing, publishing and rerunning Ubuntu release CI. Passing native Linux diagnostics and Windows tests do not substitute for that pinned release gate.
