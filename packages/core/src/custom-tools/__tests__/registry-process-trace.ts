@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { type ChildProcess } from "node:child_process"
 import * as fs from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 const TRACE_PRELOAD = `
 const fs = require("node:fs")
@@ -44,12 +45,23 @@ export class RegistryProcessTrace {
 	private file: string
 	private removeAbortListener?: () => void
 
-	constructor(readonly directory: string) {
+	constructor(
+		readonly directory: string,
+		private readonly ownerOnly = false,
+	) {
 		this.preload = path.join(directory, "preload.cjs")
 		this.file = path.join(directory, `${process.pid}.parent.json`)
-		this.env = { ALPHA_REGISTRY_PROCESS_TRACE_DIR: directory, ALPHA_REGISTRY_PROCESS_TRACE_PRELOAD: this.preload }
+		this.env = {
+			ALPHA_REGISTRY_PROCESS_TRACE_DIR: directory,
+			...(!ownerOnly ? { ALPHA_REGISTRY_PROCESS_TRACE_PRELOAD: this.preload } : {}),
+		}
 		fs.mkdirSync(directory, { recursive: true })
-		fs.writeFileSync(this.preload, TRACE_PRELOAD)
+		fs.writeFileSync(
+			this.preload,
+			ownerOnly
+				? fs.readFileSync(fileURLToPath(new URL("./registry-owner-preload.cjs", import.meta.url)))
+				: TRACE_PRELOAD,
+		)
 		this.stage("parent trace start")
 		this.flush("start")
 	}
@@ -76,10 +88,10 @@ export class RegistryProcessTrace {
 	observe(child: ChildProcess): void {
 		this.children.set(child.pid ?? -1, child)
 		this.stage("parent child created", child.pid)
-		this.flush("child created")
+		if (!this.ownerOnly) this.flush("child created")
 		child.on("spawn", () => {
 			this.stage("parent child spawn", child.pid)
-			this.flush("child spawn")
+			if (!this.ownerOnly) this.flush("child spawn")
 		})
 		child.on("exit", (code, signal) => {
 			this.stage("parent child exit", { pid: child.pid, code, signal })
@@ -156,6 +168,11 @@ export class RegistryProcessTrace {
 	}
 
 	async instrumentBundle(bundle: string): Promise<void> {
+		if (this.ownerOnly) {
+			this.bundle = bundle
+			this.stage("parent original registry bundle", bundle)
+			return
+		}
 		let source = await fs.promises.readFile(bundle, "utf8")
 		const inject = (before: string, after: string) => {
 			assert.ok(source.includes(before), `Registry trace target missing: ${before}`)
@@ -242,8 +259,9 @@ export class RegistryProcessTrace {
 }
 
 export function createRegistryProcessTrace(name: string): RegistryProcessTrace | undefined {
-	if (process.env.ALPHA_TRACE_CUSTOM_TOOLS !== "1") return undefined
+	const mode = process.env.ALPHA_TRACE_CUSTOM_TOOLS
+	if (mode !== "1" && mode !== "owner-only") return undefined
 	const root = process.env.ALPHA_CUSTOM_TOOL_TRACE_DIR
 	assert.ok(root, "ALPHA_CUSTOM_TOOL_TRACE_DIR is required for registry process diagnostics")
-	return new RegistryProcessTrace(path.join(path.resolve(root), name))
+	return new RegistryProcessTrace(path.join(path.resolve(root), name), mode === "owner-only")
 }
