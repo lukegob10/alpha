@@ -198,10 +198,15 @@ jobs:
               shell: pwsh
               env:
                   ALPHA_TRACE_CUSTOM_TOOLS: "1"
+                  VITEST_MAX_WORKERS: "2"
+                  VITEST_MAX_FORKS: "2"
+                  VITEST_MIN_FORKS: "1"
+                  VITEST_MAX_THREADS: "2"
+                  VITEST_MIN_THREADS: "1"
               run: |
                   New-Item -ItemType Directory -Force artifacts/harness/release-3.2.7 | Out-Null
                   node -e "const os=require('node:os'); console.log(JSON.stringify({node:process.version,platform:process.platform,cpus:os.availableParallelism()}))"
-                  pnpm --filter @alpha-code/core test --reporter=verbose 2>&1 | Tee-Object -FilePath artifacts/harness/release-3.2.7/hosted-core-diagnostics.log
+                  pnpm --filter @alpha-code/core test --reporter=dot --reporter=json --outputFile.json=../../artifacts/harness/release-3.2.7/core-diagnostic-results.json 2>&1 | Tee-Object -FilePath artifacts/harness/release-3.2.7/hosted-core-diagnostics.log
                   exit $LASTEXITCODE
             - name: Retain diagnostic traces
               if: always()
