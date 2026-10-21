@@ -3,14 +3,14 @@
 import path from "path"
 import * as fs from "fs/promises"
 import os from "os"
-import { createRequire } from "module"
+import { createRequire, registerHooks } from "module"
 import { fileURLToPath, pathToFileURL } from "url"
 
 import { execa } from "execa"
 
 import { type CustomToolDefinition, parametersSchema as z } from "@alpha-code/types"
 
-import type { CustomToolRegistry } from "../custom-tool-registry.js"
+import { CustomToolRegistry } from "../custom-tool-registry.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "../esbuild-runner.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -21,22 +21,17 @@ const TEST_FIXTURES_OVERRIDE_DIR = path.join(__dirname, "fixtures-override")
 describe("CustomToolRegistry", () => {
 	let registry: CustomToolRegistry
 	let nativeRegistryRoot: string
-	let NativeCustomToolRegistry: typeof CustomToolRegistry
+	let nativeRegistryBundle: string
 
 	beforeAll(async () => {
 		nativeRegistryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-registry-"))
-		const bundle = path.join(nativeRegistryRoot, "registry.mjs")
+		nativeRegistryBundle = path.join(nativeRegistryRoot, "registry.mjs")
 		await runEsbuild({
 			entryPoint: path.join(__dirname, "..", "custom-tool-registry.ts"),
-			outfile: bundle,
+			outfile: nativeRegistryBundle,
 			external: NODE_BUILTIN_MODULES,
 			banner: COMMONJS_REQUIRE_BANNER,
 		})
-		// Production tool imports must use Node's ESM cache, not Vitest's transformed module graph.
-		// Keep all public-method assertions against the current source, compiled fresh for this suite.
-		NativeCustomToolRegistry = (
-			createRequire(import.meta.url)(bundle) as typeof import("../custom-tool-registry.js")
-		).CustomToolRegistry
 	})
 
 	afterAll(async () => {
@@ -44,8 +39,78 @@ describe("CustomToolRegistry", () => {
 	})
 
 	beforeEach(() => {
-		registry = new NativeCustomToolRegistry()
+		registry = new CustomToolRegistry()
 	})
+
+	async function runNativeScenario(body: string, signal: AbortSignal): Promise<void> {
+		const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-case-"))
+		try {
+			// A fresh Node process has no Vitest module hooks; require(esm) inside this worker still has them.
+			const script = `
+			import assert from "node:assert/strict"
+			import { CustomToolRegistry } from ${JSON.stringify(pathToFileURL(nativeRegistryBundle).href)}
+			const registry = new CustomToolRegistry({ cacheDir: ${JSON.stringify(cacheDir)} })
+			const TEST_FIXTURES_DIR = ${JSON.stringify(TEST_FIXTURES_DIR)}
+			const TEST_FIXTURES_OVERRIDE_DIR = ${JSON.stringify(TEST_FIXTURES_OVERRIDE_DIR)}
+			${body}
+		`
+			await execa(process.execPath, ["--input-type=module", "--eval", script], {
+				stdin: "ignore",
+				cancelSignal: signal,
+			})
+		} finally {
+			await fs.rm(cacheDir, { recursive: true, force: true })
+		}
+	}
+
+	function installWorkerLoaderGuard(signal: AbortSignal, moduleUrl: string): () => void {
+		const hooks = registerHooks({
+			load(url, context, nextLoad) {
+				if (url === moduleUrl || url.startsWith(`${moduleUrl}?`))
+					throw new Error("Test-worker loader intercepted a custom tool")
+				return nextLoad(url, context)
+			},
+		})
+		let active = true
+		const deregister = () => {
+			if (!active) return
+			active = false
+			signal.removeEventListener("abort", deregister)
+			hooks.deregister()
+		}
+		signal.addEventListener("abort", deregister, { once: true })
+		if (signal.aborted) deregister()
+		return deregister
+	}
+
+	it("keeps file-loading scenarios outside test-worker module hooks", async ({ signal }) => {
+		const toolDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-hook-source-"))
+		try {
+			await fs.writeFile(path.join(toolDir, "package.json"), JSON.stringify({ type: "module" }))
+			const toolFile = path.join(toolDir, "isolated.js")
+			await fs.writeFile(
+				toolFile,
+				'export default { name: "isolated_js", description: "Native loader guard", execute: async () => "isolated execution" }',
+			)
+			const toolUrl = pathToFileURL(await fs.realpath(toolFile)).href
+			const deregister = installWorkerLoaderGuard(signal, toolUrl)
+			try {
+				await runNativeScenario(
+					`
+					const result = await registry.loadFromDirectory(${JSON.stringify(toolDir)})
+					assert.deepEqual(result.loaded, ["isolated_js"])
+					assert.deepEqual(result.failed, [])
+					assert.equal(await registry.get("isolated_js").execute({}, {}), "isolated execution")
+				`,
+					signal,
+				)
+			} finally {
+				deregister()
+			}
+		} finally {
+			await fs.rm(toolDir, { recursive: true, force: true })
+		}
+	}, 60_000)
 
 	it("loads module URL characters through native imports and both compilation caches", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-paths-"))
@@ -96,6 +161,41 @@ describe("CustomToolRegistry", () => {
 			await fs.rm(tempDir, { recursive: true, force: true })
 		}
 	}, 60_000)
+
+	it("deregisters worker loader hooks on abort before pending work settles", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-hook-abort-"))
+		const bundle = path.join(tempDir, "bundle.mjs")
+		const alreadyAbortedDir = path.join(tempDir, "already-aborted")
+		const alreadyAbortedBundle = path.join(alreadyAbortedDir, "bundle.mjs")
+		await fs.writeFile(bundle, 'export const guardProbe = "loaded"')
+		await fs.mkdir(alreadyAbortedDir)
+		await fs.writeFile(alreadyAbortedBundle, 'export const guardProbe = "loaded"')
+		const controller = new AbortController()
+		let finishWork!: () => void
+		const pending = new Promise<void>((resolve) => {
+			finishWork = resolve
+		})
+		const deregister = installWorkerLoaderGuard(controller.signal, pathToFileURL(await fs.realpath(bundle)).href)
+		const operation = pending.finally(deregister)
+		try {
+			controller.abort()
+			const nativeRequire = createRequire(import.meta.url)
+			expect(nativeRequire(bundle).guardProbe).toBe("loaded")
+			const disposeAborted = installWorkerLoaderGuard(
+				controller.signal,
+				pathToFileURL(await fs.realpath(alreadyAbortedBundle)).href,
+			)
+			try {
+				expect(nativeRequire(alreadyAbortedBundle).guardProbe).toBe("loaded")
+			} finally {
+				disposeAborted()
+			}
+		} finally {
+			finishWork()
+			await operation
+			await fs.rm(tempDir, { recursive: true, force: true })
+		}
+	})
 
 	describe("validation", () => {
 		it("should accept a valid tool definition", () => {
@@ -300,157 +400,198 @@ describe("CustomToolRegistry", () => {
 	})
 
 	describe.sequential("loadFromDirectory", () => {
-		it("should load tools from TypeScript files", async () => {
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			expect(result.loaded).toContain("simple")
-			expect(registry.has("simple")).toBe(true)
+		it("should load tools from TypeScript files", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				assert.ok(result.loaded.includes("simple"))
+				assert.equal(registry.has("simple"), true)
+			`,
+				signal,
+			)
 		}, 120_000)
 
-		it("should handle named exports", async () => {
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			expect(result.loaded).toContain("multi_toolA")
-			expect(result.loaded).toContain("multi_toolB")
+		it("should handle named exports", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				assert.ok(result.loaded.includes("multi_toolA"))
+				assert.ok(result.loaded.includes("multi_toolB"))
+			`,
+				signal,
+			)
 		}, 30000)
 
-		it("should report validation failures", async () => {
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			const invalidFailure = result.failed.find((f) => f.file === "invalid.ts")
-			expect(invalidFailure).toBeDefined()
-			expect(invalidFailure?.error).toContain("Invalid tool definition")
+		it("should report validation failures", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				const invalidFailure = result.failed.find(f => f.file === "invalid.ts")
+				assert.notEqual(invalidFailure, undefined)
+				assert.ok(invalidFailure?.error.includes("Invalid tool definition"))
+			`,
+				signal,
+			)
 		}, 30000)
 
-		it("should return empty results for non-existent directory", async () => {
-			const result = await registry.loadFromDirectory("/nonexistent/path")
-
-			expect(result.loaded).toHaveLength(0)
-			expect(result.failed).toHaveLength(0)
+		it("should return empty results for non-existent directory", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory("/nonexistent/path")
+				assert.equal(result.loaded.length, 0)
+				assert.equal(result.failed.length, 0)
+			`,
+				signal,
+			)
 		})
 
-		it("should skip non-tool exports silently", async () => {
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			expect(result.loaded).toContain("mixed_validTool")
-			// The non-tool exports should not appear in loaded or failed.
-			expect(result.loaded).not.toContain("mixed_someString")
-			expect(result.loaded).not.toContain("mixed_someNumber")
-			expect(result.loaded).not.toContain("mixed_someObject")
+		it("should skip non-tool exports silently", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				assert.ok(result.loaded.includes("mixed_validTool"))
+				assert.equal(result.loaded.includes("mixed_someString"), false)
+				assert.equal(result.loaded.includes("mixed_someNumber"), false)
+				assert.equal(result.loaded.includes("mixed_someObject"), false)
+			`,
+				signal,
+			)
 		}, 30000)
 
-		it("should support args as alias for parameters", async () => {
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			expect(result.loaded).toContain("legacy")
-
-			const tool = registry.get("legacy")
-			expect(tool?.parameters).toBeDefined()
+		it("should support args as alias for parameters", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				assert.ok(result.loaded.includes("legacy"))
+				assert.notEqual(registry.get("legacy")?.parameters, undefined)
+			`,
+				signal,
+			)
 		}, 30000)
 	})
 
 	describe.sequential("clearCache", () => {
-		it("should clear the TypeScript compilation cache", async () => {
-			await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-			registry.clearCache()
-
-			// Should be able to load again without issues.
-			registry.clear()
-			const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
-
-			expect(result.loaded).toContain("cached")
+		it("should clear the TypeScript compilation cache", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				registry.clearCache()
+				registry.clear()
+				const result = await registry.loadFromDirectory(TEST_FIXTURES_DIR)
+				assert.ok(result.loaded.includes("cached"))
+			`,
+				signal,
+			)
 		}, 120_000)
 	})
 
 	describe.sequential("loadFromDirectories", () => {
-		it("should load tools from multiple directories", async () => {
-			const result = await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
-
-			// Should load tools from both directories.
-			expect(result.loaded).toContain("simple") // From both directories (override wins).
-			expect(result.loaded).toContain("unique_override") // Only in override directory.
-			expect(result.loaded).toContain("multi_toolA") // Only in fixtures directory.
+		it("should load tools from multiple directories", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
+				assert.ok(result.loaded.includes("simple"))
+				assert.ok(result.loaded.includes("unique_override"))
+				assert.ok(result.loaded.includes("multi_toolA"))
+			`,
+				signal,
+			)
 		}, 60000)
 
-		it("should allow later directories to override earlier ones", async () => {
-			await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
-
-			// The simple tool should have the overridden description.
-			const simpleTool = registry.get("simple")
-			expect(simpleTool).toBeDefined()
-			expect(simpleTool?.description).toBe("Simple tool - OVERRIDDEN")
+		it("should allow later directories to override earlier ones", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
+				const simpleTool = registry.get("simple")
+				assert.notEqual(simpleTool, undefined)
+				assert.equal(simpleTool?.description, "Simple tool - OVERRIDDEN")
+			`,
+				signal,
+			)
 		}, 60000)
 
-		it("should preserve order: first directory loaded first, second overrides", async () => {
-			// Load in reverse order: override first, then fixtures.
-			await registry.loadFromDirectories([TEST_FIXTURES_OVERRIDE_DIR, TEST_FIXTURES_DIR])
-
-			// Now the original fixtures directory should win.
-			const simpleTool = registry.get("simple")
-			expect(simpleTool).toBeDefined()
-			expect(simpleTool?.description).toBe("Simple tool") // Original wins when loaded second.
+		it("should preserve order: first directory loaded first, second overrides", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				await registry.loadFromDirectories([TEST_FIXTURES_OVERRIDE_DIR, TEST_FIXTURES_DIR])
+				const simpleTool = registry.get("simple")
+				assert.notEqual(simpleTool, undefined)
+				assert.equal(simpleTool?.description, "Simple tool")
+			`,
+				signal,
+			)
 		}, 60000)
 
-		it("should handle non-existent directories in the array", async () => {
-			const result = await registry.loadFromDirectories([
-				"/nonexistent/path",
-				TEST_FIXTURES_DIR,
-				"/another/nonexistent",
-			])
-
-			// Should still load from the existing directory.
-			expect(result.loaded).toContain("simple")
-			expect(result.failed).toHaveLength(1) // Only the invalid.ts from fixtures.
+		it("should handle non-existent directories in the array", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectories([
+					"/nonexistent/path", TEST_FIXTURES_DIR, "/another/nonexistent",
+				])
+				assert.ok(result.loaded.includes("simple"))
+				assert.equal(result.failed.length, 1)
+			`,
+				signal,
+			)
 		}, 60000)
 
-		it("should handle empty array", async () => {
-			const result = await registry.loadFromDirectories([])
-
-			expect(result.loaded).toHaveLength(0)
-			expect(result.failed).toHaveLength(0)
+		it("should handle empty array", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectories([])
+				assert.equal(result.loaded.length, 0)
+				assert.equal(result.failed.length, 0)
+			`,
+				signal,
+			)
 		})
 
-		it("should combine results from all directories", async () => {
-			const result = await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
-
-			// Loaded should include tools from both (with duplicates since simple is loaded twice).
-			// The "simple" tool is loaded from both directories.
-			const simpleCount = result.loaded.filter((name) => name === "simple").length
-			expect(simpleCount).toBe(2) // Listed twice in loaded results.
+		it("should combine results from all directories", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectories([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
+				assert.equal(result.loaded.filter(name => name === "simple").length, 2)
+			`,
+				signal,
+			)
 		}, 60000)
 	})
 
 	describe.sequential("loadFromDirectoriesIfStale", () => {
-		it("should load tools from multiple directories when stale", async () => {
-			const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
-
-			expect(result.loaded).toContain("simple")
-			expect(result.loaded).toContain("unique_override")
+		it("should load tools from multiple directories when stale", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
+				assert.ok(result.loaded.includes("simple"))
+				assert.ok(result.loaded.includes("unique_override"))
+			`,
+				signal,
+			)
 		}, 60000)
 
-		it("should restore a cleared catalog even if directory contents are unchanged", async () => {
-			// First load.
-			await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
-
-			registry.clear()
-
-			// Clear also invalidates source snapshots; a new capture must restore the requested sources.
-			const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
-
-			expect(result.loaded).toContain("simple")
-			expect(registry.has("simple")).toBe(true)
+		it("should restore a cleared catalog even if directory contents are unchanged", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
+				registry.clear()
+				const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
+				assert.ok(result.loaded.includes("simple"))
+				assert.equal(registry.has("simple"), true)
+			`,
+				signal,
+			)
 		}, 30000)
 
-		it("should handle mixed stale and non-stale directories", async () => {
-			// Load from fixtures first.
-			await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
-
-			// Load from both - fixtures is not stale, override is new (stale).
-			const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
-
-			// Override directory tools should be loaded (it's stale/new).
-			expect(result.loaded).toContain("simple") // From override (stale).
-			expect(result.loaded).toContain("unique_override") // From override (stale).
+		it("should handle mixed stale and non-stale directories", async ({ signal }) => {
+			await runNativeScenario(
+				`
+				await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
+				const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR, TEST_FIXTURES_OVERRIDE_DIR])
+				assert.ok(result.loaded.includes("simple"))
+				assert.ok(result.loaded.includes("unique_override"))
+			`,
+				signal,
+			)
 		}, 60000)
 	})
 })

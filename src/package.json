@@ -990,7 +990,7 @@
 		"@google/genai": "^1.47.0",
 		"@imagemagick/magick-wasm": "0.0.44",
 		"@lancedb/lancedb": "^0.27.2",
-		"@modelcontextprotocol/sdk": "1.31.0",
+		"@modelcontextprotocol/sdk": "1.32.0",
 		"@qdrant/js-client-rest": "^1.14.0",
 		"@alpha-code/core": "workspace:^",
 		"@alpha-code/ipc": "workspace:^",

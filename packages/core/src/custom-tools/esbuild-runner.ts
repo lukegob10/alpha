@@ -160,6 +160,10 @@ export async function runEsbuild(options: EsbuildOptions, extensionPath?: string
 	const scriptPath = getEsbuildScriptPath(extensionPath)
 
 	const args: string[] = [
+		// Mitigate Node's background JS compilation/GC shutdown deadlock in the force-exiting Go/WASM CLI.
+		// Keep this child-only; parallel WebAssembly compilation remains enabled. See nodejs/node#54918.
+		"--no-concurrent-recompilation",
+		"--no-concurrent-sparkplug",
 		scriptPath,
 		options.entryPoint,
 		`--outfile=${options.outfile}`,
