@@ -401,20 +401,17 @@ describe("CustomToolRegistry", () => {
 			expect(result.loaded).toContain("unique_override")
 		}, 60000)
 
-		it("should not reload if directories are not stale", async () => {
+		it("should restore a cleared catalog even if directory contents are unchanged", async () => {
 			// First load.
 			await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
 
-			// Clear tools but keep staleness tracking.
-			// (firstLoadSize is captured to document that tools were loaded, then cleared).
-			const _firstLoadSize = registry.size
 			registry.clear()
 
-			// Second load - should return cached tool names without reloading.
+			// Clear also invalidates source snapshots; a new capture must restore the requested sources.
 			const result = await registry.loadFromDirectoriesIfStale([TEST_FIXTURES_DIR])
 
-			// Registry was cleared, not stale so no reload.
-			expect(result.loaded).toEqual([])
+			expect(result.loaded).toContain("simple")
+			expect(registry.has("simple")).toBe(true)
 		}, 30000)
 
 		it("should handle mixed stale and non-stale directories", async () => {

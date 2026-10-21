@@ -95,10 +95,52 @@ describe("ticket chat context", () => {
 			query: "PM1",
 			cwd: "/untrusted",
 		})
-		expect(TicketStore.forWorkspace).toHaveBeenCalledExactlyOnceWith("/project")
-		expect(store.search).toHaveBeenCalledExactlyOnceWith("PM1")
+		expect(TicketStore.forWorkspace).toHaveBeenCalledExactlyOnceWith("/project", undefined, undefined)
+		expect(store.search).toHaveBeenCalledExactlyOnceWith("PM1", undefined)
 		expect(result).toEqual({ type: "ticketSearchResults", requestId: "a", tickets: [ticket] })
 	})
+	it("propagates picker cancellation through workspace resolution and search", async () => {
+		const store = mockStore()
+		const cancellation = new AbortController()
+		const request = { type: "searchTickets", requestId: "picker", query: "backend" }
+		expect(await searchTicketMentions("/project", request, cancellation.signal)).toEqual({
+			type: "ticketSearchResults",
+			requestId: "picker",
+			tickets: [ticket],
+		})
+		expect(TicketStore.forWorkspace).toHaveBeenCalledExactlyOnceWith("/project", undefined, cancellation.signal)
+		expect(store.search).toHaveBeenCalledExactlyOnceWith("backend", cancellation.signal)
+	})
+	it.each(["preflight", "workspace", "search", "late-result"] as const)(
+		"does not convert %s cancellation into a picker result",
+		async (stage) => {
+			const store = mockStore()
+			const cancellation = new AbortController()
+			const reason = new Error("Ticket query superseded")
+			if (stage === "preflight") cancellation.abort(reason)
+			else if (stage === "workspace") {
+				vi.mocked(TicketStore.forWorkspace).mockImplementation(async () => {
+					cancellation.abort(reason)
+					throw reason
+				})
+			} else {
+				store.search.mockImplementation(async () => {
+					cancellation.abort(reason)
+					if (stage === "search") throw reason
+					return [ticket]
+				})
+			}
+			await expect(
+				searchTicketMentions(
+					"/project",
+					{ type: "searchTickets", requestId: "picker", query: "backend" },
+					cancellation.signal,
+				),
+			).rejects.toBe(reason)
+			if (stage === "preflight") expect(TicketStore.forWorkspace).not.toHaveBeenCalled()
+			if (stage === "preflight" || stage === "workspace") expect(store.search).not.toHaveBeenCalled()
+		},
+	)
 	it("rejects oversized searches and distinguishes unavailable storage from no matches", async () => {
 		const store = mockStore()
 		expect(

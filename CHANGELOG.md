@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.2.7
+
+### Patch Changes
+
+- Reduce repeated setup work during task creation and keep the initial prompt visible and recoverable while a task starts.
+- Move command-output regular expressions into bounded workers and fold repeated file-tracking metadata to keep the extension host responsive.
+- Retain scheduled-command ownership until process-tree cleanup and output settlement finish, and preserve captured command timeout and cancellation policy.
+- Share task admission across chat surfaces, join in-flight creation during disposal, and publish managed completion after durable Apply and verification settlement.
+- Preserve final provider text, cache-write usage, retry metadata, and distinct failed or interrupted history turns.
+- Isolate custom-tool catalogs by captured workspace and retain immutable, bounded tool generations across edits and refreshes.
+- Protect concurrent skill edits through versioned host writes and validate managed-worker artifact references before reading, applying, or discarding changes.
+- Keep image drafts and lifecycle updates attached to their originating task, and cancel obsolete Ticket mention searches.
+- Publish platform-specific extension packages and defer optional local indexing initialization so unavailable native bindings do not prevent core activation.
+- Require complete test selection and validated benchmark evidence before accepting release and promotion results.
+- Update the extension version and in-app release announcement together for Alpha 3.2.7. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
+### Validation Notes
+
+- The implementation candidate passed 14,887 extension tests, 246 reusable-core tests, 2,461 webview tests, 567 offline evaluator tests, and 4,814 managed-agent certification tests. Exact 1.138.0 smoke, 1.125.0 compatibility, and four managed-agent host suites also passed. Release CI validates the final versioned source and packages separately.
+- Live/manual acceptance and the remaining gateway-transport and PTY exit-confirmation work are documented in the implementation report. Intel macOS supports core features and Qdrant indexing; this LanceDB version has no Intel macOS native binding.
+
 ## 3.2.6
 
 ### Patch Changes

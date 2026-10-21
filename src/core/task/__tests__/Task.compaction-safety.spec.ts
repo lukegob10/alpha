@@ -1,5 +1,10 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
-import type { ModelInfo, ProviderSettings, TaskDesignHandoff } from "@alpha-code/types"
+import {
+	getVscodeLlmContextWindow,
+	type ModelInfo,
+	type ProviderSettings,
+	type TaskDesignHandoff,
+} from "@alpha-code/types"
 
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import * as requestTimeout from "../../../api/providers/utils/timeout-config"
@@ -208,6 +213,135 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 	}
 	return Reflect.get(task, "handleContextWindowExceededError").call(task) as Promise<void>
 }
+
+describe("Task small Copilot context exhaustion", () => {
+	async function smallWindowFixture(automatic: boolean, irreducible = false) {
+		const { TelemetryService } = await import("@alpha-code/telemetry")
+		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+		const fixture = harness()
+		const { task, api, provider, history } = fixture
+		const contextWindow = getVscodeLlmContextWindow(
+			{ vendor: "copilot", family: "claude-sonnet-4.6", maxInputTokens: 936_000 },
+			200_000,
+		)
+		expect(contextWindow).toBe(200_000)
+		api.getModel = () => ({
+			id: "claude-sonnet-4.6",
+			info: { contextWindow, maxTokens: -1, contextWindowIncludesOutput: false, supportsPromptCache: false },
+		})
+		Object.assign(task.apiConfiguration, { apiProvider: "vscode-lm", vsCodeLmContextSize: 200_000 })
+		Object.assign(Reflect.get(task, "effectiveApiConfiguration"), task.apiConfiguration)
+		history.splice(
+			0,
+			history.length,
+			...(irreducible
+				? [{ role: "user" as const, content: "data".repeat(220_000), ts: 1 }]
+				: [
+						...Array.from({ length: 8 }, (_, index): ApiMessage[] => [
+							{ role: "user", content: `Instruction ${index}: retain answer=42.`, ts: index * 2 + 1 },
+							{ role: "assistant", content: "data".repeat(27_500), ts: index * 2 + 2 },
+						]).flat(),
+						{ role: "user" as const, content: "Continue with answer=42.", ts: 17 },
+					]),
+		)
+		provider.getState.mockResolvedValue({ autoCondenseContext: automatic, autoCondenseContextPercent: 100 })
+		vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 220_000 } as ReturnType<Task["getTokenUsage"]>)
+		api.countTokens.mockImplementation(async (blocks) => Math.ceil(JSON.stringify(blocks).length / 4))
+		api.createMessage.mockImplementation(async function* (_systemPrompt, messages) {
+			if (Math.ceil(JSON.stringify(messages).length / 4) > contextWindow) {
+				throw new Error("Request input exceeds the model's maximum context length of 200000 tokens")
+			}
+			yield { type: "text", text: "The answer is 42; the task can continue." }
+		})
+		const actualContext =
+			await vi.importActual<typeof import("../../context-management")>("../../context-management")
+		const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")
+		vi.mocked(manageContext).mockImplementation(actualContext.manageContext)
+		vi.mocked(willManageContext).mockImplementation(actualContext.willManageContext)
+		vi.mocked(summarizeConversation).mockImplementation(actualCondense.summarizeConversation)
+		return fixture
+	}
+
+	it.each([true, false])(
+		"closes compaction UI and dispatches after overflow with automatic summary=%s",
+		async (automatic) => {
+			const { task, api, provider, history } = await smallWindowFixture(automatic)
+			const original = structuredClone(history)
+			const text: string[] = []
+			for await (const chunk of task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+			})) {
+				if (chunk.type === "text") text.push(chunk.text)
+			}
+			expect(text.join("")).toContain("task can continue")
+			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 2 : 1)
+			expect(task.say).toHaveBeenCalledWith(
+				"sliding_window_truncation",
+				undefined,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				expect.any(Object),
+				undefined,
+				expect.objectContaining({ messagesRemoved: expect.any(Number) }),
+			)
+			expect(history).toEqual(original)
+			expect(task.apiConversationHistory.some((message) => message.isTruncationMarker)).toBe(true)
+			if (automatic) {
+				expect(provider.postMessageToWebview).toHaveBeenCalledTimes(2)
+				expect(provider.postMessageToWebview).toHaveBeenNthCalledWith(1, {
+					type: "condenseTaskContextStarted",
+					text: task.taskId,
+				})
+				expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+					type: "condenseTaskContextResponse",
+					text: task.taskId,
+				})
+			}
+		},
+	)
+
+	it("releases manual compaction admission when the smaller model rejects its summary", async () => {
+		const { task, api, provider, history, save } = await smallWindowFixture(true)
+		await task.condenseContext()
+		expect(task.say).toHaveBeenCalledWith(
+			"condense_context_error",
+			expect.any(String),
+			undefined,
+			false,
+			undefined,
+			undefined,
+			expect.any(Object),
+		)
+		expect(api.createMessage).toHaveBeenCalledOnce()
+		expect(save).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toBe(history)
+		expect(Reflect.get(task, "contextCondenseAbortController")).toBeUndefined()
+		expect(Reflect.get(task, "manualContextCondenseSettlement")).toBeUndefined()
+		// AlphaProvider owns the manual response notification; Task owns releasing its admission guard.
+		expect(provider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it.each([true, false])(
+		"closes the UI and stops irreducible overflow with automatic summary=%s",
+		async (automatic) => {
+			const { task, api, provider, history, save } = await smallWindowFixture(automatic, true)
+			const running = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next()
+			await expect(running).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError", retryable: false })
+			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 1 : 0)
+			expect(save).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(history)
+			if (automatic) {
+				expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+					type: "condenseTaskContextResponse",
+					text: task.taskId,
+				})
+			}
+		},
+	)
+})
 
 describe("Task design handoff provenance", () => {
 	function largeHandoff(taskId: string): TaskDesignHandoff {

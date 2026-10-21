@@ -22,6 +22,7 @@ export function hostReceipt(testFile = "core-loop.test") {
 		ownershipGate: "verified",
 		requireAllTests: true,
 		testCounts: { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 },
+		testSelection: { testFile, grep: null, forbidOnly: true },
 		captureComplete: true,
 		retentionStatus: "complete",
 		failure: null,

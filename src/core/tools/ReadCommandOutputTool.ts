@@ -7,6 +7,7 @@ import { Task } from "../task/Task"
 import { getTaskDirectoryPath } from "../../utils/storage"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { withCommandOutputSearch, type CommandOutputMatcher } from "./helpers/commandOutputSearch"
 import {
 	getCommandArtifactExecutionId,
 	READ_COMMAND_OUTPUT_DEFAULT_LIMIT_BYTES,
@@ -84,7 +85,7 @@ function isUnsafeSearchPattern(pattern: string): boolean {
 	// A second variable-width quantifier can make an otherwise flat pattern
 	// superlinear (for example, `a+a+$`). Keep one simple quantifier available
 	// for useful controls such as `test\\d+`, but reject multiple quantifiers
-	// conservatively because JavaScript RegExp has no execution timeout.
+	// conservatively alongside the worker's independent execution bound.
 	let variableWidthQuantifiers = 0
 	let hasLargeFixedQuantifier = false
 	let inCharacterClass = false
@@ -761,16 +762,21 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 			throw new Error("Invalid search pattern. Potentially unsafe regular-expression constructs are rejected.")
 		}
 
-		const CHUNK_SIZE = READ_CHUNK_SIZE
+		return withCommandOutputSearch(pattern, signal, (matcher, searchSignal) =>
+			this.searchWithMatcher(artifactPath, pattern, offset, totalSize, limit, matcher, searchSignal),
+		)
+	}
 
-		// Create case-insensitive regex for search
-		let regex: RegExp
-		try {
-			regex = new RegExp(pattern, "i")
-		} catch {
-			// If invalid regex, treat as literal string
-			regex = new RegExp(this.escapeRegExp(pattern), "i")
-		}
+	private async searchWithMatcher(
+		artifactPath: string,
+		pattern: string,
+		offset: number,
+		totalSize: number,
+		limit: number,
+		matcher: CommandOutputMatcher,
+		signal: AbortSignal,
+	): Promise<SearchArtifactResult> {
+		const CHUNK_SIZE = READ_CHUNK_SIZE
 
 		const fileHandle = await openArtifact(artifactPath, signal)
 		const matches: Array<{ lineNumber: number; content: string }> = []
@@ -841,26 +847,27 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 			partialLineBytes = READ_COMMAND_OUTPUT_MAX_SEARCH_LINE_BYTES
 			partialLineOverflow = true
 		}
-		const processCompleteLine = (lineEnd: number) => {
-			lineNumber++
-			if (partialLineOverflow) {
-				incomplete = true
-				truncated = true
-				return
-			}
-
-			const line = partialLine.endsWith("\r") ? partialLine.slice(0, -1) : partialLine
-			if (regex.test(line)) {
-				retainMatch(lineNumber, line)
-				if (budgetExhausted && lineEnd < totalSize) truncated = true
-			} else if (budgetExhausted && lineEnd < totalSize) {
-				truncated = true
-			}
+		type SearchCandidate = { line: string; lineEnd: number }
+		const processCandidates = async (candidates: SearchCandidate[]) => {
+			if (candidates.length === 0) return processedBytes
+			const result = await matcher.testBatch({
+				lines: candidates.map(({ line }) => line),
+				firstLineNumber: lineNumber + 1,
+				remainingBytes: matchContentBudget - renderedMatchBytes,
+				hasMatches: matches.length > 0,
+			})
+			signal.throwIfAborted()
+			for (const index of result.matchedLineIndices) retainMatch(lineNumber + index + 1, candidates[index].line)
+			lineNumber += result.processedLineCount
+			const processedThrough = candidates[result.processedLineCount - 1].lineEnd
+			if (budgetExhausted && processedThrough < totalSize) truncated = true
+			return processedThrough
 		}
-		const processDecodedChunk = (decoded: string, chunkStart: number, pendingBytes: number) => {
+		const processDecodedChunk = async (decoded: string, chunkStart: number, pendingBytes: number) => {
 			let segmentStart = 0
 			let decodedBytesConsumed = 0
-			let processedThrough = processedBytes
+			const candidates: SearchCandidate[] = []
+			let overflowThrough: number | undefined
 			for (let index = 0; index < decoded.length; index++) {
 				signal?.throwIfAborted()
 				if (decoded[index] !== "\n") continue
@@ -868,21 +875,30 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				appendPartialLine(segment)
 				decodedBytesConsumed += Buffer.byteLength(segment, "utf8") + 1
 				const lineEnd = chunkStart + Math.max(0, decodedBytesConsumed - pendingBytes)
-				processCompleteLine(lineEnd)
-				processedThrough = lineEnd
+				if (partialLineOverflow) {
+					overflowThrough = lineEnd
+					break
+				}
+				candidates.push({
+					line: partialLine.endsWith("\r") ? partialLine.slice(0, -1) : partialLine,
+					lineEnd,
+				})
 				resetPartialLine()
 				segmentStart = index + 1
-				if (truncated) break
 			}
-			if (!truncated) {
+			if (overflowThrough === undefined) {
 				const remainder = decoded.slice(segmentStart)
 				appendPartialLine(remainder)
 				decodedBytesConsumed += Buffer.byteLength(remainder, "utf8")
 				if (partialLineOverflow) {
-					incomplete = true
-					truncated = true
-					processedThrough = chunkStart + Math.max(0, decodedBytesConsumed - pendingBytes)
+					overflowThrough = chunkStart + Math.max(0, decodedBytesConsumed - pendingBytes)
 				}
+			}
+			let processedThrough = await processCandidates(candidates)
+			if (!truncated && overflowThrough !== undefined) {
+				incomplete = true
+				truncated = true
+				processedThrough = overflowThrough
 			}
 			return processedThrough
 		}
@@ -912,19 +928,24 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				loadedBytes += chunkBytes
 				decoderPendingBytes = Math.max(0, pendingBytes + chunkBytes - Buffer.byteLength(chunk, "utf8"))
 
-				processedBytes = Math.max(processedBytes, processDecodedChunk(chunk, chunkStart, pendingBytes))
+				processedBytes = Math.max(processedBytes, await processDecodedChunk(chunk, chunkStart, pendingBytes))
 			}
 
 			if (!truncated) {
 				const decoded = decoder.end()
 				processedBytes = Math.max(
 					processedBytes,
-					processDecodedChunk(decoded, loadedBytes, decoderPendingBytes),
+					await processDecodedChunk(decoded, loadedBytes, decoderPendingBytes),
 				)
 				decoderPendingBytes = 0
 				// A non-empty unterminated line is a complete search candidate at EOF.
 				if (!truncated && (partialLineBytes > 0 || partialLine.length > 0)) {
-					processCompleteLine(totalSize)
+					await processCandidates([
+						{
+							line: partialLine.endsWith("\r") ? partialLine.slice(0, -1) : partialLine,
+							lineEnd: totalSize,
+						},
+					])
 					processedBytes = totalSize
 				}
 			}
@@ -1047,17 +1068,6 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 			return `${(bytes / 1024).toFixed(1)}KB`
 		}
 		return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
-	}
-
-	/**
-	 * Escape special regex characters in a string for literal matching.
-	 *
-	 * @param string - The string to escape
-	 * @returns The escaped string safe for use in a RegExp constructor
-	 * @private
-	 */
-	private escapeRegExp(string: string): string {
-		return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 	}
 
 	/**

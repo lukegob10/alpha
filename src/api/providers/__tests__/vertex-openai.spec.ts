@@ -5,6 +5,8 @@ import OpenAI from "openai"
 import { vertexModels } from "@alpha-code/types"
 
 import { buildApiHandler } from "../../index"
+import { isApiStreamAbortError } from "../../transform/stream"
+import { AgentRetryPolicy } from "../../../core/agent/AgentRetryPolicy"
 import { VertexOpenAiHandler } from "../vertex-openai"
 
 const mocks = vi.hoisted(() => ({
@@ -64,6 +66,120 @@ describe("VertexOpenAiHandler", () => {
 			helixCommand: "helix auth token print -a",
 			...overrides,
 		})
+
+	describe.each(["stream", "response", "single-prompt"])("%s error boundary", (surface) => {
+		async function request(): Promise<void> {
+			const handler = createHandler({ vertexStreamingEnabled: surface === "stream" })
+			if (surface === "single-prompt") {
+				await handler.completePrompt("hello")
+				return
+			}
+			for await (const _chunk of handler.createMessage("system", [])) {
+				// Consume all chunks so iteration failures reach the adapter boundary.
+			}
+		}
+
+		it.each([429, 503])("preserves terminal retry authority and server advice for HTTP %s", async (status) => {
+			const errorDetails = [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "60s" }]
+			mocks.create.mockRejectedValueOnce(
+				Object.assign(new Error("OpenAI completion error: Opaque provider failure."), {
+					name: "ProviderError",
+					status,
+					code: "provider_terminal",
+					errorDetails,
+					retryAfterMs: 60_000,
+					retryable: false,
+					retryCategory: "rate-limit",
+				}),
+			)
+
+			await expect(request()).rejects.toMatchObject({
+				message: "Vertex OpenAI-compatible completion error: Opaque provider failure.",
+				name: "ProviderError",
+				status,
+				code: "provider_terminal",
+				errorDetails,
+				retryAfterMs: 60_000,
+				retryable: false,
+				retryCategory: "rate-limit",
+			})
+			expect(mocks.create).toHaveBeenCalledOnce()
+			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+		})
+
+		it("retains safe header advice for the owning retry policy", async () => {
+			mocks.create.mockRejectedValueOnce(
+				Object.assign(new Error("Opaque provider failure."), {
+					status: 429,
+					retryable: true,
+					retryCategory: "rate-limit",
+					headers: { "Retry-After": "60", authorization: "secret-header-fixture" },
+				}),
+			)
+			const failure: unknown = await request().then(
+				() => undefined,
+				(error: unknown) => error,
+			)
+
+			expect(failure).toMatchObject({ retryable: true, retryCategory: "rate-limit", retryAfterMs: 60_000 })
+			expect(failure).not.toHaveProperty("headers")
+			expect(failure).not.toHaveProperty("error")
+			if (
+				!(failure instanceof Error) ||
+				!("retryCategory" in failure) ||
+				failure.retryCategory !== "rate-limit" ||
+				!("retryAfterMs" in failure) ||
+				typeof failure.retryAfterMs !== "number"
+			) {
+				throw new Error("Vertex discarded the retry classification or server delay")
+			}
+			expect(
+				new AgentRetryPolicy({ jitter: "none", now: () => 1_000 }).decide({
+					category: failure.retryCategory,
+					attempt: 1,
+					retryAfterMs: failure.retryAfterMs,
+				}),
+			).toMatchObject({ shouldRetry: true, category: "rate-limit", delayMs: 60_000, retryAt: 61_000 })
+		})
+
+		it("preserves opaque provider cancellation identity", async () => {
+			mocks.create.mockRejectedValueOnce(Object.assign(new Error("Operation stopped"), { name: "AbortError" }))
+			const failure: unknown = await request().then(
+				() => undefined,
+				(error: unknown) => error,
+			)
+
+			expect(failure).toMatchObject({ name: "AbortError" })
+			expect(isApiStreamAbortError(failure)).toBe(true)
+			expect(mocks.create).toHaveBeenCalledOnce()
+			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+		})
+	})
+
+	it("retains retry authority when a response iterator fails after visible output", async () => {
+		mocks.create.mockResolvedValueOnce({
+			async *[Symbol.asyncIterator]() {
+				yield { choices: [{ delta: { content: "partial answer" } }] }
+				throw Object.assign(new Error("Opaque upstream failure."), {
+					status: 503,
+					retryable: false,
+					retryCategory: "transport",
+					retryAfterMs: 5_000,
+				})
+			},
+		})
+		const stream = createHandler().createMessage("system", [])
+
+		await expect(stream.next()).resolves.toMatchObject({ value: { type: "text", text: "partial answer" } })
+		await expect(stream.next()).rejects.toMatchObject({
+			status: 503,
+			retryable: false,
+			retryCategory: "transport",
+			retryAfterMs: 5_000,
+		})
+		expect(mocks.create).toHaveBeenCalledOnce()
+		expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+	})
 
 	it("exposes the Grok 4.6 Vertex catalog metadata", () => {
 		const model = createHandler().getModel()

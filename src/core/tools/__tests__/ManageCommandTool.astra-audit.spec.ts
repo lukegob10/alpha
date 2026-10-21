@@ -24,6 +24,29 @@ import type {
 	ExitCodeDetails,
 } from "../../../integrations/terminal/types"
 
+vi.mock("node:worker_threads", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:worker_threads")>()
+	const { readFileSync } = await import("node:fs")
+	const { transformSync } = await import("esbuild")
+	const nodePath = await import("node:path")
+	const source = transformSync(
+		readFileSync(nodePath.resolve(process.cwd(), "workers/searchCommandOutput.ts"), "utf8"),
+		{
+			loader: "ts",
+			format: "cjs",
+		},
+	).code
+	class SearchTestWorker extends original.Worker {
+		constructor(filename: string | URL, options?: import("node:worker_threads").WorkerOptions) {
+			// Focused source tests must not depend on a previously bundled worker.
+			const isSearchWorker =
+				typeof filename === "string" && nodePath.basename(filename) === "searchCommandOutput.js"
+			super(isSearchWorker ? source : filename, isSearchWorker ? { ...options, eval: true } : options)
+		}
+	}
+	return { ...original, Worker: SearchTestWorker }
+})
+
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
 
 function commandFixture(

@@ -8,14 +8,19 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { zipSync } from "fflate"
 
+import { hostVsixTarget, lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
+
 const repository = fileURLToPath(new URL("../", import.meta.url))
 const verifier = path.join(repository, "scripts/verify-vsix-contents.mjs")
+const hostTarget = hostVsixTarget()
 const required = [
+	"extension.vsixmanifest",
 	"extension/package.json",
 	"extension/package.nls.json",
 	"extension/dist/extension.js",
 	"extension/dist/workers/sanitizeDocument.js",
 	"extension/dist/workers/validateImage.js",
+	"extension/dist/workers/searchCommandOutput.js",
 	"extension/dist/workers/magick.wasm",
 	"extension/dist/workers/magick-LICENSE",
 	"extension/dist/workers/magick-NOTICE",
@@ -41,32 +46,40 @@ const required = [
 	"extension/webview-ui/build/html-document/purify.min.js",
 	"extension/webview-ui/build/html-document/viewer.css",
 ]
-if (["win32", "darwin"].includes(process.platform))
-	required.push(`extension/dist/node_modules/@vscode/ripgrep/bin/${process.platform === "win32" ? "rg.exe" : "rg"}`)
+if (lanceDbBindingForTarget(hostTarget)) required.push(`extension/dist/${lanceDbBindingForTarget(hostTarget)}`)
+if (/^(?:win32|darwin)-/u.test(hostTarget))
+	required.push(
+		`extension/dist/node_modules/@vscode/ripgrep/bin/${hostTarget.startsWith("win32-") ? "rg.exe" : "rg"}`,
+	)
 
 const runVerifier = (args, options = {}) =>
 	spawnSync(process.execPath, [verifier, ...args], { encoding: "utf8", windowsHide: true, ...options })
 
-async function withArchive(entries, check) {
+async function withArchive(entries, check, target = hostTarget) {
 	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-vsix-content-test-"))
 	try {
 		const content = path.join(root, "content")
 		for (const entry of entries) {
-			const target = path.join(content, entry)
-			await mkdir(path.dirname(target), { recursive: true })
-			await writeFile(target, "owned archive fixture\n")
+			const filePath = path.join(content, entry)
+			await mkdir(path.dirname(filePath), { recursive: true })
+			await writeFile(
+				filePath,
+				entry === "extension.vsixmanifest"
+					? `<PackageManifest><Metadata><Identity Id="alpha" TargetPlatform="${target}"/></Metadata></PackageManifest>`
+					: "owned archive fixture\n",
+			)
 		}
 		const archive = path.join(root, "fixture.vsix")
 		const pack = () => {
 			const files = Object.create(null)
 			const collect = (directory) => {
 				for (const item of readdirSync(path.join(content, directory), { withFileTypes: true })) {
-					const name = `${directory}/${item.name}`
+					const name = directory ? `${directory}/${item.name}` : item.name
 					if (item.isDirectory()) collect(name)
 					else files[name] = readFileSync(path.join(content, name))
 				}
 			}
-			collect("extension")
+			collect("")
 			writeFileSync(archive, zipSync(files))
 		}
 		pack()
@@ -159,10 +172,99 @@ test("VSIX content verification rejects a truncated ZIP directory", async () => 
 	})
 })
 
+for (const [target, binding] of [
+	["win32-x64", "lancedb.win32-x64-msvc.node"],
+	["win32-arm64", "lancedb.win32-arm64-msvc.node"],
+	["darwin-arm64", "lancedb.darwin-arm64.node"],
+	["darwin-x64", null],
+	["linux-x64", "lancedb.linux-x64-gnu.node"],
+	["linux-arm64", "lancedb.linux-arm64-gnu.node"],
+	["alpine-x64", "lancedb.linux-x64-musl.node"],
+	["alpine-arm64", "lancedb.linux-arm64-musl.node"],
+])
+	test(`VSIX verification requires the declared ${target} platform's binding independently of the verifier host`, async () => {
+		const platformEntries = required.filter(
+			(entry) =>
+				!entry.endsWith(".node") && !entry.startsWith("extension/dist/node_modules/@vscode/ripgrep/bin/"),
+		)
+		if (binding) platformEntries.push(`extension/dist/${binding}`)
+		if (/^(?:win32|darwin)-/u.test(target))
+			platformEntries.push(
+				`extension/dist/node_modules/@vscode/ripgrep/bin/${target.startsWith("win32-") ? "rg.exe" : "rg"}`,
+			)
+		await withArchive(
+			platformEntries,
+			async ({ archive, content, pack }) => {
+				assert.equal(runVerifier([archive, "--target", target]).status, 0)
+				if (binding) {
+					await rm(path.join(content, "extension/dist", binding))
+					pack()
+					const missing = runVerifier([archive])
+					assert.equal(missing.status, 1)
+					assert.ok(missing.stderr.includes(binding))
+				} else {
+					await writeFile(path.join(content, "extension/dist/lancedb.darwin-arm64.node"), "wrong platform")
+					pack()
+					const incompatible = runVerifier([archive])
+					assert.equal(incompatible.status, 1)
+					assert.match(incompatible.stderr, /incompatible LanceDB bindings/u)
+				}
+			},
+			target,
+		)
+	})
+
+test("VSIX verification refuses untargeted, unsupported, mismatched and ambiguous platform metadata", async () => {
+	await withArchive(required, async ({ archive, content, pack }) => {
+		const otherTarget = hostTarget === "linux-x64" ? "win32-x64" : "linux-x64"
+		const mismatch = runVerifier([archive, "--target", otherTarget])
+		assert.equal(mismatch.status, 1)
+		assert.match(mismatch.stderr, /does not match requested target/u)
+		for (const [attributes, error] of [
+			['Id="alpha"', /must declare a TargetPlatform/u],
+			['Id="alpha" TargetPlatform="universal"', /Unsupported VSIX target/u],
+			[`TargetPlatform="${hostTarget}" TargetPlatform="${otherTarget}"`, /Invalid VSIX Identity attributes/u],
+			[`Id="alpha TargetPlatform='${hostTarget}'"`, /must declare a TargetPlatform/u],
+		]) {
+			await writeFile(
+				path.join(content, "extension.vsixmanifest"),
+				`<PackageManifest><Identity ${attributes}/></PackageManifest>`,
+			)
+			pack()
+			const result = runVerifier([archive])
+			assert.equal(result.status, 1)
+			assert.match(result.stderr, error)
+		}
+	})
+})
+
+test("VSIX verification refuses extra native platforms and oversized manifest allocations", async () => {
+	const otherBinding =
+		lanceDbBindingForTarget(hostTarget) === "lancedb.linux-x64-gnu.node"
+			? "lancedb.win32-x64-msvc.node"
+			: "lancedb.linux-x64-gnu.node"
+	await withArchive([...required, `extension/dist/${otherBinding}`], ({ archive }) => {
+		const result = runVerifier([archive])
+		assert.equal(result.status, 1)
+		assert.match(result.stderr, /incompatible LanceDB bindings/u)
+	})
+	await withArchive(required, ({ archive }) => {
+		updateZipEntry(archive, "extension.vsixmanifest", (bytes, central, local) => {
+			bytes.writeUInt32LE(32 * 1024 * 1024, central + 24)
+			bytes.writeUInt32LE(32 * 1024 * 1024, local + 22)
+		})
+		const result = runVerifier([archive])
+		assert.equal(result.status, 1)
+		assert.match(result.stderr, /VSIX manifest exceeds/u)
+	})
+})
+
 for (const entry of [
+	"extension.vsixmanifest",
 	"extension/dist/extension.js",
 	"extension/dist/workers/sanitizeDocument.js",
 	"extension/dist/workers/validateImage.js",
+	"extension/dist/workers/searchCommandOutput.js",
 	"extension/dist/workers/magick.wasm",
 	"extension/dist/workers/magick-LICENSE",
 	"extension/dist/workers/magick-NOTICE",

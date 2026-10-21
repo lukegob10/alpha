@@ -1,0 +1,9 @@
+{
+	"schemaVersion": 1,
+	"hostVersion": "1.138.0",
+	"visibleBeforeAdmissionCompleted": true,
+	"rejectedDraftRestored": true,
+	"observedKeyToVisibleMs": 18.199999809265137,
+	"boundary": "renderer clock before trusted Enter to polling observation; includes CDP/observation overhead",
+	"workload": "one prompt with saved-profile storage held by a controlled barrier; no provider request"
+}

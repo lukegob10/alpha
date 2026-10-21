@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.6",
+	"version": "3.2.7",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -979,8 +979,7 @@
 		"format": "prettier --write .",
 		"bundle": "node esbuild.mjs",
 		"vscode:prepublish": "pnpm bundle --production",
-		"vsix": "mkdirp ../bin && vsce package --no-dependencies --out ../bin",
-		"publish:marketplace": "vsce publish --no-dependencies && ovsx publish --no-dependencies",
+		"vsix": "node ../scripts/package-vsix.mjs",
 		"watch:bundle": "pnpm bundle --watch",
 		"watch:tsc": "node ../node_modules/typescript/lib/tsc.js --noEmit --watch --project tsconfig.dev-watch.json",
 		"clean": "rimraf README.md CHANGELOG.md LICENSE dist logs mock .turbo"

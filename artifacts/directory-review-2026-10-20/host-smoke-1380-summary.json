@@ -1,0 +1,217 @@
+{
+	"expectedVersion": "1.138.0",
+	"expectedSuiteCount": 13,
+	"suiteCount": 13,
+	"totalPassed": 47,
+	"allPassed": true,
+	"suites": [
+		{
+			"file": "extension.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 5,
+				"passed": 5,
+				"pending": 0,
+				"executed": 5,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "modes.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 2,
+				"passed": 2,
+				"pending": 0,
+				"executed": 2,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "approval-mode.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 17,
+				"passed": 17,
+				"pending": 0,
+				"executed": 17,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "command-path-approval.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "command-file-diff.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "tool-search.acceptance.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "alpha-tickets.acceptance.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "request-user-input-async.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "update-plan.acceptance.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "view-image.acceptance.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 1,
+				"passed": 1,
+				"pending": 0,
+				"executed": 1,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "compaction-acceptance.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 6,
+				"passed": 6,
+				"pending": 0,
+				"executed": 6,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "vscode-lm-contract.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "vscode-lm-fixture",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 8,
+				"passed": 8,
+				"pending": 0,
+				"executed": 8,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		},
+		{
+			"file": "background-command-completion.test.js",
+			"actualVSCodeVersion": "1.138.0",
+			"providerMode": "scripted",
+			"status": "passed",
+			"requireAllTests": true,
+			"testCounts": {
+				"total": 2,
+				"passed": 2,
+				"pending": 0,
+				"executed": 2,
+				"failed": 0
+			},
+			"hostExitObserved": true,
+			"exitCode": 0
+		}
+	]
+}

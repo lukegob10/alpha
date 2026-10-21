@@ -17,6 +17,8 @@
 		"explicit_disabled": "This skill is disabled. Enable it in Skills settings before invoking it.",
 		"explicit_mode_unavailable": "This skill is unavailable in the current mode. Select a skill supported by the current mode.",
 		"builtin_read_only": "Built-in skills are read-only. Create a personal or workspace skill to override them.",
+		"edit_conflict": "Could not safely update {{path}}. The skill has unsaved changes, changed during the update, or could not be saved. Save or reload SKILL.md, resolve any save conflict, and retry.",
+		"save_conflict_protection": "Updating skill modes requires files.saveConflictResolution to be askUser. Enable save conflict protection for SKILL.md and retry.",
 		"catalog_invalid_cursor": "Invalid or stale skill catalog cursor. Restart with action \"list\" and no cursor.",
 		"catalog_output_budget": "Skill catalog output budget leaves no room for its pagination envelope.",
 		"catalog_more_available": "More skills are available through skill action \"list\".",

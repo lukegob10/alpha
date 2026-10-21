@@ -3,6 +3,7 @@ import { z, ZodError } from "zod"
 
 import {
 	type ProviderSettingsWithId,
+	type ProviderSettings,
 	providerSettingsWithIdSchema,
 	discriminatedProviderSettingsWithIdSchema,
 	ProviderSettingsEntry,
@@ -743,6 +744,18 @@ export class ProviderSettingsManager {
 			if (error instanceof ProviderProfileUnavailableError) throw error
 			throw new Error(`Failed to get profile: ${error instanceof Error ? error.message : error}`)
 		}
+	}
+
+	/** Resolve admission settings and availability from the same secret-storage snapshot. */
+	public async getAvailableProfile(name: string): Promise<ProviderSettings | undefined> {
+		return this.lock(async () => {
+			const profiles = await this.load()
+			const entry = this.profileEntries(profiles).find((candidate) => candidate.name === name)
+			if (!entry) return undefined
+			this.assertAvailable(entry)
+			const { id: _id, ...settings } = profiles.apiConfigs[entry.name]
+			return settings.apiProvider ? settings : undefined
+		})
 	}
 
 	/**

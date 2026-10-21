@@ -3,9 +3,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createRequire } from "node:module"
+import { runInNewContext } from "node:vm"
 import * as esbuild from "esbuild"
 
-import { resolveLanceDbNativeDependencies } from "../lancedb-native.mjs"
+import { hostVsixTarget, lanceDbBindingForTarget, resolveLanceDbNativeDependencies } from "../lancedb-native.mjs"
 
 const platformNames = [
 	"darwin-arm64",
@@ -70,6 +71,98 @@ function fixture(installed = platformNames, hideManifests = false) {
 }
 
 describe("LanceDB extension native packaging inventory", () => {
+	it.each([
+		["win32-x64", "win32-x64-msvc"],
+		["win32-arm64", "win32-arm64-msvc"],
+		["darwin-arm64", "darwin-arm64"],
+		["linux-x64", "linux-x64-gnu"],
+		["linux-arm64", "linux-arm64-gnu"],
+		["alpine-x64", "linux-x64-musl"],
+		["alpine-arm64", "linux-arm64-musl"],
+	])("requires the matching native binding for %s", (target, nativePlatform) => {
+		const item = fixture()
+		expect(
+			resolveLanceDbNativeDependencies(item.require, target).bindings.map((file) => path.basename(file)),
+		).toEqual([`lancedb.${nativePlatform}.node`])
+		expect(() => resolveLanceDbNativeDependencies(fixture([]).require, target)).toThrow(
+			`Missing LanceDB binding lancedb.${nativePlatform}.node for VSIX target ${target}`,
+		)
+	})
+
+	it("keeps Intel macOS core-only and rejects unsupported platform claims", () => {
+		expect(lanceDbBindingForTarget("darwin-x64")).toBeNull()
+		expect(resolveLanceDbNativeDependencies(fixture().require, "darwin-x64").bindings).toEqual([])
+		for (const target of ["universal", "web", "linux-armhf", "__proto__", undefined])
+			expect(() => lanceDbBindingForTarget(target)).toThrow("Unsupported VSIX target")
+	})
+
+	it.each([
+		["win32", "arm64", undefined, "win32-arm64"],
+		["darwin", "x64", undefined, "darwin-x64"],
+		["linux", "x64", "gnu", "linux-x64"],
+		["linux", "arm64", "musl", "alpine-arm64"],
+	])("maps the host %s/%s/%s to %s", (platform, arch, libc, target) => {
+		expect(hostVsixTarget({ platform, arch, libc })).toBe(target)
+	})
+
+	it("rejects unknown host architectures and Linux libc", () => {
+		expect(() => hostVsixTarget({ platform: "win32", arch: "ia32" })).toThrow("Unsupported VSIX target")
+		expect(() => hostVsixTarget({ platform: "linux", arch: "x64", libc: "unknown" })).toThrow(
+			"Unsupported Linux libc",
+		)
+	})
+
+	it("keeps the bundled CommonJS backend lazy when its native dependency cannot load", async () => {
+		const item = fixture([])
+		const backendEntry = item.require.resolve("@lancedb/lancedb")
+		fs.writeFileSync(backendEntry, `module.exports = require(${JSON.stringify(nativePackages[0])})`)
+		const result = await esbuild.build({
+			entryPoints: [path.resolve(import.meta.dirname, "../services/code-index/vector-store/lancedb-client.ts")],
+			bundle: true,
+			format: "cjs",
+			platform: "node",
+			write: false,
+			logLevel: "silent",
+			alias: { "@lancedb/lancedb": backendEntry },
+			external: nativePackages,
+			plugins: [
+				{
+					name: "fixture-localization",
+					setup(build) {
+						build.onResolve({ filter: /\/i18n$/ }, () => ({ path: "fixture-i18n", namespace: "fixture" }))
+						build.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
+							contents: "export const t = (_key, params) => Object.values(params).join(': ')",
+						}))
+					},
+				},
+			],
+		})
+		const module = { exports: {} }
+		const packageRequire = createRequire(import.meta.url)
+		let nativeLoads = 0
+		let directoryWrites = 0
+		runInNewContext(result.outputFiles[0].text, {
+			module,
+			exports: module.exports,
+			process: { platform: "darwin", arch: "x64" },
+			console: { error() {} },
+			require(name) {
+				if (nativePackages.includes(name)) {
+					nativeLoads++
+					throw new Error("Cannot find native binding")
+				}
+				if (name === "fs/promises") return { mkdir: async () => directoryWrites++ }
+				return packageRequire(name)
+			},
+		})
+		const store = new module.exports.LanceDbVectorStore(path.resolve("workspace"), undefined, 3)
+		expect(nativeLoads).toBe(0)
+		await expect(store.initialize()).rejects.toThrow(/darwin-x64.*Cannot find native binding/)
+		await expect(store.initialize()).rejects.toThrow(/darwin-x64.*Cannot find native binding/)
+		expect(nativeLoads).toBe(1)
+		expect(directoryWrites).toBe(0)
+	})
+
 	it("keeps all declared native imports external but copies only the installed subset", () => {
 		for (const installed of [[], ["win32-x64-msvc"], ["darwin-arm64", "linux-arm64-musl"]]) {
 			const item = fixture(installed)

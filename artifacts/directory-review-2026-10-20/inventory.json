@@ -1,0 +1,122 @@
+{
+	"root": "F:\\roo-fork\\Alpha-Code",
+	"languages": {
+		"css": 11,
+		"html": 6,
+		"javascript": 178,
+		"shell": 3,
+		"sql": 15,
+		"typescript": 2153,
+		"typescript-react": 361
+	},
+	"surfaces": {
+		"ci_cd": {
+			"count": 11,
+			"sample_paths": [
+				".github/CODEOWNERS",
+				".github/ISSUE_TEMPLATE/bug_report.yml",
+				".github/ISSUE_TEMPLATE/config.yml",
+				".github/ISSUE_TEMPLATE/feature_request.yml",
+				".github/ISSUE_TEMPLATE/marketplace.yml",
+				".github/actions/setup-node-pnpm/action.yml",
+				".github/pull_request_template.md",
+				".github/workflows/code-qa.yml"
+			]
+		},
+		"config": {
+			"count": 56,
+			"sample_paths": [
+				"apps/vscode-e2e/fixtures/vscode-lm-provider/package.json",
+				"apps/vscode-e2e/package.json",
+				"apps/vscode-e2e/portable-automation/package.json",
+				"evals/javascript/alpha-cancellation-cleanup/package.json",
+				"evals/javascript/alpha-change-integration/package.json",
+				"evals/javascript/alpha-cleanup/package.json",
+				"evals/javascript/alpha-compaction-resume/package.json",
+				"evals/javascript/alpha-context-continuity/package.json"
+			]
+		},
+		"data_db": {
+			"count": 54,
+			"sample_paths": [
+				"packages/evals/src/db/__tests__/globalSetup.spec.ts",
+				"packages/evals/src/db/__tests__/migrationJournal.spec.ts",
+				"packages/evals/src/db/__tests__/testDatabaseTarget.spec.ts",
+				"packages/evals/src/db/db.ts",
+				"packages/evals/src/db/index.ts",
+				"packages/evals/src/db/migrations/0000_young_trauma.sql",
+				"packages/evals/src/db/migrations/0001_add_timeout_to_runs.sql",
+				"packages/evals/src/db/migrations/0001_lowly_captain_flint.sql"
+			]
+		},
+		"docs": {
+			"count": 103,
+			"sample_paths": [
+				".changeset/README.md",
+				"README.md",
+				"docs/README.md",
+				"docs/activity-edge-tracer.md",
+				"docs/agent-hotkeys.md",
+				"docs/alpha-panel-loading-vscode-1.125-to-1.138-2026-10-20.md",
+				"docs/approval-mode-policy.md",
+				"docs/benchmark-exact-host-launch-2026-10-20.md"
+			]
+		},
+		"frontend": {
+			"count": 3689,
+			"sample_paths": [
+				".changeset/changelog-config.js",
+				"apps/vscode-e2e/fixtures/vscode-lm-provider/extension.js",
+				"apps/vscode-e2e/portable-automation/extension.js",
+				"apps/vscode-e2e/portable-automation/receipt.js",
+				"apps/vscode-e2e/src/campaign/__tests__/controller.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/developmentCli.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/developmentSuites.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/extensionAdapter.spec.ts"
+			]
+		},
+		"infra": {
+			"count": 1,
+			"sample_paths": ["packages/evals/docker-compose.yml"]
+		},
+		"observability": {
+			"count": 0,
+			"sample_paths": []
+		},
+		"scripts": {
+			"count": 277,
+			"sample_paths": [
+				"packages/evals/.docker/scripts/postgres/create-databases.sh",
+				"packages/types/scripts/generate-alphamodes-schema.ts",
+				"packages/types/scripts/publish-npm.cjs",
+				"packages/types/scripts/verify-entrypoints.mjs",
+				"scripts/benchmarks/activation-environment.mjs",
+				"scripts/benchmarks/code-index-search.ts",
+				"scripts/benchmarks/file-change-projection.mjs",
+				"scripts/benchmarks/nor36-request-preflight.config.ts"
+			]
+		},
+		"tests": {
+			"count": 1278,
+			"sample_paths": [
+				"apps/vscode-e2e/src/campaign/__tests__/controller.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/developmentCli.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/developmentSuites.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/extensionAdapter.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/liveGate.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/nestedRestartCampaign.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/ownedProcess.spec.ts",
+				"apps/vscode-e2e/src/campaign/__tests__/patchPlan.spec.ts"
+			]
+		}
+	},
+	"suggested_review_passes": [
+		"references/change-safety-harness.md",
+		"references/performance-optimization-guide.md",
+		"references/javascript-review-guide.md",
+		"references/html-review-guide.md",
+		"references/frontend-clean-code-extension.md",
+		"references/testing-validation-guide.md",
+		"scripts/find_stale_scripts.py"
+	]
+}

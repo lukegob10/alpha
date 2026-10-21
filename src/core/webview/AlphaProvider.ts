@@ -139,6 +139,7 @@ import {
 	shouldDeriveApprovalFlags,
 	subagentAutoApprovalPolicySchema,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
+	ticketSearchRequestSchema,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -210,7 +211,7 @@ import {
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
-import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
+import { AgentLifecycleJournal, readAgentLifecycleEvents, type AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
 	AgentIncidentMonitor,
 	INCIDENT_WINDOW_MS,
@@ -297,6 +298,7 @@ import {
 } from "./AgentLifecycleProjection"
 import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
 import { cancelPromptEnhancements } from "./promptEnhancementRequests"
+import { cancelTicketSearches, enqueueTicketSearch } from "./ticketSearchRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
 import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
@@ -808,7 +810,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.6-vscode-compatibility"
+	public readonly latestAnnouncementId = "october-2026-v3.2.7-performance-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1261,6 +1263,7 @@ export class AlphaProvider
 	*/
 	private clearWebviewResources() {
 		this.isViewLaunched = false
+		cancelTicketSearches(this)
 		this.clearWebviewFocus()
 		while (this.webviewDisposables.length) {
 			const x = this.webviewDisposables.pop()
@@ -1284,12 +1287,16 @@ export class AlphaProvider
 		this._disposed = true
 		this.log("Disposing AlphaProvider...")
 		cancelPromptEnhancements(this)
+		cancelTicketSearches(this)
 
 		// Stop accepting webview work, then let the last already-accepted message
 		// settle before removing tasks it may have created.
 		this.clearWebviewResources()
 		await this.webviewMessageQueue
 		await Promise.all([...this.taskControlMessageQueues.values(), ...this.immediateWebviewOperations])
+		// API admissions share the creation queue even when no webview message owns
+		// them. Close admission before joining it and taking the owned-task snapshot.
+		await this.taskCreationQueue
 		// In-flight eviction keeps its ownership fence until cleanup has settled.
 		await Promise.allSettled([this.subagentResidencyPrune, ...this.subagentResidencyEvictions.values()])
 
@@ -2091,9 +2098,38 @@ export class AlphaProvider
 			)
 		}
 		const run = (message: WebviewMessage) => webviewMessageHandler(this, message, this.marketplaceManager)
+		const failTicketSearch = (requestId: string) =>
+			this.postMessageToWebview({
+				type: "ticketSearchResults",
+				ticketSearch: { type: "ticketSearchResults", requestId, tickets: [], error: true },
+			})
 
 		const onReceiveMessage = (message: WebviewMessage) => {
+			if (this._disposed) return
 			const messageType = message && typeof message === "object" ? message.type : undefined
+			if (messageType === "searchTickets") {
+				const request = ticketSearchRequestSchema.safeParse(message)
+				if (!request.success) return
+				if (message.taskId !== undefined && (typeof message.taskId !== "string" || !message.taskId)) return
+				// Capture scope before another view or navigation can change the foreground task.
+				const taskId = message.taskId ?? this.getActiveTaskId()
+				const task = taskId ? this.getLiveTask(taskId) : undefined
+				if (taskId && !task) return failTicketSearch(request.data.requestId)
+				const cwd = task?.cwd ?? this.cwd
+				const scopedMessage = taskId ? { ...message, taskId } : message
+				const processing = enqueueTicketSearch(this, taskId, (signal) =>
+					webviewMessageHandler(this, scopedMessage, this.marketplaceManager, {
+						ticketSearch: { signal, cwd },
+					}),
+				)
+				const tracked = processing.catch(async (error) => {
+					logFailure(message, error)
+					await failTicketSearch(request.data.requestId)
+				})
+				this.immediateWebviewOperations.add(tracked)
+				void tracked.finally(() => this.immediateWebviewOperations.delete(tracked))
+				return tracked
+			}
 			if (messageType && immediateControlTypes.has(messageType)) {
 				const processing = run(message)
 				const tracked = processing.catch((error) => logFailure(message, error))
@@ -5985,14 +6021,18 @@ export class AlphaProvider
 		const owner = this.getTaskOwner(taskId) ?? this
 		const { history, task } = await owner.getDirectCrossTask(caller, taskId, true)
 		this.throwIfThreadCancelled(signal)
+		const globalStoragePath = owner.contextProxy.globalStorageUri.fsPath
 		const apiMessages =
 			task && (task.apiConversationHistory.length > 0 || task.isInitialized || !history)
 				? [...task.apiConversationHistory]
-				: await readThreadApiMessages(taskId, this.contextProxy.globalStorageUri.fsPath, signal)
+				: await readThreadApiMessages(taskId, globalStoragePath, signal)
+		this.throwIfThreadCancelled(signal)
+		const lifecycleEvents = await readAgentLifecycleEvents(taskId, globalStoragePath)
+		this.throwIfThreadCancelled(signal)
 		const workspacePath =
 			!task && history?.orchestrationWorkspaceMode === "worktree"
 				? await crossTaskWorktreeService.resolve(
-						this.contextProxy.globalStorageUri.fsPath,
+						globalStoragePath,
 						history.orchestrationWorkspaceTaskId ?? history.id,
 						history.orchestrationWorkspaceRelativePath ?? "",
 					)
@@ -6016,6 +6056,7 @@ export class AlphaProvider
 							? "interrupted"
 							: undefined,
 			apiMessages,
+			lifecycleEvents,
 			uiMessages: task?.clineMessages,
 			options,
 		})
@@ -7319,6 +7360,13 @@ export class AlphaProvider
 		options: ManagedCreateTaskOptions = {},
 		configuration: AlphaCodeSettings = {},
 	): Promise<Task> {
+		this.assertTaskAdmissionOpen()
+		const parentOwner = parentTask ? this.getTaskOwner(parentTask.taskId) : undefined
+		if (parentOwner && parentOwner !== this) {
+			// Route before acquiring either provider's queue so opposite cross-view
+			// admissions cannot each hold one queue while waiting for the other.
+			return parentOwner.createTask(text, images, parentTask, options, configuration)
+		}
 		const performanceSubmissionStartedAt =
 			process.env.ALPHA_TASK_OBSERVABILITY === "1" ? performance.now() : undefined
 		const previousCreation = this.taskCreationQueue
@@ -7328,6 +7376,7 @@ export class AlphaProvider
 		})
 		await previousCreation
 		try {
+			this.assertTaskAdmissionOpen()
 			return await this.createTaskUnderCreationLock(
 				text,
 				images,
@@ -7341,6 +7390,10 @@ export class AlphaProvider
 		}
 	}
 
+	private assertTaskAdmissionOpen(): void {
+		if (this._disposed) throw new Error("Cannot create a task in a disposed provider")
+	}
+
 	private async createTaskUnderCreationLock(
 		text?: string,
 		images?: string[],
@@ -7350,14 +7403,11 @@ export class AlphaProvider
 		performanceSubmissionStartedAt?: number,
 	): Promise<Task> {
 		await this.taskHistoryStoreReady
-		if (this._disposed) throw new Error("Cannot create a task in a disposed provider")
-		const parentOwner = parentTask ? this.getTaskOwner(parentTask.taskId) : undefined
-		if (parentOwner && parentOwner !== this) {
-			return parentOwner.createTask(text, images, parentTask, options, configuration)
-		}
+		this.assertTaskAdmissionOpen()
 		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
 		await this.configurationQueue
+		this.assertTaskAdmissionOpen()
 		const reasoningPreference = taskReasoningPreferenceSchema.parse(
 			options.reasoningPreference ??
 				parentTask?.reasoningPreference ??
@@ -7381,6 +7431,7 @@ export class AlphaProvider
 			}
 
 			await this.setValues(sanitizedConfiguration)
+			this.assertTaskAdmissionOpen()
 
 			if (configuration.commandExecutionTimeout !== undefined) {
 				await vscode.workspace
@@ -7390,10 +7441,12 @@ export class AlphaProvider
 						configuration.commandExecutionTimeout,
 						vscode.ConfigurationTarget.Global,
 					)
+				this.assertTaskAdmissionOpen()
 			}
 
 			if (configuration.currentApiConfigName) {
 				await this.setProviderProfile(configuration.currentApiConfigName)
+				this.assertTaskAdmissionOpen()
 			}
 
 			// Register custom modes so the CustomModesManager knows about them.
@@ -7403,6 +7456,7 @@ export class AlphaProvider
 			if (configuration.customModes?.length) {
 				for (const mode of configuration.customModes) {
 					await this.customModesManager.updateCustomMode(mode.slug, mode)
+					this.assertTaskAdmissionOpen()
 				}
 			}
 		}
@@ -7427,48 +7481,30 @@ export class AlphaProvider
 		let apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
 		if (!options.apiConfiguration) {
-			const entries = await this.providerSettingsManager.listConfig()
-			const selected = entries.find(({ name }) => name === taskApiConfigName)
-			this.assertProviderProfileAvailable(selected)
-			if (selected) {
-				const savedConfiguration = await this.getProviderSettingsForProfileName(selected.name, entries)
-				if (savedConfiguration) {
-					// The profile owns its settings; ContextProxy may contain a partially
-					// persisted projection after an earlier write failed. Explicit API
-					// overrides still apply to this admission's immutable configuration.
-					const explicitProviderSettings = Object.fromEntries(
-						PROVIDER_SETTINGS_KEYS.filter((key) => Object.hasOwn(configuration, key)).map((key) => [
-							key,
-							configuration[key],
-						]),
-					)
-					apiConfiguration = { ...savedConfiguration, ...explicitProviderSettings }
-				}
+			const savedConfiguration = await this.providerSettingsManager.getAvailableProfile(taskApiConfigName)
+			this.assertTaskAdmissionOpen()
+			if (savedConfiguration) {
+				// Resolve availability and settings together: two serialized secrets
+				// reads both delay startup and can observe different profile versions.
+				const explicitProviderSettings = Object.fromEntries(
+					PROVIDER_SETTINGS_KEYS.filter((key) => Object.hasOwn(configuration, key)).map((key) => [
+						key,
+						configuration[key],
+					]),
+				)
+				apiConfiguration = { ...savedConfiguration, ...explicitProviderSettings }
 			}
 		}
 		assertSupportedApiProvider(apiConfiguration.apiProvider)
 
 		if (!parentTask && options.preserveExisting && !options.background) {
 			await this.finalizeActiveCompletionCandidate()
+			this.assertTaskAdmissionOpen()
 		}
 
 		// Single-open-task invariant: always enforce for user-initiated top-level tasks
 		if (!parentTask && !options.preserveExisting) await this.removeTaskFromStack()
-
-		if (!parentTask && options.preserveExisting && !this.taskSessions.canCreateTask()) {
-			const configuredMaxLiveTasks = normalizeMaxLiveTasks(
-				(this.contextProxy as { getValue?: (key: string) => unknown } | undefined)?.getValue?.(
-					"maxConcurrentTasks",
-				) ?? DEFAULT_MAX_CONCURRENT_TASKS,
-			)
-			const maxLiveTasks =
-				typeof this.taskSessions.getMaxLiveTasks === "function"
-					? this.taskSessions.getMaxLiveTasks()
-					: configuredMaxLiveTasks
-			const message = `Maximum live task limit reached (${maxLiveTasks}). Close a running task before starting another.`
-			vscode.window.showErrorMessage(message)
-			throw new Error(message)
-		}
+		this.assertTaskAdmissionOpen()
 
 		const {
 			background,
@@ -7484,69 +7520,112 @@ export class AlphaProvider
 			requestedChildPolicy: taskOptions.subagentDelegationPolicy,
 			taskExplicitlyEnabled: taskOptions.subagentDelegationExplicitlyEnabled === true,
 		}).policy
-		const task = new Task({
-			provider: this,
-			apiConfiguration,
-			enableCheckpoints,
-			checkpointTimeout,
-			consecutiveMistakeLimit: apiConfiguration.consecutiveMistakeLimit,
-			task: text,
-			images,
-			experiments,
-			rootTask: parentTask ? (parentTask.rootTask ?? parentTask) : undefined,
-			parentTask,
-			taskNumber: this.taskStack.length + 1,
-			performanceSubmissionStartedAt,
-			onCreated: this.taskCreationCallback,
-			initialTodos: taskOptions.initialTodos,
-			taskApiConfigName,
-			// Ensure this task is present in taskStack before startTask() emits
-			// its initial state update, so state.currentTaskId is available ASAP.
-			startTask: false,
-			...taskOptions,
-			presentationModelCalls: hasFiniteTaskCallLimit(stateValues) ? false : taskOptions.presentationModelCalls,
-			taskApprovalMode,
-			reasoningPreference,
-			taskMode: topLevelTaskMode,
-			// Freeze ordinary root tasks at creation so a later settings change or
-			// reload cannot silently change their delegation semantics.
-			subagentDelegationPolicy: frozenSubagentDelegationPolicy,
-		})
-		if (taskOptions.subagentInstructionPlacement === "system") {
-			await task.persistFrozenSubagentInstructions()
+		const taskId = options.taskId ?? uuidv7()
+		let releaseAdmission: () => void
+		try {
+			releaseAdmission = this.taskSessions.reserveTaskAdmission(taskId)
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith("Maximum live task limit reached")) {
+				void vscode.window.showErrorMessage(error.message)
+			}
+			throw error
 		}
-
-		const modePersistence =
-			!parentTask && !background
-				? this.updateGlobalState("mode", topLevelTaskMode ?? defaultModeSlug).catch((error) => {
-						this.log(`[createTask] Failed to persist task mode: ${String(error)}`)
-					})
-				: Promise.resolve()
-
-		await this.addTaskToStack(task, { focus: !background })
-		if (background) {
-			await this.postTaskSessionStateToWebview()
-		} else {
-			await this.postTaskStateToWebview({ clearManagedAgentTree: true })
-		}
-		if (hasConfigurationOverrides) {
-			void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
-				this.log(`[createTask] Background state refresh failed: ${String(error)}`)
+		let task: Task | undefined
+		try {
+			task = new Task({
+				provider: this,
+				apiConfiguration,
+				enableCheckpoints,
+				checkpointTimeout,
+				consecutiveMistakeLimit: apiConfiguration.consecutiveMistakeLimit,
+				task: text,
+				images,
+				experiments,
+				rootTask: parentTask ? (parentTask.rootTask ?? parentTask) : undefined,
+				parentTask,
+				taskNumber: this.taskStack.length + 1,
+				performanceSubmissionStartedAt,
+				onCreated: this.taskCreationCallback,
+				initialTodos: taskOptions.initialTodos,
+				taskApiConfigName,
+				// Ensure this task is present in taskStack before startTask() emits
+				// its initial state update, so state.currentTaskId is available ASAP.
+				...taskOptions,
+				startTask: false,
+				taskId,
+				presentationModelCalls: hasFiniteTaskCallLimit(stateValues)
+					? false
+					: taskOptions.presentationModelCalls,
+				taskApprovalMode,
+				reasoningPreference,
+				taskMode: topLevelTaskMode,
+				// Freeze ordinary root tasks at creation so a later settings change or
+				// reload cannot silently change their delegation semantics.
+				subagentDelegationPolicy: frozenSubagentDelegationPolicy,
 			})
-		}
-		if (performanceSubmissionStartedAt !== undefined) {
-			task.recordTaskPerformance("task_setup", performanceSubmissionStartedAt)
-		}
-		if (options.startTask !== false) {
-			task.start()
-		}
-		await modePersistence
+			this.assertTaskAdmissionOpen()
+			if (taskOptions.subagentInstructionPlacement === "system") {
+				await task.persistFrozenSubagentInstructions()
+				this.assertTaskAdmissionOpen()
+			}
 
-		this.log(
-			`[createTask] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
-		)
+			const modePersistence =
+				!parentTask && !background
+					? this.updateGlobalState("mode", topLevelTaskMode ?? defaultModeSlug).catch((error) => {
+							this.log(`[createTask] Failed to persist task mode: ${String(error)}`)
+						})
+					: Promise.resolve()
 
-		return task
+			await this.addTaskToStack(task, { focus: !background })
+			this.assertTaskAdmissionOpen()
+			if (background) {
+				await this.postTaskSessionStateToWebview()
+			} else {
+				await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+			}
+			this.assertTaskAdmissionOpen()
+			if (this.taskSessions.getTask(task.taskId) !== task) {
+				throw new Error(`Task ${task.taskId} lost runtime ownership during admission`)
+			}
+			if (hasConfigurationOverrides) {
+				void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
+					this.log(`[createTask] Background state refresh failed: ${String(error)}`)
+				})
+			}
+			if (performanceSubmissionStartedAt !== undefined) {
+				task.recordTaskPerformance("task_setup", performanceSubmissionStartedAt)
+			}
+			if (options.startTask !== false) {
+				task.start()
+			}
+			await modePersistence
+			this.assertTaskAdmissionOpen()
+
+			this.log(
+				`[createTask] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
+			)
+
+			return task
+		} catch (error) {
+			if (task) {
+				// Constructor callbacks can acquire resources before registration. Give
+				// failed admission a canonical handle until its cleanup has succeeded.
+				if (!this.taskSessions.getTask(task.taskId)) {
+					this.taskSessions.register(task, { focus: false })
+					this.taskStack.push(task)
+				}
+				if (this.taskSessions.getTask(task.taskId) === task) {
+					await this.removeTaskFromStack({ taskId: task.taskId })
+				} else {
+					await awaitTaskCancellationBoundary(task, await task.abortTask(true))
+					for (const cleanup of this.taskEventListeners.get(task) ?? []) cleanup()
+					this.taskEventListeners.delete(task)
+				}
+			}
+			throw error
+		} finally {
+			releaseAdmission()
+		}
 	}
 
 	/** Capture exact run promises before Stop callbacks can install another parent or generation. */

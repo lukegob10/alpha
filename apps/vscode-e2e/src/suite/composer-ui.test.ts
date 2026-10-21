@@ -56,25 +56,54 @@ suite("Rendered composer", function () {
 		const editor = await vscode.commands.executeCommand<{
 			viewLaunched: boolean
 			postStateToWebview(): Promise<void>
+			providerSettingsManager: { getAvailableProfile(name: string): Promise<ProviderSettings | undefined> }
 		}>("alpha.openInNewTab")
 		assert.ok(editor)
 		await waitFor(() => editor.viewLaunched, { timeout: 15_000 })
 		await editor.postStateToWebview()
-		await fs.writeFile(
-			path.join(directory, "ui-composer-editor-ready.json"),
-			JSON.stringify({ nonce, version: vscode.version }),
-			{ flag: "wx" },
-		)
-		await waitFor(
-			async () => {
-				try {
-					return JSON.parse(await fs.readFile(path.join(directory, "ui-finish.json"), "utf8")).nonce === nonce
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
-					throw error
-				}
-			},
-			{ timeout: 90_000 },
-		)
+		const originalLookup = editor.providerSettingsManager.getAvailableProfile
+		editor.providerSettingsManager.getAvailableProfile = async () => {
+			await fs.writeFile(path.join(directory, "ui-first-prompt-blocked.json"), JSON.stringify({ nonce }), {
+				flag: "wx",
+			})
+			await waitFor(
+				async () => {
+					try {
+						return (
+							JSON.parse(await fs.readFile(path.join(directory, "ui-first-prompt-release.json"), "utf8"))
+								.nonce === nonce
+						)
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+						throw error
+					}
+				},
+				{ timeout: 30_000 },
+			)
+			throw new Error("Startup fixture rejected admission")
+		}
+		try {
+			await fs.writeFile(
+				path.join(directory, "ui-composer-editor-ready.json"),
+				JSON.stringify({ nonce, version: vscode.version }),
+				{ flag: "wx" },
+			)
+			await waitFor(
+				async () => {
+					try {
+						return (
+							JSON.parse(await fs.readFile(path.join(directory, "ui-finish.json"), "utf8")).nonce ===
+							nonce
+						)
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+						throw error
+					}
+				},
+				{ timeout: 90_000 },
+			)
+		} finally {
+			editor.providerSettingsManager.getAvailableProfile = originalLookup
+		}
 	})
 })

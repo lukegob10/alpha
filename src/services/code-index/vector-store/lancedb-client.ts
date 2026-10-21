@@ -1,6 +1,5 @@
 import * as fs from "fs/promises"
 import * as path from "path"
-import * as lancedb from "@lancedb/lancedb"
 import type { Connection, Table } from "@lancedb/lancedb"
 
 import { t } from "../../../i18n"
@@ -19,6 +18,21 @@ const TABLE_NAME = "code_blocks"
 const METADATA_ID = "__indexing_metadata__"
 const CODE_TYPE = "code"
 const METADATA_TYPE = "metadata"
+let lanceDbModule: Promise<typeof import("@lancedb/lancedb")> | undefined
+
+// Indexing is optional: importing extension services must not load a platform-specific native binding.
+function loadLanceDb() {
+	return (lanceDbModule ??= import("@lancedb/lancedb").catch((error: unknown) => {
+		throw new Error(
+			t("embeddings:vectorStore.lanceBackendUnavailable", {
+				platform: `${process.platform}-${process.arch}`,
+				errorMessage: error instanceof Error ? error.message : String(error),
+			}),
+			{ cause: error },
+		)
+	}))
+}
+
 const SEARCH_COLUMNS = [
 	"id",
 	"filePath",
@@ -79,6 +93,7 @@ export class LanceDbVectorStore implements IVectorStore {
 
 	private async getDb(): Promise<Connection> {
 		if (!this.db) {
+			const lancedb = await loadLanceDb()
 			await fs.mkdir(this.dbPath, { recursive: true })
 			this.db = await lancedb.connect(this.dbPath)
 		}
@@ -180,6 +195,7 @@ export class LanceDbVectorStore implements IVectorStore {
 
 	private async createFreshTable(): Promise<void> {
 		const db = await this.getDb()
+		const lancedb = await loadLanceDb()
 		if (await this.tableExists(db)) {
 			await db.dropTable(TABLE_NAME)
 		}

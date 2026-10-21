@@ -9,11 +9,7 @@ import { ScheduledTaskStore } from "../ScheduledTaskStore"
 
 const commandRunner = vi.hoisted(() => vi.fn(async () => ({ stdout: "done", stderr: "" })))
 
-vi.mock("child_process", async (importOriginal) => {
-	const original = await importOriginal<typeof import("child_process")>()
-	const { promisify } = await import("util")
-	return { ...original, execFile: Object.assign(vi.fn(), { [promisify.custom]: commandRunner }) }
-})
+vi.mock("../runScheduledCommand", () => ({ runScheduledCommand: commandRunner }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 
 function deferred<T>() {

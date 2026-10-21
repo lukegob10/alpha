@@ -99,6 +99,9 @@ vi.mock("../../config/ProviderSettingsManager", () => ({
 	ProviderProfileRenameError: class extends Error {},
 	ProviderProfileSaveError: class extends Error {},
 	ProviderSettingsManager: class {
+		async getAvailableProfile() {
+			return { apiProvider: "openai", openAiModelId: "ws08-scripted" }
+		}
 		async getProfile() {
 			return { id: "scripted", name: "Scripted", apiProvider: "openai", openAiModelId: "ws08-scripted" }
 		}

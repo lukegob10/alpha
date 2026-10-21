@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { AlphaMessage } from "@alpha-code/types"
+import type { AgentLifecycleEvent, AgentTurnTerminalStatus, AlphaMessage } from "@alpha-code/types"
 
 import type { ApiMessage } from "../apiMessages"
 import { buildThreadReadResult, forkTaskHistory } from "../ThreadHistory"
@@ -33,7 +33,7 @@ function completedHistory(): ApiMessage[] {
 	]
 }
 
-function read(apiMessages = completedHistory(), options = {}) {
+function read(apiMessages = completedHistory(), options = {}, lifecycleEvents?: readonly AgentLifecycleEvent[]) {
 	return buildThreadReadResult({
 		taskId: "peer-1",
 		title: "Peer thread",
@@ -42,8 +42,39 @@ function read(apiMessages = completedHistory(), options = {}) {
 		updatedAt: 100,
 		status: { type: "idle" },
 		apiMessages,
+		lifecycleEvents,
 		options,
 	})
+}
+
+function lifecycleTurn(
+	turnId: string,
+	startedAt: number,
+	terminal?: { status: AgentTurnTerminalStatus; at: number },
+): AgentLifecycleEvent[] {
+	const identity = { version: 1 as const, taskId: "peer-1", runId: `run:${turnId}`, turnId }
+	return [
+		{
+			...identity,
+			eventId: `${turnId}:start`,
+			sequence: 1,
+			occurredAt: startedAt,
+			type: "turn_started",
+			payload: {},
+		},
+		...(terminal
+			? [
+					{
+						...identity,
+						eventId: `${turnId}:terminal`,
+						sequence: 2,
+						occurredAt: terminal.at,
+						type: "turn_terminal" as const,
+						payload: { status: terminal.status },
+					},
+				]
+			: []),
+	]
 }
 
 describe("thread history projection", () => {
@@ -82,6 +113,256 @@ describe("thread history projection", () => {
 		expect(older.page.hasMore).toBe(false)
 		expect(JSON.stringify(older.turns)).toContain("The repository is ready.")
 		expect(() => read(history, { cursor: "other-thread:cursor" })).toThrow("Unknown thread history cursor")
+	})
+
+	it.each([
+		["cancelled", "interrupted"],
+		["failed", "failed"],
+	] as const)(
+		"preserves an earlier %s response through a completed request and cold pagination",
+		(outcome, status) => {
+			const history: ApiMessage[] = [
+				{ role: "user", input_origin: "human", content: "First request", ts: 1 },
+				{
+					role: "assistant",
+					phase: "commentary",
+					content: "Working on first request",
+					agentResponseOutcome: { status: outcome },
+					ts: 2,
+				},
+				{ role: "user", input_origin: "human", content: "Second request", ts: 3 },
+				{ role: "assistant", phase: "final_answer", content: "Second request done", ts: 4 },
+			]
+			const all = read(history, { turnLimit: 10 })
+			expect(all.turns.map((turn) => turn.status)).toEqual(["completed", status])
+			expect(JSON.stringify(all.turns[0])).not.toContain("First request")
+			const newest = read(history)
+			expect(newest.page.hasMore).toBe(true)
+			const older = read(structuredClone(history), { cursor: newest.page.nextCursor })
+			expect(older.turns).toEqual([all.turns[1]])
+			expect(older.page.hasMore).toBe(false)
+		},
+	)
+
+	it("keeps human steering and retryable responses within the unfinished turn", () => {
+		const history: ApiMessage[] = [
+			{ role: "user", input_origin: "human", content: "First request", ts: 1 },
+			{
+				role: "assistant",
+				phase: "commentary",
+				content: "Retrying the first request",
+				agentResponseOutcome: { status: "failed", retryable: true },
+				ts: 2,
+			},
+			{ role: "user", input_origin: "human", content: "Also check the second file", ts: 3 },
+			{ role: "assistant", phase: "final_answer", content: "Both files are ready", ts: 4 },
+		]
+		const result = read(history, { turnLimit: 10 })
+		expect(result.turns).toHaveLength(1)
+		expect(result.turns[0].status).toBe("completed")
+		expect(JSON.stringify(result.turns[0])).toContain("Also check the second file")
+	})
+
+	it.each(["interrupted", "failed"] as const)(
+		"projects an earlier journal %s status and identity through cold pagination",
+		(status) => {
+			const history: ApiMessage[] = [
+				{ role: "user", input_origin: "human", content: "First request", ts: 11 },
+				{ role: "assistant", phase: "final_answer", content: "Candidate rejected by the host", ts: 12 },
+				{ role: "user", input_origin: "human", content: "Second request", ts: 21 },
+				{ role: "assistant", phase: "final_answer", content: "Second request done", ts: 22 },
+			]
+			const events = [
+				...lifecycleTurn("first", 10, { status, at: 13 }),
+				...lifecycleTurn("second", 20, { status: "completed", at: 23 }),
+			]
+			const all = read(history, { turnLimit: 10 }, events)
+			expect(all.turns.map((turn) => turn.status)).toEqual(["completed", status])
+			const newest = read(history, {}, events)
+			const older = read(structuredClone(history), { cursor: newest.page.nextCursor }, structuredClone(events))
+			expect(older.turns).toEqual([all.turns[1]])
+			expect(older.page).toMatchObject({ hasMore: false, nextCursor: null })
+			const changedPrefix = [
+				{ role: "user" as const, content: "Compacted context", isSummary: true, ts: 1 },
+				...history,
+			]
+			expect(read(changedPrefix, { turnLimit: 10 }, events).turns.map((turn) => turn.id)).toEqual(
+				all.turns.map((turn) => turn.id),
+			)
+		},
+	)
+
+	it("keeps apparent final answers, failed model attempts and human steering in their canonical active turn", () => {
+		const history: ApiMessage[] = [
+			{ role: "user", input_origin: "human", content: "First request", ts: 11 },
+			{ role: "assistant", phase: "final_answer", content: "Candidate answer", ts: 12 },
+			{ role: "user", input_origin: "human", content: "Also check the second file", ts: 13 },
+			{ role: "assistant", content: "Failed attempt", agentResponseOutcome: { status: "failed" }, ts: 14 },
+			{ role: "user", input_origin: "human", content: "Continue checking", ts: 15 },
+		]
+		const result = read(history, { turnLimit: 10 }, lifecycleTurn("active", 10))
+		expect(result.turns).toHaveLength(1)
+		expect(result.turns[0].status).toBe("inProgress")
+		expect(result.turns[0].items.filter((item) => item.type === "userMessage")).toHaveLength(3)
+	})
+
+	it("attaches an input staged before the canonical start while retaining the completed legacy prefix", () => {
+		const history: ApiMessage[] = [
+			...completedHistory(),
+			{ role: "user", input_origin: "human", content: "New request", ts: 50 },
+			{ role: "assistant", phase: "commentary", content: "New investigation", ts: 60 },
+		]
+		const events = lifecycleTurn("new", 55, { status: "interrupted", at: 70 })
+		const result = read(history, { turnLimit: 10 }, events)
+		expect(result.turns.map((turn) => turn.status)).toEqual(["interrupted", "completed"])
+		expect(result.turns[1]).toEqual(read().turns[0])
+		expect(JSON.stringify(result.turns[0])).toContain("New request")
+	})
+
+	it("projects the canonical active status before the first response to a staged input", () => {
+		const history: ApiMessage[] = [
+			...completedHistory(),
+			{ role: "user", input_origin: "human", content: "New request", ts: 50 },
+		]
+		const result = read(history, { turnLimit: 10 }, lifecycleTurn("new", 55))
+		expect(result.turns.map((turn) => turn.status)).toEqual(["inProgress", "completed"])
+		expect(JSON.stringify(result.turns[0])).toContain("New request")
+	})
+
+	it("preserves host terminal status when the latest legacy answer has a final phase", () => {
+		const result = buildThreadReadResult({
+			taskId: "peer-1",
+			objective: "Inspect the repository",
+			workspacePath: "/repo",
+			updatedAt: 100,
+			status: { type: "idle" },
+			lastTurnStatus: "failed",
+			apiMessages: completedHistory(),
+		})
+		expect(result.turns[0].status).toBe("failed")
+	})
+
+	it("retains legacy fallback when equal journal timestamps cannot identify unstamped envelopes", () => {
+		const history: ApiMessage[] = [
+			{ role: "user", content: "First request", ts: 10 },
+			{ role: "assistant", content: "Cancelled", agentResponseOutcome: { status: "cancelled" }, ts: 10 },
+			{ role: "user", content: "Second request", ts: 10 },
+			{ role: "assistant", content: "Done", phase: "final_answer", ts: 10 },
+		]
+		const result = read(history, { turnLimit: 10 }, [
+			...lifecycleTurn("first", 10, { status: "interrupted", at: 10 }),
+			...lifecycleTurn("second", 10, { status: "completed", at: 10 }),
+		])
+		expect(result.turns.map((turn) => turn.status)).toEqual(["completed", "interrupted"])
+		expect(new Set(result.turns.map((turn) => turn.id)).size).toBe(2)
+	})
+
+	it("correlates timestamp-less response envelopes by durable message identity", () => {
+		const events = lifecycleTurn("identified", 10, { status: "interrupted", at: 30 })
+		events.splice(1, 0, {
+			...events[0],
+			eventId: "identified:text",
+			sequence: 2,
+			occurredAt: 20,
+			type: "item_added",
+			payload: {
+				item: { type: "assistant_text", itemId: "text-1", messageId: "provider-message-1", text: "Working" },
+			},
+		})
+		events[2].sequence = 3
+		const result = read(
+			[
+				{ role: "user", input_origin: "human", content: "First request" },
+				{ role: "assistant", content: "Working", messageId: "provider-message-1" },
+			],
+			{},
+			events,
+		)
+		expect(result.turns).toHaveLength(1)
+		expect(result.turns[0].status).toBe("interrupted")
+	})
+
+	it("correlates timestamp-less tool transactions without exposing private journal items", () => {
+		const events = lifecycleTurn("identified-tool", 10, { status: "failed", at: 30 })
+		events.splice(1, 0, {
+			...events[0],
+			eventId: "identified-tool:call",
+			sequence: 2,
+			occurredAt: 20,
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					type: "tool_call",
+					itemId: "call-1",
+					toolCallId: "read-1",
+					name: "read_file",
+					arguments: { private: "journal-only arguments" },
+					status: "accepted",
+				},
+			},
+		})
+		events[2].sequence = 3
+		const result = read(
+			[
+				{ role: "user", content: "Inspect the repository" },
+				{ role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "read_file", input: {} }] },
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "secret output" }] },
+			],
+			{},
+			events,
+		)
+		expect(result.turns).toHaveLength(1)
+		expect(result.turns[0].status).toBe("failed")
+		expect(result.turns[0].items).toContainEqual({ type: "toolResult", id: "read-1", status: "completed" })
+		expect(JSON.stringify(result)).not.toContain("journal-only arguments")
+		expect(JSON.stringify(result)).not.toContain("secret output")
+	})
+
+	it("does not attach inherited fork messages to a newer turn that reuses a tool call ID", () => {
+		const history: ApiMessage[] = [
+			...completedHistory(),
+			{ role: "user", input_origin: "human", content: "New request", ts: 51 },
+			{ role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "read_file", input: {} }], ts: 52 },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "New result" }], ts: 53 },
+		]
+		const events = lifecycleTurn("new", 50, { status: "interrupted", at: 60 })
+		events.splice(1, 0, {
+			...events[0],
+			eventId: "new:call",
+			sequence: 2,
+			occurredAt: 52,
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					type: "tool_call",
+					itemId: "call-1",
+					toolCallId: "read-1",
+					name: "read_file",
+					status: "accepted",
+				},
+			},
+		})
+		events[2].sequence = 3
+		const result = read(history, { turnLimit: 10 }, events)
+		expect(result.turns.map((turn) => turn.status)).toEqual(["interrupted", "completed"])
+		expect(result.turns[1]).toEqual(read().turns[0])
+	})
+
+	it("keeps terminal outcomes after trailing hidden reasoning and excludes unrelated journal identities", () => {
+		const history: ApiMessage[] = [
+			{ role: "user", input_origin: "human", content: "First request", ts: 1 },
+			{ role: "assistant", content: "Working", agentResponseOutcome: { status: "cancelled" }, ts: 2 },
+			{ role: "assistant", content: "", type: "reasoning", encrypted_content: "private", ts: 3 },
+			{ role: "user", input_origin: "human", content: "Second request", ts: 4 },
+			{ role: "assistant", content: "Done", phase: "final_answer", ts: 5 },
+		]
+		const unrelated = lifecycleTurn("other", 0, { status: "failed", at: 10 }).map((event) => ({
+			...event,
+			taskId: "other-thread",
+		}))
+		const result = read(history, { turnLimit: 10 }, unrelated)
+		expect(result.turns.map((turn) => turn.status)).toEqual(["completed", "interrupted"])
+		expect(JSON.stringify(result)).not.toContain("private")
 	})
 
 	it("keeps agent inbox deliveries in their owning turn and excludes hidden reasoning", () => {

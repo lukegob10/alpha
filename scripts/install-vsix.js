@@ -136,7 +136,8 @@ async function main(argv = process.argv.slice(2)) {
 		const validatedEditorArgument = editorArgument === undefined ? undefined : normalizeEditor(editorArgument)
 		const packageJson = JSON.parse(fs.readFileSync(path.join("src", "package.json"), "utf8"))
 		const { name, version, publisher } = validatePackageMetadata(packageJson)
-		const vsixFileName = path.join("bin", `${name}-${version}.vsix`)
+		const { hostVsixTarget } = await import("../src/lancedb-native.mjs")
+		const vsixFileName = path.join("bin", `${name}-${version}-${hostVsixTarget()}.vsix`)
 		const extensionId = `${publisher}.${name}`
 
 		console.log("\n🚀 Alpha VSIX Installer")

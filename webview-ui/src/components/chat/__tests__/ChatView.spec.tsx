@@ -1547,6 +1547,159 @@ describe("ChatView file-change summaries", () => {
 describe("ChatView - Plan command", () => {
 	beforeEach(() => vi.clearAllMocks())
 
+	it("shows the first prompt immediately and claims its admission before the host responds", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(input, { target: { value: "Inspect the slow first prompt" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Inspect the slow first prompt")
+		expect(view.getByRole("status")).toHaveTextContent("chat:taskStartup.starting")
+		expect(input).toHaveAttribute("data-sending-disabled", "true")
+		fireEvent.change(input, { target: { value: "Inspect the slow first prompt" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		const submissions = vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "newTask")
+		expect(submissions).toHaveLength(1)
+		expect(submissions[0][0]).toMatchObject({ taskId: expect.any(String), requestId: expect.any(String) })
+	})
+
+	it("keeps the first prompt visible through admission and replaces it once the host transcript arrives", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
+		fireEvent.change(input, { target: { value: "Keep this prompt visible" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		const submission = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.findLast(([message]) => message.type === "newTask")![0]
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						chatCommandResult: {
+							command: "newTask",
+							taskId: submission.taskId,
+							requestId: submission.requestId,
+							status: "accepted",
+						},
+					},
+				}),
+			)
+		})
+		mockPostMessage({
+			currentTaskId: submission.taskId,
+			currentView: { type: "task", taskId: submission.taskId },
+			clineMessages: [],
+		})
+		expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Keep this prompt visible")
+		expect(input).toHaveAttribute("data-sending-disabled", "true")
+		mockPostMessage({ clineMessages: [{ ts: 123, type: "say", say: "text", text: "Keep this prompt visible" }] })
+		await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "false"))
+		expect(view.getAllByText("Keep this prompt visible")).toHaveLength(1)
+		expect(input).toHaveAttribute("data-sending-disabled", "false")
+		expect(view.queryByText("chat:taskStartup.starting")).not.toBeInTheDocument()
+	})
+
+	it("restores a rejected first prompt once without changing another chat's draft", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
+		fireEvent.change(input, { target: { value: "Recover my first prompt" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		const submission = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.findLast(([message]) => message.type === "newTask")![0]
+		mockPostMessage({
+			currentTaskId: "other-chat",
+			currentView: { type: "task", taskId: "other-chat" },
+			clineMessages: [{ ts: 50, type: "say", say: "text", text: "Other chat" }],
+		})
+		await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Other chat"))
+		fireEvent.change(input, { target: { value: "Other chat draft" } })
+		const reject = {
+			type: "chatCommandResult",
+			chatCommandResult: {
+				command: "newTask",
+				taskId: submission.taskId,
+				requestId: submission.requestId,
+				status: "rejected",
+			},
+		}
+		await act(async () => {
+			window.dispatchEvent(new MessageEvent("message", { data: reject }))
+			window.dispatchEvent(new MessageEvent("message", { data: reject }))
+		})
+		expect(input).toHaveValue("Other chat draft")
+		expect(view.queryByText("Recover my first prompt")).not.toBeInTheDocument()
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+		await waitFor(() => expect(input).toHaveValue("Recover my first prompt"))
+		expect(view.getByRole("alert")).toHaveTextContent("chat:taskStartup.failed")
+		expect(input).toHaveAttribute("data-sending-disabled", "false")
+	})
+
+	it("restores the first prompt if admission fails after the empty task has been selected", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: undefined,
+			currentTaskItem: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
+		fireEvent.change(input, { target: { value: "Recover after partial admission" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		const submission = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.findLast(([message]) => message.type === "newTask")![0]
+		mockPostMessage({
+			currentTaskId: submission.taskId,
+			currentView: { type: "task", taskId: submission.taskId },
+			clineMessages: [],
+		})
+		await view.findByRole("button", { name: "history:backToHome" })
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						chatCommandResult: {
+							command: "newTask",
+							taskId: submission.taskId,
+							requestId: submission.requestId,
+							status: "rejected",
+						},
+					},
+				}),
+			)
+		})
+		await waitFor(() => expect(input).toHaveValue("Recover after partial admission"))
+		expect(view.getByRole("alert")).toHaveTextContent("chat:taskStartup.failed")
+		expect(input).toHaveAttribute("data-sending-disabled", "false")
+	})
+
 	it("includes a selected draft approval mode in the first new task request", async () => {
 		const { getByTestId } = renderChatView()
 		mockPostMessage({
@@ -1570,6 +1723,8 @@ describe("ChatView - Plan command", () => {
 				type: "newTask",
 				text: "Start with Ask",
 				images: [],
+				taskId: expect.any(String),
+				requestId: expect.any(String),
 				taskApprovalMode: "ask",
 			})
 		})
@@ -1591,6 +1746,8 @@ describe("ChatView - Plan command", () => {
 				type: "newTask",
 				text: "/plan inspect the provider flow",
 				images: [],
+				taskId: expect.any(String),
+				requestId: expect.any(String),
 			})
 		})
 		expect(input).toHaveValue("")
@@ -3482,6 +3639,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "newTask",
 				text: "Second task",
 				images: [],
+				taskId: expect.any(String),
+				requestId: expect.any(String),
 			})
 		})
 	})
@@ -5487,6 +5646,8 @@ describe("ChatView - Message Queueing Tests", () => {
 					type: "newTask",
 					text: "continue with this prompt",
 					images: [],
+					taskId: expect.any(String),
+					requestId: expect.any(String),
 				})
 			})
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
@@ -5797,6 +5958,8 @@ describe("ChatView - Message Queueing Tests", () => {
 			type: "newTask",
 			text: "new task after transition",
 			images: [],
+			taskId: expect.any(String),
+			requestId: expect.any(String),
 		})
 	})
 
@@ -5985,6 +6148,50 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
+
+	it.each([false, true])(
+		"reenables the composer after a failed manual summary (batched reply=%s)",
+		async (batched) => {
+			const view = renderChatView()
+			mockPostMessage({
+				currentTaskId: "small-window-task",
+				currentView: { type: "task", taskId: "small-window-task" },
+				currentTaskItem: { id: "small-window-task", task: "Fill the small window", ts: 1 },
+				clineMessages: [{ type: "say", say: "task", ts: 1, text: "Fill the small window" }],
+			})
+			const input = await waitFor(
+				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
+			)
+			await waitFor(() => expect(view.getByTestId("mock-send")).not.toBeDisabled())
+			fireEvent.change(input, { target: { value: "compact the context" } })
+			const complete = () =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "condenseTaskContextResponse", text: "small-window-task" },
+					}),
+				)
+			await act(async () => {
+				fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+				if (batched) complete()
+			})
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "condenseTaskContextRequest",
+				text: "small-window-task",
+			})
+			if (!batched) {
+				expect(view.getByTestId("mock-send")).toBeDisabled()
+				await act(async () => {
+					complete()
+				})
+			}
+			await waitFor(() => expect(view.getByTestId("mock-send")).not.toBeDisabled())
+			fireEvent.change(input, { target: { value: "Continue after the rejected summary." } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ text: "Continue after the rejected summary." }),
+			)
+		},
+	)
 
 	it("should add a condensing message to groupedMessages when isCondensing is true", async () => {
 		// This test verifies that when the condenseTaskContextStarted message is received,

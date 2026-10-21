@@ -21,7 +21,7 @@ import { calibrationReportSchema } from "./contracts"
 import { buildReviewSample } from "./reviewSampling"
 import { auditFrontierRelease, releaseFrontierSuite } from "./release"
 import { runBenchmarkModelCampaign, type ModelCampaignPartition, type ModelCampaignProvider } from "./modelCampaign"
-import { evaluateFrontierConvergence, type FrontierConvergenceGate } from "./convergence"
+import { evaluateFrontierConvergence } from "./convergence"
 import { loadBenchmarkCatalog, loadPrivateGraderBundle } from "./loader"
 import { runAuthoringCheck } from "./authoring"
 import { writeTaskTemplate, type TaskTemplateProfile } from "./templates"
@@ -493,7 +493,7 @@ async function main() {
 	}
 	if (command === "gate") {
 		const decision = evaluateFrontierConvergence(
-			JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--input")), "utf8")) as FrontierConvergenceGate,
+			JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--input")), "utf8")),
 		)
 		console.log(JSON.stringify(decision, null, 2))
 		if (!decision.promote) process.exitCode = 1

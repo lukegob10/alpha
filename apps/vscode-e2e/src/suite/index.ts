@@ -17,7 +17,14 @@ import {
 	type LiveSetupAction,
 	type LiveSetupState,
 } from "./liveCopilot"
-import { TestRunError, testSuiteOutcome, type TestExecutionCounts, type TestRunFailureCode } from "../runFailure"
+import {
+	TestRunError,
+	testSuiteMochaOptions,
+	testSuiteOutcome,
+	type TestExecutionCounts,
+	type TestSuiteSelection,
+	type TestRunFailureCode,
+} from "../runFailure"
 
 function providerFailure(code: LiveCopilotPreflightErrorCode | undefined): TestRunFailureCode {
 	switch (code) {
@@ -128,6 +135,7 @@ export async function run() {
 		stage?: string
 		requireAllTests: boolean
 		testCounts?: TestExecutionCounts
+		testSelection?: TestSuiteSelection
 		failureDiagnostics?: MochaFailureDiagnostic[]
 	} = {
 		schemaVersion: 1,
@@ -287,14 +295,14 @@ export async function run() {
 
 	globalThis.api = api
 
-	const mochaOptions: Mocha.MochaOptions = {
-		ui: "tdd",
-		timeout: 20 * 60 * 1_000, // 20m
-	}
-
-	if (process.env.TEST_GREP) {
-		mochaOptions.grep = process.env.TEST_GREP
-		console.log(`Running tests matching pattern: ${process.env.TEST_GREP}`)
+	const mochaOptions = testSuiteMochaOptions({
+		requireAllTests: hostMetadata.requireAllTests,
+		testGrep: process.env.TEST_GREP,
+	})
+	hostMetadata.testSelection = {
+		testFile: process.env.TEST_FILE || null,
+		grep: process.env.TEST_GREP || null,
+		forbidOnly: mochaOptions.forbidOnly === true,
 	}
 
 	const mocha = new Mocha(mochaOptions)

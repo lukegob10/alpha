@@ -171,3 +171,22 @@ test("rejects shell text supplied as an editor option", () => {
 		fs.rmSync(isolatedRoot, { recursive: true, force: true })
 	}
 })
+
+test("selects the host-targeted artifact name before invoking an editor", async () => {
+	const { hostVsixTarget } = await import("../src/lancedb-native.mjs")
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "alpha-installer-target-")))
+	try {
+		fs.mkdirSync(path.join(root, "src"))
+		fs.writeFileSync(
+			path.join(root, "src", "package.json"),
+			JSON.stringify({ name: "alpha", version: "1.2.3", publisher: "Alpha" }),
+		)
+		const result = spawnSync(process.execPath, [installerPath, "-y"], { cwd: root, encoding: "utf8" })
+		assert.equal(result.status, 1)
+		assert.ok(result.stderr.includes(`alpha-1.2.3-${hostVsixTarget()}.vsix`), result.stderr)
+	} finally {
+		assert.equal(path.dirname(root), fs.realpathSync(os.tmpdir()))
+		assert.match(path.basename(root), /^alpha-installer-target-/u)
+		fs.rmSync(root, { recursive: true, force: true })
+	}
+})

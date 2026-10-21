@@ -38,6 +38,53 @@ describe("ProviderSettingsManager", () => {
 		providerSettingsManager = new ProviderSettingsManager(mockContext)
 	})
 
+	describe("task admission profile lookup", () => {
+		const savedProfiles = (settings: object) =>
+			JSON.stringify({
+				currentApiConfigName: "selected",
+				apiConfigs: { selected: { id: "selected-id", ...settings } },
+				modeApiConfigs: {},
+			})
+
+		it("checks availability and returns current settings in one read without persisting", async () => {
+			await providerSettingsManager.initialize()
+			mockSecrets.get.mockResolvedValue(savedProfiles({ apiProvider: "openai", openAiModelId: "saved-model" }))
+			mockSecrets.get.mockClear()
+			mockSecrets.store.mockClear()
+			expect(await providerSettingsManager.getAvailableProfile("selected")).toEqual({
+				apiProvider: "openai",
+				openAiModelId: "saved-model",
+			})
+			expect(mockSecrets.get).toHaveBeenCalledOnce()
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+			mockSecrets.get.mockResolvedValue(savedProfiles({ apiProvider: "openai", openAiModelId: "changed-model" }))
+			expect(await providerSettingsManager.getAvailableProfile("selected")).toMatchObject({
+				openAiModelId: "changed-model",
+			})
+		})
+
+		it("retains context-only fallback for absent and unconfigured saved profiles", async () => {
+			await providerSettingsManager.initialize()
+			mockSecrets.get.mockResolvedValue(savedProfiles({}))
+			await expect(providerSettingsManager.getAvailableProfile("missing")).resolves.toBeUndefined()
+			await expect(providerSettingsManager.getAvailableProfile("selected")).resolves.toBeUndefined()
+		})
+
+		it.each([
+			["invalid", { apiProvider: "openai", modelTemperature: "invalid-temperature" }],
+			["unsupported", { apiProvider: "future-provider" }],
+		] as const)("rejects %s profiles before providing settings", async (code, settings) => {
+			await providerSettingsManager.initialize()
+			mockSecrets.get.mockResolvedValue(savedProfiles(settings))
+			mockSecrets.store.mockClear()
+			await expect(providerSettingsManager.getAvailableProfile("selected")).rejects.toMatchObject({
+				name: "ProviderProfileUnavailableError",
+				code,
+			})
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+		})
+	})
+
 	it.each([...retiredProviderNames, "future-provider"])(
 		"loads and exports saved %s settings without losing legacy data",
 		async (apiProvider) => {

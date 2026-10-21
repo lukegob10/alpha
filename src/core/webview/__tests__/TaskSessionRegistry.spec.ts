@@ -103,6 +103,91 @@ describe("task hotkey navigation", () => {
 })
 
 describe("host task ownership", () => {
+	it("claims new runtime capacity across views and releases it idempotently", () => {
+		const { sidebar, panel } = createHostViews(1)
+		const release = sidebar.reserveTaskAdmission("preparing")
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+		expect(() => panel.reserveTaskAdmission("other")).toThrow("Maximum live task limit reached")
+		expect(() => panel.reserveTaskAdmission("preparing")).toThrow("already")
+		release()
+		release()
+		expect(panel.getAvailableTaskCapacity()).toBe(1)
+		const releaseSuccessor = panel.reserveTaskAdmission("preparing")
+		release()
+		expect(sidebar.getAvailableTaskCapacity()).toBe(0)
+		releaseSuccessor()
+	})
+
+	it("keeps a registered admission counted once after its reservation releases", () => {
+		const { sidebar, panel } = createHostViews(1)
+		const release = sidebar.reserveTaskAdmission("new-task")
+		sidebar.register(createTask("new-task"))
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+		release()
+		expect(panel.getLiveTaskCount()).toBe(1)
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+		expect(() => panel.reserveTaskAdmission("new-task")).toThrow("already")
+	})
+
+	it("uses an owned prepared child reservation without charging twice or lending it to another view", () => {
+		const { sidebar, panel } = createHostViews(2)
+		sidebar.register(createTask("parent"))
+		sidebar.reserveTaskSlots("group", {
+			rootTaskId: "parent",
+			count: 1,
+			maxTotalTasks: 2,
+			maxRootTasks: 1,
+			activeRootTasks: 0,
+			isRootTaskRegistered: () => false,
+		})
+		sidebar.setReservedTaskIds("group", ["child"])
+		expect(() => panel.reserveTaskAdmission("child")).toThrow("current owner")
+		const release = sidebar.reserveTaskAdmission("child")
+		expect(panel.getReservedTaskSlots("parent", () => false)).toEqual({ total: 1, root: 1 })
+		sidebar.register(createTask("child"), { focus: false })
+		release()
+		expect(panel.getLiveTaskCount()).toBe(2)
+		expect(panel.getReservedTaskSlots("parent", () => false)).toEqual({ total: 0, root: 0 })
+	})
+
+	it("holds an admitted child slot while its prepared group is released, then releases a failed admission", () => {
+		const { sidebar, panel } = createHostViews(1)
+		sidebar.reserveTaskSlots("group", {
+			rootTaskId: "parent",
+			count: 1,
+			maxTotalTasks: 1,
+			maxRootTasks: 1,
+			activeRootTasks: 0,
+			isRootTaskRegistered: () => false,
+		})
+		sidebar.setReservedTaskIds("group", ["child"])
+		const release = sidebar.reserveTaskAdmission("child")
+		sidebar.releaseTaskSlots("group")
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+		release()
+		expect(panel.getAvailableTaskCapacity()).toBe(1)
+	})
+
+	it("returns a failed child admission to its retained prepared group", () => {
+		const { sidebar, panel } = createHostViews(1)
+		sidebar.reserveTaskSlots("group", {
+			rootTaskId: "parent",
+			count: 1,
+			maxTotalTasks: 1,
+			maxRootTasks: 1,
+			activeRootTasks: 0,
+			isRootTaskRegistered: () => false,
+		})
+		sidebar.setReservedTaskIds("group", ["child"])
+		sidebar.reserveTaskAdmission("child")()
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+		const releaseRetry = sidebar.reserveTaskAdmission("child")
+		sidebar.register(createTask("child"))
+		releaseRetry()
+		expect(panel.getLiveTaskCount()).toBe(1)
+		expect(panel.getReservedTaskSlots("parent", () => false)).toEqual({ total: 0, root: 0 })
+	})
+
 	it("reserves prepared child capacity across views and roots before any child starts", () => {
 		const { sidebar, panel } = createHostViews(3)
 		sidebar.register(createTask("parent"))

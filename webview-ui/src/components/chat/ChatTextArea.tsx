@@ -928,6 +928,41 @@ export const ChatTextArea = memo(
 					.filter(Boolean)
 			}, [])
 
+			const pendingImageReadsRef = useRef(new Map<FileReader, () => void>())
+			const imageReadsDisposedRef = useRef(false)
+			useLayoutEffect(() => {
+				const pendingImageReads = pendingImageReadsRef.current
+				imageReadsDisposedRef.current = false
+				return () => {
+					imageReadsDisposedRef.current = true
+					for (const [reader, cancel] of pendingImageReads) {
+						reader.onloadend = null
+						if (reader.readyState === 1) reader.abort()
+						cancel()
+					}
+					pendingImageReads.clear()
+				}
+			}, [])
+			const readImageFile = useCallback(
+				(blob: Blob) =>
+					new Promise<string | null>((resolve) => {
+						const reader = new FileReader()
+						pendingImageReadsRef.current.set(reader, () => resolve(null))
+						reader.onloadend = () => {
+							pendingImageReadsRef.current.delete(reader)
+							reader.onloadend = null
+							if (reader.error) {
+								console.error(t("chat:errorReadingFile"), reader.error)
+								resolve(null)
+							} else {
+								resolve(typeof reader.result === "string" ? reader.result : null)
+							}
+						}
+						reader.readAsDataURL(blob)
+					}),
+				[t],
+			)
+
 			const handlePaste = useCallback(
 				async (e: React.ClipboardEvent) => {
 					const items = e.clipboardData.items
@@ -975,31 +1010,12 @@ export const ChatTextArea = memo(
 						e.preventDefault()
 
 						const imagePromises = imageItems.map((item) => {
-							return new Promise<string | null>((resolve) => {
-								const blob = item.getAsFile()
-
-								if (!blob) {
-									resolve(null)
-									return
-								}
-
-								const reader = new FileReader()
-
-								reader.onloadend = () => {
-									if (reader.error) {
-										console.error(t("chat:errorReadingFile"), reader.error)
-										resolve(null)
-									} else {
-										const result = reader.result
-										resolve(typeof result === "string" ? result : null)
-									}
-								}
-
-								reader.readAsDataURL(blob)
-							})
+							const blob = item.getAsFile()
+							return blob ? readImageFile(blob) : Promise.resolve(null)
 						})
 
 						const imageDataArray = await Promise.all(imagePromises)
+						if (imageReadsDisposedRef.current) return
 						const dataUrls = imageDataArray.filter((dataUrl): dataUrl is string => dataUrl !== null)
 
 						if (dataUrls.length > 0) {
@@ -1017,6 +1033,7 @@ export const ChatTextArea = memo(
 					getVsCodeResourcePaths,
 					insertTextAtSelection,
 					shouldDisableImages,
+					readImageFile,
 					setSelectedImages,
 					t,
 				],
@@ -1152,25 +1169,10 @@ export const ChatTextArea = memo(
 						})
 
 						if (!shouldDisableImages && imageFiles.length > 0) {
-							const imagePromises = imageFiles.map((file) => {
-								return new Promise<string | null>((resolve) => {
-									const reader = new FileReader()
-
-									reader.onloadend = () => {
-										if (reader.error) {
-											console.error(t("chat:errorReadingFile"), reader.error)
-											resolve(null)
-										} else {
-											const result = reader.result
-											resolve(typeof result === "string" ? result : null)
-										}
-									}
-
-									reader.readAsDataURL(file)
-								})
-							})
+							const imagePromises = imageFiles.map(readImageFile)
 
 							const imageDataArray = await Promise.all(imagePromises)
+							if (imageReadsDisposedRef.current) return
 							const dataUrls = imageDataArray.filter((dataUrl): dataUrl is string => dataUrl !== null)
 
 							if (dataUrls.length > 0) {
@@ -1195,6 +1197,7 @@ export const ChatTextArea = memo(
 					setCursorPosition,
 					setIntendedCursorPosition,
 					shouldDisableImages,
+					readImageFile,
 					setSelectedImages,
 					t,
 				],

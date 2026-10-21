@@ -12,6 +12,7 @@ const taskMocks = vi.hoisted(() => {
 		presentationModelCalls?: false
 
 		constructor(options: any) {
+			this.taskId = options.taskId ?? this.taskId
 			this.parentTask = options.parentTask
 			this.taskApprovalMode = options.taskApprovalMode
 			this.presentationModelCalls = options.presentationModelCalls
@@ -34,6 +35,7 @@ import { retiredProviderNames, type ProviderSettings, type HistoryItem } from "@
 
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { TaskSessionRegistry } from "../core/webview/TaskSessionRegistry"
+import type { Task } from "../core/task/Task"
 
 describe("AlphaProvider.createTask start control", () => {
 	afterEach(() => {
@@ -42,14 +44,22 @@ describe("AlphaProvider.createTask start control", () => {
 		vi.restoreAllMocks()
 	})
 
-	const createProvider = () =>
-		Object.assign(Object.create(AlphaProvider.prototype), {
+	const createProvider = () => {
+		const taskSessions = new TaskSessionRegistry()
+		const getProfile = vi.fn(async (_options?: { name: string }) => ({
+			id: "default-profile",
+			name: "default",
+			apiProvider: "openai",
+			apiModelId: "gpt-4.1",
+			consecutiveMistakeLimit: 3,
+		}))
+		return Object.assign(Object.create(AlphaProvider.prototype), {
 			context: { secrets: {} },
 			taskStack: [],
 			taskCreationQueue: Promise.resolve(),
 			createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
-			getLiveTask: vi.fn(),
-			taskSessions: new TaskSessionRegistry(),
+			getLiveTask: vi.fn((taskId: string) => taskSessions.getTask(taskId)),
+			taskSessions,
 			customModesManager: { updateCustomMode: vi.fn() },
 			taskCreationCallback: undefined,
 			setValues: vi.fn(),
@@ -72,13 +82,8 @@ describe("AlphaProvider.createTask start control", () => {
 			})),
 			providerSettingsManager: {
 				listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "openai" }]),
-				getProfile: vi.fn(async () => ({
-					id: "default-profile",
-					name: "default",
-					apiProvider: "openai",
-					apiModelId: "gpt-4.1",
-					consecutiveMistakeLimit: 3,
-				})),
+				getProfile,
+				getAvailableProfile: vi.fn(async (name: string) => getProfile({ name })),
 			},
 			contextProxy: {
 				getValues: vi.fn(() => ({
@@ -91,11 +96,14 @@ describe("AlphaProvider.createTask start control", () => {
 			},
 			removeTaskFromStack: vi.fn(),
 			updateGlobalState: vi.fn(async () => undefined),
-			addTaskToStack: vi.fn(async () => undefined),
+			addTaskToStack: vi.fn(async (task: Task, options: { focus?: boolean } = {}) => {
+				taskSessions.register(task, options)
+			}),
 			postTaskStateToWebview: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
 		}) as unknown as AlphaProvider
+	}
 
 	it.each(["allowedMaxCost", "allowedMaxRequests"] as const)(
 		"disables presentation model calls at admission with finite positive %s",

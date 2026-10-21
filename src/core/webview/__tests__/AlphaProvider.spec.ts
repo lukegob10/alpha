@@ -624,7 +624,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the v3.2.6 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.6-vscode-compatibility"
+		const announcementId = "october-2026-v3.2.7-performance-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1916,7 +1916,7 @@ describe("AlphaProvider", () => {
 		await provider.contextProxy.setValue("currentApiConfigName", "Coding")
 		await provider.contextProxy.setValue("apiProvider", "anthropic")
 		const activate = vi.spyOn(provider, "setProviderProfile")
-		const addTask = vi.spyOn(provider, "addTaskToStack").mockResolvedValue(undefined)
+		const addTask = vi.spyOn(provider, "addTaskToStack")
 		vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
 		const apiConfiguration = { apiProvider: "openai" as const, openAiModelId: "internal-model" }
 		await provider.createTask("Scheduled prompt", undefined, undefined, {
@@ -1985,7 +1985,7 @@ describe("AlphaProvider", () => {
 	test("allows a root task policy override to narrow but never widen", async () => {
 		const getState = vi.spyOn(provider, "getState")
 		vi.spyOn(provider, "removeTaskFromStack").mockResolvedValue(undefined)
-		vi.spyOn(provider, "addTaskToStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "addTaskToStack")
 		vi.spyOn(provider, "postStateToWebviewWithoutAlphaMessages").mockResolvedValue(undefined)
 
 		getState.mockResolvedValue({

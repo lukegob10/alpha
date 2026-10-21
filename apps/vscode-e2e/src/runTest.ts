@@ -9,8 +9,11 @@ import {
 	testRunFailureCode,
 	describeTestRunFailure,
 	isTestExecutionCounts,
+	isTestSuiteSelection,
+	testSuiteMochaOptions,
 	testSuiteOutcome,
 	type TestExecutionCounts,
+	type TestSuiteSelection,
 	type TestRunFailureCode,
 } from "./runFailure"
 import { launchExtensionHost, HostLaunchCancelledError, type HostLaunchOptions } from "./hostLaunch"
@@ -58,7 +61,7 @@ export interface ExtensionTestRunOptions {
 	setupTimeoutMs?: number
 	testFile?: string
 	testGrep?: string
-	/** Hard gates require every selected Mocha test to execute and pass. */
+	/** Hard gates require the entire selected file, with grep and exclusive tests forbidden. */
 	requireAllTests?: boolean
 	runId?: string
 	scenarioId?: string
@@ -93,6 +96,7 @@ export interface ExtensionTestRunResult {
 	actualReasoningEffort?: string
 	requireAllTests?: boolean
 	testCounts?: TestExecutionCounts
+	testSelection?: TestSuiteSelection
 	evidenceManifestPath?: string
 	captureComplete?: boolean
 	evidenceFailure?: "evidence-failed"
@@ -176,6 +180,8 @@ export function readRunOptions(
 		throw new TestRunError("invalid-options", "Setup timeout must be an integer")
 	const setupTimeoutMs = timeout === undefined ? undefined : Number(timeout)
 	validateLiveSetupTimeout(setupTimeoutMs, parsed.has("--setup"))
+	const testGrep = parsed.get("--grep") ?? env.TEST_GREP
+	testSuiteMochaOptions({ testGrep, requireAllTests: parsed.has("--require-all-tests") })
 	return {
 		providerMode: providerMode as ProviderMode,
 		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.138.0",
@@ -190,7 +196,7 @@ export function readRunOptions(
 		setup: parsed.has("--setup"),
 		setupTimeoutMs,
 		testFile: parsed.get("--file") ?? env.TEST_FILE,
-		testGrep: parsed.get("--grep") ?? env.TEST_GREP,
+		testGrep,
 		requireAllTests: parsed.has("--require-all-tests"),
 		runId: parsed.get("--run-id"),
 		scenarioId: parsed.get("--scenario-id"),
@@ -225,6 +231,7 @@ type HostPreflight = {
 	stage?: string
 	requireAllTests?: boolean
 	testCounts?: TestExecutionCounts
+	testSelection?: TestSuiteSelection
 }
 
 async function readHostPreflight(artifactsDir: string, runId: string): Promise<HostPreflight> {
@@ -248,6 +255,7 @@ async function readHostPreflight(artifactsDir: string, runId: string): Promise<H
 		}
 		if (
 			("requireAllTests" in host && typeof host.requireAllTests !== "boolean") ||
+			("testSelection" in host && !isTestSuiteSelection(host.testSelection)) ||
 			("testCounts" in host && !isTestExecutionCounts(host.testCounts))
 		)
 			throw new Error("Invalid host test counts")
@@ -360,6 +368,7 @@ export async function runExtensionTests(
 	if (options.setup && options.providerMode !== "live-copilot") throw new Error("--setup requires live-copilot")
 	if (options.requireAllTests !== undefined && typeof options.requireAllTests !== "boolean")
 		throw new TestRunError("invalid-options", "Required test policy must be a boolean")
+	testSuiteMochaOptions(options)
 	if (options.setup && options.requireAllTests)
 		throw new TestRunError("invalid-options", "Interactive setup does not execute a required test suite")
 	if (
@@ -441,6 +450,7 @@ export async function runExtensionTests(
 					modelFamily: options.modelFamily,
 					reasoningEffort: options.reasoningEffort,
 					testFile: options.testFile,
+					testGrep: options.testGrep,
 					requireAllTests: options.requireAllTests === true,
 					setup: options.setup === true,
 				},
@@ -539,8 +549,22 @@ export async function runExtensionTests(
 			"ownershipGate" in host && host.ownershipGate === "verified" ? ("verified" as const) : undefined
 		if ((profile.profileDir || !dependencies.launch) && !ownershipGate)
 			throw new TestRunError("host-not-owned", "Host ownership was not verified")
+		if (
+			host.testSelection &&
+			(host.testSelection.testFile !== (options.testFile || (options.scenarioId ? "workflow.test" : null)) ||
+				host.testSelection.grep !== (options.testGrep || null) ||
+				host.testSelection.forbidOnly !== (options.requireAllTests === true))
+		)
+			throw new TestRunError("host-preflight-missing", "Observed suite selection does not match this launch")
 		if (exitCode === 0 && host.status === "passed" && options.requireAllTests) {
-			if (host.stage !== "suite-complete" || host.requireAllTests !== true || !host.testCounts)
+			if (
+				host.stage !== "suite-complete" ||
+				host.requireAllTests !== true ||
+				!host.testCounts ||
+				!host.testSelection ||
+				host.testSelection.grep !== null ||
+				host.testSelection.forbidOnly !== true
+			)
 				throw new TestRunError("host-preflight-missing", "Required suite completion evidence is missing")
 			const { failure } = testSuiteOutcome(
 				host.testCounts.failed,
@@ -561,6 +585,7 @@ export async function runExtensionTests(
 			actualReasoningEffort: host.actualReasoningEffort,
 			requireAllTests: host.requireAllTests,
 			testCounts: host.testCounts,
+			testSelection: host.testSelection,
 			exitCode: failure ? exitCode || 1 : 0,
 			retained: Boolean(profile.profileDir) || Boolean(failure),
 			failure,
@@ -586,6 +611,7 @@ export async function runExtensionTests(
 		let ownershipGate: "verified" | undefined
 		let requireAllTests: boolean | undefined
 		let testCounts: TestExecutionCounts | undefined
+		let testSelection: TestSuiteSelection | undefined
 		try {
 			const host = await readHostPreflight(artifactsDir, runId)
 			failure = testRunFailureCode(host, failure)
@@ -593,6 +619,7 @@ export async function runExtensionTests(
 			ownershipGate = host.ownershipGate === "verified" ? "verified" : undefined
 			requireAllTests = host.requireAllTests
 			testCounts = host.testCounts
+			testSelection = host.testSelection
 		} catch {
 			/* Missing or invalid evidence cannot improve the known failure classification. */
 		}
@@ -604,6 +631,7 @@ export async function runExtensionTests(
 			ownershipGate,
 			requireAllTests,
 			testCounts,
+			testSelection,
 			exitCode: 1,
 			retained: true,
 			failure,

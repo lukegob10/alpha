@@ -118,6 +118,10 @@ import type { ModelRequestPhase, ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
 import { ApiStreamDeadlineError, iterateApiStreamWithAbort } from "../../transform/stream"
+import { TelemetryService } from "@alpha-code/telemetry"
+import { countContextTokens, getEffectiveApiHistory, summarizeConversation } from "../../../core/condense"
+import { getContextLimits, manageContext } from "../../../core/context-management"
+import type { ApiMessage } from "../../../core/task-persistence/apiMessages"
 
 const mockLanguageModelChat = {
 	id: "test-model",
@@ -200,6 +204,228 @@ describe("VsCodeLmHandler", () => {
 		const modelChangeCallback = (vscode.lm.onDidChangeChatModels as Mock).mock.calls[0]?.[0]
 		modelChangeCallback?.()
 		handler.dispose()
+	})
+
+	describe("small Copilot context exhaustion", () => {
+		const systemPrompt = "Keep the original request and the most recent instruction."
+		const contextWindow = 200_000
+
+		function history(tokensPerTurn: number): ApiMessage[] {
+			return [
+				...Array.from({ length: 8 }, (_, index): ApiMessage[] => [
+					{ role: "user", content: `Instruction ${index}: retain answer=42.`, ts: index * 2 + 1 },
+					{
+						role: "assistant",
+						content: `ARCHIVED_EVIDENCE_${index} ${"data".repeat(tokensPerTurn)}`,
+						ts: index * 2 + 2,
+					},
+				]).flat(),
+				{ role: "user", content: "Continue with answer=42.", ts: 17 },
+			]
+		}
+
+		async function prepareSmallWindow() {
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			handler.dispose()
+			const model = {
+				...mockLanguageModelChat,
+				id: "copilot-claude-sonnet-4.6-context-exhaustion",
+				name: "Claude Sonnet 4.6",
+				vendor: "copilot",
+				family: "claude-sonnet-4.6",
+				maxInputTokens: 936_000,
+				countTokens: vi.fn(async (value: string | vscode.LanguageModelChatMessage) =>
+					Math.ceil((typeof value === "string" ? value : JSON.stringify(value)).length / 4),
+				),
+				sendRequest: vi.fn(
+					async (
+						messages: vscode.LanguageModelChatMessage[],
+						_options: vscode.LanguageModelChatRequestOptions,
+						_token: vscode.CancellationToken,
+					) => {
+						const tokens = Math.ceil(JSON.stringify(messages).length / 4)
+						if (tokens > contextWindow) {
+							throw new Error(
+								`Request input ${tokens} exceeds the model's maximum context length of ${contextWindow} tokens`,
+							)
+						}
+						return {
+							stream: (async function* () {
+								yield new vscode.LanguageModelTextPart(
+									"Retain answer=42 and continue with the latest instruction.",
+								)
+							})(),
+						}
+					},
+				),
+			}
+			;(vscode.lm.selectChatModels as Mock).mockResolvedValue([model])
+			handler = new VsCodeLmHandler({
+				vsCodeLmModelSelector: { vendor: model.vendor, family: model.family, id: model.id },
+				vsCodeLmContextSize: contextWindow,
+			})
+			await handler.prepareModel()
+			expect(handler.getModel().info).toMatchObject({ contextWindow, contextWindowIncludesOutput: false })
+			return model
+		}
+
+		it.each([
+			{
+				label: "below the safety margin",
+				tokensPerTurn: 21_000,
+				automatic: true,
+				status: undefined,
+				receipt: "none",
+			},
+			{
+				label: "at the compaction boundary",
+				tokensPerTurn: 23_125,
+				automatic: true,
+				status: "reduced",
+				receipt: "summary",
+			},
+			{
+				label: "at the full input window",
+				tokensPerTurn: 25_000,
+				automatic: true,
+				status: "reduced",
+				receipt: "either",
+			},
+			{
+				label: "past the window, including the summary request",
+				tokensPerTurn: 27_500,
+				automatic: true,
+				status: "reduced",
+				receipt: "truncation",
+			},
+			{
+				label: "past the window with automatic summarization disabled",
+				tokensPerTurn: 27_500,
+				automatic: false,
+				status: "reduced",
+				receipt: "truncation",
+			},
+		])("settles $label with the 200k selection", async ({ tokensPerTurn, automatic, status, receipt }) => {
+			const model = await prepareSmallWindow()
+			const messages = history(tokensPerTurn)
+			const original = structuredClone(messages)
+			const before = await countContextTokens(messages, handler, systemPrompt)
+			const result = await manageContext({
+				messages,
+				totalTokens: before,
+				contextWindow,
+				maxTokens: 0,
+				apiHandler: handler,
+				autoCondenseContext: automatic,
+				autoCondenseContextPercent: 100,
+				systemPrompt,
+				taskId: "small-copilot-window",
+			})
+			expect(result.status).toBe(status)
+			if (receipt === "summary") expect(result.condenseId).toBeDefined()
+			if (receipt === "truncation") expect(result.truncationId).toBeDefined()
+			if (receipt === "none" || !automatic) expect(model.sendRequest).not.toHaveBeenCalled()
+			if (receipt === "truncation" && automatic) {
+				expect(model.sendRequest).toHaveBeenCalledOnce()
+				expect(Math.ceil(JSON.stringify(model.sendRequest.mock.calls[0][0]).length / 4)).toBeGreaterThan(
+					contextWindow,
+				)
+			}
+			const active = getEffectiveApiHistory(result.messages)
+			const after = await countContextTokens(active, handler, systemPrompt)
+			expect(after).toBeLessThanOrEqual(getContextLimits(contextWindow, 0).allowedTokens)
+			if (status === "reduced") expect(after).toBeLessThan(before)
+			expect(messages).toEqual(original)
+			expect(result.messages.filter((message) => !message.isSummary && !message.isTruncationMarker)).toHaveLength(
+				messages.length,
+			)
+			const text: string[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, active)) {
+				if (chunk.type === "text") text.push(chunk.text)
+			}
+			expect(text.join("")).toContain("answer=42")
+			for (const call of model.sendRequest.mock.calls) {
+				expect(call[1]).toMatchObject({
+					modelOptions: { contextSize: contextWindow },
+					configuration: { contextSize: contextWindow },
+				})
+			}
+			expect(mockCancellationSources.every((source) => source.dispose.mock.calls.length === 1)).toBe(true)
+		})
+
+		it("reports a rejected manual summary without changing the overflowing saved history", async () => {
+			const model = await prepareSmallWindow()
+			const messages = history(27_500)
+			const original = structuredClone(messages)
+			const result = await summarizeConversation({
+				messages,
+				apiHandler: handler,
+				systemPrompt,
+				taskId: "manual-overflow",
+			})
+			expect(model.sendRequest).toHaveBeenCalledOnce()
+			expect(result.errorDetails).toContain("maximum context length")
+			expect(result.status).toBe("no_progress")
+			expect(result.messages).toBe(messages)
+			expect(messages).toEqual(original)
+		})
+
+		it("ends irreducible oversized input without inventing a summary or retrying forever", async () => {
+			const model = await prepareSmallWindow()
+			const messages: ApiMessage[] = [{ role: "user", content: "data".repeat(220_000), ts: 1 }]
+			const result = await manageContext({
+				messages,
+				totalTokens: 220_000,
+				contextWindow,
+				maxTokens: 0,
+				apiHandler: handler,
+				autoCondenseContext: false,
+				autoCondenseContextPercent: 100,
+				systemPrompt,
+				taskId: "irreducible-overflow",
+			})
+			expect(result.status).toBe("exhausted")
+			expect(result.messages).toBe(messages)
+			expect(result.condenseId).toBeUndefined()
+			expect(result.truncationId).toBeUndefined()
+			expect(model.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it("cancels a stuck summary request and disposes the LM request without committing history", async () => {
+			const model = await prepareSmallWindow()
+			const controller = new AbortController()
+			const messages = history(23_125)
+			const original = structuredClone(messages)
+			let summaryStarted!: () => void
+			const started = new Promise<void>((resolve) => {
+				summaryStarted = resolve
+			})
+			model.sendRequest.mockImplementationOnce(() => {
+				summaryStarted()
+				return new Promise(() => undefined)
+			})
+			const stopped = new Error("Stopped during small-window compaction")
+			const running = manageContext({
+				messages,
+				totalTokens: 185_000,
+				contextWindow,
+				maxTokens: 0,
+				apiHandler: handler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 100,
+				systemPrompt,
+				taskId: "cancelled-summary",
+				metadata: { taskId: "cancelled-summary", signal: controller.signal },
+			})
+			const rejection = expect(running).rejects.toBe(stopped)
+			await started
+			controller.abort(stopped)
+			await rejection
+			expect(messages).toEqual(original)
+			expect(model.sendRequest).toHaveBeenCalledOnce()
+			expect(mockCancellationSources.at(-1)?.cancel).toHaveBeenCalledOnce()
+			expect(mockCancellationSources.at(-1)?.dispose).toHaveBeenCalledOnce()
+		})
 	})
 
 	describe("constructor", () => {

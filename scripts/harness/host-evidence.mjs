@@ -36,6 +36,18 @@ export const extendedHostFiles = [
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
 const integer = (value) => Number.isSafeInteger(value) && value >= 0
+const selection = (value) =>
+	value === null ||
+	value === undefined ||
+	(typeof value === "object" &&
+		!Array.isArray(value) &&
+		(value.testFile === null || typeof value.testFile === "string") &&
+		(value.grep === null || typeof value.grep === "string") &&
+		typeof value.forbidOnly === "boolean")
+const completeSelection = (receipt) =>
+	receipt.testSelection?.testFile === receipt.testFile &&
+	receipt.testSelection.grep === null &&
+	receipt.testSelection.forbidOnly === true
 
 export function validateHostReceipt(value) {
 	const counts = value?.testCounts
@@ -59,6 +71,7 @@ export function validateHostReceipt(value) {
 		value.status !== "passed" ||
 		value.exitCode !== 0 ||
 		value.requireAllTests !== true ||
+		!selection(value.testSelection) ||
 		value.failure != null ||
 		value.captureComplete !== true ||
 		value.retentionStatus !== "complete" ||
@@ -96,6 +109,14 @@ export function validateHostReceipt(value) {
 		retentionStatus: "complete",
 		profile: { kind: value.profile.kind, sha256: value.profile.sha256 },
 		testCounts: { total: counts.total, passed: counts.passed, failed: 0, pending: 0, executed: counts.executed },
+		// Legacy schema-1 receipts remain readable, but cannot prove complete selection for admission.
+		testSelection: value.testSelection
+			? {
+					testFile: value.testSelection.testFile,
+					grep: value.testSelection.grep,
+					forbidOnly: value.testSelection.forbidOnly,
+				}
+			: null,
 	}
 }
 
@@ -124,6 +145,8 @@ export function hostSuiteVerdict(receipts, suite) {
 	const expected =
 		suite === "smoke" ? smokeHostFiles : suite === "confidence" ? confidenceHostFiles : extendedHostFiles
 	const observed = receipts.map((receipt) => receipt.testFile)
+	if (receipts.some((receipt) => !completeSelection(receipt)))
+		return { status: "failed", reason: "incomplete_host_selection" }
 	if (new Set(receipts.map((receipt) => receipt.runId)).size !== receipts.length)
 		return { status: "failed", reason: "duplicate_host_run" }
 	if (
@@ -150,6 +173,8 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 	} catch {
 		return { status: "failed", reason: "invalid_host_receipt" }
 	}
+	if (receipts.some((receipt) => !completeSelection(receipt)))
+		return { status: "failed", reason: "incomplete_host_selection" }
 	const identity = report?.evaluationIdentity
 	const plan = report?.evaluationPlan
 	if (

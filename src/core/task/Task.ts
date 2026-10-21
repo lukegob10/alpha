@@ -2004,7 +2004,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.alphaIgnoreController = new AlphaIgnoreController(this.cwd)
 		this.alphaProtectedController = new AlphaProtectedController(this.cwd)
-		this.fileContextTracker = new FileContextTracker(provider, this.taskId)
+		this.fileContextTracker = new FileContextTracker(provider, this.taskId, this.cwd)
 
 		this.alphaIgnoreController.initialize().catch((error) => {
 			console.error("Failed to initialize AlphaIgnoreController:", error)
@@ -2589,12 +2589,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	/** Copy command authority before asynchronous request preparation can observe changed settings. */
 	private captureToolExecutionPolicy(state?: TaskRequestState): NonNullable<ToolPolicyInput["execution"]> {
+		const configuration = vscode.workspace.getConfiguration(Package.name)
+		const timeoutSeconds = configuration.get<unknown>("commandExecutionTimeout", 0)
+		const timeoutAllowlist = configuration.get<unknown>("commandTimeoutAllowlist", [])
+		// Keep malformed external settings out of timers and policy digests. The
+		// upper bound matches the extension's contributed configuration contract.
+		const userTimeoutMs =
+			typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0
+				? Math.floor(Math.min(timeoutSeconds, 600) * 1_000)
+				: 0
 		return Object.freeze({
 			workspaceRoots: Object.freeze([this.cwd]),
 			...(this.taskKind === "primary" ? { outsideWorkspace: "approval" as const } : {}),
 			command: Object.freeze({
 				allowedPrefixes: Object.freeze([...(state?.allowedCommands ?? [])]),
 				deniedPrefixes: Object.freeze([...(state?.deniedCommands ?? [])]),
+				userTimeoutMs,
+				timeoutAllowlist: Object.freeze(
+					Array.isArray(timeoutAllowlist)
+						? timeoutAllowlist.filter((rule): rule is string => typeof rule === "string")
+						: [],
+				),
 			}),
 		})
 	}

@@ -13,6 +13,32 @@ import {
 
 import { hostReceipt, outcomeFixture } from "./fixtures/evidence.mjs"
 
+test("whole host suites reject filtered, focused, or legacy selection evidence", () => {
+	for (const selection of [
+		undefined,
+		null,
+		{ testFile: "extension.test", grep: "passing", forbidOnly: true },
+		{ testFile: "extension.test", grep: null, forbidOnly: false },
+		{ testFile: "another.test", grep: null, forbidOnly: true },
+	]) {
+		const receipts = smokeHostFiles.map(hostReceipt)
+		receipts[0].testSelection = selection
+		assert.equal(hostSuiteVerdict(receipts, "smoke").status, "failed", JSON.stringify(selection))
+	}
+})
+
+test("legacy schema-one receipts stay readable without proving a complete gate", () => {
+	const legacy = hostReceipt()
+	delete legacy.testSelection
+	const normalized = validateHostReceipt(legacy)
+	assert.equal(normalized.schemaVersion, 1)
+	assert.equal(normalized.testSelection, null)
+	assert.deepEqual(validateHostReceipt(normalized), normalized)
+	const { campaign, receipts } = outcomeFixture()
+	delete receipts[0].testSelection
+	assert.equal(outcomeCampaignVerdict(campaign, receipts, campaign.id).reason, "incomplete_host_selection")
+})
+
 test("host inventory matches the canonical runner scripts and requires background launch receipts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
 	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])

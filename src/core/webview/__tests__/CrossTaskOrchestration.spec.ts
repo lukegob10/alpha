@@ -15,6 +15,7 @@ import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { crossTaskWorktreeService } from "../CrossTaskWorktreeService"
 import * as threadTaskStorage from "../ThreadTaskStorage"
 import * as taskStorage from "../../../utils/storage"
+import { AgentLifecycleJournal } from "../../agent/lifecycle"
 
 type FakeTask = EventEmitter & Record<string, any>
 const temporaryDirectories: string[] = []
@@ -1070,6 +1071,58 @@ describe("Cross-task orchestration host", () => {
 		expect(JSON.stringify(result)).not.toContain("opaque-provider-state")
 		expect(JSON.stringify(result)).not.toContain("hidden-reasoning")
 	})
+
+	it.each(["failed", "interrupted"] as const)(
+		"reads an older cold journal %s turn after a newer completion and through pagination",
+		async (status) => {
+			const { provider, internals, history } = createProviderFixture()
+			const caller = createTask()
+			const taskId = "cold-peer"
+			const storagePath = internals.contextProxy.globalStorageUri.fsPath
+			history.set(taskId, { ...taskHistoryItem(taskId, "other-parent"), status: "completed" })
+			await saveApiMessages({
+				taskId,
+				globalStoragePath: storagePath,
+				messages: [
+					{ role: "user", input_origin: "human", content: "First request", ts: 11 },
+					{ role: "assistant", content: "Candidate rejected by the host", phase: "final_answer", ts: 12 },
+					{ role: "user", input_origin: "human", content: "Second request", ts: 21 },
+					{ role: "assistant", content: "Second request completed", phase: "final_answer", ts: 22 },
+				],
+			})
+			const journal = new AgentLifecycleJournal(taskId, storagePath)
+			for (const [turnId, startedAt, terminalStatus] of [
+				["first", 10, status],
+				["second", 20, "completed"],
+			] as const) {
+				const identity = { version: 1 as const, taskId, runId: `run:${turnId}`, turnId }
+				await journal.append({
+					...identity,
+					eventId: `${turnId}:started`,
+					occurredAt: startedAt,
+					type: "turn_started",
+					payload: {},
+				})
+				await journal.append({
+					...identity,
+					eventId: `${turnId}:terminal`,
+					occurredAt: startedAt + 3,
+					type: "turn_terminal",
+					payload: { status: terminalStatus },
+				})
+			}
+			await journal.close()
+			const newest = await provider.readIndependentThread(caller as unknown as Task, taskId)
+			const older = await provider.readIndependentThread(caller as unknown as Task, taskId, {
+				cursor: newest.page.nextCursor ?? undefined,
+			})
+
+			expect(newest.turns.map((turn) => turn.status)).toEqual(["completed"])
+			expect(newest.page.hasMore).toBe(true)
+			expect(older.turns.map((turn) => turn.status)).toEqual([status])
+			expect(older.page.hasMore).toBe(false)
+		},
+	)
 
 	it("forks committed peer history into an idle persisted task without launching a turn", async () => {
 		const { provider, internals, tasks, history } = createProviderFixture()

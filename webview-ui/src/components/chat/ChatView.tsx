@@ -72,7 +72,7 @@ import { ActivityTraceToggle } from "./ActivityTraceToggle"
 import { getActionActivity, getCompletedTurnActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
-import { useTaskComposer } from "./hooks/useTaskComposer"
+import { useTaskComposer, type ComposerSubmission } from "./hooks/useTaskComposer"
 import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
@@ -451,28 +451,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [currentTaskId, currentView, isBlankTaskView, messages.length])
 
-	// Leaving this less safe version here since if the first message is not a
-	// task, then the extension is in a bad state and needs to be debugged (see
-	// Alpha.abort).
-	const task = useMemo(() => {
-		const firstMessage = activeMessages.at(0)
-
-		if (firstMessage) {
-			return firstMessage
-		}
-
-		if (!visibleCurrentTaskId) {
-			return undefined
-		}
-
-		return {
-			ts: visibleCurrentTaskItem?.ts ?? 0,
-			type: "say" as const,
-			say: "text" as const,
-			text: visibleCurrentTaskItem?.task ?? "",
-		}
-	}, [visibleCurrentTaskId, visibleCurrentTaskItem?.task, visibleCurrentTaskItem?.ts, activeMessages])
-
 	const latestTodos = useMemo(() => {
 		// First check if we have initial todos from the state (for new subtasks)
 		if (visibleCurrentTaskTodos && visibleCurrentTaskTodos.length > 0) {
@@ -511,6 +489,61 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		getTaskDraft,
 		updateTaskDraft,
 	} = useTaskComposer(visibleCurrentTaskId)
+	const newTaskSubmission = getTaskDraft(undefined).pendingNewTaskRequest
+	const visibleNewTaskSubmission =
+		newTaskSubmission && (!visibleCurrentTaskId || visibleCurrentTaskId === newTaskSubmission.taskId)
+			? newTaskSubmission
+			: undefined
+	// This is a presentation receipt until the host publishes the task's durable
+	// first message. It never supplies lifecycle or execution authority.
+	const task = useMemo<AlphaMessage | undefined>(() => {
+		if (activeMessages[0]) return activeMessages[0]
+		if (visibleNewTaskSubmission) {
+			return {
+				ts: visibleNewTaskSubmission.clientSubmittedAt ?? 0,
+				type: "say",
+				say: "text",
+				text: visibleNewTaskSubmission.text,
+				images: visibleNewTaskSubmission.images,
+			}
+		}
+		return visibleCurrentTaskId
+			? {
+					ts: visibleCurrentTaskItem?.ts ?? 0,
+					type: "say",
+					say: "text",
+					text: visibleCurrentTaskItem?.task ?? "",
+				}
+			: undefined
+	}, [
+		activeMessages,
+		visibleNewTaskSubmission,
+		visibleCurrentTaskId,
+		visibleCurrentTaskItem?.ts,
+		visibleCurrentTaskItem?.task,
+	])
+	useLayoutEffect(() => {
+		if (!newTaskSubmission || visibleCurrentTaskId !== newTaskSubmission.taskId || activeMessages.length === 0)
+			return
+		if (activeMessages[0]?.say === "error") return
+		updateTaskDraft(undefined, (draft) =>
+			draft.pendingNewTaskRequest?.requestId === newTaskSubmission.requestId
+				? { ...draft, pendingNewTaskRequest: null }
+				: draft,
+		)
+	}, [newTaskSubmission, visibleCurrentTaskId, activeMessages, updateTaskDraft])
+	const isPreparingFirstRequest =
+		Boolean(visibleNewTaskSubmission) ||
+		Boolean(
+			visibleCurrentTaskId &&
+				activeMessages.length <= 1 &&
+				!effectiveVisibleLiveTask?.isStreaming &&
+				(effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Initializing ||
+					effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Running) &&
+				!activeMessages.some(
+					(message) => message.type === "ask" || message.say === "api_req_started" || message.say === "error",
+				),
+		)
 	const [answeredAsyncUserInputTs, setAnsweredAsyncUserInputTs] = useState<Set<string>>(() => new Set())
 	const pendingAsyncUserInputTs = useMemo(
 		() =>
@@ -1256,26 +1289,75 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [currentTaskId, currentView?.type])
 
+	const postNewTaskSubmission = useCallback(
+		(text: string, images: string[]) => {
+			if (getTaskDraft(undefined).pendingNewTaskRequest) return false
+			const submission = {
+				requestId: crypto.randomUUID(),
+				taskId: crypto.randomUUID(),
+				text,
+				images: [...images],
+				clientSubmittedAt: Date.now(),
+			}
+			updateTaskDraft(undefined, (draft) => ({
+				...draft,
+				pendingNewTaskRequest: submission,
+				chatCommandError: undefined,
+			}))
+			isBlankTaskPendingRef.current = false
+			vscode.postMessage({
+				type: "newTask",
+				text,
+				images,
+				taskId: submission.taskId,
+				requestId: submission.requestId,
+				...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
+			})
+			return true
+		},
+		[draftTaskApprovalMode, getTaskDraft, updateTaskDraft],
+	)
 	const startNewTask = useCallback(
 		(text?: string, images: string[] = []) => {
 			const trimmedInput = text?.trim() ?? ""
 			enterBlankTaskView()
 
 			if (trimmedInput || images.length > 0) {
-				isBlankTaskPendingRef.current = false
-				vscode.postMessage({
-					type: "newTask",
-					text: trimmedInput,
-					images,
-					...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
-				})
-				return
+				return postNewTaskSubmission(trimmedInput, images)
 			}
 
 			vscode.postMessage({ type: "startBlankTask" })
+			return true
 		},
-		[draftTaskApprovalMode, enterBlankTaskView],
+		[enterBlankTaskView, postNewTaskSubmission],
 	)
+	const restoreNewTaskSubmission = useCallback(
+		(submission: ComposerSubmission) => {
+			updateTaskDraft(undefined, (draft) =>
+				draft.pendingNewTaskRequest?.requestId === submission.requestId
+					? {
+							...draft,
+							pendingNewTaskRequest: null,
+							inputValue: draft.inputValue ? `${draft.inputValue} ${submission.text}` : submission.text,
+							selectedImages: [...draft.selectedImages, ...submission.images],
+							chatCommandError: t("chat:taskStartup.failed"),
+						}
+					: draft,
+			)
+			if (visibleCurrentTaskId === submission.taskId) enterBlankTaskView()
+			if (!visibleCurrentTaskId || visibleCurrentTaskId === submission.taskId) setSendingDisabled(false)
+		},
+		[updateTaskDraft, visibleCurrentTaskId, enterBlankTaskView, t],
+	)
+	useEffect(() => {
+		if (
+			newTaskSubmission &&
+			newTaskSubmission.taskId === visibleCurrentTaskId &&
+			(effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
+				effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed)
+		)
+			restoreNewTaskSubmission(newTaskSubmission)
+	}, [newTaskSubmission, visibleCurrentTaskId, effectiveVisibleLiveTask?.lifecycle, restoreNewTaskSubmission])
 	const getCurrentAskMessageTs = useCallback(
 		() =>
 			alphaAskRef.current
@@ -1360,6 +1442,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (pendingResumeRequestRef.current || pendingEditRequestRef.current) {
 				return false
 			}
+			const pendingNewTask = getTaskDraft(undefined).pendingNewTaskRequest
+			if (pendingNewTask && (!visibleCurrentTaskId || visibleCurrentTaskId === pendingNewTask.taskId))
+				return false
 
 			if (editingQueuedMessage) {
 				if (editingQueuedMessage.taskId !== visibleCurrentTaskId) return false
@@ -1447,8 +1532,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (isVisibleTaskFailedOrClosed) {
-				startNewTask(text, images)
-				return true
+				return startNewTask(text, images)
 			}
 
 			const currentInputBoundary = messagesRef.current.findLast(
@@ -1512,13 +1596,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			userRespondedRef.current = true
 
 			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
-				isBlankTaskPendingRef.current = false
-				vscode.postMessage({
-					type: "newTask",
-					text,
-					images,
-					...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
-				})
+				if (!postNewTaskSubmission(text, images)) return false
 			} else if (
 				isCurrentMessageResponse ||
 				!alphaAskRef.current ||
@@ -1604,12 +1682,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isLastFollowUpAnswered,
 			postQueuedMessage,
 			startNewTask,
+			postNewTaskSubmission,
 			handleCondenseContext,
 			isCondensing,
 			sendingDisabled,
 			visibleCurrentTaskId,
 			mode,
-			draftTaskApprovalMode,
 			setMode,
 			getTaskDraft,
 			updateTaskDraft,
@@ -2110,6 +2188,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					break
 				case "chatCommandResult": {
 					const result = message.chatCommandResult
+					if (result?.command === "newTask") {
+						const submission = getTaskDraft(undefined).pendingNewTaskRequest
+						if (submission?.requestId !== result.requestId || submission.taskId !== result.taskId) break
+						if (result.status === "rejected") {
+							restoreNewTaskSubmission(submission)
+						}
+						break
+					}
 					if (!result?.taskId) break
 					const owner = result.taskId
 					const draft = getTaskDraft(owner)
@@ -2340,6 +2426,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			enableButtons,
 			enterBlankTaskView,
 			handleSetChatBoxMessage,
+			restoreNewTaskSubmission,
 			handlePrimaryButtonClick,
 			handleSecondaryButtonClick,
 			setCheckpointWarningState,
@@ -3748,6 +3835,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						{chatCommandError}
 					</div>
 				)}
+				{isPreparingFirstRequest && (
+					<div role="status" className="mx-[15px] mb-2 text-sm text-vscode-descriptionForeground">
+						{t("chat:taskStartup.starting")}
+					</div>
+				)}
 				{isModelResponseDelayed && (
 					<div
 						role="status"
@@ -3775,6 +3867,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						setInputValue={setInputValue}
 						sendingDisabled={
 							isProfileDisabled ||
+							Boolean(visibleNewTaskSubmission) ||
 							isCompletedTaskResumePending ||
 							isCondensing ||
 							Boolean(pendingQueueRequest || pendingEditRequest)

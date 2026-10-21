@@ -5,10 +5,28 @@ import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unzipSync } from "fflate"
 
+import { lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
+
 const archiveArgument = process.argv[2]
 
 if (!archiveArgument) {
-	console.error("Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix> [--check-source]")
+	console.error("Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix> [--check-source] [--target <platform>]")
+	process.exit(1)
+}
+
+let expectedTarget
+let checkSource = false
+try {
+	for (let index = 3; index < process.argv.length; index++) {
+		const argument = process.argv[index]
+		if (argument === "--check-source") checkSource = true
+		else if (argument === "--target" && expectedTarget === undefined) {
+			expectedTarget = process.argv[++index]
+			lanceDbBindingForTarget(expectedTarget)
+		} else throw new Error(`Unknown or repeated VSIX verification argument: ${argument}`)
+	}
+} catch (error) {
+	console.error(error.message)
 	process.exit(1)
 }
 
@@ -19,7 +37,6 @@ if (!existsSync(archivePath)) {
 	process.exit(1)
 }
 
-const checkSource = process.argv.includes("--check-source")
 const sourceAssets = new Map()
 if (checkSource) {
 	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -45,6 +62,12 @@ try {
 			const name = entry.name.trim().replaceAll("\\", "/").replace(/^\.\//u, "")
 			if (entries.has(name)) throw new Error(`Duplicate VSIX archive entry: ${name}`)
 			entries.add(name)
+			if (entry.name === "extension.vsixmanifest") {
+				if (entry.originalSize > 64 * 1024 || (entry.compression === 0 && entry.size > 64 * 1024)) {
+					throw new Error("VSIX manifest exceeds the 64 KiB inspection limit")
+				}
+				return true
+			}
 			const source = sourceAssets.get(entry.name)
 			if (!source) return false
 			// Only trusted source names are inflated, and their declared size must
@@ -61,6 +84,7 @@ try {
 }
 
 const requiredEntries = [
+	"extension.vsixmanifest",
 	"extension/package.json",
 	"extension/assets/skills/debug/SKILL.md",
 	"extension/assets/skills/review-agent/SKILL.md",
@@ -83,6 +107,7 @@ const requiredEntries = [
 	"extension/dist/extension.js",
 	"extension/dist/workers/sanitizeDocument.js",
 	"extension/dist/workers/validateImage.js",
+	"extension/dist/workers/searchCommandOutput.js",
 	"extension/dist/workers/magick.wasm",
 	"extension/dist/workers/magick-LICENSE",
 	"extension/dist/workers/magick-NOTICE",
@@ -92,8 +117,35 @@ const requiredEntries = [
 	"extension/assets/vscode-material-icons/icons/3d.svg",
 ]
 
-if (process.platform === "win32" || process.platform === "darwin") {
-	const ripgrepExecutable = process.platform === "win32" ? "rg.exe" : "rg"
+let target
+let nativeBinding
+try {
+	if (!packagedAssets["extension.vsixmanifest"]) throw new Error("VSIX is missing required extension.vsixmanifest")
+	const manifest = new TextDecoder("utf-8", { fatal: true }).decode(packagedAssets["extension.vsixmanifest"])
+	const identities = manifest.replace(/<!--[\s\S]*?-->/gu, "").match(/<Identity\b[^<>]*\/>/gu) ?? []
+	if (identities.length !== 1) throw new Error("VSIX manifest must contain exactly one Identity")
+	let remaining = identities[0].slice("<Identity".length, -2)
+	const attributes = new Map()
+	while (remaining.trim().length > 0) {
+		const attribute = /^\s+([\w:.-]+)\s*=\s*(?:"([^"<]*)"|'([^'<]*)')/u.exec(remaining)
+		if (!attribute || attributes.has(attribute[1])) throw new Error("Invalid VSIX Identity attributes")
+		attributes.set(attribute[1], attribute[2] ?? attribute[3])
+		remaining = remaining.slice(attribute[0].length)
+	}
+	target = attributes.get("TargetPlatform")
+	if (!target) throw new Error("VSIX must declare a TargetPlatform; a host-only native binding is not universal")
+	nativeBinding = lanceDbBindingForTarget(target)
+	if (expectedTarget !== undefined && expectedTarget !== target) {
+		throw new Error(`VSIX TargetPlatform ${target} does not match requested target ${expectedTarget}`)
+	}
+} catch (error) {
+	console.error(`Invalid VSIX platform contract: ${error.message}`)
+	process.exit(1)
+}
+
+if (nativeBinding) requiredEntries.push(`extension/dist/${nativeBinding}`)
+if (target.startsWith("win32-") || target.startsWith("darwin-")) {
+	const ripgrepExecutable = target.startsWith("win32-") ? "rg.exe" : "rg"
 	requiredEntries.push(`extension/dist/node_modules/@vscode/ripgrep/bin/${ripgrepExecutable}`)
 }
 
@@ -103,7 +155,10 @@ const packagedLinuxRipgrepFiles = [...entries].filter(
 	(entry) =>
 		/^extension\/dist\/node_modules\/@vscode\/ripgrep-linux-[^/]+\//u.test(entry) ||
 		/^extension\/dist\/node_modules\/@vscode\/ripgrep-universal\/.+\/(?:linux|linux-[^/]+)\//u.test(entry) ||
-		(process.platform === "linux" && entry === "extension/dist/node_modules/@vscode/ripgrep/bin/rg"),
+		(/^(?:linux|alpine)-/u.test(target) && entry === "extension/dist/node_modules/@vscode/ripgrep/bin/rg"),
+)
+const incompatibleNativeBindings = [...entries].filter(
+	(entry) => /(?:^|\/)lancedb\.[^/]+\.node$/u.test(entry) && entry !== `extension/dist/${nativeBinding}`,
 )
 
 if (missingEntries.length > 0) {
@@ -118,6 +173,13 @@ if (packagedEnvironmentFiles.length > 0) {
 	process.exit(1)
 }
 
+if (incompatibleNativeBindings.length > 0) {
+	console.error(
+		`VSIX target ${target} contains incompatible LanceDB bindings:\n${incompatibleNativeBindings.map((entry) => `- ${entry}`).join("\n")}`,
+	)
+	process.exit(1)
+}
+
 if (packagedLinuxRipgrepFiles.length > 0) {
 	console.error(
 		`VSIX must not contain Linux-specific ripgrep binaries:\n${packagedLinuxRipgrepFiles.map((entry) => `- ${entry}`).join("\n")}`,
@@ -125,7 +187,9 @@ if (packagedLinuxRipgrepFiles.length > 0) {
 	process.exit(1)
 }
 
-console.log(`Verified ${entries.size} VSIX entries; required files are present and no .env file is packaged.`)
+console.log(
+	`Verified ${entries.size} VSIX entries for ${target}; required files are present and no .env file is packaged.`,
+)
 
 // Opt-in release check: listing files alone cannot detect stale copied public
 // assets restored from a build cache with incomplete inputs.

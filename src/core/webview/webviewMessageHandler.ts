@@ -46,7 +46,7 @@ import {
 	taskRenameRequestSchema,
 	type TaskRenameResult,
 } from "@alpha-code/types"
-import { customToolRegistry } from "@alpha-code/core"
+import { customToolRegistry, serializeCustomTool } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
@@ -183,6 +183,7 @@ export const webviewMessageHandler = async (
 	provider: AlphaProvider,
 	message: WebviewMessage,
 	marketplaceManager?: MarketplaceManager,
+	options?: { ticketSearch?: { signal: AbortSignal; cwd: string } },
 ) => {
 	// Utility functions provided for concise get/update of global state via contextProxy API.
 	const getGlobalState = <K extends keyof GlobalState>(key: K) => provider.contextProxy.getValue(key)
@@ -730,6 +731,7 @@ export const webviewMessageHandler = async (
 				!approvalModeSchema.safeParse(message.taskApprovalMode).success
 			) {
 				vscode.window.showErrorMessage("Invalid task approval mode")
+				await postChatCommandResult("newTask", "rejected", "unknown")
 				break
 			}
 			const navigationGeneration = provider.getTaskNavigationGeneration()
@@ -757,9 +759,11 @@ export const webviewMessageHandler = async (
 					},
 					message.taskConfiguration,
 				)
+				await postChatCommandResult("newTask", "accepted")
 			} catch (error) {
+				await postChatCommandResult("newTask", "rejected", "unknown")
 				// Failure recovery belongs to this submission, never a later navigation.
-				if (stillCurrent()) {
+				if (!message.requestId && stillCurrent()) {
 					await provider.postMessageToWebview({
 						type: "action",
 						action: "chatButtonClicked",
@@ -1417,6 +1421,8 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "searchTickets": {
+			const search = options?.ticketSearch
+			search?.signal.throwIfAborted()
 			const task = getTaskForMessage(provider, message, { allowActiveFallback: true })
 			if (message.taskId && !task) {
 				const request = ticketSearchRequestSchema.safeParse(message)
@@ -1432,7 +1438,10 @@ export const webviewMessageHandler = async (
 					})
 				break
 			}
-			const result = await searchTicketMentions(task?.cwd ?? provider.cwd, message)
+			const result = search
+				? await searchTicketMentions(search.cwd, message, search.signal)
+				: await searchTicketMentions(task?.cwd ?? provider.cwd, message)
+			search?.signal.throwIfAborted()
 			if (result) await provider.postMessageToWebview({ type: "ticketSearchResults", ticketSearch: result })
 			break
 		}
@@ -2182,11 +2191,14 @@ export const webviewMessageHandler = async (
 		case "refreshCustomTools": {
 			try {
 				const toolDirs = getConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
-				await customToolRegistry.loadFromDirectories(toolDirs)
+				const result = await customToolRegistry.loadFromDirectories(toolDirs)
 
 				await provider.postMessageToWebview({
 					type: "customToolsResult",
-					tools: customToolRegistry.getAllSerialized(),
+					tools: result.catalog.map(serializeCustomTool),
+					...(result.failed.length > 0
+						? { error: result.failed.map(({ file, error }) => `${file}: ${error}`).join("\n") }
+						: {}),
 				})
 			} catch (error) {
 				await provider.postMessageToWebview({

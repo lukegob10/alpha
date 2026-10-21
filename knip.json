@@ -12,6 +12,7 @@
 				"early-task-ending.investigation.config.ts",
 				"workers/countTokens.ts",
 				"workers/sanitizeDocument.ts",
+				"workers/searchCommandOutput.ts",
 				"core/agent/benchmarks/AgentControlStore.benchmark.ts",
 				"core/agent/benchmarks/AgentIncidentMonitor.benchmark.ts",
 				"core/agent/benchmarks/StepContext.benchmark.ts",

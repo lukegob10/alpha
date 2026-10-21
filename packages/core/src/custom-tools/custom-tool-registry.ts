@@ -10,9 +10,10 @@
 
 import fs from "fs"
 import path from "path"
-import { createHash } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import os from "os"
 import { pathToFileURL } from "url"
+import { createRequire } from "module"
 
 import type {
 	CustomToolDefinition,
@@ -20,7 +21,7 @@ import type {
 	CustomToolParametersSchema,
 } from "@alpha-code/types"
 
-import type { StoredCustomTool, LoadResult } from "./types.js"
+import type { StoredCustomTool, LoadResult, CatalogLoadResult } from "./types.js"
 import { serializeCustomTool } from "./serialize.js"
 import { runEsbuild, NODE_BUILTIN_MODULES, COMMONJS_REQUIRE_BANNER } from "./esbuild-runner.js"
 
@@ -33,16 +34,53 @@ export interface RegistryOptions {
 	extensionPath?: string
 }
 
+const MAX_CACHED_DIRECTORIES = 64
+const MAX_COMPILED_SOURCES = 128
+const MAX_IMPORT_GENERATIONS = 256
+const PROCESS_CACHE_NAMESPACE = `host-${process.pid}-${randomUUID()}`
+
+// Node retains ESM generations for the lifetime of the extension host, including failed imports.
+// Keep this budget process-wide across registry instances; cache eviction cannot reclaim those modules.
+const importedModuleUrls = new Set<string>()
+const pendingModuleLoads = new Map<string, Promise<Record<string, unknown>>>()
+const activeCacheDirectories = new Set<string>()
+const pendingCacheGenerations = new Set<string>()
+const retainedCacheDirectories = new Set<string>()
+const pendingCacheRemovals = new Map<string, Promise<void>>()
+const pendingCachePrunes = new Map<string, Promise<void>>()
+
+interface DirectorySnapshot {
+	fingerprint: string
+	tools: readonly StoredCustomTool[]
+	loaded: readonly string[]
+	failed: ReadonlyArray<LoadResult["failed"][number]>
+}
+
+interface CompiledSource {
+	fingerprint: string
+	url: string
+}
+
+const fingerprint = (contents: string | Buffer) => createHash("sha256").update(contents).digest("hex")
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
 export class CustomToolRegistry {
 	private tools = new Map<string, StoredCustomTool>()
-	private tsCache = new Map<string, string>()
+	private registeredTools = new Map<string, StoredCustomTool>()
+	private directorySnapshots = new Map<string, DirectorySnapshot>()
+	private pendingDirectories = new Map<string, Promise<DirectorySnapshot>>()
+	private tsCache = new Map<string, CompiledSource>()
+	private cacheRoot: string
 	private cacheDir: string
+	private cacheReady?: Promise<void>
 	private nodePaths: string[]
 	private extensionPath?: string
-	private lastLoaded: Map<string, number> = new Map()
+	private clearVersion = 0
 
 	constructor(options?: RegistryOptions) {
-		this.cacheDir = options?.cacheDir ?? path.join(os.tmpdir(), "dynamic-tools-cache")
+		this.cacheRoot = path.resolve(options?.cacheDir ?? path.join(os.tmpdir(), "dynamic-tools-cache"))
+		this.cacheDir = path.join(this.cacheRoot, PROCESS_CACHE_NAMESPACE)
 		// Default to current working directory's node_modules.
 		this.nodePaths = options?.nodePaths ?? [path.join(process.cwd(), "node_modules")]
 		this.extensionPath = options?.extensionPath
@@ -55,63 +93,12 @@ export class CustomToolRegistry {
 	 * @param toolDir - Absolute path to the tools directory
 	 * @returns LoadResult with lists of loaded and failed tools
 	 */
-	async loadFromDirectory(toolDir: string): Promise<LoadResult> {
-		const result: LoadResult = { loaded: [], failed: [] }
-
-		try {
-			if (!fs.existsSync(toolDir)) {
-				return result
-			}
-
-			const files = fs.readdirSync(toolDir).filter((f) => f.endsWith(".ts") || f.endsWith(".js"))
-
-			for (const file of files) {
-				const filePath = path.join(toolDir, file)
-
-				try {
-					console.log(`[CustomToolRegistry] importing tool from ${filePath}`)
-					const mod = await this.import(filePath)
-
-					for (const [exportName, value] of Object.entries(mod)) {
-						const def = this.validate(exportName, value)
-
-						if (!def) {
-							continue
-						}
-
-						this.tools.set(def.name, { ...def, source: filePath })
-						console.log(`[CustomToolRegistry] loaded tool ${def.name} from ${filePath}`)
-						result.loaded.push(def.name)
-					}
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error)
-					console.error(`[CustomToolRegistry] import(${filePath}) failed: ${message}`)
-					result.failed.push({ file, error: message })
-				}
-			}
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error)
-			console.error(`[CustomToolRegistry] loadFromDirectory(${toolDir}) failed: ${message}`)
-		}
-
-		return result
+	async loadFromDirectory(toolDir: string): Promise<CatalogLoadResult> {
+		return this.loadDirectories([toolDir], true)
 	}
 
-	async loadFromDirectoryIfStale(toolDir: string): Promise<LoadResult> {
-		if (!fs.existsSync(toolDir)) {
-			return { loaded: [], failed: [] }
-		}
-
-		const lastLoaded = this.lastLoaded.get(toolDir)
-		const stat = fs.statSync(toolDir)
-		const isStale = lastLoaded ? stat.mtimeMs > lastLoaded : true
-
-		if (isStale) {
-			this.lastLoaded.set(toolDir, stat.mtimeMs)
-			return this.loadFromDirectory(toolDir)
-		}
-
-		return { loaded: this.list(), failed: [] }
+	async loadFromDirectoryIfStale(toolDir: string): Promise<CatalogLoadResult> {
+		return this.loadDirectories([toolDir], false)
 	}
 
 	/**
@@ -122,16 +109,8 @@ export class CustomToolRegistry {
 	 * @param toolDirs - Array of absolute paths to tools directories
 	 * @returns LoadResult with lists of loaded and failed tools from all directories
 	 */
-	async loadFromDirectories(toolDirs: string[]): Promise<LoadResult> {
-		const result: LoadResult = { loaded: [], failed: [] }
-
-		for (const toolDir of toolDirs) {
-			const dirResult = await this.loadFromDirectory(toolDir)
-			result.loaded.push(...dirResult.loaded)
-			result.failed.push(...dirResult.failed)
-		}
-
-		return result
+	async loadFromDirectories(toolDirs: string[]): Promise<CatalogLoadResult> {
+		return this.loadDirectories(toolDirs, true)
 	}
 
 	/**
@@ -141,16 +120,127 @@ export class CustomToolRegistry {
 	 * @param toolDirs - Array of absolute paths to tools directories
 	 * @returns LoadResult with lists of loaded and failed tools
 	 */
-	async loadFromDirectoriesIfStale(toolDirs: string[]): Promise<LoadResult> {
-		const result: LoadResult = { loaded: [], failed: [] }
+	async loadFromDirectoriesIfStale(toolDirs: string[]): Promise<CatalogLoadResult> {
+		return this.loadDirectories(toolDirs, false)
+	}
 
-		for (const toolDir of toolDirs) {
-			const dirResult = await this.loadFromDirectoryIfStale(toolDir)
-			result.loaded.push(...dirResult.loaded)
-			result.failed.push(...dirResult.failed)
+	private async loadDirectories(toolDirs: readonly string[], force: boolean): Promise<CatalogLoadResult> {
+		const version = this.clearVersion
+		const snapshots: DirectorySnapshot[] = []
+		for (const toolDir of toolDirs) snapshots.push(await this.loadDirectorySnapshot(toolDir, force))
+		const tools = new Map(this.registeredTools)
+		const result: CatalogLoadResult = { loaded: [], failed: [], catalog: [] }
+		for (const snapshot of snapshots) {
+			for (const tool of snapshot.tools) tools.set(tool.name, tool)
+			result.loaded.push(...snapshot.loaded)
+			result.failed.push(...snapshot.failed)
 		}
-
+		result.catalog = Object.freeze([...tools.values()])
+		// Legacy getters project the last completed request atomically. Executable consumers retain result.catalog.
+		if (version === this.clearVersion) this.tools = tools
 		return result
+	}
+
+	private async loadDirectorySnapshot(toolDir: string, force: boolean): Promise<DirectorySnapshot> {
+		let directory = path.resolve(toolDir)
+		try {
+			directory = await fs.promises.realpath(directory)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				return {
+					fingerprint: "",
+					tools: [],
+					loaded: [],
+					failed: [{ file: toolDir, error: errorMessage(error) }],
+				}
+			}
+		}
+		const key = process.platform === "win32" ? directory.toLowerCase() : directory
+		const pending = this.pendingDirectories.get(key)
+		if (pending) {
+			if (!force) return pending
+			await pending
+			return this.loadDirectorySnapshot(toolDir, force)
+		}
+		if (this.pendingDirectories.size >= MAX_CACHED_DIRECTORIES) {
+			return {
+				fingerprint: "",
+				tools: [],
+				loaded: [],
+				failed: [
+					{
+						file: toolDir,
+						error: "Too many concurrent custom tool directory loads. Retry after the current loads finish.",
+					},
+				],
+			}
+		}
+		const version = this.clearVersion
+		const loading = this.readDirectorySnapshot(directory, key, force)
+		this.pendingDirectories.set(key, loading)
+		try {
+			const snapshot = await loading
+			if (version === this.clearVersion) {
+				this.directorySnapshots.delete(key)
+				this.directorySnapshots.set(key, snapshot)
+				while (this.directorySnapshots.size > MAX_CACHED_DIRECTORIES) {
+					this.directorySnapshots.delete(this.directorySnapshots.keys().next().value!)
+				}
+			}
+			return snapshot
+		} finally {
+			this.pendingDirectories.delete(key)
+		}
+	}
+
+	private async readDirectorySnapshot(directory: string, key: string, force: boolean): Promise<DirectorySnapshot> {
+		const loaded: string[] = []
+		const failed: LoadResult["failed"] = []
+		const tools = new Map<string, StoredCustomTool>()
+		try {
+			const files = (await fs.promises.readdir(directory, { withFileTypes: true }))
+				.filter((entry) => !entry.isDirectory() && (entry.name.endsWith(".ts") || entry.name.endsWith(".js")))
+				.map((entry) => entry.name)
+				.sort()
+			const manifest: Array<{ file: string; fingerprint: string }> = []
+			for (const file of files) {
+				try {
+					manifest.push({
+						file,
+						fingerprint: fingerprint(await fs.promises.readFile(path.join(directory, file))),
+					})
+				} catch (error) {
+					failed.push({ file, error: errorMessage(error) })
+				}
+			}
+			const sourceFingerprint = fingerprint(JSON.stringify({ manifest, failed }))
+			const cached = this.directorySnapshots.get(key)
+			if (!force && cached?.fingerprint === sourceFingerprint && cached.failed.length === 0) return cached
+			for (const entry of manifest) {
+				const filePath = path.join(directory, entry.file)
+				try {
+					const mod = await this.import(filePath, entry.fingerprint, force)
+					const fileTools: StoredCustomTool[] = []
+					for (const [exportName, value] of Object.entries(mod)) {
+						const definition = this.validate(exportName, value)
+						if (definition) fileTools.push(Object.freeze({ ...definition, source: filePath }))
+					}
+					for (const tool of fileTools) {
+						tools.set(tool.name, tool)
+						loaded.push(tool.name)
+					}
+				} catch (error) {
+					const message = errorMessage(error)
+					console.error(`[CustomToolRegistry] import(${filePath}) failed: ${message}`)
+					failed.push({ file: entry.file, error: message })
+				}
+			}
+			return { fingerprint: sourceFingerprint, tools: Object.freeze([...tools.values()]), loaded, failed }
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+				failed.push({ file: directory, error: errorMessage(error) })
+			return { fingerprint: "", tools: [], loaded, failed }
+		}
 	}
 
 	/**
@@ -164,7 +254,8 @@ export class CustomToolRegistry {
 			throw new Error(`Invalid tool definition for '${id}'`)
 		}
 
-		const storedTool: StoredCustomTool = source ? { ...validated, source } : validated
+		const storedTool: StoredCustomTool = Object.freeze(source ? { ...validated, source } : { ...validated })
+		this.registeredTools.set(id, storedTool)
 		this.tools.set(id, storedTool)
 	}
 
@@ -172,6 +263,16 @@ export class CustomToolRegistry {
 	 * Unregister a tool by ID.
 	 */
 	unregister(id: string): boolean {
+		this.registeredTools.delete(id)
+		for (const [key, snapshot] of this.directorySnapshots) {
+			if (snapshot.tools.some((tool) => tool.name === id)) {
+				this.directorySnapshots.set(key, {
+					...snapshot,
+					tools: Object.freeze(snapshot.tools.filter((tool) => tool.name !== id)),
+					loaded: snapshot.loaded.filter((name) => name !== id),
+				})
+			}
+		}
 		return this.tools.delete(id)
 	}
 
@@ -221,7 +322,10 @@ export class CustomToolRegistry {
 	 * Clear all registered tools.
 	 */
 	clear(): void {
+		this.clearVersion++
 		this.tools.clear()
+		this.registeredTools.clear()
+		this.directorySnapshots.clear()
 	}
 
 	/**
@@ -240,8 +344,8 @@ export class CustomToolRegistry {
 	}
 
 	/**
-	 * Clear the TypeScript compilation cache (both in-memory and on disk).
-	 * This removes all tool-specific subdirectories and their contents.
+	 * Clear the TypeScript lookup cache and unused disk entries.
+	 * Imported generations retain their resources until host exit so captured tools remain executable.
 	 */
 	clearCache(): void {
 		this.tsCache.clear()
@@ -251,8 +355,12 @@ export class CustomToolRegistry {
 				const entries = fs.readdirSync(this.cacheDir, { withFileTypes: true })
 				for (const entry of entries) {
 					const entryPath = path.join(this.cacheDir, entry.name)
-					if (entry.isDirectory()) {
-						// Remove tool-specific subdirectory and all its contents.
+					if (
+						entry.isDirectory() &&
+						!retainedCacheDirectories.has(entryPath) &&
+						!pendingCacheGenerations.has(entryPath) &&
+						!activeCacheDirectories.has(entryPath)
+					) {
 						fs.rmSync(entryPath, { recursive: true, force: true })
 					} else if (entry.name.endsWith(".mjs")) {
 						// Also clean up any legacy flat .mjs files from older cache format.
@@ -276,104 +384,267 @@ export class CustomToolRegistry {
 	 * - npm packages are bundled with a CommonJS shim for require() compatibility
 	 * - The tool's local node_modules is included in the resolution path
 	 */
-	private async import(filePath: string): Promise<Record<string, CustomToolDefinition>> {
+	private async import(
+		filePath: string,
+		sourceFingerprint: string,
+		force: boolean,
+	): Promise<Record<string, unknown>> {
 		const absolutePath = path.resolve(filePath)
-		const ext = path.extname(absolutePath)
+		const key = process.platform === "win32" ? absolutePath.toLowerCase() : absolutePath
+		// A stable compiled slot must not be overwritten while another registry imports it.
+		while (pendingModuleLoads.has(key)) {
+			try {
+				await pendingModuleLoads.get(key)
+			} catch {
+				// Each caller receives its own source load result after the previous attempt settles.
+			}
+		}
+		if (pendingModuleLoads.size >= MAX_CACHED_DIRECTORIES) {
+			throw new Error("Too many concurrent custom tool module loads. Retry after the current loads finish.")
+		}
+		const loading = this.importSource(absolutePath, sourceFingerprint, force)
+		pendingModuleLoads.set(key, loading)
+		try {
+			return await loading
+		} finally {
+			pendingModuleLoads.delete(key)
+		}
+	}
 
-		if (ext === ".js" || ext === ".mjs") {
-			return import(pathToFileURL(absolutePath).href)
+	private async importSource(
+		absolutePath: string,
+		sourceFingerprint: string,
+		force: boolean,
+	): Promise<Record<string, unknown>> {
+		const assertSourceCurrent = async () => {
+			if (fingerprint(await fs.promises.readFile(absolutePath)) !== sourceFingerprint) {
+				throw new Error("Custom tool source changed while loading. Refresh custom tools to retry.")
+			}
+		}
+		await assertSourceCurrent()
+		if (path.extname(absolutePath) === ".js") {
+			const url = pathToFileURL(absolutePath)
+			url.searchParams.set("alpha_tool", sourceFingerprint)
+			const nativeRequire = createRequire(absolutePath)
+			// Native import of CommonJS also consults require.cache, independently of the versioned ESM URL.
+			delete nativeRequire.cache[absolutePath]
+			try {
+				const mod = await this.importModule(url.href)
+				await assertSourceCurrent()
+				return mod
+			} finally {
+				delete nativeRequire.cache[absolutePath]
+			}
 		}
 
-		const stat = fs.statSync(absolutePath)
-		const cacheKey = `${absolutePath}:${stat.mtimeMs}`
+		const cached = this.tsCache.get(absolutePath)
+		if (!force && cached?.fingerprint === sourceFingerprint) return this.importModule(cached.url)
 
-		// Check if we have a cached version in memory.
-		if (this.tsCache.has(cacheKey)) {
-			const cachedPath = this.tsCache.get(cacheKey)!
-			return import(pathToFileURL(cachedPath).href)
+		await this.ensureCacheDirectory()
+		const stagingDirectory = path.join(this.cacheDir, `stage-${fingerprint(absolutePath).slice(0, 32)}`)
+		while (pendingCacheRemovals.has(stagingDirectory)) await pendingCacheRemovals.get(stagingDirectory)
+		activeCacheDirectories.add(stagingDirectory)
+		try {
+			await fs.promises.mkdir(stagingDirectory, { recursive: true, mode: 0o700 })
+			// Prune before compilation so invalid sources cannot accumulate unbounded failed-build slots.
+			await this.pruneDiskCache(stagingDirectory)
+			this.tsCache.delete(absolutePath)
+			const toolDir = path.dirname(absolutePath)
+			const tempFile = path.join(stagingDirectory, "bundle.mjs")
+			await runEsbuild(
+				{
+					entryPoint: absolutePath,
+					outfile: tempFile,
+					format: "esm",
+					platform: "node",
+					target: "node18",
+					bundle: true,
+					sourcemap: "inline",
+					packages: "bundle",
+					nodePaths: [path.join(toolDir, "node_modules"), ...this.nodePaths],
+					external: NODE_BUILTIN_MODULES,
+					banner: COMMONJS_REQUIRE_BANNER,
+				},
+				this.extensionPath,
+			)
+			const bundle = await fs.promises.readFile(tempFile)
+			const envFiles = await this.readEnvFiles(toolDir)
+			const generation = fingerprint(
+				JSON.stringify({
+					source: absolutePath,
+					bundle: fingerprint(bundle),
+					env: envFiles.map(({ name, contents }) => [name, fingerprint(contents)]),
+				}),
+			)
+			const toolCacheDir = path.join(this.cacheDir, `tool-${generation.slice(0, 32)}`)
+			const url = pathToFileURL(path.join(toolCacheDir, "bundle.mjs")).href
+			this.assertImportCapacity(url)
+			while (pendingCacheRemovals.has(toolCacheDir)) await pendingCacheRemovals.get(toolCacheDir)
+			const retained = retainedCacheDirectories.has(toolCacheDir)
+			if (!retained && retainedCacheDirectories.size + pendingCacheGenerations.size >= MAX_COMPILED_SOURCES) {
+				throw new Error(
+					"Custom tool compiled generation limit reached. Reload the extension host before loading new tool versions.",
+				)
+			}
+			// Reserve capacity/protect writes without marking partial output as an imported generation.
+			if (!retained) pendingCacheGenerations.add(toolCacheDir)
+			try {
+				const exists =
+					retained &&
+					(await fs.promises.stat(toolCacheDir).then(
+						() => true,
+						(error: NodeJS.ErrnoException) => {
+							if (error.code === "ENOENT") return false
+							throw error
+						},
+					))
+				if (!exists) {
+					await fs.promises.mkdir(toolCacheDir, { recursive: true, mode: 0o700 })
+					await fs.promises.writeFile(path.join(toolCacheDir, "bundle.mjs"), bundle, { mode: 0o600 })
+					for (const { name, contents } of envFiles)
+						await fs.promises.writeFile(path.join(toolCacheDir, name), contents, { mode: 0o600 })
+				}
+				await assertSourceCurrent()
+				await this.pruneDiskCache(stagingDirectory)
+				// From import onward Node may retain executable state even if module evaluation fails.
+				retainedCacheDirectories.add(toolCacheDir)
+				pendingCacheGenerations.delete(toolCacheDir)
+				const mod = await this.importModule(url)
+				await assertSourceCurrent()
+				this.tsCache.delete(absolutePath)
+				this.tsCache.set(absolutePath, { fingerprint: sourceFingerprint, url })
+				while (this.tsCache.size > MAX_COMPILED_SOURCES) this.tsCache.delete(this.tsCache.keys().next().value!)
+				return mod
+			} finally {
+				try {
+					if (!retainedCacheDirectories.has(toolCacheDir)) {
+						await fs.promises.rm(toolCacheDir, { recursive: true, force: true })
+					}
+				} finally {
+					pendingCacheGenerations.delete(toolCacheDir)
+				}
+			}
+		} finally {
+			try {
+				await fs.promises.rm(stagingDirectory, { recursive: true, force: true })
+			} finally {
+				activeCacheDirectories.delete(stagingDirectory)
+			}
 		}
+	}
 
-		const hash = createHash("sha256").update(cacheKey).digest("hex").slice(0, 16)
-
-		// Use a tool-specific subdirectory to avoid .env file conflicts between tools.
-		const toolCacheDir = path.join(this.cacheDir, hash)
-		fs.mkdirSync(toolCacheDir, { recursive: true })
-
-		const tempFile = path.join(toolCacheDir, "bundle.mjs")
-
-		// Check if we have a cached version on disk (from a previous run/instance).
-		if (fs.existsSync(tempFile)) {
-			this.tsCache.set(cacheKey, tempFile)
-			return import(pathToFileURL(tempFile).href)
+	private assertImportCapacity(url: string): void {
+		if (!importedModuleUrls.has(url) && importedModuleUrls.size >= MAX_IMPORT_GENERATIONS) {
+			throw new Error(
+				"Custom tool module reload limit reached. Reload the extension host before loading new tool versions.",
+			)
 		}
+	}
 
-		// Get the tool's directory to include its node_modules in resolution path.
-		const toolDir = path.dirname(absolutePath)
-		const toolNodeModules = path.join(toolDir, "node_modules")
+	private async importModule(url: string): Promise<Record<string, unknown>> {
+		this.assertImportCapacity(url)
+		importedModuleUrls.add(url)
+		return import(url)
+	}
 
-		// Combine default nodePaths with tool-specific node_modules.
-		// Tool's node_modules takes priority (listed first).
-		const nodePaths = fs.existsSync(toolNodeModules) ? [toolNodeModules, ...this.nodePaths] : this.nodePaths
+	private async ensureCacheDirectory(): Promise<void> {
+		this.cacheReady ??= this.initializeCacheDirectory()
+		try {
+			await this.cacheReady
+		} catch (error) {
+			this.cacheReady = undefined
+			throw error
+		}
+	}
 
-		// Bundle the TypeScript file with dependencies using esbuild CLI.
-		// - Node.js built-ins are external (they can't be bundled and are always available)
-		// - npm packages are bundled with CommonJS require() shim for compatibility
-		await runEsbuild(
-			{
-				entryPoint: absolutePath,
-				outfile: tempFile,
-				format: "esm",
-				platform: "node",
-				target: "node18",
-				bundle: true,
-				sourcemap: "inline",
-				packages: "bundle",
-				nodePaths,
-				external: NODE_BUILTIN_MODULES,
-				banner: COMMONJS_REQUIRE_BANNER,
-			},
-			this.extensionPath,
+	private async initializeCacheDirectory(): Promise<void> {
+		await fs.promises.mkdir(this.cacheDir, { recursive: true, mode: 0o700 })
+		for (const entry of await fs.promises.readdir(this.cacheRoot, { withFileTypes: true })) {
+			const match = /^host-([1-9][0-9]*)-[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.exec(entry.name)
+			if (!entry.isDirectory() || !match || entry.name === PROCESS_CACHE_NAMESPACE) continue
+			try {
+				process.kill(Number(match[1]), 0)
+			} catch (error) {
+				// An inaccessible/reused PID is not evidence that another window's resources are unused.
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+					await fs.promises.rm(path.join(this.cacheRoot, entry.name), { recursive: true, force: true })
+				}
+			}
+		}
+	}
+
+	private async pruneDiskCache(currentDirectory: string): Promise<void> {
+		while (pendingCachePrunes.has(this.cacheDir)) await pendingCachePrunes.get(this.cacheDir)
+		const pruning = this.pruneDiskCacheEntries(currentDirectory)
+		pendingCachePrunes.set(this.cacheDir, pruning)
+		try {
+			await pruning
+		} finally {
+			pendingCachePrunes.delete(this.cacheDir)
+		}
+	}
+
+	private async pruneDiskCacheEntries(currentDirectory: string): Promise<void> {
+		const directoryEntries = await fs.promises.readdir(this.cacheDir, { withFileTypes: true })
+		for (const entry of directoryEntries) {
+			if (entry.isDirectory() && /^stage-[a-f0-9]{32}$/.test(entry.name)) {
+				await this.removeUnusedCacheDirectory(path.join(this.cacheDir, entry.name))
+			}
+		}
+		const entries = directoryEntries
+			.filter((entry) => entry.isDirectory() && /^(?:tool-[a-f0-9]{32}|[a-f0-9]{16})$/.test(entry.name))
+			.map((entry) => path.join(this.cacheDir, entry.name))
+		if (entries.length <= MAX_COMPILED_SOURCES) return
+		const candidates: Array<{ directory: string; modified: number }> = []
+		for (const directory of entries) {
+			if (
+				directory !== currentDirectory &&
+				!activeCacheDirectories.has(directory) &&
+				!pendingCacheGenerations.has(directory) &&
+				!retainedCacheDirectories.has(directory)
+			) {
+				candidates.push({ directory, modified: (await fs.promises.stat(directory)).mtimeMs })
+			}
+		}
+		candidates.sort((a, b) => a.modified - b.modified)
+		let remaining = entries.length - MAX_COMPILED_SOURCES
+		for (const { directory } of candidates) {
+			if (remaining <= 0) break
+			if (await this.removeUnusedCacheDirectory(directory)) remaining--
+		}
+	}
+
+	private async removeUnusedCacheDirectory(directory: string): Promise<boolean> {
+		if (
+			activeCacheDirectories.has(directory) ||
+			pendingCacheGenerations.has(directory) ||
+			retainedCacheDirectories.has(directory)
 		)
-
-		// Copy .env files from the tool's source directory to the tool-specific cache directory.
-		// This allows tools that use dotenv with __dirname to find their .env files,
-		// while ensuring different tools' .env files don't overwrite each other.
-		this.copyEnvFiles(toolDir, toolCacheDir)
-
-		this.tsCache.set(cacheKey, tempFile)
-		return import(pathToFileURL(tempFile).href)
+			return false
+		const removal = fs.promises.rm(directory, { recursive: true, force: true })
+		pendingCacheRemovals.set(directory, removal)
+		try {
+			await removal
+			return true
+		} finally {
+			pendingCacheRemovals.delete(directory)
+		}
 	}
 
 	/**
-	 * Copy .env files from the tool's source directory to the tool-specific cache directory.
-	 * This allows tools that use dotenv with __dirname to find their .env files,
-	 * while ensuring different tools' .env files don't overwrite each other.
-	 *
-	 * @param toolDir - The directory containing the tool source files
-	 * @param destDir - The tool-specific cache directory to copy .env files to
+	 * Capture exactly the env files belonging to this generation, including deletions between refreshes.
 	 */
-	private copyEnvFiles(toolDir: string, destDir: string): void {
-		try {
-			const files = fs.readdirSync(toolDir)
-			const envFiles = files.filter((f) => f === ".env" || f.startsWith(".env."))
-
-			for (const envFile of envFiles) {
-				const srcPath = path.join(toolDir, envFile)
-				const destPath = path.join(destDir, envFile)
-
-				// Only copy if source is a file (not a directory).
-				const stat = fs.statSync(srcPath)
-				if (stat.isFile()) {
-					fs.copyFileSync(srcPath, destPath)
-					console.log(`[CustomToolRegistry] copied ${envFile} to tool cache directory`)
-				}
-			}
-		} catch (error) {
-			// Non-fatal: log but don't fail if we can't copy env files.
-			console.warn(
-				`[CustomToolRegistry] failed to copy .env files: ${error instanceof Error ? error.message : String(error)}`,
-			)
+	private async readEnvFiles(toolDir: string): Promise<Array<{ name: string; contents: Buffer }>> {
+		const names = (await fs.promises.readdir(toolDir))
+			.filter((name) => name === ".env" || name.startsWith(".env."))
+			.sort()
+		const files: Array<{ name: string; contents: Buffer }> = []
+		for (const name of names) {
+			const file = path.join(toolDir, name)
+			if ((await fs.promises.stat(file)).isFile())
+				files.push({ name, contents: await fs.promises.readFile(file) })
 		}
+		return files
 	}
 
 	/**

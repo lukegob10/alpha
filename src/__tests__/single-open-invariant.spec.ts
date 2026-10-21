@@ -5,6 +5,7 @@ import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { TaskSessionRegistry } from "../core/webview/TaskSessionRegistry"
 import { API } from "../extension/api"
 import * as ProfileValidatorMod from "../shared/ProfileValidator"
+import type { Task } from "../core/task/Task"
 
 // Mock Task class used by AlphaProvider to avoid heavy startup
 vi.mock("../core/task/Task", () => {
@@ -15,7 +16,7 @@ vi.mock("../core/task/Task", () => {
 		public apiConfiguration: any
 		public rootTask?: any
 		constructor(opts: any) {
-			this.taskId = opts.historyItem?.id ?? `task-${Math.random().toString(36).slice(2, 8)}`
+			this.taskId = opts.historyItem?.id ?? opts.taskId ?? `task-${Math.random().toString(36).slice(2, 8)}`
 			this.parentTask = opts.parentTask
 			this.apiConfiguration = opts.apiConfiguration ?? { apiProvider: "vertex" }
 			opts.onCreated?.(this)
@@ -33,32 +34,52 @@ describe("Single-open-task invariant", () => {
 		vi.restoreAllMocks()
 	})
 
-	const serializedTaskCreation = () => ({
-		taskCreationQueue: Promise.resolve(),
-		createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
-		assertProviderProfileAvailable: Reflect.get(AlphaProvider.prototype, "assertProviderProfileAvailable"),
-		getProviderSettingsForProfileName: Reflect.get(AlphaProvider.prototype, "getProviderSettingsForProfileName"),
-	})
-	const providerSettingsManager = () => ({
-		getModeConfigId: vi.fn().mockResolvedValue(undefined),
-		listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "vertex" }]),
-		getProfile: vi.fn(async () => ({
+	const serializedTaskCreation = (maxLiveTasks = 3) => {
+		const taskSessions = new TaskSessionRegistry(maxLiveTasks)
+		taskSessions.register({ taskId: "existing-1" } as Task)
+		return {
+			taskSessions,
+			taskCreationQueue: Promise.resolve(),
+			createTaskUnderCreationLock: Reflect.get(AlphaProvider.prototype, "createTaskUnderCreationLock"),
+			assertTaskAdmissionOpen: Reflect.get(AlphaProvider.prototype, "assertTaskAdmissionOpen"),
+			assertProviderProfileAvailable: Reflect.get(AlphaProvider.prototype, "assertProviderProfileAvailable"),
+			getProviderSettingsForProfileName: Reflect.get(
+				AlphaProvider.prototype,
+				"getProviderSettingsForProfileName",
+			),
+			removeTaskFromStack: vi.fn(async () => {
+				const task = taskSessions.getActiveTask()
+				if (task) taskSessions.unregister(task.taskId, task)
+			}),
+			addTaskToStack: vi.fn(async (task: Task, options: { focus?: boolean } = {}) => {
+				taskSessions.register(task, options)
+			}),
+		}
+	}
+	const providerSettingsManager = () => {
+		const getProfile = vi.fn(async (_options?: { name: string }) => ({
 			id: "default-profile",
 			name: "default",
 			apiProvider: "vertex",
 			consecutiveMistakeLimit: 0,
-		})),
-	})
+		}))
+		return {
+			getModeConfigId: vi.fn().mockResolvedValue(undefined),
+			listConfig: vi.fn(async () => [{ id: "default-profile", name: "default", apiProvider: "vertex" }]),
+			getProfile,
+			getAvailableProfile: vi.fn(async (name: string) => getProfile({ name })),
+		}
+	}
 
 	it("User-initiated create: closes existing before opening new", async () => {
 		// Allow profile
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
-		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
-		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
+		const creation = serializedTaskCreation(1)
+		const { removeTaskFromStack, addTaskToStack } = creation
 
 		const provider = {
-			...serializedTaskCreation(),
+			...creation,
 			// Simulate an existing task present in stack
 			taskStack: [{ taskId: "existing-1" }],
 			setValues: vi.fn(),
@@ -103,13 +124,12 @@ describe("Single-open-task invariant", () => {
 	it("Extension multi-session create: preserves existing live task", async () => {
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
-		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
-		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
+		const creation = serializedTaskCreation()
+		const { removeTaskFromStack, addTaskToStack } = creation
 
 		const provider = {
-			...serializedTaskCreation(),
+			...creation,
 			taskStack: [{ taskId: "existing-1" }],
-			taskSessions: { canCreateTask: vi.fn(() => true) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
@@ -153,12 +173,12 @@ describe("Single-open-task invariant", () => {
 
 	it("Extension multi-session create: blocks when live task cap is reached", async () => {
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
-		const addTaskToStack = vi.fn()
+		const creation = serializedTaskCreation(1)
+		const { addTaskToStack } = creation
 
 		const provider = {
-			...serializedTaskCreation(),
+			...creation,
 			taskStack: [{ taskId: "existing-1" }],
-			taskSessions: { canCreateTask: vi.fn(() => false) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({

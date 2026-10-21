@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { HistoryItem, ProviderSettingsEntry } from "@alpha-code/types"
+import type { ExtensionContext } from "vscode"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"
+import { ProviderSettingsManager, ProviderProfileUnavailableError } from "../../config/ProviderSettingsManager"
 
 const { constructTask } = vi.hoisted(() => ({ constructTask: vi.fn() }))
 
@@ -43,6 +45,12 @@ const createProvider = (entries: ProviderSettingsEntry[]) => {
 		},
 		providerSettingsManager: {
 			listConfig,
+			getAvailableProfile: vi.fn(async (name: string) => {
+				const entry = entries.find((candidate) => candidate.name === name)
+				if (entry?.availability)
+					throw new ProviderProfileUnavailableError(entry.availability, entry, entry.invalidFields)
+				return entry ? { apiProvider: "openai" } : undefined
+			}),
 			getModeConfigId: vi.fn(async () => "broken-id"),
 			getProfile: vi.fn(async () => ({ id: "broken-id", name: "Broken", apiProvider: "openai" })),
 		},
@@ -71,6 +79,43 @@ const history = (extra: Partial<HistoryItem> = {}): HistoryItem => ({
 })
 
 describe("unavailable provider profile admission", () => {
+	it("admits a fresh prompt with one saved-profile read when secret storage is slow", async () => {
+		vi.useFakeTimers()
+		try {
+			const { provider } = createProvider([])
+			const content = JSON.stringify({
+				currentApiConfigName: "Broken",
+				apiConfigs: { Broken: { id: "profile-id", apiProvider: "openai", openAiModelId: "saved-model" } },
+				modeApiConfigs: {},
+			})
+			const secrets = { get: vi.fn(async () => content), store: vi.fn(async () => undefined) }
+			const manager = new ProviderSettingsManager({ secrets } as unknown as ExtensionContext)
+			await manager.initialize()
+			secrets.get.mockClear()
+			secrets.get.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(content), 50)))
+			Object.assign(provider, { providerSettingsManager: manager })
+			const began = Date.now()
+			let admissionMs: number | undefined
+			const submission = provider.createTask("Inspect the startup path").then(
+				() => {
+					throw new Error("Expected the task replacement boundary")
+				},
+				(error: unknown) => {
+					expect(error).toBe(admitted)
+					admissionMs = Date.now() - began
+				},
+			)
+			await vi.advanceTimersByTimeAsync(100)
+			await submission
+			expect({ secretReads: secrets.get.mock.calls.length, admissionMs }).toEqual({
+				secretReads: 1,
+				admissionMs: 50,
+			})
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it.each(["invalid", "unsupported"] as const)(
 		"rejects a new task using an %s selected profile before replacing existing work",
 		async (availability) => {
@@ -180,9 +225,9 @@ describe("unavailable provider profile admission", () => {
 	})
 
 	it("propagates profile-storage failure without replacing the current task", async () => {
-		const { provider, listConfig, removeTaskFromStack } = createProvider([])
+		const { provider, removeTaskFromStack } = createProvider([])
 		const storageFailure = new Error("Profile storage is unavailable")
-		listConfig.mockRejectedValueOnce(storageFailure)
+		vi.mocked(provider.providerSettingsManager.getAvailableProfile).mockRejectedValueOnce(storageFailure)
 
 		await expect(provider.createTask("Keep the current task safe")).rejects.toBe(storageFailure)
 		expect(removeTaskFromStack).not.toHaveBeenCalled()
@@ -190,9 +235,7 @@ describe("unavailable provider profile admission", () => {
 
 	it("uses the selected profile instead of stale cached settings left by a failed projection", async () => {
 		const { provider, removeTaskFromStack } = createProvider([{ id: "broken-id", name: "Broken" }])
-		vi.mocked(provider.providerSettingsManager.getProfile).mockResolvedValueOnce({
-			id: "broken-id",
-			name: "Broken",
+		vi.mocked(provider.providerSettingsManager.getAvailableProfile).mockResolvedValueOnce({
 			apiProvider: "vscode-lm",
 			vsCodeLmModelSelector: { id: "selected-model" },
 		})
@@ -208,9 +251,7 @@ describe("unavailable provider profile admission", () => {
 
 	it("keeps explicit API provider overrides on top of the selected saved profile", async () => {
 		const { provider, removeTaskFromStack } = createProvider([{ id: "broken-id", name: "Broken" }])
-		vi.mocked(provider.providerSettingsManager.getProfile).mockResolvedValueOnce({
-			id: "broken-id",
-			name: "Broken",
+		vi.mocked(provider.providerSettingsManager.getAvailableProfile).mockResolvedValueOnce({
 			apiProvider: "openai",
 			openAiModelId: "saved-model",
 			openAiBaseUrl: "https://example.invalid/provider",

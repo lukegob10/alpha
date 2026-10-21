@@ -1,0 +1,385 @@
+{
+	"status": "startup_followup_complete_receipts_verified",
+	"ownerReport": "docs/first-prompt-latency-2026-10-20.md",
+	"referenceSmoke": {
+		"source": "artifacts/first-prompt-smoke-1380.log",
+		"expectedVersion": "1.138.0",
+		"expectedFiles": 13,
+		"totalPassed": 47,
+		"allPassed": true,
+		"suites": [
+			{
+				"file": "extension.test.js",
+				"runId": "eff3b2c7-e69d-4e8f-a8f7-e688329d58aa",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 5,
+					"passed": 5,
+					"pending": 0,
+					"executed": 5,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "modes.test.js",
+				"runId": "637241b9-3d15-4a87-939b-5c09fe52a9df",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 2,
+					"passed": 2,
+					"pending": 0,
+					"executed": 2,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "approval-mode.test.js",
+				"runId": "471cdb5e-a607-4333-95ab-ad30b88e58af",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 17,
+					"passed": 17,
+					"pending": 0,
+					"executed": 17,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "command-path-approval.test.js",
+				"runId": "17cc31bb-e8fc-407a-b041-4b4b49e89e6d",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "command-file-diff.test.js",
+				"runId": "4a758129-9f90-482c-a9b5-adf18ac99de4",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "tool-search.acceptance.test.js",
+				"runId": "1f845d4c-5e92-4445-b748-9b8207fdbce6",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "alpha-tickets.acceptance.test.js",
+				"runId": "e2016248-37d1-4515-a9f8-465a22c6f138",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "request-user-input-async.test.js",
+				"runId": "66618ff8-ff13-4a7d-adac-37a0ddaad018",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "update-plan.acceptance.test.js",
+				"runId": "3f9b2576-833d-4285-9aea-e33940b42b7f",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "view-image.acceptance.test.js",
+				"runId": "3981be9e-2273-4d67-ac99-cf3dd690ec92",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 1,
+					"passed": 1,
+					"pending": 0,
+					"executed": 1,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "compaction-acceptance.test.js",
+				"runId": "921e634f-528f-40c5-a8b4-fdb558d8ff86",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 6,
+					"passed": 6,
+					"pending": 0,
+					"executed": 6,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "vscode-lm-contract.test.js",
+				"runId": "76d880a0-c637-4d90-abd2-3e72237e3691",
+				"version": "1.138.0",
+				"provider": "vscode-lm-fixture",
+				"status": "passed",
+				"counts": {
+					"total": 8,
+					"passed": 8,
+					"pending": 0,
+					"executed": 8,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "background-command-completion.test.js",
+				"runId": "b1a5f9a7-7c1f-4ece-bc30-3d5af828b972",
+				"version": "1.138.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 2,
+					"passed": 2,
+					"pending": 0,
+					"executed": 2,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			}
+		]
+	},
+	"minimumCompatibilityRunner": {
+		"source": "artifacts/first-prompt-compatibility-1250.log",
+		"expectedVersion": "1.125.0",
+		"expectedFiles": 4,
+		"totalPassed": 19,
+		"allPassed": true,
+		"suites": [
+			{
+				"file": "extension.test.js",
+				"runId": "d9dcba4e-401e-4d3a-b53f-c9289b685e31",
+				"version": "1.125.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 5,
+					"passed": 5,
+					"pending": 0,
+					"executed": 5,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "modes.test.js",
+				"runId": "03c76121-9ccb-4376-9485-7d995ed5a34d",
+				"version": "1.125.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 2,
+					"passed": 2,
+					"pending": 0,
+					"executed": 2,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "storage-recovery.test.js",
+				"runId": "1189b565-7c22-4b06-b0f3-4f324a57c485",
+				"version": "1.125.0",
+				"provider": "scripted",
+				"status": "passed",
+				"counts": {
+					"total": 4,
+					"passed": 4,
+					"pending": 0,
+					"executed": 4,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			},
+			{
+				"file": "vscode-lm-contract.test.js",
+				"runId": "b2631115-ecf7-45c0-95d8-826d62197f3b",
+				"version": "1.125.0",
+				"provider": "vscode-lm-fixture",
+				"status": "passed",
+				"counts": {
+					"total": 8,
+					"passed": 8,
+					"pending": 0,
+					"executed": 8,
+					"failed": 0
+				},
+				"requireAllTests": true,
+				"hostExitObserved": true,
+				"exitCode": 0
+			}
+		]
+	},
+	"before": {
+		"source": "artifacts/first-prompt-baseline.log",
+		"hostVersion": "1.138.0",
+		"boundary": "host task creation to injected provider entry; composer transport and renderer paint excluded",
+		"loggedConditions": "same workspace and process; first scoped catalog cold, subsequent catalogs warm; no pacing",
+		"samples": [
+			{
+				"sample": 0,
+				"taskCreatedMs": 11.305099999999584,
+				"firstRequestMs": 769.0229999999992
+			},
+			{
+				"sample": 1,
+				"taskCreatedMs": 5.337199999999939,
+				"firstRequestMs": 861.6966999999995
+			},
+			{
+				"sample": 2,
+				"taskCreatedMs": 4.894500000000335,
+				"firstRequestMs": 470.8755000000001
+			}
+		]
+	},
+	"after": {
+		"source": "artifacts/first-prompt-after.log",
+		"hostVersion": "1.138.0",
+		"boundary": "host task creation to injected provider entry; composer transport and renderer paint excluded",
+		"loggedConditions": "fresh task/catalog per sample; same workspace/process; warm filesystem caches; no pacing",
+		"samples": [
+			{
+				"sample": 0,
+				"taskCreatedMs": 13.59940000000006,
+				"firstRequestMs": 657.6060000000007
+			},
+			{
+				"sample": 1,
+				"taskCreatedMs": 4.554599999999482,
+				"firstRequestMs": 288.0618999999997
+			},
+			{
+				"sample": 2,
+				"taskCreatedMs": 5.3846999999996115,
+				"firstRequestMs": 486.6994000000004
+			}
+		]
+	},
+	"conditionsCorrection": "Each task releases its scoped skills catalog; each sample discovers a fresh catalog while filesystem caches remain warm. The original baseline metadata described later catalogs as warm incorrectly.",
+	"storageBeforeAfter": {
+		"injectedDelayPerReadMs": 50,
+		"before": {
+			"reads": 2,
+			"ms": 100
+		},
+		"after": {
+			"reads": 1,
+			"ms": 50
+		}
+	},
+	"renderedAdmission": {
+		"schemaVersion": 1,
+		"hostVersion": "1.138.0",
+		"visibleBeforeAdmissionCompleted": true,
+		"rejectedDraftRestored": true,
+		"observedKeyToVisibleMs": 18.199999809265137,
+		"boundary": "renderer clock before trusted Enter to polling observation; includes CDP/observation overhead",
+		"workload": "one prompt with saved-profile storage held by a controlled barrier; no provider request"
+	},
+	"renderedScreenshot": "artifacts/directory-review-2026-10-20/startup-first-prompt-pending.png",
+	"limitations": [
+		"The minimum-host runner reuses rebuilt extension/webview outputs rather than executing the full build wrapper again.",
+		"The earlier minimum-host overlap failure remains unexplained; the startup repair is not established as its cause or fix.",
+		"Both provider-entry samples bypass saved-profile lookup and exclude composer transport, renderer paint, and real provider/network latency.",
+		"Three samples per series do not establish a general speedup or diagnose multi-second live delays."
+	]
+}

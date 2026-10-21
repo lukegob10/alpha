@@ -1,15 +1,12 @@
 import { execa, ExecaError } from "execa"
-import psTree from "ps-tree"
 import process from "process"
-import { execFile, type ExecFileException } from "node:child_process"
 import { captureRejectionSymbol } from "node:events"
 
 import type { AlphaTerminal, DirectTerminalCommand, ExitCodeDetails } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
+import { getDescendantPids, terminateProcessTree } from "../../utils/processTree"
 
-const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
-const PROCESS_SETTLEMENT_POLL_MS = 25
 const PID_UPDATE_TIMEOUT_MS = 1_000
 const MAX_PENDING_LINE_OBSERVERS = 16
 
@@ -124,7 +121,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				if (!directCommand && this.pid && process.platform !== "win32") {
 					this.pidUpdatePromise = new Promise<void>((resolve) => {
 						setTimeout(() => {
-							void this.getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
+							void getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
 								.then((children) => {
 									const actualPid = children[0]
 									if (Number.isInteger(actualPid) && actualPid > 0) this.pid = actualPid
@@ -309,7 +306,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		)
 		const targets = new Set(roots)
 		for (const root of roots) {
-			for (const descendant of await this.getDescendantPids(root)) targets.add(descendant)
+			for (const descendant of await getDescendantPids(root)) targets.add(descendant)
 		}
 		for (const pid of [...targets].reverse()) {
 			try {
@@ -333,176 +330,11 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 	private async terminateProcessTree(): Promise<void> {
 		const subprocess = this.subprocess
 		if (!subprocess) return
-
 		await this.pidUpdatePromise
 		const roots = [this.pid, subprocess.pid].filter(
 			(pid, index, values): pid is number => typeof pid === "number" && pid > 0 && values.indexOf(pid) === index,
 		)
-		if (roots.length === 0) return
-
-		if (process.platform === "win32") {
-			// taskkill performs its own tree snapshot and forcefully terminates the
-			// complete tree. Unlike ps-tree@1.x, it does not depend on WMIC.
-			const results = await Promise.allSettled(roots.map((pid) => this.terminateWindowsProcessTree(pid)))
-			this.throwTerminationErrors(
-				results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
-			)
-			return
-		}
-
-		const descendants = new Set<number>()
-		const discoveryResults = await Promise.allSettled(
-			roots.map(async (rootPid) => {
-				for (const childPid of await this.getDescendantPids(rootPid)) {
-					if (!roots.includes(childPid)) descendants.add(childPid)
-				}
-			}),
-		)
-		const errors: unknown[] = discoveryResults.flatMap((result) =>
-			result.status === "rejected" ? [result.reason] : [],
-		)
-
-		// Snapshot every descendant before terminating its parents so re-parenting
-		// cannot hide a process between discovery and delivery of SIGKILL.
-		const terminatedPids: number[] = []
-		for (const pid of [...descendants].reverse()) {
-			try {
-				this.killPid(pid)
-				terminatedPids.push(pid)
-			} catch (error) {
-				errors.push(error)
-			}
-		}
-		for (const pid of roots) {
-			try {
-				this.killPid(pid)
-				terminatedPids.push(pid)
-			} catch (error) {
-				errors.push(error)
-			}
-		}
-		try {
-			await this.waitForPosixProcessSettlement(terminatedPids)
-		} catch (error) {
-			errors.push(error)
-		}
-		this.throwTerminationErrors(errors)
-	}
-
-	private async waitForPosixProcessSettlement(pids: readonly number[]): Promise<void> {
-		if (pids.length === 0) return
-		const deadline = Date.now() + PROCESS_TERMINATION_TIMEOUT_MS
-		while (true) {
-			const remainingMs = deadline - Date.now()
-			if (remainingMs <= 0) throw new Error("Timed out waiting for the terminated process tree to stop")
-			const runningPids = await new Promise<number[]>((resolve, reject) => {
-				execFile(
-					"ps",
-					["-o", "pid=,stat=", "-p", pids.join(",")],
-					{ timeout: remainingMs, maxBuffer: 1024 * 1024 },
-					(error, stdout, stderr) => {
-						// ps exits 1 with no rows when every selected PID has disappeared.
-						if (
-							error &&
-							!(error.code === 1 && !error.killed && !error.signal && !stdout.trim() && !stderr.trim())
-						) {
-							reject(new Error("Failed to inspect terminated process-tree state", { cause: error }))
-							return
-						}
-						const running: number[] = []
-						for (const row of stdout.trim().split("\n").filter(Boolean)) {
-							const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(row)
-							if (!match || !pids.includes(Number(match[1]))) {
-								reject(new Error("Invalid terminated process-tree state from ps"))
-								return
-							}
-							// A zombie is already dead; its parent/init owns reaping the PID.
-							// Signal delivery alone does not establish this exit boundary.
-							if (!/^[ZXx]/.test(match[2])) running.push(Number(match[1]))
-						}
-						resolve(running)
-					},
-				)
-			})
-			if (runningPids.length === 0) return
-			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(PROCESS_SETTLEMENT_POLL_MS, remainingMs)))
-		}
-	}
-
-	private throwTerminationErrors(errors: readonly unknown[]): void {
-		if (errors.length === 0) return
-		if (errors.length === 1) throw errors[0]
-		throw new AggregateError(errors, `Failed to terminate ${errors.length} process-tree targets`)
-	}
-
-	private terminateWindowsProcessTree(pid: number): Promise<void> {
-		return new Promise((resolve, reject) => {
-			execFile(
-				"taskkill.exe",
-				["/PID", String(pid), "/T", "/F"],
-				{ windowsHide: true, timeout: PROCESS_TERMINATION_TIMEOUT_MS },
-				(error: ExecFileException | null) => {
-					if (!error) {
-						resolve()
-						return
-					}
-					// taskkill returns an error when a prior tree kill already removed
-					// this root. Missing taskkill and failures against a still-live root
-					// are real cleanup failures and must remain observable.
-					const launcherOrTimeoutFailure = error.code === "ENOENT" || error.killed || error.signal
-					if (!launcherOrTimeoutFailure && !this.isProcessAlive(pid)) {
-						resolve()
-						return
-					}
-					reject(new Error(`taskkill failed for PID ${pid}: ${error.message}`, { cause: error }))
-				},
-			)
-		})
-	}
-
-	private isProcessAlive(pid: number): boolean {
-		try {
-			process.kill(pid, 0)
-			return true
-		} catch (error) {
-			return (error as NodeJS.ErrnoException).code !== "ESRCH"
-		}
-	}
-
-	private getDescendantPids(pid: number, timeoutMs = PROCESS_TERMINATION_TIMEOUT_MS): Promise<number[]> {
-		return new Promise((resolve, reject) => {
-			let settled = false
-			const timeout = setTimeout(() => {
-				settled = true
-				reject(new Error(`Timed out discovering the process tree for PID ${pid}`))
-			}, timeoutMs)
-			psTree(pid, (error, children) => {
-				if (settled) return
-				settled = true
-				clearTimeout(timeout)
-				if (error) {
-					reject(new Error(`Failed to get process tree for PID ${pid}: ${error.message}`, { cause: error }))
-					return
-				}
-				resolve(
-					children
-						.map((child) => Number.parseInt(child.PID, 10))
-						.filter((childPid) => Number.isInteger(childPid) && childPid > 0),
-				)
-			})
-		})
-	}
-
-	private killPid(pid: number): void {
-		try {
-			if (!process.kill(pid, "SIGKILL")) throw new Error("process.kill returned false")
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ESRCH") return
-			throw new Error(
-				`Failed to kill process ${pid}: ${error instanceof Error ? error.message : String(error)}`,
-				{ cause: error },
-			)
-		}
+		await terminateProcessTree(roots, { allowMissingWindowsRoots: true })
 	}
 
 	public override hasUnretrievedOutput() {
