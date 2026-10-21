@@ -7,7 +7,6 @@
 	},
 	"scripts": {
 		"harness": "node scripts/harness/run.mjs",
-		"diagnostic:catalog": "node artifacts/harness/release-3.2.7/windows-native-run.mjs",
 		"harness:matrix": "node scripts/harness/run.mjs matrix",
 		"harness:acceptance": "node scripts/harness/local-acceptance.mjs",
 		"preinstall": "node scripts/bootstrap.mjs",
