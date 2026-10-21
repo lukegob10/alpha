@@ -62,6 +62,12 @@ explicitly closed. The tests make no external network requests.
 - Repository tooling: **293 passed**, including the five new regressions and webview build/preload coverage.
 - Root type checks: **nine tasks passed**, all freshly executed.
 - Frozen installation: **passed** with supply-chain policy validation and no dependency resolution step.
+- Windows VSIX: **packaged and verified**, including 1,817 entries and 16 document assets matching source; installed
+  successfully into an isolated VS Code **1.125.0** profile.
+- Exact VS Code **1.138.0** smoke: **47 passed / 13 suites** with the updated dependencies.
+- The additional local **1.125.0** compatibility run was **blocked before preflight** by VS Code's Windows update lock
+  (`Code is currently being updated`); a running CodeSetup process confirmed the environmental blocker. Installation is
+  not a substitute for this gate. Committed-source CI and release validation must run the exact minimum-host checks.
 
 Logs are retained under the ignored `artifacts/harness/release-3.2.7/` directory. These focused results do not replace
 final committed-source CI, exact-host compatibility, packaging, or public-download verification.

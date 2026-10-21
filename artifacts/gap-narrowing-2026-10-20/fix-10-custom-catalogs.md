@@ -128,3 +128,39 @@ At this checkpoint **the first stalled await and root cause remain unproven**. N
 The first two hosted diagnostic runs also passed: `39605450917` / job `119240362153` (default workers/verbose) and `39605627689` / job `119240965043` (normal harness worker environment/dot+JSON). Each reported **237 passed, 8 platform skips / 17 files**; the latter took 164.24 seconds on Node 24.21.0, Linux, four available CPUs. Both traces completed all **102 compiler** and **114 native import** pairs. They did not capture the original failure.
 
 To reduce instrumentation effects before further hosted sampling, the diagnostic helper now keeps only the latest **512 stage events** in a circular buffer. It performs no per-event console/RPC writes and flushes after a test failure or suite completion. The exact original `return import(url)` adoption path is retained; completion is recorded after the caller's already-existing await, with no added await. A selected Linux multi-directory test passed in 22.72 seconds and emitted one 240-event completion buffer with all eight compilation/import completions. Core types, focused ESLint, formatting and diff checks passed. Additional diagnostics remain explicitly outside release-gate evidence until the actual stalled stage is captured and corrected.
+
+## Final native-process fixture correction (2026-10-21)
+
+The lower-impact buffered hosted run `39607311403`, job `119246743635`, at **`9eb0579c184a9811e4bcc1e2f722384e254e902d`** completed three sequential samples using the normal harness worker environment, `ALPHA_HARNESS_REPOSITORY_ROOT`, and dot/JSON reporters. Each reported **237 passed, 8 platform skips / 17 files**; durations were **109.64**, **105.85**, and **108.67 seconds**. Each recorded 3,132 stage events and no failure flush. Together with the two earlier hosted samples and exact-Node Linux runs, this investigation did not reproduce a stalled await. These manual diagnostic samples are not release gates and do not establish a production root cause.
+
+The final correction therefore addresses the demonstrated fixture mismatch only. `custom-tool-registry.spec.ts` compiles the current registry source once, then runs each of its sixteen original directory-loading/cache/order/staleness cases in a fresh **native Node process**, using the current test host's `process.execPath`. Basic registration, lookup, validation and serialization tests continue to import the source directly through Vitest. Loading an ESM bundle with `createRequire` inside the Vitest worker was insufficient isolation because the worker still has process-wide module hooks. Extension execution does not have those hooks; a child process exercises the actual native module-loader boundary without changing the production registry.
+
+Every original test title and timeout is unchanged. An AST comparison against merged main `4f59e6084fda1463c08831a7a0ce4f99d108cdfa` found **34 original tests preserved**, no changed or missing deadlines, and all **64 original assertions preserved per case** as equivalent Vitest or `node:assert/strict` assertions. The native cases still check TypeScript/default/named exports, the exact invalid-definition error, absent directories and empty requests, skipped non-tool exports, legacy `args`, cache clear/reload, both directory precedence orders, duplicate loaded names, unchanged-source catalog restoration, and mixed stale/warm loads. The existing native encoded-path/cache test still covers repeated forced loads, real schema parsing and a new registry sharing the cache. The sixteen catalog regressions continue to cover concurrent workspace ownership, captured generations, refresh/recovery and hard lifetime bounds.
+
+The parent owns the suite's temporary registry bundle and each child's private cache directory. `finally` removes those resources after the child closes. Each child receives the existing Vitest test's `AbortSignal` through Execa's `cancelSignal`, so the original deadline cancels the process rather than leaving a native scenario running. No retry, added timeout, test skip, private-method spy, production runtime edit or dependency change is part of this correction.
+
+A new deterministic public-behavior regression registers a test-worker `module.registerHooks` loader hook that rejects generated tool bundles, then asserts that the fixture loads the expected tool and reports only the intended invalid definition. Against the former in-worker native fixture it was **red: 1 failed / 34 filtered**, 11.07 seconds, with six intercepted tool imports and no `simple` tool. With the native child fixture it was **green: 1 passed / 34 filtered**, 10.36 seconds. This proves process isolation from worker hooks; it does **not** prove that those hooks caused the intermittent hosted timeout.
+
+Temporary `registry-stage-trace.ts` and `registry-stall-probe.mjs` are removed. The parent restored `.github/workflows/code-qa.yml` byte-for-byte to the normal main-branch workflow. No production registry or compiler source changed in this final follow-up. The earlier standalone `registry-native-linux-probe.mjs` remains as durable native-workload evidence.
+
+Final validation against the fixture correction on security-updated baseline **`1be4ef984796435f12daf7a0d0734c2049638b93`**:
+
+- Windows `pnpm --filter @alpha-code/core test src/custom-tools/__tests__/custom-tool-registry.spec.ts src/custom-tools/__tests__/custom-tool-registry.catalog.spec.ts --maxWorkers=1`: **51 passed / 2 files**, 212.19 seconds. This includes the new hook-isolation regression and all sixteen native catalog regressions.
+- Exact **Node 24.21.0 Linux x64**, full core, normal dot/JSON reporters and `--maxWorkers=2`: **238 passed, 8 platform skips / 17 files**, 219.17 seconds. The eight skips are existing platform-gated assertions; the fixture correction adds no skip. Linux catalog resource/permission assertions ran. Saved full output and JSON: `artifacts/harness/release-3.2.7/wsl-node24-final-native-core.log` and `wsl-node24-final-native-core.json`.
+- Core `check-types`: **passed**, 6.02 seconds. Package-scoped `pnpm --dir packages/core exec eslint src/custom-tools/__tests__/custom-tool-registry.spec.ts --max-warnings=0`: **passed**, 3.54 seconds. An initial lint invocation from the repository root did not find a flat config; the package-scoped command above is the completed lint check.
+- Touched-file Prettier and `git diff --check`: **passed**. All pnpm commands set `PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=warn`.
+
+The final Linux command ran from `/mnt/f/roo-fork/Alpha-Code/packages/core` with the isolated tool paths above and no diagnostic tracing:
+
+```sh
+env NODE_PATH=/tmp/alpha-registry-linux-24/node_modules \
+  ESBUILD_BINARY_PATH=/tmp/alpha-registry-linux-24/esbuild/bin/esbuild \
+  VITEST_MAX_WORKERS=2 VITEST_MAX_FORKS=2 VITEST_MIN_FORKS=1 \
+  VITEST_MAX_THREADS=2 VITEST_MIN_THREADS=1 CI=1 GITHUB_ACTIONS=1 \
+  /tmp/alpha-registry-linux-24/node-v24.21.0-linux-x64/bin/node \
+  /mnt/f/roo-fork/Alpha-Code/packages/core/node_modules/vitest/vitest.mjs run \
+  --maxWorkers=2 --reporter=dot --reporter=json \
+  --outputFile=/tmp/alpha-registry-linux-24/final-native-core.json
+```
+
+Final owned files are the registry spec, this report, and deletion of the two temporary stage-diagnostic files. The normal workflow restoration and security follow-up belong to the coordinating agent. Production registry/compiler source has no diff. Source is stable after the completed focused/full-core, type, lint, formatting and diff checks; only this evidence report was amended afterward. The coordinating agent owns normal hosted CI and release gates; publication remains dependent on those gates. The precise cause of the original intermittent hosted hang remains unproven, and arbitrary user module graphs are not claimed deadlock-free.
