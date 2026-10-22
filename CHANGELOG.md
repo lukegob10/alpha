@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.2.8
+
+### Patch Changes
+
+- Open captured file diffs from Review and per-file change counts, and keep diff requests available during compaction.
+- Show visible feedback when a diff cannot open, support long file paths, and retain inline review for older or large change sets.
+- Initialize each chat once and share concurrent configuration loads while preserving invalidation and retry behavior.
+- Load document readers, code highlighting, and error details when needed to reduce repeated startup work.
+- Update the extension version and in-app release announcement together for Alpha 3.2.8. Windows x64 packaging, the VS Code 1.125.0 minimum, and the exact 1.138.0 reference host remain unchanged.
+
+### Validation Notes
+
+- Focused startup and diff regressions, type checks, and the exact VS Code 1.138.0 smoke gate passed locally. Release CI validates the final versioned source and package separately.
+- The local exact VS Code 1.125.0 compatibility launch was blocked by the global Windows VS Code update lock before extension activation; no passing minimum-host result is claimed.
+
 ## 3.2.7
 
 ### Patch Changes

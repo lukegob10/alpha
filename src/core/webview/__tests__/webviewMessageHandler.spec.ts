@@ -8,6 +8,10 @@ vi.mock("../../../integrations/misc/open-file", () => ({
 	openFile: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock("../../../integrations/editor/openDiff", () => ({
+	openDiff: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
 	AnthropicVertex: vi.fn(),
 }))
@@ -32,6 +36,7 @@ import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
+import { openDiff } from "../../../integrations/editor/openDiff"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import type { Task } from "../../task/Task"
 import * as taskPersistence from "../../task-persistence"
@@ -922,6 +927,56 @@ import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
 beforeEach(() => {
 	vi.mocked(mockAlphaProvider.canAcceptTaskInput).mockReturnValue(true)
+})
+
+describe("webviewMessageHandler - captured diff review", () => {
+	const payload = {
+		title: "Alpha Diff: src/file.ts",
+		files: [{ path: "src/file.ts", originalContent: "before\n", finalContent: "after\n" }],
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(openDiff).mockResolvedValue(undefined)
+	})
+
+	it("opens captured snapshots without requiring a live task or reading workspace files", async () => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "openDiff", payload })
+
+		expect(openDiff).toHaveBeenCalledExactlyOnceWith(payload)
+		expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.getLiveTask).not.toHaveBeenCalled()
+		expect(fs.readFile).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		{ ...payload, files: [] },
+		{ ...payload, title: "x".repeat(257) },
+		{ ...payload, files: Array.from({ length: 129 }, () => payload.files[0]) },
+	])("reports an invalid review request instead of silently ignoring it", async (invalidPayload) => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "openDiff", payload: invalidPayload })
+
+		expect(openDiff).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledExactlyOnceWith(t("common:errors.invalid_diff"))
+		expect(mockAlphaProvider.log).toHaveBeenCalledExactlyOnceWith(
+			"[openDiff] Rejected invalid captured diff request",
+		)
+	})
+
+	it("reports a failed editor command without exposing snapshots embedded in the error URI", async () => {
+		const secretSnapshot = Buffer.from("private file contents").toString("base64")
+		vi.mocked(openDiff).mockRejectedValueOnce(new Error(`Failed to resolve cline-diff:/file?${secretSnapshot}`))
+
+		await expect(webviewMessageHandler(mockAlphaProvider, { type: "openDiff", payload })).resolves.toBeUndefined()
+
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledExactlyOnceWith(t("common:errors.could_not_open_diff"))
+		expect(mockAlphaProvider.log).toHaveBeenCalledExactlyOnceWith(
+			"[openDiff] VS Code could not open the captured diff",
+		)
+		expect(JSON.stringify(vi.mocked(mockAlphaProvider.log).mock.calls)).not.toContain(secretSnapshot)
+		expect(JSON.stringify(vi.mocked(vscode.window.showErrorMessage).mock.calls)).not.toContain(secretSnapshot)
+	})
 })
 
 describe("webviewMessageHandler - implement plan", () => {

@@ -635,6 +635,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
 	const shellSnapshotRef = useRef<Record<string, unknown>>()
 	const shellValueRef = useRef<ExtensionStateContextType>()
+	const didAnnounceLaunch = useRef(false)
 
 	const setListApiConfigMeta = useCallback(
 		(value: ProviderSettingsEntry[]) => setState((prevState) => ({ ...prevState, listApiConfigMeta: value })),
@@ -1064,6 +1065,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	}, [handleMessage])
 
 	useEffect(() => {
+		if (didAnnounceLaunch.current) return
+		didAnnounceLaunch.current = true
+		// The state listener above owns readiness, including React's development effect replay.
 		vscode.postMessage({ type: "webviewDidLaunch" })
 	}, [])
 

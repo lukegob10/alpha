@@ -245,9 +245,6 @@ const App = () => {
 		}
 	}, [telemetrySetting, telemetryKey, machineId, didHydrateState])
 
-	// Tell the extension that we are ready to receive messages.
-	useEffect(() => vscode.postMessage({ type: "webviewDidLaunch" }), [])
-
 	useEffect(() => {
 		let lastFocused: boolean | undefined
 		const reportFocus = (focused: boolean) => {

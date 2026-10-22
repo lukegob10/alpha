@@ -1,79 +1,38 @@
 import i18next from "i18next"
-
-// Build translations object
-const translations: Record<string, Record<string, any>> = {}
-
-// Determine if running in test environment
-const isTestEnv = process.env.NODE_ENV === "test"
-
-// Load translations based on environment
-if (!isTestEnv) {
-	try {
-		// Dynamic imports to avoid browser compatibility issues
-		const fs = require("fs")
-		const path = require("path")
-
-		const localesDir = path.join(__dirname, "i18n", "locales")
-
-		try {
-			// Find all language directories
-			const languageDirs = fs.readdirSync(localesDir, { withFileTypes: true })
-
-			const languages = languageDirs
-				.filter(
-					(dirent: { isDirectory: () => boolean; name: string }) =>
-						dirent.isDirectory() && !dirent.name.startsWith("."),
-				)
-				.map((dirent: { name: string }) => dirent.name)
-
-			// Process each language
-			languages.forEach((language: string) => {
-				const langPath = path.join(localesDir, language)
-
-				// Find all JSON files in the language directory
-				const files = fs
-					.readdirSync(langPath, { withFileTypes: true })
-					.filter(
-						(dirent: { isFile: () => boolean; name: string }) =>
-							dirent.isFile() && dirent.name.endsWith(".json") && !dirent.name.startsWith("."),
-					)
-					.map((dirent: { name: string }) => dirent.name)
-
-				// Initialize language in translations object
-				if (!translations[language]) {
-					translations[language] = {}
-				}
-
-				// Process each namespace file
-				files.forEach((file: string) => {
-					const namespace = path.basename(file, ".json")
-					const filePath = path.join(langPath, file)
-
-					try {
-						// Read and parse the JSON file
-						const content = fs.readFileSync(filePath, "utf8")
-						translations[language][namespace] = JSON.parse(content)
-					} catch (error) {
-						console.error(`Error loading translation file ${filePath}:`, error)
-					}
-				})
-			})
-
-			console.log(`Loaded translations for languages: ${Object.keys(translations).join(", ")}`)
-		} catch (dirError) {
-			console.error(`Error processing directory ${localesDir}:`, dirError)
-		}
-	} catch (error) {
-		console.error("Error loading translations:", error)
-	}
-}
+import common from "./locales/en/common.json"
+import embeddings from "./locales/en/embeddings.json"
+import htmlArtifactKit from "./locales/en/htmlArtifactKit.json"
+import htmlDocument from "./locales/en/htmlDocument.json"
+import marketplace from "./locales/en/marketplace.json"
+import mcp from "./locales/en/mcp.json"
+import scheduledTasks from "./locales/en/scheduledTasks.json"
+import skills from "./locales/en/skills.json"
+import tools from "./locales/en/tools.json"
+import worktrees from "./locales/en/worktrees.json"
 
 // Initialize i18next with configuration
 i18next.init({
 	lng: "en",
 	fallbackLng: "en",
 	debug: false,
-	resources: translations,
+	// Unit tests use translation keys; production bundles English resources without extension-host file I/O.
+	resources:
+		process.env.NODE_ENV === "test"
+			? {}
+			: {
+					en: {
+						common,
+						embeddings,
+						htmlArtifactKit,
+						htmlDocument,
+						marketplace,
+						mcp,
+						scheduledTasks,
+						skills,
+						tools,
+						worktrees,
+					},
+				},
 	interpolation: {
 		escapeValue: false,
 	},

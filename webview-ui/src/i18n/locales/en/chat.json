@@ -76,7 +76,9 @@
 		"header": "Files edited: {{count}}",
 		"linesChanged": "{{added}} lines added, {{removed}} lines removed",
 		"openDiff": "Show diff: {{path}}",
-		"openAllDiffs": "Review"
+		"openAllDiffs": "Review",
+		"diffTitle": "Alpha Diff",
+		"diffTitleForFile": "Alpha Diff: {{path}}"
 	},
 	"retry": {
 		"title": "Retry",
@@ -506,11 +508,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves task reliability, responsiveness, and Codex CLI alignment.",
-			"taskContinuity": "Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
-			"toolsAndProviders": "Run bounded command-output searches, isolate custom tools, and preserve provider responses and usage.",
-			"delegation": "Validate worker changes and deliver results after Apply and verification have settled.",
-			"workspaceExperience": "Track files with less repeated work and protect concurrent skill edits."
+			"welcome": "Alpha v{{version}} restores file diff review and improves extension startup.",
+			"taskContinuity": "Open chats with less startup work and keep initial state updates consistent.",
+			"toolsAndProviders": "Load document readers, code highlighting, and error details as you need them.",
+			"delegation": "Review saved file changes while task work continues.",
+			"workspaceExperience": "Open the diff editor from Review or file change counts, with clear feedback if opening fails."
 		}
 	},
 	"crossTasks": {

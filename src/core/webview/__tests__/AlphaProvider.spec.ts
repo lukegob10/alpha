@@ -623,16 +623,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.6 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.7-performance-reliability"
+	test("shows the v3.2.8 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.8-diff-review-startup"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue(
-			"lastShownAnnouncementId",
-			"october-2026-v3.2.5-reliability-and-responsiveness",
-		)
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.7-performance-reliability")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -1372,6 +1369,37 @@ describe("AlphaProvider", () => {
 
 		// Should post state and theme to webview
 		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test.each(["enabled", "disabled", "unset", undefined] as const)(
+		"initializes %s telemetry without assembling a second startup state",
+		async (telemetrySetting) => {
+			await provider.contextProxy.setValue("telemetrySetting", telemetrySetting)
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+			const assembleState = vi.spyOn(provider, "getStateToPostToWebview")
+			const updateTelemetry = vi.spyOn(TelemetryService.instance, "updateTelemetryState")
+
+			await messageHandler({ type: "webviewDidLaunch" })
+
+			expect(assembleState).toHaveBeenCalledTimes(1)
+			expect(updateTelemetry).toHaveBeenCalledWith(telemetrySetting !== "disabled")
+		},
+	)
+
+	test("contains telemetry initialization failures without blocking webview readiness", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		vi.spyOn(TelemetryService.instance, "updateTelemetryState").mockImplementationOnce(() => {
+			throw new Error("telemetry unavailable")
+		})
+
+		await expect(messageHandler({ type: "webviewDidLaunch" })).resolves.toBeUndefined()
+
+		expect(provider.viewLaunched).toBe(true)
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("Failed to initialize telemetry state: telemetry unavailable"),
+		)
 	})
 
 	test("tracks sidebar readiness across replacement launch and disposal", async () => {
