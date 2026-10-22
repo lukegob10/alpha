@@ -22,6 +22,10 @@ interface FileChangesPanelProps {
 	onExpandedChange?: () => void
 }
 
+// Larger reviews remain available inline; the host limits each native review request.
+const MAX_NATIVE_DIFF_FILES = 128
+const MAX_NATIVE_DIFF_TITLE_LENGTH = 256
+
 function countChangedLines(originalContent: string, finalContent: string): { added: number; removed: number } {
 	let added = 0
 	let removed = 0
@@ -124,24 +128,31 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		return snapshots
 	}, [byPath])
 
-	const openDiff = useCallback((files: OpenDiffFile[]) => {
-		if (files.length === 0) return
-		vscode.postMessage({
-			type: "openDiff",
-			payload: {
-				title: files.length === 1 ? `Alpha Diff: ${files[0].path}` : "Alpha Diff",
-				files,
-			},
-		})
-	}, [])
+	const openDiff = useCallback(
+		(files: OpenDiffFile[]) => {
+			if (files.length === 0 || files.length > MAX_NATIVE_DIFF_FILES) return
+			const title =
+				files.length === 1
+					? t("chat:fileChangesInConversation.diffTitleForFile", { path: files[0].path })
+					: t("chat:fileChangesInConversation.diffTitle")
+			vscode.postMessage({
+				type: "openDiff",
+				payload: {
+					title:
+						title.length <= MAX_NATIVE_DIFF_TITLE_LENGTH
+							? title
+							: t("chat:fileChangesInConversation.diffTitle"),
+					files,
+				},
+			})
+		},
+		[t],
+	)
 
 	const reviewChanges = useCallback(() => {
 		const files = Array.from(diffFilesByPath.values())
-		if (files.length === 0) return
-		if (byPath.size === 1) {
-			openDiff(files)
-			return
-		}
+		openDiff(files)
+		if (byPath.size === 1 && files.length > 0) return
 
 		onExpandedChange?.()
 		setPanelExpanded(true)
@@ -224,9 +235,8 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 				<button
 					type="button"
 					aria-label={t("chat:fileChangesInConversation.openAllDiffs")}
-					disabled={diffFilesByPath.size === 0}
 					onClick={reviewChanges}
-					className="my-auto mr-3 shrink-0 rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background px-2.5 py-1 text-xs text-vscode-foreground hover:bg-vscode-list-hoverBackground disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder">
+					className="my-auto mr-3 shrink-0 rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background px-2.5 py-1 text-xs text-vscode-foreground hover:bg-vscode-list-hoverBackground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder">
 					{t("chat:fileChangesInConversation.openAllDiffs")}
 				</button>
 			</div>
@@ -247,7 +257,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 									: entries.map((e) => e.diff).join("\n\n")
 							const combinedStats = summariesByPath.get(path)!
 							return (
-								<div key={path} className="group/file">
+								<div key={path}>
 									<div className="flex items-center px-3 hover:bg-vscode-list-hoverBackground">
 										<button
 											type="button"
@@ -258,16 +268,6 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 											<span className="min-w-0 flex-1 truncate" title={path}>
 												{path}
 											</span>
-											{(combinedStats.added > 0 || combinedStats.removed > 0) && (
-												<span className="flex shrink-0 gap-1 text-xs tabular-nums">
-													<span className="text-vscode-charts-green">
-														+{combinedStats.added}
-													</span>
-													<span className="text-vscode-charts-red">
-														-{combinedStats.removed}
-													</span>
-												</span>
-											)}
 										</button>
 										<button
 											type="button"
@@ -278,7 +278,17 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 												if (diffSnapshot) openDiff([diffSnapshot])
 												else togglePath(path)
 											}}
-											className="ml-2 flex size-6 shrink-0 items-center justify-center rounded text-vscode-descriptionForeground opacity-0 group-hover/file:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
+											className="ml-2 flex h-6 shrink-0 items-center gap-2 rounded px-1 text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
+											{(combinedStats.added > 0 || combinedStats.removed > 0) && (
+												<span className="flex shrink-0 gap-1 text-xs tabular-nums">
+													<span className="text-vscode-charts-green">
+														+{combinedStats.added}
+													</span>
+													<span className="text-vscode-charts-red">
+														-{combinedStats.removed}
+													</span>
+												</span>
+											)}
 											<FileDiff className="size-3.5" aria-hidden />
 										</button>
 									</div>

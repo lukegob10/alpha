@@ -1,22 +1,23 @@
 import * as path from "path"
-// @ts-ignore-next-line
-import pdf from "pdf-parse/lib/pdf-parse"
-import mammoth from "mammoth"
 import fs from "fs/promises"
 import { isBinaryFile } from "isbinaryfile"
-import { extractTextFromXLSX } from "./extract-text-from-xlsx"
 import { readWithSlice } from "./indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../../core/prompts/tools/native-tools/read_file"
 
 async function extractTextFromPDF(filePath: string, signal?: AbortSignal): Promise<string> {
 	const dataBuffer = signal ? await fs.readFile(filePath, { signal }) : await fs.readFile(filePath)
 	signal?.throwIfAborted()
+	// @ts-ignore-next-line
+	const { default: pdf } = await import("pdf-parse/lib/pdf-parse")
+	signal?.throwIfAborted()
 	// Keep pdf.js substream offsets relative to an owned byte array, independent of Node Buffer pooling.
 	const data = await pdf(Uint8Array.from(dataBuffer))
 	return data.text
 }
 
-async function extractTextFromDOCX(filePath: string): Promise<string> {
+async function extractTextFromDOCX(filePath: string, signal?: AbortSignal): Promise<string> {
+	const { default: mammoth } = await import("mammoth")
+	signal?.throwIfAborted()
 	const result = await mammoth.extractRawText({ path: filePath })
 	return result.value
 }
@@ -39,14 +40,18 @@ async function extractTextFromIPYNB(filePath: string, signal?: AbortSignal): Pro
 }
 
 /**
- * Map of supported binary file formats to their extraction functions
+ * Keep format-specific parsers lazy: terminal and diff helpers import this module during activation.
  */
 const SUPPORTED_BINARY_FORMATS: Readonly<Record<string, (filePath: string, signal?: AbortSignal) => Promise<string>>> =
 	{
 		".pdf": extractTextFromPDF,
 		".docx": extractTextFromDOCX,
 		".ipynb": extractTextFromIPYNB,
-		".xlsx": extractTextFromXLSX,
+		".xlsx": async (filePath, signal) => {
+			const { extractTextFromXLSX } = await import("./extract-text-from-xlsx")
+			signal?.throwIfAborted()
+			return extractTextFromXLSX(filePath)
+		},
 	}
 
 /**

@@ -710,18 +710,13 @@ export const webviewMessageHandler = async (
 				)
 
 			// Enable telemetry by default (when unset) or when explicitly enabled
-			void provider
-				.getStateToPostToWebview()
-				.then((state) => {
-					const { telemetrySetting } = state
-					const isOptedIn = telemetrySetting !== "disabled"
-					TelemetryService.instance.updateTelemetryState(isOptedIn)
-				})
-				.catch((error) => {
-					provider.log(
-						`[webviewDidLaunch] Failed to initialize telemetry state: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				})
+			try {
+				TelemetryService.instance.updateTelemetryState(getGlobalState("telemetrySetting") !== "disabled")
+			} catch (error) {
+				provider.log(
+					`[webviewDidLaunch] Failed to initialize telemetry state: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
 
 			provider.isViewLaunched = true
 			break
@@ -1363,7 +1358,18 @@ export const webviewMessageHandler = async (
 			break
 		case "openDiff": {
 			const result = openDiffPayloadSchema.safeParse(message.payload)
-			if (result.success) await openDiff(result.data)
+			if (!result.success) {
+				provider.log("[openDiff] Rejected invalid captured diff request")
+				void vscode.window.showErrorMessage(t("common:errors.invalid_diff"))
+				break
+			}
+			try {
+				await openDiff(result.data)
+			} catch {
+				// VS Code errors may include virtual URIs containing complete file snapshots.
+				provider.log("[openDiff] VS Code could not open the captured diff")
+				void vscode.window.showErrorMessage(t("common:errors.could_not_open_diff"))
+			}
 			break
 		}
 		case "readFileContent": {

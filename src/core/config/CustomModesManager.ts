@@ -57,6 +57,9 @@ export class CustomModesManager {
 	private settingsFileCreation?: Promise<void>
 	private cachedModes: ModeConfig[] | null = null
 	private cachedAt: number = 0
+	private loadingModes?: Promise<ModeConfig[]>
+	private cacheGeneration = 0
+	private disposed = false
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -258,6 +261,7 @@ export class CustomModesManager {
 		}
 
 		const settingsPath = await this.getCustomModesFilePath()
+		if (this.disposed) return
 
 		// Watch settings file
 		const settingsWatcher = vscode.workspace.createFileSystemWatcher(settingsPath)
@@ -353,7 +357,18 @@ export class CustomModesManager {
 		if (this.cachedModes && now - this.cachedAt < CustomModesManager.cacheTTL) {
 			return this.cachedModes
 		}
+		if (this.loadingModes) return this.loadingModes
 
+		const loading = this.loadCustomModes(this.cacheGeneration)
+		this.loadingModes = loading
+		try {
+			return await loading
+		} finally {
+			if (this.loadingModes === loading) this.loadingModes = undefined
+		}
+	}
+
+	private async loadCustomModes(generation: number): Promise<ModeConfig[]> {
 		// Get modes from settings file.
 		const settingsPath = await this.getCustomModesFilePath()
 		const settingsModes = await this.loadModesFromFile(settingsPath)
@@ -386,10 +401,13 @@ export class CustomModesManager {
 				.map((mode) => ({ ...mode, source: "global" as const })),
 		]
 
+		// A reset or file change can invalidate a load while its I/O is pending.
+		if (generation !== this.cacheGeneration) return this.getCustomModes()
 		await this.context.globalState.update("customModes", mergedModes)
+		if (generation !== this.cacheGeneration) return this.getCustomModes()
 
 		this.cachedModes = mergedModes
-		this.cachedAt = now
+		this.cachedAt = Date.now()
 
 		return mergedModes
 	}
@@ -1008,9 +1026,12 @@ export class CustomModesManager {
 	private clearCache(): void {
 		this.cachedModes = null
 		this.cachedAt = 0
+		this.cacheGeneration++
+		this.loadingModes = undefined
 	}
 
 	dispose(): void {
+		this.disposed = true
 		for (const disposable of this.disposables) {
 			disposable.dispose()
 		}

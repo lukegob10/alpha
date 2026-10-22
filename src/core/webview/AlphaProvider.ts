@@ -810,7 +810,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.7-performance-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.8-diff-review-startup"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -2083,6 +2083,9 @@ export class AlphaProvider
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
 			"enhancePrompt",
 			"cancelEnhancePrompt",
+			// Captured diff snapshots need no task or settings transition. Keep review
+			// available while compaction or other global operations are still pending.
+			"openDiff",
 			"webviewFocusChanged",
 			"cancelTask",
 			"cancelSubagent",

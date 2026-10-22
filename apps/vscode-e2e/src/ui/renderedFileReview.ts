@@ -53,12 +53,42 @@ export async function exerciseRenderedFileReview(
 			)
 		}
 	}
-	const stage = JSON.parse(await fs.readFile(path.join(directory, "ui-stage-file-review.json"), "utf8")) as {
-		nonce: string
-		fileNames: string[]
+	const readStage = async (stage: string): Promise<object> => {
+		let detail: object | undefined
+		await waitUntil(
+			async () => {
+				signal?.throwIfAborted()
+				try {
+					const receipt: unknown = JSON.parse(
+						await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"),
+					)
+					assert.ok(receipt && typeof receipt === "object")
+					assert.ok("nonce" in receipt && receipt.nonce === nonce)
+					assert.ok("stage" in receipt && receipt.stage === stage)
+					detail = receipt
+					return true
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+					throw error
+				}
+			},
+			Date.now() + 30_000,
+			`file_review_host_timeout: ${stage}`,
+		)
+		assert.ok(detail)
+		return detail
 	}
-	assert.equal(stage.nonce, nonce)
-	assert.equal(stage.fileNames.length, 3)
+	const acknowledge = (stage: string) =>
+		writeJsonAtomically(
+			path.join(directory, `ui-done-${stage}.json`),
+			{ nonce, stage, status: "passed" },
+			{ rename: fs.link },
+		)
+	const stage = await readStage("file-review")
+	assert.ok("fileNames" in stage && Array.isArray(stage.fileNames))
+	assert.ok(stage.fileNames.every((fileName: unknown) => typeof fileName === "string"))
+	const fileNames = stage.fileNames
+	assert.equal(fileNames.length, 3)
 	const fileToggle = (fileName: string) =>
 		`[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes(${javascriptLiteral(fileName)}))`
 
@@ -74,20 +104,31 @@ export async function exerciseRenderedFileReview(
 	)
 	await focus("d.querySelector('button[aria-label=Review]')")
 	await enter()
-	for (const [index, fileName] of stage.fileNames.entries()) {
+	await acknowledge("file-review")
+	const reviewScreenshot = await cdp.request<{ data: string }>(
+		"Page.captureScreenshot",
+		{ format: "png" },
+		workbenchSession,
+	)
+	await fs.writeFile(path.join(directory, "ui-file-review-native.png"), Buffer.from(reviewScreenshot.data, "base64"))
+
+	// The host verifies every native Review resource and closes that editor before authorizing the next action.
+	const fileStage = await readStage("file-review-file")
+	assert.ok("fileName" in fileStage && fileStage.fileName === fileNames[1])
+	for (const [index, fileName] of fileNames.entries()) {
 		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='${index === 2}'`)
 	}
-	await focus(fileToggle(stage.fileNames[2]!))
+	await focus(fileToggle(fileNames[2]!))
 	await enter()
-	for (const fileName of stage.fileNames) {
+	for (const fileName of fileNames) {
 		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='false'`)
 	}
-	await focus(fileToggle(stage.fileNames[0]!))
+	await focus(fileToggle(fileNames[0]!))
 	await enter()
-	await check(`(${fileToggle(stage.fileNames[0]!)})?.getAttribute('aria-expanded')==='true'`)
-	await focus(fileToggle(stage.fileNames[0]!))
+	await check(`(${fileToggle(fileNames[0]!)})?.getAttribute('aria-expanded')==='true'`)
+	await focus(fileToggle(fileNames[0]!))
 	await enter()
-	await focus(fileToggle(stage.fileNames[2]!))
+	await focus(fileToggle(fileNames[2]!))
 	await enter()
 	const screenshot = await cdp.request<{ data: string }>(
 		"Page.captureScreenshot",
@@ -96,12 +137,16 @@ export async function exerciseRenderedFileReview(
 	)
 	await fs.writeFile(path.join(directory, "ui-file-review.png"), Buffer.from(screenshot.data, "base64"))
 	await fs.writeFile(path.join(directory, "ui-file-review.txt"), await evaluate<string>("d.body.innerText"))
-	await focus("d.querySelector('button[aria-label^=\"Show diff:\"]')")
-	await enter()
-	await writeJsonAtomically(
-		path.join(directory, "ui-done-file-review.json"),
-		{ nonce, stage: "file-review", status: "passed" },
-		{ rename: fs.link },
+	await focus(
+		`[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${javascriptLiteral(`Show diff: ${fileStage.fileName}`)})`,
 	)
-	return ["file-review", "review-bottom-file-open", "review-all-files-closed", "review-native-file-diff"]
+	await enter()
+	await acknowledge("file-review-file")
+	return [
+		"file-review",
+		"review-native-multi-diff",
+		"review-bottom-file-open",
+		"review-all-files-closed",
+		"review-native-file-diff",
+	]
 }

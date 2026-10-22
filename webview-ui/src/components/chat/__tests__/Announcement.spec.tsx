@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.7",
+		version: "3.2.8",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.7" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.8" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.7")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.8")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.7 improves task reliability, responsiveness, and Codex CLI alignment."),
+			screen.getByText("Alpha v3.2.8 restores file diff review and improves extension startup."),
 		).toBeInTheDocument()
 	})
 
@@ -51,20 +51,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText(
-				"Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
-			),
+			screen.getByText("Open chats with less startup work and keep initial state updates consistent."),
 		).toBeInTheDocument()
+		expect(
+			screen.getByText("Load document readers, code highlighting, and error details as you need them."),
+		).toBeInTheDocument()
+		expect(screen.getByText("Review saved file changes while task work continues.")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Run bounded command-output searches, isolate custom tools, and preserve provider responses and usage.",
+				"Open the diff editor from Review or file change counts, with clear feedback if opening fails.",
 			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Validate worker changes and deliver results after Apply and verification have settled."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Track files with less repeated work and protect concurrent skill edits."),
 		).toBeInTheDocument()
 	})
 
@@ -72,12 +68,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.7 improves task reliability, responsiveness, and Codex CLI alignment."),
+			screen.getByText("Alpha v3.2.8 restores file diff review and improves extension startup."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Keep task startup, cancellation, history, and image drafts consistent across chat surfaces.",
-			),
+			screen.getByText("Open chats with less startup work and keep initial state updates consistent."),
 		).toBeInTheDocument()
 	})
 })

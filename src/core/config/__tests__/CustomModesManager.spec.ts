@@ -95,6 +95,111 @@ describe("CustomModesManager", () => {
 	})
 
 	describe("getCustomModes", () => {
+		it("should share one cold load across concurrent startup readers", async () => {
+			const settingsModes = [{ slug: "mode1", name: "Mode 1", roleDefinition: "Role 1", groups: ["read"] }]
+			let releaseRead!: (content: string) => void
+			let signalReadStarted!: () => void
+			const readStarted = new Promise<void>((resolve) => {
+				signalReadStarted = resolve
+			})
+			const pendingRead = new Promise<string>((resolve) => {
+				releaseRead = resolve
+			})
+			vi.mocked(fs.readFile).mockImplementation((filePath) => {
+				if (filePath === mockSettingsPath) {
+					signalReadStarted()
+					return pendingRead
+				}
+				return Promise.resolve(yaml.stringify({ customModes: [] }))
+			})
+
+			const readers = Array.from({ length: 8 }, () => manager.getCustomModes())
+			await readStarted
+			expect(mockContext.globalState.update).not.toHaveBeenCalled()
+			releaseRead(yaml.stringify({ customModes: settingsModes }))
+			const results = await Promise.all(readers)
+
+			expect({
+				settingsReads: vi.mocked(fs.readFile).mock.calls.filter(([filePath]) => filePath === mockSettingsPath)
+					.length,
+				projectReads: vi.mocked(fs.readFile).mock.calls.filter(([filePath]) => filePath === mockAlphaModes)
+					.length,
+				stateWrites: vi.mocked(mockContext.globalState.update).mock.calls.length,
+			}).toEqual({ settingsReads: 1, projectReads: 1, stateWrites: 1 })
+			expect(results[0]).toEqual([{ ...settingsModes[0], source: "global" }])
+			for (const result of results) expect(result).toBe(results[0])
+		})
+
+		it("should retry a shared load after state persistence fails", async () => {
+			vi.mocked(mockContext.globalState.update).mockRejectedValueOnce(new Error("Persistence unavailable"))
+
+			await expect(Promise.all([manager.getCustomModes(), manager.getCustomModes()])).rejects.toThrow(
+				"Persistence unavailable",
+			)
+
+			await expect(manager.getCustomModes()).resolves.toEqual([])
+			expect(mockContext.globalState.update).toHaveBeenCalledTimes(2)
+			expect(
+				vi.mocked(fs.readFile).mock.calls.filter(([filePath]) => filePath === mockSettingsPath),
+			).toHaveLength(2)
+		})
+
+		it("should discard a pending read when modes are reset", async () => {
+			const oldMode = { slug: "mode1", name: "Mode 1", roleDefinition: "Role 1", groups: ["read"] }
+			let releaseRead!: (content: string) => void
+			let signalReadStarted!: () => void
+			const readStarted = new Promise<void>((resolve) => {
+				signalReadStarted = resolve
+			})
+			const pendingRead = new Promise<string>((resolve) => {
+				releaseRead = resolve
+			})
+			vi.mocked(fs.readFile).mockResolvedValue(yaml.stringify({ customModes: [] }))
+			vi.mocked(fs.readFile).mockImplementationOnce(() => {
+				signalReadStarted()
+				return pendingRead
+			})
+
+			const oldReader = manager.getCustomModes()
+			await readStarted
+			await manager.resetCustomModes()
+			const currentModes = await manager.getCustomModes()
+			releaseRead(yaml.stringify({ customModes: [oldMode] }))
+
+			expect(await oldReader).toBe(currentModes)
+			expect(await manager.getCustomModes()).toBe(currentModes)
+			expect(currentModes).toEqual([])
+			expect(mockContext.globalState.update).toHaveBeenLastCalledWith("customModes", [])
+		})
+
+		it("should discard a pending cache publication when modes are reset", async () => {
+			const oldMode = { slug: "mode1", name: "Mode 1", roleDefinition: "Role 1", groups: ["read"] }
+			let releaseUpdate!: () => void
+			let signalUpdateStarted!: () => void
+			const updateStarted = new Promise<void>((resolve) => {
+				signalUpdateStarted = resolve
+			})
+			const pendingUpdate = new Promise<void>((resolve) => {
+				releaseUpdate = resolve
+			})
+			vi.mocked(fs.readFile).mockResolvedValue(yaml.stringify({ customModes: [] }))
+			vi.mocked(fs.readFile).mockResolvedValueOnce(yaml.stringify({ customModes: [oldMode] }))
+			vi.mocked(mockContext.globalState.update).mockImplementationOnce(() => {
+				signalUpdateStarted()
+				return pendingUpdate
+			})
+
+			const oldReader = manager.getCustomModes()
+			await updateStarted
+			await manager.resetCustomModes()
+			const currentModes = await manager.getCustomModes()
+			releaseUpdate()
+
+			expect(await oldReader).toBe(currentModes)
+			expect(await manager.getCustomModes()).toBe(currentModes)
+			expect(currentModes).toEqual([])
+		})
+
 		it("should handle valid YAML in .alphamodes file and JSON for global customModes", async () => {
 			const settingsModes = [{ slug: "mode1", name: "Mode 1", roleDefinition: "Role 1", groups: ["read"] }]
 
@@ -730,6 +835,41 @@ describe("CustomModesManager", () => {
 			finishWrite?.()
 			await expect(Promise.all([first, second])).resolves.toEqual([mockSettingsPath, mockSettingsPath])
 			expect(fs.writeFile).toHaveBeenCalledOnce()
+		})
+
+		it("does not create file watchers after disposal during startup", async () => {
+			let releasePath!: (filePath: string) => void
+			const pathReady = new Promise<string>((resolve) => {
+				releasePath = resolve
+			})
+			const getPath = vi
+				.spyOn(CustomModesManager.prototype, "getCustomModesFilePath")
+				.mockReturnValueOnce(pathReady)
+			const createWatcher = vi.mocked(vscode.workspace.createFileSystemWatcher)
+			createWatcher.mockReturnValue({
+				ignoreCreateEvents: false,
+				ignoreChangeEvents: false,
+				ignoreDeleteEvents: false,
+				onDidChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				onDidCreate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				onDidDelete: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+				dispose: vi.fn(),
+			})
+			const originalNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+
+			try {
+				const testManager = new CustomModesManager(mockContext, mockOnUpdate)
+				testManager.dispose()
+				releasePath(mockSettingsPath)
+				await pathReady
+
+				expect(createWatcher).not.toHaveBeenCalled()
+				testManager.dispose()
+			} finally {
+				getPath.mockRestore()
+				process.env.NODE_ENV = originalNodeEnv
+			}
 		})
 
 		it("watches file for changes", async () => {
