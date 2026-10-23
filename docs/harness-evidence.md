@@ -134,8 +134,8 @@ retain their history; current evidence follows completion order so an older succ
 
 The host owner exports only actual extension-host results, never its unit-test seam. Required suites bind unique run IDs,
 the exact actual host version, each file's expected provider, complete test counts, ownership, capture and retention.
-Confidence requires all 18 host files from its existing smoke prerequisites and core checks. Extended requires its five
-selected feature files, including rich-document coverage. Unit-runner children clear the host-receipt destination while
+Confidence requires the complete host file inventory selected by its smoke prerequisites and core checks. Extended requires
+its complete selected feature inventory, including rich-document coverage. Unit-runner children clear the host-receipt destination while
 retaining their separate Node execution collector, so negative unit fixtures cannot publish host evidence.
 Outcome admission additionally binds unique scenario/attempt/run identities and the campaign's source, build and task
 configuration to captured task evidence. Completed capture alone is insufficient: task outcome, task IDs, required

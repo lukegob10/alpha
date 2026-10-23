@@ -513,29 +513,6 @@ export class NativeToolCallParser {
 	}
 
 	/**
-	 * Process stream finish reason.
-	 * Emits end events when finish_reason is 'tool_calls'.
-	 */
-	public static processFinishReason(finishReason: string | null | undefined, scope?: string): ToolCallStreamEvent[] {
-		const events: ToolCallStreamEvent[] = []
-		const prefix = `${scope ?? this.defaultScope}:`
-
-		if (finishReason === "tool_calls" && this.rawChunkTracker.size > 0) {
-			for (const [key, tracked] of this.rawChunkTracker.entries()) {
-				if (!key.startsWith(prefix)) {
-					continue
-				}
-				events.push({
-					type: "tool_call_end",
-					id: tracked.id,
-				})
-			}
-		}
-
-		return events
-	}
-
-	/**
 	 * Finalize any remaining tool calls that weren't explicitly ended.
 	 * Should be called at the end of stream processing.
 	 */
@@ -648,6 +625,7 @@ export class NativeToolCallParser {
 		// partial-json-parser extracts partial values (strings, arrays, objects) immediately
 		try {
 			const partialArgs = parseJSON(toolCall.argumentsAccumulator)
+			if (!this.isArgumentObject(partialArgs)) return null
 
 			// Resolve tool alias to canonical name
 			const resolvedName = resolveToolAlias(toolCall.name) as ToolName
@@ -658,7 +636,7 @@ export class NativeToolCallParser {
 			return this.createPartialToolUse(
 				toolCall.id,
 				resolvedName,
-				partialArgs || {},
+				partialArgs,
 				true, // partial
 				originalName,
 			)
@@ -1311,15 +1289,19 @@ export class NativeToolCallParser {
 
 		try {
 			// Parse the arguments JSON string
-			let args: Record<string, any>
+			let parsedArguments: unknown
 			try {
-				args = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
+				parsedArguments = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
 			} catch (error) {
 				const recoveredQueries =
 					resolvedName === "search_files" ? this.parseConcatenatedSearchQueries(toolCall.arguments) : null
 				if (!recoveredQueries) throw error
-				args = { queries: recoveredQueries }
+				parsedArguments = { queries: recoveredQueries }
 			}
+			// Match the canonical response accumulator's object-root contract. Arrays
+			// and scalars otherwise satisfy zero-field checks and appear to be valid calls.
+			if (!this.isArgumentObject(parsedArguments)) throw new Error("Tool arguments must be a JSON object")
+			const args: Record<string, any> = parsedArguments
 
 			// Build stringified params for display/logging.
 			// Tool execution MUST use nativeArgs (typed) and does not support legacy fallbacks.
@@ -1923,7 +1905,8 @@ export class NativeToolCallParser {
 	public static parseDynamicMcpTool(toolCall: { id: string; name: string; arguments: string }): McpToolUse | null {
 		try {
 			// Parse the arguments - these are the actual tool arguments passed directly
-			const args = JSON.parse(toolCall.arguments || "{}")
+			const args: unknown = JSON.parse(toolCall.arguments || "{}")
+			if (!this.isArgumentObject(args)) throw new Error("MCP tool arguments must be a JSON object")
 
 			// Normalize the tool name to handle models that output underscores instead of hyphens
 			// e.g., mcp__serverName__toolName -> mcp--serverName--toolName

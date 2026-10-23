@@ -1057,8 +1057,9 @@ describe("VsCodeLmHandler", () => {
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
 		})
 
-		it("projects instruction fragments as ordered User messages on VS Code 1.125.0", async () => {
+		it("preserves ordered instruction fragments and the full long request on VS Code 1.125.0", async () => {
 			mockVsCodeVersion.value = "1.125.0"
+			const currentRequest = "Requirement 1. ".repeat(30_000) + "FINAL_REQUIREMENT_SENTINEL"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Response")
@@ -1067,7 +1068,7 @@ describe("VsCodeLmHandler", () => {
 
 			for await (const _chunk of handler.createMessage(
 				"Legacy prompt",
-				[{ role: "user", content: "Current request" }],
+				[{ role: "user", content: currentRequest }],
 				{
 					taskId: "fragment-test",
 					instructionFragments: [
@@ -1088,7 +1089,7 @@ describe("VsCodeLmHandler", () => {
 			expect(requestMessages[0]?.content[0]).toEqual(
 				expect.objectContaining({ value: "Base instructions\n\nProject instructions\n\nMode instructions" }),
 			)
-			expect(requestMessages[1]?.content[0]).toEqual(expect.objectContaining({ value: "Current request" }))
+			expect(requestMessages[1]?.content[0]).toEqual(expect.objectContaining({ value: currentRequest }))
 		})
 
 		it("should include serialized tool schemas in the synchronous input estimate", async () => {
@@ -1230,10 +1231,7 @@ describe("VsCodeLmHandler", () => {
 			})
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
 			expect(handler.getStatefulMarker()).toBe(Buffer.from(statefulMarker).toString("base64"))
-			expect(warnSpy).not.toHaveBeenCalledWith(
-				"Alpha <Language Model API>: Unknown chunk type received:",
-				expect.anything(),
-			)
+			expect(warnSpy).not.toHaveBeenCalledWith("Alpha <Language Model API>: Unknown chunk type received")
 			warnSpy.mockRestore()
 		})
 
@@ -2503,6 +2501,49 @@ describe("VsCodeLmHandler", () => {
 			await expect(handler.createMessage(systemPrompt, messages).next()).rejects.toThrow("API Error")
 		})
 
+		it.each(["admission", "stream"])(
+			"retains safe error fields for a circular %s failure without logging provider payloads",
+			async (phase) => {
+				const failure: Record<string, unknown> = {
+					message: "Provider unavailable",
+					code: "RateLimited",
+					status: 429,
+					retryable: false,
+					phase: "untrusted-provider-phase",
+					semanticOutputObserved: false,
+					headers: { authorization: "private-credential" },
+					request: { prompt: "private-prompt" },
+					count: 1n,
+				}
+				failure.self = failure
+				if (phase === "admission") mockLanguageModelChat.sendRequest.mockRejectedValueOnce(failure)
+				else {
+					mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+						stream: (async function* () {
+							yield new vscode.LanguageModelTextPart("Partial answer")
+							throw failure
+						})(),
+					})
+				}
+				const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				try {
+					const stream = handler.createMessage("System", [], { taskId: "safe-error" })
+					if (phase === "stream") await stream.next()
+					await expect(stream.next()).rejects.toMatchObject({
+						message: "Alpha <Language Model API>: Response stream error: Provider unavailable",
+						code: "RateLimited",
+						status: 429,
+						retryable: false,
+						phase: phase === "stream" ? "response-stream" : "request-admission",
+						semanticOutputObserved: phase === "stream",
+					})
+					expect(log).not.toHaveBeenCalled()
+				} finally {
+					log.mockRestore()
+				}
+			},
+		)
+
 		it("should cancel when VS Code LM request startup hangs past the API timeout", async () => {
 			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
 
@@ -3596,6 +3637,32 @@ describe("VsCodeLmHandler", () => {
 })
 
 describe("getVsCodeLmModels", () => {
+	it("contains null and circular discovery failures without logging raw provider data", async () => {
+		const circular: Record<string, unknown> = {
+			code: "NotAuthorized",
+			status: 403,
+			headers: { authorization: "private-credential" },
+			request: { prompt: "private-prompt" },
+			count: 1n,
+		}
+		circular.self = circular
+		const selectChatModels = vscode.lm.selectChatModels as Mock
+		selectChatModels.mockReset().mockRejectedValueOnce(null).mockRejectedValueOnce(circular)
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			await expect(getVsCodeLmModels()).resolves.toEqual([])
+			await expect(getVsCodeLmModels()).resolves.toEqual([])
+			expect(log).toHaveBeenLastCalledWith("Error fetching VS Code LM models:", {
+				code: "NotAuthorized",
+				status: 403,
+				retryable: false,
+			})
+			expect(JSON.stringify(log.mock.calls)).not.toContain("private-")
+		} finally {
+			log.mockRestore()
+		}
+	})
+
 	it("shares one pending discovery across eight concurrent settings refreshes", async () => {
 		let resolveModels!: (models: (typeof mockLanguageModelChat)[]) => void
 		const selection = new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {

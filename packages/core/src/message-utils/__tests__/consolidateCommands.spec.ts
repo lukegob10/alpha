@@ -81,6 +81,22 @@ describe("consolidateCommands", () => {
 	})
 
 	describe("MCP server sequences", () => {
+		it.each(["null", "false", "42", '"request"', "[]"])(
+			"preserves responses when an old request contains non-object JSON %s",
+			(text) => {
+				const messages: AlphaMessage[] = [
+					{ type: "ask", ask: "use_mcp_server", text, ts: 1000 },
+					{ type: "say", say: "mcp_server_response", text: "response data", ts: 1001 },
+				]
+
+				const result = consolidateCommands(messages)
+
+				expect(result).toHaveLength(1)
+				expect(JSON.parse(result[0]!.text!)).toEqual({ response: "response data" })
+				expect(messages[0]!.text).toBe(text)
+			},
+		)
+
 		it("should consolidate use_mcp_server and mcp_server_response messages", () => {
 			const messages: AlphaMessage[] = [
 				{
@@ -138,6 +154,26 @@ describe("consolidateCommands", () => {
 	})
 
 	describe("mixed messages", () => {
+		it("preserves an MCP response interleaved with legacy command output", () => {
+			const messages: AlphaMessage[] = [
+				{ type: "ask", ask: "command", text: "git status", ts: 1000 },
+				{
+					type: "ask",
+					ask: "use_mcp_server",
+					text: JSON.stringify({ server: "test", tool: "read" }),
+					ts: 1001,
+				},
+				{ type: "say", say: "mcp_server_response", text: "MCP result", ts: 1002 },
+				{ type: "say", say: "command_output", text: "clean", ts: 1003 },
+			]
+
+			const result = consolidateCommands(messages)
+
+			expect(result).toHaveLength(2)
+			expect(result[0]!.text).toBe(`git status\n${COMMAND_OUTPUT_STRING}clean`)
+			expect(JSON.parse(result[1]!.text!)).toEqual({ server: "test", tool: "read", response: "MCP result" })
+		})
+
 		it("should preserve non-command, non-MCP messages", () => {
 			const messages: AlphaMessage[] = [
 				{ type: "say", say: "text", text: "before", ts: 1000 },

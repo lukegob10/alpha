@@ -1,7 +1,7 @@
 # Testing and evaluation workflow
 
 The supported local workflow requires no Docker. Run these commands from the repository root with Node **24.21.0**, pnpm **11.24.0**, and npm **11.19.0**.
-VS Code **1.138.0** is the release contract.
+VS Code **1.138.0** is the exact release reference; **1.125.0** is the minimum supported host.
 
 ## Docker-free corporate setup
 
@@ -43,6 +43,13 @@ The executable [catalog](../scripts/harness/catalog.mjs) is the command inventor
 existing package scripts. Unversioned commands remain valid; exact-host commands now use the `:1380` suffix. Pass Vitest filters directly after `test`, without a standalone
 `--`. Use package tests/typechecks for changed shared packages. Run exact-host coverage for the surfaces listed in
 [AGENTS.md](../AGENTS.md), even if lower-level tests pass.
+
+The reference and minimum-host gates remain separate:
+
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
+```
 
 Additional Docker-free storage experiments use the existing campaign runner after a successful build/host lane:
 
@@ -146,8 +153,8 @@ boundary; do not silently downgrade container isolation to a normal workstation 
 5. Read the diagnosis and comparison with failures, retries and missing measurements visible.
 6. Record keep/revise/revert/inconclusive and the claim's scope. Preserve unresolved incidents separately.
 
-A green rerun does not explain the historical ticket-progress timeout. Preserve each incident's original evidence;
-the [evidence runbook](harness-evidence.md) describes report validation and retention.
+Preserve a failing run's original evidence; a later pass does not explain its cause.
+The [evidence runbook](harness-evidence.md) describes report validation and retention.
 
 CI runs the existing unit/tooling commands on Windows, Linux and macOS;
 the extended host lane remains pinned to VS Code 1.138.0 and requires complete execution receipts.

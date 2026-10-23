@@ -15,6 +15,12 @@ test("managed-agent certification discovers its public lifecycle regression suit
 	})
 	assert.equal(result.error, undefined)
 	assert.equal(result.status, 0, result.stderr)
+	assert.match(result.stdout, /^types-build :: pnpm --filter @alpha-code\/types build$/m)
+	assert.equal(
+		/live-preflight|live-playbook-preflight|prepare-run-c/.test(result.stdout),
+		false,
+		"Automated certification must not depend on retired live prompts or their fixture preparer",
+	)
 	const commands = result.stdout.split(/\r?\n/).filter((line) => line.includes(" :: pnpm --dir "))
 	for (const file of [
 		"core/webview/__tests__/AlphaProvider.managed-owned-disposal.spec.ts",

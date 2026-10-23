@@ -15,7 +15,10 @@ vi.mock("fs/promises", async (importOriginal) => {
 
 const execFileAsync = promisify(execFile)
 const TIMEOUT = 30_000
-type GitEffect = { git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> }
+type GitEffect = {
+	git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string>
+	gitBuffer(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Buffer>
+}
 
 describe("Worker capture failure preserves uncommitted changes", () => {
 	let root: string
@@ -266,8 +269,17 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 		TIMEOUT,
 	)
 
-	it.each(["index", "patch", "metadata"] as const)(
-		"retains the worktree after a failed %s write and recovers it on reload",
+	it.each([
+		"index",
+		"tree-entry",
+		"before-blob",
+		"after-blob",
+		"before-file",
+		"after-file",
+		"patch",
+		"metadata",
+	] as const)(
+		"retains the worktree after a failed %s capture step and recovers it on reload",
 		async (stage) => {
 			const prepared = await service.create(storage, "worker", await service.validateScope(repo, ["src"]))
 			const artifactId = prepared.artifact.id
@@ -276,24 +288,41 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 			const newPath = path.join(prepared.workspacePath, "src/new.txt")
 			await fs.writeFile(valuePath, "worker changes\n")
 			await fs.writeFile(newPath, "new worker file\n")
-			const failure = Object.assign(new Error(`${stage} capture write failed`), { code: "EIO" })
+			const failure = Object.assign(new Error(`${stage} capture failed`), { code: "EIO" })
 			const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")
 			let injected = false
-			if (stage === "index") {
+			if (stage === "index" || stage === "tree-entry") {
 				// Inject only the Git effect; the real worktree and its physical cleanup stay observable.
 				const owner = service as unknown as GitEffect
 				const actualGit = owner.git.bind(service)
 				vi.spyOn(owner, "git").mockImplementation(async (cwd, args, env) => {
-					if (!injected && args[0] === "read-tree") {
+					if (!injected && args[0] === (stage === "index" ? "read-tree" : "ls-tree")) {
 						injected = true
 						throw failure
 					}
 					return actualGit(cwd, args, env)
 				})
-			} else if (stage === "patch") {
-				vi.mocked(fs.writeFile).mockImplementation(async (target, data, options) => {
-					if (!injected && target === path.join(artifactDirectory, "changes.patch")) {
+			} else if (stage === "before-blob" || stage === "after-blob") {
+				const owner = service as unknown as GitEffect
+				const actualGitBuffer = owner.gitBuffer.bind(service)
+				vi.spyOn(owner, "gitBuffer").mockImplementation(async (cwd, args, env) => {
+					const baseline = args[1]?.startsWith(`${prepared.artifact.baselineCommit}:`)
+					if (!injected && args[0] === "show" && baseline === (stage === "before-blob")) {
 						injected = true
+						throw failure
+					}
+					return actualGitBuffer(cwd, args, env)
+				})
+			} else if (stage === "patch" || stage === "before-file" || stage === "after-file") {
+				vi.mocked(fs.writeFile).mockImplementation(async (target, data, options) => {
+					const name = path.basename(String(target))
+					const matchesStage =
+						stage === "patch"
+							? name === "changes.patch"
+							: name.endsWith(stage === "before-file" ? "-before" : "-after")
+					if (!injected && path.dirname(String(target)) === artifactDirectory && matchesStage) {
+						injected = true
+						await actual.writeFile(target, "incomplete export")
 						throw failure
 					}
 					return actual.writeFile(target, data, options)
@@ -329,6 +358,7 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 				"src/value.txt",
 			])
 			const changed = artifact.changes.find(({ path: changedPath }) => changedPath === "src/value.txt")!
+			expect(await fs.readFile(path.join(artifactDirectory, changed.beforeFile!), "utf8")).toBe("baseline\n")
 			expect(await fs.readFile(path.join(artifactDirectory, changed.afterFile!), "utf8")).toBe("worker changes\n")
 			await expect(fs.access(prepared.workspacePath)).rejects.toMatchObject({ code: "ENOENT" })
 			await expect(new ManagedSubagentWorktreeService().recoverOrphans(storage)).resolves.toEqual([])

@@ -7,11 +7,6 @@
 	"expectedIntegrationPendingCount": 8,
 	"prerequisites": [
 		{
-			"id": "live-playbook-preflight",
-			"label": "Validate and execute the documented live Run A PowerShell commands",
-			"args": ["certify:managed-agents:live-preflight"]
-		},
-		{
 			"id": "types-build",
 			"label": "Build public workspace types used by extension and webview tests",
 			"args": ["--filter", "@alpha-code/types", "build"]

@@ -13,7 +13,6 @@ import { t } from "../../i18n"
 import type { CustomModesManager } from "../../core/config/CustomModesManager"
 import { getProjectMcpConfigPath } from "../config-paths"
 
-import { RemoteConfigLoader } from "./RemoteConfigLoader"
 import { SimpleInstaller } from "./SimpleInstaller"
 
 export interface MarketplaceItemsResponse {
@@ -23,34 +22,19 @@ export interface MarketplaceItemsResponse {
 }
 
 export class MarketplaceManager {
-	private configLoader: RemoteConfigLoader
 	private installer: SimpleInstaller
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly customModesManager?: CustomModesManager,
+		customModesManager?: CustomModesManager,
 	) {
-		this.configLoader = new RemoteConfigLoader()
 		this.installer = new SimpleInstaller(context, customModesManager)
 	}
 
 	async getMarketplaceItems(): Promise<MarketplaceItemsResponse> {
-		try {
-			const marketplaceItems = await this.configLoader.loadAllItems()
-
-			return {
-				organizationMcps: [],
-				marketplaceItems,
-			}
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error)
-			console.error("Failed to load marketplace items:", error)
-
-			return {
-				organizationMcps: [],
-				marketplaceItems: [],
-				errors: [errorMessage],
-			}
+		return {
+			organizationMcps: [],
+			marketplaceItems: [],
 		}
 	}
 
@@ -178,11 +162,6 @@ export class MarketplaceManager {
 			)
 			throw error
 		}
-	}
-
-	async cleanup(): Promise<void> {
-		// Clear API cache if needed
-		this.configLoader.clearCache()
 	}
 
 	/**

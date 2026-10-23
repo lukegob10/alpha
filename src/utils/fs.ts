@@ -19,7 +19,11 @@ export async function createDirectoriesForFile(filePath: string): Promise<string
 	// Traverse up the directory tree and collect missing directories
 	while (!(await fileExistsAtPath(currentPath))) {
 		dirsToCreate.push(currentPath)
-		currentPath = path.dirname(currentPath)
+		const parentPath = path.dirname(currentPath)
+		if (parentPath === currentPath) {
+			throw new Error(`Cannot create directories because the filesystem root is unavailable: ${currentPath}`)
+		}
+		currentPath = parentPath
 	}
 
 	// Create directories from the topmost missing one down to the target directory

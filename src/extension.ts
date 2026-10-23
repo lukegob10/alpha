@@ -47,7 +47,6 @@ import { initializeI18n } from "./i18n"
 
 let outputChannel: vscode.OutputChannel
 let extensionContext: vscode.ExtensionContext
-let sidebarProvider: AlphaProvider | undefined
 
 /**
  * Check if we should auto-open the Alpha sidebar after switching to a worktree.
@@ -170,7 +169,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		incidentPanel,
 		vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()),
 	)
-	sidebarProvider = provider
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
 	provider.setScheduledTaskService(scheduledTaskService)
 	context.subscriptions.push(scheduledTaskService)
@@ -320,14 +318,10 @@ export async function deactivate() {
 	}
 	log(`${Package.name} extension deactivated`)
 
-	const provider = sidebarProvider
-	sidebarProvider = undefined
-	if (provider) {
-		try {
-			await provider.dispose()
-		} catch {
-			log("Failed to dispose sidebar provider")
-		}
+	try {
+		await AlphaProvider.disposeAll()
+	} catch {
+		log("Failed to dispose task providers")
 	}
 
 	try {

@@ -1,49 +1,55 @@
-# Deliberate rewind and crash recovery
+# Conversation history and recovery
 
-Reference: Codex CLI commit `8c076942cb70fba8e5c4732c23f1faabc4aed484`, inspected on 2026-10-17.
-Its [rollout reconstruction](https://github.com/openai/codex/blob/8c076942cb70fba8e5c4732c23f1faabc4aed484/codex-rs/core/src/session/rollout_reconstruction.rs)
-uses explicit `ThreadRolledBack` events when reconstructing retained user turns. Its
-[paginated revert implementation](https://github.com/openai/codex/blob/8c076942cb70fba8e5c4732c23f1faabc4aed484/codex-rs/thread-store/src/local/revert_thread.rs)
-persists a replacement rollout before switching the active pointer, and
-[revert tests](https://github.com/openai/codex/blob/8c076942cb70fba8e5c4732c23f1faabc4aed484/codex-rs/thread-store/src/local/revert_thread_tests.rs)
-cover repeated reverts retaining thread identity and hiding removed suffixes.
+Task identity, canonical lifecycle, and transcript writers remain extension-owned. Intentional history removal must be
+durable before crash repair decides which missing tool transactions to restore.
 
-Alpha retains its existing TypeScript task owner, lifecycle journal and transcript writers. The corresponding invariant
-is that intentional history removal must be durable before crash repair decides which missing tool transactions to
-restore. Previously MessageManager wrote shortened UI history first, then provider history, without recording deliberate
-removal. False persistence receipts were ignored. Canonical recovery could then recreate removed calls and results.
+## Fresh chats, forks, and resume
 
-`Task.commitConversationRewind` now writes `task_rewind.json` atomically before either transcript changes. This receipt
-contains the exact pending UI and provider projections plus removed canonical call IDs scoped to lifecycle run and turn.
-Accepted calls still receive terminal lifecycle receipts, including removed unresolved calls; exclusions suppress only
-provider transcript repair. Both existing projection writers must acknowledge success before the pending projections are removed. Failure leaves
-the receipt available for retry and fails the caller instead of reporting a completed rewind. Resume finishes pending
-projections before reading either history or repairing canonical transactions. Repeating recovery after success is a
-no-op.
+A new chat receives its supplied prompt and applicable configuration/instructions with empty conversation history.
+A fork creates a new identity with the chosen source-history boundary and starts idle until followed up. Resume restores
+the existing saved conversation; compaction stays within that identity. Checkout/worktree choice is independent of history
+inheritance.
 
-Completed receipts retain cumulative exclusions. Rewinding again must not forget an earlier intentional removal from
-the same lifecycle; a successor turn can reuse a provider call ID without inheriting an old exclusion. Calls retained in
-the provider history remain eligible for normal missing-result repair. When a historical rewind retains a tool call
-but deliberately removes its previously stored result, the target records a host-authored error receipt in place of
-the removed output. This preserves transaction pairing without restoring deleted contents. A result already missing
-before the rewind remains eligible for crash repair. This deliberately tightens historical result-only rewind behavior. Older tasks without a receipt retain their prior
-recovery behavior. Retained historical UI fields and retired variants are preserved, and malformed receipts fail closed
-without replacing their bytes. This change does not retroactively identify deletions made before these receipts existed.
+Model-facing fresh creation and history forks require the corresponding explicit human request. A request for a new chat
+does not authorize transcript copying. Saved declarations or Full Access cannot supply missing fork intent.
+Fresh handoffs carry a concise objective, ticket/source references, decisions, and constraints rather than the old
+transcript or compaction summary. Managed-child history inheritance retains its separate captured contract.
 
-Rewind is a host operation. Callers must join task cancellation before replacing history or restoring workspace files;
-an abort flag alone is not a termination receipt. Checkpoint restoration and prompt restart already join
-`awaitTaskCancellationBoundary`. The shared task operation serializes its rewind commits and recovery, and applies
-equally to foreground and background task instances. Artifact cleanup runs only after both transcript receipts commit,
-with the existing idle and current-reference checks.
+## Durable rewind
 
-Focused validation:
+`Task.commitConversationRewind` writes `task_rewind.json` atomically before either transcript changes. The receipt contains
+pending UI/provider projections and removed canonical call IDs scoped to lifecycle run and turn. Accepted calls still get
+terminal lifecycle receipts; exclusions suppress only deliberate provider-history restoration.
+
+Both projection writers must acknowledge success before pending projections are removed. Failure leaves the receipt
+available and fails the caller rather than claiming rewind completed. Resume finishes pending projections before reading
+history or repairing canonical transactions. Recovery after success is a no-op.
+
+Completed receipts retain cumulative exclusions. Later rewinds cannot forget earlier removal from the same lifecycle;
+a successor turn reusing a call ID cannot inherit an older exclusion. Retained calls remain eligible for missing-result
+repair. When rewind deliberately removes a stored result but retains its call, a host-authored error receipt preserves
+pairing without restoring deleted content. A result missing before rewind remains eligible for crash repair.
+
+Old tasks without receipts retain their previous reader behavior. Historical UI fields and retired variants remain
+readable. Malformed receipts fail closed without replacing their bytes. Receipt-based recovery cannot retroactively
+identify deletions made before the format existed.
+
+## Cancellation and ownership
+
+Callers join task cancellation before replacing history or restoring files; an abort flag is not a termination receipt.
+Checkpoint restoration and prompt restart use `awaitTaskCancellationBoundary`. The task serializes rewind/recovery for
+foreground and background instances. Artifact cleanup runs only after both transcript receipts commit, with existing
+idle/current-reference checks. A stale task instance cannot adopt another instance's rewind result.
+
+## Validation
 
 ```sh
-pnpm --dir src test core/message-manager/index.spec.ts core/message-manager/index.artifacts.spec.ts core/task-persistence/__tests__/TaskRewindStore.spec.ts core/task/__tests__/Task.rewind-recovery.spec.ts --maxWorkers=2
-pnpm --dir src test core/task/__tests__/Task.persistence.spec.ts core/task-persistence/__tests__/ThreadHistory.spec.ts core/task/__tests__/Task.post-eof-cancellation.spec.ts --maxWorkers=2
+pnpm --dir src test core/message-manager/index.spec.ts core/message-manager/index.artifacts.spec.ts core/task-persistence/__tests__/TaskRewindStore.spec.ts core/task/__tests__/Task.rewind-recovery.spec.ts
+pnpm --dir src test core/task/__tests__/Task.persistence.spec.ts core/task-persistence/__tests__/ThreadHistory.spec.ts core/task/__tests__/Task.post-eof-cancellation.spec.ts
+pnpm --dir src check-types
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
-The focused cases cover false UI/provider receipts, a crash between projection writes, repeated recovery, removed-tool
-suppression, retained-tool repair, successor call-ID reuse, cumulative exclusions and stale receipt completion. These
-tests use deterministic failures and real temporary receipt files rather than timed process termination. Exact
-VS Code 1.125.0 smoke remains the integration gate.
+Cases cover rejected writer receipts, crashes between projections, repeated recovery, removed/retained calls, successor
+call-ID reuse, cumulative exclusions, stale completion, and fresh/fork authorization. Use deterministic failures and
+temporary files rather than timed process termination. Host-adapter changes also require minimum-host compatibility.

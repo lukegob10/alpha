@@ -43,16 +43,15 @@ task, selection remains unchanged.
 
 ## Reference behavior and compatibility
 
-The implementation uses stable command, webview messaging, and keybinding contracts for VS Code **1.125.0**. Consulted
-[VS Code keybindings](https://code.visualstudio.com/docs/configure/keybindings) and
-[contribution points](https://code.visualstudio.com/api/references/contribution-points#contributes.keybindings) on
-October 5, 2026, and [when-clause contexts](https://code.visualstudio.com/api/references/when-clause-contexts) and
-[webview messaging](https://code.visualstudio.com/api/extension-guides/webview#passing-messages-from-a-webview-to-an-extension)
-on October 6, 2026. Reproduced the failed Alt+Period dispatch using trusted keyboard input in the exact Windows 1.125.0
-host, and inspected that host's sidebar overlay and key forwarding code. Validate with focused command, reasoning,
-registry, focus, message-handler, and composer tests, package and consumer typechecks, then
-`pnpm --filter @alpha-code/vscode-e2e test:smoke:1250`. The rendered reasoning fixture additionally tests trusted keypresses
-with `pnpm --filter @alpha-code/vscode-e2e test:reasoning:1250`.
+The implementation uses stable command, webview messaging, and keybinding contracts available in VS Code **1.125.0**.
+Platform references are [keybindings](https://code.visualstudio.com/docs/configure/keybindings),
+[contribution points](https://code.visualstudio.com/api/references/contribution-points#contributes.keybindings),
+[when-clause contexts](https://code.visualstudio.com/api/references/when-clause-contexts), and
+[webview messaging](https://code.visualstudio.com/api/extension-guides/webview#passing-messages-from-a-webview-to-an-extension).
+Validate command, reasoning, registry, focus, message-handler, and composer coverage, then the exact reference-host gate
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1380` and adapter compatibility with
+`pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250`. The rendered reasoning fixture tests trusted keypresses with
+`pnpm --filter @alpha-code/vscode-e2e test:reasoning:1380`.
 
 The Windows fixture presses reasoning minus/plus inside both composers and navigates both views. Its sidebar stages also
 verify that ordinary Enter queues without interrupting a held HTTP request, Send and steer cancels that request and delivers

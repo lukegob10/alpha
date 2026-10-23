@@ -1,62 +1,82 @@
-# Subagent lifecycle hardening
+# Managed-agent lifecycle and workspace ownership
 
-Reviewed against Codex CLI commit `8531184b49bcb160175a84e140b659a83a426df7`, retrieved October 22, 2026.
-The earlier review used `f3a90545aed3188ee1e5c119ec89a742de399cdc`; all reported findings were rechecked against
-the current Alpha working tree before implementation.
+Managed agents run through the shared Task, turn engine, scheduler, cancellation receipts, and persistence store.
+Independent chats retain separate lifecycle authority. A role, model choice, prompt, or message cannot widen authority.
 
-## Reference and scope
+## Settings and lifetime
 
-Codex's [tree shutdown](https://github.com/openai/codex/blob/8531184b49bcb160175a84e140b659a83a426df7/codex-rs/core/src/agent/control/runtime.rs)
-closes admission and signals cancellation before draining work. Teardown membership remains owned after registry removal.
-Its [spawn cleanup](https://github.com/openai/codex/blob/8531184b49bcb160175a84e140b659a83a426df7/codex-rs/core/src/agent/control/spawn_guard.rs)
-retains provisional ownership until acceptance or complete cleanup. Its
-[message-wake regressions](https://github.com/openai/codex/blob/8531184b49bcb160175a84e140b659a83a426df7/codex-rs/core/tests/suite/agent_message_wake.rs)
-distinguish explicit follow-ups from passive messages and preserve finishing-turn ownership through persistence.
+`subagentsEnabled` controls new admission while retaining controls for existing agents. `maxConcurrentSubagents` is a
+positive safe integer excluding the root, defaulting to three. Model/effort defaults and custom agent definitions select
+within the captured provider; they cannot substitute credentials or another provider.
 
-Alpha keeps its shared TypeScript kernel, existing tool scheduler, native Task cancellation receipts, provider ownership,
-and durable control store. No parallel runtime, automatic root-message wake feature, or Codex sandbox implementation is
-introduced. Alpha's stronger parent verification, recursive cancellation, workspace protections, and native tools remain
-intentional extension contracts. Conversation-only forks continue excluding parent tool traffic and opaque reasoning state.
+`wait_agent` defaults to 30 seconds, with a 10-second minimum and one-hour maximum. Timeout ends the wait, not the agent.
+Explicit Stop/interruption, parent cancellation, provider failures, and individual tool deadlines retain their owners.
 
-## Reverified changes
+Generic per-child execution timers, fixed research windows, cumulative child/tree token/cost ceilings, and separate nesting
+limits are retired. Old settings are removed idempotently or ignored on update/import. Historical manifests, digests,
+usage, and stop reasons remain readable; reload does not reinstate retired limits. Goal budgets and ordinary provider/tool
+limits remain separate.
 
-| Boundary                   | Correction                                                                                                                             |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Provider shutdown          | Signal owned Tasks before draining queued operations; join native cleanup and admitted child finalizations before closing persistence. |
-| Direct child Stop          | Join the captured child cancellation boundary and preserve cancellation rather than prematurely publishing failure.                    |
-| Partial batch admission    | Terminalize provisional child records on failure, release reservations after durable cleanup, and retain evidence when cleanup fails.  |
-| Guidance during completion | Continue accepted agent/steering input through the existing turn loop when final persistence yields to that input.                     |
-| Lifecycle tool effects     | Record durable intent before dispatch; conditional follow-up approval remains before the effect boundary, including late cancellation. |
-| Captured command denials   | Evaluate explicit inherited denials before automatic-approval opt-outs.                                                                |
-| Forked assistant context   | Read canonical text-block phases, retaining independent partial/final answers through reload and nested forks.                         |
-| Scheduled-task shutdown    | Retain scheduler ownership through admitted task creation, full task-tree teardown, and terminal writes.                               |
-| Unverified command cleanup | Retain failed process-tree cleanup as a shutdown obligation; ordinary command failures still settle normally.                          |
-| Budget equality            | Treat reported usage equal to a child/tree ceiling as exhausted before another request starts.                                         |
-| Grouped child attention    | Preserve canonical awaiting-input attention in grouped rows and count each child once.                                                 |
-| Interrupted waits          | Project steering interruption through the existing cancelled presentation.                                                             |
-| Completed-group recovery   | Recover a completed aggregate when every durable child row is already completed.                                                       |
-| Certification discovery    | Include managed lifecycle suites in existing tracks and assert their discovery in a tooling regression.                                |
+## Authority and approvals
 
-Regression tests use controlled promises and actual Task/provider/scheduler boundaries. Each new failure case was run
-before its production fix. The implementation extends existing ownership and projection paths without changing public
-or persisted schemas.
+Host-verified `spawn_agent` requests capture the parent's effective tool catalog and permission snapshot at the immutable
+step boundary and launch without a separate delegation approval. Commands, ordinary tools, protected writes, and MCP
+actions still follow inherited action approval for every role. A finalized approved agent can receive follow-ups without
+another delegation prompt; legacy records needing authorization migration retain their approval path.
 
-## Confirmed follow-up work
+The effective child grant intersects captured, invoking-step, ancestor, and live ceilings. Current settings may narrow a
+frozen grant. Full Access skips ordinary review only where both live and captured policy permit it. Explicit command
+denials, source-qualified MCP grants, disabled tools, Plan restrictions, `.alphaignore`, protected files, and workspace
+scope remain enforced. MCP snapshots contain identity/grants, not server credentials.
 
-- **Legacy delegated-child handoff:** parent metadata and the visible result can commit before the matching provider-history
-  result. Cold recovery can then substitute a generic interrupted result. Repair requires an idempotent, call-matched
-  handoff receipt before generic transcript recovery; moving the existing writes alone is insufficient.
-- **Compaction token spending:** summary inference preserves cost but discards input/output usage counters. Token budgets
-  therefore exclude that spending, while current cost accounting, request pacing, cancellation, and timeouts still apply.
-  A compatible repair must preserve normalized usage on existing success/error receipts, include failed and cancelled
-  attempts exactly once, and distinguish cumulative spending from the smaller active context.
+`runtimePolicy.authorityModel: "parent"` and captured execution mode distinguish current inheritance from older manifests.
+They participate in policy digests. Older manifests retain their narrower authority without rehashing or silent expansion.
+Compatibility callers without an invoking catalog retain a conservative tool surface. Role wording is task guidance;
+it is not an independent security boundary.
 
-These two findings remain open. Stale degraded-state refreshes and cancellation during mailbox acquisition remain
-unproven integration concerns, not confirmed defects from this pass.
+Ticket operations bind to the logical parent project, including from private Worker checkouts. Background commands use
+their process-owning provider and cannot acquire foreground interactive terminals. Passive messages neither supply human
+approval nor start recipient turns or grant ancestor/peer lifecycle control.
+
+## Context and cancellation
+
+Each child has its own persisted history and uses normal request/compaction boundaries. Native full-history inheritance
+requires provider compatibility; legacy conversation projections exclude parent tool traffic and opaque reasoning state.
+Forked partial/final assistant answers retain their phase through reload and nested forks. Child history never becomes a
+shared mutable parent transcript.
+
+Shutdown closes admission and signals owned tasks before draining work. Direct Stop joins the captured child cancellation
+boundary. Provisional launches remain owned until acceptance or durable cleanup; failed cleanup retains its evidence and
+shutdown obligation. Lifecycle effects persist intent before dispatch and publish one terminal result. Accepted guidance
+during final persistence continues through the existing turn loop.
+
+## Worker isolation and integration
+
+`ManagedSubagentWorktreeService` owns private checkouts, captured changes, exact-file/write-scope checks, conflicts, and
+Apply/Discard recovery. Absolute command directories inside an owned worktree are accepted; traversal and physical
+symlink/junction escapes are rejected. Git commands use ordinary command approval and task authorization.
+
+Successful completed Workers integrate already-approved in-scope effects before terminal publication, under the shared
+workspace mutation gate and original-content checks. Current parent mode and reductions in captured approval authority
+are rechecked. Conflicts, partial/cancelled work, reduced permissions, and older proposals retain recoverable Review/Apply.
+Integration failure cannot be reported as an applied success.
+
+Plain folders use an artifact-owned private Git database outside the source workspace; Git must be installed, but the
+user folder need not be a repository and receives no Git metadata. Private snapshots preserve file bytes independently of
+global line-ending conversion. Windows short storage under `~/.alpha/worker-git` retains validated ownership metadata.
+Nested artifacts keep that database alive until dependent checkouts/proposals are released. Cleanup removes dependents
+before their database, and unknown ownership records are preserved. Existing artifacts without optional private metadata
+remain readable.
 
 ## Validation
 
-Focused extension/webview regressions and owning suites run with `--maxWorkers=2 --no-cache`. Required final gates are
-extension and webview typechecks, exact VS Code 1.138.0 smoke, managed-agent automated certification, and minimum-host
-compatibility where applicable. The final chat records actual results and any environmental limits; listing a gate here
-does not claim it passed. Live-model capacity, quality, and speed are not established by deterministic fixture results.
+```sh
+pnpm --dir src test core/agent/__tests__/SubagentRuntimeLimits.spec.ts core/webview/__tests__/AlphaProvider.worker-integration.spec.ts
+pnpm --filter @alpha-code/core test src/worktree/__tests__/managed-subagent-worktree.non-git.spec.ts
+pnpm certify:managed-agents:automated
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+```
+
+Apply minimum-host compatibility coverage to host-adapter changes. Use the
+[certification guide](certification/managed-agent-milestone-certification.md) for the remaining tracks and evidence rules.
+Scripted certification does not establish live-provider capacity, quality, or speed.

@@ -106,3 +106,15 @@ test("release publication waits for the verified Windows x64 package only", () =
 	assert.match(publication, /Download the Windows x64 VSIX/u)
 	assert.doesNotMatch(workflow, /darwin-|linux-|win32-arm64|Intel macOS/u)
 })
+
+test("only release publication receives a repository write token", () => {
+	for (const file of ["code-qa.yml", "evals.yml", "release-vsix.yml"]) {
+		const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8")
+		assert.match(workflow, /^permissions:\r?\n {4}contents: read$/mu, file)
+		if (file !== "release-vsix.yml") assert.doesNotMatch(workflow, /contents: write/u, file)
+	}
+	const workflow = readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	const [validationAndPackaging, publication] = workflow.split("    publish-release:")
+	assert.doesNotMatch(validationAndPackaging, /contents: write/u)
+	assert.match(publication, /^ {8}permissions:\r?\n {12}contents: write$/mu)
+})

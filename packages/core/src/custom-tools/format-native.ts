@@ -23,5 +23,8 @@ export function formatNative(tool: SerializedCustomToolDefinition): OpenAI.Chat.
 		parameters = { type: "object", properties: {}, required: [], additionalProperties: false }
 	}
 
-	return { type: "function", function: { ...tool, strict: true, parameters } }
+	return {
+		type: "function",
+		function: { name: tool.name, description: tool.description, strict: true, parameters },
+	}
 }

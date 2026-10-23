@@ -31,13 +31,14 @@ export class WorkspaceMutationGate {
 		run: () => Promise<T>,
 		isCancelled?: () => boolean,
 	): Promise<T> | undefined {
-		void taskId
-		void label
 		if (this.active || this.queue.length > 0 || isCancelled?.()) return undefined
 
 		this.active = true
 		return Promise.resolve()
-			.then(run)
+			.then(() => {
+				if (isCancelled?.()) throw new WorkspaceMutationCancelledError(taskId, label)
+				return run()
+			})
 			.finally(() => {
 				this.active = false
 				this.drain()

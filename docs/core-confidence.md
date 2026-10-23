@@ -36,12 +36,12 @@ recovery requests; increasing samples does not increase that budget. An exhauste
 Select an exact available model and supported effort. This example plans a run without launching a host or consuming calls:
 
 ```powershell
-pnpm test:live:core --model-id gpt-5.6-luna --effort high --max-requests 100 --samples 1 --root F:/alpha-vscode-e2e-runs/core-confidence --profile-dir F:/alpha-vscode-e2e-runs/20260906/profiles --dry-run
+pnpm test:live:core --model-id <exact-discovered-id> --effort <supported-effort> --max-requests 100 --samples 1 --root <new-absolute-campaign-root> --profile-dir <owned-profile-root> --dry-run
 ```
 
 After choosing the budget, replace `--dry-run` with `--init-root` for the first run into a new empty campaign root. Later
 runs use its existing marker and a new run ID. Follow [the profile guide](vscode-live-test-profiles.md) for authentication
-and owned-profile setup. The example model is not an availability guarantee. This suite is Copilot-only; it does not change
+and owned-profile setup. Select a model from the current discovery receipt. This suite is Copilot-only; it does not change
 Vertex setup or model routing. Live acceptance supplements the scripted and LM-fixture 1.138.0 gates.
 
 Gate results identify the scenario subset, exact model/effort, host, samples, total usage/budget, and each attempt's requests
@@ -60,7 +60,7 @@ For every observed defect: retain its failed run, reproduce it at the owning bou
 fix the invariant, and rerun the affected gate. A later pass does not erase the earlier failure. Expand the fixed suite when
 a newly observed core-loop failure is not represented; avoid unrelated feature work.
 
-These gates establish confidence in specific tested contracts. They do not establish a general live solve-rate improvement,
-rendered-UI correctness from projected state alone, or completion of all eight pending managed-agent integration rows.
-Full long-context and medium/hard frontier-task grading remain separate acceptance work in NOR-48. The broader live
-`test:live:reliability` suite is still available when a change affects those additional scenarios.
+These gates establish confidence in specific tested contracts. General live solve-rate claims require repeated comparable
+runs; rendered-UI claims require renderer observations. Check the current managed-agent certification matrix for integration
+requirements that need additional evidence. Full long-context and medium/hard frontier-task grading require their declared
+workloads and graders. Run the broader live `test:live:reliability` suite when a change affects its additional scenarios.

@@ -104,9 +104,9 @@ disabled until corrected. Fixing the source automatically recovers. A moved file
 is not guessed or searched for. Reopen its new source explicitly. A workspace
 closed across reload must be reopened before its document link can resolve.
 
-## Workload limits and acceptance budgets
+## Workload limits
 
-Established before measuring/tuning: maximum source 512 KiB, 12,000 elements,
+Maximum source is 512 KiB, 12,000 elements,
 64 levels of depth, 32 enhanced widgets, 1,000 evidence links. Kit enhancements
 add their own table/chart/diagram limits. The host reads at most 512 KiB + 1 byte of
 HTML per refresh. Images add at most eight sequential reads of 1 MiB + 1 byte each;
@@ -119,11 +119,6 @@ heap, 1.5 s deadline), retained warm after success and terminated on failure,
 cancellation or panel closure.
 At most eight document panels may be open at once; close one to open another.
 
-Measurement fixtures: small = complete review example; large = 1,000 rows × 5
-columns with plain text, within the source and element limits. Initial acceptance
-budgets on the development machine: sanitizer p95 < 100 ms small / < 250 ms large;
-warm user-visible open < 500 ms small / < 1 s large; cold open < 2 s; refresh after
-debounce < 500 ms small / < 1 s large. Repeated-open/close target: one panel per URI,
-no remaining listener/watcher/timer registrations after closing. These are budgets,
-not claimed measurements or performance gains. Exact-host/installed-package results
-and unavailable gates are recorded separately in the release evidence.
+Repeated opens retain one panel per canonical URI. Closing releases the panel's
+listeners, watchers, timers, and worker. Validate authoring and installed-package
+behavior using the current [testing workflow](testing-harness.md).

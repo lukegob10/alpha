@@ -51,6 +51,6 @@ view-image receipts, local mention budgets, provider/history media projections, 
 Keep the existing exact PNG/GIF byte checks, controlled cancellation barriers, actual SVG pixels/transparency,
 metadata exclusions, output-budget checks, and calibrated native path-denial controls.
 
-Production packaging may rebuild and minify the worker. Record its new bytes and rerun actual-codec checks against
-that output before relying on development-build evidence. Packaging verification and the exact VS Code 1.125.0
-host gate remain separate obligations under the repository guide.
+Production packaging may rebuild and minify the worker. Rerun actual-codec checks against that output before relying
+on development-build evidence. Packaging verification and the exact VS Code 1.138.0 host gate remain separate
+obligations under the repository guide; host-adapter changes also require minimum-host compatibility.

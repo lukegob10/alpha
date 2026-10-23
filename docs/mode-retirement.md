@@ -60,5 +60,5 @@ unsupported-target rejection before side effects, task-local concurrent transiti
 delegation, prompt/tool filtering, mode selectors, and approval settings. The release-gating host command remains:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```

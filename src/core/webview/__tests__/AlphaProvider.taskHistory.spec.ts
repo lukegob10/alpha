@@ -1,6 +1,8 @@
 // pnpm --filter alpha test core/webview/__tests__/AlphaProvider.taskHistory.spec.ts
 
 import * as vscode from "vscode"
+import * as fs from "fs/promises"
+import { managedSubagentWorktreeService } from "@alpha-code/core"
 import {
 	TaskLifecycleState,
 	type HistoryItem,
@@ -12,6 +14,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { ContextProxy } from "../../config/ContextProxy"
 import { AlphaProvider } from "../AlphaProvider"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
+import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 
 // Mock setup
 vi.mock("p-wait-for", () => ({
@@ -22,7 +25,7 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => {
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
-	return {
+	const filesystem = {
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) {
 				if (transactionDirectories.has(filePath)) throw Object.assign(new Error("exists"), { code: "EEXIST" })
@@ -82,6 +85,7 @@ vi.mock("fs/promises", () => {
 		access: vi.fn().mockResolvedValue(undefined),
 		rm: vi.fn().mockResolvedValue(undefined),
 	}
+	return { ...filesystem, default: filesystem }
 })
 
 // This suite replaces filesystem I/O with in-memory mocks. Keep the matching
@@ -1115,6 +1119,54 @@ describe("AlphaProvider Task History Synchronization", () => {
 
 			expect(purgeRoot).not.toHaveBeenCalled()
 			expect(provider.taskHistoryStore.get(root.id)).toEqual(expect.objectContaining({ id: root.id }))
+		})
+
+		it("deletes each descendant once when persisted lineage repeats edges or contains a cycle", async () => {
+			for (const item of [
+				createHistoryItem({ id: "cycle-root", task: "Root", childIds: ["cycle-a", "cycle-a", "cycle-b"] }),
+				createHistoryItem({ id: "cycle-a", task: "A", childIds: ["cycle-root", "cycle-b"] }),
+				createHistoryItem({ id: "cycle-b", task: "B", childIds: ["cycle-a"] }),
+			]) {
+				await provider.updateTaskHistory(item, { broadcast: false })
+			}
+			const lookup = provider.getTaskWithId.bind(provider)
+			let reads = 0
+			const getTask = vi.spyOn(provider, "getTaskWithId").mockImplementation(async (...args) => {
+				// Bound the broken implementation so this regression fails its assertions
+				// instead of keeping the test process inside an endless async traversal.
+				if (++reads > 12) throw new Error("Repeated lineage traversal")
+				return lookup(...args)
+			})
+			const deletedHistory = vi.spyOn(provider.taskHistoryStore, "deleteMany")
+			const checkpoints = vi.spyOn(ShadowCheckpointService, "deleteTask").mockResolvedValue(undefined)
+			const artifacts = vi
+				.spyOn(managedSubagentWorktreeService, "deleteArtifactsForTasks")
+				.mockResolvedValue(undefined)
+			const post = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			vi.mocked(fs.rm).mockClear()
+			try {
+				await provider.deleteTaskWithId("cycle-root")
+
+				expect(deletedHistory).toHaveBeenCalledExactlyOnceWith(["cycle-root", "cycle-a", "cycle-b"])
+				expect(getTask).toHaveBeenCalledTimes(4)
+				expect(checkpoints.mock.calls.map(([options]) => options.taskId)).toEqual([
+					"cycle-root",
+					"cycle-a",
+					"cycle-b",
+				])
+				expect(fs.rm).toHaveBeenCalledTimes(3)
+				expect(artifacts).toHaveBeenCalledExactlyOnceWith("/test/storage/path", [
+					"cycle-root",
+					"cycle-a",
+					"cycle-b",
+				])
+			} finally {
+				getTask.mockRestore()
+				deletedHistory.mockRestore()
+				checkpoints.mockRestore()
+				artifacts.mockRestore()
+				post.mockRestore()
+			}
 		})
 
 		it("does not block subsequent writes when a previous store write errors", async () => {

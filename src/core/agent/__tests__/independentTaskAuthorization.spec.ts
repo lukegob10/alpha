@@ -26,6 +26,10 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Continue this work in a new chat without the previous context.",
 		"Okay, can we create a new chat for these tickets?",
 		"Okay, I want a fresh chat for the parser.",
+		"Create a new\nthread for the parser.",
+		"Create a new thread, with a short parser review prompt.",
+		"Create a new thread\nDon't change any files.",
+		"Create a new thread, don't create it, create a new chat instead.",
 	])("accepts a direct request: %s", (request) => {
 		expect(isExplicitIndependentTaskRequest(request)).toBe(true)
 	})
@@ -57,6 +61,13 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Work on these tickets here rather than in a new chat.",
 		"How can we continue this work in a new chat?",
 		"Create a new thread, but let's not.",
+		"Create a new task\nActually, do not create it.",
+		"Create a new thread, actually do not create it.",
+		"Create a new thread\r\nDon't create it.",
+		"Create a new thread, scratch that.",
+		"Create a new thread, please don't.",
+		"'Create a new thread, don't create it, create another thread'",
+		"Please 'create a new thread, don't create it, create another thread'",
 	])("rejects an absent or indirect request: %s", (request) => {
 		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
 	})
@@ -137,6 +148,9 @@ describe("isExplicitThreadForkRequest", () => {
 		"Create a new chat with the same conversation history.",
 		"Create a new thread and preserve the entire conversation history.",
 		"Start a new chat and keep the same context.",
+		"Fork this\nchat for another approach.",
+		"Fork this chat\nDon't change any files.",
+		"Fork this chat, don't fork it, fork this chat instead.",
 	])("accepts a direct request to retain history: %s", (request) => {
 		expect(isExplicitThreadForkRequest(request)).toBe(true)
 	})
@@ -169,6 +183,13 @@ describe("isExplicitThreadForkRequest", () => {
 		"Start a new chat without the previous context.",
 		'Create a new chat named "with the same context".',
 		"Create a new chat. Read the documentation with the full conversation history examples.",
+		"Fork this chat\nActually, do not fork it.",
+		"Fork this chat, actually do not fork it.",
+		"Fork this chat\r\nDon't fork it.",
+		"Fork this chat, scratch that.",
+		"Fork this chat, please don't.",
+		"'Fork this chat, don't fork it, fork this chat again'",
+		"Also, 'fork this chat, don't fork it, fork this chat again'",
 	])("rejects fresh, indirect, deferred, or revoked requests: %s", (request) => {
 		expect(isExplicitThreadForkRequest(request)).toBe(false)
 	})

@@ -950,6 +950,20 @@ describe("webviewMessageHandler - captured diff review", () => {
 		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
 	})
 
+	it.each(["src/file.ts", "../../../private.txt", "/outside/workspace.txt", ""])(
+		"ignores retired file-content requests for %j without resolving task state or reading files",
+		async (text) => {
+			await expect(
+				webviewMessageHandler(mockAlphaProvider, { type: "readFileContent", text }),
+			).resolves.toBeUndefined()
+
+			expect(fs.readFile).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.getLiveTask).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each([
 		{ ...payload, files: [] },
 		{ ...payload, title: "x".repeat(257) },

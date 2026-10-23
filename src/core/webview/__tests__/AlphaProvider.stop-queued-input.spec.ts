@@ -106,7 +106,8 @@ describe("AlphaProvider Stop with pending human input", () => {
 					),
 				).toBe(true)
 			}
-			await vi.waitFor(() => expect(nextTurn.request).toBeDefined())
+			await nextTurn.entered
+			expect(nextTurn.request).toBeDefined()
 			expect(nextTurn.request?.signal?.aborted).toBe(false)
 			if (admission === "queue") {
 				expect(

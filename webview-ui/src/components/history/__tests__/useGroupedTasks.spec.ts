@@ -122,6 +122,63 @@ describe("useGroupedTasks", () => {
 			expect(result.current.isSearchMode).toBe(false)
 		})
 
+		it("keeps chats with cyclic saved parents reachable exactly once", () => {
+			const tasks = [
+				Object.freeze(createMockTask({ id: "cycle-a", parentTaskId: "cycle-b", ts: 3 })),
+				Object.freeze(createMockTask({ id: "cycle-b", parentTaskId: "cycle-a", ts: 2 })),
+				Object.freeze(createMockTask({ id: "child", parentTaskId: "cycle-b", ts: 1 })),
+			]
+			const { result } = renderHook(() => useGroupedTasks(tasks, ""))
+
+			expect(result.current.groups).toHaveLength(1)
+			expect(result.current.groups[0].parent.id).toBe("cycle-a")
+			expect(result.current.groups[0].subtasks[0].item.id).toBe("cycle-b")
+			expect(result.current.groups[0].subtasks[0].children.map((node) => node.item.id)).toEqual(["child"])
+			expect(countAllSubtasks(result.current.groups[0].subtasks)).toBe(2)
+			expect(tasks[0].parentTaskId).toBe("cycle-b")
+			expect(tasks[1].parentTaskId).toBe("cycle-a")
+		})
+
+		it("promotes a self-parented chat after ordinary roots and preserves its descendants", () => {
+			const tasks = [
+				createMockTask({ id: "self", parentTaskId: "self", ts: 3 }),
+				createMockTask({ id: "ordinary", ts: 2 }),
+				createMockTask({ id: "child", parentTaskId: "self", ts: 1 }),
+			]
+			const { result } = renderHook(() => useGroupedTasks(tasks, ""))
+
+			expect(result.current.groups.map((group) => group.parent.id)).toEqual(["ordinary", "self"])
+			expect(result.current.groups[1].subtasks.map((node) => node.item.id)).toEqual(["child"])
+		})
+
+		it("keeps descendants attached when a child sorts before its cyclic ancestors", () => {
+			const tasks = [
+				createMockTask({ id: "child", parentTaskId: "cycle-b", ts: 3 }),
+				createMockTask({ id: "cycle-a", parentTaskId: "cycle-b", ts: 2 }),
+				createMockTask({ id: "cycle-b", parentTaskId: "cycle-a", ts: 1 }),
+			]
+			const { result } = renderHook(() => useGroupedTasks(tasks, ""))
+
+			expect(result.current.groups).toHaveLength(1)
+			expect(result.current.groups[0].parent.id).toBe("cycle-b")
+			expect(result.current.groups[0].subtasks.map((node) => node.item.id)).toEqual(["child", "cycle-a"])
+		})
+
+		it("cuts repeated ancestors when building a subtree from historical links", () => {
+			const first = createMockTask({ id: "first", parentTaskId: "second" })
+			const second = createMockTask({ id: "second", parentTaskId: "first" })
+			const childrenMap = new Map([
+				["first", [second]],
+				["second", [first]],
+			])
+
+			const node = buildSubtree(first, childrenMap, new Set())
+
+			expect(node.item.id).toBe("first")
+			expect(node.children.map((child) => child.item.id)).toEqual(["second"])
+			expect(node.children[0].children).toEqual([])
+		})
+
 		it("handles deeply nested tasks with recursive tree structure", () => {
 			const rootTask = createMockTask({
 				id: "root-1",

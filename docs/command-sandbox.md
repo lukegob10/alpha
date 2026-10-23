@@ -1,63 +1,67 @@
 # Command and path approval
 
-## Contract (2.1.40)
+Alpha executes commands through its normal inline or VS Code terminal. Approval, path preflight, cancellation, and output
+capture use the shared scheduler and tool boundaries. The extension does not provision an OS sandbox or repair OS
+permissions.
 
-Alpha uses the normal inline or VS Code terminal. There is no downloaded command runtime, Codex executable, OS sandbox,
-Windows account provisioning, or permission repair in the extension. This replaces the native runtime introduced in 2.1.39.
+## Approval boundary
 
-The approval mode and saved allowed/denied prefixes decide whether ordinary commands ask. Auto approves commands run
-from the workspace without requiring a saved prefix. The built-in prefix list is empty; users can save a prefix for Ask
-mode or to override a broader deny rule. Existing explicit deny rules, disabled tools, Plan restrictions, and inherited
-child authority still apply. Preferences use the existing global store and persist across projects/reloads.
+Auto approves commands run from the workspace without a saved prefix. Ask requests ordinary command approval unless an
+explicit non-wildcard saved prefix allows the command. Full Access skips ordinary per-action review where permitted.
+Explicit denials, disabled tools, Plan restrictions, and narrower inherited authority remain effective in every mode.
+Any matching deny wins over an allow; arguments are case-sensitive.
 
-## Auto mode contract
+The built-in allowed-prefix list is empty. A one-time migration removes only the former product defaults `git log`,
+`git diff`, and `git show` from global state, preserving other saved prefixes and VS Code user/workspace/folder settings.
+Users can deliberately re-add a prefix for Ask mode. See the [approval policy](approval-mode-policy.md) for MCP, Tickets,
+and inherited-agent decisions.
 
-Auto approves read-only workspace access, validated in-workspace file changes, commands run from the workspace, and
-Alpha Ticket changes for the current project. It asks before launching sub-agents, MCP calls, protected-file changes,
-and detected outside-workspace or unresolved command writes. Ask requests approval for file changes and commands by
-default; saved non-wildcard prefixes can still allow matching commands. Full Access skips the ordinary per-action review
-for actions it permits, while explicit command denials remain in force. See the
-[approval-mode policy](approval-mode-policy.md) for the approval contract.
+## Path preflight
 
-Earlier manifests seeded `git log`, `git diff`, and `git show` as allowed command prefixes. A one-time upgrade migration
-removes those exact entries from global state because they were product defaults, not a user's explicit opt-in. Other
-saved prefixes are retained, and VS Code user/workspace/folder settings are not changed.
+Before approval, the scheduler examines common file destinations:
 
-The execution scheduler separately examines common file destinations before command approval:
-
-- File output redirections, including append and redirections without spaces.
-- Common PowerShell, CMD, and POSIX write, delete, copy, and move commands. Copy sources may be outside the root.
-- Common output flags and working-directory options. Directory changes in a command chain affect subsequent checks.
+- Output/append redirections, including forms without spaces.
+- Common PowerShell, CMD, and POSIX write/delete/copy/move commands and output flags.
+- Working-directory options and supported directory changes within command chains.
 - Quoted paths, supported environment variables, traversal, and existing symlinks/junctions.
-- Shell command wrappers and PowerShell encoded commands, within a bounded inspection budget.
+- Shell wrappers and PowerShell encoded commands within a bounded inspection budget.
 
-Detected writes outside the captured task roots require explicit approval, even with `*`. A recognized write whose
-destination cannot be resolved also requires review. The command card displays the paths and unresolved-path notice;
-approval applies to that run only. Updating command prefix rules does not grant outside-path approval. A restricted
-managed child cannot acquire outside authority from a prompt. Known read commands can run from an outside directory;
-other commands with an outside working directory require review.
+In Ask and Auto, detected writes outside captured task roots or recognized writes with unresolved destinations require
+review even when a command prefix matches. The card displays resolved paths and unresolved-path context; approval covers
+that run only. Saving a prefix does not grant outside-path access. Full Access skips the ordinary outside-path review;
+captured managed-agent restrictions still apply. Known read commands can use an outside working directory; other commands
+with one require review.
 
-Canonical path identities are captured by the existing scheduler and rechecked after approval, before dispatch.
-Native file tools retain their existing outside-write approval and mutation gates. `.alphaignore`, protected files,
-cancellation, output capture, and command lifecycle bookkeeping remain at their existing owning boundaries.
+Canonical path identities are captured and rechecked after approval before dispatch. File tools retain their own mutation
+gates, stale-content checks, `.alphaignore`, and protected-file rules.
 
-## Deliberate limits
+Preflight is not process isolation. It does not interpret arbitrary script bodies or guarantee exhaustive shell parsing.
+Scripts, aliases, hooks, dynamic paths, network access, and descendant processes remain subject to OS-account permissions
+and the user's command authorization. Do not describe Auto as OS-enforced workspace confinement.
 
-This is a command/path preflight, **not process isolation**. Unknown programs and arbitrary script bodies are allowed by
-the user's command rules. A script, hook, alias, dynamically calculated path, or descendant process can access any file
-permitted by the user's OS account. The preflight does not interpret arbitrary JavaScript/Python or audit script files.
-It neither guarantees exhaustive shell parsing nor claims to prevent every outside write. Settings and policy summaries
-describe this limitation.
+## Literal command text
 
-## Compatibility and validation
+Structured native command strings are literal shell input. Approval, ignore/path checks, direct audited reads, and terminal
+dispatch must consume the same text. Registry adapters may translate argument names or timeout units but cannot decode
+HTML entities in command content. Historical native `execute_command`/`command` aliases remain accepted with literal
+contents; saved transcripts are not rewritten.
 
-The saved terminal selection is honored again. Shell-integration timeout and command delay controls apply to the VS Code
-terminal; inline execution does not use those host-shell controls. Settings inputs still use the cached Save/Cancel buffer.
-No settings reset or per-project setup is introduced. Runtime files left by 2.1.39 are unused; Alpha does not delete shared
-Codex installation or account data.
+Multi-file `apply_patch` retains independent per-file preflight and outcomes: invalid/ignored files are skipped while
+independently valid files can apply; a later approval denial stops subsequent files. Ignored files are not read.
+The aggregate status reports any failure and does not imply an all-or-nothing filesystem transaction.
 
-Regression coverage lives in `commandPathScope.spec.ts`, `outsideWorkspaceAccess.spec.ts`, command/lifecycle tests,
-`CommandExecution.spec.tsx`, and the shared message-schema test. The exact VS Code 1.125.0 release gate is followed by
-`test:command-paths:1250:run`, which checks ordinary auto-approval, outside-path approval presentation, and actual command
-execution after a one-run approval. Unit tests verify that denying review prevents the effect, that junction retargeting
-is rejected, and that restricted child policy cannot be widened.
+## Terminal compatibility and validation
+
+Saved terminal selection remains authoritative. Shell-integration timeout and command delay apply to the VS Code terminal,
+not inline execution. Settings use the existing buffered Save/Cancel flow. Unused runtime files from retired implementations
+do not authorize deletion of shared Codex/account data.
+
+Regression coverage includes command path scope, outside-workspace access, denied effects, junction retargeting, literal
+native commands, terminal lifecycle, child ceilings, and command-card presentation.
+
+```sh
+pnpm --dir src check-types
+pnpm --dir webview-ui check-types
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
+```

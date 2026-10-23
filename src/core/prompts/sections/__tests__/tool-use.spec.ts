@@ -181,12 +181,17 @@ describe("getSharedToolUseSection", () => {
 			subagentDelegationPolicy: "proactive",
 		})
 		const toolUse = getSharedToolUseSection("review", false, true, "proactive")
+		const capabilities = getCapabilitiesSection("F:/workspace", undefined, "review", true, "proactive")
 
 		expect(rules).not.toContain("Do not create tasks or delegate")
 		expect(rules).toContain("create only managed descendants with spawn_agent")
-		expect(rules).toContain("frozen depth, root-wide capacity, timeout, token, and cost limits")
+		expect(rules).toContain("inherited authority and root-wide capacity limits")
+		expect(rules).toContain("Never control a parent, ancestor, sibling, or foreign branch")
 		expect(toolUse).toContain("managed-agent lifecycle controls for your retained descendant subtree")
 		expect(toolUse).toContain("Do not control ancestors, siblings, or foreign branches")
+		expect(toolUse).toContain("when root-wide capacity allows")
+		expect(capabilities).toContain("delegation policy, inherited authority, and root-wide capacity limits")
+		expect(`${rules}\n${toolUse}\n${capabilities}`).not.toMatch(/\b(?:timeouts?|tokens?|costs?|budgets?)\b/i)
 	})
 
 	it.each(["explore", "review", "worker"] as const)(

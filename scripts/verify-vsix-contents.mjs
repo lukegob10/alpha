@@ -173,7 +173,7 @@ if (target.startsWith("win32-") || target.startsWith("darwin-")) {
 }
 
 const missingEntries = requiredEntries.filter((entry) => !entries.has(entry))
-const packagedEnvironmentFiles = [...entries].filter((entry) => /(^|\/)\.env(?:\.|$)/u.test(entry))
+const packagedEnvironmentFiles = [...entries].filter((entry) => /(^|\/)\.env(?:\.|$)/iu.test(entry))
 const packagedLinuxRipgrepFiles = [...entries].filter(
 	(entry) =>
 		/^extension\/dist\/node_modules\/@vscode\/ripgrep-linux-[^/]+\//u.test(entry) ||

@@ -125,12 +125,6 @@ export async function readApiMessages({
 					)
 				}
 				assertValidHistory(parsedData, taskId)
-				if (parsedData.length === 0) {
-					console.error(
-						`[Alpha-Debug] readApiMessages: Found OLD API conversation history file (claude_messages.json), but it's empty (parsed as []). TaskId: ${taskId}, Path: ${oldPath}`,
-					)
-				}
-
 				try {
 					// Commit the replacement before removing the fallback. resumeTaskFromHistory
 					// reads twice, so deleting the only durable copy here loses the task.
@@ -148,10 +142,6 @@ export async function readApiMessages({
 
 				return parsedData
 			}
-			// If we reach here, neither the new nor the old history file was found.
-			console.error(
-				`[Alpha-Debug] readApiMessages: API conversation history file not found for taskId: ${taskId}. Expected at: ${filePath}`,
-			)
 			return []
 		})
 	}

@@ -1,7 +1,10 @@
 import type { SubagentGroupState } from "@alpha-code/types"
 
 import { buildInternalTaskEnvelope, type InternalTaskPolicy } from "../../agent/InternalTaskEnvelope"
+import type { PreparedSubagentGroup } from "../../agent/SubagentDelegation"
 import { createSpawnAgentTool, spawn_agent as spawnAgentSchema } from "../../prompts/tools/native-tools/spawn_agent"
+import type { Task } from "../../task/Task"
+import type { ToolCallbacks } from "../BaseTool"
 import { spawnAgentTool } from "../SpawnAgentTool"
 
 const policy: InternalTaskPolicy = {
@@ -57,7 +60,107 @@ function handle() {
 	}
 }
 
+function cancellationHarness(batch: PreparedSubagentGroup = prepared()) {
+	const request = new AbortController()
+	const lifetime = new AbortController()
+	const provider = {
+		prepareSubagentGroup: vi.fn(async () => batch),
+		launchPreparedSubagentGroup: vi.fn(async () => handle()),
+		cancelPreparedSubagentGroup: vi.fn(async () => undefined),
+	}
+	const task = {
+		providerRef: { deref: () => provider },
+		recordToolError: vi.fn(),
+		getTaskLifetimeCancellationSignal: () => lifetime.signal,
+	} as unknown as Task
+	const callbacks = {
+		askApproval: vi.fn(async () => true),
+		pushToolResult: vi.fn(),
+		handleError: vi.fn(async () => undefined),
+		setResultMetadata: vi.fn(),
+		signal: request.signal,
+	} satisfies ToolCallbacks
+	return { batch, provider, task, callbacks, request, lifetime }
+}
+
 describe("SpawnAgentTool", () => {
+	it.each(["before preparation", "during preparation", "during approval", "during declined approval"] as const)(
+		"does not launch a child cancelled %s",
+		async (stage) => {
+			const { batch, provider, task, callbacks, request, lifetime } = cancellationHarness()
+			if (stage === "before preparation") request.abort()
+			if (stage === "during preparation") {
+				provider.prepareSubagentGroup.mockImplementationOnce(async () => {
+					request.abort()
+					return batch
+				})
+			}
+			if (stage === "during approval" || stage === "during declined approval") {
+				callbacks.askApproval.mockImplementationOnce(async () => {
+					request.abort()
+					return stage !== "during declined approval"
+				})
+			}
+
+			await spawnAgentTool.execute({ task_name: "inspect", message: "Inspect src" }, task, callbacks)
+
+			expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalled()
+			expect(lifetime.signal.aborted).toBe(false)
+			expect(callbacks.handleError).not.toHaveBeenCalled()
+			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+			expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({ status: "cancelled", tool: "spawn_agent" }),
+			)
+			if (stage === "before preparation") {
+				expect(provider.prepareSubagentGroup).not.toHaveBeenCalled()
+				expect(provider.cancelPreparedSubagentGroup).not.toHaveBeenCalled()
+			} else {
+				expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledExactlyOnceWith(
+					task,
+					batch,
+					expect.stringContaining("cancelled before launch"),
+				)
+			}
+			if (!stage.includes("approval")) expect(callbacks.askApproval).not.toHaveBeenCalled()
+		},
+	)
+
+	it("passes request cancellation separately from the accepted child's lifetime", async () => {
+		const { batch, provider, task, callbacks, request, lifetime } = cancellationHarness()
+
+		await spawnAgentTool.execute({ task_name: "inspect", message: "Inspect src" }, task, callbacks)
+		request.abort()
+
+		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledExactlyOnceWith(
+			task,
+			batch,
+			lifetime.signal,
+			request.signal,
+		)
+		expect(provider.cancelPreparedSubagentGroup).not.toHaveBeenCalled()
+		expect(lifetime.signal.aborted).toBe(false)
+	})
+
+	it("releases a preparation rejected by the single-child invariant", async () => {
+		const batch = prepared()
+		batch.envelopes = []
+		const { provider, task, callbacks } = cancellationHarness(batch)
+
+		await spawnAgentTool.execute({ task_name: "inspect", message: "Inspect src" }, task, callbacks)
+
+		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalled()
+		expect(callbacks.askApproval).not.toHaveBeenCalled()
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledExactlyOnceWith(
+			task,
+			batch,
+			expect.stringContaining("invalid"),
+		)
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			"Error: spawn_agent must prepare exactly one child",
+		)
+	})
+
 	it("launches a host-verified inherited child without a second approval tier", async () => {
 		const batch = { ...prepared(), inheritsParentPermissions: true, requiresExplicitApproval: false }
 		const provider = {
@@ -81,7 +184,12 @@ describe("SpawnAgentTool", () => {
 			} as any,
 		)
 		expect(askApproval).not.toHaveBeenCalled()
-		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, expect.any(AbortSignal))
+		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(
+			task,
+			batch,
+			expect.any(AbortSignal),
+			undefined,
+		)
 		expect(pushToolResult).toHaveBeenCalled()
 	})
 	it("advertises configured agent names without exposing their instructions", () => {
@@ -163,7 +271,7 @@ describe("SpawnAgentTool", () => {
 			true,
 		)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledAfter(askApproval)
-		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, lifetimeSignal)
+		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, lifetimeSignal, undefined)
 		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalledWith(task, batch, requestSignal)
 		expect(pushToolResult).toHaveBeenCalledWith(
 			JSON.stringify({ ...handle(), target: "child-1", taskName: "backend_review" }),

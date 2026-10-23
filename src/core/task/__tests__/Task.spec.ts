@@ -5926,9 +5926,6 @@ describe("Alpha", () => {
 				const abortSpy = vi.spyOn(mockAbortController, "abort")
 				task.currentRequestAbortController = mockAbortController
 
-				// Spy on console.log
-				const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-
 				// Call cancelCurrentRequest
 				task.cancelCurrentRequest()
 
@@ -5937,12 +5934,6 @@ describe("Alpha", () => {
 
 				// Verify the controller was cleared
 				expect(task.currentRequestAbortController).toBeUndefined()
-
-				// Verify logging
-				expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Aborting current HTTP request"))
-
-				// Restore console.log
-				consoleLogSpy.mockRestore()
 			})
 
 			it("should handle missing AbortController gracefully", () => {

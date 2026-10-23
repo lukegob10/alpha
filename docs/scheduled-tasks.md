@@ -15,5 +15,5 @@ Focused validation:
 ```sh
 pnpm --dir src test services/scheduled-tasks/__tests__/ScheduledTaskStore.spec.ts services/scheduled-tasks/__tests__/ScheduledTaskService.profiles.spec.ts
 pnpm --dir webview-ui test src/components/scheduled-tasks/__tests__/ScheduledTasksView.spec.tsx
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```

@@ -68,15 +68,9 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 			}
 
 			if (responses.length > 0) {
-				// Parse the JSON from the message text
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const jsonObj = safeJsonParse<any>(msg.text || "{}", {})
-
-				// Add the response to the JSON object
-				jsonObj.response = responses.join("\n")
-
-				// Stringify the updated JSON object
-				const consolidatedText = JSON.stringify(jsonObj)
+				const parsed: unknown = safeJsonParse(msg.text)
+				const request = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+				const consolidatedText = JSON.stringify({ ...request, response: responses.join("\n") })
 
 				consolidatedMessages.set(msg.ts, { ...msg, text: consolidatedText })
 			} else {
@@ -98,7 +92,6 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 			let consolidatedText = msg.text || ""
 			let j = i + 1
 			let previous: { type: "ask" | "say"; text: string } | undefined
-			let lastProcessedIndex = i
 
 			while (j < messages.length) {
 				const currentMsg = messages[j]
@@ -133,18 +126,12 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 
 					previous = { type, text }
 					processedIndices.add(j)
-					lastProcessedIndex = j
 				}
 
 				j++
 			}
 
 			consolidatedMessages.set(msg.ts, { ...msg, text: consolidatedText })
-
-			// Only skip ahead if we actually processed command outputs
-			if (lastProcessedIndex > i) {
-				i = lastProcessedIndex
-			}
 		}
 	}
 

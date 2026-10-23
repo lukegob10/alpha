@@ -177,6 +177,14 @@ export async function runAgentLifecycleOperation(
 	operation: (provider: AgentLifecycleControlProvider) => Promise<unknown>,
 	beforePush?: (result: unknown) => Promise<void> | void,
 ): Promise<void> {
+	const cancelled = () => {
+		callbacks.setResultMetadata?.({ status: "cancelled" })
+		callbacks.pushToolResult(JSON.stringify({ status: "cancelled", tool: name }))
+	}
+	if (callbacks.signal?.aborted) {
+		cancelled()
+		return
+	}
 	const provider = task.providerRef.deref() as (Partial<AgentLifecycleControlProvider> & object) | undefined
 	if (typeof provider?.[method] !== "function") {
 		const error = new Error(`agent lifecycle capability ${method} is unavailable`)
@@ -186,6 +194,11 @@ export async function runAgentLifecycleOperation(
 	}
 
 	await publishLifecyclePresentation(name, task, "running", true)
+	if (callbacks.signal?.aborted) {
+		cancelled()
+		await publishLifecyclePresentation(name, task, "completed", false, { cancelled: true })
+		return
+	}
 	try {
 		const result = await operation(provider as AgentLifecycleControlProvider)
 		const serialized = JSON.stringify(result)

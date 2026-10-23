@@ -114,7 +114,7 @@ The optional setup probe requests consent only following the user's setup action
 receipt. Alpha's own extension-context access check must succeed; unknown access remains blocked. A genuine request
 through an Alpha workflow is the live-provider acceptance check.
 
-All automated host tests target exact VS Code 1.138.0. Profile state is separated as
+Primary automated host tests target exact VS Code 1.138.0; explicit minimum-host compatibility tests use 1.125.0. Profile state is separated as
 `profiles/<exact-version>/user-data` and `profiles/<exact-version>/extensions`; authentication may be required separately.
 Do not copy credential stores between versions. Persistent profiles and workspaces are never automatically deleted.
 
@@ -131,7 +131,7 @@ Runner fixture launches disable the built-in VS Code Git extension with `--disab
 }
 ```
 
-This isolates the bundled Copilot repository/branch observer errors encountered when fixture repositories open. Alpha's Git tool workflows still execute the real Git CLI through the normal command approval and workspace boundaries. The resulting tests cover those commands and their repository effects; they do not certify the built-in SCM UI or the VS Code Git extension API.
+This isolates fixture repository observers from the task under test. Alpha's Git tool workflows still execute the real Git CLI through the normal command approval and workspace boundaries. The resulting tests cover those commands and their repository effects; they do not certify the built-in SCM UI or the VS Code Git extension API.
 
 Isolation is a launch condition. Downloaded/vendor extensions are not patched, and uncaught errors retain normal test failure handling. Record this condition when interpreting or comparing results, and keep native SCM integration coverage separate.
 
@@ -179,7 +179,7 @@ pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 These defaults do not initialize or erase a profile. Live Copilot runs still require the explicit provider and exact
 discovered model ID. Each run retains its own artifact directory under the configured artifacts root.
 
-After authentication, use an explicit scenario, run ID, and request cap. NOR-41 owns the workflow implementation:
+After authentication, use an explicit scenario, run ID, and request cap through the existing workflow runner:
 
 ```sh
 node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir F:\alpha-e2e\profiles --workspace F:\alpha-e2e\workspace --artifacts-dir F:\alpha-e2e\artifacts --model-id EXACT_DISCOVERED_ID --reasoning-effort max --scenario-id review-edit-test-commit-followup --scenario-phase run --request-limit 60 --run-id live-review-1380-01
@@ -199,22 +199,6 @@ Normal Mocha suites require at least one executed, non-pending test. Empty file 
 skipped suites fail with `no-tests-executed`; zero failures alone is insufficient. `host-preflight.json` records total,
 passed, pending, executed, and failed counts at `stage: "suite-complete"`. Actual assertion/hook failures remain failures.
 Explicit discovery-only and consent-preflight-only setup stages return before Mocha and are not workflow-test passes.
-
-Observed pre-fix regression, reported by the coordinating thread on **2026-09-06**: the actual **1.122.1** host ran
-`--provider scripted --file extension.test --grep '^ALPHA_NO_MATCH_20260906$'` under the dedicated scripted profile with
-run ID `no-tests-before-1221-01`. It reported **0 passing**, exited **0**, and persisted **status: passed**. This is an
-observed false success, not a valid passing gate. Its retained evidence is under
-`F:\alpha-vscode-e2e-runs\20260906\scripted-artifacts\no-tests-before-1221-01`. The post-fix real-host rerun must fail with
-`no-tests-executed` and `testCounts.executed: 0`; ordinary nonempty suites must still pass independently.
-
-Post-fix evidence, reported by the coordinating thread on **2026-09-06**: the same actual-host command and grep in run
-`no-tests-after-1221-01` exited **1**, persisted **status: failed / failure: no-tests-executed**, and recorded
-`stage: suite-complete` with `testCounts.executed: 0`. Evidence capture completed, numeric host exit was observed, and
-ownership was verified. The retained artifact directory is
-`F:\alpha-vscode-e2e-runs\20260906\scripted-artifacts\no-tests-after-1221-01`.
-The coordinating thread also ran `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` successfully after a fresh webview
-build and restored extension bundle: **all 8 real-host tests passed**. These checks validate the zero-test guard and
-nonempty deterministic host gate; they do not establish authenticated live-Copilot workflow success.
 
 Evidence capture is awaited before cleanup. Incomplete capture changes a successful host result into `evidence-failed`
 and retains the source directories. Raw profile logs/storage remain local; the collector exports bounded structural
@@ -249,7 +233,7 @@ If an existing window receives a forwarded launch, ownership validation blocks i
 Never terminate unrelated editor processes to clear a test failure.
 
 `hostExitObserved` proves only the direct launcher's numeric close. Recorded extension-host PIDs plus ancestry are inputs
-to recovery checks, **not** proof that every storage writer has stopped. Offline repair requires the separate NOR-42/43
+to recovery checks, **not** proof that every storage writer has stopped. Offline repair requires the existing storage-recovery
 ownership/liveness checks; a missing receipt, live process, or unknown writer remains blocked. Do not delete profile
 storage or lock metadata just to make a run pass.
 
@@ -275,15 +259,11 @@ exit leaves the profile lease for offline inspection. This is not a descendant-t
 recovery phases should supply an explicit installed/cached executable because the upstream host downloader does not
 accept an AbortSignal; cancellation is checked before and after download resolution.
 
-The current baseline is **1.138.0** as of 2026-10-19; see [the migration record](vscode-1.138-migration.md) for current validation. The section below records the previous migration and its historical results.
+The exact reference gate uses VS Code **1.138.0**; minimum-host compatibility is checked separately on **1.125.0**.
+Run both when changing host adapters or the installation minimum. Keep profiles isolated by exact version and perform
+interactive sign-in for each live profile that requires it. Existing profiles and historical evidence stay in place.
 
-Baseline migrated **2026-10-01** to exact VS Code **1.125.0**. Retired host profiles and historical evidence are not copied or reset. The dedicated 1.125.0 live profile needs its own interactive Copilot sign-in; scripted and fixture gates use isolated test state on the same host version.
-
-Primary references checked **2026-10-01**:
-[1.125.0 API types](https://github.com/microsoft/vscode/blob/1.125.0/src/vscode-dts/vscode.d.ts),
-[VS Code extension testing](https://code.visualstudio.com/api/working-with-extensions/testing-extension) and
-[Language Model API](https://code.visualstudio.com/api/extension-guides/ai/language-model), reconciled against the installed
-VS Code API types and Alpha's actual adapter. The host gate and real provider samples remain necessary; local unit/type
-checks alone do not establish either host's live-provider compatibility.
-
-Migration validation on 2026-10-01: `test:smoke:1250:run` passed all scripted and LM-fixture suites on actual VS Code 1.125.0 with complete evidence capture. Runner unit tests passed (468 passed, two platform-specific skips); extension and runner typechecks and VSIX content verification passed. Live Copilot authentication was not exercised.
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
+```

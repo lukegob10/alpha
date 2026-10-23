@@ -45,7 +45,7 @@ Do not infer that an API request is read-only from the `gh api` prefix.
 
 ## References
 
-Primary documentation reviewed on 2026-09-19:
+Primary documentation:
 
 - [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login)
 - [CLI environment variables and token precedence](https://cli.github.com/manual/gh_help_environment)

@@ -52,6 +52,9 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 	}
 
 	private onDisconnect() {
+		this._clientId = undefined
+		this.executionIdentity = undefined
+		this.serverProcess = undefined
 		this.capabilities = undefined
 		if (!this._isConnected) {
 			return
@@ -59,9 +62,6 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 
 		this.log("[client#onDisconnect]")
 		this._isConnected = false
-		this._clientId = undefined
-		this.executionIdentity = undefined
-		this.serverProcess = undefined
 		this.emit(IpcMessageType.Disconnect)
 	}
 
@@ -131,13 +131,16 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 	}
 
 	public disconnect() {
-		this.capabilities = undefined
 		try {
 			ipc.disconnect(this._id)
 		} catch (error) {
 			this.log(
 				`[client#disconnect] error disconnecting -> ${error instanceof Error ? error.message : String(error)}`,
 			)
+		} finally {
+			// node-ipc removes transport listeners before closing an explicit disconnect.
+			// Clear the handshake even when no disconnect callback is emitted or cleanup fails.
+			this.onDisconnect()
 		}
 	}
 

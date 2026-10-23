@@ -119,6 +119,19 @@ function directRequestClauses(userRequestText: string | undefined): string[] {
 		.replace(/^\s*>.*$/gm, " ")
 		.split(/(?:[.!?;]+\s*|,\s*and\s+|\s+(?:and|then|also|but)\s+)/i)
 		.map((clause) => clause.replace(/^\s*(?:also|then|next|additionally|separately|after that)[,:\s]+/i, "").trim())
+		.filter((clause) => clause.length > 0 && !/^[\"'“”‘’>]/.test(directAction(clause)))
+		.flatMap((clause) => {
+			const parts = clause.split(/[,\r\n]+/)
+			// Preserve ordinary commas and wrapped noun phrases. Split only when a
+			// later fragment explicitly revokes the request using the same grammar.
+			return parts.some(
+				(part, index) =>
+					index > 0 && (isExplicitRevocation(part.trim()) || isExplicitRevocation(directAction(part.trim()))),
+			)
+				? parts
+				: [clause]
+		})
+		.map((clause) => clause.trim())
 		.filter((clause) => clause.length > 0 && !/^[\"'“”‘’>]/.test(clause))
 }
 

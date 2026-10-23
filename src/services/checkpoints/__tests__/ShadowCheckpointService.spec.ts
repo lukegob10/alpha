@@ -4,6 +4,8 @@ import fs from "fs/promises"
 import path from "path"
 import os from "os"
 import { EventEmitter } from "events"
+import { execFile } from "child_process"
+import { promisify } from "util"
 
 import { type DiffResult, simpleGit, SimpleGit } from "simple-git"
 
@@ -1461,6 +1463,15 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const consoleLogSpy = vitest.spyOn(console, "log").mockImplementation(() => {})
 
 				try {
+					// Prove the inherited value is an effective failure canary without
+					// relying on checkpoint diagnostics to reveal environment filtering.
+					await expect(
+						promisify(execFile)("git", ["config", "--bool", "--get", "core.autocrlf"], {
+							cwd: testWorkspaceDir,
+							windowsHide: true,
+						}),
+					).rejects.toMatchObject({ code: 128 })
+
 					const testService = await klass.create({
 						taskId: `test-git-config-${Date.now()}`,
 						shadowDir: testShadowDir,
@@ -1469,8 +1480,14 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 					})
 
 					await expect(testService.initShadowGit()).resolves.not.toThrow()
+					await fs.writeFile(path.join(testWorkspaceDir, "test.txt"), "Checkpoint with isolated Git config")
+					const checkpoint = await testService.saveCheckpoint("Isolated inherited Git config")
+					expect(checkpoint?.commit).toBeTruthy()
+					const diff = await testService.getDiff({ to: checkpoint!.commit })
+					expect(diff).toHaveLength(1)
+					expect(diff[0].paths.relative).toBe("test.txt")
+					expect(diff[0].content.after).toBe("Checkpoint with isolated Git config")
 					const logOutput = consoleLogSpy.mock.calls.flat().join(" ")
-					expect(logOutput).toContain("GIT_CONFIG_VALUE_0")
 					expect(logOutput).not.toContain(secretConfigValue)
 				} finally {
 					if (originalGitConfigCount !== undefined) {

@@ -166,6 +166,105 @@ function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<vo
 	return entry && ("promise" in entry ? entry.promise : entry)
 }
 
+const deferred = <T = void>() => {
+	let resolve!: (value: T | PromiseLike<T>) => void
+	const promise = new Promise<T>((complete) => {
+		resolve = complete
+	})
+	return { promise, resolve }
+}
+
+describe("managed spawn request admission", () => {
+	it.each(["mode", "history"] as const)("cancels an interrupted request during %s preparation", async (stage) => {
+		const { provider, parent, parentAbort, runner, store, sessions, ready } = makeHarness()
+		await ready
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+			{ objective: "Inspect source", agent_kind: "review", fork_turns: "none" },
+		])
+		const entered = deferred()
+		const held = deferred()
+		const request = new AbortController()
+		const reason = new Error("Invoking step was interrupted")
+		let restore: (() => void) | undefined
+		if (stage === "mode") {
+			parent.getTaskMode.mockImplementationOnce(async () => {
+				entered.resolve()
+				await held.promise
+				return "code"
+			})
+		} else {
+			const update = provider.updateTaskHistory.bind(provider)
+			const spy = vi.spyOn(provider, "updateTaskHistory").mockImplementationOnce(async (item) => {
+				entered.resolve()
+				await held.promise
+				return update(item)
+			})
+			restore = () => spy.mockRestore()
+		}
+		const operation = provider.launchPreparedSubagentGroup(
+			parent as unknown as Task,
+			prepared,
+			parentAbort.signal,
+			request.signal,
+		)
+		const rejected = expect(operation).rejects.toBe(reason)
+		try {
+			await entered.promise
+			request.abort(reason)
+			held.resolve()
+			await rejected
+			expect(runner).not.toHaveBeenCalled()
+			expect(parentAbort.signal.aborted).toBe(false)
+			expect(sessions.getReservedTaskSlots(parent.taskId, () => false)).toEqual({ total: 0, root: 0 })
+			const record = store.getAgent(prepared.envelopes[0].id, parent.taskId)
+			if (stage === "history") expect(record?.status).toBe("cancelled")
+			else expect(record).toBeUndefined()
+			await ownedFinalization(Reflect.get(provider, "subagentRunFinalizations").get(prepared.envelopes[0].id))
+		} finally {
+			held.resolve()
+			await operation.catch(() => undefined)
+			restore?.()
+			await store.shutdown()
+		}
+	})
+
+	it("keeps an accepted child alive after its spawning request ends and retains parent cancellation", async () => {
+		const harness = makeHarness()
+		const { provider, parent, parentAbort, runner, store, runs, ready } = harness
+		await ready
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+			{ objective: "Inspect source", agent_kind: "review", fork_turns: "none" },
+		])
+		const entered = deferred<AbortSignal>()
+		const held = deferred()
+		const complete = runner.getMockImplementation()!
+		runner.mockImplementationOnce(async (envelope, signal) => {
+			entered.resolve(signal)
+			await held.promise
+			return complete(envelope, signal)
+		})
+		const request = new AbortController()
+		const handle = await provider.launchPreparedSubagentGroup(
+			parent as unknown as Task,
+			prepared,
+			parentAbort.signal,
+			request.signal,
+		)
+		try {
+			const childSignal = await entered.promise
+			request.abort(new Error("Spawning request finished"))
+			expect(childSignal.aborted).toBe(false)
+			parentAbort.abort(new Error("Parent task stopped"))
+			expect(childSignal.aborted).toBe(true)
+		} finally {
+			held.resolve()
+			await runs.waitForResult(handle.taskId)
+			await settleRun(harness, handle.taskId)
+			await store.shutdown()
+		}
+	})
+})
+
 describe("Astra delegation durability audit", () => {
 	it.each([
 		{ setting: { subagentRootTokenBudget: 50_000 }, stopReason: "root_token_budget" },

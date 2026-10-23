@@ -281,41 +281,8 @@ const EXPECTED_ERROR_MESSAGE_PATTERNS = [
 	/rate limit/i, // Contains "rate limit" (case insensitive)
 ]
 
-/**
- * Interface representing the error structure from OpenAI SDK.
- * OpenAI SDK errors (APIError, AuthenticationError, RateLimitError, etc.)
- * have a numeric `status` property and may contain nested error metadata.
- *
- * @see https://github.com/openai/openai-node/blob/master/src/error.ts
- */
-interface OpenAISdkError {
-	/** HTTP status code of the error response */
-	status: number
-	/** Optional error code (may be numeric or string) */
-	code?: number | string
-	/** Primary error message */
-	message: string
-	/** Nested error object containing additional details from the API response */
-	error?: {
-		message?: string
-		metadata?: {
-			/** Raw error message from upstream provider (e.g., OpenRouter upstream errors) */
-			raw?: string
-		}
-	}
-}
-
-/**
- * Type guard to check if an error object is an OpenAI SDK error.
- * OpenAI SDK errors (APIError and subclasses) have: status, code, message properties.
- */
-function isOpenAISdkError(error: unknown): error is OpenAISdkError {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"status" in error &&
-		typeof (error as OpenAISdkError).status === "number"
-	)
+function isErrorRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null
 }
 
 /**
@@ -325,7 +292,7 @@ function isOpenAISdkError(error: unknown): error is OpenAISdkError {
  * @returns The status code if available, undefined otherwise
  */
 export function getErrorStatusCode(error: unknown): number | undefined {
-	if (isOpenAISdkError(error)) {
+	if (isErrorRecord(error) && typeof error.status === "number") {
 		return error.status
 	}
 	return undefined
@@ -375,21 +342,14 @@ export function extractMessageFromJsonPayload(message: string): string | undefin
  * @returns The best available error message, or undefined if not extractable
  */
 export function getErrorMessage(error: unknown): string | undefined {
-	let message: string | undefined
+	if (!isErrorRecord(error)) return undefined
 
-	if (isOpenAISdkError(error)) {
-		// Prioritize nested metadata which may contain upstream provider details
-		message = error.error?.metadata?.raw || error.error?.message || error.message
-	} else if (error instanceof Error) {
-		// Handle standard Error objects (including ApiProviderError)
-		message = error.message
-	} else if (typeof error === "object" && error !== null && "message" in error) {
-		// Handle plain objects with a message property
-		const msgValue = (error as { message: unknown }).message
-		if (typeof msgValue === "string") {
-			message = msgValue
-		}
-	}
+	// A numeric status does not prove that the rest of an upstream payload has the SDK's shape.
+	const upstream = typeof error.status === "number" && isErrorRecord(error.error) ? error.error : undefined
+	const metadata = upstream && isErrorRecord(upstream.metadata) ? upstream.metadata : undefined
+	const message = [metadata?.raw, upstream?.message, error.message].find(
+		(candidate): candidate is string => typeof candidate === "string" && candidate.length > 0,
+	)
 
 	if (!message) {
 		return undefined

@@ -27,4 +27,22 @@ describe("copy destination containment", () => {
 		expect(() => copyPaths([["source.txt", "alias/file.txt"]], root, output)).toThrow("symbolic links")
 		expect(fs.existsSync(path.join(external, "file.txt"))).toBe(false)
 	})
+
+	it("skips an absent optional source without replacing an existing destination", () => {
+		const destination = path.join(root, "existing.txt")
+		fs.writeFileSync(destination, "keep existing output")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			copyPaths([["absent.txt", "existing.txt", { optional: true }]], root, root)
+			expect(fs.readFileSync(destination, "utf8")).toBe("keep existing output")
+			expect(warning).toHaveBeenCalledExactlyOnceWith("[copyPaths] Optional file not found: absent.txt")
+		} finally {
+			warning.mockRestore()
+		}
+	})
+
+	it("propagates copy failures even when the source is optional", () => {
+		expect(() => copyPaths([["source.txt", "absent/file.txt", { optional: true }]], root, root)).toThrow()
+		expect(fs.existsSync(path.join(root, "absent", "file.txt"))).toBe(false)
+	})
 })

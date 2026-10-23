@@ -721,9 +721,19 @@ describe("VS Code LM canonical contracts", () => {
 	})
 
 	it("keeps unknown future response parts compatible without turning valid text into failure", async () => {
-		const { result } = await observe([new vscode.LanguageModelTextPart("Complete."), { futurePart: true }])
-		expect(result.text).toBe("Complete.")
-		expect(result.outcome).toBeUndefined()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+		try {
+			const { result } = await observe([
+				new vscode.LanguageModelTextPart("Complete."),
+				{ futurePart: true, opaqueState: "private-host-state" },
+			])
+			expect(result.text).toBe("Complete.")
+			expect(result.outcome).toBeUndefined()
+			expect(warn).toHaveBeenCalledWith("Alpha <Language Model API>: Unknown chunk type received")
+			expect(JSON.stringify(warn.mock.calls)).not.toContain("private-host-state")
+		} finally {
+			warn.mockRestore()
+		}
 	})
 
 	it.each(["gpt-5.6-sol", "gpt-6-luna"])(

@@ -599,18 +599,18 @@ export async function countContextTokens(
  * truncation, where a call and result may have been hidden as a pair.
  */
 export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
-	const callIds = new Set<string>()
-	for (const pair of getToolCallResultPairs(messages).values()) {
-		if (pair.callMessageIndexes.length > 0) callIds.add(pair.id)
-	}
-
+	const pendingCallIds = new Set<string>()
 	let changed = false
 	const filtered = messages
 		.map((message) => {
 			if (!Array.isArray(message.content)) return message
 			const filteredContent = message.content.filter((block) => {
+				const callId = getToolCallId(block)
+				if (callId !== undefined) pendingCallIds.add(callId)
 				const resultId = getToolResultId(block)
-				return !resultId || callIds.has(resultId)
+				// A later reused ID cannot acknowledge an earlier orphan result,
+				// and each call occurrence owns only one terminal receipt.
+				return resultId === undefined || pendingCallIds.delete(resultId)
 			})
 			if (filteredContent.length === message.content.length) return message
 			changed = true
@@ -678,18 +678,6 @@ export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[]
 
 	return [...messages, syntheticMessage]
 }
-
-/**
- * Produces an API-safe history by completing orphan calls and removing orphan
- * results.  The operation is non-destructive and preserves the original array
- * when no repair is required.
- */
-export function ensureToolCallResultIntegrity(messages: ApiMessage[]): ApiMessage[] {
-	return filterOrphanToolResults(injectSyntheticToolResults(messages))
-}
-
-/** Alias used by context policies that describe repair as preservation. */
-export const preserveToolCallResultPairs = ensureToolCallResultIntegrity
 
 /**
  * Extracts <command> blocks from a message's content.
@@ -839,10 +827,6 @@ export function getToolFreeMetadata(
 	delete isolated.instructionFragments
 	return isolated
 }
-
-/** Alias for consumers that prefer an imperative name. */
-export const createToolFreeMetadata = getToolFreeMetadata
-export const getToolFreeRequestMetadata = getToolFreeMetadata
 
 /**
  * Summarizes the conversation messages using an LLM call.

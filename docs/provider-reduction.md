@@ -1,64 +1,58 @@
-# Provider reduction
+# Provider support and saved-profile recovery
 
-Alpha supports four chat/model connections: GCP Vertex AI (`vertex`), VS Code LM API
-(`vscode-lm`), Stellar (`stellar`), and OpenAI Compatible (`openai`). Indexing separately
-supports GCP Vertex AI (`vertex`) and Gemini Developer API (`gemini`). Model vendors
-exposed through chat connections do not create additional Alpha chat providers.
+Alpha supports four chat connections: GCP Vertex AI (`vertex`), VS Code LM API (`vscode-lm`), Stellar (`stellar`),
+and OpenAI Compatible (`openai`). Indexing separately supports Vertex and Gemini Developer API (`gemini`).
+A model vendor exposed through a connection does not create another Alpha provider.
 
-The chat-provider reduction removes dedicated Anthropic, Amazon Bedrock, Baseten, DeepSeek,
-Fireworks, Gemini API/CLI, LiteLLM, LM Studio, MiniMax, Mistral, Moonshot, Ollama,
-OpenAI Codex, OpenAI Native, OpenRouter, Poe, Qwen Code, Requesty, SambaNova,
-Unbound, Vercel AI Gateway, xAI, and Z AI connections. Their chat-specific authentication,
-catalogs, model fetchers, UI controls, and exclusive tests are removed. The
-OpenRouter-only image-generation experiment is retired as well.
+## Execution and compatibility
 
-Vertex retains Claude, Gemini, and OpenAI protocol partner routes, direct GCP
-authentication, and the existing gateway/Helix configuration. Stellar retains its
-gateway/Helix behavior. OpenAI Compatible retains endpoint, header, model, Azure
-compatibility, and streaming configuration. VS Code LM retains host-discovered
-models, provider state, tool ordering, usage, cancellation, and replay behavior.
+Dedicated connections outside this set, including OpenAI Native/Codex, OpenRouter, Anthropic, Bedrock, and Gemini chat,
+are retired. Their saved identifiers and historical transcripts remain readable. Execution rejects unsupported or unknown
+identifiers explicitly; it cannot clear the selection into a default provider. Select a supported replacement deliberately.
 
-Anthropic message types remain the existing shared transcript representation.
-Anthropic/Vertex, Google GenAI, Google authentication, and OpenAI SDK dependencies
-remain where the four connections consume them. Removing a dedicated provider
-does not remove a wire format needed by a retained connection.
+Vertex retains its partner routes and gateway/Helix behavior. Stellar retains its gateway/Helix behavior. OpenAI Compatible
+retains endpoint, header, model, Azure, and streaming configuration. VS Code LM retains host discovery and provider-state
+replay. Shared Anthropic transcript types and SDKs still used by supported connections remain required.
 
-Saved unsupported provider identifiers remain identifiable on read; execution
-must reject them with an unsupported-provider error. Users select an approved
-connection explicitly. Unknown identifiers must never be cleared into the default
-provider. Historical transcripts and evaluation records remain readable. Existing
-index identities continue to separate providers, models, dimensions, and gateway
-configuration, preventing old vectors from being treated as Vertex vectors.
+Task creation and resume validate the selected provider before changing the active lifecycle. Reconfiguration builds the
+new handler before committing configuration, preserving the current handler when a replacement is rejected. The internal
+process-local `fake-ai` seam remains available for tests, is absent from public choices, and cannot restore executable
+callbacks from a saved profile after restart.
 
-Task creation and history resume validate the provider before changing the active
-task lifecycle. Replacing a running task's API configuration constructs the new
-handler before committing the change, so an unsupported saved setup leaves the
-current handler intact. The exact VS Code 1.125.0 smoke gate checks that every
-retired provider and an unknown provider reject execution while the extension
-stays active and can return to a supported connection.
+## Retaining invalid profiles
 
-The process-local scripted `fake-ai` implementation remains an internal testing
-seam for the real extension harness. It is absent from public provider choices and
-requires a live implementation or a registered process-local ID. A saved profile
-cannot restore its executable callbacks after host restart.
+[ProviderSettingsManager](../src/core/config/ProviderSettingsManager.ts) keeps schema-invalid values in the additive
+`retainedApiConfigs` map alongside executable `apiConfigs`. Entries retain a stable identity and original JSON value.
+Recognized migrations run before validation. Invalid entries survive unrelated saves, rename, import/export, and reopen
+until explicit validated repair or deletion. An all-invalid store retains its selected identity rather than inventing
+another provider. Invalid whole-store JSON/metadata produces a safe error without overwriting the stored bytes.
 
-The installed-extension model campaign uses OpenAI Compatible (`--provider openai`),
-`OPENAI_API_KEY`, and optional `OPENAI_BASE_URL`. Live endpoint E2E tests use the same
-connection plus `ALPHA_E2E_MODEL_ID`. CI evaluator runs require `EVALS_MODEL_ID`.
-Credentials are injected at execution rather than written into campaign settings.
-Scripted and VS Code LM fixture harnesses remain available without live credentials.
+Only safe profile-list metadata crosses to the webview: `availability: "invalid" | "unsupported"` and bounded known
+top-level invalid field names. Raw retained data, credentials, and arbitrary nested keys are excluded.
 
-Regression coverage checks the public registry and factory, rejects retired and
-unknown IDs, preserves imported profile data, and verifies Vertex and Gemini indexing
-configuration. Invalid embedding settings retire the active services before
-reporting an error; explicitly switching to Vertex resets the old model dimension.
-Constructing an unconfigured Vertex chat handler does not resolve Google ADC until
-the first request. Claude-on-Vertex requests forward the task cancellation signal.
+- Duplicate stored IDs remain unchanged; ID-based routing and updates reject ambiguity instead of choosing the first match.
+  Valid name-based selection remains available.
+- Repair preserves the retained identity. Imported profile references remap to that identity, and ambiguous mappings fail
+  before persistence. Embedded legacy IDs or names cannot override authoritative store identity.
+- Explicit replacement validates the whole profile before removing retained data.
+- Deletion rechecks the clicked identity inside the storage lock, includes retained entries in the last-profile guard,
+  and selects an available remaining profile before an unavailable one.
+- Fresh unsaved views share the portable `default` identity; persisted identities remain authoritative.
+- Configured automatic imports remain authoritative on activation. Repair the configured source file when it would
+  reintroduce invalid setup. Warnings expose a bounded count and basename, never the retained payload or JSON fragments.
 
-Use `pnpm test:core:confidence` for the combined exact-host and deterministic
-managed-agent gate. It runs the smoke, core-loop, completion-idle, and managed-agent
-acceptance suites on VS Code 1.125.0, then supplies the fresh completion capture to
-certification. Standalone certification requires that capture via
-`ALPHA_COMPLETION_IDLE_EVIDENCE`; without it, the optional replay test is skipped
-and strict certification correctly refuses to report a pass. These scripted gates
-do not certify live credentials or replace the matrix's pending integration work.
+Previously deleted data cannot be reconstructed from an empty store. Retention preserves evidence; it does not invent
+credentials or authorize execution of invalid configuration.
+
+## Index and evaluation boundaries
+
+Index identities distinguish providers, models, dimensions, and gateways. Invalid embedding settings retire active services
+before reporting the error, so old vectors cannot silently become vectors for a different connection.
+
+Live API campaigns use OpenAI Compatible, `OPENAI_API_KEY`, and optional `OPENAI_BASE_URL`; endpoint E2E runs additionally
+select `ALPHA_E2E_MODEL_ID`, and evaluator CI selects `EVALS_MODEL_ID`. Inject credentials at execution rather than saving
+them in campaign files. Scripted and deterministic VS Code LM fixtures require no live credentials.
+
+Use the [testing workflow](testing-harness.md) and [core confidence runbook](core-confidence.md) for current gates.
+Focused coverage includes provider registry/factory rejection, profile retention and identity, import projection,
+reconfiguration rollback, and indexing-provider compatibility.

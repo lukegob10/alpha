@@ -24,7 +24,7 @@ fixtures and scripts when comparing revisions. Do not change scripted actions to
 fixtures complement the production scoped-read benchmark; they do not establish a timing improvement.
 
 The [final-stage acceptance protocol](completion-acceptance.md) predeclares the separate real-Task settlement workloads,
-conditional provider policy, quality oracle, and thresholds for the pending NOR-37 comparison. It does not change these
+conditional provider policy, quality oracle, and thresholds for controlled completion comparisons. It does not change these
 seven fixed engine scripts or claim unmeasured provider-token savings.
 
 ## Run

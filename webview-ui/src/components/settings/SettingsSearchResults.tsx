@@ -4,10 +4,11 @@ import type { LucideIcon } from "lucide-react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { cn } from "@/lib/utils"
 
-import { SectionName } from "./SettingsView"
-import { SearchResult } from "./useSettingsSearch"
+import type { SectionName } from "./SettingsView"
+import type { SearchResult } from "./useSettingsSearch"
 
 export interface SettingsSearchResultsProps {
+	id: string
 	results: SearchResult[]
 	query: string
 	onSelectResult: (result: SearchResult) => void
@@ -67,6 +68,7 @@ function HighlightMatch({ text, positions }: HighlightMatchProps) {
 }
 
 export function SettingsSearchResults({
+	id,
 	results,
 	query,
 	onSelectResult,
@@ -98,19 +100,23 @@ export function SettingsSearchResults({
 	// If no results, show a message
 	if (results.length === 0) {
 		return (
-			<div className="max-h-80 overflow-y-auto p-4 text-vscode-descriptionForeground text-sm">
+			<div
+				id={id}
+				role="listbox"
+				aria-label={t("settings:search.placeholder")}
+				className="max-h-80 overflow-y-auto p-4 text-vscode-descriptionForeground text-sm">
 				{t("settings:search.noResults", { query })}
 			</div>
 		)
 	}
 
 	return (
-		<div className="max-h-80 overflow-y-auto" role="listbox">
+		<div id={id} className="max-h-80 overflow-y-auto" role="listbox" aria-label={t("settings:search.placeholder")}>
 			{Object.entries(groupedResults).map(([section, sectionResults]) => {
 				const Icon = sectionIconMap.get(section as SectionName)
 
 				return (
-					<div key={section}>
+					<div key={section} role="group" aria-label={t(`settings:sections.${section}`)}>
 						{/* Section header */}
 						<div className="flex items-center gap-2 px-3 py-1.5 mt-4 first:mt-0 text-xs text-vscode-descriptionForeground bg-vscode-sideBar-background border-b-vscode-panel-border sticky top-0">
 							{Icon && <Icon className="h-3.5 w-3.5" />}
@@ -128,6 +134,7 @@ export function SettingsSearchResults({
 									id={resultDomId}
 									type="button"
 									role="option"
+									tabIndex={-1}
 									aria-selected={isHighlighted}
 									onMouseDown={(event) => event.preventDefault()}
 									onClick={() => onSelectResult(result)}

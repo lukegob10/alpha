@@ -1288,6 +1288,15 @@ export class AlphaProvider
 		this.codeIndexStatusSubscription = undefined
 	}
 
+	/** Join every view's owned tasks before extension-wide stores and services stop. */
+	static async disposeAll(): Promise<void> {
+		const outcomes = await Promise.allSettled([...this.activeInstances].map((provider) => provider.dispose()))
+		const failures: unknown[] = outcomes.flatMap((outcome) =>
+			outcome.status === "rejected" ? [outcome.reason] : [],
+		)
+		if (failures.length) throw new AggregateError(failures, "Task provider cleanup failed")
+	}
+
 	dispose(): Promise<void> {
 		if (this.disposal) return this.disposal
 		let resolve!: () => void
@@ -1399,7 +1408,6 @@ export class AlphaProvider
 		}
 		this.scopedSkillsManagers?.clear()
 		this.skillsManager = undefined
-		this.marketplaceManager?.cleanup()
 		this.customModesManager?.dispose()
 		await this.scheduledTaskService?.dispose()
 		this.scheduledTaskService = undefined
@@ -3275,6 +3283,7 @@ export class AlphaProvider
 
 			// Collect all task IDs to delete (parent + all subtasks)
 			const allIdsToDelete: string[] = [id]
+			const seenTaskIds = new Set(allIdsToDelete)
 
 			if (cascadeSubtasks) {
 				// Recursively collect all child IDs
@@ -3285,6 +3294,9 @@ export class AlphaProvider
 						})
 						if (item.childIds && item.childIds.length > 0) {
 							for (const childId of item.childIds) {
+								// Persisted lineage can contain repeated edges or cycles.
+								if (seenTaskIds.has(childId)) continue
+								seenTaskIds.add(childId)
 								allIdsToDelete.push(childId)
 								await collectChildIds(childId)
 							}
@@ -8818,6 +8830,7 @@ export class AlphaProvider
 		parent: Task,
 		prepared: PreparedSubagentGroup,
 		parentSignal: AbortSignal,
+		requestSignal?: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
 		const parentLifetimeSignal = parent.getTaskLifetimeCancellationSignal()
 		if (this.preparedSubagentGroups.get(prepared.group.groupId) !== prepared) {
@@ -8838,6 +8851,7 @@ export class AlphaProvider
 			parentSignal,
 			parentLifetimeSignal,
 			finalizationBinding.admissionSignal,
+			...(requestSignal ? [requestSignal] : []),
 		])
 		const controlRecords = new Map<string, AgentRecord>()
 		let admissionEntered = false
@@ -8857,11 +8871,12 @@ export class AlphaProvider
 				return await this.startPreparedSubagentRun(
 					parent,
 					prepared,
-					admissionSignal,
+					parentSignal,
 					controlRecord,
 					false,
 					parentLifetimeSignal,
 					finalizationBinding,
+					admissionSignal,
 				)
 			} catch (error) {
 				if (
@@ -8944,21 +8959,25 @@ export class AlphaProvider
 			parent,
 			parentLifetimeSignal,
 		),
+		requestSignal?: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
 		// The record is published before invoking this asynchronous admission producer.
-		const admissionSignal = AbortSignal.any([
+		const lifetimeSignal = AbortSignal.any([
 			parentSignal,
 			parentLifetimeSignal,
 			finalizationBinding.admissionSignal,
 		])
+		// The invoking step can stop admission, but accepted children remain owned
+		// by the parent task's lifetime rather than its current model request.
+		const admissionSignal = requestSignal ? AbortSignal.any([lifetimeSignal, requestSignal]) : lifetimeSignal
 		return this.startPreparedSubagentRunUnderFinalization(
 			parent,
 			prepared,
-			admissionSignal,
+			lifetimeSignal,
 			controlRecord,
 			isFollowup,
-			parentLifetimeSignal,
 			finalizationBinding,
+			admissionSignal,
 		).catch(async (error) => {
 			if (
 				finalizationBinding.isAdmitting() &&
@@ -8988,10 +9007,10 @@ export class AlphaProvider
 		parentSignal: AbortSignal,
 		controlRecord: AgentRecord,
 		isFollowup: boolean,
-		parentLifetimeSignal: AbortSignal,
 		finalizationBinding: SubagentFinalizationBinding,
+		admissionSignal: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
-		this.assertSubagentAdmissionSignals([parentSignal, parentLifetimeSignal, finalizationBinding.admissionSignal])
+		this.assertSubagentAdmissionSignals([admissionSignal])
 		const envelope = prepared.envelopes[0]
 		const agent = prepared.group.agents[0]
 		const controller = new AbortController()
@@ -9043,11 +9062,7 @@ export class AlphaProvider
 
 		try {
 			await this.attachSubagentGroupToParentHistory(parent, prepared)
-			this.assertSubagentAdmissionSignals([
-				parentSignal,
-				parentLifetimeSignal,
-				finalizationBinding.admissionSignal,
-			])
+			this.assertSubagentAdmissionSignals([admissionSignal])
 			const currentControl = this.agentControlStore.getAgent(controlRecord.taskId, controlRecord.rootTaskId)
 			if (
 				controlRecord.pendingFollowupEventId &&
@@ -9106,14 +9121,7 @@ export class AlphaProvider
 		} catch (error) {
 			parentSignal.removeEventListener("abort", cancelFromParent)
 			if (!controller.signal.aborted) controller.abort(error)
-			if (
-				!launched &&
-				this.isExpectedSubagentAdmissionCancellation(error, [
-					parentSignal,
-					parentLifetimeSignal,
-					finalizationBinding.admissionSignal,
-				])
-			) {
+			if (!launched && this.isExpectedSubagentAdmissionCancellation(error, [admissionSignal])) {
 				unsubscribe()
 				if (this.subagentGroupControllers.get(prepared.group.groupId) === controller) {
 					this.subagentGroupControllers.delete(prepared.group.groupId)
@@ -14320,8 +14328,10 @@ export class AlphaProvider
 		message: string
 		initialTodos: TodoItem[]
 		mode: string
+		signal?: AbortSignal
 	}): Promise<Task> {
 		const { parentTaskId, message, initialTodos, mode } = params
+		params.signal?.throwIfAborted()
 		const owner = this.getTaskOwner(parentTaskId)
 		if (owner && owner !== this) return owner.delegateParentAndOpenChild(params)
 		assertPrimaryMode(mode)
@@ -14343,6 +14353,7 @@ export class AlphaProvider
 		const modeProviderProfile = await this.getModeProviderProfile(mode)
 		const childTaskApiConfigName =
 			modeProviderProfile?.name ?? (await parent.getTaskApiConfigName()) ?? (await this.getProviderProfile())
+		params.signal?.throwIfAborted()
 		const childApiConfiguration = modeProviderProfile?.providerSettings ?? parent.apiConfiguration
 		const selectedParentViews = this.getHostProviders()
 			.filter((provider) => provider.isTaskSelected(parentTaskId))
@@ -14369,7 +14380,9 @@ export class AlphaProvider
 		let flushSuccess = false
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (retryDelayMs > 0) await delay(retryDelayMs)
+			params.signal?.throwIfAborted()
 			flushSuccess = await parent.flushPendingToolResultsToHistory()
+			params.signal?.throwIfAborted()
 			if (flushSuccess) break
 		}
 		if (!flushSuccess) {
@@ -14378,9 +14391,9 @@ export class AlphaProvider
 			)
 		}
 
-		// 3) Enforce single-open invariant by closing/disposing the parent first
-		//    This ensures we never have >1 tasks open at any time during delegation.
-		//    Await abort completion to ensure clean disposal and prevent unhandled rejections.
+		// Handoff commits here. Removing the parent intentionally cancels its request;
+		// finish the child transition after that cancellation instead of interrupting it.
+		params.signal?.throwIfAborted()
 		await this.removeTaskFromStack({ taskId: parentTaskId, skipDelegationRepair: true })
 
 		// 4) Create child as sole active (parent reference preserved for lineage)

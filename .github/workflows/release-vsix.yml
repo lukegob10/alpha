@@ -8,7 +8,7 @@ on:
     workflow_dispatch:
 
 permissions:
-    contents: write
+    contents: read
 
 concurrency:
     group: release-vsix-${{ github.ref }}
@@ -136,6 +136,8 @@ jobs:
         needs: package-vsix
         runs-on: windows-latest
         timeout-minutes: 15
+        permissions:
+            contents: write
         steps:
             - name: Checkout release metadata
               uses: actions/checkout@v5

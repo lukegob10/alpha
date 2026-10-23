@@ -39,10 +39,22 @@ describe("formatNative", () => {
 				name: "simple_tool",
 				description: "A simple tool",
 				parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
-				source: undefined,
 				strict: true,
 			},
 		})
+	})
+
+	it("keeps local source paths out of provider function declarations", () => {
+		const serialized: SerializedCustomToolDefinition = {
+			name: "local_tool",
+			description: "A local custom tool",
+			source: "/private/workspace/custom-tools/local.ts",
+		}
+
+		const result = formatNative(serialized)
+
+		expect(result.function).not.toHaveProperty("source")
+		expect(serialized.source).toBe("/private/workspace/custom-tools/local.ts")
 	})
 
 	it("should convert a tool with required args", () => {

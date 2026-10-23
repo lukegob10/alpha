@@ -17,6 +17,7 @@ import {
 	injectSyntheticToolResults,
 	hasToolCallResultIntegrity,
 	getToolCallResultPairs,
+	filterOrphanToolResults,
 	toolUseToText,
 	toolResultToText,
 	convertToolBlocksToText,
@@ -49,6 +50,61 @@ describe("tool transaction occurrence integrity", () => {
 		expect(hasToolCallResultIntegrity([call(), call(), result("Error: denied")])).toBe(false)
 		expect(hasToolCallResultIntegrity([call(), result("Error: denied"), result("Error: cancelled")])).toBe(false)
 	})
+
+	it("retains completed reused-ID transactions without replacing their messages", () => {
+		const messages = [call(), result("Error: first read failed"), call("list_files"), result("Error: denied")]
+		expect(filterOrphanToolResults(messages)).toBe(messages)
+	})
+
+	it("removes an earlier orphan result even when a later call reuses its identity", () => {
+		const messages = [result("Error: old read failed"), call("list_files"), result("Error: denied")]
+		const before = structuredClone(messages)
+		const filtered = filterOrphanToolResults(messages)
+		expect(filtered).toEqual(messages.slice(1))
+		expect(hasToolCallResultIntegrity(filtered)).toBe(true)
+		expect(messages).toEqual(before)
+	})
+
+	it("removes duplicate terminal receipts while retaining ordinary user text", () => {
+		const mixed: ApiMessage = {
+			role: "user",
+			content: [
+				{ type: "tool_result", tool_use_id: "reused-call", content: "Stale duplicate" },
+				{ type: "text", text: "Continue with the next file" },
+			],
+		}
+		const messages = [call(), result("Error: denied"), mixed]
+		const before = structuredClone(messages)
+		const filtered = filterOrphanToolResults(messages)
+		expect(filtered).toEqual([
+			...messages.slice(0, 2),
+			{ role: "user", content: [{ type: "text", text: "Continue with the next file" }] },
+		])
+		expect(hasToolCallResultIntegrity(filtered)).toBe(true)
+		expect(messages).toEqual(before)
+	})
+
+	it.each(["tool_use_id", "tool_call_id"])(
+		"filters a result whose call is hidden by truncation before a reused %s transaction",
+		(resultIdField) => {
+			const messages = [
+				{ role: "user", content: "Task" },
+				{ ...call(), truncationParent: "hidden" },
+				{
+					role: "user",
+					content: [{ type: "tool_result", [resultIdField]: "reused-call", content: "Old result" }],
+				},
+				{ role: "user", content: "Earlier steps hidden", isTruncationMarker: true, truncationId: "hidden" },
+				call("list_files"),
+				result("Error: denied"),
+			] as unknown as ApiMessage[]
+			const before = structuredClone(messages)
+			const effective = getEffectiveApiHistory(messages)
+			expect(effective).toEqual([messages[0], ...messages.slice(3)])
+			expect(hasToolCallResultIntegrity(effective)).toBe(true)
+			expect(messages).toEqual(before)
+		},
+	)
 
 	it.each(["tool_use_id", "tool_call_id"])(
 		"repairs only the current missing result after a completed reused-ID %s transaction",

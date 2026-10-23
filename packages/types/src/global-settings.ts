@@ -313,6 +313,7 @@ export type AlphaCodeSettings = GlobalSettings & ProviderSettings
  */
 export const SECRET_STATE_KEYS = [
 	"openAiApiKey",
+	"vertexJsonCredentials",
 	"codeIndexQdrantApiKey",
 	"codebaseIndexVertexJsonCredentials",
 	"codebaseIndexGeminiApiKey",

@@ -17,15 +17,11 @@ import { CustomToolsSettings } from "./CustomToolsSettings"
 type ExperimentalSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	experiments: Experiments
 	setExperimentEnabled: SetExperimentEnabled
-	apiConfiguration?: any
-	setApiConfigurationField?: any
 }
 
 export const ExperimentalSettings = ({
 	experiments,
 	setExperimentEnabled,
-	apiConfiguration,
-	setApiConfigurationField,
 	className,
 	...props
 }: ExperimentalSettingsProps) => {

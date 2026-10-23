@@ -469,6 +469,38 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(host.panels).toHaveLength(2)
 	})
 
+	it("contains a refresh transport failure and replays the retained snapshot on ready", async () => {
+		const panel = await open("one.html", "Initial")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+		panel.webview.postMessage.mockRejectedValueOnce(new Error("Transport unavailable"))
+		await fs.writeFile(path.join(root, "one.html"), documentHtml("Updated"))
+		await refresh(panel, () => host.watchers[0].change.fire())
+		await flushUntil(() =>
+			expect(warning).toHaveBeenCalledExactlyOnceWith("[HtmlDocument] Unable to publish document snapshot"),
+		)
+		const posts = panel.webview.postMessage.mock.calls.length
+		send(panel, "ready")
+		await flushUntil(() => expect(panel.webview.postMessage).toHaveBeenCalledTimes(posts + 1))
+		expect(latest(panel)).toMatchObject({ title: "Updated", stale: false })
+		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+	})
+
+	it("ignores a refresh transport rejection after the panel closes", async () => {
+		const panel = await open("one.html", "Initial")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+		let rejectPost!: (reason: Error) => void
+		panel.webview.postMessage.mockImplementationOnce(
+			() => new Promise<boolean>((_resolve, reject) => (rejectPost = reject)),
+		)
+		await refresh(panel, () => host.watchers[0].change.fire())
+		panel.dispose()
+		rejectPost(new Error("Webview disposed"))
+		await nextTurn()
+		expect(warning).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
 	it("coalesces a burst of file events into one refresh without focus changes", async () => {
 		const panel = await open("one.html", "Initial")
 		await fs.writeFile(path.join(root, "one.html"), documentHtml("Burst result"))

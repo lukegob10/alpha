@@ -1,8 +1,14 @@
 // pnpm exec vitest run src/__tests__/index.test.ts
 
-import { GLOBAL_STATE_KEYS } from "../index.js"
+import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS, isSecretStateKey } from "../index.js"
 
 describe("GLOBAL_STATE_KEYS", () => {
+	it("stores Vertex service-account JSON only through the secret state contract", () => {
+		expect(SECRET_STATE_KEYS).toContain("vertexJsonCredentials")
+		expect(isSecretStateKey("vertexJsonCredentials")).toBe(true)
+		expect(GLOBAL_STATE_KEYS).not.toContain("vertexJsonCredentials")
+	})
+
 	it("should contain provider settings keys", () => {
 		expect(GLOBAL_STATE_KEYS).toContain("autoApprovalEnabled")
 	})

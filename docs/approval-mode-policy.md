@@ -8,13 +8,18 @@ Auto approves read-only workspace access, validated in-workspace file changes, a
 The command grant is implicit in Auto; users do not need to save `*` or a Git prefix.
 Auto approves Alpha Ticket changes for the current project, including deletion. Tickets are stored under the user's
 `.alpha/tickets` directory, but the ticket tools bind each operation to the opened project; this grant does not allow
-general file access outside the workspace. Auto asks before launching sub-agents, using MCP, changing protected files,
+general file access outside the workspace. Auto asks before using MCP without a matching grant, changing protected files,
 or changing files outside the opened workspace. Explicit command denies and detected outside or unresolved command
 write paths still require denial or review, respectively.
 
 Ask requests approval for file changes and commands by default; a saved non-wildcard command prefix can still allow its
 matching commands without a prompt. Full Access continues to skip the ordinary per-action review for actions it permits,
 while explicit command denials remain in force.
+
+A host-verified `spawn_agent` request with captured parent permissions launches without an additional delegation prompt.
+Child actions still obey the intersection of live and captured approval authority, tool availability, mode, and workspace
+scope. Historical delegation records without finalized authorization retain their approval path. See
+[managed-agent ownership](subagent-lifecycle-hardening.md).
 
 For an MCP tool call, the runtime resolves the captured server, source (`global` or `project`), and tool before asking.
 Ask and Auto require review unless the user has enabled the legacy global MCP grant and saved an allow grant for that

@@ -61,5 +61,5 @@ pnpm --dir src test core/agent/__tests__/TaskWorkContext.spec.ts core/task/__tes
 pnpm --dir src test core/task/__tests__/Task.spec.ts core/tools/__tests__/ToolRepetitionDetector.progress.spec.ts core/tools/__tests__/ToolRepetitionDetector.failures.spec.ts
 pnpm --dir src test core/tools/__tests__/ToolRepetitionDetector.commands.spec.ts core/task/__tests__/stageThreeCompletion.integration.spec.ts
 pnpm --dir src check-types
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```

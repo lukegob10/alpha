@@ -3,18 +3,17 @@
 Use this reference when choosing frontmatter, storage, invocation policy, or cross-host compatibility. Prefer the
 portable profile unless the user explicitly targets one host.
 
-Sources were checked on 2026-09-20:
+Primary references:
 
-- Agent Skills specification: https://agentskills.io/specification
-- Agent Skills authoring practices: https://agentskills.io/skill-creation/best-practices
-- Agent Skills script guidance: https://agentskills.io/skill-creation/using-scripts
-- Agent Skills evaluation guidance: https://agentskills.io/skill-creation/evaluating-skills
-- Agent Skills description optimization: https://agentskills.io/skill-creation/optimizing-descriptions
-- OpenAI Codex skills: https://developers.openai.com/codex/skills
-- Anthropic Claude Code skills: https://docs.anthropic.com/en/docs/claude-code/skills
-- Cursor Agent Skills: https://cursor.com/docs/skills.md
-- Cursor's installed `create-skill` authoring guidance available on 2026-09-20
-- Alpha's current `SkillsManager` and skill invocation implementation
+- [Agent Skills specification](https://agentskills.io/specification)
+- [Authoring practices](https://agentskills.io/skill-creation/best-practices)
+- [Script guidance](https://agentskills.io/skill-creation/using-scripts)
+- [Evaluation guidance](https://agentskills.io/skill-creation/evaluating-skills)
+- [Description optimization](https://agentskills.io/skill-creation/optimizing-descriptions)
+- [OpenAI skills documentation](https://developers.openai.com/codex/skills)
+- [Claude Code skills](https://code.claude.com/docs/en/skills)
+- [Cursor Agent Skills](https://cursor.com/docs/skills)
+- Alpha's `SkillsManager` and skill invocation implementation in this repository
 
 Host behavior evolves. Recheck the relevant primary documentation before depending on a host extension, distribution
 path, version-specific feature, or permission behavior.
@@ -60,8 +59,8 @@ Keep the main file below 500 lines and preferably below 5,000 tokens. Link suppo
 using paths relative to the skill root. Load references only when needed.
 
 Validate with `skills-ref validate <skill-directory>` when the reference validator is already available or the user
-authorizes installing it. The current validator accepts only the six portable fields, so supported host extensions can
-produce an unexpected-field error. Validate those fields with the target host rather than deleting intentional metadata.
+authorizes installing it. Check the installed validator's supported fields; validate host extensions with the target
+host rather than deleting intentional metadata to satisfy a portable validator.
 The reference library is a conformance aid, not a production security boundary. A valid package can still have poor
 activation boundaries or incorrect behavior.
 
@@ -118,58 +117,34 @@ validation or another host. Selection never widens the active mode's tool or mut
 
 ## Cursor profile
 
-Cursor discovers:
+Consult [Cursor's current skill documentation](https://cursor.com/docs/skills) for discovery directories, supported
+frontmatter, explicit invocation, Custom Modes, and remote distribution. Confirm the target surface: a skill available
+on the local machine is not proof that a Cloud Agent or remote worker receives it.
 
-- Project skills at `.agents/skills/<name>/SKILL.md` and `.cursor/skills/<name>/SKILL.md`.
-- Personal skills at `~/.agents/skills/<name>/SKILL.md` and `~/.cursor/skills/<name>/SKILL.md`.
-- Compatible skills in project and personal Claude and Codex skill directories.
-
-Prefer `.agents/skills/` for the portable package and `.cursor/skills/` for a Cursor-specific package. Start from the
-portable `name` and `description` fields. Cursor also supports `paths` for file-scoped activation,
-`disable-model-invocation` for explicit-only invocation, `metadata`, and `icon` and `color` for Custom Mode presentation.
-Cursor's installed creator defaults `disable-model-invocation` to `true`; omit it when the skill should be selected from
-ambient task context. This authoring default is distinct from the runtime default, which permits automatic invocation
-when the field is absent. Keep references one level deep and use forward slashes in skill-authored paths.
-
-Only personal skills under `~/.cursor/skills/` participate in Cursor's personal Cloud Agent sync; `.agents` and
-compatibility directories remain local unless separately distributed. Cursor's `~/.cursor/skills-cursor/` directory is
-managed by the product. Never write user skills into it. Verify current Cursor documentation before relying on
-additional Cursor-only fields or packaging behavior.
+Use `.agents/skills/` only when the requested Cursor surface discovers it. Keep portable frontmatter unless a verified
+Cursor extension is required, and keep user-authored skills separate from product-managed built-ins. Do not infer runtime
+invocation defaults from an installed creator skill or assume another host implements Cursor's fields.
 
 ## Claude Code profile
 
-Claude Code reads project skills from `.claude/skills/<name>/SKILL.md` and personal skills from
-`~/.claude/skills/<name>/SKILL.md`. It supports the portable profile and local Claude Code extensions, including:
+Consult [Claude Code's skill reference](https://code.claude.com/docs/en/skills) for its discovery locations, frontmatter,
+invocation controls, permissions, dynamic context, and subagent behavior. Verify the actual delivery surface separately;
+local Claude Code support does not establish support in a synced skill, upload, API, or packaging flow.
 
-- `when_to_use` and argument metadata.
-- `disable-model-invocation` and `user-invocable`.
-- `allowed-tools` and `disallowed-tools`.
-- `model`, `effort`, `context`, `agent`, `background`, `hooks`, `paths`, and `shell`.
-
-Use these only for a Claude Code-local skill whose requested behavior needs them. Keep cross-host skills to the six
-standard fields. Claude.ai uploads, the Skills API, and Anthropic's packaging flow accept only `name`, `description`,
-`license`, `compatibility`, `metadata`, and `allowed-tools`; unsupported keys can fail packaging instead of being
-ignored.
-
-`allowed-tools` is a temporary host permission grant in Claude Code. Grant only the narrow commands the workflow needs;
-do not use it as a substitute for safe instructions or input validation. Dynamic context injection and Claude-specific
-substitutions are not portable.
+Add a Claude Code extension only when the requested workflow needs it and the target host supports it. Keep portable
+packages to the standard fields. Treat permission-related metadata according to the host's documented enforcement;
+neither the metadata nor the skill body can bypass the active host policy.
 
 ## Codex profile
 
-Codex uses the open Agent Skills format and discovers:
+Consult [OpenAI's skill documentation](https://developers.openai.com/codex/skills) for the requested Codex surface. Verify
+discovery roots, invocation policy, supported metadata, and distribution there before authoring host-specific behavior.
+For Codex CLI behavior, inspect the relevant [current source and tests](https://github.com/openai/codex) when the
+documentation does not resolve a compatibility question.
 
-- Repository skills from `.agents/skills/` at the current directory and parent directories through the repository root.
-- Personal skills from `$HOME/.agents/skills/`.
-- Administrator skills from `/etc/codex/skills/` on supported systems.
-- System skills bundled with Codex.
-
-Explicit invocation uses the host's skill selector or `$skill-name`; implicit invocation relies primarily on `name` and
-`description`. Codex loads the body and later resources progressively.
-
-Codex can use `agents/openai.yaml` for presentation, implicit-invocation policy, and declared tool dependencies. Keep
-those settings outside `SKILL.md`; they are a Codex extension. Use plugins when the requested deliverable is an
-installable distribution containing multiple skills, connectors, or presentation metadata.
+Keep portable activation metadata in `SKILL.md`. Use `agents/openai.yaml` only for supported host extensions that the
+requested workflow needs, and test discovery and invocation in that host. Alpha's support for one field does not imply
+that it implements Codex presentation, dependency loading, or distribution behavior.
 
 ## Cross-host decisions
 

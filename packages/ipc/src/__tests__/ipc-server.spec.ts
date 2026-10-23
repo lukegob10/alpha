@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => {
 			handlers.clear()
 			deferStart = false
 			ipc.config.silent = false
+			ipc.server = backendServer
 		},
 	}
 })
@@ -234,16 +235,98 @@ describe("IpcServer disposal", () => {
 				expect(diagnostic).not.toContain("ipc-server-secret-canary")
 				expect(diagnostic.length).toBeLessThan(512)
 			}
-			mocks.emitBackend("message", {
-				type: IpcMessageType.TaskCommand,
-				origin: IpcOrigin.Client,
-				clientId: "client-1",
-				data: { commandName: TaskCommandName.SendMessage, data: { text: "ordinary message" } },
-			})
-			expect(onCommand).toHaveBeenCalledExactlyOnceWith("client-1", {
+			const socket = createSocket()
+			mocks.emitBackend("connect", socket)
+			const clientId = mocks.backendServer.emit.mock.calls[0]?.[2].data.clientId
+			mocks.emitBackend(
+				"message",
+				{
+					type: IpcMessageType.TaskCommand,
+					origin: IpcOrigin.Client,
+					clientId,
+					data: { commandName: TaskCommandName.SendMessage, data: { text: "ordinary message" } },
+				},
+				socket,
+			)
+			expect(onCommand).toHaveBeenCalledExactlyOnceWith(clientId, {
 				commandName: TaskCommandName.SendMessage,
 				data: { text: "ordinary message" },
 			})
+		} finally {
+			server.dispose()
+		}
+	})
+
+	it("accepts commands only from the socket assigned to the acknowledged client ID", () => {
+		const onCommand = vi.fn()
+		const log = vi.fn()
+		const server = new IpcServer("test.sock", log)
+		const firstSocket = createSocket()
+		const secondSocket = createSocket()
+		server.on(IpcMessageType.TaskCommand, onCommand)
+		server.listen()
+		try {
+			mocks.emitBackend("connect", firstSocket)
+			mocks.emitBackend("connect", secondSocket)
+			const firstClientId = mocks.backendServer.emit.mock.calls[0]?.[2].data.clientId
+			const secondClientId = mocks.backendServer.emit.mock.calls[1]?.[2].data.clientId
+			expect(firstClientId).not.toBe(secondClientId)
+			const command = { commandName: TaskCommandName.SendMessage, data: { text: "private-command-canary" } }
+			const message = {
+				type: IpcMessageType.TaskCommand,
+				origin: IpcOrigin.Client,
+				clientId: firstClientId,
+				data: command,
+			}
+			log.mockClear()
+			mocks.emitBackend("message", message, secondSocket)
+			mocks.emitBackend("message", message, createSocket())
+			mocks.emitBackend("message", message)
+			mocks.emitBackend("message", { ...message, clientId: "unknown-client" })
+			expect(onCommand).not.toHaveBeenCalled()
+			expect(log).toHaveBeenCalledTimes(4)
+			expect(JSON.stringify(log.mock.calls)).not.toContain("private-command-canary")
+
+			mocks.emitBackend("message", message, firstSocket)
+			expect(onCommand).toHaveBeenCalledExactlyOnceWith(firstClientId, command)
+			mocks.emitBackend("message", { ...message, clientId: secondClientId }, secondSocket)
+			expect(onCommand).toHaveBeenLastCalledWith(secondClientId, command)
+			expect(onCommand).toHaveBeenCalledTimes(2)
+
+			mocks.emitBackend("socket.disconnected", firstSocket)
+			mocks.emitBackend("message", message, firstSocket)
+			expect(onCommand).toHaveBeenCalledTimes(2)
+		} finally {
+			server.dispose()
+		}
+	})
+
+	it("uses its owned backend for replies and broadcasts when another server replaces the global backend", () => {
+		const server = new IpcServer("test.sock", vi.fn())
+		const socket = createSocket()
+		server.listen()
+		try {
+			mocks.emitBackend("connect", socket)
+			const acknowledgement = mocks.backendServer.emit.mock.calls[0]?.[2]
+			const replacement = { ...mocks.backendServer, emit: vi.fn(), broadcast: vi.fn() }
+			mocks.ipc.server = replacement
+			mocks.backendServer.emit.mockClear()
+			server.send(acknowledgement.data.clientId, acknowledgement)
+			server.send(socket, acknowledgement)
+			server.broadcast(acknowledgement)
+			expect(mocks.backendServer.emit).toHaveBeenCalledTimes(2)
+			expect(mocks.backendServer.emit).toHaveBeenCalledWith(socket, "message", acknowledgement)
+			expect(mocks.backendServer.broadcast).toHaveBeenCalledExactlyOnceWith("message", acknowledgement)
+			expect(replacement.emit).not.toHaveBeenCalled()
+			expect(replacement.broadcast).not.toHaveBeenCalled()
+
+			server.dispose()
+			server.send(socket, acknowledgement)
+			server.broadcast(acknowledgement)
+			expect(mocks.backendServer.emit).toHaveBeenCalledTimes(2)
+			expect(mocks.backendServer.broadcast).toHaveBeenCalledOnce()
+			expect(replacement.emit).not.toHaveBeenCalled()
+			expect(replacement.broadcast).not.toHaveBeenCalled()
 		} finally {
 			server.dispose()
 		}

@@ -220,7 +220,9 @@ export class McpHub {
 
 	constructor(provider: AlphaProvider) {
 		this.providerRef = new WeakRef(provider)
-		this.watchMcpSettingsFile()
+		this.watchMcpSettingsFile().catch((error) => {
+			console.error("Failed to watch global MCP settings:", error)
+		})
 		this.watchProjectMcpFile().catch(console.error)
 		this.setupWorkspaceFoldersWatcher()
 		this.initializationPromise = Promise.all([
@@ -246,7 +248,6 @@ export class McpHub {
 	 */
 	public registerClient(): void {
 		this.refCount++
-		// console.log(`McpHub: Client registered. Ref count: ${this.refCount}`)
 	}
 
 	/**
@@ -257,10 +258,7 @@ export class McpHub {
 	public async unregisterClient(disposeWhenUnused = true): Promise<void> {
 		this.refCount--
 
-		// console.log(`McpHub: Client unregistered. Ref count: ${this.refCount}`)
-
 		if (disposeWhenUnused && this.refCount <= 0) {
-			console.log("McpHub: Last client unregistered. Disposing hub.")
 			await this.dispose()
 		}
 	}
@@ -360,7 +358,7 @@ export class McpHub {
 	 */
 	private debounceConfigChange(filePath: string, source: "global" | "project"): void {
 		// Skip processing if this is a programmatic update to prevent unnecessary server restarts
-		if (this.isProgrammaticUpdate) {
+		if (this.isDisposed || this.isProgrammaticUpdate) {
 			return
 		}
 
@@ -421,7 +419,7 @@ export class McpHub {
 
 	private async watchProjectMcpFile(): Promise<void> {
 		// Skip if test environment is detected or VSCode APIs are not available
-		if (process.env.NODE_ENV === "test" || !vscode.workspace.createFileSystemWatcher) {
+		if (this.isDisposed || process.env.NODE_ENV === "test" || !vscode.workspace.createFileSystemWatcher) {
 			return
 		}
 
@@ -569,7 +567,7 @@ export class McpHub {
 
 	private async watchMcpSettingsFile(): Promise<void> {
 		// Skip if test environment is detected or VSCode APIs are not available
-		if (process.env.NODE_ENV === "test" || !vscode.workspace.createFileSystemWatcher) {
+		if (this.isDisposed || process.env.NODE_ENV === "test" || !vscode.workspace.createFileSystemWatcher) {
 			return
 		}
 
@@ -580,7 +578,8 @@ export class McpHub {
 		}
 
 		const settingsPath = await this.getMcpSettingsFilePath()
-		const settingsUri = vscode.Uri.file(settingsPath)
+		// The path lookup may finish after the final provider has released the hub.
+		if (this.isDisposed) return
 		const settingsPattern = new vscode.RelativePattern(path.dirname(settingsPath), path.basename(settingsPath))
 
 		// Create a file system watcher for the global MCP settings file

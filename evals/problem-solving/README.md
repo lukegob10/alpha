@@ -64,7 +64,8 @@ on Harbor's published oracle agent. Selected bank digests must equal the fixture
 in `frontier-v1`.
 
 One selected local task can be prepared for the existing VS Code extension campaign. Each attempt
-gets a fresh workspace and profile. The final workspace is graded with the existing command grader.
+gets a fresh workspace and reuses the explicitly selected owned live profile. The final workspace is graded with the
+existing command grader.
 A scripted or preflight run is not counted as solving evidence, and provider, cancellation, budget,
 and task failures stay distinct.
 
@@ -73,7 +74,9 @@ change, then the same subset on the new build. Holdout stays out of that change.
 
 ## Live trajectory reports
 
-Run live quality measurements through the actual VS Code extension and Copilot provider:
+Run live quality measurements through the actual VS Code extension and Copilot provider. First set explicit absolute
+`PROBLEM_SOLVING_ATTEMPT_ROOT` and `PROBLEM_SOLVING_PROFILE_DIR` paths as described in the
+[improvement loop](improvement-loop.md); the attempt directory must be new and the profile must already be initialized:
 
 ```sh
 pnpm --dir packages/evals benchmark:problem-solving-live
@@ -82,9 +85,9 @@ pnpm --dir packages/evals benchmark:problem-solving-live
 Every invocation creates a unique run directory and refuses to reuse an existing one. The report
 stores the Git commit, clean/dirty state, a digest of the build and evaluation inputs, the resolved
 task-set digest, and the exact selected task IDs and repetitions. The default is one sample for each
-of the 32 eligible local tasks. `PROBLEM_SOLVING_TASK_IDS` accepts a
+eligible local task. `PROBLEM_SOLVING_TASK_IDS` accepts a
 comma-separated subset, `PROBLEM_SOLVING_REPETITIONS` accepts 1 through 3, and the host, model,
-effort, request limit, run ID, attempt root, and profile root can be set with the corresponding
+effort, request limit, and run ID can be set with the corresponding
 `PROBLEM_SOLVING_*` environment variables. `PROBLEM_SOLVING_PROMPT_VARIANTS` accepts `baseline`,
 `single-command`, or both as a comma-separated value; the default is `baseline`. When both are
 selected, repetition order alternates between arms. Reports include per-attempt effective prompt

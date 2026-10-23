@@ -1,48 +1,25 @@
 # Standalone CLI retirement
 
-Date: 2026-09-17. Scope: contract alignment and deletion of Alpha's standalone CLI.
+Alpha runs as a VS Code extension. The standalone `alpha` application in `apps/cli/`,
+its exclusive `packages/vscode-shim/`, CLI-only exports, and CLI evaluation execution
+are retired. Do not recreate a parallel agent runtime.
 
-## Plan and boundaries
+Development commands and `packages/evals/src/cli/` remain supported. They orchestrate
+tests and the real VS Code extension through its existing API and IPC boundaries.
+The shared execution kernel, task history, skills, MCP, terminal sessions, and extension
+surfaces retain their normal contracts.
 
-1. Remove `apps/cli`, its exclusive `packages/vscode-shim`, CLI release automation,
-   stdin/event schemas, debug logger and core CLI entry point. Prune only dependencies
-   no longer reachable from the remaining workspace packages.
-2. Remove the `ROO_CLI_RUNTIME` branches from command timeouts, approval preparation
-   and profile restoration. Preserve the existing VS Code behavior, shared execution
-   kernel, tools, IPC, task history, skills, MCP, terminal sessions and all extension surfaces.
-3. Keep the existing VS Code evaluation runner. Remove the CLI runner and execution
-   selector. Reject CLI execution in new run requests. Keep historical database values
-   readable; attempts to execute a retired CLI run must fail before launching an agent,
-   with an actionable message. Do not relabel historical results or delete user data.
-4. Run focused regressions, workspace lint/types/tests and dependency checks, then
-   bundle, package inspection, the exact VS Code 1.122.1 smoke gate and the unattended
-   live Copilot harness exercise.
+## Compatibility
 
-The dependency search found no extension import of the shim or CLI protocol. Shared
-packages remain; only their exclusively CLI exports are removed. Development commands
-and the evaluation orchestrator under `packages/evals/src/cli` remain: these launch
-tests and the real VS Code extension, not a second Alpha agent application.
+- Historical task and evaluation records remain readable with their original execution
+  identity. Do not relabel or delete them because CLI execution is retired.
+- New evaluation requests reject CLI execution before creating a run. Executing an old
+  CLI run fails before launching an agent or container and reports the unsupported path.
+- A retained `ROO_CLI_RUNTIME` environment variable cannot suppress extension command
+  timeouts, approvals, or saved-provider restoration.
+- Extension APIs and saved task formats remain supported. Retired application paths
+  remain forbidden in automated patch plans.
 
-The checkout already contained unrelated and earlier harness work. Its pre-removal
-state was captured outside the repository in
-`alpha-cli-removal-baseline-20260917-003553` under the local temporary directory.
-Those changes must remain intact. This task does not publish a release, change a version,
-remove installed software, delete home-directory data, or rewrite past release notes.
-
-## Compatibility and verification
-
-The intentional removals are the standalone `alpha` executable, its shim, CLI-only
-package exports and CLI evaluation execution. Existing extension APIs and saved task
-formats retain their contracts. Retired paths remain forbidden in automated patch
-plans so subsequent extension maintenance cannot recreate a parallel CLI.
-
-The implementation removes 223 tracked files (37,206 lines) and 26 exclusive dependency
-versions. Remaining workspace importers and dependency versions are unchanged. The
-lockfile change contains deletions only. Historical release notes remain as history;
-unused CLI announcements and the CLI release/debug instructions are removed.
-
-Regression tests verify that an inherited retired environment flag cannot suppress
-command timeouts or saved provider restoration. Evaluation tests exercise VS Code
-routing, cancellation, failure, budget-result classification, and rejection of legacy
-CLI runs before launching a local agent or container. The server action validates new
-run requests before creating database records. Historical database values remain readable.
+Validate affected extension and evaluator routing, cancellation, failure classification,
+and historical-record readers. Use the current [testing workflow](testing-harness.md)
+and [VS Code host contract](vscode-1.138-migration.md) for the applicable gates.

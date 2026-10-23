@@ -39,7 +39,7 @@ VS Code Extension Host and Git workspace. `certify:managed-agents:automated` run
 
 Current agent Settings follow the Codex V2 public agent controls: enablement, root-wide thread count, default model
 and reasoning effort, interruption messages, and custom agent definitions. See
-[the pinned source comparison and compatibility contract](../agent-settings-codex-alignment-2026-10-23.md).
+[the lifecycle and compatibility contract](../subagent-lifecycle-hardening.md).
 
 Generic execution deadlines, the separate research cutoff, per-agent token/cost limits, proactive-delegation preferences,
 provider-profile routes and nesting-depth controls are retired. Old global preferences cannot restore them. Historical
@@ -48,34 +48,34 @@ Capacity, captured permission scopes, cancellation ownership and atomic persiste
 
 ## Deterministic matrix
 
-| Row                                    | Gate                                                                                            |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `CFG-CONTRACT-001`                     | Exact ExtensionState/updateSettings field names, ranges, and defaults                           |
-| `CFG-FROZEN-001`                       | Frozen orchestration manifest and legacy-default recovery                                       |
-| `PROJECTION-CONTRACT-001`              | Depth/effective-limit/stop-reason live and list projection                                      |
-| `CFG-POLICY-001`                       | Explicit-only/proactive behavior, narrowing, and reload persistence                             |
-| `CFG-TIMEOUT-001`                      | Wait timeout without child termination; explicit cancellation and reload                        |
-| `CFG-BUDGET-001`                       | Retired budget compatibility, continued work and durable historical stop reasons                |
-| `NEST-DEPTH-001`                       | Authorized nesting without a separate depth ceiling, with authority narrowing                   |
-| `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                                                |
-| `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                           |
-| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child passive parent-mail wakes                     |
-| `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims                           |
-| `ROUTING-STEERING-RECEIPT-001`         | Durable agent-message acknowledgment, human approval isolation, and retained-follow-up recovery |
-| `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                       |
-| `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                                     |
-| `RECOVERY-NESTED-001`                  | Nested topology/usage/mailbox rehydration and orphan cleanup                                    |
-| `CONTEXT-INHERIT-001`                  | Frozen, credential-free, digest-checked `fork_turns` inheritance                                |
-| `NEST-COMPLETION-001`                  | Active/unowned descendants block managed-parent completion                                      |
-| `WORKER-GATE-001`                      | Approval-mode-aware Worker settlement, durable parent verification, and double completion check |
-| `PROTOCOL-STRICT-001`                  | Strict native-provider/lifecycle parsing                                                        |
-| `WORKER-NESTED-001`                    | Explicit descendant Worker verification ownership                                               |
-| `UI-LIVE-TREE-001`                     | Compact nested task navigation, attention, overflow controls, and reload                        |
-| `UI-SETTINGS-BUFFER-001`               | Local cached edits survive unrelated extension/live-tree updates                                |
-| `UI-SETTINGS-DEBT-001`                 | No skipped/placeholder Settings change-detection assertions                                     |
-| `RUNTIME-LEGACY-DEBT-001`              | Selected legacy Task coverage has no skipped cases                                              |
-| `PROCESS-TREE-CLEANUP-001`             | Awaited Task/provider cleanup and real local OS process-tree removal                            |
-| `PERSISTENCE-COMPACT-GLOBAL-STATE-001` | Bounded root-only global-state compatibility history                                            |
+| Row                                    | Gate                                                                                                       |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `CFG-CONTRACT-001`                     | Exact ExtensionState/updateSettings field names, ranges, and defaults                                      |
+| `CFG-FROZEN-001`                       | Frozen orchestration manifest and legacy-default recovery                                                  |
+| `PROJECTION-CONTRACT-001`              | Depth/effective-limit/stop-reason live and list projection                                                 |
+| `CFG-POLICY-001`                       | Explicit authorization, inherited authority narrowing, retired-setting compatibility, and reload           |
+| `CFG-TIMEOUT-001`                      | Wait timeout without child termination; explicit cancellation and reload                                   |
+| `CFG-BUDGET-001`                       | Retired budget compatibility, continued work and durable historical stop reasons                           |
+| `NEST-DEPTH-001`                       | Authorized nesting without a separate depth ceiling, with authority narrowing                              |
+| `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                                                           |
+| `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                                      |
+| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child passive parent-mail wakes                                |
+| `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims                                      |
+| `ROUTING-STEERING-RECEIPT-001`         | Durable agent-message acknowledgment, human approval isolation, and retained-follow-up recovery            |
+| `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                                  |
+| `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                                                |
+| `RECOVERY-NESTED-001`                  | Nested topology/usage/mailbox rehydration and orphan cleanup                                               |
+| `CONTEXT-INHERIT-001`                  | Frozen, credential-free, digest-checked `fork_turns` inheritance                                           |
+| `NEST-COMPLETION-001`                  | Active/unowned descendants block managed-parent completion                                                 |
+| `WORKER-GATE-001`                      | Approved-effect integration, recoverable Worker review, durable parent verification, and single completion |
+| `PROTOCOL-STRICT-001`                  | Strict native-provider/lifecycle parsing                                                                   |
+| `WORKER-NESTED-001`                    | Explicit descendant Worker verification ownership                                                          |
+| `UI-LIVE-TREE-001`                     | Compact nested task navigation, attention, overflow controls, and reload                                   |
+| `UI-SETTINGS-BUFFER-001`               | Local cached edits survive unrelated extension/live-tree updates                                           |
+| `UI-SETTINGS-DEBT-001`                 | No skipped/placeholder Settings change-detection assertions                                                |
+| `RUNTIME-LEGACY-DEBT-001`              | Selected legacy Task coverage has no skipped cases                                                         |
+| `PROCESS-TREE-CLEANUP-001`             | Awaited Task/provider cleanup and real local OS process-tree removal                                       |
+| `PERSISTENCE-COMPACT-GLOBAL-STATE-001` | Bounded root-only global-state compatibility history                                                       |
 
 ## Expected integration-dependent rows
 
@@ -99,7 +99,7 @@ INT-GLOBAL-STATE-SIZE-001
 2. Route results, recovery events, waits, and upward progress to the owning immediate parent. Restrict downward
    messages and lifecycle-control targets to an authorized descendant subtree.
 3. Reserve root-keyed capacity and task names atomically before asynchronous preparation.
-4. Persist effective policy, ancestry, limits, deadlines, usage, and stop reason before launch. Reload must not read
+4. Persist effective policy, ancestry, supported limits, usage, and stop reason before launch. Reload must not read
    changed current Settings for an existing child.
 5. Keep native `wait_agent` result claiming atomic and receipt-based. A lifecycle render must not consume a result;
    reload must ACK a claim with a persisted matching tool result and release a claim without one for exact retry.

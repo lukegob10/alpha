@@ -5,6 +5,9 @@ on:
         types: [labeled]
     workflow_dispatch:
 
+permissions:
+    contents: read
+
 env:
     DOCKER_BUILDKIT: 1
     COMPOSE_DOCKER_CLI_BUILD: 1

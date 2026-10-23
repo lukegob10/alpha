@@ -8,6 +8,9 @@ on:
         types: [opened, reopened, ready_for_review, synchronize]
         branches: [main]
 
+permissions:
+    contents: read
+
 jobs:
     knip:
         runs-on: ubuntu-latest

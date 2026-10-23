@@ -1,6 +1,10 @@
 import { createHash } from "crypto"
 import { describe, expect, it } from "vitest"
-import { disabledSubagentAutoApprovalPolicy, subagentAutoApprovalPolicySchema } from "@alpha-code/types"
+import {
+	deriveAutoApprovalFlags,
+	disabledSubagentAutoApprovalPolicy,
+	subagentAutoApprovalPolicySchema,
+} from "@alpha-code/types"
 
 import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../index"
 import { createSubagentCommandApprovalPolicy } from "../commands"
@@ -149,6 +153,43 @@ describe("checkAutoApproval", () => {
 				state: { approvalMode: "auto" },
 			}),
 		).resolves.toEqual({ decision: "ask" })
+	})
+
+	it.each([
+		"{",
+		"null",
+		"[]",
+		'"readFile"',
+		JSON.stringify({ tool: "readFile", batchFiles: [null] }),
+		JSON.stringify({ tool: "readFile", batchFiles: ["inside.ts"] }),
+		JSON.stringify({ tool: "readFile", batchFiles: [[]] }),
+		JSON.stringify({ tool: "readFile", batchFiles: "inside.ts" }),
+		JSON.stringify({ tool: "readFile", batchFiles: [{ path: "inside.ts", isOutsideWorkspace: 0 }] }),
+		JSON.stringify({ tool: "readFile", isOutsideWorkspace: 0 }),
+	])("keeps malformed approval metadata under review without throwing: %s", async (text) => {
+		for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+			await expect(checkAutoApproval({ ask: "tool", text, state: { approvalMode } })).resolves.toEqual({
+				decision: "ask",
+			})
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					ask: "tool",
+					text,
+					state: { approvalMode },
+					inheritedState: { ...disabledSubagentAutoApprovalPolicy, ...deriveAutoApprovalFlags(approvalMode) },
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		}
+	})
+
+	it("preserves legacy batch reads with omitted optional scope flags", async () => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({ tool: "readFile", batchFiles: [{ path: "inside.ts" }] }),
+				state: { approvalMode: "auto" },
+			}),
+		).resolves.toEqual({ decision: "approve" })
 	})
 
 	it.each([

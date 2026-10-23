@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { RequestUserInputAnswerMap } from "@alpha-code/types"
 
 import { RequestUserInputForm } from "../RequestUserInputForm"
 
@@ -136,6 +137,22 @@ describe("RequestUserInputForm", () => {
 
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
 			workspace_scope: { answers: ["A linked workspace\nInclude the shared package"] },
+		})
+	})
+
+	it.each(["__proto__", "constructor", "toString"])("preserves the question ID %s in serialized answers", (id) => {
+		const onSubmit = vi.fn<(answers: RequestUserInputAnswerMap) => void>()
+		render(<RequestUserInputForm request={{ questions: [{ ...request.questions[0]!, id }] }} onSubmit={onSubmit} />)
+		fireEvent.click(screen.getByRole("radio", { name: "Current workspace (Recommended)" }))
+		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
+		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
+
+		expect(onSubmit).toHaveBeenCalledTimes(1)
+		const answers = onSubmit.mock.calls[0][0]
+		expect(Object.hasOwn(answers, id)).toBe(true)
+		expect(Object.getPrototypeOf(answers)).toBe(Object.prototype)
+		expect(JSON.parse(JSON.stringify(answers))).toEqual({
+			[id]: { answers: ["Current workspace (Recommended)"] },
 		})
 	})
 

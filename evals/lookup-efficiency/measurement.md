@@ -1,6 +1,8 @@
 # Lookup-efficiency measurement contract
 
-21 September 2026. Sibling of the [NOR-36 independent efficiency acceptance](../proportional-scope/acceptance.md). This document owns measurement of production-shaped **“where does X live?”** lookups. It does not block NOR-70–74, does not change the seven proportional-scope fixtures or their scripts, and does not revive NOR-36’s unproven 25% tool / 20% token targets.
+This contract measures production-shaped **“where does X live?”** lookups, alongside the
+[proportional-scope acceptance](../proportional-scope/acceptance.md). Preserve the seven proportional-scope fixtures
+and their scripts as a separate workload; percentage savings require their own comparable measurements.
 
 The NOR-36 scripted **narrow lookup** class remains **2 model requests / 1 tool result** on a fixture oracle. That is not a live-model budget. Lookup-efficiency scripted traces prove this reporter and contract only.
 
@@ -56,15 +58,15 @@ If the measured baseline is already near this bar, tighten it. Do not treat a si
 
 Every sample's declared count, model, reasoning preference, and cache state must match its run envelope. Sample indices must be nonnegative safe integers below the declared count; extra samples are rejected rather than omitted from the comparison.
 
-## Live capture without a NOR-48 adapter
+## Live capture
 
-A documented wrap of existing evidence is success. Do not finish the unimplemented NOR-48 live eval adapter as a new runtime.
+Use existing evidence collectors and preserve their provenance when wrapping observations for this reporter.
 
 1. Declare sample count, model, reasoning preference, and cache state first.
 2. Run the frozen prompts in the real extension. Live Copilot uses the existing campaign `--provider live-copilot` path (`docs/core-confidence.md`, `apps/vscode-e2e`). Evals VS Code execution uses `processTask`, which already reads `agent_turn_events.jsonl` and normalizes it to `EvalTraceEvent`.
 3. Keep the **raw** JSONL. Campaign `*.projection.json` hashes tool names and is insufficient for this reporter.
 4. Wrap each sample as `observations.json` (`fixtureId`, identity, `trace`, optional `usage` / `completionStage` / `timing`) and project with `scripts/evals/lookup-efficiency-report.mjs`.
-5. Pair reference (main-equivalent source, or a recorded failure trace) against the candidate after NOR-69 children land.
+5. Pair reference (main-equivalent source, or a recorded failure trace) against the declared candidate build.
 
 Optional observer fields: `usage.reasoningTokens`, `usage.requestUsage[].reasoningTokens`, `usage.localReasoningTokenEstimate`, `completionStage.rejectionCount`, `completionStage.lastReasonCode` (allowlisted), `completionStage.backgroundedCommandsAtFirstAnswer`, `timing.firstGroundedAnswerMs`, `timing.durableCompletionMs`.
 

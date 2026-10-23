@@ -191,4 +191,20 @@ describe("WorkspaceMutationGate", () => {
 		await Promise.all([transition, worker])
 		expect(order).toEqual(["plan:start", "plan:end", "worker:start"])
 	})
+
+	it("cancels an idle transition before its callback starts and releases the next mutation", async () => {
+		const gate = new WorkspaceMutationGate()
+		let cancelled = false
+		const transitionEffect = vi.fn(async () => "entered")
+		const transition = gate.runIfIdle("parent", "enter Plan", transitionEffect, () => cancelled)
+		expect(transition).toBeDefined()
+		const nextEffect = vi.fn(async () => "committed")
+		const next = gate.run("worker", "edit", nextEffect)
+
+		cancelled = true
+		await expect(transition).rejects.toBeInstanceOf(WorkspaceMutationCancelledError)
+		await expect(next).resolves.toBe("committed")
+		expect(transitionEffect).not.toHaveBeenCalled()
+		expect(nextEffect).toHaveBeenCalledOnce()
+	})
 })

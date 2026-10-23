@@ -1,12 +1,7 @@
 # Turn-scoped Stop and steering admission
 
-Reference inspected on 2026-10-17: OpenAI Codex CLI commit `8c076942`.
-The upstream [turn protocol](https://github.com/openai/codex/blob/8c076942/codex-rs/app-server-protocol/src/protocol/v2/turn.rs)
-requires `expected_turn_id` for steering and `turn_id` for interruption. The
-[thread implementation](https://github.com/openai/codex/blob/8c076942/codex-rs/core/src/codex_thread.rs)
-restricts steer-only submission to the expected active regular turn; it cannot start a successor.
-The upstream [steering integration tests](https://github.com/openai/codex/blob/8c076942/codex-rs/app-server/tests/suite/v2/turn_steer.rs)
-were inspected as context. Alpha implements this admission invariant in its existing TypeScript host and task queue.
+Direct steering and Stop target the observed active turn. A delayed operation cannot start or interrupt a successor.
+Alpha enforces this in its existing TypeScript host and durable task queue.
 
 The composer attaches its observed canonical `expectedTurnId` to Stop and direct steering.
 The host rejects a mismatched turn before resolving attachments and checks again afterward.

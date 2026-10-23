@@ -81,6 +81,26 @@ describe("getRulesSection", () => {
 		expect(result).toContain(cwd)
 	})
 
+	it("keeps path formats consistent with supplied tools without expanding authority", () => {
+		const variants = [
+			getRulesSection(cwd),
+			getRulesSection(cwd, undefined, true),
+			...(["explore", "review", "worker"] as const).map((subagentRole) =>
+				getRulesSection(cwd, {
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					subagentRole,
+				}),
+			),
+		]
+		for (const rules of variants) {
+			expect(rules).toContain("Use the path format accepted by each supplied tool schema")
+			expect(rules).toContain("Absolute paths never expand the authorized workspace or read/write scope")
+			expect(rules).not.toContain("File-tool paths must be relative")
+		}
+	})
+
 	it("uses command evidence without requiring user confirmation", () => {
 		const result = getToolUseGuidelinesSection()
 

@@ -7257,7 +7257,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// saves, and only post parts of partial message instead of
 					// whole array in new listener.
 					this.updateAlphaMessage(lastMessage)
-					// console.log("Task#ask: current ask promise was ignored (#1)")
 					throw new AskIgnoredError("updating existing partial")
 				} else {
 					// This is a new partial message, so add it with partial
@@ -7274,7 +7273,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						progressStatus,
 						toolApprovalRequest: alphaToolApprovalRequest,
 					})
-					// console.log("Task#ask: current ask promise was ignored (#2)")
 					throw new AskIgnoredError("new partial")
 				}
 			} else {
@@ -13149,7 +13147,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.contextCondenseAbortController?.abort(cancellation)
 		this.postTurnCompactionAbortController?.abort(cancellation)
 		if (this.currentRequestAbortController) {
-			console.log(`[Task#${this.taskId}.${this.instanceId}] Aborting current HTTP request`)
 			this.currentRequestAbortController.abort(cancellation)
 			this.currentRequestAbortController = undefined
 		}
@@ -13815,7 +13812,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.retainedReasoningHandlers.clear()
 		this.disposeReasoningHandler(this.api)
 		this.reasoningSummaries?.dispose()
-		console.log(`[Task#dispose] disposing task ${this.taskId}.${this.instanceId}`)
 		this.releaseSubagentReviewBarrierIfSettled(true)
 		this.invalidateStreamingPreviewEpoch()
 		this.taskCancellationController.abort()
@@ -13912,25 +13908,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			console.error("Error reverting diff changes:", error)
 		}
-	}
-
-	// Subtasks
-	// Spawn / Wait / Complete
-
-	public async startSubtask(message: string, initialTodos: TodoItem[], mode: string) {
-		const provider = this.providerRef.deref()
-
-		if (!provider) {
-			throw new Error("Provider not available")
-		}
-
-		const child = await (provider as any).delegateParentAndOpenChild({
-			parentTaskId: this.taskId,
-			message,
-			initialTodos,
-			mode,
-		})
-		return child
 	}
 
 	/**
@@ -16509,8 +16486,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 
 							if (this.abort) {
-								console.log(`aborting stream, this.abandoned = ${this.abandoned}`)
-
 								if (!this.abandoned && this.isCurrentApiConversationHistoryOwner()) {
 									// Only need to gracefully abort if this instance
 									// isn't abandoned (sometimes OpenRouter stream
@@ -19796,7 +19771,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// A failed/aborted lifecycle await therefore cannot strand an active signal.
 		let removeFirstChunkAbortListener: (() => void) | undefined
 		const clearOwnedRequestController = () => {
-			console.log(`[Task#${this.taskId}.${this.instanceId}] AbortSignal triggered for current request`)
 			if (this.currentRequestAbortController === requestController) {
 				this.currentRequestAbortController = undefined
 			}

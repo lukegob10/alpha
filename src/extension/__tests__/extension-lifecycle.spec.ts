@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
 	return {
 		outputChannel,
 		provider,
+		disposeProviders: vi.fn(async () => provider.dispose()),
 		shutdownGlobalStores: vi.fn().mockResolvedValue(undefined),
 		cleanupMcp: vi.fn().mockResolvedValue(undefined),
 		shutdownTelemetry: vi.fn(),
@@ -81,7 +82,7 @@ vi.mock("../../core/webview/AlphaProvider", () => {
 	const AlphaProvider = vi.fn(function () {
 		return mocks.provider
 	})
-	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider" })
+	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider", disposeAll: mocks.disposeProviders })
 	return { AlphaProvider }
 })
 vi.mock("../../integrations/editor/DiffViewProvider", () => ({ DIFF_VIEW_URI_SCHEME: "alpha-diff" }))
@@ -258,7 +259,7 @@ describe("extension lifecycle", () => {
 		await deactivate()
 	})
 
-	it("awaits sidebar provider disposal before shutting down global services", async () => {
+	it("awaits every task provider's disposal before shutting down global services", async () => {
 		let finishProviderDisposal!: () => void
 		mocks.provider.dispose.mockImplementationOnce(
 			() => new Promise<void>((resolve) => (finishProviderDisposal = resolve)),
@@ -278,6 +279,7 @@ describe("extension lifecycle", () => {
 		const deactivating = deactivate()
 
 		await vi.waitFor(() => expect(mocks.provider.dispose).toHaveBeenCalledOnce())
+		expect(mocks.disposeProviders).toHaveBeenCalledOnce()
 		expect(mocks.shutdownGlobalStores).not.toHaveBeenCalled()
 
 		finishProviderDisposal()
@@ -287,6 +289,26 @@ describe("extension lifecycle", () => {
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
 		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+	})
+
+	it("keeps shared services running until an editor provider finishes cleanup", async () => {
+		let finishEditor!: () => void
+		const editorCleanup = new Promise<void>((resolve) => (finishEditor = resolve))
+		mocks.disposeProviders.mockImplementationOnce(async () => {
+			await Promise.all([mocks.provider.dispose(), editorCleanup])
+		})
+		const deactivating = deactivate()
+		try {
+			await Promise.resolve()
+			expect(mocks.disposeProviders).toHaveBeenCalledOnce()
+			expect(mocks.shutdownGlobalStores).not.toHaveBeenCalled()
+			expect(mocks.cleanupMcp).not.toHaveBeenCalled()
+		} finally {
+			finishEditor()
+			await deactivating
+		}
+		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
+		expect(mocks.cleanupMcp).toHaveBeenCalledOnce()
 	})
 
 	it("finishes cleanup when the host has already closed its output channel", async () => {

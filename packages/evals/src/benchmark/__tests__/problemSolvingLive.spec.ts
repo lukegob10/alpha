@@ -18,6 +18,7 @@ import {
 	extensionBundleDigest,
 	launchExtension,
 	orderProblemSolvingPromptVariants,
+	readProblemSolvingRunPaths,
 	runLiveProblemSolvingCore,
 } from "../problemSolvingLive"
 
@@ -95,6 +96,32 @@ afterEach(async () => {
 })
 
 describe("live problem-solving runner configuration", () => {
+	it("uses only explicitly configured profile and output roots", () => {
+		const attemptRoot = path.resolve(os.tmpdir(), "alpha-live-output")
+		const profileDir = path.resolve(os.tmpdir(), "alpha-live-profile")
+		expect(
+			readProblemSolvingRunPaths({
+				PROBLEM_SOLVING_ATTEMPT_ROOT: attemptRoot,
+				PROBLEM_SOLVING_PROFILE_DIR: profileDir,
+			}),
+		).toEqual({ attemptRoot, profileDir })
+	})
+
+	it.each(["PROBLEM_SOLVING_ATTEMPT_ROOT", "PROBLEM_SOLVING_PROFILE_DIR"])(
+		"rejects missing or invalid %s before a live run can select an operator profile",
+		(key) => {
+			const valid = {
+				PROBLEM_SOLVING_ATTEMPT_ROOT: path.resolve(os.tmpdir(), "alpha-live-output"),
+				PROBLEM_SOLVING_PROFILE_DIR: path.resolve(os.tmpdir(), "alpha-live-profile"),
+			}
+			for (const value of [undefined, "", "relative-path", `${path.parse(process.cwd()).root}invalid\0path`]) {
+				expect(() => readProblemSolvingRunPaths({ ...valid, [key]: value })).toThrow(
+					`${key} must name an explicit absolute path`,
+				)
+			}
+		},
+	)
+
 	it.each([
 		{
 			name: "provider timeout",

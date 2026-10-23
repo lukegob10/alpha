@@ -35,15 +35,25 @@ A valid profile threshold overrides the global setting. Profile inheritance (`-1
 settings resolve through the same helper for preview, automatic compaction, manual compaction, and provider-error
 recovery. The existing threshold setting continues to mean a percentage of W, preserving its stored interpretation.
 
-The deliberate change from the old 75% of window-minus-output target to 25% of the compactable working budget leaves
-room before the next trigger. For W = 1,000,000, R = 32,768, P = 20%, and F = 10,000, the old target was 725,424 tokens;
-the new target is 57,500, below the 200,000-token trigger. These are ceilings, not a request to pad summaries to that size.
+The summary target leaves room before the next trigger. For W = 1,000,000, R = 32,768, P = 20%, and F = 10,000,
+it is 57,500 tokens, below the 200,000-token trigger. These are ceilings, not a request to pad summaries to that size.
 
 System instructions, tool schemas, summary wrapping, active workflows, and any supplied environment details count toward
 the result. The default exact recent tail is bounded by one quarter of the remaining history budget and 16,384 tokens.
 Optional folded file context is capped during generation and admitted only while the complete measured candidate fits
 and remains smaller. The concise handoff prompt includes the remaining summary token budget, including when the user
 supplies custom condensing instructions.
+
+## Smaller-model transitions
+
+After a model change, the host can retain one previous handler when non-model provider settings match. Endpoint,
+credentials, or account changes invalidate it. After model preparation, only a larger previous window may generate the
+summary through `compactionApiHandler`. The selected handler still owns token counting, replacement acceptance, recent
+transactions, and carried user instructions. The summary request is tool-free with independent response-chain metadata.
+
+Captured previous handlers are released after success or failure and are process-local. Reload, unavailable previous
+models, and incomplete summary output retain bounded failure/truncation behavior. A larger window alone does not establish
+opaque reasoning compatibility. The existing `request-isolation.spec.ts` and recent-tail/reload tests cover this boundary.
 
 ## Progress and repeated requests
 
@@ -86,10 +96,10 @@ the field continue rendering as successful compactions. No configuration migrati
 ```sh
 pnpm --dir src test core/context-management core/condense core/task/__tests__/Task.compaction-safety.spec.ts shared/__tests__/context-output-reservation.spec.ts shared/__tests__/api.spec.ts api/providers/__tests__/vscode-lm.spec.ts core/task-persistence core/agent/__tests__/AgentTurnEngine.spec.ts
 pnpm --filter @alpha-code/types test
-pnpm --dir webview-ui test src/components/chat/context-management/__tests__/CondensationResultRow.spec.tsx src/components/chat/__tests__/TaskHeader.spec.tsx src/components/settings/providers/__tests__/VSCodeLM.spec.tsx src/__tests__/ContextWindowProgress.spec.tsx src/__tests__/ContextWindowProgressLogic.spec.ts
+pnpm --dir webview-ui test src/components/chat/context-management/__tests__/CondensationResultRow.spec.tsx src/components/chat/__tests__/TaskHeader.spec.tsx src/components/settings/providers/__tests__/VSCodeLM.spec.tsx
 pnpm lint
 pnpm check-types
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
 Extremely small windows or triggers can still be insufficient for mandatory instructions

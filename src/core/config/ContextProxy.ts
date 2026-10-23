@@ -40,6 +40,7 @@ const globalSettingsExportSchema = globalSettingsSchema.omit({
 })
 
 export class ContextProxy {
+	private static readonly vertexCredentialLocks = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
 	private readonly originalContext: vscode.ExtensionContext
 
 	private stateCache: GlobalState
@@ -67,19 +68,7 @@ export class ContextProxy {
 			}
 		}
 
-		const promises = [
-			...SECRET_STATE_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error loading secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
-		]
-
-		await Promise.all(promises)
+		await this.loadSecrets("loading")
 
 		// Migration: inspect invalid/removed API providers without changing the saved value
 		await this.migrateInvalidApiProvider()
@@ -323,6 +312,20 @@ export class ContextProxy {
 		// Update cache.
 		this.secretCache[key] = value
 
+		if (key === "vertexJsonCredentials") {
+			return this.withVertexCredentialLock(async () => {
+				this.secretCache[key] = value
+				if (value === undefined) {
+					// Clear the legacy copy first so reload cannot restore removed credentials.
+					await this.originalContext.globalState.update(key, undefined)
+					await this.originalContext.secrets.delete(key)
+				} else {
+					await this.originalContext.secrets.store(key, value)
+					await this.originalContext.globalState.update(key, undefined)
+				}
+			})
+		}
+
 		// Write directly to context.
 		return value === undefined
 			? this.originalContext.secrets.delete(key)
@@ -334,18 +337,55 @@ export class ContextProxy {
 	 * This is useful when you need to ensure the cache has the latest values
 	 */
 	async refreshSecrets(): Promise<void> {
-		const promises = [
-			...SECRET_STATE_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error refreshing secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
+		await this.loadSecrets("refreshing")
+	}
+
+	private async loadSecrets(operation: "loading" | "refreshing"): Promise<void> {
+		await Promise.all(
+			SECRET_STATE_KEYS.map((key) => {
+				const load = async () => {
+					let loaded = false
+					try {
+						this.secretCache[key] = await this.originalContext.secrets.get(key)
+						loaded = true
+					} catch (error) {
+						logger.error(
+							`Error ${operation} secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
+						)
+					}
+					if (key === "vertexJsonCredentials") await this.migrateLegacyVertexCredentials(loaded)
 				}
+				return key === "vertexJsonCredentials" ? this.withVertexCredentialLock(load) : load()
 			}),
-		]
-		await Promise.all(promises)
+		)
+	}
+
+	private withVertexCredentialLock(operation: () => Promise<void>): Promise<void> {
+		const previous = ContextProxy.vertexCredentialLocks.get(this.originalContext.secrets) ?? Promise.resolve()
+		const next = previous.then(operation)
+		ContextProxy.vertexCredentialLocks.set(
+			this.originalContext.secrets,
+			next.catch(() => {}),
+		)
+		return next
+	}
+
+	private async migrateLegacyVertexCredentials(secretLoaded: boolean): Promise<void> {
+		const key = "vertexJsonCredentials"
+		try {
+			const legacyValue = this.originalContext.globalState.get<unknown>(key)
+			if (typeof legacyValue !== "string") return
+
+			const storedValue = this.secretCache[key]
+			if (storedValue === undefined) this.secretCache[key] = legacyValue
+			// A failed read cannot establish whether a newer secret already exists.
+			if (!secretLoaded) return
+			if (storedValue === undefined) await this.originalContext.secrets.store(key, legacyValue)
+			// Remove plaintext only after an existing or newly stored secret is durable.
+			await this.originalContext.globalState.update(key, undefined)
+		} catch {
+			logger.error("Could not migrate legacy Vertex credentials to SecretStorage; migration will retry on reload")
+		}
 	}
 
 	private getAllSecretState(): SecretState {
@@ -446,6 +486,8 @@ export class ContextProxy {
 			...PROVIDER_SETTINGS_KEYS.filter((key) => !isSecretStateKey(key))
 				.filter((key) => this.stateCache[key] !== undefined)
 				.reduce((acc, key) => ({ ...acc, [key]: undefined }), {} as ProviderSettings),
+			// Preserve profile replacement semantics from when this field lived in global state.
+			...(this.secretCache.vertexJsonCredentials !== undefined ? { vertexJsonCredentials: undefined } : {}),
 			...values,
 			...projection,
 		})
@@ -520,7 +562,11 @@ export class ContextProxy {
 
 		await Promise.all([
 			...GLOBAL_STATE_KEYS.map((key) => this.originalContext.globalState.update(key, undefined)),
-			...SECRET_STATE_KEYS.map((key) => this.originalContext.secrets.delete(key)),
+			...SECRET_STATE_KEYS.map((key) =>
+				key === "vertexJsonCredentials"
+					? this.storeSecret(key, undefined)
+					: this.originalContext.secrets.delete(key),
+			),
 		])
 
 		await this.initialize()

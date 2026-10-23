@@ -266,7 +266,8 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 	}
 
 	private async post(entry: Entry): Promise<void> {
-		if (entry.snapshot)
+		if (!entry.snapshot || entry.closed) return
+		try {
 			await entry.panel.webview.postMessage({
 				type: "document",
 				documentId: entry.target.uri,
@@ -274,6 +275,11 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 				...entry.snapshot,
 				staleLabel: t("htmlDocument:stale"),
 			})
+		} catch {
+			// Timer-driven refreshes have no request awaiting their transport. Keep
+			// the snapshot for the renderer's next ready handshake or source refresh.
+			if (!entry.closed) console.warn("[HtmlDocument] Unable to publish document snapshot")
+		}
 	}
 
 	private async message(entry: Entry, input: unknown): Promise<void> {

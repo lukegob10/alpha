@@ -104,6 +104,20 @@ function parsePromptVariants(value: string | undefined): ProblemSolvingPromptVar
 	return parsed as ProblemSolvingPromptVariant[]
 }
 
+export function readProblemSolvingRunPaths(env: NodeJS.ProcessEnv): { attemptRoot: string; profileDir: string } {
+	const requiredPath = (key: string): string => {
+		const value = env[key]
+		if (!value || value.includes("\0") || !path.isAbsolute(value)) {
+			throw new Error(`${key} must name an explicit absolute path`)
+		}
+		return value
+	}
+	return {
+		attemptRoot: requiredPath("PROBLEM_SOLVING_ATTEMPT_ROOT"),
+		profileDir: requiredPath("PROBLEM_SOLVING_PROFILE_DIR"),
+	}
+}
+
 export async function extensionBundleDigest(repositoryRoot: string): Promise<string> {
 	const bundlePath = path.join(repositoryRoot, "src", "dist", "extension.js")
 	const before = await fs.lstat(bundlePath)
@@ -433,8 +447,7 @@ if (isDirectRun) {
 	const runId =
 		process.env.PROBLEM_SOLVING_RUN_ID ??
 		`problem-solving-live-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`
-	const attemptRoot = process.env.PROBLEM_SOLVING_ATTEMPT_ROOT ?? `F:/alpha-vscode-e2e-runs/${runId}`
-	const profileDir = process.env.PROBLEM_SOLVING_PROFILE_DIR ?? "F:/alpha-vscode-e2e-runs/20260906/profiles"
+	const { attemptRoot, profileDir } = readProblemSolvingRunPaths(process.env)
 	const taskIds = process.env.PROBLEM_SOLVING_TASK_IDS?.split(",")
 		.map((value) => value.trim())
 		.filter(Boolean)

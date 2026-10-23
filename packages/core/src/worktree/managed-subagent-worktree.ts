@@ -6,6 +6,7 @@ import * as path from "path"
 import { promisify } from "util"
 import { z } from "zod"
 
+import { createWorktreeGitEnvironment } from "./git-environment.js"
 import { worktreeIncludeService } from "./worktree-include.js"
 
 const execFileAsync = promisify(execFile)
@@ -464,7 +465,7 @@ export class ManagedSubagentWorktreeService {
 			const command = [...GIT_PLATFORM_ARGS, ...invocation.prefix, ...commandArgs]
 			const options = {
 				cwd: invocation.cwd,
-				env: invocation.env ? { ...process.env, ...invocation.env } : process.env,
+				env: createWorktreeGitEnvironment(invocation.env),
 				maxBuffer: MAX_GIT_OUTPUT,
 				windowsHide: true,
 			}
@@ -575,6 +576,7 @@ export class ManagedSubagentWorktreeService {
 	private async initializePrivateRepository(destination: string): Promise<void> {
 		await execFileAsync("git", [...GIT_PLATFORM_ARGS, "init", "--bare", "--template=", destination], {
 			cwd: os.tmpdir(),
+			env: createWorktreeGitEnvironment(),
 			maxBuffer: MAX_GIT_OUTPUT,
 			windowsHide: true,
 		})
@@ -1224,15 +1226,9 @@ export class ManagedSubagentWorktreeService {
 		filePath: string,
 		cwd = artifact.gitRoot,
 	): Promise<{ mode?: string; hash?: string }> {
-		try {
-			const output = (
-				await this.artifactGit(artifact, ["ls-tree", commit, "--", filePath], undefined, cwd)
-			).trim()
-			const match = /^(\d+)\s+\w+\s+([0-9a-f]+)\t/.exec(output)
-			return match ? { mode: match[1], hash: match[2] } : {}
-		} catch {
-			return {}
-		}
+		const output = (await this.artifactGit(artifact, ["ls-tree", commit, "--", filePath], undefined, cwd)).trim()
+		const match = /^(\d+)\s+\w+\s+([0-9a-f]+)\t/.exec(output)
+		return match ? { mode: match[1], hash: match[2] } : {}
 	}
 
 	private async writeCommitFile(
@@ -1243,14 +1239,10 @@ export class ManagedSubagentWorktreeService {
 		filePath: string,
 		name: string,
 		cwd = artifact.gitRoot,
-	): Promise<string | undefined> {
+	): Promise<string> {
 		const target = await this.artifactFilePath(storagePath, artifactId, name)
-		try {
-			await fs.writeFile(target, await this.artifactGitBuffer(artifact, ["show", `${commit}:${filePath}`], cwd))
-			return name
-		} catch {
-			return undefined
-		}
+		await fs.writeFile(target, await this.artifactGitBuffer(artifact, ["show", `${commit}:${filePath}`], cwd))
+		return name
 	}
 
 	async capture(storagePath: string, artifactId: string, partial = false): Promise<ManagedWorkerArtifact> {

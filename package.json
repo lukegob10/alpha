@@ -25,8 +25,6 @@
 		"certify:managed-agents:self-check": "node scripts/certification/managed-agent-milestone-certify.mjs --self-check",
 		"certify:managed-agents:host-e2e": "pnpm --filter @alpha-code/vscode-e2e test:managed-agents",
 		"certify:managed-agents:automated": "pnpm certify:managed-agents && pnpm certify:managed-agents:host-e2e",
-		"certify:managed-agents:live-preflight": "node scripts/certification/managed-agent-live-playbook-preflight.mjs",
-		"certify:managed-agents:prepare-run-c": "node scripts/certification/managed-agent-live-playbook-preflight.mjs --prepare-run-c-workspace",
 		"format": "turbo format --log-order grouped --output-logs new-only",
 		"build": "pnpm bundle",
 		"bundle": "turbo bundle --filter=./src --log-order grouped --output-logs new-only",

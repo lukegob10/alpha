@@ -103,7 +103,6 @@ import { ticketTargetSchema, ticketSearchRequestSchema } from "@alpha-code/types
 import { resolveImageMentions, textHasImageMention } from "../mentions/resolveImageMentions"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Mode, defaultModeSlug } from "../../shared/modes"
 import { generateSystemPrompt } from "./generateSystemPrompt"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
@@ -1376,44 +1375,10 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
-		case "readFileContent": {
-			const relPath = message.text || ""
-			if (!relPath) {
-				provider.postMessageToWebview({
-					type: "fileContent",
-					fileContent: { path: relPath, content: null, error: "No path provided" },
-				})
-				break
-			}
-			try {
-				const cwd = getCurrentCwd()
-				if (!cwd) {
-					provider.postMessageToWebview({
-						type: "fileContent",
-						fileContent: { path: relPath, content: null, error: "No workspace path available" },
-					})
-					break
-				}
-				const absPath = path.resolve(cwd, relPath)
-				// Workspace-boundary validation: prevent path traversal attacks
-				if (isPathOutsideWorkspace(absPath)) {
-					provider.postMessageToWebview({
-						type: "fileContent",
-						fileContent: { path: relPath, content: null, error: "Path is outside workspace" },
-					})
-					break
-				}
-				const content = await fs.readFile(absPath, "utf-8")
-				provider.postMessageToWebview({ type: "fileContent", fileContent: { path: relPath, content } })
-			} catch (err) {
-				const errorMsg = err instanceof Error ? err.message : String(err)
-				provider.postMessageToWebview({
-					type: "fileContent",
-					fileContent: { path: relPath, content: null, error: errorMsg },
-				})
-			}
+		case "readFileContent":
+			// Retired: captured diff snapshots own file review. Ignore stale webviews
+			// without exposing a separate, unbounded filesystem read capability.
 			break
-		}
 		case "openMention":
 			await openMention(getCurrentCwd(), message.text)
 			break

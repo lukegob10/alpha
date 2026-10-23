@@ -128,8 +128,72 @@ export type ExtensionLifecycleMessage =
 	| AgentLifecycleSnapshotMessage
 	| AgentLifecycleDegradedMessage
 
-const lifecycleEnvelopeValue = (value: AgentLifecycleEvent | AgentLifecycleSnapshot): string => JSON.stringify(value)
-const lifecycleDegradedEnvelopeValue = (value: AgentLifecycleDegradedSignal): string => JSON.stringify(value)
+function isJsonLifecycleEnvelope(value: unknown): boolean {
+	let remaining = 100_000
+	const ancestors = new Set<object>()
+	const visit = (item: unknown, depth: number): boolean => {
+		if (--remaining < 0 || depth > 64) return false
+		if (item === undefined || item === null || typeof item === "string" || typeof item === "boolean") return true
+		if (typeof item === "number") return Number.isFinite(item)
+		if (typeof item !== "object" || ancestors.has(item)) return false
+		const array = Array.isArray(item)
+		const prototype: unknown = Object.getPrototypeOf(item)
+		if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return false
+		if ("toJSON" in item) {
+			const descriptor = Object.getOwnPropertyDescriptor(item, "toJSON")
+			if (!descriptor || !("value" in descriptor) || typeof descriptor.value === "function") return false
+		}
+		ancestors.add(item)
+		try {
+			if (array) {
+				if (item.length > remaining) return false
+				for (let index = 0; index < item.length; index++) {
+					const descriptor = Object.getOwnPropertyDescriptor(item, index)
+					if (
+						!descriptor ||
+						!("value" in descriptor) ||
+						descriptor.value === undefined ||
+						!visit(descriptor.value, depth + 1)
+					)
+						return false
+				}
+				return true
+			}
+			for (const key in item) {
+				if (!Object.hasOwn(item, key)) continue
+				const descriptor = Object.getOwnPropertyDescriptor(item, key)
+				if (!descriptor || !("value" in descriptor) || !visit(descriptor.value, depth + 1)) return false
+			}
+			return true
+		} finally {
+			ancestors.delete(item)
+		}
+	}
+	try {
+		// Unknown tool data must remain ordinary JSON; never invoke serialization hooks or lose non-JSON values.
+		return visit(value, 0)
+	} catch {
+		return false
+	}
+}
+
+function lifecycleEnvelopeValue(value: unknown): string | undefined {
+	try {
+		return JSON.stringify(value)
+	} catch {
+		return undefined
+	}
+}
+
+function validateLifecycleEnvelope(message: unknown, context: z.RefinementCtx): boolean {
+	if (isJsonLifecycleEnvelope(message)) return true
+	context.addIssue({
+		code: z.ZodIssueCode.custom,
+		path: ["payload"],
+		message: "Lifecycle messages require bounded JSON-compatible data",
+	})
+	return false
+}
 
 /**
  * Extension-side lifecycle messages use the existing `payload` convention.
@@ -147,6 +211,7 @@ export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMess
 	})
 	.passthrough()
 	.superRefine((message, context) => {
+		if (!validateLifecycleEnvelope(message, context)) return
 		const candidates = [message.payload, message.event, message.agentLifecycleEvent].filter(
 			(candidate): candidate is AgentLifecycleEvent => candidate !== undefined,
 		)
@@ -166,7 +231,8 @@ export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMess
 				message: "agentLifecycleEvent taskId must match the lifecycle event taskId",
 			})
 		}
-		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(event))) {
+		const aliases = candidates.map(lifecycleEnvelopeValue)
+		if (aliases.some((candidate) => candidate === undefined || candidate !== aliases[0])) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				path: ["payload"],
@@ -202,6 +268,7 @@ export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapsh
 	})
 	.passthrough()
 	.superRefine((message, context) => {
+		if (!validateLifecycleEnvelope(message, context)) return
 		const candidates = [message.payload, message.snapshot, message.agentLifecycleSnapshot].filter(
 			(candidate): candidate is AgentLifecycleSnapshot => candidate !== undefined,
 		)
@@ -221,7 +288,8 @@ export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapsh
 				message: "agentLifecycleSnapshot taskId must match the lifecycle snapshot taskId",
 			})
 		}
-		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(snapshot))) {
+		const aliases = candidates.map(lifecycleEnvelopeValue)
+		if (aliases.some((candidate) => candidate === undefined || candidate !== aliases[0])) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				path: ["payload"],
@@ -240,6 +308,7 @@ export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegrad
 	})
 	.passthrough()
 	.superRefine((message, context) => {
+		if (!validateLifecycleEnvelope(message, context)) return
 		const candidates = [message.payload, message.signal, message.agentLifecycleDegraded].filter(
 			(candidate): candidate is AgentLifecycleDegradedSignal => candidate !== undefined,
 		)
@@ -259,11 +328,8 @@ export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegrad
 				message: "agentLifecycleDegraded taskId must match the signal taskId",
 			})
 		}
-		if (
-			candidates.some(
-				(candidate) => lifecycleDegradedEnvelopeValue(candidate) !== lifecycleDegradedEnvelopeValue(signal),
-			)
-		) {
+		const aliases = candidates.map(lifecycleEnvelopeValue)
+		if (aliases.some((candidate) => candidate === undefined || candidate !== aliases[0])) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				path: ["payload"],

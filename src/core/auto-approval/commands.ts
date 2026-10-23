@@ -195,44 +195,6 @@ function matchesPrefix(tokens: ShellCommandToken[], prefix: string[], platform: 
 	return prefix.every((expected, index) => !tokens[index].dynamic && argv[index] === expected)
 }
 
-/**
- * Return the most specific matching complete argv prefix, preserving configured text.
- * A specific rule outranks '*'; shell syntax and partial argument strings are never prefixes.
- */
-export function findLongestPrefixMatch(command: string, prefixes: readonly string[]): string | null {
-	if (!command?.trim() || !prefixes?.length) return null
-	const platform = commandPlatform()
-	const parsed = parseSingleCommand(command, platform)
-	if (!parsed) return null
-	let longestMatch: string | null = null
-	let longestTokenCount = -1
-	for (const prefix of prefixes) {
-		const expected = prefix === "*" ? [] : parseLiteralPrefix(prefix, platform)
-		if (!expected || (prefix !== "*" && !matchesPrefix(parsed.tokens, expected, platform))) continue
-		if (expected.length > longestTokenCount) {
-			longestMatch = prefix
-			longestTokenCount = expected.length
-		}
-	}
-	return longestMatch
-}
-
-export function isAutoApprovedSingleCommand(
-	command: string,
-	allowedCommands: readonly string[],
-	deniedCommands?: readonly string[],
-): boolean {
-	return getSingleCommandDecision(command, allowedCommands, deniedCommands) === "auto_approve"
-}
-
-export function isAutoDeniedSingleCommand(
-	command: string,
-	allowedCommands: readonly string[],
-	deniedCommands?: readonly string[],
-): boolean {
-	return getSingleCommandDecision(command, allowedCommands, deniedCommands) === "auto_deny"
-}
-
 function compileRules(commands: readonly string[], platform: ShellCommandPlatform) {
 	const prefixes: string[][] = []
 	let wildcard = false
@@ -432,15 +394,4 @@ export function getSubagentCommandDecision(command: string, policy: SubagentComm
 		policy.allowAll && !policy.denyAll && !policy.denied.length,
 		platform,
 	)
-}
-
-/** Single-command callers cannot accidentally approve a chain; full command decisions use the same policy. */
-export function getSingleCommandDecision(
-	command: string,
-	allowedCommands: readonly string[],
-	deniedCommands?: readonly string[],
-): CommandDecision {
-	if (!command?.trim()) return "auto_approve"
-	if (!parseSingleCommand(command, commandPlatform())) return "ask_user"
-	return getCommandDecision(command, allowedCommands, deniedCommands)
 }

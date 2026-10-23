@@ -36,18 +36,11 @@ docs/_site/
 # Logging
 logs
 *.log
-/artifacts/certification/*.json
-/artifacts/certification/live-full-*/
-/artifacts/core-confidence/
-/artifacts/harness/
-/artifacts/testing-*/
-/artifacts/reasoning-ui/
-/artifacts/file-review-ui/
-/artifacts/tickets-ui/
+
+# Generated diagnostics, host captures, and gate evidence
+/artifacts/
 /packages/evals/artifacts/campaigns/
 /packages/evals/artifacts/authoring/
-/artifacts/certification/core-confidence.log
-/artifacts/certification/*.json.tmp-*
 
 # Vite development
 .vite-port

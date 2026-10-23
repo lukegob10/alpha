@@ -243,7 +243,13 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					result = await host.runStep(input)
 				} catch (error) {
-					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+					return terminalOutcome(
+						host.shouldAbort() ? "aborted" : "failed",
+						steps,
+						undefined,
+						errorMessage(error),
+						error,
+					)
 				}
 				steps += 1
 				result = { ...result, ...captureResponsePhase(result, result.response) }
@@ -316,7 +322,18 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						response: result.response,
 						completionReason: result.nextInput === "complete" ? "host" : "assistant",
 					}
-					const admission = await this.host.admitCompletion?.(outcome)
+					let admission: AgentTurnContinuation<TInput> | undefined
+					try {
+						admission = await this.host.admitCompletion?.(outcome)
+					} catch (admissionError) {
+						return terminalOutcome(
+							this.host.shouldAbort() ? "aborted" : "failed",
+							steps,
+							result.response,
+							errorMessage(admissionError),
+							admissionError,
+						)
+					}
 					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, result.response)
 					if (admission?.status && admission.status !== "completed") {
 						return terminalOutcome(
@@ -363,7 +380,13 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					sample = await this.host.sampleStep!(input)
 				} catch (error) {
-					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+					return terminalOutcome(
+						this.host.shouldAbort() ? "aborted" : "failed",
+						steps,
+						undefined,
+						errorMessage(error),
+						error,
+					)
 				}
 				steps += 1
 
@@ -431,7 +454,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							)
 						} else {
 							const continuation = await this.host.selectContinuation?.(sample, steps)
-							if (!continuation) {
+							if (this.host.shouldAbort()) {
+								outcome = terminalOutcome("aborted", steps, sample.response, reason)
+							} else if (!continuation) {
 								outcome = terminalOutcome(
 									"incomplete",
 									steps,
@@ -508,7 +533,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				} catch (decisionError) {
 					recoveryEligible = false
 					outcome = terminalOutcome(
-						"failed",
+						this.host.shouldAbort() ? "aborted" : "failed",
 						steps,
 						sample.response,
 						errorMessage(decisionError),

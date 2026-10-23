@@ -122,10 +122,9 @@ const RequestUserInputFormContent = ({
 		}
 		if (!isComplete) return
 
-		const answers: RequestUserInputAnswerMap = {}
-		for (const item of request.questions) {
-			answers[item.id] = { answers: [answerValue(selectedAnswers[item.id])] }
-		}
+		const answers: RequestUserInputAnswerMap = Object.fromEntries(
+			request.questions.map((item) => [item.id, { answers: [answerValue(selectedAnswers[item.id])] }]),
+		)
 		cancelAutoApproval()
 		// Claim synchronously so two input events before React commits cannot send the group twice.
 		submissionLocked.current = true

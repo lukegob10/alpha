@@ -716,6 +716,58 @@ describe("AlphaProvider host ownership", () => {
 })
 
 describe("AlphaProvider final history disposal", () => {
+	it("starts cleanup for sidebar and editor providers and joins both before global shutdown", async () => {
+		const sidebar = makeProvider(storage())
+		const editor = makeProvider(storage())
+		Object.assign(editor, { renderContext: "editor" })
+		const held = barrier()
+		const disposeSidebar = vi.spyOn(sidebar, "dispose").mockImplementationOnce(() => held.promise)
+		const disposeEditor = vi.spyOn(editor, "dispose").mockResolvedValue(undefined)
+		let settled = false
+		const closing = AlphaProvider.disposeAll().then(() => {
+			settled = true
+		})
+		try {
+			expect(disposeSidebar).toHaveBeenCalledOnce()
+			expect(disposeEditor).toHaveBeenCalledOnce()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+		} finally {
+			held.resolve()
+			await closing
+		}
+	})
+
+	it("joins other provider cleanup before reporting an aggregated failure", async () => {
+		const sidebar = makeProvider(storage())
+		const editor = makeProvider(storage())
+		const failure = new Error("Sidebar cleanup failed")
+		const held = barrier()
+		vi.spyOn(sidebar, "dispose").mockRejectedValue(failure)
+		const disposeEditor = vi.spyOn(editor, "dispose").mockImplementationOnce(() => held.promise)
+		let settled = false
+		const closing = AlphaProvider.disposeAll()
+		const outcome = closing.then(
+			() => {
+				settled = true
+			},
+			(error: unknown) => {
+				settled = true
+				return error
+			},
+		)
+		try {
+			expect(disposeEditor).toHaveBeenCalledOnce()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+		} finally {
+			held.resolve()
+		}
+		const error = await outcome
+		expect(error).toBeInstanceOf(AggregateError)
+		expect((error as AggregateError).errors).toEqual([failure])
+	})
+
 	it("keeps provider disposal pending until the final history write settles", async () => {
 		const owner = makeProvider(storage())
 		const entered = barrier()

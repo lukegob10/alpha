@@ -152,4 +152,70 @@ describe("IncidentPanel", () => {
 		await panel.open()
 		expect(vscode.window.createWebviewPanel).not.toHaveBeenCalled()
 	})
+
+	it.each(["snapshot", "transport"] as const)(
+		"contains a %s publication failure and permits the next ready request",
+		async (source) => {
+			const { panel, provider, webview, receive, snapshot } = setup()
+			await panel.open()
+			if (source === "snapshot") {
+				vi.mocked(provider.getIncidentDashboardSnapshot).mockRejectedValueOnce(new Error("Unavailable"))
+			} else {
+				webview.postMessage.mockRejectedValueOnce(new Error("Transport unavailable"))
+			}
+			receive({ type: "incidentDashboardReady" })
+			await vi.waitFor(() =>
+				expect(provider.log).toHaveBeenCalledWith("Failed to publish incident dashboard snapshot"),
+			)
+			webview.postMessage.mockClear()
+			receive({ type: "incidentDashboardReady" })
+			await vi.waitFor(() =>
+				expect(webview.postMessage).toHaveBeenCalledExactlyOnceWith({
+					type: "incidentDashboardUpdate",
+					snapshot,
+				}),
+			)
+			panel.dispose()
+		},
+	)
+
+	it("contains detail transport failures without exposing their payload", async () => {
+		const { panel, provider, webview, receive } = setup()
+		await panel.open()
+		webview.postMessage.mockRejectedValueOnce(new Error("Private transport details"))
+		receive({ type: "incidentDashboardRequestTurnDetail", turnId: "a".repeat(64) })
+		await vi.waitFor(() =>
+			expect(provider.log).toHaveBeenCalledExactlyOnceWith("Failed to publish incident dashboard turn details"),
+		)
+		panel.dispose()
+	})
+
+	it("ignores retained message and dashboard callbacks after panel disposal", async () => {
+		const { panel, provider, receive, onChange } = setup()
+		await panel.open()
+		vi.useFakeTimers()
+		try {
+			onChange()
+			expect(vi.getTimerCount()).toBe(1)
+			panel.dispose()
+			onChange()
+			receive({ type: "incidentDashboardReady" })
+			receive({ type: "startDebuggingTask", alertId: "old-alert" })
+			expect(vi.getTimerCount()).toBe(0)
+			expect(provider.getIncidentDashboardSnapshot).not.toHaveBeenCalled()
+			expect(provider.startIncidentDebuggingTask).not.toHaveBeenCalled()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("disposes a panel restored after the service has already shut down", async () => {
+		const { panel, provider, nativePanel } = setup()
+		panel.dispose()
+		const serializer = vi.mocked(vscode.window.registerWebviewPanelSerializer).mock.calls.at(-1)![1]
+		await serializer.deserializeWebviewPanel(nativePanel as unknown as vscode.WebviewPanel, undefined)
+		expect(nativePanel.dispose).toHaveBeenCalledOnce()
+		expect(nativePanel.onDidDispose).not.toHaveBeenCalled()
+		expect(provider.subscribeIncidentDashboard).not.toHaveBeenCalled()
+	})
 })

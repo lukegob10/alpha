@@ -152,8 +152,8 @@ describe("ContextProxy", () => {
 
 	describe("constructor", () => {
 		it("should initialize state cache with all global state keys", () => {
-			// +2 for condensing-prompt migration checks.
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2)
+			// +3 for condensing-prompt and legacy Vertex credential migration checks.
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3)
 			for (const key of GLOBAL_STATE_KEYS) {
 				expect(mockGlobalState.get).toHaveBeenCalledWith(key)
 			}
@@ -180,7 +180,7 @@ describe("ContextProxy", () => {
 			expect(result).toBe("deepseek")
 
 			// Original context should be called once during updateGlobalState (+3 for migration checks)
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2) // From initialization + migration checks
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3) // From initialization + migration checks
 		})
 
 		it("should handle default values correctly", async () => {
@@ -542,7 +542,7 @@ describe("ContextProxy", () => {
 			}
 
 			// Total calls include initial setup, and reset.
-			const expectedUpdateCalls = 2 + GLOBAL_STATE_KEYS.length
+			const expectedUpdateCalls = 3 + GLOBAL_STATE_KEYS.length
 			expect(mockGlobalState.update).toHaveBeenCalledTimes(expectedUpdateCalls)
 		})
 

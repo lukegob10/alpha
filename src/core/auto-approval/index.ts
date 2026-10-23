@@ -120,6 +120,32 @@ export interface CheckAutoApprovalInput {
 	requiresExplicitApproval?: boolean
 }
 
+function parseToolApprovalMetadata(text: string | undefined): AlphaSayTool | undefined {
+	let tool: AlphaSayTool
+	try {
+		tool = JSON.parse(text || "{}")
+	} catch {
+		return undefined
+	}
+	if (!tool || typeof tool !== "object" || Array.isArray(tool) || typeof tool.tool !== "string") return undefined
+	// Malformed metadata must not crash preflight or silently drop its workspace boundary.
+	if (
+		(tool.isOutsideWorkspace !== undefined && typeof tool.isOutsideWorkspace !== "boolean") ||
+		(tool.batchFiles !== undefined &&
+			(!Array.isArray(tool.batchFiles) ||
+				tool.batchFiles.some(
+					(file) =>
+						!file ||
+						typeof file !== "object" ||
+						Array.isArray(file) ||
+						(file.isOutsideWorkspace !== undefined && typeof file.isOutsideWorkspace !== "boolean"),
+				)))
+	) {
+		return undefined
+	}
+	return tool
+}
+
 export async function checkAutoApproval({
 	state,
 	commandPolicy,
@@ -247,17 +273,8 @@ export async function checkAutoApproval({
 	}
 
 	if (ask === "tool") {
-		let tool: AlphaSayTool | undefined
-
-		try {
-			tool = JSON.parse(text || "{}")
-		} catch (error) {
-			console.error("Failed to parse tool:", error)
-		}
-
-		if (!tool) {
-			return { decision: "ask" }
-		}
+		const tool = parseToolApprovalMetadata(text)
+		if (!tool) return { decision: "ask" }
 
 		const toolName: string = tool.tool
 		if (toolName === "delegateTask" || toolName === "spawnAgent") {
@@ -355,6 +372,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 }): Promise<CheckAutoApprovalResult> {
 	if (!inheritedState) return checkAutoApproval(input)
 	if (isNonBlockingAsk(input.ask)) return { decision: "approve" }
+	if (input.ask === "tool" && !parseToolApprovalMetadata(input.text)) return { decision: "ask" }
 	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
 		if (input.ask === "use_mcp_server") {

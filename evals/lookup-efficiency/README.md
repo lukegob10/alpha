@@ -24,7 +24,7 @@ The reporter consumes existing `EvalTraceEvent` records (the same normalized sha
 
 ## Capture a live sample
 
-Do not wait for an unimplemented NOR-48 live eval adapter. Wrap evidence the campaign and `processTask` paths already write.
+Use the existing campaign and `processTask` evidence paths to capture live observations.
 
 1. Predeclare `declaredSampleCount`, model id, reasoning preference (effort), and cache warm/cold **before** the run. Use the tiny workspaces under `workspaces/` (or a frozen copy). Pair later on the same prompt ids.
 2. Run each prompt in the real VS Code extension (live Copilot through the existing campaign `--provider live-copilot` path, or an evals `processTask` VS Code execution). Keep the same model/effort for reference and candidate.

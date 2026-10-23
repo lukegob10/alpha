@@ -356,6 +356,49 @@ describe("McpHub", () => {
 	})
 
 	describe("File watcher cleanup", () => {
+		it("does not create a settings watcher when discovery finishes after disposal", async () => {
+			await mcpHub.waitUntilReady()
+			let resolveSettingsPath!: (value: string) => void
+			vi.spyOn(mcpHub, "getMcpSettingsFilePath").mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveSettingsPath = resolve
+				}),
+			)
+			vi.stubEnv("NODE_ENV", "development")
+			vi.mocked(vscode.workspace.createFileSystemWatcher).mockClear()
+
+			try {
+				const watching = (mcpHub as unknown as { watchMcpSettingsFile(): Promise<void> }).watchMcpSettingsFile()
+				await mcpHub.dispose()
+				resolveSettingsPath("/mock/settings/path/mcp_settings.json")
+				await watching
+
+				expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled()
+			} finally {
+				vi.unstubAllEnvs()
+			}
+		})
+
+		it("observes global settings watcher setup failures during construction", async () => {
+			await mcpHub.waitUntilReady()
+			const error = new Error("settings directory unavailable")
+			const settingsPath = vi.spyOn(McpHub.prototype, "getMcpSettingsFilePath").mockRejectedValueOnce(error)
+			vi.mocked(vscode.workspace.onDidChangeWorkspaceFolders).mockReturnValueOnce({ dispose: vi.fn() })
+			vi.stubEnv("NODE_ENV", "development")
+			let hub: McpHub | undefined
+
+			try {
+				hub = new McpHub(mockProvider as AlphaProvider)
+				await hub.waitUntilReady()
+
+				expect(console.error).toHaveBeenCalledWith("Failed to watch global MCP settings:", error)
+			} finally {
+				await hub?.dispose()
+				settingsPath.mockRestore()
+				vi.unstubAllEnvs()
+			}
+		})
+
 		it("writes project MCP settings to the same Alpha path used by discovery", async () => {
 			await mcpHub.waitUntilReady()
 			vi.mocked(fsPromises.access).mockResolvedValue(undefined)

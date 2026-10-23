@@ -2,13 +2,13 @@
 
 Alpha's evaluations exercise the real VS Code extension. The directories have separate responsibilities:
 
-| Path                                             | Responsibility                                                                       |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `evals/`                                         | Versioned suites, prompts, workspaces, checksum manifests, and measurement contracts |
-| [`packages/evals/`](../packages/evals/README.md) | Optional evaluator, grading, persistence, and benchmark commands                     |
-| [`scripts/evals/`](../scripts/evals/)            | Paired-run orchestration and report generation used by the retained suites           |
-| [`apps/vscode-e2e/`](../apps/vscode-e2e/)        | Exact VS Code 1.125.0 host tests and extension evaluation runner                     |
-| [`artifacts/`](../artifacts/)                    | Ignored local host, UI, certification, and harness evidence                          |
+| Path                                             | Responsibility                                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `evals/`                                         | Versioned suites, prompts, workspaces, checksum manifests, and measurement contracts       |
+| [`packages/evals/`](../packages/evals/README.md) | Optional evaluator, grading, persistence, and benchmark commands                           |
+| [`scripts/evals/`](../scripts/evals/)            | Paired-run orchestration and report generation used by the retained suites                 |
+| [`apps/vscode-e2e/`](../apps/vscode-e2e/)        | Exact VS Code 1.138.0 reference and 1.125.0 compatibility host tests and evaluation runner |
+| [`artifacts/`](../artifacts/)                    | Ignored local host, UI, certification, and harness evidence                                |
 
 ## Retained suites
 

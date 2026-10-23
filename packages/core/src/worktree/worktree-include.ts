@@ -13,6 +13,7 @@ import { promisify } from "util"
 import ignore, { type Ignore } from "ignore"
 
 import type { WorktreeIncludeStatus } from "./types.js"
+import { createWorktreeGitEnvironment } from "./git-environment.js"
 
 /**
  * Progress info for copy tracking.
@@ -58,7 +59,10 @@ export class WorktreeIncludeService {
 		try {
 			const ref = `${branch}:.worktreeinclude`
 			// Use git cat-file -e to check if the file exists on the branch (without printing contents)
-			await execFileAsync("git", ["cat-file", "-e", "--", ref], { cwd })
+			await execFileAsync("git", ["cat-file", "-e", "--", ref], {
+				cwd,
+				env: createWorktreeGitEnvironment(),
+			})
 			return true
 		} catch {
 			// File doesn't exist on this branch

@@ -9,6 +9,8 @@ import { Package } from "../../shared/package"
 
 export type FileResult = { path: string; type: "file" | "folder"; label?: string }
 
+const MAX_RIPGREP_STDERR_BYTES = 64 * 1024
+
 function normalizeResultPath(result: FileResult): FileResult {
 	// File paths cross the extension/webview boundary and are later parsed with
 	// POSIX separators by the mention UI. Keep native separators for filesystem
@@ -35,8 +37,11 @@ export async function executeRipgrep({
 		throw new Error(`ripgrep not found: ${rgPath}`)
 	}
 
-	return executeWithRipgrepFallback(rgPath, (activeRgPath) =>
-		executeRipgrepAtPath(activeRgPath, args, workspacePath, limit, signal),
+	return executeWithRipgrepFallback(
+		rgPath,
+		(activeRgPath) => executeRipgrepAtPath(activeRgPath, args, workspacePath, limit, signal),
+		undefined,
+		signal,
 	)
 }
 
@@ -55,10 +60,33 @@ function executeRipgrepAtPath(
 		const rl = readline.createInterface({ input: rgProcess.stdout, crlfDelay: Infinity })
 		const fileResults: FileResult[] = []
 		const dirSet = new Set<string>() // Track unique directory paths.
-
+		const stderrChunks: Buffer[] = []
+		let stderrBytes = 0
+		let stderrTruncated = false
 		let count = 0
+		let reachedLimit = false
+		let stopping = false
+		let settled = false
+		let processError: Error | undefined
+		const onProcessError = (error: Error) => {
+			processError ??= createRipgrepProcessError(error)
+		}
+		const stop = () => {
+			if (stopping || settled) return
+			stopping = true
+			try {
+				rgProcess.kill()
+			} catch (error) {
+				onProcessError(error instanceof Error ? error : new Error(String(error)))
+			}
+		}
+		const onStreamError = (error: Error) => {
+			onProcessError(error)
+			stop()
+		}
 
-		rl.on("line", (line) => {
+		const onLine = (line: string) => {
+			if (reachedLimit || processError || signal?.aborted) return
 			if (count < limit) {
 				try {
 					const relativePath = path.relative(workspacePath, line)
@@ -79,36 +107,73 @@ function executeRipgrepAtPath(
 					// Silently ignore errors processing individual paths.
 				}
 			} else {
-				rl.close()
-				rgProcess.kill()
+				reachedLimit = true
+				// Keep draining the pipes until child close acknowledges termination.
+				stop()
 			}
-		})
+		}
 
-		let errorOutput = ""
-
-		rgProcess.stderr.on("data", (data) => {
-			errorOutput += data.toString()
-		})
-
-		rl.on("close", () => {
-			if (errorOutput && fileResults.length === 0) {
-				reject(new Error(`ripgrep process error: ${errorOutput}`))
-			} else {
-				// Convert directory set to array of directory objects.
-				const dirResults = Array.from(dirSet).map((dirPath) => ({
-					path: dirPath,
-					type: "folder" as const,
-					label: path.basename(dirPath),
-				}))
-
-				// Combine files and directories and resolve.
-				resolve([...fileResults, ...dirResults])
+		const onStderr = (data: Buffer) => {
+			const retainedBytes = Math.min(data.length, MAX_RIPGREP_STDERR_BYTES - stderrBytes)
+			if (retainedBytes > 0) {
+				// Copy the bounded prefix so a large chunk's backing buffer is not retained.
+				stderrChunks.push(Buffer.from(data.subarray(0, retainedBytes)))
+				stderrBytes += retainedBytes
 			}
+			if (retainedBytes < data.length) stderrTruncated = true
+		}
+
+		// stdout EOF can precede late stderr, process errors, and cancellation.
+		// Only child close establishes that the process and both pipes have ended.
+		rgProcess.once("close", (code, exitSignal) => {
+			if (settled) return
+			settled = true
+			rgProcess.removeListener("error", onProcessError)
+			rgProcess.stdout.removeListener("error", onStreamError)
+			rgProcess.stderr.removeListener("error", onStreamError)
+			rgProcess.stderr.removeListener("data", onStderr)
+			rl.removeListener("line", onLine)
+			rl.removeListener("error", onStreamError)
+			rl.close()
+			const errorOutput =
+				Buffer.concat(stderrChunks, stderrBytes).toString("utf8") +
+				(stderrTruncated ? "\n[stderr truncated]" : "")
+			stderrChunks.length = 0
+			if (signal?.aborted) {
+				reject(signal.reason ?? new Error("File search cancelled"))
+				return
+			}
+			if (processError) {
+				reject(processError)
+				return
+			}
+			if (
+				(!reachedLimit && exitSignal) ||
+				(fileResults.length === 0 && (errorOutput || (!reachedLimit && code !== 0 && code !== 1)))
+			) {
+				const status = exitSignal ? `signal ${exitSignal}` : `code ${code}`
+				reject(
+					new Error(`ripgrep process error: exited with ${status}${errorOutput ? `\n${errorOutput}` : ""}`),
+				)
+				return
+			}
+			// Retain the existing partial-file behavior for filesystem errors and
+			// deliberate output-limit termination. Exit 1 is an ordinary no-match result.
+			const dirResults = Array.from(dirSet).map((dirPath) => ({
+				path: dirPath,
+				type: "folder" as const,
+				label: path.basename(dirPath),
+			}))
+
+			resolve([...fileResults, ...dirResults])
 		})
 
-		rgProcess.on("error", (error) => {
-			reject(createRipgrepProcessError(error))
-		})
+		rgProcess.on("error", onProcessError)
+		rgProcess.stdout.on("error", onStreamError)
+		rgProcess.stderr.on("error", onStreamError)
+		rgProcess.stderr.on("data", onStderr)
+		rl.on("error", onStreamError)
+		rl.on("line", onLine)
 	})
 }
 

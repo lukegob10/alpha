@@ -348,6 +348,37 @@ describe("bounded delegation", () => {
 		expect(runner).not.toHaveBeenCalled()
 	})
 
+	it("rejects a dependency cycle before launching an unrelated ready child", async () => {
+		const runner = vi.fn<InternalTaskRunner>(async (item) => result(item.id))
+		const manager = new BoundedDelegationManager(runner)
+
+		await expect(
+			manager.runBatch([envelope("ready"), envelope("cycle-a", ["cycle-b"]), envelope("cycle-b", ["cycle-a"])]),
+		).rejects.toThrow("Cyclic child dependencies")
+		expect(runner).not.toHaveBeenCalled()
+	})
+
+	it("rejects a batch containing an active ID before launching any siblings", async () => {
+		const entered = barrier()
+		const release = barrier()
+		const runner = vi.fn<InternalTaskRunner>(async (item) => {
+			entered.resolve()
+			await release.promise
+			return result(item.id)
+		})
+		const manager = new BoundedDelegationManager(runner)
+		const active = manager.run(envelope("active"))
+
+		try {
+			await entered.promise
+			await expect(manager.runBatch([envelope("sibling"), envelope("active")])).rejects.toThrow("already running")
+			expect(runner.mock.calls.map(([item]) => item.id)).toEqual(["active"])
+		} finally {
+			release.resolve()
+			await active
+		}
+	})
+
 	it("rejects a task ID that is already registered as active", async () => {
 		let releaseFirst!: () => void
 		const manager = new BoundedDelegationManager(async (item) => {
@@ -361,6 +392,43 @@ describe("bounded delegation", () => {
 
 		releaseFirst()
 		await expect(first).resolves.toMatchObject({ taskId: "a", status: "completed" })
+	})
+
+	it("rechecks a dependent stage for concurrent ID claims before launching its siblings", async () => {
+		const rootEntered = barrier()
+		const rootRelease = barrier()
+		const concurrentEntered = barrier()
+		const concurrentRelease = barrier()
+		const runner = vi.fn<InternalTaskRunner>(async (item) => {
+			if (item.id === "root") {
+				rootEntered.resolve()
+				await rootRelease.promise
+			} else if (item.id === "concurrent") {
+				concurrentEntered.resolve()
+				await concurrentRelease.promise
+			}
+			return result(item.id)
+		})
+		const manager = new BoundedDelegationManager(runner)
+		const batch = manager.runBatch([
+			envelope("root"),
+			envelope("concurrent", ["root"]),
+			envelope("sibling", ["root"]),
+		])
+		await rootEntered.promise
+		const concurrent = manager.run(envelope("concurrent"))
+
+		try {
+			await concurrentEntered.promise
+			const rejection = expect(batch).rejects.toThrow("already running")
+			rootRelease.resolve()
+			await rejection
+			expect(runner.mock.calls.map(([item]) => item.id)).toEqual(["root", "concurrent"])
+		} finally {
+			rootRelease.resolve()
+			concurrentRelease.resolve()
+			await Promise.allSettled([batch, concurrent])
+		}
 	})
 
 	it("propagates parent cancellation to every active child", async () => {

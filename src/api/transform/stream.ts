@@ -251,24 +251,30 @@ export function createApiStreamError(input: ApiStreamErrorInput): ApiStreamError
 	}
 }
 
-/** Extract a useful text message from provider/SDK error payloads. */
+/** Extract bounded error text without serializing arbitrary provider payloads. */
 export function getApiStreamErrorMessage(value: unknown, fallback = "Provider stream error"): string {
-	if (typeof value === "string" && value.length > 0) return value
-	if (value && typeof value === "object") {
-		const candidate = value as { message?: unknown; error?: unknown; detail?: unknown }
-		if (typeof candidate.message === "string" && candidate.message.length > 0) return candidate.message
-		if (typeof candidate.detail === "string" && candidate.detail.length > 0) return candidate.detail
-		if (candidate.error !== undefined && candidate.error !== value) {
-			const nested = getApiStreamErrorMessage(candidate.error, "")
-			if (nested) return nested
+	let current = value
+	// SDK error envelopes may nest or refer back to one another. A fixed depth
+	// keeps malformed remote errors from overflowing the extension-host stack.
+	for (let depth = 0; depth < 8; depth++) {
+		if (typeof current === "string" && current.length > 0) return current.slice(0, 4_096)
+		if (!current || typeof current !== "object") break
+		const candidate = current as { message?: unknown; error?: unknown; detail?: unknown }
+		if (typeof candidate.message === "string" && candidate.message.length > 0) {
+			return candidate.message.slice(0, 4_096)
 		}
+		if (typeof candidate.detail === "string" && candidate.detail.length > 0) {
+			return candidate.detail.slice(0, 4_096)
+		}
+		current = candidate.error
 	}
-	return fallback
+	return fallback.slice(0, 4_096)
 }
 
 /**
- * Preserve common error metadata while allowing arbitrary provider payloads to
- * remain available under `metadata`. The returned object is safe to serialize.
+ * Preserve only common scalar error metadata. SDK payloads can contain request
+ * bodies, credentials, cycles and custom serializers; never copy them into
+ * diagnostics or canonical error records. The result is bounded and JSON-safe.
  */
 export function normalizeApiStreamErrorMetadata(
 	value: unknown,
@@ -278,14 +284,17 @@ export function normalizeApiStreamErrorMetadata(
 	const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 	const nested = source.error && typeof source.error === "object" ? (source.error as Record<string, unknown>) : {}
 	const getNumber = (...values: unknown[]) =>
-		values.find((candidate): candidate is number => typeof candidate === "number")
+		values.find((candidate): candidate is number => typeof candidate === "number" && Number.isFinite(candidate))
 	const getString = (...values: unknown[]) =>
-		values.find((candidate): candidate is string => typeof candidate === "string")
+		values.find((candidate): candidate is string => typeof candidate === "string" && candidate.length <= 256)
 	const getBoolean = (...values: unknown[]) =>
 		values.find((candidate): candidate is boolean => typeof candidate === "boolean")
 	const status = getNumber(source.status, source.statusCode, nested.status, nested.statusCode)
+	const statusCode = getNumber(source.statusCode, nested.statusCode)
 	const code = getString(source.code, source.error_code, nested.code, nested.type)
 	const phase = getString(source.phase, nested.phase, defaults.phase)
+	const requestId = getString(request.requestId)
+	const attemptId = getString(request.attemptId)
 	const retryable = getBoolean(
 		source.retryable,
 		nested.retryable,
@@ -299,42 +308,15 @@ export function normalizeApiStreamErrorMetadata(
 		defaults.semanticOutputObserved,
 	)
 
-	const metadata: Record<string, unknown> = {}
-	for (const [key, candidate] of Object.entries(source)) {
-		if (
-			![
-				"error",
-				"message",
-				"detail",
-				"code",
-				"error_code",
-				"status",
-				"statusCode",
-				"retryable",
-				"phase",
-				"semanticOutputObserved",
-			].includes(key) &&
-			candidate !== undefined
-		) {
-			metadata[key] = candidate
-		}
-	}
-	for (const [key, candidate] of Object.entries(nested)) {
-		if (!Object.prototype.hasOwnProperty.call(metadata, key) && candidate !== undefined) metadata[key] = candidate
-	}
-
 	return {
 		...(code !== undefined ? { code } : {}),
 		...(status !== undefined ? { status } : {}),
-		...(typeof source.statusCode === "number" || typeof nested.statusCode === "number"
-			? { statusCode: getNumber(source.statusCode, nested.statusCode) }
-			: {}),
+		...(statusCode !== undefined ? { statusCode } : {}),
 		...(retryable !== undefined ? { retryable } : {}),
 		...(phase !== undefined ? { phase } : {}),
-		...(request.requestId !== undefined ? { requestId: request.requestId } : {}),
-		...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+		...(requestId !== undefined ? { requestId } : {}),
+		...(attemptId !== undefined ? { attemptId } : {}),
 		...(semanticOutputObserved !== undefined ? { semanticOutputObserved } : {}),
-		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
 	}
 }
 
@@ -349,6 +331,7 @@ export async function* iterateApiStreamWithAbort<T>(source: AsyncIterable<T>, si
 	let finished = false
 	try {
 		while (!finished) {
+			if (signal?.aborted) break
 			const nextPromise = iterator.next()
 			const result = signal
 				? await Promise.race([
@@ -400,7 +383,12 @@ export async function* iterateApiStreamWithAbort<T>(source: AsyncIterable<T>, si
  */
 export async function raceApiStreamAbort<T>(promise: PromiseLike<T>, signal?: AbortSignal): Promise<T | undefined> {
 	if (!signal) return await promise
-	if (signal.aborted) return undefined
+	if (signal.aborted) {
+		// The caller has already started this operation. Its late rejection still
+		// needs an owner when cancellation prevents us from awaiting the result.
+		Promise.resolve(promise).catch(() => undefined)
+		return undefined
+	}
 
 	let onAbort: (() => void) | undefined
 	const abortPromise = new Promise<undefined>((resolve) => {

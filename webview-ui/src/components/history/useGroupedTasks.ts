@@ -15,12 +15,18 @@ export function buildSubtree(
 	task: HistoryItem,
 	childrenMap: Map<string, HistoryItem[]>,
 	expandedIds: Set<string>,
+	visited = new Set<string>(),
 ): SubtaskTreeNode {
+	visited.add(task.id)
 	const directChildren = (childrenMap.get(task.id) || []).slice().sort((a, b) => b.ts - a.ts)
+	const children: SubtaskTreeNode[] = []
+	for (const child of directChildren) {
+		if (!visited.has(child.id)) children.push(buildSubtree(child, childrenMap, expandedIds, visited))
+	}
 
 	return {
 		item: task as DisplayHistoryItem,
-		children: directChildren.map((child) => buildSubtree(child, childrenMap, expandedIds)),
+		children,
 		isExpanded: expandedIds.has(task.id),
 	}
 }
@@ -70,16 +76,27 @@ export function useGroupedTasks(tasks: HistoryItem[], searchQuery: string): Grou
 		// 2. Have a parentTaskId that doesn't exist in our task list (orphans promoted to root)
 		const rootTasks = tasks.filter((task) => !task.parentTaskId || !taskMap.has(task.parentTaskId))
 
-		// Build groups from root tasks with recursively nested subtask trees
-		const taskGroups: TaskGroup[] = rootTasks.map((parent) => {
-			const directChildren = (childrenMap.get(parent.id) || []).slice().sort((a, b) => b.ts - a.ts)
-
-			return {
-				parent: parent as DisplayHistoryItem,
-				subtasks: directChildren.map((child) => buildSubtree(child, childrenMap, expandedIds)),
-				isExpanded: expandedIds.has(parent.id),
+		// Persisted cycles have no natural root. Render normal trees first, then
+		// promote each remaining component so every saved chat stays reachable.
+		const visited = new Set<string>()
+		const taskGroups: TaskGroup[] = []
+		for (const task of [...rootTasks, ...tasks]) {
+			if (visited.has(task.id)) continue
+			let parent = task
+			const ancestors = new Set<string>()
+			while (parent.parentTaskId && !ancestors.has(parent.id)) {
+				ancestors.add(parent.id)
+				const ancestor = taskMap.get(parent.parentTaskId)
+				if (!ancestor || visited.has(ancestor.id)) break
+				parent = ancestor
 			}
-		})
+			const node = buildSubtree(parent, childrenMap, expandedIds, visited)
+			taskGroups.push({
+				parent: parent as DisplayHistoryItem,
+				subtasks: node.children,
+				isExpanded: expandedIds.has(parent.id),
+			})
+		}
 
 		// Preserve the search hook's selected sort order for root conversations.
 

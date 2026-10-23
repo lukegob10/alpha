@@ -17,7 +17,7 @@ export function getCapabilitiesSection(
 				: "You may inspect repository evidence using read, list, and search operations. This is a read-only child task."
 		const delegationCapability = subagentCanDelegate
 			? `
-- You may launch bounded managed descendants and control only your retained descendant subtree. The frozen ${subagentDelegationPolicy ?? "effective"} delegation policy and ancestry/capacity/budget limits govern every launch.`
+- You may launch bounded managed descendants and control only your retained descendant subtree. The frozen ${subagentDelegationPolicy ?? "effective"} delegation policy, inherited authority, and root-wide capacity limits govern every launch.`
 			: ""
 
 		return `====

@@ -1258,12 +1258,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			{/* Experimental Section */}
 			{section === "experimental" && (
-				<ExperimentalSettings
-					setExperimentEnabled={setExperimentEnabled}
-					experiments={experiments}
-					apiConfiguration={apiConfiguration}
-					setApiConfigurationField={setApiConfigurationField}
-				/>
+				<ExperimentalSettings setExperimentEnabled={setExperimentEnabled} experiments={experiments} />
 			)}
 
 			{/* Language Section */}

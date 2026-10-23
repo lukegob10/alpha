@@ -19,12 +19,6 @@ export function assertMessageQueueBounds(messages: readonly QueuedMessage[]): vo
 	}
 }
 
-export interface MessageQueueState {
-	messages: QueuedMessage[]
-	isProcessing: boolean
-	isPaused: boolean
-}
-
 export interface QueueEvents {
 	stateChanged: [messages: QueuedMessage[]]
 }

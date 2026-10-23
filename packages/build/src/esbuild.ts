@@ -137,29 +137,30 @@ export function copyPaths(copyPaths: [string, string, CopyPathOptions?][], srcDi
 				throw new Error("Copy destination cannot contain symbolic links")
 			if (current === outputRoot) break
 		}
+		const srcPath = resolveCopySourcePath(srcDir, srcRelPath)
+		let stats: fs.Stats
 		try {
-			const srcPath = resolveCopySourcePath(srcDir, srcRelPath)
-			const stats = fs.lstatSync(srcPath)
-
-			if (stats.isDirectory()) {
-				if (fs.existsSync(dstPath)) {
-					rmDir(dstPath)
-				}
-
-				fs.mkdirSync(dstPath, { recursive: true })
-
-				const count = copyDir(srcPath, dstPath, 0)
-				console.log(`[copyPaths] Copied ${count} files from ${srcRelPath} to ${dstRelPath}`)
-			} else {
-				fs.copyFileSync(srcPath, dstPath)
-				console.log(`[copyPaths] Copied ${srcRelPath} to ${dstRelPath}`)
-			}
+			stats = fs.lstatSync(srcPath)
 		} catch (error) {
-			if (options.optional) {
+			if (options.optional && error instanceof Error && "code" in error && error.code === "ENOENT") {
 				console.warn(`[copyPaths] Optional file not found: ${srcRelPath}`)
-			} else {
-				throw error
+				return
 			}
+			throw error
+		}
+
+		if (stats.isDirectory()) {
+			if (fs.existsSync(dstPath)) {
+				rmDir(dstPath)
+			}
+
+			fs.mkdirSync(dstPath, { recursive: true })
+
+			const count = copyDir(srcPath, dstPath, 0)
+			console.log(`[copyPaths] Copied ${count} files from ${srcRelPath} to ${dstRelPath}`)
+		} else {
+			fs.copyFileSync(srcPath, dstPath)
+			console.log(`[copyPaths] Copied ${srcRelPath} to ${dstRelPath}`)
 		}
 	})
 }
