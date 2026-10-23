@@ -219,6 +219,8 @@ async function createHarness() {
 		legacyHandoffInputBuffers: buffers,
 		taskEventListeners: new WeakMap(),
 		taskStack: [child],
+		// This legacy-only fixture has no managed child finalizations to join.
+		subagentRunFinalizations: new Map(),
 		publishedTaskTranscriptRevisions: new Map(),
 		currentView: { type: "task", taskId: CHILD_ID },
 		getParentCompletionDecision: getDecision,

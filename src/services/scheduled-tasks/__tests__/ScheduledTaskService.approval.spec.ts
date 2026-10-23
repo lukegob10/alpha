@@ -71,6 +71,7 @@ describe("scheduled task approval grants", () => {
 				build(task, false),
 			)
 			vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockResolvedValue(true)
+			vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockResolvedValue(undefined)
 			let finishRun!: () => void
 			const launched = new Promise<void>((resolve) => (finishRun = resolve))
 			vi.spyOn(ScheduledTaskStore.prototype, "upsertRun").mockImplementation(async (run) => {
@@ -85,6 +86,7 @@ describe("scheduled task approval grants", () => {
 			})
 			const provider = {
 				createTask,
+				removeTaskFromStack: vi.fn(async () => undefined),
 				providerSettingsManager: {
 					getProfile: vi
 						.fn()
@@ -109,7 +111,7 @@ describe("scheduled task approval grants", () => {
 					expect.objectContaining({ background: true, taskApprovalMode: expected }),
 				)
 			} finally {
-				service.dispose()
+				await service.dispose()
 			}
 		},
 	)

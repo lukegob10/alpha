@@ -23,6 +23,7 @@ import {
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
+import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
 
 import { Anthropic } from "@anthropic-ai/sdk"
@@ -96,6 +97,8 @@ import {
 	type ParentVerificationObligation,
 	type AgentLifecycleDegradedSignal,
 	agentLifecycleEventSchema,
+	agentLifecyclePhaseSchema,
+	webviewErrorMessageSchema,
 	type ManagedAgentTreeProjection,
 	type ManagedAgentTreeNodeProjection,
 	type SubagentUsage,
@@ -500,7 +503,7 @@ type SubagentFinalizationBinding = {
 	canPublishParent(): boolean
 	bindAsyncRun(): void
 	bindBlockingRun(group: PreparedSubagentGroup): void
-	settle(completion: Promise<void>, expectedCancellation?: (error: unknown) => boolean): void
+	settle(completion: Promise<void>): void
 	cancelAdmission(cleanup: () => Promise<void>): Promise<void>
 	reject(error: unknown): void
 }
@@ -810,7 +813,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.8-diff-review-startup"
+	public readonly latestAnnouncementId = "october-2026-v3.2.9-chat-worker-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1160,6 +1163,10 @@ export class AlphaProvider
 		this.taskSessions.markLifecycle(currentTask.taskId, TaskLifecycleState.Closing)
 		{
 			try {
+				const parentSignal = currentTask.getTaskLifetimeCancellationSignal?.()
+				const finalizations = parentSignal
+					? this.captureOwnedSubagentFinalizations(currentTask, parentSignal)
+					: []
 				// A Worker may own an OS process tree. Keep its live-session handle
 				// registered until cleanup succeeds so a failed termination can be retried.
 				const abortResult = await currentTask.abortTask(true)
@@ -1167,7 +1174,14 @@ export class AlphaProvider
 				// terminal transcript receipt is durable. Abort/persistence must settle,
 				// but joining that loop here would wait for this method to return.
 				// External cancellation and replacement still join the full boundary.
-				if (!ownedDelegationHandoff) await awaitTaskCancellationBoundary(currentTask, abortResult)
+				if (!ownedDelegationHandoff) {
+					const native = {
+						termination: awaitTaskCancellationBoundary(currentTask, abortResult).then(() => undefined),
+					}
+					if (parentSignal)
+						await this.joinOwnedTaskCancellation(currentTask, parentSignal, native, finalizations)
+					else await native.termination
+				}
 			} catch (error) {
 				this.log(
 					`[AlphaProvider#removeTaskFromStack] retaining task ${currentTask.taskId}.${currentTask.instanceId} after cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1271,16 +1285,26 @@ export class AlphaProvider
 				x.dispose()
 			}
 		}
+		this.codeIndexManager = undefined
+		this.codeIndexStatusSubscription = undefined
 	}
 
-	async dispose(): Promise<void> {
+	dispose(): Promise<void> {
 		if (this.disposal) return this.disposal
-		this.disposal = this.disposeOwnedResources().catch((error) => {
-			// Keep the canonical owner available for an explicit cleanup retry.
-			this.disposal = undefined
-			throw error
+		let resolve!: () => void
+		let reject!: (error: unknown) => void
+		const disposal = new Promise<void>((complete, fail) => {
+			resolve = complete
+			reject = fail
 		})
-		return this.disposal
+		// Cancellation listeners can synchronously reenter disposal.
+		this.disposal = disposal
+		void this.disposeOwnedResources().then(resolve, (error) => {
+			// Keep the canonical owner available for an explicit cleanup retry.
+			if (this.disposal === disposal) this.disposal = undefined
+			reject(error)
+		})
+		return disposal
 	}
 
 	private async disposeOwnedResources(): Promise<void> {
@@ -1289,9 +1313,24 @@ export class AlphaProvider
 		cancelPromptEnhancements(this)
 		cancelTicketSearches(this)
 
-		// Stop accepting webview work, then let the last already-accepted message
-		// settle before removing tasks it may have created.
+		// Accepted compaction and tool operations can wait on task cancellation.
+		// Signal every owned task before draining those queues or joining teardown.
 		this.clearWebviewResources()
+		const ownedTasks = new Set([...this.taskSessions.getOwnedTasks(), ...this.taskStack])
+		const finalizations = new Set([...this.subagentRunFinalizations.values()].map(({ promise }) => promise))
+		const cancellations = Promise.allSettled(
+			[...ownedTasks].map((task) => {
+				try {
+					if (typeof task.beginTaskCancellation === "function") {
+						return task.beginTaskCancellation(true).termination
+					}
+					task.cancelCurrentRequest?.()
+					return Promise.resolve()
+				} catch (error) {
+					return Promise.reject(error)
+				}
+			}),
+		)
 		await this.webviewMessageQueue
 		await Promise.all([...this.taskControlMessageQueues.values(), ...this.immediateWebviewOperations])
 		// API admissions share the creation queue even when no webview message owns
@@ -1302,10 +1341,28 @@ export class AlphaProvider
 
 		// A selected task may belong to another view. Only this provider's
 		// canonical runtimes and legacy stack entries are ours to terminate.
-		const ownedTasks = new Set([...this.taskSessions.getOwnedTasks(), ...this.taskStack])
+		for (const task of [...this.taskSessions.getOwnedTasks(), ...this.taskStack]) ownedTasks.add(task)
+		const failures = new Set<unknown>()
 		for (const task of ownedTasks) {
-			await this.removeTaskFromStack({ taskId: task.taskId })
+			try {
+				await this.removeTaskFromStack({ taskId: task.taskId })
+			} catch (error) {
+				failures.add(error)
+			}
 		}
+		for (const result of await cancellations) if (result.status === "rejected") failures.add(result.reason)
+		const joinedFinalizations = new Set<Promise<void>>()
+		for (;;) {
+			for (const { promise } of this.subagentRunFinalizations.values()) finalizations.add(promise)
+			const pending = [...finalizations].filter((promise) => !joinedFinalizations.has(promise))
+			if (!pending.length) break
+			for (const promise of pending) joinedFinalizations.add(promise)
+			for (const result of await Promise.allSettled(pending)) {
+				if (result.status === "rejected") failures.add(result.reason)
+			}
+		}
+		if (failures.size === 1) throw [...failures][0]
+		if (failures.size > 1) throw new AggregateError([...failures], "Provider task cleanup failed")
 
 		this.log("Cleared all tasks")
 		await this.closeAgentLifecycleJournals()
@@ -1345,7 +1402,7 @@ export class AlphaProvider
 		this.skillsManager = undefined
 		this.marketplaceManager?.cleanup()
 		this.customModesManager?.dispose()
-		this.scheduledTaskService?.dispose()
+		await this.scheduledTaskService?.dispose()
 		this.scheduledTaskService = undefined
 		await this.taskHistoryStoreReady.catch((error) => {
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
@@ -1490,10 +1547,26 @@ export class AlphaProvider
 	}
 
 	async resolveWebviewView(webviewView: vscode.WebviewView | vscode.WebviewPanel) {
-		this.isViewLaunched = false
-		this.clearWebviewFocus()
+		if (this._disposed) return
+		this.clearWebviewResources()
 		this.view = webviewView
 		const inTabMode = "onDidChangeViewState" in webviewView
+		const isCurrentView = () => !this._disposed && this.view === webviewView
+
+		// Disposal may arrive while HTML is loading, or after a replacement has attached.
+		this.webviewDisposables.push(
+			webviewView.onDidDispose(async () => {
+				if (!isCurrentView()) return
+				if (inTabMode) {
+					this.log("Disposing AlphaProvider instance for tab view")
+					await this.dispose()
+				} else {
+					this.log("Clearing webview resources for sidebar view")
+					this.view = undefined
+					this.clearWebviewResources()
+				}
+			}),
+		)
 
 		if (inTabMode) {
 			setPanel(webviewView, "tab")
@@ -1547,16 +1620,18 @@ export class AlphaProvider
 			localResourceRoots: resourceRoots,
 		}
 
-		webviewView.webview.html = await resolveWebviewHtml({
+		const html = await resolveWebviewHtml({
 			webview: webviewView.webview,
 			extensionUri: this.contextProxy.extensionUri,
 			extensionMode: this.contextProxy.extensionMode,
 			onHmrUnavailable: () => vscode.window.showErrorMessage(t("common:errors.hmr_not_running")),
 		})
+		if (!isCurrentView()) return
 
 		// Sets up an event listener to listen for messages passed from the webview view context
 		// and executes code based on the message that is received.
-		this.setWebviewMessageListener(webviewView.webview)
+		this.setWebviewMessageListener(webviewView.webview, isCurrentView)
+		webviewView.webview.html = html
 
 		// Initialize code index status subscription for the current workspace.
 		this.updateCodeIndexStatusSubscription()
@@ -1564,6 +1639,7 @@ export class AlphaProvider
 		// Listen for active editor changes to update code index status for the
 		// current workspace.
 		const activeEditorSubscription = vscode.window.onDidChangeActiveTextEditor(() => {
+			if (!isCurrentView()) return
 			// Update subscription when workspace might have changed.
 			this.updateCodeIndexStatusSubscription()
 		})
@@ -1575,6 +1651,7 @@ export class AlphaProvider
 			// WebviewView and WebviewPanel have all the same properties except
 			// for this visibility listener panel.
 			const viewStateDisposable = webviewView.onDidChangeViewState(() => {
+				if (!isCurrentView()) return
 				if (this.view?.visible) {
 					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
 				} else {
@@ -1586,6 +1663,7 @@ export class AlphaProvider
 		} else if ("onDidChangeVisibility" in webviewView) {
 			// sidebar
 			const visibilityDisposable = webviewView.onDidChangeVisibility(() => {
+				if (!isCurrentView()) return
 				if (this.view?.visible) {
 					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
 				} else {
@@ -1596,29 +1674,12 @@ export class AlphaProvider
 			this.webviewDisposables.push(visibilityDisposable)
 		}
 
-		// Listen for when the view is disposed
-		// This happens when the user closes the view or when the view is closed programmatically
-		webviewView.onDidDispose(
-			async () => {
-				if (inTabMode) {
-					this.log("Disposing AlphaProvider instance for tab view")
-					await this.dispose()
-				} else {
-					this.log("Clearing webview resources for sidebar view")
-					this.clearWebviewResources()
-					// Reset current workspace manager reference when view is disposed
-					this.codeIndexManager = undefined
-				}
-			},
-			null,
-			this.disposables,
-		)
-
 		// Listen for when color changes
 		const configDisposable = vscode.workspace.onDidChangeConfiguration(async (e) => {
-			if (e && e.affectsConfiguration("workbench.colorTheme")) {
+			if (isCurrentView() && e && e.affectsConfiguration("workbench.colorTheme")) {
 				// Sends latest theme name to webview
-				await this.postMessageToWebview({ type: "theme", text: JSON.stringify(await getTheme()) })
+				const theme = await getTheme()
+				if (isCurrentView()) await this.postMessageToWebview({ type: "theme", text: JSON.stringify(theme) })
 			}
 		})
 		this.webviewDisposables.push(configDisposable)
@@ -2066,7 +2127,7 @@ export class AlphaProvider
 	 *
 	 * @param webview A reference to the extension webview
 	 */
-	private setWebviewMessageListener(webview: vscode.Webview) {
+	private setWebviewMessageListener(webview: vscode.Webview, isCurrentWebview = () => !this._disposed) {
 		const taskControlTypes = new Set<WebviewMessage["type"]>([
 			"queueMessage",
 			"sendAndSteer",
@@ -2081,6 +2142,8 @@ export class AlphaProvider
 			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
+			// A recreated webview needs its initial state even while an older request is still running.
+			"webviewDidLaunch",
 			"enhancePrompt",
 			"cancelEnhancePrompt",
 			// Captured diff snapshots need no task or settings transition. Keep review
@@ -2100,16 +2163,59 @@ export class AlphaProvider
 				`[webviewMessageHandler] ${message?.type ?? "unknown"} failed: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
-		const run = (message: WebviewMessage) => webviewMessageHandler(this, message, this.marketplaceManager)
+		const run = (message: WebviewMessage) =>
+			message.type === "webviewDidLaunch"
+				? webviewMessageHandler(this, message, this.marketplaceManager, { isCurrentWebview })
+				: webviewMessageHandler(this, message, this.marketplaceManager)
 		const failTicketSearch = (requestId: string) =>
 			this.postMessageToWebview({
 				type: "ticketSearchResults",
 				ticketSearch: { type: "ticketSearchResults", requestId, tickets: [], error: true },
 			})
 
+		const reportedWebviewErrors = new Set<string>()
 		const onReceiveMessage = (message: WebviewMessage) => {
-			if (this._disposed) return
+			if (!isCurrentWebview()) return
 			const messageType = message && typeof message === "object" ? message.type : undefined
+			if (messageType === "webviewError") {
+				if (reportedWebviewErrors.size >= 10) return
+				const diagnostic = webviewErrorMessageSchema.safeParse(message)
+				if (!diagnostic.success) return
+				const key = JSON.stringify(diagnostic.data)
+				if (reportedWebviewErrors.has(key)) return
+				reportedWebviewErrors.add(key)
+				let context: {
+					taskIdSha256?: string
+					messageCount?: number
+					apiMessageCount?: number
+					phase?: string
+				} = {}
+				try {
+					const task = this.getCurrentTask()
+					if (task) {
+						const phase = agentLifecyclePhaseSchema.safeParse(
+							this.taskSessions.getMetadataForTask(task.taskId)?.activityPhase,
+						)
+						context = {
+							taskIdSha256: hashAgentTurnEvidenceId(task.taskId),
+							messageCount: task.clineMessages.length,
+							apiMessageCount: task.apiConversationHistory.length,
+							phase: phase.success ? phase.data : undefined,
+						}
+					}
+				} catch {
+					// A missing runtime snapshot must not hide the renderer's failure.
+				}
+				try {
+					// Observe immediately: compaction or other queued work may still be running.
+					this.log(
+						`[webviewError] ${JSON.stringify({ timestamp: Date.now(), ...diagnostic.data, ...context })}`,
+					)
+				} catch {
+					// Diagnostics never change task state or interrupt webview message handling.
+				}
+				return
+			}
 			if (messageType === "searchTickets") {
 				const request = ticketSearchRequestSchema.safeParse(message)
 				if (!request.success) return
@@ -3116,21 +3222,12 @@ export class AlphaProvider
 
 	/* Condenses a task's message history to use fewer tokens. */
 	async condenseTaskContext(taskId: string) {
-		let task: Task | undefined
-		for (let i = this.taskStack.length - 1; i >= 0; i--) {
-			if (this.taskStack[i].taskId === taskId) {
-				task = this.taskStack[i]
-				break
-			}
-		}
-		if (!task) {
-			throw new Error(`Task with id ${taskId} not found in stack`)
-		}
-
 		let condenseFailed = false
 		let completionNotificationFailed = false
 		let completionNotificationError: unknown
 		try {
+			const task = this.getLiveTask(taskId)
+			if (!task) throw new Error(`Task with id ${taskId} not found`)
 			await task.condenseContext()
 		} catch (error) {
 			condenseFailed = true
@@ -3306,6 +3403,12 @@ export class AlphaProvider
 		}
 		await Promise.all(publications)
 		if (selectionIsCurrent) this.recordPublishedTaskTranscript(visibleTaskId, transcriptRevision)
+		await this.restoreSupersededManagedAgentTree(
+			state.managedAgentTree,
+			taskStateSeq,
+			navigationGeneration,
+			currentView,
+		)
 	}
 
 	/**
@@ -3984,8 +4087,13 @@ export class AlphaProvider
 	}
 
 	private enqueueAgentLifecycleMessage(message: ExtensionMessage): Promise<void> {
+		// The canonical journal stays in the extension host. Repeatedly forwarding
+		// its accumulated items and replay receipts makes long turns quadratic.
+		const lifecycleMessage =
+			message.type === "agentLifecycleEvent" || message.type === "agentLifecycleSnapshot" ? undefined : message
 		const delivery = this.agentLifecycleMessageQueue.then(async () => {
-			for (const provider of this.getHostProviders()) await provider.postMessageToWebview(message)
+			if (!lifecycleMessage) return this.postTaskSessionStateToWebview({ includeManagedAgentTree: false })
+			for (const provider of this.getHostProviders()) await provider.postMessageToWebview(lifecycleMessage)
 		})
 		this.agentLifecycleMessageQueue = delivery.catch((error) => {
 			this.log(`Failed to publish agent lifecycle message: ${String(error)}`)
@@ -3995,9 +4103,6 @@ export class AlphaProvider
 
 	private handleAgentLifecycleSnapshotUpdated(snapshot: AgentLifecycleSnapshot): void {
 		this.taskSessions.markLifecycleSnapshot(snapshot.taskId, snapshot)
-		void this.postTaskSessionStateToWebview().catch((error) => {
-			this.log(`Failed to refresh task state after lifecycle update: ${String(error)}`)
-		})
 	}
 
 	private async handleAgentLifecycleSnapshotResync(request: AgentLifecycleSnapshotResyncRequest): Promise<void> {
@@ -4139,7 +4244,6 @@ export class AlphaProvider
 			activeTaskId,
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
-			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
 			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
 			clineMessages: options.includeTranscript === false ? [] : (currentTask?.clineMessages ?? []),
 			messageQueue:
@@ -4223,44 +4327,71 @@ export class AlphaProvider
 	 * extension snapshot minus taskHistory. That still copied clineMessages on
 	 * every heartbeat and stalled the webview. Keep those paths on this patch.
 	 */
-	async postTaskSessionStateToWebview(): Promise<void> {
+	async postTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean } = {}): Promise<void> {
 		for (const provider of this.getHostProviders()) {
-			if (!provider._disposed) await provider.postLocalTaskSessionStateToWebview()
+			if (!provider._disposed) await provider.postLocalTaskSessionStateToWebview(options)
 		}
 	}
 
-	private async postLocalTaskSessionStateToWebview(): Promise<void> {
+	private async postLocalTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean }): Promise<void> {
 		const navigationGeneration = this.taskNavigationGeneration
 		const currentView = this.currentView
-		const taskStateSeq = ++this.taskStateSeq
-		const currentTask = currentView.type === "task" ? this.getLiveTask(currentView.taskId) : undefined
-		const state: Partial<ExtensionState> = {
-			currentView,
-			activeTaskId: this.getActiveTaskId(),
-			liveTaskIds: this.getLiveTaskIds(),
-			liveTasksById: this.getLiveTaskMetadata(),
-			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
-			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
-			taskStateSeq,
-		}
-
-		if (currentTask) {
-			state.currentTaskId = currentTask.taskId
-			state.currentTaskItem = this.taskHistoryStore.get(currentTask.taskId)
+		const taskForTree = currentView.type === "task" ? this.getLiveTask(currentView.taskId) : undefined
+		const treeState: Pick<ExtensionState, "managedAgentTree"> = {}
+		// Lifecycle publication must not wait for managed-agent store startup.
+		if (taskForTree && options.includeManagedAgentTree !== false) {
 			try {
-				state.managedAgentTree = await this.buildManagedAgentTreeProjection(
-					currentTask,
+				treeState.managedAgentTree = await this.buildManagedAgentTreeProjection(
+					taskForTree,
 					resolveSubagentOrchestrationSettings(this.contextProxy.getValues()),
 				)
 			} catch (error) {
 				this.log(
-					`[postTaskSessionStateToWebview] Failed to project managed-agent tree for ${currentTask.taskId}: ${String(error)}`,
+					`[postTaskSessionStateToWebview] Failed to project managed-agent tree for ${taskForTree.taskId}: ${String(error)}`,
 				)
 			}
 		}
 
 		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
+		// A compact lifecycle update may have passed the tree projection. Capture
+		// current metadata and its sequence together so neither update is lost.
+		const currentTask = currentView.type === "task" ? this.getLiveTask(currentView.taskId) : undefined
+		const state: Partial<ExtensionState> = {
+			...treeState,
+			currentView,
+			activeTaskId: this.getActiveTaskId(),
+			liveTaskIds: this.getLiveTaskIds(),
+			liveTasksById: this.getLiveTaskMetadata(),
+			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
+			taskStateSeq: ++this.taskStateSeq,
+		}
+		if (currentTask) {
+			state.currentTaskId = currentTask.taskId
+			state.currentTaskItem = this.taskHistoryStore.get(currentTask.taskId)
+		}
 		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	private async restoreSupersededManagedAgentTree(
+		managedAgentTree: ManagedAgentTreeProjection | undefined,
+		taskStateSeq: number,
+		navigationGeneration: number,
+		currentView: CurrentTaskView,
+	): Promise<void> {
+		if (
+			!managedAgentTree ||
+			this.taskStateSeq <= taskStateSeq ||
+			navigationGeneration !== this.taskNavigationGeneration ||
+			currentView !== this.currentView ||
+			currentView.type !== "task" ||
+			!this.getLiveTask(currentView.taskId)
+		) {
+			return
+		}
+		// Full state retains its transcript/queue fences. A newer lifecycle patch
+		// can supersede its task domain, so publish the independently built tree
+		// through the local projection with current metadata and a fresh sequence.
+		await this.postLocalTaskSessionStateToWebview({})
 	}
 
 	/**
@@ -4283,6 +4414,12 @@ export class AlphaProvider
 		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { taskHistory: _omit, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
+		await this.restoreSupersededManagedAgentTree(
+			state.managedAgentTree,
+			taskStateSeq,
+			navigationGeneration,
+			currentView,
+		)
 	}
 
 	/**
@@ -4304,6 +4441,12 @@ export class AlphaProvider
 		Object.assign(state, { taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
+		await this.restoreSupersededManagedAgentTree(
+			state.managedAgentTree,
+			taskStateSeq,
+			navigationGeneration,
+			currentView,
+		)
 	}
 
 	/**
@@ -4845,7 +4988,6 @@ export class AlphaProvider
 			activeTaskId,
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
-			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
 			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
 			managedAgentTree,
 			currentTaskItem: currentTask?.taskId ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
@@ -12146,10 +12288,7 @@ export class AlphaProvider
 				parentLifetimeSignal,
 				finalizationBinding,
 			)
-			finalizationBinding.settle(
-				completion.then(() => undefined),
-				(error) => this.isExpectedSubagentAdmissionCancellation(error, [admissionSignal]),
-			)
+			finalizationBinding.settle(completion.then(() => undefined))
 			return await completion
 		} catch (error) {
 			finalizationBinding.reject(error)
@@ -12160,6 +12299,7 @@ export class AlphaProvider
 	private async cancelSubagentAdmissionRecords(
 		records: ReadonlyMap<string, AgentRecord>,
 		prepared: PreparedSubagentGroup,
+		failure?: { message: string },
 	): Promise<void> {
 		let firstFailure: unknown
 		let failureObserved = false
@@ -12175,16 +12315,17 @@ export class AlphaProvider
 					throw new Error("The original sub-agent admission no longer owns its control record")
 				if (!["pending", "running", "cancelling"].includes(current.status)) continue
 				const completedAt = Date.now()
+				const status = failure ? "failed" : "cancelled"
 				await this.agentControlStore.updateAgentStatus(
 					record.taskId,
-					"cancelled",
+					status,
 					{
 						at: completedAt,
 						terminalResult: {
-							status: "cancelled",
-							error: "Parent task cancelled before child launch",
+							status,
+							error: failure?.message ?? "Parent task cancelled before child launch",
 							completedAt,
-							stopReason: "parent_cancelled",
+							stopReason: failure ? "never_launched" : "parent_cancelled",
 						},
 					},
 					record.rootTaskId,
@@ -12204,11 +12345,12 @@ export class AlphaProvider
 		records: ReadonlyMap<string, AgentRecord>,
 		prepared: PreparedSubagentGroup,
 		canPublishParent: () => boolean,
+		failure?: { message: string },
 	): Promise<void> {
 		let firstFailure: unknown
 		let failureObserved = false
 		try {
-			await this.cancelSubagentAdmissionRecords(records, prepared)
+			await this.cancelSubagentAdmissionRecords(records, prepared, failure)
 		} catch (error) {
 			failureObserved = true
 			firstFailure = error
@@ -12225,11 +12367,16 @@ export class AlphaProvider
 		}
 		if (!failureObserved) {
 			const completedAt = Date.now()
-			prepared.group.status = "cancelled"
+			const status = failure ? "failed" : "cancelled"
+			prepared.group.status = status
 			prepared.group.completedAt = completedAt
 			for (const agent of prepared.group.agents) {
-				agent.status = "cancelled"
+				agent.status = status
 				agent.completedAt = completedAt
+				if (failure) {
+					agent.error = failure.message
+					agent.stopReason = "never_launched"
+				}
 				delete agent.phase
 				delete agent.phaseStartedAt
 				delete agent.pendingApproval
@@ -12338,12 +12485,14 @@ export class AlphaProvider
 					completion,
 				})
 			},
-			settle: (ownedCompletion: Promise<void>, expectedCancellation?: (error: unknown) => boolean) => {
+			settle: (ownedCompletion: Promise<void>) => {
 				if (settlementBound) return
 				settlementBound = true
 				completion = ownedCompletion
 				void ownedCompletion.then(resolve, (error) => {
-					if (record.phase === "admitting" && admissionCleanupCompleted && expectedCancellation?.(error)) {
+					// The tool still reports admission failure, but a durable rollback
+					// leaves no child runtime or finalization for the parent to join.
+					if (record.phase === "admitting" && admissionCleanupCompleted) {
 						resolve()
 					} else {
 						reject(error)
@@ -12446,6 +12595,16 @@ export class AlphaProvider
 						controlRecords,
 						prepared,
 						finalizationBinding.canPublishParent,
+					),
+				)
+			} else if (controlRecords.size > 0) {
+				await finalizationBinding.cancelAdmission(() =>
+					this.releaseCancelledSubagentAdmission(
+						parent,
+						controlRecords,
+						prepared,
+						finalizationBinding.canPublishParent,
+						{ message: failure instanceof Error ? failure.message : String(failure) },
 					),
 				)
 			} else if (this.preparedSubagentGroups.get(prepared.group.groupId) === prepared) {
@@ -13019,7 +13178,7 @@ export class AlphaProvider
 				const enforceBudgets = (): boolean => {
 					if (settled) return true
 					const usage = child.getTokenUsage()
-					if (usage.totalTokensIn > limits.maxInputTokens) {
+					if (usage.totalTokensIn >= limits.maxInputTokens) {
 						stopForBudget(
 							"input_token_limit",
 							`Sub-agent input token limit exceeded (${usage.totalTokensIn}/${limits.maxInputTokens}).`,
@@ -13027,7 +13186,7 @@ export class AlphaProvider
 						)
 						return true
 					}
-					if (usage.totalTokensOut > limits.maxOutputTokens) {
+					if (usage.totalTokensOut >= limits.maxOutputTokens) {
 						stopForBudget(
 							"output_token_limit",
 							`Sub-agent output token limit exceeded (${usage.totalTokensOut}/${limits.maxOutputTokens}).`,
@@ -13036,7 +13195,7 @@ export class AlphaProvider
 						return true
 					}
 					const rootUsage = this.getSubagentRootUsage(ancestry.rootTaskId)
-					if (limits.rootTokenBudget !== null && rootUsage.tokens > limits.rootTokenBudget) {
+					if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
 						stopForBudget(
 							"root_token_budget",
 							`Root sub-agent token budget exceeded (${rootUsage.tokens}/${limits.rootTokenBudget}).`,
@@ -13044,7 +13203,7 @@ export class AlphaProvider
 						)
 						return true
 					}
-					if (limits.rootCostBudget !== null && rootUsage.cost > limits.rootCostBudget) {
+					if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
 						stopForBudget(
 							"root_cost_budget",
 							`Root sub-agent cost budget exceeded (${rootUsage.cost}/${limits.rootCostBudget}).`,
@@ -13071,8 +13230,8 @@ export class AlphaProvider
 				}
 				const onAborted = () => {
 					if (signal.aborted) return
-					const reason = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? "")
-					finish(reason.includes("timed out") ? "timed_out" : "failed")
+					const status = child.abortReason === "streaming_failed" ? "failed" : "cancelled"
+					stopAndFinish(status, child.getTokenUsage(), undefined, status)
 				}
 				const onCancelled = () => {
 					const reason = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? "")
@@ -13139,7 +13298,7 @@ export class AlphaProvider
 
 		descriptor.runtimeCleanupFailed = cleanupFailed
 		if (role === "worker" && descriptor.managedWorktree && !cleanupFailed) {
-			const artifact = await managedSubagentWorktreeService
+			let artifact = await managedSubagentWorktreeService
 				.capture(
 					this.context.globalStorageUri.fsPath,
 					descriptor.managedWorktree.artifact.id,
@@ -13149,6 +13308,14 @@ export class AlphaProvider
 					descriptor.runtimeCleanupFailed = true
 					throw error
 				})
+			if (result.status === "completed") {
+				artifact = await this.integrateCompletedWorkerChanges(
+					parent,
+					artifact,
+					finalizedManifest.data.runtimePolicy.autoApproval,
+					signal,
+				)
+			}
 			const changedFiles = this.getLogicalWorkerChangedFiles(artifact)
 			const changeSet = this.shouldPublishWorkerChangeSet(artifact)
 				? this.toSubagentChangeSetState(artifact, changedFiles)
@@ -13506,14 +13673,62 @@ export class AlphaProvider
 		return parsed.success ? parsed.data : undefined
 	}
 
-	private getAutoApprovedWorkerChangePolicy(taskId: string): SubagentAutoApprovalPolicy | undefined {
+	private hasCurrentWorkerIntegrationPolicy(parent: Task, captured: SubagentAutoApprovalPolicy): boolean {
+		const settings = this.contextProxy.getValues()
+		const capturedMode = inferApprovalModeFromPolicy(captured)
+		if (
+			approvalModeRank[migrateApprovalMode(settings)] < approvalModeRank[capturedMode] ||
+			approvalModeRank[parent.getTaskApprovalMode()] < approvalModeRank[capturedMode]
+		)
+			return false
+		const live = resolveApprovalFlags(settings)
+		return (["autoApprovalEnabled", "alwaysAllowWrite", "alwaysAllowWriteProtected"] as const).every(
+			(key) => !captured[key] || live[key],
+		)
+	}
+
+	/** Settle already-approved child effects before publishing their terminal result. */
+	private async integrateCompletedWorkerChanges(
+		parent: Task,
+		artifact: ManagedWorkerArtifact,
+		capturedPolicy: SubagentAutoApprovalPolicy | undefined,
+		signal: AbortSignal,
+	): Promise<ManagedWorkerArtifact> {
+		if (
+			!capturedPolicy ||
+			artifact.status !== "pending_review" ||
+			artifact.partial ||
+			artifact.changes.length === 0 ||
+			signal.aborted
+		)
+			return artifact
+
+		const integrated = await this.runWorkspaceMutation(parent, "integrate completed Worker changes", async () => {
+			if (
+				(await getTaskModeForSwitch(parent)) !== defaultModeSlug ||
+				signal.aborted ||
+				!this.hasCurrentWorkerIntegrationPolicy(parent, capturedPolicy)
+			)
+				return false
+			// The child already passed its inherited per-action approvals. Isolation
+			// still validates the write scope; apply checks the original content
+			// under the shared mutation gate so concurrent edits cannot be lost.
+			await managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, artifact.id)
+			return true
+		})
+		return integrated
+			? managedSubagentWorktreeService.load(this.context.globalStorageUri.fsPath, artifact.id)
+			: artifact
+	}
+
+	private getAutoApprovedWorkerChangePolicy(taskId: string, parent: Task): SubagentAutoApprovalPolicy | undefined {
 		const settings = this.contextProxy.getValues()
 		const livePolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
 		if (migrateApprovalMode(settings) === "ask" || !livePolicy.autoApprovalEnabled || !livePolicy.alwaysAllowWrite)
 			return undefined
 
 		const capturedPolicy = this.getCapturedSubagentAutoApprovalPolicy(taskId)
-		if (!capturedPolicy) return undefined
+		if (!capturedPolicy || !this.hasCurrentWorkerIntegrationPolicy(parent, capturedPolicy)) return undefined
 		const effectivePolicy = this.intersectSubagentAutoApprovalPolicies(livePolicy, capturedPolicy)
 		return effectivePolicy.autoApprovalEnabled && effectivePolicy.alwaysAllowWrite ? effectivePolicy : undefined
 	}
@@ -13536,14 +13751,16 @@ export class AlphaProvider
 				.filter(
 					(agent) =>
 						agent.role === "worker" &&
+						agent.status === "completed" &&
 						agent.changeSet?.status === "pending_review" &&
+						agent.changeSet.partial !== true &&
 						agent.changeSet.changedFiles.length > 0,
 				)
 				.map((agent) => ({ groupId: group.groupId, changeSetId: agent.changeSet!.id, taskId: agent.taskId }))
 		})
 
 		for (const pending of pendingChangeSets) {
-			if (!this.getAutoApprovedWorkerChangePolicy(pending.taskId)) continue
+			if (!this.getAutoApprovedWorkerChangePolicy(pending.taskId, parent)) continue
 			const capability = await this.getSubagentChangeSetActionCapability(
 				parentTaskId,
 				pending.groupId,
@@ -13633,7 +13850,10 @@ export class AlphaProvider
 						"Plan mode cannot apply Worker changes. Switch to Code mode to apply this proposal.",
 					)
 				}
-				if (requireAutoApproval && !this.getAutoApprovedWorkerChangePolicy(target.agent.taskId)) {
+				if (
+					requireAutoApproval &&
+					!this.getAutoApprovedWorkerChangePolicy(target.agent.taskId, target.parent)
+				) {
 					return undefined
 				}
 				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId)
@@ -13983,7 +14203,12 @@ export class AlphaProvider
 		const parent =
 			this.getLiveTask(prepared.group.parentTaskId) ?? this.subagentDescriptors.get(result.taskId)?.parent
 		if (parent) {
-			await this.recordWorkerVerificationObligation(parent, prepared.group, agent)
+			await this.recordWorkerVerificationObligation(
+				parent,
+				prepared.group,
+				agent,
+				result.changeSet?.status === "applied" ? "apply" : undefined,
+			)
 			await parent.upsertSubagentGroup(prepared.group)
 			this.publishedSubagentResults.add(publicationKey)
 			if (result.changeSet?.status === "pending_review") {

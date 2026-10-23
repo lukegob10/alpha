@@ -3,6 +3,9 @@ import { render, screen, waitFor } from "@testing-library/react"
 import ErrorBoundary from "../components/ErrorBoundary"
 import { telemetryClient } from "@src/utils/TelemetryClient"
 import { enhanceErrorWithSourceMaps } from "@src/utils/sourceMapUtils"
+import { reportWebviewError } from "@src/utils/webviewErrors"
+
+vi.mock("@src/utils/webviewErrors", () => ({ reportWebviewError: vi.fn() }))
 
 // Mock telemetry client
 vi.mock("@src/utils/TelemetryClient", () => ({
@@ -128,6 +131,25 @@ describe("ErrorBoundary", () => {
 		)
 	})
 
+	it("reports a local error before source-map enhancement can finish", async () => {
+		let finish!: (error: Error) => void
+		vi.mocked(enhanceErrorWithSourceMaps).mockImplementationOnce(
+			() => new Promise<Error>((resolve) => (finish = resolve)),
+		)
+		render(
+			<ErrorBoundary>
+				<ErrorThrower shouldThrow message="Original rendering error" />
+			</ErrorBoundary>,
+		)
+		expect(reportWebviewError).toHaveBeenCalledTimes(1)
+		expect(reportWebviewError).toHaveBeenCalledWith("render", expect.any(Error))
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		expect(telemetryClient.capture).not.toHaveBeenCalled()
+		await waitFor(() => expect(enhanceErrorWithSourceMaps).toHaveBeenCalledTimes(1))
+		finish(new Error("Original rendering error"))
+		await waitFor(() => expect(telemetryClient.capture).toHaveBeenCalledTimes(1))
+	})
+
 	it("preserves the error and component stack when source-map enhancement fails", async () => {
 		vi.mocked(enhanceErrorWithSourceMaps).mockRejectedValueOnce(new Error("Source map unavailable"))
 
@@ -144,6 +166,8 @@ describe("ErrorBoundary", () => {
 		expect(screen.getByText(/Original rendering error/)).toBeInTheDocument()
 		expect(screen.getByText(/errorBoundary.componentStack/)).toBeInTheDocument()
 		expect(telemetryClient.capture).not.toHaveBeenCalled()
+		expect(reportWebviewError).toHaveBeenCalledTimes(1)
+		expect(reportWebviewError).toHaveBeenCalledWith("render", expect.any(Error))
 	})
 
 	it("preserves the error screen when diagnostic reporting fails", async () => {

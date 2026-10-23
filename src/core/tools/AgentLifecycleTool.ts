@@ -152,7 +152,7 @@ function lifecyclePresentation(
 							: 0,
 					timedOut: optionalBoolean(record, "timedOut"),
 					alreadyDelivered: optionalBoolean(record, "alreadyDelivered"),
-					cancelled: optionalBoolean(record, "cancelled"),
+					cancelled: record.interrupted === true ? true : optionalBoolean(record, "cancelled"),
 					noActiveAgents: optionalBoolean(record, "noActiveAgents"),
 				}),
 	}

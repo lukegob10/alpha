@@ -1,0 +1,51 @@
+{
+	"status": "failed",
+	"nonce": "230d9001-6b33-4dd0-8f10-83a75b65ef12",
+	"reason": "transcript_transcript-busy-one_timeout",
+	"host": {
+		"runId": "ui-230d9001-6b33-4dd0-8f10-83a75b65ef12",
+		"providerMode": "scripted",
+		"vscodeVersion": "1.138.0",
+		"launchKind": "extension-test",
+		"workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\workspace",
+		"userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\profile\\1.138.0\\user-data",
+		"extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\profile\\1.138.0\\extensions",
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\evidence\\ui-230d9001-6b33-4dd0-8f10-83a75b65ef12",
+		"profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\profile",
+		"execution": "extension-host",
+		"status": "failed",
+		"hostExitObserved": true,
+		"ownershipGate": "verified",
+		"actualVSCodeVersion": "1.138.0",
+		"requireAllTests": true,
+		"testCounts": {
+			"total": 1,
+			"passed": 0,
+			"pending": 0,
+			"executed": 1,
+			"failed": 1
+		},
+		"testSelection": {
+			"testFile": "transcript-lifecycle-ui.test",
+			"grep": null,
+			"forbidOnly": true
+		},
+		"exitCode": 1,
+		"retained": true,
+		"failure": "host-failed",
+		"retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\evidence\\ui-230d9001-6b33-4dd0-8f10-83a75b65ef12\\retention-result.json",
+		"launchedHostPid": 19392,
+		"extensionHostPid": 31812,
+		"extensionHostParentPid": 19392,
+		"evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-dzrsg9\\evidence\\ui-230d9001-6b33-4dd0-8f10-83a75b65ef12\\manifest.json",
+		"captureComplete": true,
+		"guidance": "Inspect this run's host preflight, host logs, and scenario result. Rerun the same bounded scenario after identifying the failing operation.",
+		"retention": {
+			"schemaVersion": 1,
+			"runId": "ui-230d9001-6b33-4dd0-8f10-83a75b65ef12",
+			"eligibility": "held",
+			"status": "complete",
+			"maintenance": "campaign-owned"
+		}
+	}
+}

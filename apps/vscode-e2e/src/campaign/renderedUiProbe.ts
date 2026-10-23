@@ -9,6 +9,7 @@ import { exerciseRenderedFileReview } from "../ui/renderedFileReview"
 import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
 import { exerciseRenderedComposer } from "../ui/renderedComposer"
 import { exerciseRenderedRequestUserInput } from "../ui/renderedRequestUserInput"
+import { exerciseRenderedTranscriptLifecycle } from "../ui/renderedTranscriptLifecycle"
 import { CdpConnection } from "../ui/cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
@@ -26,7 +27,14 @@ interface Evaluation<T> {
 export async function runRenderedUiProbe(
 	executable: string,
 	output: string,
-	mode: "probe" | "acceptance" | "reasoning" | "file-review" | "composer" | "request-user-input" = "probe",
+	mode:
+		| "probe"
+		| "acceptance"
+		| "reasoning"
+		| "file-review"
+		| "composer"
+		| "request-user-input"
+		| "transcript-lifecycle" = "probe",
 	signal?: AbortSignal,
 ) {
 	await fs.mkdir(output, { recursive: true })
@@ -45,18 +53,20 @@ export async function runRenderedUiProbe(
 		vscodeVersion: "1.138.0",
 		vscodeExecutablePath: executable,
 		testFile:
-			mode === "request-user-input"
-				? "request-user-input-ui.test"
-				: mode === "composer"
-					? "composer-ui.test"
-					: mode === "file-review"
-						? "file-review-ui.test"
-						: mode === "reasoning"
-							? "reasoning-ui.test"
-							: mode === "acceptance"
-								? "managed-agents.acceptance.test"
-								: "rendered-ui-probe.test",
-		...(mode === "request-user-input" ? { requireAllTests: true } : {}),
+			mode === "transcript-lifecycle"
+				? "transcript-lifecycle-ui.test"
+				: mode === "request-user-input"
+					? "request-user-input-ui.test"
+					: mode === "composer"
+						? "composer-ui.test"
+						: mode === "file-review"
+							? "file-review-ui.test"
+							: mode === "reasoning"
+								? "reasoning-ui.test"
+								: mode === "acceptance"
+									? "managed-agents.acceptance.test"
+									: "rendered-ui-probe.test",
+		...(mode === "request-user-input" || mode === "transcript-lifecycle" ? { requireAllTests: true } : {}),
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -90,15 +100,17 @@ export async function runRenderedUiProbe(
 							await fs.readFile(
 								path.join(
 									directory,
-									mode === "request-user-input"
-										? "ui-stage-input-wizard.json"
-										: mode === "file-review"
-											? "ui-stage-file-review.json"
-											: mode === "reasoning"
-												? "ui-stage-reasoning-high.json"
-												: mode === "acceptance"
-													? "ui-stage-settings-edit.json"
-													: "ui-ready.json",
+									mode === "transcript-lifecycle"
+										? "ui-stage-transcript-selected.json"
+										: mode === "request-user-input"
+											? "ui-stage-input-wizard.json"
+											: mode === "file-review"
+												? "ui-stage-file-review.json"
+												: mode === "reasoning"
+													? "ui-stage-reasoning-high.json"
+													: mode === "acceptance"
+														? "ui-stage-settings-edit.json"
+														: "ui-ready.json",
 								),
 								"utf8",
 							),
@@ -153,19 +165,25 @@ export async function runRenderedUiProbe(
 			assert.ok(workbenchSession)
 			if (mode !== "probe") {
 				const stages = await (
-					mode === "request-user-input"
-						? exerciseRenderedRequestUserInput
-						: mode === "composer"
-							? exerciseRenderedComposer
-							: mode === "file-review"
-								? exerciseRenderedFileReview
-								: mode === "reasoning"
-									? exerciseRenderedReasoning
-									: exerciseRenderedAcceptance
+					mode === "transcript-lifecycle"
+						? exerciseRenderedTranscriptLifecycle
+						: mode === "request-user-input"
+							? exerciseRenderedRequestUserInput
+							: mode === "composer"
+								? exerciseRenderedComposer
+								: mode === "file-review"
+									? exerciseRenderedFileReview
+									: mode === "reasoning"
+										? exerciseRenderedReasoning
+										: exerciseRenderedAcceptance
 				)(cdp, sessionId, workbenchSession, directory, nonce, combinedSignal)
 				const modelSwitchTiming =
 					mode === "reasoning"
 						? JSON.parse(await fs.readFile(path.join(directory, "ui-model-switch-timing.json"), "utf8"))
+						: undefined
+				const selectionLayout =
+					mode === "transcript-lifecycle"
+						? JSON.parse(await fs.readFile(path.join(directory, "ui-selection-layout.json"), "utf8"))
 						: undefined
 				observed = {
 					status: "passed",
@@ -176,6 +194,7 @@ export async function runRenderedUiProbe(
 					stages,
 					provider: "scripted",
 					...(modelSwitchTiming ? { modelSwitchTiming } : {}),
+					...(selectionLayout ? { selectionLayout } : {}),
 				}
 			} else {
 				await cdp.request("Page.bringToFront", {}, workbenchSession)
@@ -246,7 +265,13 @@ export async function runRenderedUiProbe(
 				nonce,
 				reason: error instanceof Error ? error.message : "probe_failed",
 			}
-			if (mode === "reasoning" || mode === "file-review" || mode === "request-user-input") abort.abort()
+			if (
+				mode === "reasoning" ||
+				mode === "file-review" ||
+				mode === "request-user-input" ||
+				mode === "transcript-lifecycle"
+			)
+				abort.abort()
 		} finally {
 			cdp?.close()
 			if (

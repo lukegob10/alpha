@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import * as vscode from "vscode"
+import { TaskLifecycleState } from "@alpha-code/types"
 
 import { ExtensionWorkflowHost } from "../scenarios/extensionWorkflowHost"
 import { WorkflowRequestBudget } from "../scenarios/requestBudget"
@@ -71,6 +72,9 @@ suite("Completed task after an implementation thread", function () {
 				"completed",
 				"The canonical assistant-text turn must be terminal",
 			)
+			assert.equal(after.liveTasksById[id]?.lifecycle, TaskLifecycleState.Completed)
+			assert.equal(after.liveTasksById[id]?.turnId, after.agentLifecycleSnapshots[id]?.turnId)
+			assert.equal(after.liveTasksById[id]?.hasPendingToolCalls, false)
 			await host.followup(id, "verify")
 			await host.complete(id)
 			await host.assertUiTask(id)

@@ -7,6 +7,7 @@ import {
 	agentLifecycleEventSchema,
 	TaskLifecycleState,
 	TaskStatus,
+	type AgentLifecycleSnapshot,
 	type AlphaMessage,
 	type ExtensionState,
 } from "@alpha-code/types"
@@ -28,6 +29,7 @@ interface ArtifactTask {
 interface ArtifactProvider {
 	getLiveTask(id: string): ArtifactTask | undefined
 	getTaskWithId(id: string): Promise<{ taskDirPath: string }>
+	getAgentLifecycleSnapshot(taskId: string): AgentLifecycleSnapshot | undefined
 	getStateToPostToWebview(): Promise<ExtensionState>
 }
 interface Observation {
@@ -359,7 +361,7 @@ suite("Native command artifact workflow", function () {
 						})
 						.filter((metadata) => metadata?.tool === "readCommandOutput")
 					const state = await provider.getStateToPostToWebview()
-					const snapshot = state.agentLifecycleSnapshots?.[task.taskId]
+					const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 					const projected = state.liveTasksById?.[task.taskId]
 					const callIds = mode === "code" ? [EXEC_CALL, SEARCH_CALL, READ_CALL] : [SEARCH_CALL, READ_CALL]
 					assert.ok(observation.artifactId)
@@ -488,6 +490,13 @@ suite("Native command artifact workflow", function () {
 							"Plan artifact reads must not execute commands",
 						)
 					assert.equal(projected?.lifecycle, TaskLifecycleState.Completed)
+					assert.equal(projected?.turnId, snapshot?.turnId)
+					assert.equal(projected?.hasPendingToolCalls, false)
+					assert.equal(
+						state.agentLifecycleSnapshots,
+						undefined,
+						"UI state must omit the accumulated lifecycle journal",
+					)
 					assert.equal(projected?.status, TaskStatus.Idle)
 					assert.equal(projected?.isTurnActive, false)
 					assert.equal(projected?.isWaitingForInput, false)
@@ -496,10 +505,7 @@ suite("Native command artifact workflow", function () {
 						(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
 					)
 					assert.equal(finalMessages.length, 1)
-					assert.equal(
-						finalMessages[0]!.text,
-						mode === "architect" ? `<proposed_plan>\n${FINAL}\n</proposed_plan>` : FINAL,
-					)
+					assert.equal(finalMessages[0]!.text, FINAL)
 					const assistantItems = taskEvents
 						.filter((event) => event.type === "item_added")
 						.map((event) => event.payload.item)

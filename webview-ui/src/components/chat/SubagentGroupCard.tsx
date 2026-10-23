@@ -71,13 +71,21 @@ const agentDetail = (agent: SubagentRunState): string => {
 export interface SubagentGroupCardProps {
 	group: SubagentGroupState
 	parentTaskId?: string
+	inputTaskIds?: ReadonlySet<string>
 	onShowTask?: (taskId: string) => void
 	presentation?: "transcript" | "dock"
 	isVisible?: boolean
 }
 
 export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
-	const { group, parentTaskId, onShowTask, presentation: cardPresentation = "transcript", isVisible = true } = props
+	const {
+		group,
+		parentTaskId,
+		inputTaskIds,
+		onShowTask,
+		presentation: cardPresentation = "transcript",
+		isVisible = true,
+	} = props
 	const { t } = useTranslation("chat")
 	const presentation = useContext(ExtensionStateContext)
 	const managedSteeringDrafts = presentation?.managedSteeringDrafts
@@ -445,7 +453,12 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 										<SubagentTaskLink
 											name={agent.nickname}
 											status={agent.status}
-											attention={compactAttention(agent)}
+											attention={
+												compactAttention(agent) ??
+												(inputTaskIds?.has(agent.taskId)
+													? t("subagentDock.input", { count: 1 })
+													: undefined)
+											}
 											detail={taskUnavailable ? agent.error : agentDetail(agent)}
 											disabled={taskUnavailable}
 											onOpen={() => openTask(agent)}

@@ -12,6 +12,7 @@ const createProviderHarness = (condenseContext: import("vitest").Mock, postMessa
 	const task = { taskId, condenseContext } as unknown as Task
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		taskStack: [task],
+		taskSessions: { getTask: vi.fn((id: string) => (id === taskId ? task : undefined)) },
 		postMessageToWebview,
 		log: vi.fn(),
 	}) as AlphaProvider
@@ -67,12 +68,26 @@ describe("AlphaProvider.condenseTaskContext", () => {
 		expect(postMessageToWebview).toHaveBeenCalledOnce()
 	})
 
-	it("keeps task-not-found errors clear without posting completion", async () => {
+	it("condenses a task displayed from another provider's session", async () => {
+		const condenseContext = vi.fn().mockResolvedValue(undefined)
+		const { provider, postMessageToWebview } = createProviderHarness(condenseContext)
+		Object.assign(provider, { taskStack: [] })
+
+		await expect(provider.condenseTaskContext(taskId)).resolves.toBeUndefined()
+
+		expect(condenseContext).toHaveBeenCalledOnce()
+		expect(postMessageToWebview).toHaveBeenCalledExactlyOnceWith(completionResponse)
+	})
+
+	it("clears the composer's busy state when the requested task is no longer live", async () => {
 		const { provider, postMessageToWebview } = createProviderHarness(vi.fn())
 
 		await expect(provider.condenseTaskContext("missing-task")).rejects.toThrow(
-			"Task with id missing-task not found in stack",
+			"Task with id missing-task not found",
 		)
-		expect(postMessageToWebview).not.toHaveBeenCalled()
+		expect(postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "condenseTaskContextResponse",
+			text: "missing-task",
+		})
 	})
 })

@@ -35,7 +35,7 @@ import { buildSkillResult, resolveSkillContentForMode } from "../skills/skillInv
 import { ScheduledTaskStore } from "./ScheduledTaskStore"
 import { checkAutoApproval } from "../../core/auto-approval"
 import { getNextRunAt, isRecurringSchedule } from "./schedule"
-import { runScheduledCommand } from "./runScheduledCommand"
+import { runScheduledCommand, ScheduledCommandCleanupError } from "./runScheduledCommand"
 
 const ACTIVE_RUN_STATUSES = new Set(["pending", "queued", "running", "waiting_for_approval"])
 const DEFAULT_TICK_MS = 60 * 1000
@@ -106,6 +106,14 @@ const truncateOutput = (output: string): string =>
 		? `${output.slice(0, MAX_COMMAND_OUTPUT_CHARS)}\n[output truncated]`
 		: output
 
+type ActiveScheduledAlphaTask = {
+	alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>>
+	task: ScheduledTask
+	run: ScheduledTaskRun
+	started: boolean
+	closing?: Promise<void>
+}
+
 export class ScheduledTaskService implements vscode.Disposable {
 	private readonly store: ScheduledTaskStore
 	private readonly ownerId = crypto.randomUUID()
@@ -115,18 +123,16 @@ export class ScheduledTaskService implements vscode.Disposable {
 	private refreshTimer: ReturnType<typeof setTimeout> | undefined
 	private timer: ReturnType<typeof setTimeout> | undefined
 	private disposed = false
+	private disposalPromise: Promise<void> | undefined
 	private readonly commandControllers = new Set<AbortController>()
 	private readonly commandCompletions = new Map<AbortController, Promise<void>>()
-	private readonly activeAlphaTasks = new Map<
-		string,
-		{ alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>>; task: ScheduledTask; run: ScheduledTaskRun }
-	>()
+	private readonly activeAlphaTasks = new Map<string, ActiveScheduledAlphaTask>()
 	private readonly pendingRunCompletions = new Map<
 		string,
 		{ task: ScheduledTask; run: ScheduledTaskRun; inFlight?: Promise<void> }
 	>()
 	private queue: Array<{ task: ScheduledTask; run: ScheduledTaskRun }> = []
-	private processing = false
+	private processingCompletion: Promise<void> | undefined
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -188,8 +194,29 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 	}
 
-	dispose(): void {
-		if (this.disposed) return
+	dispose(): Promise<void> {
+		if (this.disposalPromise) return this.disposalPromise
+		let resolve!: () => void
+		let reject!: (error: unknown) => void
+		this.disposalPromise = new Promise<void>((resolveDisposal, rejectDisposal) => {
+			resolve = resolveDisposal
+			reject = rejectDisposal
+		})
+		void this.disposalPromise.catch((error) => {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not stop scheduled task service: ${String(error)}`,
+			)
+		})
+		const disposal = this.disposalPromise
+		void this.disposeResources().then(resolve, (error) => {
+			if (this.disposalPromise === disposal) this.disposalPromise = undefined
+			reject(error)
+		})
+		return this.disposalPromise
+	}
+
+	private async disposeResources(): Promise<void> {
+		const retrying = this.disposed
 		this.disposed = true
 		if (this.timer) {
 			clearTimeout(this.timer)
@@ -202,31 +229,80 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.stopWatching?.()
 		this.stopWatching = undefined
 		for (const controller of this.commandControllers) controller.abort()
-		for (const { alphaTask, run } of this.activeAlphaTasks.values()) {
-			if (this.pendingRunCompletions.has(run.id)) continue
-			void alphaTask.abortTask().catch((error) => {
-				this.outputChannel.appendLine(
-					`[ScheduledTaskService] Could not abort task ${alphaTask.taskId}: ${String(error)}`,
-				)
-			})
+		const pendingCompletions = [...this.pendingRunCompletions.values()]
+		const activeTasks = [...this.activeAlphaTasks.values()].filter(
+			({ run }) => !this.pendingRunCompletions.has(run.id),
+		)
+		for (const [taskId, { run }] of this.activeAlphaTasks) {
+			if (this.pendingRunCompletions.has(run.id)) this.activeAlphaTasks.delete(taskId)
 		}
-		this.activeAlphaTasks.clear()
-		this.pendingRunCompletions.clear()
+		if (!retrying) {
+			// Ordinary failed run writes retain their existing recovery policy. Only an admitted
+			// shutdown write becomes an obligation of a later explicit disposal attempt.
+			for (const { run, inFlight } of pendingCompletions) {
+				if (!inFlight) this.pendingRunCompletions.delete(run.id)
+			}
+		} else {
+			for (const active of activeTasks) active.closing = undefined
+		}
+		this.queue = []
 		this.provider.off(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.off(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
 		this.workspaceListener?.dispose()
 		this.workspaceListener = undefined
-		const release = this.releaseOwnerLease
-		this.releaseOwnerLease = undefined
-		if (release) {
-			// A second window must not recover a run while this owner is still
-			// stopping its process tree or attempting its terminal write.
-			const commands = [...this.commandCompletions.values()]
-			const releasing = commands.length ? Promise.allSettled(commands).then(() => release()) : release()
-			void releasing.catch((error) => {
-				this.outputChannel.appendLine(`[ScheduledTaskService] Could not release owner lease: ${String(error)}`)
-			})
+		const taskCompletions = activeTasks.map(async (active) => {
+			const { alphaTask, task, run, started } = active
+			// Provider removal joins the original Task and its managed descendants without rehydrating it.
+			await this.closeAlphaTask(active)
+			// An in-flight admission publishes its own failure before its queue join settles.
+			if (!started && this.processingCompletion) return
+			await this.finishRun(
+				task,
+				{
+					...run,
+					alphaTaskId: alphaTask.taskId,
+					status: "failed",
+					summary: "Scheduled task was aborted.",
+					finishedAt: Date.now(),
+				},
+				true,
+			)
+		})
+		const results = await Promise.allSettled([
+			...this.commandCompletions.values(),
+			...taskCompletions,
+			...pendingCompletions.flatMap(({ task, run, inFlight }) =>
+				inFlight ? [inFlight] : retrying ? [this.finishRun(task, run, true)] : [],
+			),
+			...(this.processingCompletion ? [this.processingCompletion] : []),
+		])
+		const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason)
+		for (const { run } of this.pendingRunCompletions.values()) {
+			failures.push(new Error(`Could not persist scheduled run ${run.id} during shutdown`))
 		}
+		if (failures.length) throw new AggregateError(failures, "Scheduled task cleanup failed")
+		// Keep ownership through task-tree cleanup, late admission, and every admitted terminal write.
+		// Failed cleanup retains the lease because the previous task may still own live effects.
+		await this.releaseOwnerLease?.()
+		this.releaseOwnerLease = undefined
+	}
+
+	private closeAlphaTask(active: ActiveScheduledAlphaTask): Promise<void> {
+		if (active.closing) return active.closing
+		const closing = this.provider.removeTaskFromStack({
+			taskId: active.alphaTask.taskId,
+			requireAbortSuccess: true,
+		})
+		active.closing = closing
+		void closing.then(
+			() => {
+				if (this.activeAlphaTasks.get(active.alphaTask.taskId) === active) {
+					this.activeAlphaTasks.delete(active.alphaTask.taskId)
+				}
+			},
+			() => undefined,
+		)
+		return closing
 	}
 
 	getState(): ScheduledTaskState {
@@ -448,14 +524,18 @@ export class ScheduledTaskService implements vscode.Disposable {
 		await this.broadcast()
 	}
 
-	private async processQueue(): Promise<void> {
-		if (this.processing) {
-			return
-		}
+	private processQueue(): Promise<void> {
+		if (this.processingCompletion) return this.processingCompletion
+		if (this.disposed || this.queue.length === 0) return Promise.resolve()
+		const processing = this.drainQueue()
+		this.processingCompletion = processing
+		void processing.catch(() => undefined)
+		return processing
+	}
 
-		this.processing = true
+	private async drainQueue(): Promise<void> {
 		try {
-			while (this.queue.length > 0) {
+			while (!this.disposed && this.queue.length > 0) {
 				const { task, run } = this.queue.shift()!
 				try {
 					await this.startRun(task, run)
@@ -463,6 +543,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 					this.outputChannel.appendLine(
 						`[ScheduledTaskService] Run ${run.id} failed before admission: ${error instanceof Error ? error.message : String(error)}`,
 					)
+					if (this.disposed) throw error
 					await this.finishRun(task, {
 						...run,
 						status: "failed",
@@ -476,7 +557,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				}
 			}
 		} finally {
-			this.processing = false
+			this.processingCompletion = undefined
 		}
 	}
 
@@ -539,6 +620,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 					"Review and save this legacy schedule's approval mode before running it. Its old command deny rules cannot be applied to a background task.",
 				)
 			}
+			if (this.disposed) throw new Error("Scheduled task service stopped before admission")
 			alphaTask = await this.provider.createTask(prompt, undefined, undefined, {
 				preserveExisting: true,
 				background: true,
@@ -550,7 +632,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 				apiConfiguration,
 				reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
 			})
-			this.activeAlphaTasks.set(alphaTask.taskId, { alphaTask, task, run: startedRun })
+			const activeTask = { alphaTask, task, run: startedRun, started: false }
+			this.activeAlphaTasks.set(alphaTask.taskId, activeTask)
 			if (this.disposed) throw new Error("Scheduled task service stopped before admission")
 			await alphaTask.prepareReasoningForAdmission()
 			if (this.disposed) throw new Error("Scheduled task service stopped before admission")
@@ -562,16 +645,14 @@ export class ScheduledTaskService implements vscode.Disposable {
 				reasoningState,
 			})
 			if (this.disposed) throw new Error("Scheduled task service stopped before launch")
+			activeTask.started = true
 			alphaTask.start()
 			taskStarted = true
 			await this.broadcast()
 		} catch (error) {
-			if (alphaTask && !taskStarted && this.activeAlphaTasks.delete(alphaTask.taskId)) {
-				await alphaTask.abortTask().catch((cleanupError) => {
-					this.outputChannel.appendLine(
-						`Failed to clean up scheduled task ${alphaTask?.taskId}: ${String(cleanupError)}`,
-					)
-				})
+			const activeTask = alphaTask && this.activeAlphaTasks.get(alphaTask.taskId)
+			if (activeTask && !taskStarted) {
+				await this.closeAlphaTask(activeTask)
 			}
 			const failedRun: ScheduledTaskRun = {
 				...startedRun,
@@ -579,7 +660,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				finishedAt: Date.now(),
 				error: error instanceof Error ? error.message : String(error),
 			}
-			await this.finishRun(task, failedRun)
+			await this.finishRun(task, failedRun, this.disposed)
 		}
 	}
 
@@ -689,12 +770,15 @@ export class ScheduledTaskService implements vscode.Disposable {
 		const controller = new AbortController()
 		this.commandControllers.add(controller)
 		let complete!: () => void
-		this.commandCompletions.set(
-			controller,
-			new Promise<void>((resolve) => {
-				complete = resolve
-			}),
-		)
+		let failCleanup!: (error: ScheduledCommandCleanupError) => void
+		let cleanupFailure: ScheduledCommandCleanupError | undefined
+		const completion = new Promise<void>((resolve, reject) => {
+			complete = resolve
+			failCleanup = reject
+		})
+		// Tree cleanup can fail before disposal starts. Retain its observed failure for every later join.
+		void completion.catch(() => undefined)
+		this.commandCompletions.set(controller, completion)
 		try {
 			const result = await runScheduledCommand(execution.command, {
 				cwd: task.workspace || getWorkspacePath(),
@@ -711,6 +795,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				exitCode: 0,
 			})
 		} catch (error) {
+			if (error instanceof ScheduledCommandCleanupError) cleanupFailure = error
 			const commandError = error as Error & { stdout?: string; stderr?: string; code?: number | string }
 			const output = truncateOutput([commandError.stdout, commandError.stderr].filter(Boolean).join("\n"))
 			await this.finishRun(task, {
@@ -723,8 +808,11 @@ export class ScheduledTaskService implements vscode.Disposable {
 			})
 		} finally {
 			this.commandControllers.delete(controller)
-			this.commandCompletions.delete(controller)
-			complete()
+			if (cleanupFailure) failCleanup(cleanupFailure)
+			else {
+				this.commandCompletions.delete(controller)
+				complete()
+			}
 		}
 	}
 
@@ -806,7 +894,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		await this.finishRun(active.task, { ...active.run, alphaTaskId, status, summary, finishedAt: Date.now() })
 	}
 
-	private async finishRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
+	private async finishRun(task: ScheduledTask, run: ScheduledTaskRun, retainForDisposal = false): Promise<void> {
 		// A terminal event may be delivered only once. Preserve its first outcome
 		// while duplicate events and tick retries join the same persistence attempt.
 		let pending = this.pendingRunCompletions.get(run.id)
@@ -814,7 +902,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			pending = { task, run }
 			// Aborted commands can settle after disposal. Permit their best-effort
 			// terminal write without retaining work that no future tick can retry.
-			if (!this.disposed) this.pendingRunCompletions.set(run.id, pending)
+			if (!this.disposed || retainForDisposal) this.pendingRunCompletions.set(run.id, pending)
 		}
 		if (!pending.inFlight) {
 			const completion = pending

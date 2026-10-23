@@ -9,6 +9,7 @@ import {
 	type AlphaMessage,
 	type AlphaCodeAPI,
 	type AlphaCodeSettings,
+	type AgentLifecycleSnapshot,
 	type ExtensionState,
 	type TaskApprovalModeUpdate,
 	type TaskApprovalModeUpdateResult,
@@ -84,6 +85,7 @@ interface HostProvider {
 	closeTask(taskId: string): Promise<void>
 	viewLaunched: boolean
 	getLiveTask(taskId: string): HostTask | undefined
+	getAgentLifecycleSnapshot(taskId: string): AgentLifecycleSnapshot | undefined
 	getStateToPostToWebview(): Promise<ExtensionState>
 	getTaskSettlementDiagnostics(task: HostTask): unknown
 	recordPrimaryMutation(task: HostTask, ...args: unknown[]): Promise<boolean>
@@ -820,7 +822,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			currentView: state.currentView,
 			liveTaskIds: state.liveTaskIds,
 			liveTasksById: { [taskId]: state.liveTasksById?.[taskId] },
-			agentLifecycleSnapshots: { [taskId]: state.agentLifecycleSnapshots?.[taskId] },
+			agentLifecycleSnapshots: { [taskId]: this.provider.getAgentLifecycleSnapshot(taskId) },
 			clineMessages: task.clineMessages.slice(-2),
 		}
 	}

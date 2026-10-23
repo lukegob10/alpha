@@ -15092,6 +15092,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							return
 						}
 
+						// A follow-up admitted during completion persistence still belongs to
+						// the current task's existing input consumer.
+						if (this.hasPendingAgentMessages() || this.hasPendingSteerMessage()) {
+							nextTurnInput = { userContent: [], includeFileDetails: false }
+							continue
+						}
+
 						const concurrentFeedback = this.dequeueQueuedMessage()
 						if (concurrentFeedback) {
 							await this.say(

@@ -1,0 +1,120 @@
+{
+	"electron": "43.7.7",
+	"chromium": "150.0.7871.250",
+	"profile": "C:\\Users\\LUKEGO~1\\AppData\\Local\\Temp\\alpha-native-layout-Fu2ZDb",
+	"results": [
+		{
+			"variant": "no-animation",
+			"input": "native mouse",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": true,
+				"timeline": "auto",
+				"animation": "none",
+				"rendererPid": 47644
+			},
+			"outcome": {
+				"status": "alive",
+				"clicks": 1,
+				"selected": true,
+				"displays": ["none", "block"]
+			}
+		},
+		{
+			"variant": "no-selection",
+			"input": "native mouse",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": false,
+				"timeline": "scroll(self y)",
+				"animation": "fixture-fade",
+				"rendererPid": 38560
+			},
+			"outcome": {
+				"status": "alive",
+				"clicks": 1,
+				"selected": false,
+				"displays": ["none", "block"]
+			}
+		},
+		{
+			"variant": "no-toggle",
+			"input": "native mouse",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": true,
+				"timeline": "scroll(self y)",
+				"animation": "fixture-fade",
+				"rendererPid": 14084
+			},
+			"outcome": {
+				"status": "alive",
+				"clicks": 1,
+				"selected": true,
+				"displays": ["", "none"]
+			}
+		},
+		{
+			"variant": "normal-timeline",
+			"input": "native mouse",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": true,
+				"timeline": "auto",
+				"animation": "fixture-fade",
+				"rendererPid": 48248
+			},
+			"outcome": {
+				"status": "alive",
+				"clicks": 1,
+				"selected": true,
+				"displays": ["none", "block"]
+			}
+		},
+		{
+			"variant": "full",
+			"input": "native mouse",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": true,
+				"timeline": "scroll(self y)",
+				"animation": "fixture-fade",
+				"rendererPid": 47712
+			},
+			"outcome": {
+				"status": "crashed",
+				"reason": "crashed",
+				"exitCode": -2147483645
+			}
+		},
+		{
+			"variant": "script-toggle",
+			"input": "DOM click",
+			"before": {
+				"x": 98.6796875,
+				"y": 68.5,
+				"supported": true,
+				"selected": true,
+				"timeline": "scroll(self y)",
+				"animation": "fixture-fade",
+				"rendererPid": 45360
+			},
+			"outcome": {
+				"status": "alive",
+				"clicks": 1,
+				"selected": true,
+				"displays": ["none", "block"]
+			}
+		}
+	]
+}

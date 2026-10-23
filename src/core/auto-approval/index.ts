@@ -358,13 +358,12 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
 		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
-		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute || !input.text) {
-			return { decision: "ask" }
-		}
+		if (!input.text) return { decision: "ask" }
 		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
 			(policy) => getSubagentCommandDecision(input.text!, policy),
 		)
 		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute) return { decision: "ask" }
 		if (input.requiresExplicitApproval && inheritedMode !== "bypass") return { decision: "ask" }
 		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
 		return { decision: "ask" }

@@ -12,6 +12,7 @@ for (const testFile of [
 	"task-navigation-ui.test",
 	"composer-ui.test",
 	"request-user-input-ui.test",
+	"transcript-lifecycle-ui.test",
 ]) {
 	test(`renderer debugging for ${testFile} requires scripted execution and an owned profile`, async () => {
 		for (const change of [

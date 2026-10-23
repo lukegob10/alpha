@@ -218,6 +218,9 @@ describe("VSCodeLM", () => {
 		["gemini-3.1-pro", "Gemini 3.1 Pro (Preview)", 936_000, 200_000, 936_000],
 		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 200_000, 936_000],
 		["claude-opus-5", "Claude Opus 5", 936_000, 200_000, 936_000],
+		["claude-opus-5.5", "Claude Opus 5.5", 936_000, 200_000, 936_000],
+		["claude-sonnet-5.5", "Claude Sonnet 5.5", 936_000, 200_000, 936_000],
+		["claude-haiku-5.5", "Claude Haiku 5.5", 936_000, 200_000, 936_000],
 		["grok-4.6", "Grok 4.6", 425_001, 200_000, 425_001],
 		["gpt-6-astra", "GPT 6 Astra", 1_050_000, 272_000, 1_050_000],
 		["gpt-6-luna", "GPT 6 Luna", 1_050_000, 272_000, 1_050_000],
@@ -249,9 +252,10 @@ describe("VSCodeLM", () => {
 	)
 
 	it.each([
-		["claude-opus-5", "Claude Opus 5", ["low", "medium", "high", "xhigh", "max"]],
-		["grok-4.6", "Grok 4.6", ["low", "medium", "high", "xhigh"]],
-	] as const)("exposes Copilot reasoning controls for %s", (family, name, efforts) => {
+		["claude-opus-5", "Claude Opus 5", ["low", "medium", "high", "xhigh", "max"], "high"],
+		["claude-opus-5.5", "Claude Opus 5.5", ["low", "medium", "high", "xhigh", "max"], "medium"],
+		["grok-4.6", "Grok 4.6", ["low", "medium", "high", "xhigh"], "high"],
+	] as const)("exposes Copilot reasoning controls for %s", (family, name, efforts, defaultEffort) => {
 		const selectedModel = {
 			vendor: "copilot",
 			family,
@@ -270,10 +274,36 @@ describe("VSCodeLM", () => {
 			expect.objectContaining({
 				supportsReasoningEffort: efforts,
 				requiredReasoningEffort: true,
-				reasoningEffort: "high",
+				reasoningEffort: defaultEffort,
 			}),
 		)
 		expect(thinkingBudgetProps.at(-1).showReasoningEffort).toBe(false)
+	})
+
+	it.each([
+		["Claude Sonnet 5.5", ["low", "medium", "high", "xhigh", "max"]],
+		["Claude Haiku 5.5", ["low", "medium", "high", "xhigh", "max"]],
+		["GPT-6 Astra", ["low", "medium", "high", "xhigh", "max"]],
+		["GPT-6 Luna", ["none", "low", "medium", "high", "xhigh", "max"]],
+		["GPT-6 Sol", ["none", "low", "medium", "high", "xhigh", "max"]],
+		["GPT-6.1 Sol", ["low", "medium", "high", "xhigh", "max"]],
+	] as const)("exposes %s reasoning for live models with opaque IDs", (name, efforts) => {
+		const selectedModel = {
+			vendor: "copilot",
+			family: "opaque-family",
+			version: "2026-10-22",
+			id: "opaque-model-id",
+			name,
+		}
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
+		act(() => {
+			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		})
+		expect(thinkingBudgetProps.at(-1).modelInfo.supportsReasoningEffort).toEqual(efforts)
+		expect(modelPickerProps.at(-1).valueTransform("copilot/opaque-model-id")).toMatchObject({
+			id: selectedModel.id,
+			family: selectedModel.family,
+		})
 	})
 
 	it("uses Kimi K3's single live window without showing a context toggle", () => {
@@ -552,25 +582,29 @@ describe("VSCodeLM", () => {
 		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
 	})
 
-	it("clears a stale disabled effort when switching to an always-reasoning Copilot model", () => {
+	it.each([
+		["claude-opus-5", "disable"],
+		["claude-opus-5.5", "disable"],
+		["claude-opus-5.5", "none"],
+		["gpt-6.1-sol", "none"],
+	] as const)("clears stale %s effort %s when switching models", (family, effort) => {
 		const model = {
 			vendor: "copilot",
-			family: "claude-opus-5",
-			version: "claude-opus-5",
-			id: "copilot-claude-opus-5",
-			name: "Claude Opus 5",
+			family,
+			version: family,
+			id: `copilot-${family}`,
 		}
 
 		renderProvider({
 			apiProvider: "vscode-lm",
 			enableReasoningEffort: false,
-			reasoningEffort: "disable",
+			reasoningEffort: effort,
 		})
 		act(() => {
 			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [model] } } as MessageEvent)
 		})
 
-		modelPickerProps.at(-1).onModelChange("copilot-claude-opus-5/copilot-claude-opus-5")
+		modelPickerProps.at(-1).onModelChange(`copilot/${model.id}`)
 
 		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
 	})

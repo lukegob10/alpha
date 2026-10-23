@@ -33,6 +33,7 @@ import { MessageManager } from "../../message-manager"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
+import type { CodeIndexManager } from "../../../services/code-index/manager"
 
 // These are individual provider unit cases. Host-wide sharing is exercised by
 // AlphaProvider.host-ownership.spec.ts with two simultaneously attached views.
@@ -426,6 +427,20 @@ describe("AlphaProvider", () => {
 	let mockPostMessage: any
 	let updateGlobalStateSpy: any
 
+	function replacementView(inTabMode = false): vscode.WebviewView {
+		return {
+			...mockWebviewView,
+			webview: {
+				...mockWebviewView.webview,
+				html: "",
+				onDidReceiveMessage: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			},
+			onDidDispose: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			onDidChangeVisibility: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			...(inTabMode ? { onDidChangeViewState: vi.fn().mockReturnValue({ dispose: vi.fn() }) } : {}),
+		} as unknown as vscode.WebviewView
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 
@@ -496,10 +511,7 @@ describe("AlphaProvider", () => {
 				cspSource: "vscode-webview://test-csp-source",
 			},
 			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
+			onDidDispose: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
 		} as unknown as vscode.WebviewView
 
@@ -623,13 +635,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.8 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.8-diff-review-startup"
+	test("shows the v3.2.9 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.9-chat-worker-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.7-performance-reliability")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.8-diff-review-startup")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -965,6 +977,29 @@ describe("AlphaProvider", () => {
 
 		releaseCondense()
 		await Promise.all([condenseMessage, cancelMessage])
+	})
+
+	test("hydrates a reloaded webview while a global operation is pending", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		let releaseCondense!: () => void
+		const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+			new Promise<void>((resolve) => {
+				releaseCondense = resolve
+			}),
+		)
+		const pending = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
+		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
+		mockPostMessage.mockClear()
+
+		const launching = messageHandler({ type: "webviewDidLaunch" })
+		try {
+			await vi.waitFor(() => expect(provider.viewLaunched).toBe(true))
+			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
+		} finally {
+			releaseCondense()
+			await Promise.all([pending, launching])
+		}
 	})
 
 	test("tracks webview focus immediately while a global operation is pending", async () => {
@@ -1424,6 +1459,162 @@ describe("AlphaProvider", () => {
 		await disposeView()
 		expect(provider.viewLaunched).toBe(false)
 	})
+
+	test.each([false, true])("ignores stale view disposal after replacement (tab: %s)", async (inTabMode) => {
+		const previous = replacementView(inTabMode)
+		const current = replacementView(inTabMode)
+		await provider.resolveWebviewView(previous)
+		const disposePrevious = vi.mocked(previous.onDidDispose).mock.calls[0][0]
+		await provider.resolveWebviewView(current)
+		const receiveCurrent = vi.mocked(current.webview.onDidReceiveMessage).mock.calls[0][0]
+		await receiveCurrent({ type: "webviewDidLaunch" })
+		const disposeProvider = vi.spyOn(provider, "dispose")
+
+		await disposePrevious()
+
+		expect(provider.viewLaunched).toBe(true)
+		expect(disposeProvider).not.toHaveBeenCalled()
+		expect(vi.mocked(current.webview.onDidReceiveMessage).mock.results[0].value.dispose).not.toHaveBeenCalled()
+	})
+
+	test("cleans replaced view subscriptions and restores code index progress", async () => {
+		const previous = replacementView()
+		const current = replacementView()
+		const progressSubscription = () => ({ dispose: vi.fn() })
+		const progressUpdate = {
+			systemStatus: "Standby" as const,
+			message: "",
+			processedItems: 0,
+			totalItems: 0,
+			currentItemUnit: "files",
+		}
+		const manager = {
+			onProgressUpdate: vi.fn().mockImplementation(progressSubscription),
+			getCurrentStatus: vi.fn().mockReturnValue(progressUpdate),
+		} as unknown as CodeIndexManager
+		const workspaceManager = vi.spyOn(provider, "getCurrentWorkspaceCodeIndexManager").mockReturnValue(manager)
+		try {
+			await provider.resolveWebviewView(previous)
+			const oldMessages = vi.mocked(previous.webview.onDidReceiveMessage).mock.results[0].value
+			const oldVisibility = vi.mocked(previous.onDidChangeVisibility).mock.results[0].value
+			const oldProgress = vi.mocked(manager.onProgressUpdate).mock.results[0].value
+
+			await provider.resolveWebviewView(current)
+
+			expect(oldMessages.dispose).toHaveBeenCalledOnce()
+			expect(oldVisibility.dispose).toHaveBeenCalledOnce()
+			expect(oldProgress.dispose).toHaveBeenCalledOnce()
+			expect(manager.onProgressUpdate).toHaveBeenCalledTimes(2)
+			mockPostMessage.mockClear()
+			vi.mocked(manager.onProgressUpdate).mock.calls[1][0](progressUpdate)
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "indexingStatusUpdate",
+				values: manager.getCurrentStatus(),
+			})
+		} finally {
+			workspaceManager.mockRestore()
+		}
+	})
+
+	test("ignores retained message and visibility callbacks from replaced or closed views", async () => {
+		const previous = replacementView()
+		const current = replacementView()
+		await provider.resolveWebviewView(previous)
+		const receivePrevious = vi.mocked(previous.webview.onDidReceiveMessage).mock.calls[0][0]
+		const showPrevious = vi.mocked(previous.onDidChangeVisibility).mock.calls[0][0]
+		await provider.resolveWebviewView(current)
+		const receiveCurrent = vi.mocked(current.webview.onDidReceiveMessage).mock.calls[0][0]
+		const focus = vi.spyOn(provider, "setWebviewFocused")
+		mockPostMessage.mockClear()
+
+		await receivePrevious({ type: "webviewFocusChanged", focused: true })
+		showPrevious()
+		expect(focus).not.toHaveBeenCalled()
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		await receiveCurrent({ type: "webviewFocusChanged", focused: true })
+		expect(focus).toHaveBeenCalledOnce()
+		await vi.mocked(current.onDidDispose).mock.calls[0][0]()
+		focus.mockClear()
+		await receiveCurrent({ type: "webviewFocusChanged", focused: true })
+		expect(focus).not.toHaveBeenCalled()
+	})
+
+	test.each(["replace", "close"] as const)("ignores HTML resolution after %s", async (transition) => {
+		const developmentContext = { ...mockContext, extensionMode: vscode.ExtensionMode.Development }
+		provider = new AlphaProvider(
+			developmentContext,
+			mockOutputChannel,
+			"sidebar",
+			new ContextProxy(developmentContext),
+		)
+		const previous = replacementView()
+		const current = replacementView()
+		let finishHtml!: (response: { status: number }) => void
+		vi.mocked(axios.get).mockReturnValueOnce(new Promise((resolve) => (finishHtml = resolve)))
+		const resolvingPrevious = provider.resolveWebviewView(previous)
+		try {
+			if (transition === "replace") {
+				vi.mocked(axios.get).mockResolvedValueOnce({ status: 200 })
+				await provider.resolveWebviewView(current)
+			} else {
+				expect(previous.onDidDispose).toHaveBeenCalledOnce()
+				await vi.mocked(previous.onDidDispose).mock.calls[0][0]()
+			}
+		} finally {
+			finishHtml({ status: 200 })
+			await resolvingPrevious
+		}
+
+		expect(previous.webview.html).toBe("")
+		expect(previous.webview.onDidReceiveMessage).not.toHaveBeenCalled()
+		if (transition === "replace") expect(current.webview.html).toContain("<!DOCTYPE html>")
+	})
+
+	test("does not post initial state when a view is replaced during mode loading", async () => {
+		const previous = replacementView()
+		await provider.resolveWebviewView(previous)
+		let finishModes!: () => void
+		vi.spyOn(provider.customModesManager, "getCustomModes").mockImplementationOnce(
+			() => new Promise((resolve) => (finishModes = () => resolve([]))),
+		)
+		const initialState = vi.spyOn(provider, "postStateToWebview")
+		const receivePrevious = vi.mocked(previous.webview.onDidReceiveMessage).mock.calls[0][0]
+		const launching = receivePrevious({ type: "webviewDidLaunch" })
+		try {
+			await provider.resolveWebviewView(replacementView())
+		} finally {
+			finishModes()
+			await launching
+		}
+
+		expect(initialState).not.toHaveBeenCalled()
+		expect(provider.viewLaunched).toBe(false)
+	})
+
+	test.each(["replace", "close"] as const)(
+		"does not let an older launch mark the webview ready after %s",
+		async (transition) => {
+			const previous = replacementView()
+			await provider.resolveWebviewView(previous)
+			const receivePrevious = vi.mocked(previous.webview.onDidReceiveMessage).mock.calls[0][0]
+			let finishInitialState!: () => void
+			const initialState = vi
+				.spyOn(provider, "postStateToWebview")
+				.mockImplementationOnce(() => new Promise<void>((resolve) => (finishInitialState = resolve)))
+			const launching = receivePrevious({ type: "webviewDidLaunch" })
+			await vi.waitFor(() => expect(initialState).toHaveBeenCalledOnce())
+			try {
+				if (transition === "replace") await provider.resolveWebviewView(replacementView())
+				else await vi.mocked(previous.onDidDispose).mock.calls[0][0]()
+			} finally {
+				finishInitialState()
+				await launching
+			}
+
+			expect(provider.viewLaunched).toBe(false)
+		},
+	)
 
 	test("does not report the webview ready before its initial state is delivered", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
@@ -3448,10 +3639,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				asWebviewUri: vi.fn(),
 			},
 			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
+			onDidDispose: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
 		} as unknown as vscode.WebviewView
 
@@ -4413,11 +4601,10 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				expect(journal.replay).toHaveBeenCalledTimes(reuseUnchanged ? 0 : 1)
 				expect(journal.refresh).toHaveBeenCalledTimes(reuseUnchanged ? 1 : 0)
 				expect(provider.getAgentLifecycleSnapshot(taskId)).toEqual(snapshot)
-				expect(provider.postMessageToWebview).toHaveBeenCalledWith({
-					type: "agentLifecycleSnapshot",
-					taskId,
-					payload: snapshot,
-				})
+				expect(provider.postTaskSessionStateToWebview).toHaveBeenCalled()
+				expect(provider.postMessageToWebview).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "agentLifecycleSnapshot" }),
+				)
 			},
 		)
 

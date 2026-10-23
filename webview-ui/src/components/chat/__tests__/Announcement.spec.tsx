@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.8",
+		version: "3.2.9",
 	},
 }))
 
@@ -37,13 +37,11 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.8" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.9" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.8")).toBeInTheDocument()
-		expect(
-			screen.getByText("Alpha v3.2.8 restores file diff review and improves extension startup."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.9")).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.9 improves long chat reliability and Worker handoffs.")).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
@@ -51,27 +49,31 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Open chats with less startup work and keep initial state updates consistent."),
+			screen.getByText(
+				"Keep long chats responsive and recover their controls after compaction or a view reload.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Load document readers, code highlighting, and error details as you need them."),
+			screen.getByText("Use updated Copilot model aliases and supported reasoning controls."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Review saved file changes while task work continues.")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Open the diff editor from Review or file change counts, with clear feedback if opening fails.",
+				"Bring completed Worker changes back automatically while preserving conflict review and existing approvals.",
 			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Create Decision and Review tickets alongside existing ticket types."),
 		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
+		expect(screen.getByText("Alpha v3.2.9 improves long chat reliability and Worker handoffs.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.8 restores file diff review and improves extension startup."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Open chats with less startup work and keep initial state updates consistent."),
+			screen.getByText(
+				"Keep long chats responsive and recover their controls after compaction or a view reload.",
+			),
 		).toBeInTheDocument()
 	})
 })

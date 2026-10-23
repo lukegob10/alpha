@@ -6347,6 +6347,71 @@ describe("Alpha", () => {
 			expect(request.mock.calls[1][0]).toEqual([])
 		})
 
+		it.each(["primary", "subagent"] as const)(
+			"continues the %s task when accepted agent input arrives during final completion persistence",
+			async (kind) => {
+				const task = createTask(kind)
+				const persistenceStarted = deferred()
+				const releasePersistence = deferred()
+				const flush = task.flushApiConversationHistoryPersistence.bind(task)
+				let heldCompletion = false
+				vi.spyOn(task, "flushApiConversationHistoryPersistence").mockImplementation(async (...args) => {
+					if (!heldCompletion && task["didEmitTaskCompleted"]) {
+						heldCompletion = true
+						persistenceStarted.resolve()
+						await releasePersistence.promise
+					}
+					await flush(...args)
+				})
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					task.abort = true
+					return { response: "noButtonClicked" }
+				})
+				const say = vi.spyOn(task, "say")
+				const completed = vi.fn()
+				task.on(AlphaCodeEventName.TaskCompleted, completed)
+				const request = vi
+					.spyOn(task, "runAgentRequests")
+					.mockResolvedValueOnce({
+						status: "completed",
+						response: createAgentResponse([{ type: "text", text: "Initial review." }]),
+					})
+					.mockImplementationOnce(async () => {
+						await task["deliverAgentMessages"]()
+						return {
+							status: "completed",
+							response: createAgentResponse([{ type: "text", text: "Expanded review." }]),
+						}
+					})
+				const run = task["initiateTaskLoop"]([{ type: "text", text: "Review the change." }])
+				try {
+					await persistenceStarted.promise
+					expect(task.isCompleted()).toBe(false)
+					await task.admitAgentMessage(() =>
+						task.receiveAgentMessage({
+							id: "late-agent-followup",
+							senderTaskId: "parent",
+							text: "Include the cancellation case.",
+						}),
+					)
+				} finally {
+					releasePersistence.resolve()
+				}
+				await run
+
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1]?.[0]).toEqual([])
+				expect(
+					task.apiConversationHistory.filter((message) => message.agent_message_id === "late-agent-followup"),
+				).toHaveLength(1)
+				expect(task.hasPendingAgentMessages()).toBe(false)
+				expect(ask).not.toHaveBeenCalled()
+				expect(say.mock.calls.some(([type]) => type === "error")).toBe(false)
+				expect(task.isCompleted()).toBe(true)
+				expect(completed).toHaveBeenCalledOnce()
+			},
+		)
+
 		it.each(["commentary", "reasoning"] as const)(
 			"continues after %s to read automatic child reports without calling wait_agent",
 			async (phase) => {

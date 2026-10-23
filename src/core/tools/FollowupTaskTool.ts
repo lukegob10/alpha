@@ -46,6 +46,10 @@ export class FollowupTaskTool extends BaseTool<"followup_task"> {
 			}
 		}
 
+		// Followup may require migration approval, so its descriptor cannot start
+		// the effect unconditionally before this handler settles that decision.
+		if (callbacks.startEffect && !(await callbacks.startEffect())) return
+
 		await runAgentLifecycleOperation(this.name, "followupAgentTask", task, callbacks, (provider) =>
 			provider.followupAgentTask(task, target, message),
 		)

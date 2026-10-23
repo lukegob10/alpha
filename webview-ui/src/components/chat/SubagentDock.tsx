@@ -53,6 +53,19 @@ export const SubagentDock = memo(function SubagentDock({
 		() => new Set(latestGroups.flatMap((group) => group.agents.map((agent) => agent.taskId))),
 		[latestGroups],
 	)
+	const inputTaskIds = useMemo(
+		() =>
+			new Set(
+				projection?.rootTaskId === parentTaskId
+					? projection.nodes
+							.filter((node) => node.taskId !== parentTaskId && node.attention?.kind === "input")
+							.map((node) => node.taskId)
+					: model.nodes
+							.filter((node) => liveTasksById?.[node.taskId]?.isWaitingForInput)
+							.map((node) => node.taskId),
+			),
+		[parentTaskId, projection, model.nodes, liveTasksById],
+	)
 	// Exclude only duplicate navigation rows; the canonical tree still owns descendant and overflow projections.
 	const agents = latestGroups.flatMap((group) => group.agents)
 	const ungroupedAttention =
@@ -67,7 +80,7 @@ export const SubagentDock = memo(function SubagentDock({
 			agent.parentVerification?.blocking ||
 			(agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)),
 	).length
-	const inputCount = ungroupedAttention.filter((node) => node.attention?.kind === "input").length
+	const inputCount = inputTaskIds.size
 	const statuses = new Map([
 		...agents.map((agent) => [agent.taskId, agent.status] as const),
 		...model.nodes.map((node) => [node.taskId, node.status] as const),
@@ -98,6 +111,7 @@ export const SubagentDock = memo(function SubagentDock({
 						key={group.groupId}
 						group={group}
 						parentTaskId={group.parentTaskId}
+						inputTaskIds={inputTaskIds}
 						onShowTask={onShowTask}
 						presentation="dock"
 						isVisible={isVisible}

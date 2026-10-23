@@ -774,6 +774,7 @@ export class TaskSessionRegistry {
 				: isTurnActive && !isWaitingForInput
 		const hasPendingSteer =
 			typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
+		const terminalToolCalls = new Set(session.lifecycleSnapshot?.terminalToolCallIds)
 		const metadata: LiveTaskMetadata = {
 			id: task.taskId,
 			...(task.orchestrationParentTaskId ? { orchestrationParentTaskId: task.orchestrationParentTaskId } : {}),
@@ -790,6 +791,9 @@ export class TaskSessionRegistry {
 			isTurnActive,
 			canInterrupt,
 			activityPhase: session.lifecycleSnapshot?.phase,
+			turnId: session.lifecycleSnapshot?.turnId,
+			hasPendingToolCalls:
+				session.lifecycleSnapshot?.acceptedToolCallIds.some((id) => !terminalToolCalls.has(id)) ?? false,
 			hasPendingSteer,
 			isWaitingForInput,
 			lastUpdatedAt: Math.max(

@@ -91,7 +91,7 @@ describe("TicketStore", () => {
 			expect.objectContaining({ id: cleared.id, type: null, priority: null }),
 		])
 	})
-	it.each(["testing", "performance", "ux"] as const)(
+	it.each(["testing", "performance", "ux", "decision", "review"] as const)(
 		"persists the %s ticket type and priority in list summaries",
 		async (type) => {
 			const created = await store.create({ name: `Classified ${type}`, type, priority: "low" })

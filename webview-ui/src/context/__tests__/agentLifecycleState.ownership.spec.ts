@@ -10,7 +10,11 @@ import {
 import { experimentDefault } from "@alpha/experiments"
 
 import { mergeExtensionState } from "../ExtensionStateContext"
-import { applyLifecycleEventToExtensionState, applyLifecycleSnapshotToExtensionState } from "../agentLifecycleState"
+import {
+	applyLifecycleDegradedToExtensionState,
+	applyLifecycleEventToExtensionState,
+	applyLifecycleSnapshotToExtensionState,
+} from "../agentLifecycleState"
 
 const metadata = (id: string): LiveTaskMetadata => ({
 	id,
@@ -90,6 +94,87 @@ const terminal = (taskId: string, status: "completed" | "failed" | "interrupted"
 	})
 
 describe("lifecycle task ownership", () => {
+	it("releases old snapshot histories when compact host metadata becomes authoritative", () => {
+		const initial: ExtensionState = {
+			...state(),
+			taskStateSeq: 1,
+			liveTaskIds: ["current", "background"],
+			liveTasksById: { current: metadata("current"), background: metadata("background") },
+			agentLifecycleSnapshots: {
+				current: snapshot("current", { phase: "waiting" }),
+				background: snapshot("background"),
+			},
+		}
+		const compact = {
+			...metadata("current"),
+			turnId: "new-turn",
+			hasPendingToolCalls: false,
+			activityPhase: "compacting" as const,
+		}
+		const updated = mergeExtensionState(initial, {
+			taskStateSeq: 2,
+			liveTasksById: { current: compact, background: metadata("background") },
+		})
+
+		expect(updated.liveTasksById?.current).toEqual(compact)
+		expect(updated.agentLifecycleSnapshots?.current).toBeUndefined()
+		expect(updated.agentLifecycleSnapshots?.background).toEqual(initial.agentLifecycleSnapshots?.background)
+		expect(applyLifecycleSnapshotToExtensionState(updated, snapshot("current"))).toBe(updated)
+		expect(applyLifecycleEventToExtensionState(updated, terminal("current", "completed"))).toBe(updated)
+	})
+
+	it("keeps compact metadata authoritative when stale task maps or legacy snapshots arrive", () => {
+		const compact = { ...metadata("current"), hasPendingToolCalls: false, turnId: "new-turn" }
+		const initial: ExtensionState = {
+			...state(),
+			taskStateSeq: 3,
+			liveTaskIds: ["current"],
+			liveTasksById: { current: compact },
+		}
+		const updated = mergeExtensionState(initial, {
+			taskStateSeq: 2,
+			liveTasksById: { current: metadata("current") },
+			agentLifecycleSnapshots: { current: snapshot("current", { phase: "waiting" }) },
+		})
+		expect(updated.liveTasksById?.current).toBe(compact)
+		expect(updated.agentLifecycleSnapshots?.current).toBeUndefined()
+	})
+
+	it("preserves host metadata while degradation and recovery signals arrive", () => {
+		const compact = {
+			...metadata("current"),
+			hasPendingToolCalls: false,
+			turnId: "new-turn",
+			activityPhase: "compacting" as const,
+		}
+		const initial: ExtensionState = {
+			...state(),
+			currentTaskId: "current",
+			taskStateSeq: 1,
+			liveTaskIds: ["current"],
+			liveTasksById: { current: compact },
+			clineMessages: [{ ts: 2, type: "ask", ask: "completion_result" }],
+		}
+		const degraded = applyLifecycleDegradedToExtensionState(initial, {
+			version: 1,
+			taskId: "current",
+			occurredAt: 3,
+			degraded: true,
+			reason: "append_rejected",
+		})
+		expect(degraded.liveTasksById?.current).toBe(compact)
+		expect(degraded.agentLifecycleDegraded?.current.degraded).toBe(true)
+		const recovered = applyLifecycleDegradedToExtensionState(degraded, {
+			version: 1,
+			taskId: "current",
+			occurredAt: 4,
+			degraded: false,
+			reason: "resynced",
+		})
+		expect(recovered.liveTasksById?.current).toBe(compact)
+		expect(recovered.agentLifecycleDegraded?.current).toBeUndefined()
+	})
+
 	it.each([
 		["in_progress", {}],
 		["completed", {}],

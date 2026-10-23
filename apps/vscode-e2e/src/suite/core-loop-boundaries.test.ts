@@ -7,6 +7,7 @@ import {
 	agentLifecycleEventSchema,
 	TaskLifecycleState,
 	TaskStatus,
+	type AgentLifecycleSnapshot,
 	type AlphaMessage,
 	type ExtensionState,
 } from "@alpha-code/types"
@@ -29,6 +30,7 @@ interface BoundaryTask {
 interface BoundaryProvider {
 	getLiveTask(id: string): BoundaryTask | undefined
 	getTaskWithId(id: string): Promise<{ taskDirPath: string }>
+	getAgentLifecycleSnapshot(taskId: string): AgentLifecycleSnapshot | undefined
 	getStateToPostToWebview(): Promise<ExtensionState>
 }
 interface Observation {
@@ -227,14 +229,13 @@ suite("Core response boundary contracts", function () {
 					},
 				})
 				await waitFor(
-					async () => {
+					() => {
 						const task = observation.task
 						if (!task) return false
 						if (scenario === "continuation") return completions === 1
 						assert.equal(task.didComplete, false, "An invalid or incomplete response must not complete")
-						const state = await provider.getStateToPostToWebview()
 						return (
-							state.agentLifecycleSnapshots?.[task.taskId]?.status === expectedStatus[scenario] &&
+							provider.getAgentLifecycleSnapshot(task.taskId)?.status === expectedStatus[scenario] &&
 							task.clineMessages.some(
 								(message) =>
 									message.ts === task.getActiveAskTimestamp() &&
@@ -254,7 +255,7 @@ suite("Core response boundary contracts", function () {
 				const transactions = inspectToolTransactions(history)
 				const lifecycle = inspectTaskLifecycle(events, task.taskId)
 				const state = await provider.getStateToPostToWebview()
-				const snapshot = state.agentLifecycleSnapshots?.[task.taskId]
+				const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 				const projected = state.liveTasksById?.[task.taskId]
 				const recoveryAsks = task.clineMessages.filter((message) => message.ask === "resume_task")
 				assert.ok(snapshot, "Every tested terminal outcome must have canonical lifecycle state")
@@ -300,6 +301,13 @@ suite("Core response boundary contracts", function () {
 				assert.equal(terminalEvents[0]!.payload.status, expectedStatus[scenario])
 				assert.equal(snapshot.terminalEventId, terminalEvents[0]!.eventId)
 				assert.ok(projected)
+				assert.equal(projected.turnId, snapshot.turnId)
+				assert.equal(projected.hasPendingToolCalls, false)
+				assert.equal(
+					state.agentLifecycleSnapshots,
+					undefined,
+					"UI state must omit the accumulated lifecycle journal",
+				)
 				assert.equal(projected.isTurnActive, false)
 				assert.equal(projected.canInterrupt, false)
 				if (scenario === "continuation") {
@@ -413,8 +421,7 @@ suite("Coding workflow tool recovery", function () {
 			const events = await readBoundedJson(path.join(taskDirPath, "agent_lifecycle_events.jsonl"), true)
 			const transactions = inspectToolTransactions(history)
 			const lifecycle = inspectTaskLifecycle(events, task.taskId)
-			const state = await provider.getStateToPostToWebview()
-			const snapshot = state.agentLifecycleSnapshots?.[task.taskId]
+			const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 			const failedRead = resultFor(history, "missing-workflow-read")
 			const correctedRead = resultFor(history, "corrected-workflow-read")
 			await fs.writeFile(

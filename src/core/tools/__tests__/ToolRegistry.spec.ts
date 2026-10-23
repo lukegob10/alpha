@@ -270,6 +270,9 @@ describe("ToolRegistry", () => {
 			expect(registry.resolve(name)?.name).toBe(name)
 			expect(registry.resolve(name)?.execute).toBeTypeOf("function")
 		}
+		for (const name of ["report_progress", "cancel_agent", "close_agent"]) {
+			expect(registry.resolve(name)?.capabilities.requiresApproval).toBe(false)
+		}
 	})
 
 	it("rejects unknown tools without inventing a descriptor", () => {

@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 export const INITIAL_CHAT_TRANSCRIPT_RENDER_COUNT = 80
 export const CHAT_TRANSCRIPT_RENDER_BATCH_SIZE = 100
 
 interface TranscriptWindow {
 	taskKey: string | undefined
-	startIndex: number
+	/** An omitted start follows the latest rows; a number anchors browsing. */
+	startIndex?: number
+	wasFollowing: boolean
 }
 
 type IdleWindow = Window & {
@@ -25,19 +27,53 @@ interface ProgressiveTranscript<T> {
  * Mounts the newest transcript rows first. Older rows stay reachable through
  * Load older / Load all and through revealIndex (checkpoints). Auto-prepending
  * every historical row made long tasks pay full DOM cost after first paint.
+ * Follow mode keeps that bound during live appends; browsing retains its first row.
  */
 export function useProgressiveTranscript<T>(
 	items: T[],
 	taskKey: string | undefined,
 	autoLoadOlder = false,
+	followLatest = true,
 ): ProgressiveTranscript<T> {
 	const initialStartIndex = Math.max(0, items.length - INITIAL_CHAT_TRANSCRIPT_RENDER_COUNT)
 	const [renderWindow, setRenderWindow] = useState<TranscriptWindow>({
 		taskKey,
-		startIndex: initialStartIndex,
+		startIndex: autoLoadOlder || !followLatest ? initialStartIndex : undefined,
+		wasFollowing: followLatest,
 	})
-	const startIndex =
-		renderWindow.taskKey === taskKey ? Math.min(renderWindow.startIndex, initialStartIndex) : initialStartIndex
+	const committedWindow = useRef({ taskKey, startIndex: initialStartIndex })
+	let currentWindow = renderWindow
+	if (renderWindow.taskKey !== taskKey) {
+		currentWindow = {
+			taskKey,
+			startIndex: autoLoadOlder || !followLatest ? initialStartIndex : undefined,
+			wasFollowing: followLatest,
+		}
+	} else if (
+		renderWindow.wasFollowing !== followLatest ||
+		(renderWindow.startIndex !== undefined && renderWindow.startIndex > initialStartIndex)
+	) {
+		const browsingStartIndex =
+			renderWindow.startIndex ??
+			(committedWindow.current.taskKey === taskKey ? committedWindow.current.startIndex : initialStartIndex)
+		currentWindow = {
+			...renderWindow,
+			startIndex:
+				followLatest && !renderWindow.wasFollowing && !autoLoadOlder
+					? undefined
+					: Math.min(browsingStartIndex, initialStartIndex),
+			wasFollowing: followLatest,
+		}
+	}
+	if (currentWindow !== renderWindow) {
+		// Capture browsing/reattachment before rendering rows; following appends need no state update.
+		setRenderWindow(currentWindow)
+	}
+	const startIndex = Math.min(currentWindow.startIndex ?? initialStartIndex, initialStartIndex)
+	useLayoutEffect(() => {
+		// A wheel gesture and a transcript append can arrive in one render; retain the row the reader actually saw.
+		committedWindow.current = { taskKey, startIndex }
+	}, [startIndex, taskKey])
 
 	useEffect(() => {
 		if (!autoLoadOlder || !taskKey || startIndex === 0) {
@@ -53,10 +89,13 @@ export function useProgressiveTranscript<T>(
 
 			setRenderWindow((current) => {
 				const currentStartIndex =
-					current.taskKey === taskKey ? Math.min(current.startIndex, initialStartIndex) : initialStartIndex
+					current.taskKey === taskKey
+						? Math.min(current.startIndex ?? initialStartIndex, initialStartIndex)
+						: initialStartIndex
 				return {
 					taskKey,
 					startIndex: Math.max(0, currentStartIndex - CHAT_TRANSCRIPT_RENDER_BATCH_SIZE),
+					wasFollowing: current.wasFollowing,
 				}
 			})
 		}
@@ -88,11 +127,13 @@ export function useProgressiveTranscript<T>(
 
 			setRenderWindow((current) => {
 				const currentStartIndex =
-					current.taskKey === taskKey ? Math.min(current.startIndex, initialStartIndex) : initialStartIndex
+					current.taskKey === taskKey
+						? Math.min(current.startIndex ?? initialStartIndex, initialStartIndex)
+						: initialStartIndex
 				if (index >= currentStartIndex) {
 					return current
 				}
-				return { taskKey, startIndex: index }
+				return { taskKey, startIndex: index, wasFollowing: current.wasFollowing }
 			})
 		},
 		[initialStartIndex, items.length, taskKey],
@@ -105,13 +146,16 @@ export function useProgressiveTranscript<T>(
 
 		setRenderWindow((current) => {
 			const currentStartIndex =
-				current.taskKey === taskKey ? Math.min(current.startIndex, initialStartIndex) : initialStartIndex
+				current.taskKey === taskKey
+					? Math.min(current.startIndex ?? initialStartIndex, initialStartIndex)
+					: initialStartIndex
 			if (currentStartIndex === 0) {
 				return current
 			}
 			return {
 				taskKey,
 				startIndex: Math.max(0, currentStartIndex - CHAT_TRANSCRIPT_RENDER_BATCH_SIZE),
+				wasFollowing: current.wasFollowing,
 			}
 		})
 	}, [initialStartIndex, startIndex, taskKey])

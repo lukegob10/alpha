@@ -37,15 +37,25 @@ describe("scheduled profiles and skills", () => {
 	const leaseReleases = new Set<Promise<void>>()
 
 	function makeProvider() {
+		const createTask = vi.fn(async (..._args: Parameters<AlphaProvider["createTask"]>) => ({
+			taskId: "alpha-task",
+			prepareReasoningForAdmission: vi.fn(async () => undefined),
+			start: vi.fn(),
+			abortTask: vi.fn(async () => undefined),
+		}))
 		return Object.assign(new EventEmitter(), {
 			cwd: path.join(tmpDir, "coding-workspace"),
 			currentApiConfigName: "Coding",
-			createTask: vi.fn(async (..._args: Parameters<AlphaProvider["createTask"]>) => ({
-				taskId: "alpha-task",
-				prepareReasoningForAdmission: vi.fn(async () => undefined),
-				start: vi.fn(),
-				abortTask: vi.fn(async () => undefined),
-			})),
+			createTask,
+			removeTaskFromStack: vi.fn(async ({ taskId }: { taskId: string }) => {
+				for (const result of createTask.mock.results) {
+					const task = await result.value
+					if (task.taskId === taskId) {
+						await task.abortTask()
+						return
+					}
+				}
+			}),
 			setProviderProfile: vi.fn(),
 			providerSettingsManager: { getProfile: vi.fn().mockResolvedValue(profile) },
 			postMessageToWebview: vi.fn(async (message: ExtensionMessage) => {
@@ -111,11 +121,10 @@ describe("scheduled profiles and skills", () => {
 	})
 
 	afterEach(async () => {
-		service.dispose()
+		await service.dispose()
 		Object.assign(vscode.workspace, { workspaceFolders: [] })
 		onRun = undefined
-		// VS Code disposal is synchronous. Join the actual asynchronous release
-		// and already-admitted store transactions before deleting their storage.
+		// Join independently owned store transactions before deleting their storage.
 		await Promise.all([
 			...leaseReleases,
 			...Array.from(ownedStores, (store) => Reflect.get(store, "writeLock") as Promise<void>),
@@ -384,10 +393,11 @@ describe("scheduled profiles and skills", () => {
 		})
 		await service.runNow(task.id)
 		await entered
-		service.dispose()
+		const disposal = service.dispose()
 		releaseAdmission()
 
-		await vi.waitFor(() => expect(abortTask).toHaveBeenCalledOnce())
+		await disposal
+		expect(abortTask).toHaveBeenCalledOnce()
 		await expect(finished).resolves.toMatchObject({
 			status: "failed",
 			error: "Scheduled task service stopped before admission",

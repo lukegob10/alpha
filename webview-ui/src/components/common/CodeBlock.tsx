@@ -22,6 +22,8 @@ export const WINDOW_SHADE_SETTINGS = {
 export const SCROLL_SNAP_TOLERANCE = 20
 
 const CHAT_TRANSCRIPT_SCROLLER_SELECTOR = '[data-chat-transcript-scroller="true"]'
+const MAX_HIGHLIGHT_CHARACTERS = 100_000
+const MAX_HIGHLIGHT_LINES = 1_000
 
 /*
 overflowX: auto + inner div with padding results in an issue where the top/left/bottom padding renders but the right padding inside does not count as overflow as the width of the element is not exceeded. Once the inner div is outside the boundaries of the parent it counts as overflow.
@@ -210,21 +212,25 @@ const CodeBlock = memo(
 		const collapseTimeout2Ref = useRef<NodeJS.Timeout | null>(null)
 
 		const sourceText = source || ""
+		const shouldHighlight =
+			!partial &&
+			sourceText.length <= MAX_HIGHLIGHT_CHARACTERS &&
+			sourceText.split("\n", MAX_HIGHLIGHT_LINES + 1).length <= MAX_HIGHLIGHT_LINES
 		const fallback = (
 			<pre style={{ padding: 0, margin: 0 }}>
 				<code className={`hljs language-${currentLanguage || "txt"}`}>{sourceText}</code>
 			</pre>
 		)
 		const displayedCode =
-			!partial && highlightedCode?.source === sourceText && highlightedCode.language === currentLanguage
+			shouldHighlight && highlightedCode?.source === sourceText && highlightedCode.language === currentLanguage
 				? highlightedCode.node
 				: fallback
 
-		// Do not start expensive highlighter work for every fragment of a partial
-		// code fence. The final source is highlighted once when streaming ends.
+		// Streaming and oversized fences stay complete plain text; tokenizing them
+		// can create hundreds of thousands of syntax nodes on the renderer thread.
 		useEffect(() => {
 			let cancelled = false
-			if (partial)
+			if (!shouldHighlight)
 				return () => {
 					cancelled = true
 				}
@@ -282,7 +288,7 @@ const CodeBlock = memo(
 			return () => {
 				cancelled = true
 			}
-		}, [sourceText, currentLanguage, partial])
+		}, [sourceText, currentLanguage, shouldHighlight])
 
 		useEffect(() => {
 			return () => {

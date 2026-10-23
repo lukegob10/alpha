@@ -139,7 +139,10 @@ class ManagedAgentScriptedAI {
 	})
 	heldDiscardTaskId?: string
 
-	constructor(private readonly getTaskHistory: (taskId: string) => Promise<ManagedAgentHistory>) {}
+	constructor(
+		private readonly getTaskHistory: (taskId: string) => Promise<ManagedAgentHistory>,
+		private readonly beforeWorkerCompletion: (taskId: string, role: ScriptRole) => Promise<void>,
+	) {}
 
 	releaseDiscard(): void {
 		this.releaseDiscardGate?.()
@@ -337,6 +340,7 @@ class ManagedAgentScriptedAI {
 			this.heldDiscardTaskId = taskId
 			await this.discardGate
 		}
+		if (call.name === "assistant_text") await this.beforeWorkerCompletion(taskId, role)
 		if (role === "root" && call.name === "exec_command") {
 			this.heldReviewTaskId = taskId
 			await this.reviewGate
@@ -627,6 +631,8 @@ interface ManagedAgentHostProvider {
 	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string):
 		| {
+				cwd: string
+				parentTaskId?: string
 				didComplete: boolean
 				taskAsk?: AlphaMessage
 				isInitialized?: boolean
@@ -708,12 +714,12 @@ const waitForAgent = async (
 	return findAgent(groups, parentTaskId, objective)!
 }
 
-const waitForPendingChangeSet = async (
+const waitForConflictedChangeSet = async (
 	groups: ReadonlyMap<string, SubagentGroupState>,
 	parentTaskId: string,
 	objective: string,
 ): Promise<Required<Pick<SubagentChangeSetActionResult, "taskId" | "groupId" | "changeSetId">>> => {
-	await waitFor(() => findAgent(groups, parentTaskId, objective)?.agent.changeSet?.status === "pending_review", {
+	await waitFor(() => findAgent(groups, parentTaskId, objective)?.agent.changeSet?.status === "conflicted", {
 		timeout: 90_000,
 		interval: 50,
 	})
@@ -785,7 +791,7 @@ const initializeFixtureRepository = async (workspace: string): Promise<void> => 
 suite("Managed-agent deterministic Extension Host acceptance", function () {
 	this.timeout((process.env.ALPHA_UI_ACCEPTANCE_NONCE ? 6 : 3) * 60_000)
 
-	test("runs nested Apply, discard, verification, projection, and navigation without manual input", async () => {
+	test("runs nested conflict recovery, discard, verification, projection, and navigation without manual input", async () => {
 		const api = globalThis.api
 		const renderedUi = !!process.env.ALPHA_UI_ACCEPTANCE_NONCE
 		const provider = getHostProvider(api)
@@ -800,10 +806,44 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 		}
 
-		const scriptedAI = new ManagedAgentScriptedAI(async (taskId) => {
-			const { apiConversationHistory } = await provider.getTaskWithId(taskId)
-			return apiConversationHistory
-		})
+		const concurrentEdits = new Map<string, { file: string; baseline: Buffer }>()
+		const scriptedAI = new ManagedAgentScriptedAI(
+			async (taskId) => {
+				const { apiConversationHistory } = await provider.getTaskWithId(taskId)
+				return apiConversationHistory
+			},
+			async (taskId, role) => {
+				const relativePath =
+					role === "nested"
+						? NESTED_PATH
+						: role === "outer"
+							? OUTER_PATH
+							: role === "discard"
+								? DISCARD_PATH
+								: undefined
+				if (!relativePath || concurrentEdits.has(taskId)) return
+				const child = provider.getLiveTask(taskId)
+				const parent = child?.parentTaskId ? provider.getLiveTask(child.parentTaskId) : undefined
+				assert.ok(parent, "The conflict fixture requires the live owning parent")
+				const file = path.join(parent.cwd, relativePath)
+				const baseline = await fs.readFile(file)
+				concurrentEdits.set(taskId, { file, baseline })
+				// Ordinary completed Workers integrate automatically. Exercise the
+				// retained review UI with a real concurrent edit instead of requiring
+				// a second approval for every successful Worker.
+				await fs.writeFile(
+					file,
+					role === "discard"
+						? '{"owner":"concurrent","verified":false}\n'
+						: stateModuleText("concurrent", false),
+				)
+			},
+		)
+		const resolveConcurrentEdit = async (taskId: string) => {
+			const edit = concurrentEdits.get(taskId)
+			assert.ok(edit, "Expected a captured concurrent edit before conflict recovery")
+			await fs.writeFile(edit.file, edit.baseline)
+		}
 		const configuration: AlphaCodeSettings = {
 			apiProvider: "fake-ai",
 			fakeAi: scriptedAI,
@@ -974,7 +1014,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 			scriptedAI.releaseInterrupt()
 
-			const nestedChangeSet = await waitForPendingChangeSet(groups, outerTaskId, NESTED_OBJECTIVE)
+			const nestedChangeSet = await waitForConflictedChangeSet(groups, outerTaskId, NESTED_OBJECTIVE)
 			if (renderedUi) {
 				await waitFor(() => scriptedAI.heldDiscardTaskId === discardTaskId, { timeout: 30000 })
 				const heldSibling = provider.getLiveTask(discardTaskId)
@@ -1002,6 +1042,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				}
 				scriptedAI.releaseDiscard()
 			}
+			await resolveConcurrentEdit(nestedTaskId)
 			await waitForAvailableCapability(provider, nestedChangeSet, "apply")
 			if (renderedUi) {
 				await provider.showTaskWithId(outerTaskId)
@@ -1024,9 +1065,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			// The inherited vitest rule must approve verification without a harness response.
 
 			const [outerChangeSet, discardChangeSet] = await Promise.all([
-				waitForPendingChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),
-				waitForPendingChangeSet(groups, rootTaskId, DISCARD_OBJECTIVE),
+				waitForConflictedChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),
+				waitForConflictedChangeSet(groups, rootTaskId, DISCARD_OBJECTIVE),
 			])
+			await resolveConcurrentEdit(discardTaskId)
 			await waitForAvailableCapability(provider, discardChangeSet, "discard")
 			if (renderedUi) {
 				await provider.showTaskWithId(rootTaskId)
@@ -1046,6 +1088,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(discarded.changeSetStatus, "discarded")
 			}
 
+			await resolveConcurrentEdit(outerTaskId)
 			await waitForAvailableCapability(provider, outerChangeSet, "apply")
 			if (renderedUi) {
 				await provider.showTaskWithId(rootTaskId)

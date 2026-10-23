@@ -1,0 +1,39 @@
+{
+	"status": "failed",
+	"nonce": "426b46ce-cdc8-42b8-b4b7-d7842c374fc1",
+	"reason": "CDP command timeout",
+	"host": {
+		"runId": "ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1",
+		"providerMode": "scripted",
+		"vscodeVersion": "1.138.0",
+		"launchKind": "extension-test",
+		"workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\workspace",
+		"userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\profile\\1.138.0\\user-data",
+		"extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\profile\\1.138.0\\extensions",
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\evidence\\ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1",
+		"profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\profile",
+		"execution": "extension-host",
+		"status": "blocked",
+		"hostExitObserved": false,
+		"actualVSCodeVersion": "1.138.0",
+		"ownershipGate": "verified",
+		"requireAllTests": true,
+		"exitCode": 1,
+		"retained": true,
+		"failure": "host-cancelled",
+		"retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\evidence\\ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1\\retention-result.json",
+		"launchedHostPid": 45960,
+		"extensionHostPid": 35872,
+		"extensionHostParentPid": 45960,
+		"evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\evidence\\ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1\\manifest.json",
+		"captureComplete": true,
+		"guidance": "The owned host launch was cancelled. Inspect its exit receipt and retained lease before restarting; cancellation does not prove every storage writer stopped.",
+		"retention": {
+			"schemaVersion": 1,
+			"runId": "ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1",
+			"eligibility": "held",
+			"status": "complete",
+			"maintenance": "campaign-owned"
+		}
+	}
+}

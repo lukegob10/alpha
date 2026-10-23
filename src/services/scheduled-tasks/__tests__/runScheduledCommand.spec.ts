@@ -105,16 +105,25 @@ describe("scheduled command lifecycle", () => {
 		expect(vi.getTimerCount()).toBe(0)
 	})
 
-	it("reports cleanup failures without converting a late successful close to success", async () => {
-		terminateProcessTree.mockRejectedValue(new Error("tree termination denied"))
-		const running = run()
-		const rejected = expect(running).rejects.toThrow(
-			"Command aborted during shutdown; process cleanup failed: Error: tree termination denied",
-		)
-		controller.abort()
-		child.emit("close", 0, null)
-		await rejected
-	})
+	it.each(["late close", "close timeout"])(
+		"preserves a typed tree cleanup failure through %s",
+		async (settlement) => {
+			const cause = new Error("tree termination denied")
+			terminateProcessTree.mockRejectedValue(cause)
+			const result = run().catch((error: unknown) => error)
+			controller.abort()
+			if (settlement === "late close") child.emit("close", 0, null)
+			else await vi.advanceTimersByTimeAsync(11_000)
+			expect(await result).toMatchObject({
+				name: "ScheduledCommandCleanupError",
+				cause,
+				message: expect.stringContaining(
+					"Command aborted during shutdown; process cleanup failed: Error: tree termination denied",
+				),
+			})
+			expect(terminateProcessTree).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("bounds shutdown when process pipes never close", async () => {
 		const running = run()

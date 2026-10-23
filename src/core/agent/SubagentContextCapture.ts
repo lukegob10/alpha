@@ -12,7 +12,9 @@ import {
 	subagentModelRouteStateSchema,
 	subagentAutoApprovalPolicySchema,
 	finalizeSubagentDelegationPolicy,
+	normalizeAssistantMessageMetadata,
 	toolNames,
+	type AssistantMessageMetadata,
 	type SubagentContextManifest,
 	type SubagentContextRuntimePolicy,
 	type SubagentForkTurns,
@@ -546,6 +548,47 @@ function cloneNativeMedia(block: NativeConversationContent[number]): NativeConve
 	return media
 }
 
+/** Canonical responses keep source message phases on text blocks inside one persisted assistant envelope. */
+function splitNativeAssistantSources(message: ApiMessage, retainProviderMetadata: boolean): ApiMessage[] {
+	if (
+		message.role !== "assistant" ||
+		!Array.isArray(message.content) ||
+		!message.content.some(
+			(block) => block.type === "text" && normalizeAssistantMessageMetadata(block).phase !== undefined,
+		)
+	) {
+		return [message]
+	}
+	const content = message.content
+	const sources: { metadata: AssistantMessageMetadata; indexes: number[] }[] = []
+	for (const [index, block] of content.entries()) {
+		if (block.type !== "text") continue
+		const metadata = normalizeAssistantMessageMetadata(block)
+		metadata.phase ??= message.phase
+		const previous = sources.at(-1)
+		if (
+			previous?.indexes.at(-1) === index - 1 &&
+			(previous.metadata.id !== undefined ||
+				previous.metadata.outputIndex !== undefined ||
+				previous.metadata.phase === undefined) &&
+			previous.metadata.id === metadata.id &&
+			previous.metadata.outputIndex === metadata.outputIndex &&
+			previous.metadata.phase === metadata.phase
+		) {
+			previous.indexes.push(index)
+		} else {
+			sources.push({ metadata, indexes: [index] })
+		}
+	}
+	return sources.map(({ metadata, indexes }) => ({
+		...message,
+		content: indexes.map((index) => content[index]),
+		phase: metadata.phase,
+		internal_chat_message_metadata_passthrough: undefined,
+		...cloneConversationAnnotations(message, retainProviderMetadata, indexes),
+	}))
+}
+
 function projectNativeConversationMessage(
 	message: ApiMessage,
 	toolNamesById: ReadonlyMap<string, string>,
@@ -558,7 +601,9 @@ function projectNativeConversationMessage(
 	// Partial answers are committed conversation evidence even when the parent
 	// continues with tools. Preserve their phase rather than promoting them to final.
 	const isPartialAnswer = message.phase === "partial_answer"
-	if (message.role === "assistant" && !isFinalAssistant && !isPartialAnswer) return undefined
+	if (message.role === "assistant" && (message.phase === "commentary" || (!isFinalAssistant && !isPartialAnswer))) {
+		return undefined
+	}
 
 	let content: ApiMessage["content"]
 	let retainedContentIndexes: number[] | undefined
@@ -667,26 +712,27 @@ function captureNativeConversation(input: CaptureSubagentContextInput): {
 	let current: NativeConversationTurn | undefined
 	for (const [sourceMessageIndex, message] of input.history.entries()) {
 		recordAssistantToolUses(message, toolNamesById)
-		const phase = (message as ApiMessage & { phase?: unknown }).phase
-		const projected = projectNativeConversationMessage(
-			message,
-			toolNamesById,
-			finalIndexes.has(sourceMessageIndex) || phase === "final_answer",
-			compatibleRoute,
-		)
-		if (!projected) continue
-		if (message.isSummary === true) {
-			// A summary represents older context, not a provable user-led turn. Its
-			// already-effective body is retained only for a full-history fork.
-			baseline.push(projected)
-			continue
+		for (const source of splitNativeAssistantSources(message, compatibleRoute)) {
+			const projected = projectNativeConversationMessage(
+				source,
+				toolNamesById,
+				finalIndexes.has(sourceMessageIndex) || source.phase === "final_answer",
+				compatibleRoute,
+			)
+			if (!projected) continue
+			if (message.isSummary === true) {
+				// A summary represents older context, not a provable user-led turn. Its
+				// already-effective body is retained only for a full-history fork.
+				baseline.push(projected)
+				continue
+			}
+			if (message.role === "user") {
+				current = { ordinal: turns.length, entries: [] }
+				turns.push(current)
+			}
+			if (current) current.entries.push({ sourceMessageIndex, message: projected })
+			else baseline.push(projected)
 		}
-		if (message.role === "user") {
-			current = { ordinal: turns.length, entries: [] }
-			turns.push(current)
-		}
-		if (current) current.entries.push({ sourceMessageIndex, message: projected })
-		else baseline.push(projected)
 	}
 
 	const selected =

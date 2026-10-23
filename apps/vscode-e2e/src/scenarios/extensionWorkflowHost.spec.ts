@@ -7,6 +7,8 @@ import * as path from "node:path"
 
 import {
 	AlphaCodeEventName,
+	TaskLifecycleState,
+	type AgentLifecycleSnapshot,
 	type ApprovalMode,
 	type AlphaMessage,
 	type AlphaCodeAPI,
@@ -326,9 +328,37 @@ test("completion is observed without an approval and retains its completed state
 		waitForTermination: async () => undefined,
 		approveAsk: () => assert.fail("completion observation must not approve a boundary"),
 	}
+	const snapshot: AgentLifecycleSnapshot = {
+		version: 1,
+		taskId: task.taskId,
+		runId: "review-run",
+		turnId: "review-turn",
+		status: "completed",
+		phase: "finalizing",
+		lastSequence: 1,
+		terminalEventId: "review-terminal",
+		items: [],
+		steps: [],
+		acceptedToolCallIds: [],
+		effectStartedToolCallIds: [],
+		terminalToolCallIds: [],
+		processedEvents: [{ eventId: "review-terminal", sequence: 1, fingerprint: "review-terminal-receipt" }],
+	}
+	const projected = {
+		lifecycle: TaskLifecycleState.Completed,
+		turnId: snapshot.turnId,
+		hasPendingToolCalls: false,
+	}
 	const provider = Object.assign(new EventEmitter(), {
 		getLiveTask: () => task,
-		getStateToPostToWebview: async () => ({ currentTaskId: task.taskId }),
+		getAgentLifecycleSnapshot: (taskId: string) => {
+			assert.equal(taskId, task.taskId)
+			return snapshot
+		},
+		getStateToPostToWebview: async () => ({
+			currentTaskId: task.taskId,
+			liveTasksById: { [task.taskId]: projected },
+		}),
 	})
 	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 	const host = new ExtensionWorkflowHost(
@@ -344,6 +374,8 @@ test("completion is observed without an approval and retains its completed state
 		const state = await host.captureCompletedTask(task.taskId)
 		assert.equal(state.currentTaskId, task.taskId)
 		assert.deepEqual(state.clineMessages, task.clineMessages)
+		assert.deepEqual(state.agentLifecycleSnapshots, { [task.taskId]: snapshot })
+		assert.deepEqual(state.liveTasksById, { [task.taskId]: projected })
 	} finally {
 		await host.dispose()
 	}

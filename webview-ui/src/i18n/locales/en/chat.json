@@ -508,11 +508,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} restores file diff review and improves extension startup.",
-			"taskContinuity": "Open chats with less startup work and keep initial state updates consistent.",
-			"toolsAndProviders": "Load document readers, code highlighting, and error details as you need them.",
-			"delegation": "Review saved file changes while task work continues.",
-			"workspaceExperience": "Open the diff editor from Review or file change counts, with clear feedback if opening fails."
+			"welcome": "Alpha v{{version}} improves long chat reliability and Worker handoffs.",
+			"taskContinuity": "Keep long chats responsive and recover their controls after compaction or a view reload.",
+			"toolsAndProviders": "Use updated Copilot model aliases and supported reasoning controls.",
+			"delegation": "Bring completed Worker changes back automatically while preserving conflict review and existing approvals.",
+			"workspaceExperience": "Create Decision and Review tickets alongside existing ticket types."
 		}
 	},
 	"crossTasks": {

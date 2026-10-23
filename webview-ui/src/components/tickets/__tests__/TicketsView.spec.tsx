@@ -664,25 +664,25 @@ describe("ticket editor", () => {
 		expect(screen.getByLabelText("type")).toHaveValue("improvement")
 	})
 
-	it("saves and removes a classification and displays the saved type in properties", async () => {
+	it.each(["bug", "decision", "review"] as const)("saves, displays, and removes %s classification", async (type) => {
 		render(<TicketsView />)
 		expect(
 			within(screen.getByRole("region", { name: "properties" })).getByRole("combobox", { name: "type" }),
 		).toHaveValue("")
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
 		expect(screen.getByRole("button", { name: "save" })).toBeDisabled()
-		fireEvent.change(screen.getByLabelText("type"), { target: { value: "bug" } })
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: type } })
 		fireEvent.click(screen.getByRole("button", { name: "save" }))
-		expect(requests("update")[0].operation).toMatchObject({ input: { type: "bug", expectedRevision: "v1" } })
+		expect(requests("update")[0].operation).toMatchObject({ input: { type, expectedRevision: "v1" } })
 		reply({
 			type: "ticketResponse",
 			requestId: requests("update")[0].requestId,
-			result: { ...ticket, type: "bug", revision: "v2" },
+			result: { ...ticket, type, revision: "v2" },
 		})
 		await screen.findByRole("article")
-		expect(within(screen.getByRole("complementary")).getByRole("combobox", { name: "type" })).toHaveValue("bug")
+		expect(within(screen.getByRole("complementary")).getByRole("combobox", { name: "type" })).toHaveValue(type)
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
-		expect(screen.getByLabelText("type")).toHaveValue("bug")
+		expect(screen.getByLabelText("type")).toHaveValue(type)
 		fireEvent.change(screen.getByLabelText("type"), { target: { value: "" } })
 		fireEvent.click(screen.getByRole("button", { name: "save" }))
 		expect(requests("update")[1].operation).toMatchObject({ input: { type: null, expectedRevision: "v2" } })
@@ -695,16 +695,16 @@ describe("ticket editor", () => {
 		expect(within(screen.getByRole("complementary")).getByRole("combobox", { name: "type" })).toHaveValue("")
 	})
 
-	it("includes the type when creating a ticket", () => {
+	it.each(["feature", "decision", "review"] as const)("includes %s when creating a ticket", (type) => {
 		render(<TicketsView />)
 		fireEvent.click(screen.getByRole("button", { name: "new" }))
-		fireEvent.change(screen.getByLabelText("name"), { target: { value: "New feature" } })
-		fireEvent.change(screen.getByLabelText("type"), { target: { value: "feature" } })
+		fireEvent.change(screen.getByLabelText("name"), { target: { value: `New ${type}` } })
+		fireEvent.change(screen.getByLabelText("type"), { target: { value: type } })
 		fireEvent.click(screen.getByRole("button", { name: "save" }))
-		expect(requests("create")[0].operation).toMatchObject({ input: { name: "New feature", type: "feature" } })
+		expect(requests("create")[0].operation).toMatchObject({ input: { name: `New ${type}`, type } })
 	})
 
-	it("restores type filters, resets pagination on changes, and preserves filters through navigation", async () => {
+	it.each(["feature", "decision", "review"] as const)("preserves %s filtering through navigation", async (type) => {
 		vi.useFakeTimers()
 		vi.mocked(vscode.getState).mockReturnValue({ project: "project", typeFilter: "bug", offset: 50 })
 		vi.mocked(vscode.postTicketMessage).mockImplementation(announceProjects)
@@ -712,24 +712,24 @@ describe("ticket editor", () => {
 		expect(screen.getByLabelText("filterType")).toHaveValue("bug")
 		await act(() => vi.advanceTimersByTimeAsync(150))
 		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: "bug", offset: 50 } })
-		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: "feature" } })
+		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: type } })
 		await act(() => vi.advanceTimersByTimeAsync(150))
-		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: "feature", offset: 0 } })
+		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type, offset: 0 } })
 		reply({
 			type: "ticketResponse",
 			requestId: requests("list").at(-1)!.requestId,
-			result: { tickets: [{ ...ticket, type: "feature" }], total: 1, invalidFiles: [] },
+			result: { tickets: [{ ...ticket, type }], total: 1, invalidFiles: [] },
 		})
 		await act(async () => {})
 		fireEvent.click(screen.getByRole("button", { name: /Original/ }))
 		reply({
 			type: "ticketResponse",
 			requestId: requests("read").at(-1)!.requestId,
-			result: { ...ticket, type: "feature" },
+			result: { ...ticket, type },
 		})
 		await act(async () => {})
 		fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "title" }))
-		expect(screen.getByLabelText("filterType")).toHaveValue("feature")
+		expect(screen.getByLabelText("filterType")).toHaveValue(type)
 		fireEvent.change(screen.getByLabelText("filterType"), { target: { value: "untagged" } })
 		await act(() => vi.advanceTimersByTimeAsync(150))
 		expect(requests("list").at(-1)?.operation).toMatchObject({ input: { type: null, offset: 0 } })

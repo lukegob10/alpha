@@ -4,6 +4,8 @@ import { render, screen, fireEvent, act, waitFor } from "@/utils/test-utils"
 
 import CodeBlock from "../CodeBlock"
 
+const copyWithFeedback = vi.hoisted(() => vi.fn())
+
 // Mock the translation context
 vi.mock("../../../i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
@@ -85,7 +87,7 @@ vi.mock("../../../utils/highlighter", () => {
 vi.mock("../../../utils/clipboard", () => ({
 	useCopyToClipboard: () => ({
 		showCopyFeedback: false,
-		copyWithFeedback: vi.fn(),
+		copyWithFeedback,
 	}),
 }))
 
@@ -231,6 +233,43 @@ describe("CodeBlock", () => {
 
 		rerender(<CodeBlock source="const latest = 2" language="typescript" partial={false} />)
 		await waitFor(() => expect(getHighlighter).toHaveBeenCalledTimes(1))
+	})
+
+	it.each([
+		["many lines", "const item = 1\n".repeat(1001)],
+		["one long line", "x".repeat(100_001)],
+	])("keeps oversized %s as complete plain text after streaming", async (_label, source) => {
+		const { getHighlighter } = await import("../../../utils/highlighter")
+		const { container, rerender } = render(<CodeBlock source={source} language="typescript" partial />)
+
+		await act(async () => {
+			rerender(<CodeBlock source={source} language="typescript" partial={false} />)
+		})
+
+		expect(getHighlighter).not.toHaveBeenCalled()
+		expect(container.querySelector("pre code")?.textContent).toBe(source)
+		// The real viewport observer enables the copy control for visible blocks.
+		container.firstElementChild?.setAttribute("data-partially-visible", "true")
+		fireEvent.click(screen.getByRole("button", { name: "Copy code" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(source, expect.objectContaining({ type: "click" }))
+	})
+
+	it("switches between highlighted small code and plain large code without stale output", async () => {
+		const { getHighlighter } = await import("../../../utils/highlighter")
+		const { container, rerender } = render(<CodeBlock source="const small = 1" language="typescript" />)
+		await screen.findByText(/const small = 1.*theme/)
+		vi.mocked(getHighlighter).mockClear()
+		const large = "x".repeat(100_001)
+
+		await act(async () => {
+			rerender(<CodeBlock source={large} language="typescript" />)
+		})
+		expect(getHighlighter).not.toHaveBeenCalled()
+		expect(container.querySelector("pre code")?.textContent).toBe(large)
+
+		rerender(<CodeBlock source="const latest = 2" language="typescript" />)
+		await screen.findByText(/const latest = 2.*theme/)
+		expect(getHighlighter).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not let stale asynchronous highlighting replace newer source", async () => {

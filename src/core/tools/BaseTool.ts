@@ -102,6 +102,8 @@ export interface ToolCallbacks {
 	/** Remaining text allowance after scheduler-owned approval feedback; read tools reserve their own framing. */
 	getRemainingOutputChars?: () => number
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
+	/** Record a conditional effect after its approval settles; this never grants approval. */
+	startEffect?: () => Promise<boolean>
 	toolCallId?: string
 	signal?: AbortSignal
 	/** Recheck the captured MCP contract after approval/UI waits, immediately before dispatch. */

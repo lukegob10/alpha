@@ -57,6 +57,9 @@ describe("prompt enhancement provider dispatch and disposal", () => {
 		let failJoin!: (error: Error) => void
 		const joining = new Promise<void>((_resolve, reject) => (failJoin = reject))
 		const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
+			taskSessions: { getOwnedTasks: () => [] },
+			taskStack: [],
+			subagentRunFinalizations: new Map(),
 			webviewMessageQueue: joining,
 			clearWebviewResources: vi.fn(),
 			log: vi.fn(),

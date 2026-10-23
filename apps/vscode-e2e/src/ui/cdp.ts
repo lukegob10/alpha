@@ -1,6 +1,13 @@
+export interface CdpEvent {
+	method: string
+	params?: Record<string, unknown>
+	sessionId?: string
+}
+
 /** Small bounded transport for the owned test Electron instance, using Node's native WebSocket. */
 export class CdpConnection {
 	private sequence = 0
+	private readonly observers = new Set<(event: CdpEvent) => void>()
 	private pending = new Map<
 		number,
 		{ resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }
@@ -8,14 +15,18 @@ export class CdpConnection {
 	private constructor(private readonly socket: WebSocket) {
 		socket.addEventListener("message", (event) => {
 			if (typeof event.data !== "string" || event.data.length > 16_777_216) return this.close()
-			let response: { id?: number; result?: unknown; error?: unknown }
+			let response: { id?: number; result?: unknown; error?: unknown } & Partial<CdpEvent>
 			try {
 				response = JSON.parse(event.data)
 			} catch {
 				this.close()
 				return
 			}
-			if (response.id === undefined) return
+			if (response.id === undefined) {
+				if (typeof response.method === "string")
+					for (const observer of this.observers) observer(response as CdpEvent)
+				return
+			}
 			const request = this.pending.get(response.id)
 			if (!request) return
 			this.pending.delete(response.id)
@@ -85,6 +96,12 @@ export class CdpConnection {
 			}
 		})
 	}
+	/** Observers own their bounded evidence; the transport never retains notifications. */
+	observe(observer: (event: CdpEvent) => void): () => void {
+		if (this.observers.size >= 8) throw new Error("CDP observer limit reached")
+		this.observers.add(observer)
+		return () => this.observers.delete(observer)
+	}
 	private rejectPending() {
 		for (const request of this.pending.values()) {
 			clearTimeout(request.timer)
@@ -93,6 +110,7 @@ export class CdpConnection {
 		this.pending.clear()
 	}
 	close() {
+		this.observers.clear()
 		this.rejectPending()
 		this.socket.close()
 	}

@@ -9,12 +9,16 @@ import { AlphaCodeEventName, type CreateScheduledTaskPayload, type ExtensionMess
 import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { ScheduledTaskService } from "../ScheduledTaskService"
 import { ScheduledTaskStore } from "../ScheduledTaskStore"
+import { ScheduledCommandCleanupError } from "../runScheduledCommand"
 
 const commandRunner = vi.hoisted(() =>
 	vi.fn<(command: string, options: { signal: AbortSignal }) => Promise<{ stdout: string; stderr: string }>>(),
 )
 
-vi.mock("../runScheduledCommand", () => ({ runScheduledCommand: commandRunner }))
+vi.mock("../runScheduledCommand", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../runScheduledCommand")>()),
+	runScheduledCommand: commandRunner,
+}))
 vi.mock("../../../utils/storage", () => ({ getStorageBasePath: (base: string) => base }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 
@@ -58,11 +62,16 @@ describe("scheduled terminal result durability", () => {
 
 	function makeProvider() {
 		let taskCount = 0
+		const tasks = new Map<string, AlphaTask>()
 		return Object.assign(new EventEmitter(), {
 			createTask: vi.fn(async () => {
 				let task: AlphaTask
 				task = makeAlphaTask(`background-task-${++taskCount}`, () => onStart?.(task))
+				tasks.set(task.taskId, task)
 				return task
+			}),
+			removeTaskFromStack: vi.fn(async ({ taskId }: { taskId: string }) => {
+				await tasks.get(taskId)?.abortTask()
 			}),
 			providerSettingsManager: { getProfile: vi.fn(async () => profile) },
 			postMessageToWebview: vi.fn(async (_message: ExtensionMessage) => undefined),
@@ -142,7 +151,9 @@ describe("scheduled terminal result durability", () => {
 	})
 
 	afterEach(async () => {
-		service.dispose()
+		await service.dispose().catch(() => undefined)
+		// Failed tree cleanup intentionally retains the lease for the live host.
+		await (Reflect.get(service, "releaseOwnerLease") as (() => Promise<void>) | undefined)?.()
 		await Promise.all([...leaseReleases, Reflect.get(Reflect.get(service, "store"), "writeLock") as Promise<void>])
 		Object.assign(vscode.workspace, { workspaceFolders: originalFolders })
 		vi.restoreAllMocks()
@@ -418,6 +429,62 @@ describe("scheduled terminal result durability", () => {
 		expect(output.mock.calls.at(-1)?.[0]).not.toContain("will retry")
 	})
 
+	it("retains unverified command cleanup across initial and repeated disposal", async () => {
+		const schedule = await service.createTask(
+			payload({
+				execution: { type: "command", command: "node --version" },
+				autoApproval: { approvalMode: "bypass" },
+			}),
+		)
+		const executing = deferred()
+		const cleanupFailure = new ScheduledCommandCleanupError("Command process tree cleanup failed", {
+			cause: new Error("Tree termination denied"),
+		})
+		commandRunner.mockImplementationOnce(
+			async (_command, { signal }) =>
+				new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(cleanupFailure), { once: true })
+					executing.resolve()
+				}),
+		)
+		await service.runNow(schedule.id)
+		await executing.promise
+
+		await expect(service.dispose()).rejects.toMatchObject({ errors: [cleanupFailure] })
+		expect(leaseReleases.size).toBe(0)
+		expect(service.getState().runs[0].status).toBe("failed")
+		await expect(service.dispose()).rejects.toMatchObject({ errors: [cleanupFailure] })
+		expect(leaseReleases.size).toBe(0)
+		expect(commandRunner).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		Object.assign(new Error("Command failed (exit code 17)"), { code: 17 }),
+		new Error("Command aborted during shutdown; timed out waiting for the scheduled command process to close"),
+	])("settles ordinary command failure ownership during disposal: %s", async (failure) => {
+		const schedule = await service.createTask(
+			payload({
+				execution: { type: "command", command: "node --version" },
+				autoApproval: { approvalMode: "bypass" },
+			}),
+		)
+		const executing = deferred()
+		commandRunner.mockImplementationOnce(
+			async (_command, { signal }) =>
+				new Promise((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(failure), { once: true })
+					executing.resolve()
+				}),
+		)
+		await service.runNow(schedule.id)
+		await executing.promise
+
+		await service.dispose()
+		expect(leaseReleases.size).toBe(1)
+		expect(service.getState().runs[0].status).toBe("failed")
+		expect((Reflect.get(service, "commandCompletions") as Map<AbortController, Promise<void>>).size).toBe(0)
+	})
+
 	it("retains the owner through command cleanup and its terminal write when disposal repeats", async () => {
 		const schedule = await service.createTask(
 			payload({
@@ -460,6 +527,7 @@ describe("scheduled terminal result durability", () => {
 			expect(service.getState().runs[0].status).toBe("running")
 			releaseWrite.resolve()
 			await processQueue.mock.results[0].value
+			await service.dispose()
 			expect(leaseReleases.size).toBe(1)
 			expect(service.getState().runs[0].status).toBe("failed")
 			expect((Reflect.get(service, "commandControllers") as Set<AbortController>).size).toBe(0)
@@ -467,6 +535,194 @@ describe("scheduled terminal result durability", () => {
 			cleanup.resolve()
 			releaseWrite.resolve()
 			await processQueue.mock.results[0].value
+		}
+	})
+
+	it("retains the owner through Alpha tree cleanup and its terminal write when disposal repeats", async () => {
+		const schedule = await service.createTask(payload())
+		const { alphaTask } = await launch(schedule.id)
+		const closing = deferred()
+		const releaseClose = deferred()
+		const writing = deferred()
+		const releaseWrite = deferred()
+		provider.removeTaskFromStack.mockImplementationOnce(async () => {
+			closing.resolve()
+			await releaseClose.promise
+		})
+		const completeRun = ScheduledTaskStore.prototype.completeRun
+		vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockImplementationOnce(async function (
+			this: ScheduledTaskStore,
+			run,
+		) {
+			writing.resolve()
+			await releaseWrite.promise
+			return completeRun.call(this, run)
+		})
+		try {
+			const disposal = service.dispose()
+			expect(service.dispose()).toBe(disposal)
+			expect(provider.removeTaskFromStack).toHaveBeenCalledExactlyOnceWith({
+				taskId: alphaTask.taskId,
+				requireAbortSuccess: true,
+			})
+			await closing.promise
+			expect(leaseReleases.size).toBe(0)
+			expect(service.getState().runs[0].status).toBe("running")
+			releaseClose.resolve()
+			await writing.promise
+			expect(leaseReleases.size).toBe(0)
+			releaseWrite.resolve()
+			await disposal
+			expect(leaseReleases.size).toBe(1)
+			expect(service.getState().runs[0].status).toBe("failed")
+			expect(alphaTask.abortTask).not.toHaveBeenCalled()
+		} finally {
+			releaseClose.resolve()
+			releaseWrite.resolve()
+			await service.dispose()
+		}
+	})
+
+	it("retains the owner and reports failed Alpha tree cleanup without an unhandled rejection", async () => {
+		const schedule = await service.createTask(payload())
+		const { alphaTask } = await launch(schedule.id)
+		const failure = new Error("Managed child process cleanup failed")
+		provider.removeTaskFromStack.mockRejectedValueOnce(failure)
+
+		const disposal = service.dispose()
+		expect(service.dispose()).toBe(disposal)
+		expect(provider.removeTaskFromStack).toHaveBeenCalledExactlyOnceWith({
+			taskId: alphaTask.taskId,
+			requireAbortSuccess: true,
+		})
+		await expect(disposal).rejects.toThrow("cleanup failed")
+		expect(leaseReleases.size).toBe(0)
+		expect(service.getState().runs[0].status).toBe("running")
+		expect(output).toHaveBeenCalledWith(expect.stringContaining("Could not stop scheduled task service"))
+	})
+
+	it("retries failed Alpha tree cleanup only on a later explicit disposal", async () => {
+		const schedule = await service.createTask(payload())
+		await launch(schedule.id)
+		provider.removeTaskFromStack.mockRejectedValueOnce(new Error("Transient process cleanup failure"))
+
+		const failed = service.dispose()
+		await expect(failed).rejects.toThrow("cleanup failed")
+		expect(leaseReleases.size).toBe(0)
+		expect(provider.removeTaskFromStack).toHaveBeenCalledOnce()
+		const retried = service.dispose()
+		expect(retried).not.toBe(failed)
+		await retried
+		expect(provider.removeTaskFromStack).toHaveBeenCalledTimes(2)
+		expect(leaseReleases.size).toBe(1)
+		expect(service.getState().runs[0].status).toBe("failed")
+		expect(service.dispose()).toBe(retried)
+	})
+
+	it("keeps successful Alpha branches settled when retrying another branch's disposal", async () => {
+		const firstSchedule = await service.createTask(payload({ name: "First scheduled task" }))
+		const secondSchedule = await service.createTask(payload({ name: "Second scheduled task" }))
+		const first = await launch(firstSchedule.id)
+		const second = await launch(secondSchedule.id)
+		provider.removeTaskFromStack
+			.mockRejectedValueOnce(new Error("First branch cleanup failed"))
+			.mockResolvedValueOnce(undefined)
+
+		await expect(service.dispose()).rejects.toThrow("cleanup failed")
+		expect(provider.removeTaskFromStack.mock.calls).toEqual([
+			[{ taskId: first.alphaTask.taskId, requireAbortSuccess: true }],
+			[{ taskId: second.alphaTask.taskId, requireAbortSuccess: true }],
+		])
+		await service.dispose()
+		expect(provider.removeTaskFromStack.mock.calls).toEqual([
+			[{ taskId: first.alphaTask.taskId, requireAbortSuccess: true }],
+			[{ taskId: second.alphaTask.taskId, requireAbortSuccess: true }],
+			[{ taskId: first.alphaTask.taskId, requireAbortSuccess: true }],
+		])
+		expect(leaseReleases.size).toBe(1)
+		expect(service.getState().runs.every((run) => run.status === "failed")).toBe(true)
+	})
+
+	it("retries a failed disposal terminal write without stopping the Alpha tree again", async () => {
+		const schedule = await service.createTask(payload())
+		await launch(schedule.id)
+		const completeSpy = vi
+			.spyOn(ScheduledTaskStore.prototype, "completeRun")
+			.mockRejectedValueOnce(new Error("Transient shutdown persistence failure"))
+
+		await expect(service.dispose()).rejects.toThrow("cleanup failed")
+		expect(leaseReleases.size).toBe(0)
+		expect(provider.removeTaskFromStack).toHaveBeenCalledOnce()
+		expect(completeSpy).toHaveBeenCalledOnce()
+		await service.dispose()
+		expect(provider.removeTaskFromStack).toHaveBeenCalledOnce()
+		expect(completeSpy).toHaveBeenCalledTimes(2)
+		expect(completeSpy.mock.calls[1][0]).toBe(completeSpy.mock.calls[0][0])
+		expect(leaseReleases.size).toBe(1)
+		expect(service.getState().runs[0].status).toBe("failed")
+	})
+
+	it("joins an Alpha task admitted during disposal before releasing the owner", async () => {
+		const schedule = await service.createTask(payload())
+		const creating = deferred()
+		const releaseCreation = deferred<AlphaTask>()
+		const closing = deferred()
+		const releaseClose = deferred()
+		const alphaTask = makeAlphaTask("admitting-during-disposal", () => {})
+		provider.createTask.mockImplementationOnce(async () => {
+			creating.resolve()
+			return releaseCreation.promise
+		})
+		provider.removeTaskFromStack.mockImplementationOnce(async () => {
+			closing.resolve()
+			await releaseClose.promise
+		})
+		await service.runNow(schedule.id)
+		await creating.promise
+		const disposal = service.dispose()
+		try {
+			expect(leaseReleases.size).toBe(0)
+			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+			releaseCreation.resolve(alphaTask)
+			await closing.promise
+			expect(leaseReleases.size).toBe(0)
+			expect(alphaTask.start).not.toHaveBeenCalled()
+			releaseClose.resolve()
+			await disposal
+			expect(provider.removeTaskFromStack).toHaveBeenCalledExactlyOnceWith({
+				taskId: alphaTask.taskId,
+				requireAbortSuccess: true,
+			})
+			expect(leaseReleases.size).toBe(1)
+			expect(service.getState().runs[0].status).toBe("failed")
+		} finally {
+			releaseCreation.resolve(alphaTask)
+			releaseClose.resolve()
+			await disposal
+		}
+	})
+
+	it("stops an admission waiting for its profile before creating another Alpha task", async () => {
+		const schedule = await service.createTask(payload())
+		const loading = deferred()
+		const releaseProfile = deferred<typeof profile>()
+		provider.providerSettingsManager.getProfile.mockImplementationOnce(async () => {
+			loading.resolve()
+			return releaseProfile.promise
+		})
+		await service.runNow(schedule.id)
+		await loading.promise
+		const disposal = service.dispose()
+		try {
+			expect(leaseReleases.size).toBe(0)
+			releaseProfile.resolve(profile)
+			await disposal
+			expect(provider.createTask).not.toHaveBeenCalled()
+			expect(leaseReleases.size).toBe(1)
+			expect(service.getState().runs[0].status).toBe("failed")
+		} finally {
+			releaseProfile.resolve(profile)
+			await disposal
 		}
 	})
 
@@ -507,10 +763,13 @@ describe("scheduled terminal result durability", () => {
 			await writing.promise
 			const messageCount = provider.postMessageToWebview.mock.calls.length
 			service.dispose()
+			expect(leaseReleases.size).toBe(0)
 			releaseWrite.resolve()
 			await completion
+			await service.dispose()
 
 			expect(service.getState().runs.find((candidate) => candidate.id === run.id)?.status).toBe("succeeded")
+			expect(leaseReleases.size).toBe(1)
 			expect(provider.postMessageToWebview).toHaveBeenCalledTimes(messageCount + 1)
 			expect(showInformation).not.toHaveBeenCalled()
 			expect(alphaTask.abortTask).not.toHaveBeenCalled()

@@ -1,0 +1,27 @@
+{
+	"retrievedOn": "2026-10-23",
+	"alpha": {
+		"authoredSearchRoots": ["webview-ui/src", "src/core/webview", "src/services", "packages"],
+		"authoredTimelineMatches": 0,
+		"builtCssFiles": 3,
+		"builtCssTimelineMatches": 0,
+		"builtJsFiles": 358,
+		"builtJsFilesContainingTimelineTerm": ["src/webview-ui/build/assets/chunk-B1dDrJ26.js"],
+		"soleJsOccurrence": "LESS syntax-highlighting grammar property rule; not applied styling"
+	},
+	"codex": {
+		"extensionVersion": "26.1007.21434",
+		"cssFilesContainingAnimationTimeline": 3,
+		"classes": [
+			"horizontal-scroll-fade-mask",
+			"vertical-scroll-fade-mask",
+			"vertical-scroll-fade-mask-top",
+			"vertical-scroll-fade-mask-bottom"
+		],
+		"timelines": ["scroll(self x)", "scroll(self y)"]
+	},
+	"limits": [
+		"Static audit of current built chat assets; not proof that arbitrary rendered HTML previews or future content cannot use scroll timelines",
+		"The original session DOM and triggering event were not captured"
+	]
+}

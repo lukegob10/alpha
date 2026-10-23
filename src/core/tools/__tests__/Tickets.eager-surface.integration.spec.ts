@@ -65,7 +65,17 @@ describe("eager Alpha Tickets tools", () => {
 					parameters: {
 						properties: {
 							type: {
-								enum: ["bug", "feature", "improvement", "testing", "performance", "ux", null],
+								enum: [
+									"bug",
+									"feature",
+									"improvement",
+									"testing",
+									"performance",
+									"ux",
+									"decision",
+									"review",
+									null,
+								],
 							},
 							priority: { type: ["string", "null"], enum: ["high", "medium", "low", null] },
 						},
