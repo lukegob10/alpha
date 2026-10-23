@@ -927,6 +927,57 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "deny" })
 	})
 
+	describe.each([
+		{ label: "Ask", autoApprovalEnabled: true, alwaysAllowWrite: false, alwaysAllowExecute: false },
+		{
+			label: "disabled automatic approval",
+			autoApprovalEnabled: false,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+		},
+		{
+			label: "disabled automatic commands",
+			autoApprovalEnabled: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: false,
+		},
+	])("with $label inherited command review", ({ label: _label, ...flags }) => {
+		it.each(["commandApproval", "commandApprovalCeilings"] as const)(
+			"preserves %s denials after reload and live command rules broaden",
+			async (denialSource) => {
+				const deniedCommands = ["git push"]
+				const capturedDenial = createSubagentCommandApprovalPolicy(["*"], deniedCommands, "f".repeat(64))
+				const unrestricted = createSubagentCommandApprovalPolicy(["*"], [], "0".repeat(64))
+				const inheritedState = subagentAutoApprovalPolicySchema.parse(
+					JSON.parse(
+						JSON.stringify({
+							...disabledSubagentAutoApprovalPolicy,
+							...flags,
+							commandApproval: denialSource === "commandApproval" ? capturedDenial : unrestricted,
+							commandApprovalCeilings: denialSource === "commandApprovalCeilings" ? [capturedDenial] : [],
+						}),
+					),
+				)
+				deniedCommands.splice(0)
+
+				for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+					const input = {
+						ask: "command" as const,
+						state: { approvalMode, allowedCommands: ["*"], deniedCommands },
+						commandPolicy: { allowedPrefixes: ["*"], deniedPrefixes: deniedCommands },
+						inheritedState,
+					}
+					await expect(
+						checkAutoApprovalWithInheritedPolicy({ ...input, text: "git push origin main" }),
+					).resolves.toEqual({ decision: "deny" })
+					await expect(
+						checkAutoApprovalWithInheritedPolicy({ ...input, text: "git status --short" }),
+					).resolves.toEqual({ decision: "ask" })
+				}
+			},
+		)
+	})
+
 	it.each([
 		["git status", "approve"],
 		["git push origin main", "deny"],

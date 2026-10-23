@@ -4,7 +4,7 @@ import { ticketPrioritySchema, ticketStatusSchema, ticketTypeSchema } from "@alp
 const ticketType = {
 	type: ["string", "null"],
 	enum: [...ticketTypeSchema.options, null],
-	description: "Ticket classification: bug, feature, improvement, testing, performance, or UX. Use null for no type.",
+	description: "Ticket classification. Use null for no type.",
 }
 const ticketPriority = {
 	type: ["string", "null"],

@@ -10,6 +10,9 @@ import {
 import { formatResponse } from "../../prompts/responses"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import { buildCanonicalAssistantHistoryContent } from "../../task-persistence/canonicalAssistantHistory"
+import { createAgentResponse } from "../AgentResponse"
+import { getFinalAssistantMessageIndexes } from "../SubagentInvocationContext"
 import { digestValue } from "../StepContext"
 import {
 	assertSubagentHistoryFork,
@@ -392,6 +395,161 @@ describe("native sub-agent conversation forks", () => {
 			if (nested.historyFork.kind !== "native") throw new Error("Expected a native history fork")
 			expect(nested.historyFork.messages).toEqual(captured.historyFork.messages)
 			expect(nativeHistory).toEqual(original)
+		},
+	)
+
+	it.each(["all", "1"] as const)(
+		"inherits canonical partial answer blocks before tools through a %s fork and nested reload",
+		(forkTurns) => {
+			const response = createAgentResponse(
+				[
+					{
+						type: "text",
+						text: "Checking another file",
+						phase: "commentary",
+						id: "progress",
+						outputIndex: 0,
+					},
+					{
+						type: "text",
+						text: "The first confirmed finding",
+						phase: "partial_answer",
+						id: "partial",
+						outputIndex: 1,
+					},
+					{ type: "tool_call", id: "read-1", name: "read_file", arguments: { path: "file.ts" } },
+				],
+				{ status: "completed" },
+			)
+			const nativeHistory: ApiMessage[] = [
+				{ role: "user", content: "Investigate the issue" },
+				{
+					role: "assistant",
+					content: buildCanonicalAssistantHistoryContent(response),
+					agentResponseItems: response.items,
+					agentResponseOutcome: response.outcome,
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "read-1", content: "Private tool data" }],
+				},
+			]
+			const original = structuredClone(nativeHistory)
+			const captured = captureNative(forkTurns, nativeHistory, getFinalAssistantMessageIndexes(nativeHistory))
+			if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+			expect(captured.historyFork.messages).toEqual([
+				{ role: "user", content: "Investigate the issue", input_origin: "agent" },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "The first confirmed finding" }],
+					phase: "partial_answer",
+					input_origin: "agent",
+				},
+			])
+			const restored = JSON.parse(JSON.stringify(captured.historyFork))
+			expect(() => assertSubagentHistoryFork(restored, captured.manifest)).not.toThrow()
+			const nested = captureNative("all", restored.messages)
+			if (nested.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+			expect(nested.historyFork.messages).toEqual(captured.historyFork.messages)
+			expect(nativeHistory).toEqual(original)
+		},
+	)
+
+	it("keeps canonical partial and final source phases separate while excluding commentary", () => {
+		const response = createAgentResponse(
+			[
+				{ type: "text", text: "Checking the file", phase: "commentary", id: "progress", outputIndex: 0 },
+				{ type: "text", text: "Partial finding", phase: "partial_answer", id: "partial", outputIndex: 1 },
+				{ type: "text", text: "Final finding", phase: "final_answer", id: "final", outputIndex: 2 },
+			],
+			{ status: "completed" },
+		)
+		const nativeHistory: ApiMessage[] = [
+			{ role: "user", content: "Investigate the issue" },
+			{
+				role: "assistant",
+				content: buildCanonicalAssistantHistoryContent(response),
+				agentResponseItems: response.items,
+				agentResponseOutcome: response.outcome,
+			},
+		]
+		const original = structuredClone(nativeHistory)
+		const captured = captureNative("all", nativeHistory, getFinalAssistantMessageIndexes(nativeHistory))
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages).toEqual([
+			{ role: "user", content: "Investigate the issue", input_origin: "agent" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Partial finding" }],
+				phase: "partial_answer",
+				input_origin: "agent",
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Final finding" }],
+				phase: "final_answer",
+				input_origin: "agent",
+			},
+		])
+		expect(captured.selectedTurns[0].sourceMessageIndexes).toEqual([0, 1, 1])
+		const restored = JSON.parse(JSON.stringify(captured.historyFork))
+		expect(() => assertSubagentHistoryFork(restored, captured.manifest)).not.toThrow()
+		const nested = captureNative("all", restored.messages)
+		if (nested.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(nested.historyFork.messages).toEqual(captured.historyFork.messages)
+		expect(nativeHistory).toEqual(original)
+	})
+
+	it.each([route, { ...route, modelId: "other-model" }])(
+		"remaps canonical source annotations only across a compatible route (%j)",
+		(childRoute) => {
+			const response = createAgentResponse(
+				[
+					{ type: "reasoning", text: "", encryptedContent: "parent-private-state", id: "reasoning" },
+					{ type: "text", text: "Checking", phase: "commentary", id: "progress", outputIndex: 1 },
+					{ type: "text", text: "Partial finding", phase: "partial_answer", id: "partial", outputIndex: 2 },
+					{ type: "text", text: "Final finding", phase: "final_answer", id: "final", outputIndex: 3 },
+				],
+				{ status: "completed" },
+			)
+			const nativeHistory: ApiMessage[] = [
+				{ role: "user", content: "Investigate" },
+				Object.assign(
+					{
+						role: "assistant" as const,
+						content: buildCanonicalAssistantHistoryContent(response),
+						agentResponseItems: response.items,
+						agentResponseOutcome: response.outcome,
+					},
+					{
+						vscodeLmStatefulMarker: "parent-marker",
+						internal_chat_message_metadata_passthrough: {
+							content_item_kinds: ["reasoning", "progress", "partial-evidence", "final-evidence"],
+						},
+					},
+				),
+			]
+			const captured = captureNative(
+				"all",
+				nativeHistory,
+				getFinalAssistantMessageIndexes(nativeHistory),
+				childRoute,
+			)
+			if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+			expect(captured.historyFork.messages.slice(1)).toEqual(
+				["partial", "final"].map((kind) => ({
+					role: "assistant",
+					content: [{ type: "text", text: kind === "partial" ? "Partial finding" : "Final finding" }],
+					phase: kind === "partial" ? "partial_answer" : "final_answer",
+					input_origin: "agent",
+					...(childRoute.modelId === route.modelId
+						? { internal_chat_message_metadata_passthrough: { content_item_kinds: [`${kind}-evidence`] } }
+						: {}),
+				})),
+			)
+			expect(JSON.stringify(captured.historyFork.messages)).not.toMatch(
+				/parent-private-state|parent-marker|Checking/,
+			)
 		},
 	)
 

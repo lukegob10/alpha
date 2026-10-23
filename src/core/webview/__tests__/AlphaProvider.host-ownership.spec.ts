@@ -342,6 +342,50 @@ describe("AlphaProvider host ownership", () => {
 		expect(sidebar.isTaskOnScreen("first")).toBe(true)
 	})
 
+	it("compacts a borrowed task and acknowledges the requesting view without changing ownership", async () => {
+		const host = storage()
+		const owner = makeProvider(host)
+		const borrower = makeProvider(host)
+		const task = Object.assign(makeTask("shared-compaction"), {
+			condenseContext: vi.fn(async () => undefined),
+		})
+		await owner.addTaskToStack(task)
+		await borrower.focusTask(task.taskId)
+
+		await expect(borrower.condenseTaskContext(task.taskId)).resolves.toBeUndefined()
+
+		expect(task.condenseContext).toHaveBeenCalledOnce()
+		expect(borrower.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "condenseTaskContextResponse",
+			text: task.taskId,
+		})
+		expect(owner.postMessageToWebview).not.toHaveBeenCalled()
+		expect(borrower.getLiveTask(task.taskId)).toBe(task)
+		expect(borrower.getTaskOwner(task.taskId)).toBe(owner)
+	})
+
+	it("rejects compaction from another host while acknowledging the failed request", async () => {
+		const owner = makeProvider(storage())
+		const requester = makeProvider(storage())
+		const task = Object.assign(makeTask("foreign-compaction"), {
+			condenseContext: vi.fn(async () => undefined),
+		})
+		await owner.addTaskToStack(task)
+
+		await expect(requester.condenseTaskContext(task.taskId)).rejects.toThrow(
+			`Task with id ${task.taskId} not found`,
+		)
+
+		expect(task.condenseContext).not.toHaveBeenCalled()
+		expect(requester.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "condenseTaskContextResponse",
+			text: task.taskId,
+		})
+		expect(owner.postMessageToWebview).not.toHaveBeenCalled()
+		expect(owner.getLiveTask(task.taskId)).toBe(task)
+		expect(owner.getTaskOwner(task.taskId)).toBe(owner)
+	})
+
 	it("disposing a borrowed view does not terminate its selected task", async () => {
 		const host = storage()
 		const owner = makeProvider(host)

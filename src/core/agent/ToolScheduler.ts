@@ -2955,6 +2955,12 @@ export class ToolScheduler {
 			pushToolResult: (content: ToolResponse) => collector.push(content),
 			getRemainingOutputChars: () => collector.getRemainingOutputChars(),
 			setResultMetadata: (metadata: ToolResultMetadata) => collector.setMetadata(metadata),
+			startEffect: async () => {
+				if (this.isCancelled()) return false
+				await this.checkEffectFence(prepared.call)
+				if (this.isCancelled()) return false
+				return startEffect()
+			},
 			toolCallId: prepared.call.id,
 			signal: this.executionSignal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>

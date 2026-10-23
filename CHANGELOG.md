@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.9
+
+### Patch Changes
+
+- Integrate completed Worker changes automatically after their existing approvals, with review retained for conflicts, partial results, or reduced authority.
+- Harden subagent admission, cancellation, shutdown, budget boundaries, completion recovery, and follow-up delivery.
+- Keep long chats responsive by bounding mounted transcript rows, lifecycle update payloads, and syntax highlighting for large code blocks.
+- Restore webview controls reliably after compaction and view replacement, and report bounded webview error diagnostics.
+- Update Copilot model aliases and Claude reasoning controls while preserving the minimum-host fallback.
+- Add Decision and Review ticket types across native tools, storage, and the Tickets UI.
+- Update the extension version and in-app release announcement together for Alpha 3.2.9. Windows x64 packaging, the VS Code 1.125.0 minimum, and the exact 1.138.0 reference host remain unchanged.
+
 ## 3.2.8
 
 ### Patch Changes

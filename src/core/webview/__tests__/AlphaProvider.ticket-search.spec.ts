@@ -28,6 +28,9 @@ function fixture() {
 	}))
 	let cwd = "/workspace"
 	const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
+		taskSessions: { getOwnedTasks: () => [] },
+		taskStack: [],
+		subagentRunFinalizations: new Map(),
 		webviewMessageQueue: Promise.resolve(),
 		taskControlMessageQueues: new Map(),
 		immediateWebviewOperations: new Set(),

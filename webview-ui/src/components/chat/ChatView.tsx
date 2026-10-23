@@ -353,7 +353,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
 	const projectedMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
 	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
-	const visibleTurnId = visibleCurrentTaskId ? agentLifecycleSnapshots?.[visibleCurrentTaskId]?.turnId : undefined
+	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
+	const hasHostLifecycleMetadata = visibleLiveTask?.hasPendingToolCalls !== undefined
+	const visibleTurnId = hasHostLifecycleMetadata
+		? visibleLiveTask?.turnId
+		: visibleCurrentTaskId
+			? agentLifecycleSnapshots?.[visibleCurrentTaskId]?.turnId
+			: undefined
 	const visibleTaskPayload = useMemo(
 		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
 		[visibleCurrentTaskId],
@@ -375,15 +381,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[currentTaskId, getCachedTranscriptRevision],
 	)
-	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const isVisibleTaskLifecycleDegraded = Boolean(
 		visibleCurrentTaskId && agentLifecycleDegraded?.[visibleCurrentTaskId]?.degraded,
 	)
 	const legacyVisibleLiveTask =
-		visibleCurrentTaskId && isVisibleTaskLifecycleDegraded
+		visibleCurrentTaskId && isVisibleTaskLifecycleDegraded && !hasHostLifecycleMetadata
 			? projectLegacyLiveTaskMetadata(extensionState, visibleCurrentTaskId, visibleLiveTask)
 			: undefined
-	const effectiveVisibleLiveTask = isVisibleTaskLifecycleDegraded ? legacyVisibleLiveTask : visibleLiveTask
+	const effectiveVisibleLiveTask = legacyVisibleLiveTask ?? visibleLiveTask
 	const isVisibleTaskCompleted = effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
@@ -1224,10 +1229,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isStreaming = isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput && !isToolCurrentlyAsking
 	const visibleLifecycleSnapshot = visibleCurrentTaskId ? agentLifecycleSnapshots?.[visibleCurrentTaskId] : undefined
 	const hasPendingToolCalls = useMemo(() => {
+		if (hasHostLifecycleMetadata) return visibleLiveTask.hasPendingToolCalls
 		if (!visibleLifecycleSnapshot) return false
 		const completed = new Set(visibleLifecycleSnapshot.terminalToolCallIds)
 		return visibleLifecycleSnapshot.acceptedToolCallIds.some((id) => !completed.has(id))
-	}, [visibleLifecycleSnapshot])
+	}, [hasHostLifecycleMetadata, visibleLiveTask, visibleLifecycleSnapshot])
 	// Silence is expected while tools (including wait_agent), compaction, or other runtime phases run.
 	// Missing/degraded phase data cannot establish that the model is the source of a delay.
 	const isModelResponseDelayed =
@@ -2846,14 +2852,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[transcriptTaskKey],
 	)
-	const {
-		items: renderedGroupedMessages,
-		startIndex: transcriptStartIndex,
-		hasOlder: hasOlderTranscript,
-		loadOlder: loadOlderTranscript,
-		revealIndex: revealTranscriptIndex,
-	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, false)
-
 	const checkpointIndices = useMemo(() => {
 		const indices: number[] = []
 		for (let i = 0; i < groupedMessages.length; i++) {
@@ -2876,6 +2874,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// expand, or load asynchronous content. This controller is the sole owner of
 	// automatic bottom pinning.
 	const {
+		scrollMode,
 		showScrollToBottom,
 		handleScrollToBottomClick,
 		releaseFollow,
@@ -2888,8 +2887,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		handleContentLoad,
 	} = useChatScrollController({
 		taskTs: task?.ts,
-		itemCount: renderedGroupedMessages.length,
+		itemCount: groupedMessages.length,
 	})
+	const {
+		items: renderedGroupedMessages,
+		startIndex: transcriptStartIndex,
+		hasOlder: hasOlderTranscript,
+		loadOlder: loadOlderTranscript,
+		revealIndex: revealTranscriptIndex,
+	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, false, scrollMode === "FOLLOWING")
 
 	const bindTranscriptScroller = useCallback(
 		(element: HTMLDivElement | null) => {

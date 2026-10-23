@@ -117,6 +117,7 @@ type VsCodeLm122RequestOptions = vscode.LanguageModelChatRequestOptions & {
 }
 
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
+const VSCODE_COPILOT_THINKING_MIN_VERSION = "1.136.1"
 const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
 const VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS = 5_000
 const VSCODE_LM_CLIENT_CACHE_MAX_SETTLED_ENTRIES = 32
@@ -386,6 +387,7 @@ function getVsCodeLmModelConfiguration(
 function applyVsCodeLmModelConfiguration(
 	requestOptions: vscode.LanguageModelChatRequestOptions,
 	configuration: VsCodeLmModelConfiguration | undefined,
+	model: vscode.LanguageModelChat,
 ): void {
 	if (!configuration) {
 		return
@@ -394,6 +396,15 @@ function applyVsCodeLmModelConfiguration(
 	requestOptions.modelOptions = {
 		...(requestOptions.modelOptions ?? {}),
 		...configuration,
+	}
+	if (
+		configuration.reasoningEffort &&
+		getVscodeLlmModelInfo(model)?.family.startsWith("claude-") &&
+		!isVersionBefore(vscode.version, VSCODE_COPILOT_THINKING_MIN_VERSION)
+	) {
+		// Copilot's external LM bridge gates Claude effort on this model option.
+		// Verified in bundled Copilot 0.64.1 / 0.66.0; older hosts retain their existing path.
+		requestOptions.modelOptions._enableThinking = true
 	}
 
 	const compatibleRequestOptions = requestOptions as VsCodeLm122RequestOptions
@@ -1240,7 +1251,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
 			}
 
-			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options))
+			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options), client)
 
 			if (tools.length > 0) {
 				requestOptions.tools = tools
@@ -1555,7 +1566,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(metadata?.signal, requestCancellation)
 			throwIfSingleCompletionAborted(metadata)
 			const requestOptions: vscode.LanguageModelChatRequestOptions = {}
-			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options))
+			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options), client)
 			const responseAdmission = Promise.resolve(
 				client.sendRequest(
 					[vscode.LanguageModelChatMessage.User(prompt)],

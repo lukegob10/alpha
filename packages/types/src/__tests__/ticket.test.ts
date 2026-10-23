@@ -44,7 +44,16 @@ describe("ticket wire contracts", () => {
 		)
 	})
 	it("accepts the complete ticket classification set and explicit removal across mutations and filters", () => {
-		expect(ticketTypeSchema.options).toEqual(["bug", "feature", "improvement", "testing", "performance", "ux"])
+		expect(ticketTypeSchema.options).toEqual([
+			"bug",
+			"feature",
+			"improvement",
+			"testing",
+			"performance",
+			"ux",
+			"decision",
+			"review",
+		])
 		for (const type of [...ticketTypeSchema.options, null]) {
 			expect(createTicketSchema.parse({ name: "Ticket", type })).toEqual({ name: "Ticket", type })
 			expect(updateTicketSchema.parse({ id: "PM-01", expectedRevision: "v1", type }).type).toBe(type)

@@ -36,7 +36,7 @@ describe("native parent steering while a Worker proposal awaits review", () => {
 				root.taskId,
 				"Incorporated the second instruction without approving the proposal.",
 			)
-			const reviewEntered = deferred()
+			let reviewEntered = deferred()
 			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementation(async () => {
 				if (root["isAwaitingSubagentReview"]) reviewEntered.resolve()
 			})
@@ -94,11 +94,17 @@ describe("native parent steering while a Worker proposal awaits review", () => {
 			expect(queue.claimMessage(queued!.id)).toBeDefined()
 			await queue.flush()
 			await root.steerUserMessage(guidance, [], undefined, [queued!.id])
-			await vi.waitFor(() => expect(followup.request).toBeDefined())
+			await followup.entered
+			expect(followup.request).toBeDefined()
 			followup.release()
-			await vi.waitFor(() => expect(reply.request).toBeDefined())
+			await reply.entered
+			expect(reply.request).toBeDefined()
+			// Each reply must reach its own review publication; a previous review
+			// flag is insufficient evidence that this response has drained.
+			reviewEntered = deferred()
 			reply.release()
-			await vi.waitFor(() => expect(root["isAwaitingSubagentReview"]).toBe(true))
+			await reviewEntered.promise
+			expect(root["isAwaitingSubagentReview"]).toBe(true)
 			await root.flushApiConversationHistoryPersistence()
 			const history = await readApiMessages({ taskId: root.taskId, globalStoragePath: fixture.storagePath })
 			const delivered = history.filter((message) => message.queued_message_ids?.includes(queued!.id))
@@ -128,10 +134,13 @@ describe("native parent steering while a Worker proposal awaits review", () => {
 			expect((await root.getCompletionGateDecision()).allowed).toBe(false)
 			expect(root.getExternalMutationCapability().allowed).toBe(true)
 			await root.steerUserMessage("Also inspect the status before reviewing the proposal.")
-			await vi.waitFor(() => expect(furtherReply.request).toBeDefined())
+			await furtherReply.entered
+			expect(furtherReply.request).toBeDefined()
 			expect(root.getExternalMutationCapability().allowed).toBe(false)
+			reviewEntered = deferred()
 			furtherReply.release()
-			await vi.waitFor(() => expect(root["isAwaitingSubagentReview"]).toBe(true))
+			await reviewEntered.promise
+			expect(root["isAwaitingSubagentReview"]).toBe(true)
 			expect(root.isCompleted()).toBe(false)
 			expect(root["subagentReviewInputTurn"]).toBeDefined()
 			if (finish === "stop") await root.abortTask(true)

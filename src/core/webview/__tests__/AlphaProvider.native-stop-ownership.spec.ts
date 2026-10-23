@@ -613,6 +613,33 @@ describe("AlphaProvider native Stop caller ownership", () => {
 			expect(harness.provider.getLiveTask(prepared.envelopes[0].id)).toBeUndefined()
 			replacement.dispose()
 			replacement.release()
+
+			// The injected rollback failure leaves a pending durable control row.
+			// Shutdown must report that owned cleanup failure even after A -> B.
+			await expect(harness.provider.dispose()).rejects.toBe(failure)
+			const finalizations = Reflect.get(harness.provider, "subagentRunFinalizations") as Map<
+				string,
+				{ promise: Promise<void> }
+			>
+			const taskId = prepared.envelopes[0].id
+			const receipt = finalizations.get(taskId)
+			expect(receipt).toBeDefined()
+			if (!receipt) throw new Error("The failed admission lost its cleanup ownership")
+			const [settlement] = await Promise.allSettled([receipt.promise])
+			expect(settlement).toEqual({ status: "rejected", reason: failure })
+			const completedAt = Date.now()
+			await harness.store.updateAgentStatus(
+				taskId,
+				"cancelled",
+				{
+					at: completedAt,
+					terminalResult: { status: "cancelled", stopReason: "parent_cancelled", completedAt },
+				},
+				task.taskId,
+			)
+			// Only the now-repaired, fully joined fixture fault may release its pin.
+			expect(finalizations.get(taskId)).toBe(receipt)
+			finalizations.delete(taskId)
 		},
 	)
 

@@ -64,15 +64,18 @@ describe("supported provider model catalogs", () => {
 			"gpt-6.1-sol",
 			"claude-fable-5",
 			"claude-haiku-4.5",
+			"claude-haiku-5.5",
 			"claude-sonnet-4.5",
 			"claude-sonnet-4.6",
 			"claude-sonnet-5",
+			"claude-sonnet-5.5",
 			"claude-opus-4.5",
 			"claude-opus-4.6",
 			"claude-opus-4.7",
 			"claude-opus-4.8",
 			"claude-opus-4.8-fast",
 			"claude-opus-5",
+			"claude-opus-5.5",
 			"gemini-3.1-pro",
 			"gemini-3.5-flash",
 			"gemini-3.6-flash",
@@ -132,8 +135,48 @@ describe("supported provider model catalogs", () => {
 				contextWindow: 922_000,
 				maxInputTokens: 922_000,
 				supportsImages: true,
-				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 			})
+		})
+
+		it.each([
+			["claude-opus-5.5", "Claude Opus 5.5", "claude-opus-5-5"],
+			["claude-sonnet-5.5", "Claude Sonnet 5.5", "claude-sonnet-5-5"],
+			["claude-haiku-5.5", "Claude Haiku 5.5", "claude-haiku-5-5"],
+		] as const)("recognizes %s without losing its live routing identity", (family, name, alias) => {
+			for (const identity of [{ family }, { family: alias }, { name }, { id: `copilot/${alias}/preview` }]) {
+				const liveModel = { vendor: "copilot", id: "opaque-model-id", ...identity }
+				expect(getVscodeLlmModelId(liveModel)).toBe(family)
+				expect(getVscodeLlmModelInfo(liveModel)).toMatchObject({
+					name,
+					supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+					supportsImages: true,
+				})
+				expect(mergeVscodeLlmModels([liveModel])).toEqual([liveModel])
+			}
+			expect(getVscodeLlmModelInfo({ vendor: "other", family })).toBeUndefined()
+			expect(getVscodeLlmModelInfo({ vendor: "copilot", family: `${family}0` })).toBeUndefined()
+		})
+
+		it("uses Opus 5.5's required medium default without changing the other Claude defaults", () => {
+			expect(getVscodeLlmModelInfo({ family: "claude-opus-5.5" })).toMatchObject({
+				requiredReasoningEffort: true,
+				reasoningEffort: "medium",
+			})
+			for (const family of ["claude-sonnet-5.5", "claude-haiku-5.5"]) {
+				expect(getVscodeLlmModelInfo({ family })?.reasoningEffort).toBeUndefined()
+			}
+		})
+
+		it.each([
+			["gpt-6-astra", "GPT-6 Astra", "GPT 6 Astra"],
+			["gpt-6-luna", "GPT-6 Luna", "GPT 6 Luna"],
+			["gpt-6-sol", "GPT-6 Sol", "GPT 6 Sol"],
+			["gpt-6.1-sol", "GPT-6.1 Sol", "GPT 6.1 Sol"],
+		] as const)("recognizes %s display names when Copilot returns opaque IDs", (family, ...names) => {
+			for (const name of names) {
+				expect(getVscodeLlmModelId({ vendor: "copilot", id: "opaque-model-id", name })).toBe(family)
+			}
 		})
 
 		it("does not invent Sol 6.1 reasoning defaults or context-configuration support", () => {

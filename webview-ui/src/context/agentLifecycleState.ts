@@ -350,6 +350,10 @@ function acceptsLifecycleTask(state: ExtensionState, taskId: string): boolean {
 	return state.taskStateSeq === undefined || state.liveTasksById === undefined || !!state.liveTasksById[taskId]
 }
 
+function hasHostLifecycleMetadata(state: ExtensionState, taskId: string): boolean {
+	return state.liveTasksById?.[taskId]?.hasPendingToolCalls !== undefined
+}
+
 export interface ProjectedLifecycleMetadata {
 	lifecycle: TaskLifecycleState
 	status: TaskStatus
@@ -391,6 +395,7 @@ export function applyLifecycleSnapshotsToExtensionState(
 	let liveTaskIds = state.liveTaskIds
 	for (const snapshot of Object.values(snapshots)) {
 		if (!acceptsLifecycleTask(state, snapshot.taskId)) continue
+		if (hasHostLifecycleMetadata(state, snapshot.taskId)) continue
 		if (state.agentLifecycleDegraded?.[snapshot.taskId]?.degraded) continue
 		const projection = projectLifecycleMetadata(snapshot)
 		const existing = liveTasksById?.[snapshot.taskId]
@@ -564,6 +569,7 @@ export function applyLifecycleDegradedToExtensionState(state: ExtensionState, si
 	else delete degraded[signal.taskId]
 
 	const nextState = { ...state, agentLifecycleDegraded: degraded }
+	if (hasHostLifecycleMetadata(state, signal.taskId)) return nextState
 	if (signal.degraded) {
 		const legacy = projectLegacyLiveTaskMetadata(nextState, signal.taskId, nextState.liveTasksById?.[signal.taskId])
 		if (!legacy) return nextState
@@ -589,7 +595,13 @@ export const applyAgentLifecycleDegradedToExtensionState = applyLifecycleDegrade
 
 export function applyLifecycleSnapshotToExtensionState(state: ExtensionState, snapshotValue: unknown): ExtensionState {
 	const snapshot = parseAgentLifecycleSnapshot(snapshotValue)
-	if (!snapshot || !acceptsLifecycleTask(state, snapshot.taskId)) return state
+	if (
+		!snapshot ||
+		!acceptsLifecycleTask(state, snapshot.taskId) ||
+		hasHostLifecycleMetadata(state, snapshot.taskId)
+	) {
+		return state
+	}
 	const snapshots = mergeAgentLifecycleSnapshots(state.agentLifecycleSnapshots, { [snapshot.taskId]: snapshot })
 	if (snapshots === state.agentLifecycleSnapshots) return state
 	return applyLifecycleSnapshotsToExtensionState({ ...state, agentLifecycleSnapshots: snapshots }, snapshots)
@@ -597,7 +609,8 @@ export function applyLifecycleSnapshotToExtensionState(state: ExtensionState, sn
 
 export function applyLifecycleEventToExtensionState(state: ExtensionState, eventValue: unknown): ExtensionState {
 	const event = parseAgentLifecycleEvent(eventValue)
-	if (!event || !acceptsLifecycleTask(state, event.taskId)) return state
+	if (!event || !acceptsLifecycleTask(state, event.taskId) || hasHostLifecycleMetadata(state, event.taskId))
+		return state
 	const attachedSnapshotValue = asRecord(eventValue)?.agentLifecycleSnapshot
 	if (attachedSnapshotValue !== undefined) {
 		const attachedSnapshot = parseAgentLifecycleSnapshot(attachedSnapshotValue)

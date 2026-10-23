@@ -1,0 +1,60 @@
+{
+	"status": "passed",
+	"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+	"hostVersion": "1.138.0",
+	"targetType": "iframe",
+	"trustedInputVerified": true,
+	"stages": [
+		"selected-task-before-hydration",
+		"bounded-growing-transcript",
+		"three-real-compactions",
+		"hidden-reveal",
+		"browsing-preserved",
+		"no-renderer-fatal-events"
+	],
+	"provider": "scripted",
+	"host": {
+		"runId": "ui-f24ab891-453b-484b-b005-87017eef1acf",
+		"providerMode": "scripted",
+		"vscodeVersion": "1.138.0",
+		"launchKind": "extension-test",
+		"workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\workspace",
+		"userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile\\1.138.0\\user-data",
+		"extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile\\1.138.0\\extensions",
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf",
+		"profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile",
+		"execution": "extension-host",
+		"status": "passed",
+		"hostExitObserved": true,
+		"ownershipGate": "verified",
+		"actualVSCodeVersion": "1.138.0",
+		"requireAllTests": true,
+		"testCounts": {
+			"total": 1,
+			"passed": 1,
+			"pending": 0,
+			"executed": 1,
+			"failed": 0
+		},
+		"testSelection": {
+			"testFile": "transcript-lifecycle-ui.test",
+			"grep": null,
+			"forbidOnly": true
+		},
+		"exitCode": 0,
+		"retained": true,
+		"retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf\\retention-result.json",
+		"launchedHostPid": 25512,
+		"extensionHostPid": 2108,
+		"extensionHostParentPid": 25512,
+		"evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf\\manifest.json",
+		"captureComplete": true,
+		"retention": {
+			"schemaVersion": 1,
+			"runId": "ui-f24ab891-453b-484b-b005-87017eef1acf",
+			"eligibility": "held",
+			"status": "complete",
+			"maintenance": "campaign-owned"
+		}
+	}
+}

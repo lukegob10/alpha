@@ -1,0 +1,848 @@
+{
+	"status": "passed",
+	"nonce": "736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+	"hostVersion": "1.138.0",
+	"targetType": "iframe",
+	"trustedInputVerified": true,
+	"stages": [
+		"selected-task-before-hydration",
+		"bounded-growing-transcript",
+		"three-real-compactions",
+		"hidden-reveal",
+		"browsing-preserved",
+		"selected-row-replacement",
+		"selection-focus-reflow",
+		"trusted-pointer-hit-tests",
+		"native-layout-phase-evidence",
+		"no-renderer-fatal-events"
+	],
+	"provider": "scripted",
+	"selectionLayout": {
+		"nonce": "736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+		"rounds": 24,
+		"observations": [
+			{
+				"round": 0,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 3,
+					"trustedMouseMoves": 3,
+					"trustedMouseReleases": 0,
+					"focusChanges": 1,
+					"mutationBatches": 1,
+					"detachedSelections": 0,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 0,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 10,
+					"trustedMouseMoves": 6,
+					"trustedMouseReleases": 1,
+					"focusChanges": 3,
+					"mutationBatches": 3,
+					"detachedSelections": 0,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 1,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 12,
+					"trustedMouseMoves": 9,
+					"trustedMouseReleases": 1,
+					"focusChanges": 3,
+					"mutationBatches": 3,
+					"detachedSelections": 0,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 1,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 16,
+					"trustedMouseMoves": 12,
+					"trustedMouseReleases": 2,
+					"focusChanges": 4,
+					"mutationBatches": 4,
+					"detachedSelections": 1,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 2,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 17,
+					"trustedMouseMoves": 15,
+					"trustedMouseReleases": 2,
+					"focusChanges": 4,
+					"mutationBatches": 4,
+					"detachedSelections": 1,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 2,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 21,
+					"trustedMouseMoves": 18,
+					"trustedMouseReleases": 3,
+					"focusChanges": 5,
+					"mutationBatches": 6,
+					"detachedSelections": 1,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 3,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 24,
+					"trustedMouseMoves": 21,
+					"trustedMouseReleases": 3,
+					"focusChanges": 6,
+					"mutationBatches": 6,
+					"detachedSelections": 1,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 3,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 31,
+					"trustedMouseMoves": 24,
+					"trustedMouseReleases": 4,
+					"focusChanges": 8,
+					"mutationBatches": 10,
+					"detachedSelections": 2,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 4,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 33,
+					"trustedMouseMoves": 27,
+					"trustedMouseReleases": 4,
+					"focusChanges": 8,
+					"mutationBatches": 10,
+					"detachedSelections": 2,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 4,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 38,
+					"trustedMouseMoves": 30,
+					"trustedMouseReleases": 5,
+					"focusChanges": 9,
+					"mutationBatches": 12,
+					"detachedSelections": 2,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 5,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 39,
+					"trustedMouseMoves": 33,
+					"trustedMouseReleases": 5,
+					"focusChanges": 9,
+					"mutationBatches": 12,
+					"detachedSelections": 2,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 5,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 43,
+					"trustedMouseMoves": 36,
+					"trustedMouseReleases": 6,
+					"focusChanges": 10,
+					"mutationBatches": 13,
+					"detachedSelections": 3,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 6,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 46,
+					"trustedMouseMoves": 39,
+					"trustedMouseReleases": 6,
+					"focusChanges": 11,
+					"mutationBatches": 13,
+					"detachedSelections": 3,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 6,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 53,
+					"trustedMouseMoves": 42,
+					"trustedMouseReleases": 7,
+					"focusChanges": 13,
+					"mutationBatches": 15,
+					"detachedSelections": 3,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 7,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 55,
+					"trustedMouseMoves": 45,
+					"trustedMouseReleases": 7,
+					"focusChanges": 13,
+					"mutationBatches": 15,
+					"detachedSelections": 3,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 7,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 60,
+					"trustedMouseMoves": 48,
+					"trustedMouseReleases": 8,
+					"focusChanges": 14,
+					"mutationBatches": 19,
+					"detachedSelections": 4,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 8,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 61,
+					"trustedMouseMoves": 51,
+					"trustedMouseReleases": 8,
+					"focusChanges": 14,
+					"mutationBatches": 19,
+					"detachedSelections": 4,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 8,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 66,
+					"trustedMouseMoves": 54,
+					"trustedMouseReleases": 9,
+					"focusChanges": 15,
+					"mutationBatches": 21,
+					"detachedSelections": 4,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 9,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 69,
+					"trustedMouseMoves": 57,
+					"trustedMouseReleases": 9,
+					"focusChanges": 16,
+					"mutationBatches": 21,
+					"detachedSelections": 4,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 9,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 76,
+					"trustedMouseMoves": 60,
+					"trustedMouseReleases": 10,
+					"focusChanges": 18,
+					"mutationBatches": 22,
+					"detachedSelections": 5,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 10,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 78,
+					"trustedMouseMoves": 63,
+					"trustedMouseReleases": 10,
+					"focusChanges": 18,
+					"mutationBatches": 22,
+					"detachedSelections": 5,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 10,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 83,
+					"trustedMouseMoves": 66,
+					"trustedMouseReleases": 11,
+					"focusChanges": 19,
+					"mutationBatches": 24,
+					"detachedSelections": 5,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 11,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 84,
+					"trustedMouseMoves": 69,
+					"trustedMouseReleases": 11,
+					"focusChanges": 19,
+					"mutationBatches": 24,
+					"detachedSelections": 5,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 11,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 89,
+					"trustedMouseMoves": 72,
+					"trustedMouseReleases": 12,
+					"focusChanges": 20,
+					"mutationBatches": 28,
+					"detachedSelections": 6,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 12,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 92,
+					"trustedMouseMoves": 75,
+					"trustedMouseReleases": 12,
+					"focusChanges": 21,
+					"mutationBatches": 28,
+					"detachedSelections": 6,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 12,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 99,
+					"trustedMouseMoves": 78,
+					"trustedMouseReleases": 13,
+					"focusChanges": 23,
+					"mutationBatches": 30,
+					"detachedSelections": 6,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 13,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 101,
+					"trustedMouseMoves": 81,
+					"trustedMouseReleases": 13,
+					"focusChanges": 23,
+					"mutationBatches": 30,
+					"detachedSelections": 6,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 13,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 106,
+					"trustedMouseMoves": 84,
+					"trustedMouseReleases": 14,
+					"focusChanges": 24,
+					"mutationBatches": 31,
+					"detachedSelections": 7,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 14,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 107,
+					"trustedMouseMoves": 87,
+					"trustedMouseReleases": 14,
+					"focusChanges": 24,
+					"mutationBatches": 31,
+					"detachedSelections": 7,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 14,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 112,
+					"trustedMouseMoves": 90,
+					"trustedMouseReleases": 15,
+					"focusChanges": 25,
+					"mutationBatches": 33,
+					"detachedSelections": 7,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 15,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 115,
+					"trustedMouseMoves": 93,
+					"trustedMouseReleases": 15,
+					"focusChanges": 26,
+					"mutationBatches": 33,
+					"detachedSelections": 7,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 15,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 122,
+					"trustedMouseMoves": 96,
+					"trustedMouseReleases": 16,
+					"focusChanges": 28,
+					"mutationBatches": 37,
+					"detachedSelections": 8,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 16,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 124,
+					"trustedMouseMoves": 99,
+					"trustedMouseReleases": 16,
+					"focusChanges": 28,
+					"mutationBatches": 37,
+					"detachedSelections": 8,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 16,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 129,
+					"trustedMouseMoves": 102,
+					"trustedMouseReleases": 17,
+					"focusChanges": 29,
+					"mutationBatches": 39,
+					"detachedSelections": 8,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 17,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 130,
+					"trustedMouseMoves": 105,
+					"trustedMouseReleases": 17,
+					"focusChanges": 29,
+					"mutationBatches": 39,
+					"detachedSelections": 8,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 17,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 135,
+					"trustedMouseMoves": 108,
+					"trustedMouseReleases": 18,
+					"focusChanges": 30,
+					"mutationBatches": 40,
+					"detachedSelections": 9,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 18,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 138,
+					"trustedMouseMoves": 111,
+					"trustedMouseReleases": 18,
+					"focusChanges": 31,
+					"mutationBatches": 40,
+					"detachedSelections": 9,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 18,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 145,
+					"trustedMouseMoves": 114,
+					"trustedMouseReleases": 19,
+					"focusChanges": 33,
+					"mutationBatches": 42,
+					"detachedSelections": 10,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 19,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 147,
+					"trustedMouseMoves": 117,
+					"trustedMouseReleases": 19,
+					"focusChanges": 33,
+					"mutationBatches": 42,
+					"detachedSelections": 10,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 19,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 152,
+					"trustedMouseMoves": 120,
+					"trustedMouseReleases": 20,
+					"focusChanges": 34,
+					"mutationBatches": 46,
+					"detachedSelections": 11,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 20,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 153,
+					"trustedMouseMoves": 123,
+					"trustedMouseReleases": 20,
+					"focusChanges": 34,
+					"mutationBatches": 46,
+					"detachedSelections": 11,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 20,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 158,
+					"trustedMouseMoves": 126,
+					"trustedMouseReleases": 21,
+					"focusChanges": 35,
+					"mutationBatches": 48,
+					"detachedSelections": 12,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 21,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 161,
+					"trustedMouseMoves": 129,
+					"trustedMouseReleases": 21,
+					"focusChanges": 36,
+					"mutationBatches": 48,
+					"detachedSelections": 12,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 21,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 170,
+					"trustedMouseMoves": 132,
+					"trustedMouseReleases": 22,
+					"focusChanges": 38,
+					"mutationBatches": 49,
+					"detachedSelections": 13,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 22,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 172,
+					"trustedMouseMoves": 135,
+					"trustedMouseReleases": 22,
+					"focusChanges": 38,
+					"mutationBatches": 49,
+					"detachedSelections": 13,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 22,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 177,
+					"trustedMouseMoves": 138,
+					"trustedMouseReleases": 23,
+					"focusChanges": 39,
+					"mutationBatches": 51,
+					"detachedSelections": 14,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 23,
+				"phase": "before",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 178,
+					"trustedMouseMoves": 141,
+					"trustedMouseReleases": 23,
+					"focusChanges": 39,
+					"mutationBatches": 51,
+					"detachedSelections": 14,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			},
+			{
+				"round": 23,
+				"phase": "after",
+				"sample": {
+					"documentRetained": true,
+					"selectionChanges": 183,
+					"trustedMouseMoves": 144,
+					"trustedMouseReleases": 24,
+					"focusChanges": 40,
+					"mutationBatches": 55,
+					"detachedSelections": 15,
+					"rangePresent": true,
+					"toolbarVisible": true,
+					"composerVisible": true
+				}
+			}
+		],
+		"nativeTrace": {
+			"records": 186438,
+			"overflow": false,
+			"rendererPids": [33244],
+			"phases": {
+				"layout": 812,
+				"compositing": 1233,
+				"hitTest": 1412
+			}
+		}
+	},
+	"host": {
+		"runId": "ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+		"providerMode": "scripted",
+		"vscodeVersion": "1.138.0",
+		"launchKind": "extension-test",
+		"workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\workspace",
+		"userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\profile\\1.138.0\\user-data",
+		"extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\profile\\1.138.0\\extensions",
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\evidence\\ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+		"profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\profile",
+		"execution": "extension-host",
+		"status": "passed",
+		"hostExitObserved": true,
+		"ownershipGate": "verified",
+		"actualVSCodeVersion": "1.138.0",
+		"requireAllTests": true,
+		"testCounts": {
+			"total": 1,
+			"passed": 1,
+			"pending": 0,
+			"executed": 1,
+			"failed": 0
+		},
+		"testSelection": {
+			"testFile": "transcript-lifecycle-ui.test",
+			"grep": null,
+			"forbidOnly": true
+		},
+		"exitCode": 0,
+		"retained": true,
+		"retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\evidence\\ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9\\retention-result.json",
+		"launchedHostPid": 32072,
+		"extensionHostPid": 47332,
+		"extensionHostParentPid": 32072,
+		"evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\evidence\\ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9\\manifest.json",
+		"captureComplete": true,
+		"retention": {
+			"schemaVersion": 1,
+			"runId": "ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+			"eligibility": "held",
+			"status": "complete",
+			"maintenance": "campaign-owned"
+		}
+	}
+}

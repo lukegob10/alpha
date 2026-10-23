@@ -179,7 +179,17 @@ describe("native tickets", () => {
 						properties: {
 							type: {
 								type: ["string", "null"],
-								enum: ["bug", "feature", "improvement", "testing", "performance", "ux", null],
+								enum: [
+									"bug",
+									"feature",
+									"improvement",
+									"testing",
+									"performance",
+									"ux",
+									"decision",
+									"review",
+									null,
+								],
 							},
 						},
 					},
@@ -192,8 +202,7 @@ describe("native tickets", () => {
 					parameters: {
 						properties: {
 							type: {
-								description:
-									"Ticket classification: bug, feature, improvement, testing, performance, or UX. Use null for no type.",
+								description: "Ticket classification. Use null for no type.",
 							},
 							priority: {
 								type: ["string", "null"],

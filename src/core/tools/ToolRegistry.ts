@@ -722,6 +722,10 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 			name !== "get_goal" &&
 			name !== "read_diagnostic_evidence" &&
 			name !== "report_progress" &&
+			name !== "send_message" &&
+			name !== "interrupt_agent" &&
+			name !== "cancel_agent" &&
+			name !== "close_agent" &&
 			name !== "list_tickets" &&
 			name !== "read_ticket" &&
 			name !== "list_tasks" &&

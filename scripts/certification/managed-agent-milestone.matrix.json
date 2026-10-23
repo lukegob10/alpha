@@ -59,10 +59,10 @@
 				"^core/webview/__tests__/stageThreeLegacyHandoff\\.integration\\.spec\\.ts$",
 				"^core/config/__tests__/(?:ProviderSettingsManager\\.(?:retention(?:-review)?|upgrade)|ContextProxy\\.profile-projection)\\.spec\\.ts$",
 				"^core/webview/__tests__/(?:AlphaProvider\\.(?:unavailable-profile-admission|profile-delete\\.availability|prompt-enhancement|pending-review-steering|diagnostics)|webviewMessageHandler\\.(?:profile-availability|enhancePrompt)|promptEnhancementRequests)\\.spec\\.ts$",
-				"^core/task/__tests__/.*(?:agent|descendant|nested).*\\.spec\\.ts$",
+				"^core/task/__tests__/.*(?:agent|managed|descendant|nested).*\\.spec\\.ts$",
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
-				"^core/webview/__tests__/(?:AlphaProvider\\.(?:editor-restore(?:\\.integration)?|flicker-free-cancel|native-stop-ownership|stop-finalization-retry|stop-queued-input|task-state-navigation|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry(?:\\.published-ask)?)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:AlphaProvider\\.(?:editor-restore(?:\\.integration)?|flicker-free-cancel|native-stop-ownership|stop-finalization-retry|stop-queued-input|task-state-navigation|.*(?:agent|managed|delegat|nested|tree).*)|TaskSessionRegistry(?:\\.published-ask)?)\\.spec\\.ts$",
 				"^__tests__/(?:delegation-events|history-resume-delegation|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
 			]
 		},
@@ -96,6 +96,7 @@
 				"^core/task/__tests__/(?:stageThreeCompletion\\.integration|completionDiagnostics)\\.spec\\.ts$",
 				"^core/task-persistence/__tests__/stageThreeVerificationRecovery\\.integration\\.spec\\.ts$",
 				"^core/webview/__tests__/AlphaProvider\\.primary-verification\\.spec\\.ts$",
+				"^core/webview/__tests__/AlphaProvider\\.worker-integration\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:attemptCompletionTool|executeCommandTool)\\.spec\\.ts$",
 				"^core/webview/__tests__/(?:AlphaProvider\\.change-set-actions|webviewMessageHandler\\.edit)\\.spec\\.ts$"
 			]
@@ -623,10 +624,16 @@
 		},
 		{
 			"id": "WORKER-GATE-001",
-			"requirement": "Worker changes remain quarantined until approval-mode policy safely settles them: Ask requires review, Auto/Full Access auto-apply eligible scoped changes, and parent verification gates completion while optional process evidence remains advisory.",
+			"requirement": "Completed Workers integrate approved scoped effects before result publication without a second review. Conflicts, partial work, reduced authority and saved proposals remain recoverable; effect settlement gates completion while optional process evidence remains advisory.",
 			"classification": "baseline",
 			"trackIds": ["runtime-invariants", "worker-worktree", "worker-completion-gate", "live-tree-ui"],
 			"probes": [
+				{
+					"label": "completed Worker integration without a second review",
+					"patterns": [
+						"integrates approved %s Worker effects before publishing a result without a second review"
+					]
+				},
 				{
 					"label": "durable Apply transition and verification",
 					"patterns": [
@@ -909,7 +916,7 @@
 		},
 		{
 			"id": "INT-WORKER-GATE-001",
-			"requirement": "Real VS Code host: Ask requires Worker Apply/Discard review while Auto/Full Access automatically apply eligible scoped changes; parent verification and optional process evidence retain their contract across reload.",
+			"requirement": "Real VS Code host: completed Workers integrate already-approved effects automatically; concurrent-edit conflicts and recoverable proposals retain Apply/Discard, parent settlement and optional process evidence across reload.",
 			"reason": "Requires the real extension host, terminal ownership, filesystem worktree, approval-mode transitions, UI review, reload, and completion transition.",
 			"evidenceCommand": null
 		},

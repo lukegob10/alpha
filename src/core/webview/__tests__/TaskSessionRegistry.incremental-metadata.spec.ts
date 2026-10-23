@@ -45,6 +45,29 @@ const createSnapshot = (taskId: string, overrides: Partial<AgentLifecycleSnapsho
 	})
 
 describe("incremental task metadata", () => {
+	it("projects turn identity and pending calls without exposing their history", () => {
+		const registry = new TaskSessionRegistry()
+		const task = createTask("target")
+		registry.register(task)
+		expect(registry.getMetadataForTask(task.taskId)).toMatchObject({ hasPendingToolCalls: false })
+		const pending = createSnapshot(task.taskId, {
+			acceptedToolCallIds: ["finished", "pending"],
+			terminalToolCallIds: ["finished"],
+		})
+		registry.markLifecycleSnapshot(task.taskId, pending)
+		expect(registry.getMetadataForTask(task.taskId)).toMatchObject({
+			turnId: pending.turnId,
+			hasPendingToolCalls: true,
+		})
+		registry.markLifecycleSnapshot(task.taskId, { ...pending, terminalToolCallIds: ["finished", "pending"] })
+		expect(registry.getMetadataForTask(task.taskId)).toMatchObject({
+			turnId: pending.turnId,
+			hasPendingToolCalls: false,
+		})
+		expect(registry.getMetadataForTask(task.taskId)).not.toHaveProperty("processedEvents")
+		expect(registry.getMetadataForTask(task.taskId)).not.toHaveProperty("items")
+	})
+
 	it("projects only the requested chat among fifty registered chats", () => {
 		const registry = new TaskSessionRegistry(50)
 		const tasks = Array.from({ length: 50 }, (_, index) => createTask(`task-${index}`))

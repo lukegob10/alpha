@@ -9,7 +9,10 @@ import { ScheduledTaskStore } from "../ScheduledTaskStore"
 
 const commandRunner = vi.hoisted(() => vi.fn(async () => ({ stdout: "done", stderr: "" })))
 
-vi.mock("../runScheduledCommand", () => ({ runScheduledCommand: commandRunner }))
+vi.mock("../runScheduledCommand", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../runScheduledCommand")>()),
+	runScheduledCommand: commandRunner,
+}))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 
 function deferred<T>() {
@@ -89,6 +92,7 @@ describe("before-run notifications remain advisory", () => {
 				start,
 				abortTask,
 			})),
+			removeTaskFromStack: vi.fn(async () => abortTask()),
 			providerSettingsManager: {
 				getProfile: vi.fn(async () => ({ id: "background", name: "Background", apiProvider: "openai" })),
 			},
@@ -124,12 +128,12 @@ describe("before-run notifications remain advisory", () => {
 				await setImmediate()
 				expect(kind === "prompt" ? start : commandRunner).toHaveBeenCalledTimes(2)
 				expect(runs.some((run) => run.status === "queued")).toBe(false)
-				service.dispose()
+				await service.dispose()
 				if (kind === "prompt") expect(abortTask).toHaveBeenCalledTimes(2)
 			} finally {
 				dismissed.resolve(undefined)
 				await Promise.all(processQueue.mock.results.map((result) => result.value))
-				service.dispose()
+				await service.dispose()
 			}
 		},
 	)
@@ -148,7 +152,7 @@ describe("before-run notifications remain advisory", () => {
 				expect(runs[0].status).toBe(kind === "prompt" ? "running" : "succeeded")
 				expect(outputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("Could not notify start"))
 			} finally {
-				service.dispose()
+				await service.dispose()
 			}
 		},
 	)
@@ -166,14 +170,14 @@ describe("before-run notifications remain advisory", () => {
 		try {
 			await service.runNow("first")
 			await Promise.all(processQueue.mock.results.map((result) => result.value))
-			if (dispose) service.dispose()
+			if (dispose) await service.dispose()
 			dismissed.resolve(true)
 			await Promise.all(notify.mock.results.map((result) => result.value))
 			if (dispose) expect(review).not.toHaveBeenCalled()
 			else expect(review).toHaveBeenCalledExactlyOnceWith("first", runs[0].id)
 		} finally {
 			dismissed.resolve(true)
-			service.dispose()
+			await service.dispose()
 		}
 	})
 
@@ -188,11 +192,11 @@ describe("before-run notifications remain advisory", () => {
 				"alpha-1",
 			)
 			expect(runs[0].status).toBe("succeeded")
-			service.dispose()
+			await service.dispose()
 			expect(abortTask).not.toHaveBeenCalled()
 		} finally {
 			dismissed.resolve(undefined)
-			service.dispose()
+			await service.dispose()
 		}
 	})
 
@@ -223,7 +227,7 @@ describe("before-run notifications remain advisory", () => {
 			} finally {
 				approved.resolve(false)
 				dismissed.resolve(undefined)
-				service.dispose()
+				await service.dispose()
 			}
 		},
 	)

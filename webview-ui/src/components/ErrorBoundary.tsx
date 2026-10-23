@@ -1,5 +1,6 @@
 import React, { Component } from "react"
 import { telemetryClient } from "@src/utils/TelemetryClient"
+import { reportWebviewError } from "@src/utils/webviewErrors"
 import { withTranslation, WithTranslation } from "react-i18next"
 
 type ErrorProps = {
@@ -36,6 +37,7 @@ class ErrorBoundary extends Component<ErrorProps, ErrorState> {
 	}
 
 	componentDidCatch(error: unknown, errorInfo: React.ErrorInfo) {
+		reportWebviewError("render", error)
 		const componentStack = errorInfo.componentStack || ""
 		this.setState({ componentStack })
 		void this.reportError(error, componentStack)

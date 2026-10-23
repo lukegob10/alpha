@@ -10,7 +10,7 @@ import {
 } from "@alpha-code/types"
 import { readFileSync } from "node:fs"
 
-import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
+import { ExtensionStateContextProvider, useExtensionState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
 import ChatView, { ChatViewProps, type ChatViewRef, isContextCondensationRequest } from "../ChatView"
@@ -1385,6 +1385,135 @@ describe("ChatView activity trace", () => {
 		fireEvent.click(view.getByTestId("chat-load-all"))
 		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeInTheDocument())
 		expect(view.queryByTestId("chat-load-older")).not.toBeInTheDocument()
+	})
+
+	it("bounds a restored live transcript when mounted after state hydration", async () => {
+		// App mounts ChatView only after hydration; mounting before it masks a fixed render-window start.
+		function HydratedChatView() {
+			const { didHydrateState } = useExtensionState()
+			return didHydrateState ? <ChatView {...defaultProps} /> : null
+		}
+		const view = render(
+			<ExtensionStateContextProvider>
+				<QueryClientProvider client={queryClient}>
+					<HydratedChatView />
+				</QueryClientProvider>
+			</ExtensionStateContextProvider>,
+		)
+		const taskId = "restored-long-running-task"
+		const state = {
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isTurnActive: true,
+					isStreaming: true,
+					isWaitingForInput: false,
+				},
+			},
+		}
+		const prompt: AlphaMessage = { ts: 1, type: "say", say: "task", text: "Continue the large project" }
+		mockPostMessage({ ...state, clineMessages: [prompt] })
+		await view.findByTestId("chat-transcript-content")
+
+		const messages: AlphaMessage[] = Array.from({ length: 2_000 }, (_, index) => ({
+			ts: index + 2,
+			type: "say",
+			say: "tool",
+			text: JSON.stringify({ tool: "readFile", path: `src/file-${index}.ts`, content: `src/file-${index}.ts` }),
+		}))
+		for (let count = 100; count <= messages.length; count += 100) {
+			mockPostMessage({ ...state, clineMessages: [prompt, ...messages.slice(0, count)] })
+			await waitFor(() =>
+				expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", String(count)),
+			)
+		}
+
+		expect(view.getByRole("group", { name: "common:chatToolbar.label" })).toBeInTheDocument()
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-rendered-count", "80")
+		expect(view.container.querySelectorAll("[data-chat-message-index]")).toHaveLength(80)
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "condenseTaskContextStarted", text: taskId } }),
+			)
+		})
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", "2001")
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-rendered-count", "80")
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "condenseTaskContextResponse", text: taskId } }),
+			)
+		})
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", "2000")
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-rendered-count", "80")
+		expect(view.getByRole("group", { name: "common:chatToolbar.label" })).toBeInTheDocument()
+	})
+
+	it("preserves browsing rows and checkpoint navigation until returning to the latest output", async () => {
+		const view = renderChatView()
+		const taskId = "browsing-long-running-task"
+		const messages: AlphaMessage[] = Array.from({ length: 400 }, (_, index) => ({
+			ts: index + 2,
+			type: "say",
+			say: index === 30 ? "checkpoint_saved" : "text",
+			text: index === 30 ? "checkpoint-30" : `Progress ${index}`,
+		}))
+		const publish = (count: number) =>
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						status: "running",
+						lifecycle: "running",
+						isActive: true,
+						isTurnActive: true,
+						isStreaming: true,
+						isWaitingForInput: false,
+					},
+				},
+				clineMessages: [
+					{ ts: 1, type: "say", say: "task", text: "Continue the large project" },
+					...messages.slice(0, count),
+				],
+			})
+		publish(200)
+		const firstBrowsingRow = await view.findByTestId("chat-message-120")
+		const scroller = view.getByTestId("chat-transcript-scroller")
+		Object.defineProperties(scroller, {
+			scrollHeight: { configurable: true, value: 10_000 },
+			clientHeight: { configurable: true, value: 400 },
+			scrollTop: { configurable: true, writable: true, value: 9_000 },
+		})
+		fireEvent.wheel(scroller, { deltaY: -100 })
+		await view.findByRole("button", { name: "chat:scrollToBottom" })
+
+		publish(300)
+		await waitFor(() => expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", "300"))
+		expect(view.getByTestId("chat-message-120")).toBe(firstBrowsingRow)
+		expect(scroller.scrollTop).toBe(9_000)
+
+		fireEvent.click(view.getByRole("button", { name: "chat:scrollToLatestCheckpoint" }))
+		const checkpointRow = await view.findByTestId("chat-message-30")
+		expect(checkpointRow.scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" })
+		publish(400)
+		await waitFor(() => expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", "400"))
+		expect(view.getByTestId("chat-message-30")).toBe(checkpointRow)
+
+		fireEvent.click(view.getByTestId("chat-load-older"))
+		expect(view.getByTestId("chat-message-0")).toBeInTheDocument()
+		expect(view.queryByTestId("chat-load-older")).not.toBeInTheDocument()
+		const retainedLatestRow = view.getByTestId("chat-message-399")
+		fireEvent.click(view.getByRole("button", { name: "chat:scrollToBottom" }))
+		expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-rendered-count", "80")
+		expect(view.queryByTestId("chat-message-30")).not.toBeInTheDocument()
+		expect(view.getByTestId("chat-message-399")).toBe(retainedLatestRow)
 	})
 })
 
@@ -3296,7 +3425,11 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 		afterEach(() => vi.useRealTimers())
 
-		const publishActivity = (phase: string | undefined, overrides: Partial<ExtensionState> = {}) => {
+		const publishActivity = (
+			phase: string | undefined,
+			overrides: Partial<ExtensionState> = {},
+			hostLifecycle?: { turnId?: string; hasPendingToolCalls: boolean },
+		) => {
 			mockPostMessage({
 				currentTaskId: "task-1",
 				currentView: { type: "task", taskId: "task-1" },
@@ -3316,6 +3449,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						tokensIn: 0,
 						tokensOut: 0,
 						totalCost: 0,
+						...hostLifecycle,
 					},
 				},
 				clineMessages: [{ type: "say", say: "task", ts: 1, text: "Waiting test" }],
@@ -3371,6 +3505,14 @@ describe("ChatView - Message Queueing Tests", () => {
 			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
 			act(() => vi.advanceTimersByTime(300_000))
 			expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+		})
+
+		it.each([false, true])("uses compact host pending-tool state (%s)", async (hasPendingToolCalls) => {
+			const { getByTestId, queryByText } = renderChatView()
+			publishActivity("working", {}, { turnId: "compact-turn", hasPendingToolCalls })
+			await waitFor(() => expect(getByTestId("mock-stop")).toBeEnabled())
+			act(() => vi.advanceTimersByTime(30_000))
+			expect(Boolean(queryByText("chat:modelResponseDelayed"))).toBe(!hasPendingToolCalls)
 		})
 
 		it.each(["completed", "error", "cancelled"])(
@@ -4027,77 +4169,105 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(getByRole("alert")).toHaveTextContent("chat:queuedMessages.queueFailed")
 	})
 
-	it("submits a steering draft once and retains new typing until its receipt", async () => {
-		const ref = React.createRef<ChatViewRef>()
-		const view = renderChatView({}, ref)
-		mockPostMessage({
-			currentTaskId: "task-1",
-			agentLifecycleSnapshots: {
-				"task-1": agentLifecycleSnapshotSchema.parse({
-					version: 1,
-					taskId: "task-1",
-					runId: "run-1",
-					turnId: "observed-turn",
-					status: "in_progress",
-					phase: "working",
-					lastSequence: 0,
-					items: [],
-					steps: [],
-					acceptedToolCallIds: [],
-					terminalToolCallIds: [],
-					processedEvents: [],
-				}),
-			},
-			clineMessages: [
-				{ type: "say", say: "task", ts: 1, text: "Initial task" },
-				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
-			],
-		})
-		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
-		fireEvent.change(input, { target: { value: "Use the existing parser" } })
-		vi.mocked(vscode.postMessage).mockClear()
-		act(() => {
-			ref.current!.sendAndSteer("task-1")
-			ref.current!.sendAndSteer("task-1")
-		})
-		const requests = vi
-			.mocked(vscode.postMessage)
-			.mock.calls.map(([request]) => request)
-			.filter((request) => request.type === "sendAndSteer")
-		expect(requests).toHaveLength(1)
-		const request = requests[0]
-		expect(request).toMatchObject({
-			taskId: "task-1",
-			expectedTurnId: "observed-turn",
-			text: "Use the existing parser",
-			images: [],
-			requestId: expect.any(String),
-		})
-		fireEvent.click(view.getByTestId("mock-stop"))
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "cancelTask",
-			taskId: "task-1",
-			expectedTurnId: "observed-turn",
-		})
-		expect(input).toHaveValue("Use the existing parser")
-		fireEvent.change(input, { target: { value: "Next instruction" } })
-		act(() =>
-			window.dispatchEvent(
-				new MessageEvent("message", {
-					data: {
-						type: "chatCommandResult",
-						chatCommandResult: {
-							command: "sendAndSteer",
-							taskId: "task-1",
-							requestId: request.requestId,
-							status: "accepted",
+	it.each(["legacy", "compact"])(
+		"submits a %s steering draft once and retains new typing until its receipt",
+		async (source) => {
+			const observedTurnId = source === "compact" ? "compact-turn" : "observed-turn"
+			const ref = React.createRef<ChatViewRef>()
+			const view = renderChatView({}, ref)
+			mockPostMessage({
+				currentTaskId: "task-1",
+				...(source === "compact"
+					? {
+							liveTasksById: {
+								"task-1": {
+									id: "task-1",
+									status: "running",
+									lifecycle: "running",
+									isActive: true,
+									isStreaming: true,
+									isTurnActive: true,
+									canInterrupt: true,
+									isWaitingForInput: false,
+									turnId: observedTurnId,
+									hasPendingToolCalls: false,
+									queueCount: 0,
+									tokensIn: 0,
+									tokensOut: 0,
+									totalCost: 0,
+								},
+							},
+						}
+					: {}),
+				agentLifecycleSnapshots: {
+					"task-1": agentLifecycleSnapshotSchema.parse({
+						version: 1,
+						taskId: "task-1",
+						runId: "run-1",
+						turnId: "observed-turn",
+						status: "in_progress",
+						phase: "working",
+						lastSequence: 0,
+						items: [],
+						steps: [],
+						acceptedToolCallIds: [],
+						terminalToolCallIds: [],
+						processedEvents: [],
+					}),
+				},
+				clineMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Initial task" },
+					{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+				],
+			})
+			const input = await waitFor(
+				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
+			)
+			fireEvent.change(input, { target: { value: "Use the existing parser" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			act(() => {
+				ref.current!.sendAndSteer("task-1")
+				ref.current!.sendAndSteer("task-1")
+			})
+			const requests = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([request]) => request)
+				.filter((request) => request.type === "sendAndSteer")
+			expect(requests).toHaveLength(1)
+			const request = requests[0]
+			expect(request).toMatchObject({
+				taskId: "task-1",
+				expectedTurnId: observedTurnId,
+				text: "Use the existing parser",
+				images: [],
+				requestId: expect.any(String),
+			})
+			fireEvent.click(view.getByTestId("mock-stop"))
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "cancelTask",
+				taskId: "task-1",
+				expectedTurnId: observedTurnId,
+			})
+			expect(input).toHaveValue("Use the existing parser")
+			fireEvent.change(input, { target: { value: "Next instruction" } })
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: {
+								command: "sendAndSteer",
+								taskId: "task-1",
+								requestId: request.requestId,
+								status: "accepted",
+							},
 						},
-					},
-				}),
-			),
-		)
-		expect(input).toHaveValue("Next instruction")
-	})
+					}),
+				),
+			)
+			expect(input).toHaveValue("Next instruction")
+		},
+	)
 
 	describe.each([undefined, false, true])("ordinary submission with autoSteer=%s", (autoSteer) => {
 		it.each(["Enter", "click", "host command"] as const)(

@@ -221,6 +221,20 @@ describe("agent lifecycle tools", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status }))
 	})
 
+	it("presents a steered wait with the existing cancellation state", async () => {
+		const { provider, task, say, callbacks } = harness()
+		provider.waitForAgent.mockResolvedValueOnce({ timedOut: false, interrupted: true, reason: "steered_input" })
+
+		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
+
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "cancelled" })
+		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
+			lifecycleStatus: "completed",
+			cancelled: true,
+			timedOut: false,
+		})
+	})
+
 	it("dispatches a targeted terminal wait without changing legacy wait calls", async () => {
 		const { provider, task, callbacks } = harness()
 

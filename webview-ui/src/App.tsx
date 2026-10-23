@@ -10,6 +10,7 @@ import { MarketplaceViewStateManager } from "./components/marketplace/Marketplac
 import { vscode } from "./utils/vscode"
 import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
+import { initializeWebviewErrorReporting } from "./utils/webviewErrors"
 import { ExtensionStateContextProvider, useShellState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
 import ChatToolbar from "./components/chat/ChatToolbar"
@@ -266,6 +267,7 @@ const App = () => {
 
 	// Initialize source map support for better error reporting
 	useEffect(() => {
+		const disposeErrorReporting = initializeWebviewErrorReporting()
 		// Initialize source maps for better error reporting in production
 		initializeSourceMaps()
 
@@ -276,6 +278,7 @@ const App = () => {
 
 		// Log initialization for debugging
 		console.debug("App initialized with source map support")
+		return disposeErrorReporting
 	}, [])
 
 	// Focus the WebView when non-interactive content is clicked (only in editor/tab mode)

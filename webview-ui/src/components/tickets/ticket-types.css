@@ -54,6 +54,14 @@
 	--ticket-type-accent: var(--vscode-charts-green, var(--vscode-textLink-foreground));
 }
 
+.ticket-type-badge[data-type="decision"] {
+	--ticket-type-accent: var(--vscode-charts-yellow, var(--vscode-textLink-foreground));
+}
+
+.ticket-type-badge[data-type="review"] {
+	--ticket-type-accent: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+}
+
 @supports (background: color-mix(in srgb, black, white)) {
 	.ticket-type-badge {
 		border-color: var(

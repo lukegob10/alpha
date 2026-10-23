@@ -322,6 +322,33 @@ export const webviewFocusChangedMessageSchema = z.object({
 	focused: z.boolean(),
 })
 
+/** Local renderer diagnostics never carry error text, stacks, resource URLs, or conversation data. */
+export const webviewErrorMessageSchema = z
+	.object({
+		type: z.literal("webviewError"),
+		source: z.enum(["render", "window", "rejection", "resource"]),
+		errorType: z.enum([
+			"Error",
+			"TypeError",
+			"RangeError",
+			"ReferenceError",
+			"SyntaxError",
+			"URIError",
+			"EvalError",
+			"AggregateError",
+			"ChunkLoadError",
+			"other",
+		]),
+		failure: z.enum(["stack_overflow", "invalid_string_length", "chunk_load", "resource_load", "other"]),
+		visibility: z.enum(["visible", "hidden"]),
+		line: z.number().int().min(0).max(1_000_000_000).optional(),
+		column: z.number().int().min(0).max(1_000_000_000).optional(),
+		resourceType: z.enum(["script", "style", "image"]).optional(),
+	})
+	.strict()
+
+export type WebviewErrorMessage = z.infer<typeof webviewErrorMessageSchema>
+
 export const cancelEnhancePromptMessageSchema = z.object({
 	type: z.literal("cancelEnhancePrompt"),
 	requestId: z.string().min(1).max(128),
@@ -794,6 +821,7 @@ interface WebviewMessageBase {
 		| "webviewDidLaunch"
 		| "webviewUiReady"
 		| "webviewFocusChanged"
+		| "webviewError"
 		| "newTask"
 		| "resumeCompletedTask"
 		| "startBlankTask"
@@ -1111,6 +1139,7 @@ interface WebviewMessageBase {
 }
 
 export type WebviewMessage =
+	| (Omit<WebviewMessageBase, "type" | "source"> & WebviewErrorMessage)
 	| (Omit<WebviewMessageBase, "type"> & { type: "renameTask"; taskRenameRequest: TaskRenameRequest })
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
 	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })
@@ -1161,6 +1190,7 @@ export type WebviewMessage =
 				| "renameTask"
 				| "webviewUiReady"
 				| "webviewFocusChanged"
+				| "webviewError"
 				| "queueMessage"
 				| "sendAndSteer"
 				| "toolApprovalResponse"

@@ -41,13 +41,7 @@ const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", 
 const COPILOT_MINIMAL_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["minimal", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
 const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
-const COPILOT_GPT_6_ASTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-]
+const COPILOT_GPT_6_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh", "max"]
 const COPILOT_KIMI_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "high", "max"]
 const COPILOT_CLAUDE_46_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "max"]
 const COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
@@ -192,7 +186,7 @@ export const vscodeLlmModels = {
 			family: "gpt-6-astra",
 			contextWindow: COPILOT_GPT_6_CONTEXT_WINDOW,
 			supportsImages: true,
-			supportsReasoningEffort: COPILOT_GPT_6_ASTRA_REASONING_EFFORTS,
+			supportsReasoningEffort: COPILOT_GPT_6_REASONING_EFFORTS,
 			supportsContextWindowConfiguration: true,
 			extendedContextSize: COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE,
 		}),
@@ -224,7 +218,7 @@ export const vscodeLlmModels = {
 		family: "gpt-6.1-sol",
 		contextWindow: COPILOT_GPT_6_1_SOL_INPUT_CEILING,
 		supportsImages: true,
-		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
+		supportsReasoningEffort: COPILOT_GPT_6_REASONING_EFFORTS,
 	}),
 	"claude-fable-5": copilotModel({
 		name: "Claude Fable 5",
@@ -239,6 +233,15 @@ export const vscodeLlmModels = {
 		name: "Claude Haiku 4.5",
 		family: "claude-haiku-4.5",
 		supportsImages: true,
+	}),
+	"claude-haiku-5.5": copilotModel({
+		name: "Claude Haiku 5.5",
+		family: "claude-haiku-5.5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
 	}),
 	"claude-sonnet-4.5": copilotModel({
 		name: "Claude Sonnet 4.5",
@@ -257,6 +260,15 @@ export const vscodeLlmModels = {
 	"claude-sonnet-5": copilotModel({
 		name: "Claude Sonnet 5",
 		family: "claude-sonnet-5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+	}),
+	"claude-sonnet-5.5": copilotModel({
+		name: "Claude Sonnet 5.5",
+		family: "claude-sonnet-5.5",
 		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
@@ -312,6 +324,17 @@ export const vscodeLlmModels = {
 		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
 		requiredReasoningEffort: true,
 		reasoningEffort: "high",
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
+	}),
+	"claude-opus-5.5": copilotModel({
+		name: "Claude Opus 5.5",
+		family: "claude-opus-5.5",
+		contextWindow: COPILOT_CLAUDE_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS,
+		requiredReasoningEffort: true,
+		reasoningEffort: "medium",
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE,
 	}),
@@ -433,7 +456,13 @@ export const vscodeLlmModels = {
 
 const vscodeLlmModelAliases: Partial<Record<VscodeLlmModelId, readonly string[]>> = {
 	// The first alias is also the broad catalog family; retain the canonical selector.
-	"gpt-6.1-sol": ["gpt-6.1-sol", "gpt-6.1 sol"],
+	"gpt-6-astra": ["gpt-6-astra", "gpt-6 astra", "gpt 6 astra"],
+	"gpt-6-luna": ["gpt-6-luna", "gpt-6 luna", "gpt 6 luna"],
+	"gpt-6-sol": ["gpt-6-sol", "gpt-6 sol", "gpt 6 sol"],
+	"gpt-6.1-sol": ["gpt-6.1-sol", "gpt-6.1 sol", "gpt 6.1 sol"],
+	"claude-haiku-5.5": ["claude-haiku-5.5", "claude-haiku-5-5", "claude haiku 5.5"],
+	"claude-sonnet-5.5": ["claude-sonnet-5.5", "claude-sonnet-5-5", "claude sonnet 5.5"],
+	"claude-opus-5.5": ["claude-opus-5.5", "claude-opus-5-5", "claude opus 5.5"],
 	"gemini-3-flash": ["gemini-3-flash-preview"],
 	"gemini-3.1-pro": ["gemini-3.1-pro-preview"],
 	"mai-code-1-flash": ["mai-code-1-flash-picker"],

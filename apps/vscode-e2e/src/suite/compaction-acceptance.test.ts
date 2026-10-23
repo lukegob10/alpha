@@ -3,7 +3,14 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
 
-import { AlphaCodeEventName, getVscodeLlmContextWindow, type AlphaCodeSettings } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	getVscodeLlmContextWindow,
+	TaskLifecycleState,
+	type AlphaCodeSettings,
+	type AgentLifecycleSnapshot,
+	type ExtensionState,
+} from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
@@ -402,10 +409,17 @@ type CompactionHost = {
 		| undefined
 	getTaskWithId(taskId: string): Promise<{ apiConversationHistory: HistoryMessage[] }>
 	showTaskWithId(taskId: string): Promise<void>
-	getStateToPostToWebview(): Promise<{
-		currentTaskId?: string
-		agentLifecycleSnapshots?: Record<string, { status: string }>
-	}>
+	getAgentLifecycleSnapshot(taskId: string): AgentLifecycleSnapshot | undefined
+	getStateToPostToWebview(): Promise<Partial<ExtensionState>>
+}
+
+function assertCompletedTaskState(provider: CompactionHost, state: Partial<ExtensionState>, taskId: string) {
+	const canonical = provider.getAgentLifecycleSnapshot(taskId)
+	assert.equal(canonical?.status, "completed", "The canonical journal must retain terminal completion")
+	assert.equal(state.liveTasksById?.[taskId]?.lifecycle, TaskLifecycleState.Completed)
+	assert.equal(state.liveTasksById?.[taskId]?.turnId, canonical?.turnId)
+	assert.equal(state.liveTasksById?.[taskId]?.hasPendingToolCalls, false)
+	assert.equal(state.agentLifecycleSnapshots, undefined, "UI state must not retransmit the full lifecycle journal")
 }
 
 suite("Alpha native compaction acceptance", function () {
@@ -454,7 +468,7 @@ suite("Alpha native compaction acceptance", function () {
 					)
 					const state = await provider.getStateToPostToWebview()
 					assert.equal(state.currentTaskId, taskId)
-					assert.equal(state.agentLifecycleSnapshots?.[taskId]?.status, "completed")
+					assertCompletedTaskState(provider, state, taskId)
 					const task = provider.getLiveTask(taskId)!
 					assert.equal(task.instanceId, instanceId)
 					assert.equal(task.isStreaming, false)
@@ -548,10 +562,7 @@ suite("Alpha native compaction acceptance", function () {
 			})
 			assert.equal(model.requests.length, 3)
 			assert.equal(model.requests[2]!.rejected, false)
-			assert.equal(
-				(await provider.getStateToPostToWebview()).agentLifecycleSnapshots?.[healthyId]?.status,
-				"completed",
-			)
+			assertCompletedTaskState(provider, await provider.getStateToPostToWebview(), healthyId)
 		} finally {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			await api.clearCurrentTask().catch(() => undefined)
@@ -661,7 +672,7 @@ suite("Alpha native compaction acceptance", function () {
 			)
 			const state = await provider.getStateToPostToWebview()
 			assert.equal(state.currentTaskId, taskId)
-			assert.equal(state.agentLifecycleSnapshots?.[taskId]?.status, "completed")
+			assertCompletedTaskState(provider, state, taskId)
 		} finally {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			api.off(AlphaCodeEventName.TaskCreated, onCreated)

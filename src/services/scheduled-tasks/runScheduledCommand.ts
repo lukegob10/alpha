@@ -9,6 +9,14 @@ const PROCESS_CLOSE_TIMEOUT_MS = 11_000
 type CommandOptions = { cwd?: string; signal: AbortSignal; timeoutMs: number }
 type CommandOutput = { stdout: string; stderr: string }
 
+/** Process-tree termination rejected, so a failed command is not proof that its effects stopped. */
+export class ScheduledCommandCleanupError extends Error {
+	constructor(message: string, options: ErrorOptions) {
+		super(message, options)
+		this.name = "ScheduledCommandCleanupError"
+	}
+}
+
 /** The command string has already passed scheduled-command approval. */
 export async function runScheduledCommand(command: string, options: CommandOptions): Promise<CommandOutput> {
 	if (options.signal.aborted) throw new Error("Command aborted during shutdown")
@@ -61,10 +69,19 @@ export async function runScheduledCommand(command: string, options: CommandOptio
 				detachedProcessGroup: process.platform !== "win32" ? child.pid : undefined,
 				graceful: true,
 			}).catch((error: unknown) => {
-				failure = new Error(`${failure?.message}; process cleanup failed: ${String(error)}`, { cause: error })
+				failure = new ScheduledCommandCleanupError(
+					`${failure?.message}; process cleanup failed: ${String(error)}`,
+					{
+						cause: error,
+					},
+				)
 			})
 			closeTimer = setTimeout(() => {
-				failure = new Error(`${failure?.message}; timed out waiting for the scheduled command process to close`)
+				const message = `${failure?.message}; timed out waiting for the scheduled command process to close`
+				failure =
+					failure instanceof ScheduledCommandCleanupError
+						? new ScheduledCommandCleanupError(message, { cause: failure.cause })
+						: new Error(message, { cause: failure })
 				child.stdout?.destroy()
 				child.stderr?.destroy()
 				closed = true

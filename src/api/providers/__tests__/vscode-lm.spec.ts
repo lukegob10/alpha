@@ -1980,7 +1980,7 @@ describe("VsCodeLmHandler", () => {
 					instructionModelId: "gpt-6.1-sol",
 					toolIdentity: { provider: "vscode-lm", vendor: "copilot", family: "gpt-6.1-sol", id },
 					info: {
-						supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+						supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 						supportsImages: true,
 						contextWindow: gpt61SolModel.maxInputTokens,
 						contextWindowIncludesOutput: false,
@@ -1988,6 +1988,139 @@ describe("VsCodeLmHandler", () => {
 				})
 			},
 		)
+
+		it.each([
+			["claude-opus-5.5", "Claude Opus 5.5", ["low", "medium", "high", "xhigh", "max"]],
+			["claude-sonnet-5.5", "Claude Sonnet 5.5", ["low", "medium", "high", "xhigh", "max"]],
+			["claude-haiku-5.5", "Claude Haiku 5.5", ["low", "medium", "high", "xhigh", "max"]],
+			["gpt-6-astra", "GPT-6 Astra", ["low", "medium", "high", "xhigh", "max"]],
+			["gpt-6-luna", "GPT-6 Luna", ["none", "low", "medium", "high", "xhigh", "max"]],
+			["gpt-6-sol", "GPT-6 Sol", ["none", "low", "medium", "high", "xhigh", "max"]],
+			["gpt-6.1-sol", "GPT-6.1 Sol", ["low", "medium", "high", "xhigh", "max"]],
+		] as const)(
+			"routes every %s task effort through streaming and single completions",
+			async (family, name, efforts) => {
+				mockVsCodeVersion.value = "1.138.0"
+				handler.dispose()
+				const model = {
+					...mockLanguageModelChat,
+					id: `copilot/${family}/opaque-route`,
+					vendor: "copilot",
+					family,
+					name,
+					version: "2026-10-22",
+					sendRequest: vi.fn().mockImplementation(async () => ({
+						stream: (async function* () {
+							yield new vscode.LanguageModelTextPart("Reasoned response")
+						})(),
+					})),
+				}
+				const profile: ProviderSettings = {
+					apiProvider: "vscode-lm",
+					vsCodeLmModelSelector: { vendor: model.vendor, family, id: model.id },
+				}
+				handler = new VsCodeLmHandler(profile)
+				handler["client"] = model as unknown as vscode.LanguageModelChat
+
+				for (const effort of efforts) {
+					const resolution = resolveTaskReasoning(profile, { kind: "effort", effort }, handler.getModel())
+					expect(resolution.state.effective).toEqual({ kind: "effort", effort })
+					expect(resolution.state.capabilities.efforts).toEqual(efforts)
+					handler.setReasoningOptions(resolution.configuration)
+
+					for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think" }])) {
+						// Consume the response before issuing the independent single completion.
+					}
+					await handler.completePrompt("Think")
+
+					expect(model.sendRequest).toHaveBeenCalledTimes(2)
+					for (const [, options] of model.sendRequest.mock.calls) {
+						expect(options).toMatchObject({
+							modelOptions: {
+								reasoningEffort: effort,
+								...(family.startsWith("claude-") ? { _enableThinking: true } : {}),
+							},
+							configuration: { reasoningEffort: effort },
+						})
+						expect(options.configuration).toEqual({ reasoningEffort: effort })
+						if (!family.startsWith("claude-"))
+							expect(options.modelOptions).not.toHaveProperty("_enableThinking")
+					}
+					model.sendRequest.mockClear()
+				}
+				expect(handler.getModel().id).toBe(model.id)
+				expect(profile).not.toHaveProperty("reasoningEffort")
+			},
+		)
+
+		it.each([
+			["claude-opus-5.5", "medium"],
+			["gpt-6.1-sol", "low"],
+		] as const)("omits an unsupported None request for %s", async (family, fallbackEffort) => {
+			mockVsCodeVersion.value = "1.138.0"
+			handler.dispose()
+			const profile: ProviderSettings = {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", family },
+				enableReasoningEffort: true,
+				reasoningEffort: "none",
+			}
+			handler = new VsCodeLmHandler(profile)
+			const model = {
+				...mockLanguageModelChat,
+				id: `copilot/${family}/opaque-route`,
+				vendor: "copilot",
+				family,
+				sendRequest: vi.fn().mockImplementation(async () => ({
+					stream: (async function* () {
+						yield new vscode.LanguageModelTextPart("Host default response")
+					})(),
+				})),
+			}
+			handler["client"] = model as unknown as vscode.LanguageModelChat
+			expect(handler.getModel().info.supportsReasoningEffort).not.toContain("none")
+			await handler.completePrompt("Think")
+			expect(model.sendRequest.mock.calls[0]?.[1]).not.toHaveProperty("modelOptions.reasoningEffort")
+			expect(model.sendRequest.mock.calls[0]?.[1]).not.toHaveProperty("configuration.reasoningEffort")
+			expect(model.sendRequest.mock.calls[0]?.[1]).not.toHaveProperty("modelOptions._enableThinking")
+
+			const requested = { kind: "effort", effort: "none" } as const
+			const resolution = resolveTaskReasoning(profile, requested, handler.getModel())
+			expect(resolution.state.requested).toEqual(requested)
+			expect(resolution.state.effective).toEqual({ kind: "effort", effort: fallbackEffort })
+			handler.setReasoningOptions(resolution.configuration)
+			await handler.completePrompt("Use the supported fallback")
+			expect(model.sendRequest.mock.calls[1]?.[1]).toMatchObject({
+				modelOptions: {
+					reasoningEffort: fallbackEffort,
+					...(family.startsWith("claude-") ? { _enableThinking: true } : {}),
+				},
+				configuration: { reasoningEffort: fallbackEffort },
+			})
+			expect(profile.reasoningEffort).toBe("none")
+		})
+
+		it.each([
+			["1.125.0", undefined],
+			["1.135.0", undefined],
+			["1.136.1", true],
+			["1.138.0", true],
+		] as const)("uses the verified Claude thinking bridge on host %s", async (version, enableThinking) => {
+			mockVsCodeVersion.value = version
+			handler.dispose()
+			handler = new VsCodeLmHandler({ ...defaultOptions, enableReasoningEffort: true, reasoningEffort: "high" })
+			handler["client"] = mockCopilotClaudeOpus5LanguageModelChat as unknown as vscode.LanguageModelChat
+			mockCopilotClaudeOpus5LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Claude response")
+				})(),
+			})
+
+			await handler.completePrompt("Think")
+			const options = mockCopilotClaudeOpus5LanguageModelChat.sendRequest.mock.calls[0]?.[1]
+			expect(options?.modelOptions?._enableThinking).toBe(enableThinking)
+			expect(options?.configuration).toEqual({ reasoningEffort: "high" })
+		})
 
 		it("should pass Claude's 1M-tier input budget through both model option routes", async () => {
 			handler = new VsCodeLmHandler({
@@ -2056,13 +2189,24 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
-		it("enables Claude Opus 5's required default effort through the task resolver", async () => {
+		it.each([
+			["claude-opus-5", "high"],
+			["claude-opus-5.5", "medium"],
+		] as const)("enables %s's required default effort through the task resolver", async (family, effort) => {
+			mockVsCodeVersion.value = "1.138.0"
 			handler = new VsCodeLmHandler(defaultOptions)
-			handler["client"] = mockCopilotClaudeOpus5LanguageModelChat as any
+			handler["client"] = {
+				...mockCopilotClaudeOpus5LanguageModelChat,
+				id: `copilot-${family}`,
+				family,
+				name: `Claude Opus ${family.slice("claude-opus-".length)}`,
+				version: family,
+			} as unknown as vscode.LanguageModelChat
 
 			const profile: ProviderSettings = { ...defaultOptions, apiProvider: "vscode-lm" }
 			const resolution = resolveTaskReasoning(profile, { kind: "default" }, handler.getModel())
-			expect(resolution.state.effective).toEqual({ kind: "effort", effort: "high" })
+			expect(resolution.state.effective).toEqual({ kind: "effort", effort })
+			expect(resolution.state.capabilities.canDisable).toBe(false)
 			handler.setReasoningOptions(resolution.configuration)
 
 			mockCopilotClaudeOpus5LanguageModelChat.sendRequest.mockResolvedValueOnce({
@@ -2078,8 +2222,8 @@ describe("VsCodeLmHandler", () => {
 			expect(mockCopilotClaudeOpus5LanguageModelChat.sendRequest).toHaveBeenCalledWith(
 				expect.any(Array),
 				expect.objectContaining({
-					modelOptions: { reasoningEffort: "high" },
-					configuration: { reasoningEffort: "high" },
+					modelOptions: { reasoningEffort: effort, _enableThinking: true },
+					configuration: { reasoningEffort: effort },
 				}),
 				expect.anything(),
 			)

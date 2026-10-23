@@ -1,0 +1,644 @@
+{
+	"phase": "after-final-tree-fix",
+	"runId": "ui-f24ab891-453b-484b-b005-87017eef1acf",
+	"command": "pnpm --filter @alpha-code/vscode-e2e test:transcript-lifecycle-ui:1380",
+	"limitations": [
+		"No actual blank panel or renderer crash was reproduced in the bounded runs.",
+		"DOM counters include renderer-owned detached nodes until collection; heap values are point samples, not retained heap or a general performance claim."
+	],
+	"workload": {
+		"initialSyntheticRows": 1200,
+		"growingAppends": [320, 320, 320],
+		"hiddenAppendRows": 320,
+		"browsingAppendRows": 40,
+		"mainProviderRequests": 4,
+		"realTaskCompactions": 3,
+		"liveModelRequests": 0
+	},
+	"observations": {
+		"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+		"hostVersion": "1.138.0",
+		"observations": [
+			{
+				"stage": "transcript-hydrated",
+				"totalRows": 1202,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1122,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 31117,
+				"dom": {
+					"documents": 10,
+					"nodes": 7329,
+					"jsEventListeners": 2026
+				},
+				"heap": {
+					"usedBytes": 49312300,
+					"totalBytes": 88354816
+				}
+			},
+			{
+				"stage": "transcript-growing-one",
+				"totalRows": 1523,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1443,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 31117,
+				"dom": {
+					"documents": 5,
+					"nodes": 11643,
+					"jsEventListeners": 2573
+				},
+				"heap": {
+					"usedBytes": 52681400,
+					"totalBytes": 116715520
+				}
+			},
+			{
+				"stage": "transcript-compact-one",
+				"totalRows": 1524,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1444,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17367,
+				"dom": {
+					"documents": 5,
+					"nodes": 11700,
+					"jsEventListeners": 3321
+				},
+				"heap": {
+					"usedBytes": 73733952,
+					"totalBytes": 117239808
+				}
+			},
+			{
+				"stage": "transcript-busy-one",
+				"totalRows": 1525,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1445,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17389,
+				"dom": {
+					"documents": 5,
+					"nodes": 11735,
+					"jsEventListeners": 3325
+				},
+				"heap": {
+					"usedBytes": 74459104,
+					"totalBytes": 117239808
+				}
+			},
+			{
+				"stage": "transcript-compacted-one",
+				"totalRows": 1525,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1445,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17414,
+				"dom": {
+					"documents": 5,
+					"nodes": 11843,
+					"jsEventListeners": 3344
+				},
+				"heap": {
+					"usedBytes": 58457736,
+					"totalBytes": 121434112
+				}
+			},
+			{
+				"stage": "transcript-growing-two",
+				"totalRows": 1846,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1766,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 31117,
+				"dom": {
+					"documents": 5,
+					"nodes": 15917,
+					"jsEventListeners": 4288
+				},
+				"heap": {
+					"usedBytes": 69635164,
+					"totalBytes": 135327744
+				}
+			},
+			{
+				"stage": "transcript-compact-two",
+				"totalRows": 1847,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1767,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17367,
+				"dom": {
+					"documents": 5,
+					"nodes": 15974,
+					"jsEventListeners": 5036
+				},
+				"heap": {
+					"usedBytes": 90952552,
+					"totalBytes": 135327744
+				}
+			},
+			{
+				"stage": "transcript-busy-two",
+				"totalRows": 1848,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 1768,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17389,
+				"dom": {
+					"documents": 5,
+					"nodes": 16009,
+					"jsEventListeners": 5040
+				},
+				"heap": {
+					"usedBytes": 91793136,
+					"totalBytes": 135589888
+				}
+			},
+			{
+				"stage": "transcript-hidden",
+				"totalRows": 2168,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2088,
+				"bottomGap": 14942,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 30754,
+				"dom": {
+					"documents": 5,
+					"nodes": 19912,
+					"jsEventListeners": 5922
+				},
+				"heap": {
+					"usedBytes": 87322304,
+					"totalBytes": 145289216
+				}
+			},
+			{
+				"stage": "transcript-revealed",
+				"totalRows": 2168,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2088,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 30754,
+				"dom": {
+					"documents": 5,
+					"nodes": 19916,
+					"jsEventListeners": 5922
+				},
+				"heap": {
+					"usedBytes": 87367792,
+					"totalBytes": 145289216
+				}
+			},
+			{
+				"stage": "transcript-compacted-two",
+				"totalRows": 2168,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2088,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 30779,
+				"dom": {
+					"documents": 5,
+					"nodes": 20039,
+					"jsEventListeners": 5959
+				},
+				"heap": {
+					"usedBytes": 99822728,
+					"totalBytes": 146075648
+				}
+			},
+			{
+				"stage": "transcript-growing-three",
+				"totalRows": 2489,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2409,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 31117,
+				"dom": {
+					"documents": 5,
+					"nodes": 24095,
+					"jsEventListeners": 7605
+				},
+				"heap": {
+					"usedBytes": 112759772,
+					"totalBytes": 162852864
+				}
+			},
+			{
+				"stage": "transcript-compact-three",
+				"totalRows": 2490,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2410,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17367,
+				"dom": {
+					"documents": 5,
+					"nodes": 7402,
+					"jsEventListeners": 1654
+				},
+				"heap": {
+					"usedBytes": 59605680,
+					"totalBytes": 155512832
+				}
+			},
+			{
+				"stage": "transcript-busy-three",
+				"totalRows": 2491,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2411,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17389,
+				"dom": {
+					"documents": 5,
+					"nodes": 7437,
+					"jsEventListeners": 1658
+				},
+				"heap": {
+					"usedBytes": 60567100,
+					"totalBytes": 155512832
+				}
+			},
+			{
+				"stage": "transcript-compacted-three",
+				"totalRows": 2491,
+				"renderedRows": 80,
+				"actualRows": 80,
+				"firstIndex": 2411,
+				"bottomGap": 0,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17414,
+				"dom": {
+					"documents": 5,
+					"nodes": 7525,
+					"jsEventListeners": 1677
+				},
+				"heap": {
+					"usedBytes": 69134588,
+					"totalBytes": 155512832
+				}
+			},
+			{
+				"stage": "transcript-browse",
+				"totalRows": 2491,
+				"renderedRows": 180,
+				"actualRows": 180,
+				"firstIndex": 2311,
+				"bottomGap": 10533,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 17414,
+				"dom": {
+					"documents": 5,
+					"nodes": 7760,
+					"jsEventListeners": 1695
+				},
+				"heap": {
+					"usedBytes": 69888440,
+					"totalBytes": 155512832
+				}
+			},
+			{
+				"stage": "transcript-browse-appended",
+				"totalRows": 2531,
+				"renderedRows": 220,
+				"actualRows": 220,
+				"firstIndex": 2311,
+				"bottomGap": 23372,
+				"toolbarVisible": true,
+				"composerVisible": true,
+				"composerDisabled": false,
+				"textLength": 32815,
+				"dom": {
+					"documents": 5,
+					"nodes": 9724,
+					"jsEventListeners": 2141
+				},
+				"heap": {
+					"usedBytes": 70767088,
+					"totalBytes": 155512832
+				}
+			}
+		],
+		"violations": [],
+		"fatalEventCount": 0,
+		"fatalEvents": []
+	},
+	"host": {
+		"runId": "ui-f24ab891-453b-484b-b005-87017eef1acf",
+		"providerMode": "scripted",
+		"vscodeVersion": "1.138.0",
+		"launchKind": "extension-test",
+		"workspace": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\workspace",
+		"userDataDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile\\1.138.0\\user-data",
+		"extensionsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile\\1.138.0\\extensions",
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf",
+		"profileDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\profile",
+		"execution": "extension-host",
+		"status": "passed",
+		"hostExitObserved": true,
+		"ownershipGate": "verified",
+		"actualVSCodeVersion": "1.138.0",
+		"requireAllTests": true,
+		"testCounts": {
+			"total": 1,
+			"passed": 1,
+			"pending": 0,
+			"executed": 1,
+			"failed": 0
+		},
+		"testSelection": {
+			"testFile": "transcript-lifecycle-ui.test",
+			"grep": null,
+			"forbidOnly": true
+		},
+		"exitCode": 0,
+		"retained": true,
+		"retentionResultPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf\\retention-result.json",
+		"launchedHostPid": 25512,
+		"extensionHostPid": 2108,
+		"extensionHostParentPid": 25512,
+		"evidenceManifestPath": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-ysfyWT\\evidence\\ui-f24ab891-453b-484b-b005-87017eef1acf\\manifest.json",
+		"captureComplete": true
+	},
+	"preflight": {
+		"schemaVersion": 1,
+		"runId": "ui-f24ab891-453b-484b-b005-87017eef1acf",
+		"actualVSCodeVersion": "1.138.0",
+		"requireAllTests": true,
+		"testSelection": {
+			"testFile": "transcript-lifecycle-ui.test",
+			"grep": null,
+			"forbidOnly": true
+		},
+		"stage": "suite-complete",
+		"testCounts": {
+			"total": 1,
+			"passed": 1,
+			"pending": 0,
+			"executed": 1,
+			"failed": 0
+		},
+		"status": "passed",
+		"ownershipGate": "verified"
+	},
+	"stageReceipts": {
+		"ui-stage-transcript-browse-appended.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-browse-appended"
+		},
+		"ui-stage-transcript-browse.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-browse"
+		},
+		"ui-stage-transcript-busy-one.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-one"
+		},
+		"ui-stage-transcript-busy-three.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-three"
+		},
+		"ui-stage-transcript-busy-two.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-two"
+		},
+		"ui-stage-transcript-compact-one.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-one"
+		},
+		"ui-stage-transcript-compact-three.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-three"
+		},
+		"ui-stage-transcript-compact-two.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-two"
+		},
+		"ui-stage-transcript-compacted-one.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-one"
+		},
+		"ui-stage-transcript-compacted-three.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-three"
+		},
+		"ui-stage-transcript-compacted-two.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-two"
+		},
+		"ui-stage-transcript-growing-one.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-one"
+		},
+		"ui-stage-transcript-growing-three.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-three"
+		},
+		"ui-stage-transcript-growing-two.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-two"
+		},
+		"ui-stage-transcript-hidden.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-hidden"
+		},
+		"ui-stage-transcript-hydrated.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-hydrated"
+		},
+		"ui-stage-transcript-revealed.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-revealed"
+		},
+		"ui-stage-transcript-selected.json": {
+			"version": "1.138.0",
+			"taskId": "01a16691-4c61-738d-81be-efb019bfffd5",
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-selected"
+		}
+	},
+	"acknowledgements": {
+		"ui-done-transcript-browse-appended.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-browse-appended",
+			"status": "passed"
+		},
+		"ui-done-transcript-browse.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-browse",
+			"status": "passed"
+		},
+		"ui-done-transcript-busy-one.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-one",
+			"status": "passed"
+		},
+		"ui-done-transcript-busy-three.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-three",
+			"status": "passed"
+		},
+		"ui-done-transcript-busy-two.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-busy-two",
+			"status": "passed"
+		},
+		"ui-done-transcript-compact-one.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-one",
+			"status": "passed"
+		},
+		"ui-done-transcript-compact-three.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-three",
+			"status": "passed"
+		},
+		"ui-done-transcript-compact-two.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compact-two",
+			"status": "passed"
+		},
+		"ui-done-transcript-compacted-one.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-one",
+			"status": "passed"
+		},
+		"ui-done-transcript-compacted-three.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-three",
+			"status": "passed"
+		},
+		"ui-done-transcript-compacted-two.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-compacted-two",
+			"status": "passed"
+		},
+		"ui-done-transcript-growing-one.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-one",
+			"status": "passed"
+		},
+		"ui-done-transcript-growing-three.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-three",
+			"status": "passed"
+		},
+		"ui-done-transcript-growing-two.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-growing-two",
+			"status": "passed"
+		},
+		"ui-done-transcript-hidden.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-hidden",
+			"status": "passed"
+		},
+		"ui-done-transcript-hydrated.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-hydrated",
+			"status": "passed"
+		},
+		"ui-done-transcript-revealed.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-revealed",
+			"status": "passed"
+		},
+		"ui-done-transcript-selected.json": {
+			"nonce": "f24ab891-453b-484b-b005-87017eef1acf",
+			"stage": "transcript-selected",
+			"status": "passed"
+		}
+	}
+}

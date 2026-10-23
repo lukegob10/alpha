@@ -37,6 +37,7 @@
 				"src/runHistoryUi.ts",
 				"src/runTaskNavigationUi.ts",
 				"src/runTicketsUi.ts",
+				"src/runTranscriptLifecycleUi.ts",
 				"src/runTest.ts",
 				"src/runUnitTests.ts",
 				"src/campaign/hostTerminationCampaign.ts",

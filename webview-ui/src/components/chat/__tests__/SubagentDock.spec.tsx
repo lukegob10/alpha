@@ -1,4 +1,11 @@
-import type { ManagedAgentTreeProjection, SubagentGroupState, SubagentRunState } from "@alpha-code/types"
+import {
+	TaskLifecycleState,
+	TaskStatus,
+	type LiveTaskMetadata,
+	type ManagedAgentTreeProjection,
+	type SubagentGroupState,
+	type SubagentRunState,
+} from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
 import i18next from "i18next"
 import { initReactI18next } from "react-i18next"
@@ -30,6 +37,21 @@ const group = (overrides: Partial<SubagentGroupState> = {}): SubagentGroupState 
 	startedAt: 2,
 	agents: [agent()],
 	...overrides,
+})
+
+const waitingTask = (): LiveTaskMetadata => ({
+	id: "child-1",
+	status: TaskStatus.Interactive,
+	lifecycle: TaskLifecycleState.Waiting,
+	isActive: false,
+	isStreaming: false,
+	isWaitingForInput: true,
+	waitingReason: "api_req_failed",
+	lastUpdatedAt: 5,
+	queueCount: 0,
+	tokensIn: 0,
+	tokensOut: 0,
+	totalCost: 0,
 })
 
 const projection = (): ManagedAgentTreeProjection => ({
@@ -321,6 +343,81 @@ describe("SubagentDock", () => {
 		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
 		expect(screen.getByRole("button", { name: /Open Maple/ })).toBeVisible()
 		expect(screen.getByRole("button", { name: /Open Iris/ })).toBeVisible()
+	})
+
+	it.each(["projection", "live metadata"] as const)(
+		"keeps grouped input attention from %s visible without duplicate counts or rows",
+		async (source) => {
+			const user = userEvent.setup()
+			const projected = source === "projection" ? projection() : undefined
+			if (projected) projected.nodes[0].attention = { kind: "input", label: "Waiting for user input" }
+			render(
+				<SubagentDock
+					groups={[group()]}
+					projection={projected}
+					liveTasksById={{ "child-1": waitingTask() }}
+					parentTaskId="parent-1"
+				/>,
+			)
+			const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+			expect(within(toggle).getByText("1 awaiting input")).toBeVisible()
+			expect(within(toggle).queryByText("2 awaiting input")).not.toBeInTheDocument()
+			await user.click(toggle)
+			const row = screen.getByRole("button", { name: /Open Maple.*awaiting input/ })
+			expect(within(row).getByText("1 awaiting input")).toBeVisible()
+			expect(screen.getAllByRole("button", { name: /Open Maple/ })).toHaveLength(1)
+		},
+	)
+
+	it("clears grouped input attention when the canonical projection resumes before live metadata refreshes", async () => {
+		const user = userEvent.setup()
+		const projected = projection()
+		projected.nodes[0].attention = { kind: "input", label: "Waiting for user input" }
+		const props = {
+			groups: [group()],
+			parentTaskId: "parent-1",
+			liveTasksById: { "child-1": waitingTask() },
+		}
+		const { rerender } = render(<SubagentDock {...props} projection={projected} />)
+		const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+		expect(within(toggle).getByText("1 awaiting input")).toBeVisible()
+		await user.click(toggle)
+		expect(screen.getByRole("button", { name: /Open Maple.*awaiting input/ })).toBeVisible()
+
+		rerender(<SubagentDock {...props} projection={projection()} />)
+		expect(screen.queryByText("1 awaiting input")).not.toBeInTheDocument()
+		expect(screen.getAllByRole("button", { name: /Open Maple/ })).toHaveLength(1)
+		expect(screen.getByRole("button", { name: /Open Maple · Working/ })).toBeVisible()
+	})
+
+	it("preserves approval attention over a grouped input hint", async () => {
+		const user = userEvent.setup()
+		const projected = projection()
+		projected.nodes[0].attention = { kind: "input", label: "Waiting for user input" }
+		render(
+			<SubagentDock
+				groups={[
+					group({
+						agents: [
+							agent({
+								pendingApproval: {
+									id: "approval-1",
+									type: "command",
+									operation: "pnpm test",
+									createdAt: 4,
+								},
+							}),
+						],
+					}),
+				]}
+				projection={projected}
+				parentTaskId="parent-1"
+			/>,
+		)
+		expect(screen.getByText("1 approval")).toBeVisible()
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		expect(screen.getByRole("button", { name: /Open Maple.*Approval/ })).toBeVisible()
+		expect(screen.queryByText("1 awaiting input")).not.toBeInTheDocument()
 	})
 
 	it.each([

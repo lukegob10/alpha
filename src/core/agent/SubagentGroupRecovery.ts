@@ -38,7 +38,9 @@ export const reconcileSubagentGroupAfterReload = (
 		)
 	}
 
-	group.status = neverLaunched ? "cancelled" : "interrupted"
+	// Child reports can be durable before the aggregate terminal status is written.
+	const allCompleted = group.agents.length > 0 && group.agents.every((agent) => agent.status === "completed")
+	group.status = allCompleted ? "completed" : neverLaunched ? "cancelled" : "interrupted"
 	group.completedAt ??= completedAt
 	return true
 }

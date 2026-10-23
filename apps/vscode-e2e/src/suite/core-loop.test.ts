@@ -6,6 +6,7 @@ import {
 	AlphaCodeEventName,
 	TaskLifecycleState,
 	agentLifecycleEventSchema,
+	type AgentLifecycleSnapshot,
 	type AlphaMessage,
 	type ExtensionState,
 } from "@alpha-code/types"
@@ -28,6 +29,7 @@ interface SmallTask {
 interface Provider {
 	getLiveTask(id: string): SmallTask | undefined
 	getTaskWithId(id: string): Promise<{ taskDirPath: string }>
+	getAgentLifecycleSnapshot(taskId: string): AgentLifecycleSnapshot | undefined
 	getStateToPostToWebview(): Promise<ExtensionState>
 }
 
@@ -127,9 +129,8 @@ class CommandReadAI {
 			yield { type: "tool_call_end" as const, id: call.id }
 		}
 		await waitFor(
-			async () => {
-				const state = await provider.getStateToPostToWebview()
-				const snapshot = state.agentLifecycleSnapshots?.[task.taskId]
+			() => {
+				const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 				if (!snapshot || !this.calls.every(({ id }) => snapshot.effectStartedToolCallIds?.includes(id)))
 					return false
 				observation.startedBeforeEof = [...snapshot.effectStartedToolCallIds!]
@@ -221,7 +222,7 @@ suite("Workspace read streaming", function () {
 			const events = await readBoundedJson(path.join(taskDirPath, "agent_lifecycle_events.jsonl"), true)
 			const transactions = inspectToolTransactions(history)
 			const lifecycle = inspectTaskLifecycle(events, task.taskId)
-			const snapshot = (await provider.getStateToPostToWebview()).agentLifecycleSnapshots?.[task.taskId]
+			const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 			await fs.writeFile(
 				path.join(artifacts, "core-workdir-read-stream.json"),
 				JSON.stringify(
@@ -336,6 +337,7 @@ suite("Core loop proportional completion", function () {
 				const transactions = inspectToolTransactions(history)
 				const lifecycle = inspectTaskLifecycle(events, task.taskId)
 				const state = await provider.getStateToPostToWebview()
+				const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 				const projected = state.liveTasksById?.[task.taskId]
 				const evidence = {
 					schemaVersion: 1,
@@ -364,6 +366,14 @@ suite("Core loop proportional completion", function () {
 				assert.equal(state.currentTaskId, task.taskId)
 				assert.ok(projected)
 				assert.equal(projected.lifecycle, TaskLifecycleState.Completed)
+				assert.equal(snapshot?.status, "completed")
+				assert.equal(projected.turnId, snapshot?.turnId)
+				assert.equal(projected.hasPendingToolCalls, false)
+				assert.equal(
+					state.agentLifecycleSnapshots,
+					undefined,
+					"UI state must omit the accumulated lifecycle journal",
+				)
 				assert.equal(projected.isStreaming, false)
 				assert.notEqual(projected.isTurnActive, true)
 				assert.deepEqual(transactions.errors, [])

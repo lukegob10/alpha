@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { downloadAndUnzipVSCode } from "@vscode/test-electron"
+import { ticketTypeSchema, type TicketType } from "@alpha-code/types"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { prepareTestProfile } from "./testProfile"
 import { CdpConnection } from "./ui/cdp"
@@ -32,7 +33,7 @@ export function assertTicketsUiHostResult(host: ExtensionTestRunResult): void {
 
 interface TicketFixture {
 	name: string
-	type: "bug" | "feature" | "improvement" | "testing" | "performance" | "ux"
+	type: TicketType
 	status: "backlog" | "in-progress" | "complete" | "canceled"
 	priority?: "high" | "medium" | "low"
 }
@@ -44,6 +45,8 @@ const fixtures: TicketFixture[] = [
 	{ name: "UI fixture testing", type: "testing", status: "complete", priority: "medium" },
 	{ name: "UI fixture performance", type: "performance", status: "canceled" },
 	{ name: "UI fixture ux", type: "ux", status: "in-progress", priority: "low" },
+	{ name: "UI fixture decision", type: "decision", status: "backlog", priority: "medium" },
+	{ name: "UI fixture review", type: "review", status: "backlog", priority: "low" },
 ]
 
 function ticketMarkdown(fixture: TicketFixture, id: string, reference: string, date: string): string {
@@ -298,7 +301,8 @@ export async function runTicketsUi(executable: string, output: string) {
 			await check(`d.activeElement?.id === ${javascriptLiteral(id)}`, `${id}_focus_restored`)
 			await check("!d.querySelector('.tickets-notice')", `${id}_no_self_change_notice`)
 		}
-		const requiredTypes = ["bug", "feature", "improvement", "performance", "testing", "ux"]
+		const requiredTypes = [...ticketTypeSchema.options].sort()
+		const assignedPriorityCount = fixtures.filter((fixture) => fixture.priority !== undefined).length
 		for (const [stage, themeClass] of [
 			["tickets-dark", "vscode-dark"],
 			["tickets-light", "vscode-light"],
@@ -306,7 +310,7 @@ export async function runTicketsUi(executable: string, output: string) {
 		] as const) {
 			if (stage !== "tickets-dark") await ready(stage)
 			await check(
-				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === 6`,
+				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === ${fixtures.length}`,
 				`${stage}_list`,
 			)
 			for (const fixture of fixtures) {
@@ -338,8 +342,8 @@ export async function runTicketsUi(executable: string, output: string) {
 				Math.abs(listMetrics.occupiedRowWidth - listMetrics.tableClientWidth) <= 1,
 				"Visible columns fill the table without phantom space",
 			)
-			assert.equal(listMetrics.priorities, 5)
-			assert.equal(listMetrics.noPriority, 1)
+			assert.equal(listMetrics.priorities, assignedPriorityCount)
+			assert.equal(listMetrics.noPriority, fixtures.length - assignedPriorityCount)
 			assert.ok(
 				listMetrics.viewportScrollWidth <= listMetrics.viewportWidth + 1,
 				"Webview has no horizontal overflow",
@@ -360,7 +364,11 @@ export async function runTicketsUi(executable: string, output: string) {
 				const inlinePriority = await evaluate<{ visible: number; assigned: number }>(
 					"(()=>{const labels=[...d.querySelectorAll('.ticket-priority-inline')].filter(e=>e.checkVisibility());return {visible:labels.length,assigned:labels.filter(e=>e.dataset.priority!=='none').length}})()",
 				)
-				assert.deepEqual(inlinePriority, { visible: 6, assigned: 5 }, "Narrow rows show every ticket priority")
+				assert.deepEqual(
+					inlinePriority,
+					{ visible: fixtures.length, assigned: assignedPriorityCount },
+					"Narrow rows show every ticket priority",
+				)
 			}
 			await fs.writeFile(path.join(directory, `${stage}-metrics.json`), JSON.stringify(listMetrics, null, 2))
 			await capture(`${stage}-list`)
@@ -436,7 +444,7 @@ export async function runTicketsUi(executable: string, output: string) {
 			)
 			await pressEnter()
 			await check(
-				"!!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === 6",
+				`!!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === ${fixtures.length}`,
 				`${stage}_back`,
 			)
 			await writeJsonAtomically(path.join(directory, `ui-done-${stage}.json`), {

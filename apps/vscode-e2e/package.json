@@ -24,6 +24,7 @@
 		"test:cross-task:1380": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.138.0 --provider scripted --require-all-tests --file cross-task-orchestration.acceptance.test",
 		"test:reasoning:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runReasoningUi.js",
 		"test:composer-ui:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runComposerUi.js",
+		"test:transcript-lifecycle-ui:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTranscriptLifecycleUi.js",
 		"test:request-user-input-ui:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runRequestUserInputUi.js",
 		"test:history-ui:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runHistoryUi.js",
 		"test:task-navigation:1380": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTest.js --vscode-version 1.138.0 --provider scripted --require-all-tests --file task-navigation-latency.test",

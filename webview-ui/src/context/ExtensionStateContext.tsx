@@ -279,7 +279,12 @@ export const mergeExtensionState = (
 		incomingTaskStateSeq !== undefined && !taskStateIsStale && !patchHasNoTaskStateSequence,
 		authoritativeTasks
 			? {
-					taskIds: new Set(Object.keys(authoritativeTasks)),
+					// Compact host metadata supersedes retained legacy lifecycle histories.
+					taskIds: new Set(
+						Object.keys(authoritativeTasks).filter(
+							(taskId) => authoritativeTasks[taskId].hasPendingToolCalls === undefined,
+						),
+					),
 					replaceSnapshots: acceptedTaskSnapshot && newState.liveTasksById !== undefined,
 				}
 			: undefined,

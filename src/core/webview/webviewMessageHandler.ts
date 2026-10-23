@@ -183,7 +183,7 @@ export const webviewMessageHandler = async (
 	provider: AlphaProvider,
 	message: WebviewMessage,
 	marketplaceManager?: MarketplaceManager,
-	options?: { ticketSearch?: { signal: AbortSignal; cwd: string } },
+	options?: { ticketSearch?: { signal: AbortSignal; cwd: string }; isCurrentWebview?: () => boolean },
 ) => {
 	// Utility functions provided for concise get/update of global state via contextProxy API.
 	const getGlobalState = <K extends keyof GlobalState>(key: K) => provider.contextProxy.getValue(key)
@@ -622,12 +622,16 @@ export const webviewMessageHandler = async (
 		}
 		case "webviewDidLaunch":
 			const webviewLaunchStartedAt = performance.now()
+			const isCurrentWebview = options?.isCurrentWebview ?? (() => true)
 			provider.clearPublishedTaskTranscriptRevisions()
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()
+			if (!isCurrentWebview()) break
 			await updateGlobalState("customModes", customModes)
+			if (!isCurrentWebview()) break
 
 			await provider.postStateToWebview()
+			if (!isCurrentWebview()) break
 			if (process.env.ALPHA_TASK_OBSERVABILITY === "1") {
 				provider.log(
 					`[performance] ${JSON.stringify({ phase: "webview_state_posted", durationMs: Math.round(performance.now() - webviewLaunchStartedAt) })}`,
@@ -654,6 +658,7 @@ export const webviewMessageHandler = async (
 			if (mcpHub) {
 				await provider.postMessageToWebview({ type: "mcpServers", mcpServers: mcpHub.getAllServers() })
 			}
+			if (!isCurrentWebview()) break
 
 			void provider.providerSettingsManager
 				.listConfig()
@@ -718,7 +723,7 @@ export const webviewMessageHandler = async (
 				)
 			}
 
-			provider.isViewLaunched = true
+			if (isCurrentWebview()) provider.isViewLaunched = true
 			break
 		case "newTask": {
 			if (

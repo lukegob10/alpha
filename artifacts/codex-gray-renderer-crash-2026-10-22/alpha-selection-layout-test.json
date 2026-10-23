@@ -1,0 +1,96 @@
+{
+	"purpose": "Alpha selection/layout exposure and native renderer crash detection",
+	"conclusion": "Alpha interaction workload passed; a separate minimal scroll-animation fixture reproduces the same native guard as the Codex dump",
+	"conditions": {
+		"hostVersion": "1.138.0",
+		"platform": "Windows x64",
+		"nodeVersion": "24.21.0",
+		"pnpmVersion": "11.24.0",
+		"providerMode": "scripted",
+		"modelId": "transcript-lifecycle-ui",
+		"liveModelRequests": 0,
+		"profile": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-XUluGP\\profile\\1.138.0\\user-data",
+		"runId": "ui-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9",
+		"restoredTranscriptRows": 1200,
+		"realCompactions": 3,
+		"selectionRounds": 24,
+		"phaseCheckpoints": 48
+	},
+	"interactionResult": {
+		"status": "passed",
+		"allDocumentsRetained": true,
+		"allToolbarsAndComposersVisible": true,
+		"finalCounters": {
+			"documentRetained": true,
+			"selectionChanges": 183,
+			"trustedMouseMoves": 144,
+			"trustedMouseReleases": 24,
+			"focusChanges": 40,
+			"mutationBatches": 55,
+			"detachedSelections": 15,
+			"rangePresent": true,
+			"toolbarVisible": true,
+			"composerVisible": true
+		},
+		"nativeTrace": {
+			"records": 186438,
+			"overflow": false,
+			"rendererPids": [33244],
+			"phases": {
+				"layout": 812,
+				"compositing": 1233,
+				"hitTest": 1412
+			}
+		},
+		"originalProbeReceipt": "../transcript-lifecycle-ui/ui-probe-736ac7f6-6bbb-4fac-a96c-a326bbdb50a9.json"
+	},
+	"positiveControl": {
+		"purpose": "Positive control for native crash detection; not a reproduction of the original layout bug",
+		"injectedVia": "CDP Page.crash against the isolated owned Alpha iframe",
+		"controlPassed": true,
+		"rendererCrashObserved": true,
+		"expectedProbeStatus": "failed",
+		"actualProbeStatus": "failed",
+		"runId": "ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1",
+		"hostVersion": "1.138.0",
+		"fatalEventCount": 1,
+		"fatalEventMethods": ["Inspector.targetCrashed"],
+		"artifactsDir": "C:\\Users\\Luke Goblirsch\\AppData\\Local\\Temp\\alpha-rendered-probe-rSRUMQ\\evidence\\ui-426b46ce-cdc8-42b8-b4b7-d7842c374fc1"
+	},
+	"validation": {
+		"focusedNodeTests": {
+			"passed": 21,
+			"failed": 0,
+			"skipped": 0
+		},
+		"e2eTypecheck": "passed",
+		"scopedEslint": "passed",
+		"nativeRendererExercise": "passed",
+		"injectedNativeCrashDetection": "passed",
+		"exactHostSmoke": {
+			"command": "pnpm --filter @alpha-code/vscode-e2e test:smoke:1380",
+			"status": "passed",
+			"hostVersion": "1.138.0",
+			"suites": 13,
+			"passed": 47,
+			"failed": 0,
+			"skipped": 0
+		}
+	},
+	"limits": [
+		"Native phase counters establish execution, not the exact unsafe lifecycle state from the original dump",
+		"Text ranges may legitimately collapse when their selected nodes are replaced",
+		"This bounded workload is not a general stability or performance guarantee",
+		"The minimal fixture confirms a matching browser failure mechanism; the original Codex DOM event and Alpha incident remain unobserved",
+		"No production extension workaround was introduced"
+	],
+	"standaloneReproduction": {
+		"matrix": "standalone-layout-matrix.json",
+		"fixture": "selection-layout-repro.html",
+		"runner": "standalone-layout-matrix.cjs",
+		"nativeFault": "standalone-layout-fault.json",
+		"fullCombination": "crashed on first native click in two independent runs",
+		"controls": "No-animation, no-selection, no-toggle, normal-timeline, and script-only click survived the recorded matrix",
+		"alphaOriginalIncidentReproduced": false
+	}
+}
