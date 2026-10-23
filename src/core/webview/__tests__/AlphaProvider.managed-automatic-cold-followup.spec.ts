@@ -242,7 +242,7 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 			expect(successor.isToolAllowedForTask("exec_command")).toBe(true)
 			expect(successor.isToolAllowedForTask("apply_patch")).toBe(false)
 			expect(successor.isToolAllowedForTask("manage_command")).toBe(false)
-			expect(successor.isToolAllowedForTask("spawn_agent")).toBe(false)
+			expect(successor.isToolAllowedForTask("spawn_agent")).toBe(manifest?.runtimePolicy.delegate === true)
 			expect(successor.getTaskCommandDenialReason("node -e process.exit(0)", successor.cwd)).toBeDefined()
 			expect(successor.taskMode).toBe(target.task.taskMode)
 			expect(successor.cwd).toBe(target.task.cwd)

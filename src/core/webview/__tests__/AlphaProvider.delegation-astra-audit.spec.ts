@@ -217,7 +217,9 @@ describe("Astra delegation durability audit", () => {
 			provider.prepareSubagentGroup(parent as unknown as Task, [
 				{ objective: "Inspect another file", agent_kind: "review" },
 			]),
-		).rejects.toThrow(stopReason)
+		).resolves.toMatchObject({
+			envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+		})
 	})
 
 	it.each(["mailbox", "parent transcript", "rollback"])(
@@ -288,7 +290,7 @@ describe("Astra delegation durability audit", () => {
 	it.each([
 		{ setting: { subagentRootTokenBudget: 50_000 }, stopReason: "root_token_budget" },
 		{ setting: { subagentRootCostBudget: 5 }, stopReason: "root_cost_budget" },
-	])("restores the frozen $stopReason after every child closes", async ({ setting, stopReason }) => {
+	])("retires $stopReason after every child closes", async ({ setting, stopReason }) => {
 		const harness = makeHarness(setting)
 		const { handle } = await harness.launch()
 		harness.history.set(handle.taskId, {
@@ -308,7 +310,9 @@ describe("Astra delegation durability audit", () => {
 			reloaded.provider.prepareSubagentGroup(reloaded.parent as unknown as Task, [
 				{ objective: "Try with default settings after reload", agent_kind: "review" },
 			]),
-		).rejects.toThrow(stopReason)
+		).resolves.toMatchObject({
+			envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+		})
 	})
 
 	it("reads legacy tombstones using retained history without including another root", async () => {
@@ -338,7 +342,7 @@ describe("Astra delegation durability audit", () => {
 	})
 
 	it.each(["root_token_budget", "root_cost_budget"] as const)(
-		"retains the %s exhaustion cause after closing and reconstructing the root",
+		"preserves historical %s without blocking new launches after reload",
 		async (stopReason) => {
 			const harness = makeHarness()
 			const { handle } = await harness.launch()
@@ -351,7 +355,9 @@ describe("Astra delegation durability audit", () => {
 				reloaded.provider.prepareSubagentGroup(reloaded.parent as unknown as Task, [
 					{ objective: "Try after reload", agent_kind: "review" },
 				]),
-			).rejects.toThrow(stopReason)
+			).resolves.toMatchObject({
+				envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+			})
 		},
 	)
 

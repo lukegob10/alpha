@@ -944,6 +944,54 @@ describe("native sub-agent conversation forks", () => {
 })
 
 describe("sub-agent context capture", () => {
+	it("round-trips parent authority, scope, mode and credential-free MCP grants with their digests", () => {
+		const policy: CaptureSubagentContextInput["runtimePolicy"] = {
+			...runtimePolicy,
+			authorityModel: "parent",
+			mode: "code",
+			execute: true,
+			mutate: true,
+			network: true,
+			externalSideEffects: true,
+			writeScope: ["src"],
+			fileWriteScope: [],
+			allowedTools: ["exec_command", "apply_patch", "mcp--docs--search"],
+			autoApproval: {
+				...runtimePolicy.autoApproval,
+				alwaysAllowMcp: true,
+				mcpApproval: { enabled: true, grants: [{ serverName: "docs", toolName: "search", source: "project" }] },
+			},
+		}
+		const { manifest } = captureSubagentContext({
+			parentTaskId: "parent",
+			capturedAt: 123,
+			forkTurns: "none",
+			history: [],
+			instructions: {
+				effectiveText: "Frozen instructions",
+				sources: [{ kind: "user", ref: "parent:user", text: "Frozen instructions" }],
+			},
+			skills: [],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy: policy,
+		})
+		policy.autoApproval!.mcpApproval!.grants.length = 0
+		const reloaded = subagentContextManifestSchema.parse(JSON.parse(serializeSubagentContextManifest(manifest)))
+		expect(isValidSubagentContextManifest(reloaded)).toBe(true)
+		expect(reloaded.runtimePolicy).toMatchObject({
+			authorityModel: "parent",
+			mode: "code",
+			execute: true,
+			mutate: true,
+			writeScope: ["src"],
+			fileWriteScope: [],
+			autoApproval: {
+				mcpApproval: { enabled: true, grants: [{ serverName: "docs", toolName: "search", source: "project" }] },
+			},
+		})
+	})
 	it("retains the exact pre-description legacy manifest hash and canonical bytes", () => {
 		const { manifest } = capture("none")
 		const legacySkills = [

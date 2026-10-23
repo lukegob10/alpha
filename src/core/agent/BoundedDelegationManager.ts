@@ -166,7 +166,6 @@ export class BoundedDelegationManager {
 		}
 
 		let acquired = false
-		let timer: ReturnType<typeof setTimeout> | undefined
 		const started = Date.now()
 		try {
 			if (controller.signal.aborted) throw controller.signal.reason
@@ -179,10 +178,6 @@ export class BoundedDelegationManager {
 			// A lifecycle observer may synchronously cancel the run in response to
 			// the started notification. Do not invoke the child runner in that case.
 			if (controller.signal.aborted) throw controller.signal.reason
-			timer = setTimeout(
-				() => controller.abort(new InternalTaskCancellationError("timed_out", "internal task timed out")),
-				envelope.budget.timeoutMs,
-			)
 			const result = await this.runner(envelope, controller.signal)
 			if (result.taskId !== envelope.id) {
 				throw new Error(`Sub-agent runner returned task ${result.taskId} for handle ${envelope.id}`)
@@ -229,7 +224,6 @@ export class BoundedDelegationManager {
 						: "failed",
 			}
 		} finally {
-			if (timer) clearTimeout(timer)
 			if (parentListenerAttached) parentSignal?.removeEventListener("abort", cancelFromParent)
 			if (acquired) this.release(rootKey)
 			if (this.activeRuns.get(envelope.id) === controller) this.activeRuns.delete(envelope.id)

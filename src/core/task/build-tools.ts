@@ -9,7 +9,6 @@ import {
 	type ModeConfig,
 	type ModelInfo,
 	type ApprovalMode,
-	type ToolName,
 	type McpServer,
 } from "@alpha-code/types"
 import { customToolRegistry, formatNative, serializeCustomTool } from "@alpha-code/core"
@@ -32,7 +31,7 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicyInput, ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
-import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
+import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
@@ -62,7 +61,7 @@ export interface BuildToolsOptions {
 	 */
 	includeAllToolsWithRestrictions?: boolean
 	/** Optional task-lane authority cap applied after mode filtering. */
-	allowedToolNames?: readonly ToolName[]
+	allowedToolNames?: readonly string[]
 	/** Selects role-specific schemas for primary and managed-child tasks. */
 	taskKind?: "primary" | "subagent"
 	/** Restricts the task to the host-owned diagnostic evidence reader. */
@@ -391,6 +390,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		taskKind === "primary" &&
 		crossTaskRole !== "none" &&
 		isExplicitIndependentTaskRequest(options.userRequestText)
+	const allowIndependentTaskFork =
+		!diagnosticSession &&
+		taskKind === "primary" &&
+		crossTaskRole !== "none" &&
+		isExplicitThreadForkRequest(options.userRequestText)
 	const legacyCrossTaskToolNames = ["create_task", "list_tasks", "wait_task", "send_task_message"].filter(
 		(name) => includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, name),
 	)
@@ -456,6 +460,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				enableAgentLifecycleTools,
 				crossTaskRole,
 				allowIndependentTaskCreation,
+				allowIndependentTaskFork,
 				legacyCrossTaskToolNames,
 				namedAgentTypes,
 				todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
@@ -518,6 +523,10 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				allowIndependentTaskCreation ||
 				(includeAllToolsWithRestrictions === true &&
 					historyContainsToolName(options.discoveryHistory, "create_thread")),
+			includeForkThreadSchema:
+				allowIndependentTaskFork ||
+				(includeAllToolsWithRestrictions === true &&
+					historyContainsToolName(options.discoveryHistory, "fork_thread")),
 			legacyCrossTaskToolNames,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			namedAgentTypes,
@@ -563,6 +572,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			const name = getToolName(tool)
 			return (
 				(name !== "create_thread" || allowIndependentTaskCreation) &&
+				(name !== "fork_thread" || allowIndependentTaskFork) &&
 				!legacyCrossTaskToolNames.includes(name) &&
 				name !== "access_mcp_resource" &&
 				(canDiscover || (name !== "tool_search" && name !== "discover_tools"))

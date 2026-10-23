@@ -64,6 +64,8 @@ export interface NativeToolsOptions {
 	includeCreateTaskSchema?: boolean
 	/** Include create_thread only when the latest human request authorizes a separate task. */
 	includeCreateThreadSchema?: boolean
+	/** Include fork_thread only for an explicit request to retain conversation history. */
+	includeForkThreadSchema?: boolean
 	/** Retain declarations required by saved provider history without advertising them on fresh tasks. */
 	legacyCrossTaskToolNames?: readonly string[]
 }
@@ -96,6 +98,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		crossTaskRole = "none",
 		includeCreateTaskSchema = false,
 		includeCreateThreadSchema = includeCreateTaskSchema,
+		includeForkThreadSchema = false,
 		legacyCrossTaskToolNames = [],
 	} = options
 
@@ -125,7 +128,9 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(taskKind === "primary" && crossTaskRole !== "none"
 			? [
 					...threadOrchestrationTools.filter(
-						(tool) => tool.function.name !== "create_thread" || includeCreateThreadSchema,
+						(tool) =>
+							(tool.function.name !== "create_thread" || includeCreateThreadSchema) &&
+							(tool.function.name !== "fork_thread" || includeForkThreadSchema),
 					),
 					...crossTaskOrchestrationTools.filter(
 						(tool) =>

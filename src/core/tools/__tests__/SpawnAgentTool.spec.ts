@@ -58,6 +58,32 @@ function handle() {
 }
 
 describe("SpawnAgentTool", () => {
+	it("launches a host-verified inherited child without a second approval tier", async () => {
+		const batch = { ...prepared(), inheritsParentPermissions: true, requiresExplicitApproval: false }
+		const provider = {
+			prepareSubagentGroup: vi.fn(async () => batch),
+			launchPreparedSubagentGroup: vi.fn(async () => handle()),
+			cancelPreparedSubagentGroup: vi.fn(),
+		}
+		const task = {
+			providerRef: { deref: () => provider },
+			getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+		} as any
+		const askApproval = vi.fn()
+		const pushToolResult = vi.fn()
+		await spawnAgentTool.execute(
+			{ task_name: "inspect", message: "Inspect the parser", agent_type: "explorer" },
+			task,
+			{
+				askApproval,
+				pushToolResult,
+				handleError: vi.fn(),
+			} as any,
+		)
+		expect(askApproval).not.toHaveBeenCalled()
+		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, expect.any(AbortSignal))
+		expect(pushToolResult).toHaveBeenCalled()
+	})
 	it("advertises configured agent names without exposing their instructions", () => {
 		const schema = createSpawnAgentTool(undefined, [{ name: "researcher", description: "Inspect code paths" }])
 		expect(schema.function.parameters.properties.agent_type.description).toContain(

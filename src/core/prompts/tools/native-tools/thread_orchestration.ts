@@ -76,13 +76,13 @@ export const threadOrchestrationTools = [
 	),
 	threadTool(
 		"create_thread",
-		"Create and start a separate task only when the user explicitly asks for a new task. The task inherits the current working directory, mode, policy, and model; omit model unless the user explicitly requests an override. Use spawn_agent for bounded delegated work.",
+		"Create and start a fresh chat only when the user requests a new task, thread, or chat. This starts with empty conversation history. For a handoff, supply a concise, self-contained prompt with ticket references, the objective, essential decisions and constraints; do not copy the old transcript or compaction summary. The task inherits the working directory, mode, policy, and model; omit model unless explicitly requested. Use spawn_agent for bounded delegated work.",
 		{ prompt, title: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 } },
 		["prompt"],
 	),
 	threadTool(
 		"fork_thread",
-		"Fork a task without starting a new turn. Omit threadId to fork the calling task. The fork keeps completed history and excludes an unfinished source turn.",
+		"Copy a task's completed conversation history into a new chat only when the user explicitly requests a fork or retaining that history. A request for a new or fresh chat uses create_thread. Omit threadId to fork the calling task. The fork excludes an unfinished source turn and remains idle; send a follow-up to continue work there.",
 		{ threadId },
 	),
 	threadTool(

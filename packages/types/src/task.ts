@@ -171,7 +171,7 @@ export interface CreateTaskOptions {
 	historyWorkspacePath?: string
 	/** Private execution root used only to redact managed-worktree paths from model-visible output. */
 	subagentPrivateWorkspaceRoot?: string
-	/** Absolute time after which a sub-agent must stop researching and synthesize its result. */
+	/** @deprecated Historical task options remain readable; agent research has no separate deadline. */
 	subagentResearchDeadlineAt?: number
 }
 

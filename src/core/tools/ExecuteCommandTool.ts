@@ -1184,6 +1184,9 @@ export async function executeCommandInTerminal(
 	let fileChangesPublished = false
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const isManagedCommandAgent =
+		task.taskKind === "subagent" &&
+		(isManagedWorker || task.subagentContextManifest?.runtimePolicy.execute === true)
 	const executionMode =
 		capturedExecutionMode ?? (typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug)
 	const isPlanMode = executionMode === planModeSlug
@@ -1198,7 +1201,7 @@ export async function executeCommandInTerminal(
 				recovery: { kind: reason === "policy_denied" ? "user-action" : "repair" },
 			}),
 		)
-	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
+	const restrictCommandCwdToWorkspace = isManagedCommandAgent || isPlanMode
 	const cancellationResult = (): [boolean, ToolResponse] => {
 		if (toolCallId)
 			void project("evidence", () => {
@@ -1210,7 +1213,7 @@ export async function executeCommandInTerminal(
 	const taskWasCancelled = () =>
 		task.abort || (stepOwnsLaunch && signal?.aborted) || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
-	if (tty === true && (isManagedWorker || isPlanMode)) {
+	if (tty === true && (isManagedCommandAgent || isPlanMode)) {
 		rejectBeforeLaunch("policy_denied", "interactive-terminal")
 		if (toolCallId)
 			void project("evidence", () => {
@@ -1218,18 +1221,13 @@ export async function executeCommandInTerminal(
 			})
 		return [false, "Interactive terminals require a foreground Code task; this command was not started."]
 	}
-	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
+	if (isPlanMode && customCwd && path.isAbsolute(customCwd)) {
 		rejectBeforeLaunch("policy_denied", customCwd)
 		if (toolCallId)
 			void project("evidence", () => {
 				task.failCommandExecution?.(toolCallId)
 			})
-		return [
-			false,
-			isPlanMode
-				? "Plan commands may use only workspace-relative command directories."
-				: "Editing workers may use only workspace-relative command directories.",
-		]
+		return [false, "Plan commands may use only workspace-relative command directories."]
 	}
 	if (!customCwd) {
 		workingDir = task.cwd
@@ -1290,7 +1288,7 @@ export async function executeCommandInTerminal(
 	const terminalProvider =
 		tty === true
 			? "vscode"
-			: tty === false || isManagedWorker || terminalShellIntegrationDisabled
+			: tty === false || isManagedCommandAgent || terminalShellIntegrationDisabled
 				? "execa"
 				: "vscode"
 	const provider = capturedProvider ?? (await task.providerRef.deref())

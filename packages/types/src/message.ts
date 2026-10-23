@@ -265,7 +265,7 @@ export const subagentRunStateSchema = z.object({
 	pendingApproval: z
 		.object({
 			id: z.string(),
-			type: z.enum(["command", "protected_write"]),
+			type: z.enum(["command", "protected_write", "mcp", "tool"]),
 			operation: z.string(),
 			scope: z.string().optional(),
 			createdAt: z.number(),

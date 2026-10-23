@@ -263,6 +263,16 @@ describe("Task command policy capture", () => {
 		expect(isPathAllowed(policy, path.resolve(task.cwd, "..", "outside-proof.txt"))).toBe(false)
 	})
 
+	it("forks the exact callable parent catalog from the invoking step without sharing mutable names", async () => {
+		const { task } = harness()
+		await captureRequest(task)
+		const { policy } = capturedStep(task).surface
+		const invocation = task.getSubagentInvocationContext()
+		expect(invocation?.allowedTools).toEqual(policy.allowedTools)
+		invocation?.allowedTools?.push("ungranted-tool")
+		expect(task.getSubagentInvocationContext()?.allowedTools).not.toContain("ungranted-tool")
+	})
+
 	it("retains the inherited child command ceiling and outside-workspace restriction", async () => {
 		const { task, state, published } = harness()
 		state.approvalMode = "auto"

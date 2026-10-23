@@ -357,6 +357,16 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	if (isNonBlockingAsk(input.ask)) return { decision: "approve" }
 	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
+		if (input.ask === "use_mcp_server") {
+			return checkAutoApproval({
+				...input,
+				state: { ...input.state, ...inheritedState, approvalMode: inheritedMode },
+				reviewPolicy: {
+					protectedWriteAllowed: inheritedState.alwaysAllowWriteProtected,
+					mcp: inheritedState.mcpApproval ?? { enabled: false, grants: [] },
+				},
+			})
+		}
 		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
 		if (!input.text) return { decision: "ask" }
 		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
@@ -376,6 +386,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
 	if (liveMode === "ask" || inheritedMode === "ask") return { decision: "ask" }
 	if (liveMode === "bypass" && inheritedMode === "bypass") {
+		if (input.ask === "use_mcp_server" && inheritedResult.decision !== "approve") return { decision: "ask" }
 		if (
 			input.reviewPolicy &&
 			(input.ask === "use_mcp_server" || (input.ask === "tool" && input.isProtected)) &&

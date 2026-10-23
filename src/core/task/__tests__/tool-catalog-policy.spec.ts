@@ -12,6 +12,41 @@ import type { AlphaProvider } from "../../webview/AlphaProvider"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 
 describe("effective tool catalog policy", () => {
+	it("retains inherited MCP and Alpha tools in a child catalog without adding uncaptured tools", async () => {
+		const hub = {
+			getServers: () => [
+				{
+					name: "docs",
+					status: "connected",
+					config: "{}",
+					source: "project",
+					tools: [
+						{
+							name: "search",
+							description: "Search documentation",
+							inputSchema: { type: "object", properties: {} },
+						},
+					],
+				},
+			],
+		}
+		const provider = { context: {}, getMcpHub: () => hub } as unknown as AlphaProvider
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: process.cwd(),
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			taskKind: "subagent",
+			allowedToolNames: ["exec_command", "apply_patch", "mcp--docs--search", "create_ticket"],
+		})
+		for (const name of ["exec_command", "apply_patch", "mcp--docs--search", "create_ticket"]) {
+			expect(result.surface?.isCallable(name), name).toBe(true)
+		}
+		expect(result.surface?.isCallable("delete_ticket")).toBe(false)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+	})
 	it.each(["mcp--calendar--read_events", "mcp__calendar__read_events"])(
 		"accepts the canonical MCP tool spelling %s at execution validation",
 		(name) => {

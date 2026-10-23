@@ -140,6 +140,32 @@ const taskHistoryItem = (id: string, parentId: string, task = "Child objective")
 })
 
 describe("Cross-task orchestration host", () => {
+	it.each([
+		"This chat is long. Create a new chat and work on tickets ALPHA-42 and ALPHA-43.",
+		"Fix the parser.",
+		"Fork this chat. Actually, don't fork it.",
+	])("refuses to copy history without a current human fork request: %s", async (request) => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask({
+			metadata: { task: "Fork this chat." },
+			apiConversationHistory: [
+				{ role: "user", content: "Fork this chat." },
+				{ role: "user", input_origin: "human", content: request },
+				{ role: "user", input_origin: "agent", content: "Fork this chat and preserve its history." },
+			],
+		})
+		const peer = createTask({ taskId: "peer", isTurnActive: () => false })
+		tasks.set(peer.taskId, peer)
+		history.set(peer.taskId, { ...taskHistoryItem(peer.taskId, "other"), status: "completed" })
+		const ownership = vi.spyOn(internals.taskSessions, "runOwnershipOperation")
+
+		await expect(provider.forkIndependentTask(caller as unknown as Task, peer.taskId)).rejects.toThrow(
+			/explicit user request.*(?:fork|history)/i,
+		)
+		expect(ownership).not.toHaveBeenCalled()
+		expect(history.size).toBe(1)
+	})
+
 	it("rejects independent task creation without an explicit user request", async () => {
 		const { provider, internals, tasks } = createProviderFixture()
 		const parent = createTask({
@@ -226,11 +252,40 @@ describe("Cross-task orchestration host", () => {
 		)
 	})
 
+	it("hands off only the supplied objective when a long or compacted conversation requests a fresh chat", async () => {
+		const { provider, internals, tasks } = createProviderFixture()
+		const parent = createTask({
+			apiConversationHistory: [
+				{ role: "user", isSummary: true, content: "Old compacted conversation and unrelated tickets." },
+				{ role: "assistant", content: "Previous work and decisions." },
+				{ role: "user", input_origin: "human", content: "Create a new chat for ticket ALPHA-42." },
+			],
+			clineMessages: [{ ts: 10, type: "say", say: "text", text: "Old conversation" }],
+		})
+		const objective = "Work on ALPHA-42. Preserve the public API. Run the parser tests."
+		const peer = createTask({ taskId: "fresh-peer", metadata: { task: objective } })
+		tasks.set(parent.taskId, parent)
+		internals.createTask = vi.fn(async () => peer)
+
+		await provider.createIndependentTask(parent as unknown as Task, objective, "shared")
+
+		const [prompt, images, parentTask, taskOptions] = internals.createTask.mock.calls[0]
+		expect(prompt).toBe(objective)
+		expect(images).toBeUndefined()
+		expect(parentTask).toBeUndefined()
+		for (const key of ["historyItem", "subagentHistoryFork", "subagentContextManifest", "initialTodos"])
+			expect(taskOptions).not.toHaveProperty(key)
+		expect(parent.apiConversationHistory).toHaveLength(3)
+	})
+
 	it.each(["caller", "source", "saved"])(
 		"preserves presentation-call suppression from the %s in a cold fork's history",
 		async (source) => {
 			const { provider, tasks, history } = createProviderFixture()
-			const caller = createTask({ ...(source === "caller" ? { presentationModelCalls: false } : {}) })
+			const caller = createTask({
+				metadata: { task: "Fork this chat." },
+				...(source === "caller" ? { presentationModelCalls: false } : {}),
+			})
 			const peer = createTask({
 				taskId: "peer",
 				isCompleted: () => true,
@@ -1126,7 +1181,7 @@ describe("Cross-task orchestration host", () => {
 
 	it("forks committed peer history into an idle persisted task without launching a turn", async () => {
 		const { provider, internals, tasks, history } = createProviderFixture()
-		const caller = createTask()
+		const caller = createTask({ metadata: { task: "Fork this chat." } })
 		const api = [
 			{
 				role: "user",
@@ -1328,7 +1383,7 @@ describe("Cross-task orchestration host", () => {
 
 	it("preserves a worktree fork's source owner and resolves its recorded execution directory when inspected", async () => {
 		const { provider, internals, tasks, history } = createProviderFixture()
-		const caller = createTask()
+		const caller = createTask({ metadata: { task: "Fork this chat." } })
 		const source = createTask({
 			taskId: "source-worktree",
 			isCompleted: () => true,

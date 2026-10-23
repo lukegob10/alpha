@@ -178,6 +178,23 @@ export const subagentAutoApprovalPolicySchema = z
 		alwaysAllowWriteProtected: z.boolean(),
 		/** Missing legacy grants remain disabled without changing their persisted policy digest. */
 		alwaysAllowTickets: z.boolean().optional(),
+		alwaysAllowMcp: z.boolean().optional(),
+		/** Credential-free parent review grants; absent legacy captures cannot approve MCP. */
+		mcpApproval: z
+			.object({
+				enabled: z.boolean(),
+				grants: z.array(
+					z
+						.object({
+							serverName: z.string().min(1),
+							toolName: z.string().min(1),
+							source: z.enum(["global", "project"]).optional(),
+						})
+						.strict(),
+				),
+			})
+			.strict()
+			.optional(),
 		alwaysAllowExecute: z.boolean(),
 		alwaysAllowSubagents: z.boolean(),
 		commandApproval: subagentCommandApprovalPolicySchema,
@@ -212,6 +229,9 @@ export const disabledSubagentAutoApprovalPolicy: SubagentAutoApprovalPolicy = su
 export const subagentContextRuntimePolicySchema = z
 	.object({
 		role: subagentRoleSchema,
+		/** Omission retains historical role ceilings. New agents inherit parent authority. */
+		authorityModel: z.literal("parent").optional(),
+		mode: z.enum(["code", "architect"]).optional(),
 		read: z.boolean(),
 		execute: z.boolean(),
 		mutate: z.boolean(),
@@ -232,22 +252,22 @@ export const subagentContextRuntimePolicySchema = z
 		digest: subagentContextDigestSchema,
 	})
 	.strict()
-	.superRefine(({ role, execute, mutate, writeScope, fileWriteScope }, context) => {
-		if ((role === "explore" || role === "review") && (execute || mutate)) {
+	.superRefine(({ role, authorityModel, execute, mutate, writeScope, fileWriteScope }, context) => {
+		if (!authorityModel && (role === "explore" || role === "review") && (execute || mutate)) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				message: `${role} context policy must remain read-only`,
 				path: [execute ? "execute" : "mutate"],
 			})
 		}
-		if (role === "worker" && !writeScope) {
+		if ((role === "worker" || (authorityModel === "parent" && mutate)) && !writeScope) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				message: "worker context policy requires writeScope",
 				path: ["writeScope"],
 			})
 		}
-		if (role !== "worker" && fileWriteScope !== undefined) {
+		if (!authorityModel && role !== "worker" && fileWriteScope !== undefined) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				message: "only worker context policy may retain exact-file write scope",

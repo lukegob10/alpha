@@ -158,6 +158,7 @@ function getAlphaToolContractSection(
 	subagentCanDelegate = false,
 	subagentDelegationPolicy?: "explicit-only" | "proactive",
 	isPlanMode = false,
+	subagentInheritsPermissions = false,
 ): string {
 	const patchToolGuidance =
 		"Prefer the supplied apply_patch tool for file patches, passing patch text in its declared input. Alpha also routes a complete standalone apply_patch heredoc in exec_command through the same patch tool and policy. Do not search for an apply_patch executable."
@@ -168,8 +169,11 @@ function getAlphaToolContractSection(
 			subagentCanDelegate,
 			subagentDelegationPolicy,
 			isPlanMode,
+			subagentInheritsPermissions,
 		)
-		return subagentRole === "worker" ? `${sharedToolUse}\n\n${patchToolGuidance}` : sharedToolUse
+		return subagentRole === "worker" || subagentInheritsPermissions
+			? `${sharedToolUse}\n\n${patchToolGuidance}`
+			: sharedToolUse
 	}
 	const delegationGuidance =
 		subagentDelegationPolicy === "explicit-only"
@@ -218,7 +222,7 @@ async function generatePrompt(
 	const modeConfig = getModeBySlug(mode, customModeConfigs) || planMode
 	const { roleDefinition, baseInstructions } = getModeSelection(mode, promptComponent, customModeConfigs)
 	const subagentRole = settings?.subagentRole
-	const isPlanMode = !subagentRole && mode === planModeSlug
+	const isPlanMode = (!subagentRole || settings?.subagentInheritsPermissions === true) && mode === planModeSlug
 
 	const hasMcpGroup = modeConfig.groups.some((groupEntry) => getGroupName(groupEntry) === "mcp")
 	const hasMcpServers = mcpHub && mcpHub.getServers().length > 0
@@ -291,11 +295,12 @@ async function generatePrompt(
 	const customInstructions = renderCustomInstructionParts(customInstructionParts)
 
 	const ticketSection =
-		!subagentRole && modeConfig.groups.some((entry) => getGroupName(entry) === "read")
+		(!subagentRole || settings?.subagentInheritsPermissions) &&
+		modeConfig.groups.some((entry) => getGroupName(entry) === "read")
 			? getTicketsSection(isPlanMode)
 			: ""
 	const mcpToolsSection =
-		!subagentRole && shouldIncludeMcp
+		(!subagentRole || settings?.subagentInheritsPermissions) && shouldIncludeMcp
 			? `====
 
 ALPHA MCP TOOLS
@@ -309,6 +314,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 			settings?.subagentCanDelegate,
 			settings?.subagentDelegationPolicy,
 			isPlanMode,
+			settings?.subagentInheritsPermissions,
 		),
 		ticketSection,
 		mcpToolsSection,
@@ -320,6 +326,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 					settings?.subagentCanDelegate,
 					settings?.subagentDelegationPolicy,
 					isPlanMode,
+					settings?.subagentInheritsPermissions,
 				)
 			: "",
 		modesSection,

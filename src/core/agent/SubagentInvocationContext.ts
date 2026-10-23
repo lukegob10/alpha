@@ -15,6 +15,8 @@ export interface SubagentInvocationContext {
 	finalAssistantMessageIndexes: number[]
 	/** Captured grant ceiling; a live settings change can only narrow it at launch. */
 	autoApprovalPolicy?: SubagentAutoApprovalPolicy
+	/** Full callable catalog, including deferred and MCP names, captured with the invoking step. */
+	allowedTools?: string[]
 	instructions: {
 		effectiveText: string
 		sources: SubagentContextInstructionSourceInput[]

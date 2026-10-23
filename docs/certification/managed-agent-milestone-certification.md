@@ -37,25 +37,14 @@ VS Code Extension Host and Git workspace. `certify:managed-agents:automated` run
 
 ## Stable backend contract
 
-Adapters, Settings controls, persistence, and tests use these names and semantics:
+Current agent Settings follow the Codex V2 public agent controls: enablement, root-wide thread count, default model
+and reasoning effort, interruption messages, and custom agent definitions. See
+[the pinned source comparison and compatibility contract](../agent-settings-codex-alignment-2026-10-23.md).
 
-| Field                      | Contract                                                                                                    |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentSubagents`   | Integer `1..16`, default `2`                                                                                |
-| `subagentDelegationPolicy` | <code>"explicit-only" &#124; "proactive"</code>, default `"explicit-only"`; per-task policy may only narrow |
-| `subagentMaxDepth`         | Integer `1..5`, default `1`                                                                                 |
-| `subagentRoleTimeoutsMs`   | Partial `explore/review/worker`, each `10_000..3_600_000`; defaults `120_000/120_000/900_000`               |
-| `subagentMaxInputTokens`   | Integer `1..10_000_000`, default `250_000`                                                                  |
-| `subagentMaxOutputTokens`  | Integer `1..10_000_000`, default `16_000`                                                                   |
-| `subagentRootTokenBudget`  | Integer `1..10_000_000` or `null`, default `null`                                                           |
-| `subagentRootCostBudget`   | Positive finite number or `null`, default `null`                                                            |
-
-Every child freezes `contextManifest.orchestration = { ancestry, delegationPolicy, limits }`. A legacy manifest that
-omits it recovers with frozen legacy defaults, including `16_000` input and `4_000` output tokens, not current mutable
-Settings. Live/list projections expose `depth`, `maxDepth`, `delegationPolicy`, `effectiveLimits`, and terminal `stopReason`.
-
-Stop reasons cover timeout, input/output token limits, root token/cost budgets, depth/authority denial, ancestor
-cancellation, orphan/recovery failure, cancellation, failure, and completion.
+Generic execution deadlines, the separate research cutoff, per-agent token/cost limits, proactive-delegation preferences,
+provider-profile routes and nesting-depth controls are retired. Old global preferences cannot restore them. Historical
+manifests and stop reasons remain readable, while new manifests and live projections use null for retired ceilings.
+Capacity, captured permission scopes, cancellation ownership and atomic persistence remain enforced.
 
 ## Deterministic matrix
 
@@ -65,9 +54,9 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 | `CFG-FROZEN-001`                       | Frozen orchestration manifest and legacy-default recovery                                       |
 | `PROJECTION-CONTRACT-001`              | Depth/effective-limit/stop-reason live and list projection                                      |
 | `CFG-POLICY-001`                       | Explicit-only/proactive behavior, narrowing, and reload persistence                             |
-| `CFG-TIMEOUT-001`                      | Role timeout configuration, reload, and exactly-once terminal outcome                           |
-| `CFG-BUDGET-001`                       | Output/token/cost enforcement and durable stop reason                                           |
-| `NEST-DEPTH-001`                       | Positive authorized nesting, maximum depth, and authority narrowing                             |
+| `CFG-TIMEOUT-001`                      | Wait timeout without child termination; explicit cancellation and reload                        |
+| `CFG-BUDGET-001`                       | Retired budget compatibility, continued work and durable historical stop reasons                |
+| `NEST-DEPTH-001`                       | Authorized nesting without a separate depth ceiling, with authority narrowing                   |
 | `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                                                |
 | `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                           |
 | `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child passive parent-mail wakes                     |
@@ -75,7 +64,7 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 | `ROUTING-STEERING-RECEIPT-001`         | Durable agent-message acknowledgment, human approval isolation, and retained-follow-up recovery |
 | `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                       |
 | `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                                     |
-| `RECOVERY-NESTED-001`                  | Nested topology/budget/mailbox rehydration and orphan cleanup                                   |
+| `RECOVERY-NESTED-001`                  | Nested topology/usage/mailbox rehydration and orphan cleanup                                    |
 | `CONTEXT-INHERIT-001`                  | Frozen, credential-free, digest-checked `fork_turns` inheritance                                |
 | `NEST-COMPLETION-001`                  | Active/unowned descendants block managed-parent completion                                      |
 | `WORKER-GATE-001`                      | Approval-mode-aware Worker settlement, durable parent verification, and double completion check |

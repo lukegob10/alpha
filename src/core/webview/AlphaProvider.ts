@@ -5,7 +5,7 @@ import {
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/TaskReasoning"
-import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
+import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
 import { arePathsEqual } from "../../utils/path"
 import os from "os"
@@ -25,6 +25,8 @@ import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
+import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
+import { captureToolReviewPolicy } from "../auto-approval"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
@@ -108,8 +110,6 @@ import {
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
-	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
 	MAX_MANAGED_AGENT_TREE_ACTIVITY,
 	MAX_MANAGED_AGENT_TREE_NODES,
 	DEFAULT_MODES,
@@ -124,6 +124,7 @@ import {
 	type ModelInfo,
 	isProviderName,
 	createSubagentEffectiveLimits,
+	retireSubagentExecutionLimits,
 	finalizedSubagentContextManifestSchema,
 	finalizeSubagentDelegationPolicy,
 	resolveSubagentDelegationPolicy,
@@ -374,7 +375,6 @@ async function flushLegacyHandoffMessagesDurably(
 	}
 }
 
-const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 const BLOCKING_SUBAGENT_RESULT_DELIVERY = "delegate_task"
@@ -570,7 +570,6 @@ export class AlphaProvider
 	private readonly preparedSubagentGroups = new Map<string, PreparedSubagentGroup>()
 	private readonly subagentGroupControllers = new Map<string, AbortController>()
 	private readonly reservedSubagentSlots = new Map<string, SubagentSlotReservation>()
-	private readonly exhaustedSubagentRootBudgets = new Map<string, "root_token_budget" | "root_cost_budget">()
 	private readonly publishedSubagentResults = new Set<string>()
 	private readonly subagentDescriptors = new Map<
 		string,
@@ -1721,7 +1720,6 @@ export class AlphaProvider
 				| "historyWorkspacePath"
 				| "subagentPrivateWorkspaceRoot"
 				| "subagentAuthority"
-				| "subagentResearchDeadlineAt"
 				| "apiConfiguration"
 			>
 		},
@@ -2030,7 +2028,6 @@ export class AlphaProvider
 			historyWorkspacePath: options?.subagentRuntime?.historyWorkspacePath,
 			subagentPrivateWorkspaceRoot: options?.subagentRuntime?.subagentPrivateWorkspaceRoot,
 			subagentAuthority: options?.subagentRuntime?.subagentAuthority,
-			subagentResearchDeadlineAt: options?.subagentRuntime?.subagentResearchDeadlineAt,
 			onCreated: (instance) => {
 				// The constructor may begin a history resume immediately after this
 				// callback. Establish ownership before it emits or reads persistence.
@@ -4512,7 +4509,7 @@ export class AlphaProvider
 
 	/** Capture the effective approval grant without persisting plaintext command rules. */
 	public snapshotSubagentAutoApprovalPolicy(
-		settings: AlphaCodeSettings,
+		settings: AlphaCodeSettings & Pick<ExtensionState, "mcpServers">,
 		commandListsResolved = false,
 	): SubagentAutoApprovalPolicy {
 		const flags = resolveApprovalFlags(settings)
@@ -4525,8 +4522,13 @@ export class AlphaProvider
 		const allowlist = shouldDeriveApprovalFlags(settings)
 			? effectiveCommandAllowlistForMode(migrateApprovalMode(settings), allowedCommands)
 			: allowedCommands
+		const mcp = captureToolReviewPolicy({
+			...settings,
+			mcpServers: settings.mcpServers ?? this.getMcpHub()?.getServers(),
+		}).mcp
 		return {
 			...flags,
+			mcpApproval: { enabled: mcp.enabled, grants: [...mcp.grants] },
 			commandApproval: createSubagentCommandApprovalPolicy(allowlist, deniedCommands),
 		}
 	}
@@ -4554,6 +4556,23 @@ export class AlphaProvider
 				live.alwaysAllowWriteOutsideWorkspace && inherited.alwaysAllowWriteOutsideWorkspace,
 			alwaysAllowWriteProtected: live.alwaysAllowWriteProtected && inherited.alwaysAllowWriteProtected,
 			alwaysAllowTickets: live.alwaysAllowTickets === true && inherited.alwaysAllowTickets === true,
+			alwaysAllowMcp: live.alwaysAllowMcp === true && inherited.alwaysAllowMcp === true,
+			mcpApproval: {
+				enabled: live.mcpApproval?.enabled === true && inherited.mcpApproval?.enabled === true,
+				grants:
+					inferApprovalModeFromPolicy(live) === "bypass"
+						? [...(inherited.mcpApproval?.grants ?? [])]
+						: (live.mcpApproval?.grants ?? []).filter(
+								(grant) =>
+									inferApprovalModeFromPolicy(inherited) === "bypass" ||
+									inherited.mcpApproval?.grants.some(
+										(ceiling) =>
+											grant.serverName === ceiling.serverName &&
+											grant.toolName === ceiling.toolName &&
+											grant.source === ceiling.source,
+									),
+							),
+			},
 			alwaysAllowExecute: live.alwaysAllowExecute && inherited.alwaysAllowExecute,
 			alwaysAllowSubagents: live.alwaysAllowSubagents && inherited.alwaysAllowSubagents,
 			commandApproval: live.commandApproval,
@@ -4707,17 +4726,17 @@ export class AlphaProvider
 					record.role === "root"
 						? 0
 						: (orchestration?.ancestry.depth ?? managedAgentDepthFromPath(record.path)),
-				maxDepth:
-					record.role === "root"
-						? (firstFrozenOrchestration?.ancestry.maxDepth ?? settings.maxDepth)
-						: orchestration?.ancestry.maxDepth,
+				maxDepth: null,
 				delegationPolicy:
 					record.role === "root"
 						? (firstFrozenOrchestration?.delegationPolicy.policy ??
 							rootTask?.subagentDelegationPolicy ??
 							settings.delegationPolicy)
 						: orchestration?.delegationPolicy.policy,
-				effectiveLimits: record.role === "root" ? undefined : orchestration?.limits,
+				effectiveLimits:
+					record.role === "root" || !orchestration
+						? undefined
+						: retireSubagentExecutionLimits(orchestration.limits),
 				stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 				usage,
 				attention,
@@ -4765,8 +4784,8 @@ export class AlphaProvider
 			activity,
 			capacity: { active, queued, terminal, limit: capacityLimit },
 			budgets: {
-				tokenLimit: firstFrozenOrchestration?.limits.rootTokenBudget ?? settings.rootTokenBudget,
-				costLimit: firstFrozenOrchestration?.limits.rootCostBudget ?? settings.rootCostBudget,
+				tokenLimit: null,
+				costLimit: null,
 			},
 			omittedNodeCount: allNodes.length - nodes.length,
 			omittedActivityCount: recentMailbox.totalCount - activity.length,
@@ -4804,16 +4823,11 @@ export class AlphaProvider
 			alwaysAllowTickets,
 			maxConcurrentTasks,
 			maxConcurrentSubagents,
-			subagentDelegationPolicy,
-			subagentMaxDepth,
-			subagentRoleTimeoutsMs,
-			subagentMaxInputTokens,
-			subagentMaxOutputTokens,
-			subagentRootTokenBudget,
-			subagentRootCostBudget,
-			subagentDefaultApiConfigId,
+			subagentsEnabled,
+			subagentDefaultModel,
+			subagentDefaultReasoningEffort,
+			subagentInterruptMessage,
 			subagentAgentTypes,
-			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext,
@@ -4920,13 +4934,6 @@ export class AlphaProvider
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents,
-			subagentDelegationPolicy,
-			subagentMaxDepth,
-			subagentRoleTimeoutsMs,
-			subagentMaxInputTokens,
-			subagentMaxOutputTokens,
-			subagentRootTokenBudget,
-			subagentRootCostBudget,
 		})
 		let managedAgentTree: ManagedAgentTreeProjection | undefined
 		if (currentTask) {
@@ -4964,16 +4971,11 @@ export class AlphaProvider
 			alwaysAllowTickets: alwaysAllowTickets ?? false,
 			maxConcurrentTasks: maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
-			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
-			subagentMaxDepth: orchestrationSettings.maxDepth,
-			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
-			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
-			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
-			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
-			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
-			subagentDefaultApiConfigId,
+			subagentsEnabled: subagentsEnabled ?? true,
+			subagentDefaultModel,
+			subagentDefaultReasoningEffort,
+			subagentInterruptMessage: subagentInterruptMessage ?? true,
 			subagentAgentTypes,
-			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
@@ -5125,13 +5127,6 @@ export class AlphaProvider
 		const approval = this.projectApprovalSettings(stateValues)
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
-			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
-			subagentMaxDepth: stateValues.subagentMaxDepth,
-			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
-			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
-			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
-			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		})
 
 		// Return the same structure as before.
@@ -5154,16 +5149,11 @@ export class AlphaProvider
 			alwaysAllowTickets: approval.alwaysAllowTickets,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
-			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
-			subagentMaxDepth: orchestrationSettings.maxDepth,
-			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
-			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
-			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
-			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
-			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
-			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
+			subagentsEnabled: stateValues.subagentsEnabled ?? true,
+			subagentDefaultModel: stateValues.subagentDefaultModel,
+			subagentDefaultReasoningEffort: stateValues.subagentDefaultReasoningEffort,
+			subagentInterruptMessage: stateValues.subagentInterruptMessage ?? true,
 			subagentAgentTypes: stateValues.subagentAgentTypes,
-			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
 			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
@@ -6214,6 +6204,16 @@ export class AlphaProvider
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(caller)
 		this.throwIfThreadCancelled(signal)
+		if (
+			!isExplicitThreadForkRequest(
+				extractUserRequestText(
+					caller.apiConversationHistory,
+					caller.orchestrationParentTaskId ? undefined : caller.metadata?.task,
+				),
+			)
+		) {
+			throw new Error("Forking requires an explicit user request to fork or retain conversation history")
+		}
 		return this.taskSessions.runOwnershipOperation(`cross-task:${sourceTaskId}`, async () => {
 			const owner = this.getTaskOwner(sourceTaskId) ?? this
 			const source = await owner.getDirectCrossTask(caller, sourceTaskId, true)
@@ -7615,13 +7615,6 @@ export class AlphaProvider
 		const experiments = stateValues.experiments ?? experimentDefault
 		const currentSubagentDelegationPolicy = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
-			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
-			subagentMaxDepth: stateValues.subagentMaxDepth,
-			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
-			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
-			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
-			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		}).delegationPolicy
 		let apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
@@ -8269,13 +8262,23 @@ export class AlphaProvider
 		}
 		const parentMode = invocation?.mode ?? (await parent.getTaskMode())
 		const parentAuthority = this.getParentDelegationAuthority(parent)
+		if (parentMode !== "code") {
+			parentAuthority.policy = {
+				...parentAuthority.policy,
+				mutate: false,
+				network: false,
+				externalSideEffects: false,
+			}
+		}
 		const settings = this.contextProxy.getValues()
 		// Route preferences belong to this preparation, including time spent awaiting Worker scope validation.
-		const defaultProfileId = settings.subagentDefaultApiConfigId
-		const profileByRole = { ...settings.subagentApiConfigByRole }
+		if (settings.subagentsEnabled === false) throw new Error("Subagents are disabled in Agents settings")
+		const defaultModel = settings.subagentDefaultModel
+		const defaultReasoningEffort = settings.subagentDefaultReasoningEffort ?? undefined
 		const spawnRequest: SpawnAgentRequest | undefined = Array.isArray(drafts)
 			? undefined
 			: normalizeSpawnAgentRequest(drafts)
+		const authorityModel = spawnRequest?.source === "codex-v2" ? ("parent" as const) : undefined
 		const configuredTypes = subagentAgentTypesSchema.parse(settings.subagentAgentTypes ?? {})
 		const typeName = spawnRequest?.source === "codex-v2" ? (spawnRequest.agent_type ?? "default") : undefined
 		const typeDefinition =
@@ -8327,7 +8330,7 @@ export class AlphaProvider
 				"Plan mode permits only read-only Explore and Review sub-agents; switch to Code for Worker edits",
 			)
 		}
-		assertSubagentTaskAuthorities(normalizedDrafts)
+		if (!authorityModel) assertSubagentTaskAuthorities(normalizedDrafts)
 		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
 		const liveApprovalMode = migrateApprovalMode(settings)
 		const parentApprovalMode = invokingApprovalMode ?? liveApprovalMode
@@ -8358,14 +8361,12 @@ export class AlphaProvider
 		)
 		const provisionalDelegationPolicies = normalizedDrafts.map(() =>
 			resolveSubagentDelegationPolicy({
-				settingsPolicy: settings.subagentDelegationPolicy,
+				settingsPolicy: undefined,
 				frozenTaskPolicy:
 					parent.subagentContextManifest?.orchestration?.delegationPolicy.policy ??
 					parent.subagentDelegationPolicy,
-				// Settings may immediately narrow an already-open proactive task.
-				// They may never widen a task frozen as explicit-only.
-				requestedChildPolicy:
-					settings.subagentDelegationPolicy === "explicit-only" ? "explicit-only" : undefined,
+				// Retired proactive preferences cannot widen captured authority.
+				requestedChildPolicy: "explicit-only",
 				taskExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled === true,
 			}),
 		)
@@ -8376,7 +8377,7 @@ export class AlphaProvider
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
 		const approvalMode = inferApprovalModeFromPolicy(childAutoApprovalPolicy)
-		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible
+		const requiresExplicitApproval = !authorityModel && (approvalMode === "ask" || !autoEligible)
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
 			delegationPolicy:
@@ -8386,35 +8387,17 @@ export class AlphaProvider
 						})
 					: provisionalDelegationPolicies[index],
 		}))
-		const requestedPolicies = normalizedDrafts.map((draft, index) =>
-			this.getRequestedSubagentPolicy(
-				draft.agent_kind,
-				orchestrations[index].ancestry.depth < orchestrations[index].ancestry.maxDepth,
-			),
+		const requestedPolicies = normalizedDrafts.map((draft) =>
+			authorityModel ? { ...parentAuthority.policy } : this.getRequestedSubagentPolicy(draft.agent_kind, true),
 		)
 		const effectivePolicies = normalizedDrafts.map((draft, index) =>
-			resolveInternalTaskPolicy(parentAuthority.policy, requestedPolicies[index], draft.agent_kind),
+			resolveInternalTaskPolicy(
+				parentAuthority.policy,
+				requestedPolicies[index],
+				draft.agent_kind,
+				authorityModel,
+			),
 		)
-		const exhaustedRootBudget = this.getSubagentRootBudgetExhaustion(controlRoot.rootTaskId)
-		if (exhaustedRootBudget) {
-			throw new Error(`${exhaustedRootBudget}: this orchestration root has exhausted its frozen budget`)
-		}
-		const rootUsageAtPrepare = this.getSubagentRootUsage(controlRoot.rootTaskId)
-		const rootTokenBudget = orchestrations[0].limits.rootTokenBudget
-		const rootCostBudget = orchestrations[0].limits.rootCostBudget
-		if (rootTokenBudget !== null && rootUsageAtPrepare.tokens >= rootTokenBudget) {
-			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_token_budget")
-			throw new Error(
-				`root_token_budget: root usage ${rootUsageAtPrepare.tokens} has exhausted the frozen budget ${rootTokenBudget}`,
-			)
-		}
-		if (rootCostBudget !== null && rootUsageAtPrepare.cost >= rootCostBudget) {
-			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_cost_budget")
-			throw new Error(
-				`root_cost_budget: root usage ${rootUsageAtPrepare.cost} has exhausted the frozen budget ${rootCostBudget}`,
-			)
-		}
-
 		if (normalizedDrafts.filter((draft) => draft.agent_kind === "worker").length > 1) {
 			throw new Error("A delegation batch can contain at most one worker")
 		}
@@ -8482,7 +8465,11 @@ export class AlphaProvider
 			),
 		)
 		const workerWriteScopes = normalizedDrafts.map((draft, index) =>
-			draft.agent_kind === "worker" ? [...validatedScopes[index]!.writeScope] : undefined,
+			draft.agent_kind === "worker"
+				? [...validatedScopes[index]!.writeScope]
+				: authorityModel && effectivePolicies[index].mutate
+					? [...(inheritedWriteScope ?? ["."])]
+					: undefined,
 		)
 
 		const createdAt = Date.now()
@@ -8496,18 +8483,21 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
-						defaultProfileId,
-						profileByRole: typeDefinition?.apiConfigId
-							? { ...profileByRole, [draft.agent_kind]: typeDefinition.apiConfigId }
-							: profileByRole,
 						profileLoader: this.providerSettingsManager,
+						defaultModelId: defaultModel,
+						defaultReasoningEffort,
+						agentModelId: typeDefinition?.model,
+						agentReasoningEffort: typeDefinition?.reasoningEffort,
+						resolveModelDefaultReasoningEffort: async (configuration) => {
+							const state = await this.resolveReasoningCapabilities(configuration, { kind: "default" })
+							return state.effective.kind === "effort" ? state.effective.effort : undefined
+						},
 						...(spawnRequest?.source === "codex-v2"
 							? {
-									requestedModelId: spawnRequest.model ?? typeDefinition?.model,
-									requestedReasoningEffort:
-										spawnRequest.reasoning_effort ?? typeDefinition?.reasoningEffort,
+									requestedModelId: spawnRequest.model,
+									requestedReasoningEffort: spawnRequest.reasoning_effort,
 								}
-							: {}),
+							: { requestedModelId: defaultModel, requestedReasoningEffort: defaultReasoningEffort }),
 					}),
 				),
 			),
@@ -8567,9 +8557,15 @@ export class AlphaProvider
 				const role = draft.agent_kind
 				const effectivePolicy = effectivePolicies[index]
 				const validatedScope = validatedScopes[index]
-				const allowedTools = [
-					...getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate),
-				]
+				const allowedTools = authorityModel
+					? getInheritedSubagentToolNames(
+							invocation?.allowedTools ??
+								parent.getTaskAllowedToolNames?.() ??
+								getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate),
+							effectivePolicy,
+							inheritedSkills.length > 0,
+						)
+					: [...getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate)]
 				return captureSubagentContext({
 					parentTaskId: parent.taskId,
 					capturedAt: createdAt,
@@ -8591,13 +8587,16 @@ export class AlphaProvider
 					orchestration: orchestrations[index],
 					runtimePolicy: {
 						role,
+						...(authorityModel ? { authorityModel, mode: parentMode as "code" | "architect" } : {}),
 						...effectivePolicy,
 						allowedTools,
 						workspaceRoots: [parent.cwd],
-						...(draft.agent_kind === "worker"
+						...(workerWriteScopes[index]
 							? {
 									writeScope: workerWriteScopes[index]!,
-									fileWriteScope: [...validatedScope!.fileWriteScope],
+									fileWriteScope: [
+										...(validatedScope?.fileWriteScope ?? parentAuthority.fileAllowedPaths ?? []),
+									],
 								}
 							: {}),
 						autoApproval: childAutoApprovalPolicy,
@@ -8628,6 +8627,7 @@ export class AlphaProvider
 					depth: orchestration.ancestry.depth,
 					objective: draft.objective,
 					agentKind: draft.agent_kind,
+					authorityModel,
 					expectedOutput: draft.expected_output,
 					parentPolicy: parentAuthority.policy,
 					requestedPolicy: requestedPolicies[index],
@@ -8705,7 +8705,12 @@ export class AlphaProvider
 				usage: { durationMs: 0 },
 			})),
 		}))
-		const prepared = { group, envelopes, requiresExplicitApproval }
+		const prepared = {
+			group,
+			envelopes,
+			requiresExplicitApproval,
+			...(authorityModel ? { inheritsParentPermissions: true } : {}),
+		}
 		this.preparedSubagentGroups.set(groupId, prepared)
 		this.taskSessions.setReservedTaskIds(
 			groupId,
@@ -10389,12 +10394,12 @@ export class AlphaProvider
 		const settings = this.getResolvedSubagentOrchestrationSettings()
 		const effectiveLimits =
 			frozen?.limits ?? createSubagentEffectiveLimits(settings, "worker", this.taskSessions.getMaxLiveTasks())
-		const { timeoutMs: _roleSpecificTimeout, ...limits } = structuredClone(effectiveLimits)
+		const { timeoutMs: _roleSpecificTimeout, ...limits } = retireSubagentExecutionLimits(effectiveLimits)
 
 		return subagentRootOrchestrationSummarySchema.parse({
 			source: frozen ? "frozen" : "configured",
 			delegationPolicy: frozen?.delegationPolicy.policy ?? settings.delegationPolicy,
-			maxDepth: frozen?.ancestry.maxDepth ?? settings.maxDepth,
+			maxDepth: null,
 			limits,
 		})
 	}
@@ -10425,12 +10430,12 @@ export class AlphaProvider
 			modelRouteId: record.snapshot?.modelRouteId,
 			usage: record.snapshot?.usage,
 			depth: orchestration?.ancestry.depth,
-			maxDepth: orchestration?.ancestry.maxDepth,
+			maxDepth: null,
 			delegationPolicy: orchestration?.delegationPolicy.policy,
 			delegationPolicyProvenance: orchestration?.delegationPolicy
 				? structuredClone(orchestration.delegationPolicy)
 				: undefined,
-			effectiveLimits: orchestration?.limits ? structuredClone(orchestration.limits) : undefined,
+			effectiveLimits: orchestration?.limits ? retireSubagentExecutionLimits(orchestration.limits) : undefined,
 			stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 			requiresParentVerification:
 				parentVerification?.blocking || parentVerification?.status === "required"
@@ -10965,7 +10970,9 @@ export class AlphaProvider
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		const manifest =
 			this.subagentDescriptors.get(record.taskId)?.contextManifest ?? record.snapshot?.contextManifest
-		return manifest?.orchestration?.delegationPolicy.policy !== "proactive"
+		// An existing approved agent keeps its captured authority for follow-ups.
+		// Only legacy records that need an authorization migration require a fresh approval.
+		return !finalizedSubagentContextManifestSchema.safeParse(manifest).success
 	}
 
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
@@ -11280,24 +11287,6 @@ export class AlphaProvider
 			throw new Error(
 				`Not enough root-wide child capacity to resume ${record.path}; effective root child maximum: ${limits.maxConcurrentSubagents}.`,
 			)
-		}
-		const history = this.taskHistoryStore.get(record.taskId)
-		if ((history?.tokensIn ?? 0) >= limits.maxInputTokens) {
-			throw new Error(`input_token_limit: agent ${record.path} exhausted its frozen input token limit`)
-		}
-		if ((history?.tokensOut ?? 0) >= limits.maxOutputTokens) {
-			throw new Error(`output_token_limit: agent ${record.path} exhausted its frozen output token limit`)
-		}
-		const exhaustion = this.getSubagentRootBudgetExhaustion(record.rootTaskId)
-		if (exhaustion) throw new Error(`${exhaustion}: this orchestration root has exhausted its frozen budget`)
-		const rootUsage = this.getSubagentRootUsage(record.rootTaskId)
-		if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
-			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_token_budget")
-			throw new Error(`root_token_budget: this orchestration root has exhausted its frozen token budget`)
-		}
-		if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
-			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_cost_budget")
-			throw new Error(`root_cost_budget: this orchestration root has exhausted its frozen cost budget`)
 		}
 	}
 
@@ -11714,30 +11703,7 @@ export class AlphaProvider
 		const settings = this.contextProxy.getValues()
 		return resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: settings.maxConcurrentSubagents,
-			subagentDelegationPolicy: settings.subagentDelegationPolicy,
-			subagentMaxDepth: settings.subagentMaxDepth,
-			subagentRoleTimeoutsMs: settings.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: settings.subagentMaxInputTokens,
-			subagentMaxOutputTokens: settings.subagentMaxOutputTokens,
-			subagentRootTokenBudget: settings.subagentRootTokenBudget,
-			subagentRootCostBudget: settings.subagentRootCostBudget,
 		})
-	}
-
-	private getSubagentRootBudgetExhaustion(rootTaskId: string): "root_token_budget" | "root_cost_budget" | undefined {
-		const retained = this.exhaustedSubagentRootBudgets.get(rootTaskId)
-		if (retained) return retained
-		const persisted = [
-			...this.agentControlStore
-				.listAgents({ rootTaskId, includeRoot: false })
-				.map((record) => record.terminalResult?.stopReason ?? record.snapshot?.stopReason),
-			...this.agentControlStore.listClosedAgents(rootTaskId).map((record) => record.stopReason),
-		].find(
-			(reason): reason is "root_token_budget" | "root_cost_budget" =>
-				reason === "root_token_budget" || reason === "root_cost_budget",
-		)
-		if (persisted) this.exhaustedSubagentRootBudgets.set(rootTaskId, persisted)
-		return persisted
 	}
 
 	private getSubagentRootUsage(rootTaskId: string): { tokens: number; cost: number } {
@@ -11788,48 +11754,6 @@ export class AlphaProvider
 		}
 	}
 
-	private exhaustSubagentRootBudget(
-		rootTaskId: string,
-		currentTaskId: string,
-		stopReason: "root_token_budget" | "root_cost_budget",
-		message: string,
-	): void {
-		this.exhaustedSubagentRootBudgets.set(rootTaskId, stopReason)
-		const cancelled = new Set<string>([currentTaskId])
-		for (const prepared of this.preparedSubagentGroups.values()) {
-			for (const envelope of prepared.envelopes) {
-				if ((envelope.rootTaskId ?? envelope.parentTaskId) !== rootTaskId || cancelled.has(envelope.id))
-					continue
-				cancelled.add(envelope.id)
-				if (!this.asyncSubagentRunManager.cancel(envelope.id, message, stopReason)) {
-					this.boundedDelegationManager.cancel(envelope.id, message, stopReason)
-				}
-			}
-		}
-		for (const record of this.agentControlStore.listAgents({
-			rootTaskId,
-			includeRoot: false,
-			statuses: ["pending", "running", "cancelling"],
-		})) {
-			if (!cancelled.has(record.taskId)) {
-				cancelled.add(record.taskId)
-				if (!this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason)) {
-					this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
-				}
-			}
-			void this.agentControlStore
-				.appendEvent({
-					rootTaskId,
-					sender: rootTaskId,
-					recipient: record.taskId,
-					kind: "control",
-					name: "root_budget_exhausted",
-					payload: { stopReason, message },
-				})
-				.catch((error) => this.log(`Failed to persist root budget cancellation: ${String(error)}`))
-		}
-	}
-
 	private findFrozenRootOrchestration(rootTaskId: string): SubagentManifestOrchestration | undefined {
 		return (
 			this.agentControlStore
@@ -11857,14 +11781,10 @@ export class AlphaProvider
 	): Pick<SubagentManifestOrchestration, "ancestry" | "limits"> {
 		const parentOrchestration = parent.subagentContextManifest?.orchestration
 		if (parent.taskKind === "subagent") {
-			// Legacy children intentionally retain the original depth-one semantics,
-			// independent of any settings changed after they were created.
+			// Retain captured permission ceilings; nesting has no independent execution limit.
 			const parentDepth = parentOrchestration?.ancestry.depth ?? 1
-			const maxDepth = parentOrchestration?.ancestry.maxDepth ?? 1
+			const maxDepth = null
 			const depth = parentDepth + 1
-			if (depth > maxDepth) {
-				throw new Error(`depth_limit: maximum managed-agent depth ${maxDepth} has been reached`)
-			}
 			if (!parent.subagentContextManifest?.runtimePolicy.delegate) {
 				throw new Error("authority_denied: this managed agent was not granted delegation authority")
 			}
@@ -11874,17 +11794,9 @@ export class AlphaProvider
 			) {
 				throw new Error("authority_denied: only a managed Worker may grant a descendant Worker")
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings({
-				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
-			})
+			const legacySettings = resolveSubagentOrchestrationSettings()
 			const limits: SubagentEffectiveLimits = parentOrchestration?.limits
-				? {
-						...structuredClone(parentOrchestration.limits),
-						// A descendant may select a different role, but every role timeout
-						// comes from the root-frozen map rather than current settings.
-						timeoutMs: parentOrchestration.limits.roleTimeoutsMs[role],
-					}
+				? retireSubagentExecutionLimits(parentOrchestration.limits)
 				: createSubagentEffectiveLimits(
 						legacySettings,
 						role,
@@ -11903,17 +11815,14 @@ export class AlphaProvider
 
 		const frozenRootOrchestration = this.findFrozenRootOrchestration(parent.taskId)
 		const rootLimits: SubagentEffectiveLimits = frozenRootOrchestration
-			? {
-					...structuredClone(frozenRootOrchestration.limits),
-					timeoutMs: frozenRootOrchestration.limits.roleTimeoutsMs[role],
-				}
+			? retireSubagentExecutionLimits(frozenRootOrchestration.limits)
 			: createSubagentEffectiveLimits(settings, role, this.taskSessions.getMaxLiveTasks())
 		return {
 			ancestry: {
 				rootTaskId: parent.taskId,
 				parentTaskId: parent.taskId,
 				depth: 1,
-				maxDepth: frozenRootOrchestration?.ancestry.maxDepth ?? settings.maxDepth,
+				maxDepth: null,
 			},
 			limits: rootLimits,
 		}
@@ -12127,10 +12036,7 @@ export class AlphaProvider
 			if (record.parentTaskId !== record.rootTaskId || parent.taskId !== record.rootTaskId) {
 				throw new Error(`recovery_failed: nested legacy agent ${record.path} has no trustworthy ancestry`)
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings({
-				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
-			})
+			const legacySettings = resolveSubagentOrchestrationSettings()
 			const legacyDecision = finalizeSubagentDelegationPolicy(resolveSubagentDelegationPolicy({}), {
 				authorization: "group-approval",
 				groupApproved: true,
@@ -12140,7 +12046,7 @@ export class AlphaProvider
 					rootTaskId: record.rootTaskId,
 					parentTaskId: record.parentTaskId,
 					depth: 1,
-					maxDepth: 1,
+					maxDepth: null,
 				},
 				delegationPolicy: legacyDecision,
 				limits: createSubagentEffectiveLimits(legacySettings, agent.role, DEFAULT_MAX_CONCURRENT_TASKS),
@@ -12194,6 +12100,7 @@ export class AlphaProvider
 			depth: orchestration.ancestry.depth,
 			objective: record.objective,
 			agentKind: agent.role,
+			authorityModel: contextManifest.runtimePolicy.authorityModel,
 			expectedOutput: [instruction],
 			parentPolicy: parentAuthority.policy,
 			requestedPolicy: {
@@ -12207,7 +12114,7 @@ export class AlphaProvider
 			},
 			workspaceRoots,
 			parentWorkspaceRoots: parentAuthority.workspaceRoots,
-			allowedPaths: agent.role === "worker" ? agent.writeScope : undefined,
+			allowedPaths: capturedPolicy.writeScope ?? (agent.role === "worker" ? agent.writeScope : undefined),
 			parentAllowedPaths: parentAuthority.allowedPaths,
 			parentFileAllowedPaths: parentAuthority.fileAllowedPaths,
 			sharedWorkspace: agent.role !== "worker",
@@ -12889,6 +12796,7 @@ export class AlphaProvider
 			delegationPolicy: finalizedManifest.data.orchestration.delegationPolicy.policy,
 			depth: ancestry.depth,
 			maxDepth: ancestry.maxDepth,
+			authorityModel: finalizedManifest.data.runtimePolicy.authorityModel,
 		})
 		const inheritedSkillCatalog = renderInheritedSkillCatalog(
 			finalizedManifest.data.skills.map(({ name, description, path, allowImplicitInvocation }) => ({
@@ -12934,7 +12842,7 @@ export class AlphaProvider
 							logicalWorkspace: parent.historyWorkspacePath,
 							approvalProvenance: descriptor.approvalProvenance,
 						}
-			const researchDeadlineAt = role === "worker" ? undefined : Date.now() + SUBAGENT_RESEARCH_WINDOW_MS
+
 			if (followupInstruction) {
 				const { historyItem } = await this.getTaskWithId(envelope.id, { includeApiConversationHistory: false })
 				const activeHistory = {
@@ -12963,7 +12871,6 @@ export class AlphaProvider
 							historyWorkspacePath: parent.historyWorkspacePath,
 							subagentPrivateWorkspaceRoot: descriptor.managedWorktree?.artifact.worktreePath,
 							subagentAuthority,
-							subagentResearchDeadlineAt: researchDeadlineAt,
 							apiConfiguration: structuredClone(modelRoute.apiConfiguration),
 						},
 					},
@@ -12977,14 +12884,14 @@ export class AlphaProvider
 					preserveExisting: true,
 					startTask: false,
 					initialStatus: "active",
-					taskMode: "code",
+					taskMode: finalizedManifest.data.runtimePolicy.mode ?? "code",
 					taskApprovalMode: inferApprovalModeFromPolicy(
 						finalizedManifest.data.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy,
 					),
 					taskApiConfigName: modelRoute.apiConfigName,
 					apiConfiguration: structuredClone(modelRoute.apiConfiguration),
 					enableCheckpoints: false,
-					workspacePath: descriptor.managedWorktree?.workspacePath,
+					workspacePath: descriptor.managedWorktree?.workspacePath ?? parent.cwd,
 					historyWorkspacePath: parent.historyWorkspacePath,
 					subagentPrivateWorkspaceRoot: descriptor.managedWorktree?.artifact.worktreePath,
 					taskKind: "subagent",
@@ -13003,7 +12910,6 @@ export class AlphaProvider
 						: {}),
 					subagentWriteScope: descriptor.writeScope,
 					subagentAuthority,
-					subagentResearchDeadlineAt: researchDeadlineAt,
 				})
 				// The private instruction body must be durably verified before the only
 				// launch descriptor copy is discarded and the background loop starts.
@@ -13148,6 +13054,13 @@ export class AlphaProvider
 						} catch (error) {
 							captureFailure(error)
 						}
+						if (status === "interrupted") {
+							try {
+								await child.recordSubagentInterruption?.()
+							} catch (error) {
+								captureFailure(error)
+							}
+						}
 						if (failureObserved) throw firstFailure
 					}
 					void stopChild().then(
@@ -13165,57 +13078,8 @@ export class AlphaProvider
 						},
 					)
 				}
-				const stopForBudget = (
-					stopReason: "input_token_limit" | "output_token_limit" | "root_token_budget" | "root_cost_budget",
-					summary: string,
-					usage: TokenUsage,
-				) => {
-					if (stopReason === "root_token_budget" || stopReason === "root_cost_budget") {
-						this.exhaustSubagentRootBudget(ancestry.rootTaskId, child.taskId, stopReason, summary)
-					}
-					stopAndFinish("cancelled", usage, summary, stopReason)
-				}
-				const enforceBudgets = (): boolean => {
-					if (settled) return true
-					const usage = child.getTokenUsage()
-					if (usage.totalTokensIn >= limits.maxInputTokens) {
-						stopForBudget(
-							"input_token_limit",
-							`Sub-agent input token limit exceeded (${usage.totalTokensIn}/${limits.maxInputTokens}).`,
-							usage,
-						)
-						return true
-					}
-					if (usage.totalTokensOut >= limits.maxOutputTokens) {
-						stopForBudget(
-							"output_token_limit",
-							`Sub-agent output token limit exceeded (${usage.totalTokensOut}/${limits.maxOutputTokens}).`,
-							usage,
-						)
-						return true
-					}
-					const rootUsage = this.getSubagentRootUsage(ancestry.rootTaskId)
-					if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
-						stopForBudget(
-							"root_token_budget",
-							`Root sub-agent token budget exceeded (${rootUsage.tokens}/${limits.rootTokenBudget}).`,
-							usage,
-						)
-						return true
-					}
-					if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
-						stopForBudget(
-							"root_cost_budget",
-							`Root sub-agent cost budget exceeded (${rootUsage.cost}/${limits.rootCostBudget}).`,
-							usage,
-						)
-						return true
-					}
-					return false
-				}
 				const onMessage = ({ message }: { message: AlphaMessage }) => {
 					currentRunMessages.push(message)
-					if (enforceBudgets()) return
 					const phase = this.getSubagentPhaseForMessage(message)
 					if (!phase) return
 					void this.updateSubagentPhase(groupId, child.taskId, phase).catch((error) =>
@@ -13224,9 +13088,7 @@ export class AlphaProvider
 				}
 
 				const onCompleted = (_taskId: string, tokenUsage: TokenUsage) => {
-					if (!enforceBudgets()) {
-						finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
-					}
+					finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
 				}
 				const onAborted = () => {
 					if (signal.aborted) return
@@ -13502,7 +13364,7 @@ export class AlphaProvider
 
 	public async surfaceSubagentApproval(
 		child: Task,
-		type: "command" | "protected_write",
+		type: "command" | "protected_write" | "mcp" | "tool",
 		text?: string,
 	): Promise<void> {
 		const descriptor = this.subagentDescriptors.get(child.taskId)
@@ -13511,10 +13373,18 @@ export class AlphaProvider
 		if (!descriptor || !prepared || !agent) return
 		let operation = text?.trim() || (type === "command" ? "Run command" : "Protected write")
 		let scope: string | undefined
-		if (type === "protected_write") {
+		if (type !== "command") {
 			try {
-				const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string }
-				operation = payload.tool ?? "Protected write"
+				const payload = JSON.parse(text ?? "{}") as {
+					tool?: string
+					path?: string
+					serverName?: string
+					toolName?: string
+				}
+				operation =
+					type === "mcp"
+						? [payload.serverName, payload.toolName].filter(Boolean).join(" / ") || operation
+						: (payload.tool ?? operation)
 				scope = payload.path
 			} catch {
 				// Keep the original display text when metadata is malformed.

@@ -34,6 +34,107 @@ const readInside = JSON.stringify({ tool: "readFile", path: "src/foo.ts", isOuts
 const readOutside = JSON.stringify({ tool: "readFile", path: "../code.ts", isOutsideWorkspace: true })
 
 describe("checkAutoApproval", () => {
+	it.each([
+		"git status --short",
+		"git add src/file.ts",
+		"git commit -m implementation",
+		"git switch -c implementation",
+	])("inherits Full Access for %s while preserving a captured denial", async (text) => {
+		const inheritedState = {
+			...disabledSubagentAutoApprovalPolicy,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			commandApproval: createSubagentCommandApprovalPolicy(["*"], []),
+		}
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState,
+				ask: "command",
+				text,
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState: {
+					...inheritedState,
+					commandApproval: createSubagentCommandApprovalPolicy(["*"], [text]),
+				},
+				ask: "command",
+				text,
+			}),
+		).resolves.toEqual({ decision: "deny" })
+	})
+
+	it.each(["auto", "bypass"] as const)("requires both live and captured MCP grants in %s", async (mode) => {
+		const text = JSON.stringify({ type: "use_mcp_tool", serverName: "docs", toolName: "search", source: "project" })
+		const state = {
+			approvalMode: mode,
+			alwaysAllowMcp: true,
+			mcpServers: [
+				{
+					name: "docs",
+					config: "{}",
+					status: "connected" as const,
+					source: "project" as const,
+					tools: [{ name: "search", alwaysAllow: true }],
+				},
+			],
+		}
+		const inheritedState = subagentAutoApprovalPolicySchema.parse({
+			...disabledSubagentAutoApprovalPolicy,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: true,
+			alwaysAllowWriteOutsideWorkspace: mode === "bypass",
+			alwaysAllowMcp: true,
+			mcpApproval: { enabled: true, grants: [{ serverName: "docs", toolName: "search", source: "project" }] },
+			commandApproval: createSubagentCommandApprovalPolicy(["*"], []),
+		})
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({ state, inheritedState, ask: "use_mcp_server", text }),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: {
+					...inheritedState,
+					mcpApproval: { enabled: false, grants: [] },
+				},
+				ask: "use_mcp_server",
+				text,
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { ...state, approvalMode: "ask", alwaysAllowMcp: false },
+				inheritedState,
+				ask: "use_mcp_server",
+				text,
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		if (mode === "auto") {
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state,
+					inheritedState: {
+						...inheritedState,
+						mcpApproval: {
+							enabled: true,
+							grants: [{ serverName: "docs", toolName: "search", source: "global" }],
+						},
+					},
+					ask: "use_mcp_server",
+					text,
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		}
+	})
 	it("keeps mixed batch reads under outside-read approval", async () => {
 		await expect(
 			checkAutoApproval({

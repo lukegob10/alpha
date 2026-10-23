@@ -185,6 +185,10 @@ export async function runRenderedUiProbe(
 					mode === "transcript-lifecycle"
 						? JSON.parse(await fs.readFile(path.join(directory, "ui-selection-layout.json"), "utf8"))
 						: undefined
+				const unattendedLifecycle =
+					mode === "transcript-lifecycle"
+						? JSON.parse(await fs.readFile(path.join(directory, "ui-unattended-lifecycle.json"), "utf8"))
+						: undefined
 				observed = {
 					status: "passed",
 					nonce,
@@ -195,6 +199,7 @@ export async function runRenderedUiProbe(
 					provider: "scripted",
 					...(modelSwitchTiming ? { modelSwitchTiming } : {}),
 					...(selectionLayout ? { selectionLayout } : {}),
+					...(unattendedLifecycle ? { unattendedLifecycle } : {}),
 				}
 			} else {
 				await cdp.request("Page.bringToFront", {}, workbenchSession)

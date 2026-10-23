@@ -58,6 +58,8 @@
 				"^core/webview/__tests__/queue-steering\\.integration\\.spec\\.ts$",
 				"^core/webview/__tests__/stageThreeLegacyHandoff\\.integration\\.spec\\.ts$",
 				"^core/config/__tests__/(?:ProviderSettingsManager\\.(?:retention(?:-review)?|upgrade)|ContextProxy\\.profile-projection)\\.spec\\.ts$",
+				"^core/config/__tests__/ContextProxy\\.spec\\.ts$",
+				"^core/webview/__tests__/AlphaProvider\\.closed-budget-freeze\\.astra-review\\.spec\\.ts$",
 				"^core/webview/__tests__/(?:AlphaProvider\\.(?:unavailable-profile-admission|profile-delete\\.availability|prompt-enhancement|pending-review-steering|diagnostics)|webviewMessageHandler\\.(?:profile-availability|enhancePrompt)|promptEnhancementRequests)\\.spec\\.ts$",
 				"^core/task/__tests__/.*(?:agent|managed|descendant|nested).*\\.spec\\.ts$",
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
@@ -140,82 +142,48 @@
 	"rows": [
 		{
 			"id": "CFG-CONTRACT-001",
-			"requirement": "ExtensionState/updateSettings expose the exact bounded orchestration fields and defaults agreed with the backend.",
+			"requirement": "Settings expose current Codex agent enablement, thread cap, model/effort defaults, interruption messages and custom agents; retired preferences are not writable.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "settings-buffering"],
 			"probes": [
 				{
-					"label": "concurrency/depth/policy schema tests",
-					"match": "all",
-					"patterns": ["maxConcurrentSubagents", "subagentDelegationPolicy", "subagentMaxDepth"]
-				},
-				{
-					"label": "role timeout schema tests",
-					"patterns": ["subagentRoleTimeoutsMs"]
-				},
-				{
-					"label": "token/output/root budget schema tests",
-					"match": "all",
-					"patterns": [
-						"subagentMaxInputTokens",
-						"subagentMaxOutputTokens",
-						"subagentRootTokenBudget",
-						"subagentRootCostBudget"
-					]
+					"label": "current settings and inheritance",
+					"patterns": ["uses Codex V2 defaults", "saves Codex settings without forwarding retired settings"]
 				}
 			],
 			"sourceProbes": [
 				{
-					"label": "all exact persisted setting names",
-					"path": "packages/types/src/global-settings.ts",
-					"match": "all",
-					"patterns": [
-						"maxConcurrentSubagents",
-						"subagentDelegationPolicy",
-						"subagentMaxDepth",
-						"subagentRoleTimeoutsMs",
-						"subagentMaxInputTokens",
-						"subagentMaxOutputTokens",
-						"subagentRootTokenBudget",
-						"subagentRootCostBudget"
-					]
-				},
-				{
-					"label": "ExtensionState exposes exact fields",
+					"label": "current public settings",
 					"path": "packages/types/src/vscode-extension-host.ts",
 					"match": "all",
 					"patterns": [
+						"subagentsEnabled",
 						"maxConcurrentSubagents",
-						"subagentDelegationPolicy",
-						"subagentMaxDepth",
-						"subagentRoleTimeoutsMs",
-						"subagentMaxInputTokens",
-						"subagentMaxOutputTokens",
-						"subagentRootTokenBudget",
-						"subagentRootCostBudget"
+						"subagentDefaultModel",
+						"subagentDefaultReasoningEffort",
+						"subagentInterruptMessage",
+						"subagentAgentTypes"
 					]
 				}
 			]
 		},
 		{
 			"id": "CFG-FROZEN-001",
-			"requirement": "Every child freezes contextManifest.orchestration ancestry, delegationPolicy, and limits; legacy omissions recover with frozen legacy defaults.",
+			"requirement": "Children retain captured context and authority across reload; old execution ceilings never regain effect.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing"],
 			"probes": [
 				{
-					"label": "frozen ancestry and effective limits contract",
+					"label": "legacy snapshots remain readable",
 					"patterns": ["freezes ancestry and effective limits while retaining legacy manifests"]
 				},
 				{
-					"label": "legacy omission recovery with frozen defaults",
-					"patterns": ["recovers a legacy orchestration omission with frozen legacy defaults"]
+					"label": "legacy omission",
+					"patterns": ["recovers a legacy orchestration omission without reviving execution limits"]
 				},
 				{
-					"label": "frozen delegation policy and role timeout reload",
-					"patterns": [
-						"rehydrates a child with its frozen delegation policy and role timeout despite changed settings"
-					]
+					"label": "reload ignores deadlines",
+					"patterns": ["rehydrates a child with its frozen delegation policy without reviving role timeouts"]
 				}
 			],
 			"sourceProbes": [
@@ -275,111 +243,86 @@
 		},
 		{
 			"id": "CFG-POLICY-001",
-			"requirement": "Explicit-request versus proactive delegation policy is enforced and reload-stable.",
+			"requirement": "Delegation follows explicit requests or applicable instructions; retired proactive settings cannot grant authority.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
 			"probes": [
 				{
-					"label": "explicit/proactive policy behavior",
+					"label": "explicit requests and session grants",
 					"patterns": [
-						"subagentDelegationPolicy.{0,120}(?:explicit-only|proactive)",
-						"(?:explicit(?:-request)?|explicit-only|proactive).{0,100}delegat",
-						"delegat.{0,100}(?:explicit(?:-request)?|proactive)"
+						"ignores the retired proactive setting while preserving session grants and task opt-in"
 					]
 				},
 				{
-					"label": "per-task policy can narrow but not widen",
-					"patterns": [
-						"(?:explicit-only|proactive).{0,120}(?:narrow|widen|override)",
-						"(?:narrow|widen|override).{0,120}(?:explicit-only|proactive)"
-					]
+					"label": "authority only narrows",
+					"patterns": ["allows a per-task policy to narrow but never widen"]
 				},
 				{
-					"label": "effective policy persistence or reload",
-					"patterns": [
-						"(?:persist|reload|rehydrat).{0,100}(?:effective )?delegation policy",
-						"delegation policy.{0,100}(?:persist|reload|rehydrat)"
-					]
+					"label": "saved authorizations remain valid",
+					"patterns": ["rehydrates a child with its frozen delegation policy"]
 				}
 			]
 		},
 		{
 			"id": "CFG-TIMEOUT-001",
-			"requirement": "Validated role-specific timeouts survive reload and produce one deterministic terminal result.",
+			"requirement": "Wait timeouts release the parent without stopping the child; legacy execution deadlines have no effect and explicit cancellation still cleans up.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
 			"probes": [
 				{
-					"label": "role-specific timeout configuration",
-					"patterns": [
-						"subagentRoleTimeoutsMs",
-						"(?:role|explore|review|worker).{0,100}timeout",
-						"timeout.{0,100}(?:role|explore|review|worker)"
-					]
+					"label": "no child deadline",
+					"patterns": ["keeps working past a legacy execution timeout until explicitly stopped"]
 				},
 				{
-					"label": "timeout persistence/reload",
-					"patterns": [
-						"(?:persist|reload|rehydrat).{0,100}timeout",
-						"timeout.{0,100}(?:persist|reload|rehydrat)"
-					]
+					"label": "wait lifecycle cleanup",
+					"patterns": ["settles a blocking wait on %s and disposes its timer and subscription"]
 				},
 				{
-					"label": "exactly-once timeout terminal outcome",
-					"patterns": ["timed_out.{0,100}(?:once|terminal|result)", "timeout.{0,100}exactly.once"]
+					"label": "parent cancellation and interruption",
+					"patterns": ["distinguishes parent cancellation and interruption"]
 				}
 			]
 		},
 		{
 			"id": "CFG-BUDGET-001",
-			"requirement": "Output, token, and cost limits stop the root tree deterministically and report the effective stop reason.",
+			"requirement": "Retired per-child and root token/cost preferences cannot stop work or block new launches after reload; usage and historical stop reasons remain durable.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "settings-buffering"],
 			"probes": [
 				{
-					"label": "output/token limit enforcement",
-					"patterns": [
-						"(?:subagentMaxInputTokens|subagentMaxOutputTokens).{0,120}(?:stop|cancel|terminal|stopReason)",
-						"(?:output|token).{0,100}(?:limit|budget|ceiling).{0,100}(?:stop|cancel|terminal)"
-					]
+					"label": "multi-request continuation",
+					"patterns": ["ignores a retired .name limit across provider requests", "ignores a retired"]
 				},
 				{
-					"label": "root cost limit enforcement",
-					"patterns": [
-						"subagentRootCostBudget.{0,120}(?:stop|cancel|terminal|stopReason)",
-						"cost.{0,100}(?:limit|budget|ceiling).{0,100}(?:stop|cancel|terminal)",
-						"(?:limit|budget|ceiling).{0,100}cost.{0,100}(?:stop|cancel|terminal)"
-					]
+					"label": "closed history cannot restore budgets",
+					"patterns": ["does not revive .* after deleting the final child's history and reloading"]
 				},
 				{
-					"label": "durable effective stop reason",
-					"patterns": [
-						"stopReason.{0,120}(?:input_token_limit|output_token_limit|root_token_budget|root_cost_budget)",
-						"(?:effective )?stop reason.{0,100}(?:persist|reload|terminal)"
-					]
+					"label": "reported causes remain readable",
+					"patterns": ["accepts stable terminal stop reason %s"]
 				}
 			]
 		},
 		{
 			"id": "NEST-DEPTH-001",
-			"requirement": "Authorized children may spawn descendants only within configured depth and narrowed authority.",
+			"requirement": "Authorized descendants have no independent nesting-depth ceiling; parent permission and workspace ceilings still apply.",
 			"classification": "merge-dependent",
 			"trackIds": ["types-contracts", "runtime-invariants", "lifecycle-routing", "worker-worktree"],
 			"probes": [
 				{
-					"label": "authorized read-only nesting and frozen depth",
+					"label": "nesting without depth ceiling",
 					"patterns": [
-						"allows read-only descendants within frozen depth while denying depth, delegation, and Worker widening"
+						"permits nested read-only agents without a depth ceiling while denying authority widening"
 					]
 				},
 				{
-					"label": "authorized Worker nesting with exact scope narrowing",
+					"label": "Worker exact scope",
 					"patterns": [
 						"allows a Worker to layer one nested Worker only within its frozen directory and exact-file scope"
 					]
 				},
 				{
-					"label": "layered Worker checkout ownership",
+					"label": "layered checkout ownership",
 					"patterns": ["layers a nested Worker worktree through its owning parent before the root checkout"]
 				}
 			]
@@ -568,7 +511,7 @@
 		},
 		{
 			"id": "RECOVERY-NESTED-001",
-			"requirement": "Reload reconstructs nested ownership, budgets, mailbox routing, and orphan cleanup without flattening.",
+			"requirement": "Reload reconstructs nested ownership, usage, mailbox routing and orphan cleanup without flattening or restoring retired limits.",
 			"classification": "merge-dependent",
 			"trackIds": ["runtime-invariants", "lifecycle-routing", "worker-worktree"],
 			"probes": [
@@ -910,8 +853,8 @@
 		},
 		{
 			"id": "INT-BUDGET-STOP-001",
-			"requirement": "Real provider: role timeout and root output/token/cost exhaustion stop all descendants once with accurate usage and cost.",
-			"reason": "Requires billable provider usage/stream termination and wall-clock enforcement that deterministic offline tests must not simulate as proof.",
+			"requirement": "Real provider: long-running agents and compaction continue without generic execution deadlines; explicit cancellation stops provider work and descendant processes.",
+			"reason": "Deterministic tests establish lifecycle semantics; supplemental live-provider runs establish actual provider and process behavior over long sessions.",
 			"evidenceCommand": null
 		},
 		{

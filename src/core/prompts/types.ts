@@ -24,6 +24,8 @@ export interface SystemPromptSettings {
 	codexRootDelegationAvailable?: boolean
 	/** Narrow child authority used to omit capabilities the child cannot call. */
 	subagentRole?: "explore" | "review" | "worker"
+	/** New roles inherit authority; old manifests keep their historical role restrictions. */
+	subagentInheritsPermissions?: boolean
 	/** Whether the managed child received a frozen, mode-filtered skill catalog. */
 	subagentHasInheritedSkills?: boolean
 	/** Whether this managed child uses a frozen parent context package. */

@@ -39,42 +39,29 @@ async function createFixture() {
 }
 
 describe("AlphaProvider managed-agent budget thresholds", () => {
-	it.each(budgets)("stops at exactly $name before another provider request", async (budget) => {
+	it.each(budgets)("ignores a retired $name limit across provider requests", async (budget) => {
 		const fixture = await createFixture()
 		Object.assign(fixture.settings, { [budget.setting]: budget.limit })
-		const child = await fixture.spawnChild("exact_budget")
-		child.turn.chunks = [
-			{
-				type: "tool_call",
-				id: "inspect_agents",
-				name: "list_agents",
-				arguments: "{}",
-			},
-		]
-		const next = fixture.queueTurn(child.taskId, "This request must not start after exhaustion.")
+		const child = await fixture.spawnChild("legacy_budget")
+		child.turn.chunks = [{ type: "tool_call", id: "inspect_agents", name: "list_agents", arguments: "{}" }]
+		const next = fixture.queueTurn(child.taskId, "The objective is complete.")
 		const completed = fixture.runs.waitForResult(child.taskId)
 		if (!completed) throw new Error("The child has no owned run completion")
 		child.turn.release()
-
 		try {
 			const outcome = await Promise.race([
 				next.entered.then(() => ({ nextRequest: true as const })),
 				completed.then((result) => ({ nextRequest: false as const, result })),
 			])
-			expect(outcome.nextRequest).toBe(false)
-			if (outcome.nextRequest) throw new Error("An exhausted child started another provider request")
-			expect(outcome.result).toMatchObject({ status: "cancelled", stopReason: budget.reason })
-			await child.finalization
-			expect(fixture.store.getAgent(child.taskId)).toMatchObject({
-				status: "cancelled",
-				terminalResult: { stopReason: budget.reason },
-			})
+			expect(outcome.nextRequest).toBe(true)
 		} finally {
 			next.release()
 			await completed
 			await child.finalization
 			await child.task.waitForTermination()
 		}
+		expect(await completed).toMatchObject({ status: "completed", stopReason: "completed" })
+		expect(fixture.store.getAgent(child.taskId)?.status).toBe("completed")
 	})
 
 	it.each(budgets)("permits completion below the $name limit", async (budget) => {

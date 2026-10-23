@@ -411,7 +411,7 @@ describe("request-independent tool authority", () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({
 				crossTaskRole: "root",
-				userRequestText: "Create one independent task and stop it when complete.",
+				userRequestText: "Create one independent task and fork this chat. Stop the new task when complete.",
 			}),
 		)
 
@@ -446,6 +446,54 @@ describe("request-independent tool authority", () => {
 				expect(result.surface?.isCallable("create_thread"), `${apiProvider}: ${userRequestText}`).toBe(true)
 			}
 		}
+	})
+
+	it.each(["openai", "vscode-lm", "vertex"] as const)(
+		"keeps fresh-chat requests from selecting a history fork on %s, including cached catalogs",
+		async (apiProvider) => {
+			const base = options({
+				apiConfiguration: { apiProvider },
+				includeAllToolsWithRestrictions: apiProvider === "vertex",
+				approvalMode: "bypass",
+				crossTaskRole: "root",
+			})
+			const fork = await buildNativeToolsArrayWithRestrictions({
+				...base,
+				userRequestText: "Fork this chat and create a new task for verification.",
+			})
+			expect(fork.surface?.isCallable("fork_thread")).toBe(true)
+
+			const fresh = await buildNativeToolsArrayWithRestrictions({
+				...base,
+				userRequestText: "This chat is long. Create a new chat and work on ticket ALPHA-42.",
+			})
+			expect(namesOf(fresh.tools)).toContain("create_thread")
+			expect(namesOf(fresh.tools)).not.toContain("fork_thread")
+			expect(fresh.surface?.isCallable("create_thread")).toBe(true)
+			expect(fresh.surface?.isCallable("fork_thread")).toBe(false)
+			expect(fresh.surface?.resolve("fork_thread")).toBeUndefined()
+		},
+	)
+
+	it("keeps a historical fork declaration for restricted-provider replay without allowing a new fork", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				apiConfiguration: { apiProvider: "vertex" },
+				includeAllToolsWithRestrictions: true,
+				crossTaskRole: "root",
+				userRequestText: "Create a fresh chat for ticket ALPHA-42.",
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "prior-fork", name: "fork_thread", input: {} }],
+					},
+				],
+			}),
+		)
+		expect(namesOf(result.tools)).toContain("fork_thread")
+		expect(result.allowedFunctionNames).not.toContain("fork_thread")
+		expect(result.surface?.isCallable("fork_thread")).toBe(false)
+		expect(result.surface?.resolve("fork_thread")).toBeUndefined()
 	})
 
 	it("hides create_thread from an ordinary root work request, including after a prior authorized turn", async () => {

@@ -61,22 +61,25 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 
 		let approved: boolean
 		try {
-			approved = await callbacks.askApproval(
-				"tool",
-				JSON.stringify({
-					tool: "spawnAgent",
-					groupId: prepared.group.groupId,
-					agent: {
-						nickname: prepared.group.agents[0].nickname,
-						role: prepared.group.agents[0].role,
-						objective: prepared.group.agents[0].objective,
-						writeScope: prepared.group.agents[0].writeScope,
-					},
-				}),
-				undefined,
-				undefined,
-				prepared.requiresExplicitApproval === true,
-			)
+			approved =
+				prepared.inheritsParentPermissions === true && request.source === "codex-v2"
+					? true
+					: await callbacks.askApproval(
+							"tool",
+							JSON.stringify({
+								tool: "spawnAgent",
+								groupId: prepared.group.groupId,
+								agent: {
+									nickname: prepared.group.agents[0].nickname,
+									role: prepared.group.agents[0].role,
+									objective: prepared.group.agents[0].objective,
+									writeScope: prepared.group.agents[0].writeScope,
+								},
+							}),
+							undefined,
+							undefined,
+							prepared.requiresExplicitApproval === true,
+						)
 		} catch (error) {
 			try {
 				await provider.cancelPreparedSubagentGroup(task, prepared, "Sub-agent approval was interrupted.")

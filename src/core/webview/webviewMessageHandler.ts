@@ -38,6 +38,8 @@ import {
 	webviewFocusChangedMessageSchema,
 	cancelEnhancePromptMessageSchema,
 	subagentAgentTypesSchema,
+	globalSettingsSchema,
+	RETIRED_SUBAGENT_SETTING_KEYS,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
@@ -1000,6 +1002,7 @@ export const webviewMessageHandler = async (
 		case "updateSettings":
 			if (message.updatedSettings) {
 				for (const [key, value] of Object.entries(message.updatedSettings)) {
+					if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) continue
 					let newValue = value
 
 					if (key === "language") {
@@ -1059,24 +1062,20 @@ export const webviewMessageHandler = async (
 					} else if (key === "maxConcurrentTasks") {
 						newValue = value ?? 3
 						provider.setMaxConcurrentTasks(newValue as number)
-					} else if (key === "subagentDefaultApiConfigId") {
-						newValue = typeof value === "string" && value.length > 0 ? value : undefined
+					} else if (
+						key === "subagentsEnabled" ||
+						key === "subagentInterruptMessage" ||
+						key === "maxConcurrentSubagents"
+					) {
+						newValue = globalSettingsSchema.shape[key].parse(value)
+					} else if (key === "subagentDefaultReasoningEffort") {
+						newValue = globalSettingsSchema.shape.subagentDefaultReasoningEffort.parse(
+							value === "" || value === null ? undefined : value,
+						)
+					} else if (key === "subagentDefaultModel") {
+						newValue = globalSettingsSchema.shape.subagentDefaultModel.parse(value) || undefined
 					} else if (key === "subagentAgentTypes") {
 						newValue = value == null ? undefined : subagentAgentTypesSchema.parse(value)
-					} else if (key === "subagentApiConfigByRole") {
-						const roles = value as { explore?: unknown; review?: unknown; worker?: unknown } | undefined
-						const normalizedRoles = {
-							...(typeof roles?.explore === "string" && roles.explore.length > 0
-								? { explore: roles.explore }
-								: {}),
-							...(typeof roles?.review === "string" && roles.review.length > 0
-								? { review: roles.review }
-								: {}),
-							...(typeof roles?.worker === "string" && roles.worker.length > 0
-								? { worker: roles.worker }
-								: {}),
-						}
-						newValue = Object.keys(normalizedRoles).length > 0 ? normalizedRoles : undefined
 					} else if (key === "experiments") {
 						if (!value) {
 							continue

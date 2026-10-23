@@ -69,12 +69,16 @@ export function getRulesSection(cwd: string, settings?: SystemPromptSettings, is
 	const subagentRole = settings?.subagentRole
 
 	if (subagentRole) {
-		const workerRules =
-			subagentRole === "worker"
+		const workerRules = settings?.subagentInheritsPermissions
+			? `
+- Use only the supplied tools under the parent's captured approval policy. Git, network and MCP operations follow the same rules as other inherited tools; they require task authorization and may still need user approval.
+- Respect the host-enforced write scope, protected files, command denials and execution mode. Full Access cannot widen a narrower captured parent grant.
+- Set exec_command workdir to the supplied task directory or a directory within the authorized workspace. Do not use a working directory to bypass path checks.`
+			: subagentRole === "worker"
 				? `
 - Edit only paths in the approved write scope. All other repository paths are read-only.
 - Before using exec_command, use the SYSTEM INFORMATION context to make the command compatible with the user's environment. Set its workdir parameter instead of changing directories. When dependent commands must be chained, use \`${chainOp}\` for the active shell.${chainNote ? ` ${chainNote}` : ""}
-- Commands are for targeted local implementation or verification only. Do not stage, commit, create branches, or change remotes.`
+- Commands and Git operations follow the inherited approval policy and the user-authorized objective.`
 				: "\n- This child is read-only. Inspect evidence without mutating files or running commands."
 		const frozenContextRules = settings?.subagentUsesFrozenContext
 			? settings.subagentFrozenInstructions
@@ -88,7 +92,7 @@ export function getRulesSection(cwd: string, settings?: SystemPromptSettings, is
 		const delegationRules = settings?.subagentCanDelegate
 			? `
 - You may create only managed descendants with spawn_agent. Use list_agents for read-only identity and status discovery within the same root task tree. Use wait_agent, followup_task, and interrupt_agent only for your retained descendant subtree. Never control a parent, ancestor, sibling, or foreign branch.
-- Managed delegation remains subject to the frozen depth, root-wide capacity, timeout, token, and cost limits.${
+- Managed delegation remains subject to the inherited authority and root-wide capacity limits.${
 					settings.subagentDelegationPolicy === "proactive"
 						? " The proactive policy permits delegation only when it materially advances the assigned objective."
 						: " Each spawn must be authorized by a persisted task opt-in or trusted group approval; task wording and model-supplied arguments are not approval."

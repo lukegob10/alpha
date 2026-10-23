@@ -45,9 +45,12 @@ describe("InternalTaskEnvelope nested ancestry", () => {
 		[{ depth: undefined }, "both rootTaskId and depth"],
 		[{ parentTaskId: "child-1", depth: 1 }, "parented directly"],
 		[{ parentTaskId: "root-1", depth: 2 }, "parent below"],
-		[{ parentTaskId: "child-1", depth: 4 }, "exceeds maximum depth 3"],
 	] as const)("rejects invalid nested ancestry %j", (override, message) => {
 		expect(() => buildInternalTaskEnvelope({ ...base, ...override })).toThrow(message)
+	})
+
+	it("ignores a captured legacy depth ceiling", () => {
+		expect(buildInternalTaskEnvelope({ ...base, parentTaskId: "child-1", depth: 4 })).toMatchObject({ depth: 4 })
 	})
 
 	it("rejects descendant delegation when the parent authority does not include it", () => {

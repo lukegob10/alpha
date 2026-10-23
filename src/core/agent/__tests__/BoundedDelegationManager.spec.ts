@@ -96,25 +96,18 @@ describe("bounded delegation", () => {
 		})
 	})
 
-	it("returns a timed-out structured result instead of corrupting the parent", async () => {
-		let cancellationKind: string | undefined
-		const manager = new BoundedDelegationManager(
-			async (_item, signal) =>
-				await new Promise((_, reject) =>
-					signal.addEventListener(
-						"abort",
-						() => {
-							cancellationKind =
-								signal.reason instanceof InternalTaskCancellationError ? signal.reason.kind : undefined
-							reject(signal.reason)
-						},
-						{ once: true },
-					),
-				),
-		)
-		const timed = { ...envelope("a"), budget: { ...envelope("a").budget, timeoutMs: 1 } }
-		await expect(manager.run(timed)).resolves.toMatchObject({ taskId: "a", status: "timed_out" })
-		expect(cancellationKind).toBe("timed_out")
+	it("retains a structured timeout reported by a child operation", async () => {
+		const manager = new BoundedDelegationManager(async (item) => ({
+			...result(item.id),
+			status: "timed_out",
+			stopReason: "timeout",
+			summary: "Child operation timed out",
+		}))
+		await expect(manager.run(envelope("a"))).resolves.toMatchObject({
+			taskId: "a",
+			status: "timed_out",
+			stopReason: "timeout",
+		})
 	})
 
 	it("cancels a queued child with a structured result without invoking its runner", async () => {

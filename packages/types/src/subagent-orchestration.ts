@@ -1,12 +1,26 @@
 import { z } from "zod"
 
-import { subagentRoleSchema, type SubagentRole } from "./subagent.js"
+import { type SubagentRole } from "./subagent.js"
 
-export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 2
+// Codex V2 defaults to four session threads, including the root.
+export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3
 export const MIN_MAX_CONCURRENT_SUBAGENTS = 1
-export const MAX_MAX_CONCURRENT_SUBAGENTS = 16
+export const MAX_MAX_CONCURRENT_SUBAGENTS = Number.MAX_SAFE_INTEGER
 
 export const DEFAULT_SUBAGENT_DELEGATION_POLICY = "explicit-only" as const
+
+/** Historical preferences are accepted on import, but no longer control execution. */
+export const RETIRED_SUBAGENT_SETTING_KEYS: readonly string[] = [
+	"subagentDelegationPolicy",
+	"subagentMaxDepth",
+	"subagentRoleTimeoutsMs",
+	"subagentMaxInputTokens",
+	"subagentMaxOutputTokens",
+	"subagentRootTokenBudget",
+	"subagentRootCostBudget",
+	"subagentDefaultApiConfigId",
+	"subagentApiConfigByRole",
+]
 
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 1
 export const MIN_SUBAGENT_MAX_DEPTH = 1
@@ -89,10 +103,10 @@ export const resolvedSubagentOrchestrationSettingsSchema = z
 	.object({
 		maxConcurrentSubagents: maxConcurrentSubagentsSchema,
 		delegationPolicy: subagentDelegationPolicySchema,
-		maxDepth: subagentMaxDepthSchema,
-		roleTimeoutsMs: effectiveSubagentRoleTimeoutsMsSchema,
-		maxInputTokens: subagentTokenLimitSchema,
-		maxOutputTokens: subagentTokenLimitSchema,
+		maxDepth: subagentMaxDepthSchema.nullable(),
+		roleTimeoutsMs: effectiveSubagentRoleTimeoutsMsSchema.nullable(),
+		maxInputTokens: subagentTokenLimitSchema.nullable(),
+		maxOutputTokens: subagentTokenLimitSchema.nullable(),
 		rootTokenBudget: subagentRootTokenBudgetSchema,
 		rootCostBudget: subagentRootCostBudgetSchema,
 	})
@@ -111,41 +125,20 @@ function parseOrDefault<T>(schema: z.ZodType<T>, value: unknown, fallback: T): T
 export function resolveSubagentOrchestrationSettings(
 	settings: Partial<Record<keyof SubagentOrchestrationSettings, unknown>> = {},
 ): ResolvedSubagentOrchestrationSettings {
-	const timeoutOverrides = parseOrDefault(subagentRoleTimeoutsMsSchema, settings.subagentRoleTimeoutsMs, {})
-
 	return resolvedSubagentOrchestrationSettingsSchema.parse({
 		maxConcurrentSubagents: parseOrDefault(
 			maxConcurrentSubagentsSchema,
 			settings.maxConcurrentSubagents,
 			DEFAULT_MAX_CONCURRENT_SUBAGENTS,
 		),
-		delegationPolicy: parseOrDefault(
-			subagentDelegationPolicySchema,
-			settings.subagentDelegationPolicy,
-			DEFAULT_SUBAGENT_DELEGATION_POLICY,
-		),
-		maxDepth: parseOrDefault(subagentMaxDepthSchema, settings.subagentMaxDepth, DEFAULT_SUBAGENT_MAX_DEPTH),
-		roleTimeoutsMs: { ...DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS, ...timeoutOverrides },
-		maxInputTokens: parseOrDefault(
-			subagentTokenLimitSchema,
-			settings.subagentMaxInputTokens,
-			DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-		),
-		maxOutputTokens: parseOrDefault(
-			subagentTokenLimitSchema,
-			settings.subagentMaxOutputTokens,
-			DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
-		),
-		rootTokenBudget: parseOrDefault(
-			subagentRootTokenBudgetSchema,
-			settings.subagentRootTokenBudget,
-			DEFAULT_SUBAGENT_ROOT_TOKEN_BUDGET,
-		),
-		rootCostBudget: parseOrDefault(
-			subagentRootCostBudgetSchema,
-			settings.subagentRootCostBudget,
-			DEFAULT_SUBAGENT_ROOT_COST_BUDGET,
-		),
+		// Legacy preferences remain readable but cannot restore retired execution limits.
+		delegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
+		maxDepth: null,
+		roleTimeoutsMs: null,
+		maxInputTokens: null,
+		maxOutputTokens: null,
+		rootTokenBudget: null,
+		rootCostBudget: null,
 	})
 }
 
@@ -320,13 +313,9 @@ export const subagentAncestrySchema = z
 		rootTaskId: z.string().min(1),
 		parentTaskId: z.string().min(1),
 		depth: z.number().int().min(1),
-		maxDepth: subagentMaxDepthSchema,
+		maxDepth: subagentMaxDepthSchema.nullable(),
 	})
 	.strict()
-	.refine(({ depth, maxDepth }) => depth <= maxDepth, {
-		path: ["depth"],
-		message: "sub-agent depth cannot exceed maxDepth",
-	})
 export type SubagentAncestry = z.infer<typeof subagentAncestrySchema>
 
 /** Effective, immutable ceilings applied to one child for its entire retained lifetime. */
@@ -334,17 +323,30 @@ export const subagentEffectiveLimitsSchema = z
 	.object({
 		maxConcurrentTasks: z.number().int().positive(),
 		maxConcurrentSubagents: maxConcurrentSubagentsSchema,
-		maxInputTokens: subagentTokenLimitSchema,
-		maxOutputTokens: subagentTokenLimitSchema,
+		maxInputTokens: subagentTokenLimitSchema.nullable(),
+		maxOutputTokens: subagentTokenLimitSchema.nullable(),
 		/** Frozen root role map used when a child creates a differently typed descendant. */
-		roleTimeoutsMs: effectiveSubagentRoleTimeoutsMsSchema,
+		roleTimeoutsMs: effectiveSubagentRoleTimeoutsMsSchema.nullable(),
 		/** Selected timeout for this child role. */
-		timeoutMs: subagentRoleTimeoutMsSchema,
+		timeoutMs: subagentRoleTimeoutMsSchema.nullable(),
 		rootTokenBudget: subagentRootTokenBudgetSchema,
 		rootCostBudget: subagentRootCostBudgetSchema,
 	})
 	.strict()
 export type SubagentEffectiveLimits = z.infer<typeof subagentEffectiveLimitsSchema>
+
+/** New descendants and live projections keep capacity but retire historical execution ceilings. */
+export function retireSubagentExecutionLimits(limits: SubagentEffectiveLimits): SubagentEffectiveLimits {
+	return {
+		...limits,
+		maxInputTokens: null,
+		maxOutputTokens: null,
+		roleTimeoutsMs: null,
+		timeoutMs: null,
+		rootTokenBudget: null,
+		rootCostBudget: null,
+	}
+}
 
 /** Root-wide ceilings shown before a role-specific child timeout is selected. */
 export const subagentRootEffectiveLimitsSchema = subagentEffectiveLimitsSchema.omit({ timeoutMs: true })
@@ -355,7 +357,7 @@ export const subagentRootOrchestrationSummarySchema = z
 	.object({
 		source: z.enum(["configured", "frozen"]),
 		delegationPolicy: subagentDelegationPolicySchema,
-		maxDepth: subagentMaxDepthSchema,
+		maxDepth: subagentMaxDepthSchema.nullable(),
 		limits: subagentRootEffectiveLimitsSchema,
 	})
 	.strict()
@@ -382,7 +384,7 @@ export type FinalizedSubagentManifestOrchestration = z.infer<typeof finalizedSub
 
 export function createSubagentEffectiveLimits(
 	settings: ResolvedSubagentOrchestrationSettings,
-	role: SubagentRole,
+	_role: SubagentRole,
 	maxConcurrentTasks: number,
 ): SubagentEffectiveLimits {
 	return subagentEffectiveLimitsSchema.parse({
@@ -390,8 +392,8 @@ export function createSubagentEffectiveLimits(
 		maxConcurrentSubagents: settings.maxConcurrentSubagents,
 		maxInputTokens: settings.maxInputTokens,
 		maxOutputTokens: settings.maxOutputTokens,
-		roleTimeoutsMs: structuredClone(settings.roleTimeoutsMs),
-		timeoutMs: settings.roleTimeoutsMs[subagentRoleSchema.parse(role)],
+		roleTimeoutsMs: null,
+		timeoutMs: null,
 		rootTokenBudget: settings.rootTokenBudget,
 		rootCostBudget: settings.rootCostBudget,
 	})

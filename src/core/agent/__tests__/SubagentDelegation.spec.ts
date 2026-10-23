@@ -9,6 +9,18 @@ import {
 } from "../SubagentDelegation"
 
 describe("buildSubagentPrompt", () => {
+	it.each(["explore", "review", "worker"] as const)("uses inherited permissions for a new %s agent", (role) => {
+		const prompt = buildSubagentPrompt({
+			nickname: "Maple",
+			role,
+			objective: "Inspect the checkout and implement the requested fix",
+			expectedOutput: [],
+			writeScope: ["."],
+			authorityModel: "parent",
+		})
+		expect(prompt).toContain("parent's approval policy")
+		expect(prompt).not.toMatch(/Do not commit|Do not stage|Do not edit files|Do not.*access the network or MCP/)
+	})
 	it.each([
 		["explore" as const, "Map dependency boundaries", []],
 		["review" as const, "Assess recovery invariants", ["Risks", "Evidence"]],
@@ -75,7 +87,7 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("editing Worker")
 		expect(prompt).toContain("isolated Git worktree")
 		expect(prompt).toContain("src/parser")
-		expect(prompt).toContain("Do not commit, stage, create branches, or change remotes")
+		expect(prompt).toContain("Git operations follow the inherited command approval policy")
 		expect(prompt).toContain("a complete objective may conclude that no repository change is needed")
 		expect(prompt).toContain("choose verification proportionate to the work")
 		expect(prompt).toContain("including when no change was needed")
@@ -250,7 +262,7 @@ describe("normalizeSpawnAgentRequest", () => {
 	it.each([
 		{ model: " " },
 		{ reasoning_effort: "disable" },
-		{ reasoning_effort: "ultra" },
+		{ reasoning_effort: "unsupported" },
 		{ fork_turns: "01" },
 		{ agent_type: "root admin" },
 		{ write_scope: ["src"] },

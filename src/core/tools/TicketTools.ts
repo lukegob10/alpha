@@ -52,7 +52,9 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	try {
 		signal?.throwIfAborted()
 		if (task.abort) throw new Error("Ticket operation cancelled")
-		const store = await TicketStore.forWorkspace(task.cwd, undefined, signal)
+		// A private checkout changes file execution paths, not the inherited Tickets project.
+		const ticketWorkspace = task.taskKind === "subagent" ? task.historyWorkspacePath : task.cwd
+		const store = await TicketStore.forWorkspace(ticketWorkspace, undefined, signal)
 		const approveMutation = async (
 			operation: "create" | "update" | "delete",
 			name: string,

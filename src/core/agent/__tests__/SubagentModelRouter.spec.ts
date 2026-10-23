@@ -38,6 +38,79 @@ const loader = {
 const parentApiConfiguration = profiles[0]
 
 describe("resolveSubagentModelRoute", () => {
+	it("inherits model and effort unless a default explicitly selects a model", async () => {
+		const parent = { ...parentApiConfiguration, reasoningEffort: "high" as const, enableReasoningEffort: true }
+		const inherited = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: parent,
+			profileLoader: loader,
+		})
+		expect(inherited.apiConfiguration).toMatchObject({ openAiModelId: "parent-model", reasoningEffort: "high" })
+		const selected = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: parent,
+			profileLoader: loader,
+			defaultModelId: "child-model",
+		})
+		expect(selected.apiConfiguration.openAiModelId).toBe("child-model")
+		expect(selected.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(selected.apiConfiguration.openAiApiKey).toBe("parent-secret")
+		expect(parent.reasoningEffort).toBe("high")
+	})
+
+	it("uses the model default when an explicit selection repeats the parent model", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: { ...parentApiConfiguration, reasoningEffort: "high", enableReasoningEffort: true },
+			profileLoader: loader,
+			requestedModelId: "parent-model",
+		})
+		expect(result.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(result.apiConfiguration.enableReasoningEffort).toBeUndefined()
+	})
+
+	it("captures the preceding model's default effort before applying a custom model", async () => {
+		const resolveDefault = vi.fn().mockResolvedValue("medium")
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader: loader,
+			defaultModelId: "default-model",
+			agentModelId: "custom-model",
+			resolveModelDefaultReasoningEffort: resolveDefault,
+		})
+		expect(resolveDefault.mock.calls[0]?.[0]).toMatchObject({ openAiModelId: "default-model" })
+		expect(result.apiConfiguration).toMatchObject({ openAiModelId: "custom-model", reasoningEffort: "medium" })
+		expect(parentApiConfiguration.reasoningEffort).toBeUndefined()
+	})
+
+	it("resolves custom agent overrides after spawn, defaults, and parent settings", async () => {
+		const selected = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader: loader,
+			defaultModelId: "default-model",
+			defaultReasoningEffort: "low",
+			requestedModelId: "spawn-model",
+			requestedReasoningEffort: "medium",
+			agentModelId: "custom-model",
+			agentReasoningEffort: "high",
+		})
+		expect(selected.apiConfiguration).toMatchObject({
+			apiProvider: "openai",
+			openAiModelId: "custom-model",
+			reasoningEffort: "high",
+			openAiApiKey: "parent-secret",
+		})
+		const modelOnly = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader: loader,
+			requestedReasoningEffort: "medium",
+			agentModelId: "custom-model",
+		})
+		expect(modelOnly.apiConfiguration.reasoningEffort).toBe("medium")
+	})
 	it("applies role, default, then parent precedence using stable IDs", async () => {
 		const role = await resolveSubagentModelRoute({
 			role: "explore",

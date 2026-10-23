@@ -373,6 +373,7 @@ import {
 } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
 import { AutoApprovalHandler, captureToolReviewPolicy, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
+import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
 import { clearTaskSessionApprovalGrants } from "../auto-approval/taskSessionApprovalGrants"
 import { collectArtifactExecutionIds, MessageManager } from "../message-manager"
 import { validateAndFixToolResultIds } from "./validateToolResultIds"
@@ -1042,7 +1043,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private reasoningSummaries?: ReasoningSummary
 	private agentWaitAbortController?: AbortController
 	private readonly subagentAuthority?: SubagentAuthorityGrant
-	private readonly subagentResearchDeadlineAt?: number
 	private readonly childTasksRequiringVerification = new Set<string>()
 	private readonly commandExecutionEvidence = new Map<string, CommandExecutionEvidence>()
 	private pendingCommandVerification: Promise<void> = Promise.resolve()
@@ -1876,7 +1876,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		subagentChangeSet,
 		historyWorkspacePath,
 		subagentPrivateWorkspaceRoot,
-		subagentResearchDeadlineAt,
 		performanceSubmissionStartedAt,
 		taskApprovalMode,
 		toolApprovalReviewer,
@@ -1971,7 +1970,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			subagentWriteScope ??
 			(subagentAuthority?.role === "worker" ? subagentAuthority.writeScope : undefined)
 		this.subagentChangeSet = structuredClone(historyItem?.subagentChangeSet ?? subagentChangeSet)
-		this.subagentResearchDeadlineAt = subagentResearchDeadlineAt
 		this.subagentInitialContext = subagentInitialContext
 		if (subagentFrozenInstructions !== undefined) {
 			if (!contextManifest) throw new Error("Managed child frozen instructions require a context manifest")
@@ -4748,7 +4746,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			mode,
 			customModes: state?.customModes,
 			experiments: state?.experiments,
-			disabledTools: state?.disabledTools,
+			disabledTools: this.getDisabledToolsForStep(state),
 			// Opt-in editors were already selected and authority-filtered at this step's capture boundary.
 			includedTools: [...surface.allowedFunctionNames],
 			signal: schedulerSignal,
@@ -6208,6 +6206,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						profileName: capturedApiConfigName ?? "Parent profile",
 					},
 					history: forkHistory,
+					allowedTools: [...surface.policy.allowedTools],
 					finalAssistantMessageIndexes: getFinalAssistantMessageIndexes(forkHistory),
 					...(capturedAutoApprovalPolicy
 						? { autoApprovalPolicy: structuredClone(capturedAutoApprovalPolicy) }
@@ -7408,10 +7407,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				approval.decision === "ask"
 			if (
 				isStatusMutable &&
-				this.subagentRole === "worker" &&
-				(type === "command" || (type === "tool" && isProtected))
+				this.taskKind === "subagent" &&
+				(type === "command" || type === "tool" || type === "use_mcp_server")
 			) {
-				await provider?.surfaceSubagentApproval(this, type === "command" ? "command" : "protected_write", text)
+				await provider?.surfaceSubagentApproval?.(
+					this,
+					type === "command"
+						? "command"
+						: type === "use_mcp_server"
+							? "mcp"
+							: isProtected
+								? "protected_write"
+								: "tool",
+					text,
+				)
 			}
 
 			if (isStatusMutable) {
@@ -7531,7 +7540,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.buildUserMessageContent(result.text, result.images, result.queuedMessageIds),
 			)
 		}
-		if (this.subagentRole === "worker") await provider?.clearSubagentApproval(this.taskId)
+		if (this.taskKind === "subagent") await provider?.clearSubagentApproval?.(this.taskId)
 		if (this.activeAsk?.ts === askTs) {
 			this.activeAsk = undefined
 		}
@@ -9862,7 +9871,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		includeUntrackedTaskProcesses = true,
 		pendingOutput: readonly TaskCommandOutputFinalization[] = [],
 	): Promise<void> {
-		if (this.taskKind === "subagent" && this.subagentRole !== "worker") return
+		if (
+			this.taskKind === "subagent" &&
+			this.subagentRole !== "worker" &&
+			!this.subagentContextManifest?.runtimePolicy.execute
+		)
+			return
 		// Command launch can still be awaiting approval or terminal acquisition, so
 		// cancel its evidence even when no process has become visible yet.
 		this.failActiveCommandExecutions("cancelled")
@@ -10038,8 +10052,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (changed) await this.saveAlphaMessages()
 	}
 
-	public getTaskAllowedToolNames(): readonly ToolName[] | undefined {
+	public getTaskAllowedToolNames(): readonly string[] | undefined {
 		if (this.taskKind !== "subagent") return undefined
+		const policy = this.subagentContextManifest?.runtimePolicy
+		if (policy?.authorityModel === "parent") {
+			return getInheritedSubagentToolNames(
+				[...policy.allowedTools, "send_message", "list_agents"],
+				policy,
+				Boolean(this.subagentContextManifest?.skills.length),
+			)
+		}
 		const role = this.subagentRole ?? "review"
 		const roleCeiling = getSubagentAllowedToolNames(
 			role,
@@ -10079,6 +10101,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.taskKind === "primary"
 	}
 
+	private getDisabledToolsForStep(state?: TaskRequestState): ToolName[] | undefined {
+		return state?.subagentsEnabled === false
+			? [...(state.disabledTools ?? []), "spawn_agent"]
+			: state?.disabledTools
+	}
+
 	private getUserRequestTextForCatalog(): string | undefined {
 		return extractUserRequestText(
 			this.apiConversationHistory,
@@ -10103,6 +10131,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	/** Exact-file entries retained from managed Worker scope validation. */
 	public getSubagentFileWriteScope(): string[] {
+		if (this.subagentContextManifest?.runtimePolicy.authorityModel === "parent") {
+			return [...(this.subagentContextManifest.runtimePolicy.fileWriteScope ?? [])]
+		}
 		return this.subagentAuthority?.role === "worker" ? [...(this.subagentAuthority.fileWriteScope ?? [])] : []
 	}
 
@@ -10127,9 +10158,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public getTaskToolDenialReason(toolName: string, params?: Record<string, unknown>): string | undefined {
 		toolName = canonicalizeToolName(toolName)
+		if (toolName === "spawn_agent" && this.providerRef?.deref()?.getValue?.("subagentsEnabled") === false) {
+			return "Subagents are disabled in Agents settings."
+		}
 		const allowed = this.getTaskAllowedToolNames()
 		if (allowed && !(allowed as readonly string[]).includes(toolName)) {
-			return `Tool "${toolName}" is not allowed for this parent-managed ${this.subagentRole === "worker" ? "editing worker" : "read-only sub-agent"}.`
+			const label =
+				this.subagentContextManifest?.runtimePolicy.authorityModel === "parent"
+					? "sub-agent"
+					: this.subagentRole === "worker"
+						? "editing worker"
+						: "read-only sub-agent"
+			return `Tool "${toolName}" is not allowed for this parent-managed ${label}.`
 		}
 		if (this.taskKind === "subagent" && toolName === "write_stdin" && params) {
 			const role = this.subagentRole ?? this.subagentContextManifest?.runtimePolicy.role ?? "review"
@@ -10139,19 +10179,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		if (this.subagentRole === "worker" && this.isWorkerEditTool(toolName) && params) {
+		if (
+			(this.subagentRole === "worker" ||
+				this.subagentContextManifest?.runtimePolicy.authorityModel === "parent") &&
+			this.isWorkerEditTool(toolName) &&
+			params
+		) {
 			const paths = this.getWorkerEditPaths(params)
 			if (paths.length === 0) return `Tool "${toolName}" did not provide a verifiable edit path.`
 			const outside = paths.find((candidate) => !this.isWorkerWritePathAllowed(candidate))
 			if (outside) return `Worker edit path is outside the approved write_scope: ${outside}`
-		}
-
-		if (
-			this.taskKind === "subagent" &&
-			this.subagentResearchDeadlineAt !== undefined &&
-			Date.now() >= this.subagentResearchDeadlineAt
-		) {
-			return "The sub-agent research window has ended. Stop using research tools and give a final assistant answer with the evidence already collected."
 		}
 
 		return undefined
@@ -10191,11 +10228,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cwd: this.cwd,
 				historyWorkspacePath: this.historyWorkspacePath,
 				subagentPrivateWorkspaceRoot: this.subagentPrivateWorkspaceRoot,
-				subagentWriteScope: this.subagentWriteScope,
+				subagentWriteScope: this.subagentWriteScope ?? this.subagentContextManifest?.runtimePolicy.writeScope,
 				subagentAuthority:
-					this.subagentAuthority?.role === "worker"
-						? { role: "worker", fileWriteScope: this.subagentAuthority.fileWriteScope }
-						: undefined,
+					this.subagentContextManifest?.runtimePolicy.authorityModel === "parent"
+						? { role: "worker", fileWriteScope: this.subagentContextManifest.runtimePolicy.fileWriteScope }
+						: this.subagentAuthority?.role === "worker"
+							? { role: "worker", fileWriteScope: this.subagentAuthority.fileWriteScope }
+							: undefined,
 			},
 			candidate,
 		)
@@ -10505,6 +10544,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			completionResultSummary: summary,
 			stopReason: this.subagentStopReason,
 		})
+	}
+
+	/** Record only model context; UI and terminal lifecycle remain independent. */
+	public async recordSubagentInterruption(): Promise<void> {
+		if (this.taskKind !== "subagent") return
+		if (this.providerRef.deref()?.getValue?.("subagentInterruptMessage") === false) return
+		const entry: ApiMessage = {
+			role: "user",
+			input_origin: "agent",
+			content: [
+				{
+					type: "text",
+					text: "<agent_interruption>The previous agent turn was interrupted. Review the current task state before continuing.</agent_interruption>",
+				},
+			],
+		}
+		if (!(await this.addToApiConversationHistory(entry))) {
+			throw new Error("Failed to persist the agent interruption message")
+		}
 	}
 
 	private defaultSubagentStopReason(
@@ -11670,7 +11728,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					customModes: state?.customModes,
 					experiments: state?.experiments,
 					apiConfiguration,
-					disabledTools: state?.disabledTools,
+					disabledTools: this.getDisabledToolsForStep(state),
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -18361,7 +18419,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const isSubagent = this.taskKind === "subagent"
 		const projectInstructionDiscovery = isSubagent ? undefined : captureProjectInstructionDiscoveryOptions()
 		let mcpHub: McpHub | undefined
-		if (!isSubagent && (mcpEnabled ?? true)) {
+		if (
+			(!isSubagent || this.subagentContextManifest?.runtimePolicy.authorityModel === "parent") &&
+			(mcpEnabled ?? true)
+		) {
 			const provider = this.providerRef.deref()
 
 			if (!provider) {
@@ -18381,20 +18442,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const mode = modeOverride ?? (await this.getTaskMode())
 		const subagentAncestry = this.subagentContextManifest?.orchestration?.ancestry
 		const effectiveSubagentDelegationPolicy = resolveSubagentDelegationPolicy({
-			settingsPolicy: state?.subagentDelegationPolicy,
+			settingsPolicy: undefined,
 			frozenTaskPolicy:
 				this.subagentContextManifest?.orchestration?.delegationPolicy.policy ?? this.subagentDelegationPolicy,
-			// A live explicit-only setting is a security narrowing for an
-			// already-open proactive task. A later proactive setting never widens
-			// a task that was frozen as explicit-only.
-			requestedChildPolicy: state?.subagentDelegationPolicy === "explicit-only" ? "explicit-only" : undefined,
+			// Retired proactive preferences cannot widen an existing task's
+			// captured delegation authority.
+			requestedChildPolicy: "explicit-only",
 			taskExplicitlyEnabled: this.subagentDelegationExplicitlyEnabled === true,
 		}).policy
 		const subagentCanDelegate = Boolean(
 			isSubagent &&
 				this.subagentContextManifest?.runtimePolicy.delegate === true &&
 				subagentAncestry &&
-				subagentAncestry.depth < subagentAncestry.maxDepth &&
 				this.getTaskAllowedToolNames()?.includes("spawn_agent"),
 		)
 		const frozenSubagentInstructions = isSubagent ? await this.getFrozenSubagentInstructions() : undefined
@@ -18413,7 +18472,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.isToolAllowedForTask("spawn_agent") &&
 				filterNativeToolsForMode([createSpawnAgentTool()], mode, customModes, experiments, undefined, {
 					modelInfo,
-					disabledTools: state?.disabledTools,
+					disabledTools: this.getDisabledToolsForStep(state),
 				}).some((tool) => tool.type === "function" && tool.function.name === "spawn_agent")
 
 			return SYSTEM_PROMPT_FRAGMENTS(
@@ -18442,12 +18501,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					isStealthModel: modelInfo?.isStealthModel,
 					approvalMode: approvalModeOverride ?? migrateApprovalMode(state),
 					commandShell: getCommandShell(
-						(isSubagent && this.subagentRole === "worker") ||
+						(isSubagent &&
+							(this.subagentRole === "worker" || this.subagentContextManifest?.runtimePolicy.execute)) ||
 							(state?.terminalShellIntegrationDisabled ?? true),
 						BaseTerminal.getExecaShellPath(),
 					),
 					codexRootDelegationAvailable,
 					subagentRole: isSubagent ? this.subagentRole : undefined,
+					subagentInheritsPermissions:
+						isSubagent && this.subagentContextManifest?.runtimePolicy.authorityModel === "parent",
 					subagentHasInheritedSkills: isSubagent
 						? Boolean(this.subagentContextManifest?.skills.length)
 						: undefined,
@@ -18566,7 +18628,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							customModes: state?.customModes,
 							experiments: state?.experiments,
 							apiConfiguration,
-							disabledTools: state?.disabledTools,
+							disabledTools: this.getDisabledToolsForStep(state),
 							execution: capturedExecution,
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -19204,7 +19266,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									customModes: state?.customModes,
 									experiments: state?.experiments,
 									apiConfiguration,
-									disabledTools: state?.disabledTools,
+									disabledTools: this.getDisabledToolsForStep(state),
 									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -19561,7 +19623,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					customModes: state?.customModes,
 					experiments: state?.experiments,
 					apiConfiguration,
-					disabledTools: state?.disabledTools,
+					disabledTools: this.getDisabledToolsForStep(state),
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),

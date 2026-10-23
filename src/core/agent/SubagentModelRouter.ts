@@ -27,6 +27,11 @@ export interface ResolveSubagentModelRouteOptions {
 	profileLoader: SubagentProfileLoader
 	requestedModelId?: string
 	requestedReasoningEffort?: ReasoningEffortExtended
+	defaultModelId?: string
+	defaultReasoningEffort?: ReasoningEffortExtended
+	agentModelId?: string
+	agentReasoningEffort?: ReasoningEffortExtended
+	resolveModelDefaultReasoningEffort?(configuration: ProviderSettings): Promise<ReasoningEffortExtended | undefined>
 }
 
 export interface ResolvedSubagentModelRoute {
@@ -151,10 +156,15 @@ export function applySubagentSpawnOverrides(
 	base: ResolvedSubagentModelRoute,
 	requestedModelId?: string,
 	requestedReasoningEffort?: ReasoningEffortExtended,
+	resetReasoningForSelectedModel = true,
 ): ResolvedSubagentModelRoute {
 	if (!requestedModelId && !requestedReasoningEffort) return base
 
 	const apiConfiguration = snapshotProviderSettings(base.apiConfiguration)
+	if (resetReasoningForSelectedModel && requestedModelId && !requestedReasoningEffort) {
+		apiConfiguration.reasoningEffort = undefined
+		apiConfiguration.enableReasoningEffort = undefined
+	}
 	if (requestedModelId) {
 		switch (apiConfiguration.apiProvider) {
 			case "openai":
@@ -203,5 +213,19 @@ export async function resolveSubagentModelRoute(
 	options: ResolveSubagentModelRouteOptions,
 ): Promise<ResolvedSubagentModelRoute> {
 	const base = await resolveProfileRoute(options)
-	return applySubagentSpawnOverrides(base, options.requestedModelId, options.requestedReasoningEffort)
+	const selected = applySubagentSpawnOverrides(
+		base,
+		options.requestedModelId ?? options.defaultModelId,
+		options.requestedReasoningEffort ?? options.defaultReasoningEffort,
+	)
+	if (options.agentModelId && !options.agentReasoningEffort && !selected.apiConfiguration.reasoningEffort) {
+		const effort = await options.resolveModelDefaultReasoningEffort?.(selected.apiConfiguration)
+		if (effort) {
+			selected.apiConfiguration.reasoningEffort = effort
+			selected.apiConfiguration.enableReasoningEffort = effort !== "none"
+		}
+	}
+	// Custom agent settings are applied last. A custom model alone preserves the
+	// effort already resolved from the launch/default/parent settings, as in Codex.
+	return applySubagentSpawnOverrides(selected, options.agentModelId, options.agentReasoningEffort, false)
 }

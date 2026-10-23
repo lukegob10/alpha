@@ -905,6 +905,45 @@ describe("executeCommandTool", () => {
 	})
 
 	describe("Plan command working-directory confinement", () => {
+		it("allows a Worker Git command in an absolute directory inside its worktree", async () => {
+			mockAlphaTask.taskKind = "subagent"
+			mockAlphaTask.subagentRole = "worker"
+			mockAlphaTask.cwd = path.resolve("worker-worktree")
+			vitest.mocked(TerminalRegistry.getOrCreateTerminal).mockRejectedValueOnce(new Error("terminal unavailable"))
+
+			await expect(
+				executeCommandInTerminalActual(mockAlphaTask as Task, {
+					executionId: "worker-git-absolute",
+					command: "git status --short",
+					customCwd: mockAlphaTask.cwd,
+				}),
+			).rejects.toThrow("terminal unavailable")
+
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
+				mockAlphaTask.cwd,
+				mockAlphaTask.taskId,
+				"execa",
+			)
+		})
+
+		it("rejects an absolute Worker directory that escapes through a junction", async () => {
+			mockAlphaTask.taskKind = "subagent"
+			mockAlphaTask.subagentRole = "worker"
+			mockAlphaTask.cwd = path.resolve("worker-worktree")
+			vitest
+				.mocked(fs.realpath)
+				.mockResolvedValueOnce(mockAlphaTask.cwd)
+				.mockResolvedValueOnce(path.resolve("outside"))
+
+			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
+				executionId: "worker-cwd-junction",
+				command: "git status",
+				customCwd: path.join(mockAlphaTask.cwd, "linked"),
+			})
+
+			expect(result).toEqual([false, "Editing worker command directory is outside its isolated workspace."])
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		})
 		it("rejects an absolute working directory before opening a terminal", async () => {
 			mockAlphaTask.getTaskMode = vitest.fn().mockResolvedValue("architect")
 

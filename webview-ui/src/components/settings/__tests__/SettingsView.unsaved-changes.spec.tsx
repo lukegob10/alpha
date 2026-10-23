@@ -1737,8 +1737,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				updatedSettings: expect.objectContaining({
 					soundEnabled: true,
 					subagentAgentTypes: definitions,
-					subagentApiConfigByRole: profileRoutes,
-					subagentDefaultApiConfigId: "default-child-profile",
 				}),
 			}),
 		)

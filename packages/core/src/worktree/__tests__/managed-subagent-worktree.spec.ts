@@ -47,6 +47,33 @@ describe("ManagedSubagentWorktreeService", () => {
 		await fs.rm(root, { recursive: true, force: true })
 	}, WORKTREE_TEST_TIMEOUT_MS)
 
+	it(
+		"captures staged and committed Worker edits without changing the parent's branch or index",
+		async () => {
+			await git(["config", "core.autocrlf", "false"])
+			const parentHead = await git(["rev-parse", "HEAD"])
+			const parentBranch = await git(["branch", "--show-current"])
+			const parentIndex = await git(["diff", "--cached", "--binary"])
+			const prepared = await service.create(storage, "worker-git", await service.validateScope(repo, ["src"]))
+			await git(["switch", "-c", "worker-implementation"], prepared.workspacePath)
+			await fs.writeFile(path.join(prepared.workspacePath, "src/value.txt"), "committed worker edit\n")
+			await git(["add", "src/value.txt"], prepared.workspacePath)
+			await git(["commit", "-m", "worker implementation"], prepared.workspacePath)
+			await fs.writeFile(path.join(prepared.workspacePath, "src/value.txt"), "final worker edit\n")
+			await git(["add", "src/value.txt"], prepared.workspacePath)
+
+			const captured = await service.capture(storage, prepared.artifact.id)
+			expect(captured.status).toBe("pending_review")
+			expect(captured.changes.map((change) => change.path)).toEqual(["src/value.txt"])
+			await service.apply(storage, captured.id)
+			expect(await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).toBe("final worker edit\n")
+			expect(await git(["rev-parse", "HEAD"])).toBe(parentHead)
+			expect(await git(["branch", "--show-current"])).toBe(parentBranch)
+			expect(await git(["diff", "--cached", "--binary"])).toBe(parentIndex)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
 	it.skipIf(process.platform !== "win32").each([202, 218])(
 		"uses long Windows storage length %i with spaces for nested Workers without changing Git configuration",
 		async (storageLength) => {

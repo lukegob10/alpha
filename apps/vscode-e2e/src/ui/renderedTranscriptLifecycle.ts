@@ -5,6 +5,7 @@ import * as path from "node:path"
 import type { CdpConnection } from "./cdp"
 import { javascriptLiteral } from "./javascriptLiteral"
 import { exerciseRenderedSelectionLayout } from "./renderedSelectionLayout"
+import { exerciseUnattendedLifecycle } from "./renderedUnattendedLifecycle"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
 
@@ -182,9 +183,59 @@ export async function exerciseRenderedTranscriptLifecycle(
 			await sample(`transcript-growing-${cycle}`)
 			await acknowledge(`transcript-growing-${cycle}`)
 			await sample(`transcript-compact-${cycle}`)
+			if (cycle === "three") {
+				await evaluate("d.querySelector('button[aria-label=\"Expand context details\"]').click()")
+				const compactButton =
+					"[...d.querySelectorAll('button')].find(e=>e.textContent.includes('Intelligently condense context'))"
+				try {
+					await waitUntil(
+						() => evaluate<boolean>(`!!(${compactButton})&&!(${compactButton}).disabled`),
+						Date.now() + 10_000,
+						"transcript_compact_control_timeout",
+					)
+				} catch (error) {
+					await fs.writeFile(
+						path.join(directory, "ui-compaction-controls.json"),
+						JSON.stringify(
+							await evaluate(
+								`([...d.querySelectorAll('button')].map(e=>({label:e.getAttribute('aria-label'),text:e.textContent.slice(0,90),disabled:e.disabled,expanded:e.getAttribute('aria-expanded')})))`,
+							),
+							null,
+							2,
+						),
+					)
+					throw error
+				}
+				await evaluate(`(${compactButton}).click()`)
+			}
 			await acknowledge(`transcript-compact-${cycle}`)
-			await sample(`transcript-busy-${cycle}`)
+			// Opening the context details deliberately releases following before manual compaction.
+			await sample(`transcript-busy-${cycle}`, true, cycle !== "three")
+			if (cycle === "three") {
+				await evaluate(`(d.defaultView.__alphaBeforeBusyReload=${javascriptLiteral(nonce)})`)
+			}
 			await acknowledge(`transcript-busy-${cycle}`)
+			if (cycle === "three") {
+				await ready("transcript-reloaded-busy")
+				const rehydration: { stage: string; lastObserved?: unknown } = { stage: "reload-bootstrap" }
+				observations.push(rehydration)
+				await waitUntil(
+					async () => {
+						const state = await evaluate<{ documentReplaced: boolean; transcriptPresent: boolean }>(
+							`({documentReplaced:d.defaultView.__alphaBeforeBusyReload!==${javascriptLiteral(nonce)},
+								transcriptPresent:!!d.querySelector('[data-testid=chat-transcript-content]'),
+								rootChildren:d.getElementById('root')?.childElementCount??-1,
+								toolbarPresent:!!d.querySelector('.chat-toolbar')})`,
+						)
+						rehydration.lastObserved = state
+						return state.documentReplaced && state.transcriptPresent
+					},
+					Date.now() + 20_000,
+					"transcript_busy_rehydration_timeout",
+				)
+				await sample("transcript-reloaded-busy")
+				await acknowledge("transcript-reloaded-busy")
+			}
 			if (cycle === "two") {
 				await sample("transcript-hidden", false)
 				await acknowledge("transcript-hidden")
@@ -195,6 +246,11 @@ export async function exerciseRenderedTranscriptLifecycle(
 			assert.equal(completed.composerDisabled, false, "Compaction must restore the composer")
 			await acknowledge(`transcript-compacted-${cycle}`)
 		}
+		const unattendedStages = await exerciseUnattendedLifecycle(cdp, workbenchSession, directory, nonce, {
+			evaluate,
+			ready,
+			acknowledge,
+		})
 		await ready("transcript-browse")
 		await activate("d.querySelector('[data-testid=chat-load-older]')")
 		const browsing = await sample("transcript-browse", true, false)
@@ -221,7 +277,9 @@ export async function exerciseRenderedTranscriptLifecycle(
 			"selected-task-before-hydration",
 			"bounded-growing-transcript",
 			"three-real-compactions",
+			"reload-during-queued-compaction",
 			"hidden-reveal",
+			...unattendedStages,
 			"browsing-preserved",
 			...selectionStages,
 			"no-renderer-fatal-events",

@@ -26,17 +26,19 @@ export interface InternalTaskEnvelope {
 	depth?: number
 	objective: string
 	agentKind?: InternalAgentKind
+	authorityModel?: "parent"
 	expectedOutput: string[]
 	scope: { workspaceRoots: string[]; allowedPaths?: string[]; sharedWorkspace: boolean; contextRefs: string[] }
 	policy: InternalTaskPolicy
 	skills: Array<{ id: string; digest: string }>
 	modelRoute: { id: ModelRouteId; provider?: string; model?: string; reasoning?: string }
 	budget: {
-		maxDepth: number
+		maxDepth: number | null
 		maxConcurrency: number
-		maxInputTokens: number
-		maxOutputTokens: number
-		timeoutMs: number
+		/** Legacy ceilings retained for reading captured envelopes; no longer enforced. */
+		maxInputTokens: number | null
+		maxOutputTokens: number | null
+		timeoutMs: number | null
 	}
 	dependencies: string[]
 	digest: string
@@ -68,6 +70,7 @@ export interface BuildInternalTaskEnvelopeInput {
 	depth?: number
 	objective: string
 	agentKind?: string
+	authorityModel?: "parent"
 	expectedOutput?: string[]
 	parentPolicy: InternalTaskPolicy
 	requestedPolicy: Partial<InternalTaskPolicy>
@@ -173,8 +176,9 @@ export function resolveInternalTaskPolicy(
 	parent: InternalTaskPolicy,
 	requested: Partial<InternalTaskPolicy>,
 	agentKind: InternalAgentKind,
+	authorityModel?: "parent",
 ): InternalTaskPolicy {
-	const roleCeiling = ROLE_POLICY_CEILINGS[agentKind]
+	const roleCeiling = ROLE_POLICY_CEILINGS[authorityModel === "parent" ? "general" : agentKind]
 	for (const key of AUTHORITY_KEYS) {
 		if (requested[key] === true && !parent[key])
 			throw new Error(`Internal task cannot widen parent authority: ${key}`)
@@ -215,7 +219,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 	const agentKind = (input.agentKind ?? "general") as InternalAgentKind
 	const routeId = (input.modelRouteId ?? "balanced") as ModelRouteId
 	if (!Object.hasOwn(modelRoutes, routeId)) throw new Error(`Unknown model route: ${input.modelRouteId}`)
-	const policy = resolveInternalTaskPolicy(input.parentPolicy, input.requestedPolicy, agentKind)
+	const policy = resolveInternalTaskPolicy(input.parentPolicy, input.requestedPolicy, agentKind, input.authorityModel)
 	if (policy.mutate && input.parentAllowedPaths !== undefined && input.allowedPaths === undefined) {
 		throw new Error("Internal task requires an explicit write scope under a scoped parent")
 	}
@@ -234,18 +238,18 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 		return { id, digest: skill.digest ?? digestValue(skill.content) }
 	})
 	const defaults = {
-		maxDepth: 0,
+		maxDepth: null,
 		maxConcurrency: 1,
-		maxInputTokens: 16_000,
-		maxOutputTokens: 4_000,
-		timeoutMs: 120_000,
+		maxInputTokens: null,
+		maxOutputTokens: null,
+		timeoutMs: null,
 	}
 	const budget = { ...defaults, ...input.budget }
-	if (Object.values(budget).some((value) => !Number.isFinite(value) || value < 0))
-		throw new Error("Invalid internal task budget")
-	if (input.depth !== undefined && input.depth > budget.maxDepth) {
-		throw new Error(`Internal task depth ${input.depth} exceeds maximum depth ${budget.maxDepth}`)
+	if (!Number.isSafeInteger(budget.maxConcurrency) || budget.maxConcurrency < 1) {
+		throw new Error("Internal task concurrency must be a positive safe integer")
 	}
+	if (Object.values(budget).some((value) => value !== null && (!Number.isFinite(value) || value < 0)))
+		throw new Error("Invalid internal task budget")
 	const route = { ...modelRoutes[routeId], ...input.modelOverride, id: routeId }
 	const withoutDigest = {
 		id: input.id ?? crypto.randomUUID(),
@@ -254,6 +258,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 		...(input.depth !== undefined ? { depth: input.depth } : {}),
 		objective: input.objective.trim(),
 		agentKind,
+		...(input.authorityModel ? { authorityModel: input.authorityModel } : {}),
 		expectedOutput:
 			input.expectedOutput ??
 			(input.agentKind ? [...internalAgentDefinitions[agentKind].expectedOutput] : ["summary", "evidence"]),

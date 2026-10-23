@@ -8,6 +8,25 @@ import { isToolAllowedForMode } from "../validateToolUse"
 
 describe("native tickets", () => {
 	afterEach(() => vi.restoreAllMocks())
+	it("uses the inherited project for a child running in a private worktree", async () => {
+		const forWorkspace = vi.spyOn(TicketStore, "forWorkspace").mockResolvedValue({
+			projectId: "parent-project",
+			list: vi.fn(async () => ({ tickets: [], total: 0, invalidFiles: [] })),
+		} as unknown as TicketStore)
+		const task = {
+			taskKind: "subagent",
+			cwd: "/private/worker-worktree",
+			historyWorkspacePath: "/project",
+			abort: false,
+			say: vi.fn(),
+		}
+		await executeTicketTool({
+			task,
+			callbacks: { setResultMetadata: vi.fn(), pushToolResult: vi.fn() },
+			call: { name: "list_tickets", nativeArgs: {} },
+		} as unknown as ToolExecutionContext)
+		expect(forWorkspace).toHaveBeenCalledWith("/project", undefined, undefined)
+	})
 	it.each(["list_tickets", "read_ticket"] as const)(
 		"cancels %s storage preparation with exactly one terminal result",
 		async (name) => {

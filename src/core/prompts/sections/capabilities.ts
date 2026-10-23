@@ -7,10 +7,12 @@ export function getCapabilitiesSection(
 	subagentCanDelegate = false,
 	subagentDelegationPolicy?: "explicit-only" | "proactive",
 	isPlanMode = false,
+	subagentInheritsPermissions = false,
 ): string {
 	if (subagentRole) {
-		const roleCapabilities =
-			subagentRole === "worker"
+		const roleCapabilities = subagentInheritsPermissions
+			? "Use the inherited tools and approval policy for the assigned objective. The host enforces workspace, write-scope, protected-file, command-denial and execution-mode restrictions; the role does not add a separate permission tier."
+			: subagentRole === "worker"
 				? "You may inspect repository evidence, edit only paths in the approved write scope, and run targeted local verification commands subject to the child approval policy."
 				: "You may inspect repository evidence using read, list, and search operations. This is a read-only child task."
 		const delegationCapability = subagentCanDelegate

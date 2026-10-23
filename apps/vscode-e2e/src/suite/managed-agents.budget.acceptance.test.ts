@@ -44,6 +44,12 @@ interface BudgetProvider {
 	getLiveTask(taskId: string): LiveTask | undefined
 	getTaskWithId(taskId: string): Promise<{ taskDirPath: string }>
 	getStateToPostToWebview(): Promise<{ managedAgentTree?: unknown }>
+	waitForAgent(
+		parent: LiveTask,
+		timeoutMs: number,
+		options: { target: string; untilTerminal: boolean },
+	): Promise<unknown>
+	cancelAgent(parent: LiveTask, target: string): Promise<unknown>
 	prepareSubagentGroup(parent: LiveTask, drafts: unknown[]): Promise<PreparedGroup>
 	launchPreparedSubagentGroup(
 		parent: LiveTask,
@@ -101,8 +107,8 @@ const runBudgetCase = async (options: {
 	roleTimeoutMs: number
 	maxOutputTokens: number
 	rootTokenBudget: number | null
-	expectedStatus: "timed_out" | "cancelled"
-	expectedStopReason: "timeout" | "output_token_limit" | "root_token_budget"
+	expectedStatus: "completed" | "cancelled"
+	expectedStopReason: "completed" | "parent_cancelled"
 	caseName: string
 	agentKind?: BudgetAgentKind
 	childCount?: number
@@ -203,14 +209,10 @@ const runBudgetCase = async (options: {
 			assert.ok(childTask)
 			childTasks.push(childTask)
 		}
-		// Usage-producing fixtures are held until the suite has captured every
-		// original LiveTask reference. This prevents an immediate budget stop from
-		// racing provider.getLiveTask and rehydrating a resumable task.
+		// Capture the original child instances before releasing provider work.
 		for (const childId of childIds) model.releaseUsage(childId)
 		if (options.mode === "output") {
-			// The host settles provider usage when the response stream closes. Wait
-			// until the child has yielded its usage chunk, then release its stream
-			// so the output limit is enforced at the completion boundary.
+			// Closing a usage-bearing response must complete normally despite retired limits.
 			await waitFor(() => childIds.every((childId) => model.observations.get(childId)?.usageEmitted === true), {
 				description: `${options.caseName} usage chunks`,
 			})
@@ -231,13 +233,30 @@ const runBudgetCase = async (options: {
 				{ description: `${options.caseName} Worker process fixture` },
 			)
 		}
+		if (options.mode !== "output") {
+			// A terminal-only wait crosses the old ten-second role deadline while
+			// the child owns a real provider request or command process.
+			const firstChildId = childIds[0]
+			assert.ok(firstChildId)
+			const waited = await provider.waitForAgent(rootTask, 10_001, { target: firstChildId, untilTerminal: true })
+			assert.deepEqual(waited, { timedOut: true, events: [] })
+			const running = agentControlStateSchema.parse(provider.agentControlStore.getSnapshot())
+			for (const childId of childIds) {
+				assert.equal(running.agents.find((agent) => agent.taskId === childId)?.status, "running")
+				assert.equal(
+					childTasks.find((task) => task.taskId === childId)?.getTaskLifetimeCancellationSignal().aborted,
+					false,
+				)
+				await provider.cancelAgent(rootTask, childId)
+			}
+		}
 		await waitFor(
 			() =>
 				childIds.every((childId) => {
 					const state = agentControlStateSchema.parse(provider.agentControlStore.getSnapshot())
 					return state.agents.find((agent) => agent.taskId === childId)?.status === options.expectedStatus
 				}),
-			{ timeout: 60_000, description: `${options.caseName} child budget stop` },
+			{ timeout: 60_000, description: `${options.caseName} terminal outcome` },
 		)
 		for (const childTask of childTasks) await childTask.waitForTermination()
 		if (processFixture) {
@@ -283,12 +302,12 @@ const runBudgetCase = async (options: {
 				childId,
 			)
 			assert.deepEqual(lifecycle.errors, [])
-			assert.equal(lifecycle.cancelledTurns, 1)
-			assert.equal(lifecycle.completedTurns, 0)
+			assert.equal(lifecycle.cancelledTurns, options.expectedStatus === "cancelled" ? 1 : 0)
+			assert.equal(lifecycle.completedTurns, options.expectedStatus === "completed" ? 1 : 0)
 		}
 
 		// The root is cancelled only after the child result is durable. This also
-		// verifies that a budget stop releases the root's child capacity.
+		// verifies that a explicit cancellation releases the root's child capacity.
 		const rootBeforeCancel = rootTask
 		if (!rootBeforeCancel.getTaskLifetimeCancellationSignal().aborted) await api.cancelCurrentTask()
 		await rootBeforeCancel.waitForTermination()
@@ -352,7 +371,7 @@ const runBudgetCase = async (options: {
 suite("Managed-agent budget Extension Host acceptance", function () {
 	this.timeout(180_000)
 
-	test("stops role timeout, child output exhaustion, and root token exhaustion", async function () {
+	test("ignores retired agent limits, keeps running after wait timeout, and stops on explicit cancellation", async function () {
 		if (process.env.ALPHA_E2E_BUDGET_RUN !== "1") {
 			this.skip()
 			return
@@ -365,8 +384,8 @@ suite("Managed-agent budget Extension Host acceptance", function () {
 			roleTimeoutMs: 10_000,
 			maxOutputTokens: 64,
 			rootTokenBudget: null,
-			expectedStatus: "timed_out",
-			expectedStopReason: "timeout",
+			expectedStatus: "cancelled",
+			expectedStopReason: "parent_cancelled",
 			agentKind: "worker",
 		})
 		await runBudgetCase({
@@ -375,8 +394,8 @@ suite("Managed-agent budget Extension Host acceptance", function () {
 			roleTimeoutMs: 60_000,
 			maxOutputTokens: 1,
 			rootTokenBudget: null,
-			expectedStatus: "cancelled",
-			expectedStopReason: "output_token_limit",
+			expectedStatus: "completed",
+			expectedStopReason: "completed",
 		})
 		await runBudgetCase({
 			caseName: "root-token",
@@ -385,7 +404,7 @@ suite("Managed-agent budget Extension Host acceptance", function () {
 			maxOutputTokens: 64,
 			rootTokenBudget: 15,
 			expectedStatus: "cancelled",
-			expectedStopReason: "root_token_budget",
+			expectedStopReason: "parent_cancelled",
 			childCount: 2,
 		})
 	})

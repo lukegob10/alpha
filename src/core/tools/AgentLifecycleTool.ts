@@ -80,17 +80,12 @@ export function optionalReason(value: unknown): string | undefined {
 
 export function resolveWaitTimeout(value: unknown): number {
 	if (value === undefined || value === null) return WAIT_AGENT_DEFAULT_TIMEOUT_MS
-	if (
-		typeof value !== "number" ||
-		!Number.isInteger(value) ||
-		value < WAIT_AGENT_MIN_TIMEOUT_MS ||
-		value > WAIT_AGENT_MAX_TIMEOUT_MS
-	) {
+	if (typeof value !== "number" || !Number.isInteger(value) || value > WAIT_AGENT_MAX_TIMEOUT_MS) {
 		throw new Error(
 			`timeout_ms must be an integer from ${WAIT_AGENT_MIN_TIMEOUT_MS} to ${WAIT_AGENT_MAX_TIMEOUT_MS}`,
 		)
 	}
-	return value
+	return Math.max(value, WAIT_AGENT_MIN_TIMEOUT_MS)
 }
 
 export function resolveUntilTerminal(value: unknown): boolean {

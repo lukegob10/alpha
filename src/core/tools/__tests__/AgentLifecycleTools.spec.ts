@@ -272,7 +272,7 @@ describe("agent lifecycle tools", () => {
 
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
 		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
-		await waitAgentTool.execute({ timeout_ms: 9_999 }, task, callbacks)
+		await waitAgentTool.execute({ timeout_ms: 3_600_001 }, task, callbacks)
 		await waitAgentTool.execute({ target: "/root/review" }, task, callbacks)
 
 		expect(provider.sendMessageToAgent).not.toHaveBeenCalled()

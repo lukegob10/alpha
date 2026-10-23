@@ -1,5 +1,11 @@
 # Managed-Agent Live Acceptance
 
+> October 23, 2026 update: agent execution timeouts, research cutoffs and per-agent budgets are retired.
+> The historical Run D stop expectations below are superseded by
+> [the Codex alignment contract](../agent-settings-codex-alignment-2026-10-23.md).
+> Verify continued execution after wait expiry and explicit cancellation instead. Old settings in historical examples
+> are compatibility inputs and have no effect.
+
 > Catalog compatibility: these retained procedures include historical `report_progress`, `interrupt_agent`, and
 > `cancel_agent` calls that are no longer advertised to models. They are not ready-to-run prompts for the current
 > catalog. Adapt those checkpoints to actual host lifecycle controls before live use; `close_agent` is not a

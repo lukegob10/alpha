@@ -283,9 +283,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		enterBehavior,
 		autoSteer,
 		maxConcurrentTasks,
-		subagentDefaultApiConfigId,
 		subagentAgentTypes,
-		subagentApiConfigByRole,
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
@@ -697,9 +695,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					autoCondenseContextScope,
 					postTurnCondenseContextPercent,
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
-					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
 					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
-					...(subagentApiConfigByRole !== undefined ? { subagentApiConfigByRole } : {}),
 					...toManagedAgentSettingsSavePayload(cachedState),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
@@ -1131,13 +1127,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			)}
 
 			{/* Agents Section */}
-			{section === "agents" && (
-				<AgentsSettings
-					values={cachedState}
-					setCachedStateField={setCachedStateField}
-					listApiConfigMeta={listApiConfigMeta}
-				/>
-			)}
+			{section === "agents" && <AgentsSettings values={cachedState} setCachedStateField={setCachedStateField} />}
 
 			{/* Slash Commands Section */}
 			{section === "slashCommands" && <SlashCommandsSettings />}

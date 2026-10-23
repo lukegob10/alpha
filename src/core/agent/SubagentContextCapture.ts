@@ -1016,6 +1016,8 @@ function sanitizeAutoApprovalPolicy(
 		alwaysAllowWriteOutsideWorkspace: input.alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected: input.alwaysAllowWriteProtected,
 		...(input.alwaysAllowTickets !== undefined ? { alwaysAllowTickets: input.alwaysAllowTickets } : {}),
+		...(input.alwaysAllowMcp !== undefined ? { alwaysAllowMcp: input.alwaysAllowMcp } : {}),
+		...(input.mcpApproval !== undefined ? { mcpApproval: input.mcpApproval } : {}),
 		alwaysAllowExecute: input.alwaysAllowExecute,
 		alwaysAllowSubagents: input.alwaysAllowSubagents,
 		commandApproval: sanitizeCommandApproval(input.commandApproval),
@@ -1029,6 +1031,8 @@ function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePo
 	const autoApproval = input.autoApproval ? sanitizeAutoApprovalPolicy(input.autoApproval) : undefined
 	const withoutDigest = {
 		role: input.role,
+		...(input.authorityModel ? { authorityModel: input.authorityModel } : {}),
+		...(input.mode ? { mode: input.mode } : {}),
 		read: input.read,
 		execute: input.execute,
 		mutate: input.mutate,

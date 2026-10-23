@@ -1983,20 +1983,20 @@ describe("AlphaProvider", () => {
 		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds).toBe(2.5)
 	})
 
-	test("getState exposes saved sub-agent routing selections", async () => {
+	test("getState omits retired sub-agent routing selections", async () => {
 		await provider.contextProxy.setValue("subagentDefaultApiConfigId", "default-id")
 		await provider.contextProxy.setValue("subagentApiConfigByRole", { review: "review-id" })
 
 		const state = await provider.getState()
 		const webviewState = await provider.getStateToPostToWebview()
 
-		expect(state.subagentDefaultApiConfigId).toBe("default-id")
-		expect(state.subagentApiConfigByRole).toEqual({ review: "review-id" })
-		expect(webviewState.subagentDefaultApiConfigId).toBe("default-id")
-		expect(webviewState.subagentApiConfigByRole).toEqual({ review: "review-id" })
+		expect(state).not.toHaveProperty("subagentDefaultApiConfigId")
+		expect(state).not.toHaveProperty("subagentApiConfigByRole")
+		expect(webviewState).not.toHaveProperty("subagentDefaultApiConfigId")
+		expect(webviewState).not.toHaveProperty("subagentApiConfigByRole")
 	})
 
-	test("getState exposes normalized saved sub-agent orchestration guardrails", async () => {
+	test("getState exposes only current sub-agent settings", async () => {
 		await provider.contextProxy.setValues({
 			maxConcurrentSubagents: 5,
 			subagentDelegationPolicy: "proactive",
@@ -2012,15 +2012,9 @@ describe("AlphaProvider", () => {
 		const webviewState = await provider.getStateToPostToWebview()
 		const expected = {
 			maxConcurrentSubagents: 5,
-			subagentDelegationPolicy: "proactive",
-			subagentMaxDepth: 3,
-			subagentRoleTimeoutsMs: { explore: 120_000, review: 240_000, worker: 900_000 },
-			subagentMaxInputTokens: 32_000,
-			subagentMaxOutputTokens: 8_000,
-			subagentRootTokenBudget: 200_000,
-			subagentRootCostBudget: 25,
+			subagentsEnabled: true,
+			subagentInterruptMessage: true,
 		}
-
 		expect(state).toMatchObject(expected)
 		expect(webviewState).toMatchObject(expected)
 	})
@@ -2060,7 +2054,7 @@ describe("AlphaProvider", () => {
 
 		const webviewState = await provider.getStateToPostToWebview()
 
-		expect(buildProjection).toHaveBeenCalledWith(rootTask, expect.objectContaining({ maxConcurrentSubagents: 2 }))
+		expect(buildProjection).toHaveBeenCalledWith(rootTask, expect.objectContaining({ maxConcurrentSubagents: 3 }))
 		expect(webviewState.managedAgentTree).toBe(projection)
 	})
 
@@ -2093,7 +2087,7 @@ describe("AlphaProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
-	test("normalizes cleared sub-agent routing selections before persistence", async () => {
+	test("ignores retired sub-agent routing updates", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 
@@ -2105,24 +2099,20 @@ describe("AlphaProvider", () => {
 			},
 		})
 
-		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentDefaultApiConfigId", undefined)
-		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentApiConfigByRole", { explore: "fast-id" })
+		expect(updateGlobalStateSpy).not.toHaveBeenCalledWith("subagentDefaultApiConfigId", expect.anything())
+		expect(updateGlobalStateSpy).not.toHaveBeenCalledWith("subagentApiConfigByRole", expect.anything())
 	})
 
-	test("persists every sub-agent orchestration setting, including disabled root budgets", async () => {
+	test("persists current sub-agent settings and ignores retired limits", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 		const updatedSettings = {
 			maxConcurrentSubagents: 4,
-			subagentDelegationPolicy: "explicit-only",
-			subagentMaxDepth: 2,
-			subagentRoleTimeoutsMs: { explore: 90_000, review: 180_000, worker: 600_000 },
-			subagentMaxInputTokens: 24_000,
-			subagentMaxOutputTokens: 6_000,
-			subagentRootTokenBudget: null,
-			subagentRootCostBudget: null,
+			subagentsEnabled: false,
+			subagentDefaultModel: "child-model",
+			subagentDefaultReasoningEffort: "high",
+			subagentInterruptMessage: false,
 		}
-
 		await messageHandler({ type: "updateSettings", updatedSettings })
 
 		for (const [key, value] of Object.entries(updatedSettings)) {

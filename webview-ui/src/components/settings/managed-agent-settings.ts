@@ -1,46 +1,26 @@
 import {
 	DEFAULT_MAX_CONCURRENT_SUBAGENTS,
-	DEFAULT_SUBAGENT_DELEGATION_POLICY,
-	DEFAULT_SUBAGENT_MAX_DEPTH,
-	DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-	DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
-	DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
 	MAX_MAX_CONCURRENT_SUBAGENTS,
-	MAX_SUBAGENT_MAX_DEPTH,
-	MAX_SUBAGENT_ROLE_TIMEOUT_MS,
-	MAX_SUBAGENT_TOKEN_LIMIT,
 	MIN_MAX_CONCURRENT_SUBAGENTS,
-	MIN_SUBAGENT_MAX_DEPTH,
-	MIN_SUBAGENT_ROLE_TIMEOUT_MS,
-	MIN_SUBAGENT_TOKEN_LIMIT,
-	subagentRootCostBudgetSchema,
-	subagentRootTokenBudgetSchema,
-	type SubagentDelegationPolicy,
-	type SubagentRole,
+	reasoningEffortExtendedSchema,
+	type ReasoningEffortExtended,
 } from "@alpha-code/types"
 
 import type { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 
-export type ManagedAgentRole = SubagentRole
-
-/** Stable extension-host settings contract, isolated locally until shared types expose it. */
 export interface ManagedAgentSettings {
+	subagentsEnabled: boolean
 	maxConcurrentSubagents: number
-	subagentDelegationPolicy: SubagentDelegationPolicy
-	subagentMaxDepth: number
-	subagentRoleTimeoutsMs: Record<ManagedAgentRole, number>
-	subagentMaxInputTokens: number
-	subagentMaxOutputTokens: number
-	subagentRootTokenBudget: number | null
-	subagentRootCostBudget: number | null
+	subagentDefaultModel: string
+	subagentDefaultReasoningEffort?: ReasoningEffortExtended
+	subagentInterruptMessage: boolean
 }
 
 export type SettingsCachedState = ExtensionStateContextType &
 	ManagedAgentSettings & {
-		/** VS Code setting buffered locally so it follows the Settings Save/Discard contract. */
+		/** Buffered until Settings Save. */
 		terminalInheritEnv?: boolean
 	}
-
 export type SetSettingsCachedStateField = <K extends keyof SettingsCachedState>(
 	field: K,
 	value: SettingsCachedState[K],
@@ -48,25 +28,15 @@ export type SetSettingsCachedStateField = <K extends keyof SettingsCachedState>(
 
 export const MANAGED_AGENT_SETTING_LIMITS = {
 	maxConcurrentSubagents: { min: MIN_MAX_CONCURRENT_SUBAGENTS, max: MAX_MAX_CONCURRENT_SUBAGENTS },
-	timeoutMs: { min: MIN_SUBAGENT_ROLE_TIMEOUT_MS, max: MAX_SUBAGENT_ROLE_TIMEOUT_MS },
-	inputTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
-	outputTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
-	rootTokens: { min: MIN_SUBAGENT_TOKEN_LIMIT, max: MAX_SUBAGENT_TOKEN_LIMIT },
-	maxDepth: { min: MIN_SUBAGENT_MAX_DEPTH, max: MAX_SUBAGENT_MAX_DEPTH },
 } as const
 
 export const DEFAULT_MANAGED_AGENT_SETTINGS: ManagedAgentSettings = {
+	subagentsEnabled: true,
 	maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
-	subagentDelegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
-	subagentMaxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
-	subagentRoleTimeoutsMs: { ...DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS },
-	subagentMaxInputTokens: DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-	subagentMaxOutputTokens: DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
-	subagentRootTokenBudget: null,
-	subagentRootCostBudget: null,
+	subagentDefaultModel: "",
+	subagentDefaultReasoningEffort: undefined,
+	subagentInterruptMessage: true,
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
 export function clampManagedAgentNumber(
 	value: unknown,
@@ -74,90 +44,33 @@ export function clampManagedAgentNumber(
 	limits: { min: number; max: number },
 ): number {
 	const parsed = typeof value === "number" ? value : Number(value)
-	if (!Number.isFinite(parsed)) {
-		return fallback
-	}
-
-	return Math.min(Math.max(Math.trunc(parsed), limits.min), limits.max)
+	return Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), limits.min), limits.max) : fallback
 }
 
-function nullableRootCost(value: unknown): number | null {
-	if (value === undefined || value === null || value === "") return null
-	const parsed = typeof value === "number" ? value : Number(value)
-	const result = subagentRootCostBudgetSchema.safeParse(parsed)
-	return result.success ? result.data : null
-}
-
-function nullableRootTokens(value: unknown): number | null {
-	if (value === undefined || value === null || value === "") return null
-	const parsed = typeof value === "number" ? value : Number(value)
-	const result = subagentRootTokenBudgetSchema.safeParse(parsed)
-	return result.success ? result.data : null
-}
-
-/** Reads runtime-provided fields when available and otherwise applies contract defaults. */
+/** Initialize the edit buffer without reviving retired agent settings. */
 export function withManagedAgentSettingsDefaults(state: ExtensionStateContextType): SettingsCachedState {
-	const source = state as ExtensionStateContextType & Partial<ManagedAgentSettings>
-	const rawTimeouts: Record<string, unknown> = isRecord(source.subagentRoleTimeoutsMs)
-		? source.subagentRoleTimeoutsMs
-		: {}
-
+	const effort = reasoningEffortExtendedSchema.safeParse(state.subagentDefaultReasoningEffort)
 	return {
 		...state,
+		subagentsEnabled: state.subagentsEnabled ?? true,
 		maxConcurrentSubagents: clampManagedAgentNumber(
-			source.maxConcurrentSubagents,
-			DEFAULT_MANAGED_AGENT_SETTINGS.maxConcurrentSubagents,
+			state.maxConcurrentSubagents,
+			DEFAULT_MAX_CONCURRENT_SUBAGENTS,
 			MANAGED_AGENT_SETTING_LIMITS.maxConcurrentSubagents,
 		),
-		subagentDelegationPolicy: source.subagentDelegationPolicy === "proactive" ? "proactive" : "explicit-only",
-		subagentMaxDepth: clampManagedAgentNumber(
-			source.subagentMaxDepth,
-			DEFAULT_MANAGED_AGENT_SETTINGS.subagentMaxDepth,
-			MANAGED_AGENT_SETTING_LIMITS.maxDepth,
-		),
-		subagentRoleTimeoutsMs: {
-			explore: clampManagedAgentNumber(
-				rawTimeouts.explore,
-				DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.explore,
-				MANAGED_AGENT_SETTING_LIMITS.timeoutMs,
-			),
-			review: clampManagedAgentNumber(
-				rawTimeouts.review,
-				DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.review,
-				MANAGED_AGENT_SETTING_LIMITS.timeoutMs,
-			),
-			worker: clampManagedAgentNumber(
-				rawTimeouts.worker,
-				DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.worker,
-				MANAGED_AGENT_SETTING_LIMITS.timeoutMs,
-			),
-		},
-		subagentMaxInputTokens: clampManagedAgentNumber(
-			source.subagentMaxInputTokens,
-			DEFAULT_MANAGED_AGENT_SETTINGS.subagentMaxInputTokens,
-			MANAGED_AGENT_SETTING_LIMITS.inputTokens,
-		),
-		subagentMaxOutputTokens: clampManagedAgentNumber(
-			source.subagentMaxOutputTokens,
-			DEFAULT_MANAGED_AGENT_SETTINGS.subagentMaxOutputTokens,
-			MANAGED_AGENT_SETTING_LIMITS.outputTokens,
-		),
-		subagentRootTokenBudget: nullableRootTokens(source.subagentRootTokenBudget),
-		subagentRootCostBudget: nullableRootCost(source.subagentRootCostBudget),
+		subagentDefaultModel: state.subagentDefaultModel ?? "",
+		subagentDefaultReasoningEffort: effort.success ? effort.data : undefined,
+		subagentInterruptMessage: state.subagentInterruptMessage ?? true,
 	}
 }
 
-export function toManagedAgentSettingsSavePayload(state: SettingsCachedState): ManagedAgentSettings {
-	const normalized = withManagedAgentSettingsDefaults(state)
-
+export function toManagedAgentSettingsSavePayload(state: SettingsCachedState) {
 	return {
-		maxConcurrentSubagents: normalized.maxConcurrentSubagents,
-		subagentDelegationPolicy: normalized.subagentDelegationPolicy,
-		subagentMaxDepth: normalized.subagentMaxDepth,
-		subagentRoleTimeoutsMs: normalized.subagentRoleTimeoutsMs,
-		subagentMaxInputTokens: normalized.subagentMaxInputTokens,
-		subagentMaxOutputTokens: normalized.subagentMaxOutputTokens,
-		subagentRootTokenBudget: normalized.subagentRootTokenBudget,
-		subagentRootCostBudget: normalized.subagentRootCostBudget,
+		subagentsEnabled: state.subagentsEnabled,
+		maxConcurrentSubagents: state.maxConcurrentSubagents,
+		subagentDefaultModel: state.subagentDefaultModel.trim(),
+		// An explicit empty value survives JSON serialization so Save can clear inheritance overrides.
+		subagentDefaultReasoningEffort: state.subagentDefaultReasoningEffort ?? null,
+		subagentInterruptMessage: state.subagentInterruptMessage,
 	}
 }
