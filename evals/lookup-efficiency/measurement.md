@@ -63,7 +63,7 @@ Every sample's declared count, model, reasoning preference, and cache state must
 Use existing evidence collectors and preserve their provenance when wrapping observations for this reporter.
 
 1. Declare sample count, model, reasoning preference, and cache state first.
-2. Run the frozen prompts in the real extension. Live Copilot uses the existing campaign `--provider live-copilot` path (`docs/core-confidence.md`, `apps/vscode-e2e`). Evals VS Code execution uses `processTask`, which already reads `agent_turn_events.jsonl` and normalizes it to `EvalTraceEvent`.
+2. Run the frozen prompts in the real extension. Live Copilot uses the existing campaign `--provider live-copilot` path ([live tests](../../README.md#live-tests), `apps/vscode-e2e`). Evals VS Code execution uses `processTask`, which already reads `agent_turn_events.jsonl` and normalizes it to `EvalTraceEvent`.
 3. Keep the **raw** JSONL. Campaign `*.projection.json` hashes tool names and is insufficient for this reporter.
 4. Wrap each sample as `observations.json` (`fixtureId`, identity, `trace`, optional `usage` / `completionStage` / `timing`) and project with `scripts/evals/lookup-efficiency-report.mjs`.
 5. Pair reference (main-equivalent source, or a recorded failure trace) against the declared candidate build.

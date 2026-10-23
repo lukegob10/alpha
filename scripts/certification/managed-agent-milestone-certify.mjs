@@ -200,7 +200,7 @@ function runSelfCheck() {
 	}
 
 	console.log(
-		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2; vitestSummary=${vitestSummaryCases})`,
+		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; matrix=validated; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2; vitestSummary=${vitestSummaryCases})`,
 	)
 }
 
@@ -439,48 +439,7 @@ function loadMatrix() {
 			fail(`${row.id} has an invalid evidenceCommand`)
 		}
 	}
-	validateCertificationDocumentation(parsed)
-
 	return parsed
-}
-
-function validateCertificationDocumentation(matrix) {
-	const certificationPath = path.join(
-		repositoryRoot,
-		"docs",
-		"certification",
-		"managed-agent-milestone-certification.md",
-	)
-	const certification = readFileSync(certificationPath, "utf8").replace(/\r\n/g, "\n")
-	const deterministicSection = extractMarkdownSection(certification, "## Deterministic matrix")
-	const documentedDeterministicIds = [...deterministicSection.matchAll(/^\|\s*`([A-Z0-9-]+)`\s*\|/gm)].map(
-		(match) => match[1],
-	)
-	const expectedDeterministicIds = matrix.rows.map((row) => row.id)
-	if (JSON.stringify(documentedDeterministicIds) !== JSON.stringify(expectedDeterministicIds)) {
-		fail("Certification deterministic row table does not match matrix row IDs and order")
-	}
-
-	const integrationSection = extractMarkdownSection(certification, "## Expected integration-dependent rows")
-	const integrationBlock = /```text\n([\s\S]*?)\n```/.exec(integrationSection)
-	const documentedIntegrationIds = integrationBlock
-		? integrationBlock[1]
-				.split("\n")
-				.map((line) => line.trim())
-				.filter(Boolean)
-		: []
-	const expectedIntegrationIds = matrix.integrationPending.map((row) => row.id)
-	if (JSON.stringify(documentedIntegrationIds) !== JSON.stringify(expectedIntegrationIds)) {
-		fail("Certification pending-integration list does not match matrix row IDs and order")
-	}
-}
-
-function extractMarkdownSection(document, heading) {
-	const marker = `${heading}\n`
-	const start = document.indexOf(marker)
-	const end = document.indexOf("\n## ", start + marker.length)
-	if (start < 0 || end < 0) fail(`Documentation is missing section ${heading}`)
-	return document.slice(start, end)
 }
 
 function assertUniqueIds(items, label) {
@@ -589,7 +548,7 @@ function printCommands(prerequisites, resolvedTracks, integrationPending, eviden
 		`strict-release-gate :: node scripts/certification/managed-agent-milestone-certify.mjs --strict --evidence ${quote(evidenceRelativePath)}`,
 	)
 	console.log(
-		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification src/core/agent/__tests__/certification",
+		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification src/core/agent/__tests__/certification",
 	)
 	console.log("harness-syntax-check :: node --check scripts/certification/managed-agent-milestone-certify.mjs")
 	console.log("=== ALPHA MANAGED-AGENT CERTIFICATION COMMANDS END ===")

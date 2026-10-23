@@ -39,7 +39,7 @@ pnpm --filter @alpha-code/evals benchmark:validate
 pnpm --filter @alpha-code/evals benchmark:fixture-check
 ```
 
-See the [testing workflow](../docs/testing-harness.md) for host gates and the
+See [testing](../README.md#testing) for host gates and the
 [evaluator guide](../packages/evals/README.md) for service and live-provider prerequisites. Keep fixture bytes and
 checksum manifests stable; change individual exercises deliberately through the evaluator's authoring commands.
 

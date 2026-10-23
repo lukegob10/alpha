@@ -81,6 +81,6 @@ runs. Retain full source and harness identities. Run the exact VS Code 1.138.0 r
 context/completion suites after implementation; host adapter changes also require the 1.125.0 compatibility gate.
 
 Live strategy evidence requires an authorized configured provider through a documented Alpha interface and a declared
-repeated workload/model/cache/quality protocol. Use the [live profile guide](../../docs/vscode-live-test-profiles.md)
-for current Copilot setup and [the testing workflow](../../docs/testing-harness.md) for host gates. Scripted structural
+repeated workload/model/cache/quality protocol. See [live tests](../../README.md#live-tests)
+for current Copilot setup and [testing](../../README.md#testing) for host gates. Scripted structural
 evidence can proceed without provider credentials. Never use missing live measurements as a zero-cost observation.

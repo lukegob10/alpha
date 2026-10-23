@@ -15,7 +15,7 @@ pnpm --filter @alpha-code/vscode-webview build
 pnpm --dir apps/vscode-e2e compile
 ```
 
-Use a dedicated, initialized live profile from the [profile guide](../../docs/vscode-live-test-profiles.md). The runner
+Use a dedicated, initialized live profile as described in [live tests](../../README.md#live-tests). The runner
 requires explicit absolute `PROBLEM_SOLVING_PROFILE_DIR` and `PROBLEM_SOLVING_ATTEMPT_ROOT` paths. Choose a new attempt
 root outside the repository and normal editor data for every run; an existing run directory is rejected. No dated
 machine-specific profile or output location is selected automatically.

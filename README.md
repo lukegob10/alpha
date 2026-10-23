@@ -14,24 +14,20 @@ The exact development and release reference host is VS Code **1.138.0**; it does
   chat composer to switch modes.
 - Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff.
 - Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
-- Use built-in skills, Alpha Tickets, the [HTML document previewer](docs/html-documents.md), and
-  [scheduled tasks](docs/scheduled-tasks.md).
+- Use built-in skills, Alpha Tickets, the HTML document previewer, and scheduled tasks.
 - Connect MCP servers and use automatic context compaction for longer tasks.
 
-Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Read the
-[approval policy](docs/approval-mode-policy.md) and [command and workspace protections](docs/command-sandbox.md) before
-granting broader access. Provider selection does not change the approval policy or workspace protections.
+Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
+policy or workspace protections.
 
 Supported chat providers are GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible.
-Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. See
-[provider recovery](docs/provider-reduction.md) for removed-provider configurations and
-[mode compatibility](docs/mode-retirement.md) for retired saved modes, which resume in Plan.
+Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
 
-Alpha uses the GitHub CLI (`gh`) through its command tool. Install and authenticate it where the extension runs;
-[GitHub CLI setup](docs/github-cli.md) describes the workflow and approval boundary.
+Alpha uses the GitHub CLI (`gh`) through its command tool. Install it where the extension runs and authenticate with
+`gh auth login`. Commands use the selected approval policy.
 
-The standalone Alpha CLI is retired. Development and evaluation commands run the real extension;
-[CLI compatibility](docs/cli-retirement.md) covers saved evaluation data.
+The standalone Alpha CLI is retired. Development and evaluation commands run the real extension. Historical task and
+evaluation records remain readable.
 
 ## Develop
 
@@ -55,11 +51,10 @@ Open the checkout in VS Code 1.138.0, select **Run Extension** in Run and Debug,
 Host with webview hot reload. Extension code rebuilds automatically; restart the development host to load those changes.
 Select **Run Extension (debugger)** when you need breakpoint debugging.
 
-## Validate
+## Testing
 
 Start with the focused tests and owning typecheck in the [validation matrix](AGENTS.md#validation-matrix).
-The [testing workflow](docs/testing-harness.md) documents prerequisites, additional lanes, and evaluator setup.
-Common extension checks use the same harness as CI:
+Use `pnpm harness list` for available checks. Common extension checks use the same harness as CI:
 
 ```sh
 pnpm harness run static
@@ -74,10 +69,27 @@ host-adapter changes also require the compatibility gate:
 pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 ```
 
-See the [host compatibility contract](docs/vscode-1.138-migration.md) and
-[live-profile guide](docs/vscode-live-test-profiles.md). Live provider runs supplement deterministic checks and require
-their own credentials and run budget. Offline evaluator checks use `pnpm test:evals:offline`; the
+The `extended` lane covers instructions, HTML previews, storage recovery, and scheduled tasks; `confidence` runs the
+broader core gate. Offline evaluator checks use `pnpm test:evals:offline`; the
 [evaluator guide](packages/evals/README.md) covers service-backed checks and fixture authoring.
+
+### Live tests
+
+Live provider runs supplement deterministic checks and require their own credentials and run budget. Use three separate
+absolute profile, workspace, and artifact paths outside this checkout and normal VS Code data. Profile and workspace
+directories must initially be empty or absent. Initialize a dedicated profile after building the extension and runner:
+
+```sh
+pnpm bundle
+pnpm --filter @alpha-code/vscode-webview build
+pnpm --dir apps/vscode-e2e compile
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>" --init-profile --setup
+```
+
+Sign in inside the dedicated host. After discovery, repeat setup with the exact returned `--model-id` and a supported
+`--reasoning-effort`, then finish the readiness check. Omit `--init-profile` after initialization and `--setup` when
+running tests. Setup and model discovery do not prove that a task passed. Never copy credentials between profiles or
+reset unrelated editor data. See the [runner options](apps/vscode-e2e/src/runTest.ts) for current flags.
 
 ## Package and install a local build
 
@@ -100,7 +112,7 @@ on a selected release branch. It does not publish to the VS Code Marketplace. Se
 
 ## Resources and contributions
 
-- [Project documentation](docs/README.md): compatibility, safety, recovery, and operating guides.
+- [Engineering guide](AGENTS.md): architecture, compatibility, security, and validation requirements.
 - [Evaluation inputs](evals/README.md): suites, fixtures, measurement contracts, and historical evidence.
 - [GitHub Issues](https://github.com/lukegob10/alpha/issues): bugs, feature requests, and development questions.
 

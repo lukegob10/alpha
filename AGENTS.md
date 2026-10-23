@@ -32,8 +32,9 @@ Codex CLI as an intentional, explained choice, not as the default simply because
 For questions, bugs, features, or design decisions about intended agent behavior, inspect the relevant current
 [Codex CLI source](https://github.com/openai/codex) and its tests first. Use current official OpenAI documentation when
 the source is unclear or additional product context is needed. Compare upstream behavior with Alpha's current code and
-tests, and record the upstream commit or retrieval date and any intentional divergence in durable design work. Do not
-infer current Codex behavior from memory or from older Alpha design documents.
+tests, and record the upstream commit or retrieval date and any intentional divergence in the change description or a
+focused code comment when needed to maintain the contract. Do not infer current Codex behavior from memory or older
+Alpha writeups.
 
 Translate verified Codex behavior into Alpha's native TypeScript architecture and VS Code APIs. Do not introduce Rust,
 port Codex CLI or Codex app source code, copy prompts wholesale, or build a parallel runtime to imitate their structure.
@@ -53,9 +54,8 @@ Before changing code:
   than patching only the visible symptom.
 - For a performance change, capture a meaningful baseline and define the metric and workload before optimizing.
 - Follow the Codex CLI source-first rule above for agent behavior. Consult current primary sources for VS Code or other
-  external contracts, and record the upstream version, commit, or retrieval date in durable design work.
-- Treat files in `docs/` as design history and context, not as proof of current behavior. Verify claims against current
-  code, tests, and manifests.
+  external contracts, and record the upstream version, commit, or retrieval date with the change.
+- Verify behavior against current code, tests, schemas, manifests, and primary sources rather than historical writeups.
 
 While implementing:
 
@@ -92,8 +92,10 @@ Before finishing:
 
 Alpha is a VS Code extension. The standalone application in `apps/cli/` and its exclusive
 `packages/vscode-shim/` were retired; do not recreate a parallel agent runtime. Development and evaluation command-line
-tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data;
-see `docs/cli-retirement.md` for the removal and compatibility contract.
+tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data
+with its original execution identity. Reject unsupported CLI evaluation execution before creating a run or launching an
+agent or container; do not relabel historical records. A retained `ROO_CLI_RUNTIME` variable cannot bypass extension
+timeouts, approvals, or saved-provider restoration.
 
 ## VS Code minimum and reference hosts
 
@@ -127,8 +129,7 @@ pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 Run that gate for changes involving extension activation, VS Code APIs or contributions, commands, webviews, VS Code LM,
 task lifecycle, cancellation, persistence/reload, modes, or extension packaging. If the gate cannot run in the current
 environment, say so explicitly and run the closest lower-level coverage; do not silently substitute another VS Code
-version. Changes to the installation minimum or host adapters also require the minimum-host compatibility gate
-documented in `docs/vscode-1.138-migration.md`.
+version. Changes to the installation minimum or host adapters also require the minimum-host compatibility gate above.
 
 ## Repository map and ownership
 
@@ -153,14 +154,21 @@ documented in `docs/vscode-1.138-migration.md`.
 - `packages/core/`: platform-agnostic reusable functionality. Do not introduce `vscode` imports here.
 - `apps/vscode-e2e/`: real extension-host contract tests, including the exact 1.138.0 gate.
 - `packages/evals/`, `evals/`, and `scripts/`: deterministic evaluation, certification, benchmark, and release tooling.
-- `docs/`: architectural decisions, investigations, and plans. Update the relevant document when an architectural
-  contract or benchmark methodology changes.
+- `README.md`: essential setup, usage, testing, and packaging. This guide owns durable engineering requirements;
+  implementation contracts belong in their owning code, schemas, and tests.
+
+## Documentation hygiene
+
+Do not create standalone feature, internal architecture, audit, or performance writeups unless the user explicitly
+requests one. Keep essential usage in `README.md` and durable engineering rules here. Record investigation and run
+results with the change or outside the checkout rather than accumulating dated reports. Preserve functional Markdown
+used by runtime prompts, built-in skills, evaluator instructions, and fixtures.
 
 ## Agent-harness architecture invariants
 
 Code (`code`) and Plan (`architect`) are the only executable modes. Mode changes are user-controlled host operations;
 models must not receive a `switch_mode` tool. Retired or unknown saved modes resume in Plan without gaining write
-authority. Keep historical transcripts readable; see `docs/mode-retirement.md` for the compatibility contract.
+authority. Keep historical transcripts readable without granting execution authority to retired mode strings.
 
 Apply the Codex CLI direction above through Alpha's shared execution kernel and extension adapters. Other harnesses may
 inform a specific decision, but they do not replace Codex CLI as the target for agent behavior.
