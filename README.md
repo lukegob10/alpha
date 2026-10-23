@@ -47,6 +47,9 @@ pnpm --filter @alpha-code/types build
 pnpm harness doctor
 ```
 
+Turbo orders workspace builds and reuses their outputs. Its ignored `.turbo/` data is disposable; local cache entries
+are pruned at the start of runs using seven-day retention and a 2 GB size target.
+
 Open the checkout in VS Code 1.138.0, select **Run Extension** in Run and Debug, and press `F5`. The
 [launch configuration](.vscode/launch.json) starts the [watch tasks](.vscode/tasks.json) and opens an Extension Development
 Host with webview hot reload. Extension code rebuilds automatically; restart the development host to load those changes.
