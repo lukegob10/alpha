@@ -98,12 +98,13 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 		}
 
 		// Perform the checkpoint restoration
-		await currentAlpha.checkpointRestore({
+		const restored = await currentAlpha.checkpointRestore({
 			ts: messageTs,
 			commitHash: checkpoint.hash,
 			mode: "restore",
 			operation,
 		})
+		if (restored === false) throw new Error("The checkpoint is no longer available")
 
 		// Save messages and reload the stopped task after deletion.
 		if (operation === "delete") {

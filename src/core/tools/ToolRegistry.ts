@@ -1062,7 +1062,10 @@ export class ToolRegistry {
 		this.registerBuiltIn("handle_dialog", handleDialogTool, schemas)
 		this.registerBuiltIn("run_playwright_code", runPlaywrightCodeTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
-		this.registerBuiltIn("view_image", viewImageTool, schemas)
+		const executeViewImage = executeBaseTool(viewImageTool, "view_image")
+		this.registerBuiltIn("view_image", viewImageTool, schemas, (context) =>
+			executeViewImage({ ...context, callbacks: { ...context.callbacks, supportsImages } }),
+		)
 		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)

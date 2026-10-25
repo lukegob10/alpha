@@ -25,21 +25,26 @@ describe("thread result serialization", () => {
 	})
 
 	it("preserves the latest assistant answer before shrinking supporting history", () => {
+		const items = [
+			{ type: "agentMessage", id: "earlier-answer", text: "Initial findings." },
+			{ type: "toolResult", id: "large", text: "x".repeat(40_000) },
+			{ type: "agentMessage", id: "answer", text: "Verified outcome." },
+			{ type: "toolResult", id: "last-result", text: "Done." },
+		]
+		Object.freeze(items)
 		const result = JSON.parse(
 			serializeThreadResult({
 				thread: { id: "peer" },
 				turns: [
 					{
 						id: "turn",
-						items: [
-							{ type: "toolResult", id: "large", text: "x".repeat(40_000) },
-							{ type: "agentMessage", id: "answer", text: "Verified outcome." },
-						],
+						items,
 					},
 				],
 			}),
 		)
 		expect(result.turns[0].items).toEqual([{ type: "agentMessage", id: "answer", text: "Verified outcome." }])
+		expect(items.map(({ id }) => id)).toEqual(["earlier-answer", "large", "answer", "last-result"])
 	})
 
 	it("also honors a smaller remaining character budget", () => {

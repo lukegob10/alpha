@@ -223,6 +223,25 @@ it("still honors cancellation when the retry backoff is already consumed", async
 	expect(vi.getTimerCount()).toBe(0)
 })
 
+it.each([
+	["without a retry deadline", undefined],
+	["with a retry deadline", 90_000],
+] as const)("releases the pacing timer on cancellation %s", async (_description, retryDeadline) => {
+	vi.useFakeTimers()
+	vi.setSystemTime(0)
+	const { task } = retryTask()
+	Reflect.deleteProperty(task, "waitForProviderPacingDelay")
+	const controller = new AbortController()
+	const reason = new Error("cancelled during provider pacing")
+	const pending = task["waitForProviderPacingDelay"](60_000, controller.signal, retryDeadline)
+	const rejected = expect(pending).rejects.toBe(reason)
+	expect(vi.getTimerCount()).toBe(1)
+
+	controller.abort(reason)
+	await rejected
+	expect(vi.getTimerCount()).toBe(0)
+})
+
 it("still exhausts an expired automatic budget when the retry backoff is already consumed", async () => {
 	vi.useFakeTimers()
 	vi.setSystemTime(90_000)

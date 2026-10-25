@@ -394,7 +394,7 @@ describe("getMessagesSinceLastSummary", () => {
 		]
 
 		const result = getMessagesSinceLastSummary(messages)
-		expect(result).toEqual(messages)
+		expect(result).toBe(messages)
 	})
 
 	it("should return messages since the last summary", () => {
@@ -450,6 +450,77 @@ describe("getMessagesSinceLastSummary", () => {
 })
 
 describe("getEffectiveApiHistory", () => {
+	it.each([false, true])(
+		"preserves transaction identity across truncation and rewind (summary: %s)",
+		(withSummary) => {
+			const summary: ApiMessage = { role: "user", content: "Summary", isSummary: true, condenseId: "summary" }
+			const hiddenCall: ApiMessage = {
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused-call", name: "read_file", input: {} }],
+				truncationParent: "truncation",
+			}
+			const hiddenResult: ApiMessage = {
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "reused-call", content: "Earlier result" }],
+				truncationParent: "truncation",
+			}
+			const marker: ApiMessage = {
+				role: "user",
+				content: "Truncated history",
+				isTruncationMarker: true,
+				truncationId: "truncation",
+			}
+			const retainedCall: ApiMessage = {
+				role: "assistant",
+				content: [{ type: "tool_use", id: "reused-call", name: "read_file", input: {} }],
+			}
+			const retainedResult: ApiMessage = {
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "reused-call", content: "Recent result" }],
+			}
+			const prefix = withSummary ? [summary] : []
+			const messages = [...prefix, hiddenCall, hiddenResult, marker, retainedCall, retainedResult]
+			const before = structuredClone(messages)
+			const expected = [...prefix, marker, retainedCall, retainedResult]
+			const effective = getEffectiveApiHistory(messages)
+
+			expect(effective).toEqual(expected)
+			effective.forEach((message, index) => expect(message).toBe(expected[index]))
+			expect(hasToolCallResultIntegrity(effective)).toBe(true)
+			const restored = getEffectiveApiHistory(messages.filter((message) => message !== marker))
+			const expectedRestored = [...prefix, hiddenCall, hiddenResult, retainedCall, retainedResult]
+			expect(restored).toEqual(expectedRestored)
+			restored.forEach((message, index) => expect(message).toBe(expectedRestored[index]))
+			expect(hasToolCallResultIntegrity(restored)).toBe(true)
+			expect(messages).toEqual(before)
+		},
+	)
+
+	it("removes orphan-only fresh-start markers before applying truncation", () => {
+		const summary: ApiMessage = { role: "user", content: "Summary", isSummary: true }
+		const call: ApiMessage = {
+			role: "assistant",
+			content: [{ type: "tool_use", id: "call", name: "read_file", input: {} }],
+			truncationParent: "orphan-marker",
+		}
+		const orphanMarker: ApiMessage = {
+			role: "user",
+			content: [{ type: "tool_result", tool_use_id: "missing-call", content: "Orphan result" }],
+			isTruncationMarker: true,
+			truncationId: "orphan-marker",
+		}
+		const result: ApiMessage = {
+			role: "user",
+			content: [{ type: "tool_result", tool_use_id: "call", content: "Retained result" }],
+		}
+		const effective = getEffectiveApiHistory([summary, call, orphanMarker, result])
+
+		expect(effective).toEqual([summary, call, result])
+		expect(effective[1]).toBe(call)
+		expect(effective[2]).toBe(result)
+		expect(hasToolCallResultIntegrity(effective)).toBe(true)
+	})
+
 	it("should return only summary when summary exists (fresh start model)", () => {
 		const condenseId = "test-condense-id"
 		const messages: ApiMessage[] = [

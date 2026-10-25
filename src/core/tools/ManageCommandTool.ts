@@ -129,26 +129,14 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				}
 				assertActive()
 				assertSessionCurrent?.()
-				if (
-					terminal.taskId !== task.taskId ||
-					terminal.process !== process ||
-					process.executionId !== params.execution_id ||
-					!terminal.running
-				)
-					throw new Error("Command changed while approval was pending")
+				if (!isPhysicallyRunning()) throw new Error("Command changed while approval was pending")
 				if (params.action === "input") {
 					const provider = task.providerRef.deref()
 					if (!provider) throw new Error("Task mutation owner unavailable")
 					await provider.runWorkspaceMutation(task, "command input", async () => {
 						assertActive()
 						assertSessionCurrent?.()
-						if (
-							terminal.taskId !== task.taskId ||
-							terminal.process !== process ||
-							process.executionId !== params.execution_id ||
-							!terminal.running ||
-							(process.isSettled && !interrupt)
-						)
+						if (!isPhysicallyRunning() || (process.isSettled && !interrupt))
 							throw new Error("Command is no longer accepting input")
 						if (interrupt) await interrupt.call(process)
 						else await process.writeInput!(params.input!)

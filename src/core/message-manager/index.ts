@@ -32,7 +32,7 @@ export function collectArtifactExecutionIds(messages: readonly (AlphaMessage | A
 			}
 		} else if (value !== null && typeof value === "object" && !seen.has(value)) {
 			seen.add(value)
-			pending.push(...Object.values(value))
+			for (const child of Object.values(value)) pending.push(child)
 		}
 	}
 	return ids

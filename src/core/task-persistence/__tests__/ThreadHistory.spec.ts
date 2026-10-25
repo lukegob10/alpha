@@ -3,6 +3,7 @@ import type { AgentLifecycleEvent, AgentTurnTerminalStatus, AlphaMessage } from 
 
 import type { ApiMessage } from "../apiMessages"
 import { buildThreadReadResult, forkTaskHistory } from "../ThreadHistory"
+import { invalidPersistedApiMessages } from "../validatePersistedApiMessages"
 
 function completedHistory(): ApiMessage[] {
 	return [
@@ -497,5 +498,127 @@ describe("independent thread forks", () => {
 	it("does not invent inherited history for a first turn that is still running", () => {
 		const snapshot = forkTaskHistory([{ role: "user", content: "First turn", ts: 1 }], [], { active: true })
 		expect(snapshot).toEqual({ apiMessages: [], uiMessages: [] })
+	})
+})
+
+const persistedToolFormats = [
+	{
+		name: "legacy call",
+		call: { type: "tool_call", tool_call_id: "read-1", name: "read_file", arguments: {} },
+		result: { type: "tool_result", tool_use_id: "read-1", content: "Read evidence" },
+	},
+	{
+		name: "legacy result",
+		call: { type: "tool_use", id: "read-1", name: "read_file", input: {} },
+		result: { type: "tool_result", tool_call_id: "read-1", content: "Read evidence" },
+	},
+	{
+		name: "empty canonical aliases",
+		call: { type: "tool_call", id: "", tool_call_id: "read-1", name: "read_file", arguments: {} },
+		result: { type: "tool_result", tool_use_id: "", tool_call_id: "read-1", content: "Read evidence" },
+	},
+	{
+		name: "matching aliases",
+		call: { type: "tool_call", id: "read-1", tool_call_id: "read-1", name: "read_file", arguments: {} },
+		result: { type: "tool_result", tool_use_id: "read-1", tool_call_id: "read-1", content: "Read evidence" },
+	},
+] as const
+
+/** Historical blocks are accepted by the persisted protocol but absent from the current provider SDK types. */
+function persistedHistory(value: unknown): ApiMessage[] {
+	expect(invalidPersistedApiMessages(value)).toBeUndefined()
+	return value as ApiMessage[]
+}
+
+describe("persisted thread tool aliases", () => {
+	it.each(persistedToolFormats)("projects $name without changing the source history", ({ call, result }) => {
+		const history = persistedHistory([
+			{ role: "user", content: "Inspect the repository" },
+			{ role: "assistant", content: [call] },
+			{ role: "user", content: [result] },
+		])
+		const before = JSON.stringify(history)
+		expect(read(history, { includeOutputs: true }).turns[0].items).toEqual([
+			expect.objectContaining({ type: "userMessage" }),
+			{ type: "toolCall", id: "read-1", name: "read_file", status: "completed" },
+			{ type: "toolResult", id: "read-1", status: "completed", text: "Read evidence" },
+		])
+		expect(JSON.stringify(history)).toBe(before)
+	})
+
+	it.each(persistedToolFormats)("retains a completed $name pair when forking", ({ call, result }) => {
+		const history = persistedHistory([
+			{ role: "user", content: "Inspect the repository" },
+			{ role: "assistant", content: [call] },
+			{ role: "user", content: [result] },
+			{ role: "assistant", content: "Repository inspected.", phase: "final_answer" },
+		])
+		const before = JSON.stringify(history)
+		const fork = forkTaskHistory(history, [], { active: false })
+		expect(JSON.stringify(fork.apiMessages)).toBe(before)
+		expect(JSON.stringify(history)).toBe(before)
+		expect(fork.apiMessages[1]).not.toBe(history[1])
+	})
+
+	it.each(persistedToolFormats)("excludes an unresolved $name call from inactive forks", ({ call }) => {
+		const history = persistedHistory([
+			{ role: "user", content: "Inspect the repository" },
+			{ role: "assistant", content: [call] },
+		])
+		const before = JSON.stringify(history)
+		expect(forkTaskHistory(history, [], { active: false }).apiMessages).toEqual([history[0]])
+		expect(JSON.stringify(history)).toBe(before)
+	})
+
+	it("keeps tool-bearing legacy assistant text and subsequent steering within the unfinished turn", () => {
+		const history = persistedHistory([
+			{ role: "user", content: "Inspect the repository" },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Checking the repository." }, persistedToolFormats[0].call],
+				phase: "final_answer",
+			},
+			{ role: "user", content: "Also check the second file" },
+		])
+		expect(read(history, { turnLimit: 10 }).turns).toHaveLength(1)
+	})
+
+	it.each(["call", "result"] as const)("correlates a timestamp-less legacy %s with its lifecycle turn", (kind) => {
+		const events: AgentLifecycleEvent[] = [
+			...lifecycleTurn("first", 10, { status: "interrupted", at: 19 }),
+			{
+				version: 1,
+				taskId: "peer-1",
+				runId: "run:first",
+				turnId: "first",
+				eventId: "first:call",
+				sequence: 3,
+				occurredAt: 11,
+				type: "tool_call_accepted",
+				payload: {
+					item: {
+						type: "tool_call",
+						itemId: "call:read-1",
+						toolCallId: "read-1",
+						name: "read_file",
+						arguments: {},
+						status: "accepted",
+					},
+				},
+			},
+			...lifecycleTurn("second", 20, { status: "completed", at: 29 }),
+		]
+		const history = persistedHistory([
+			{
+				role: kind === "call" ? "assistant" : "user",
+				content: [kind === "call" ? persistedToolFormats[0].call : persistedToolFormats[1].result],
+			},
+			{ role: "user", content: "Second request", ts: 21 },
+			{ role: "assistant", content: "Second request done", ts: 22 },
+		])
+		const all = read(history, { turnLimit: 10 }, events)
+		expect(all.turns.map((turn) => turn.status)).toEqual(["completed", "interrupted"])
+		const first = read([{ role: "user", content: "First request", ts: 12 }], {}, events).turns[0]
+		expect(all.turns[1].id).toBe(first.id)
 	})
 })

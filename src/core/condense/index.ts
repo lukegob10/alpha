@@ -9,7 +9,7 @@ import { getApiStreamErrorMessage } from "../../api/transform/stream"
 import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
-import { findLast } from "../../shared/array"
+import { findLast, findLastIndex } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
@@ -1361,14 +1361,8 @@ ${commandBlocks}
  * so the first message since the last summary is guaranteed to be a user message.
  */
 export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[] {
-	const lastSummaryIndexReverse = [...messages].reverse().findIndex((message) => message.isSummary)
-
-	if (lastSummaryIndexReverse === -1) {
-		return messages
-	}
-
-	const lastSummaryIndex = messages.length - lastSummaryIndexReverse - 1
-	return messages.slice(lastSummaryIndex)
+	const lastSummaryIndex = findLastIndex(messages, (message) => !!message.isSummary)
+	return lastSummaryIndex === -1 ? messages : messages.slice(lastSummaryIndex)
 }
 
 /**
@@ -1388,48 +1382,19 @@ export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[
  * @returns The filtered history that should be sent to the API
  */
 export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
-	// Find the most recent summary message
 	const lastSummary = findLast(messages, (msg) => msg.isSummary === true)
+	// Filter orphan results against the fresh-start history before truncation and
+	// again afterward: a truncation marker can hide the only matching call.
+	const activeMessages = lastSummary
+		? filterOrphanToolResults(messages.slice(messages.indexOf(lastSummary)))
+		: messages
 
-	if (lastSummary) {
-		// Fresh start model: return only messages from the summary onwards
-		const summaryIndex = messages.indexOf(lastSummary)
-		let messagesFromSummary = messages.slice(summaryIndex)
-
-		// Filter orphan results against the active fresh-start history.  This is
-		// intentionally done before truncation filtering and again afterward: a
-		// truncation marker can hide the only matching call.
-		messagesFromSummary = filterOrphanToolResults(messagesFromSummary)
-
-		// Still need to filter out any truncated messages within this range
-		const existingTruncationIds = new Set<string>()
-		for (const msg of messagesFromSummary) {
-			if (msg.isTruncationMarker && msg.truncationId) {
-				existingTruncationIds.add(msg.truncationId)
-			}
-		}
-
-		return filterOrphanToolResults(
-			messagesFromSummary.filter((msg) => {
-				// Filter out truncated messages if their truncation marker exists
-				if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-					return false
-				}
-				return true
-			}),
-		)
-	}
-
-	// No summary - filter based on condenseParent and truncationParent as before
-	// This handles the case of orphaned condenseParent tags (summary was deleted via rewind)
-
-	// Collect all condenseIds of summaries that exist in the current history
 	const existingSummaryIds = new Set<string>()
-	// Collect all truncationIds of truncation markers that exist in the current history
 	const existingTruncationIds = new Set<string>()
-
-	for (const msg of messages) {
-		if (msg.isSummary && msg.condenseId) {
+	for (const msg of activeMessages) {
+		// Fresh starts already exclude earlier summaries. Retain legacy marker
+		// filtering only when no fresh-start boundary exists.
+		if (!lastSummary && msg.isSummary && msg.condenseId) {
 			existingSummaryIds.add(msg.condenseId)
 		}
 		if (msg.isTruncationMarker && msg.truncationId) {
@@ -1437,21 +1402,13 @@ export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
 		}
 	}
 
-	// Filter out messages whose condenseParent points to an existing summary
-	// or whose truncationParent points to an existing truncation marker.
-	// Messages with orphaned parents (summary/marker was deleted) are included.
+	// Deleted markers restore their messages when the user rewinds.
 	return filterOrphanToolResults(
-		messages.filter((msg) => {
-			// Filter out condensed messages if their summary exists
-			if (msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) {
-				return false
-			}
-			// Filter out truncated messages if their truncation marker exists
-			if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-				return false
-			}
-			return true
-		}),
+		activeMessages.filter(
+			(msg) =>
+				!(msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) &&
+				!(msg.truncationParent && existingTruncationIds.has(msg.truncationParent)),
+		),
 	)
 }
 

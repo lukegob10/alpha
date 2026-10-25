@@ -365,6 +365,35 @@ describe("AgentIncidentMonitor", () => {
 		expect(monitor.snapshot().tasks.map(({ taskId }) => taskId)).toContain(digest("historical-task"))
 	})
 
+	it("publishes live events individually and restored batches once while ignoring live duplicates", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 5_000 })
+		const snapshots: Array<ReturnType<typeof monitor.snapshot>> = []
+		monitor.subscribe((snapshot) => snapshots.push(snapshot))
+		const started = turnStarted()
+		const failed = turnFailed()
+		monitor.observe(started)
+		expect(snapshots).toHaveLength(2)
+		monitor.observe(started)
+		expect(snapshots).toHaveLength(2)
+		monitor.restore([{ taskId: "task-incident", events: [started, failed] }])
+		expect(snapshots).toHaveLength(3)
+		expect(snapshots.at(-1)?.alerts).toHaveLength(1)
+		monitor.observe(failed)
+		expect(snapshots).toHaveLength(3)
+	})
+
+	it.each(["live", "restored"])(
+		"preserves the %s event boundary when merging history without a timestamp",
+		(origin) => {
+			const monitor = new AgentIncidentMonitor({ now: () => 5_000 })
+			const started = turnStarted()
+			if (origin === "live") monitor.observe(started)
+			else monitor.restore([{ taskId: "task-incident", events: [started] }])
+			const snapshot = monitor.restore([{ taskId: "task-incident", status: "completed" }])
+			expect(snapshot.tasks[0]?.state).toBe(origin === "live" ? "running" : "completed")
+		},
+	)
+
 	it("keeps task, timeline, and alert projections within schema limits", () => {
 		const monitor = new AgentIncidentMonitor({
 			now: () => 20_000,

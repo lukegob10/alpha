@@ -731,6 +731,25 @@ describe("TaskSessionRegistry", () => {
 		})
 	})
 
+	it.each([false, true])("selects the registration projection with prior degradation: %s", (degraded) => {
+		const registry = new TaskSessionRegistry(1)
+		const taskId = "task-registration-projection"
+		const snapshot = createLifecycleSnapshot(taskId, { phase: "awaiting_approval" })
+		if (degraded) registry.markLifecycleDegraded(taskId)
+
+		registry.register(
+			createTask(taskId, { clineMessages: [{ ts: 100, type: "say", say: "error", text: "Failed" }] }),
+			{ lifecycleSnapshot: snapshot },
+		)
+
+		expect(registry.getMetadataForTask(taskId)).toMatchObject({
+			lifecycle: degraded ? TaskLifecycleState.Failed : TaskLifecycleState.Waiting,
+			isWaitingForInput: !degraded,
+			waitingReason: degraded ? undefined : "awaiting_approval",
+		})
+		expect(registry.getLifecycleSnapshot(taskId)).toEqual(snapshot)
+	})
+
 	it("falls back to legacy task status while lifecycle persistence is degraded", () => {
 		const registry = new TaskSessionRegistry(1)
 		const task = createTask("task-degraded")

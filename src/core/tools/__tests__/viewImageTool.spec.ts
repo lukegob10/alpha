@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { NativeToolCallParser } from "../../assistant-message/NativeToolCallParser"
 import type { Task } from "../../task/Task"
 import { ToolRegistry } from "../ToolRegistry"
+import { viewImageToolSchema } from "../../prompts/tools/native-tools/view_image"
 import i18next from "../../../i18n"
 import toolTranslations from "../../../i18n/locales/en/tools.json"
 
@@ -135,6 +136,72 @@ describe("view_image registry adapter", () => {
 		expect(execution.trackFileContext).not.toHaveBeenCalled()
 		expect(toolCallbacks.pushToolResult).toHaveBeenCalledOnce()
 		expect(toolCallbacks.setResultMetadata).toHaveBeenLastCalledWith(expect.objectContaining({ status: "denied" }))
+	})
+
+	it.each(["before execution", "during approval"] as const)(
+		"keeps the captured image capability when the live model changes %s",
+		async (when) => {
+			workspace = await mkdtemp(path.join(os.tmpdir(), "alpha-view-image-"))
+			await writeFile(path.join(workspace, "pixel.png"), pngBytes)
+			const registry = new ToolRegistry({ supportsImages: true })
+			const model = { supportsImages: true }
+			const execution = task(model)
+			const toolCallbacks = callbacks()
+			if (when === "before execution") model.supportsImages = false
+			else
+				toolCallbacks.askApprovalResponse.mockImplementation(async () => {
+					model.supportsImages = false
+					return { response: "yesButtonClicked" }
+				})
+
+			await registry.resolve("view_image")!.execute({
+				task: execution.task,
+				call: {
+					type: "tool_use",
+					id: "view-captured-image",
+					name: "view_image",
+					params: { path: "pixel.png" },
+					partial: false,
+					nativeArgs: { path: "pixel.png" },
+				},
+				callbacks: toolCallbacks,
+			})
+
+			expect(toolCallbacks.askApprovalResponse).toHaveBeenCalledOnce()
+			expect(toolCallbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith([
+				expect.objectContaining({ type: "text", text: expect.stringContaining("File: pixel.png") }),
+				{ type: "image", source: { type: "base64", media_type: "image/png", data: pngBase64 } },
+			])
+			expect(toolCallbacks.setResultMetadata).toHaveBeenLastCalledWith(
+				expect.objectContaining({ status: "success" }),
+			)
+		},
+	)
+
+	it("rejects a retained image schema when the captured model does not support images", async () => {
+		const registry = new ToolRegistry({ supportsImages: false, nativeTools: [viewImageToolSchema] })
+		const execution = task({ supportsImages: true })
+		const toolCallbacks = callbacks()
+
+		await registry.resolve("view_image")!.execute({
+			task: execution.task,
+			call: {
+				type: "tool_use",
+				id: "view-text-only-model",
+				name: "view_image",
+				params: { path: "pixel.png" },
+				partial: false,
+				nativeArgs: { path: "pixel.png" },
+			},
+			callbacks: toolCallbacks,
+		})
+
+		expect(toolCallbacks.askApprovalResponse).not.toHaveBeenCalled()
+		expect(execution.trackFileContext).not.toHaveBeenCalled()
+		expect(toolCallbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			"Error: the current model does not support image input.",
+		)
+		expect(toolCallbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
 	})
 
 	it("rejects non-image paths and remains absent from text-only registries", async () => {

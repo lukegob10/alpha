@@ -319,57 +319,79 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("modified2.ts")
 	})
 
-	it("excludes extension-private sub-agent paths from every parent environment surface", async () => {
-		const storagePath = path.join(mockCwd, ".alpha-storage")
-		const privateWorktree = path.join(storagePath, "subagent-worktrees", "artifact-123", "docs", "secret.md")
-		const privateChangeSet = path.join(storagePath, "subagent-change-sets", "artifact-123", "0-after")
-		const publicFile = path.join(mockCwd, "src", "app.ts")
-		mockProvider.context = { globalStorageUri: { fsPath: storagePath } }
-		;(vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>).push(
-			{ document: { uri: { fsPath: publicFile } } },
-			{ document: { uri: { fsPath: privateWorktree } } },
-		)
-		;(vscode.window.tabGroups.all as unknown as Array<{ tabs: Array<{ input: unknown }> }>).push({
-			tabs: [
-				{ input: new (vscode.TabInputText as any)({ fsPath: publicFile }) },
-				{ input: new (vscode.TabInputText as any)({ fsPath: privateChangeSet }) },
-			],
-		})
-		;(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
-			files: [privateChangeSet, "src/recent.ts"],
-			commit: vi.fn(),
-		})
+	it.each(["artifact-123", "..artifact-123"])(
+		"excludes extension-private sub-agent paths under %s from every parent environment surface",
+		async (artifactId) => {
+			const storagePath = path.join(mockCwd, ".alpha-storage")
+			const privateWorktree = path.join(storagePath, "subagent-worktrees", artifactId, "docs", "secret.md")
+			const privateChangeSet = path.join(storagePath, "subagent-change-sets", artifactId, "0-after")
+			const publicFile = path.join(mockCwd, "src", "app.ts")
+			mockProvider.context = { globalStorageUri: { fsPath: storagePath } }
+			;(vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>).push(
+				{ document: { uri: { fsPath: publicFile } } },
+				{ document: { uri: { fsPath: privateWorktree } } },
+			)
+			;(vscode.window.tabGroups.all as unknown as Array<{ tabs: Array<{ input: unknown }> }>).push({
+				tabs: [
+					{ input: new (vscode.TabInputText as any)({ fsPath: publicFile }) },
+					{ input: new (vscode.TabInputText as any)({ fsPath: privateChangeSet }) },
+				],
+			})
+			;(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+				files: [privateChangeSet, "src/recent.ts"],
+				commit: vi.fn(),
+			})
 
-		const privateActiveTerminal = {
-			id: "private-active",
-			getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateWorktree)),
-			getLastCommand: vi.fn().mockReturnValue("SECRET_COMMAND_SHOULD_NOT_APPEAR"),
-			getProcessesWithOutput: vi.fn().mockReturnValue([]),
-		} as MockTerminal
-		const privateInactiveTerminal = {
-			id: "private-inactive",
-			getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateChangeSet)),
-			getLastCommand: vi.fn(),
-			getProcessesWithOutput: vi
-				.fn()
-				.mockReturnValue([
-					{ command: "SECRET_COMMAND_SHOULD_NOT_APPEAR", getUnretrievedOutput: vi.fn(() => "secret output") },
+			const privateActiveTerminal = {
+				id: "private-active",
+				getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateWorktree)),
+				getLastCommand: vi.fn().mockReturnValue("SECRET_COMMAND_SHOULD_NOT_APPEAR"),
+				getProcessesWithOutput: vi.fn().mockReturnValue([]),
+			} as MockTerminal
+			const privateInactiveTerminal = {
+				id: "private-inactive",
+				getCurrentWorkingDirectory: vi.fn().mockReturnValue(path.dirname(privateChangeSet)),
+				getLastCommand: vi.fn(),
+				getProcessesWithOutput: vi.fn().mockReturnValue([
+					{
+						command: "SECRET_COMMAND_SHOULD_NOT_APPEAR",
+						hasUnretrievedOutput: vi.fn(() => true),
+						captureUnretrievedOutput: vi.fn(() => ({
+							output: "secret output",
+							commit: vi.fn(),
+							release: vi.fn(),
+						})),
+					},
 				]),
-			cleanCompletedProcessQueue: vi.fn(),
-		} as MockTerminal
-		;(TerminalRegistry.getBackgroundTerminals as Mock).mockImplementation((active: boolean) =>
-			active ? [privateActiveTerminal] : [privateInactiveTerminal],
-		)
+				cleanCompletedProcessQueue: vi.fn(),
+			} as MockTerminal
+			;(TerminalRegistry.getBackgroundTerminals as Mock).mockImplementation((active: boolean) =>
+				active ? [privateActiveTerminal] : [privateInactiveTerminal],
+			)
+
+			const result = await getEnvironmentDetails(mockAlphaTask as Task)
+
+			expect(result).toContain("src/app.ts")
+			expect(result).toContain("src/recent.ts")
+			expect(result).not.toContain("artifact-123")
+			expect(result).not.toContain("subagent-worktrees")
+			expect(result).not.toContain("subagent-change-sets")
+			expect(result).not.toContain("SECRET_COMMAND_SHOULD_NOT_APPEAR")
+			expect(privateInactiveTerminal.cleanCompletedProcessQueue).not.toHaveBeenCalled()
+		},
+	)
+
+	it("keeps paths in similarly named siblings of private storage visible", async () => {
+		const storagePath = path.join(mockCwd, ".alpha-storage")
+		mockProvider.context = { globalStorageUri: { fsPath: storagePath } }
+		const publicFile = path.join(storagePath, "subagent-worktrees-public", "src", "app.ts")
+		;(vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>).push({
+			document: { uri: { fsPath: publicFile } },
+		})
 
 		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
-		expect(result).toContain("src/app.ts")
-		expect(result).toContain("src/recent.ts")
-		expect(result).not.toContain("artifact-123")
-		expect(result).not.toContain("subagent-worktrees")
-		expect(result).not.toContain("subagent-change-sets")
-		expect(result).not.toContain("SECRET_COMMAND_SHOULD_NOT_APPEAR")
-		expect(privateInactiveTerminal.cleanCompletedProcessQueue).not.toHaveBeenCalled()
+		expect(result).toContain("subagent-worktrees-public/src/app.ts")
 	})
 
 	it("should include active terminal information", async () => {

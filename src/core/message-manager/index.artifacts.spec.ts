@@ -112,6 +112,22 @@ describe("rewind command artifact retention", () => {
 		)
 	})
 
+	it("retains artifact references inside tool inputs with broad arrays", async () => {
+		const values: unknown[] = new Array(200_000).fill(null)
+		values.push({ artifact_id: artifactName(retainedInputId) })
+		task.apiConversationHistory[1] = {
+			ts: 210,
+			role: "assistant",
+			content: [{ type: "tool_use", id: "saved-read", name: "inspect_payload", input: { values } }],
+		}
+
+		await manager.rewindToTimestamp(400)
+
+		expect((await fs.readdir(artifactDirectory)).sort()).toEqual(
+			filenames.filter((name) => ![artifactName("500"), artifactName(removedId)].includes(name)).sort(),
+		)
+	})
+
 	it.each(["ui", "api"] as const)("keeps artifacts when the %s transcript save returns false", async (source) => {
 		if (source === "ui") {
 			vi.mocked(task.overwriteAlphaMessages).mockImplementation(async (messages) => {

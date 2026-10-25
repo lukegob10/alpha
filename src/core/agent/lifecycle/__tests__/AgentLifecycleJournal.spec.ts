@@ -255,6 +255,39 @@ describe("AgentLifecycleJournal", () => {
 		await journal.close()
 	})
 
+	it("persists repeated sibling argument values and redacts actual cycles", async () => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { snapshotEvery: 1 })
+		const shared = { path: "file.ts", password: "private-password" }
+		const argumentsValue: Record<string, unknown> = { first: shared, second: shared }
+		argumentsValue.self = argumentsValue
+		await journal.append({
+			...phaseEvent("shared-arguments"),
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					itemId: "call-item",
+					type: "tool_call",
+					toolCallId: "call-1",
+					name: "read_file",
+					arguments: argumentsValue,
+					status: "accepted",
+				},
+			},
+		})
+		await journal.close()
+		const recovered = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		expect(recovered.getSnapshot()?.items[0]).toMatchObject({
+			arguments: {
+				first: { path: "file.ts", password: "[redacted]" },
+				second: { path: "file.ts", password: "[redacted]" },
+				self: "[circular]",
+			},
+		})
+		expect(await fs.readFile(await recovered.getEventsFilePath(), "utf8")).not.toContain("private-password")
+		expect(shared.password).toBe("private-password")
+		await recovered.close()
+	})
+
 	it("owns sequences and supports exact replay without appending a duplicate", async () => {
 		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
 		const first = await journal.append(phaseEvent("event-1"))

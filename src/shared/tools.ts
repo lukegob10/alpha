@@ -734,6 +734,8 @@ export const TOOL_ALIASES: Record<string, ToolName> = {
 	write_file: "write_to_file",
 	search_and_replace: "edit",
 } as const
+// Model and settings names must resolve only declared aliases, never object prototype members.
+Object.setPrototypeOf(TOOL_ALIASES, null)
 
 const legacyThreadToolReplacements: Readonly<Record<string, readonly string[]>> = {
 	create_task: ["create_thread", "fork_thread"],
@@ -741,6 +743,7 @@ const legacyThreadToolReplacements: Readonly<Record<string, readonly string[]>> 
 	wait_task: ["wait_threads"],
 	send_task_message: ["send_message_to_thread"],
 }
+Object.setPrototypeOf(legacyThreadToolReplacements, null)
 
 /** Preserve saved exclusions when a historical task control is replaced by the thread surface. */
 export function expandLegacyThreadToolDisables(names: readonly string[]): string[] {

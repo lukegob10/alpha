@@ -30,6 +30,7 @@ const codexModelIds = [
 ] as const
 
 const pinnedSourceSha256 = {
+	"gpt-6.1-sol": "e1bdd4f8f0df4b20f4a0ffc8a861ce819df45325d8cecdfb92e80379cf8d142e",
 	"gpt-6-astra": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a",
 	"gpt-6-sol": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d",
 	"gpt-6-luna": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12",
@@ -49,10 +50,13 @@ describe("pinned Codex model instructions", () => {
 			promptSlug: "gpt-6.1-sol",
 			isFallback: false,
 		})
-		expect(result.instructions).toContain("State actions directly")
-		expect(result.instructions).toContain("Acknowledge and repair meaningful errors briefly")
-		expect(CODEX_GPT61_REFERENCE_COMMIT).toBe("b741e480e203f037ca726bc2a76d99a8e8668e66")
-		expect(CODEX_GPT61_REFERENCE_RETRIEVED_AT).toBe("2026-10-03")
+		expect(result.instructions).toContain("what you won't do or what something is not")
+		expect(result.instructions).toContain("Avoid unnecessary apologies and self-blame")
+		expect(result.instructions.indexOf("Avoid unnecessary apologies and self-blame")).toBeLessThan(
+			result.instructions.indexOf("## Technical communication"),
+		)
+		expect(CODEX_GPT61_REFERENCE_COMMIT).toBe("970111f6cb62cc02fe36a82ea7d71b37a2889c97")
+		expect(CODEX_GPT61_REFERENCE_RETRIEVED_AT).toBe("2026-10-24")
 	})
 
 	it("records the current upstream catalog provenance", () => {

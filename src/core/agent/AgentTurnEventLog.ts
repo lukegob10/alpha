@@ -216,17 +216,17 @@ function boundValue(value: unknown, maxValueLength: number, seen = new WeakSet<o
 
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-
-	if (Array.isArray(value)) {
-		return value.map((child) => boundValue(child, maxValueLength, seen))
-	}
-
-	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-			entryKey,
-			boundValue(entryValue, maxValueLength, seen, entryKey),
-		]),
-	)
+	const result = Array.isArray(value)
+		? value.map((child) => boundValue(child, maxValueLength, seen))
+		: Object.fromEntries(
+				Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+					entryKey,
+					boundValue(entryValue, maxValueLength, seen, entryKey),
+				]),
+			)
+	// Only ancestors form a cycle; canonical response projections share payloads.
+	seen.delete(value)
+	return result
 }
 
 /** Exported for hosts that need the same redaction policy for non-persisted telemetry. */

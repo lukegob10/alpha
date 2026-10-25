@@ -39,8 +39,8 @@ export async function classifyCommandRead(
 	let start = 1
 	if (tokens[start] === "--no-pager" || tokens[start] === "-P") start++
 	const subcommand = tokens[start++]
+	if (!Object.hasOwn(GIT_OPTIONS, subcommand)) return undefined
 	const allowed = GIT_OPTIONS[subcommand]
-	if (!allowed) return undefined
 	const args = tokens.slice(start)
 	let pathsOnly = false
 	for (let index = 0; index < args.length; index++) {

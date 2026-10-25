@@ -4,6 +4,7 @@ import { Task } from "../../task/Task"
 import { formatResponse } from "../../prompts/responses"
 import { getCommand, getCommandNames } from "../../../services/command/commands"
 import type { ToolUse } from "../../../shared/tools"
+import { digestValue } from "../../agent/StepContext"
 
 // Mock dependencies
 vi.mock("../../../services/command/commands", () => ({
@@ -22,6 +23,7 @@ describe("runSlashCommandTool", () => {
 			taskId: "task-1",
 			consecutiveMistakeCount: 0,
 			recordToolError: vi.fn(),
+			recordLoadedSkill: vi.fn().mockResolvedValue(undefined),
 			sayAndCreateMissingParamError: vi.fn().mockResolvedValue("Missing parameter error"),
 			ask: vi.fn().mockResolvedValue({}),
 			cwd: "/test/project",
@@ -146,7 +148,76 @@ Resolve relative file references against this directory unless the skill explici
 Use skill workflow`,
 		)
 		expect(mockTask.recordToolError).not.toHaveBeenCalledWith("run_slash_command")
+		expect(mockTask.recordLoadedSkill).toHaveBeenCalledExactlyOnceWith(
+			"skill-only",
+			"/mock/.alpha/skills/skill-only/SKILL.md",
+			digestValue("Use skill workflow"),
+		)
+		expect(mockCallbacks.askApproval.mock.invocationCallOrder[0]).toBeLessThan(
+			mockTask.recordLoadedSkill.mock.invocationCallOrder[0],
+		)
+		expect(mockTask.recordLoadedSkill.mock.invocationCallOrder[0]).toBeLessThan(
+			mockCallbacks.pushToolResult.mock.invocationCallOrder[0],
+		)
 		expect(getCommandNames).not.toHaveBeenCalled()
+	})
+
+	it.each(["denied", "cancelled"] as const)(
+		"does not record or publish a skill when approval is %s",
+		async (outcome) => {
+			const cancellation = new AbortController()
+			const reason = new Error("Slash command approval interrupted")
+			mockCallbacks.signal = cancellation.signal
+			mockCallbacks.askApproval.mockImplementationOnce(async () => {
+				if (outcome === "cancelled") cancellation.abort(reason)
+				return outcome !== "denied"
+			})
+			mockTask.providerRef.deref().getSkillsManager.mockReturnValue({
+				getSkillContent: vi.fn().mockResolvedValue({
+					name: "review",
+					path: "/test/project/.agents/skills/review/SKILL.md",
+					source: "project",
+					instructions: "Review the implementation",
+				}),
+			})
+			vi.mocked(getCommand).mockResolvedValue(undefined)
+
+			await runSlashCommandTool.execute({ command: "review" }, mockTask as Task, mockCallbacks)
+
+			expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+			expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+			expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(mockTask.recordToolError).not.toHaveBeenCalled()
+			if (outcome === "cancelled") {
+				expect(mockCallbacks.handleError).toHaveBeenCalledExactlyOnceWith("running slash command", reason)
+			} else {
+				expect(mockCallbacks.handleError).not.toHaveBeenCalled()
+			}
+		},
+	)
+
+	it("does not publish a command after its approval is interrupted", async () => {
+		const cancellation = new AbortController()
+		const reason = new Error("Slash command approval interrupted")
+		mockCallbacks.signal = cancellation.signal
+		mockCallbacks.askApproval.mockImplementationOnce(async () => {
+			cancellation.abort(reason)
+			return true
+		})
+		vi.mocked(getCommand).mockResolvedValue({
+			name: "review",
+			content: "Review the implementation",
+			source: "project",
+			filePath: ".alpha/commands/review.md",
+		})
+
+		await runSlashCommandTool.execute({ command: "review" }, mockTask as Task, mockCallbacks)
+
+		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+		expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+		expect(mockTask.recordToolError).not.toHaveBeenCalled()
+		expect(mockCallbacks.handleError).toHaveBeenCalledExactlyOnceWith("running slash command", reason)
 	})
 
 	it("uses the task's workspace and sticky mode for skill fallback instead of foreground state", async () => {

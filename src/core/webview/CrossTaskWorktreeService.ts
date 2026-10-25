@@ -18,7 +18,7 @@ export interface CrossTaskWorktree {
 
 function isWithin(root: string, candidate: string): boolean {
 	const relative = path.relative(path.resolve(root), path.resolve(candidate))
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
 function normalizePersistedRelativePath(value: string): string {
@@ -47,11 +47,7 @@ export class CrossTaskWorktreeService {
 
 		const relativeNative = path.relative(gitRoot, sourceWorkspace)
 		const relativeParts = relativeNative ? relativeNative.split(path.sep) : []
-		if (
-			relativeNative.startsWith("..") ||
-			path.isAbsolute(relativeNative) ||
-			relativeParts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
-		) {
+		if (relativeParts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) {
 			throw new Error("The task workspace path cannot be represented safely inside a Git worktree")
 		}
 		const workspaceRelativePath = relativeParts.join("/")

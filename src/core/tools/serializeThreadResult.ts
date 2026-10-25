@@ -1,3 +1,5 @@
+import { findLast } from "../../shared/array"
+
 const MAX_THREAD_RESPONSE_BYTES = 8_000
 const contentKeys = new Set(["text", "title", "summary", "message", "preview", "result", "objective", "error"])
 
@@ -34,9 +36,7 @@ export function serializeThreadResult(value: unknown, maxOutputChars?: number): 
 	if (Array.isArray(compact.turns)) {
 		compact.turns = compact.turns.map((turn: unknown) => {
 			if (!isObject(turn) || !Array.isArray(turn.items)) return turn
-			const lastAnswer = [...turn.items]
-				.reverse()
-				.find((item: unknown) => isObject(item) && item.type === "agentMessage")
+			const lastAnswer = findLast<unknown>(turn.items, (item) => isObject(item) && item.type === "agentMessage")
 			return { ...turn, items: lastAnswer ? [lastAnswer] : [], truncated: true }
 		})
 		if (isObject(compact.thread)) compact.thread = { id: compact.thread.id, status: compact.thread.status }

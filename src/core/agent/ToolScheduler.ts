@@ -737,7 +737,15 @@ const OUTSIDE_WORKSPACE_TOOLS = new Set([
 
 function assertPathIdentities(prepared: PreparedCall): void {
 	for (const { absolute, canonical } of prepared.pathIdentities ?? []) {
-		if (path.relative(canonical, resolvePathWithExistingAncestor(absolute)) !== "") {
+		let currentCanonical: string
+		try {
+			currentCanonical = resolvePathWithExistingAncestor(absolute)
+		} catch {
+			throw new ToolReadDeniedError(
+				`Path target could not be safely resolved: ${absolute}. Check the path and retry.`,
+			)
+		}
+		if (path.relative(canonical, currentCanonical) !== "") {
 			throw new ToolReadDeniedError(
 				`Path target changed during execution or approval: ${absolute}. Retry with the current path.`,
 			)
@@ -997,19 +1005,7 @@ export class ToolScheduler {
 		const capabilities = item?.descriptor?.capabilities
 		const captured = item?.descriptor && this.options.policy?.capabilities[item.descriptor.name]
 		if (item?.mcpReadPrepared) {
-			return (
-				this.executionMode === "selective-parallel" &&
-				capabilities?.parallelMcpRead === true &&
-				capabilities.concurrency === "serial" &&
-				capabilities.sideEffects === "external" &&
-				capabilities.requiresApproval &&
-				!capabilities.controlFlow &&
-				captured?.parallelMcpRead === true &&
-				captured.concurrency === "serial" &&
-				captured.sideEffects === "external" &&
-				captured.requiresApproval &&
-				!captured.controlFlow
-			)
+			return this.canPrepareParallelMcpRead(item)
 		}
 		if (item?.commandRead) {
 			return (
@@ -2151,10 +2147,17 @@ export class ToolScheduler {
 							this.executionHost.cwd,
 						),
 				))
-		prepared.pathIdentities = pathArguments.map((candidate) => {
-			const absolute = this.resolvePolicyPath(canonicalName, candidate)
-			return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
-		})
+		try {
+			prepared.pathIdentities = pathArguments.map((candidate) => {
+				const absolute = this.resolvePolicyPath(canonicalName, candidate)
+				return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
+			})
+		} catch (error) {
+			prepared.validationError = `Unable to safely resolve tool paths: ${this.errorMessage(error)}`
+			reject("policy_denied", "workspace")
+			prepared.descriptor = descriptor
+			return prepared
+		}
 		for (const candidate of pathArguments) {
 			if (
 				!outsideAccess &&

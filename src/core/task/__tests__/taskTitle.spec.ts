@@ -51,6 +51,7 @@ describe("automatic task titles", () => {
 			{ type: "text", text: "Add concise chat titles." },
 			{ type: "outcome", status: "completed", terminal: true },
 		])
+		Object.assign(handler, { streamCapabilities: { cancellation: true, lifecycle: true } })
 		const signal = new AbortController().signal
 
 		await expect(generateTaskTitle(handler, "title-task", "Long request 😀".repeat(100), signal)).resolves.toBe(
@@ -78,16 +79,56 @@ describe("automatic task titles", () => {
 		expect(handler.dispose).toHaveBeenCalledOnce()
 	})
 
-	it("does not save output from a cancelled provider request", async () => {
-		const handler = createHandler([
-			{ type: "text", text: "A title that should not be saved" },
-			{ type: "outcome", status: "cancelled", terminal: true },
-		])
+	it("rejects lifecycle-aware output without terminal completion", async () => {
+		const handler = createHandler([{ type: "text", text: "Partial title" }])
+		Object.assign(handler, { streamCapabilities: { cancellation: true, lifecycle: true } })
 
 		await expect(
 			generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
-		).resolves.toBe(undefined)
+		).resolves.toBeUndefined()
+		expect(handler.dispose).toHaveBeenCalledOnce()
 	})
+
+	it.each([
+		[true, undefined],
+		[false, "Partial title"],
+		[undefined, "Partial title"],
+	] as const)("retains nonterminal EOF behavior with lifecycle %s", async (lifecycle, expected) => {
+		const handler = createHandler([
+			{ type: "text", text: "Partial title" },
+			{ type: "outcome", status: "completed", terminal: false },
+		])
+		Object.assign(handler, { streamCapabilities: { cancellation: true, lifecycle } })
+
+		await expect(
+			generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
+		).resolves.toBe(expected)
+		expect(handler.dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each([false, undefined])("accepts legacy EOF completion with lifecycle %s", async (lifecycle) => {
+		const handler = createHandler([{ type: "text", text: "Add concise chat titles" }])
+		Object.assign(handler, { streamCapabilities: { cancellation: true, lifecycle } })
+
+		await expect(
+			generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
+		).resolves.toBe("Add concise chat titles")
+		expect(handler.dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each(["cancelled", "failed", "incomplete"])(
+		"does not save output from a %s provider request",
+		async (status) => {
+			const handler = createHandler([
+				{ type: "text", text: "A title that should not be saved" },
+				{ type: "outcome", status, terminal: true },
+			])
+
+			await expect(
+				generateTaskTitle(handler, "title-task", "Summarize this", new AbortController().signal),
+			).resolves.toBe(undefined)
+		},
+	)
 
 	it.each([false, undefined])(
 		"skips optional requests on a transport without cancellation: %s",

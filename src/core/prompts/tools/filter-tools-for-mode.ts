@@ -13,14 +13,6 @@ import type { McpHub } from "../../../services/mcp/McpHub"
 import { isToolAllowedForMode } from "../../../core/tools/validateToolUse"
 
 /**
- * Reverse lookup map - maps alias name to canonical tool name.
- * Built once at module load from the central TOOL_ALIASES constant.
- */
-const ALIAS_TO_CANONICAL: Map<string, string> = new Map(
-	Object.entries(TOOL_ALIASES).map(([alias, canonical]) => [alias, canonical]),
-)
-
-/**
  * Canonical to aliases map - maps canonical tool name to array of alias names.
  * Built once at module load from the central TOOL_ALIASES constant.
  */
@@ -67,8 +59,7 @@ function resolveEffectiveMode(
  * @returns The canonical tool name
  */
 export function resolveToolAlias(toolName: string): string {
-	const canonical = ALIAS_TO_CANONICAL.get(toolName)
-	return canonical ?? toolName
+	return TOOL_ALIASES[toolName] ?? toolName
 }
 
 /**

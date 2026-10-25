@@ -129,12 +129,6 @@ function checkIsAnthropicContextWindowError(response: unknown): boolean {
 				/max_tokens_to_sample/i,
 			]
 
-			// Additional check for Anthropic-specific error codes
-			const errorCode = res.error?.error?.code
-			if (errorCode === "context_length_exceeded" || errorCode === "invalid_request_error") {
-				return contextWindowPatterns.some((pattern) => pattern.test(message))
-			}
-
 			return contextWindowPatterns.some((pattern) => pattern.test(message))
 		}
 

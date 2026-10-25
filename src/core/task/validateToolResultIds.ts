@@ -78,11 +78,6 @@ export function validateAndFixToolResultIds(
 		return userMessage
 	}
 
-	// Find tool_result blocks in the user message
-	let toolResults = userMessage.content.filter(
-		(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
-	)
-
 	// Deduplicate tool_result blocks to prevent API protocol violations (GitHub #10465)
 	// This serves as a safety net for any potential race conditions that could generate
 	// duplicate tool_results with the same tool_use_id. The root cause (approval feedback
@@ -106,7 +101,7 @@ export function validateAndFixToolResultIds(
 		content: deduplicatedContent,
 	}
 
-	toolResults = deduplicatedContent.filter(
+	const toolResults = deduplicatedContent.filter(
 		(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
 	)
 

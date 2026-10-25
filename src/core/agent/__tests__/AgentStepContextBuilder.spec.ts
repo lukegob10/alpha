@@ -84,6 +84,37 @@ function capturedInput(approvalMode: "ask" | "auto" | "bypass" = "ask"): CreateS
 }
 
 describe("AgentStepContextBuilder", () => {
+	it.each(["flat", "nested"] as const)("preserves runtime reference precedence for %s inputs", (shape) => {
+		const references = (id: string) => ({ handler: { id }, executables: { read_file: vi.fn() } })
+		const defaults = references("defaults")
+		const inline = references("inline")
+		const runtime = references("runtime")
+		const explicit = references("explicit")
+		const builder = new AgentStepContextBuilder(defaults)
+		const context = capturedInput()
+		const input = shape === "flat" ? context : { context }
+
+		const defaultStep = builder.build(input)
+		expect(defaultStep.runtime.getHandler()).toBe(defaults.handler)
+		expect(defaultStep.runtime.getExecutable("read_file")).toBe(defaults.executables.read_file)
+
+		const handlerStep = builder.build({ ...input, handler: inline.handler })
+		expect(handlerStep.runtime.getHandler()).toBe(inline.handler)
+		expect(handlerStep.runtime.getExecutable("read_file")).toBeUndefined()
+
+		const executableStep = builder.build({ ...input, executables: inline.executables })
+		expect(executableStep.runtime.getHandler()).toBeUndefined()
+		expect(executableStep.runtime.getExecutable("read_file")).toBe(inline.executables.read_file)
+
+		const runtimeStep = builder.build({ ...input, ...inline, runtime })
+		expect(runtimeStep.runtime.getHandler()).toBe(runtime.handler)
+		expect(runtimeStep.runtime.getExecutable("read_file")).toBe(runtime.executables.read_file)
+
+		const explicitStep = builder.build({ ...input, ...inline, runtime }, explicit)
+		expect(explicitStep.runtime.getHandler()).toBe(explicit.handler)
+		expect(explicitStep.runtime.getExecutable("read_file")).toBe(explicit.executables.read_file)
+	})
+
 	it("deep-freezes and redacts captured data without mutating inputs", () => {
 		const input = capturedInput()
 		const originalMessages = input.transcript.messages

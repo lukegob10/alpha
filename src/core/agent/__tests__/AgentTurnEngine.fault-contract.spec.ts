@@ -122,6 +122,29 @@ describe.each(["legacy", "staged"] as const)("AgentTurnEngine %s finalization co
 		})
 	})
 
+	it("retains a null error payload when the completion callback omits its status", async () => {
+		const host = createHost(async () => ({ error: null }))
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "failed",
+			steps: 1,
+			response,
+			reason: "null",
+			error: null,
+		})
+	})
+
+	it("preserves an explicit successful status with diagnostic metadata", async () => {
+		const host = createHost(async () => ({ status: "completed", error: new Error("Diagnostic metadata.") }))
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 1,
+			response,
+			completionReason: "host",
+		})
+	})
+
 	it.each(["failed", "incomplete", "cancelled"] as const)(
 		"retains a provider %s outcome when completion callbacks return or throw a secondary fault",
 		async (providerStatus) => {
@@ -156,6 +179,46 @@ describe.each(["legacy", "staged"] as const)("AgentTurnEngine %s finalization co
 })
 
 describe("AgentTurnEngine staged fault drains", () => {
+	it.each([
+		["commit", false],
+		["commit", true],
+		["effects", false],
+		["effects", true],
+	] as const)(
+		"retains a returned error-only %s failure with secondary faults: %s",
+		async (phase, secondaryFaults) => {
+			const fault = new Error(`${phase} failed`)
+			const host: AgentTurnStagedHost<string> = {
+				shouldAbort: () => false,
+				sampleStep: vi.fn(async () => ({ response })),
+				commitResponse: vi.fn(async () => (phase === "commit" ? { error: fault } : undefined)),
+				executeEffects: vi.fn(async () => ({ error: fault })),
+				onStepComplete: vi.fn(async () => {
+					if (secondaryFaults) throw new Error("Secondary completion fault.")
+				}),
+				selectContinuation: vi.fn(),
+				selectRecovery: vi.fn(),
+				releaseStep: vi.fn(() => {
+					if (secondaryFaults) throw new Error("Secondary cleanup fault.")
+				}),
+			}
+
+			expect(await new AgentTurnEngine(host).run("first")).toEqual({
+				status: "failed",
+				steps: 1,
+				response,
+				reason: fault.message,
+				error: fault,
+			})
+			expect(host.onStepComplete).toHaveBeenCalledOnce()
+			expect(host.releaseStep).toHaveBeenCalledOnce()
+			expect(host.selectContinuation).not.toHaveBeenCalled()
+			expect(host.selectRecovery).not.toHaveBeenCalled()
+			if (phase === "commit") expect(host.executeEffects).not.toHaveBeenCalled()
+			else expect(host.executeEffects).toHaveBeenCalledOnce()
+		},
+	)
+
 	it.each(["failed", "aborted", "incomplete"] as const)(
 		"retains a sampled %s boundary when transcript commit also throws",
 		async (status) => {
@@ -240,4 +303,82 @@ describe("AgentTurnEngine staged fault drains", () => {
 			expect(visited.filter((name) => name === "release")).toHaveLength(1)
 		},
 	)
+})
+
+describe.each(["legacy", "staged"] as const)("AgentTurnEngine %s error-only results", (adapter) => {
+	it.each([
+		["sample", false],
+		["sample", true],
+		["callback", false],
+		["callback", true],
+	] as const)(
+		"does not complete after an error-only %s with a completed provider outcome: %s",
+		async (phase, completed) => {
+			const error = new Error(`${phase} failed`)
+			const capturedResponse: AgentResponse = {
+				...response,
+				...(completed ? { outcome: { status: "completed" } as const } : {}),
+			}
+			const callbacks = {
+				shouldAbort: () => false,
+				onStepComplete: vi.fn(async () => (phase === "callback" ? { error } : undefined)),
+				admitCompletion: vi.fn(),
+			}
+			const sample = async () => ({ response: capturedResponse, ...(phase === "sample" ? { error } : {}) })
+			const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+				adapter === "legacy"
+					? {
+							...callbacks,
+							runStep: vi.fn(async () => ({ ...(await sample()), nextInput: "complete" as const })),
+						}
+					: {
+							...callbacks,
+							sampleStep: vi.fn(sample),
+							commitResponse: vi.fn(),
+							executeEffects: vi.fn(),
+							selectContinuation: vi.fn(),
+							releaseStep: vi.fn(),
+						}
+
+			expect(await new AgentTurnEngine(host).run("first")).toEqual({
+				status: "failed",
+				steps: 1,
+				response: capturedResponse,
+				reason: error.message,
+				error,
+			})
+			expect(host.onStepComplete).toHaveBeenCalledExactlyOnceWith(capturedResponse, 1)
+			expect(host.admitCompletion).not.toHaveBeenCalled()
+			if (host.sampleStep) {
+				expect(host.selectContinuation).not.toHaveBeenCalled()
+				expect(host.releaseStep).toHaveBeenCalledOnce()
+				if (phase === "sample") expect(host.executeEffects).not.toHaveBeenCalled()
+			}
+		},
+	)
+
+	it("preserves cancellation after an error-only completion callback", async () => {
+		let aborted = false
+		const error = new Error("Completion callback cancelled.")
+		const callbacks = {
+			shouldAbort: () => aborted,
+			onStepComplete: vi.fn(async () => {
+				aborted = true
+				return { error }
+			}),
+			admitCompletion: vi.fn(),
+		}
+		const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+			adapter === "legacy"
+				? { ...callbacks, runStep: async () => ({ response, nextInput: "complete" }) }
+				: { ...callbacks, sampleStep: async () => ({ response }), releaseStep: vi.fn() }
+
+		expect(await new AgentTurnEngine(host).run("first")).toMatchObject({
+			status: "aborted",
+			steps: 1,
+			reason: error.message,
+		})
+		expect(host.admitCompletion).not.toHaveBeenCalled()
+		if (host.sampleStep) expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
 })

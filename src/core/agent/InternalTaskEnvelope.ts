@@ -132,7 +132,7 @@ const ROLE_POLICY_CEILINGS: Record<InternalAgentKind, Pick<InternalTaskPolicy, (
 
 const isWithin = (root: string, candidate: string): boolean => {
 	const relative = path.relative(path.resolve(root), path.resolve(candidate))
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
 function validateScope(

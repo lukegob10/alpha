@@ -53,6 +53,10 @@ describe("seek-sequence", () => {
 			expect(seekSequence(lines, pattern, 0, true)).toBe(2)
 		})
 
+		it.each([2, 3])("does not match consumed lines at EOF when start is %s", (start) => {
+			expect(seekSequence(["head", "tail"], ["tail"], start, true)).toBeNull()
+		})
+
 		it("should handle Unicode normalization - dashes", () => {
 			// EN DASH (\u2013) and NON-BREAKING HYPHEN (\u2011) → ASCII '-'
 			const lines = toVec(["hello \u2013 world \u2011 test"])

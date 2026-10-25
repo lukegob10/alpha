@@ -81,13 +81,6 @@ function referencesOf<Handler, Executable>(
 	input: BuildAgentStepContextInput<Handler, Executable> | BuildAgentStepInput<Handler, Executable>,
 	defaults: AgentStepRuntimeInput<Handler, Executable> | undefined,
 ): AgentStepRuntimeInput<Handler, Executable> | AgentStepRuntime<Handler, Executable> | undefined {
-	if (isBuildAgentStepInput(input)) {
-		if (input.runtime !== undefined) return input.runtime
-		if (input.handler !== undefined || input.executables !== undefined) {
-			return { handler: input.handler, executables: input.executables }
-		}
-		return defaults
-	}
 	if (input.runtime !== undefined) return input.runtime
 	if (input.handler !== undefined || input.executables !== undefined) {
 		return { handler: input.handler, executables: input.executables }

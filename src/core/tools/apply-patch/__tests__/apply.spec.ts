@@ -150,6 +150,27 @@ describe("apply-patch apply", () => {
 			expect(result).toBe("foo\nbar\nBAZ\nqux\n")
 		})
 
+		it.each([false, true])("rejects EOF chunks that reuse consumed source lines (sentinel: %s)", (sentinel) => {
+			const chunks: UpdateFileChunk[] = [
+				{
+					changeContext: null,
+					oldLines: ["tail"],
+					newLines: ["first"],
+					isEndOfFile: false,
+				},
+				{
+					changeContext: null,
+					oldLines: sentinel ? ["tail", ""] : ["tail"],
+					newLines: sentinel ? ["second", ""] : ["second"],
+					isEndOfFile: true,
+				},
+			]
+
+			expect(() => applyChunksToContent("head\ntail\n", "test.txt", chunks)).toThrow(
+				"Failed to find expected lines",
+			)
+		})
+
 		it("should handle interleaved changes", () => {
 			const original = "a\nb\nc\nd\ne\nf\n"
 			const chunks: UpdateFileChunk[] = [

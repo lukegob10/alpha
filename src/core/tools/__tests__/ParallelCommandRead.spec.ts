@@ -395,6 +395,14 @@ describe("command-read classification and session execution boundary", () => {
 		},
 	)
 
+	it.each(["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"])(
+		"does not admit inherited object names as Git subcommands: %s",
+		async (subcommand) => {
+			await expect(classifyCommandRead(`git ${subcommand}`, root, root)).resolves.toBeUndefined()
+			await expect(classifyCommandRead(`git ${subcommand} --short`, root, root)).resolves.toBeUndefined()
+		},
+	)
+
 	it.each([
 		"git status --short",
 		"git diff --stat",

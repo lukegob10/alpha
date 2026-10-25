@@ -106,15 +106,13 @@ export class SubagentNicknameRegistry {
 
 		const rootAssignments = this.assignedByRoot.get(rootTaskId) ?? new Set<string>()
 		const unavailable = new Set([...rootAssignments, ...Array.from(reserved, (name) => name.toLowerCase())])
-		const requested = new Set<string>()
 		for (const preferredName of preferredNames) {
 			const preferred = preferredName?.trim()
 			if (!preferred) continue
 			const key = preferred.toLowerCase()
-			if (unavailable.has(key) || requested.has(key)) {
+			if (unavailable.has(key)) {
 				throw new Error(`Sub-agent task_name "${preferred}" is already in use`)
 			}
-			requested.add(key)
 			unavailable.add(key)
 		}
 		const assigned: string[] = []

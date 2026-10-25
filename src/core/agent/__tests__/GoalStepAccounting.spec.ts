@@ -40,6 +40,19 @@ describe("goal receipts from existing provider usage", () => {
 		expect(goalResponseTokens(response, false)).toBe(140)
 	})
 
+	it("does not lose billable tokens when adding cached input would exceed the safe integer range", () => {
+		const response = createAgentResponse([
+			{
+				type: "usage",
+				inputTokens: Number.MAX_SAFE_INTEGER - 1,
+				cacheReadTokens: Number.MAX_SAFE_INTEGER,
+				cacheWriteTokens: 1,
+				outputTokens: 0,
+			},
+		])
+		expect(goalResponseTokens(response, false)).toBe(Number.MAX_SAFE_INTEGER)
+	})
+
 	it.each([-1, NaN, Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid counter %s", (inputTokens) => {
 		expect(() =>
 			goalResponseTokens(createAgentResponse([{ type: "usage", inputTokens, outputTokens: 0 }])),

@@ -153,6 +153,29 @@ describe("managed worker path presentation", () => {
 		}
 	})
 
+	it("allows scoped descendant names beginning with dots while rejecting parent traversal", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-dot-path-"))
+		try {
+			const worktree = path.join(tempRoot, "worktree")
+			fs.mkdirSync(path.join(worktree, "..notes"), { recursive: true })
+			fs.writeFileSync(path.join(worktree, "..notes", "existing.ts"), "existing\n")
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: worktree,
+				subagentWriteScope: ["..notes"],
+				subagentAuthority: { role: "worker" as const, fileWriteScope: [] as string[] },
+			}
+
+			expect(isWorkerWritePathAllowed(worker, "..notes/existing.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, "..notes/new.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, "../..notes/outside.ts")).toBe(false)
+			expect(isWorkerWritePathAllowed(worker, ".")).toBe(false)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
 	it("rejects a junction escape from worker write-scope", () => {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-junction-"))
 		try {

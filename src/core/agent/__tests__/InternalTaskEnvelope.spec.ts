@@ -28,6 +28,50 @@ const base = {
 }
 
 describe("internal task envelopes", () => {
+	it.each(["..notes", "..notes/file.ts", ".../file.ts"])("permits descendant path %s", (allowedPath) => {
+		const envelope = buildInternalTaskEnvelope({ ...base, allowedPaths: [allowedPath] })
+		expect(envelope.scope.allowedPaths).toEqual([path.resolve(workspaceRoot, allowedPath)])
+	})
+
+	it("permits a child root beginning with dots within the parent workspace", () => {
+		const childRoot = path.join(workspaceRoot, "..notes")
+		const envelope = buildInternalTaskEnvelope({
+			...base,
+			workspaceRoots: [childRoot],
+			parentWorkspaceRoots: [workspaceRoot],
+			allowedPaths: ["file.ts"],
+		})
+		expect(envelope.scope.workspaceRoots).toEqual([childRoot])
+		expect(envelope.scope.allowedPaths).toEqual([path.join(childRoot, "file.ts")])
+	})
+
+	it("permits a dotted descendant within a narrower parent write scope", () => {
+		const envelope = buildInternalTaskEnvelope({
+			...base,
+			parentAllowedPaths: ["src"],
+			allowedPaths: ["src/..notes/file.ts"],
+		})
+		expect(envelope.scope.allowedPaths).toEqual([path.join(workspaceRoot, "src/..notes/file.ts")])
+	})
+
+	it.each(["..", "../outside/file.ts", "../workspace-other/file.ts"])(
+		"rejects workspace traversal through %s",
+		(allowedPath) => {
+			expect(() => buildInternalTaskEnvelope({ ...base, allowedPaths: [allowedPath] })).toThrow(
+				"outside parent scope",
+			)
+		},
+	)
+
+	it.each(["src/../private/file.ts", "src-sibling/file.ts"])(
+		"rejects escape from a narrower parent write scope through %s",
+		(allowedPath) => {
+			expect(() =>
+				buildInternalTaskEnvelope({ ...base, parentAllowedPaths: ["src"], allowedPaths: [allowedPath] }),
+			).toThrow("widens parent write scope")
+		},
+	)
+
 	it("builds deterministic diagnostic, implementation, and verification policies", () => {
 		const diagnostic = buildInternalTaskEnvelope({
 			...base,

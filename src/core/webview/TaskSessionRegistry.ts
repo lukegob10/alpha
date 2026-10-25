@@ -465,31 +465,25 @@ export class TaskSessionRegistry {
 		}
 		const transcriptRevision = ++this.nextTranscriptRevision
 		const pendingSnapshot = options.lifecycleSnapshot ?? this.lifecycleSnapshots.get(task.taskId)
-		const projection = pendingSnapshot
-			? projectAgentLifecycleSnapshot(pendingSnapshot, {
-					taskAsk: task.taskAsk,
+		const projection = this.lifecycleDegradedTaskIds.has(task.taskId)
+			? projectAlphaMessageStatus({
 					messages: task.clineMessages,
+					taskAsk: task.taskAsk,
+					taskStatus: task.taskStatus,
 				})
-			: undefined
+			: pendingSnapshot
+				? projectAgentLifecycleSnapshot(pendingSnapshot, {
+						taskAsk: task.taskAsk,
+						messages: task.clineMessages,
+					})
+				: undefined
 		this.sessions.set(task.taskId, {
 			task,
 			owner: this,
 			transcriptRevision,
-			lifecycle: this.lifecycleDegradedTaskIds.has(task.taskId)
-				? projectAlphaMessageStatus({
-						messages: task.clineMessages,
-						taskAsk: task.taskAsk,
-						taskStatus: task.taskStatus,
-					}).lifecycle
-				: (projection?.lifecycle ?? TaskLifecycleState.Initializing),
+			lifecycle: projection?.lifecycle ?? TaskLifecycleState.Initializing,
 			lastActivityAt: Date.now(),
-			waitingReason: this.lifecycleDegradedTaskIds.has(task.taskId)
-				? projectAlphaMessageStatus({
-						messages: task.clineMessages,
-						taskAsk: task.taskAsk,
-						taskStatus: task.taskStatus,
-					}).waitingReason
-				: projection?.waitingReason,
+			waitingReason: projection?.waitingReason,
 			lifecycleSnapshot: pendingSnapshot ? structuredClone(pendingSnapshot) : undefined,
 		})
 		if (pendingSnapshot) this.lifecycleSnapshots.set(task.taskId, structuredClone(pendingSnapshot))

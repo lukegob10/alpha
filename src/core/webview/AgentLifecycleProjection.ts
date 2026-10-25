@@ -278,19 +278,12 @@ export class AgentLifecycleProjector {
 				})
 				return result("resync_required", { taskId: event.taskId, event, request })
 			}
-			baseSnapshot = createAgentLifecycleSnapshot({
-				taskId: event.taskId,
-				runId: event.runId,
-				turnId: event.turnId,
-				phase: eventPhase(event),
-			})
-			previousSnapshot = undefined
 		}
 
 		// A new run can legitimately restart sequence numbers after a terminal
 		// turn. An active turn changing identity is a conflict and requires a
 		// snapshot rather than an inferred reset.
-		if (baseSnapshot.runId !== event.runId || baseSnapshot.turnId !== event.turnId) {
+		if (baseSnapshot && (baseSnapshot.runId !== event.runId || baseSnapshot.turnId !== event.turnId)) {
 			if (event.sequence !== 1 || baseSnapshot.status === "in_progress") {
 				const request = this.markResync(event.taskId, {
 					taskId: event.taskId,
@@ -303,6 +296,10 @@ export class AgentLifecycleProjector {
 				})
 				return result("resync_required", { taskId: event.taskId, event, request })
 			}
+			baseSnapshot = undefined
+		}
+
+		if (!baseSnapshot) {
 			baseSnapshot = createAgentLifecycleSnapshot({
 				taskId: event.taskId,
 				runId: event.runId,

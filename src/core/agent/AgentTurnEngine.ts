@@ -118,14 +118,21 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
+function normalizePhaseFailure(phase: AgentTurnPhaseResult): AgentTurnPhaseResult {
+	// An omitted status cannot turn a reported host error into assistant completion.
+	if (phase.status !== undefined || phase.error === undefined) return phase
+	return { ...phase, status: "failed", reason: phase.reason ?? errorMessage(phase.error) }
+}
+
 function mergePhaseResult(current: AgentTurnPhaseResult, next: AgentTurnPhaseResult | void): AgentTurnPhaseResult {
 	// Completion and cleanup still run after a fault, but cannot replace the
 	// first terminal phase or its diagnostics with a secondary failure.
 	if (!next || (current.status && current.status !== "completed")) return current
+	next = normalizePhaseFailure(next)
 	return {
 		status: next.status ?? current.status,
 		reason: next.reason ?? current.reason,
-		error: next.error ?? current.error,
+		error: next.error !== undefined ? next.error : current.error,
 	}
 }
 
@@ -145,7 +152,7 @@ function outcomeStatus(response: AgentResponse): AgentTurnStepStatus | undefined
 function captureResponsePhase(phase: AgentTurnPhaseResult, response: AgentResponse): AgentTurnPhaseResult {
 	if (phase.status && phase.status !== "completed") return phase
 	const status = outcomeStatus(response)
-	if (!status) return phase
+	if (!status) return normalizePhaseFailure(phase)
 	return {
 		...phase,
 		status,
@@ -232,6 +239,20 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 		return input
 	}
 
+	private canCompleteImplicitly(
+		response: AgentResponse,
+		requiresContinuation: boolean | undefined,
+		step: number,
+	): boolean {
+		return (
+			response.toolCalls.length === 0 &&
+			response.text.trim().length > 0 &&
+			!requiresContinuation &&
+			!response.outcome?.requiresContinuation &&
+			(this.host.canCompleteWithoutTools?.(response, step) ?? true)
+		)
+	}
+
 	private async runLegacy(initialInput: TInput): Promise<AgentTurnOutcome> {
 		let input = initialInput
 		let steps = 0
@@ -296,13 +317,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					)
 				}
 
-				const isVisibleNoToolResponse =
-					result.response.toolCalls.length === 0 && result.response.text.trim().length > 0
-				const completedWithoutTools =
-					isVisibleNoToolResponse &&
-					!result.requiresContinuation &&
-					!result.response.outcome?.requiresContinuation &&
-					(this.host.canCompleteWithoutTools?.(result.response, steps) ?? true)
+				const completedWithoutTools = this.canCompleteImplicitly(
+					result.response,
+					result.requiresContinuation,
+					steps,
+				)
 
 				const requiresContinuation =
 					result.requiresContinuation || result.response.outcome?.requiresContinuation
@@ -472,13 +491,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 									continuation.error,
 								)
 							} else {
-								const isVisibleNoToolResponse =
-									sample.response.toolCalls.length === 0 && sample.response.text.trim().length > 0
-								const completedWithoutTools =
-									isVisibleNoToolResponse &&
-									!continuation.requiresContinuation &&
-									!sample.response.outcome?.requiresContinuation &&
-									(this.host.canCompleteWithoutTools?.(sample.response, steps) ?? true)
+								const completedWithoutTools = this.canCompleteImplicitly(
+									sample.response,
+									continuation.requiresContinuation,
+									steps,
+								)
 								const requiresContinuation =
 									continuation.requiresContinuation || sample.response.outcome?.requiresContinuation
 								if (continuation.nextInput === "complete" && requiresContinuation) {

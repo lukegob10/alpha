@@ -195,13 +195,6 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			return
 		}
 
-		if (!(task.api.getModel().info.supportsImages ?? false)) {
-			task.didToolFailInCurrentTurn = true
-			callbacks.setResultMetadata?.({ status: "error" })
-			callbacks.pushToolResult("Error: the current model does not support image input.")
-			return
-		}
-
 		await this.executeNew([{ path: imagePath }], task, callbacks, false, true)
 	}
 
@@ -215,7 +208,15 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		batch: boolean,
 		imageOnly = false,
 	): Promise<void> {
-		const supportsImages = task.api.getModel().info.supportsImages ?? false
+		// Keep the step's capability through approval and publication. Legacy direct
+		// callers without a captured callback resolve their current model once.
+		const supportsImages = callbacks.supportsImages ?? task.api.getModel().info.supportsImages ?? false
+		if (imageOnly && !supportsImages) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			callbacks.pushToolResult("Error: the current model does not support image input.")
+			return
+		}
 		const fileResults: FileResult[] = entries.map((entry) => {
 			const error = this.validateLegacyEntry(entry) ?? this.validateNewParams(entry)
 			if (error) {
@@ -374,7 +375,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				task.didToolFailInCurrentTurn = true
 			}
 
-			this.buildAndPushResult(task, fileResults, callbacks)
+			this.buildAndPushResult(task, fileResults, callbacks, supportsImages)
 			const observations = fileResults
 				.filter((result) => result.status === "approved" && result.observedContent !== undefined)
 				.map((result) => readProgress(path.resolve(task.cwd, result.path), result.observedContent!))
@@ -407,7 +408,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 			task.didToolFailInCurrentTurn = true
 			callbacks.setResultMetadata?.({ status: "error" })
 
-			this.buildAndPushResult(task, fileResults, callbacks)
+			this.buildAndPushResult(task, fileResults, callbacks, supportsImages)
 		}
 	}
 
@@ -806,7 +807,12 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 	/**
 	 * Build and push the final result to the tool output.
 	 */
-	private buildAndPushResult(task: Task, fileResults: FileResult[], callbacks: ToolCallbacks): void {
+	private buildAndPushResult(
+		task: Task,
+		fileResults: FileResult[],
+		callbacks: ToolCallbacks,
+		supportsImages: boolean,
+	): void {
 		const { pushToolResult } = callbacks
 
 		const fileImageUrls = fileResults.filter((r) => r.imageDataUrl).map((r) => r.imageDataUrl as string)
@@ -861,9 +867,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		})
 		const finalResult = sections.join("\n\n---\n\n")
 
-		const allImages = [...feedbackImages, ...fileImageUrls]
-		const finalModelSupportsImages = task.api.getModel().info.supportsImages ?? false
-		const imagesToInclude = finalModelSupportsImages ? allImages : []
+		const imagesToInclude = supportsImages ? [...feedbackImages, ...fileImageUrls] : []
 
 		if (statusMessage || imagesToInclude.length > 0) {
 			const result = formatResponse.toolResult(

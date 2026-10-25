@@ -1073,12 +1073,15 @@ function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (typeof value !== "object") return String(value)
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen))
-	return Object.fromEntries(
-		Object.keys(value as Record<string, unknown>)
-			.sort()
-			.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => canonicalize(entry, seen))
+		: Object.fromEntries(
+				Object.keys(value as Record<string, unknown>)
+					.sort()
+					.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
+			)
+	seen.delete(value)
+	return result
 }
 
 const SECRET_KEY_PATTERN =
@@ -1111,11 +1114,14 @@ function redactLifecycleValue(
 	if (value instanceof Date) return value.toISOString()
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen))
-	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-			entryKey,
-			redactLifecycleValue(entryValue, maxValueLength, seen, entryKey),
-		]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen))
+		: Object.fromEntries(
+				Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+					entryKey,
+					redactLifecycleValue(entryValue, maxValueLength, seen, entryKey),
+				]),
+			)
+	seen.delete(value)
+	return result
 }

@@ -13,15 +13,30 @@ function isRelativePathOutsideRoot(relativePath: string): boolean {
 export function resolvePathWithExistingAncestor(candidatePath: string): string {
 	const absolutePath = path.resolve(candidatePath)
 	const missingSegments: string[] = []
+	const followedLinks = new Set<string>()
 	let currentPath = absolutePath
 
 	while (true) {
 		try {
 			return path.join(fs.realpathSync(currentPath), ...missingSegments.reverse())
-		} catch {
+		} catch (error) {
+			// realpath cannot resolve dangling links. Inspect the link itself before
+			// treating it as a missing suffix, or an outside write target looks local.
+			const metadata = fs.lstatSync(currentPath, { throwIfNoEntry: false })
+			if (metadata?.isSymbolicLink()) {
+				const linkKey = process.platform === "win32" ? currentPath.toLowerCase() : currentPath
+				if (followedLinks.has(linkKey) || followedLinks.size >= 40) {
+					throw new Error("Too many symbolic links while resolving workspace path")
+				}
+				followedLinks.add(linkKey)
+				currentPath = path.resolve(path.dirname(currentPath), fs.readlinkSync(currentPath))
+				continue
+			}
+			if (metadata) throw error
+
 			const parentPath = path.dirname(currentPath)
 			if (parentPath === currentPath) {
-				return absolutePath
+				throw error
 			}
 
 			missingSegments.push(path.basename(currentPath))
@@ -39,10 +54,14 @@ export function isPathWithinRoot(rootPath: string, candidatePath: string): boole
 		return false
 	}
 
-	const canonicalRoot = resolvePathWithExistingAncestor(absoluteRoot)
-	const canonicalCandidate = resolvePathWithExistingAncestor(absoluteCandidate)
-	const canonicalRelative = path.relative(canonicalRoot, canonicalCandidate)
-	return !isRelativePathOutsideRoot(canonicalRelative)
+	try {
+		const canonicalRoot = resolvePathWithExistingAncestor(absoluteRoot)
+		const canonicalCandidate = resolvePathWithExistingAncestor(absoluteCandidate)
+		const canonicalRelative = path.relative(canonicalRoot, canonicalCandidate)
+		return !isRelativePathOutsideRoot(canonicalRelative)
+	} catch {
+		return false
+	}
 }
 
 export function getPathRelativeToRoot(rootPath: string, candidatePath: string): string | undefined {

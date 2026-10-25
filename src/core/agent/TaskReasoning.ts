@@ -67,24 +67,14 @@ export function resolveTaskReasoning(
 	const requested = preference ?? DEFAULT_PREFERENCE
 	const capabilities = getTaskReasoningCapabilities(configuration, model)
 
-	if (requested.kind === "default") {
-		const defaultResolution = resolveDefaultPreference(capabilities, configuration, model)
-		return {
-			// Preserve object identity when the profile already expresses the
-			// adapter's default. Task construction uses this to avoid rebuilding
-			// handlers and their host listeners.
-			configuration: applyRuntimeChanges(configuration, defaultResolution.patch),
-			state: {
-				requested,
-				effective: defaultResolution.effective,
-				capabilities,
-				...(defaultResolution.fallbackReason ? { fallbackReason: defaultResolution.fallbackReason } : {}),
-			},
-		}
-	}
-
-	const resolution = resolvePreference(requested, capabilities, configuration, model)
+	const resolution =
+		requested.kind === "default"
+			? resolveDefaultPreference(capabilities, configuration, model)
+			: resolvePreference(requested, capabilities, configuration, model)
 	return {
+		// Preserve object identity when the profile already expresses the
+		// adapter's default. Task construction uses this to avoid rebuilding
+		// handlers and their host listeners.
 		configuration: applyRuntimeChanges(configuration, resolution.patch),
 		state: {
 			requested,

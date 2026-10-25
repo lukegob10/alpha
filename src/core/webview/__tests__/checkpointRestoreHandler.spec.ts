@@ -232,6 +232,37 @@ describe("checkpointRestoreHandler", () => {
 			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalled()
 		})
 
+		it.each(["delete", "edit"] as const)(
+			"preserves history when the checkpoint is unavailable for %s",
+			async (operation) => {
+				const messages = mockAlphaTask.clineMessages
+				const originalMessages = structuredClone(messages)
+				mockAlphaTask.checkpointRestore.mockResolvedValue(false)
+
+				await expect(
+					handleCheckpointRestoreOperation({
+						provider: mockProvider,
+						currentAlpha: mockAlphaTask,
+						messageTs: 3,
+						messageIndex: 2,
+						checkpoint: { hash: "abc123" },
+						operation,
+						editData:
+							operation === "edit"
+								? { editedContent: "Replacement", apiConversationHistoryIndex: 2 }
+								: undefined,
+					}),
+				).rejects.toThrow("The checkpoint is no longer available")
+
+				expect(mockAlphaTask.clineMessages).toBe(messages)
+				expect(mockAlphaTask.clineMessages).toEqual(originalMessages)
+				expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+				expect(saveTaskMessages).not.toHaveBeenCalled()
+				expect(mockProvider.getTaskWithId).not.toHaveBeenCalled()
+				expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+			},
+		)
+
 		it("should reinitialize task with correct history item after delete", async () => {
 			const expectedHistoryItem = {
 				id: "test-task-123",
@@ -286,7 +317,8 @@ describe("checkpointRestoreHandler", () => {
 
 		it("should handle errors gracefully", async () => {
 			// Mock checkpoint restore to throw an error
-			mockAlphaTask.checkpointRestore.mockRejectedValue(new Error("Checkpoint restore failed"))
+			const restoreError = new Error("Checkpoint restore failed")
+			mockAlphaTask.checkpointRestore.mockRejectedValue(restoreError)
 
 			// The function should throw and show an error message
 			await expect(
@@ -298,7 +330,9 @@ describe("checkpointRestoreHandler", () => {
 					checkpoint: { hash: "abc123" },
 					operation: "delete",
 				}),
-			).rejects.toThrow("Checkpoint restore failed")
+			).rejects.toBe(restoreError)
+			expect(saveTaskMessages).not.toHaveBeenCalled()
+			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
 
 			// Verify error message was shown
 			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(

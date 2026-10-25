@@ -18913,33 +18913,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return
 		}
 
-		if (!interruptionSignal) {
-			await delay(delayMs)
-			return
-		}
-
-		await new Promise<void>((resolve, reject) => {
-			const cleanup = () => interruptionSignal.removeEventListener("abort", onAbort)
-			const onAbort = () => {
-				cleanup()
-				reject(interruptionSignal.reason ?? new Error("Request cancelled by user"))
-			}
-			if (interruptionSignal.aborted) {
-				onAbort()
-				return
-			}
-			interruptionSignal.addEventListener("abort", onAbort, { once: true })
-			delay(delayMs).then(
-				() => {
-					cleanup()
-					resolve()
-				},
-				(error) => {
-					cleanup()
-					reject(error)
-				},
-			)
-		})
+		await delayWithAbort(delayMs, interruptionSignal)
 	}
 
 	private async getProviderRateLimitLaneKey(stateOverride?: TaskRequestState): Promise<string> {

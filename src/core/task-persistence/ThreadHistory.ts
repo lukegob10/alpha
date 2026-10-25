@@ -11,6 +11,7 @@ import type {
 
 import type { ApiMessage } from "./apiMessages"
 import { parseProposedPlan } from "../../shared/plan-mode"
+import { getToolCallId, getToolResultId } from "../../utils/tool-id"
 
 type HistoryTurn = {
 	messages: ApiMessage[]
@@ -62,7 +63,8 @@ function lastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): num
 }
 
 function isFinalResponse(message: ApiMessage, completedText: ReadonlySet<string>): boolean {
-	if (message.role !== "assistant" || blocks(message).some((block) => block.type === "tool_use")) return false
+	if (message.role !== "assistant" || blocks(message).some((block) => getToolCallId(block) !== undefined))
+		return false
 	const lastText = message.agentResponseItems
 		?.slice()
 		.reverse()
@@ -171,13 +173,10 @@ function lifecycleOwners(
 			...(message.agentResponseItems ?? []).flatMap((item) =>
 				item.type === "text" && item.id ? [`message:${item.id}`] : [],
 			),
-			...blocks(message).flatMap((block) =>
-				block.type === "tool_use" && typeof block.id === "string"
-					? [`tool:${block.id}`]
-					: block.type === "tool_result" && typeof block.tool_use_id === "string"
-						? [`tool:${block.tool_use_id}`]
-						: [],
-			),
+			...blocks(message).flatMap((block) => {
+				const toolId = getToolCallId(block) ?? getToolResultId(block)
+				return toolId !== undefined ? [`tool:${toolId}`] : []
+			}),
 		]
 		const matched = new Set(ids.flatMap((id) => [...(anchors.get(id) ?? [])]))
 		const [matchedOwner] = matched
@@ -282,9 +281,10 @@ function visibleItems(turn: HistoryTurn, options: ThreadReadOptions): ThreadVisi
 	const outputLimit = options.maxOutputCharsPerItem ?? 2_000
 	const completedTools = new Set(
 		turn.messages.flatMap((message) =>
-			blocks(message).flatMap((block) =>
-				block.type === "tool_result" && typeof block.tool_use_id === "string" ? [block.tool_use_id] : [],
-			),
+			blocks(message).flatMap((block) => {
+				const resultId = getToolResultId(block)
+				return resultId !== undefined ? [resultId] : []
+			}),
 		),
 	)
 	for (let index = 0; index < turn.messages.length; index++) {
@@ -305,18 +305,20 @@ function visibleItems(turn: HistoryTurn, options: ThreadReadOptions): ThreadVisi
 			}
 		}
 		for (const block of blocks(message)) {
-			if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string") {
-				const hasResult = completedTools.has(block.id)
+			const callId = getToolCallId(block)
+			const resultId = getToolResultId(block)
+			if (callId !== undefined && typeof block.name === "string") {
+				const hasResult = completedTools.has(callId)
 				items.push({
 					type: "toolCall",
-					id: block.id,
+					id: callId,
 					name: block.name,
 					status: hasResult ? "completed" : "inProgress",
 				})
-			} else if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+			} else if (resultId !== undefined) {
 				items.push({
 					type: "toolResult",
-					id: block.tool_use_id,
+					id: resultId,
 					status: block.is_error === true ? "error" : "completed",
 					...(options.includeOutputs ? { text: limitText(textContent(block.content), outputLimit) } : {}),
 				})
@@ -402,7 +404,8 @@ export function forkTaskHistory(
 		const candidates = new Map<string, { indices: number[]; next: number }>()
 		for (let index = 0; index < apiMessages.length; index++) {
 			const message = apiMessages[index]
-			if (message.role !== "assistant" || blocks(message).some((block) => block.type === "tool_use")) continue
+			if (message.role !== "assistant" || blocks(message).some((block) => getToolCallId(block) !== undefined))
+				continue
 			const text = normalize(textContent(message.content))
 			if (!text) continue
 			const entry = candidates.get(text) ?? { indices: [], next: 0 }
@@ -426,8 +429,10 @@ export function forkTaskHistory(
 	let safeEnd = 0
 	for (let index = 0; index < end; index++) {
 		for (const block of blocks(apiMessages[index])) {
-			if (block.type === "tool_use" && typeof block.id === "string") pending.add(block.id)
-			if (block.type === "tool_result" && typeof block.tool_use_id === "string") pending.delete(block.tool_use_id)
+			const callId = getToolCallId(block)
+			const resultId = getToolResultId(block)
+			if (callId !== undefined) pending.add(callId)
+			if (resultId !== undefined) pending.delete(resultId)
 		}
 		if (pending.size === 0) safeEnd = index + 1
 	}

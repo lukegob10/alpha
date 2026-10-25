@@ -110,13 +110,15 @@ function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (typeof value !== "object") return String(value)
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen))
-
-	return Object.fromEntries(
-		Object.keys(value as Record<string, unknown>)
-			.sort()
-			.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => canonicalize(entry, seen))
+		: Object.fromEntries(
+				Object.keys(value as Record<string, unknown>)
+					.sort()
+					.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
+			)
+	seen.delete(value)
+	return result
 }
 
 /** Stable content identity used only for replay/conflict detection. */

@@ -32,7 +32,7 @@ export interface ResolveImageMentionsResult {
 
 function isPathWithinCwd(absPath: string, cwd: string): boolean {
 	const rel = path.relative(cwd, absPath)
-	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
+	return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
 }
 
 function isImagePathMention(mention: string): boolean {
@@ -50,17 +50,6 @@ export function textHasImageMention(text: string): boolean {
 		if (mention && isImagePathMention(mention)) return true
 	}
 	return false
-}
-
-function dedupePreserveOrder(values: string[]): string[] {
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const v of values) {
-		if (seen.has(v)) continue
-		seen.add(v)
-		result.push(v)
-	}
-	return result
 }
 
 /**
@@ -157,6 +146,6 @@ export async function resolveImageMentions({
 		}
 	}
 
-	const merged = dedupePreserveOrder([...existingImages, ...newImages]).slice(0, MAX_IMAGES_PER_MESSAGE)
+	const merged = [...new Set([...existingImages, ...newImages])].slice(0, MAX_IMAGES_PER_MESSAGE)
 	return { text, images: merged }
 }

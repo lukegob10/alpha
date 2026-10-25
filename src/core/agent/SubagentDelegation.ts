@@ -107,12 +107,14 @@ export function normalizeSpawnAgentRequest(input: unknown): SpawnAgentRequest {
 	}
 
 	if ("message" in parsed.data) {
+		// Codex 970111f6cb62cc02fe36a82ea7d71b37a2889c97 treats numeric V2 values as full-history aliases.
+		// Legacy calls and persisted manifests retain their bounded numeric turn selection.
 		return {
 			source: "codex-v2",
 			task_name: parsed.data.task_name,
 			message: parsed.data.message,
 			agent_type: parsed.data.agent_type,
-			fork_turns: parsed.data.fork_turns ?? "all",
+			fork_turns: parsed.data.fork_turns === "none" ? "none" : "all",
 			...(parsed.data.model ? { model: parsed.data.model } : {}),
 			...(parsed.data.reasoning_effort ? { reasoning_effort: parsed.data.reasoning_effort } : {}),
 		}

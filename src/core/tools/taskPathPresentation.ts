@@ -172,7 +172,7 @@ export function isWorkerWritePathAllowed(
 		const realWorkspace = fsSync.realpathSync(task.cwd)
 		const realExisting = fsSync.realpathSync(existing)
 		const realRelative = path.relative(realWorkspace, realExisting)
-		if (realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))) {
+		if (realRelative !== ".." && !realRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(realRelative)) {
 			if (
 				task.historyWorkspacePath &&
 				fsSync.existsSync(task.historyWorkspacePath) &&

@@ -172,9 +172,9 @@ function freezeValue<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 /**
- * Deduplicate provider definitions by canonical name and retain only schemas
- * that have one executable descriptor. Unknown functions remain unavailable;
- * keeping them in an allow-list would create a model/runtime split.
+ * Retain one provider definition per executable or supported history name.
+ * Unknown functions remain unavailable; keeping them in an allow-list would
+ * create a model/runtime split.
  */
 function normalizeSchemas(
 	schemas: readonly TaskToolSchema[],
@@ -194,37 +194,21 @@ function normalizeSchemas(
 		const canonicalName = canonicalizeToolName(schema.function.name)
 		if (!registry.resolve(canonicalName)) continue
 		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(canonicalName)) continue
-		const existingIndex = indexes.get(canonicalName)
+		// Saved-history declarations keep their wire names but share one canonical executable.
+		const key =
+			schema.function.name === "discover_tools" ||
+			(includeAllToolsWithRestrictions && schema.function.name === "update_todo_list")
+				? schema.function.name
+				: canonicalName
+		const existingIndex = indexes.get(key)
 		if (existingIndex !== undefined) {
-			if (
-				canonicalName === "tool_search" &&
-				schema.function.name === "discover_tools" &&
-				result[existingIndex]?.type === "function" &&
-				result[existingIndex].function.name === "tool_search"
-			) {
-				// Keep the old provider-history name alongside tool_search when a saved task uses it.
-				result.push(schema)
-				continue
-			}
-			if (
-				includeAllToolsWithRestrictions &&
-				canonicalName === "update_plan" &&
-				schema.function.name === "update_todo_list" &&
-				result[existingIndex]?.type === "function" &&
-				result[existingIndex].function.name === "update_plan"
-			) {
-				// Restricted providers may need the old declaration to replay a saved
-				// update_todo_list call. Its name stays out of the callable allow-list.
-				result.push(schema)
-				continue
-			}
 			// Keep schema selection aligned with ToolRegistry.getSchemaMap: when a
 			// provider sends both an alias and its canonical spelling, the canonical
 			// definition is authoritative even if it appears later in the catalog.
 			if (source.type === "function" && source.function.name === canonicalName) result[existingIndex] = schema
 			continue
 		}
-		indexes.set(canonicalName, result.length)
+		indexes.set(key, result.length)
 		result.push(schema)
 	}
 	return result

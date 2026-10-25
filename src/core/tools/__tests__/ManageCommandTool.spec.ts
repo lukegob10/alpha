@@ -203,16 +203,25 @@ it("cannot operate another task's command", async () => {
 	expect(process.abort).not.toHaveBeenCalled()
 })
 
-it("rechecks process identity after approval", async () => {
-	const { task, callbacks, process, terminal } = harness()
-	callbacks.askApproval.mockImplementation(async () => {
-		terminal.taskId = "other"
-		return true
-	})
-	await manageCommandTool.execute({ execution_id: "execution", action: "stop" }, task, callbacks)
-	expect(process.abort).not.toHaveBeenCalled()
-	expect(callbacks.handleError).toHaveBeenCalled()
-})
+it.each(["task ownership", "process reference", "execution identity", "running status"] as const)(
+	"rechecks %s after approval",
+	async (change) => {
+		const { task, callbacks, process, terminal } = harness()
+		callbacks.askApproval.mockImplementation(async () => {
+			if (change === "task ownership") terminal.taskId = "other"
+			else if (change === "process reference") terminal.process = Object.assign(new EventEmitter(), process)
+			else if (change === "execution identity") process.executionId = "replacement"
+			else terminal.running = false
+			return true
+		})
+		await manageCommandTool.execute({ execution_id: "execution", action: "stop" }, task, callbacks)
+		expect(process.abort).not.toHaveBeenCalled()
+		expect(callbacks.handleError).toHaveBeenCalledWith(
+			"controlling command",
+			expect.objectContaining({ message: "Command changed while approval was pending" }),
+		)
+	},
+)
 
 it("rejects input if the same process receives a new execution identity during approval", async () => {
 	const { task, callbacks, process } = harness()
@@ -249,6 +258,35 @@ it("rechecks a session binding inside the mutation gate before writing input", a
 	expect(process.writeInput).not.toHaveBeenCalled()
 	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
 })
+
+it.each(["task ownership", "process reference", "execution identity", "running status"] as const)(
+	"rechecks %s inside the mutation gate before writing input",
+	async (change) => {
+		const { task, callbacks, process, terminal } = harness()
+		vi.spyOn(task.providerRef, "deref").mockReturnValue({
+			runWorkspaceMutation: async (_task: unknown, _label: string, run: () => Promise<void>) => {
+				if (change === "task ownership") terminal.taskId = "other"
+				else if (change === "process reference") terminal.process = Object.assign(new EventEmitter(), process)
+				else if (change === "execution identity") process.executionId = "replacement"
+				else terminal.running = false
+				await run()
+			},
+		} as never)
+
+		await manageCommandTool.execute(
+			{ execution_id: "execution", action: "input", input: "yes\n", timeout_ms: 0 },
+			task,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).toHaveBeenCalledExactlyOnceWith("command", "input command execution\nyes\n")
+		expect(process.writeInput).not.toHaveBeenCalled()
+		expect(callbacks.handleError).toHaveBeenCalledWith(
+			"controlling command",
+			expect.objectContaining({ message: "Command is no longer accepting input" }),
+		)
+	},
+)
 
 it("preserves denied input and sends only literal approved input", async () => {
 	const { task, callbacks, process } = harness()

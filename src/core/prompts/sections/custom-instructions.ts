@@ -570,16 +570,6 @@ async function loadAgentRulesFileFromDirectory(
 }
 
 /**
- * Load AGENTS.md or AGENT.md file from the project root if it exists
- * Checks for both AGENTS.md (standard) and AGENT.md (alternative) for compatibility
- *
- * @deprecated Use loadAllAgentRulesFiles for loading from all directories
- */
-async function loadAgentRulesFile(cwd: string): Promise<string> {
-	return loadAgentRulesFileFromDirectory(cwd, false, cwd, cwd, createProjectInstructionBudget())
-}
-
-/**
  * Load all AGENTS.md files from project root and optionally subdirectories with .roo folders
  * Returns combined content with clear path headers for each file
  *

@@ -37,10 +37,10 @@ export function goalResponseTokens(response: AgentResponse, inputIncludesCache =
 		const input = counter(item.inputTokens)
 		const cached = counter(item.cacheReadTokens)
 		const created = counter(item.cacheWriteTokens)
-		const normalizedInput = inputIncludesCache ? input : input + cached + created
+		const billableInput = inputIncludesCache ? Math.max(0, input - cached) : input + created
 		// Reasoning tokens are a subset of output tokens. Re-counting them would
 		// make provider choice change a goal's budget semantics.
-		total += Math.max(0, normalizedInput - cached) + counter(item.outputTokens)
+		total += billableInput + counter(item.outputTokens)
 		if (!Number.isSafeInteger(total)) throw new Error("Goal usage exceeds the supported counter range")
 	}
 	return total

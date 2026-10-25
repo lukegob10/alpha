@@ -4,6 +4,7 @@ import type {
 	AgentLifecycleToolCallItem,
 	AgentLifecycleToolResultItem,
 } from "@alpha-code/types"
+import { agentLifecycleEventSchema } from "@alpha-code/types"
 
 import {
 	AgentLifecycleReducerError,
@@ -104,6 +105,18 @@ describe("agent lifecycle reducer", () => {
 		expect(() => reduceAgentLifecycleEvent(first, event(1, "event-1", { phase: "planning" }))).toThrowError(
 			expect.objectContaining<Partial<AgentLifecycleReducerError>>({ code: "duplicate_event_conflict" }),
 		)
+	})
+
+	it("recognizes exact replay after shared argument values pass through JSON persistence", () => {
+		const shared = { path: "file.ts" }
+		const firstEvent: AgentLifecycleEvent = {
+			...baseEvent(1, "shared-arguments"),
+			type: "tool_call_accepted",
+			payload: { item: { ...toolCall(), arguments: { first: shared, second: shared } } },
+		}
+		const first = reduceAgentLifecycleEvent(createAgentLifecycleSnapshot(ids), firstEvent)
+		const persistedEvent = agentLifecycleEventSchema.parse(JSON.parse(JSON.stringify(firstEvent)))
+		expect(reduceAgentLifecycleEvent(first, persistedEvent)).toEqual(first)
 	})
 
 	it("tracks item transitions and keeps assistant streaming monotonic", () => {

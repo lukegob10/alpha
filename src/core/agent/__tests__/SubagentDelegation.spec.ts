@@ -226,6 +226,26 @@ describe("normalizeSpawnAgentRequest", () => {
 		})
 	})
 
+	it.each(["1", "2", "9007199254740991"])("treats V2 fork_turns %s as a full-history alias", (fork_turns) => {
+		expect(
+			normalizeSpawnAgentRequest({
+				task_name: "map_lifecycle",
+				message: "Trace the task lifecycle.",
+				fork_turns,
+			}),
+		).toMatchObject({ source: "codex-v2", fork_turns: "all" })
+	})
+
+	it("preserves a V2 request to start without inherited turns", () => {
+		expect(
+			normalizeSpawnAgentRequest({
+				task_name: "map_lifecycle",
+				message: "Trace the task lifecycle.",
+				fork_turns: "none",
+			}),
+		).toMatchObject({ source: "codex-v2", fork_turns: "none" })
+	})
+
 	it("retains default and route overrides without treating them as authority", () => {
 		const request = normalizeSpawnAgentRequest({
 			task_name: "scoped_worker",

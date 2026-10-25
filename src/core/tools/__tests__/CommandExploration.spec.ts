@@ -58,6 +58,13 @@ describe("trusted command exploration", () => {
 		},
 	)
 
+	it.each(["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"])(
+		"does not classify inherited object names as searches: %s",
+		(command) => {
+			expect(getCommandSearchSource(command)).toBeUndefined()
+		},
+	)
+
 	it.each([
 		"rg needle src; pnpm test",
 		"rg needle src && pnpm test",

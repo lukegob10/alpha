@@ -66,6 +66,40 @@ describe("resolveImageMentions", () => {
 		expect(result.images).toEqual([dataUrl])
 	})
 
+	it("loads image descendants whose names begin with two dots", async () => {
+		const buffer = Buffer.from("dotted-image")
+		const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, buffer))
+
+		const result = await resolveImageMentions({ text: "@/..images/cat.png", cwd: "/workspace" })
+
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.resolve("/workspace", "..images/cat.png"),
+			undefined,
+			5 * 1024 * 1024,
+		)
+		expect(result.images).toEqual([dataUrl])
+	})
+
+	it.each(["../outside.png", "../workspace-other/cat.png", "nested/../../outside.png"])(
+		"does not load images outside the workspace through %s",
+		async (relativePath) => {
+			const result = await resolveImageMentions({ text: `@/${relativePath}`, cwd: "/workspace" })
+
+			expect(mockValidateImage).not.toHaveBeenCalled()
+			expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+			expect(result.images).toEqual([])
+		},
+	)
+
+	it("does not treat the workspace directory itself as an image", async () => {
+		const result = await resolveImageMentions({ text: "@/../workspace.png", cwd: "/workspace.png" })
+
+		expect(mockValidateImage).not.toHaveBeenCalled()
+		expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+		expect(result.images).toEqual([])
+	})
+
 	it("should support gif images (matching read_file)", async () => {
 		const dataUrl = `data:image/gif;base64,${Buffer.from("gif-bytes").toString("base64")}`
 		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, Buffer.from("gif-bytes"), ".gif"))
@@ -151,6 +185,22 @@ describe("resolveImageMentions", () => {
 		})
 
 		expect(result.images).toHaveLength(1)
+	})
+
+	it("keeps the first occurrence order across supplied and mentioned images", async () => {
+		const existing = "data:image/png;base64,ZXhpc3Rpbmc="
+		const added = "data:image/png;base64,YWRkZWQ="
+		mockReadImageAsDataUrl
+			.mockResolvedValueOnce(imageReceipt(existing, Buffer.from("existing")))
+			.mockResolvedValueOnce(imageReceipt(added, Buffer.from("added")))
+
+		const result = await resolveImageMentions({
+			text: "@/existing.png @/added.png",
+			images: [existing, existing],
+			cwd: "/workspace",
+		})
+
+		expect(result.images).toEqual([existing, added])
 	})
 
 	it("should skip images when supportsImages is false", async () => {

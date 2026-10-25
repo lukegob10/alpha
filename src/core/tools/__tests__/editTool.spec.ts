@@ -260,6 +260,21 @@ describe("editTool", () => {
 			expect(mockTask.diffViewProvider.editType).toBe("modify")
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
+
+		it.each(["\n", "\r\n"])("preserves literal patterns, replacement text, BOM and %j endings", async (eol) => {
+			const oldString = "[value].*+$"
+			const replacement = "$& $$ $'"
+			await executeEditTool(
+				{ old_string: oldString, new_string: replacement, replace_all: "true" },
+				{ fileContent: `\uFEFF${oldString}${eol}unchanged${eol}${oldString}` },
+			)
+
+			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+				`\uFEFF${replacement}${eol}unchanged${eol}${replacement}`,
+				true,
+			)
+			expect(mockAskApproval).toHaveBeenCalledTimes(1)
+		})
 	})
 
 	describe("uniqueness check", () => {
