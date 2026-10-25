@@ -66,14 +66,17 @@ export class FileContextTracker {
 		)
 		this.fileWatchers.set(filePath, watcher)
 
-		// Track file changes
-		watcher.onDidChange(() => {
+		// Deletion and recreation invalidate previously read content as well.
+		const onFileEvent = () => {
 			if (this.disposed || this.fileWatchers.get(filePath) !== watcher) return
 
 			// A watcher event has no writer identity. Conservatively retain it rather than
 			// letting an unmatched Alpha-write marker acknowledge an external change.
 			void this.trackFileContext(filePath, "user_edited")
-		})
+		}
+		watcher.onDidCreate(onFileEvent)
+		watcher.onDidChange(onFileEvent)
+		watcher.onDidDelete(onFileEvent)
 	}
 
 	// Tracks a file operation in metadata and sets up a watcher for the file

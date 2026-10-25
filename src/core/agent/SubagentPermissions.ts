@@ -3,7 +3,14 @@ import { canonicalizeToolName } from "../tools/ToolRegistry"
 import type { InternalTaskPolicy } from "./InternalTaskEnvelope"
 import { isMcpTool } from "../../utils/mcp-name"
 
-const delegationTools = new Set(["spawn_agent", "wait_agent", "followup_task", "interrupt_agent", "close_agent"])
+const delegationTools = new Set([
+	"spawn_agent",
+	"wait_agent",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
+])
 const editTools = new Set([
 	"apply_patch",
 	"write_to_file",

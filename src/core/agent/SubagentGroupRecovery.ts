@@ -1,6 +1,32 @@
-import type { SubagentGroupState, SubagentStopReason } from "@alpha-code/types"
+import type { SubagentGroupState, SubagentGroupStatus, SubagentRunState, SubagentStopReason } from "@alpha-code/types"
 
 const ACTIVE_STATUSES = new Set(["pending", "running", "cancelling"])
+
+/** Resolve durable child outcomes using the same blocking and asynchronous group semantics as live finalization. */
+export function aggregateSubagentGroupTerminalStatus(
+	outcomes: readonly { status: SubagentRunState["status"] | "denied"; stopReason?: SubagentStopReason }[],
+	executionMode: SubagentGroupState["executionMode"] = "blocking",
+): Exclude<SubagentGroupStatus, "pending" | "running" | "cancelling"> {
+	if (outcomes.some(({ status }) => ACTIVE_STATUSES.has(status))) {
+		throw new Error("Cannot aggregate an active sub-agent group")
+	}
+	const statuses = outcomes.map(({ status, stopReason }) =>
+		status === "failed" && stopReason === "authority_denied" ? "denied" : status,
+	)
+	if (executionMode === "async" && statuses.length === 1) {
+		const status = statuses[0]
+		if (status === "completed" || status === "cancelled" || status === "timed_out" || status === "interrupted") {
+			return status
+		}
+		return status === "denied" ? "cancelled" : "failed"
+	}
+	const completed = statuses.filter((status) => status === "completed").length
+	if (statuses.length > 0 && completed === statuses.length) return "completed"
+	if (completed > 0) return "partial"
+	if (statuses.length > 0 && statuses.every((status) => status === "cancelled")) return "cancelled"
+	if (statuses.length > 0 && statuses.every((status) => status === "timed_out")) return "timed_out"
+	return "failed"
+}
 
 const wasPreparedButNeverLaunched = (group: SubagentGroupState): boolean =>
 	group.status === "pending" &&
@@ -20,6 +46,7 @@ export const reconcileSubagentGroupAfterReload = (
 	if (!ACTIVE_STATUSES.has(group.status)) return false
 
 	const neverLaunched = wasPreparedButNeverLaunched(group)
+	const hadUnfinishedChildren = group.agents.some((agent) => ACTIVE_STATUSES.has(agent.status))
 	for (const agent of group.agents) {
 		if (!ACTIVE_STATUSES.has(agent.status)) continue
 
@@ -39,8 +66,11 @@ export const reconcileSubagentGroupAfterReload = (
 	}
 
 	// Child reports can be durable before the aggregate terminal status is written.
-	const allCompleted = group.agents.length > 0 && group.agents.every((agent) => agent.status === "completed")
-	group.status = allCompleted ? "completed" : neverLaunched ? "cancelled" : "interrupted"
+	group.status = neverLaunched
+		? "cancelled"
+		: hadUnfinishedChildren
+			? "interrupted"
+			: aggregateSubagentGroupTerminalStatus(group.agents, group.executionMode)
 	group.completedAt ??= completedAt
 	return true
 }

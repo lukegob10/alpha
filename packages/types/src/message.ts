@@ -14,6 +14,7 @@ import {
 } from "./subagent.js"
 import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
 import { asyncUserInputDataSchema, userInputResponseDataSchema } from "./followup.js"
+import { agentRunIdSchema, agentTurnIdSchema, agentTurnTerminalStatusSchema } from "./agent-lifecycle.js"
 
 /**
  * AlphaAsk
@@ -493,6 +494,20 @@ export const toolApprovalPromptSchema = z
 
 export type ToolApprovalPrompt = z.infer<typeof toolApprovalPromptSchema>
 
+/** Transcript attribution projected by the host; never an execution or approval authority. */
+export const alphaMessageTurnSchema = z
+	.object({
+		runId: agentRunIdSchema,
+		turnId: agentTurnIdSchema,
+		/** Input's role when consumed by this turn, independent of its submission action. */
+		inputKind: z.enum(["start", "steer"]).optional(),
+		/** Completed attribution identifies this exact row as the host's accepted final response. */
+		terminalStatus: agentTurnTerminalStatusSchema.optional(),
+	})
+	.strict()
+
+export type AlphaMessageTurn = z.infer<typeof alphaMessageTurnSchema>
+
 /**
  * AlphaMessage
  *
@@ -507,6 +522,8 @@ export type ToolApprovalPrompt = z.infer<typeof toolApprovalPromptSchema>
  */
 export const alphaMessageSchema = z
 	.object({
+		/** Absent in older saved transcripts; disclosure choices remain local to the webview. */
+		turn: alphaMessageTurnSchema.optional(),
 		/** Associates completed command output with its approval message when a batch runs concurrently. */
 		commandExecutionId: z.string().optional(),
 		/** Durable input identities represented by this transcript message. */

@@ -229,6 +229,20 @@ describe("verification scope observations", () => {
 		expect(extractMutationPaths({ ...block, name: "read_file", nativeArgs: undefined })).toBeUndefined()
 	})
 
+	it("observes padded patch operations without treating marker-like context as a mutation", () => {
+		const block: ToolUse<"apply_patch"> = {
+			type: "tool_use",
+			name: "apply_patch",
+			params: {},
+			partial: false,
+			nativeArgs: {
+				patch: "*** Begin Patch\n*** Add File: allowed.ts\n+new\n  *** Update File: before.ts\n*** Move to: after.ts\n@@\n *** Delete File: context.ts\n-old\n+new\n*** End Patch",
+			},
+		}
+
+		expect(extractMutationPaths(block)).toEqual(["after.ts", "allowed.ts", "before.ts"])
+	})
+
 	it.each([
 		"vitest run",
 		"tox -e py",

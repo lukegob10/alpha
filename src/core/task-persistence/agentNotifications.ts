@@ -1,7 +1,7 @@
 import type { AgentLifecycleStatus, AgentMailboxEntry } from "@alpha-code/types"
 import { isDeepStrictEqual } from "util"
 
-import { sanitizeToolUseId } from "../../utils/tool-id"
+import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 import type { ApiMessage } from "./apiMessages"
 
 /** Completed and errored turns report to the parent; resumable interruption and cancellation do not. */
@@ -54,16 +54,21 @@ export function getPersistedAgentNotificationIds(
 			eventIds.add(message.agent_message_id)
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue
 		for (const block of message.content) {
-			if (block.type === "tool_use" && block.name === "wait_agent") waitCallIds.add(sanitizeToolUseId(block.id))
+			const callId = getToolCallId(block)
+			if (callId !== undefined && "name" in block && block.name === "wait_agent") {
+				waitCallIds.add(sanitizeToolUseId(callId))
+			}
 		}
 	}
 	for (const message of history) {
 		if (message.role !== "user" || !Array.isArray(message.content)) continue
 		const hasReceipt = message.content.some((block) => {
+			const resultId = getToolResultId(block)
 			if (
 				block.type !== "tool_result" ||
 				block.is_error ||
-				!waitCallIds.has(sanitizeToolUseId(block.tool_use_id))
+				resultId === undefined ||
+				!waitCallIds.has(sanitizeToolUseId(resultId))
 			)
 				return false
 			const texts =

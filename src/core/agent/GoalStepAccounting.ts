@@ -70,16 +70,25 @@ export async function accountGoalResponse(
 	step.elapsedChargedMs = (step.elapsedChargedMs ?? 0) + step.usageReceipt.timeMs
 }
 
-/** The root owns elapsed work time; descendant steps contribute tokens only. */
-export async function finishGoalStep(step: GoalStepAccounting | undefined, now = Date.now()): Promise<void> {
-	if (!step || step.executionMode === "architect" || step.finished) return
+/** Freeze the remaining interval without overlapping a response receipt awaiting replay. */
+export function getGoalStepElapsedReceipt(step: GoalStepAccounting, now = Date.now()): TaskGoalUsageReceipt {
+	const pendingResponseTimeMs = step.responseAccounted ? 0 : (step.usageReceipt?.timeMs ?? 0)
 	step.elapsedReceipt ??= {
 		goalTaskId: step.goalTaskId,
 		goalId: step.goalId,
 		eventId: `${step.eventId}:elapsed`,
 		tokens: 0,
-		timeMs: step.accountElapsed ? Math.max(0, Math.trunc(now - step.startedAt) - (step.elapsedChargedMs ?? 0)) : 0,
+		timeMs: step.accountElapsed
+			? Math.max(0, Math.trunc(now - step.startedAt) - (step.elapsedChargedMs ?? 0) - pendingResponseTimeMs)
+			: 0,
 	}
-	await step.controller.recordUsage(step.elapsedReceipt.eventId, 0, step.elapsedReceipt.timeMs, step.goalId)
+	return step.elapsedReceipt
+}
+
+/** The root owns elapsed work time; descendant steps contribute tokens only. */
+export async function finishGoalStep(step: GoalStepAccounting | undefined, now = Date.now()): Promise<void> {
+	if (!step || step.executionMode === "architect" || step.finished) return
+	const receipt = getGoalStepElapsedReceipt(step, now)
+	await step.controller.recordUsage(receipt.eventId, 0, receipt.timeMs, step.goalId)
 	step.finished = true
 }

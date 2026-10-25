@@ -1,7 +1,40 @@
-import { parsePatch, ParseError } from "../parser"
+import { getPatchPaths, mapPatchPaths, parsePatch, ParseError } from "../parser"
 import { applyChunksToContent } from "../apply"
 
 describe("apply_patch parser", () => {
+	describe("operation paths", () => {
+		const patch =
+			"*** Begin Patch\n*** Add File: added.txt\n+new\n  *** Delete File: deleted.txt\n  *** Update File: source.txt\n*** Move to: destination.txt\n@@\n *** Add File: literal.txt\n-old\n+new\n*** End Patch"
+
+		it("extracts padded operation sources and move targets without treating context as an operation", () => {
+			expect(getPatchPaths(patch)).toEqual(["added.txt", "deleted.txt", "source.txt", "destination.txt"])
+		})
+
+		it("maps the same parsed targets while preserving marker-like context", () => {
+			const mapPath = vi.fn((filePath: string) => `nested/${filePath}`)
+			const mapped = mapPatchPaths(patch, mapPath)
+
+			expect(getPatchPaths(mapped)).toEqual([
+				"nested/added.txt",
+				"nested/deleted.txt",
+				"nested/source.txt",
+				"nested/destination.txt",
+			])
+			expect(mapPath.mock.calls.flat()).toEqual(getPatchPaths(patch))
+			expect(mapped).toContain("\n *** Add File: literal.txt\n")
+		})
+
+		it("rejects malformed patches at both policy and mapping boundaries", () => {
+			const malformed = "*** Begin Patch\n*** Update File: empty.txt\n*** End Patch"
+			expect(() => getPatchPaths(malformed)).toThrow(ParseError)
+			expect(() => mapPatchPaths(malformed, (filePath) => filePath)).toThrow(ParseError)
+		})
+
+		it.each(["", "first\nsecond", "first\rsecond"])("rejects an unrepresentable mapped path %j", (mapped) => {
+			expect(() => mapPatchPaths(patch, () => mapped)).toThrow(ParseError)
+		})
+	})
+
 	describe("parsePatch", () => {
 		it.each(["LF", "CRLF", "mixed"])("keeps %s patch separators out of CRLF file content", (separators) => {
 			const replacement = "value = $& $$ $1 $` $' &lt; &amp; &#36;"
@@ -95,6 +128,7 @@ describe("apply_patch parser", () => {
 						changeContext: "def f():",
 						oldLines: ["    pass"],
 						newLines: ["    return 123"],
+						contextLineIndices: [],
 						isEndOfFile: false,
 					},
 				],
@@ -120,6 +154,7 @@ describe("apply_patch parser", () => {
 						changeContext: "def f():",
 						oldLines: ["    pass"],
 						newLines: ["    return 123"],
+						contextLineIndices: [],
 						isEndOfFile: false,
 					},
 				],
@@ -143,6 +178,7 @@ describe("apply_patch parser", () => {
 						changeContext: null,
 						oldLines: [],
 						newLines: ["line"],
+						contextLineIndices: [],
 						isEndOfFile: false,
 					},
 				],
@@ -181,6 +217,7 @@ describe("apply_patch parser", () => {
 						changeContext: "def f():",
 						oldLines: ["    pass"],
 						newLines: ["    return 123"],
+						contextLineIndices: [],
 						isEndOfFile: false,
 					},
 				],
@@ -206,6 +243,7 @@ describe("apply_patch parser", () => {
 						changeContext: null,
 						oldLines: [],
 						newLines: ["line"],
+						contextLineIndices: [],
 						isEndOfFile: false,
 					},
 				],
@@ -234,6 +272,7 @@ describe("apply_patch parser", () => {
 						changeContext: null,
 						oldLines: ["import foo"],
 						newLines: ["import foo", "bar"],
+						contextLineIndices: [[0, 0]],
 						isEndOfFile: false,
 					},
 				],
@@ -304,6 +343,7 @@ EOF`)
 						changeContext: null,
 						oldLines: [],
 						newLines: ["line"],
+						contextLineIndices: [],
 						isEndOfFile: true,
 					},
 				],
@@ -333,12 +373,14 @@ EOF`)
 						changeContext: null,
 						oldLines: ["foo", "bar"],
 						newLines: ["foo", "BAR"],
+						contextLineIndices: [[0, 0]],
 						isEndOfFile: false,
 					},
 					{
 						changeContext: null,
 						oldLines: ["baz", "qux"],
 						newLines: ["baz", "QUX"],
+						contextLineIndices: [[0, 0]],
 						isEndOfFile: false,
 					},
 				],

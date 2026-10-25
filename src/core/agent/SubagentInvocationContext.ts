@@ -1,5 +1,11 @@
 import type { ApiInstructionFragment } from "../../api"
-import type { ProviderSettings, SubagentAutoApprovalPolicy, SubagentModelRouteState } from "@alpha-code/types"
+import type {
+	Personality,
+	ProviderSettings,
+	SubagentAutoApprovalPolicy,
+	SubagentModelRouteState,
+	TaskReasoningPreference,
+} from "@alpha-code/types"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import { selectInheritedInstructionFragments } from "../prompts/inherited-instructions"
 import type { AgentResponseItem } from "./AgentResponse"
@@ -10,6 +16,10 @@ export interface SubagentInvocationContext {
 	mode: string
 	apiConfiguration: ProviderSettings
 	apiConfigName?: string
+	/** Task-only selection captured with the invoking handler; omitted legacy captures use the profile default. */
+	reasoningPreference?: TaskReasoningPreference
+	/** Captured model-owned style preference; historical captures retain the default wording. */
+	personality?: Personality
 	modelRoute: SubagentModelRouteState
 	history: ApiMessage[]
 	finalAssistantMessageIndexes: number[]

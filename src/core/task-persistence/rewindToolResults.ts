@@ -1,7 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 
 import type { ApiMessage } from "./apiMessages"
-import { getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
+import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 
 /** Keep a retained historical call paired without replaying output the user deliberately removed. */
 export function replaceDeliberatelyRemovedToolResults(previous: ApiMessage[], retained: ApiMessage[]): ApiMessage[] {
@@ -39,14 +39,12 @@ export function replaceDeliberatelyRemovedToolResults(previous: ApiMessage[], re
 				.map((block) => sanitizeToolUseId(getToolResultId(block) ?? "")),
 		)
 		const removedResults: Anthropic.ToolResultBlockParam[] = assistant.content
-			.filter((block) => block.type === "tool_use")
-			.filter(
-				(block) =>
-					originalIds.has(sanitizeToolUseId(block.id)) && !retainedIds.has(sanitizeToolUseId(block.id)),
-			)
-			.map((block) => ({
+			.map(getToolCallId)
+			.filter((id): id is string => id !== undefined)
+			.filter((id) => originalIds.has(sanitizeToolUseId(id)) && !retainedIds.has(sanitizeToolUseId(id)))
+			.map((id) => ({
 				type: "tool_result",
-				tool_use_id: block.id,
+				tool_use_id: id,
 				is_error: true,
 				content:
 					"The tool result was deliberately removed by a conversation rewind. Its prior output is unavailable.",

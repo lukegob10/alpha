@@ -46,7 +46,7 @@ import osName from "os-name"
 import { Tiktoken } from "tiktoken/lite"
 import o200kBase from "tiktoken/encoders/o200k_base"
 
-import { ModeConfig, PLAN_MODE_INSTRUCTIONS } from "@alpha-code/types"
+import { ModeConfig, PLAN_MODE_INSTRUCTIONS, type Personality } from "@alpha-code/types"
 
 import {
 	CODEX_COLLABORATION_MODE_ORIGIN,
@@ -525,6 +525,56 @@ describe("SYSTEM_PROMPT", () => {
 		expect(rendered.indexOf("ALPHA TOOL CONTRACT")).toBeLessThan(rendered.indexOf("SYSTEM INFORMATION"))
 		expect(rendered.indexOf("SYSTEM INFORMATION")).toBeLessThan(rendered.indexOf("USER'S CUSTOM INSTRUCTIONS"))
 		expect(userContextPart?.role).toBe("user")
+	})
+
+	it.each([
+		[defaultModeSlug, undefined],
+		[planModeSlug, undefined],
+		[defaultModeSlug, "worker"],
+	] as const)("omits only built-in personality in %s mode for child role %s", async (mode, subagentRole) => {
+		const customInstructions = "# Personality\nUSER_OWNED_TONE\n## Writing style\nUSER_OWNED_WRITING"
+		const build = (personality: Personality) =>
+			SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				undefined,
+				undefined,
+				mode,
+				{ code: { roleDefinition: "USER_OWNED_ROLE", customInstructions: customInstructions } },
+				undefined,
+				customInstructions,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: false,
+					newTaskRequireTodos: false,
+					approvalMode: "auto",
+					personality,
+					subagentRole,
+					subagentUsesFrozenContext: Boolean(subagentRole),
+					subagentFrozenInstructions: subagentRole ? customInstructions : undefined,
+				},
+				undefined,
+				"gpt-6.1-sol",
+			)
+		const original = await build("default")
+		const omitted = await build("none")
+
+		expect(original.instructionParts[0]?.content).toBe(CODEX_MODEL_INSTRUCTIONS["gpt-6.1-sol"])
+		expect(omitted.instructionParts[0]).toEqual({
+			...original.instructionParts[0],
+			content: resolveCodexModelPrompt("gpt-6.1-sol", "none").instructions,
+		})
+		expect(omitted.instructionParts[0]?.content).not.toContain("# Personality\n")
+		expect(omitted.instructionParts.slice(1)).toEqual(original.instructionParts.slice(1))
+		expect(omitted.userContext).toContain(customInstructions)
+		expect(omitted.systemSuffix).toBe(original.systemSuffix)
+		expect(omitted.instructionParts.map(({ content }) => content).join("")).toBe(
+			renderSystemPromptFragments(omitted),
+		)
 	})
 
 	it("tells Copilot GPT-5.6 Sol to call the native patch tool and reports the command shell", async () => {

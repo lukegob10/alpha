@@ -382,3 +382,159 @@ describe.each(["legacy", "staged"] as const)("AgentTurnEngine %s error-only resu
 		if (host.sampleStep) expect(host.releaseStep).toHaveBeenCalledOnce()
 	})
 })
+
+describe("AgentTurnEngine decision failures", () => {
+	const decisions = [
+		["legacy", "admission"],
+		["staged", "admission"],
+		["staged", "continuation"],
+	] as const
+
+	it.each(decisions)("rejects an error-only %s %s before completing or resampling", async (adapter, phase) => {
+		for (const error of [new Error("Decision failed."), null]) {
+			for (const nextInput of ["complete", "repair"] as const) {
+				const decision = { nextInput, requiresContinuation: nextInput === "repair", error }
+				const callbacks = {
+					shouldAbort: () => false,
+					admitCompletion: vi
+						.fn<NonNullable<AgentTurnStagedHost<string>["admitCompletion"]>>(async () => undefined)
+						.mockResolvedValueOnce(phase === "admission" ? decision : undefined),
+				}
+				const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+					adapter === "legacy"
+						? { ...callbacks, runStep: vi.fn(async () => ({ response, nextInput: "complete" as const })) }
+						: {
+								...callbacks,
+								sampleStep: vi.fn(async () => ({ response })),
+								selectContinuation: vi
+									.fn<NonNullable<AgentTurnStagedHost<string>["selectContinuation"]>>(async () => ({
+										nextInput: "complete" as const,
+									}))
+									.mockResolvedValueOnce(
+										phase === "continuation" ? decision : { nextInput: "complete" as const },
+									),
+								releaseStep: vi.fn(),
+							}
+
+				expect(await new AgentTurnEngine(host).run("first")).toEqual({
+					status: "failed",
+					steps: 1,
+					response,
+					reason: error instanceof Error ? error.message : "null",
+					error,
+				})
+				if (host.sampleStep) {
+					expect(host.sampleStep).toHaveBeenCalledOnce()
+					expect(host.releaseStep).toHaveBeenCalledOnce()
+					if (phase === "continuation") expect(host.admitCompletion).not.toHaveBeenCalled()
+				} else expect(host.runStep).toHaveBeenCalledOnce()
+			}
+		}
+	})
+
+	it.each(decisions)("preserves explicit successful diagnostics from %s %s", async (adapter, phase) => {
+		const decision = { nextInput: "complete" as const, status: "completed" as const, error: null }
+		const callbacks = {
+			shouldAbort: () => false,
+			admitCompletion: vi.fn(async () => (phase === "admission" ? decision : undefined)),
+		}
+		const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+			adapter === "legacy"
+				? { ...callbacks, runStep: vi.fn(async () => ({ response, nextInput: "complete" as const })) }
+				: {
+						...callbacks,
+						sampleStep: vi.fn(async () => ({ response })),
+						selectContinuation: vi.fn(async () => decision),
+						releaseStep: vi.fn(),
+					}
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 1,
+			response,
+			completionReason: "host",
+		})
+		if (host.sampleStep) expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
+
+	it.each(decisions)("lets cancellation win an error-only %s %s", async (adapter, phase) => {
+		let aborted = false
+		const fail = () => {
+			aborted = true
+			return { nextInput: "repair", requiresContinuation: true, error: new Error("Late decision.") }
+		}
+		const callbacks = {
+			shouldAbort: () => aborted,
+			admitCompletion: vi.fn(async () => (phase === "admission" ? fail() : undefined)),
+		}
+		const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+			adapter === "legacy"
+				? { ...callbacks, runStep: vi.fn(async () => ({ response, nextInput: "complete" as const })) }
+				: {
+						...callbacks,
+						sampleStep: vi.fn(async () => ({ response })),
+						selectContinuation: vi.fn(async () =>
+							phase === "continuation" ? fail() : { nextInput: "complete" as const },
+						),
+						releaseStep: vi.fn(),
+					}
+
+		expect(await new AgentTurnEngine(host).run("first")).toMatchObject({ status: "aborted", steps: 1 })
+		if (host.sampleStep) expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
+
+	it.each(["failed", "incomplete"] as const)(
+		"retains the original %s result when recovery reports an error without a status",
+		async (status) => {
+			for (const error of [new Error("Original sample failure."), null]) {
+				const host: AgentTurnStagedHost<string> = {
+					shouldAbort: () => false,
+					sampleStep: vi.fn(async () => ({ response, status, reason: "Original sample boundary.", error })),
+					selectRecovery: vi
+						.fn<NonNullable<AgentTurnStagedHost<string>["selectRecovery"]>>(async () => undefined)
+						.mockResolvedValueOnce({
+							nextInput: "repair",
+							requiresContinuation: true,
+							error: new Error("Secondary recovery failure."),
+						}),
+					releaseStep: vi.fn(),
+				}
+
+				expect(await new AgentTurnEngine(host).run("first")).toEqual({
+					status,
+					steps: 1,
+					response,
+					reason: "Original sample boundary.",
+					...(status === "failed" ? { error } : {}),
+				})
+				expect(host.sampleStep).toHaveBeenCalledOnce()
+				expect(host.selectRecovery).toHaveBeenCalledOnce()
+				expect(host.releaseStep).toHaveBeenCalledOnce()
+			}
+		},
+	)
+
+	it("preserves a null original error when recovery reports another terminal failure", async () => {
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async () => ({ response, status: "failed" as const, error: null })),
+			selectRecovery: vi.fn(async () => ({
+				nextInput: "complete",
+				status: "failed" as const,
+				reason: "Recovery declined.",
+				error: new Error("Secondary recovery failure."),
+			})),
+			releaseStep: vi.fn(),
+		}
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "failed",
+			steps: 1,
+			response,
+			reason: "Recovery declined.",
+			error: null,
+		})
+		expect(host.sampleStep).toHaveBeenCalledOnce()
+		expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
+})

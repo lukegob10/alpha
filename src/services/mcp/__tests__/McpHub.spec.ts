@@ -1739,8 +1739,13 @@ describe("McpHub", () => {
 			expect(mockConnection.client!.request).toHaveBeenCalledWith(
 				expect.objectContaining({ method: "tools/call" }),
 				expect.any(Object),
-				expect.objectContaining({ timeout: 60000, signal: controller.signal }),
+				expect.objectContaining({ timeout: 60000, signal: expect.any(AbortSignal) }),
 			)
+			const sdkSignal = vi.mocked(mockConnection.client.request).mock.calls[0][2]?.signal
+			const reason = new Error("caller cancelled tool request")
+			controller.abort(reason)
+			expect(sdkSignal?.aborted).toBe(true)
+			expect(sdkSignal?.reason).toBe(reason)
 		})
 
 		it("rejects before dispatch when an MCP tool signal is already aborted", async () => {
@@ -1789,8 +1794,9 @@ describe("McpHub", () => {
 
 			mcpHub.connections = [mockConnection]
 			const running = mcpHub.callTool("test-server", "some-tool", {}, undefined, controller.signal)
-			await vi.waitFor(() => expect(signalFromRequest).toBe(controller.signal))
+			expect(signalFromRequest).toBeInstanceOf(AbortSignal)
 			controller.abort(new Error("pending tool request cancelled"))
+			expect(signalFromRequest?.aborted).toBe(true)
 
 			await expect(running).rejects.toThrow("pending tool request cancelled")
 			resolveRequest({ content: [] })
@@ -2143,8 +2149,13 @@ describe("McpHub", () => {
 			expect(mockConnection.client!.request).toHaveBeenCalledWith(
 				expect.objectContaining({ method: "resources/read" }),
 				expect.any(Object),
-				{ signal: controller.signal },
+				{ signal: expect.any(AbortSignal) },
 			)
+			const sdkSignal = vi.mocked(mockConnection.client.request).mock.calls[0][2]?.signal
+			const reason = new Error("caller cancelled resource request")
+			controller.abort(reason)
+			expect(sdkSignal?.aborted).toBe(true)
+			expect(sdkSignal?.reason).toBe(reason)
 		})
 
 		it("rejects before dispatch when a resource signal is already aborted", async () => {
@@ -2193,13 +2204,122 @@ describe("McpHub", () => {
 
 			mcpHub.connections = [mockConnection]
 			const running = mcpHub.readResource("test-server", "file:///report.txt", undefined, controller.signal)
-			await vi.waitFor(() => expect(signalFromRequest).toBe(controller.signal))
+			expect(signalFromRequest).toBeInstanceOf(AbortSignal)
 			controller.abort(new Error("pending resource request cancelled"))
+			expect(signalFromRequest?.aborted).toBe(true)
 
 			await expect(running).rejects.toThrow("pending resource request cancelled")
 			resolveRequest({ contents: [] })
 			await Promise.resolve()
 		})
+	})
+
+	describe.each(["callTool", "readResource"] as const)("%s connection lifecycle", (method) => {
+		type Response = Awaited<ReturnType<McpHubType[typeof method]>>
+		const response: Response = method === "callTool" ? { content: [] } : { contents: [] }
+
+		beforeEach(async () => {
+			await mcpHub.waitUntilReady()
+		})
+
+		function fixture() {
+			let resolveRequest!: (value: Response) => void
+			let rejectRequest!: (reason: Error) => void
+			let finishClose!: () => void
+			let sdkSignal: AbortSignal | undefined
+			const requestPromise = new Promise<Response>((resolve, reject) => {
+				resolveRequest = resolve
+				rejectRequest = reject
+			})
+			const closePromise = new Promise<void>((resolve) => {
+				finishClose = resolve
+			})
+			const request = vi.fn((_request: unknown, _schema: unknown, options?: { signal?: AbortSignal }) => {
+				sdkSignal = options?.signal
+				return requestPromise
+			})
+			const connection: ConnectedMcpConnection = {
+				type: "connected",
+				server: {
+					name: "test-server",
+					config: JSON.stringify({ type: "stdio", command: "node" }),
+					status: "connected",
+					source: "global",
+				},
+				client: { request, close: vi.fn() } as unknown as ConnectedMcpConnection["client"],
+				transport: { close: vi.fn(() => closePromise) } as unknown as ConnectedMcpConnection["transport"],
+			}
+			mcpHub.connections = [connection]
+			const dispatch = (signal?: AbortSignal) =>
+				method === "callTool"
+					? mcpHub.callTool("test-server", "some-tool", {}, "global", signal)
+					: mcpHub.readResource("test-server", "file:///report.txt", "global", signal)
+			return {
+				connection,
+				request,
+				resolveRequest,
+				rejectRequest,
+				finishClose,
+				dispatch,
+				signal: () => sdkSignal,
+			}
+		}
+
+		it.each([
+			{ lifecycle: "deleteConnection", settlement: "resolve" },
+			{ lifecycle: "deleteConnection", settlement: "reject" },
+			{ lifecycle: "dispose", settlement: "resolve" },
+			{ lifecycle: "dispose", settlement: "reject" },
+		] as const)(
+			"rejects before $lifecycle teardown finishes and absorbs late $settlement",
+			async ({ lifecycle, settlement }) => {
+				const run = fixture()
+				const caller = lifecycle === "dispose" ? new AbortController() : undefined
+				const running = run.dispatch(caller?.signal)
+				const rejected = expect(running).rejects.toMatchObject({ name: "AbortError" })
+				const teardown =
+					lifecycle === "dispose" ? mcpHub.dispose() : mcpHub.deleteConnection("test-server", "global")
+				try {
+					expect(run.request).toHaveBeenCalledOnce()
+					expect(run.signal()).toBeInstanceOf(AbortSignal)
+					expect(run.signal()?.aborted).toBe(true)
+					expect(caller?.signal.aborted ?? false).toBe(false)
+					await rejected
+
+					if (settlement === "resolve") run.resolveRequest(response)
+					else run.rejectRequest(new Error("late SDK request failure"))
+					await expect(running).rejects.toBe(run.signal()?.reason)
+					expect(mcpHub.connections).toHaveLength(0)
+				} finally {
+					run.resolveRequest(response)
+					run.finishClose()
+					await teardown
+					await running.catch(() => {})
+					await rejected.catch(() => {})
+				}
+			},
+		)
+
+		it.each(["removed", "disabled", "disconnected"] as const)(
+			"rejects a completed response if its captured connection was %s before publication",
+			async (change) => {
+				const run = fixture()
+				const running = run.dispatch()
+				try {
+					if (change === "removed") mcpHub.connections = []
+					else if (change === "disabled") run.connection.server.disabled = true
+					else run.connection.server.status = "disconnected"
+					run.resolveRequest(response)
+
+					await expect(running).rejects.toMatchObject({ name: "AbortError" })
+					expect(run.request).toHaveBeenCalledOnce()
+				} finally {
+					run.resolveRequest(response)
+					run.finishClose()
+					await running.catch(() => {})
+				}
+			},
+		)
 	})
 
 	describe("MCP global enable/disable", () => {

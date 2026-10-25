@@ -38,6 +38,12 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		) {
 			return `${location} has invalid goal usage receipts`
 		}
+		if (
+			candidate.condenseCopyParent !== undefined &&
+			(candidate.role !== "user" || !hasNonemptyId(candidate.condenseCopyParent))
+		) {
+			return `${location} has invalid carried user copy provenance`
+		}
 		if (candidate.reasoning_details !== undefined && !Array.isArray(candidate.reasoning_details)) {
 			return `${location} has invalid reasoning details`
 		}

@@ -544,7 +544,22 @@
 						},
 						{
 							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
-							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with a persisted receipt without redelivery$",
+							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with canonical IDs without redelivery$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with legacy IDs without redelivery$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with empty-canonical IDs without redelivery$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with matching IDs without redelivery$",
 							"minimumMatches": 1
 						}
 					]

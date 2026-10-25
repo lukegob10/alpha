@@ -6,6 +6,7 @@ import {
 	serializeAgentNotification,
 } from "../agentNotifications"
 import type { ApiMessage } from "../apiMessages"
+import { invalidPersistedApiMessages } from "../validatePersistedApiMessages"
 
 const notification: AgentMailboxEntry = {
 	eventId: "child-run-one:completed",
@@ -37,6 +38,51 @@ const waitHistory = (body = serializeAgentNotification(notification), isError = 
 		],
 	},
 ]
+
+const persistedWaitFormats = [
+	{
+		name: "legacy call",
+		call: { type: "tool_call", tool_call_id: "wait.1", name: "wait_agent", arguments: {} },
+		resultIds: { tool_use_id: "wait_1" },
+	},
+	{
+		name: "legacy result",
+		call: { type: "tool_use", id: "wait.1", name: "wait_agent", input: {} },
+		resultIds: { tool_call_id: "wait_1" },
+	},
+	{
+		name: "empty canonical aliases",
+		call: { type: "tool_call", id: "", tool_call_id: "wait.1", name: "wait_agent", arguments: {} },
+		resultIds: { tool_use_id: "", tool_call_id: "wait_1" },
+	},
+	{
+		name: "matching aliases",
+		call: { type: "tool_call", id: "wait.1", tool_call_id: "wait.1", name: "wait_agent", arguments: {} },
+		resultIds: { tool_use_id: "wait_1", tool_call_id: "wait_1" },
+	},
+] as const
+
+function persistedWaitHistory(call: unknown, resultIds: Record<string, string>, isError = false): ApiMessage[] {
+	const history: unknown = [
+		{ role: "assistant", content: [call] },
+		{
+			role: "user",
+			input_origin: "agent",
+			content: [
+				{
+					type: "tool_result",
+					...resultIds,
+					is_error: isError,
+					content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "wait-claim", eventCount: 1 }),
+				},
+				{ type: "text", text: serializeAgentNotification(notification) },
+			],
+		},
+	]
+	// Historical aliases remain valid persisted data even though the provider SDK omits them.
+	expect(invalidPersistedApiMessages(history)).toBeUndefined()
+	return history as ApiMessage[]
+}
 
 it("recognizes host-authored automatic receipts without accepting human or assistant metadata", () => {
 	const message: ApiMessage = {
@@ -92,6 +138,21 @@ it("requires a successful native wait receipt and the actual notification identi
 			],
 			[notification],
 		),
+	).toEqual(new Set())
+})
+
+it.each(persistedWaitFormats)("recognizes $name wait receipts without rewriting history", ({ call, resultIds }) => {
+	const history = persistedWaitHistory(call, resultIds)
+	const before = structuredClone(history)
+	expect(getPersistedAgentNotificationIds(history, [notification])).toEqual(new Set([notification.eventId]))
+	expect(history).toEqual(before)
+	expect(getPersistedAgentNotificationIds(persistedWaitHistory(call, resultIds, true), [notification])).toEqual(
+		new Set(),
+	)
+	expect(
+		getPersistedAgentNotificationIds(persistedWaitHistory({ ...call, name: "read_file" }, resultIds), [
+			notification,
+		]),
 	).toEqual(new Set())
 })
 

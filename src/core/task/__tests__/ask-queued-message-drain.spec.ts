@@ -147,9 +147,9 @@ describe("Task.ask queued message drain", () => {
 		const pending = task.ask("command", "node script.js", false, { text: "../outside" }, false, true)
 		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
-		expect(task["addToAlphaMessages"]).toHaveBeenCalledWith(
-			expect.objectContaining({ progressStatus: { text: "../outside" } }),
-		)
+		expect(vi.mocked(task["addToAlphaMessages"]).mock.calls[0]?.[0]).toMatchObject({
+			progressStatus: { text: "../outside" },
+		})
 		task.handleWebviewAskResponse("noButtonClicked")
 		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
 	})

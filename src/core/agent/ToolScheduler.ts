@@ -57,7 +57,7 @@ import type {
 	ToolDescriptor,
 	ToolRegistry,
 } from "../tools/ToolRegistry"
-import { canonicalizeToolName } from "../tools/ToolRegistry"
+import { canonicalizeToolName, captureCustomToolNames } from "../tools/ToolRegistry"
 import {
 	getToolOutputLimit,
 	isCommandDeniedByPolicy,
@@ -769,6 +769,7 @@ function getVerificationOutput(content: ToolResponse): string {
 export class ToolScheduler {
 	private readonly approvalMutex = new AsyncMutex()
 	private readonly admissionMutex = new AsyncMutex()
+	private readonly capturedCustomToolNames: ReadonlySet<string>
 	private effectFenceFailure?: ToolEffectFenceError
 	private batchController = new AbortController()
 	private approvalAbortRequested = false
@@ -802,7 +803,9 @@ export class ToolScheduler {
 	private readonly deferredVerificationEventIds = new Set<string>()
 	private deferredBatchFinishedEvent?: Extract<AgentTurnEvent, { type: "tool_batch_finished" }>
 
-	constructor(private readonly options: ToolSchedulerOptions) {}
+	constructor(private readonly options: ToolSchedulerOptions) {
+		this.capturedCustomToolNames = captureCustomToolNames(options.registry)
+	}
 
 	private get executionHost(): ToolExecutionHost {
 		const host = this.options.executionHost ?? (this.options.task as unknown as ToolExecutionHost | undefined)
@@ -2072,15 +2075,22 @@ export class ToolScheduler {
 					prepared.descriptor = descriptor
 					return prepared
 				}
-				const taskRoot = this.executionHost.cwd ?? (this.toolTask as TaskPathContext).cwd
-				const commandCwd = path.resolve(
-					taskRoot,
-					typeof argumentsValue.cwd === "string" ? argumentsValue.cwd : ".",
-					invocation.workdir ?? ".",
-				)
-				argumentsValue = normalizeTaskToolArguments(this.toolTask as TaskPathContext, "apply_patch", {
-					patch: rebaseApplyPatchPaths(invocation.patch, taskRoot, commandCwd),
-				})
+				try {
+					const taskRoot = this.executionHost.cwd ?? (this.toolTask as TaskPathContext).cwd
+					const commandCwd = path.resolve(
+						taskRoot,
+						typeof argumentsValue.cwd === "string" ? argumentsValue.cwd : ".",
+						invocation.workdir ?? ".",
+					)
+					argumentsValue = normalizeTaskToolArguments(this.toolTask as TaskPathContext, "apply_patch", {
+						patch: rebaseApplyPatchPaths(invocation.patch, taskRoot, commandCwd),
+					})
+				} catch (error) {
+					prepared.validationError = this.errorMessage(error)
+					reject("invalid_arguments")
+					prepared.descriptor = descriptor
+					return prepared
+				}
 				canonicalName = "apply_patch"
 				descriptor = patchDescriptor
 			}
@@ -2225,6 +2235,7 @@ export class ToolScheduler {
 						requestedArgumentsValue,
 						this.options.experiments,
 						this.options.includedTools,
+						this.capturedCustomToolNames,
 					)
 				}
 				validateToolUse(
@@ -2235,6 +2246,7 @@ export class ToolScheduler {
 					(toolCall.nativeArgs ?? {}) as Record<string, unknown>,
 					this.options.experiments,
 					this.options.includedTools,
+					this.capturedCustomToolNames,
 				)
 			}
 		} catch (error) {
@@ -2508,16 +2520,6 @@ export class ToolScheduler {
 						callId: prepared.call.id,
 						toolName: interceptedPatch ? approvalToolName : prepared.call.name,
 					})
-					if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
-						await publishApprovalResult({
-							type: "approval_result",
-							requestId,
-							decision: "approved",
-							reason: "Approved by an exact task-session grant.",
-						})
-						return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
-					}
-
 					let approval: ToolApprovalResponse | undefined
 					let typedDecision: ToolApprovalDecision | undefined
 					let approvalEventReason: string | undefined
@@ -2551,6 +2553,18 @@ export class ToolScheduler {
 								})
 								return undefined
 							}
+						}
+						// Codex 970111f6 runs permission hooks before consulting user approval
+						// caches. A prior session grant cannot override a current hook denial.
+						if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
+							assertPathIdentities(prepared)
+							await publishApprovalResult({
+								type: "approval_result",
+								requestId,
+								decision: "approved",
+								reason: "Approved by an exact task-session grant.",
+							})
+							return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
 						}
 						if (typedApprovalHost && approvalRequest) {
 							const response = await this.raceCancellation(() =>

@@ -5,6 +5,7 @@
 		"busy": "Command output search is busy. Retry after current searches finish.",
 		"timeout": "Command output search timed out. Try a simpler pattern or read the artifact without a search.",
 		"cleanup": "Command output search could not release its worker.",
+		"outputBudget": "Command output cannot be read within the remaining tool output budget. Retry with more output space.",
 		"unavailable": "Command output search could not complete."
 	},
 	"readFile": {

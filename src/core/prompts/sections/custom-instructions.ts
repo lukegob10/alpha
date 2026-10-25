@@ -40,16 +40,12 @@ function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
 	)
 }
 
-async function resolvePathWithinRoot(
-	filePath: string,
-	trustedRoot: string,
-	reportReadFailures = false,
-): Promise<string | undefined> {
+async function resolvePathWithinRoot(filePath: string, trustedRoot: string): Promise<string | undefined> {
 	try {
 		const [realRoot, realPath] = await Promise.all([fs.realpath(trustedRoot), fs.realpath(filePath)])
 		return isPathWithinRoot(realRoot, realPath) ? realPath : undefined
 	} catch (error) {
-		if (reportReadFailures && !isOptionalInstructionFileError(error)) throw error
+		if (!isOptionalInstructionFileError(error)) throw error
 		return undefined
 	}
 }
@@ -58,9 +54,22 @@ function isOptionalInstructionFileError(error: unknown): boolean {
 	return ["ENOENT", "EISDIR", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")
 }
 
+function instructionReadError(kind: "agent" | "rule", sourcePath: string, error: unknown): Error {
+	const errorCode = (error as NodeJS.ErrnoException).code
+	const diagnosticCode = errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode) ? errorCode : "filesystem error"
+	return new Error(
+		`Unable to load ${kind} instructions from "${sourcePath}" (${diagnosticCode}). Check file access and try again.`,
+	)
+}
+
 async function safeReadFileWithinRoot(filePath: string, trustedRoot: string): Promise<string> {
-	const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot)
-	return resolvedPath ? safeReadFile(resolvedPath) : ""
+	try {
+		const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot)
+		return resolvedPath ? await safeReadFile(resolvedPath) : ""
+	} catch (error) {
+		if (isOptionalInstructionFileError(error)) return ""
+		throw instructionReadError("rule", filePath, error)
+	}
 }
 
 function getRuleTrustRoot(cwd: string, configDirectory: string): string {
@@ -74,8 +83,9 @@ async function directoryExists(dirPath: string): Promise<boolean> {
 	try {
 		const stats = await fs.stat(dirPath)
 		return stats.isDirectory()
-	} catch (err) {
-		return false
+	} catch (error) {
+		if (isOptionalInstructionFileError(error)) return false
+		throw instructionReadError("rule", dirPath, error)
 	}
 }
 
@@ -192,8 +202,8 @@ async function resolveSymLink(
 			// Handle nested symlinks by awaiting the recursive call
 			await resolveSymLink(resolvedTarget, fileInfo, depth + 1, trustedRoot)
 		}
-	} catch (err) {
-		// Skip invalid symlinks
+	} catch (error) {
+		if (!isOptionalInstructionFileError(error)) throw error
 	}
 }
 
@@ -243,13 +253,14 @@ async function readTextFilesFromDirectory(
 						return { filename: resolvedPath, content, sortKey: originalPath }
 					}
 					return null
-				} catch (err) {
-					return null
+				} catch (error) {
+					if (isOptionalInstructionFileError(error)) return null
+					throw error
 				}
 			}),
 		)
 
-		// Filter out null values (directories, failed reads, or excluded files)
+		// Missing/non-file candidates and excluded files do not contribute instructions.
 		const filteredFiles = fileContents.filter(
 			(item): item is { filename: string; content: string; sortKey: string } => item !== null,
 		)
@@ -263,8 +274,10 @@ async function readTextFilesFromDirectory(
 				return filenameA.localeCompare(filenameB)
 			})
 			.map(({ filename, content }) => ({ filename, content }))
-	} catch (err) {
-		return []
+	} catch (error) {
+		if (isOptionalInstructionFileError(error)) return []
+		// A selected rule source cannot silently disappear or select weaker legacy guidance on an I/O failure.
+		throw instructionReadError("rule", dirPath, error)
 	}
 }
 
@@ -468,7 +481,7 @@ async function readAgentInstructionFile(
 		const isSymbolicLink = metadata.isSymbolicLink()
 		if (!isSymbolicLink && !metadata.isFile()) return undefined
 
-		const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot, true)
+		const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot)
 		if (!resolvedPath) return undefined
 
 		// Resolving a link establishes its path scope; its target must also be a
@@ -482,13 +495,9 @@ async function readAgentInstructionFile(
 		return { ref: filePath, text }
 	} catch (error) {
 		if (isOptionalInstructionFileError(error)) return undefined
-		const errorCode = (error as NodeJS.ErrnoException).code
-		const diagnosticCode = errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode) ? errorCode : "filesystem error"
 		// Never fall through to weaker guidance after an access or I/O failure.
 		// Include the selected source and a bounded code, not provider/OS error text.
-		throw new Error(
-			`Unable to load agent instructions from "${filePath}" (${diagnosticCode}). Check file access and try again.`,
-		)
+		throw instructionReadError("agent", filePath, error)
 	}
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import path from "path"
 
 import { WorkspaceMutationCancelledError, WorkspaceMutationGate } from "../WorkspaceMutationGate"
 
@@ -13,6 +14,54 @@ const deferred = <T = void>() => {
 }
 
 describe("WorkspaceMutationGate", () => {
+	it("shares admission across equivalent host storage paths", async () => {
+		const storagePath = path.resolve("workspace-gate-shared-storage")
+		const first = WorkspaceMutationGate.forGlobalStorage(storagePath)
+		const second = WorkspaceMutationGate.forGlobalStorage(path.join(storagePath, "nested", ".."))
+		const release = deferred()
+		const active = first.run("sidebar-task", "edit", () => release.promise)
+		const queuedEffect = vi.fn(async () => "committed")
+		const queued = second.run("editor-task", "edit", queuedEffect)
+
+		try {
+			await Promise.resolve()
+			expect(queuedEffect).not.toHaveBeenCalled()
+			expect(second.runIfIdle("editor-task", "enter Plan", async () => undefined)).toBeUndefined()
+		} finally {
+			release.resolve()
+			await Promise.allSettled([active, queued])
+		}
+		await expect(queued).resolves.toBe("committed")
+		expect(queuedEffect).toHaveBeenCalledOnce()
+	})
+
+	it("keeps separate host storage admissions independent", async () => {
+		const first = WorkspaceMutationGate.forGlobalStorage(path.resolve("workspace-gate-first-storage"))
+		const second = WorkspaceMutationGate.forGlobalStorage(path.resolve("workspace-gate-second-storage"))
+		const release = deferred()
+		const active = first.run("first-task", "edit", () => release.promise)
+		try {
+			await expect(second.runIfIdle("second-task", "edit", async () => "committed")).resolves.toBe("committed")
+		} finally {
+			release.resolve()
+			await active
+		}
+	})
+
+	it.runIf(process.platform === "win32")("shares admission across Windows host path casing", async () => {
+		const storagePath = path.resolve("workspace-gate-windows-storage")
+		const first = WorkspaceMutationGate.forGlobalStorage(storagePath.toLowerCase())
+		const second = WorkspaceMutationGate.forGlobalStorage(storagePath.toUpperCase())
+		const release = deferred()
+		const active = first.run("sidebar-task", "edit", () => release.promise)
+		try {
+			expect(second.runIfIdle("editor-task", "enter Plan", async () => undefined)).toBeUndefined()
+		} finally {
+			release.resolve()
+			await active
+		}
+	})
+
 	it("releases ownership when an admitted callback throws synchronously", async () => {
 		const gate = new WorkspaceMutationGate()
 		const failed = gate.run("task-a", "failed admission", () => {

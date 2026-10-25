@@ -5,7 +5,7 @@
  * Based on the Codex apply_patch specification.
  */
 
-export { parsePatch, ParseError } from "./parser"
+export { parsePatch, getPatchPaths, mapPatchPaths, ParseError } from "./parser"
 export type { Hunk, UpdateFileChunk, ApplyPatchArgs } from "./parser"
 
 export { seekSequence } from "./seek-sequence"

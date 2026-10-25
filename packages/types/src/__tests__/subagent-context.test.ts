@@ -63,6 +63,21 @@ function firstSkill(manifest: SubagentContextManifest): SubagentContextSkill {
 	return skill
 }
 
+describe("captured subagent personality", () => {
+	it("preserves historical manifests without materializing a personality field", () => {
+		expect(subagentContextManifestSchema.parse(makeManifest())).not.toHaveProperty("personality")
+	})
+
+	it.each(["default", "none"] as const)("retains %s through a saved manifest round trip", (personality) => {
+		const saved = JSON.stringify(subagentContextManifestSchema.parse(makeManifest({ personality })))
+		expect(subagentContextManifestSchema.parse(JSON.parse(saved)).personality).toBe(personality)
+	})
+
+	it.each([null, true, "friendly", "None", ""])("rejects unsupported personality %j", (personality) => {
+		expect(subagentContextManifestSchema.safeParse({ ...makeManifest(), personality }).success).toBe(false)
+	})
+})
+
 describe("inherited subagent authority", () => {
 	it.each(["explore", "review", "worker"] as const)("retains parent authority for a new %s role", (role) => {
 		const manifest = makeManifest()

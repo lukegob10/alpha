@@ -15,6 +15,7 @@ import {
 	normalizeAssistantMessageMetadata,
 	toolNames,
 	type AssistantMessageMetadata,
+	type Personality,
 	type SubagentContextManifest,
 	type SubagentContextRuntimePolicy,
 	type SubagentForkTurns,
@@ -116,6 +117,8 @@ export interface CaptureSubagentContextInput {
 		effectiveText: string
 		sources: readonly SubagentContextInstructionSourceInput[]
 	}
+	/** Captured independently of model/provider selection; missing historical values retain the default. */
+	personality?: Personality
 	/** Skills must already be filtered for the child's effective mode. */
 	skills: readonly SubagentContextSkillInput[]
 	cwd: string
@@ -269,16 +272,23 @@ function redactCredentialText(text: string): string {
 function sanitizeEvidenceText(text: string, classifyRuntimeRecord = false): string {
 	const normalized = normalizeEvidenceText(text)
 	if (classifyRuntimeRecord && isRuntimeOnlyTextRecord(normalized)) return ""
-	const preserveEnvironmentLiteral = !classifyRuntimeRecord || DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN.test(normalized)
+	const hasHumanEnvelope = DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN.test(normalized)
+	const preserveEnvironmentLiteral = !classifyRuntimeRecord || hasHumanEnvelope
 
-	const withoutRuntimeContext = (
-		preserveEnvironmentLiteral ? normalized : normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n")
-	).replace(SYSTEM_REMINDER_PATTERN, "\n")
+	const withoutEnvironmentContext = preserveEnvironmentLiteral
+		? normalized
+		: normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n")
+	// A human can ask about literal protocol markup. The envelope establishes
+	// its provenance; only structured tool blocks can be replayed as tool calls.
+	const withoutRuntimeContext = hasHumanEnvelope
+		? withoutEnvironmentContext
+		: withoutEnvironmentContext
+				.replace(SYSTEM_REMINDER_PATTERN, "\n")
+				.replace(TOOL_MARKUP_BLOCK_PATTERN, "\n")
+				.replace(TOOL_MARKUP_SELF_CLOSING_PATTERN, "\n")
+				.replace(FUNCTION_MARKUP_PATTERN, "\n")
 
 	return redactCredentialText(withoutRuntimeContext)
-		.replace(TOOL_MARKUP_BLOCK_PATTERN, "\n")
-		.replace(TOOL_MARKUP_SELF_CLOSING_PATTERN, "\n")
-		.replace(FUNCTION_MARKUP_PATTERN, "\n")
 		.replace(/[ \t]+\n/g, "\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()
@@ -1057,6 +1067,7 @@ function expectedContextRefs(manifest: Omit<SubagentContextManifest, "contextRef
 	return uniqueSorted([
 		...manifest.selectedUserTurns.refs.map(({ ref }) => ref),
 		`instructions:${manifest.instructions.digest}`,
+		...(manifest.personality === undefined ? [] : [`personality:${digestValue(manifest.personality)}`]),
 		...manifest.instructions.sources.map(
 			({ ref, digest }) => `instruction-source:${encodeURIComponent(ref)}:${digest}`,
 		),
@@ -1148,6 +1159,7 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 			digest: digestValue(input.instructions.effectiveText),
 			sources,
 		},
+		...(input.personality === undefined ? {} : { personality: input.personality }),
 		skills,
 		modelRoute: sanitizeModelRoute(input.modelRoute),
 		runtimePolicy,

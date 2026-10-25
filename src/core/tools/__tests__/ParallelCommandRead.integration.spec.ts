@@ -208,6 +208,80 @@ async function commandFixture(
 }
 
 describe("command reads through the built-in registry and real subprocesses", () => {
+	it.each(["explore", "review", "worker"] as const)(
+		"keeps a captured execute=false %s child on the trusted rg reader",
+		async (role) => {
+			const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `alpha-readonly-${role}-`)))
+			let fixture: Awaited<ReturnType<typeof commandFixture>> | undefined
+			try {
+				await fs.mkdir(path.join(root, "src"))
+				await fs.writeFile(path.join(root, "src", "sample.txt"), "needle owned read\n")
+				fixture = await commandFixture(root, `readonly-reader-${role}`)
+				const { task, host, provider } = fixture
+				Object.assign(task, {
+					taskKind: "subagent",
+					subagentRole: role,
+					subagentContextManifest: {
+						skills: [],
+						runtimePolicy: { role, read: true, execute: false, allowedTools: ["exec_command"] },
+					},
+					getTaskAllowedToolNames: Task.prototype.getTaskAllowedToolNames,
+					getTaskToolDenialReason: Task.prototype.getTaskToolDenialReason,
+					getTaskCommandDenialReason: Task.prototype.getTaskCommandDenialReason,
+					isWorkerEditTool: Task.prototype["isWorkerEditTool"],
+				})
+				host.taskKind = "subagent"
+				const surface = createTaskToolSurface({
+					registry: new ToolRegistry(),
+					mode: "code",
+					cwd: root,
+					taskKind: "subagent",
+					allowedToolNames: ["exec_command"],
+				})
+				const effects = vi.fn()
+				const outcome = await new ToolScheduler({
+					executionHost: host,
+					registry: surface.registry,
+					policy: surface.policy,
+					mode: "code",
+					executionMode: "selective-parallel",
+					onEffectStart: effects,
+				}).run([
+					{
+						type: "tool_call",
+						id: "audited-read",
+						name: "exec_command",
+						arguments: { cmd: "rg -n needle src/sample.txt", yield_time_ms: 10_000 },
+					},
+					{
+						type: "tool_call",
+						id: "ordinary-shell",
+						name: "exec_command",
+						arguments: { cmd: "echo should-not-launch" },
+					},
+				])
+
+				expect(outcome.results.map(({ callId, status }) => [callId, status])).toEqual([
+					["audited-read", "success"],
+					["ordinary-shell", "denied"],
+				])
+				expect(outcome.results[0].content).toContain("needle owned read")
+				expect(outcome.results[0].exitCode).toBe(0)
+				expect(host.askApproval).toHaveBeenCalledOnce()
+				expect(effects).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "audited-read" }))
+				expect(host.userMessageContent).toEqual([
+					expect.objectContaining({ tool_use_id: "audited-read", is_error: false }),
+					expect.objectContaining({ tool_use_id: "ordinary-shell", is_error: true }),
+				])
+				expect(provider.reservePrimaryMutation).not.toHaveBeenCalled()
+				expect(await fs.readFile(path.join(root, "src", "sample.txt"), "utf8")).toBe("needle owned read\n")
+			} finally {
+				await fixture?.dispose()
+				await fs.rm(root, { recursive: true, force: true })
+			}
+		},
+	)
+
 	it("archives 400 real rg lines before assistant durability and commits their shared collector once afterward", async () => {
 		const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-prepared-held-tail-")))
 		const root = path.join(directory, "workspace")

@@ -13,6 +13,7 @@ import {
 	CODEX_PROMPT_SOURCE_RETRIEVED_AT,
 	DEFAULT_CODEX_MODEL_PROMPT,
 	resolveCodexModelPrompt,
+	stripCodexModelPersonality,
 } from "../codex-model-instructions"
 
 const codexModelIds = [
@@ -121,6 +122,24 @@ describe("pinned Codex model instructions", () => {
 		expect(resolveCodexModelPrompt("custom-gpt-5.6-sol-wrapper").isFallback).toBe(true)
 	})
 
+	it.each(codexModelIds)("keeps model %s unchanged with the default personality", (modelId, promptSlug) => {
+		expect(resolveCodexModelPrompt(modelId, "default").instructions).toBe(CODEX_MODEL_INSTRUCTIONS[promptSlug])
+	})
+
+	it.each(["gpt-6.1-sol", "gpt-5.6-sol", "claude-sonnet-4.6"])(
+		"omits only the selected catalog's personality section for model %s",
+		(modelId) => {
+			const original = resolveCodexModelPrompt(modelId)
+			const omitted = resolveCodexModelPrompt(modelId, "none")
+
+			expect(omitted).toEqual({ ...original, instructions: stripCodexModelPersonality(original.instructions) })
+			expect(omitted.instructions).not.toContain("# Personality\n")
+			expect(omitted.instructions).toContain("# Working with the user")
+			expect(omitted.instructions).toContain("# Rules for getting work done")
+			expect(resolveCodexModelPrompt(modelId).instructions).toBe(original.instructions)
+		},
+	)
+
 	it("keeps every embedded prompt byte-for-byte equal to its pinned source digest", () => {
 		for (const [slug, expectedDigest] of Object.entries(pinnedSourceSha256)) {
 			const instructions = CODEX_MODEL_INSTRUCTIONS[slug as keyof typeof pinnedSourceSha256]
@@ -138,5 +157,39 @@ describe("pinned Codex model instructions", () => {
 		// The previous Alpha-only base prompt measured 2,158 o200k tokens.
 		expect(tokenCount).toBe(3552)
 		expect(tokenCount).toBeGreaterThan(2158)
+	})
+})
+
+describe("Codex built-in personality section", () => {
+	it.each([
+		[
+			"Intro\n\n# Personality\n\nRemove me\n\n## Writing style\n\nRemove me too\n\n# Safety\n\nKeep me",
+			"Intro\n\n# Safety\n\nKeep me",
+		],
+		["Intro\n\n# Personality\n\nRemove me", "Intro\n\n"],
+		["# Personality", ""],
+		["# Personality\nRemove me\n#\nKeep me", "#\nKeep me"],
+		["# Personality\nRemove me\n#\tSafety\nKeep me", "#\tSafety\nKeep me"],
+		[
+			"Intro\r\n\r\n# Personality\r\n\r\nRemove me\r\n\r\n## Writing style\r\n\r\nRemove me too\r\n\r\n# General\r\n\r\nKeep me",
+			"Intro\r\n\r\n# General\r\n\r\nKeep me",
+		],
+		[
+			"# Personality\nRemove me\n# General\nKeep me\n# Personality\nKeep this later section",
+			"# General\nKeep me\n# Personality\nKeep this later section",
+		],
+	])("removes the first exact section through the next H1: %j", (instructions, expected) => {
+		expect(stripCodexModelPersonality(instructions)).toBe(expected)
+	})
+
+	it.each([
+		"",
+		"Intro\nNo personality section",
+		"Intro\n\n## Personality\n\nKeep me",
+		"Intro\n\n# Personality \n\nKeep me",
+		"Intro\n\n # Personality\n\nKeep me",
+		"# Personality\r",
+	])("preserves text without the exact catalog heading: %j", (instructions) => {
+		expect(stripCodexModelPersonality(instructions)).toBe(instructions)
 	})
 })

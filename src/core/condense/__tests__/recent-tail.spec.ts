@@ -215,6 +215,52 @@ describe("exact recent working set", () => {
 		expect(tail).toMatchObject({ startIndex: messages.length, tokens: 0, newestStepTooLarge: true })
 	})
 
+	it.each(["plain", "structured"] as const)(
+		"excludes host-only evidence from %s provider history counts",
+		async (representation) => {
+			const provider = new SummaryProvider()
+			const responseText = "The provider sees this response once. ".repeat(100)
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "<user_message>Keep the API unchanged.</user_message>" },
+				{
+					role: "assistant",
+					content: representation === "plain" ? responseText : [{ type: "text", text: responseText }],
+					...{ vscodeLmStatefulMarker: "opaque-provider-state" },
+					reasoning_details: [{ type: "reasoning.encrypted", data: "signed-reasoning" }],
+				},
+			]
+			const decorated: ApiMessage[] = [
+				{
+					...messages[0],
+					ts: 1,
+					input_origin: "human",
+					queued_message_ids: ["accepted-input"],
+					agent_message_id: "delivered-inbox-message",
+					condenseCopyParent: "producing-summary",
+					hook_prompt: {
+						event: "Stop",
+						fragments: [{ hook_run_id: "hook-1", text: "Recheck the result." }],
+					},
+				},
+				{
+					...messages[1],
+					ts: 2,
+					agentResponseItems: [{ type: "text", text: responseText }],
+					agentResponseOutcome: { status: "completed", reason: "Host lifecycle receipt" },
+					goal_usage_receipts: [
+						{ goalTaskId: "task", goalId: "goal", eventId: "step-1", tokens: 1000, timeMs: 300 },
+					],
+				},
+			]
+			const before = structuredClone(decorated)
+			expect(await countHistoryTokens(decorated, provider)).toBe(await countHistoryTokens(messages, provider))
+			expect(await countContextTokens(decorated, provider, "System policy")).toBe(
+				await countContextTokens(messages, provider, "System policy"),
+			)
+			expect(decorated).toEqual(before)
+		},
+	)
+
 	it("counts the full envelope of standalone reasoning in final provider input", async () => {
 		const provider = new SummaryProvider()
 		const reasoning = {
@@ -436,6 +482,7 @@ describe("exact recent working set", () => {
 		)
 		expect(result.newContextTokens).toBeLessThanOrEqual(result.targetContextTokens!)
 		expect(result.newContextTokens).toBeLessThan(result.prevContextTokens!)
+		expect(cleanupAfterTruncation(result.messages.filter((message) => !message.isSummary))).toEqual(messages)
 	})
 
 	it("summarizes an oversized newest transaction as a whole with an explicit fallback notice", async () => {
@@ -488,6 +535,62 @@ describe("exact recent working set", () => {
 		expect(getEffectiveApiHistory(rewound)).toEqual(messages.slice(0, 2))
 		const restored = cleanupAfterTruncation(reloaded.filter((message) => !message.isSummary))
 		expect(restored).toEqual(messages)
+	})
+
+	it.each(["summary deletion", "timestamp rewind"])(
+		"removes carried user copies with their producing summary after %s and reload",
+		async (operation) => {
+			const messages = history()
+			messages[0] = {
+				...messages[0],
+				content: [{ type: "text", text: "<user_message>Investigate without changing the API.</user_message>" }],
+			}
+			const result = await summarizeConversation(options(messages))
+			expect(result.status).toBe("reduced")
+			expect(result.messages.filter((message) => message.condenseCopyParent === result.condenseId)).toHaveLength(
+				1,
+			)
+			const reloaded: ApiMessage[] = JSON.parse(JSON.stringify(result.messages))
+			const projected = reloaded.filter((message) =>
+				operation === "summary deletion" ? !message.isSummary : (message.ts ?? 0) < 3,
+			)
+			expect(getEffectiveApiHistory(projected).some((message) => message.condenseCopyParent)).toBe(false)
+			const restored = cleanupAfterTruncation(projected)
+			expect(restored).toEqual(operation === "summary deletion" ? messages : messages.slice(0, 2))
+			expect(cleanupAfterTruncation(restored)).toEqual(restored)
+		},
+	)
+
+	it("restores the preceding summary and its user copies after repeated compaction and reload", async () => {
+		const messages = history()
+		messages[0] = {
+			...messages[0],
+			content: [{ type: "text", text: "<user_message>Keep the API unchanged.</user_message>" }],
+		}
+		const provider = new SummaryProvider()
+		const first = await summarizeConversation(options(messages, provider))
+		const followUp: ApiMessage[] = [
+			{ role: "assistant", content: "Newer investigation. ".repeat(1000), ts: 7 },
+			{
+				role: "user",
+				content: [{ type: "text", text: "<user_message>Continue with that result.</user_message>" }],
+				ts: 8,
+			},
+		]
+		const beforeSecond = [...first.messages, ...followUp]
+		const second = await summarizeConversation({
+			...options(beforeSecond, provider),
+			recentTailTokenBudget: 0,
+		})
+		expect(first.status).toBe("reduced")
+		expect(second.status).toBe("reduced")
+		expect(second.messages.filter((message) => message.condenseCopyParent === second.condenseId)).toHaveLength(2)
+		const reloaded: ApiMessage[] = JSON.parse(JSON.stringify(second.messages))
+		const previous = cleanupAfterTruncation(reloaded.filter((message) => message.condenseId !== second.condenseId))
+		expect(getEffectiveApiHistory(previous)).toEqual(getEffectiveApiHistory(beforeSecond))
+		expect(cleanupAfterTruncation(previous)).toEqual(previous)
+		const original = cleanupAfterTruncation(reloaded.filter((message) => !message.isSummary))
+		expect(original).toEqual([...messages, ...followUp])
 	})
 
 	it("recompacts an oversized saved summary without requiring new messages", async () => {

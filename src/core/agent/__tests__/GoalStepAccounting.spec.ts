@@ -87,6 +87,96 @@ describe("goal receipts from existing provider usage", () => {
 		expect(await reloaded.get()).toMatchObject({ tokensUsed: 70, timeUsedMs: 300, recoveryDeferred: true })
 	})
 
+	it.each([true, false])(
+		"keeps failed response and elapsed receipts disjoint during replay with root accounting %s",
+		async (accountElapsed) => {
+			vi.useFakeTimers()
+			vi.setSystemTime(1_000)
+			const store = new MemoryStore()
+			const controller = new GoalController({ taskId: "root", store, newId: () => "goal" })
+			await controller.create({ objective: "Finish the work." }, "user")
+			const step: GoalStepAccounting = {
+				controller,
+				goalId: "goal",
+				goalTaskId: "root",
+				controlVersion: 1,
+				requestGeneration: controller.getRequestGeneration(),
+				eventId: "failed-response-step",
+				startedAt: 900,
+				accountElapsed,
+			}
+			vi.spyOn(store, "transact").mockRejectedValueOnce(new Error("Usage write failed"))
+			await expect(accountGoalResponse(step, response)).rejects.toThrow("Usage write failed")
+			const responseReceipt = structuredClone(step.usageReceipt!)
+			vi.setSystemTime(1_200)
+			await finishGoalStep(step)
+			expect(step.usageReceipt).toEqual(responseReceipt)
+			expect(step.elapsedReceipt?.timeMs).toBe(accountElapsed ? 200 : 0)
+
+			const reloaded = new GoalController({ taskId: "root", store })
+			for (const receipt of [step.usageReceipt!, step.elapsedReceipt!, step.usageReceipt!]) {
+				await reloaded.recordUsage(receipt.eventId, receipt.tokens, receipt.timeMs, receipt.goalId)
+			}
+			expect(await reloaded.get()).toMatchObject({ tokensUsed: 70, timeUsedMs: accountElapsed ? 300 : 0 })
+		},
+	)
+
+	it("preserves the frozen response interval when its billing is retried before step release", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(1_000)
+		const store = new MemoryStore()
+		const controller = new GoalController({ taskId: "root", store, newId: () => "goal" })
+		await controller.create({ objective: "Finish the work." }, "user")
+		const step: GoalStepAccounting = {
+			controller,
+			goalId: "goal",
+			goalTaskId: "root",
+			controlVersion: 1,
+			requestGeneration: controller.getRequestGeneration(),
+			eventId: "retried-response-step",
+			startedAt: 900,
+			accountElapsed: true,
+		}
+		vi.spyOn(store, "transact").mockRejectedValueOnce(new Error("Usage write failed"))
+		await expect(accountGoalResponse(step, response)).rejects.toThrow("Usage write failed")
+		const responseReceipt = structuredClone(step.usageReceipt!)
+		vi.setSystemTime(1_100)
+		await accountGoalResponse(step, response)
+		expect(step.usageReceipt).toEqual(responseReceipt)
+		vi.setSystemTime(1_200)
+		await finishGoalStep(step)
+		expect(step.elapsedReceipt?.timeMs).toBe(200)
+		expect(await controller.get()).toMatchObject({ tokensUsed: 70, timeUsedMs: 300 })
+	})
+
+	it("retries a failed elapsed settlement with the same frozen receipt", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(1_000)
+		const store = new MemoryStore()
+		const controller = new GoalController({ taskId: "root", store, newId: () => "goal" })
+		await controller.create({ objective: "Finish the work." }, "user")
+		const step: GoalStepAccounting = {
+			controller,
+			goalId: "goal",
+			goalTaskId: "root",
+			controlVersion: 1,
+			requestGeneration: controller.getRequestGeneration(),
+			eventId: "retried-elapsed-step",
+			startedAt: 900,
+			accountElapsed: true,
+		}
+		await accountGoalResponse(step, response)
+		vi.setSystemTime(1_200)
+		vi.spyOn(store, "transact").mockRejectedValueOnce(new Error("Elapsed write failed"))
+		await expect(finishGoalStep(step)).rejects.toThrow("Elapsed write failed")
+		const elapsedReceipt = structuredClone(step.elapsedReceipt!)
+		vi.setSystemTime(1_300)
+		await finishGoalStep(step)
+		expect(step.elapsedReceipt).toEqual(elapsedReceipt)
+		expect(step.elapsedReceipt?.timeMs).toBe(200)
+		expect(await controller.get()).toMatchObject({ tokensUsed: 70, timeUsedMs: 300 })
+	})
+
 	it("rolls descendant tokens into the captured root without charging overlapping elapsed time", async () => {
 		const controller = new GoalController({ taskId: "root", store: new MemoryStore(), newId: () => "goal" })
 		await controller.create({ objective: "Finish the work." }, "user")

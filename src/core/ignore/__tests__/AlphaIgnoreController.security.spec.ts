@@ -5,11 +5,10 @@ import type { Mock } from "vitest"
 import { AlphaIgnoreController } from "../AlphaIgnoreController"
 import * as path from "path"
 import * as fs from "fs/promises"
-import { fileExistsAtPath } from "../../../utils/fs"
+import { Stats } from "fs"
 
 // Mock dependencies
 vi.mock("fs/promises")
-vi.mock("../../../utils/fs")
 vi.mock("vscode", () => {
 	const mockDisposable = { dispose: vi.fn() }
 
@@ -34,7 +33,6 @@ vi.mock("vscode", () => {
 describe("AlphaIgnoreController Security Tests", () => {
 	const TEST_CWD = "/test/path"
 	let controller: AlphaIgnoreController
-	let mockFileExists: Mock<typeof fileExistsAtPath>
 	let mockReadFile: Mock<typeof fs.readFile>
 
 	beforeEach(async () => {
@@ -42,11 +40,10 @@ describe("AlphaIgnoreController Security Tests", () => {
 		vi.clearAllMocks()
 
 		// Setup mocks
-		mockFileExists = fileExistsAtPath as Mock<typeof fileExistsAtPath>
 		mockReadFile = fs.readFile as Mock<typeof fs.readFile>
 
 		// By default, setup .alphaignore to exist with some patterns
-		mockFileExists.mockResolvedValue(true)
+		vi.mocked(fs.lstat).mockResolvedValue(Object.create(Stats.prototype) as Stats)
 		mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**\n*.log\nprivate/")
 
 		// Create and initialize controller

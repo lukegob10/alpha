@@ -1234,6 +1234,7 @@ export class NativeToolCallParser {
 
 		const result: ToolUse = {
 			type: "tool_use" as const,
+			id,
 			name,
 			params,
 			partial,
@@ -1873,6 +1874,7 @@ export class NativeToolCallParser {
 
 			const result: ToolUse<TName> = {
 				type: "tool_use" as const,
+				id: toolCall.id,
 				name: resolvedName,
 				params,
 				partial: false, // Native tool calls are always complete when yielded

@@ -81,6 +81,7 @@ vi.mock("../../../utils/path", () => {
 // Mock fs/promises for AlphaIgnoreController
 vi.mock("fs/promises", () => ({
 	default: {
+		lstat: vi.fn().mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" })),
 		readFile: vi.fn().mockRejectedValue(new Error("File not found")), // Simulate no .gitignore/.alphaignore
 	},
 }))

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "../checkpointRestoreHandler"
 import { saveTaskMessages } from "../../task-persistence"
+import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
+import type { AlphaProvider } from "../AlphaProvider"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
@@ -14,6 +16,12 @@ vi.mock("vscode", () => ({
 		showErrorMessage: vi.fn(),
 	},
 }))
+
+function barrier() {
+	let resolve!: () => void
+	const promise = new Promise<void>((complete) => (resolve = complete))
+	return { promise, resolve }
+}
 
 describe("checkpointRestoreHandler", () => {
 	let mockProvider: any
@@ -151,6 +159,107 @@ describe("checkpointRestoreHandler", () => {
 			expect(mockAlphaTask.checkpointRestore).toHaveBeenCalledOnce()
 		})
 
+		it.each(["delete", "edit"] as const)(
+			"joins cancellation before queuing the %s restore behind a sibling mutation",
+			async (operation) => {
+				const gate = new WorkspaceMutationGate()
+				const sibling = barrier()
+				const termination = barrier()
+				const joinStarted = barrier()
+				const restoreQueued = barrier()
+				const siblingMutation = gate.run("sibling", "write", () => sibling.promise)
+				mockAlphaTask.waitForTermination.mockImplementation(() => {
+					joinStarted.resolve()
+					return termination.promise
+				})
+				mockProvider.runWorkspaceMutation.mockImplementation(
+					(...args: Parameters<AlphaProvider["runWorkspaceMutation"]>) => {
+						const [task, label, run, options] = args
+						restoreQueued.resolve()
+						return gate.run(task.taskId, label, run, () => !options?.allowStoppedTask && task.abort)
+					},
+				)
+				const restore = handleCheckpointRestoreOperation({
+					provider: mockProvider,
+					currentAlpha: mockAlphaTask,
+					messageTs: 3,
+					messageIndex: 2,
+					checkpoint: { hash: "abc123" },
+					operation,
+					editData: { editedContent: "Replacement", apiConversationHistoryIndex: 2 },
+				})
+				await joinStarted.promise
+				expect(mockProvider.runWorkspaceMutation).not.toHaveBeenCalled()
+				termination.resolve()
+				await restoreQueued.promise
+				expect(mockAlphaTask.checkpointRestore).not.toHaveBeenCalled()
+				expect(saveTaskMessages).not.toHaveBeenCalled()
+				expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+				sibling.resolve()
+				await Promise.all([siblingMutation, restore])
+				expect(mockAlphaTask.checkpointRestore).toHaveBeenCalledOnce()
+				expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledOnce()
+			},
+		)
+
+		it.each(["delete", "edit"] as const)(
+			"rejects a replaced task after the %s restore acquires the workspace gate",
+			async (operation) => {
+				const gate = new WorkspaceMutationGate()
+				const sibling = barrier()
+				const restoreQueued = barrier()
+				const siblingMutation = gate.run("sibling", "write", () => sibling.promise)
+				mockProvider.runWorkspaceMutation.mockImplementation(
+					(...args: Parameters<AlphaProvider["runWorkspaceMutation"]>) => {
+						const [task, label, run] = args
+						restoreQueued.resolve()
+						return gate.run(task.taskId, label, run)
+					},
+				)
+				const restore = handleCheckpointRestoreOperation({
+					provider: mockProvider,
+					currentAlpha: mockAlphaTask,
+					messageTs: 3,
+					messageIndex: 2,
+					checkpoint: { hash: "abc123" },
+					operation,
+					editData: { editedContent: "Replacement", apiConversationHistoryIndex: 2 },
+				})
+				const rejected = expect(restore).rejects.toThrow("The task changed")
+				await restoreQueued.promise
+				mockProvider.getLiveTask.mockReturnValue({ taskId: mockAlphaTask.taskId })
+				sibling.resolve()
+				await Promise.all([siblingMutation, rejected])
+				expect(mockAlphaTask.checkpointRestore).not.toHaveBeenCalled()
+				expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+				expect(saveTaskMessages).not.toHaveBeenCalled()
+				expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+			},
+		)
+
+		it.each(["delete", "edit"] as const)("rehydrates after releasing the %s restore gate", async (operation) => {
+			const gate = new WorkspaceMutationGate()
+			mockProvider.runWorkspaceMutation.mockImplementation(
+				(...args: Parameters<AlphaProvider["runWorkspaceMutation"]>) => {
+					const [task, label, run] = args
+					return gate.run(task.taskId, label, run)
+				},
+			)
+			mockProvider.createTaskWithHistoryItem.mockImplementation(() =>
+				gate.run(mockAlphaTask.taskId, "rehydrate", async () => ({ resumeWithEditedMessage: vi.fn() })),
+			)
+			await handleCheckpointRestoreOperation({
+				provider: mockProvider,
+				currentAlpha: mockAlphaTask,
+				messageTs: 3,
+				messageIndex: 2,
+				checkpoint: { hash: "abc123" },
+				operation,
+				editData: { editedContent: "Replacement", apiConversationHistoryIndex: 2 },
+			})
+			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledOnce()
+		})
+
 		it("should not abort task if already aborted", async () => {
 			// Simulate a task that's already aborted
 			mockAlphaTask.abort = true
@@ -284,7 +393,35 @@ describe("checkpointRestoreHandler", () => {
 			})
 
 			// Verify createTaskWithHistoryItem was called with the correct history item
-			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(expectedHistoryItem)
+			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(expectedHistoryItem, {
+				preserveExisting: true,
+				background: false,
+			})
+		})
+
+		it("keeps navigation performed while a checkpoint deletion joins cancellation", async () => {
+			const termination = barrier()
+			const joinStarted = barrier()
+			mockAlphaTask.waitForTermination.mockImplementation(() => {
+				joinStarted.resolve()
+				return termination.promise
+			})
+			const restore = handleCheckpointRestoreOperation({
+				provider: mockProvider,
+				currentAlpha: mockAlphaTask,
+				messageTs: 3,
+				messageIndex: 2,
+				checkpoint: { hash: "abc123" },
+				operation: "delete",
+			})
+			await joinStarted.promise
+			mockProvider.getCurrentTask.mockReturnValue({ taskId: "another-task" })
+			termination.resolve()
+			await restore
+			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(
+				expect.objectContaining({ id: mockAlphaTask.taskId }),
+				{ preserveExisting: true, background: true },
+			)
 		})
 
 		it("preserves the foreground task when restarting a background conversation", async () => {

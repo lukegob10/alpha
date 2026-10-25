@@ -6,7 +6,7 @@ import { promisify } from "util"
 import { createTwoFilesPatch } from "diff"
 
 import type { ToolUse } from "../../shared/tools"
-import { parsePatch } from "../tools/apply-patch/parser"
+import { getPatchPaths } from "../tools/apply-patch/parser"
 import { fingerprintContent } from "../tools/contentVersion"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
@@ -166,9 +166,7 @@ export function extractMutationPaths(block: ToolUse): string[] | undefined {
 			if (typeof patch !== "string" || Buffer.byteLength(patch) > MAX_FILE_BYTES) {
 				throw new VerificationScopeError("Mutation patch is missing or exceeds the bound")
 			}
-			paths = parsePatch(patch).hunks.flatMap((hunk) =>
-				hunk.type === "UpdateFile" && hunk.movePath ? [hunk.path, hunk.movePath] : [hunk.path],
-			)
+			paths = getPatchPaths(patch)
 			break
 		}
 		default:

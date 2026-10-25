@@ -62,6 +62,7 @@ function createTask() {
 		userMessageContent,
 		userMessageContentReady: false,
 		recordToolUsage: vi.fn(),
+		scheduleStreamingPreview: vi.fn(),
 		say: vi.fn().mockResolvedValue(undefined),
 		ask: vi.fn().mockResolvedValue({ response: "yesButtonClicked" }),
 		pushToolResultToUserContent(result: Anthropic.ToolResultBlockParam) {
@@ -173,6 +174,7 @@ describe("native streaming through the captured scheduler/registry surface", () 
 			}
 		).processNativeToolCallStreamEvents
 		processEvents.call(task, rawEvents)
+		expect(task.scheduleStreamingPreview).toHaveBeenCalledOnce()
 		expect(task.assistantMessageContent[0]).toMatchObject({
 			id,
 			type: "tool_use",

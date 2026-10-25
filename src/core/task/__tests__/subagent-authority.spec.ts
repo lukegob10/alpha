@@ -7,6 +7,42 @@ import { Task, getSubagentAllowedToolNames } from "../Task"
 
 describe("sub-agent task authority", () => {
 	it.each(["explore", "review", "worker"] as const)(
+		"permits trusted audited reads while retaining the %s shell ceiling",
+		(role) => {
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: {
+					skills: [],
+					runtimePolicy: {
+						authorityModel: "parent",
+						read: true,
+						execute: false,
+						allowedTools: ["exec_command"],
+					},
+				},
+			}) as Task
+			expect(child.getTaskCommandDenialReason("rg pattern file.ts")).toBeDefined()
+			expect(child.getTaskCommandDenialReason("rg pattern file.ts", undefined, "audited-read")).toBeUndefined()
+		},
+	)
+
+	it.each([
+		{ read: false, allowedTools: ["exec_command"] },
+		{ read: true, allowedTools: ["attempt_completion"] },
+	])("requires both read authority and a command-tool grant for audited execution: %j", (runtimePolicy) => {
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
+			subagentRole: "review",
+			subagentContextManifest: {
+				skills: [],
+				runtimePolicy: { authorityModel: "parent", execute: false, ...runtimePolicy },
+			},
+		}) as Task
+		expect(child.getTaskCommandDenialReason("rg pattern file.ts", undefined, "audited-read")).toBeDefined()
+	})
+
+	it.each(["explore", "review", "worker"] as const)(
 		"inherits the captured parent tools and command authority independently of the %s role",
 		(role) => {
 			const child = Object.assign(Object.create(Task.prototype), {
@@ -363,9 +399,19 @@ describe("sub-agent task authority", () => {
 		expect(child.getTaskToolDenialReason("write_file", { path: "outside.ts" })).toContain("not allowed")
 		expect(
 			child.getTaskToolDenialReason("apply_patch", {
-				patch: "*** Begin Patch\n*** Update File: outside.ts\n*** End Patch",
+				patch: "*** Begin Patch\n*** Update File: outside.ts\n@@\n-old\n+new\n*** End Patch",
 			}),
 		).toContain("outside")
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: "*** Begin Patch\n*** Add File: core/task/allowed.ts\n+ok\n  *** Add File: outside.ts\n+outside\n*** End Patch",
+			}),
+		).toContain("outside")
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: "*** Begin Patch\n*** Update File: outside.ts\n*** End Patch",
+			}),
+		).toContain("valid patch")
 	})
 
 	it("ignores a legacy research deadline while retaining read-only authority", () => {

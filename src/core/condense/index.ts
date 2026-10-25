@@ -294,9 +294,19 @@ function waitForOperation<T>(pending: Promise<T>, signal?: AbortSignal): Promise
 const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"content",
 	"ts",
+	// These host receipts are stripped from provider requests. Canonical response
+	// evidence contains the same output already counted through content.
+	"input_origin",
+	"queued_message_ids",
+	"agent_message_id",
+	"hook_prompt",
+	"goal_usage_receipts",
+	"agentResponseItems",
+	"agentResponseOutcome",
 	"isSummary",
 	"condenseId",
 	"condenseParent",
+	"condenseCopyParent",
 	"isTruncationMarker",
 	"truncationId",
 	"truncationParent",
@@ -466,6 +476,7 @@ function createVerbatimUserMessage(
 	}
 	delete message.condenseId
 	delete message.condenseParent
+	delete message.condenseCopyParent
 	delete message.isSummary
 	delete message.isTruncationMarker
 	delete message.truncationId
@@ -1288,6 +1299,7 @@ ${commandBlocks}
 
 	// Generate a unique condenseId for this summary
 	const condenseId = crypto.randomUUID()
+	const carriedUserMessages = verbatimUserMessages.map((message) => ({ ...message, condenseCopyParent: condenseId }))
 
 	// Creation time stays newer than every original record even though the summary
 	// is inserted before the tail. Timestamp-based rewind then restores the prefix.
@@ -1302,7 +1314,7 @@ ${commandBlocks}
 	}
 
 	const newContextTokens = await countContextTokens(
-		[summaryMessage, ...verbatimUserMessages, ...retainedMessages],
+		[summaryMessage, ...carriedUserMessages, ...retainedMessages],
 		apiHandler,
 		systemPrompt,
 		metadata,
@@ -1334,7 +1346,7 @@ ${commandBlocks}
 	const newMessages = messages.map((msg) =>
 		prefix.has(msg) && !msg.condenseParent ? { ...msg, condenseParent: condenseId } : msg,
 	)
-	newMessages.splice(insertIndex, 0, summaryMessage, ...verbatimUserMessages)
+	newMessages.splice(insertIndex, 0, summaryMessage, ...carriedUserMessages)
 	return finish(
 		{
 			messages: newMessages,
@@ -1383,30 +1395,30 @@ export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[
  */
 export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
 	const lastSummary = findLast(messages, (msg) => msg.isSummary === true)
+	const existingSummaryIds = new Set<string>()
+	for (const msg of messages) {
+		if (msg.isSummary && msg.condenseId) existingSummaryIds.add(msg.condenseId)
+	}
 	// Filter orphan results against the fresh-start history before truncation and
 	// again afterward: a truncation marker can hide the only matching call.
 	const activeMessages = lastSummary
 		? filterOrphanToolResults(messages.slice(messages.indexOf(lastSummary)))
 		: messages
 
-	const existingSummaryIds = new Set<string>()
 	const existingTruncationIds = new Set<string>()
 	for (const msg of activeMessages) {
-		// Fresh starts already exclude earlier summaries. Retain legacy marker
-		// filtering only when no fresh-start boundary exists.
-		if (!lastSummary && msg.isSummary && msg.condenseId) {
-			existingSummaryIds.add(msg.condenseId)
-		}
 		if (msg.isTruncationMarker && msg.truncationId) {
 			existingTruncationIds.add(msg.truncationId)
 		}
 	}
 
-	// Deleted markers restore their messages when the user rewinds.
+	// Deleted markers restore originals; carried user copies belong to the summary
+	// that produced them and must disappear with it, including before cleanup runs.
 	return filterOrphanToolResults(
 		activeMessages.filter(
 			(msg) =>
-				!(msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) &&
+				!(msg.condenseCopyParent && !existingSummaryIds.has(msg.condenseCopyParent)) &&
+				!(!lastSummary && msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) &&
 				!(msg.truncationParent && existingTruncationIds.has(msg.truncationParent)),
 		),
 	)
@@ -1438,37 +1450,40 @@ export function cleanupAfterTruncation(messages: ApiMessage[]): ApiMessage[] {
 		}
 	}
 
-	// Clear orphaned parent references for messages whose summary or truncation marker was deleted
-	return messages.map((msg) => {
-		let needsUpdate = false
+	// Copies are derived records, so rewind removes them instead of reactivating
+	// them alongside their originals. Legacy records without ownership stay intact.
+	return messages
+		.filter((msg) => !msg.condenseCopyParent || existingSummaryIds.has(msg.condenseCopyParent))
+		.map((msg) => {
+			let needsUpdate = false
 
-		// Check for orphaned condenseParent
-		if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
-			needsUpdate = true
-		}
-
-		// Check for orphaned truncationParent
-		if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
-			needsUpdate = true
-		}
-
-		if (needsUpdate) {
-			// Create a new object without orphaned parent references
-			const { condenseParent, truncationParent, ...rest } = msg
-			const result: ApiMessage = rest as ApiMessage
-
-			// Keep condenseParent if its summary still exists
-			if (condenseParent && existingSummaryIds.has(condenseParent)) {
-				result.condenseParent = condenseParent
+			// Check for orphaned condenseParent
+			if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
+				needsUpdate = true
 			}
 
-			// Keep truncationParent if its truncation marker still exists
-			if (truncationParent && existingTruncationIds.has(truncationParent)) {
-				result.truncationParent = truncationParent
+			// Check for orphaned truncationParent
+			if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
+				needsUpdate = true
 			}
 
-			return result
-		}
-		return msg
-	})
+			if (needsUpdate) {
+				// Create a new object without orphaned parent references
+				const { condenseParent, truncationParent, ...rest } = msg
+				const result: ApiMessage = rest as ApiMessage
+
+				// Keep condenseParent if its summary still exists
+				if (condenseParent && existingSummaryIds.has(condenseParent)) {
+					result.condenseParent = condenseParent
+				}
+
+				// Keep truncationParent if its truncation marker still exists
+				if (truncationParent && existingTruncationIds.has(truncationParent)) {
+					result.truncationParent = truncationParent
+				}
+
+				return result
+			}
+			return msg
+		})
 }

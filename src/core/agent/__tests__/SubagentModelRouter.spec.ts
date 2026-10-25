@@ -1,6 +1,7 @@
-import type { ProviderSettingsWithId } from "@alpha-code/types"
+import type { ProviderSettingsWithId, TaskReasoningPreference } from "@alpha-code/types"
 
 import { resolveSubagentModelRoute } from "../SubagentModelRouter"
+import { resolveTaskReasoning } from "../TaskReasoning"
 
 const profiles: Array<ProviderSettingsWithId & { name: string }> = [
 	{
@@ -38,6 +39,142 @@ const loader = {
 const parentApiConfiguration = profiles[0]
 
 describe("resolveSubagentModelRoute", () => {
+	it("captures the invoking task preference before an awaited profile lookup", async () => {
+		const preference: TaskReasoningPreference = { kind: "effort", effort: "high" }
+		let release!: (profile: (typeof profiles)[number]) => void
+		const profile = new Promise<(typeof profiles)[number]>((resolve) => (release = resolve))
+		const pending = resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			parentApiConfigName: "Parent",
+			parentReasoningPreference: preference,
+			profileLoader: { getProfile: () => profile },
+		})
+		preference.effort = "low"
+		release(profiles[0])
+		const result = await pending
+
+		expect(result.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
+		expect(result.reasoningPreference).not.toBe(preference)
+		expect(result.apiConfiguration).not.toHaveProperty("reasoningEffort")
+	})
+
+	it.each([
+		{ label: "inherited choice", overrides: {}, effort: "high" },
+		{ label: "explicit spawn effort", overrides: { requestedReasoningEffort: "low" }, effort: "low" },
+		{ label: "default agent effort", overrides: { defaultReasoningEffort: "low" }, effort: "low" },
+		{
+			label: "configured agent effort applied last",
+			overrides: { requestedReasoningEffort: "low", agentReasoningEffort: "medium" },
+			effort: "medium",
+		},
+	] as const)("keeps $label in the effective child request", async ({ overrides, effort }) => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			parentReasoningPreference: { kind: "effort", effort: "high" },
+			profileLoader: loader,
+			...overrides,
+		})
+		const resolved = resolveTaskReasoning(result.apiConfiguration, result.reasoningPreference, {
+			id: "parent-model",
+			info: {
+				contextWindow: 128_000,
+				supportsPromptCache: false,
+				supportsReasoningEffort: ["low", "medium", "high"],
+				reasoningEffort: "medium",
+			},
+		})
+
+		expect(resolved.state.effective).toEqual({ kind: "effort", effort })
+	})
+
+	it.each(["requestedModelId", "defaultModelId"] as const)(
+		"uses the selected model default instead of the parent task override for %s",
+		async (selection) => {
+			const result = await resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration,
+				parentReasoningPreference: { kind: "effort", effort: "high" },
+				profileLoader: loader,
+				[selection]: "parent-model",
+			})
+
+			expect(result.reasoningPreference).toEqual({ kind: "default" })
+			expect(result.apiConfiguration.reasoningEffort).toBeUndefined()
+			expect(result.apiConfiguration.enableReasoningEffort).toBeUndefined()
+		},
+	)
+
+	it("retains a captured task choice when a configured agent changes only the model", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			parentReasoningPreference: { kind: "effort", effort: "high" },
+			profileLoader: loader,
+			agentModelId: "configured-model",
+			resolveModelDefaultReasoningEffort: async () => "medium",
+		})
+
+		expect(result.apiConfiguration.openAiModelId).toBe("configured-model")
+		expect(result.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
+	})
+
+	it("preserves an omitted VS Code LM Default without materializing a request override", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { id: "copilot-model" },
+				reasoningEffort: "low",
+			},
+			profileLoader: loader,
+		})
+		const resolved = resolveTaskReasoning(result.apiConfiguration, result.reasoningPreference, {
+			id: "copilot-model",
+			info: {
+				contextWindow: 128_000,
+				supportsPromptCache: false,
+				supportsReasoningEffort: ["low", "high"],
+				reasoningEffort: "low",
+			},
+		})
+
+		expect(result.reasoningPreference).toEqual({ kind: "default" })
+		expect(resolved.configuration).toBe(result.apiConfiguration)
+		expect(resolved.state.effective).toEqual({ kind: "default" })
+		expect(resolved.configuration.enableReasoningEffort).toBeUndefined()
+	})
+
+	it("inherits a captured custom-token choice without writing it into the provider profile", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: { apiProvider: "stellar", apiModelId: "stellar-model" },
+			parentReasoningPreference: { kind: "custom", value: "captured_custom" },
+			profileLoader: loader,
+		})
+		const resolved = resolveTaskReasoning(result.apiConfiguration, result.reasoningPreference, {
+			id: "stellar-model",
+			info: { contextWindow: 128_000, supportsPromptCache: false },
+		})
+
+		expect(result.reasoningPreference).toEqual({ kind: "custom", value: "captured_custom" })
+		expect(result.apiConfiguration).not.toHaveProperty("taskReasoningCustomEffort")
+		expect(resolved.configuration.taskReasoningCustomEffort).toBe("captured_custom")
+	})
+
+	it("uses an explicitly selected provider profile instead of the parent task preference", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "review",
+			parentApiConfiguration,
+			parentReasoningPreference: { kind: "effort", effort: "high" },
+			defaultProfileId: "default-id",
+			profileLoader: loader,
+		})
+
+		expect(result.reasoningPreference).toEqual({ kind: "default" })
+	})
+
 	it("inherits model and effort unless a default explicitly selects a model", async () => {
 		const parent = { ...parentApiConfiguration, reasoningEffort: "high" as const, enableReasoningEffort: true }
 		const inherited = await resolveSubagentModelRoute({

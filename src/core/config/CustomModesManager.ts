@@ -19,9 +19,13 @@ import {
 import { logger } from "../../utils/logging"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { ensureSettingsDirectoryExists } from "../../utils/globalContext"
+import { atomicWriteText, withFileLock } from "../task-persistence/atomicWrite"
 import { t } from "../../i18n"
 
 const ALPHAMODES_FILENAME = ".alphamodes"
+
+const hasErrorCode = (error: unknown, code: string): boolean =>
+	typeof error === "object" && error !== null && "code" in error && error.code === code
 
 // Type definitions for import/export functionality
 interface RuleFile {
@@ -78,6 +82,39 @@ export class CustomModesManager {
 		return result
 	}
 
+	private async resolveSettingsFilePath(filePath: string): Promise<string> {
+		try {
+			return await fs.realpath(filePath)
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) {
+				try {
+					// A dangling link is existing settings, not permission to create over its alias.
+					await fs.lstat(filePath)
+				} catch (metadataError) {
+					if (hasErrorCode(metadataError, "ENOENT")) {
+						try {
+							return path.join(await fs.realpath(path.dirname(filePath)), path.basename(filePath))
+						} catch {
+							// A missing or unreadable parent cannot establish a safe write identity.
+						}
+					}
+				}
+			}
+			throw new Error(t("common:customModes.errors.settingsResolveFailed", { path: filePath }))
+		}
+	}
+
+	private async withSettingsFileWrite(filePath: string, operation: (resolvedPath: string) => Promise<void>) {
+		const resolvedPath = await this.resolveSettingsFilePath(filePath)
+		// The canonical file lease is shared by sidebar/editor managers and other extension windows.
+		await withFileLock(resolvedPath, async () => {
+			if ((await this.resolveSettingsFilePath(filePath)) !== resolvedPath) {
+				throw new Error(t("common:customModes.errors.settingsConflict", { path: filePath }))
+			}
+			await operation(resolvedPath)
+		})
+	}
+
 	private async getWorkspaceAlphaModes(): Promise<string | undefined> {
 		const workspaceFolders = vscode.workspace.workspaceFolders
 
@@ -132,15 +169,15 @@ export class CustomModesManager {
 	/**
 	 * Parse YAML content with enhanced error handling and preprocessing
 	 */
-	private parseYamlSafely(content: string, filePath: string): any {
+	private parseYamlSafely(content: string, filePath: string, requireValid = false): any {
 		// Clean the content
 		let cleanedContent = stripBom(content)
 		cleanedContent = this.cleanInvisibleCharacters(cleanedContent)
 
 		try {
 			const parsed = yaml.parse(cleanedContent)
-			// Ensure we never return null or undefined
-			return parsed ?? {}
+			// Display reads stay tolerant; mutations must validate the original document shape.
+			return requireValid ? parsed : (parsed ?? {})
 		} catch (yamlError) {
 			// For .alphamodes files, try JSON as fallback
 			if (filePath.endsWith(ALPHAMODES_FILENAME)) {
@@ -148,6 +185,8 @@ export class CustomModesManager {
 					// Try parsing the original content as JSON (not the cleaned content)
 					return JSON.parse(content)
 				} catch (jsonError) {
+					if (requireValid)
+						throw new Error(t("common:customModes.errors.settingsParseFailed", { path: filePath }))
 					// JSON also failed, show the original YAML error
 					const errorMsg = yamlError instanceof Error ? yamlError.message : String(yamlError)
 					console.error(`[CustomModesManager] Failed to parse YAML from ${filePath}:`, errorMsg)
@@ -160,6 +199,7 @@ export class CustomModesManager {
 					return {}
 				}
 			}
+			if (requireValid) throw new Error(t("common:customModes.errors.settingsParseFailed", { path: filePath }))
 
 			// For non-.alphamodes files, just log and return empty object
 			const errorMsg = yamlError instanceof Error ? yamlError.message : String(yamlError)
@@ -242,7 +282,11 @@ export class CustomModesManager {
 		if (!fileExists) {
 			const creation =
 				this.settingsFileCreation ??
-				fs.writeFile(filePath, yaml.stringify({ customModes: [] }, { lineWidth: 0 }))
+				fs
+					.writeFile(filePath, yaml.stringify({ customModes: [] }, { lineWidth: 0 }), { flag: "wx" })
+					.catch((error) => {
+						if (!hasErrorCode(error, "EEXIST")) throw error
+					})
 			this.settingsFileCreation = creation
 			try {
 				await creation
@@ -474,34 +518,29 @@ export class CustomModesManager {
 	}
 
 	private async updateModesInFile(filePath: string, operation: (modes: ModeConfig[]) => ModeConfig[]): Promise<void> {
-		let content = "{}"
-
-		try {
-			content = await fs.readFile(filePath, "utf-8")
-		} catch (error) {
-			// File might not exist yet.
-			content = yaml.stringify({ customModes: [] }, { lineWidth: 0 })
-		}
-
-		let settings
-
-		try {
-			settings = this.parseYamlSafely(content, filePath)
-		} catch (error) {
-			// Error already logged in parseYamlSafely
-			settings = { customModes: [] }
-		}
-
-		// Ensure settings is an object and has customModes property
-		if (!settings || typeof settings !== "object") {
-			settings = { customModes: [] }
-		}
-		if (!settings.customModes) {
-			settings.customModes = []
-		}
-
-		settings.customModes = operation(settings.customModes)
-		await fs.writeFile(filePath, yaml.stringify(settings, { lineWidth: 0 }), "utf-8")
+		await this.withSettingsFileWrite(filePath, async (resolvedPath) => {
+			let content = ""
+			try {
+				content = await fs.readFile(resolvedPath, "utf-8")
+			} catch (error) {
+				if (!hasErrorCode(error, "ENOENT")) {
+					throw new Error(t("common:customModes.errors.settingsReadFailed", { path: filePath }))
+				}
+			}
+			const settings = content.trim() ? this.parseYamlSafely(content, filePath, true) : {}
+			if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+				throw new Error(t("common:customModes.errors.settingsInvalid", { path: filePath }))
+			}
+			const modes = settings.customModes === undefined ? [] : settings.customModes
+			if (!Array.isArray(modes) || !customModesSettingsSchema.safeParse({ customModes: modes }).success) {
+				throw new Error(t("common:customModes.errors.settingsInvalid", { path: filePath }))
+			}
+			// Validate without replacing the original objects, preserving unknown saved fields.
+			settings.customModes = operation(modes)
+			await atomicWriteText(resolvedPath, yaml.stringify(settings, { lineWidth: 0 }), {
+				requireAtomicReplace: true,
+			})
+		})
 	}
 
 	private async refreshMergedState(): Promise<void> {
@@ -618,10 +657,16 @@ export class CustomModesManager {
 	public async resetCustomModes(): Promise<void> {
 		try {
 			const filePath = await this.getCustomModesFilePath()
-			await fs.writeFile(filePath, yaml.stringify({ customModes: [] }, { lineWidth: 0 }))
-			await this.context.globalState.update("customModes", [])
-			this.clearCache()
-			await this.onUpdate()
+			await this.queueWrite(async () => {
+				await this.withSettingsFileWrite(filePath, (resolvedPath) =>
+					atomicWriteText(resolvedPath, yaml.stringify({ customModes: [] }, { lineWidth: 0 }), {
+						requireAtomicReplace: true,
+					}),
+				)
+				await this.context.globalState.update("customModes", [])
+				this.clearCache()
+				await this.onUpdate()
+			})
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			vscode.window.showErrorMessage(t("common:customModes.errors.resetFailed", { error: errorMessage }))

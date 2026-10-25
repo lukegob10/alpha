@@ -2,7 +2,8 @@ import * as fsSync from "fs"
 import * as path from "path"
 
 import { getReadablePath } from "../../utils/path"
-import { isPathWithinRoot } from "./pathSafety"
+import { mapPatchPaths } from "./apply-patch/parser"
+import { isPathWithinRoot, resolvePathWithExistingAncestor } from "./pathSafety"
 
 export type TaskPathContext = {
 	taskKind?: "primary" | "subagent"
@@ -54,8 +55,6 @@ export function resolveTaskWorkspacePath(task: TaskPathContext, candidate: strin
 	return absolutePath
 }
 
-const PATCH_DESTINATION_MARKERS = ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "] as const
-
 function presentRemappedTaskPath(task: TaskPathContext, candidate: string): string {
 	const remapped = resolveTaskWorkspacePath(task, candidate)
 	const naive = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(task.cwd, candidate)
@@ -75,17 +74,6 @@ function remapNestedPathEntries(task: TaskPathContext, value: unknown): unknown 
 		if (typeof record.path !== "string") return entry
 		return { ...record, path: presentRemappedTaskPath(task, record.path) }
 	})
-}
-
-function remapPatchDestinations(task: TaskPathContext, patch: string): string {
-	return patch
-		.split(/\r?\n/)
-		.map((line) => {
-			const marker = PATCH_DESTINATION_MARKERS.find((prefix) => line.startsWith(prefix))
-			if (!marker) return line
-			return `${marker}${presentRemappedTaskPath(task, line.slice(marker.length))}`
-		})
-		.join("\n")
 }
 
 /**
@@ -131,7 +119,7 @@ export function normalizeTaskToolArguments(
 	if ("files" in next) next.files = remapNestedPathEntries(task, next.files)
 	if ("queries" in next) next.queries = remapNestedPathEntries(task, next.queries)
 	if (toolName === "apply_patch" && typeof next.patch === "string") {
-		next.patch = remapPatchDestinations(task, next.patch)
+		next.patch = mapPatchPaths(next.patch, (candidate) => presentRemappedTaskPath(task, candidate))
 	}
 	return next
 }
@@ -139,6 +127,11 @@ export function normalizeTaskToolArguments(
 /** Scope approvals to this task, including junctions, independently of the foreground VS Code workspace. */
 export function isTaskPathOutsideWorkspace(task: TaskPathContext, absolutePath: string): boolean {
 	return !isWithin(task.cwd, resolveTaskWorkspacePath(task, absolutePath))
+}
+
+function isGitMetadataPath(relativePath: string): boolean {
+	const firstSegment = relativePath.split(path.sep)[0]
+	return firstSegment === ".git" || (process.platform === "win32" && firstSegment?.toLowerCase() === ".git")
 }
 
 export function isWorkerWritePathAllowed(
@@ -154,7 +147,7 @@ export function isWorkerWritePathAllowed(
 
 	const relative = path.relative(task.cwd, rewritten).split(path.sep).join("/")
 	if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) return false
-	if (relative === ".git" || relative.startsWith(".git/")) return false
+	if (isGitMetadataPath(path.relative(task.cwd, rewritten))) return false
 	const fileScopes = task.subagentAuthority?.role === "worker" ? (task.subagentAuthority.fileWriteScope ?? []) : []
 	const allowed = task.subagentWriteScope.some(
 		(scope) =>
@@ -162,16 +155,13 @@ export function isWorkerWritePathAllowed(
 	)
 	if (!allowed) return false
 
-	let existing = rewritten
-	while (!fsSync.existsSync(existing)) {
-		const parent = path.dirname(existing)
-		if (parent === existing) return false
-		existing = parent
-	}
 	try {
 		const realWorkspace = fsSync.realpathSync(task.cwd)
-		const realExisting = fsSync.realpathSync(existing)
+		const realExisting = resolvePathWithExistingAncestor(rewritten)
 		const realRelative = path.relative(realWorkspace, realExisting)
+		// Git metadata stays protected through inward aliases, missing targets,
+		// and case variants on Windows, independently of the lexical write scope.
+		if (isGitMetadataPath(realRelative)) return false
 		if (realRelative !== ".." && !realRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(realRelative)) {
 			if (
 				task.historyWorkspacePath &&

@@ -812,7 +812,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const initialAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			const initialAuthorityDenial = await task.getTaskCommandDenialReason?.(
+				canonicalCommand,
+				customCwd,
+				host ? "audited-read" : "shell",
+			)
 			if (initialAuthorityDenial) {
 				denyByTaskCommandAuthority(initialAuthorityDenial)
 				return
@@ -834,7 +838,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const postApprovalAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			const postApprovalAuthorityDenial = await task.getTaskCommandDenialReason?.(
+				canonicalCommand,
+				customCwd,
+				host ? "audited-read" : "shell",
+			)
 			if (postApprovalAuthorityDenial) {
 				denyByTaskCommandAuthority(postApprovalAuthorityDenial)
 				return
@@ -1155,6 +1163,7 @@ export async function executeCommandInTerminal(
 		capturedOutputPreviewSize,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
+	const commandTurn = task.captureMessageTurn?.() ?? null
 	const commandStartedAt = performance.now()
 	const project = (
 		slot: CommandPresentationSlot,
@@ -1447,6 +1456,7 @@ export async function executeCommandInTerminal(
 					await task.say("command_output", text, undefined, partial, undefined, undefined, {
 						isNonInteractive: true,
 						commandExecutionId: executionId,
+						turn: commandTurn,
 					})
 				} catch (error) {
 					console.error("[ExecuteCommandTool] Failed to publish command output:", error)
@@ -1697,6 +1707,7 @@ export async function executeCommandInTerminal(
 								await task
 									.say("tool", payload, undefined, false, undefined, undefined, {
 										isNonInteractive: true,
+										turn: commandTurn,
 									})
 									.catch((error) =>
 										console.warn(
@@ -1913,6 +1924,16 @@ export async function executeCommandInTerminal(
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
 	let userTimeoutFinalization: Promise<void> | undefined
+	const clearUserTimeout = () => {
+		clearTimeout(userTimeoutId)
+		process.removeListener("shell_execution_complete", clearUserTimeout)
+		process.removeListener("terminal_closed", clearUserTimeout)
+		process.removeListener("completed", clearUserTimeoutIfInactive)
+		process.removeListener("error", clearUserTimeoutIfInactive)
+	}
+	const clearUserTimeoutIfInactive = () => {
+		if (terminal.process !== process || !terminal.running) clearUserTimeout()
+	}
 	const finalizeUserTimeout = (): Promise<void> => {
 		if (userTimeoutFinalization) return userTimeoutFinalization
 		// This owner outlives the foreground race. The agent may already have
@@ -1995,6 +2016,7 @@ export async function executeCommandInTerminal(
 			racers.push(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
+						clearUserTimeout()
 						isUserTimedOut = true
 						// The timeout now owns the terminal outcome. A callback emitted by
 						// process cleanup may still flush output, but it must not settle the
@@ -2018,6 +2040,11 @@ export async function executeCommandInTerminal(
 								await task.say(
 									"error",
 									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+									undefined,
+									undefined,
+									undefined,
+									undefined,
+									{ turn: commandTurn },
 								)
 								assertOwnership?.()
 							}).catch((error) => console.error("Failed to report a background command timeout:", error))
@@ -2043,7 +2070,15 @@ export async function executeCommandInTerminal(
 			await finalizeUserTimeout()
 			await project("failure", async (assertOwnership) => {
 				assertOwnership?.()
-				await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
+				await task.say(
+					"error",
+					t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					{ turn: commandTurn },
+				)
 				assertOwnership?.()
 				task.didToolFailInCurrentTurn = true
 			})
@@ -2086,18 +2121,21 @@ export async function executeCommandInTerminal(
 		throw processError
 	} finally {
 		clearTimeout(agentTimeoutId)
-		const keepUserTimeoutForBackground =
-			commandExecutionTimeout > 0 && runInBackground && !completed && !exitDetails && process.isSettled !== true
-		if (keepUserTimeoutForBackground) {
-			const clearBackgroundUserTimeout = () => {
-				clearTimeout(userTimeoutId)
-				process.removeListener("completed", clearBackgroundUserTimeout)
-				process.removeListener("error", clearBackgroundUserTimeout)
-			}
-			process.once("completed", clearBackgroundUserTimeout)
-			process.once("error", clearBackgroundUserTimeout)
+		const keepUserTimeout =
+			commandExecutionTimeout > 0 &&
+			!isUserTimedOut &&
+			!exitDetails &&
+			((runInBackground && !completed && process.isSettled !== true) ||
+				(terminal.taskId === task.taskId && terminal.process === process && terminal.running))
+		if (keepUserTimeout) {
+			// Reader completion/error does not prove physical exit. Keep the hard
+			// ceiling on that original command until its shell exits or closes.
+			process.once("shell_execution_complete", clearUserTimeout)
+			process.once("terminal_closed", clearUserTimeout)
+			process.on("completed", clearUserTimeoutIfInactive)
+			process.on("error", clearUserTimeoutIfInactive)
 		} else {
-			clearTimeout(userTimeoutId)
+			clearUserTimeout()
 		}
 		clearTimeout(pendingCommandOutputEmitTimer)
 		if (task.terminalProcess === process) task.terminalProcess = undefined

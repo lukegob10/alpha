@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
+import type { ModelInfo, Personality, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
 import type { ApiHandler, ApiHandlerCreateMessageMetadata, ApiInstructionFragment } from "../../../api"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { digestValue } from "../../agent/StepContext"
@@ -88,12 +88,23 @@ interface InvocationStep {
 
 function invocationHarness(toolName = "spawn_agent") {
 	const modelInfo: ModelInfo = { contextWindow: 128_000, maxTokens: 4096, supportsPromptCache: false }
-	const live = { mode: "code", modelId: "parent-model", systemPrompt: "Invoking system prompt" }
+	const live: { mode: string; modelId: string; systemPrompt: string; personality?: Personality } = {
+		mode: "code",
+		modelId: "parent-model",
+		systemPrompt: "Invoking system prompt",
+		personality: "none",
+	}
 	const api = {
 		getModel: () => ({ id: live.modelId, info: modelInfo }),
 		countTokens: vi.fn(async () => 1),
 		createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {}),
 	} satisfies ApiHandler
+	const capturedReasoning: TaskReasoningState = {
+		requested: { kind: "effort", effort: "max" },
+		effective: { kind: "effort", effort: "max" },
+		capabilities: { kind: "effort", efforts: ["low", "max"], canDisable: true },
+	}
+	const reasoningByHandler = new WeakMap<ApiHandler, TaskReasoningState>([[api, capturedReasoning]])
 	const apiConfiguration: ProviderSettings = {
 		apiProvider: "openai",
 		apiModelId: "parent-model",
@@ -136,6 +147,8 @@ function invocationHarness(toolName = "spawn_agent") {
 		api,
 		apiConfiguration,
 		effectiveApiConfiguration,
+		reasoningPreference: { kind: "effort", effort: "low" },
+		reasoningByHandler,
 		_taskApiConfigName: "Invoking parent profile",
 		apiConversationHistory: history,
 		agentTurnId: "invoking-turn",
@@ -144,7 +157,11 @@ function invocationHarness(toolName = "spawn_agent") {
 		reasoningHandlerUsers: new Map(),
 		retainedReasoningHandlers: new Set(),
 	}) as Task
-	const capture = (retryAttempt = 0, retainedStep?: InvocationStep): InvocationStep => {
+	const capture = (
+		retryAttempt = 0,
+		retainedStep?: InvocationStep,
+		recoverFromCommittedHistory = false,
+	): InvocationStep => {
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			taskId: task.taskId,
 			mode: live.mode,
@@ -163,9 +180,25 @@ function invocationHarness(toolName = "spawn_agent") {
 			modelInfo,
 			surface,
 			retainedStep,
+			undefined,
+			undefined,
+			undefined,
+			recoverFromCommittedHistory,
+			live.personality,
 		]) as InvocationStep
 	}
-	return { task, api, apiConfiguration, effectiveApiConfiguration, history, cleanHistory, fragments, live, capture }
+	return {
+		task,
+		api,
+		apiConfiguration,
+		effectiveApiConfiguration,
+		history,
+		cleanHistory,
+		fragments,
+		live,
+		capture,
+		reasoningByHandler,
+	}
 }
 
 describe("Task managed-child native history startup", () => {
@@ -282,6 +315,8 @@ describe("Task invoking-step subagent snapshot", () => {
 		const request = step.getRequest()
 		expect(captured).toMatchObject({
 			mode: "code",
+			personality: "none",
+			reasoningPreference: { kind: "effort", effort: "max" },
 			apiConfiguration: { apiProvider: "openai", apiModelId: "parent-model", reasoningEffort: "max" },
 			apiConfigName: "Invoking parent profile",
 			modelRoute: { source: "parent", provider: "openai", modelId: "parent-model" },
@@ -301,6 +336,8 @@ describe("Task invoking-step subagent snapshot", () => {
 		live.modelId = "later-model"
 		live.mode = "architect"
 		live.systemPrompt = "Later system prompt"
+		live.personality = "default"
+		task.reasoningPreference = { kind: "effort", effort: "high" }
 		Reflect.set(task, "_taskApiConfigName", "Later profile")
 
 		expect(task.getSubagentInvocationContext()).toEqual(captured)
@@ -317,6 +354,9 @@ describe("Task invoking-step subagent snapshot", () => {
 		first.history[0].content = "Child replacement request"
 		first.history.push({ role: "user", content: "Child-only input" })
 		first.apiConfiguration.reasoningEffort = "low"
+		first.personality = "default"
+		if (first.reasoningPreference?.kind !== "effort") throw new Error("Expected a captured effort preference")
+		first.reasoningPreference.effort = "low"
 		first.modelRoute.modelId = "child-selected-model"
 		first.instructions.sources[0].text = "Child replacement guidance"
 		first.finalAssistantMessageIndexes.length = 0
@@ -332,6 +372,8 @@ describe("Task invoking-step subagent snapshot", () => {
 		live.mode = "architect"
 		live.modelId = "later-model"
 		live.systemPrompt = "Later system prompt"
+		live.personality = "default"
+		task.reasoningPreference = { kind: "off" }
 		history.push({ role: "user", content: "Later user input" })
 		apiConfiguration.reasoningEffort = "low"
 		fragments[1].content = "Later guidance"
@@ -346,6 +388,35 @@ describe("Task invoking-step subagent snapshot", () => {
 		expect(retry.attemptId).toBe("attempt-1")
 		expect(task.getSubagentInvocationContext()).toEqual(invocation)
 		expect(retry.getRequest()).toEqual(request)
+	})
+
+	it("retains the handler's reasoning choice and personality when committed-history recovery derives a new step", () => {
+		const { task, capture, live, history } = invocationHarness()
+		const first = capture()
+		live.personality = "default"
+		task.reasoningPreference = { kind: "off" }
+		history.push({ role: "user", content: "Settled recovery input" })
+
+		const recovery = capture(1, first, true)
+		expect(recovery.snapshot.context.contextId).not.toBe(first.snapshot.context.contextId)
+		expect(recovery.snapshot.context.parentContextId).toBe(first.snapshot.context.contextId)
+		expect(recovery.getSubagentInvocationContext()).toMatchObject({
+			personality: "none",
+			reasoningPreference: { kind: "effort", effort: "max" },
+			history,
+		})
+	})
+
+	it("uses Default for legacy handlers rather than reading a newer live task preference", () => {
+		const { task, capture, live, reasoningByHandler, api } = invocationHarness()
+		reasoningByHandler.delete(api)
+		live.personality = undefined
+		task.reasoningPreference = { kind: "effort", effort: "high" }
+
+		expect(capture().getSubagentInvocationContext()).toMatchObject({
+			personality: "default",
+			reasoningPreference: { kind: "default" },
+		})
 	})
 
 	it("releases invocation history and raw provider inputs for every retry sharing the boundary", () => {

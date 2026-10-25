@@ -119,6 +119,33 @@ describe("agent lifecycle reducer", () => {
 		expect(reduceAgentLifecycleEvent(first, persistedEvent)).toEqual(first)
 	})
 
+	it("recognizes optional undefined fields after JSON persistence", () => {
+		const firstEvent: AgentLifecycleEvent = {
+			...baseEvent(1, "undefined-envelope"),
+			type: "phase_changed",
+			stepId: undefined,
+		}
+		const first = reduceAgentLifecycleEvent(createAgentLifecycleSnapshot(ids), firstEvent)
+		const persistedEvent = agentLifecycleEventSchema.parse(JSON.parse(JSON.stringify(firstEvent)))
+		expect(reduceAgentLifecycleEvent(first, persistedEvent)).toEqual(first)
+	})
+
+	it.each([
+		["undefined object properties", { path: "file.ts", absent: undefined }],
+		["undefined array elements", { entries: [undefined, "present"] }],
+		["nonfinite numbers", { invalid: NaN, positive: Infinity, negative: -Infinity }],
+	] as const)("recognizes %s in tool payloads after JSON persistence", (_label, argumentsValue) => {
+		const firstEvent: AgentLifecycleEvent = {
+			...baseEvent(1, "wire-arguments"),
+			type: "tool_call_accepted",
+			payload: { item: { ...toolCall(), arguments: argumentsValue } },
+		}
+		const first = reduceAgentLifecycleEvent(createAgentLifecycleSnapshot(ids), firstEvent)
+		const persistedEvent = agentLifecycleEventSchema.parse(JSON.parse(JSON.stringify(firstEvent)))
+		const persistedSnapshot = JSON.parse(JSON.stringify(first)) as AgentLifecycleSnapshot
+		expect(reduceAgentLifecycleEvent(persistedSnapshot, persistedEvent)).toEqual(persistedSnapshot)
+	})
+
 	it("tracks item transitions and keeps assistant streaming monotonic", () => {
 		const initial = createAgentLifecycleSnapshot(ids)
 		const assistant = {

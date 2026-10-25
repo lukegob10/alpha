@@ -253,6 +253,37 @@ describe("ReadCommandOutputTool", () => {
 	})
 
 	describe("Pagination (offset/limit)", () => {
+		it.each([undefined, "🙂"])(
+			"fits multibyte pagination within the host output budget (search: %s)",
+			async (search) => {
+				const bytes = Buffer.from("🙂 retained output\n".repeat(100))
+				vi.mocked(fs.stat).mockResolvedValue({ size: bytes.length } as any)
+				mockFileHandle.read.mockImplementation(
+					(buffer: Buffer, offset: number, length: number, position: number) =>
+						Promise.resolve({ bytesRead: bytes.copy(buffer, offset, position, position + length) }),
+				)
+				mockCallbacks.getRemainingOutputChars = () => 600
+				await tool.execute({ artifact_id: "cmd-1.txt", offset: 1, search }, mockTask, mockCallbacks)
+				const content = mockCallbacks.pushToolResult.mock.calls[0][0] as string
+				expect(Buffer.byteLength(content)).toBeLessThanOrEqual(600)
+				expect(content).not.toContain("�")
+				const telemetry = JSON.parse(mockTask.say.mock.calls.find(([type]: [string]) => type === "tool")[1])
+				expect(telemetry.readStart).toBe(4)
+				expect(telemetry.nextOffset).toBeGreaterThan(telemetry.readStart)
+				expect(telemetry.nextOffset).toBeLessThan(bytes.length)
+			},
+		)
+
+		it("does not read or credit an artifact when the host budget cannot fit a page", async () => {
+			mockCallbacks.getRemainingOutputChars = () => 100
+			await tool.execute({ artifact_id: "cmd-1.txt" }, mockTask, mockCallbacks)
+			expect(fs.open).not.toHaveBeenCalled()
+			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("remaining tool output budget"),
+			)
+		})
+
 		it("should use default limit of 40KB", async () => {
 			const artifactId = "cmd-1706119234567.txt"
 			const largeContent = "x".repeat(50 * 1024) // 50KB

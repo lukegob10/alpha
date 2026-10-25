@@ -91,6 +91,12 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+	// Unconfigured paths are absent; filesystem methods never resolve to undefined metadata.
+	statMock.mockReset().mockRejectedValue({ code: "ENOENT" })
+	readdirMock.mockReset().mockResolvedValue([])
+	readlinkMock.mockReset().mockRejectedValue({ code: "ENOENT" })
+	lstatMock.mockReset().mockRejectedValue({ code: "ENOENT" })
+	readFileMock.mockReset().mockRejectedValue({ code: "ENOENT" })
 	realpathMock.mockReset()
 	realpathMock.mockImplementation(async (filePath: PathLike) => path.resolve(filePath.toString()))
 })
@@ -219,6 +225,7 @@ describe("loadRuleFiles", () => {
 			}
 			return Promise.resolve({
 				isFile: vi.fn().mockReturnValue(false),
+				isDirectory: vi.fn().mockReturnValue(false),
 			}) as any
 		})
 
@@ -327,6 +334,7 @@ describe("loadRuleFiles", () => {
 		statMock.mockImplementation((path) => {
 			return Promise.resolve({
 				isFile: vi.fn().mockReturnValue(true),
+				isDirectory: vi.fn().mockReturnValue(false),
 			}) as any
 		})
 
@@ -417,7 +425,7 @@ describe("loadRuleFiles", () => {
 		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
 	})
 
-	it("should handle errors when reading directory", async () => {
+	it("rejects unexpected directory read failures instead of selecting weaker rules", async () => {
 		// Simulate .alpha/rules directory exists
 		statMock.mockResolvedValueOnce({
 			isDirectory: vi.fn().mockReturnValue(true),
@@ -434,8 +442,8 @@ describe("loadRuleFiles", () => {
 			return Promise.reject({ code: "ENOENT" })
 		})
 
-		const result = await loadRuleFiles("/fake/path")
-		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
+		await expect(loadRuleFiles("/fake/path")).rejects.toThrow("Unable to load rule instructions")
+		expect(readFileMock).not.toHaveBeenCalled()
 	})
 
 	it("should read files from nested subdirectories in .alpha/rules/", async () => {
@@ -1249,6 +1257,7 @@ Mode-specific Instructions:\n${modeInstructions}
 			}
 			return Promise.resolve({
 				isFile: vi.fn().mockReturnValue(false),
+				isDirectory: vi.fn().mockReturnValue(false),
 			}) as any
 		})
 
@@ -1703,6 +1712,7 @@ describe("Rules directory reading", () => {
 		statMock.mockImplementation((path) => {
 			return Promise.resolve({
 				isFile: vi.fn().mockReturnValue(true),
+				isDirectory: vi.fn().mockReturnValue(false),
 			}) as any
 		})
 

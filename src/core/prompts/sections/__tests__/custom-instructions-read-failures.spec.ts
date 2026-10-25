@@ -9,7 +9,11 @@ vi.mock("os", async (importOriginal) => {
 	return { ...actual, homedir: () => homeDirectoryState.value }
 })
 
-import { addCustomInstructionParts, loadApplicableAgentInstructionSources } from "../custom-instructions"
+import {
+	addCustomInstructionParts,
+	loadApplicableAgentInstructionSources,
+	renderCustomInstructionParts,
+} from "../custom-instructions"
 
 describe("agent instruction read failures", () => {
 	let fixtureRoot: string
@@ -92,5 +96,110 @@ describe("agent instruction read failures", () => {
 
 		const parts = await addCustomInstructionParts("", "", cwd, "code", { agentInstructionSources: sources })
 		expect(parts.find(({ origin }) => origin === "agent-rules")?.content).toContain("Preferred guidance")
+	})
+
+	describe.each(["rules", "rules-code"])("preferred .alpha/%s instructions", (directoryName) => {
+		const failures = (["stat", "realpath", "readdir", "readFile"] as const).flatMap((operation) =>
+			(["EACCES", "EIO"] as const).map((code) => ({ operation, code })),
+		)
+
+		async function writeRuleSources() {
+			const preferredDirectory = path.join(cwd, ".alpha", directoryName)
+			const legacyDirectory = path.join(cwd, ".roo", directoryName)
+			await fs.mkdir(preferredDirectory, { recursive: true })
+			await fs.mkdir(legacyDirectory, { recursive: true })
+			const preferredFile = path.join(preferredDirectory, "preferred.md")
+			await fs.writeFile(preferredFile, "Preferred Alpha rules")
+			await fs.writeFile(path.join(preferredDirectory, "other.md"), "Other Alpha rules")
+			await fs.writeFile(path.join(legacyDirectory, "legacy.md"), "Weaker legacy directory rules")
+			await fs.writeFile(path.join(cwd, `.alpha${directoryName}`), "Weaker legacy file rules")
+			return { preferredDirectory, preferredFile, legacyDirectory }
+		}
+
+		it.each(failures)(
+			"rejects $operation $code without partial rules or weaker fallbacks",
+			async ({ operation, code }) => {
+				const { preferredDirectory, preferredFile, legacyDirectory } = await writeRuleSources()
+				const failedPath = operation === "readFile" ? preferredFile : preferredDirectory
+				const original = fs[operation].bind(fs)
+				vi.spyOn(fs, operation).mockImplementation(async (...args: unknown[]) => {
+					if (String(args[0]) === failedPath) {
+						throw Object.assign(new Error("private filesystem contents"), { code })
+					}
+					return Reflect.apply(original, fs, args)
+				})
+				const read = operation === "readFile" ? vi.mocked(fs.readFile) : vi.spyOn(fs, "readFile")
+
+				await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.toThrow(
+					`Unable to load rule instructions from "${preferredDirectory}" (${code})`,
+				)
+				await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.not.toThrow(
+					"private filesystem contents",
+				)
+				expect(read.mock.calls.some(([file]) => String(file).startsWith(legacyDirectory + path.sep))).toBe(
+					false,
+				)
+				expect(
+					read.mock.calls.some(([file]) => String(file) === path.join(cwd, `.alpha${directoryName}`)),
+				).toBe(false)
+			},
+		)
+
+		it("retains missing-directory fallback and reloads preferred instructions on the next assembly", async () => {
+			const { preferredDirectory } = await writeRuleSources()
+			const original = fs.readdir.bind(fs)
+			vi.spyOn(fs, "readdir").mockImplementation(async (...args: unknown[]) => {
+				if (String(args[0]) === preferredDirectory) {
+					throw Object.assign(new Error("Directory disappeared"), { code: "ENOENT" })
+				}
+				return Reflect.apply(original, fs, args)
+			})
+
+			const missing = renderCustomInstructionParts(await addCustomInstructionParts("", "", cwd, "code"))
+			expect(missing).toContain("Weaker legacy directory rules")
+			expect(missing).not.toContain("Preferred Alpha rules")
+
+			vi.restoreAllMocks()
+			const restored = renderCustomInstructionParts(await addCustomInstructionParts("", "", cwd, "code"))
+			expect(restored).toContain("Preferred Alpha rules")
+			expect(restored).not.toContain("Weaker legacy directory rules")
+			expect(restored).not.toContain("Weaker legacy file rules")
+		})
+
+		it.each(["EACCES", "EIO"])("rejects %s while resolving an included rule symlink", async (code) => {
+			const { preferredDirectory } = await writeRuleSources()
+			const target = path.join(cwd, ".alpha", "shared-rules")
+			await fs.mkdir(target)
+			await fs.writeFile(path.join(target, "shared.md"), "Shared rule instructions")
+			const link = path.join(preferredDirectory, "shared")
+			await fs.symlink(target, link, process.platform === "win32" ? "junction" : "dir")
+			const original = fs.readlink.bind(fs)
+			vi.spyOn(fs, "readlink").mockImplementation(async (...args: unknown[]) => {
+				if (String(args[0]) === link) throw Object.assign(new Error("private symlink details"), { code })
+				return Reflect.apply(original, fs, args)
+			})
+
+			await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.toThrow(
+				`Unable to load rule instructions from "${preferredDirectory}" (${code})`,
+			)
+		})
+	})
+
+	it("does not replace an inaccessible legacy Alpha rule file with Cline rules", async () => {
+		const alphaRules = path.join(cwd, ".alpharules")
+		const clineRules = path.join(cwd, ".clinerules")
+		await fs.writeFile(alphaRules, "Preferred legacy Alpha rules")
+		await fs.writeFile(clineRules, "Weaker Cline rules")
+		const original = fs.realpath.bind(fs)
+		vi.spyOn(fs, "realpath").mockImplementation(async (...args: unknown[]) => {
+			if (String(args[0]) === alphaRules) throw Object.assign(new Error("private details"), { code: "EACCES" })
+			return Reflect.apply(original, fs, args)
+		})
+		const read = vi.spyOn(fs, "readFile")
+
+		await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.toThrow(
+			`Unable to load rule instructions from "${alphaRules}" (EACCES)`,
+		)
+		expect(read.mock.calls.some(([file]) => String(file) === clineRules)).toBe(false)
 	})
 })

@@ -75,6 +75,9 @@ describe("custom-instructions global .roo support", () => {
 		mockGetLegacyGlobalConfigDirectory.mockReturnValue(legacyGlobalConfigDir)
 		// Default lstat to reject (file not found)
 		mockLstat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+		mockStat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+		mockReaddir.mockResolvedValue([])
+		mockReadFile.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
 		mockRealpath.mockImplementation(async (filePath) => filePath.toString())
 	})
 
@@ -90,7 +93,7 @@ describe("custom-instructions global .roo support", () => {
 			mockStat
 				.mockResolvedValueOnce({ isDirectory: () => true } as any) // global rules dir exists
 				.mockResolvedValueOnce({ isFile: () => true } as any) // for the file check inside readTextFilesFromDirectory
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // project rules dir doesn't exist
 
 			// Mock directory reading for global rules
 			mockReaddir.mockResolvedValueOnce([
@@ -115,7 +118,7 @@ describe("custom-instructions global .roo support", () => {
 		it("should load project rules only when global rules do not exist", async () => {
 			// Mock directory existence
 			mockStat
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // global rules dir doesn't exist
 				.mockResolvedValueOnce({ isDirectory: () => true } as any) // project rules dir exists
 
 			// Mock directory reading for project rules
@@ -184,8 +187,8 @@ describe("custom-instructions global .roo support", () => {
 		it("should fall back to legacy .alpharules file when no .alpha/rules directories exist", async () => {
 			// Mock directory existence - neither exist
 			mockStat
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules dir doesn't exist
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // global rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // project rules dir doesn't exist
 
 			// Mock legacy file reading
 			mockReadFile.mockResolvedValueOnce("legacy rule content")
@@ -199,8 +202,8 @@ describe("custom-instructions global .roo support", () => {
 		it("should return empty string when no rules exist anywhere", async () => {
 			// Mock directory existence - neither exist
 			mockStat
-				.mockRejectedValueOnce(new Error("ENOENT")) // global rules dir doesn't exist
-				.mockRejectedValueOnce(new Error("ENOENT")) // project rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // global rules dir doesn't exist
+				.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // project rules dir doesn't exist
 
 			// Mock legacy file reading - both fail (using safeReadFile which catches errors)
 			// The safeReadFile function catches ENOENT errors and returns empty string

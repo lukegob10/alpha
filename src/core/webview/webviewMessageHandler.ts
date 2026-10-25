@@ -1075,6 +1075,8 @@ export const webviewMessageHandler = async (
 						newValue = globalSettingsSchema.shape.subagentDefaultModel.parse(value) || undefined
 					} else if (key === "subagentAgentTypes") {
 						newValue = value == null ? undefined : subagentAgentTypesSchema.parse(value)
+					} else if (key === "personality") {
+						newValue = globalSettingsSchema.shape.personality.parse(value)
 					} else if (key === "experiments") {
 						if (!value) {
 							continue
@@ -3812,10 +3814,27 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "steerQueuedMessage": {
+			const parsedExpectedTurn = sendAndSteerMessageSchema.shape.expectedTurnId.safeParse(message.expectedTurnId)
+			if (!parsedExpectedTurn.success) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "unknown")
+				break
+			}
 			const task = getTaskForMessage(provider, message)
 			if (!task) {
 				provider.log("[webviewMessageHandler] Ignoring steerQueuedMessage: missing or unknown taskId")
 				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				break
+			}
+			// Capture before queue hydration; an older client cannot retarget a later turn while waiting.
+			const expectedTurnId = parsedExpectedTurn.data ?? provider.getAgentLifecycleSnapshot?.(task.taskId)?.turnId
+			const isStaleTurn = () =>
+				provider.getLiveTask(message.taskId) !== task ||
+				(expectedTurnId !== undefined &&
+					(typeof task.matchesExpectedTurn === "function"
+						? !task.matchesExpectedTurn(expectedTurnId)
+						: provider.getAgentLifecycleSnapshot?.(task.taskId)?.turnId !== expectedTurnId))
+			if (isStaleTurn()) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "stale_turn")
 				break
 			}
 			const canResumeCompletedFollowup = () =>
@@ -3837,6 +3856,10 @@ export const webviewMessageHandler = async (
 			}
 
 			await task.messageQueueService.ready
+			if (isStaleTurn()) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "stale_turn")
+				break
+			}
 			if (!canAdmitSteer()) {
 				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
 				break
@@ -3864,16 +3887,20 @@ export const webviewMessageHandler = async (
 					// fails. Retry that same receipt through the completed-task owner.
 					let admissionLost = false
 					await task.resumeCompletedTaskFollowup(queued.text, queued.images, "human", [queued.id], () => {
-						const admissible = canResumeCompletedFollowup()
+						const admissible = !isStaleTurn() && canResumeCompletedFollowup()
 						if (!admissible) admissionLost = true
 						return admissible
 					})
 					if (admissionLost) {
-						await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+						await postChatCommandResult(
+							"steerQueuedMessage",
+							"rejected",
+							isStaleTurn() ? "stale_turn" : "task_unavailable",
+						)
 						break
 					}
 				} else {
-					await task.steerQueuedUserMessage(queued.id)
+					await task.steerQueuedUserMessage(queued.id, expectedTurnId)
 				}
 				await postChatCommandResult("steerQueuedMessage", "accepted")
 			} catch (error) {
@@ -3883,9 +3910,11 @@ export const webviewMessageHandler = async (
 				await postChatCommandResult(
 					"steerQueuedMessage",
 					"rejected",
-					typeof task.hasPendingSteerMessage === "function" && task.hasPendingSteerMessage()
-						? "steer_pending"
-						: "unknown",
+					isStaleTurn()
+						? "stale_turn"
+						: typeof task.hasPendingSteerMessage === "function" && task.hasPendingSteerMessage()
+							? "steer_pending"
+							: "unknown",
 				)
 			}
 

@@ -26,7 +26,9 @@ describe("generateSystemPrompt", () => {
 		vi.mocked(buildApiHandler).mockReturnValue({
 			getModel: () => ({ id: "gpt-6-luna", info: {} }),
 		} as any)
-		vi.mocked(SYSTEM_PROMPT).mockImplementation(async (...args) => resolveCodexModelPrompt(args[14]).instructions)
+		vi.mocked(SYSTEM_PROMPT).mockImplementation(
+			async (...args) => resolveCodexModelPrompt(args[14], args[12]?.personality).instructions,
+		)
 	})
 
 	it("previews the selected recognized GPT model's prompt", async () => {
@@ -63,4 +65,31 @@ describe("generateSystemPrompt", () => {
 
 		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
 	})
+
+	it.each([undefined, "default", "none"] as const)(
+		"previews the captured %s personality preference",
+		async (personality) => {
+			const customInstructions = "# Personality\nKeep this user-owned style."
+			const provider = {
+				context: {} as vscode.ExtensionContext,
+				cwd: "F:/workspace",
+				getState: vi.fn().mockResolvedValue({
+					apiConfiguration: { apiProvider: "openai" },
+					customInstructions,
+					personality,
+				}),
+				customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+				getCurrentTask: vi.fn().mockReturnValue(undefined),
+				getSkillsManager: vi.fn().mockReturnValue(undefined),
+			}
+
+			const preview = await generateSystemPrompt(provider as any, { mode: "code" } as any)
+
+			expect(preview).toBe(resolveCodexModelPrompt("gpt-6-luna", personality).instructions)
+			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.personality).toBe(personality)
+			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[8]).toBe(customInstructions)
+			if (personality === "none") expect(preview).not.toContain("# Personality\n")
+			else expect(preview).toContain("# Personality\n")
+		},
+	)
 })

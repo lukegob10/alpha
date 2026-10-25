@@ -136,6 +136,7 @@ function commandFixture(
 		}),
 		providerRef: { deref: () => provider },
 		getTaskLifetimeCancellationSignal: () => lifetime.signal,
+		captureMessageTurn: Task.prototype.captureMessageTurn,
 		getTaskMode: async () => mode,
 		getTaskToolDenialReason: Task.prototype.getTaskToolDenialReason,
 		getTaskAllowedToolNames: Task.prototype.getTaskAllowedToolNames,
@@ -568,6 +569,71 @@ describe("native command transaction consistency", () => {
 			}
 		},
 	)
+
+	it.each([
+		{ search: undefined, hostLimit: 32_000 },
+		{ search: "retained", hostLimit: 32_000 },
+		{ search: undefined, hostLimit: 960 },
+		{ search: "retained", hostLimit: 960 },
+	])("fits artifact pages within the scheduler cap ($hostLimit, search: $search)", async ({ search, hostLimit }) => {
+		const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-command-pages-"))
+		try {
+			const fixture = commandFixture({ globalStoragePath })
+			const artifactId = "cmd-1.txt"
+			const directory = path.join(globalStoragePath, "tasks", fixture.task.taskId, "command-output")
+			await fs.mkdir(directory, { recursive: true })
+			const content = Array.from(
+				{ length: hostLimit === 32_000 ? 5_000 : 80 },
+				(_value, index) => `retained-${String(index).padStart(4, "0")}\n`,
+			).join("")
+			const bytes = Buffer.from(content)
+			await fs.writeFile(path.join(directory, artifactId), bytes)
+			const surface = createTaskToolSurface({
+				schemas: getNativeTools(),
+				mode: "code",
+				cwd: fixture.host.cwd,
+				outputLimits: { write_stdin: hostLimit },
+			})
+			let offset = 0
+			let pages = 0
+			while (offset < bytes.length) {
+				const outcome = await new ToolScheduler({
+					executionHost: fixture.host,
+					registry: surface.registry,
+					policy: surface.policy,
+					mode: "code",
+				}).run([
+					{
+						type: "tool_call",
+						id: `artifact-page-${pages++}`,
+						name: "write_stdin",
+						arguments: { artifact_id: artifactId, offset, ...(search ? { search } : {}) },
+					},
+				])
+				const result = outcome.results[0]
+				expect(result.status).toBe("success")
+				expect(result.truncated).toBe(false)
+				expect(typeof result.content).toBe("string")
+				const rendered = result.content as string
+				expect(rendered.length).toBeLessThanOrEqual(hostLimit)
+				const range = rendered.match(/Showing bytes (\d+)-(\d+)/)
+				expect(range).not.toBeNull()
+				const start = Number(range![1])
+				const end = Number(range![2])
+				expect(start).toBe(offset)
+				expect(end).toBeGreaterThan(start)
+				if (!search) {
+					const observed = [...rendered.matchAll(/^\s*\d+ \| (.*)$/gm)].map((match) => match[1]).join("\n")
+					expect(observed.replace(/\n$/, "")).toBe(bytes.subarray(start, end).toString().replace(/\n$/, ""))
+				}
+				offset = end
+				expect(pages).toBeLessThan(100)
+			}
+			expect(pages).toBeGreaterThan(1)
+		} finally {
+			await fs.rm(globalStoragePath, { recursive: true, force: true })
+		}
+	})
 
 	it.each(["code", "architect"] as const)(
 		"rejects missing or mixed artifact targets in %s before touching a session",

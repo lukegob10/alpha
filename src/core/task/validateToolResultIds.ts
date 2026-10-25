@@ -196,6 +196,7 @@ export function validateAndFixToolResultIds(
 					return {
 						...block,
 						tool_use_id: correctId,
+						...("tool_call_id" in block ? { tool_call_id: correctId } : {}),
 					}
 				}
 			}

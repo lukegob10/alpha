@@ -35,6 +35,12 @@ vi.mock("fs/promises", () => ({
 	stat: vi.fn(),
 	readdir: vi.fn(),
 	rm: vi.fn(),
+	realpath: vi.fn(async (value) => value.toString()),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	withFileLock: vi.fn(async (_file, operation) => operation()),
+	atomicWriteText: vi.fn(async (file, contents) => fs.writeFile(file, contents, "utf-8")),
 }))
 
 vi.mock("../../../utils/fs")
@@ -84,7 +90,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				return yaml.stringify({ customModes: [] })
 			}
 
-			throw new Error("File not found")
+			throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 		})
 
 		manager = new CustomModesManager(mockContext, mockOnUpdate)
@@ -120,7 +126,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path.includes("rules-test-mode") && path.includes("subfolder") && path.includes("rule2.md")) {
 					return "Rule 2 content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -173,7 +179,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path.includes("rules-root-mode") && path.includes("file2.md")) {
 					return "File 2 content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -234,7 +240,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 				writtenFiles[path] = content
@@ -297,7 +303,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 				writtenFiles[path] = content
@@ -361,7 +367,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 				writtenFiles[path] = content
@@ -406,7 +412,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([{ name: "rule.md", isFile: () => true }])

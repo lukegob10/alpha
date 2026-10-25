@@ -155,6 +155,7 @@ function captureNative(
 		effectiveText: "Frozen repository and user instructions",
 		sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Repository instructions" }],
 	},
+	personality?: CaptureSubagentContextInput["personality"],
 ) {
 	const input = {
 		parentTaskId: "native-parent",
@@ -162,6 +163,7 @@ function captureNative(
 		forkTurns,
 		history: nativeHistory,
 		instructions,
+		...(personality === undefined ? {} : { personality }),
 		skills: [],
 		cwd: "/workspace",
 		workspaceRoots: ["/workspace"],
@@ -173,6 +175,21 @@ function captureNative(
 }
 
 describe("native sub-agent conversation forks", () => {
+	it.each(["default", "none"] as const)("captures and verifies the %s personality across reload", (personality) => {
+		const legacy = captureNative("none", [])
+		const captured = captureNative("none", [], [], route, false, undefined, personality)
+		const restored = JSON.parse(serializeSubagentContextManifest(captured.manifest))
+
+		expect(legacy.manifest).not.toHaveProperty("personality")
+		expect(restored.personality).toBe(personality)
+		expect(isValidSubagentContextManifest(restored)).toBe(true)
+		expect(captured.manifest.contextRefs).toContain(`personality:${digestValue(personality)}`)
+		expect(captured.manifest.manifestDigest).not.toBe(legacy.manifest.manifestDigest)
+		expect(
+			isValidSubagentContextManifest({ ...restored, personality: personality === "none" ? "default" : "none" }),
+		).toBe(false)
+	})
+
 	it.each([
 		{
 			call: {
@@ -1477,6 +1494,35 @@ describe("sub-agent context capture", () => {
 		expect(turns[0]?.messages[0]?.text).toContain("You did not use a tool in your previous response")
 		expect(turns[0]?.messages[0]?.text).toContain("quoted, not delivered")
 		expect(turns[0]?.messages[0]?.text).toContain(environmentLiteral)
+	})
+
+	it.each([
+		"<system-reminder>Keep the quoted reminder payload.</system-reminder>",
+		"<read_file>Keep the quoted read payload.</read_file>",
+		'<read_file path="quoted-file.ts" />',
+		'<function name="read_file">Keep the quoted function payload.</function>',
+	])("preserves a human's literal markup in legacy and native forks: %s", (literal) => {
+		const text = `<user_message>\n${literal}\n</user_message>`
+		const nativeHistory: ApiMessage[] = [{ role: "user", content: [{ type: "text", text }] }]
+		const legacy = captureUserLedTurns("native-parent", nativeHistory)
+		const captured = captureNative("all", nativeHistory)
+
+		expect(legacy).toHaveLength(1)
+		expect(legacy[0].messages[0].text).toBe(text)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages).toMatchObject([{ role: "user", content: [{ type: "text", text }] }])
+		expect(captured.manifest.selectedUserTurns.count).toBe(1)
+	})
+
+	it("redacts credentials while preserving human markup literals", () => {
+		const text = "<user_message>\n<read_file>\napi_key=private-credential\n</read_file>\n</user_message>"
+		const nativeHistory: ApiMessage[] = [{ role: "user", content: text }]
+		const legacy = captureUserLedTurns("native-parent", nativeHistory)
+		const captured = captureNative("all", nativeHistory)
+
+		expect(legacy[0].messages[0].text).toContain("<read_file>")
+		expect(legacy[0].messages[0].text).toContain("[REDACTED CREDENTIAL]")
+		expect(JSON.stringify(captured.historyFork)).not.toContain("private-credential")
 	})
 
 	it("preserves runtime-shaped assistant conversation evidence", () => {

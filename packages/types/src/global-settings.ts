@@ -28,6 +28,9 @@ import {
 import { approvalModeSchema } from "./approval-mode.js"
 import { subagentAgentTypesSchema } from "./subagent.js"
 import { reasoningEffortExtendedSchema } from "./model.js"
+import { personalitySchema } from "./personality.js"
+
+export { personalitySchema, type Personality } from "./personality.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -110,6 +113,7 @@ export const globalSettingsSchema = z.object({
 
 	lastShownAnnouncementId: z.string().optional(),
 	customInstructions: z.string().optional(),
+	personality: personalitySchema.optional(),
 	taskHistory: z.array(historyItemSchema).optional(),
 	dismissedUpsells: z.array(z.string()).optional(),
 

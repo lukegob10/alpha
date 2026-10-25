@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { personalitySchema } from "./personality.js"
 import { subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
 import {
 	finalizedSubagentManifestOrchestrationSchema,
@@ -301,6 +302,8 @@ export const subagentContextManifestSchema = z
 		contextRefs: z.array(z.string().min(1)).min(1),
 		workspace: subagentContextWorkspaceSchema,
 		instructions: subagentContextInstructionsSchema,
+		/** Missing historical captures retain the model's default style. */
+		personality: personalitySchema.optional(),
 		skills: z
 			.array(subagentContextSkillSchema)
 			.refine(

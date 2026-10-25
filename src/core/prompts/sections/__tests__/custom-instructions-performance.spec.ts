@@ -188,7 +188,10 @@ describe("custom instruction preparation latency", () => {
 			(error: unknown) => error,
 		)
 		await vi.runAllTimersAsync()
-		expect(await pending).toBe(modeError)
+		expect(await pending).toHaveProperty(
+			"message",
+			`Unable to load rule instructions from "${path.join(cwd, ".alpharules-code")}" (EPERM). Check file access and try again.`,
+		)
 		expect(readFile).toHaveBeenCalledWith(path.join(cwd, ".alpharules"), "utf-8")
 		expect(activeOperations).toBe(0)
 	})

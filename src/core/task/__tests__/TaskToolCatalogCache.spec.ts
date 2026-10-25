@@ -167,6 +167,8 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 		vi.fn(async () => ({ content: [{ type: "text", text: "Calendar record found." }] })),
 	)
 	const hub = Object.create(McpHub.prototype) as McpHub
+	// Object.create skips field initializers; real dispatch still owns its connection cancellation state.
+	Reflect.set(hub, "connectionControllers", new Map())
 	hub.connections = servers.map((server, index) => ({
 		type: "connected",
 		server,

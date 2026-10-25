@@ -7,6 +7,12 @@ vi.mock("../../agent/CompletionHooks", async (importOriginal) => ({
 	runCompletionHooks: vi.fn(),
 }))
 
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((finish) => (resolve = finish))
+	return { promise, resolve }
+}
+
 function fixture(target: CompletionHookTarget = "Stop") {
 	const controller = new AbortController()
 	const task = Object.assign(Object.create(Task.prototype), {
@@ -17,14 +23,20 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		abort: false,
 		didComplete: false,
 		completionHookActive: false,
+		agentRunId: "hook-run",
+		agentTurnId: "same-turn",
+		providerRef: { deref: () => undefined },
+		isCurrentApiConversationHistoryOwner: vi.fn(() => true),
 		currentAgentStep: {
 			turnId: "same-turn",
+			stepId: "original-step",
 			snapshot: { context: { provider: { modelId: "fixture-model" } } },
 		},
 		completionHookTranscriptPath: vi.fn(async () => null),
-		getApprovalModeForAsk: vi.fn(() => "ask"),
+		getStepApprovalMode: vi.fn(() => "ask"),
 		getTaskLifetimeCancellationSignal: () => controller.signal,
 		say: vi.fn(async () => undefined),
+		publishLifecycleHookMessage: vi.fn(async (text: string) => task.say("text", text)),
 	}) as Task
 	vi.mocked(readCompletionHookConfig).mockReturnValue({
 		stop: [{ command: process.execPath }],
@@ -98,4 +110,125 @@ describe("configured completion hook continuations", () => {
 		expect(task.isCompleted()).toBe(false)
 		expect(task.say).not.toHaveBeenCalled()
 	})
+
+	it.each(["Stop", "SubagentStop"] as const)(
+		"captures %s metadata before transcript preparation suspends",
+		async (target) => {
+			const { task } = fixture(target)
+			const entered = deferred()
+			const release = deferred()
+			const originalCwd = task.cwd
+			vi.mocked(task["completionHookTranscriptPath"]).mockImplementation(async () => {
+				entered.resolve()
+				await release.promise
+				return null
+			})
+			vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+			const evaluation = task.evaluateCompletionHooks("Original candidate")
+			await entered.promise
+			Object.assign(task, { workspacePath: `${originalCwd}-changed`, subagentRole: "review" })
+			Object.assign(task["currentAgentStep"]!.snapshot.context.provider, { modelId: "changed-model" })
+			vi.mocked(task.getStepApprovalMode).mockReturnValue("auto")
+			release.resolve()
+
+			expect(await evaluation).toEqual({})
+			expect(runCompletionHooks).toHaveBeenCalledExactlyOnceWith(
+				expect.anything(),
+				expect.objectContaining({
+					hook_event_name: target,
+					turn_id: "same-turn",
+					cwd: originalCwd,
+					model: "fixture-model",
+					permission_mode: "ask",
+					last_assistant_message: "Original candidate",
+					...(target === "SubagentStop" ? { agent_type: "worker" } : {}),
+				}),
+				expect.any(AbortSignal),
+			)
+		},
+	)
+
+	it.each(["Stop", "SubagentStop"] as const)(
+		"keeps %s transcript preparation cancellable without waiting for the filesystem",
+		async (target) => {
+			for (const cancellation of ["task", "steering"] as const) {
+				const { task, controller } = fixture(target)
+				const stepInterruption = new AbortController()
+				if (cancellation === "steering") Object.assign(task, { stepInterruptionController: stepInterruption })
+				const entered = deferred()
+				const release = deferred()
+				const waitForControl = vi.fn(task["waitForRequestControl"].bind(task))
+				Object.assign(task, { waitForRequestControl: waitForControl })
+				vi.mocked(task["completionHookTranscriptPath"]).mockImplementation(async (taskId) => {
+					if (taskId !== task.taskId) return null
+					entered.resolve()
+					await release.promise
+					return null
+				})
+				const evaluation = task.evaluateCompletionHooks("Candidate")
+				await entered.promise
+				try {
+					// Assert the controlled boundary before cancellation so a regression
+					// cannot leave this test waiting on its deliberately held filesystem.
+					expect(waitForControl).toHaveBeenCalled()
+					if (cancellation === "steering") {
+						Object.assign(task, { pendingSteerMessage: { text: "New request", inputOrigin: "human" } })
+						stepInterruption.abort(new Error("Steered by user"))
+					} else controller.abort(new Error("Cancelled by user"))
+					expect(await evaluation).toEqual({})
+					expect(runCompletionHooks).not.toHaveBeenCalled()
+					expect(task.say).not.toHaveBeenCalled()
+					expect(task["pendingCompletionHookPrompt"]).toBeUndefined()
+					expect(task["completionHookActive"]).toBe(false)
+					if (cancellation === "steering") expect(task.hasPendingSteerMessage()).toBe(true)
+				} finally {
+					release.resolve()
+					await evaluation.catch(() => undefined)
+				}
+			}
+		},
+	)
+
+	it.each(["transcript", "hook", "warning"] as const)(
+		"discards completion-hook work after step ownership changes during %s",
+		async (boundary) => {
+			for (const target of ["Stop", "SubagentStop"] as const) {
+				const { task } = fixture(target)
+				const entered = deferred()
+				const release = deferred()
+				const hold = async () => {
+					entered.resolve()
+					await release.promise
+				}
+				vi.mocked(task["completionHookTranscriptPath"]).mockImplementation(async () => {
+					if (boundary === "transcript") await hold()
+					return null
+				})
+				vi.mocked(runCompletionHooks).mockImplementation(async () => {
+					if (boundary === "hook") await hold()
+					return {
+						warnings: ["First warning", "Second warning"],
+						prompt: "Stale repair",
+						fragments: [{ hook_run_id: "stale", text: "Stale repair" }],
+					}
+				})
+				vi.mocked(task.say).mockImplementation(async () => {
+					if (boundary === "warning") await hold()
+				})
+				const evaluation = task.evaluateCompletionHooks("Candidate")
+				await entered.promise
+				task["currentAgentStep"] = { ...task["currentAgentStep"]!, stepId: "replacement-step" }
+				const rejected = expect(evaluation).rejects.toMatchObject({ name: "AbortError" })
+				release.resolve()
+				await rejected
+
+				expect(task["completionHookActive"]).toBe(false)
+				expect(task["pendingCompletionHookPrompt"]).toBeUndefined()
+				if (boundary === "transcript") expect(runCompletionHooks).not.toHaveBeenCalled()
+				if (boundary === "warning")
+					expect(task.say).toHaveBeenCalledExactlyOnceWith("text", "Warning: First warning")
+				else expect(task.say).not.toHaveBeenCalled()
+			}
+		},
+	)
 })

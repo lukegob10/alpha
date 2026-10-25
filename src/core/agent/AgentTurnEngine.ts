@@ -124,6 +124,12 @@ function normalizePhaseFailure(phase: AgentTurnPhaseResult): AgentTurnPhaseResul
 	return { ...phase, status: "failed", reason: phase.reason ?? errorMessage(phase.error) }
 }
 
+function normalizeContinuationFailure<TInput>(
+	continuation: AgentTurnContinuation<TInput> | undefined,
+): AgentTurnContinuation<TInput> | undefined {
+	return continuation ? { ...continuation, ...normalizePhaseFailure(continuation) } : undefined
+}
+
 function mergePhaseResult(current: AgentTurnPhaseResult, next: AgentTurnPhaseResult | void): AgentTurnPhaseResult {
 	// Completion and cleanup still run after a fault, but cannot replace the
 	// first terminal phase or its diagnostics with a secondary failure.
@@ -343,7 +349,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					}
 					let admission: AgentTurnContinuation<TInput> | undefined
 					try {
-						admission = await this.host.admitCompletion?.(outcome)
+						admission = normalizeContinuationFailure(await this.host.admitCompletion?.(outcome))
 					} catch (admissionError) {
 						return terminalOutcome(
 							this.host.shouldAbort() ? "aborted" : "failed",
@@ -472,7 +478,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 								reason,
 							)
 						} else {
-							const continuation = await this.host.selectContinuation?.(sample, steps)
+							const continuation = normalizeContinuationFailure(
+								await this.host.selectContinuation?.(sample, steps),
+							)
 							if (this.host.shouldAbort()) {
 								outcome = terminalOutcome("aborted", steps, sample.response, reason)
 							} else if (!continuation) {
@@ -523,7 +531,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						}
 					}
 					if (outcome?.status === "completed") {
-						const admission = await this.host.admitCompletion?.(outcome)
+						const admission = normalizeContinuationFailure(await this.host.admitCompletion?.(outcome))
 						if (this.host.shouldAbort()) {
 							outcome = terminalOutcome("aborted", steps, sample.response)
 						} else if (admission?.status && admission.status !== "completed") {
@@ -588,6 +596,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							...(reason ? { reason } : {}),
 							...(error !== undefined ? { error } : {}),
 						})
+						// An error-only admission is a secondary failure, just like a thrown
+						// callback. Decline recovery without replacing the original boundary.
+						if (recovery?.status === undefined && recovery?.error !== undefined) recovery = undefined
 					} catch {
 						return this.host.shouldAbort()
 							? terminalOutcome("aborted", steps, sample.response, reason)
@@ -600,7 +611,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							steps,
 							sample.response,
 							recovery.reason ?? reason,
-							error ?? recovery.error,
+							error !== undefined ? error : recovery.error,
 						)
 					}
 					if (

@@ -297,7 +297,7 @@ async function captureRgRead(
 			) {
 				throw new Error("Prepared command authority or environment changed before launch")
 			}
-			if (await task.getTaskCommandDenialReason?.(command, requestedCwd))
+			if (await task.getTaskCommandDenialReason?.(command, requestedCwd, "audited-read"))
 				throw new ToolReadDeniedError("Prepared command authority was revoked")
 			const [currentRoot, currentCwd, currentExecutable, currentRoots] = await Promise.all([
 				fs.realpath(task.cwd),

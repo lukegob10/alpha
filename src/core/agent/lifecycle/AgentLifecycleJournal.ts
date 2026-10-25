@@ -728,7 +728,10 @@ function snapshotFromEvent(event: AgentLifecycleEvent): AgentLifecycleSnapshot {
 
 function validateAndRedactEvent(value: unknown, taskId: string, maxValueLength: number): AgentLifecycleEvent {
 	const redacted = redactLifecycleValue(value, maxValueLength)
-	const result = agentLifecycleEventSchema.safeParse(redacted)
+	// Reduce the same value that JSONL will retain, including omission of
+	// undefined properties and null conversion inside unknown tool payloads.
+	const persisted: unknown = JSON.parse(JSON.stringify(redacted))
+	const result = agentLifecycleEventSchema.safeParse(persisted)
 	if (!result.success) {
 		throw new AgentLifecycleRecoveryError(
 			"invalid_event",
@@ -1067,9 +1070,9 @@ function stableJson(value: unknown): string {
 
 function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value
-	if (typeof value === "number") return Number.isFinite(value) ? value : String(value)
+	if (typeof value === "number") return Number.isFinite(value) ? value : null
 	if (typeof value === "bigint") return `${value}n`
-	if (typeof value === "undefined") return "[undefined]"
+	if (typeof value === "undefined") return undefined
 	if (typeof value !== "object") return String(value)
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)

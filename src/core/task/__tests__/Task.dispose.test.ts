@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events"
 import * as fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { ProviderSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, type ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
@@ -125,6 +125,120 @@ describe("Task dispose method", () => {
 			expect(process.hasUnretrievedOutput()).toBe(true)
 		} finally {
 			commandSessionRegistry.release(task, sessionId)
+		}
+	})
+
+	test.each(["retained", "current"] as const)(
+		"releases every remaining task resource when the %s provider disposer throws",
+		(failingProvider) => {
+			const currentHandler = { ...task.api, dispose: vi.fn() }
+			const firstRetainedHandler = { ...task.api, dispose: vi.fn() }
+			const laterRetainedHandler = { ...task.api, dispose: vi.fn() }
+			const failedHandler = failingProvider === "retained" ? firstRetainedHandler : currentHandler
+			const cleanupFailure = new Error("Provider cleanup failed")
+			failedHandler.dispose.mockImplementation(() => {
+				throw cleanupFailure
+			})
+			task.api = currentHandler
+			task["retainedReasoningHandlers"].add(firstRetainedHandler)
+			task["retainedReasoningHandlers"].add(laterRetainedHandler)
+
+			const taskSignal = task.getTaskLifetimeCancellationSignal()
+			const queueDispose = vi.spyOn(task.messageQueueService, "dispose")
+			const ignoreDispose = vi.spyOn(task["alphaIgnoreController"]!, "dispose")
+			const trackerDispose = vi.spyOn(task["fileContextTracker"], "dispose")
+			task.on(AlphaCodeEventName.TaskAborted, vi.fn())
+			const process = Object.assign(new EventEmitter(), {
+				executionId: "provider-disposal-command",
+				isSettled: true,
+				hasUnretrievedOutput: () => true,
+			}) as AlphaTerminalProcess
+			const sessionId = commandSessionRegistry.register(task, process)
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				let thrown: unknown
+				try {
+					task.dispose({ preserveCommandOutputArtifacts: true })
+				} catch (error) {
+					thrown = error
+				}
+				expect(thrown).toBe(cleanupFailure)
+
+				expect(firstRetainedHandler.dispose).toHaveBeenCalledOnce()
+				expect(laterRetainedHandler.dispose).toHaveBeenCalledOnce()
+				expect(currentHandler.dispose).toHaveBeenCalledOnce()
+				expect(taskSignal.aborted).toBe(true)
+				expect(queueDispose).toHaveBeenCalledOnce()
+				expect(task.messageQueueService.listenerCount("stateChanged")).toBe(0)
+				expect(task.eventNames()).toEqual([])
+				expect(commandSessionRegistry.ownsOutput(process)).toBe(false)
+				expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+				expect(ignoreDispose).toHaveBeenCalledOnce()
+				expect(trackerDispose).toHaveBeenCalledOnce()
+
+				expect(() => task.dispose({ preserveCommandOutputArtifacts: true })).not.toThrow()
+				expect(firstRetainedHandler.dispose).toHaveBeenCalledOnce()
+				expect(laterRetainedHandler.dispose).toHaveBeenCalledOnce()
+				expect(currentHandler.dispose).toHaveBeenCalledOnce()
+			} finally {
+				commandSessionRegistry.release(task, sessionId)
+				consoleError.mockRestore()
+				queueDispose.mockRestore()
+				ignoreDispose.mockRestore()
+				trackerDispose.mockRestore()
+			}
+		},
+	)
+
+	test("reports every provider cleanup failure after releasing the remaining resources", () => {
+		const retainedFailure = new Error("Retained provider cleanup failed")
+		const currentFailure = new Error("Current provider cleanup failed")
+		const currentHandler = {
+			...task.api,
+			dispose: vi.fn(() => {
+				throw currentFailure
+			}),
+		}
+		const failingRetainedHandler = {
+			...task.api,
+			dispose: vi.fn(() => {
+				throw retainedFailure
+			}),
+		}
+		const laterRetainedHandler = { ...task.api, dispose: vi.fn() }
+		task.api = currentHandler
+		task["retainedReasoningHandlers"].add(failingRetainedHandler)
+		task["retainedReasoningHandlers"].add(laterRetainedHandler)
+		const queueDispose = vi.spyOn(task.messageQueueService, "dispose")
+		const trackerDispose = vi.spyOn(task["fileContextTracker"], "dispose")
+		task.on(AlphaCodeEventName.TaskAborted, vi.fn())
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			let thrown: unknown
+			try {
+				task.dispose({ preserveCommandOutputArtifacts: true })
+			} catch (error) {
+				thrown = error
+			}
+			expect(thrown).toBeInstanceOf(AggregateError)
+			if (!(thrown instanceof AggregateError)) throw new Error("Expected all provider cleanup failures")
+			expect(thrown.errors).toHaveLength(2)
+			expect(thrown.errors[0]).toBe(retainedFailure)
+			expect(thrown.errors[1]).toBe(currentFailure)
+			expect(laterRetainedHandler.dispose).toHaveBeenCalledOnce()
+			expect(queueDispose).toHaveBeenCalledOnce()
+			expect(trackerDispose).toHaveBeenCalledOnce()
+			expect(task.getTaskLifetimeCancellationSignal().aborted).toBe(true)
+			expect(task.eventNames()).toEqual([])
+
+			expect(() => task.dispose({ preserveCommandOutputArtifacts: true })).not.toThrow()
+			expect(failingRetainedHandler.dispose).toHaveBeenCalledOnce()
+			expect(laterRetainedHandler.dispose).toHaveBeenCalledOnce()
+			expect(currentHandler.dispose).toHaveBeenCalledOnce()
+		} finally {
+			consoleError.mockRestore()
+			queueDispose.mockRestore()
+			trackerDispose.mockRestore()
 		}
 	})
 

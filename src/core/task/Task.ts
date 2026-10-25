@@ -6,6 +6,8 @@ import {
 	taskDesignHandoffSchema,
 	MAX_DESIGN_HANDOFF_CHARS,
 	type TaskDesignHandoff,
+	type Personality,
+	type AlphaMessageTurn,
 	type TaskGoal,
 	type TaskGoalCreateInput,
 	type TaskGoalResumeInput,
@@ -56,6 +58,7 @@ import { GoalAccountingBindingStore } from "../agent/goals/GoalAccountingBinding
 import {
 	accountGoalResponse,
 	finishGoalStep,
+	getGoalStepElapsedReceipt,
 	goalResponseTokens,
 	type GoalStepAccounting,
 	type GoalAccountingBinding,
@@ -264,6 +267,7 @@ import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
 import { extractApplyPatchCommand } from "../tools/apply-patch/invocation"
+import { getPatchPaths, ParseError } from "../tools/apply-patch/parser"
 import { classifyCommandRead } from "../tools/ParallelCommandRead"
 import { isPathWithinRoot } from "../tools/pathSafety"
 import { CLOSED_TOOL_REVIEW_POLICY, isPathAllowed } from "../agent/ToolPolicy"
@@ -574,6 +578,7 @@ type TaskLifecycleHookInvocation = {
 	guard: CanonicalLifecycleEventGuard
 	provider: AlphaProvider | undefined
 	config: CompletionHookConfig
+	turn?: AlphaMessageTurn
 	context: {
 		session_id: string
 		turn_id: string
@@ -1065,7 +1070,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		string,
 		{ ids: readonly string[]; content: Anthropic.Messages.ContentBlockParam[] }
 	>()
-	private toolInputContext = new AsyncLocalStorage<string>()
+	private toolInputContext = new AsyncLocalStorage<{ toolCallId: string; turn?: AlphaMessageTurn }>()
+	/** Presentation cursor only; canonical lifecycle state continues to own the turn. */
+	private openingTurnInputPending = false
 	private durableSteerAdmission: Promise<void> = Promise.resolve()
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
 	private readonly stagedWaitAgentNotifications = new Map<string, Anthropic.TextBlockParam[]>()
@@ -1724,13 +1731,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Create initial partial tool use
 				const partialToolUse: ToolUse = {
 					type: "tool_use",
+					id: event.id,
 					name: event.name as ToolName,
 					params: {},
 					partial: true,
 				}
-
-				// Store the ID for native protocol
-				;(partialToolUse as any).id = event.id
 
 				// Add to the response buffer. Tool execution is deferred until the
 				// provider stream has completed and the assistant message is saved.
@@ -1744,9 +1749,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Get the index for this tool call
 					const toolUseIndex = this.streamingToolCallIndices.get(event.id)
 					if (toolUseIndex !== undefined) {
-						// Store the ID for native protocol
-						;(partialToolUse as any).id = event.id
-
 						// Update the existing tool use with new partial data
 						this.assistantMessageContent[toolUseIndex] = partialToolUse
 					}
@@ -1759,9 +1761,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const toolUseIndex = this.streamingToolCallIndices.get(event.id)
 
 				if (finalToolUse) {
-					// Store the tool call ID
-					;(finalToolUse as any).id = event.id
-
 					// Get the index and replace partial with final
 					if (toolUseIndex !== undefined) {
 						this.assistantMessageContent[toolUseIndex] = finalToolUse
@@ -1779,8 +1778,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const existingToolUse = this.assistantMessageContent[toolUseIndex]
 					if (existingToolUse && existingToolUse.type === "tool_use") {
 						existingToolUse.partial = false
-						// Ensure it has the ID for native protocol
-						;(existingToolUse as any).id = event.id
 					}
 
 					// Clean up tracking
@@ -1791,6 +1788,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 		}
+		this.scheduleStreamingPreview()
 	}
 
 	didRejectTool = false
@@ -3136,7 +3134,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		ids: readonly string[],
 		content: Anthropic.Messages.ContentBlockParam[],
 	): void {
-		toolCallId ??= this.toolInputContext?.getStore()
+		toolCallId ??= this.toolInputContext?.getStore()?.toolCallId
 		if (!toolCallId || !ids.length) return
 		this.queuedToolResultReceipts ??= new Map()
 		this.queuedToolResultReceipts.set(sanitizeToolUseId(toolCallId), { ids, content })
@@ -3152,7 +3150,64 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public withToolInputContext<T>(toolCallId: string, operation: () => Promise<T>): Promise<T> {
 		this.toolInputContext ??= new AsyncLocalStorage()
-		return this.toolInputContext.run(toolCallId, operation)
+		return this.toolInputContext.run({ toolCallId, turn: this.captureMessageTurn() }, operation)
+	}
+
+	/** Capture at producer admission; late callbacks must pass this snapshot back to say(). */
+	public captureMessageTurn(): AlphaMessageTurn | undefined {
+		return this.agentRunId && this.agentTurnId ? { runId: this.agentRunId, turnId: this.agentTurnId } : undefined
+	}
+
+	private async annotateMessageTurn(
+		timestamp: number,
+		attribution: Pick<AlphaMessageTurn, "inputKind" | "terminalStatus">,
+		guard: CanonicalLifecycleEventGuard = this.captureAgentStepOwnership(),
+	): Promise<void> {
+		const turn = this.captureMessageTurn()
+		if (!turn || !guard() || !this.findMessageByTimestamp(timestamp)) return
+		const provider = this.providerRef.deref()
+		const committed = await this.commitAlphaMessageMutation(
+			timestamp,
+			"the message turn attribution",
+			(message) => {
+				if (!message) return undefined
+				const existing = message.turn
+				if (
+					attribution.terminalStatus &&
+					(existing?.inputKind ||
+						(existing && (existing.runId !== turn.runId || existing.turnId !== turn.turnId)))
+				)
+					return undefined
+				const inputKind =
+					existing?.runId === turn.runId && existing.turnId === turn.turnId && existing.inputKind
+						? existing.inputKind
+						: attribution.inputKind
+				return { ...message, turn: { ...turn, ...attribution, ...(inputKind ? { inputKind } : {}) } }
+			},
+			undefined,
+			undefined,
+			{ guard, provider },
+		)
+		if (committed && guard()) await this.updateAlphaMessage(committed.message, { guard, provider })
+	}
+
+	private async sayOpeningInput(
+		type: AlphaSay,
+		text?: string,
+		images?: string[],
+		queuedMessageIds?: readonly string[],
+		stateUpdate?: "full" | "task",
+	): Promise<number | undefined> {
+		let timestamp: number | undefined
+		await this.say(type, text, images, undefined, undefined, undefined, {
+			turn: null,
+			queuedMessageIds,
+			stateUpdate,
+			onCreated: (message) => {
+				timestamp = message.ts
+			},
+		})
+		return timestamp
 	}
 
 	private getQueuedInputReceipts(content: readonly Anthropic.Messages.ContentBlockParam[]): string[] {
@@ -3290,8 +3345,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiHistory.flatMap((message) =>
 					Array.isArray(message.content)
 						? message.content
-								.filter((block) => block.type === "tool_use")
-								.map((block) => sanitizeToolUseId(block.id))
+								.map(getToolCallId)
+								.filter((id): id is string => id !== undefined)
+								.map(sanitizeToolUseId)
 						: [],
 				),
 			)
@@ -5269,7 +5325,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * existing in-progress identity; after terminality, allocate a fresh run and
 	 * turn so the task journal can begin a new local sequence at one.
 	 */
-	private async beginCanonicalLifecycleTurn(): Promise<void> {
+	private async beginCanonicalLifecycleTurn(): Promise<boolean> {
 		this.subagentReviewInputTurn = undefined
 		try {
 			await this.replayCanonicalLifecycle()
@@ -5317,6 +5373,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				effectTrackingVersion: 1,
 			})
 		}
+		return resumeExistingTurn
 	}
 
 	private async publishCanonicalLifecyclePhase(
@@ -6017,6 +6074,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		outcome: AgentTurnOutcome,
 		guard?: CanonicalLifecycleEventGuard,
 		capturedStep?: CurrentAgentStep,
+		finalMessageTs?: number,
 	): Promise<void> {
 		const step = guard ? capturedStep : this.currentAgentStep
 		const status =
@@ -6041,6 +6099,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				undefined,
 				guard,
 			)
+			if (guard && !guard()) return
+			if (outcome.status === "completed" && finalMessageTs !== undefined) {
+				await this.annotateMessageTurn(finalMessageTs, { terminalStatus: "completed" }, guard)
+				if (!guard || guard()) this.currentAssistantResponseMessageTs = finalMessageTs
+			}
 		} finally {
 			// Keep the diagnostic snapshot available after finalization, but release
 			// raw retry inputs even if publishing the terminal lifecycle event fails.
@@ -6068,6 +6131,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		designHandoffOverride?: TaskDesignHandoff | null,
 		capturedAutoApprovalPolicy?: SubagentAutoApprovalPolicy,
 		recoverFromCommittedHistory = false,
+		capturedPersonality?: Personality,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
@@ -6192,6 +6256,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let capturedForkContext: SubagentInvocationContext | undefined = forkHistory
 			? {
 					mode,
+					personality: capturedPersonality ?? "default",
+					reasoningPreference: structuredClone(
+						this.reasoningByHandler.get(apiHandler)?.requested ?? { kind: "default" },
+					),
 					apiConfiguration: snapshotProviderSettings(
 						capturedProvider?.profileConfiguration ??
 							capturedProvider?.apiConfiguration ??
@@ -6495,9 +6563,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		message: AlphaMessage,
 		stateUpdate?: "full" | "task",
 		requiredPersistenceContext?: string,
+		turn: AlphaMessageTurn | null | undefined = this.toolInputContext?.getStore()?.turn ??
+			this.captureMessageTurn(),
+		onCreated?: (message: AlphaMessage) => void,
 	) {
+		if (!message.turn && turn) message.turn = { ...turn }
 		this.observeUiMessageTimestamps([message])
 		this.clineMessages.push(message)
+		onCreated?.(message)
 		await this.publishAlphaMessageCreated(message, stateUpdate)
 		const saved = await this.saveAlphaMessages()
 		if (!saved && requiredPersistenceContext) throw new Error(`Unable to persist ${requiredPersistenceContext}.`)
@@ -6804,6 +6877,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		designHandoff?: TaskDesignHandoff,
 		matchesMessage: (message: AlphaMessage) => boolean = (message) => message.ts === timestamp,
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
+		messageTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn(),
 	): Promise<{ message: AlphaMessage; created: boolean } | undefined> {
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (ownership && !ownership.guard()) return
@@ -6820,6 +6894,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					created = index < 0
 					stagedMessage = mutate(index >= 0 ? messages[index] : undefined)
 					if (!stagedMessage) return messages
+					if (!stagedMessage.turn && messageTurn) stagedMessage.turn = { ...messageTurn }
 					if (index >= 0) messages[index] = stagedMessage
 					else messages.push(stagedMessage)
 					return messages
@@ -7137,6 +7212,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCommandApproved?: (commandExecutionId: string) => void,
 		signal?: AbortSignal,
 	): Promise<{ response: AlphaAskResponse; text?: string; images?: string[]; queuedMessageIds?: string[] }> {
+		const capturedTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
+		const addMessage = (message: AlphaMessage) =>
+			this.addToAlphaMessages(message, undefined, undefined, capturedTurn)
 		// If this Alpha instance was aborted by the provider, then the only
 		// thing keeping us alive is a promise still running in the background,
 		// in which case we don't want to send its result to the webview as it
@@ -7234,7 +7312,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let askTs: number
 		let installedAsk: Task["activeAsk"]
 		const installActiveAsk = (ts: number) => {
-			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore() }
+			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId }
 			this.activeAsk = installedAsk
 		}
 
@@ -7263,7 +7341,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// state.
 					askTs = this.reserveUiMessageTimestamp()
 					this.lastMessageTs = askTs
-					await this.addToAlphaMessages({
+					await addMessage({
 						ts: askTs,
 						type: "ask",
 						ask: type,
@@ -7315,7 +7393,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					askTs = this.reserveUiMessageTimestamp()
 					this.lastMessageTs = askTs
 					installActiveAsk(askTs)
-					await this.addToAlphaMessages({
+					await addMessage({
 						ts: askTs,
 						type: "ask",
 						ask: type,
@@ -7336,7 +7414,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			askTs = this.reserveUiMessageTimestamp()
 			this.lastMessageTs = askTs
 			installActiveAsk(askTs)
-			await this.addToAlphaMessages({
+			await addMessage({
 				ts: askTs,
 				type: "ask",
 				ask: type,
@@ -8480,14 +8558,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		) {
 			return
 		}
-		step.elapsedReceipt ??= {
-			goalTaskId: step.goalTaskId,
-			goalId: step.goalId,
-			eventId: `${step.eventId}:elapsed`,
-			tokens: 0,
-			timeMs: step.accountElapsed ? Math.max(0, Date.now() - step.startedAt - (step.elapsedChargedMs ?? 0)) : 0,
-		}
-		const receipt = step.elapsedReceipt
+		const receipt = getGoalStepElapsedReceipt(step)
 		const message = [...(this.apiConversationHistory ?? [])]
 			.reverse()
 			.find((candidate) =>
@@ -8641,6 +8712,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			guard,
 			provider: this.providerRef.deref(),
 			config: this.completionHookConfig,
+			turn: this.captureMessageTurn(),
 			context: {
 				session_id: this.parentTaskId ?? this.taskId,
 				turn_id: step?.turnId ?? this.agentTurnId ?? "",
@@ -8672,6 +8744,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					type: "say",
 					say: "text",
 					text: redactTaskPrivatePaths(this, text),
+					turn: invocation.turn,
 				}
 				return [...structuredClone(this.clineMessages), message]
 			},
@@ -8968,60 +9041,61 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					? "SubagentStop"
 					: undefined
 		if (!target) return {}
-		this.completionHookConfig ??= readCompletionHookConfig()
-		if (
-			(target === "Stop" ? this.completionHookConfig.stop : this.completionHookConfig.subagentStop).length === 0
-		) {
+		const invocation = this.captureLifecycleHookInvocation()
+		const { config, context, guard } = invocation
+		if ((target === "Stop" ? config.stop : config.subagentStop).length === 0) {
 			return {}
 		}
-		const transcriptPath = await this.completionHookTranscriptPath(this.parentTaskId ?? this.taskId)
-		const agentTranscriptPath =
-			target === "SubagentStop" ? await this.completionHookTranscriptPath(this.taskId) : undefined
-		if (
-			this.abort ||
-			this.getTaskLifetimeCancellationSignal().aborted ||
-			!this.isCurrentApiConversationHistoryOwner()
-		) {
-			return {}
+		const stopHookActive = this.completionHookActive
+		const lifetimeSignal = this.getTaskLifetimeCancellationSignal()
+		const interruptionSignal = this.stepInterruptionController?.signal
+		const signal = interruptionSignal ? AbortSignal.any([lifetimeSignal, interruptionSignal]) : lifetimeSignal
+		const interrupted = () => signal.aborted || this.abort || this.abandoned || Boolean(this.pendingSteerMessage)
+		const isCurrent = () => {
+			this.assertLifecycleHookOwnership(guard)
+			return !interrupted()
 		}
-		const outcome = await runCompletionHooks(
-			this.completionHookConfig,
-			{
-				hook_event_name: target,
-				session_id: this.parentTaskId ?? this.taskId,
-				turn_id: this.currentAgentStep?.turnId ?? this.agentTurnId ?? "",
-				transcript_path: transcriptPath,
-				cwd: this.cwd,
-				model: this.currentAgentStep?.snapshot.context.provider.modelId ?? this.api?.getModel().id ?? "",
-				stop_hook_active: this.completionHookActive,
-				last_assistant_message: lastAssistantMessage.slice(0, 16_000),
-				permission_mode: this.getStepApprovalMode(),
-				...(target === "SubagentStop"
-					? {
-							agent_id: this.taskId,
-							agent_type: this.subagentRole ?? "worker",
-							agent_transcript_path: agentTranscriptPath,
-						}
-					: {}),
-			},
-			this.getTaskLifetimeCancellationSignal(),
-		)
-		if (
-			this.abort ||
-			this.getTaskLifetimeCancellationSignal().aborted ||
-			!this.isCurrentApiConversationHistoryOwner()
-		) {
-			return {}
-		}
-		for (const warning of outcome.warnings) await this.say("text", `Warning: ${warning}`)
-		if (outcome.shouldStop && outcome.stopReason) await this.say("text", outcome.stopReason)
-		if (!outcome.prompt) return {}
-		this.completionHookActive = true
-		const hookPrompt: CompletionHookPromptProvenance = { event: target, fragments: outcome.fragments ?? [] }
-		this.pendingCompletionHookPrompt = hookPrompt
-		return {
-			prompt: outcome.prompt,
-			hookPrompt,
+		try {
+			const transcriptPath = await this.waitForRequestControl(
+				this.completionHookTranscriptPath(context.session_id),
+				signal,
+			)
+			if (!isCurrent()) return {}
+			const agentTranscriptPath =
+				target === "SubagentStop"
+					? await this.waitForRequestControl(this.completionHookTranscriptPath(this.taskId), signal)
+					: undefined
+			if (!isCurrent()) return {}
+			const outcome = await runCompletionHooks(
+				config,
+				{
+					...context,
+					hook_event_name: target,
+					transcript_path: transcriptPath,
+					stop_hook_active: stopHookActive,
+					last_assistant_message: lastAssistantMessage.slice(0, 16_000),
+					...(target === "SubagentStop" ? { agent_transcript_path: agentTranscriptPath } : {}),
+				},
+				signal,
+			)
+			if (!isCurrent()) return {}
+			for (const warning of outcome.warnings) {
+				await this.publishLifecycleHookMessage(`Warning: ${warning}`, invocation, signal)
+				if (!isCurrent()) return {}
+			}
+			if (outcome.shouldStop && outcome.stopReason) {
+				await this.publishLifecycleHookMessage(outcome.stopReason, invocation, signal)
+				if (!isCurrent()) return {}
+			}
+			if (!outcome.prompt || !isCurrent()) return {}
+			this.completionHookActive = true
+			const hookPrompt: CompletionHookPromptProvenance = { event: target, fragments: outcome.fragments ?? [] }
+			this.pendingCompletionHookPrompt = hookPrompt
+			return { prompt: outcome.prompt, hookPrompt }
+		} catch (error) {
+			this.assertLifecycleHookOwnership(guard)
+			if (interrupted()) return {}
+			throw error
 		}
 	}
 
@@ -10144,8 +10218,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * executor, but must not fall through to the serial terminal handler. Their
 	 * captured execute=false ceiling cannot be raised by approval behavior.
 	 */
-	public getTaskCommandDenialReason(_command: string, _cwd?: string): string | undefined {
+	public getTaskCommandDenialReason(
+		_command: string,
+		_cwd?: string,
+		executionKind: "shell" | "audited-read" = "shell",
+	): string | undefined {
 		if (this.taskKind !== "subagent") return undefined
+		if (executionKind === "audited-read") {
+			const toolDenial = this.getTaskToolDenialReason("exec_command")
+			if (toolDenial) return toolDenial
+			if (this.subagentContextManifest?.runtimePolicy.read === false)
+				return "This sub-agent cannot inspect workspace files."
+			return undefined
+		}
 
 		const role = this.subagentRole ?? this.subagentContextManifest?.runtimePolicy.role ?? "review"
 		const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
@@ -10183,7 +10268,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.isWorkerEditTool(toolName) &&
 			params
 		) {
-			const paths = this.getWorkerEditPaths(params)
+			let paths: string[]
+			try {
+				paths = this.getWorkerEditPaths(params)
+			} catch (error) {
+				if (error instanceof ParseError) return `Tool "${toolName}" did not provide a valid patch.`
+				throw error
+			}
 			if (paths.length === 0) return `Tool "${toolName}" did not provide a verifiable edit path.`
 			const outside = paths.find((candidate) => !this.isWorkerWritePathAllowed(candidate))
 			if (outside) return `Worker edit path is outside the approved write_scope: ${outside}`
@@ -10208,12 +10299,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!params) return []
 		const paths = [params.path, params.file_path].filter((value): value is string => typeof value === "string")
 		if (typeof params.patch === "string") {
-			for (const line of params.patch.split(/\r?\n/)) {
-				const match = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/.exec(line)
-				const move = /^\*\*\* Move to:\s*(.+)$/.exec(line)
-				if (match?.[1]) paths.push(match[1].trim())
-				if (move?.[1]) paths.push(move[1].trim())
-			}
+			paths.push(...getPatchPaths(params.patch))
 		}
 		return [...new Set(paths)]
 	}
@@ -10963,8 +11049,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
-	public async steerQueuedUserMessage(messageId: string): Promise<void> {
-		return this.enqueueDurableSteer(() => this.applyQueuedSteeringMessage(messageId))
+	public async steerQueuedUserMessage(messageId: string, expectedTurnId?: string): Promise<void> {
+		const turnId = expectedTurnId ?? this.agentTurnId ?? this.getCanonicalLifecycleSnapshot()?.turnId
+		const assertExpectedTurn = () => {
+			if (turnId !== undefined && !this.matchesExpectedTurn(turnId))
+				throw new Error("The active turn changed before steering admission")
+		}
+		assertExpectedTurn()
+		return this.enqueueDurableSteer(() => this.applyQueuedSteeringMessage(messageId, assertExpectedTurn))
 	}
 
 	private enqueueDurableSteer(operation: () => Promise<void>): Promise<void> {
@@ -11341,7 +11433,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async presentSteeringInput(steering: NonNullable<Task["pendingSteerMessage"]>): Promise<void> {
 		// The actual attributed message already has its own bubble. The wake is internal.
-		if (!steering.isAgentMessageWake) await this.say("user_feedback", steering.text, steering.images)
+		if (!steering.isAgentMessageWake)
+			await this.say("user_feedback", steering.text, steering.images, undefined, undefined, undefined, {
+				queuedMessageIds: steering.queuedMessageIds,
+			})
 	}
 
 	public async steerUserMessage(
@@ -11992,10 +12087,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			queuedMessageIds?: readonly string[]
 			/** Known failed-summary charge; never a successful compaction receipt. */
 			contextCondenseErrorCost?: number
+			turn?: AlphaMessageTurn | null
+			onCreated?: (message: AlphaMessage) => void
 		} = {},
 		contextCondense?: ContextCondense,
 		contextTruncation?: ContextTruncation,
 	): Promise<undefined> {
+		let capturedTurn =
+			options.turn === undefined
+				? (this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn())
+				: options.turn
+		if (type === "user_feedback" && !partial && options.feedbackSource !== "automatic" && capturedTurn) {
+			capturedTurn = { ...capturedTurn, inputKind: this.openingTurnInputPending ? "start" : "steer" }
+			this.openingTurnInputPending = false
+		}
+		const addMessage = (message: AlphaMessage, stateUpdate?: "full" | "task") =>
+			this.addToAlphaMessages(message, stateUpdate, undefined, capturedTurn, options.onCreated)
 		if (
 			options.contextCondenseErrorCost !== undefined &&
 			(!Number.isFinite(options.contextCondenseErrorCost) ||
@@ -12093,6 +12200,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
 				}
 				if (committed) {
+					options.onCreated?.(committed.message)
 					if (!options.isNonInteractive) this.lastMessageTs = committed.message.ts
 					await this.updateAlphaMessage(committed.message)
 					return undefined
@@ -12152,7 +12260,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 					}
 
-					await this.addToAlphaMessages(
+					await addMessage(
 						{
 							ts: sayTs,
 							type: "say",
@@ -12210,7 +12318,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 					}
 
-					await this.addToAlphaMessages(
+					await addMessage(
 						{
 							ts: sayTs,
 							type: "say",
@@ -12242,7 +12350,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (type === "text") this.currentAssistantResponseMessageTs = sayTs
 			}
 
-			await this.addToAlphaMessages(
+			await addMessage(
 				{
 					ts: sayTs,
 					type: "say",
@@ -12351,20 +12459,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const currentMessage = this.currentAssistantResponseMessageTs
 			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
 			: undefined
-		if (currentMessage?.type !== "say" || currentMessage.say !== "completion_result") return
+		if (
+			currentMessage?.type !== "say" ||
+			(currentMessage.say !== "completion_result" && !currentMessage.turn?.terminalStatus)
+		)
+			return
 
 		try {
 			const committed = await this.commitAlphaMessageMutation(
 				currentMessage.ts,
 				"the rejected completion state",
-				(message) =>
-					message?.type === "say"
-						? {
-								...message,
-								say: "text",
-								partial: false,
-							}
-						: undefined,
+				(message) => {
+					if (message?.type !== "say") return undefined
+					const turn = message.turn ? { ...message.turn } : undefined
+					if (turn) delete turn.terminalStatus
+					return { ...message, say: "text", partial: false, turn }
+				},
 			)
 			if (committed) await this.updateAlphaMessage(committed.message)
 		} catch (error) {
@@ -12472,7 +12582,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// The todo list is already set in the constructor if initialTodos were provided
 			// No need to add any messages - the todoList property is already set
 
-			await this.say("text", task, images, undefined, undefined, undefined, { stateUpdate: "task" })
+			const openingMessageTs = await this.sayOpeningInput("text", task, images, undefined, "task")
 			const firstUserMessage = this.clineMessages[0]
 			void this.scheduleInitialTaskTitle(
 				firstUserMessage?.text?.trim() || (images?.length ? "Review the attached image" : ""),
@@ -12520,6 +12630,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				undefined,
 				{
 					goalAdmission,
+					openingMessageTs,
 					inputOrigin:
 						goalAdmission ||
 						this.taskKind === "subagent" ||
@@ -12927,6 +13038,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			let responseImages: string[] | undefined
 			let responseQueuedMessageIds: string[] | undefined
 			let responseGoalAdmission: GoalInputAdmission | undefined
+			let openingMessageTs: number | undefined
 			if (hasDirectFollowup) {
 				responseText = followupText
 				responseImages = followupImages
@@ -12934,15 +13046,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (!(options.inputOrigin === "agent" && this.hasPendingAgentMessages())) {
 					const messageType =
 						options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
-					if (options.queuedMessageIds?.length) {
-						await this.say(messageType, followupText, followupImages, undefined, undefined, undefined, {
-							queuedMessageIds: options.queuedMessageIds,
-						})
-					} else if (followupImages === undefined) {
-						await this.say(messageType, followupText)
-					} else {
-						await this.say(messageType, followupText, followupImages)
-					}
+					openingMessageTs = await this.sayOpeningInput(
+						messageType,
+						followupText,
+						followupImages,
+						options.queuedMessageIds,
+					)
 				}
 			} else {
 				let completedHistory = lastAlphaMessage?.ask === "completion_result"
@@ -12962,7 +13071,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				responseGoalAdmission = this.consumeGoalAskAdmission(text)
 
 				if (response === "messageResponse") {
-					await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
+					openingMessageTs = await this.sayOpeningInput("user_feedback", text, images, queuedMessageIds)
 					responseText = text
 					responseImages = images
 					responseQueuedMessageIds = queuedMessageIds
@@ -13082,6 +13191,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					deferTaskStartedUntilInitialUserContentPersisted:
 						options.deferTaskStartedUntilInitialUserContentPersisted === true,
 					includeInitialFileDetails: !useRetainedHistory,
+					openingMessageTs,
 					inputOrigin,
 					goalAdmission,
 				}
@@ -13807,11 +13917,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!options.preserveSharedTaskResources) clearTaskSessionApprovalGrants(this.taskId)
 		this.reasoningDisposed = true
 		this.previousCompactionHandler = undefined
-		this.currentAgentStep?.releaseRequest?.()
-		for (const handler of this.retainedReasoningHandlers) this.disposeReasoningHandler(handler)
+		const providerCleanupErrors: unknown[] = []
+		const cleanUpProvider = (description: string, operation: () => void) => {
+			try {
+				operation()
+			} catch (error) {
+				providerCleanupErrors.push(error)
+				console.error(`[Task#${this.taskId}] Error ${description}:`, error)
+			}
+		}
+		cleanUpProvider("releasing the captured request", () => this.currentAgentStep?.releaseRequest?.())
+		for (const handler of this.retainedReasoningHandlers)
+			cleanUpProvider("disposing a retained provider", () => this.disposeReasoningHandler(handler))
 		this.retainedReasoningHandlers.clear()
-		this.disposeReasoningHandler(this.api)
-		this.reasoningSummaries?.dispose()
+		cleanUpProvider("disposing the task provider", () => this.disposeReasoningHandler(this.api))
+		cleanUpProvider("disposing reasoning summaries", () => this.reasoningSummaries?.dispose())
 		this.releaseSubagentReviewBarrierIfSettled(true)
 		this.invalidateStreamingPreviewEpoch()
 		this.taskCancellationController.abort()
@@ -13908,6 +14028,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			console.error("Error reverting diff changes:", error)
 		}
+
+		if (providerCleanupErrors.length === 1) throw providerCleanupErrors[0]
+		if (providerCleanupErrors.length > 1) {
+			throw new AggregateError(providerCleanupErrors, "Failed to dispose task providers")
+		}
 	}
 
 	/**
@@ -13971,6 +14096,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			includeInitialFileDetails?: boolean
 			inputOrigin?: "human" | "agent"
 			goalAdmission?: GoalInputAdmission
+			openingMessageTs?: number
 		} = {},
 	): Promise<void> {
 		if (this.contextCondenseAbortController) throw new Error("Context compaction is in progress")
@@ -14033,10 +14159,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			result: TaskStepExecutionResult
 			legacyDidEndLoop: boolean
 			goalAccounting?: GoalStepAccounting
+			assistantMessageTs?: number
 			agentStep?: CurrentAgentStep
 			ownsStep?: CanonicalLifecycleEventGuard
 		}
 		let recoveryExplanationPublished = false
+		let pendingOpeningMessageTs = options.openingMessageTs
+		let finalAssistantMessageTs: number | undefined
 		let activeStep: TaskTurnStep | undefined
 		let ownsTurnBoundary: CanonicalLifecycleEventGuard = () => this.isCurrentApiConversationHistoryOwner()
 		let ownsSampledStep: CanonicalLifecycleEventGuard | undefined
@@ -14072,6 +14201,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			sampleStep: async (input) => {
+				if (pendingOpeningMessageTs !== undefined) {
+					const timestamp = pendingOpeningMessageTs
+					pendingOpeningMessageTs = undefined
+					await this.annotateMessageTurn(timestamp, {
+						inputKind: this.openingTurnInputPending ? "start" : "steer",
+					})
+					this.openingTurnInputPending = false
+				}
 				// Legacy stubs may never capture a request. Keep their pre-call owner;
 				// the real capture callback replaces it before any sampling/salvage await.
 				let capturedStep = this.currentAgentStep
@@ -14202,6 +14339,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// A few legacy integrations still stub this public method with its
 				// historical boolean result. Normalize that boundary while keeping all
 				// production paths on explicit step statuses.
+				const responseMessageIndex = findLastIndex(
+					this.clineMessages,
+					(message) =>
+						message.type === "say" &&
+						(message.say === "text" || message.say === "completion_result") &&
+						message.turn?.runId === this.agentRunId &&
+						message.turn?.turnId === this.agentTurnId &&
+						!message.turn?.inputKind,
+				)
+				const assistantMessageTs =
+					this.clineMessages[responseMessageIndex]?.ts ?? this.currentAssistantResponseMessageTs
 				const legacyDidEndLoop = typeof rawStepResult === "boolean" && rawStepResult
 				const result: TaskStepExecutionResult =
 					typeof rawStepResult === "boolean" ? { status: "completed" } : rawStepResult
@@ -14236,7 +14384,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				goalWasActiveThisTurn = Boolean(goalAccounting && sampledMode === "code")
 				if (goalAccounting && sampledMode === "code" && goalAccounting.goalTaskId === this.taskId)
 					goalOwnerAtTurn ??= { goalId: goalAccounting.goalId, controlVersion: goalAccounting.controlVersion }
-				activeStep = { result, legacyDidEndLoop, goalAccounting, agentStep: capturedStep, ownsStep }
+				activeStep = {
+					result,
+					legacyDidEndLoop,
+					goalAccounting,
+					assistantMessageTs,
+					agentStep: capturedStep,
+					ownsStep,
+				}
 				return { response, status: result.status, reason: result.reason, error: result.error, step: activeStep }
 			},
 			commitResponse: async (sample) => {
@@ -14276,9 +14431,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			executeEffects: async (sample) => {
 				const transaction = sample.step?.result.transaction
 				if (!transaction) return sample.step?.result
+				const effectTurn = this.captureMessageTurn()
+				const previousPresentation = this.currentAssistantResponseMessageTs
+					? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
+					: undefined
 				try {
 					const result = await transaction.executeEffects()
-					if (sample.step) sample.step.result = { ...result, transaction }
+					if (sample.step) {
+						sample.step.result = { ...result, transaction }
+						// Completion tools commit their final row during effects, before completion hooks run.
+						const completion = this.currentAssistantResponseMessageTs
+							? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
+							: undefined
+						if (
+							completion !== previousPresentation &&
+							completion?.type === "say" &&
+							completion.say === "completion_result" &&
+							completion.turn?.runId === effectTurn?.runId &&
+							completion.turn?.turnId === effectTurn?.turnId &&
+							(sample.step.ownsStep?.() ?? true)
+						)
+							sample.step.assistantMessageTs = completion.ts
+					}
 					return result
 				} catch (error) {
 					if (sample.step) {
@@ -14295,6 +14469,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 			onStepComplete: async (response) => {
 				const completedStep = activeStep
+				finalAssistantMessageTs = completedStep?.assistantMessageTs
 				const ownsStep = completedStep?.ownsStep ?? ownsSampledStep
 				const ownsCompletedStep = () => ownsTurnBoundary() && (ownsStep?.() ?? true)
 				const ownershipLostResult = {
@@ -14435,16 +14610,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					if (queuedMessage) {
 						requiresContinuation = true
-						await this.say(
+						pendingOpeningMessageTs = await this.sayOpeningInput(
 							"user_feedback",
 							queuedMessage.text,
 							queuedMessage.images,
-							undefined,
-							undefined,
-							undefined,
-							{
-								queuedMessageIds: [queuedMessage.id],
-							},
+							[queuedMessage.id],
 						)
 						nextUserContent = this.buildUserMessageContent(queuedMessage.text, queuedMessage.images, [
 							queuedMessage.id,
@@ -14585,6 +14755,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const engine = new AgentTurnEngine(host)
 		const runAgentTurn = async (input: TaskTurnInput) => {
+			const openingMessageTs = pendingOpeningMessageTs
+			pendingOpeningMessageTs = undefined
+			finalAssistantMessageTs = undefined
 			let reviewTurnOwner: { runId: string; turnId: string } | undefined
 			if (this.contextCondenseAbortController) {
 				throw new Error("Context compaction is in progress")
@@ -14592,6 +14765,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
 			this.isAgentTurnEngineActive = true
 			this.goalTurnCompletionText = undefined
+			this.completionHookActive = false
+			this.pendingCompletionHookPrompt = undefined
 			this.goalRequestAdmissionRevoked = false
 			acceptedToolCallCount = 0
 			acceptedToolCallIds = new Set()
@@ -14609,7 +14784,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					goalWasActiveThisTurn && initialGoal
 						? { goalId: initialGoal.goalId, controlVersion: initialGoal.controlVersion }
 						: undefined
-				await this.beginCanonicalLifecycleTurn()
+				const resumedTurn = await this.beginCanonicalLifecycleTurn()
+				this.openingTurnInputPending = resumedTurn !== true
+				if (openingMessageTs !== undefined) {
+					await this.annotateMessageTurn(openingMessageTs, { inputKind: resumedTurn ? "steer" : "start" })
+					this.openingTurnInputPending = false
+				}
 				const runId = this.agentRunId
 				const turnId = this.agentTurnId
 				reviewTurnOwner = runId && turnId ? { runId, turnId } : undefined
@@ -14657,7 +14837,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.appendAgentTurnEvent({ type: "turn_incomplete", reason: outcome.reason })
 				}
 				if (!ownsTurnAndSample()) return outcome
-				await this.finishCanonicalLifecycleTurn(outcome, ownsTurnAndSample, retainedLifecycleStep)
+				await this.finishCanonicalLifecycleTurn(
+					outcome,
+					ownsTurnAndSample,
+					retainedLifecycleStep,
+					finalAssistantMessageTs,
+				)
 				if (!ownsTurnAndSample()) return outcome
 				await this.flushAgentTurnEvents()
 				if (!ownsTurnAndSample()) return outcome
@@ -14743,9 +14928,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (queued) {
 					this.resetCompletionRecoveryState()
 					await this.retractCompletionResult()
-					await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
-						queuedMessageIds: [queued.id],
-					})
+					pendingOpeningMessageTs = await this.sayOpeningInput("user_feedback", queued.text, queued.images, [
+						queued.id,
+					])
 					return {
 						userContent: this.buildUserMessageContent(queued.text, queued.images, [queued.id]),
 						includeFileDetails: false,
@@ -14851,9 +15036,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
-				await this.say("user_feedback", feedbackText, feedbackImages, undefined, undefined, undefined, {
-					queuedMessageIds: recovery.queuedMessageIds,
-				})
+				pendingOpeningMessageTs = await this.sayOpeningInput(
+					"user_feedback",
+					feedbackText,
+					feedbackImages,
+					recovery.queuedMessageIds,
+				)
 				return {
 					goalAdmission,
 					inputOrigin: goalAdmission ? "agent" : "human",
@@ -14884,9 +15072,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				) {
 					const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
 					if (queued)
-						await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
-							queuedMessageIds: [queued.id],
-						})
+						pendingOpeningMessageTs = await this.sayOpeningInput(
+							"user_feedback",
+							queued.text,
+							queued.images,
+							[queued.id],
+						)
 					nextTurnInput = {
 						userContent: queued
 							? this.buildUserMessageContent(queued.text, queued.images, [queued.id])
@@ -14907,9 +15098,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				) {
 					const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
 					if (queued) {
-						await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
-							queuedMessageIds: [queued.id],
-						})
+						pendingOpeningMessageTs = await this.sayOpeningInput(
+							"user_feedback",
+							queued.text,
+							queued.images,
+							[queued.id],
+						)
 					}
 					nextTurnInput = {
 						userContent: queued
@@ -14943,16 +15137,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (this.pendingSteerMessage || this.messageQueueService.messages.length > 0) {
 						const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
 						if (queued) {
-							await this.say(
+							pendingOpeningMessageTs = await this.sayOpeningInput(
 								"user_feedback",
 								queued.text,
 								queued.images,
-								undefined,
-								undefined,
-								undefined,
-								{
-									queuedMessageIds: [queued.id],
-								},
+								[queued.id],
 							)
 						}
 						nextTurnInput = {
@@ -15063,14 +15252,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					const lateQueuedFeedback = this.dequeueQueuedMessage()
 					if (lateQueuedFeedback) {
-						await this.say(
+						pendingOpeningMessageTs = await this.sayOpeningInput(
 							"user_feedback",
 							lateQueuedFeedback.text,
 							lateQueuedFeedback.images,
-							undefined,
-							undefined,
-							undefined,
-							{ queuedMessageIds: [lateQueuedFeedback.id] },
+							[lateQueuedFeedback.id],
 						)
 						nextTurnInput = {
 							userContent: this.buildUserMessageContent(
@@ -15136,14 +15322,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 						const concurrentFeedback = this.dequeueQueuedMessage()
 						if (concurrentFeedback) {
-							await this.say(
+							pendingOpeningMessageTs = await this.sayOpeningInput(
 								"user_feedback",
 								concurrentFeedback.text,
 								concurrentFeedback.images,
-								undefined,
-								undefined,
-								undefined,
-								{ queuedMessageIds: [concurrentFeedback.id] },
+								[concurrentFeedback.id],
 							)
 							nextTurnInput = {
 								userContent: this.buildUserMessageContent(
@@ -15198,9 +15381,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				// A follow-up starts a new conversational turn; retain the prior answer's durable trace boundary.
-				await this.say("user_feedback", feedbackText, feedbackImages, undefined, undefined, undefined, {
-					queuedMessageIds: queuedFollowup ? [queuedFollowup.id] : undefined,
-				})
+				pendingOpeningMessageTs = await this.sayOpeningInput(
+					"user_feedback",
+					feedbackText,
+					feedbackImages,
+					queuedFollowup ? [queuedFollowup.id] : undefined,
+				)
 				nextTurnInput = {
 					userContent: this.buildUserMessageContent(
 						feedbackText,
@@ -16434,6 +16620,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 
 								case "tool_call": {
+									const preceding = this.assistantMessageContent.at(-1)
+									if (preceding?.type === "text") preceding.partial = false
 									// Legacy: Handle complete tool calls (for backward compatibility)
 									// Convert native tool call to ToolUse format
 									const toolUse = NativeToolCallParser.parseToolCall({
@@ -16449,15 +16637,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										break
 									}
 
-									// Store the tool call ID on the ToolUse object for later reference
-									// This is needed to create tool_result blocks that reference the correct tool_use_id
-									toolUse.id = chunk.id
-
 									// Add the tool use to assistant message content
 									this.assistantMessageContent.push(toolUse)
 
 									// Mark that we have new content to process
 									this.userMessageContentReady = false
+									this.scheduleStreamingPreview()
 
 									break
 								}
@@ -16469,11 +16654,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									const lastBlock =
 										this.assistantMessageContent[this.assistantMessageContent.length - 1]
 									if (lastBlock?.type === "text" && lastBlock.partial) {
-										lastBlock.content = assistantMessage
+										lastBlock.content += chunk.text
 									} else {
 										this.assistantMessageContent.push({
 											type: "text",
-											content: assistantMessage,
+											content: chunk.text,
 											partial: true,
 										})
 										this.userMessageContentReady = false
@@ -17040,6 +17225,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 
 					this.didCompleteReadingStream = true
+					for (const block of this.assistantMessageContent) {
+						if (block.type === "text") block.partial = false
+					}
+					this.scheduleStreamingPreview()
 
 					// The canonical response is the only source allowed to mutate effects.
 					// Drain the preview queue before finalizing/replacing its shared parser
@@ -17061,9 +17250,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const toolUseIndex = this.streamingToolCallIndices.get(event.id)
 
 							if (finalToolUse) {
-								// Store the tool call ID
-								;(finalToolUse as any).id = event.id
-
 								// Get the index and replace partial with final
 								if (toolUseIndex !== undefined) {
 									this.assistantMessageContent[toolUseIndex] = finalToolUse
@@ -17081,8 +17267,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								const existingToolUse = this.assistantMessageContent[toolUseIndex]
 								if (existingToolUse && existingToolUse.type === "tool_use") {
 									existingToolUse.partial = false
-									// Ensure it has the ID for native protocol
-									;(existingToolUse as any).id = event.id
 								}
 
 								// Clean up tracking
@@ -18465,6 +18649,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				alphaIgnoreInstructions,
 				{
 					todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
+					personality: isSubagent
+						? (this.subagentContextManifest?.personality ?? "default")
+						: state?.personality,
 					useAgentRules:
 						vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,
 					enableSubfolderRules: enableSubfolderRules ?? false,
@@ -19703,6 +19890,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			capturedDesignHandoff ?? null,
 			capturedAutoApprovalPolicy,
 			options.recoveryStep !== undefined,
+			this.taskKind === "subagent"
+				? (this.subagentContextManifest?.personality ?? "default")
+				: state?.personality,
 		)
 		// Capture step and surface together, including a preflight failure before
 		// active request ownership is installed.

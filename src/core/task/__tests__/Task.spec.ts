@@ -215,7 +215,7 @@ vi.mock("fs/promises", async (importOriginal) => {
 	return {
 		...actual,
 		...mockFunctions,
-		default: mockFunctions,
+		default: { ...actual, ...mockFunctions },
 	}
 })
 
@@ -3169,7 +3169,15 @@ describe("Alpha", () => {
 				await (args[1] as () => void)()
 			})
 			await task.resumeWithEditedMessage("Replacement", images)
-			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
+			expect(say).toHaveBeenCalledWith(
+				opening ? "text" : "user_feedback",
+				"Replacement",
+				images,
+				undefined,
+				undefined,
+				undefined,
+				expect.objectContaining({ turn: null }),
+			)
 			expect(overwrite).not.toHaveBeenCalled()
 			expect(task.apiConversationHistory).toEqual(prefix)
 			expect(loop).toHaveBeenCalledWith(
@@ -3274,9 +3282,10 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{
+				expect.objectContaining({
 					queuedMessageIds: [queuedMessage.id],
-				},
+					turn: null,
+				}),
 			)
 			expect(
 				task["getQueuedInputReceipts"](
@@ -10472,7 +10481,7 @@ describe("Alpha", () => {
 					undefined,
 					undefined,
 					undefined,
-					{ queuedMessageIds: undefined },
+					expect.objectContaining({ queuedMessageIds: undefined, turn: null }),
 				)
 				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
 				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
@@ -10938,9 +10947,10 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{
+				expect.objectContaining({
 					queuedMessageIds: [followupId],
-				},
+					turn: null,
+				}),
 			)
 			expect(task.clineMessages.find((message) => message.say === "user_feedback")).toMatchObject({
 				queuedMessageIds: [followupId],
@@ -11058,7 +11068,7 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{ queuedMessageIds: [firstQueuedMessage.id] },
+				expect.objectContaining({ queuedMessageIds: [firstQueuedMessage.id], turn: null }),
 			)
 			expect(task.messageQueueService.messages).toHaveLength(1)
 			expect(task.messageQueueService.messages[0]).toMatchObject({

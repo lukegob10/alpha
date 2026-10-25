@@ -631,6 +631,12 @@ describe("ReadFileTool", () => {
 			await readFileTool.execute({ path: "large-image.png" }, mockTask as any, callbacks)
 
 			expect(mockedProcessImageFile).not.toHaveBeenCalled()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"large-image.png",
+				"read_tool",
+			)
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			expect(callbacks.setResultMetadata).not.toHaveBeenCalledWith(expect.objectContaining({ status: "error" }))
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("exceeds the maximum allowed"),
 			)
@@ -649,6 +655,12 @@ describe("ReadFileTool", () => {
 			await readFileTool.execute({ path: "another-image.png" }, mockTask as any, callbacks)
 
 			expect(mockedProcessImageFile).not.toHaveBeenCalled()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"another-image.png",
+				"read_tool",
+			)
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			expect(callbacks.setResultMetadata).not.toHaveBeenCalledWith(expect.objectContaining({ status: "error" }))
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("would exceed total memory"))
 		})
 

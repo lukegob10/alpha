@@ -1837,6 +1837,17 @@ describe("AlphaProvider", () => {
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
+	test.each([undefined, "default", "none", "pragmatic", "friendly", "", 1, null])(
+		"projects the saved personality preference %j consistently to runtime and Settings",
+		async (personality) => {
+			await mockContext.globalState.update("personality", personality)
+			await provider.contextProxy.initialize()
+			const expected = personality === "none" ? "none" : "default"
+			expect((await provider.getState()).personality).toBe(expected)
+			expect((await provider.getStateToPostToWebview()).personality).toBe(expected)
+		},
+	)
+
 	test.each([undefined, false, true])("projects the automatic steering preference %s", async (autoSteer) => {
 		await provider.contextProxy.setValue("autoSteer", autoSteer)
 		expect((await provider.getState()).autoSteer).toBe(autoSteer === true)

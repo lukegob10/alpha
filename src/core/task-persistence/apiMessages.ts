@@ -68,6 +68,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	// For non-destructive condense: points to the condenseId of the summary that replaces this message
 	// Messages with condenseParent are filtered out when sending to API if the summary exists
 	condenseParent?: string
+	/** Producing summary for a carried user copy; removing that summary removes this copy. */
+	condenseCopyParent?: string
 	// For non-destructive truncation: unique identifier for truncation marker messages
 	truncationId?: string
 	// For non-destructive truncation: points to the truncationId of the marker that hides this message

@@ -48,6 +48,8 @@ export interface UpdateFileChunk {
 	oldLines: string[]
 	/** Lines to replace with (context + added lines) */
 	newLines: string[]
+	/** Parsed context positions; omitted by programmatic whole-span replacements. */
+	contextLineIndices?: Array<[number, number]>
 	/** If true, old_lines must match at end of file */
 	isEndOfFile: boolean
 }
@@ -131,10 +133,12 @@ function parseUpdateFileChunk(
 		throw new ParseError("Update hunk does not contain any lines", lineNumber + 1)
 	}
 
+	const contextLineIndices: Array<[number, number]> = []
 	const chunk: UpdateFileChunk = {
 		changeContext,
 		oldLines: [],
 		newLines: [],
+		contextLineIndices,
 		isEndOfFile: false,
 	}
 
@@ -155,6 +159,7 @@ function parseUpdateFileChunk(
 
 		// Empty line is treated as context
 		if (line === "") {
+			contextLineIndices.push([chunk.oldLines.length, chunk.newLines.length])
 			chunk.oldLines.push("")
 			chunk.newLines.push("")
 			parsedLines++
@@ -164,6 +169,7 @@ function parseUpdateFileChunk(
 		switch (firstChar) {
 			case " ":
 				// Context line
+				contextLineIndices.push([chunk.oldLines.length, chunk.newLines.length])
 				chunk.oldLines.push(line.substring(1))
 				chunk.newLines.push(line.substring(1))
 				parsedLines++
@@ -295,6 +301,28 @@ function parseOneHunk(lines: string[], lineNumber: number): { hunk: Hunk; linesC
  * @throws ParseError if the patch is invalid
  */
 export function parsePatch(patch: string): ApplyPatchArgs {
+	return parsePatchContent(patch)
+}
+
+/** Policy and execution must inspect the same accepted file-operation grammar. */
+export function getPatchPaths(patch: string): string[] {
+	return parsePatch(patch).hunks.flatMap((hunk) =>
+		hunk.type === "UpdateFile" && hunk.movePath ? [hunk.path, hunk.movePath] : [hunk.path],
+	)
+}
+
+/** Rewrite only parsed operation headers, never marker-like update context. */
+export function mapPatchPaths(patch: string, mapPath: (filePath: string) => string): string {
+	return parsePatchContent(patch, (filePath) => {
+		const mapped = mapPath(filePath)
+		if (!mapped || /[\r\n]/.test(mapped)) {
+			throw new ParseError("Mapped patch paths must be non-empty and contain no line separators")
+		}
+		return mapped
+	}).patch
+}
+
+function parsePatchContent(patch: string, mapPath?: (filePath: string) => string): ApplyPatchArgs {
 	const trimmedPatch = patch.trim()
 	// Patch line separators are syntax; file line endings are restored when applying the hunks.
 	const lines = trimmedPatch.split(/\r?\n/)
@@ -321,6 +349,22 @@ export function parsePatch(patch: string): ApplyPatchArgs {
 
 	while (remainingLines.length > 0) {
 		const { hunk, linesConsumed } = parseOneHunk(remainingLines, lineNumber)
+		if (mapPath) {
+			hunk.path = mapPath(hunk.path)
+			const marker =
+				hunk.type === "AddFile"
+					? ADD_FILE_MARKER
+					: hunk.type === "DeleteFile"
+						? DELETE_FILE_MARKER
+						: UPDATE_FILE_MARKER
+			// Codex CLI 970111f6 accepts padded headers. These offsets belong to
+			// the parser, so scope checks and execution cannot disagree on targets.
+			effectiveLines[lineNumber - 1] = `${marker}${hunk.path}`
+			if (hunk.type === "UpdateFile" && hunk.movePath !== null) {
+				hunk.movePath = mapPath(hunk.movePath)
+				effectiveLines[lineNumber] = `${MOVE_TO_MARKER}${hunk.movePath}`
+			}
+		}
 		hunks.push(hunk)
 		lineNumber += linesConsumed
 		remainingLines = remainingLines.slice(linesConsumed)

@@ -34,6 +34,7 @@ const createTask = (taskId: string): Task =>
 		taskStatus: TaskStatus.Running,
 		taskMode: "code",
 		taskApiConfigName: taskId,
+		emit: vi.fn(),
 		apiConfiguration: { apiProvider: "anthropic", apiModelId: taskId },
 		clineMessages: [{ ts: 1, type: "say", say: "text", text: taskId }],
 		getTaskMode: vi.fn(async () => "code"),
@@ -82,6 +83,60 @@ const createProvider = () => {
 }
 
 describe("task state navigation ownership", () => {
+	it("lets a repeated open of the selected task finish the superseded state publication", async () => {
+		const { provider, taskSessions, post, select } = createProvider()
+		const entered = barrier()
+		const finish = barrier()
+		const first = createTask("first")
+		const next = createTask("next")
+		select(first)
+		taskSessions.register(next, { focus: false })
+		Object.assign(provider, { postStateToWebviewWithoutAlphaMessages: vi.fn(async () => undefined) })
+		vi.mocked(Reflect.get(provider, "getReasoningProjection")).mockImplementationOnce(async () => {
+			entered.resolve()
+			await finish.promise
+			return reasoning
+		})
+
+		const opening = provider.showTaskWithId(next.taskId)
+		await entered.promise
+		await provider.showTaskWithId(next.taskId)
+		finish.resolve()
+		await opening
+
+		expect(provider.getActiveTaskId()).toBe(next.taskId)
+		expect(post).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({ currentTaskId: next.taskId, clineMessages: next.clineMessages }),
+			}),
+		)
+		expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: next.taskId, success: true })
+		expect(post).not.toHaveBeenCalledWith({ type: "taskOpenResult", taskId: next.taskId, success: false })
+	})
+
+	it.each([false, true])(
+		"refreshes a selected task transcript with a cleared delivery cache: %s",
+		async (cleared) => {
+			const { provider, taskSessions, post, select } = createProvider()
+			const task = createTask("selected")
+			select(task)
+			const revision = taskSessions.getTranscriptRevision(task.taskId)
+			Reflect.get(provider, "publishedTaskTranscriptRevisions").set(task.taskId, revision)
+			if (cleared) provider.clearPublishedTaskTranscriptRevisions()
+			Object.assign(provider, { postStateToWebviewWithoutAlphaMessages: vi.fn(async () => undefined) })
+
+			await provider.showTaskWithId(task.taskId, revision)
+
+			expect(post).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "state",
+					state: expect.objectContaining({ currentTaskId: task.taskId, clineMessages: task.clineMessages }),
+				}),
+			)
+		},
+	)
+
 	it.each([
 		"postStateToWebview",
 		"postStateToWebviewWithoutTaskHistory",

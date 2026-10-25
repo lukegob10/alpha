@@ -51,4 +51,14 @@ describe("Codex-style apply_patch command invocation", () => {
 		)
 		expect(rebaseApplyPatchPaths(patch, root, root)).toBe(patch)
 	})
+
+	it("rebases padded operation headers without changing marker-like update context", () => {
+		const root = path.join(path.sep, "workspace")
+		const input =
+			"*** Begin Patch\n*** Add File: added.txt\n+new\n  *** Update File: old.txt\n*** Move to: moved.txt\n@@\n *** Add File: literal.txt\n-old\n+new\n*** End Patch"
+
+		expect(rebaseApplyPatchPaths(input, root, path.join(root, "src"))).toBe(
+			"*** Begin Patch\n*** Add File: src/added.txt\n+new\n*** Update File: src/old.txt\n*** Move to: src/moved.txt\n@@\n *** Add File: literal.txt\n-old\n+new\n*** End Patch",
+		)
+	})
 })

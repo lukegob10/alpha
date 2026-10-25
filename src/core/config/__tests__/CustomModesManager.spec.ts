@@ -35,6 +35,12 @@ vi.mock("fs/promises", () => ({
 	stat: vi.fn(),
 	readdir: vi.fn(),
 	rm: vi.fn(),
+	realpath: vi.fn(async (value) => value.toString()),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	withFileLock: vi.fn(async (_file, operation) => operation()),
+	atomicWriteText: vi.fn(async (file, contents) => fs.writeFile(file, contents, "utf-8")),
 }))
 
 vi.mock("../../../utils/fs")
@@ -84,7 +90,7 @@ describe("CustomModesManager", () => {
 				return yaml.stringify({ customModes: [] })
 			}
 
-			throw new Error("File not found")
+			throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 		})
 
 		manager = new CustomModesManager(mockContext, mockOnUpdate)
@@ -212,7 +218,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify({ customModes: projectModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const modes = await manager.getCustomModes()
@@ -238,7 +244,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify({ customModes: projectModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const modes = await manager.getCustomModes()
@@ -263,7 +269,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const modes = await manager.getCustomModes()
@@ -282,7 +288,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return "invalid yaml content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const modes = await manager.getCustomModes()
@@ -299,7 +305,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Mock fileExistsAtPath to only return true for settings path
@@ -321,7 +327,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Second call should use cached result
@@ -341,7 +347,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockResolvedValue(undefined)
 
@@ -366,7 +372,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: updatedSettingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Update the mode
@@ -387,7 +393,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockResolvedValue(undefined)
 
@@ -405,7 +411,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Reset mocks again
@@ -423,7 +429,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -451,7 +457,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: updatedSettingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Simulate a file change by updating a mode
@@ -469,7 +475,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: updatedSettingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			// Next call should read from file again (cache was invalidated by the update)
@@ -484,7 +490,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: settingsModes })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -510,7 +516,7 @@ describe("CustomModesManager", () => {
 					if (path === mockSettingsPath) {
 						return yaml.stringify({ customModes: settingsModes })
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 
 				// Second call within TTL should use cache
@@ -531,7 +537,7 @@ describe("CustomModesManager", () => {
 					if (path === mockSettingsPath) {
 						return yaml.stringify({ customModes: settingsModes })
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 
 				// Call after TTL should read from file again
@@ -578,7 +584,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify(settingsContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string, _encoding?: string) => {
 				if (path === mockSettingsPath) {
@@ -643,11 +649,11 @@ describe("CustomModesManager", () => {
 				}
 				if (path === mockAlphaModes) {
 					if (!alphaModesContent) {
-						throw new Error("File not found")
+						throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 					}
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 				if (path === mockAlphaModes) {
@@ -703,7 +709,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify(settingsContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string, _encoding?: string) => {
 				if (path === mockSettingsPath) {
@@ -805,7 +811,9 @@ describe("CustomModesManager", () => {
 
 			await manager.getCustomModesFilePath()
 
-			expect(fs.writeFile).toHaveBeenCalledWith(settingsPath, expect.stringMatching(/^customModes: \[\]/))
+			expect(fs.writeFile).toHaveBeenCalledWith(settingsPath, expect.stringMatching(/^customModes: \[\]/), {
+				flag: "wx",
+			})
 		})
 
 		it("waits for one shared settings-file creation when startup callers race", async () => {
@@ -941,7 +949,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify(settingsContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string, encoding?: string) => {
 				if (path === mockSettingsPath && encoding === "utf-8") {
@@ -982,7 +990,7 @@ describe("CustomModesManager", () => {
 	})
 
 	describe("updateModesInFile", () => {
-		it("handles corrupted YAML content gracefully", async () => {
+		it("rejects corrupted YAML without replacing the existing settings", async () => {
 			const corruptedYaml = "customModes: [invalid yaml content"
 			;(fs.readFile as Mock).mockResolvedValue(corruptedYaml)
 
@@ -994,20 +1002,8 @@ describe("CustomModesManager", () => {
 				source: "global",
 			}
 
-			await manager.updateCustomMode("test-mode", newMode)
-
-			// Verify that a valid YAML structure was written
-			const writeCall = (fs.writeFile as Mock).mock.calls[0]
-			const writtenContent = yaml.parse(writeCall[1])
-			expect(writtenContent).toEqual({
-				customModes: [
-					expect.objectContaining({
-						slug: "test-mode",
-						name: "Test Mode",
-						roleDefinition: "Test Role",
-					}),
-				],
-			})
+			await expect(manager.updateCustomMode("test-mode", newMode)).rejects.toThrow(/repair|invalid|parse/i)
+			expect(fs.writeFile).not.toHaveBeenCalled()
 		})
 
 		describe("importModeWithRules", () => {
@@ -1068,7 +1064,7 @@ describe("CustomModesManager", () => {
 					if (path === mockAlphaModes && alphaModesContent) {
 						return yaml.stringify(alphaModesContent)
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 					if (path === mockAlphaModes) {
@@ -1118,7 +1114,7 @@ describe("CustomModesManager", () => {
 					if (path === mockAlphaModes && alphaModesContent) {
 						return yaml.stringify(alphaModesContent)
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 					if (path === mockAlphaModes) {
@@ -1189,7 +1185,7 @@ describe("CustomModesManager", () => {
 					if (path === mockAlphaModes && alphaModesContent) {
 						return yaml.stringify(alphaModesContent)
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 					if (path === mockAlphaModes) {
@@ -1230,9 +1226,9 @@ describe("CustomModesManager", () => {
 						return yaml.stringify({ customModes: [] })
 					}
 					if (path === mockAlphaModes) {
-						throw new Error("File not found")
+						throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 
 				// Mock fs.mkdir to fail when creating rules directory
@@ -1278,7 +1274,7 @@ describe("CustomModesManager", () => {
 					if (path === mockSettingsPath) {
 						return yaml.stringify({ customModes: [] })
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string) => {
 					writtenFiles.push(path)
@@ -1360,7 +1356,7 @@ describe("CustomModesManager", () => {
 					if (path === mockAlphaModes && alphaModesContent) {
 						return yaml.stringify(alphaModesContent)
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 					if (path === mockAlphaModes) {
@@ -1419,7 +1415,7 @@ describe("CustomModesManager", () => {
 					if (path === mockAlphaModes && alphaModesContent) {
 						return yaml.stringify(alphaModesContent)
 					}
-					throw new Error("File not found")
+					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 				})
 				;(fs.writeFile as Mock).mockImplementation(async (path: string, content: string) => {
 					if (path === mockAlphaModes) {
@@ -1489,7 +1485,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const result = await manager.checkRulesDirectoryHasContent("test-mode")
@@ -1505,7 +1501,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const result = await manager.checkRulesDirectoryHasContent("test-mode")
@@ -1522,7 +1518,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockRejectedValue(new Error("Directory not found"))
 
@@ -1540,7 +1536,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([])
@@ -1562,7 +1558,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-test-mode")) {
 					return "Some rule content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -1592,7 +1588,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-test-mode")) {
 					return "Some rule content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -1618,7 +1614,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 
 			const result = await freshManager.exportModeWithRules("test-mode")
@@ -1632,7 +1628,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -1655,7 +1651,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockRejectedValue(new Error("Directory not found"))
 
@@ -1677,7 +1673,7 @@ describe("CustomModesManager", () => {
 				if (path === mockAlphaModes) {
 					return yaml.stringify(alphaModesContent)
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([])
@@ -1711,7 +1707,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-test-mode")) {
 					return "New rule content from files"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -1753,7 +1749,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -1791,7 +1787,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-test-mode")) {
 					throw new Error("Permission denied")
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 			;(fs.readdir as Mock).mockResolvedValue([
@@ -1825,7 +1821,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-global-test-mode") && path.includes("rule1.md")) {
 					return "Global rule content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -1868,7 +1864,7 @@ describe("CustomModesManager", () => {
 				if (path === mockSettingsPath) {
 					return yaml.stringify({ customModes: [globalMode] })
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -1907,7 +1903,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-global-test-mode") && path.includes("rule1.md")) {
 					return "Global rule content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
@@ -1955,7 +1951,7 @@ describe("CustomModesManager", () => {
 				if (path.includes("rules-test-mode")) {
 					return "Rule content"
 				}
-				throw new Error("File not found")
+				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
 

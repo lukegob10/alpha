@@ -317,7 +317,9 @@ describe("AlphaProvider automatic owned Task disposal with WS01 handler ownershi
 			const [settlement] = await Promise.allSettled([eviction])
 			expect(settlement).toEqual({ status: "rejected", reason: failure })
 			expect(retained.old.dispose).toHaveBeenCalledOnce()
-			expect(retained.current.dispose).not.toHaveBeenCalled()
+			// Cleanup attempts every owned adapter before surfacing the original
+			// failure; that failure still pins the runtime until public close retries.
+			expect(retained.current.dispose).toHaveBeenCalledOnce()
 			expect(journal.close).not.toHaveBeenCalled()
 			expect(journal.journals.has(child.taskId)).toBe(true)
 			expect(fixture.provider.getLiveTask(child.taskId)).toBe(child.task)

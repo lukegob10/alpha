@@ -4,6 +4,7 @@ import {
 	type ProviderSettingsWithId,
 	type ReasoningEffortExtended,
 	type SubagentModelRouteState,
+	type TaskReasoningPreference,
 } from "@alpha-code/types"
 import { ProviderProfileUnavailableError } from "../config/ProviderProfileUnavailableError"
 
@@ -22,6 +23,7 @@ export interface ResolveSubagentModelRouteOptions {
 	role: SubagentRole
 	parentApiConfiguration: ProviderSettings
 	parentApiConfigName?: string
+	parentReasoningPreference?: TaskReasoningPreference
 	defaultProfileId?: string
 	profileByRole?: Partial<Record<SubagentRole, string>>
 	profileLoader: SubagentProfileLoader
@@ -37,6 +39,8 @@ export interface ResolveSubagentModelRouteOptions {
 export interface ResolvedSubagentModelRoute {
 	apiConfiguration: ProviderSettings
 	apiConfigName: string
+	/** Explicit child choice so generic task creation cannot inherit newer parent settings. */
+	reasoningPreference?: TaskReasoningPreference
 	route: SubagentModelRouteState
 }
 
@@ -91,6 +95,7 @@ async function resolveParentRoute(
 	return {
 		apiConfiguration,
 		apiConfigName,
+		reasoningPreference: structuredClone(options.parentReasoningPreference ?? { kind: "default" }),
 		route: {
 			source,
 			resolution: fallback ? "fallback" : "selected",
@@ -140,6 +145,7 @@ async function resolveProfileRoute(options: ResolveSubagentModelRouteOptions): P
 	return {
 		apiConfiguration,
 		apiConfigName: profile.name,
+		reasoningPreference: { kind: "default" },
 		route: {
 			source,
 			resolution: "selected",
@@ -198,6 +204,12 @@ export function applySubagentSpawnOverrides(
 	return {
 		apiConfiguration,
 		apiConfigName: base.apiConfigName,
+		// The routed profile now owns an explicit effort or the selected model's
+		// default. An inherited task override must not supersede that decision.
+		reasoningPreference:
+			requestedReasoningEffort || (resetReasoningForSelectedModel && requestedModelId)
+				? { kind: "default" }
+				: structuredClone(base.reasoningPreference ?? { kind: "default" }),
 		route: {
 			...base.route,
 			source: "spawn",
@@ -212,7 +224,10 @@ export function applySubagentSpawnOverrides(
 export async function resolveSubagentModelRoute(
 	options: ResolveSubagentModelRouteOptions,
 ): Promise<ResolvedSubagentModelRoute> {
-	const base = await resolveProfileRoute(options)
+	const base = await resolveProfileRoute({
+		...options,
+		parentReasoningPreference: structuredClone(options.parentReasoningPreference ?? { kind: "default" }),
+	})
 	const selected = applySubagentSpawnOverrides(
 		base,
 		options.requestedModelId ?? options.defaultModelId,

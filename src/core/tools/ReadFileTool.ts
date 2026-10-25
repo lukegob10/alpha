@@ -24,6 +24,7 @@ import { FileReadSelectionError, prepareFileRead, renderFileRead, type FileReadC
 import { DEFAULT_TOOL_OUTPUT_LIMIT } from "../agent/ToolPolicy"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 import type { ToolUse } from "../../shared/tools"
+import { t } from "../../i18n"
 
 import {
 	DEFAULT_MAX_IMAGE_FILE_SIZE_MB,
@@ -517,6 +518,17 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				)
 
 				if (!validationResult.isValid) {
+					// An image-only read cannot succeed without publishing an image.
+					if (imageOnly) {
+						const error = validationResult.notice ?? t("tools:readFile.imageDecodeLimit")
+						updateFileResult(relPath, {
+							status: "error",
+							error,
+							nativeContent: `File: ${relPath}\nError: ${error}`,
+						})
+						callbacks.setResultMetadata?.({ status: "error" })
+						return
+					}
 					await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 					updateFileResult(relPath, {
 						nativeContent: `File: ${relPath}\nNote: ${validationResult.notice}`,

@@ -89,6 +89,7 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		resetMistakeRecoveryState: vi.fn(),
 		cancelAutoApprovalTimeout: vi.fn(),
 		say: vi.fn(async () => undefined),
+		publishLifecycleHookMessage: vi.fn(async () => undefined),
 		ask: vi.fn(async () => {
 			task.abort = true
 			return { response: "noButtonClicked" }
@@ -210,6 +211,36 @@ describe("completion hooks inside the canonical turn", () => {
 		])
 		expect(task.isCompleted()).toBe(true)
 	})
+
+	it.each(["Stop", "SubagentStop"] as const)(
+		"resets %s repair state when queued human input starts another canonical turn",
+		async (target) => {
+			const { task, events } = fixture(target)
+			const requests: Array<{ turnId: string; active: boolean }> = []
+			vi.mocked(runCompletionHooks).mockImplementation(async (_config, request) => {
+				requests.push({ turnId: request.turn_id, active: request.stop_hook_active })
+				if (requests.length === 1)
+					return {
+						prompt: "Repair the first answer.",
+						fragments: [{ hook_run_id: "first-repair", text: "Repair the first answer." }],
+						warnings: [],
+					}
+				if (requests.length === 2) task.messageQueueService.addMessage("Next human request.")
+				return { warnings: [] }
+			})
+
+			await task["initiateTaskLoop"]([{ type: "text", text: "First human request." }])
+
+			expect(task.isCompleted()).toBe(true)
+			expect(task["runAgentRequests"]).toHaveBeenCalledTimes(3)
+			expect(requests.map(({ active }) => active)).toEqual([false, true, false])
+			expect(requests[0].turnId).toBe(requests[1].turnId)
+			expect(requests[2].turnId).not.toBe(requests[1].turnId)
+			expect(events.filter(({ type }) => type === "turn_started")).toHaveLength(2)
+			expect(events.filter(({ type }) => type === "turn_terminal")).toHaveLength(2)
+			expect(task["finalizeTaskCompletion"]).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("does not dispatch a configured hook after transcript lookup yields ownership to a replacement Task", async () => {
 		const { task } = fixture()

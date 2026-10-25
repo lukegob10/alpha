@@ -181,7 +181,7 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
 import { getWorkspaceGitInfo } from "../../utils/git"
 import { getWorkspacePath } from "../../utils/path"
-import { sanitizeToolUseId } from "../../utils/tool-id"
+import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 
 import { setPanel } from "../../activate/registerCommands"
 
@@ -565,7 +565,7 @@ export class AlphaProvider
 	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
 	private newTaskDraftMode: Mode = defaultModeSlug
-	private readonly workspaceMutationGate = new WorkspaceMutationGate()
+	private readonly workspaceMutationGate: WorkspaceMutationGate
 	private readonly subagentNicknameRegistry = new SubagentNicknameRegistry()
 	private readonly preparedSubagentGroups = new Map<string, PreparedSubagentGroup>()
 	private readonly subagentGroupControllers = new Map<string, AbortController>()
@@ -823,6 +823,7 @@ export class AlphaProvider
 		public readonly contextProxy: ContextProxy,
 	) {
 		super()
+		this.workspaceMutationGate = WorkspaceMutationGate.forGlobalStorage(this.contextProxy.globalStorageUri.fsPath)
 		if ("lm" in vscode && vscode.lm?.onDidChangeChatModels)
 			this.disposables.push(
 				vscode.lm.onDidChangeChatModels(() => {
@@ -1115,6 +1116,8 @@ export class AlphaProvider
 	async removeTaskFromStack(options?: {
 		skipDelegationRepair?: boolean
 		taskId?: string
+		/** Provisional admission cleanup must never stop a successor with the same ID. */
+		expectedTask?: Task
 		requireAbortSuccess?: boolean
 		/** Only the child-owned, already-persisted legacy handoff may defer joining itself. */
 		ownedDelegationHandoff?: boolean
@@ -1126,6 +1129,9 @@ export class AlphaProvider
 		if (!currentTask) {
 			return
 		}
+		if (options?.expectedTask && currentTask !== options.expectedTask) {
+			throw new Error(`Task ${currentTask.taskId} runtime changed before provisional cleanup`)
+		}
 		const owner = this.getTaskOwner(currentTask.taskId)
 		if (owner && owner !== this) {
 			await owner.removeTaskFromStack({ ...options, taskId: currentTask.taskId })
@@ -1133,6 +1139,9 @@ export class AlphaProvider
 		}
 		await this.taskSessions.runOwnershipOperation(currentTask.taskId, async () => {
 			const canonicalTask = this.getLiveTask(currentTask.taskId)
+			if (options?.expectedTask && canonicalTask !== options.expectedTask) {
+				throw new Error(`Task ${currentTask.taskId} runtime changed before provisional cleanup`)
+			}
 			if (canonicalTask && canonicalTask !== currentTask) return
 			if (!canonicalTask && currentTask.taskKind === "subagent") return
 			await this.removeOwnedTaskFromStack(currentTask, options)
@@ -3151,52 +3160,55 @@ export class AlphaProvider
 	}
 
 	async showTaskWithId(id: string, cachedTranscriptRevision?: number) {
+		const alreadySelected = id === this.getCurrentTask()?.taskId
 		const generation = ++this.taskNavigationGeneration
 		const stillCurrent = () => generation === this.taskNavigationGeneration
+		const reportSuperseded = async () => {
+			// Results have task identity but no request identity. An obsolete open
+			// cannot report failure over a newer open of the same selected task.
+			if (!this.isTaskSelected(id)) await this.postTaskOpenResult(id, false)
+		}
 		let publishTranscript = false
 		try {
-			if (id !== this.getCurrentTask()?.taskId) {
+			// Selection is installed before its state publication can finish. A
+			// repeated open must take over publication, even when already selected.
+			const focused = await this.focusTask(id, generation)
+			if (!stillCurrent()) {
+				await reportSuperseded()
+				return
+			}
+			if (!focused) {
+				const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
 				if (!stillCurrent()) {
-					await this.postTaskOpenResult(id, false)
+					await reportSuperseded()
 					return
 				}
-				const focused = await this.focusTask(id, generation)
+				await this.createTaskWithHistoryItem(historyItem, {
+					preserveExisting: true,
+					deferTranscript: true,
+					navigationGeneration: generation,
+				})
 				if (!stillCurrent()) {
-					await this.postTaskOpenResult(id, false)
+					await reportSuperseded()
 					return
 				}
-				if (!focused) {
-					const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
-					if (!stillCurrent()) {
-						await this.postTaskOpenResult(id, false)
-						return
-					}
-					await this.createTaskWithHistoryItem(historyItem, {
-						preserveExisting: true,
-						deferTranscript: true,
-						navigationGeneration: generation,
-					})
-					if (!stillCurrent()) {
-						await this.postTaskOpenResult(id, false)
-						return
-					}
-					publishTranscript = true
-				} else {
-					const transcriptRevision = this.taskSessions.getTranscriptRevision(id)
-					publishTranscript =
-						cachedTranscriptRevision === undefined ||
-						cachedTranscriptRevision !== transcriptRevision ||
-						this.publishedTaskTranscriptRevisions.get(id) !== transcriptRevision
-				}
+				publishTranscript = true
+			} else {
+				const transcriptRevision = this.taskSessions.getTranscriptRevision(id)
+				publishTranscript =
+					alreadySelected ||
+					cachedTranscriptRevision === undefined ||
+					cachedTranscriptRevision !== transcriptRevision ||
+					this.publishedTaskTranscriptRevisions.get(id) !== transcriptRevision
 			}
 
 			if (!stillCurrent()) {
-				await this.postTaskOpenResult(id, false)
+				await reportSuperseded()
 				return
 			}
 			await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 			if (!stillCurrent()) {
-				await this.postTaskOpenResult(id, false)
+				await reportSuperseded()
 				return
 			}
 			await this.postTaskOpenResult(id, true)
@@ -4886,6 +4898,7 @@ export class AlphaProvider
 			maxTotalImageSize,
 			historyPreviewCollapsed,
 			reasoningBlockCollapsed,
+			personality,
 			enterBehavior,
 			autoSteer,
 			customCondensingPrompt,
@@ -5066,6 +5079,7 @@ export class AlphaProvider
 			settingsImportedAt: this.settingsImportedAt,
 			historyPreviewCollapsed: historyPreviewCollapsed ?? false,
 			reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
+			personality,
 			enterBehavior: enterBehavior ?? "send",
 			autoSteer: autoSteer === true,
 			customCondensingPrompt,
@@ -5225,6 +5239,7 @@ export class AlphaProvider
 			maxTotalImageSize: stateValues.maxTotalImageSize ?? 20,
 			historyPreviewCollapsed: stateValues.historyPreviewCollapsed ?? false,
 			reasoningBlockCollapsed: stateValues.reasoningBlockCollapsed ?? true,
+			personality: stateValues.personality === "none" ? "none" : "default",
 			enterBehavior: stateValues.enterBehavior ?? "send",
 			autoSteer: stateValues.autoSteer === true,
 			customCondensingPrompt: stateValues.customCondensingPrompt,
@@ -6020,7 +6035,7 @@ export class AlphaProvider
 			workspacePath = worktree.workspacePath
 		}
 
-		let childCreated = false
+		let child: Task | undefined
 		try {
 			throwIfCancelled()
 			const { fakeAi, ...providerSettings } = parent.apiConfiguration
@@ -6030,8 +6045,9 @@ export class AlphaProvider
 			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
 			if (options?.model)
 				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
-			const child = await this.createTask(normalizedObjective, undefined, undefined, {
+			child = await this.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
+				startTask: false,
 				presentationModelCalls: parent.presentationModelCalls,
 				preserveExisting: true,
 				background: true,
@@ -6054,28 +6070,38 @@ export class AlphaProvider
 						}
 					: {}),
 			})
-			childCreated = true
 			if (options?.title || options?.model) {
 				const history = await this.ensureCrossTaskHistory(child)
 				if (options.model) await this.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
 				if (options.title) await this.renameTask(child.taskId, options.title.trim())
 			}
-			if (signal?.aborted) {
-				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled", {
-					notifyRecipient: false,
-				})
-				throwIfCancelled()
-			}
+			throwIfCancelled()
 			const record = await this.getCrossTaskRecord(this.taskHistoryStore.get(child.taskId), child, false)
-			if (signal?.aborted) {
-				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled", {
-					notifyRecipient: false,
-				})
-				throwIfCancelled()
-			}
+			throwIfCancelled()
+			// Keep the child provisional until every await needed for its receipt has
+			// succeeded. No model turn can run before the caller has a usable identity.
+			child.start()
 			return record
 		} catch (error) {
-			if (!childCreated) await worktree?.cleanup()
+			// Admission can reject after its own cleanup failed. Its registered
+			// handle still owns resources even when createTask did not return it.
+			const provisionalChild = child ?? this.getLiveTask(taskId)
+			try {
+				if (provisionalChild) {
+					await this.stopIndependentTask(
+						parent,
+						taskId,
+						"Task creation failed before returning its thread identity",
+						{ notifyRecipient: false, expectedTask: provisionalChild },
+					)
+				} else {
+					await worktree?.cleanup()
+				}
+			} catch (cleanupError) {
+				throw new AggregateError([error, cleanupError], `Failed to clean up provisional task ${taskId}`, {
+					cause: error,
+				})
+			}
 			throw error
 		}
 	}
@@ -6972,7 +6998,7 @@ export class AlphaProvider
 		parent: Task,
 		taskId: string,
 		reason?: string,
-		options?: { notifyRecipient?: boolean },
+		options?: { notifyRecipient?: boolean; expectedTask?: Task },
 	): Promise<{ task_id: string; status: string }> {
 		this.assertCrossTaskRoot(parent)
 		return this.taskSessions.runOwnershipOperation(`cross-task:${taskId}`, async () => {
@@ -6980,6 +7006,7 @@ export class AlphaProvider
 			return owner.stopIndependentTaskUnderControl(parent, taskId, {
 				reason,
 				notifyRecipient: options?.notifyRecipient !== false,
+				...(options?.expectedTask ? { expectedTask: options.expectedTask } : {}),
 			})
 		})
 	}
@@ -6987,28 +7014,40 @@ export class AlphaProvider
 	private async stopIndependentTaskUnderControl(
 		parent: Task,
 		taskId: string,
-		options: { reason?: string; notifyRecipient?: boolean } = {},
+		options: { reason?: string; notifyRecipient?: boolean; expectedTask?: Task } = {},
 	): Promise<{ task_id: string; status: string }> {
 		const { history, task } = await this.getDirectCrossTask(parent, taskId)
+		if (options.expectedTask && task && task !== options.expectedTask) {
+			throw new Error(`Task ${taskId} runtime changed before provisional cleanup`)
+		}
 		if (!task) {
+			if (options.expectedTask) return { task_id: taskId, status: "already_terminal" }
 			this.assertSavedThreadControlAllowed(history, task, "stopping")
 			return { task_id: taskId, status: "already_terminal" }
 		}
-		if (this.isCrossTaskTerminal(this.getCrossTaskLifecycle(history, task))) {
+		if (!options.expectedTask && this.isCrossTaskTerminal(this.getCrossTaskLifecycle(history, task))) {
 			return { task_id: taskId, status: "already_terminal" }
 		}
-		if (task.abort) return { task_id: taskId, status: "stopping" }
+		if (!options.expectedTask && task.abort) return { task_id: taskId, status: "stopping" }
 		if (options.notifyRecipient) await task.recordAgentStopRequest(parent.taskId, options.reason)
-		await this.agentControlStoreReady
-		if (this.agentControlStore)
-			await this.cancelManagedTaskDescendants(
-				taskId,
-				this.getAgentControlRootTaskId(task),
-				`Managed descendants cancelled because thread ${taskId} stopped`,
-			)
+		// A provisional task was admitted with startTask:false and owns no child
+		// runs. Its exact runtime still needs cleanup when an earlier abort failed.
+		if (!options.expectedTask) {
+			await this.agentControlStoreReady
+			if (this.agentControlStore)
+				await this.cancelManagedTaskDescendants(
+					taskId,
+					this.getAgentControlRootTaskId(task),
+					`Managed descendants cancelled because thread ${taskId} stopped`,
+				)
+		}
 		// cancelTask rehydrates cancelled tasks so a user can resume them. An explicit
 		// orchestration stop must leave the child closed instead of restarting it.
-		await this.removeTaskFromStack({ taskId, requireAbortSuccess: true })
+		await this.removeTaskFromStack({
+			taskId,
+			requireAbortSuccess: true,
+			...(options.expectedTask ? { expectedTask: options.expectedTask } : {}),
+		})
 		await this.taskLifecycleHistoryWrites.get(taskId)
 		const stoppedHistory = this.taskHistoryStore.get(taskId)
 		if (stoppedHistory?.status === "completed" || stoppedHistory?.status === "failed") {
@@ -8265,6 +8304,12 @@ export class AlphaProvider
 			)
 		}
 		const invocation = parent.getSubagentInvocationContext?.()
+		const parentPersonality = invocation?.personality ?? "default"
+		const parentReasoningPreference: TaskReasoningPreference = structuredClone(
+			invocation
+				? (invocation.reasoningPreference ?? { kind: "default" })
+				: (parent.reasoningPreference ?? { kind: "default" }),
+		)
 		const invokingApprovalMode = parent.getStepApprovalMode?.()
 		const parentHistory =
 			invocation?.history ?? structuredClone(getEffectiveApiHistory(parent.apiConversationHistory))
@@ -8495,6 +8540,7 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
+						parentReasoningPreference,
 						profileLoader: this.providerSettingsManager,
 						defaultModelId: defaultModel,
 						defaultReasoningEffort,
@@ -8581,6 +8627,7 @@ export class AlphaProvider
 				return captureSubagentContext({
 					parentTaskId: parent.taskId,
 					capturedAt: createdAt,
+					personality: parentPersonality,
 					forkTurns: draft.fork_turns,
 					history: parentHistory,
 					...(invocation
@@ -10460,8 +10507,9 @@ export class AlphaProvider
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "assistant" || !Array.isArray(message.content)) continue
 			for (const block of message.content) {
-				if (block.type === "tool_use" && block.name === "wait_agent") {
-					waitToolCallIds.add(sanitizeToolUseId(block.id))
+				const callId = getToolCallId(block)
+				if (callId !== undefined && "name" in block && block.name === "wait_agent") {
+					waitToolCallIds.add(sanitizeToolUseId(callId))
 				}
 			}
 		}
@@ -10475,10 +10523,12 @@ export class AlphaProvider
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "user" || !Array.isArray(message.content)) continue
 			for (const block of message.content) {
+				const resultId = getToolResultId(block)
 				if (
 					block.type !== "tool_result" ||
 					block.is_error ||
-					!waitToolCallIds.has(sanitizeToolUseId(block.tool_use_id))
+					resultId === undefined ||
+					!waitToolCallIds.has(sanitizeToolUseId(resultId))
 				)
 					continue
 				const textParts =
@@ -12898,6 +12948,7 @@ export class AlphaProvider
 					),
 					taskApiConfigName: modelRoute.apiConfigName,
 					apiConfiguration: structuredClone(modelRoute.apiConfiguration),
+					reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
 					enableCheckpoints: false,
 					workspacePath: descriptor.managedWorktree?.workspacePath ?? parent.cwd,
 					historyWorkspacePath: parent.historyWorkspacePath,

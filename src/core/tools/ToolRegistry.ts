@@ -11,6 +11,7 @@ import {
 	browserToolNames,
 	discoverToolsParamsSchema,
 	toolSearchParamsSchema,
+	toolNames as validToolNames,
 	type CustomToolDefinition,
 } from "@alpha-code/types"
 
@@ -1390,4 +1391,25 @@ export class ToolRegistry {
 
 function canonicalizeAlias(alias: string): string {
 	return canonicalizeToolName(alias)
+}
+
+/** Capture custom membership with the executable registry, including its owned aliases. */
+export function captureCustomToolNames(registry: Pick<ToolRegistry, "list">): ReadonlySet<string> {
+	const nativeNames: readonly string[] = validToolNames
+	const names = new Set<string>()
+	for (const descriptor of registry.list()) {
+		if (
+			nativeNames.includes(descriptor.name) ||
+			descriptor.name.startsWith("mcp_") ||
+			parseMcpToolName(descriptor.name)
+		) {
+			continue
+		}
+		for (const name of [descriptor.name, ...descriptor.aliases]) {
+			if (!nativeNames.includes(name) && !name.startsWith("mcp_") && !parseMcpToolName(name)) {
+				names.add(name)
+			}
+		}
+	}
+	return names
 }

@@ -90,37 +90,38 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 			)
 			return
 		}
-		// For delete operations, ensure the task is properly aborted to handle any pending ask operations
-		// This prevents "Current ask promise was ignored" errors
-		if (operation === "delete" && currentAlpha) {
-			const abortResult = currentAlpha.abort ? undefined : await currentAlpha.abortTask()
-			await awaitTaskCancellationBoundary(currentAlpha, abortResult)
-		}
-
-		// Perform the checkpoint restoration
-		const restored = await currentAlpha.checkpointRestore({
-			ts: messageTs,
-			commitHash: checkpoint.hash,
-			mode: "restore",
-			operation,
+		const abortResult = currentAlpha.abort ? undefined : await currentAlpha.abortTask()
+		await awaitTaskCancellationBoundary(currentAlpha, abortResult)
+		// Join before acquiring the gate: the old loop may need it to finish.
+		// Keep replacement outside the gate for the same lifecycle ordering.
+		await provider.runWorkspaceMutation(
+			currentAlpha,
+			"delete from checkpoint",
+			async () => {
+				if (provider.getLiveTask(currentAlpha.taskId) !== currentAlpha)
+					throw new Error("The task changed before its checkpoint could be restored")
+				const restored = await currentAlpha.checkpointRestore({
+					ts: messageTs,
+					commitHash: checkpoint.hash,
+					mode: "restore",
+					operation,
+				})
+				if (restored === false) throw new Error("The checkpoint is no longer available")
+				await saveTaskMessages({
+					messages: currentAlpha.clineMessages,
+					taskId: currentAlpha.taskId,
+					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
+				})
+			},
+			{ allowStoppedTask: true },
+		)
+		const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId, {
+			includeApiConversationHistory: false,
 		})
-		if (restored === false) throw new Error("The checkpoint is no longer available")
-
-		// Save messages and reload the stopped task after deletion.
-		if (operation === "delete") {
-			// Save the updated messages to disk after checkpoint restoration
-			await saveTaskMessages({
-				messages: currentAlpha.clineMessages,
-				taskId: currentAlpha.taskId,
-				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
-			})
-
-			// Get the updated history item and reinitialize
-			const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId, {
-				includeApiConversationHistory: false,
-			})
-			await provider.createTaskWithHistoryItem(historyItem)
-		}
+		await provider.createTaskWithHistoryItem(historyItem, {
+			preserveExisting: true,
+			background: provider.getCurrentTask()?.taskId !== currentAlpha.taskId,
+		})
 	} catch (error) {
 		console.error(`Error in checkpoint restore (${operation}):`, error)
 		vscode.window.showErrorMessage(

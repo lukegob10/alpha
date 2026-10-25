@@ -48,4 +48,23 @@ describe("inherited subagent tool permissions", () => {
 			),
 		).toEqual(["spawn_agent"])
 	})
+
+	it("narrows every lifecycle control with delegation authority while retaining passive communication", () => {
+		const tools = [
+			"spawn_agent",
+			"wait_agent",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+			"list_agents",
+			"send_message",
+		]
+
+		expect(getInheritedSubagentToolNames(tools, { ...policy, delegate: false }, false)).toEqual([
+			"list_agents",
+			"send_message",
+		])
+		expect(getInheritedSubagentToolNames(tools, policy, false)).toEqual(tools)
+	})
 })

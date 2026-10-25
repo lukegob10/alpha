@@ -3,8 +3,6 @@ import { addCustomInstructions } from "../sections/custom-instructions"
 import { getCapabilitiesSection } from "../sections/capabilities"
 import { getSystemInfoSection } from "../sections/system-info"
 import { getRulesSection, getCommandChainOperator } from "../sections/rules"
-import { getObjectiveSection } from "../sections/objective"
-import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import { McpHub } from "../../../services/mcp/McpHub"
 import * as shellUtils from "../../../utils/shell"
 import { createShellTool } from "../tools/native-tools/execute_command"
@@ -101,15 +99,6 @@ describe("getRulesSection", () => {
 		}
 	})
 
-	it("uses command evidence without requiring user confirmation", () => {
-		const result = getToolUseGuidelinesSection()
-
-		expect(result).toContain("Never assume success")
-		expect(result).toContain("bounded follow-up")
-		expect(result).not.toContain("assume the terminal executed the command successfully")
-		expect(result).not.toContain("wait for the user's response after each tool use")
-	})
-
 	it("does not invite Desktop-class exploration outside the workspace", () => {
 		expect(getCapabilitiesSection(cwd)).not.toContain("Desktop")
 		expect(getSystemInfoSection(cwd)).not.toContain("Desktop")
@@ -133,28 +122,6 @@ describe("getRulesSection", () => {
 
 		expect(result).toContain("request_user_input")
 		expect(result).not.toContain("ask_followup_question")
-	})
-
-	it("uses side-effect-aware MCP batching", () => {
-		const result = getToolUseGuidelinesSection()
-
-		expect(result).toContain("Group independent, read-only calls when policy permits")
-		expect(result).toContain(
-			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
-		)
-		expect(result).not.toContain("MCP operations should be used one at a time")
-	})
-
-	it("directs Code and Plan inspection through exec_command", () => {
-		expect(getToolUseGuidelinesSection()).toContain("exec_command calls")
-		expect(getToolUseGuidelinesSection(undefined, true)).toContain("exec_command calls")
-		expect(getToolUseGuidelinesSection()).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
-		expect(getToolUseGuidelinesSection(undefined, true)).not.toMatch(
-			/\b(?:read_file|list_files|search_files|codebase_search)\b/,
-		)
-		expect(getToolUseGuidelinesSection("explore")).not.toContain("exec_command calls")
-		expect(getToolUseGuidelinesSection("review")).not.toContain("exec_command calls")
-		expect(getToolUseGuidelinesSection("worker")).not.toContain("exec_command calls")
 	})
 
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
@@ -205,9 +172,6 @@ describe("getRulesSection", () => {
 		const result = getRulesSection(cwd)
 
 		expect(result).not.toContain("visible ordinary assistant answer")
-		expect(getObjectiveSection()).toContain(
-			"visible ordinary assistant answer when no tool call or continuation is needed",
-		)
 		expect(result).not.toContain("you must use the attempt_completion tool")
 	})
 
@@ -378,14 +342,8 @@ describe("getRulesSection shell-aware command chaining", () => {
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		)
 		const question = "Where is retryLimit defined?"
-		const combined = [
-			question,
-			getRulesSection(cwd),
-			getToolUseGuidelinesSection(),
-			toolDescription(createShellTool()),
-		].join("\n")
+		const combined = [question, getRulesSection(cwd), toolDescription(createShellTool())].join("\n")
 
-		expect(combined).toContain("Use concise, workspace-scoped exec_command calls")
 		expect(combined).toContain("Runs a command in a PTY")
 		expect(combined).toContain("output or a session ID for ongoing interaction")
 		expect(combined).toContain("Commands remain subject to the task's approval and execution policy")

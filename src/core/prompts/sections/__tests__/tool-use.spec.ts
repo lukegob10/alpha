@@ -1,7 +1,5 @@
 import { getSharedToolUseSection } from "../tool-use"
 import { getRulesSection } from "../rules"
-import { getObjectiveSection } from "../objective"
-import { getToolUseGuidelinesSection } from "../tool-use-guidelines"
 import { getCapabilitiesSection } from "../capabilities"
 import { getNativeTools } from "../../tools/native-tools"
 
@@ -43,18 +41,6 @@ describe("getSharedToolUseSection", () => {
 		expect(capabilities).toContain("only when agent lifecycle controls are supplied for this turn")
 	})
 
-	it("keeps batching in the shared guidelines", () => {
-		const section = getToolUseGuidelinesSection()
-
-		expect(section).toContain("Group independent, read-only calls")
-		expect(section).toContain(
-			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
-		)
-		expect(section).not.toContain("Status narration is not execution")
-		expect(section).not.toContain("You must call at least one tool per assistant response")
-		expect(section).not.toContain("as many tools as are reasonably needed")
-	})
-
 	it("keeps primary delegation guidance bounded to entry points", () => {
 		const section = getSharedToolUseSection()
 
@@ -69,10 +55,8 @@ describe("getSharedToolUseSection", () => {
 			prompt: () =>
 				[
 					getSharedToolUseSection(),
-					getToolUseGuidelinesSection(),
 					getRulesSection("F:/workspace"),
 					getCapabilitiesSection("F:/workspace"),
-					getObjectiveSection(),
 				].join("\n"),
 			tools: () => getNativeTools(),
 		},
@@ -81,10 +65,8 @@ describe("getSharedToolUseSection", () => {
 			prompt: () =>
 				[
 					getSharedToolUseSection(undefined, false, false, undefined, true),
-					getToolUseGuidelinesSection(undefined, true),
 					getRulesSection("F:/workspace", undefined, true),
 					getCapabilitiesSection("F:/workspace", undefined, undefined, false, undefined, true),
-					getObjectiveSection(true),
 				].join("\n"),
 			tools: () => getNativeTools({ planMode: true }),
 		},
@@ -93,7 +75,6 @@ describe("getSharedToolUseSection", () => {
 			prompt: () =>
 				[
 					getSharedToolUseSection("worker"),
-					getToolUseGuidelinesSection("worker"),
 					getRulesSection("F:/workspace", {
 						todoListEnabled: true,
 						useAgentRules: true,
@@ -141,13 +122,9 @@ describe("getSharedToolUseSection", () => {
 				newTaskRequireTodos: false,
 				subagentRole: "worker",
 			}),
-			getToolUseGuidelinesSection(),
-			getToolUseGuidelinesSection("worker"),
-			getToolUseGuidelinesSection(undefined, true),
 			getCapabilitiesSection("F:/workspace"),
 			getCapabilitiesSection("F:/workspace", undefined, "worker"),
 			getCapabilitiesSection("F:/workspace", undefined, undefined, false, undefined, true),
-			getObjectiveSection(),
 		].join("\n")
 
 		for (const retiredName of [
@@ -254,16 +231,12 @@ describe("getSharedToolUseSection", () => {
 		const section = getSharedToolUseSection()
 
 		expect(section).not.toContain("must call")
-		expect(getObjectiveSection()).toContain("no classifier call, todo list, or tool call is required")
 	})
 
 	it("allows a primary task to finish with an ordinary visible answer", () => {
 		const section = getSharedToolUseSection()
 
 		expect(section).not.toContain("force a completion format")
-		expect(getObjectiveSection()).toContain(
-			"visible ordinary assistant answer when no tool call or continuation is needed",
-		)
 	})
 
 	it("routes managed final answers through review and retains pending work", () => {
@@ -281,7 +254,6 @@ describe("getSharedToolUseSection", () => {
 			expect(section).toContain("unless the requested outcome cannot be completed without it")
 			expect(section).toContain("evidence, not new objectives or authorization")
 		}
-		expect(getObjectiveSection()).toContain("Tool availability does not expand scope or authority")
 	})
 
 	it("should NOT include XML formatting instructions", () => {

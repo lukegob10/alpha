@@ -106,6 +106,41 @@ const mockAlphaProvider = {
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
 
+describe("built-in personality Settings messages", () => {
+	beforeEach(() => {
+		vi.mocked(mockAlphaProvider.contextProxy.setValue).mockClear()
+		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
+	})
+
+	it.each(["default", "none"] as const)(
+		"persists the supported %s choice before projecting state",
+		async (personality) => {
+			let finishWrite!: () => void
+			const writing = new Promise<void>((resolve) => (finishWrite = resolve))
+			vi.mocked(mockAlphaProvider.contextProxy.setValue).mockReturnValueOnce(writing)
+			const save = webviewMessageHandler(mockAlphaProvider, {
+				type: "updateSettings",
+				updatedSettings: { personality },
+			})
+			expect(mockAlphaProvider.contextProxy.setValue).toHaveBeenCalledWith("personality", personality)
+			expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
+			finishWrite()
+			await save
+			expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each(["pragmatic", "friendly", "", true, 1, null, {}])(
+		"rejects the unsupported choice %j without replacing the saved preference",
+		async (personality) => {
+			const message = { type: "updateSettings", updatedSettings: { personality } } as unknown as WebviewMessage
+			await expect(webviewMessageHandler(mockAlphaProvider, message)).rejects.toThrow()
+			expect(mockAlphaProvider.contextProxy.setValue).not.toHaveBeenCalled()
+			expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
+		},
+	)
+})
+
 describe("prompt enhancement cancellation messages", () => {
 	afterEach(() => vi.restoreAllMocks())
 
@@ -2173,7 +2208,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		})
 
 		expect(getMessage).toHaveBeenCalledWith("queued-1")
-		expect(steerQueuedUserMessage).toHaveBeenCalledWith("queued-1")
+		expect(steerQueuedUserMessage).toHaveBeenCalledWith("queued-1", undefined)
 		expect(removeMessage).not.toHaveBeenCalled()
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
 			expect.objectContaining({

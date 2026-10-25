@@ -25,6 +25,32 @@ describe("redactAgentCredentialText", () => {
 		expect(redacted).toContain('"count":3')
 	})
 
+	it.each(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "githubAccessToken"])(
+		"redacts the complete credential identifier %s in diagnostic text",
+		(key) => {
+			for (const text of [
+				JSON.stringify({ [key]: "private-value", count: 3 }),
+				`${key}=private-value; count=3`,
+			]) {
+				const redacted = redactAgentCredentialText(text)
+				expect(redacted).not.toContain("private-value")
+				expect(redacted).toContain(`${key}`)
+				expect(redacted).toContain("[redacted]")
+				expect(redacted).toContain(text.startsWith("{") ? '"count":3' : "count=3")
+			}
+		},
+	)
+
+	it("redacts prefixed authorization fields with their complete authentication parameters", () => {
+		const redacted = redactAgentCredentialText(
+			JSON.stringify({ HTTP_AUTHORIZATION: "Digest username=private-user, response=private-response", count: 3 }),
+		)
+		expect(redacted).not.toMatch(/private-user|private-response/)
+		expect(redacted).toContain("HTTP_AUTHORIZATION")
+		expect(redacted).toContain("[redacted]")
+		expect(redacted).toContain('"count":3')
+	})
+
 	it.each([`"private\\\"value"`, `'private\\'value'`])("redacts the complete escaped value %s", (value) => {
 		expect(redactAgentCredentialText(`password=${value}; count=3`)).toBe("password=[redacted]; count=3")
 	})
@@ -45,7 +71,17 @@ describe("credential strings in persisted agent events", () => {
 	it("redacts JSON credential fields before either event journal persists them", async () => {
 		storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "agent-credential-redaction-"))
 		const taskId = "task-redaction"
-		const text = JSON.stringify({ password: "private-password", api_key: "private-api-key", count: 3 })
+		const text = [
+			JSON.stringify({
+				password: "private-password",
+				api_key: "private-api-key",
+				OPENAI_API_KEY: "private-provider-key",
+				githubAccessToken: "private-prefixed-token",
+				HTTP_AUTHORIZATION: "Basic private-authorization",
+				count: 3,
+			}),
+			"ANTHROPIC_API_KEY=private-env-key",
+		].join("\n")
 		const log = new AgentTurnEventLog(taskId, storagePath)
 		const journal = new AgentLifecycleJournal(taskId, storagePath)
 		try {
@@ -66,7 +102,9 @@ describe("credential strings in persisted agent events", () => {
 				await journal.getEventsFilePath(),
 			]) {
 				const contents = await fs.readFile(file, "utf8")
-				expect(contents).not.toMatch(/private-password|private-api-key/)
+				expect(contents).not.toMatch(
+					/private-password|private-api-key|private-provider-key|private-prefixed-token|private-authorization|private-env-key/,
+				)
 				expect(contents).toContain("[redacted]")
 			}
 		} finally {

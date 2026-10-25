@@ -69,6 +69,62 @@ describe("AgentLifecycleJournal", () => {
 		await restarted.close()
 	})
 
+	it("replays optional undefined envelope fields using their durable JSON representation", async () => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { snapshotEvery: 1 })
+		const input = { ...phaseEvent("event-1"), stepId: undefined }
+		const receipt = await journal.append(input)
+		await journal.close()
+
+		const restarted = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		expect(restarted.getSnapshot()).toEqual(receipt.snapshot)
+		expect(await restarted.append(input)).toMatchObject({ sequence: 1, replayed: true })
+		await restarted.close()
+	})
+
+	it.each([
+		["undefined object properties", { path: "file.ts", absent: undefined }],
+		["undefined array elements", { entries: [undefined, "present"] }],
+		["nonfinite numbers", { invalid: NaN, positive: Infinity, negative: -Infinity }],
+	] as const)("replays tool payloads containing %s after JSON persistence", async (_label, argumentsValue) => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { snapshotEvery: 1 })
+		const input = {
+			...phaseEvent("call-accepted"),
+			type: "tool_call_accepted" as const,
+			payload: {
+				item: {
+					itemId: "call-item",
+					type: "tool_call" as const,
+					toolCallId: "call-1",
+					name: "read_file",
+					arguments: argumentsValue,
+					status: "accepted" as const,
+				},
+			},
+		}
+		const receipt = await journal.append(input)
+		await journal.close()
+
+		const restarted = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		expect(restarted.getSnapshot()).toEqual(receipt.snapshot)
+		expect(await restarted.append(input)).toMatchObject({ sequence: 1, replayed: true })
+		await restarted.close()
+	})
+
+	it("replays a step whose optional phase was omitted", async () => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { snapshotEvery: 1 })
+		const receipt = await journal.append({
+			...phaseEvent("step-started"),
+			type: "step_started",
+			stepId: "step-1",
+			payload: {},
+		})
+		await journal.close()
+
+		const restarted = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		expect(restarted.getSnapshot()).toEqual(receipt.snapshot)
+		await restarted.close()
+	})
+
 	it("replays a persisted snapshot from before effect-start receipts existed", async () => {
 		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
 		await journal.append(phaseEvent("event-1"))

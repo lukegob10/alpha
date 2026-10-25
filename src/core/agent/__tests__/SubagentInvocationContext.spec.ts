@@ -127,6 +127,7 @@ describe("captureInheritedStepInstructions", () => {
 	it("captures invoking-step user guidance with stable host-owned source references", () => {
 		const fragments: ApiInstructionFragment[] = [
 			{ role: "system", origin: "base-instructions", content: "Model base" },
+			{ role: "user", origin: "model-personality", content: "Model-owned style is rebuilt for the child" },
 			{ role: "developer", origin: "agent-rules", content: "Developer fragment" },
 			{ role: "user", origin: "agent-rules", content: "Repository rules" },
 			{ role: "user", origin: "global-custom-instructions", content: "User guidance" },

@@ -1332,6 +1332,8 @@ If complete, use attempt_completion.
 		const capturedText = `CAPTURED_PARENT_CONTEXT ${"complete context ".repeat(2_000)} END_CAPTURED_CONTEXT`
 		const captured = {
 			mode: "code",
+			reasoningPreference: { kind: "effort", effort: "high" },
+			personality: "none",
 			apiConfiguration: { apiProvider: "openai", openAiModelId: "captured-model" },
 			apiConfigName: "Captured profile",
 			modelRoute: {
@@ -1376,6 +1378,7 @@ If complete, use attempt_completion.
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
 		parent.apiConversationHistory = [{ role: "user", content: "LIVE_REPLACEMENT" }]
 		parent.apiConfiguration.openAiModelId = "live-model"
+		Object.assign(parent, { reasoningPreference: { kind: "off" } })
 		parent.getTaskMode.mockResolvedValue("architect")
 		parent.captureEffectiveInheritedInstructions.mockResolvedValue({
 			effectiveText: "Live changed instructions",
@@ -1390,6 +1393,8 @@ If complete, use attempt_completion.
 			profileName: "Captured profile",
 		})
 		expect(descriptor.inheritedInstructions).toBe("Captured applied instructions")
+		expect(descriptor.modelRoute.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
+		expect(descriptor.contextManifest.personality).toBe("none")
 		expect(descriptor.contextManifest.instructions.sources).toContainEqual(
 			expect.objectContaining({ ref: "captured:AGENTS.md" }),
 		)
@@ -1401,6 +1406,72 @@ If complete, use attempt_completion.
 		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
 		expect(parent.getTaskMode).not.toHaveBeenCalled()
 		expect(parent.getTaskApiConfigName).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		{ label: "captured parent", spawnEffort: undefined, agentEffort: undefined, expected: "high" },
+		{ label: "explicit spawn", spawnEffort: "low", agentEffort: undefined, expected: "low" },
+		{ label: "configured agent", spawnEffort: "low", agentEffort: "medium", expected: "medium" },
+	] as const)("launches with the $label reasoning selection after the live parent changes", async (testCase) => {
+		const provider = makeProviderHarness(2, {
+			subagentAgentTypes: {
+				inspector: { description: "Inspects code", role: "review", reasoningEffort: testCase.agentEffort },
+			},
+		})
+		const parent = Object.assign(makeParent(), { reasoningPreference: { kind: "effort", effort: "high" } })
+		const instructions = await parent.captureEffectiveInheritedInstructions()
+		Object.assign(parent, {
+			getSubagentInvocationContext: () => ({
+				mode: "code",
+				apiConfiguration: { ...parent.apiConfiguration, reasoningEffort: "high" },
+				apiConfigName: "Parent",
+				reasoningPreference: { kind: "effort", effort: "high" },
+				modelRoute: {
+					source: "parent",
+					resolution: "selected",
+					provider: "openai",
+					modelId: "alpha-model",
+					profileName: "Parent",
+				},
+				history: [],
+				finalAssistantMessageIndexes: [],
+				instructions,
+			}),
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+			task_name: "captured_reasoning",
+			message: "Inspect the effective reasoning selection",
+			agent_type: "inspector",
+			fork_turns: "none",
+			...(testCase.spawnEffort ? { reasoning_effort: testCase.spawnEffort } : {}),
+		})
+		Object.assign(parent, { reasoningPreference: { kind: "off" } })
+		const create = vi.spyOn(provider, "createTask").mockImplementation(async (_text, _images, _parent, options) => {
+			expect(options?.apiConfiguration?.reasoningEffort).toBe(testCase.expected)
+			expect(options?.reasoningPreference).toEqual(
+				testCase.label === "captured parent" ? { kind: "effort", effort: "high" } : { kind: "default" },
+			)
+			const emitter = new EventEmitter()
+			return Object.assign(emitter, {
+				taskId: options?.taskId,
+				taskKind: "subagent",
+				rootTaskId: parent.taskId,
+				clineMessages: [{ type: "say", say: "completion_result", text: "Selection inspected." }],
+				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0, totalCost: 0 }),
+				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+				finalizeSubagentHistory: vi.fn(async () => undefined),
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn(async () => undefined),
+				start: () => emitter.emit(AlphaCodeEventName.TaskCompleted, options?.taskId, {}),
+			}) as unknown as Task
+		})
+		Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+		await Reflect.get(provider, "runSubagentEnvelope").call(
+			provider,
+			prepared.envelopes[0],
+			new AbortController().signal,
+		)
+		expect(create).toHaveBeenCalledOnce()
 	})
 
 	it.each([
@@ -7033,65 +7104,90 @@ If complete, use attempt_completion.
 		])
 	})
 
-	it("ACKs a reload-preserved native wait claim with a persisted receipt without redelivery", async () => {
-		const persistence = new InMemoryAgentControlPersistence()
-		const beforeReload = new AgentControlStore(persistence)
-		await beforeReload.initialize()
-		await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
-		await beforeReload.appendEvent({
-			eventId: "reload-result-persisted",
-			recipient: "parent-1",
-			kind: "result",
-			name: "agent_failed",
-			payload: { taskId: "reload-child-persisted", status: "failed", stopReason: "runtime_error" },
-		})
-		const claimed = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
+	it.each(["canonical", "legacy", "empty-canonical", "matching"] as const)(
+		"ACKs a reload-preserved native wait claim with %s IDs without redelivery",
+		async (alias) => {
+			const persistence = new InMemoryAgentControlPersistence()
+			const beforeReload = new AgentControlStore(persistence)
+			await beforeReload.initialize()
+			await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
+			await beforeReload.appendEvent({
+				eventId: "reload-result-persisted",
+				recipient: "parent-1",
+				kind: "result",
+				name: "agent_failed",
+				payload: { taskId: "reload-child-persisted", status: "failed", stopReason: "runtime_error" },
+			})
+			const claimed = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
 
-		const afterReload = new AgentControlStore(persistence)
-		await afterReload.initialize()
-		const provider = makeProviderHarness()
-		;(provider as any).agentControlStore = afterReload
-		;(provider as any).agentControlStoreReady = Promise.resolve()
-		const parent = makeParent()
-		parent.apiConversationHistory = [
-			{
-				role: "assistant",
-				content: [{ type: "tool_use", id: "call.reload.receipt", name: "wait_agent", input: {} }],
-			},
-			{
-				role: "user",
-				content: [
-					{
-						type: "tool_result",
-						tool_use_id: "call_reload_receipt",
-						content: JSON.stringify({
-							timedOut: false,
-							source: "managed_agent_mailbox",
-							claimId: claimed.claimId,
-							eventCount: claimed.entries.length,
-						}),
-					},
-					{
-						type: "text",
-						text: serializeAgentNotification(claimed.entries[0]),
-					},
-				],
-			},
-		] as any
+			const afterReload = new AgentControlStore(persistence)
+			await afterReload.initialize()
+			const provider = makeProviderHarness()
+			;(provider as any).agentControlStore = afterReload
+			;(provider as any).agentControlStoreReady = Promise.resolve()
+			const parent = makeParent()
+			const callId = "call.reload.receipt"
+			const resultId = "call_reload_receipt"
+			const call =
+				alias === "canonical"
+					? { type: "tool_use", id: callId, name: "wait_agent", input: {} }
+					: {
+							type: "tool_call",
+							id: alias === "legacy" ? undefined : alias === "empty-canonical" ? "" : callId,
+							tool_call_id: callId,
+							name: "wait_agent",
+							input: {},
+						}
+			parent.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [call],
+				},
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							...(alias === "canonical"
+								? { tool_use_id: resultId }
+								: {
+										tool_use_id:
+											alias === "legacy"
+												? undefined
+												: alias === "empty-canonical"
+													? ""
+													: resultId,
+										tool_call_id: resultId,
+									}),
+							content: JSON.stringify({
+								timedOut: false,
+								source: "managed_agent_mailbox",
+								claimId: claimed.claimId,
+								eventCount: claimed.entries.length,
+							}),
+						},
+						{
+							type: "text",
+							text: serializeAgentNotification(claimed.entries[0]),
+						},
+					],
+				},
+			] as any
 
-		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
-			timedOut: false,
-			events: [],
-			alreadyDelivered: true,
-		})
-		expect(parent.forgetWaitAgentResultClaim).toHaveBeenCalledWith(claimed.claimId)
-		expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([])
-		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
-			timedOut: false,
-			noActiveAgents: true,
-			events: [],
-		})
-	})
+			await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+				timedOut: false,
+				events: [],
+				alreadyDelivered: true,
+			})
+			expect(parent.forgetWaitAgentResultClaim).toHaveBeenCalledWith(claimed.claimId)
+			expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([])
+			await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+				timedOut: false,
+				noActiveAgents: true,
+				events: [],
+			})
+		},
+	)
 
 	it("redelivers a reload-preserved claim when its wait receipt lacks child notifications", async () => {
 		const persistence = new InMemoryAgentControlPersistence()

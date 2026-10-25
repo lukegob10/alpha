@@ -1,3 +1,5 @@
+import type { AlphaMessage } from "@alpha-code/types"
+
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { Task } from "../Task"
 
@@ -72,6 +74,133 @@ it.each(["command", "tool", "followup"] as const)(
 		expect(task["askResponse"]).toBeUndefined()
 	},
 )
+
+it("rejects queued steering for a previous turn before selecting its input", async () => {
+	const { task, queue } = harness()
+	Object.assign(task, { agentTurnId: "successor" })
+	const message = await queue.addMessageDurably("QUEUED_FOR_ORIGINAL_TURN", [], "queued-input")
+	const claim = vi.spyOn(queue, "claimMessage")
+	const handoff = vi.spyOn(task, "steerUserMessage")
+	await expect(task.steerQueuedUserMessage(message!.id, "original")).rejects.toThrow("active turn changed")
+	expect(queue.messages).toMatchObject([{ id: "queued-input", text: "QUEUED_FOR_ORIGINAL_TURN" }])
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	expect(claim).not.toHaveBeenCalled()
+	expect(handoff).not.toHaveBeenCalled()
+})
+
+it.each(["explicit", "captured"] as const)(
+	"fences a %s queued steering identity while queue hydration is pending",
+	async (identity) => {
+		const { task } = harness()
+		const loading = deferred()
+		const loaded = deferred()
+		const message = { id: "restored-input", text: "QUEUED_BEFORE_RELOAD", timestamp: 1 }
+		const queue = new MessageQueueService({
+			load: async () => {
+				loading.resolve()
+				await loaded.promise
+				return [message]
+			},
+			save: async () => undefined,
+		})
+		Object.assign(task, { messageQueueService: queue, agentTurnId: "original" })
+		const request = new AbortController()
+		task.currentRequestAbortController = request
+		const handoff = vi.spyOn(task, "steerUserMessage")
+		const steering = task.steerQueuedUserMessage(message.id, identity === "explicit" ? "original" : undefined)
+		const rejected = expect(steering).rejects.toThrow("active turn changed")
+		await loading.promise
+		Reflect.set(task, "agentTurnId", "successor")
+		loaded.resolve()
+		await rejected
+		expect(queue.messages).toEqual([message])
+		expect(queue.getClaimedMessageIds()).toEqual([])
+		expect(handoff).not.toHaveBeenCalled()
+		expect(request.signal.aborted).toBe(false)
+		queue.dispose()
+	},
+)
+
+it.each(["explicit", "captured"] as const)(
+	"releases a %s queued steering claim when a successor starts during persistence",
+	async (identity) => {
+		const { task } = harness()
+		const claiming = deferred()
+		const claimed = deferred()
+		const queue = new MessageQueueService({
+			load: async () => [],
+			save: async () => {
+				if (queue.getClaimedMessageIds().includes("queued-input")) {
+					claiming.resolve()
+					await claimed.promise
+				}
+			},
+		})
+		Object.assign(task, { messageQueueService: queue, agentTurnId: "original" })
+		const message = await queue.addMessageDurably("PRESERVE_QUEUED_INPUT", [], "queued-input")
+		const request = new AbortController()
+		task.currentRequestAbortController = request
+		const handoff = vi.spyOn(task, "steerUserMessage")
+		const steering = task.steerQueuedUserMessage(message!.id, identity === "explicit" ? "original" : undefined)
+		const rejected = expect(steering).rejects.toThrow("active turn changed")
+		await claiming.promise
+		Reflect.set(task, "agentTurnId", "successor")
+		claimed.resolve()
+		await rejected
+		expect(queue.messages).toMatchObject([{ id: "queued-input", text: "PRESERVE_QUEUED_INPUT" }])
+		expect(queue.getClaimedMessageIds()).toEqual([])
+		expect(handoff).not.toHaveBeenCalled()
+		expect(request.signal.aborted).toBe(false)
+		queue.dispose()
+	},
+)
+
+it("correlates steering feedback with its durable receipt and reuses that row until provider admission", async () => {
+	const { task, queue } = harness()
+	const message = await queue.addMessageDurably("SAME_TEXT_FOR_TWO_INPUTS", [], "steering-input")
+	queue.claimMessage(message!.id)
+	const saving = deferred()
+	const saved = deferred()
+	Object.assign(task, {
+		addToAlphaMessages: vi.fn(async (feedback: AlphaMessage) => {
+			task.clineMessages.push(structuredClone(feedback))
+		}),
+		enqueueAlphaMessagesSave: async (createSnapshot: () => AlphaMessage[], onPersisted?: () => void) => {
+			createSnapshot()
+			saving.resolve()
+			await saved.promise
+			onPersisted?.()
+			return true
+		},
+	})
+	const steering = { text: message!.text, images: [], queuedMessageIds: [message!.id] }
+	await task["presentSteeringInput"](steering)
+	expect(task.clineMessages).toMatchObject([
+		{ say: "user_feedback", text: steering.text, queuedMessageIds: ["steering-input"] },
+	])
+	const firstTimestamp = task.clineMessages[0].ts
+	const retry = task["presentSteeringInput"](steering)
+	try {
+		await saving.promise
+		expect(task.clineMessages).toHaveLength(1)
+		expect(queue.visibleMessages).toMatchObject([{ id: "steering-input", deliveryState: "delivering" }])
+	} finally {
+		saved.resolve()
+		await retry
+	}
+	expect(task.clineMessages).toHaveLength(1)
+	expect(task.clineMessages[0].ts).toBe(firstTimestamp)
+	await task["presentSteeringInput"]({ ...steering, queuedMessageIds: ["different-input"] })
+	expect(task.clineMessages).toHaveLength(2)
+	task.apiConversationHistory.push({
+		role: "user",
+		content: steering.text,
+		queued_message_ids: ["steering-input"],
+	})
+	await task["presentSteeringInput"](steering)
+	expect(task.clineMessages).toHaveLength(2)
+	queue.dispose()
+})
 
 it("rejects a direct steering request for a previous turn before admitting input", async () => {
 	const { task, queue } = harness()

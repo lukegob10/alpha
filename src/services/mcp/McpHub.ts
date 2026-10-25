@@ -2068,20 +2068,19 @@ export class McpHub {
 		if (connection.server.disabled) {
 			throw new Error(`Server "${serverName}" is disabled`)
 		}
-		signal?.throwIfAborted()
+		const requestSignal = this.getConnectionSignal(connection, signal)
 		const request = {
 			method: "resources/read" as const,
 			params: {
 				uri,
 			},
 		}
-		return await requestWithAbort(
-			() =>
-				signal
-					? connection.client.request(request, ReadResourceResultSchema, { signal })
-					: connection.client.request(request, ReadResourceResultSchema),
-			signal,
+		const response = await requestWithAbort(
+			() => connection.client.request(request, ReadResourceResultSchema, { signal: requestSignal }),
+			requestSignal,
 		)
+		this.assertConnectionCurrent(connection, requestSignal)
+		return response
 	}
 
 	async callTool(
@@ -2110,9 +2109,9 @@ export class McpHub {
 			// Default to 60 seconds if parsing fails
 			timeout = 60 * 1000
 		}
-		signal?.throwIfAborted()
+		const requestSignal = this.getConnectionSignal(connection, signal)
 
-		return await requestWithAbort(
+		const response = await requestWithAbort(
 			() =>
 				connection.client.request(
 					{
@@ -2123,10 +2122,12 @@ export class McpHub {
 						},
 					},
 					CallToolResultSchema,
-					signal ? { timeout, signal } : { timeout },
+					{ timeout, signal: requestSignal },
 				),
-			signal,
+			requestSignal,
 		)
+		this.assertConnectionCurrent(connection, requestSignal)
+		return response
 	}
 
 	/**

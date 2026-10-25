@@ -11,6 +11,7 @@ import { AlphaProvider } from "../AlphaProvider"
 import { AgentMessageInbox } from "../../task-persistence/AgentMessageInbox"
 import { TaskHistoryStore, saveTaskMessages } from "../../task-persistence"
 import { readApiMessages, saveApiMessages } from "../../task-persistence/apiMessages"
+import { ProviderTranscriptStore } from "../../task-persistence/ProviderTranscriptStore"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { crossTaskWorktreeService } from "../CrossTaskWorktreeService"
 import * as threadTaskStorage from "../ThreadTaskStorage"
@@ -62,6 +63,7 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		resumeWithAgentMessages: vi.fn(async () => undefined),
 		resumeCompletedTaskFollowup: vi.fn(async () => undefined),
 		submitUserMessage: vi.fn(async () => undefined),
+		start: vi.fn(),
 		messageQueueService: { addMessage: vi.fn(() => true) },
 		updateApiConfiguration: vi.fn(),
 		...overrides,
@@ -100,8 +102,9 @@ function createProviderFixture(storagePath?: string) {
 			if (task) task.abort = true
 			void source
 		}),
-		removeTaskFromStack: vi.fn(async (options: { taskId: string }) => {
+		removeTaskFromStack: vi.fn(async (options: { taskId: string; expectedTask?: Task }) => {
 			const task = tasks.get(options.taskId)
+			if (options.expectedTask && task !== options.expectedTask) throw new Error("Task runtime changed")
 			if (task) task.abort = true
 			tasks.delete(options.taskId)
 			const record = history.get(options.taskId)
@@ -138,6 +141,31 @@ const taskHistoryItem = (id: string, parentId: string, task = "Child objective")
 	totalCost: 0,
 	workspace: "C:/repo",
 })
+
+function independentCreationFixture() {
+	const fixture = createProviderFixture()
+	const parent = createTask()
+	const child = createTask({
+		orchestrationParentTaskId: parent.taskId,
+		orchestrationWorkspaceMode: "shared",
+		metadata: { task: "Inspect parser" },
+	})
+	fixture.tasks.set(parent.taskId, parent)
+	fixture.internals.createTask = vi.fn(
+		async (_text: unknown, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+			child.taskId = options.taskId
+			fixture.tasks.set(child.taskId, child)
+			fixture.history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId, "Inspect parser"))
+			fixture.metadata.set(child.taskId, {
+				id: child.taskId,
+				lifecycle: TaskLifecycleState.Initializing,
+				lastUpdatedAt: 10,
+			})
+			return child
+		},
+	)
+	return { ...fixture, parent, child }
+}
 
 describe("Cross-task orchestration host", () => {
 	it.each([
@@ -306,7 +334,7 @@ describe("Cross-task orchestration host", () => {
 		},
 	)
 
-	it("permanently stops a child if the create call is cancelled after the child starts", async () => {
+	it("permanently stops an admitted child if creation is cancelled before its first turn", async () => {
 		const { provider, internals, tasks, history, metadata } = createProviderFixture()
 		const parent = createTask()
 		const child = createTask({
@@ -317,13 +345,20 @@ describe("Cross-task orchestration host", () => {
 		})
 		const controller = new AbortController()
 		const cancellation = new Error("Cancelled by the parent")
-		internals.createTask = vi.fn(async () => {
-			tasks.set(child.taskId, child)
-			history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId, "Inspect parser"))
-			metadata.set(child.taskId, { id: child.taskId, lifecycle: TaskLifecycleState.Running, lastUpdatedAt: 10 })
-			controller.abort(cancellation)
-			return child
-		})
+		internals.createTask = vi.fn(
+			async (_text: unknown, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+				child.taskId = options.taskId
+				tasks.set(child.taskId, child)
+				history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId, "Inspect parser"))
+				metadata.set(child.taskId, {
+					id: child.taskId,
+					lifecycle: TaskLifecycleState.Running,
+					lastUpdatedAt: 10,
+				})
+				controller.abort(cancellation)
+				return child
+			},
+		)
 
 		await expect(
 			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", controller.signal),
@@ -333,9 +368,161 @@ describe("Cross-task orchestration host", () => {
 		expect(internals.removeTaskFromStack).toHaveBeenCalledWith({
 			taskId: child.taskId,
 			requireAbortSuccess: true,
+			expectedTask: child,
+		})
+		expect(child.start).not.toHaveBeenCalled()
+		expect(tasks.has(child.taskId)).toBe(false)
+		expect(history.get(child.taskId)?.status).toBe("interrupted")
+	})
+
+	it("starts an independent task only after its title and response identity are ready", async () => {
+		const { provider, internals, parent, child } = independentCreationFixture()
+		let finishTitle!: () => void
+		let titleStarted!: () => void
+		const titleReady = new Promise<void>((resolve) => (finishTitle = resolve))
+		const pendingTitle = new Promise<void>((resolve) => (titleStarted = resolve))
+		internals.renameTask = vi.fn(async () => {
+			titleStarted()
+			await titleReady
+		})
+		const creating = provider.createIndependentTask(
+			parent as unknown as Task,
+			"Inspect parser",
+			"shared",
+			undefined,
+			{
+				title: "Parser review",
+			},
+		)
+		await pendingTitle
+		expect(internals.createTask).toHaveBeenCalledWith(
+			"Inspect parser",
+			undefined,
+			undefined,
+			expect.objectContaining({ startTask: false }),
+		)
+		expect(child.start).not.toHaveBeenCalled()
+		finishTitle()
+		await expect(creating).resolves.toMatchObject({ task_id: child.taskId })
+		expect(child.start).toHaveBeenCalledOnce()
+		expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+	})
+
+	it.each(["title", "model"] as const)("stops a provisional child when %s persistence fails", async (field) => {
+		const { provider, internals, tasks, history, parent, child } = independentCreationFixture()
+		const failure = new Error(`${field} persistence failed`)
+		if (field === "title") internals.renameTask = vi.fn().mockRejectedValue(failure)
+		else {
+			parent.apiConversationHistory = [
+				{ role: "user", input_origin: "human", content: "Create a new task using target-model" },
+			]
+			internals.updateTaskHistory.mockRejectedValueOnce(failure)
+		}
+		await expect(
+			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", undefined, {
+				...(field === "title" ? { title: "Parser review" } : { model: "target-model" }),
+			}),
+		).rejects.toBe(failure)
+		expect(child.start).not.toHaveBeenCalled()
+		expect(child.recordAgentStopRequest).not.toHaveBeenCalled()
+		expect(internals.removeTaskFromStack).toHaveBeenCalledExactlyOnceWith({
+			taskId: child.taskId,
+			requireAbortSuccess: true,
+			expectedTask: child,
 		})
 		expect(tasks.has(child.taskId)).toBe(false)
 		expect(history.get(child.taskId)?.status).toBe("interrupted")
+	})
+
+	it("stops an unstarted child when cancellation arrives during title persistence", async () => {
+		const { provider, internals, tasks, parent, child } = independentCreationFixture()
+		const controller = new AbortController()
+		const cancellation = new Error("Creation cancelled while saving the title")
+		internals.renameTask = vi.fn(async () => controller.abort(cancellation))
+		await expect(
+			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", controller.signal, {
+				title: "Parser review",
+			}),
+		).rejects.toBe(cancellation)
+		expect(child.start).not.toHaveBeenCalled()
+		expect(tasks.has(child.taskId)).toBe(false)
+		expect(internals.removeTaskFromStack).toHaveBeenCalledOnce()
+	})
+
+	it("preserves the primary error and an admitted worktree when provisional cleanup fails", async () => {
+		const { provider, internals, tasks, parent, child } = independentCreationFixture()
+		const failure = new Error("Title persistence failed")
+		const cleanupFailure = new Error("Unable to stop the provisional runtime")
+		const cleanup = vi.fn(async () => undefined)
+		const worktree = vi.spyOn(crossTaskWorktreeService, "create").mockResolvedValue({
+			workspacePath: "C:/worktree",
+			workspaceRelativePath: "",
+			baselineCommit: "a".repeat(40),
+			cleanup,
+		})
+		internals.renameTask = vi.fn().mockRejectedValue(failure)
+		internals.removeTaskFromStack.mockRejectedValue(cleanupFailure)
+		try {
+			await expect(
+				provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "worktree", undefined, {
+					title: "Parser review",
+				}),
+			).rejects.toMatchObject({
+				name: "AggregateError",
+				errors: [failure, cleanupFailure],
+				cause: failure,
+			})
+			expect(child.start).not.toHaveBeenCalled()
+			expect(tasks.get(child.taskId)).toBe(child)
+			expect(cleanup).not.toHaveBeenCalled()
+		} finally {
+			worktree.mockRestore()
+		}
+	})
+
+	it("retries cleanup for a retained aborted runtime when admission rejects without returning it", async () => {
+		const { provider, internals, tasks, parent, child } = independentCreationFixture()
+		const failure = new Error("Admission cleanup failed")
+		const admit = internals.createTask.getMockImplementation()
+		internals.createTask.mockImplementation(async (...args: unknown[]) => {
+			await admit(...args)
+			child.abort = true
+			throw failure
+		})
+		await expect(
+			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared"),
+		).rejects.toBe(failure)
+		expect(internals.removeTaskFromStack).toHaveBeenCalledExactlyOnceWith({
+			taskId: child.taskId,
+			requireAbortSuccess: true,
+			expectedTask: child,
+		})
+		expect(tasks.has(child.taskId)).toBe(false)
+		expect(child.start).not.toHaveBeenCalled()
+	})
+
+	it("does not stop a replacement runtime after provisional title persistence fails", async () => {
+		const { provider, internals, tasks, parent, child } = independentCreationFixture()
+		const failure = new Error("Title persistence failed")
+		let replacement!: FakeTask
+		internals.renameTask = vi.fn(async () => {
+			replacement = createTask({ taskId: child.taskId })
+			tasks.set(child.taskId, replacement)
+			throw failure
+		})
+		await expect(
+			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", undefined, {
+				title: "Parser review",
+			}),
+		).rejects.toMatchObject({
+			name: "AggregateError",
+			cause: failure,
+			errors: [failure, expect.objectContaining({ message: expect.stringContaining("runtime changed") })],
+		})
+		expect(tasks.get(child.taskId)).toBe(replacement)
+		expect(replacement.abort).toBe(false)
+		expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+		expect(child.start).not.toHaveBeenCalled()
 	})
 
 	it("waits on lifecycle events and returns the child's terminal response", async () => {
@@ -1443,6 +1630,56 @@ describe("Cross-task orchestration host", () => {
 		await expect(provider.readIndependentThread(caller as unknown as Task, "peer")).rejects.toThrow("digest")
 		expect(await fs.readFile(file, "utf8")).toBe(contents)
 	})
+
+	it.each([false, true])(
+		"rejects read and fork when acknowledged authority is missing, with stale Claude fallback %s",
+		async (staleLegacy) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			const caller = createTask({ metadata: { task: "Fork this chat." } })
+			const taskId = "acknowledged-peer"
+			const storagePath = internals.contextProxy.globalStorageUri.fsPath
+			history.set(taskId, { ...taskHistoryItem(taskId, "other"), status: "completed" })
+			const authority = await saveApiMessages({
+				taskId,
+				globalStoragePath: storagePath,
+				messages: [
+					{ role: "user", content: "Current request" },
+					{ role: "assistant", content: "Acknowledged answer" },
+				],
+			})
+			const store = new ProviderTranscriptStore(taskId, storagePath)
+			await store.commitAuthoritativeTranscript(authority)
+			await fs.unlink(authority.filePath)
+			const directory = path.dirname(authority.filePath)
+			if (staleLegacy) {
+				await fs.writeFile(
+					path.join(directory, "claude_messages.json"),
+					JSON.stringify([{ role: "user", content: "Obsolete prefix" }]),
+				)
+			}
+			const files = await fs.readdir(directory)
+			const contents = await Promise.all(files.map((file) => fs.readFile(path.join(directory, file), "utf8")))
+			const taskDirectories = await fs.readdir(path.dirname(directory))
+			internals.createTask = vi.fn()
+			internals.createTaskWithHistoryItem = vi.fn()
+
+			await expect(provider.readIndependentThread(caller as unknown as Task, taskId)).rejects.toThrow(
+				/authoritative/i,
+			)
+			await expect(provider.forkIndependentTask(caller as unknown as Task, taskId)).rejects.toThrow(
+				/authoritative/i,
+			)
+			expect(await fs.readdir(directory)).toEqual(files)
+			expect(await Promise.all(files.map((file) => fs.readFile(path.join(directory, file), "utf8")))).toEqual(
+				contents,
+			)
+			expect(await fs.readdir(path.dirname(directory))).toEqual(taskDirectories)
+			expect(history.size).toBe(1)
+			expect(tasks.size).toBe(0)
+			expect(internals.createTask).not.toHaveBeenCalled()
+			expect(internals.createTaskWithHistoryItem).not.toHaveBeenCalled()
+		},
+	)
 
 	it("rejects an already cancelled history read before resolving storage or performing file I/O", async () => {
 		const resolve = vi.spyOn(taskStorage, "resolveExistingTaskDirectoryPathReadOnly")
