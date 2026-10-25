@@ -1,0 +1,48 @@
+{
+	"schemaVersion": 1,
+	"currentSuiteIdentity": "frontier-v1@2",
+	"previousSuite": {
+		"identity": "frontier-v1@1",
+		"sourceRevision": "c8480b79207bcc6d437ad09dc14a03d5c61540a0",
+		"path": "evals/frontier-v1.yaml",
+		"manifestBytesSha256": "sha256:d02c156c32ca4ede4a8078bf5593d03b92eb077ea76b5b65aeec44747dc1788f",
+		"archivePath": "archive/manifests/frontier-v1@1.yaml"
+	},
+	"changes": [
+		{
+			"id": "repo-stream-backpressure",
+			"previousIdentity": "repo-stream-backpressure@1",
+			"identity": "repo-stream-backpressure@2",
+			"previousFixtureDigest": "sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665",
+			"fixtureDigest": "sha256:69672cdb07be8868d73a17687bd538508f3d64efe4f716994fffa9e1de980bc6",
+			"previousPromptDigest": "sha256:5b59e518bd9dd906f00dc96ae6efd5967de5db1fe2f1be777ae7dbc52a63b519",
+			"promptDigest": "sha256:5b59e518bd9dd906f00dc96ae6efd5967de5db1fe2f1be777ae7dbc52a63b519",
+			"calibration": "stale-previous-identity-requires-recertification",
+			"change": "verifier-obligations"
+		},
+		{
+			"id": "stateful-api-idempotency",
+			"previousIdentity": "stateful-api-idempotency@1",
+			"identity": "stateful-api-idempotency@2",
+			"previousFixtureDigest": "sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384",
+			"fixtureDigest": "sha256:2d852c8bb019722e14f011c0c210f0094776ac7a67aaed5ee51d305de948b8ab",
+			"previousPromptDigest": "sha256:c0800b19406ed36749ead739222108807300fd862702f94656f797b62aa828f3",
+			"promptDigest": "sha256:3353737123e3e3dfc13164379f95f65df6502b8690528cb231cb8bc2018e3f03",
+			"calibration": "stale-previous-identity-requires-recertification",
+			"change": "prompt-and-verifier-obligations"
+		}
+	],
+	"historicalCalibration": "Existing calibration JSON remains unchanged and cannot certify the new task identities.",
+	"exposure": {
+		"status": "public-development",
+		"reviewedOn": null,
+		"authoredOn": "2026-10-23"
+	},
+	"candidates": {
+		"root": "candidates",
+		"admission": "calibrating",
+		"liveExecutions": null,
+		"humanQualityApproval": null
+	},
+	"changedTaskLabels": "The two revised tasks are compact single-source algorithm repairs, not runtime recovery or cross-package evaluations."
+}

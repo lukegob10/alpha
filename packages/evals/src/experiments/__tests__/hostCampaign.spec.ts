@@ -47,6 +47,98 @@ function campaign() {
 }
 
 describe("actual host campaign to paired report", () => {
+	it("preserves measured phases without inventing missing timing or token totals", () => {
+		const value = campaign()
+		const report = exportHostCampaign(
+			{
+				...value,
+				attempts: value.attempts.map((attempt) => ({
+					...attempt,
+					result: {
+						...attempt.result,
+						performance: {
+							firstResponseMs: 12,
+							reasoningTokens: 20,
+							outputTokens: 40,
+							cacheReadTokens: null,
+						},
+					},
+				})),
+			},
+			{ timeWindow: "block" },
+		)
+		expect(report.observations[0]?.performance).toEqual({
+			firstResponseMs: 12,
+			inputTokens: null,
+			outputTokens: 40,
+			reasoningTokens: 20,
+			cacheReadTokens: null,
+		})
+		expect(report.observations[0]?.tokens).toBeNull()
+		expect(report.observations[0]?.performance?.providerMs).toBeUndefined()
+	})
+
+	it("retains pre-run decision-plan identity and actual attempt start", () => {
+		const value = campaign()
+		const decisionPlanDigest = digest("a")
+		const startedAt = "2026-10-01T01:00:00.000Z"
+		const report = exportHostCampaign(
+			{
+				...value,
+				attempts: value.attempts.map((attempt) => ({
+					...attempt,
+					request: { ...attempt.request, decisionPlanDigest, startedAt, timeWindow: "block" },
+				})),
+			},
+			{ timeWindow: "block" },
+		)
+		expect(report.observations[0]).toMatchObject({ decisionPlanDigest, startedAt, capturedTimeWindow: "block" })
+		expect(() =>
+			exportHostCampaign(
+				{
+					...value,
+					attempts: value.attempts.map((attempt) => ({
+						...attempt,
+						request: { ...attempt.request, timeWindow: "captured" },
+					})),
+				},
+				{ timeWindow: "relabelled" },
+			),
+		).toThrow("captured time block")
+	})
+
+	it("retains stopped campaign denominators as incomplete descriptive evidence", () => {
+		const value = campaign()
+		const sampling = {
+			planned: 2,
+			completed: 1,
+			passed: 1,
+			failed: 0,
+			blocked: 0,
+			notRun: 1,
+			diagnosticAttempts: 0,
+		}
+		const report = exportHostCampaign(
+			{
+				...value,
+				stopReason: "time_budget",
+				evaluationPlan: { ...value.evaluationPlan, samples: 2 },
+				sampling,
+			},
+			{ timeWindow: "block" },
+		)
+		expect(report.accounting?.sampling).toEqual(sampling)
+		expect(report.incomplete[0]?.reason).toMatch(/time_budget; 1 scheduled samples/)
+		expect(() => exportHostCampaign({ ...value, sampling }, { timeWindow: "block" })).toThrow("denominators")
+		const manifest = declareCampaignPair(report, report, {
+			id: "stopped",
+			template: "harness_only",
+			independentUnit: "task",
+			allowedDifferenceFields: ["extensionBuildDigest"],
+		})
+		expect(() => reportCampaignPair(report, report, manifest)).toThrow("incomplete")
+	})
+
 	it("joins actual host build receipts to immutable observations and preserves unknown usage", () => {
 		const baseline = campaign()
 		const changed = campaign()
@@ -145,6 +237,7 @@ describe("actual host campaign to paired report", () => {
 			scoredSamples: 1,
 			diagnosticAttempts: 1,
 			totalCost: null,
+			sampling: { planned: 1, completed: 1, passed: 1, failed: 0, blocked: 0, notRun: 0, diagnosticAttempts: 1 },
 		})
 		const live = { mode: "live-copilot", modelId: "model", effort: "high" }
 		expect(() =>

@@ -17,6 +17,7 @@ import {
 	watchLiveHost,
 	LIVE_HOST_STARTUP_TIMEOUT_MS,
 	LIVE_HOST_CLOSE_TIMEOUT_MS,
+	LIVE_HOST_EXECUTION_TIMEOUT_MS,
 } from "../liveHostProtocol"
 import { TestRunError } from "../runFailure"
 
@@ -94,7 +95,7 @@ test("owned atomic receipts cannot be overwritten; missing or malformed completi
 	}
 })
 
-function monitor() {
+function monitor(interactiveSetup = false) {
 	const published = new Map<string, LiveHostReceipt>()
 	const failures: string[] = []
 	let event!: (file: string) => void
@@ -118,6 +119,7 @@ function monitor() {
 				identity,
 			)
 		},
+		interactiveSetup,
 	})
 	return {
 		session,
@@ -140,7 +142,7 @@ test("startup absence times out once and releases its watcher", async (context) 
 
 test("interactive setup can remain idle indefinitely after startup; completed runs have a close deadline", async (context) => {
 	context.mock.timers.enable({ apis: ["setTimeout"] })
-	const host = monitor()
+	const host = monitor(true)
 	host.published.set(LIVE_HOST_STARTED, { ...receipt, status: "started" })
 	host.event(LIVE_HOST_STARTED)
 	await nextTurn()
@@ -155,6 +157,18 @@ test("interactive setup can remain idle indefinitely after startup; completed ru
 	context.mock.timers.tick(LIVE_HOST_CLOSE_TIMEOUT_MS - 10_000)
 	assert.deepEqual(host.failures, ["host-close-timeout"])
 	assert.equal(host.disposed(), 1)
+})
+
+test("automatic live execution has an overall deadline after startup even when completion never settles", async (context) => {
+	context.mock.timers.enable({ apis: ["setTimeout"] })
+	const host = monitor()
+	host.published.set(LIVE_HOST_STARTED, { ...receipt, status: "started" })
+	host.event(LIVE_HOST_STARTED)
+	await nextTurn()
+	context.mock.timers.tick(LIVE_HOST_EXECUTION_TIMEOUT_MS)
+	assert.deepEqual(host.failures, ["host-execution-timeout"])
+	assert.equal(host.disposed(), 1)
+	host.session.dispose()
 })
 
 test("observed close disposes the watchdog, and stale identity fails without waiting", async (context) => {

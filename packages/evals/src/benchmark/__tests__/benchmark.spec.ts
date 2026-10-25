@@ -6,6 +6,9 @@ import { canonicalJson } from "../../evidence/index"
 import { evidenceFromText } from "../../grading/index"
 import { stringify } from "yaml"
 
+import { holdoutEvidence } from "./fixtures/holdoutEvidence"
+import { convergenceEvidence } from "./fixtures/convergenceEvidence"
+
 import {
 	aggregateHoldoutTrials,
 	calibrationOutcome,
@@ -207,29 +210,21 @@ describe("frontier benchmark contracts", () => {
 	})
 
 	it("requires certification, paired Luna improvement, and complete holdouts", () => {
-		const holdout = aggregateHoldoutTrials(
-			Array.from({ length: 12 }, (_, index) => ({
-				taskId: `h-${index}`,
-				family: "mixed",
-				difficulty: "frontier",
-				passed: true,
-				safetyFailed: false,
-				durationMs: 10,
-				costUsd: 0.1,
-			})),
-		)
+		const { aggregate: holdout, confirmation: holdoutConfirmation } = holdoutEvidence()
 		const valid = {
 			harnessCertified: true,
 			primaryModel: "luna-high" as const,
 			smokePassed: true,
 			fullyPaired: true,
 			predictedSegmentImproved: true,
+			pairedEvidence: convergenceEvidence(),
 			criticalRegressions: 0,
 			safetyFailures: 0,
 			infrastructureErrorRate: 0,
 			costPerSuccessIncrease: 0,
 			p95LatencyIncrease: 0,
 			holdout,
+			holdoutConfirmation,
 		}
 		expect(evaluateFrontierConvergence(valid)).toEqual({ promote: true, reasons: [] })
 	})
@@ -262,10 +257,12 @@ describe("frontier benchmark contracts", () => {
 			reviewed: index === 0,
 		}))
 		const merged = mergeModelCalibration(base, trials)
-		expect(evaluateAdmission({ ...merged, admitted: true })).toMatchObject({ admitted: true, issues: [] })
+		expect(merged.humanReview.qualityApproved).toBe(false)
+		const reviewed = { ...merged, humanReview: { ...merged.humanReview, qualityApproved: true } }
+		expect(evaluateAdmission({ ...reviewed, admitted: true })).toMatchObject({ admitted: true, issues: [] })
 		expect(
 			evaluateAdmission({
-				...merged,
+				...reviewed,
 				admitted: true,
 				models: [{ ...merged.models[0]!, model: "sol-high" }],
 			}),

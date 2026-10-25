@@ -281,6 +281,44 @@ for (const stage of ["load", "activation", "query", "empty", "queued"] as const)
 	})
 }
 
+test("abort while reading configuration prevents a later configuration write", async () => {
+	const cancellation = new AbortController()
+	const host = fixture({ active: true })
+	host.api.getConfiguration = () => {
+		cancellation.abort()
+		return {}
+	}
+	await assert.rejects(
+		configureLiveCopilot(host.api, { modelId: model.id }, { ...host.dependencies, signal: cancellation.signal }),
+		{ name: "AbortError" },
+	)
+	assert.equal(host.state().configurations, 0)
+})
+
+for (const rejected of [false, true]) {
+	test(`abort during configuration ${rejected ? "rejection" : "completion"} cannot publish readiness`, async () => {
+		const cancellation = new AbortController()
+		const entered = deferred<void>()
+		const completed = deferred<void>()
+		const host = fixture({ active: true })
+		host.api.setConfiguration = async () => {
+			entered.resolve()
+			await completed.promise
+			if (rejected) throw new Error("sensitive configuration detail")
+		}
+		const result = configureLiveCopilot(
+			host.api,
+			{ modelId: model.id },
+			{ ...host.dependencies, signal: cancellation.signal },
+		)
+		await entered.promise
+		cancellation.abort()
+		completed.resolve()
+		await assert.rejects(result, { name: "AbortError" })
+		assert.equal(getEventListeners(cancellation.signal, "abort").length, 0)
+	})
+}
+
 test("pre-aborted discovery-only setup does not load the host API", async () => {
 	const cancellation = new AbortController()
 	cancellation.abort()

@@ -3,9 +3,18 @@ import os from "node:os"
 import path from "node:path"
 
 import pMap from "p-map"
+import { z } from "zod"
 
 import { canonicalJson, sha256 } from "../evidence/index"
-import { createDefaultGraderRegistry, resolveTaskGraderSpecs } from "../grading/index"
+import {
+	createDefaultGraderRegistry,
+	evidenceFromText,
+	resolveTaskGraderSpecs,
+	type CommandGraderSpec,
+	type GraderEvidence,
+	type GraderRunResult,
+} from "../grading/index"
+import { captureExpectedNodeTestCommands } from "../grading/nodeTestCompletion"
 import { ExecaHarnessProcessRunner, systemClock, type HarnessProcessRunner } from "../orchestration/index"
 import {
 	calibrationReportSchema,
@@ -14,6 +23,15 @@ import {
 	type CalibrationReport,
 } from "./contracts"
 import { loadPrivateGraderBundle } from "./loader"
+import { updateCalibrationReport } from "./calibrationStore"
+
+const rejectionExpectationSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		decision: z.enum(["outcome_failed", "safety_failed"]),
+		diagnostics: z.array(z.object({ graderId: z.string().min(1), code: z.string().min(1) }).strict()).min(1),
+	})
+	.strict()
 
 export async function runKeylessCalibration(options: {
 	task: BenchmarkTaskManifest
@@ -30,55 +48,100 @@ export async function runKeylessCalibration(options: {
 		task.partition === "holdout" ? path.join(privateRoot, task.fixture) : path.join(publicRoot, task.fixture)
 	const calibrationRoot = path.join(privateRoot, "calibration", task.id)
 	const privateBundle = await loadPrivateGraderBundle(task, privateRoot)
-	const initial = await evaluateWorkspace(task, fixture, privateBundle, runner, [])
-	const goldRepetitions = options.goldRepetitions ?? 20
-	const brokenRepetitions = options.brokenRepetitions ?? 20
-	const determinismRepetitions = options.determinismRepetitions ?? 50
-	const goldRuns = await repeat(goldRepetitions, () =>
-		withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
-			evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths),
-		),
-	)
-	const brokenIds = (await fs.readdir(path.join(calibrationRoot, "broken"), { withFileTypes: true }))
-		.filter((entry) => entry.isDirectory())
-		.map(({ name }) => name)
-		.sort()
-	const broken = await pMap(
-		brokenIds,
-		async (id) => {
-			const runs = await repeat(brokenRepetitions, () =>
-				withSolution(fixture, path.join(calibrationRoot, "broken", id), (workspace, changedPaths) =>
-					evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths),
-				),
-			)
-			return {
-				id,
-				repetitions: brokenRepetitions,
-				rejected: runs.filter(({ passed }) => !passed).length,
-				expectedCode: "command-exit-nonzero",
-			}
-		},
-		{ concurrency: 3 },
-	)
-	const determinismRuns = await repeat(determinismRepetitions, () =>
-		withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
-			evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths),
-		),
-	)
-	return {
-		schemaVersion: 1,
-		taskIdentity: `${task.id}@${task.version}`,
-		fixtureInitiallyFails: !initial.passed,
-		restraint: task.restraint,
-		gold: { repetitions: goldRepetitions, passed: goldRuns.filter(({ passed }) => passed).length },
-		broken,
-		determinism: {
-			repetitions: determinismRepetitions,
-			distinctDigests: new Set(determinismRuns.map(({ digest }) => digest)).size,
-		},
-		models: [],
-		humanReview: { unresolvedFalsePositivePasses: 0, reviewedTrialIds: [], reviewer: "", qualityApproved: false },
-		admitted: false,
+	try {
+		const visibleCommands = await captureExpectedNodeTestCommands(fixture, task.validation.commands)
+		const initial = await evaluateWorkspace(task, fixture, privateBundle, runner, [], visibleCommands)
+		const goldRepetitions = options.goldRepetitions ?? 20
+		const brokenRepetitions = options.brokenRepetitions ?? 20
+		const determinismRepetitions = options.determinismRepetitions ?? 50
+		const goldRuns = await repeat(goldRepetitions, () =>
+			withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
+				evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+			),
+		)
+		const brokenIds = (await fs.readdir(path.join(calibrationRoot, "broken"), { withFileTypes: true }))
+			.filter((entry) => entry.isDirectory())
+			.map(({ name }) => name)
+			.sort()
+		const broken = await mapCalibration(
+			brokenIds,
+			async (id) => {
+				const solutionRoot = path.join(calibrationRoot, "broken", id)
+				// New calibrations require an authored reason beside each private control:
+				// expected.json = { schemaVersion: 1, decision: "outcome_failed",
+				// diagnostics: [{ graderId: "task.visible_tests", code: "command_test_completion_missing" }] }.
+				// Historical reports remain readable; missing declarations cannot create new evidence.
+				const expectationFile = path.join(solutionRoot, "expected.json")
+				let expectation: z.infer<typeof rejectionExpectationSchema>
+				try {
+					expectation = rejectionExpectationSchema.parse(
+						JSON.parse(await fs.readFile(expectationFile, "utf8")),
+					)
+				} catch {
+					throw new Error(`Broken control ${task.id}/${id} requires a valid expected.json rejection reason`)
+				}
+				const runs = await repeat(brokenRepetitions, () =>
+					withSolution(fixture, solutionRoot, (workspace, changedPaths) =>
+						evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+					),
+				)
+				for (const { run } of runs) {
+					if (run.decision === "passed") continue
+					const actual = run.results
+						.filter(({ status }) => status === "failed")
+						.flatMap(({ graderId, diagnostics }) =>
+							diagnostics
+								.filter(({ severity }) => severity === "error")
+								.map(({ code }) => ({ graderId, code })),
+						)
+					const identities = (values: typeof actual) =>
+						[...new Set(values.map((value) => canonicalJson(value)))].sort()
+					if (
+						run.decision !== expectation.decision ||
+						canonicalJson(identities(actual)) !== canonicalJson(identities(expectation.diagnostics))
+					) {
+						throw new Error(
+							`Broken control ${task.id}/${id} failed for an unexpected rejection decision or reason`,
+						)
+					}
+				}
+				return {
+					id,
+					repetitions: brokenRepetitions,
+					rejected: runs.filter(({ run }) => run.decision === expectation.decision).length,
+					expectedCode: expectation.diagnostics[0]!.code,
+				}
+			},
+			3,
+		)
+		const determinismRuns = await repeat(determinismRepetitions, () =>
+			withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
+				evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+			),
+		)
+		return {
+			schemaVersion: 1,
+			taskIdentity: `${task.id}@${task.version}`,
+			calibrationScope: initial.scope,
+			fixtureInitiallyFails: !initial.passed,
+			restraint: task.restraint,
+			gold: { repetitions: goldRepetitions, passed: goldRuns.filter(({ passed }) => passed).length },
+			broken,
+			determinism: {
+				repetitions: determinismRepetitions,
+				distinctDigests: new Set(determinismRuns.map(({ digest }) => digest)).size,
+			},
+			models: [],
+			humanReview: {
+				unresolvedFalsePositivePasses: 0,
+				reviewedTrialIds: [],
+				reviewer: "",
+				qualityApproved: false,
+			},
+			admitted: false,
+		}
+	} finally {
+		await privateBundle?.dispose?.()
 	}
 }
 
@@ -87,39 +150,44 @@ export async function syncVisibleKeylessReports(options: {
 	publicRoot: string
 	privateRoot: string
 }): Promise<{ taskIds: string[]; outputRoot: string }> {
+	const { publicRoot, privateRoot } = options
 	const visible = [...options.catalog.tasks.values()]
-		.map(({ task }) => task)
-		.filter(({ partition }) => partition === "development" || partition === "regression")
+		.filter(({ task }) => task.partition === "development" || task.partition === "regression")
+		.map(({ task }) => ({ id: task.id, version: task.version }))
 		.sort((a, b) => a.id.localeCompare(b.id))
 	if (visible.length !== 28) throw new Error(`Expected 28 visible frontier tasks; found ${visible.length}`)
-	const outputRoot = path.join(options.publicRoot, "calibration")
+	const outputRoot = path.join(publicRoot, "calibration")
 	await fs.mkdir(outputRoot, { recursive: true })
 	for (const task of visible) {
-		const source = path.join(options.privateRoot, "reports", `${task.id}.keyless.json`)
+		const source = path.join(privateRoot, "reports", `${task.id}.keyless.json`)
 		const privateReport = calibrationReportSchema.parse(JSON.parse(await fs.readFile(source, "utf8")))
 		if (privateReport.taskIdentity !== `${task.id}@${task.version}`)
 			throw new Error(`Calibration report identity mismatch for ${task.id}`)
 		assertKeylessCalibrationComplete(privateReport)
 		const output = path.join(outputRoot, `${task.id}.keyless.json`)
-		let report = privateReport
-		try {
-			const existing = calibrationReportSchema.parse(JSON.parse(await fs.readFile(output, "utf8")))
+		await updateCalibrationReport(output, (existing) => {
+			if (!existing) return privateReport
 			if (existing.taskIdentity !== privateReport.taskIdentity)
 				throw new Error(`Existing calibration identity mismatch for ${task.id}`)
-			report = {
+			const sameKeylessEvidence = keylessEvidence(existing) === keylessEvidence(privateReport)
+			return {
 				...privateReport,
 				models: existing.models,
-				humanReview: existing.humanReview,
-				admitted: existing.admitted,
+				// Delivery provenance belongs to the retained visible model arms, including unknown legacy delivery.
+				modelDelivery: existing.modelDelivery,
+				humanReview: sameKeylessEvidence
+					? existing.humanReview
+					: { ...existing.humanReview, qualityApproved: false },
+				admitted: sameKeylessEvidence && existing.admitted,
 			}
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-		}
-		const temporary = `${output}.tmp`
-		await fs.writeFile(temporary, JSON.stringify(report, null, 2) + "\n")
-		await fs.rename(temporary, output)
+		})
 	}
 	return { taskIds: visible.map(({ id }) => id), outputRoot }
+}
+
+function keylessEvidence(report: CalibrationReport): string {
+	const { models: _models, modelDelivery: _delivery, humanReview: _review, admitted: _admitted, ...evidence } = report
+	return canonicalJson(evidence)
 }
 
 export function assertKeylessCalibrationComplete(report: CalibrationReport): void {
@@ -142,25 +210,49 @@ async function evaluateWorkspace(
 	privateBundle: Awaited<ReturnType<typeof loadPrivateGraderBundle>>,
 	runner: HarnessProcessRunner,
 	changedPaths: string[],
-): Promise<{ passed: boolean; digest: string }> {
-	const specs = resolveTaskGraderSpecs({
+	visibleCommands: CommandGraderSpec["commands"],
+): Promise<{
+	passed: boolean
+	digest: string
+	run: GraderRunResult
+	scope: NonNullable<CalibrationReport["calibrationScope"]>
+}> {
+	const allSpecs = resolveTaskGraderSpecs({
 		task,
+		visibleCommands,
 		privateGraders: privateBundle?.manifest.graders,
 	})
+	const specs = allSpecs.filter(({ type }) => type !== "trace-assertion" && type !== "usage-policy")
+	const scope: NonNullable<CalibrationReport["calibrationScope"]> = {
+		schemaVersion: 1,
+		kind: "keyless-fixture",
+		measuredGraderIds: specs.map(({ id }) => id),
+		unmeasuredGraderIds: allSpecs
+			.filter(({ type }) => type === "trace-assertion" || type === "usage-policy")
+			.map(({ id }) => id),
+		executionEvidence: "not-measured",
+		semanticEvidenceVersion: 1,
+	}
+	if (specs.length === 0) throw new Error(`Keyless calibration ${task.id} has no fixture graders`)
+	const semanticEvidence = new Map<string, GraderEvidence>()
 	const run = await createDefaultGraderRegistry().execute(specs, {
 		workspaceRoot: workspace,
 		hiddenRoot: privateBundle?.root,
 		changedPaths,
-		trace: [
-			{ sequence: 1, type: "agent.turn.tool_result", timestamp: "1970-01-01T00:00:00.000Z" },
-			{ sequence: 2, type: "agent.turn.verification_result", timestamp: "1970-01-01T00:00:01.000Z" },
-		],
-		usage: { costUsd: 0 },
+		// Agent trace and usage gates require an actual execution. Fixture calibration
+		// records them as unmeasured and cannot supply model-backed admission evidence.
+		trace: [],
 		processRunner: runner,
 		clock: systemClock,
+		evidenceSink: async (id, kind, value, mediaType) => {
+			const normalized = normalizeCommandEvidence(value, workspace)
+			semanticEvidence.set(id, evidenceFromText(id, kind, normalized, mediaType))
+			return evidenceFromText(id, kind, value, mediaType)
+		},
 	})
+	if (run.decision === "grader_error") throw new Error(`Keyless calibration ${task.id} encountered grader_error`)
 	const normalized = run.results.map(
-		({ graderId, graderVersion, status, hardGate, failureClass, diagnostics, error }) => ({
+		({ graderId, graderVersion, status, hardGate, failureClass, diagnostics, error, evidence }) => ({
 			graderId,
 			graderVersion,
 			status,
@@ -168,9 +260,26 @@ async function evaluateWorkspace(
 			failureClass,
 			diagnostics,
 			error,
+			evidence: evidence.map((entry) => semanticEvidence.get(entry.id) ?? entry),
 		}),
 	)
-	return { passed: run.decision === "passed", digest: sha256(canonicalJson(normalized)) }
+	return { passed: run.decision === "passed", digest: sha256(canonicalJson(normalized)), run, scope }
+}
+
+function normalizeCommandEvidence(value: string, workspace: string): string {
+	// Only owned runtime coordinates and TAP duration diagnostics are presentation noise.
+	// Assertion names, results, counts, errors, and all other output remain part of the digest.
+	let normalized = value.replaceAll("\r\n", "\n")
+	const escapedWorkspace = JSON.stringify(workspace).slice(1, -1)
+	if (escapedWorkspace !== workspace) normalized = normalized.replaceAll(escapedWorkspace, "<workspace>")
+	normalized = normalized.replaceAll(workspace, "<workspace>")
+	const portable = workspace.replaceAll("\\", "/")
+	if (portable !== workspace) normalized = normalized.replaceAll(portable, "<workspace>")
+	if (!normalized.startsWith("TAP version 13\n")) return normalized
+	return normalized
+		.split("\n")
+		.filter((line) => !/^\s*(?:duration_ms:\s*|# duration_ms\s+)\d+(?:\.\d+)?\s*$/.test(line))
+		.join("\n")
 }
 
 async function withSolution<T>(
@@ -216,5 +325,15 @@ async function listRelativeFiles(root: string): Promise<string[]> {
 }
 
 async function repeat<T>(count: number, run: () => Promise<T>): Promise<T[]> {
-	return pMap(Array.from({ length: count }), run, { concurrency: Math.min(4, count) })
+	return mapCalibration(Array.from({ length: count }), run, Math.min(4, count))
+}
+
+async function mapCalibration<T, R>(values: T[], run: (value: T) => Promise<R>, concurrency: number): Promise<R[]> {
+	try {
+		// Drain every started calibration before disposing the verified private snapshot.
+		return await pMap(values, run, { concurrency, stopOnError: false })
+	} catch (error) {
+		if (error instanceof AggregateError && error.errors.length > 0) throw error.errors[0]
+		throw error
+	}
 }

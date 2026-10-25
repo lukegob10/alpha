@@ -38,7 +38,15 @@ type BaseGraderSpec = {
 
 export type CommandGraderSpec = BaseGraderSpec & {
 	type: "command"
-	commands: Array<{ command: string; args: string[] }>
+	commands: Array<{
+		command: string
+		args: string[]
+		testExecution?: {
+			runner: "node-test"
+			expectedTests: Array<{ file: string; name: string; assertions: number }>
+			sourceDigests?: Array<{ file: string; digest: string }>
+		}
+	}>
 	cwd: "workspace" | "hidden"
 	timeoutMs: number
 	maxOutputBytes: number
@@ -68,6 +76,7 @@ export type TraceAssertion =
 	| { kind: "absent"; eventType: string }
 	| { kind: "ordered"; before: string; after: string }
 	| { kind: "count-max"; eventType: string; max: number }
+	| { kind: "verification-after-last-mutation"; commands?: Array<{ command: string; args: string[] }> }
 
 export type TraceAssertionGraderSpec = BaseGraderSpec & {
 	type: "trace-assertion"

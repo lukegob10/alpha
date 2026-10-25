@@ -14,6 +14,32 @@ export function assistantVisibleText(content: unknown): string {
 		.join("\n")
 }
 
+export function finalAssistantResponse(history: unknown): { text: string; toolCallCount: number } {
+	if (!Array.isArray(history)) return { text: "", toolCallCount: 0 }
+	const assistant = [...history]
+		.reverse()
+		.find(
+			(message): message is Record<string, unknown> =>
+				message !== null &&
+				typeof message === "object" &&
+				!Array.isArray(message) &&
+				message.role === "assistant",
+		)
+	if (!assistant) return { text: "", toolCallCount: 0 }
+	const toolCallCount = Array.isArray(assistant.content)
+		? assistant.content.filter(
+				(block) =>
+					block !== null && typeof block === "object" && !Array.isArray(block) && block.type === "tool_use",
+			).length
+		: 0
+	return {
+		// Text accompanying tool intent is commentary; the paired completion
+		// receipt determines whether that intent became an accepted answer.
+		text: toolCallCount === 0 ? assistantVisibleText(assistant.content) : "",
+		toolCallCount,
+	}
+}
+
 export function isUnansweredCommandReview(
 	message: Pick<AlphaMessage, "type" | "ask" | "partial" | "isAnswered" | "text">,
 ): boolean {

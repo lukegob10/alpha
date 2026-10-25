@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import type { BigIntStats } from "fs"
 import path from "path"
 import * as vscode from "vscode"
 
@@ -40,6 +41,7 @@ interface PreflightChange {
 	change: ApplyPatchFileChange
 	isWriteProtected: boolean
 	expectedMoveFileState?: ExpectedFileState
+	expectedDeleteStat?: BigIntStats
 }
 
 function isPatchCancelled(task: Task, callbacks: ToolCallbacks): boolean {
@@ -120,8 +122,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			const prepared: Array<PreflightChange | undefined> = []
 			let status: ApplyPatchChangeOutcome["status"] = "success"
 
-			// Preflight is sequential and read-only. A bad file must not hide the
-			// outcome of independent files, and ignored paths must never be read.
+			// Validate the full patch before approval. Report every target's outcome
+			// without reading ignored paths or partially applying an invalid patch.
 			for (const [index, hunk] of parsedPatch.hunks.entries()) {
 				if (isPatchCancelled(task, callbacks)) {
 					files[index].reason = "Patch cancelled before preflight"
@@ -162,7 +164,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					const [change] = await processAllHunks([hunk], (filePath) =>
 						fs.readFile(path.resolve(task.cwd, filePath), "utf8"),
 					)
-					prepared[index] = { change, isWriteProtected, expectedMoveFileState }
+					const expectedDeleteStat =
+						change.type === "delete" ? await fs.lstat(absolutePath, { bigint: true }) : undefined
+					prepared[index] = { change, isWriteProtected, expectedMoveFileState, expectedDeleteStat }
 				} catch (error) {
 					files[index].status = "error"
 					files[index].reason = error instanceof Error ? error.message : String(error)
@@ -170,7 +174,46 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				}
 			}
 
-			let stopped: string | undefined
+			// Codex CLI 970111f6cb62 verifies the full patch and approves its paths
+			// before execution. A failed preflight or rejected batch cannot leave
+			// earlier files written while later files still await authorization.
+			let stopped = status === "success" ? undefined : "Not attempted because patch preflight failed"
+			let batchApproved = false
+			const batch = prepared.filter((entry): entry is PreflightChange => {
+				if (!entry) return false
+				const { change } = entry
+				return (
+					change.type !== "update" ||
+					change.newContent !== change.originalContent ||
+					!!(
+						change.movePath &&
+						!arePathsEqual(path.resolve(task.cwd, change.path), path.resolve(task.cwd, change.movePath))
+					)
+				)
+			})
+			if (!stopped && batch.length > 1) {
+				for (const entry of batch) {
+					entry.isWriteProtected ||=
+						task.alphaProtectedController?.isWriteProtected(entry.change.path) || false
+				}
+				const protectedBatch = batch.some((entry) => entry.isWriteProtected)
+				const approved = await callbacks.askApproval(
+					"tool",
+					this.batchApprovalMessage(batch, task),
+					undefined,
+					protectedBatch,
+				)
+				if (isPatchCancelled(task, callbacks)) {
+					status = "cancelled"
+					stopped = "Patch cancelled during approval"
+				} else if (!approved) {
+					task.didRejectTool = true
+					status = "denied"
+					stopped = "Changes were rejected by the user."
+				} else {
+					batchApproved = true
+				}
+			}
 			for (const [index, entry] of prepared.entries()) {
 				if (!entry) continue
 				const file = files[index]
@@ -196,7 +239,12 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					const deniedPath = [change.path, change.movePath].find(
 						(candidate) => candidate && !task.alphaIgnoreController?.validateAccess(candidate),
 					)
-					if (deniedPath) {
+					if (batchApproved && isWriteProtected && !entry.isWriteProtected) {
+						outcome = {
+							status: "denied",
+							result: `Write protection changed after approval: ${change.path}`,
+						}
+					} else if (deniedPath) {
 						outcome = { status: "denied", result: `Access denied by .alphaignore: ${deniedPath}` }
 					} else if (change.type === "add") {
 						outcome = await this.handleAddFile(
@@ -207,6 +255,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 							callbacks,
 							isWriteProtected,
 							markApplied,
+							batchApproved,
 						)
 					} else if (change.type === "delete") {
 						outcome = await this.handleDeleteFile(
@@ -217,6 +266,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 							callbacks,
 							isWriteProtected,
 							markApplied,
+							batchApproved,
+							entry.expectedDeleteStat,
 						)
 					} else {
 						outcome = await this.handleUpdateFile(
@@ -228,6 +279,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 							isWriteProtected,
 							markApplied,
 							expectedMoveFileState,
+							batchApproved,
 						)
 					}
 				} catch (error) {
@@ -271,6 +323,38 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		}
 	}
 
+	private batchApprovalMessage(entries: PreflightChange[], task: Task): string {
+		const batchDiffs = entries.map(({ change }) => {
+			const originalContent = change.originalContent ?? ""
+			const finalContent = change.newContent ?? ""
+			const diff = sanitizeUnifiedDiff(
+				formatResponse.createPrettyPatch(change.path, originalContent, finalContent),
+			)
+			const content = change.movePath
+				? `${diff}\n\nMove destination: ${getTaskReadablePath(task, change.movePath)}`
+				: diff
+			return {
+				path: getTaskReadablePath(task, change.path),
+				key: change.path,
+				changeCount: 1,
+				content,
+				originalContent,
+				finalContent,
+				diffStats: computeDiffStats(diff) ?? undefined,
+			}
+		})
+		return JSON.stringify({
+			tool: "appliedDiff",
+			batchDiffs,
+			isProtected: entries.some((entry) => entry.isWriteProtected),
+			isOutsideWorkspace: entries.some(({ change }) =>
+				[change.path, change.movePath].some(
+					(candidate) => candidate && isTaskPathOutsideWorkspace(task, path.resolve(task.cwd, candidate)),
+				),
+			),
+		} satisfies AlphaSayTool)
+	}
+
 	private async handleAddFile(
 		change: ApplyPatchFileChange,
 		absolutePath: string,
@@ -279,6 +363,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
 		onApplied: () => void,
+		preapproved = false,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval } = callbacks
 
@@ -306,10 +391,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const state = await provider?.getState()
 		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-			state?.experiments ?? {},
-			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-		)
+		const isPreventFocusDisruptionEnabled =
+			preapproved || experiments.isEnabled(state?.experiments ?? {}, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)
 
 		const sanitizedDiff = sanitizeUnifiedDiff(diff || "")
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -337,7 +420,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			task.diffViewProvider.scrollToFirstDiff()
 		}
 
-		const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
+		const didApprove = preapproved || (await askApproval("tool", completeMessage, undefined, isWriteProtected))
 
 		if (!didApprove || isPatchCancelled(task, callbacks)) {
 			if (!isPreventFocusDisruptionEnabled) {
@@ -378,6 +461,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
 		onApplied: () => void,
+		preapproved = false,
+		preflightStat?: BigIntStats,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval, signal } = callbacks
 		const isCancelled = () => signal?.aborted || task.abort || task.abandoned
@@ -411,7 +496,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			// Retain the parsed snapshot so an earlier hunk's approval wait cannot
 			// silently adopt user edits to a later deletion target.
 			const expectedState: ExpectedFileState = { exists: true, content: change.originalContent ?? "" }
-			const expectedStat = await fs.lstat(absolutePath, { bigint: true })
+			const expectedStat = preflightStat ?? (await fs.lstat(absolutePath, { bigint: true }))
 			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedState)
 			assertCanDelete()
 
@@ -431,7 +516,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				isProtected: isWriteProtected,
 			} satisfies AlphaSayTool)
 
-			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
+			const didApprove = preapproved || (await askApproval("tool", completeMessage, undefined, isWriteProtected))
 
 			if (isCancelled()) throw new Error(t("tools:applyPatch.deleteCancelled"))
 			if (!didApprove) {
@@ -483,6 +568,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		isWriteProtected: boolean,
 		onApplied: () => void,
 		expectedMoveFileState?: ExpectedFileState,
+		preapproved = false,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval } = callbacks
 
@@ -564,10 +650,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const state = await provider?.getState()
 		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-			state?.experiments ?? {},
-			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-		)
+		const isPreventFocusDisruptionEnabled =
+			preapproved || experiments.isEnabled(state?.experiments ?? {}, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)
 
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -598,7 +682,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			task.diffViewProvider.scrollToFirstDiff()
 		}
 
-		const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
+		const didApprove = preapproved || (await askApproval("tool", completeMessage, undefined, isWriteProtected))
 
 		if (!didApprove || isPatchCancelled(task, callbacks)) {
 			if (!isPreventFocusDisruptionEnabled) {

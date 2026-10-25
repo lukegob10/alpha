@@ -10,6 +10,12 @@ import { CdpConnection } from "./ui/cdp"
 import { activateNativeChatHeader, readNativeChatHeader } from "./ui/nativeChatHeader"
 import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
+import { latencyObservation } from "./evidence/latencyObservation"
+import {
+	dismissRenderedDialogAndRestoreFocus,
+	dispatchRenderedDialogKey,
+	verifyRenderedDialogFocus,
+} from "./ui/renderedDialogFocus"
 
 interface Target {
 	targetId: string
@@ -899,6 +905,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		)
 		const rendererLatency = {
 			schemaVersion: 1,
+			...latencyObservation(),
 			hostVersion: expectedHostVersion,
 			runId,
 			provider: "scripted-fake-ai",
@@ -937,6 +944,21 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		)
 		const diagramScriptRequests = scriptRequestsAfter.filter((url) => !scriptRequestsBefore.includes(url))
 		assert.ok(diagramScriptRequests.length > 0, "The completed diagram loads its deferred JavaScript")
+		const modalOpener = 'button[aria-label="View Code"]'
+		await activateSelector(modalOpener)
+		const dialogDriver = {
+			evaluate,
+			check,
+			key: (key: "Tab" | "Escape", shift?: boolean) =>
+				dispatchRenderedDialogKey(connection, sessionId, key, shift),
+		}
+		await verifyRenderedDialogFocus(dialogDriver, '[role="dialog"]', "Mermaid diagram")
+		await capture("diagram-modal-keyboard")
+		await dismissRenderedDialogAndRestoreFocus(
+			dialogDriver,
+			'[role="dialog"]',
+			`d.querySelector(${javascriptLiteral(modalOpener)})`,
+		)
 		await capture("diagram-ready")
 		await fs.writeFile(
 			path.join(directory, "diagram-lazy-loading.json"),

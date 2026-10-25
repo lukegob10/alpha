@@ -1,5 +1,5 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"suiteId": "managed-agent-milestone",
 	"description": "Combined certification for configurable orchestration, nested managed agents, the live agent tree, Worker verification, and Settings buffering.",
 	"minimumTestCount": 935,
@@ -28,7 +28,7 @@
 			"packageDir": "packages/core",
 			"minimumTestCount": 25,
 			"include": [
-				"^src/worktree/__tests__/managed-subagent-worktree(?:\\.(?:capture-recovery|persistence|non-git))?\\.spec\\.ts$"
+				"^src/worktree/__tests__/managed-subagent-worktree(?:\\.(?:capture-recovery|persistence|non-git|artifact-validation|environment))?\\.spec\\.ts$"
 			]
 		},
 		{
@@ -143,7 +143,13 @@
 			"probes": [
 				{
 					"label": "current settings and inheritance",
-					"patterns": ["uses Codex V2 defaults", "saves Codex settings without forwarding retired settings"]
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/settings/__tests__/SettingsView.spec.tsx",
+							"pattern": "(?:^| )saves Codex settings without forwarding retired settings$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			],
 			"sourceProbes": [
@@ -170,15 +176,33 @@
 			"probes": [
 				{
 					"label": "legacy snapshots remain readable",
-					"patterns": ["freezes ancestry and effective limits while retaining legacy manifests"]
+					"assertions": [
+						{
+							"file": "packages/types/src/__tests__/subagent-orchestration.test.ts",
+							"pattern": "(?:^| )freezes ancestry and effective limits while retaining legacy manifests$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "legacy omission",
-					"patterns": ["recovers a legacy orchestration omission without reviving execution limits"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )recovers a legacy orchestration omission without reviving execution limits$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "reload ignores deadlines",
-					"patterns": ["rehydrates a child with its frozen delegation policy without reviving role timeouts"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )rehydrates a child with its frozen delegation policy without reviving role timeouts$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			],
 			"sourceProbes": [
@@ -207,17 +231,37 @@
 			"probes": [
 				{
 					"label": "bounded public projection schema",
-					"patterns": ["parses a bounded nested registry projection without raw manifests or report bodies"]
+					"assertions": [
+						{
+							"file": "packages/types/src/__tests__/agent-control-managed-tree.test.ts",
+							"pattern": "(?:^| )parses a bounded nested registry projection without raw manifests or report bodies$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "provider projects durable nested fields and stop reason",
-					"patterns": ["projects the durable nested registry into a bounded reload-safe webview contract"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )projects the durable nested registry into a bounded reload-safe webview contract$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "compact task strip consumes projected hierarchy and terminal state",
-					"patterns": [
-						"opens active and nested tasks with the exact task id",
-						"keeps status readable without relying on dot color"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )opens active and nested tasks with the exact task id$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )keeps status readable without relying on dot color$",
+							"minimumMatches": 1
+						}
 					]
 				}
 			],
@@ -244,17 +288,33 @@
 			"probes": [
 				{
 					"label": "explicit requests and session grants",
-					"patterns": [
-						"ignores the retired proactive setting while preserving session grants and task opt-in"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )ignores the retired proactive setting while preserving session grants and task opt-in$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "authority only narrows",
-					"patterns": ["allows a per-task policy to narrow but never widen"]
+					"assertions": [
+						{
+							"file": "packages/types/src/__tests__/subagent-orchestration.test.ts",
+							"pattern": "(?:^| )allows a per-task policy to narrow but never widen$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "saved authorizations remain valid",
-					"patterns": ["rehydrates a child with its frozen delegation policy"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )rehydrates a child with its frozen delegation policy without reviving role timeouts$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -266,15 +326,33 @@
 			"probes": [
 				{
 					"label": "no child deadline",
-					"patterns": ["keeps working past a legacy execution timeout until explicitly stopped"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/SubagentRuntimeLimits.spec.ts",
+							"pattern": "(?:^| )keeps working past a legacy execution timeout until explicitly stopped$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "wait lifecycle cleanup",
-					"patterns": ["settles a blocking wait on %s and disposes its timer and subscription"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )settles a blocking wait on .+? and disposes its timer and subscription$",
+							"minimumMatches": 4
+						}
+					]
 				},
 				{
 					"label": "parent cancellation and interruption",
-					"patterns": ["distinguishes parent cancellation and interruption"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/BoundedDelegationManager.stop-reasons.spec.ts",
+							"pattern": "(?:^| )distinguishes parent cancellation and interruption$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -286,15 +364,33 @@
 			"probes": [
 				{
 					"label": "multi-request continuation",
-					"patterns": ["ignores a retired .name limit across provider requests", "ignores a retired"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagent-budget-thresholds.spec.ts",
+							"pattern": "(?:^| )ignores a retired .+? limit across provider requests$",
+							"minimumMatches": 4
+						}
+					]
 				},
 				{
 					"label": "closed history cannot restore budgets",
-					"patterns": ["does not revive .* after deleting the final child's history and reloading"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.closed-budget-freeze.astra-review.spec.ts",
+							"pattern": "(?:^| )does not revive .+? after deleting the final child's history and reloading$",
+							"minimumMatches": 2
+						}
+					]
 				},
 				{
 					"label": "reported causes remain readable",
-					"patterns": ["accepts stable terminal stop reason %s"]
+					"assertions": [
+						{
+							"file": "packages/types/src/__tests__/subagent-orchestration.test.ts",
+							"pattern": "(?:^| )accepts stable terminal stop reason .+?$",
+							"minimumMatches": 16
+						}
+					]
 				}
 			]
 		},
@@ -306,19 +402,33 @@
 			"probes": [
 				{
 					"label": "nesting without depth ceiling",
-					"patterns": [
-						"permits nested read-only agents without a depth ceiling while denying authority widening"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )permits nested read-only agents without a depth ceiling while denying authority widening$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "Worker exact scope",
-					"patterns": [
-						"allows a Worker to layer one nested Worker only within its frozen directory and exact-file scope"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )allows a Worker to layer one nested Worker only within its frozen directory and exact-file scope$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "layered checkout ownership",
-					"patterns": ["layers a nested Worker worktree through its owning parent before the root checkout"]
+					"assertions": [
+						{
+							"file": "packages/core/src/worktree/__tests__/managed-subagent-worktree.spec.ts",
+							"pattern": "(?:^| )layers a nested Worker worktree through its owning parent before the root checkout$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -330,15 +440,33 @@
 			"probes": [
 				{
 					"label": "root-wide descendant capacity",
-					"patterns": ["counts descendants against one root cap without serializing another root"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/BoundedDelegationManager.root-capacity.spec.ts",
+							"pattern": "(?:^| )counts descendants against one root cap without serializing another root$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "terminal and queued slot release",
-					"patterns": ["cleans capacity, queued waiters, and run registrations exactly once"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/BoundedDelegationManager.spec.ts",
+							"pattern": "(?:^| )cleans capacity, queued waiters, and run registrations exactly once$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "atomic concurrent admission",
-					"patterns": ["atomically reserves a root slot before asynchronous preparation yields"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )atomically reserves a root slot before asynchronous preparation yields$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -350,19 +478,33 @@
 			"probes": [
 				{
 					"label": "recursive descendant cancellation ordering",
-					"patterns": [
-						"cancels descendants deepest-first and distinguishes direct-child from deeper target causes"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )cancels descendants deepest-first and distinguishes direct-child from deeper target causes$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "immediate cancellation admission race",
-					"patterns": [
-						"registers children before publishing running state so immediate cancellation is not lost"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )registers children before publishing running state so immediate cancellation is not lost$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "bottom-up retained close semantics",
-					"patterns": ["requires bottom-up close and never reuses a retained nested path"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/certification/managed-agent-store-certification.spec.ts",
+							"pattern": "(?:^| )requires bottom-up close and never reuses a retained nested path$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -374,28 +516,57 @@
 			"probes": [
 				{
 					"label": "durable per-recipient cursors",
-					"patterns": ["tracks per-recipient delivery and acknowledgement cursors durably"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.spec.ts",
+							"pattern": "(?:^| )tracks per-recipient delivery and acknowledgement cursors durably$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "native wait claim is not consumed by lifecycle rendering",
-					"patterns": ["does not treat lifecycle rendering as consumption of a native wait result"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )does not treat lifecycle rendering as consumption of a native wait result$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "native wait receipt reload recovery",
-					"match": "all",
-					"patterns": [
-						"releases a reload-preserved native wait claim without a receipt and redelivers the same event once",
-						"ACKs a reload-preserved native wait claim with a persisted receipt without redelivery"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )releases a reload-preserved native wait claim without a receipt and redelivers the same event once$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )ACKs a reload-preserved native wait claim with a persisted receipt without redelivery$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "no synthetic child-result user content",
-					"patterns": ["leaves the next model-facing user content free of child-report injection"]
+					"assertions": [
+						{
+							"file": "src/core/task/__tests__/Task.spec.ts",
+							"pattern": "(?:^| )leaves the next model-facing user content free of child-report injection$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "managed-child parent-mail wake without consumption or steering",
-					"patterns": [
-						"wakes a registered child's idle wait for passive parent mail without consuming or steering it"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )wakes a registered child's idle wait for passive parent mail without consuming or steering it$",
+							"minimumMatches": 1
+						}
 					]
 				}
 			]
@@ -408,19 +579,33 @@
 			"probes": [
 				{
 					"label": "immediate-parent descendant result routing",
-					"patterns": [
-						"allocates stable nested identity and routes a grandchild result only to its immediate parent mailbox"
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/certification/managed-agent-store-certification.spec.ts",
+							"pattern": "(?:^| )allocates stable nested identity and routes a grandchild result only to its immediate parent mailbox$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "authorized descendant-only controls",
-					"patterns": [
-						"cancels descendants deepest-first and distinguishes direct-child from deeper target causes"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )cancels descendants deepest-first and distinguishes direct-child from deeper target causes$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "concurrent mailbox claim is exactly once",
-					"patterns": ["grants exactly one durable owner to concurrent native wait consumers"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.spec.ts",
+							"pattern": "(?:^| )grants exactly one durable owner to concurrent native wait consumers$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -432,17 +617,27 @@
 			"probes": [
 				{
 					"label": "durable agent input without approval interference",
-					"patterns": [
-						"keeps messages durable during an approval and retries failed transcript persistence without acknowledging other events"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )keeps messages durable during an approval and retries failed transcript persistence without acknowledging other events$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "delivered but unacknowledged follow-up recovery",
-					"match": "all",
-					"patterns": [
-						"uses the current report when a retained follow-up completes successfully",
-						"PING_BEFORE_INTERRUPT",
-						"provider.deliverAgentMessages"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )uses the current report when a retained follow-up completes successfully$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/task/__tests__/subagent-followup.spec.ts",
+							"pattern": "(?:^| )keeps persisted steering and a retained follow-up in distinct user-message envelopes$",
+							"minimumMatches": 1
+						}
 					]
 				}
 			]
@@ -455,26 +650,58 @@
 			"probes": [
 				{
 					"label": "immediate-parent progress routing and exact claim",
-					"patterns": [
-						"routes nested agent progress only to the immediate parent and lets wait_agent claim it once"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )routes nested agent progress only to the immediate parent and lets wait_agent claim it once$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "root and missing-parent rejection",
-					"patterns": ["rejects report_progress from roots and when the frozen immediate parent is missing"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )rejects report_progress from roots and when the frozen immediate parent is missing$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "root and managed-child tool catalog boundary",
-					"match": "all",
-					"patterns": [
-						"keeps a stable primary Code lifecycle catalog before managed-agent activity",
-						"does not let the stable primary default override a managed child's frozen authority"
+					"assertions": [
+						{
+							"file": "src/core/prompts/tools/__tests__/build-tools-spawn-agent.spec.ts",
+							"pattern": "(?:^| )keeps a stable primary Code lifecycle catalog before managed-agent activity$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/prompts/tools/__tests__/build-tools-spawn-agent.spec.ts",
+							"pattern": "(?:^| )does not let the stable primary default override a managed child's frozen authority$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "strict bounded provider and registry contract",
-					"match": "all",
-					"patterns": ["report_progress", "2,000 characters", "requiresApproval: false"]
+					"assertions": [
+						{
+							"file": "src/core/tools/__tests__/AgentLifecycleTools.spec.ts",
+							"pattern": "(?:^| )dispatches every operation without asking for approval$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/tools/__tests__/AgentLifecycleTools.spec.ts",
+							"pattern": "(?:^| )rejects invalid inputs before calling the provider$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/tools/__tests__/ToolRegistry.spec.ts",
+							"pattern": "(?:^| )registers the built-in tools with their provider schemas$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -486,20 +713,42 @@
 			"probes": [
 				{
 					"label": "registry active-record recovery",
-					"patterns": ["recovers active records once while preserving completed records"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.spec.ts",
+							"pattern": "(?:^| )recovers active records once while preserving completed records$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "orphaned Worker recovery",
-					"patterns": ["recovers partial changes from an orphaned active worktree after reload"]
+					"assertions": [
+						{
+							"file": "packages/core/src/worktree/__tests__/managed-subagent-worktree.spec.ts",
+							"pattern": "(?:^| )recovers partial changes from an orphaned active worktree after reload$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "failed capture preserves recoverable Worker changes",
-					"patterns": ["retains the worktree after a failed"]
+					"assertions": [
+						{
+							"file": "packages/core/src/worktree/__tests__/managed-subagent-worktree.capture-recovery.spec.ts",
+							"pattern": "(?:^| )retains the worktree after a failed .+? capture step and recovers it on reload$",
+							"minimumMatches": 8
+						}
+					]
 				},
 				{
 					"label": "Apply decision reload",
-					"patterns": [
-						"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once$",
+							"minimumMatches": 1
+						}
 					]
 				}
 			]
@@ -512,11 +761,23 @@
 			"probes": [
 				{
 					"label": "nested tree reload",
-					"patterns": ["recovers nested active records to their immediate parents exactly once"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/certification/managed-agent-store-certification.spec.ts",
+							"pattern": "(?:^| )recovers nested active records to their immediate parents exactly once$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "nested orphan cleanup",
-					"patterns": ["routes an orphaned descendant recovery notice to the surviving root"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.nested.spec.ts",
+							"pattern": "(?:^| )routes an orphaned descendant recovery notice to the surviving root$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -528,17 +789,33 @@
 			"probes": [
 				{
 					"label": "requested turns and frozen inputs",
-					"patterns": [
-						"captures and applies only the requested parent turns with frozen instructions and skills"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )captures and applies only the requested parent turns with frozen instructions and skills while keeping the child objective concise$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "credential-free durable manifest",
-					"patterns": ["stores only compact refs and digests and serializes no captured secrets"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/SubagentContextCapture.spec.ts",
+							"pattern": "(?:^| )stores only compact refs and digests and serializes no captured secrets$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "tamper rejection",
-					"patterns": ["rejects a tampered retained context manifest instead of recapturing on follow-up"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )rejects a tampered retained context manifest instead of recapturing on follow-up$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -550,13 +827,23 @@
 			"probes": [
 				{
 					"label": "active descendant completion block",
-					"patterns": [
-						"(?:parent|subagent).{0,120}(?:cannot|blocks?).{0,100}complet.{0,120}active descendant"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )a parent cannot complete while an active descendant is running$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "unowned terminal result completion block",
-					"patterns": ["complet.{0,120}(?:unowned|undelivered).{0,100}descendant.{0,100}result"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )blocks completion while an undelivered descendant result remains unowned$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -568,34 +855,82 @@
 			"probes": [
 				{
 					"label": "completed Worker integration without a second review",
-					"patterns": [
-						"integrates approved %s Worker effects before publishing a result without a second review"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.worker-integration.spec.ts",
+							"pattern": "(?:^| )integrates approved .+? Worker effects before publishing a result without a second review$",
+							"minimumMatches": 3
+						}
 					]
 				},
 				{
 					"label": "durable Apply transition and verification",
-					"patterns": [
-						"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once"
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "pre-terminal completion recheck",
-					"patterns": ["rechecks verification immediately before the terminal transition"]
+					"assertions": [
+						{
+							"file": "src/core/tools/__tests__/attemptCompletionTool.spec.ts",
+							"pattern": "(?:^| )rechecks verification immediately before the terminal transition$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "fail-closed completion decision",
-					"patterns": ["fails closed when the durable completion decision cannot be loaded"]
+					"assertions": [
+						{
+							"file": "src/core/tools/__tests__/attemptCompletionTool.spec.ts",
+							"pattern": "(?:^| )fails closed when the durable completion decision cannot be loaded$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "optional Worker evidence does not invent completion debt",
-					"patterns": [
-						"does not block approved Worker changes when optional process evidence is missing or failed"
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/primary-completion-policy.spec.ts",
+							"pattern": "(?:^| )does not block approved Worker changes when optional process evidence is missing or failed$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "generic evidence does not claim test coverage",
-					"patterns": [
-						"accepts successful arbitrary process evidence without inferring a test classification"
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.primary-verification.spec.ts",
+							"pattern": "(?:^| )accepts successful arbitrary process evidence without inferring a test classification$",
+							"minimumMatches": 1
+						}
+					]
+				},
+				{
+					"label": "tampered proposal isolation",
+					"assertions": [
+						{
+							"file": "packages/core/src/worktree/__tests__/managed-subagent-worktree.artifact-validation.spec.ts",
+							"pattern": "(?:^| )preserves an external canary when only a generated proposal's patch reference is tampered$",
+							"minimumMatches": 1
+						}
+					]
+				},
+				{
+					"label": "inherited Git environment isolation",
+					"assertions": [
+						{
+							"file": "packages/core/src/worktree/__tests__/managed-subagent-worktree.environment.spec.ts",
+							"pattern": "(?:^| )ignores inherited .+? through create, capture, apply and cleanup \\(plain folder: .+?\\)$",
+							"minimumMatches": 10
+						}
 					]
 				}
 			]
@@ -608,11 +943,28 @@
 			"probes": [
 				{
 					"label": "strict lifecycle schema",
-					"patterns": ["publish strict native schemas"]
+					"assertions": [
+						{
+							"file": "src/core/prompts/tools/__tests__/build-tools-spawn-agent.spec.ts",
+							"pattern": "(?:^| )can publish strict native schemas for managed lifecycle calls$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "spawn native pipeline",
-					"patterns": ["spawn_agent"]
+					"assertions": [
+						{
+							"file": "src/core/assistant-message/__tests__/spawn-agent-native-pipeline.spec.ts",
+							"pattern": "(?:^| )preserves typed raw arguments and call IDs while previews defer effects to the canonical scheduler$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/assistant-message/__tests__/spawn-agent-native-pipeline.spec.ts",
+							"pattern": "(?:^| )executes lifecycle controls and named steering in model order$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -624,15 +976,33 @@
 			"probes": [
 				{
 					"label": "nested Worker verification owner",
-					"patterns": ["makes the immediate Worker the durable verification owner for a nested Worker"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )makes the immediate Worker the durable verification owner for a nested Worker$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "layered parent and root verification ownership",
-					"patterns": ["layers Worker verification ownership at each immediate parent"]
+					"assertions": [
+						{
+							"file": "src/core/agent/__tests__/AgentControlStore.nested.spec.ts",
+							"pattern": "(?:^| )layers Worker verification ownership at each immediate parent$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "same pre-terminal verification recheck",
-					"patterns": ["rechecks verification immediately before the terminal transition"]
+					"assertions": [
+						{
+							"file": "src/core/tools/__tests__/attemptCompletionTool.spec.ts",
+							"pattern": "(?:^| )rechecks verification immediately before the terminal transition$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		},
@@ -644,36 +1014,72 @@
 			"probes": [
 				{
 					"label": "minimal parent and transcript surfaces",
-					"match": "all",
-					"patterns": [
-						"renders one compact, horizontally scrollable task strip without repeating the root or dashboard detail",
-						"renders active agents as compact task rows without verbose trace detail"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )renders one compact, horizontally scrollable task strip without repeating the root or dashboard detail$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/chat/__tests__/SubagentGroupCard.spec.tsx",
+							"pattern": "(?:^| )renders active agents as compact task rows without verbose trace detail$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "exact descendant navigation",
-					"match": "all",
-					"patterns": [
-						"opens active and nested tasks with the exact task id",
-						"mounts a compact live task strip and opens the selected descendant"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )opens active and nested tasks with the exact task id$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/chat/__tests__/ChatView.spec.tsx",
+							"pattern": "(?:^| )mounts a compact live task strip and opens the selected descendant$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "compact attention and overflow actions",
-					"match": "all",
-					"patterns": [
-						"surfaces only compact actionable attention from group state",
-						"keeps group cancellation in a compact overflow menu",
-						"keeps command approval behind an explicit compact attention flow"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )surfaces only compact actionable attention from group state$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/chat/__tests__/SubagentGroupCard.spec.tsx",
+							"pattern": "(?:^| )keeps group cancellation in a compact overflow menu$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/chat/__tests__/SubagentGroupCard.spec.tsx",
+							"pattern": "(?:^| )keeps command approval behind an explicit compact attention flow$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "reload-safe bounded task state",
-					"match": "all",
-					"patterns": [
-						"renders durable nested registry state after reload without transcript groups",
-						"bounds very large trees without expanding vertically",
-						"keeps loading and error state to one compact line"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/chat/__tests__/ChatView.spec.tsx",
+							"pattern": "(?:^| )renders durable nested registry state after reload without transcript groups$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )bounds very large trees without expanding vertically$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+							"pattern": "(?:^| )keeps loading and error state to one compact line$",
+							"minimumMatches": 1
+						}
 					]
 				}
 			]
@@ -686,13 +1092,23 @@
 			"probes": [
 				{
 					"label": "Save-buffered approval mode",
-					"patterns": [
-						"keeps the session dial buffered through live refreshes and saves mode with derived chips"
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/settings/__tests__/SettingsView.spec.tsx",
+							"pattern": "(?:^| )keeps the session dial buffered through live refreshes and saves mode with derived chips$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "Cancel and Discard use buffered approval mode",
-					"patterns": ["preserves approval-mode edits on Cancel and resets them on Discard"]
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/settings/__tests__/SettingsView.spec.tsx",
+							"pattern": "(?:^| )preserves approval-mode edits on Cancel and resets them on Discard$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			],
 			"sourceProbes": [
@@ -720,7 +1136,18 @@
 			"probes": [
 				{
 					"label": "settings change-detection suite",
-					"patterns": ["SettingsView - (?:Unsaved Changes Detection|Change Detection Fix)"]
+					"assertions": [
+						{
+							"file": "webview-ui/src/components/settings/__tests__/SettingsView.change-detection.spec.tsx",
+							"pattern": "(?:^| )defaults to queuing and preserves unsaved steering edits across live state refreshes$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "webview-ui/src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx",
+							"pattern": "(?:^| )should not show unsaved changes when settings are automatically initialized$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			],
 			"testBlockers": [
@@ -742,7 +1169,13 @@
 			"probes": [
 				{
 					"label": "Task lifecycle suite",
-					"patterns": ["describe\\(\"Alpha\""]
+					"assertions": [
+						{
+							"file": "src/core/task/__tests__/Task.spec.ts",
+							"pattern": "(?:^| )keeps the working handler and configuration when a legacy provider is rejected$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			],
 			"testBlockers": [
@@ -760,51 +1193,108 @@
 			"probes": [
 				{
 					"label": "Task awaits abort and terminal settlement",
-					"patterns": ["waits for both the Worker process abort and terminal settlement"]
+					"assertions": [
+						{
+							"file": "src/core/task/__tests__/Task.spec.ts",
+							"pattern": "(?:^| )waits for both the Worker process abort and terminal settlement$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "Task coalesces concurrent aborts",
-					"patterns": ["coalesces concurrent aborts into one lifecycle transition"]
+					"assertions": [
+						{
+							"file": "src/core/task/__tests__/Task.spec.ts",
+							"pattern": "(?:^| )coalesces concurrent aborts into one lifecycle transition$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "provider fails closed on unproven cleanup",
-					"patterns": ["fails closed when cancellation cannot prove child cleanup"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+							"pattern": "(?:^| )fails closed when cancellation cannot prove child cleanup$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "awaited and shared abort contract",
-					"patterns": ["returns one shared promise for repeated aborts"]
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.spec.ts",
+							"pattern": "(?:^| )returns one shared promise for repeated aborts$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "bounded termination discovery",
-					"match": "all",
-					"patterns": [
-						"bounds POSIX process-tree discovery",
-						"bounds the optional POSIX PID refinement before abort discovery"
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.spec.ts",
+							"pattern": "(?:^| )bounds POSIX process-tree discovery$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.spec.ts",
+							"pattern": "(?:^| )bounds the optional POSIX PID refinement before abort discovery$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "real OS process-tree removal",
-					"patterns": ["removes the real shell, fixture parent, and sleeper child"]
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.integration.spec.ts",
+							"pattern": "(?:^| )removes the real shell, fixture parent, and sleeper child$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "output closure retains physical process ownership",
-					"patterns": ["retains ownership after output EOF until the subprocess actually exits"]
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts",
+							"pattern": "(?:^| )retains ownership after output EOF until the subprocess actually exits$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "asynchronous output remains bounded and owned",
-					"patterns": [
-						"backpressures a bounded batch of async output callbacks while preserving streaming order"
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts",
+							"pattern": "(?:^| )backpressures a bounded batch of async output callbacks while preserving streaming order$",
+							"minimumMatches": 1
+						}
 					]
 				},
 				{
 					"label": "finalization failure cannot become success",
-					"patterns": [
-						"it\\.each\\(\\[\"synchronous\", \"asynchronous\", \"shell outcome\", \"late output\"\\]\\)\\(\\s*\"fails a command when its %s completed observer fails after exit\""
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts",
+							"pattern": "(?:^| )fails a command when its .+? completed observer fails after exit$",
+							"minimumMatches": 4
+						}
 					]
 				},
 				{
 					"label": "old cleanup cannot alter the replacement command",
-					"patterns": ["leaves a replacement command"]
+					"assertions": [
+						{
+							"file": "src/integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts",
+							"pattern": "(?:^| )leaves a replacement command owned when an older .+? settles$",
+							"minimumMatches": 2
+						}
+					]
 				}
 			]
 		},
@@ -816,19 +1306,43 @@
 			"probes": [
 				{
 					"label": "bounded root-only compatibility mirror",
-					"patterns": ["keeps a bounded root-only downgrade mirror without managed-child payloads"]
+					"assertions": [
+						{
+							"file": "src/core/task-persistence/__tests__/compactTaskHistoryForGlobalState.spec.ts",
+							"pattern": "(?:^| )keeps a bounded root-only downgrade mirror without managed-child payloads$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "newest roots remain within byte budget",
-					"patterns": ["keeps the newest roots that fit and never exceeds the byte budget"]
+					"assertions": [
+						{
+							"file": "src/core/task-persistence/__tests__/compactTaskHistoryForGlobalState.spec.ts",
+							"pattern": "(?:^| )keeps the newest roots that fit and never exceeds the byte budget$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "authoritative history is immutable",
-					"patterns": ["does not mutate authoritative history while truncating compatibility text"]
+					"assertions": [
+						{
+							"file": "src/core/task-persistence/__tests__/compactTaskHistoryForGlobalState.spec.ts",
+							"pattern": "(?:^| )does not mutate authoritative history while truncating compatibility text$",
+							"minimumMatches": 1
+						}
+					]
 				},
 				{
 					"label": "provider writes only the compact compatibility mirror",
-					"patterns": ["writes only a bounded root-only downgrade mirror to globalState"]
+					"assertions": [
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.taskHistory.spec.ts",
+							"pattern": "(?:^| )writes only a bounded root-only downgrade mirror to globalState$",
+							"minimumMatches": 1
+						}
+					]
 				}
 			]
 		}
@@ -874,13 +1388,15 @@
 			"id": "INT-STORAGE-WRITERS-001",
 			"requirement": "Multiple real extension hosts/windows cannot corrupt shared agent-control state or double-claim mailbox results.",
 			"reason": "Requires multi-process writers against the real global-storage filesystem; the in-process store singleton cannot prove this.",
-			"evidenceCommand": null
+			"evidenceCommand": null,
+			"evidenceKind": "shared-storage"
 		},
 		{
 			"id": "INT-GLOBAL-STATE-SIZE-001",
 			"requirement": "Real extension-host global state remains below its configured compatibility budget during managed-agent churn and reload.",
 			"reason": "The deterministic compaction tests prove helper behavior only; real VS Code storage serialization and multi-window reload require dedicated host instrumentation.",
-			"evidenceCommand": null
+			"evidenceCommand": null,
+			"evidenceKind": "task-history-churn"
 		}
 	]
 }

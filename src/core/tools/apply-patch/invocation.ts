@@ -19,6 +19,15 @@ const HEREDOC_COMMAND =
 export function extractApplyPatchCommand(
 	command: string,
 ): ApplyPatchCommandInvocation | ApplyPatchCommandError | undefined {
+	// Codex CLI 970111f6cb62 reports implicit patch bodies as repairable input
+	// errors; they must never reach a shell or become an implicit write grant.
+	if (/^\s*\*\*\* Begin Patch(?:\s|$)/.test(command)) {
+		return {
+			kind: "error",
+			message:
+				"Send patch text to apply_patch using its patch argument. Use the exact control lines '*** Begin Patch' and '*** End Patch'.",
+		}
+	}
 	const lines = command.replace(/\r\n/g, "\n").split("\n")
 	if (lines.at(-1) === "") lines.pop()
 

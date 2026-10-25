@@ -20,10 +20,21 @@ describe("Codex-style apply_patch command invocation", () => {
 		`echo ready && apply_patch <<'PATCH'\n${patch}\nPATCH`,
 		`apply_patch <<'PATCH'\n${patch}\nPATCH\necho done`,
 		"apply_patch --version",
+		`printf '%s' '${patch}'`,
 		`apply_patch @'\n${patch}\n'@`,
 	])("leaves other shell commands alone", (command) => {
 		expect(extractApplyPatchCommand(command)).toBeUndefined()
 	})
+
+	it.each([patch, `\n  ${patch}`, patch.replace("*** Begin Patch", "*** Begin Patch ***")])(
+		"rejects implicit patch text rather than running it as a command",
+		(command) => {
+			expect(extractApplyPatchCommand(command)).toMatchObject({
+				kind: "error",
+				message: expect.stringContaining("patch argument"),
+			})
+		},
+	)
 
 	it("returns a tool error for a recognized but unterminated heredoc", () => {
 		expect(extractApplyPatchCommand(`apply_patch <<'PATCH'\n${patch}\nWRONG`)).toEqual({

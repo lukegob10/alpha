@@ -109,6 +109,16 @@ test("hard offline and host lanes require explicit execution receipts", () => {
 	assert.ok(lanes.services.receipts.slice(2).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.infrastructure.receipts[0].config, "infrastructure")
 	assert.equal(lanes.infrastructure.receipts[0].requireAllTests, true)
+	for (const suite of ["rendered", "stress"]) {
+		assert.equal(lanes[suite].exclusiveBuild, true)
+		assert.deepEqual(lanes[suite].receipts, [
+			...Array(lanes[suite].commands.length - 1).fill(null),
+			{ runner: "extension-host", suite },
+		])
+		assert.equal(lanes[suite].decisions, "scripted")
+		assert.ok(lanes[suite].prerequisites.length)
+	}
+	assert.ok(lanes.stress.commands.some((args) => args[1] === "@alpha-code/vscode-e2e" && args[2] === "compile"))
 })
 
 test("every evaluator test belongs to exactly one executable suite", async () => {

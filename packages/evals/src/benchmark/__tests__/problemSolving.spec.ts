@@ -159,7 +159,7 @@ describe("problem-solving task set", () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
 		const lanes = new Set(manifest.tasks.map(({ lane }) => lane))
 		expect(manifest.sources.map(({ id, release }) => [id, release])).toEqual([
-			["alpha-task-bank", "frontier-v1@1"],
+			["alpha-task-bank", "frontier-v1@2"],
 			["terminal-bench", "v4.0.0"],
 			["alpha-native", "problem-solving-v1@1"],
 		])
@@ -192,9 +192,30 @@ describe("problem-solving task set", () => {
 		await expect(validateProblemSolvingSet(networked, evalRoot)).rejects.toThrow(/requires network access/)
 	})
 
-	it("requires complete keyless calibration for every visible bank task", async () => {
+	it("binds the declared Alpha task-bank release to the loaded source suite", async () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
-		await assertVisibleBankCalibration(evalRoot, manifest)
+		const stale = structuredClone(manifest)
+		stale.sources.find(({ id }) => id === "alpha-task-bank")!.release = "frontier-v1@999"
+		for (const task of stale.tasks) {
+			if (task.source === "alpha-task-bank") task.sourceRelease = "frontier-v1@999"
+		}
+		await expect(validateProblemSolvingSet(stale, evalRoot)).rejects.toThrow(/Alpha task bank source release/)
+	})
+
+	it("rejects stale calibration for revised fixtures while preserving unchanged task evidence", async () => {
+		const manifest = await loadProblemSolvingSet(evalRoot)
+		const revised = new Set(["repo-stream-backpressure", "stateful-api-idempotency"])
+		await assertVisibleBankCalibration(evalRoot, {
+			...manifest,
+			tasks: manifest.tasks.filter(({ id }) => !revised.has(id)),
+		})
+		for (const id of revised) {
+			const task = manifest.tasks.find((task) => task.id === id)!
+			expect(task.version).toBe(2)
+			await expect(assertVisibleBankCalibration(evalRoot, { ...manifest, tasks: [task] })).rejects.toThrow(
+				`Keyless calibration identity mismatch for ${id}`,
+			)
+		}
 		expect(
 			manifest.tasks.filter(({ source, lane }) => source === "alpha-task-bank" && lane !== "holdout").length,
 		).toBe(28)

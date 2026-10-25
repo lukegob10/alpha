@@ -15,10 +15,11 @@ suite("Live Copilot groundedness and trajectory", function () {
 				[...item.tools],
 				{ ...item.files },
 				item.prompt,
-				async (calls, _messages, workspace, _transcript, _task, finalAssistantText) => {
+				async (calls, _messages, workspace, _transcript, _task, finalAssistantText, finalAssistantCalls) => {
 					const report = scoreQuality(item, {
-						answer: visibleAnswer(calls, finalAssistantText),
+						answer: visibleAnswer(finalAssistantCalls, finalAssistantText),
 						calls,
+						workspace,
 					})
 					const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 					if (artifacts) {

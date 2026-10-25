@@ -458,8 +458,8 @@ describe("safeWriteJson", () => {
 		const lockTestFilePath = path.join(tempDir, "lock-test-file.json")
 		await fs.writeFile(lockTestFilePath, JSON.stringify({ initial: "lock test content" }))
 
-		vi.doMock("proper-lockfile", () => ({
-			...vi.importActual("proper-lockfile"),
+		vi.doMock("proper-lockfile", async () => ({
+			...(await vi.importActual<typeof import("proper-lockfile")>("proper-lockfile")),
 			lock: vi.fn().mockRejectedValueOnce(new Error("Failed to get lock.")),
 		}))
 
@@ -470,7 +470,8 @@ describe("safeWriteJson", () => {
 
 		// Clean up
 		await fs.unlink(lockTestFilePath).catch(() => {}) // Ignore errors if file doesn't exist
-		vi.unmock("proper-lockfile") // Ensure the mock is removed after this test
+		vi.doUnmock("proper-lockfile")
+		vi.resetModules()
 	})
 	test("should release lock even if an error occurs mid-operation", async () => {
 		const data = { message: "test lock release on error" }

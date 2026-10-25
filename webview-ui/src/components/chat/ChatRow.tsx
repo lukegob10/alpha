@@ -651,9 +651,20 @@ const ChatRowContentInner = ({
 							{...activityProps}
 							summary={
 								<>
-									<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
+									{tool.isProtected ? (
+										<span
+											className="codicon codicon-lock"
+											style={{ color: "var(--vscode-editorWarning-foreground)" }}
+										/>
+									) : (
+										<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
+									)}
 									<span style={{ fontWeight: "normal" }}>
-										{t("chat:fileOperations.wantsToApplyBatchChanges")}
+										{tool.isProtected
+											? t("chat:fileOperations.wantsToEditProtected")
+											: tool.isOutsideWorkspace
+												? t("chat:fileOperations.wantsToEditOutsideWorkspace")
+												: t("chat:fileOperations.wantsToApplyBatchChanges")}
 									</span>
 								</>
 							}>

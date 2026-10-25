@@ -3,9 +3,10 @@ import { test } from "node:test"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
-import { createHash } from "node:crypto"
 
 import { createDevelopmentSuite } from "../developmentSuites"
+import { campaignConfigDigest } from "../config"
+import { compareLiveProviderIdentity } from "../../liveProviderIdentity"
 import { assertLiveGateConfig, evaluateLiveGate, fingerprintGateArtifacts, prepareLiveGate } from "../liveGate"
 import type { CampaignConfig, CampaignReport } from "../types"
 
@@ -36,6 +37,10 @@ function completeReport(plan = config()): CampaignReport {
 				usage: { requests: 2, inputTokens: null, outputTokens: null, cost: null },
 				actualHostVersion: host.version,
 				model: { id: "exact-model", effort: "high" },
+				providerIdentity: compareLiveProviderIdentity(
+					{ id: "github.copilot-chat", version: "1.0.0", entrypointSha256: "f".repeat(64) },
+					{ id: "github.copilot-chat", version: "1.0.0", entrypointSha256: "f".repeat(64) },
+				),
 				taskIds: [`task-${index}`],
 			},
 			elapsedMs: 10,
@@ -51,17 +56,7 @@ function completeReport(plan = config()): CampaignReport {
 			harnessDigest: "c".repeat(64),
 			taskSetDigest: "d".repeat(64),
 			sourceComponentsDigest: "e".repeat(64),
-			configDigest: createHash("sha256")
-				.update(
-					JSON.stringify({
-						hosts: plan.hosts.map((host) => host.version),
-						scenarioIds: plan.scenarioIds,
-						samples: plan.samples,
-						budgets: plan.budgets,
-						maxReproductions: plan.maxReproductions,
-					}),
-				)
-				.digest("hex"),
+			configDigest: campaignConfigDigest(plan),
 			unchanged: true,
 			missing: [],
 		},
@@ -162,6 +157,9 @@ test("gate rejects scripted, partial catalog and missing model configuration", (
 		(plan: CampaignConfig) => {
 			delete plan.provider.modelId
 		},
+		(plan: CampaignConfig) => {
+			plan.collectionMode = "sample-then-diagnose"
+		},
 	]) {
 		const plan = config()
 		alter(plan)
@@ -200,6 +198,15 @@ test("gate requires actual live identity, usage, task and retained evidence for 
 	for (const alter of [
 		(report: CampaignReport) => {
 			delete report.attempts[0]!.result.actualHostVersion
+		},
+		(report: CampaignReport) => {
+			delete report.attempts[0]!.result.providerIdentity
+		},
+		(report: CampaignReport) => {
+			report.attempts[0]!.termination = "timeout"
+		},
+		(report: CampaignReport) => {
+			report.attempts[0]!.result.providerIdentity!.after.entrypointSha256 = "0".repeat(64)
 		},
 		(report: CampaignReport) => {
 			report.attempts[0]!.result.model!.id = "other-model"
@@ -248,6 +255,14 @@ test("gate requires actual live identity, usage, task and retained evidence for 
 		alter(report)
 		assert.equal(evaluateLiveGate(config(), report).status, "failed")
 	}
+})
+
+test("a provider replacement between individually stable samples invalidates the live campaign", () => {
+	const report = completeReport()
+	const changed = report.attempts[1]!.result.providerIdentity!
+	changed.before.version = changed.after.version = "2.0.0"
+	changed.before.entrypointSha256 = changed.after.entrypointSha256 = "0".repeat(64)
+	assert.equal(evaluateLiveGate(config(), report).status, "failed")
 })
 
 test("a later passing reproduction cannot erase the original failure", () => {

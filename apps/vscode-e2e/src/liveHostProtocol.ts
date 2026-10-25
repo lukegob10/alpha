@@ -11,6 +11,18 @@ export const LIVE_HOST_STARTED = "live-host-started.json"
 export const LIVE_HOST_COMPLETION = "host-completion.json"
 export const LIVE_HOST_STARTUP_TIMEOUT_MS = 60_000
 export const LIVE_HOST_CLOSE_TIMEOUT_MS = 30_000
+export const LIVE_HOST_EXECUTION_TIMEOUT_MS = 20 * 60 * 1_000
+
+export function validateLiveExecutionTimeout(timeoutMs: number | undefined, interactiveSetup = false): void {
+	if (
+		timeoutMs !== undefined &&
+		(interactiveSetup || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_400_000)
+	)
+		throw new TestRunError(
+			"invalid-options",
+			"Automatic execution timeout requires 1–86400000 milliseconds and no setup",
+		)
+}
 
 export type LiveHostExpected = {
 	runId: string
@@ -182,10 +194,14 @@ export function watchLiveHost(
 	expected: LiveHostExpected,
 	onFailure: (error: TestRunError) => void,
 	dependencies: {
+		/** Only explicit setup may wait indefinitely for a human after startup. */
+		interactiveSetup?: boolean
+		executionTimeoutMs?: number
 		readReceipt?: typeof readLiveHostReceipt
 		watchFiles?: (onFile: (file: string) => void, onError: () => void) => { dispose(): void }
 	} = {},
 ): { dispose(): void } {
+	validateLiveExecutionTimeout(dependencies.executionTimeoutMs, dependencies.interactiveSetup)
 	let disposed = false
 	let checking = false
 	let pending = false
@@ -220,12 +236,21 @@ export function watchLiveHost(
 				started = await readReceipt(artifactsDir, LIVE_HOST_STARTED, expected)
 				if (disposed) return
 				clearTimeout(timer)
-				timer = undefined
+				timer = dependencies.interactiveSetup
+					? undefined
+					: setTimeout(
+							() =>
+								fail(
+									new TestRunError("host-execution-timeout", "Live host did not complete its suite"),
+								),
+							dependencies.executionTimeoutMs ?? LIVE_HOST_EXECUTION_TIMEOUT_MS,
+						)
 			}
 			if (!completed) {
 				await readReceipt(artifactsDir, LIVE_HOST_COMPLETION, expected, started)
 				if (disposed) return
 				completed = true
+				clearTimeout(timer)
 				timer = setTimeout(
 					() => fail(new TestRunError("host-close-timeout", "Live host did not close after completion")),
 					LIVE_HOST_CLOSE_TIMEOUT_MS,

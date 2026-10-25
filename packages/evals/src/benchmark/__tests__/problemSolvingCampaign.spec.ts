@@ -30,6 +30,80 @@ function host(overrides: Partial<ProblemSolvingHostResult> = {}): ProblemSolving
 }
 
 describe("problem-solving extension campaign", () => {
+	it.each([
+		{ modelId: null, effort: "medium" },
+		{ modelId: "different-model", effort: "medium" },
+		{ modelId: "gpt-test", effort: null },
+		{ modelId: "gpt-test", effort: "low" },
+	])("does not count a verified workspace under unknown or different execution settings: %j", async (actual) => {
+		const parent = await fs.realpath(os.tmpdir())
+		const root = await fs.mkdtemp(path.join(parent, "alpha-grader-model-identity-"))
+		try {
+			const result = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: "repo-cache-invalidation",
+				attemptRoot: root,
+				attemptId: "unknown-execution-identity",
+				hostVersion: "1.138.0",
+				provider: "live-copilot",
+				modelId: "gpt-test",
+				effort: "medium",
+				runExtension: async ({ workspace }) => {
+					await fs.writeFile(
+						path.join(workspace, "src", "cache.js"),
+						"export class ConfigCache {\n" +
+							"  raw = new Map()\n" +
+							"  set(key, value) { this.raw.set(key, value) }\n" +
+							"  getPort() { return Number(this.raw.get('port') ?? 80) }\n" +
+							"  getOrigin() { return `http://localhost:${this.getPort()}` }\n" +
+							"}\n",
+					)
+					return host(actual)
+				},
+			})
+			expect(result).toMatchObject({
+				status: "failed",
+				countsAsSolving: false,
+				graderDecision: "passed",
+				failureClass: "provider",
+				model: { id: actual.modelId, effort: actual.effort },
+			})
+		} finally {
+			await removeIdentityFixture(root, parent)
+		}
+	})
+
+	it.each([
+		"process.exit(0); export class ConfigCache {}",
+		"export class ConfigCache { set() {} getOrigin() { process.exit(0) } }",
+		"export class ConfigCache { calls = 0; set() {} getOrigin() { return this.calls++ === 0 ? 'http://localhost:3000' : process.exit(0) } }",
+	])("rejects an early clean exit from original fixture assertions: %s", async (source) => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-grader-completion-"))
+		try {
+			const result = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: "repo-cache-invalidation",
+				attemptRoot: root,
+				attemptId: "premature-completion",
+				hostVersion: "1.138.0",
+				provider: "live-copilot",
+				runExtension: async ({ workspace }) => {
+					await fs.writeFile(path.join(workspace, "src", "cache.js"), source)
+					return host()
+				},
+			})
+			expect(result).toMatchObject({
+				status: "failed",
+				countsAsSolving: false,
+				graderDecision: "outcome_failed",
+			})
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	it.each(["selector", "modified-check", "deleted-check"])(
 		"rejects an unchanged broken solution after %s tampering",
 		async (change) => {
@@ -96,7 +170,7 @@ describe("problem-solving extension campaign", () => {
 				effort: "medium",
 				processRunner: {
 					run: async (request) => {
-						if (request.command === "node" && request.args.includes("--test")) {
+						if (request.args.some((argument) => argument.endsWith("nodeTestExecution.mjs"))) {
 							expect(request.cwd).not.toBe(modelWorkspace)
 							expect(path.basename(request.cwd ?? "")).toMatch(/^alpha-grader-/)
 							independentCheckRuns++
@@ -382,3 +456,10 @@ describe("problem-solving extension campaign", () => {
 		expect(JSON.stringify(untrusted)).not.toContain("secret-command-content")
 	})
 })
+
+async function removeIdentityFixture(root: string, parent: string): Promise<void> {
+	const canonical = await fs.realpath(root)
+	if (path.dirname(canonical) !== parent || !path.basename(canonical).startsWith("alpha-grader-model-identity-"))
+		throw new Error("Execution identity fixture cleanup ownership mismatch")
+	await fs.rm(canonical, { recursive: true, force: true })
+}

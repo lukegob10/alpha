@@ -6,7 +6,7 @@ import { WORKFLOW_SCENARIO_IDS } from "../../scenarios/contracts"
 import { isReliabilityScenario, RELIABILITY_SCENARIO_IDS } from "../../scenarios/reliabilityCatalog"
 import { isLongContextScenario } from "../../scenarios/longContextProbe"
 import { createDevelopmentSuite, DEVELOPMENT_SUITE_NAMES, type DevelopmentSuiteOptions } from "../developmentSuites"
-import { parseCampaignConfig } from "../config"
+import { campaignConfigDigest, parseCampaignConfig } from "../config"
 import type { CampaignConfig } from "../types"
 
 const options = (overrides: Partial<DevelopmentSuiteOptions> = {}): DevelopmentSuiteOptions => ({
@@ -72,10 +72,30 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 			attemptTimeoutMs: 10 * 60 * 1_000,
 		})
 		assert.equal(config.maxReproductions, 2)
+		assert.equal(config.collectionMode, "sample-only")
 	}
 
 	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.138.0" } }))
 	assert.equal(singleHost.budgets.maxIterations, 36)
+})
+
+test("diagnostic collection is explicit and its resolved mode belongs to the config identity", () => {
+	const samples = createDevelopmentSuite(options({ suite: "soak" }))
+	const diagnostics = createDevelopmentSuite(options({ suite: "soak", collectionMode: "sample-then-diagnose" }))
+	assert.equal(diagnostics.collectionMode, "sample-then-diagnose")
+	assert.notEqual(campaignConfigDigest(samples), campaignConfigDigest(diagnostics))
+	const { collectionMode: _collectionMode, ...legacyConfig } = samples
+	assert.equal(campaignConfigDigest(samples), campaignConfigDigest(legacyConfig))
+	assert.throws(() => parseCampaignConfig({ ...samples, collectionMode: "retry-until-pass" }))
+	assert.throws(() => parseCampaignConfig({ ...samples, decisionPlanDigest: "post-hoc-plan" }))
+	assert.throws(() => parseCampaignConfig({ ...samples, decisionTimeWindow: "invalid\nwindow" }))
+	const predeclared = createDevelopmentSuite(options({ decisionPlanDigest: `sha256:${"a".repeat(64)}` }))
+	assert.equal(predeclared.decisionPlanDigest, `sha256:${"a".repeat(64)}`)
+	assert.notEqual(campaignConfigDigest(predeclared), campaignConfigDigest(createDevelopmentSuite(options())))
+	assert.throws(
+		() => parseCampaignConfig({ ...samples, repair: { enabled: true } }, true),
+		/synchronous failure reproduction/,
+	)
 })
 
 test("core acceptance uses Copilot on the reference host with explicit bounded sampling", () => {

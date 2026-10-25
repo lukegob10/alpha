@@ -1,8 +1,8 @@
-name: Evals
+name: OpenAI coding evaluation campaign
 
 on:
     pull_request:
-        types: [labeled]
+        types: [opened, reopened, ready_for_review, labeled, synchronize]
     workflow_dispatch:
 
 permissions:
@@ -14,8 +14,11 @@ env:
 
 jobs:
     evals:
-        # Run if triggered manually or if PR has 'evals' label.
-        if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'evals'
+        # Keep the label's campaign current without dispatching again for unrelated label changes.
+        if: >-
+            github.event_name == 'workflow_dispatch' ||
+            (contains(github.event.pull_request.labels.*.name, 'evals') &&
+            (github.event.action != 'labeled' || github.event.label.name == 'evals'))
         runs-on: blacksmith-16vcpu-ubuntu-2404
         timeout-minutes: 45
 
@@ -34,12 +37,20 @@ jobs:
               uses: docker/setup-buildx-action@v4
 
             - name: Create environment
+              env:
+                  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+                  OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+                  EVALS_MODEL_ID: ${{ vars.EVALS_MODEL_ID || 'gpt-4.1' }}
               run: |
-                  cat > .env.local << EOF
-                  OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY || 'test-key-for-build' }}
-                  OPENAI_BASE_URL=${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-                  EVALS_MODEL_ID=${{ vars.EVALS_MODEL_ID || 'gpt-4.1' }}
-                  EOF
+                  node --input-type=module <<'NODE'
+                  import { writeFileSync } from "node:fs"
+                  if (!process.env.OPENAI_API_KEY?.trim()) {
+                    console.error("An OpenAI credential is required for this explicitly selected coding campaign.")
+                    process.exit(1)
+                  }
+                  const names = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "EVALS_MODEL_ID"]
+                  writeFileSync(".env.local", names.map((name) => `${name}=${JSON.stringify(process.env[name])}`).join("\n") + "\n", { mode: 0o600 })
+                  NODE
 
                   cat > .env.development << EOF
                   NODE_ENV=development
@@ -57,3 +68,8 @@ jobs:
             - name: Cleanup
               if: always()
               run: pnpm docker:stop
+
+            - name: Remove the campaign credential file
+              if: always()
+              run: |
+                  node -e "require('node:fs').rmSync('.env.local', { force: true })"

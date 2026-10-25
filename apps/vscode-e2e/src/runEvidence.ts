@@ -12,6 +12,11 @@ import { assertOwnedTestRoot, type TestProfile } from "./testProfile"
 import { TestRunError } from "./runFailure"
 import type { ExtensionTestRunOptions, ExtensionTestRunResult } from "./runTest"
 import { requireEvidenceRoot, requireEvidenceRun } from "./evidence/paths"
+import {
+	finalizeImprovementCapture,
+	type ImprovementCaptureState,
+	type ImprovementCaptureInvoker,
+} from "./evidence/improvementCapture"
 
 export interface RunRetentionReport {
 	schemaVersion: 1
@@ -164,6 +169,8 @@ export async function finalizeRunEvidence(input: {
 	startedAt: string
 	repositoryBefore?: RepositoryEvidence
 	scenarioResultPath: string
+	improvementCapture?: ImprovementCaptureState
+	improvementCaptureInvoker?: ImprovementCaptureInvoker
 }): Promise<void> {
 	const { options, profile, result } = input
 	const storagePath = await existingDirectory(
@@ -171,6 +178,7 @@ export async function finalizeRunEvidence(input: {
 	)
 	const logsPath = await existingDirectory(path.join(profile.userDataDir, "logs"))
 	const workspacePath = await fs.realpath(profile.workspace)
+	const taskIds = options.scenarioId ? await scenarioTaskIds(input.scenarioResultPath, result.runId) : []
 	const capture = await captureRunEvidence({
 		artifactsRoot: profile.artifactsDir,
 		runId: result.runId,
@@ -181,7 +189,7 @@ export async function finalizeRunEvidence(input: {
 			provider: options.providerMode,
 			modelId: result.actualModelId,
 			reasoningEffort: result.actualReasoningEffort,
-			taskIds: options.scenarioId ? await scenarioTaskIds(input.scenarioResultPath, result.runId) : [],
+			taskIds,
 			startedAt: input.startedAt,
 			finishedAt: new Date().toISOString(),
 			outcome: result.status,
@@ -207,6 +215,24 @@ export async function finalizeRunEvidence(input: {
 	})
 	result.evidenceManifestPath = capture.manifestPath
 	result.captureComplete = capture.captureComplete
+	if (input.improvementCapture) {
+		result.improvementEvidence = await finalizeImprovementCapture(
+			{
+				state: input.improvementCapture,
+				result,
+				storagePath,
+				logsPath,
+				taskIds,
+				workflowResultPath: input.scenarioResultPath,
+				signal: options.signal,
+			},
+			input.improvementCaptureInvoker,
+		)
+		if (result.improvementEvidence.status !== "captured") {
+			result.captureComplete = false
+			throw new TestRunError("evidence-failed", "Opted improvement evidence is incomplete; sources retained")
+		}
+	}
 	if (!capture.captureComplete)
 		throw new TestRunError("evidence-failed", "Evidence capture is incomplete; sources retained")
 }

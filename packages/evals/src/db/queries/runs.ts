@@ -8,6 +8,7 @@ import { schema } from "../schema"
 import { client as db } from "../db"
 import { createTaskMetrics } from "./taskMetrics"
 import { getTasks } from "./tasks"
+import { assertCompleteRun, summarizeRunOutcomes } from "../../lifecycle/index"
 
 export const findRun = async (id: number) => {
 	const run = await db.query.runs.findFirst({ where: eq(schema.runs.id, id) })
@@ -51,7 +52,18 @@ export const updateRun = async (id: number, values: UpdateRun) => {
 export const getRuns = async () =>
 	db.query.runs.findMany({ orderBy: desc(schema.runs.id), with: { taskMetrics: true } })
 
+export const getRunOutcomeSummary = async (runId: number) =>
+	summarizeRunOutcomes(
+		await db.query.tasks.findMany({
+			where: eq(schema.tasks.runId, runId),
+			columns: { id: true, finishedAt: true, benchmarkTaskIdentity: true },
+			with: { trial: { with: { attempts: true } } },
+		}),
+	)
+
 export const finishRun = async (runId: number) => {
+	const outcomeSummary = await getRunOutcomeSummary(runId)
+	assertCompleteRun(outcomeSummary)
 	const [values] = await db
 		.select({
 			tokensIn: sql<number>`coalesce(sum(${schema.taskMetrics.tokensIn}), 0)`.mapWith(Number),
@@ -100,7 +112,7 @@ export const finishRun = async (runId: number) => {
 		throw new RecordNotFoundError()
 	}
 
-	return { ...run, taskMetrics }
+	return { ...run, taskMetrics, outcomeSummary }
 }
 
 export const deleteRun = async (runId: number) => {

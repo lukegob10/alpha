@@ -12,6 +12,9 @@ permissions:
     contents: read
 
 jobs:
+    evaluator-contracts:
+        uses: ./.github/workflows/evaluation-contracts.yml
+
     knip:
         runs-on: ubuntu-latest
         steps:
@@ -174,6 +177,39 @@ jobs:
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/report-*.json
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/attempt-*/evidence-index.json
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/host-evidence/**
+                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
+                  retention-days: 14
+                  if-no-files-found: error
+
+    vscode-1380-rendered:
+        name: VS Code 1.138.0 rendered UI contracts
+        runs-on: windows-latest
+        timeout-minutes: 45
+        env:
+            TEMP: ${{ runner.temp }}
+            TMP: ${{ runner.temp }}
+        steps:
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Run bounded composer, transcript and input UI contracts
+              run: pnpm harness run rendered
+            - name: Require complete rendered UI execution evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-rendered.json --require rendered
+            - name: Retain rendered UI evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: rendered-ui-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      artifacts/harness/
+                      artifacts/composer-ui/
+                      artifacts/transcript-lifecycle-ui/
+                      artifacts/request-user-input-ui/
+                      ${{ runner.temp }}/alpha-rendered-probe-*/evidence/**
+                      ${{ runner.temp }}/alpha-harness-host-probes-*/ui-probe-*.json
                       ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
                   retention-days: 14
                   if-no-files-found: error

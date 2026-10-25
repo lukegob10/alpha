@@ -8,15 +8,19 @@ import type { Task } from "../../db/index"
 import { ScriptedProcessRunner, VirtualClock } from "../../testing/index"
 import { runUnitTest } from "../runUnitTest"
 import type { Logger } from "../utils"
+import { FilesystemArtifactStore } from "../../evidence/artifactStore"
+import { evidenceFromText } from "../../grading/evidence"
 
 const benchmarkMocks = vi.hoisted(() => ({
 	findBenchmarkTask: vi.fn(),
 	loadPrivateGraderBundle: vi.fn(),
+	submitGraderRequest: vi.fn(),
 }))
 
 vi.mock("../../benchmark/index", () => ({
 	findBenchmarkTask: benchmarkMocks.findBenchmarkTask,
 	loadPrivateGraderBundle: benchmarkMocks.loadPrivateGraderBundle,
+	submitGraderRequest: benchmarkMocks.submitGraderRequest,
 }))
 
 const logger = { info: vi.fn(), error: vi.fn(), raw: vi.fn(), close: vi.fn() } as unknown as Logger
@@ -185,7 +189,10 @@ describe("runUnitTest grader adapter", () => {
 		})
 		benchmarkMocks.loadPrivateGraderBundle.mockResolvedValue({
 			root: hiddenRoot,
+			contentDigest: `sha256:${"a".repeat(64)}`,
 			manifest: {
+				id: "private",
+				version: 1,
 				graders: [{ id: "javascript-fixture.private", entrypoint: "fixture/grader.mjs" }],
 			},
 		})
@@ -236,11 +243,66 @@ describe("runUnitTest grader adapter", () => {
 		})
 		expect(result.decision).toBe("outcome_failed")
 		expect(result.results.map(({ status }) => status)).toEqual(["passed", "failed"])
+		expect(result.results[1]!.evidence).toContainEqual(
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					bundleId: "private",
+					contentDigest: `sha256:${"a".repeat(64)}`,
+					execution: "verified-private-snapshot",
+				}),
+			}),
+		)
 		expect(processRunner.calls[2]).toMatchObject({
 			command: "node",
 			args: ["fixture/grader.mjs"],
 			cwd: hiddenRoot,
 			env: { EVAL_WORKSPACE_ROOT: workspaceRoot },
 		})
+	})
+
+	it("replays verified broker output bytes through the evidence sink", async () => {
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-unit-test-grader-")))
+		temporaryRoots.push(root)
+		const store = new FilesystemArtifactStore(path.join(root, "artifacts"))
+		const descriptor = await store.put({
+			attemptId: "4",
+			kind: "grader_evidence",
+			bytes: Buffer.from("actual verifier output"),
+			mediaType: "text/plain",
+		})
+		const evidence = evidenceFromText("hidden:stdout", "stdout", "actual verifier output")
+		benchmarkMocks.findBenchmarkTask.mockResolvedValue({
+			task: { id: "private-task", graders: [{ alias: "hidden_tests", bundleId: "private" }] },
+		})
+		benchmarkMocks.submitGraderRequest.mockResolvedValue({
+			run: { decision: "passed", results: [{ evidence: [evidence] }] },
+			artifacts: [descriptor],
+		})
+		const sink = vi.fn(async (id, kind, value, mediaType) => evidenceFromText(id, kind, value, mediaType))
+		await runUnitTest({
+			task: task("javascript"),
+			attemptId: 4,
+			logger,
+			changedPaths: [],
+			brokerRoot: path.join(root, "broker"),
+			evidenceSink: sink,
+			persist: async () => undefined,
+		})
+		expect(sink).toHaveBeenCalledWith("hidden:stdout", "stdout", "actual verifier output", "text/plain")
+		await fs.writeFile(
+			path.join(root, "artifacts", "sha256", descriptor.digest.slice(7, 9), descriptor.digest.slice(7)),
+			"replaced",
+		)
+		await expect(
+			runUnitTest({
+				task: task("javascript"),
+				attemptId: 4,
+				logger,
+				changedPaths: [],
+				brokerRoot: path.join(root, "broker"),
+				evidenceSink: sink,
+				persist: async () => undefined,
+			}),
+		).rejects.toThrow("content identity mismatch")
 	})
 })

@@ -81,6 +81,8 @@ async function runCli({
 		"syncVisibleKeylessReports",
 		"mergeModelCalibration",
 		"calibrationReportSchema",
+		"readCalibrationReport",
+		"updateCalibrationReport",
 		"buildReviewSample",
 		"auditFrontierRelease",
 		"releaseFrontierSuite",
@@ -91,6 +93,7 @@ async function runCli({
 		"applySubsetMeasurements",
 		"certifyInitialFixtureStates",
 		"stringify",
+		"CalibrationReportValidationError",
 	]
 	await fs.writeFile(
 		fixture,

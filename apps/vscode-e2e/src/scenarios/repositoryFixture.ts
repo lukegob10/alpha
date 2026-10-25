@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { promises as fs } from "node:fs"
+import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { promisify } from "node:util"
 
@@ -249,15 +250,6 @@ function errorCode(error: unknown): string | number | undefined {
 
 	const code = error.code
 	return typeof code === "string" || typeof code === "number" ? code : undefined
-}
-
-function commandOutput(error: unknown, stream: "stdout" | "stderr"): string {
-	if (!isRecord(error)) {
-		return ""
-	}
-
-	const output = error[stream]
-	return typeof output === "string" ? output : ""
 }
 
 function isMissingError(error: unknown): boolean {
@@ -789,14 +781,8 @@ async function runFixtureTestsInternal(root: string): Promise<{ exitCode: number
 
 	try {
 		const result = await runCommand(process.execPath, testArgs, root, nodeChildEnvironment(), false)
-		if (!hasExecutedFixtureTests(result.stdout)) {
-			throw new FixtureError("Fixture test runner reported no executed tests")
-		}
-		return { exitCode: 0 }
+		return { exitCode: hasExecutedFixtureTests(result.stdout) ? 0 : 1 }
 	} catch (error) {
-		if (!hasExecutedFixtureTests(commandOutput(error, "stdout"))) {
-			throw new FixtureError("Fixture test runner reported no executed tests")
-		}
 		const code = errorCode(error)
 		if (typeof code !== "number") {
 			throw new FixtureError("Unable to execute fixture tests")
@@ -806,20 +792,65 @@ async function runFixtureTestsInternal(root: string): Promise<{ exitCode: number
 }
 
 function hasExecutedFixtureTests(stdout: string): boolean {
-	const match = stdout.match(/^# tests (\d+)$/m)
-	return match !== null && Number.parseInt(match[1]!, 10) >= 2
+	const count = (name: string) => {
+		const match = stdout.match(new RegExp(`^# ${name} (\\d+)$`, "m"))
+		return match ? Number.parseInt(match[1]!, 10) : undefined
+	}
+	const tests = count("tests")
+	const passed = count("pass")
+	const failed = count("fail")
+	return (
+		tests !== undefined &&
+		tests > 0 &&
+		passed !== undefined &&
+		failed !== undefined &&
+		passed + failed === tests &&
+		count("skipped") === 0 &&
+		count("todo") === 0 &&
+		count("cancelled") === 0
+	)
 }
 
-async function runModuleContract(root: string, expected: "baseline" | "enhanced"): Promise<boolean> {
+async function runModuleContract(
+	root: string,
+	expected: "baseline" | "enhanced",
+	workflowCases?: string,
+): Promise<boolean> {
 	const modulePath = fixturePath(root, FIXTURE_FILES.module)
+	const inputs = [[], [1, 2, 3], [-2, 1], [-5, 2, 3], [-8, -1], [4, -2, -3]]
+	if (workflowCases !== undefined && validateWorkflowCases(workflowCases)) {
+		for (const entry of JSON.parse(workflowCases) as Array<{ left: number; right: number }>) {
+			inputs.push([entry.left, entry.right])
+		}
+	}
 	const script =
-		expected === "enhanced"
-			? "const { sum } = require(process.argv[1]); if (sum([]) !== 0 || sum([1, 2, 3]) !== 6) process.exit(1)"
-			: "const { sum } = require(process.argv[1]); try { if (sum([]) === 0) process.exit(1) } catch {}"
+		"const { sum } = require(process.argv[1]);" +
+		"const results = JSON.parse(process.argv[2]).map((values) => {" +
+		"try { return { returned: true, value: sum(values) } } catch { return { returned: false } }" +
+		"}); process.stdout.write(JSON.stringify(results))"
 
 	try {
-		await runCommand(process.execPath, ["-e", script, modulePath], root, nodeChildEnvironment(), false)
-		return true
+		const result = await runCommand(
+			process.execPath,
+			["-e", script, modulePath, JSON.stringify(inputs)],
+			root,
+			nodeChildEnvironment(),
+			false,
+		)
+		let values: unknown
+		try {
+			values = JSON.parse(result.stdout)
+		} catch {
+			return false
+		}
+		if (!Array.isArray(values) || values.length !== inputs.length) return false
+		if (expected === "baseline") return isRecord(values[0]) && values[0].returned === false
+		return values.every(
+			(value, index) =>
+				isRecord(value) &&
+				value.returned === true &&
+				value.value === inputs[index]!.reduce((total, number) => total + number, 0),
+		)
 	} catch (error) {
 		if (typeof errorCode(error) !== "number") {
 			throw new FixtureError("Unable to execute fixture module contract")
@@ -828,21 +859,73 @@ async function runModuleContract(root: string, expected: "baseline" | "enhanced"
 	}
 }
 
-function hasEmptyListRequirement(content: string): boolean {
-	return /sum\(\[\]\)/.test(content) && /(?:assert\.equal|assert\.strictEqual)\(sum\(\[\]\),\s*0\)/.test(content)
+/** Submitted regression tests must reject an independently constructed omission of each required behavior. */
+async function inspectRegressionCoverage(artifacts: OwnedFixtureInspection["artifacts"]): Promise<{
+	empty: boolean
+	numbers: boolean
+	negative: boolean
+	workflow: boolean
+}> {
+	const parent = await fs.realpath(tmpdir())
+	const root = await fs.mkdtemp(path.join(parent, "alpha-code-fixture-coverage-"))
+	const deadline = Date.now() + COMMAND_TIMEOUT_MS
+	try {
+		await fs.mkdir(path.join(root, "lib"))
+		await fs.mkdir(path.join(root, "test"))
+		await fs.writeFile(fixturePath(root, FIXTURE_FILES.primaryTest), artifacts.primaryTest)
+		await fs.writeFile(fixturePath(root, FIXTURE_FILES.packageJson), artifacts.packageJson)
+		await fs.writeFile(fixturePath(root, FIXTURE_FILES.readme), artifacts.readme)
+		if (artifacts.workflowCases !== undefined)
+			await fs.writeFile(fixturePath(root, FIXTURE_FILES.workflowCases), artifacts.workflowCases)
+		const run = async (predicate?: string): Promise<boolean> => {
+			if (Date.now() >= deadline) throw new FixtureError("Fixture regression coverage exceeded its deadline")
+			const source = predicate
+				? `function sum(values) {
+	const result = values.reduce((total, value) => total + value, 0)
+	return (${predicate}) ? result + 1 : result
+}
+module.exports = { sum }
+`
+				: ENHANCED_MODULE_CONTENT
+			await fs.writeFile(fixturePath(root, FIXTURE_FILES.module), source)
+			return (await runFixtureTestsInternal(root)).exitCode === 0
+		}
+		const primaryPasses = await run()
+		const empty = primaryPasses && !(await run("values.length === 0"))
+		const numbers = primaryPasses && !(await run("values.length > 0 && values.every((value) => value >= 0)"))
+		if (artifacts.followupTest !== undefined)
+			await fs.writeFile(fixturePath(root, FIXTURE_FILES.followupTest), artifacts.followupTest)
+		const allPass = await run()
+		const negative = allPass && !(await run("values.some((value) => value < 0)"))
+		let workflow = artifacts.workflowCases === undefined
+		if (allPass && artifacts.workflowCases !== undefined && validateWorkflowCases(artifacts.workflowCases)) {
+			workflow = true
+			for (const { left, right } of JSON.parse(artifacts.workflowCases) as Array<{
+				left: number
+				right: number
+			}>) {
+				if (await run(`values.length === 2 && values[0] === ${left} && values[1] === ${right}`)) {
+					workflow = false
+					break
+				}
+			}
+		}
+		return { empty, numbers, negative, workflow }
+	} finally {
+		await removeCoverageSnapshot(root, parent)
+	}
 }
 
-function hasNumberRequirement(content: string): boolean {
-	return /sum\(\[\s*1\s*,\s*2\s*,\s*3\s*\]\)/.test(content) && /6/.test(content)
-}
-
-function hasNegativeNumberRequirement(content: string): boolean {
-	return /sum\(\[\s*-\d+/.test(content) && /negative/i.test(content)
+async function removeCoverageSnapshot(root: string, parent: string): Promise<void> {
+	const canonical = await fs.realpath(root)
+	if (path.dirname(canonical) !== parent || !path.basename(canonical).startsWith("alpha-code-fixture-coverage-"))
+		throw new FixtureError("Fixture coverage cleanup ownership mismatch")
+	await fs.rm(canonical, { recursive: true, force: true })
 }
 
 function hasFollowupReadmeRequirement(content: string): boolean {
 	// Grade the documented example, not Markdown backticks or one exact prose template.
-	return /sum\(\[\s*-2\s*,\s*1\s*\]\)\s*(?:\/\/\s*)?(?:=>|=|equals|returns|evaluates\s+to|is)\s*-1(?![\w]|\.\d)/i.test(
+	return /\bsum\s*\(\s*\[\s*-2\s*,\s*1\s*\]\s*\)\s*(?:,?\s*(?:which|that)\s+)?(?:\/\/\s*)?(?:=>|=|equals|return(?:s|ed|ing)?|evaluates\s+to|is)\s*-1(?![\w]|\.\d)/i.test(
 		content.replace(/`/g, ""),
 	)
 }
@@ -951,14 +1034,6 @@ async function hasApprovedArtifactLayout(root: string, expected: FixtureExpected
 		if (expected === "baseline" && inspection.artifacts.primaryTest !== PRIMARY_TEST_CONTENT) {
 			return false
 		}
-		if (
-			expected === "followup" &&
-			inspection.artifacts.followupTest !== undefined &&
-			!hasNegativeNumberRequirement(inspection.artifacts.followupTest)
-		) {
-			return false
-		}
-
 		return true
 	} catch {
 		return false
@@ -998,17 +1073,6 @@ function validateWorkflowCases(content: string | undefined): boolean {
 	} catch {
 		return false
 	}
-}
-
-function coversWorkflowCases(primaryTest: string, workflowCases: string | undefined): boolean {
-	if (workflowCases === undefined) {
-		return true
-	}
-
-	return (
-		/workflow-cases\.json/.test(primaryTest) &&
-		/(?:for\s*\(|\.forEach\s*\(|\.every\s*\(|\.map\s*\()/.test(primaryTest)
-	)
 }
 
 /**
@@ -1116,21 +1180,15 @@ export async function verifyRepositoryFixture(
 	const inspection = await inspectOwnedFixture(prepared.root)
 	const tests = await runFixtureTestsInternal(prepared.root)
 	const baselineModule = inspection.artifacts.module === BASELINE_MODULE_CONTENT
-	const primaryHasEmptyRequirement = hasEmptyListRequirement(inspection.artifacts.primaryTest)
-	const primaryHasNumberRequirement = hasNumberRequirement(inspection.artifacts.primaryTest)
-	const primaryHasNegativeRequirement = hasNegativeNumberRequirement(inspection.artifacts.primaryTest)
-	const separateFollowupHasNegativeRequirement = inspection.artifacts.followupTest
-		? hasNegativeNumberRequirement(inspection.artifacts.followupTest)
-		: false
-	const followupHasNegativeRequirement = primaryHasNegativeRequirement || separateFollowupHasNegativeRequirement
-	const followupPresent = primaryHasNegativeRequirement || inspection.artifacts.followupTest !== undefined
+	const coverage = await inspectRegressionCoverage(inspection.artifacts)
+	const primaryHasEmptyRequirement = coverage.empty
+	const primaryHasNumberRequirement = coverage.numbers
+	const followupHasNegativeRequirement = coverage.negative
+	const followupPresent = coverage.negative || inspection.artifacts.followupTest !== undefined
 	const followupReadmeRequirement = hasFollowupReadmeRequirement(inspection.artifacts.readme)
 	const workflowCasesValid = validateWorkflowCases(inspection.artifacts.workflowCases)
-	const workflowCasesCovered = coversWorkflowCases(
-		inspection.artifacts.primaryTest,
-		inspection.artifacts.workflowCases,
-	)
-	const enhancedBehavior = await runModuleContract(prepared.root, "enhanced")
+	const workflowCasesCovered = coverage.workflow
+	const enhancedBehavior = await runModuleContract(prepared.root, "enhanced", inspection.artifacts.workflowCases)
 	const baselineBehavior = await runModuleContract(prepared.root, "baseline")
 	const approvedLayout = await hasApprovedArtifactLayout(prepared.root, expected)
 	const controllerFilesIgnored = (

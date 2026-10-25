@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks"
 import { validateScenarioResult } from "./resultValidation"
 import { getPatchFailureReceipt, type PatchReceipt } from "./patchPlan"
 import { CampaignStorageError } from "./types"
+import { summarizeCampaignSamples } from "./reportAccounting"
 
 import type {
 	AttemptPhase,
@@ -33,14 +34,22 @@ const sameFailure = (first: ScenarioResult, next: ScenarioResult): boolean =>
 
 /** Sequential by design: persistent-profile ownership and mutations must not overlap. */
 export async function runCampaign(
-	config: CampaignConfig,
+	input: CampaignConfig,
 	operations: CampaignOperations,
 	signal?: AbortSignal,
 	options: { reproduceFailures?: boolean } = {},
 ): Promise<CampaignReport> {
-	if (options.reproduceFailures === false && config.repair) {
+	// Budgets and workload identity are declared once, before any asynchronous callback can change its inputs.
+	const config = structuredClone(input)
+	if (config.repair && (options.reproduceFailures === false || config.collectionMode !== undefined)) {
 		throw new Error("Reviewed repairs require failure reproduction")
 	}
+	const collectionMode =
+		options.reproduceFailures === false
+			? "sample-only"
+			: options.reproduceFailures === true
+				? "sample-then-diagnose"
+				: (config.collectionMode ?? "sample-only")
 	const now = operations.now ?? (() => performance.now())
 	const wallTime = operations.wallTime ?? (() => new Date().toISOString())
 	const started = now()
@@ -48,14 +57,23 @@ export async function runCampaign(
 		version: 1,
 		id: config.id,
 		mode: config.repair ? "reviewed-patch" : "report-only",
+		collectionMode: config.repair ? "reviewed-repair" : collectionMode,
 		requestedProvider: config.provider,
 		startedAt: wallTime(),
 		counts: { passed: 0, failed: 0, blocked: 0 },
 		usage: emptyUsage(),
 		attempts: [],
 		repairs: [],
+		evaluationPlan: {
+			scenarioIds: [...config.scenarioIds],
+			hostVersions: config.hosts.map((host) => host.version),
+			samples: config.samples,
+		},
 	}
-	const checkpoint = () => operations.persistReport(structuredClone(report))
+	const checkpoint = () => {
+		report.sampling = summarizeCampaignSamples(report.evaluationPlan!, report.attempts)
+		return operations.persistReport(structuredClone(report))
+	}
 	const stop = (reason: StopReason): never => {
 		throw new CampaignStopped(reason)
 	}
@@ -100,32 +118,46 @@ export async function runCampaign(
 		phase: AttemptPhase,
 	): Promise<ScenarioResult> => {
 		checkBudget()
-		const request: ScenarioRequest = {
+		const request: ScenarioRequest = Object.freeze({
 			campaignId: config.id,
 			attemptId: `attempt-${String(report.attempts.length + 1).padStart(4, "0")}`,
-			host,
+			host: Object.freeze({ ...host }),
 			scenarioId,
 			sample,
 			phase,
-			provider: config.provider,
+			provider: Object.freeze({ ...config.provider }),
 			requestLimit: config.budgets.maxRequests - report.usage.requests!,
-		}
+			startedAt: wallTime(),
+			...(config.decisionPlanDigest === undefined ? {} : { decisionPlanDigest: config.decisionPlanDigest }),
+			...(config.decisionTimeWindow === undefined ? {} : { timeWindow: config.decisionTimeWindow }),
+		})
 		const attemptStarted = now()
 		let result: ScenarioResult
+		let observed: ScenarioResult | undefined
 		let termination: StopReason | undefined
 		try {
-			result = validateScenarioResult(
-				await withDeadline((innerSignal) => operations.runScenario(request, innerSignal)),
-			)
+			result = await withDeadline(async (innerSignal) => {
+				// Cleanup may return authoritative observations after abort. Validate before the deadline verdict.
+				observed = validateScenarioResult(await operations.runScenario(request, innerSignal))
+				return observed
+			})
 		} catch (error) {
 			termination = error instanceof CampaignStopped ? error.reason : "infrastructure"
 			result = {
+				...observed,
 				status: "blocked",
 				failure: { class: "infrastructure", fingerprint: termination },
-				usage: unknownUsage(),
+				usage: observed?.usage ?? unknownUsage(),
 			}
 		}
-		const record: CampaignAttempt = { request, result, elapsedMs: Math.max(0, now() - attemptStarted) }
+		const record: CampaignAttempt = {
+			request,
+			result,
+			elapsedMs: Math.max(0, now() - attemptStarted),
+			...(termination === "cancelled" || termination === "time_budget"
+				? { termination: termination === "cancelled" ? ("cancelled" as const) : ("timeout" as const) }
+				: {}),
+		}
 		report.attempts.push(record)
 		report.counts[result.status]++
 		for (const key of ["requests", "inputTokens", "outputTokens", "cost"] as const) {
@@ -159,11 +191,16 @@ export async function runCampaign(
 	await checkpoint()
 	try {
 		const hosts = [...config.hosts].sort((a, b) => a.version.localeCompare(b.version, undefined, { numeric: true }))
+		const diagnostics: { host: CampaignHost; scenarioId: string; sample: number; initial: ScenarioResult }[] = []
 		for (const host of hosts) {
 			for (let sample = 1; sample <= config.samples; sample++) {
 				for (const scenarioId of config.scenarioIds) {
 					const initial = await attempt(host, scenarioId, sample, "sample")
-					if (initial.status === "passed" || options.reproduceFailures === false) continue
+					if (initial.status === "passed" || (!config.repair && collectionMode === "sample-only")) continue
+					if (!config.repair) {
+						diagnostics.push({ host, scenarioId, sample, initial })
+						continue
+					}
 					let reproduced = false
 					for (let retry = 0; retry < config.maxReproductions; retry++) {
 						const reproduction = await attempt(host, scenarioId, sample, "reproduce")
@@ -217,6 +254,12 @@ export async function runCampaign(
 					repairRecord.verified = true
 					await checkpoint()
 				}
+			}
+		}
+		// Paid diagnostics consume the same budgets, after every planned original has had its opportunity.
+		for (const { host, scenarioId, sample, initial } of diagnostics) {
+			for (let retry = 0; retry < config.maxReproductions; retry++) {
+				if (sameFailure(initial, await attempt(host, scenarioId, sample, "reproduce"))) break
 			}
 		}
 		report.stopReason = "completed"

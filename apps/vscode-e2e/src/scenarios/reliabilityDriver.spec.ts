@@ -5,7 +5,11 @@ import type { ExtensionWorkflowHost } from "./extensionWorkflowHost"
 import { runReliabilityScenario } from "./reliabilityDriver"
 import { WorkflowRequestBudget } from "./requestBudget"
 import type { WorkflowDependencies } from "./workflowDriver"
-import { LONG_CONTEXT_SCENARIO_IDS } from "./longContextProbe"
+import {
+	CONTEXT_PROBE_CHALLENGE_RESULT,
+	CONTEXT_PROBE_CHALLENGE_STEP,
+	LONG_CONTEXT_SCENARIO_IDS,
+} from "./longContextProbe"
 
 const options = {
 	runId: "reliability-unit",
@@ -40,14 +44,15 @@ for (const providerCode of [undefined, "request_timeout"] as const)
 	})
 
 for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
-	test(`${scenarioId} keeps one retained task across recovery and a graded code fix`, async () => {
+	test(`${scenarioId} keeps one retained task across recovery and a graded requirement follow-up`, async () => {
 		const exhaustEmpty = scenarioId === "long-context-empty-exhaustion"
 		const budget = new WorkflowRequestBudget(100)
 		const actions: string[] = []
 		const receipts = new Map<string, unknown>()
 		let starts = 0
 		const host = {
-			start: async () => {
+			start: async (phase: string) => {
+				assert.equal(phase, "enhance")
 				starts++
 				budget.consume()
 				return "retained"
@@ -77,6 +82,7 @@ for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
 				emptyWarnings: exhaustEmpty ? 1 : 0,
 				receiptPresent: true,
 			}),
+			inspectCompactionEvidence: () => ({ summaryRetainedFact: true }),
 			waitForFault: async (condition: () => boolean) => {
 				if (!condition() && exhaustEmpty) {
 					budget.consume()
@@ -119,6 +125,7 @@ for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
 				return [{ name: "fixture", passed: true }]
 			},
 			test: async () => ({ exitCode: 0 }),
+			readCommit: async () => "committed-setup",
 		} as unknown as WorkflowDependencies["repository"]
 		const result = await runReliabilityScenario(
 			{ ...options, scenarioId, turns: 4 },
@@ -134,6 +141,10 @@ for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
 		assert.ok(actions.indexOf("reopen") > actions.indexOf("condense"))
 		assert.deepEqual(actions, [
 			"grade:baseline",
+			"grade:enhanced",
+			"commit:fix",
+			"grade:committed",
+			"contextProbe:0",
 			"contextProbe:1",
 			"contextProbe:2",
 			"contextProbe:3",
@@ -141,10 +152,10 @@ for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
 			...(exhaustEmpty ? ["exhausted", "contextProbe:4"] : ["retry"]),
 			"condense",
 			"reopen",
-			"contextProbe:5",
-			"grade:baseline",
-			"enhance:fix",
-			"grade:enhanced",
+			`contextProbe:${CONTEXT_PROBE_CHALLENGE_STEP}`,
+			"grade:committed",
+			"followup:fix",
+			"grade:followup",
 		])
 		assert.equal(budget.transformResponse, undefined)
 		assert.ok(receipts.has("reliability-observations.json"))
@@ -205,72 +216,105 @@ test("a live admission failure retains its task snapshot and is never projected 
 	assert.ok(receipts.has("reliability-observations.json"))
 })
 
-test("context compaction requires a shrinking receipt and reopens the saved task before follow-up", async () => {
-	const budget = new WorkflowRequestBudget(30)
-	const actions: string[] = []
-	const host = {
-		start: async (phase: string) => {
-			assert.equal(phase, "contextProbe")
-			budget.consume()
-			return "retained"
-		},
-		complete: async () => {},
-		followup: async (id: string, phase: string, step: number) => {
-			assert.equal(id, "retained")
-			assert.equal(phase, "contextProbe")
-			actions.push(`followup:${step}`)
-			budget.consume()
-		},
-		resume: async (id: string, phase: string, step: number, options: { reopen: boolean }) => {
-			assert.equal(id, "retained")
-			assert.equal(phase, "contextProbe")
-			assert.equal(step, 6)
-			assert.equal(options.reopen, true)
-			actions.push("reopen")
-			budget.consume()
-		},
-		condense: async () => {
-			actions.push("condense")
-			budget.consume()
-			return true
-		},
-		inspectCompactionEvidence: () => ({
-			summaryId: "summary-1",
-			receiptId: "summary-1",
-			summaryRetainedFact: true,
-			previousTokens: 900,
-			currentTokens: 450,
-		}),
-		inspectContext: (_id: string, receipt: string) => {
-			actions.push(`receipt:${receipt}`)
-			return { receiptPresent: true }
-		},
-		inspect: async () => ({ errors: [], callCount: 1, resultCount: 1, completedTurns: 1 }),
-		admissionsAreUnique: () => true,
-	} as unknown as ExtensionWorkflowHost
-	const repository = {
-		create: async () => ({ initialCommit: "abc" }),
-		verify: async (phase: string) => {
-			actions.push(`grade:${phase}`)
-			return [{ name: "fixture", passed: true }]
-		},
-	} as unknown as WorkflowDependencies["repository"]
-	const result = await runReliabilityScenario(
-		{ ...options, scenarioId: "context-compaction" },
-		host,
-		budget,
-		repository,
-		async () => {},
-	)
-	assert.equal(result.status, "passed")
-	assert.ok(actions.indexOf("reopen") > actions.indexOf("condense"))
-	assert.equal(actions.filter((action) => action === "reopen").length, 1)
-	assert.deepEqual(
-		actions.filter((action) => action.startsWith("followup:")),
-		["followup:1", "followup:2", "followup:3", "followup:4", "followup:5"],
-	)
-	assert.equal(actions.filter((action) => action.startsWith("receipt:")).length, 7)
-	assert.equal(actions.filter((action) => action === "grade:baseline").length, 2)
-	assert.ok(result.checks.some((check) => check.name === "compaction_receipt_reduced_context" && check.passed))
-	assert.ok(result.checks.some((check) => check.name === "compaction_summary_has_anchor" && check.passed))
-})
+for (const mutation of ["none", "forgotten-fact", "stale-constraint", "recent-receipt", "repeated-commit"] as const)
+	test(`context compaction independently grades retired facts and completed effects (${mutation})`, async () => {
+		const budget = new WorkflowRequestBudget(30)
+		const actions: string[] = []
+		let commitReads = 0
+		const host = {
+			start: async (phase: string) => {
+				assert.equal(phase, "enhance")
+				budget.consume()
+				return "retained"
+			},
+			complete: async () => {},
+			followup: async (id: string, phase: string, step?: number) => {
+				assert.equal(id, "retained")
+				assert.ok(phase === "contextProbe" || phase === "commit")
+				actions.push(`${phase}:${step ?? "setup"}`)
+				budget.consume()
+			},
+			resume: async (id: string, phase: string, step: number, options: { reopen: boolean }) => {
+				assert.equal(id, "retained")
+				assert.equal(phase, "contextProbe")
+				assert.equal(step, CONTEXT_PROBE_CHALLENGE_STEP)
+				assert.equal(options.reopen, true)
+				actions.push("reopen")
+				budget.consume()
+			},
+			condense: async () => {
+				actions.push("condense")
+				budget.consume()
+				return true
+			},
+			inspectCompactionEvidence: (_id: string, fact: string) => ({
+				summaryId: "summary-1",
+				receiptId: "summary-1",
+				summaryRetainedFact: mutation !== "forgotten-fact" || fact !== "north-2",
+				previousTokens: 900,
+				currentTokens: 450,
+			}),
+			inspectContext: (_id: string, receipt: string) => {
+				actions.push(`receipt:${receipt}`)
+				const finalReport =
+					mutation === "stale-constraint"
+						? CONTEXT_PROBE_CHALLENGE_RESULT.replace("window=17", "window=9")
+						: mutation === "recent-receipt"
+							? "receipt-5"
+							: CONTEXT_PROBE_CHALLENGE_RESULT
+				return { receiptPresent: receipt !== CONTEXT_PROBE_CHALLENGE_RESULT || receipt === finalReport }
+			},
+			inspect: async () => ({ errors: [], callCount: 1, resultCount: 1, completedTurns: 1 }),
+			admissionsAreUnique: () => true,
+		} as unknown as ExtensionWorkflowHost
+		const repository = {
+			create: async () => ({ initialCommit: "abc" }),
+			verify: async (phase: string) => {
+				actions.push(`grade:${phase}`)
+				return [{ name: "fixture", passed: true }]
+			},
+			readCommit: async () => {
+				commitReads++
+				return mutation === "repeated-commit" && commitReads >= 3 ? "repeated-commit" : "committed-setup"
+			},
+		} as unknown as WorkflowDependencies["repository"]
+		const result = await runReliabilityScenario(
+			{ ...options, scenarioId: "context-compaction" },
+			host,
+			budget,
+			repository,
+			async () => {},
+		)
+		if (mutation !== "none") {
+			assert.equal(result.status, "failed")
+			assert.equal(result.failure?.category, "assertion")
+			assert.equal(
+				result.failure?.code,
+				mutation === "forgotten-fact"
+					? "summary_retained_fact_1"
+					: mutation === "repeated-commit"
+						? "committed_effect_not_repeated"
+						: "retired_context_challenge_passed",
+			)
+			return
+		}
+		assert.equal(result.status, "passed")
+		assert.ok(actions.indexOf("reopen") > actions.indexOf("condense"))
+		assert.equal(actions.filter((action) => action === "reopen").length, 1)
+		assert.deepEqual(
+			actions.filter((action) => action.startsWith("contextProbe:")),
+			[
+				"contextProbe:0",
+				"contextProbe:1",
+				"contextProbe:2",
+				"contextProbe:3",
+				"contextProbe:4",
+				"contextProbe:5",
+			],
+		)
+		assert.equal(actions.filter((action) => action.startsWith("receipt:")).length, 7)
+		assert.equal(actions.filter((action) => action === "grade:baseline").length, 1)
+		assert.equal(actions.filter((action) => action === "grade:committed").length, 3)
+		assert.ok(result.checks.some((check) => check.name === "compaction_receipt_reduced_context" && check.passed))
+		assert.ok(result.checks.some((check) => check.name === "retired_context_challenge_passed" && check.passed))
+	})

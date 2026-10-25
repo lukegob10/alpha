@@ -1,0 +1,72 @@
+name: Evaluator service and Docker contracts
+
+on:
+    workflow_call:
+    workflow_dispatch:
+    schedule:
+        - cron: "23 6 * * 2"
+
+permissions:
+    contents: read
+
+jobs:
+    evaluator-contracts:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            NODE_ENV: test
+            DATABASE_URL: postgres://postgres:password@localhost:5433/evals_test
+            REDIS_URL: redis://localhost:6380
+        services:
+            postgres:
+                image: postgres:15.4
+                env:
+                    POSTGRES_USER: postgres
+                    POSTGRES_PASSWORD: password
+                    POSTGRES_DB: evals_test
+                ports:
+                    - 5433:5432
+                options: >-
+                    --health-cmd "pg_isready -U postgres -d evals_test"
+                    --health-interval 5s --health-timeout 5s --health-retries 12
+            redis:
+                image: redis:7-alpine
+                ports:
+                    - 6380:6379
+                options: >-
+                    --health-cmd "redis-cli ping"
+                    --health-interval 5s --health-timeout 5s --health-retries 12
+        steps:
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Verify the isolated service endpoints
+              run: pnpm --filter @alpha-code/evals services:check
+            - name: Migrate the disposable test database
+              run: pnpm --filter @alpha-code/evals db:test:migrate
+            - name: Run database and Redis production contracts
+              run: pnpm harness run services
+            - name: Run Docker production and cleanup contracts
+              run: pnpm harness run infrastructure
+            - name: Require actual service and Docker execution evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-services.json --require services --require infrastructure
+            - name: Remove leaked owned test containers and fail the gate
+              if: always()
+              shell: bash
+              run: |
+                  containers=$(docker ps --all --quiet --filter label=alpha.evals.run-id)
+                  if [ -n "$containers" ]; then
+                    docker rm --force $containers
+                    echo "::error::Evaluator contracts left owned test containers after completion."
+                    exit 1
+                  fi
+            - name: Retain service and Docker evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: evaluator-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: artifacts/harness/
+                  retention-days: 14
+                  if-no-files-found: error

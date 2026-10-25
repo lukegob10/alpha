@@ -8,6 +8,13 @@ class TextPart {
 	constructor(readonly value: string) {}
 }
 
+class DataPart {
+	constructor(
+		readonly data: Uint8Array,
+		readonly mimeType: string,
+	) {}
+}
+
 class ToolCallPart {
 	constructor(
 		readonly callId: string,
@@ -44,14 +51,16 @@ class FixtureToken {
 
 interface FixtureMessage {
 	role: number
-	content: TextPart[]
+	content: unknown[]
 }
 
 interface FixtureOptions {
 	tools?: Array<{ name: string }>
+	modelConfiguration?: Record<string, unknown>
 }
 
 interface FixtureProvider {
+	provideLanguageModelChatInformation(): Array<{ id: string; capabilities: { imageInput: boolean } }>
 	provideLanguageModelChatResponse(
 		model: { id: string },
 		messages: FixtureMessage[],
@@ -62,8 +71,17 @@ interface FixtureProvider {
 }
 
 interface FixtureControl {
-	reset(scenario: string, options?: { holdRequestIndexes?: number[] }): void
-	getRequests(): Array<{ index: number; cancelled: boolean }>
+	reset(
+		scenario: string,
+		options?: { holdRequestIndexes?: number[]; holdAfterToolCallRequestIndexes?: number[] },
+	): void
+	getRequests(): Array<{
+		index: number
+		cancelled: boolean
+		modelId: string
+		configuration?: Record<string, unknown>
+		messages: Array<{ parts: Array<{ kind: string; bytes?: number[]; content?: unknown[] }> }>
+	}>
 	getEvents(): Array<{ type: string; requestIndex: number }>
 	releaseRequest(index: number): void
 	releaseAll(): void
@@ -92,6 +110,7 @@ async function loadFixture() {
 				assert.equal(specifier, "vscode")
 				return {
 					LanguageModelTextPart: TextPart,
+					LanguageModelDataPart: DataPart,
 					LanguageModelToolCallPart: ToolCallPart,
 					LanguageModelToolResultPart: ToolResultPart,
 					LanguageModelChatMessageRole: { User: USER_ROLE, Assistant: 2 },
@@ -104,6 +123,7 @@ async function loadFixture() {
 				}
 			},
 			console: { log() {} },
+			TextEncoder,
 		},
 		{ timeout: 1_000 },
 	)
@@ -113,11 +133,12 @@ async function loadFixture() {
 	const registered = provider
 	return {
 		control,
-		request(messages: FixtureMessage[], options: FixtureOptions = {}) {
+		models: registered.provideLanguageModelChatInformation(),
+		request(messages: FixtureMessage[], options: FixtureOptions = {}, modelId = "alpha-e2e-model") {
 			const token = new FixtureToken()
 			const parts: unknown[] = []
 			const done = registered.provideLanguageModelChatResponse(
-				{ id: "alpha-e2e-model" },
+				{ id: modelId },
 				messages,
 				options,
 				{ report: (part) => parts.push(part) },
@@ -160,6 +181,89 @@ test(
 		}
 	},
 )
+
+test("metadata fixture emits known opaque bytes and usage after the paired tool call", async () => {
+	const fixture = await loadFixture()
+	fixture.control.reset("metadata-tool-followup")
+	const request = fixture.request([message("Read the fixture")], { tools: [{ name: "exec_command" }] })
+	await request.done
+	assert.equal(request.parts.length, 3)
+	assert.ok(request.parts[0] instanceof ToolCallPart)
+	assert.equal(request.parts[0].callId, "alpha-e2e-command-read-1")
+	assert.ok(request.parts[1] instanceof DataPart)
+	assert.equal(request.parts[1].mimeType, "stateful_marker")
+	assert.deepEqual(Array.from(request.parts[1].data), [0, 255, 1, 128, 65])
+	assert.ok(request.parts[2] instanceof DataPart)
+	assert.equal(request.parts[2].mimeType, "usage")
+	assert.deepEqual(JSON.parse(new TextDecoder().decode(request.parts[2].data)), {
+		prompt_tokens: 321,
+		completion_tokens: 45,
+	})
+	assert.equal(request.token.listenerCount, 0)
+})
+
+test("fixture preserves nested data MIME and bytes on a later image tool-result request", async () => {
+	const fixture = await loadFixture()
+	assert.ok(fixture.models.every((model) => model.capabilities.imageInput))
+	fixture.control.reset("completion")
+	const image = new DataPart(new Uint8Array([0, 255, 127, 128]), "image/png")
+	const request = fixture.request([
+		{
+			role: USER_ROLE,
+			content: [new ToolResultPart("image-1", [image])],
+		},
+	])
+	await request.done
+	assert.deepEqual(JSON.parse(JSON.stringify(fixture.control.getRequests()[0]!.messages)), [
+		{
+			role: USER_ROLE,
+			parts: [
+				{
+					kind: "tool_result",
+					callId: "image-1",
+					content: [
+						{
+							kind: "data",
+							mimeType: "image/png",
+							bytes: [0, 255, 127, 128],
+						},
+					],
+				},
+			],
+		},
+	])
+})
+
+test("retry settings fixture holds the failing admission and records each exact model configuration", async () => {
+	const fixture = await loadFixture()
+	fixture.control.reset("retry-settings", { holdRequestIndexes: [0] })
+	const request = fixture.request([message("Retry this step")], { modelConfiguration: { reasoningEffort: "low" } })
+	const rejected = assert.rejects(request.done, /retry settings failure/)
+	assert.equal(request.parts.length, 0)
+	assert.ok(!fixture.control.getEvents().some(({ type }) => type === "provider-request-returned"))
+	fixture.control.releaseRequest(0)
+	await rejected
+	await fixture.request([message("The next step")], {}, "alpha-e2e-next-model").done
+	assert.equal(fixture.control.getRequests()[0]!.configuration?.reasoningEffort, "low")
+	assert.equal(fixture.control.getRequests()[1]!.modelId, "alpha-e2e-next-model")
+	assert.equal(request.token.listenerCount, 0)
+})
+
+test("tool-tail failure waits for the consumer-controlled effect barrier after reporting complete tool intent", async () => {
+	const fixture = await loadFixture()
+	fixture.control.reset("tool-followup-tail-error", { holdAfterToolCallRequestIndexes: [0] })
+	const request = fixture.request([message("Read the fixture")], { tools: [{ name: "exec_command" }] })
+	const rejected = assert.rejects(request.done, /failure after the accepted read/)
+	await Promise.resolve()
+	assert.equal(request.parts.length, 1)
+	assert.ok(request.parts[0] instanceof ToolCallPart)
+	assert.equal((request.parts[0].input as { max_output_tokens?: number }).max_output_tokens, 256)
+	assert.ok(fixture.control.getEvents().some(({ type }) => type === "provider-tool-call-reported"))
+	assert.ok(!fixture.control.getEvents().some(({ type }) => type === "provider-request-returned"))
+	fixture.control.releaseAll()
+	await rejected
+	assert.equal(request.token.listenerCount, 0)
+})
 
 test(
 	"title requests do not consume no-tools recovery or enter task cancellation gates",

@@ -4,7 +4,12 @@ import path from "node:path"
 
 import { type TaskEvent, AlphaCodeEventName } from "@alpha-code/types"
 
-import { findBenchmarkTask, serveGraderRequest, type GraderBrokerRequest } from "../benchmark/index"
+import {
+	findBenchmarkTask,
+	serveGraderRequest,
+	type BenchmarkTaskManifest,
+	type GraderBrokerRequest,
+} from "../benchmark/index"
 import {
 	applyAttemptEvent,
 	ensureAttempt,
@@ -26,17 +31,33 @@ import {
 	EventJournal,
 	extractFinalResponse,
 	FilesystemArtifactStore,
-	readEvidenceLog,
 	readJsonLines,
 	collectWorkspaceEvidence,
+	evidenceBundleDigest,
+	redact,
+	readOptionalEvidenceLog,
 	validateEvidenceBundle,
 	type ArtifactDescriptor,
 	type EvidenceBundle,
 } from "../evidence/index"
 import type { EvalTraceEvent, GraderEvidence, GraderRunResult } from "../grading/index"
-import { collectInfrastructureManifest, type ContainerSpec } from "../infrastructure/index"
+import type { CommandGraderSpec } from "../grading/types"
+import { captureExpectedNodeTestCommands } from "../grading/nodeTestCompletion"
+import {
+	collectInfrastructureManifest,
+	ContainerCleanupError,
+	DockerCliAdapter,
+	type ContainerSpec,
+} from "../infrastructure/index"
 import { isRetryableStatus, type AttemptPhase, type TrialTerminalStatus } from "../lifecycle/index"
-import { ExecaHarnessProcessRunner, type HarnessProcessRunner } from "../orchestration/index"
+import {
+	calculateBackoffMs,
+	ExecaHarnessProcessRunner,
+	systemRandom,
+	systemSleeper,
+	type HarnessProcessRunner,
+	type HarnessSleeper,
+} from "../orchestration/index"
 
 import { Logger, getTag, isDockerContainer } from "./utils"
 import { redisClient, getPubSubKey, registerRunner, deregisterRunner } from "./redis"
@@ -50,6 +71,7 @@ type ProcessTaskOptions = {
 	jobToken: string | null
 	logger?: Logger
 	processRunner?: HarnessProcessRunner
+	signal?: AbortSignal
 }
 
 export const processTask = async ({
@@ -57,7 +79,15 @@ export const processTask = async ({
 	jobToken,
 	logger,
 	processRunner = new ExecaHarnessProcessRunner(),
+	signal,
 }: ProcessTaskOptions) => {
+	if (signal) {
+		const runner = processRunner
+		processRunner = {
+			run: (spec) =>
+				runner.run({ ...spec, signal: spec.signal ? AbortSignal.any([spec.signal, signal]) : signal }),
+		}
+	}
 	const task = await findTask(taskId)
 	const run = await findRun(task.runId)
 	const attemptNumber = parseAttemptNumber(process.env.EVALS_ATTEMPT)
@@ -69,11 +99,14 @@ export const processTask = async ({
 	const containerized = isDockerContainer()
 	const artifactRoot = containerized ? "/var/log/evals/artifacts" : path.join(os.tmpdir(), "evals", "artifacts")
 	const store = new FilesystemArtifactStore(artifactRoot)
-	const journal = new EventJournal({
-		runId: String(run.id),
-		trialId: String(trial.id),
-		attemptId: String(attempt.id),
-	})
+	const journal = new EventJournal(
+		{
+			runId: String(run.id),
+			trialId: String(trial.id),
+			attemptId: String(attempt.id),
+		},
+		{ secrets: secretValues(jobToken) },
+	)
 	let phase: AttemptPhase = attempt.phase
 	let finalized = false
 	let registered = false
@@ -105,6 +138,7 @@ export const processTask = async ({
 
 	try {
 		await transition({ type: "start" })
+		signal?.throwIfAborted()
 		if (run.executionMethod !== "vscode") {
 			throw new Error(
 				"The Alpha CLI is retired. Create a new VS Code evaluation run; historical results are preserved.",
@@ -113,6 +147,16 @@ export const processTask = async ({
 		await registerRunner({ runId: run.id, taskId, timeoutSeconds: (run.timeout || 5) * 60 })
 		registered = true
 		const benchmark = await findBenchmarkTask(EVALS_REPO_PATH, `${task.language}/${task.exercise}`)
+		const brokered =
+			Boolean(process.env.EVALS_GRADER_BROKER_ROOT) &&
+			benchmark.task.graders.some(({ bundleId }) => Boolean(bundleId))
+		// The trusted controller captures private originals before launching this brokered child.
+		const preparedVisibleCommands = brokered
+			? undefined
+			: await captureExpectedNodeTestCommands(
+					originalTaskFixture(task, benchmark.task),
+					benchmark.task.validation.commands,
+				)
 		let workspaceRoot = getTaskWorkspacePath(task)
 		if (!containerized && task.benchmarkTaskIdentity) {
 			localSandboxRoot = path.join(os.tmpdir(), "evals", "task-sandboxes", String(attempt.id))
@@ -157,6 +201,7 @@ export const processTask = async ({
 			publish,
 			logger,
 			workspaceRoot,
+			signal,
 			onExecutionIdentity: async (executionIdentity, presentationPolicy) => {
 				const parsedPolicy =
 					typeof run.campaignHardCapUsd === "number"
@@ -185,8 +230,8 @@ export const processTask = async ({
 			: normalizeApiConversationTrace(await readJson(evidencePaths.apiConversation))
 		for (const event of trace) await record(event.type, event.payload ?? {})
 		const [extensionLog, transcript, refreshedTasks] = await Promise.all([
-			readEvidenceLog(logger.path),
-			readEvidenceLog(evidencePaths.uiMessages),
+			readOptionalEvidenceLog(logger.path),
+			readOptionalEvidenceLog(evidencePaths.uiMessages),
 			getTasks(run.id),
 		])
 		const persistedMetrics = refreshedTasks.find(({ id }) => id === task.id)?.taskMetrics
@@ -206,17 +251,22 @@ export const processTask = async ({
 		descriptors = await collectWorkspaceEvidence({
 			attemptId: String(attempt.id),
 			workspace: workspaceRoot,
+			baselineCommit,
 			extensionLog,
 			transcript,
-			finalResponse: extractFinalResponse(transcript),
-			testOutput: "",
+			finalResponse: transcript === undefined ? undefined : extractFinalResponse(transcript),
+			captureStatuses: { test_output: "unavailable" },
 			usage,
-			stopReason: "agent_completed",
+			stopReason: executionOutcome ?? "agent_completed",
 			processRunner,
 			store,
 			secrets: secretValues(jobToken),
 		})
-		await persistArtifactDescriptors(attempt.id, descriptors, artifactRoot)
+		await persistArtifactDescriptors(
+			attempt.id,
+			descriptors.filter(({ kind }) => kind !== "test_output"),
+			artifactRoot,
+		)
 		await transition({ type: "evidence_collected" })
 
 		const bundle = evidenceBundle({
@@ -227,7 +277,10 @@ export const processTask = async ({
 			journal,
 			descriptors,
 		})
-		const initialIntegrity = await validateEvidenceBundle(bundle, store)
+		const initialIntegrity = await validateEvidenceBundle(bundle, store, {
+			allowUnavailableArtifacts: ["test_output"],
+			requireWorkspaceSnapshot: true,
+		})
 		if (!initialIntegrity.valid) {
 			await recordEvidenceIntegrity({
 				attemptId: attempt.id,
@@ -245,6 +298,8 @@ export const processTask = async ({
 		}
 
 		const graderArtifacts: ArtifactDescriptor[] = []
+		const verificationOutput: Array<{ id: string; kind: string; output: string }> = []
+		const graderSink = createGraderEvidenceSink(store, String(attempt.id), graderArtifacts, secretValues(jobToken))
 		logger.info(`grading task ${task.id} (${task.language}/${task.exercise})...`)
 		const graded = await runUnitTest({
 			task,
@@ -256,8 +311,34 @@ export const processTask = async ({
 			usage,
 			environment,
 			processRunner,
-			evidenceSink: createGraderEvidenceSink(store, String(attempt.id), graderArtifacts),
+			preparedVisibleCommands,
+			evidenceSink: async (id, kind, value, mediaType) => {
+				if (kind === "stdout" || kind === "stderr") verificationOutput.push({ id, kind, output: value })
+				return graderSink(id, kind, value, mediaType)
+			},
 		})
+		const testOutput = await store.put({
+			attemptId: String(attempt.id),
+			kind: "test_output",
+			bytes: Buffer.from(
+				JSON.stringify(
+					redact(
+						verificationOutput.length
+							? verificationOutput
+							: { status: "not_applicable", reason: "no_command_output" },
+						{ secrets: secretValues(jobToken) },
+					),
+				),
+			),
+			mediaType: "application/json",
+			captureStatus:
+				graded.results.some(({ type }) => type === "command") && !verificationOutput.length
+					? "missing"
+					: "captured",
+		})
+		descriptors = descriptors.filter(({ kind }) => kind !== "test_output")
+		descriptors.push(testOutput)
+		await persistArtifactDescriptors(attempt.id, [testOutput], artifactRoot)
 		if (graderArtifacts.length) {
 			descriptors.push(...graderArtifacts)
 			await persistArtifactDescriptors(attempt.id, graderArtifacts, artifactRoot)
@@ -266,6 +347,7 @@ export const processTask = async ({
 		const finalIntegrity = await validateEvidenceBundle(
 			evidenceBundle({ run, trialId: trial.id, attemptId: attempt.id, identities, journal, descriptors }),
 			store,
+			{ requireWorkspaceSnapshot: true },
 		)
 		if (!finalIntegrity.valid) {
 			await recordEvidenceIntegrity({
@@ -282,15 +364,26 @@ export const processTask = async ({
 			})
 			throw new Error("Final evidence integrity failed")
 		}
+		const status = classifyTerminalStatus(graded, executionOutcome)
+		await transition({ type: "finalize", status })
+		const sealedBundle = evidenceBundle({
+			run,
+			trialId: trial.id,
+			attemptId: attempt.id,
+			identities,
+			journal,
+			descriptors,
+		})
+		const sealedIntegrity = await validateEvidenceBundle(sealedBundle, store, { requireWorkspaceSnapshot: true })
+		if (!sealedIntegrity.valid) throw new Error("Finalized evidence integrity failed")
 		await recordEvidenceIntegrity({
 			attemptId: attempt.id,
 			status: "valid",
 			taskIdentity: identities.taskIdentity,
 			variantIdentity: identities.variantIdentity,
+			bundleDigest: evidenceBundleDigest(sealedBundle),
+			bundle: sealedBundle,
 		})
-
-		const status = classifyTerminalStatus(graded, executionOutcome)
-		await transition({ type: "finalize", status })
 		logger.info(`task ${task.id} (${task.language}/${task.exercise}) -> ${status}`)
 		await publish({
 			eventName: status === "passed" ? AlphaCodeEventName.EvalPass : AlphaCodeEventName.EvalFail,
@@ -300,7 +393,7 @@ export const processTask = async ({
 		settled = true
 	} catch (error) {
 		if (!finalized) {
-			const status = failureStatusForPhase(phase)
+			const status = signal?.aborted ? "cancelled" : failureStatusForPhase(phase)
 			await transition({
 				type: "finalize",
 				status,
@@ -333,26 +426,36 @@ export const processTaskInContainer = async ({
 	logger,
 	maxRetries = 10,
 	processRunner = new ExecaHarnessProcessRunner(),
+	signal,
+	sleeper = systemSleeper,
 }: {
 	taskId: number
 	jobToken: string | null
 	logger: Logger
 	maxRetries?: number
 	processRunner?: HarnessProcessRunner
+	signal?: AbortSignal
+	sleeper?: HarnessSleeper
 }) => {
 	const task = await findTask(taskId)
 	const run = await findRun(task.runId)
 	if (run.executionMethod !== "vscode") {
 		// Finalize retired runs through the normal lifecycle without starting containers or retrying.
-		return processTask({ taskId, jobToken, logger, processRunner })
+		return processTask({ taskId, jobToken, logger, processRunner, signal })
 	}
 	const benchmark = await findBenchmarkTask(EVALS_REPO_PATH, `${task.language}/${task.exercise}`)
+	const preparedVisibleCommands = await captureExpectedNodeTestCommands(
+		originalTaskFixture(task, benchmark.task),
+		benchmark.task.validation.commands,
+	)
 	const requiresBroker = benchmark.task.graders.some(({ bundleId }) => Boolean(bundleId))
 	const retryLimit = typeof run.campaignHardCapUsd === "number" ? 0 : maxRetries
 	const command = `pnpm --filter @alpha-code/evals cli --taskId ${taskId}`
+	const docker = new DockerCliAdapter(processRunner)
 	logger.info(command)
 
 	for (let retry = 0; retry <= retryLimit; retry++) {
+		signal?.throwIfAborted()
 		const attemptNumber = retry + 1
 		const attempt = await ensureAttempt(task.id, attemptNumber)
 		if (attempt.terminalStatus && !isRetryableStatus(attempt.terminalStatus)) return
@@ -363,6 +466,15 @@ export const processTaskInContainer = async ({
 		await fs.mkdir(path.join(hostSandbox, "grader-broker"), { recursive: true })
 
 		const controller = new AbortController()
+		const attemptSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+		const gradingRunner: HarnessProcessRunner = {
+			run: (spec) =>
+				processRunner.run({
+					...spec,
+					signal: spec.signal ? AbortSignal.any([spec.signal, attemptSignal]) : attemptSignal,
+				}),
+		}
+		let brokerFailure: unknown
 		const brokerPromise = requiresBroker
 			? serveGraderRequest({
 					root: path.join(hostSandbox, "grader-broker"),
@@ -375,17 +487,30 @@ export const processTaskInContainer = async ({
 							task,
 							logger,
 							workspaceRoot: hostWorkspace,
-							processRunner,
+							processRunner: gradingRunner,
 							hostSandbox,
 							baselineCommit,
+							preparedVisibleCommands,
+							secrets: secretValues(jobToken),
 						}),
+				}).catch((error: unknown) => {
+					brokerFailure = error
+					controller.abort()
 				})
 			: undefined
 
 		if (retry > 0) {
-			const delayMs = Math.pow(2, retry - 1) * 1_000 * (0.5 + Math.random())
+			const delayMs = calculateBackoffMs(
+				attemptNumber,
+				{
+					maxAttempts: retryLimit + 1,
+					baseDelayMs: 1000,
+					maxDelayMs: 30_000,
+				},
+				systemRandom,
+			)
 			logger.info(`retrying in ${delayMs}ms (attempt ${attemptNumber}/${retryLimit + 1})`)
-			await new Promise((resolve) => setTimeout(resolve, delayMs))
+			await sleeper.sleep(delayMs)
 		}
 
 		const secretEnv = inheritedSecretEnvironment(jobToken)
@@ -432,6 +557,7 @@ export const processTaskInContainer = async ({
 			infrastructure = await collectInfrastructureManifest(containerSpec, processRunner, run.concurrency ?? 1)
 		} catch (error) {
 			controller.abort()
+			if (brokerPromise) await brokerPromise
 			const current = await currentAttempt(task.id, attempt.id)
 			await finalizeContainerFailure(
 				attempt.id,
@@ -452,45 +578,6 @@ export const processTaskInContainer = async ({
 			EVALS_CONCURRENCY: String(infrastructure.concurrency),
 			EVALS_PERMISSION_PROFILE_DIGEST: infrastructure.permissionProfileDigest,
 		}
-		const args = [
-			"run",
-			"--rm",
-			"--name",
-			`evals-task-${taskId}.${retry}`,
-			"--network",
-			"evals_default",
-			"--cpus",
-			String(limits.cpus),
-			"--memory",
-			String(limits.memoryBytes),
-			"--pids-limit",
-			String(limits.pids),
-			"--label",
-			"alpha.evals.managed=true",
-			"--label",
-			`alpha.evals.run-id=${run.id}`,
-			"--label",
-			`alpha.evals.trial-id=${trial.id}`,
-			"--label",
-			`alpha.evals.attempt-id=${attempt.id}`,
-			"-v",
-			`${portablePath(hostSandbox)}:/var/log/evals:rw`,
-			"-v",
-			`${portablePath(hostWorkspace)}:/workspace/eval-task:rw`,
-			"-e",
-			"HOST_EXECUTION_METHOD",
-			"-e",
-			"EVALS_ATTEMPT",
-			"-e",
-			"EVALS_TASK_WORKSPACE_ROOT",
-			"-e",
-			"EVALS_GRADER_BROKER_ROOT",
-			...Object.keys({ ...secretEnv, ...identityEnv }).flatMap((name) => ["-e", name]),
-			"evals-runner",
-			"sh",
-			"-c",
-			command,
-		]
 		const env = {
 			...secretEnv,
 			...identityEnv,
@@ -501,14 +588,15 @@ export const processTaskInContainer = async ({
 		}
 
 		try {
-			const result = await processRunner.run({
-				command: "docker",
-				args,
-				env,
-				timeoutMs: limits.timeoutMs,
-				maxOutputBytes: 10 * 1024 * 1024,
+			const result = await docker.run({
+				...containerSpec,
+				image: infrastructure.imageId,
+				processEnv: env,
+				signal: attemptSignal,
 			})
+			controller.abort()
 			if (brokerPromise) await brokerPromise
+			if (brokerFailure) throw brokerFailure
 			const current = await currentAttempt(task.id, attempt.id)
 			if (result.timedOut || result.exitCode !== 0) {
 				await finalizeContainerFailure(
@@ -536,8 +624,11 @@ export const processTaskInContainer = async ({
 				error instanceof Error ? error.message : String(error),
 			)
 			logger.error(`container process failed (attempt ${attemptNumber}/${retryLimit + 1}): ${String(error)}`)
+			// Do not dispatch another attempt while a previous owned container may still be running.
+			if (error instanceof ContainerCleanupError || signal?.aborted) throw error
 		} finally {
 			controller.abort()
+			if (brokerPromise) await brokerPromise
 		}
 	}
 
@@ -552,8 +643,10 @@ async function executeTrustedGrade(input: {
 	processRunner: HarnessProcessRunner
 	hostSandbox: string
 	baselineCommit: string
+	preparedVisibleCommands: CommandGraderSpec["commands"]
+	secrets: string[]
 }) {
-	const artifactRoot = path.join(input.hostSandbox, "trusted-artifacts")
+	const artifactRoot = path.join(input.hostSandbox, "artifacts")
 	const store = new FilesystemArtifactStore(artifactRoot)
 	const artifacts: ArtifactDescriptor[] = []
 	const run = await runUnitTest({
@@ -567,7 +660,8 @@ async function executeTrustedGrade(input: {
 		environment: input.request.environment,
 		processRunner: input.processRunner,
 		brokerRoot: false,
-		evidenceSink: createGraderEvidenceSink(store, String(input.request.attemptId), artifacts),
+		preparedVisibleCommands: input.preparedVisibleCommands,
+		evidenceSink: createGraderEvidenceSink(store, String(input.request.attemptId), artifacts, input.secrets),
 	})
 	await persistArtifactDescriptors(input.request.attemptId, artifacts, artifactRoot)
 	return { run, artifacts }
@@ -577,6 +671,7 @@ function createGraderEvidenceSink(
 	store: FilesystemArtifactStore,
 	attemptId: string,
 	descriptors: ArtifactDescriptor[],
+	secrets: string[],
 ) {
 	return async (
 		id: string,
@@ -587,7 +682,7 @@ function createGraderEvidenceSink(
 		const descriptor = await store.put({
 			attemptId,
 			kind: "grader_evidence",
-			bytes: new TextEncoder().encode(value),
+			bytes: new TextEncoder().encode(String(redact(value, { secrets }))),
 			mediaType,
 			access: "reviewer",
 		})
@@ -644,7 +739,8 @@ async function readJson(file: string): Promise<unknown> {
 
 export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] {
 	if (!Array.isArray(value)) return []
-	const toolNames = new Map<string, string>()
+	const calls = new Map<string, { name: string; input: unknown }>()
+	const sessions = new Map<string, unknown>()
 	const events: EvalTraceEvent[] = []
 	for (const message of value) {
 		if (!message || typeof message !== "object") continue
@@ -658,26 +754,38 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 			if (!item || typeof item !== "object") continue
 			const content = item as Record<string, unknown>
 			if (content.type === "tool_use" && typeof content.id === "string" && typeof content.name === "string") {
-				toolNames.set(content.id, content.name)
+				calls.set(content.id, { name: content.name, input: content.input })
 				events.push({
 					sequence: events.length + 1,
 					timestamp,
-					type: isCommandTool(content.name) ? "agent.turn.verification_started" : "agent.turn.tool_call",
-					payload: { tool: content.name },
+					type: "agent.turn.tool_call",
+					payload: { callId: content.id, name: content.name, tool: content.name, input: content.input },
 				})
 			}
 			if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
-				const tool = toolNames.get(content.tool_use_id) ?? "unknown"
-				const isCommand = isCommandTool(tool)
+				const call = calls.get(content.tool_use_id)
+				const tool = call?.name ?? "unknown"
 				const result =
 					typeof content.content === "string" ? content.content : JSON.stringify(content.content ?? "")
+				const receipt = isCommandTool(tool) ? commandReceipt(content.content) : {}
+				const command = sessionCommand(calls.get(content.tool_use_id)?.input, sessions)
+				if (receipt.sessionId !== undefined && call)
+					sessions.set(
+						String(receipt.sessionId),
+						sessions.get(String(objectRecord(call.input)?.session_id)) ?? call.input,
+					)
 				events.push({
 					sequence: events.length + 1,
 					timestamp,
-					type: isCommand ? "agent.turn.verification_result" : "agent.turn.tool_result",
+					type: "agent.turn.tool_result",
 					payload: {
+						callId: content.tool_use_id,
+						name: tool,
 						tool,
-						...(isCommand ? { ok: /exit code:\s*0\b/i.test(result) } : {}),
+						input: call?.input,
+						...command,
+						...receipt,
+						status: legacyResultStatus(content, result, isCommandTool(tool)),
 					},
 				})
 			}
@@ -686,11 +794,69 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 	return events
 }
 
-function isCommandTool(name: string): boolean {
-	return name === "exec_command" || name === "shell" || name === "execute_command"
+function legacyResultStatus(content: Record<string, unknown>, output: string, command: boolean): string {
+	if (content.is_error === true || content.timedOut === true) return "error"
+	if (["success", "error", "denied", "cancelled"].includes(String(content.status))) return String(content.status)
+	if (content.is_error === false) return "success"
+	if (!command) return "unknown"
+	const receipt = commandReceipt(output)
+	return receipt.exitCode === undefined ? "unknown" : receipt.exitCode === 0 ? "success" : "error"
 }
 
-function normalizeAgentTrace(records: unknown[]): EvalTraceEvent[] {
+function isCommandTool(name: string): boolean {
+	return ["exec_command", "shell", "execute_command", "write_stdin", "manage_command"].includes(name)
+}
+
+function commandReceipt(value: unknown): { exitCode?: number; executionStatus?: string; sessionId?: number } {
+	let structured = objectRecord(value)
+	if (typeof value === "string") {
+		try {
+			structured = objectRecord(JSON.parse(value))
+			if (!structured) return {}
+		} catch {
+			// Native control headers end at Output; stdout cannot establish exit or session metadata.
+			const nativeHeader =
+				/^(?:Chunk ID: [^\r\n]+\r?\n)?Wall time: \d+\.\d{4} seconds\r?\n(?:Process exited with code (-?\d+)\r?\n)?(?:Process running with session ID ([1-9]\d*)\r?\n)?(?:Original token count: \d+\r?\n)?Output:\r?\n/.exec(
+					value,
+				)
+			if (nativeHeader) {
+				if (nativeHeader[1] !== undefined) {
+					const exitCode = Number(nativeHeader[1])
+					return { exitCode, executionStatus: exitCode === 0 ? "success" : "error" }
+				}
+				const sessionId = Number(nativeHeader[2])
+				return Number.isSafeInteger(sessionId) && sessionId > 0 ? { sessionId, executionStatus: "running" } : {}
+			}
+			const header = value.split(/\r?\nOutput:\r?\n/, 1)[0]!
+			const exit =
+				/^\s*Exit code:\s*(-?\d+)\s*$/.exec(header) ??
+				/^Command executed in terminal[^\r\n]*\bExit code:\s*(-?\d+)\b/.exec(header)
+			return exit
+				? { exitCode: Number(exit[1]), executionStatus: Number(exit[1]) === 0 ? "success" : "error" }
+				: {}
+		}
+	}
+	if (typeof structured?.exit_code === "number" && Number.isInteger(structured.exit_code))
+		return { exitCode: structured.exit_code, executionStatus: structured.exit_code === 0 ? "success" : "error" }
+	if (typeof structured?.session_id === "number" && Number.isSafeInteger(structured.session_id))
+		return { sessionId: structured.session_id, executionStatus: "running" }
+	return {}
+}
+
+function sessionCommand(input: unknown, sessions: Map<string, unknown>): Record<string, unknown> {
+	const polling = objectRecord(input)
+	const original =
+		polling?.session_id === undefined ? undefined : objectRecord(sessions.get(String(polling.session_id)))
+	const command = original?.cmd ?? original?.command
+	return typeof command === "string"
+		? { command, ...(Array.isArray(original?.args) ? { args: original.args } : {}) }
+		: {}
+}
+
+export function normalizeAgentTrace(records: unknown[]): EvalTraceEvent[] {
+	const calls = new Map<string, { name: string; input: unknown }>()
+	const sessions = new Map<string, unknown>()
+	let previousResult: Record<string, unknown> | undefined
 	return records.flatMap((record, index) => {
 		if (!record || typeof record !== "object") return []
 		const row = record as Record<string, unknown>
@@ -705,8 +871,72 @@ function normalizeAgentTrace(records: unknown[]): EvalTraceEvent[] {
 		const rawSequence = typeof row.sequence === "number" ? row.sequence : index + 1
 		const type = nested.type.startsWith("agent.turn.") ? nested.type : `agent.turn.${nested.type}`
 		const { type: _type, ...payload } = nested
+		if (type === "agent.turn.assistant_committed") {
+			const response = objectRecord(payload.response)
+			if (Array.isArray(response?.items)) {
+				for (const item of response.items) {
+					const call = objectRecord(item)
+					if (call?.type === "tool_call" && typeof call.id === "string" && typeof call.name === "string")
+						calls.set(call.id, { name: call.name, input: call.arguments })
+				}
+			}
+		}
+		if (type === "agent.turn.tool_result" && typeof payload.callId === "string") {
+			const call = calls.get(payload.callId)
+			if (call) {
+				payload.input = call.input
+				payload.name ??= call.name
+				if (isCommandTool(call.name)) {
+					Object.assign(payload, sessionCommand(call.input, sessions), commandReceipt(payload.output))
+					if (typeof payload.sessionId === "number")
+						sessions.set(
+							String(payload.sessionId),
+							sessions.get(String(objectRecord(call.input)?.session_id)) ?? call.input,
+						)
+				}
+			}
+		} else if (
+			type === "agent.turn.verification_result" &&
+			previousResult &&
+			payload.toolName === previousResult.name &&
+			payload.status === (previousResult.executionStatus ?? previousResult.status) &&
+			previousResult.executionStatus !== "running" &&
+			verificationOutputMatches(previousResult.output, payload.output)
+		) {
+			payload.callId = previousResult.callId
+			payload.input = previousResult.input
+		}
+		previousResult = type === "agent.turn.tool_result" ? payload : undefined
 		return [{ sequence: rawSequence, timestamp, type, payload }]
 	})
+}
+
+function verificationOutputMatches(result: unknown, verification: unknown): boolean {
+	if (typeof verification !== "string") return false
+	if (result === verification) return true
+	const text =
+		typeof result === "string"
+			? result
+			: Array.isArray(result)
+				? result
+						.flatMap((part) => {
+							const item = objectRecord(part)
+							return item?.type === "text" && typeof item.text === "string" ? [item.text] : []
+						})
+						.join("\n")
+				: undefined
+	if (text === undefined) return false
+	// Match ToolScheduler's bounded public verification projection before associating its call identity.
+	const redacted = (text || "(tool did not return anything)").replace(
+		/(\b(?:api[_-]?key|secret|password|credential|authorization|private[_-]?key|bearer|token)\s*[:=]\s*)(["']?)([^\s"',}\n]+)(\2)/gi,
+		"$1$2[redacted]$4",
+	)
+	const suffix = "\n[truncated]"
+	return verification === (redacted.length > 8000 ? `${redacted.slice(0, 8000 - suffix.length)}${suffix}` : redacted)
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 }
 
 function normalizeUsage(metrics: Awaited<ReturnType<typeof getTasks>>[number]["taskMetrics"] | undefined) {
@@ -802,6 +1032,24 @@ function inheritedSecretEnvironment(jobToken: string | null): Record<string, str
 	return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => Boolean(entry[1])))
 }
 
+function originalTaskFixture(task: Task, manifest: BenchmarkTaskManifest): string {
+	const holdout = task.benchmarkPartition === "holdout" || manifest.partition === "holdout"
+	const root = holdout ? process.env.EVALS_PRIVATE_BENCHMARK_ROOT : EVALS_REPO_PATH
+	if (!root) throw new Error("EVALS_PRIVATE_BENCHMARK_ROOT is required to capture original holdout tests")
+	// Immutable expectations come from the admitted source, never an agent workspace override.
+	const sourceRoot = path.resolve(root)
+	const source = path.resolve(sourceRoot, manifest.fixture)
+	const relative = path.relative(sourceRoot, source)
+	if (
+		path.isAbsolute(manifest.fixture) ||
+		path.isAbsolute(relative) ||
+		relative === ".." ||
+		relative.startsWith(`..${path.sep}`)
+	)
+		throw new Error(`Task ${task.id} original fixture escapes its benchmark root`)
+	return source
+}
+
 async function prepareTaskWorkspace(
 	task: Task,
 	destination: string,
@@ -858,8 +1106,4 @@ async function finalizeContainerFailure(
 		phase = started.attempt.phase
 	}
 	await applyAttemptEvent(attemptId, { type: "finalize", status: "infrastructure_error", failureCode, failureDetail })
-}
-
-function portablePath(value: string): string {
-	return value.replaceAll("\\", "/")
 }

@@ -4,6 +4,13 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
+import { renderedAgentSettingsControls } from "./agentSettingsContract"
+import {
+	dismissRenderedDialogAndRestoreFocus,
+	dialogKeyTraceExpression,
+	dispatchRenderedDialogKey,
+	verifyRenderedDialogFocus,
+} from "./renderedDialogFocus"
 
 const RENDERED_CONTROL_TIMEOUT_MS = 15_000
 
@@ -200,6 +207,32 @@ export async function exerciseRenderedAcceptance(
 		retainFailure(expression, () => controls.check(expression, deadline))
 	const click = (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
 		retainFailure(element, () => controls.click(element, deadline))
+	const dialogKeyTraces: unknown[] = []
+	const dialogDriver = {
+		evaluate,
+		check,
+		key: async (key: "Tab" | "Escape", shift?: boolean) => {
+			await evaluate(dialogKeyTraceExpression(key, "install"))
+			let dispatchFailure: { error: unknown } | undefined
+			try {
+				await dispatchRenderedDialogKey(cdp, sessionId, key, shift)
+			} catch (error) {
+				dispatchFailure = { error }
+			}
+			try {
+				const trace = await evaluate(dialogKeyTraceExpression(key, "collect"))
+				dialogKeyTraces.push(trace)
+				if (dialogKeyTraces.length > 24) dialogKeyTraces.shift()
+				await fs.writeFile(
+					path.join(directory, "ui-dialog-key-traces.json"),
+					JSON.stringify({ nonce, traces: dialogKeyTraces }, null, 2),
+				)
+			} catch (error) {
+				if (!dispatchFailure) throw error
+			}
+			if (dispatchFailure) throw dispatchFailure.error
+		},
+	}
 	const outputPreview =
 		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
 	const activate = async (selector: string, label?: string, prefix = false) => {
@@ -305,26 +338,10 @@ export async function exerciseRenderedAcceptance(
 			)
 			try {
 				await activate('[data-testid="settings-tab-list"] [data-testid="tab-agents"]')
-				const basicControls = [
-					["agents-concurrency", "input", "Maximum concurrent managed agents"],
-					["agents-delegation-policy", "select", "Delegation policy"],
-					["agents-default-profile", "select", "Default child model/API profile"],
-				]
 				await check(
-					`(${javascriptLiteral(basicControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
+					`(${javascriptLiteral(renderedAgentSettingsControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
 				)
 				await capture("settings-agents-basic")
-				await activate(
-					'[data-testid="settings-content"] details[data-agents-advanced] > summary',
-					"Advanced agent settings",
-				)
-				await check(
-					"!!d.querySelector('[data-testid=settings-content] details[data-agents-advanced][open] input[id=agents-depth]')&&[...d.querySelector('[data-testid=settings-content] input[id=agents-timeout-review]').labels].some(l=>l.textContent.trim()==='Review timeout per run (seconds)')",
-				)
-				await evaluate(
-					"(()=>{d.querySelector('[data-testid=settings-content] input[id=agents-depth]').scrollIntoView({block:'center'});return true})()",
-				)
-				await capture("settings-agents-advanced")
 			} finally {
 				await activate(`[data-testid="settings-tab-list"] [data-testid=${javascriptLiteral(originalTab)}]`)
 			}
@@ -352,10 +369,16 @@ export async function exerciseRenderedAcceptance(
 			)
 			await activate("button", "Done")
 			await check("d.body.innerText.includes('Unsaved Changes')")
+			await verifyRenderedDialogFocus(dialogDriver, '[role="alertdialog"]', "Unsaved Changes")
+			const done = "[...d.querySelectorAll('button')].find(e=>e.textContent.trim()==='Done')"
+			await dismissRenderedDialogAndRestoreFocus(dialogDriver, '[role="alertdialog"]', done)
+			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
+			await activate("button", "Done")
 			await activate('[role="alertdialog"] button', "Cancel")
 			await check(
 				`!d.querySelector('[role=alertdialog]')&&${outputPreview}?.textContent?.includes('Large (20KB)')`,
 			)
+			await check(`d.activeElement===(${done})`)
 			await activate("button", "Done")
 			await activate('[role="alertdialog"] button', "Discard changes")
 			await check(`!(${outputPreview})`)
@@ -378,6 +401,15 @@ export async function exerciseRenderedAcceptance(
 			)
 			await capture(`${stage}-menu`)
 			const apply = stage.endsWith("-apply")
+			await activate('[role="menuitem"]', apply ? "Apply changes" : "Discard")
+			await check("!!d.querySelector('[role=dialog],[role=alertdialog]')")
+			await verifyRenderedDialogFocus(
+				dialogDriver,
+				'[role="dialog"],[role="alertdialog"]',
+				apply ? "Apply Worker changes?" : "Discard Worker changes?",
+			)
+			await dismissRenderedDialogAndRestoreFocus(dialogDriver, '[role="dialog"],[role="alertdialog"]', action)
+			await activate("button", `Actions for ${detail.nickname}`)
 			await activate('[role="menuitem"]', apply ? "Apply changes" : "Discard")
 			await check("!!d.querySelector('[role=dialog],[role=alertdialog]')")
 			await capture(`${stage}-confirmation`)

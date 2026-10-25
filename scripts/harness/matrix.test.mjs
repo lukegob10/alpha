@@ -8,7 +8,13 @@ import { lanes } from "./catalog.mjs"
 import { admitHarnessReport, buildEvidenceMatrix } from "./matrix.mjs"
 import { hostReceipt } from "./fixtures/evidence.mjs"
 import { expectedTestFiles, laneExpectedInventories } from "./lane-evidence.mjs"
-import { extendedHostFiles, hostSuiteVerdict, outcomeCampaignVerdict } from "./host-evidence.mjs"
+import {
+	extendedHostFiles,
+	hostSuiteVerdict,
+	outcomeCampaignVerdict,
+	renderedHostFiles,
+	stressHostFiles,
+} from "./host-evidence.mjs"
 import { proofFixture } from "./fixtures/outcome-proof.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
@@ -294,3 +300,31 @@ test("extended host evidence promotes only its executed feature contracts and re
 	assert.equal(partial.gate.status, "failed")
 	assert.equal(partial.evidence.find((entry) => entry.id === "host-html-preview")?.state, "discovered")
 })
+
+for (const [suite, files] of [
+	["rendered", renderedHostFiles],
+	["stress", stressHostFiles],
+]) {
+	test(`${suite} matrix admission requires the complete strict host suite and verified shutdown`, async () => {
+		const value = report(suite)
+		const step = value.steps.at(-1)
+		step.evidence = hostSuiteVerdict(files.map(hostReceipt), suite)
+		assert.equal(admitHarnessReport(value, context).state, "executed-pass")
+		const matrix = await buildEvidenceMatrix({ root, ...context, reports: [value], requiredLanes: [suite] })
+		assert.equal(matrix.gate.status, "passed")
+		assert.ok(matrix.hostCoverage.tests.some((entry) => entry.cadence === "manual"))
+		assert.ok(matrix.hostCoverage.tests.every((entry) => !Object.hasOwn(entry, "status")))
+		if (suite === "rendered") {
+			assert.equal(
+				matrix.evidence.find((entry) => entry.id === "host-rendered-interactions")?.state,
+				"executed-pass",
+			)
+			assert.equal(matrix.evidence.find((entry) => entry.id === "host-ui")?.state, "discovered")
+		}
+		value.cleanupUnverified = true
+		assert.equal(admitHarnessReport(value, context).reason, "unverified_host_cleanup")
+		delete value.cleanupUnverified
+		step.evidence.receipts[0].testSelection.grep = "subset"
+		assert.equal(admitHarnessReport(value, context).reason, "incomplete_host_selection")
+	})
+}

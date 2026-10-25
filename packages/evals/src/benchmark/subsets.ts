@@ -6,6 +6,7 @@ import { z } from "zod"
 import type { BenchmarkCatalog, BenchmarkTaskManifest } from "./contracts"
 
 const historySchema = z.object({
+	taskVersion: z.number().int().positive().optional(),
 	discrimination: z.number().min(0).max(1),
 	severity: z.number().min(0).max(1),
 	graderConfidence: z.number().min(0).max(1),
@@ -45,11 +46,29 @@ export type SubsetSelection = {
 	explanation: Array<{ taskId: string; source: "stable-core" | string; score: number; meanCostUsd: number }>
 }
 
-export type SubsetMeasurement = {
-	taskId: string
-	costUsd: number
-	latencyMs: number
-}
+export const subsetMeasurementSchema = z
+	.object({
+		taskId: z.string().regex(/^[a-z0-9][a-z0-9._/-]*$/),
+		taskVersion: z
+			.number({
+				required_error: "Subset measurement task version is required",
+				invalid_type_error: "Invalid subset measurement task version",
+			})
+			.int("Invalid subset measurement task version")
+			.positive("Invalid subset measurement task version")
+			.safe("Invalid subset measurement task version"),
+		costUsd: z
+			.number({ invalid_type_error: "Invalid measured cost" })
+			.finite("Invalid measured cost")
+			.nonnegative("Invalid measured cost"),
+		latencyMs: z
+			.number({ invalid_type_error: "Invalid measured latency" })
+			.finite("Invalid measured latency")
+			.nonnegative("Invalid measured latency"),
+	})
+	.strict()
+
+export type SubsetMeasurement = z.infer<typeof subsetMeasurementSchema>
 
 export async function loadBenchmarkSubset(file: string): Promise<BenchmarkSubsetManifest> {
 	return benchmarkSubsetSchema.parse(parse(await fs.readFile(file, "utf8"), { merge: true }))
@@ -70,6 +89,8 @@ export function selectBenchmarkSubset(catalog: BenchmarkCatalog, manifest: Bench
 		const history = manifest.history[id]
 		if (!task) throw new Error(`Subset references unknown visible task: ${id}`)
 		if (!history) throw new Error(`Subset history is missing for ${id}`)
+		if ((history.taskVersion ?? 1) !== task.version)
+			throw new Error(`Subset history version does not match ${id}@${task.version}`)
 		if (selected.some((entry) => entry.id === id)) throw new Error(`Subset selects ${id} more than once`)
 		selected.push(task)
 		explanation.push({ taskId: id, source, score: historyScore(history), meanCostUsd: history.meanCostUsd })
@@ -116,21 +137,27 @@ export function applySubsetMeasurements(
 	if (!Number.isInteger(sourceRunId) || sourceRunId < 1) throw new Error("Measurement source run id must be positive")
 	if (manifest.measurementRunIds.includes(sourceRunId))
 		throw new Error(`Subset history already contains run ${sourceRunId}`)
+	const parsed = z.array(subsetMeasurementSchema).min(1, "Subset measurements must not be empty").parse(measurements)
 	const seen = new Set<string>()
-	const history = structuredClone(manifest.history)
-	for (const measurement of measurements) {
+	for (const measurement of parsed) {
 		if (seen.has(measurement.taskId)) throw new Error(`Duplicate subset measurement: ${measurement.taskId}`)
 		seen.add(measurement.taskId)
-		if (!Number.isFinite(measurement.costUsd) || measurement.costUsd < 0)
-			throw new Error(`Invalid measured cost for ${measurement.taskId}`)
-		if (!Number.isFinite(measurement.latencyMs) || measurement.latencyMs < 0)
-			throw new Error(`Invalid measured latency for ${measurement.taskId}`)
-		const current = history[measurement.taskId]
-		if (!current) throw new Error(`Subset measurement references unknown task: ${measurement.taskId}`)
+		if (!Object.hasOwn(manifest.history, measurement.taskId))
+			throw new Error(`Subset measurement references unknown task: ${measurement.taskId}`)
+		const current = manifest.history[measurement.taskId]!
+		// Unversioned history retains its original v1 identity; new observations must declare theirs explicitly.
+		const expectedVersion = current.taskVersion ?? 1
+		if (measurement.taskVersion !== expectedVersion)
+			throw new Error(`Subset measurement version does not match ${measurement.taskId}@${expectedVersion}`)
+	}
+	const history = structuredClone(manifest.history)
+	for (const measurement of parsed) {
+		const current = history[measurement.taskId]!
 		const count = current.costLatencyBasis === "measured" ? current.observationCount : 0
 		const nextCount = count + 1
 		history[measurement.taskId] = {
 			...current,
+			taskVersion: measurement.taskVersion,
 			meanCostUsd: rollingMean(current.meanCostUsd, count, measurement.costUsd),
 			meanLatencyMs: rollingMean(current.meanLatencyMs, count, measurement.latencyMs),
 			costLatencyBasis: "measured",

@@ -1,7 +1,7 @@
 import { certifyHarness } from "../certification/index"
 import { findBaseline, recordPromotionOutcome } from "../db/index"
 import { canonicalJson, sha256 } from "../evidence/index"
-import { evaluatePromotion, type PromotionPolicy } from "./policy"
+import { evaluatePromotion, type ExperimentDecision, type PromotionPolicy } from "./policy"
 import type { ExperimentStatistics } from "./statistics"
 
 export async function promoteBaseline(
@@ -11,7 +11,11 @@ export async function promoteBaseline(
 		experimentIdentity: string
 		variantIdentity: string
 		taskSetIdentity: string
-		report: { control: ExperimentStatistics; candidate: ExperimentStatistics }
+		report: {
+			control: ExperimentStatistics
+			candidate: ExperimentStatistics
+			decisionEvidence?: ExperimentDecision
+		}
 		policy: PromotionPolicy
 		reviewer: string
 		rationale: string
@@ -39,6 +43,7 @@ export async function promoteBaseline(
 		highRiskRegressions: input.highRiskRegressions,
 		certified,
 		paired: input.paired,
+		decisionEvidence: input.report.decisionEvidence,
 	})
 	const promotion: Parameters<typeof recordPromotionOutcome>[0] = {
 		baselineIdentity: input.baselineIdentity,

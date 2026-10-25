@@ -4,7 +4,12 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { require as tsRequire } from "tsx/cjs/api"
 import { normalizeVitestEvidence, readExecutionJson, testEvidenceVerdict } from "./execution-evidence.mjs"
-import { hostSuiteVerdict, outcomeCampaignVerdict, readHostReceipts } from "./host-evidence.mjs"
+import {
+	hostSuiteVerdict,
+	outcomeCampaignVerdict,
+	readHostExecutionEvidence,
+	readHostReceipts,
+} from "./host-evidence.mjs"
 import { collectOutcomeBuild, OutcomeProofError, readOutcomeProofs } from "./outcome-proof.mjs"
 
 const { rejectSymlinkComponents } = tsRequire("../../apps/vscode-e2e/src/evidence/paths.ts", import.meta.url)
@@ -150,8 +155,19 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 					return verdict
 				}
 				stage = "host-receipts"
+				if (descriptor.runner === "extension-host") {
+					const evidence = await readHostExecutionEvidence(
+						hostDirectories.get(index),
+						step.startedAt,
+						descriptor.suite,
+						step.exitCode,
+					)
+					return {
+						...hostSuiteVerdict(evidence.receipts, descriptor.suite),
+						cleanupVerified: evidence.cleanupVerified,
+					}
+				}
 				const receipts = await readHostReceipts(hostDirectories.get(index), step.startedAt)
-				if (descriptor.runner === "extension-host") return hostSuiteVerdict(receipts, descriptor.suite)
 				stage = "campaign-report"
 				const campaignDirectory = path.join(campaignRoot, id)
 				const reports = (await readdir(campaignDirectory))
@@ -170,6 +186,7 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 					status: "failed",
 					stage,
 					reason: error instanceof OutcomeProofError ? error.reason : "missing_or_invalid_execution_receipt",
+					...(stage === "host-receipts" ? { cleanupVerified: false } : {}),
 				}
 			}
 		},

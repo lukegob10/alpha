@@ -195,7 +195,8 @@ export function validateRequestedReasoningEffort(
 	alphaModelInfo: AlphaVscodeLmModelInfo | undefined = getAlphaVscodeLmModelInfo(model),
 ): LiveCopilotReasoningValidation {
 	if (effort === undefined) {
-		return { status: "not-requested" }
+		// A retained sign-in profile must not become an implicit experimental condition.
+		return { status: "disabled", appliedEffort: "disable" }
 	}
 
 	if (effort === "disable") {
@@ -245,7 +246,7 @@ export function buildLiveCopilotConfiguration(
 		if (reasoning.appliedEffort === undefined) return undefined
 		configuration.enableReasoningEffort = true
 		configuration.reasoningEffort = reasoning.appliedEffort
-	} else if (reasoning.status === "disabled") {
+	} else if (reasoning.status === "disabled" || reasoning.status === "not-requested") {
 		configuration.enableReasoningEffort = false
 		configuration.reasoningEffort = "disable"
 	}
@@ -894,6 +895,7 @@ export async function configureLiveCopilot(
 	try {
 		currentConfiguration = api.getConfiguration()
 	} catch {
+		dependencies.signal?.throwIfAborted()
 		return finalizePreflightArtifact(
 			withPreflightError(
 				{
@@ -905,6 +907,7 @@ export async function configureLiveCopilot(
 			options.artifactsDir,
 		)
 	}
+	dependencies.signal?.throwIfAborted()
 
 	const configuration = buildLiveCopilotConfiguration(currentConfiguration, selection.selector, reasoning)
 	if (!configuration) {
@@ -923,6 +926,7 @@ export async function configureLiveCopilot(
 	try {
 		await api.setConfiguration(configuration)
 	} catch {
+		dependencies.signal?.throwIfAborted()
 		return finalizePreflightArtifact(
 			withPreflightError(
 				{
@@ -934,6 +938,7 @@ export async function configureLiveCopilot(
 			options.artifactsDir,
 		)
 	}
+	dependencies.signal?.throwIfAborted()
 
 	const appliedEffort = reasoning.appliedEffort
 	const configurationMetadata: LiveCopilotConfigurationMetadata = {

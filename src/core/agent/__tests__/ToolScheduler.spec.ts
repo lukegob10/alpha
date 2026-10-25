@@ -3657,10 +3657,14 @@ describe("ToolScheduler", () => {
 		const task = makeTask()
 		const controller = new AbortController()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const entered = deferred()
+		const release = deferred()
+		let executionSignal: AbortSignal | undefined
 		registry.register(
 			descriptor("read", "parallel", async ({ callbacks, signal }) => {
-				await wait(10)
-				expect(signal?.aborted).toBe(true)
+				executionSignal = signal
+				entered.resolve()
+				await release.promise
 				callbacks.pushToolResult("cancelled")
 			}),
 		)
@@ -3672,9 +3676,13 @@ describe("ToolScheduler", () => {
 			validateCall: () => {},
 			signal: controller.signal,
 		}).run(response({ id: "1", name: "read" }))
-		setTimeout(() => controller.abort(), 2)
+		await entered.promise
+		controller.abort()
+		release.resolve()
 
 		const outcome = await run
+		expect(executionSignal).toBeDefined()
+		expect(executionSignal?.aborted).toBe(true)
 		expect(outcome.status).toBe("aborted")
 		expect(resultIds(task)).toEqual([])
 	})

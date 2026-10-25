@@ -1,5 +1,6 @@
 import { evidenceFromText } from "../evidence"
 import { resolveHiddenGraderBoundary } from "../boundary"
+import { inspectNodeTestCompletion, nodeTestCompletionCommand } from "../nodeTestCompletion"
 import type { CommandGraderSpec, GraderContext, GraderPlugin, GraderResult } from "../types"
 
 export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
@@ -21,8 +22,9 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 		const evidence: GraderResult["evidence"] = []
 
 		for (const [index, command] of spec.commands.entries()) {
+			const execution = command.testExecution ? nodeTestCompletionCommand(command, cwd, spec.timeoutMs) : command
 			const result = await context.processRunner.run({
-				...command,
+				...execution,
 				cwd,
 				env: spec.cwd === "hidden" ? { EVAL_WORKSPACE_ROOT: workspaceRoot } : undefined,
 				timeoutMs: spec.timeoutMs,
@@ -54,11 +56,30 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 			}
 			if (result.exitCode !== 0) {
 				diagnostics.push({
-					code: "command_exit_nonzero",
+					code: command.testExecution ? "command_test_collector_error" : "command_exit_nonzero",
 					message: `${command.command} exited with ${result.exitCode}`,
 					severity: "error",
 				})
-				return baseResult(spec, "failed", diagnostics, evidence)
+				return baseResult(spec, command.testExecution ? "error" : "failed", diagnostics, evidence)
+			}
+			if (command.testExecution) {
+				const completion = inspectNodeTestCompletion(
+					result.fullStdout ?? result.stdout,
+					command.testExecution.expectedTests,
+					cwd,
+				)
+				if (completion !== "passed") {
+					diagnostics.push({
+						code:
+							completion === "error" ? "command_test_collector_error" : "command_test_completion_missing",
+						message:
+							completion === "error"
+								? "Test collector did not provide a complete execution receipt"
+								: "Expected original test assertions did not complete successfully",
+						severity: "error",
+					})
+					return baseResult(spec, completion, diagnostics, evidence)
+				}
 			}
 		}
 

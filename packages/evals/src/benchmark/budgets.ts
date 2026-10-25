@@ -102,15 +102,18 @@ export function assertCampaignBudgetAuthorized(budget: TierBudget, approved: boo
 export class CampaignCostLedger {
 	private reserved = 0
 	private consumed = 0
-	constructor(readonly hardCapUsd: number) {}
+	constructor(readonly hardCapUsd: number) {
+		assertMoney(hardCapUsd)
+	}
 	reserve(amount: number): void {
-		if (amount < 0) throw new Error("Reservation must be nonnegative")
+		assertMoney(amount)
 		if (money(this.consumed + this.reserved + amount) > this.hardCapUsd)
 			throw new Error("Insufficient campaign budget for the next task reservation")
 		this.reserved = money(this.reserved + amount)
 	}
 	settle(reservation: number, actual: number): void {
-		if (actual < 0 || reservation < 0) throw new Error("Campaign costs must be nonnegative")
+		assertMoney(reservation)
+		assertMoney(actual)
 		this.reserved = money(Math.max(0, this.reserved - reservation))
 		this.consumed = money(this.consumed + actual)
 		if (this.consumed > this.hardCapUsd) throw new Error("Campaign hard cap exceeded")
@@ -126,18 +129,31 @@ export class CampaignCostLedger {
 }
 
 export function evaluateEfficiencyRegression(input: {
-	baselineCostPerSuccess: number
-	candidateCostPerSuccess: number
-	baselineMedianLatencyMs: number
-	candidateMedianLatencyMs: number
+	baselineCostPerSuccess: number | null
+	candidateCostPerSuccess: number | null
+	baselineMedianLatencyMs: number | null
+	candidateMedianLatencyMs: number | null
 	capabilityImproved: boolean
 }): { accepted: boolean; reasons: string[] } {
 	const reasons: string[] = []
-	if (!input.capabilityImproved && input.candidateCostPerSuccess > input.baselineCostPerSuccess * 1.2)
+	const { baselineCostPerSuccess, candidateCostPerSuccess, baselineMedianLatencyMs, candidateMedianLatencyMs } = input
+	if (!knownMeasurement(baselineCostPerSuccess) || !knownMeasurement(candidateCostPerSuccess))
+		reasons.push("cost_measurement_unavailable_or_invalid")
+	else if (!input.capabilityImproved && candidateCostPerSuccess > baselineCostPerSuccess * 1.2)
 		reasons.push("cost_per_success_regression_over_20_percent")
-	if (!input.capabilityImproved && input.candidateMedianLatencyMs > input.baselineMedianLatencyMs * 1.25)
+	if (!knownMeasurement(baselineMedianLatencyMs) || !knownMeasurement(candidateMedianLatencyMs))
+		reasons.push("latency_measurement_unavailable_or_invalid")
+	else if (!input.capabilityImproved && candidateMedianLatencyMs > baselineMedianLatencyMs * 1.25)
 		reasons.push("median_latency_regression_over_25_percent")
 	return { accepted: reasons.length === 0, reasons }
+}
+
+function knownMeasurement(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+}
+
+function assertMoney(value: number): void {
+	if (!knownMeasurement(value)) throw new Error("Campaign money must be finite and nonnegative")
 }
 
 function money(value: number): number {

@@ -89,6 +89,31 @@ test("ordinary Windows process closure retains its uncertain cleanup without fai
 	assert.equal(input.report.cleanupUnverified, undefined)
 })
 
+test("missing owned host shutdown evidence preserves the build lease even after an ordinary Windows exit", async () => {
+	const input = fixture({
+		platform: "win32",
+		runProcess: async () => ({ exitCode: 0, signal: null, cleanupVerified: false }),
+		verify: async () => ({ status: "failed", stage: "host-receipts", cleanupVerified: false }),
+	})
+	await executeSteps(input)
+	assert.equal(input.report.status, "failed")
+	assert.equal(input.report.cleanupUnverified, true)
+	assert.equal(input.report.steps[1].status, "not_started")
+})
+
+test("a failed assertion with verified owned closure fails acceptance without leaking the build lease", async () => {
+	const input = fixture({
+		platform: "win32",
+		runProcess: async () => ({ exitCode: 1, signal: null, cleanupVerified: false }),
+		verify: async () => ({ status: "failed", reason: "invalid_host_receipt", cleanupVerified: true }),
+	})
+	await executeSteps(input)
+	assert.equal(input.report.status, "failed")
+	assert.equal(input.report.steps[0].evidence.cleanupVerified, true)
+	assert.equal(input.report.cleanupUnverified, undefined)
+	assert.equal(input.report.steps[1].status, "not_started")
+})
+
 test("a signalled Windows root with uncertain descendant cleanup retains the build lease", async () => {
 	let calls = 0
 	const input = fixture({

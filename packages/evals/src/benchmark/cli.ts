@@ -17,7 +17,8 @@ import {
 import { evaluateAdmission } from "./admission"
 import { runKeylessCalibration, syncVisibleKeylessReports } from "./calibration"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
-import { calibrationReportSchema } from "./contracts"
+import { calibrationReportSchema, type CalibrationReport } from "./contracts"
+import { CalibrationReportValidationError, readCalibrationReport, updateCalibrationReport } from "./calibrationStore"
 import { buildReviewSample } from "./reviewSampling"
 import { auditFrontierRelease, releaseFrontierSuite } from "./release"
 import { runBenchmarkModelCampaign, type ModelCampaignPartition, type ModelCampaignProvider } from "./modelCampaign"
@@ -118,13 +119,20 @@ async function main() {
 		if ((run.settings as { reasoningEffort?: unknown } | null)?.reasoningEffort !== "high")
 			throw new Error(`Run ${runId} did not use high reasoning`)
 		const selected = selectBenchmarkSubset(catalog, manifest)
-		const expected = new Set(selected.tasks.map(({ id }) => id))
+		const expected = new Map(selected.tasks.map(({ id, version }) => [id, version]))
 		if (tasks.length !== expected.size) throw new Error(`Run ${runId} does not contain the complete T1 subset`)
 		const measurements = await Promise.all(
 			tasks.map(async (task) => {
-				const taskId = task.benchmarkTaskIdentity?.split("@")[0]
-				if (!taskId || !expected.delete(taskId))
-					throw new Error(`Run ${runId} contains an unexpected or duplicate task: ${taskId ?? task.exercise}`)
+				const identity = task.benchmarkTaskIdentity
+				const parts =
+					typeof identity === "string" ? /^([a-z0-9][a-z0-9._/-]*)@([1-9][0-9]*)$/.exec(identity) : null
+				const taskId = parts?.[1]
+				const taskVersion = Number(parts?.[2])
+				if (!taskId || !Number.isSafeInteger(taskVersion) || expected.get(taskId) !== taskVersion)
+					throw new Error(
+						`Run ${runId} contains an unexpected, stale, or duplicate task identity: ${identity ?? task.exercise}`,
+					)
+				expected.delete(taskId)
 				if (task.iteration !== 1) throw new Error(`Run ${runId} contains repeated task ${taskId}`)
 				if (!task.taskMetrics) throw new Error(`Run ${runId} task ${taskId} is missing usage metrics`)
 				const trial = await findTrialForTask(task.id)
@@ -134,10 +142,10 @@ async function main() {
 					task.startedAt && task.finishedAt
 						? task.finishedAt.getTime() - task.startedAt.getTime()
 						: task.taskMetrics.duration
-				return { taskId, costUsd: task.taskMetrics.cost, latencyMs }
+				return { taskId, taskVersion, costUsd: task.taskMetrics.cost, latencyMs }
 			}),
 		)
-		if (expected.size) throw new Error(`Run ${runId} is missing T1 tasks: ${[...expected].join(", ")}`)
+		if (expected.size) throw new Error(`Run ${runId} is missing T1 tasks: ${[...expected.keys()].join(", ")}`)
 		const updated = applySubsetMeasurements(manifest, measurements, runId)
 		if (args.includes("--write")) {
 			const temporary = `${subsetFile}.tmp`
@@ -212,8 +220,10 @@ async function main() {
 		let privateBundles = 0
 		for (const { task } of catalog.tasks.values()) {
 			if (task.graders.some(({ bundleId }) => bundleId)) {
-				if (process.env.EVALS_PRIVATE_BENCHMARK_ROOT || args.includes("--require-private"))
-					await loadPrivateGraderBundle(task)
+				if (process.env.EVALS_PRIVATE_BENCHMARK_ROOT || args.includes("--require-private")) {
+					const bundle = await loadPrivateGraderBundle(task)
+					await bundle?.dispose()
+				}
 				privateBundles++
 			}
 		}
@@ -237,9 +247,19 @@ async function main() {
 	if (command === "admit") {
 		const reportPath = valueAfter(args, "--report")
 		const absolute = path.resolve(reportPath)
-		const candidate = { ...(JSON.parse(await fs.readFile(absolute, "utf8")) as object), admitted: true }
-		const result = evaluateAdmission(candidate)
-		if (result.admitted) await fs.writeFile(absolute, JSON.stringify(result.report, null, 2) + "\n")
+		let result!: ReturnType<typeof evaluateAdmission>
+		try {
+			await updateCalibrationReport(absolute, (current) => {
+				result = evaluateAdmission({ ...requireCalibrationReport(current), admitted: true })
+				return result.admitted ? result.report : undefined
+			})
+		} catch (error) {
+			if (!(error instanceof CalibrationReportValidationError)) throw error
+			result = {
+				admitted: false,
+				issues: error.issues.map(({ message }) => ({ code: "invalid_calibration_report", message })),
+			}
+		}
 		console.log(JSON.stringify(result, null, 2))
 		if (!result.admitted) process.exitCode = 1
 		return
@@ -247,40 +267,56 @@ async function main() {
 	if (command === "record-model") {
 		const reportPath = path.resolve(valueAfter(args, "--report"))
 		const trialsPath = path.resolve(valueAfter(args, "--trials"))
-		const report = mergeModelCalibration(
-			JSON.parse(await fs.readFile(reportPath, "utf8")),
-			JSON.parse(await fs.readFile(trialsPath, "utf8")) as ModelCalibrationTrial[],
+		const trials = JSON.parse(await fs.readFile(trialsPath, "utf8")) as ModelCalibrationTrial[]
+		const delivery: unknown = args.includes("--delivery")
+			? JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--delivery")), "utf8"))
+			: undefined
+		const saved = await updateCalibrationReport(reportPath, (current) =>
+			mergeModelCalibration(requireCalibrationReport(current), trials, delivery),
 		)
-		await fs.writeFile(reportPath, JSON.stringify(report, null, 2) + "\n")
-		console.log(JSON.stringify({ report: reportPath, models: report.models }, null, 2))
+		const report = requireCalibrationReport(saved.report)
+		console.log(
+			JSON.stringify(
+				{ report: reportPath, models: report.models, modelDelivery: report.modelDelivery ?? null },
+				null,
+				2,
+			),
+		)
 		return
 	}
 	if (command === "review") {
 		const reportPath = path.resolve(valueAfter(args, "--report"))
-		const report = JSON.parse(await fs.readFile(reportPath, "utf8")) as {
-			humanReview: {
-				reviewedTrialIds: string[]
-				unresolvedFalsePositivePasses: number
-				reviewer?: string
-				qualityApproved?: boolean
-			}
-		}
+		const snapshot = await readCalibrationReport(reportPath)
+		const original = requireCalibrationReport(snapshot.report)
 		const reviewedTrialIds = optionalValueAfter(args, "--trial-ids")
-			? (JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--trial-ids")), "utf8")) as string[])
-			: report.humanReview.reviewedTrialIds
-		report.humanReview = {
-			...report.humanReview,
-			reviewer: valueAfter(args, "--reviewer"),
-			qualityApproved: args.includes("--approve-quality"),
-			reviewedTrialIds: [...new Set(reviewedTrialIds)].sort(),
-		}
-		await fs.writeFile(reportPath, JSON.stringify(report, null, 2) + "\n")
+			? await readReviewedTrialIds(valueAfter(args, "--trial-ids"))
+			: original.humanReview.reviewedTrialIds
+		const reviewer = valueAfter(args, "--reviewer")
+		const saved = await updateCalibrationReport(
+			reportPath,
+			(current) => {
+				const report = requireCalibrationReport(current)
+				const reviewed = {
+					...report,
+					humanReview: {
+						...report.humanReview,
+						reviewer,
+						qualityApproved: args.includes("--approve-quality"),
+						reviewedTrialIds: [...new Set(reviewedTrialIds)].sort(),
+					},
+				}
+				return { ...reviewed, admitted: report.admitted && evaluateAdmission(reviewed).admitted }
+			},
+			{ expectedRevision: snapshot.revision },
+		)
+		const report = requireCalibrationReport(saved.report)
 		console.log(JSON.stringify({ report: reportPath, humanReview: report.humanReview }, null, 2))
 		return
 	}
 	if (command === "review-sample") {
 		const privateRoot = process.env.EVALS_PRIVATE_BENCHMARK_ROOT
 		if (!privateRoot) throw new Error("EVALS_PRIVATE_BENCHMARK_ROOT is required")
+		const disagreementTrialIds = await readDisagreementTrialIds(args)
 		const catalog = await loadBenchmarkCatalog(EVALS_REPO_PATH)
 		const suite = catalog.suites.find(({ id }) => id === "frontier-v1")
 		if (!suite) throw new Error("frontier-v1 suite is missing")
@@ -295,12 +331,10 @@ async function main() {
 				)
 			}),
 		)
-		const disagreementTrialIds = optionalValueAfter(args, "--disagreements")
-			? (JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--disagreements")), "utf8")) as string[])
-			: undefined
 		const manifest = buildReviewSample(reports, {
 			seed: optionalValueAfter(args, "--seed") ?? `frontier-v1@${suite.version}`,
 			disagreementTrialIds,
+			taskIdentities: suite.tasks.map(({ id, version }) => `${id}@${version}`),
 		})
 		const output = path.resolve(
 			optionalValueAfter(args, "--output") ??
@@ -380,6 +414,7 @@ async function main() {
 			publicRoot: EVALS_REPO_PATH,
 			privateRoot,
 			reviewer: valueAfter(args, "--reviewer"),
+			disagreementTrialIds: await readDisagreementTrialIds(args),
 		})
 		console.log(
 			JSON.stringify({ released: true, output: result.output, tasks: result.suite.tasks.length }, null, 2),
@@ -389,7 +424,11 @@ async function main() {
 	if (command === "release-audit") {
 		const privateRoot = process.env.EVALS_PRIVATE_BENCHMARK_ROOT
 		if (!privateRoot) throw new Error("EVALS_PRIVATE_BENCHMARK_ROOT is required")
-		const audit = await auditFrontierRelease({ publicRoot: EVALS_REPO_PATH, privateRoot })
+		const audit = await auditFrontierRelease({
+			publicRoot: EVALS_REPO_PATH,
+			privateRoot,
+			disagreementTrialIds: await readDisagreementTrialIds(args),
+		})
 		console.log(JSON.stringify(audit, null, 2))
 		if (!audit.releaseReady) process.exitCode = 1
 		return
@@ -512,18 +551,19 @@ async function main() {
 		const results = await pMap(
 			entries,
 			async (entry) => {
-				const report = await runKeylessCalibration({
-					task: entry.task,
-					publicRoot: EVALS_REPO_PATH,
-					privateRoot,
-				})
 				const outputRoot =
 					entry.task.partition === "holdout"
 						? path.join(privateRoot, "reports")
 						: path.join(EVALS_REPO_PATH, "calibration")
 				await fs.mkdir(outputRoot, { recursive: true })
 				const output = path.join(outputRoot, `${entry.task.id}.keyless.json`)
-				await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n")
+				const snapshot = await readCalibrationReport(output)
+				const report = await runKeylessCalibration({
+					task: entry.task,
+					publicRoot: EVALS_REPO_PATH,
+					privateRoot,
+				})
+				await updateCalibrationReport(output, () => report, { expectedRevision: snapshot.revision })
 				return {
 					taskId: entry.task.id,
 					output,
@@ -560,6 +600,21 @@ async function main() {
 	throw new Error(
 		"Usage: benchmark <validate|author-check|fixture-check|template|subset|history-update|estimate|admit|record-model|review|review-sample|paired-report|calibrate-keyless|sync-keyless|release-audit|release|run-model|gate>",
 	)
+}
+
+function requireCalibrationReport(report: CalibrationReport | undefined): CalibrationReport {
+	if (!report) throw new Error("Calibration report is missing")
+	return report
+}
+
+async function readReviewedTrialIds(file: string): Promise<string[]> {
+	const parsed: unknown = JSON.parse(await fs.readFile(path.resolve(file), "utf8"))
+	const message = "--trial-ids must contain a JSON array of non-empty trial ids"
+	if (!Array.isArray(parsed)) throw new Error(message)
+	return parsed.map((id: unknown) => {
+		if (typeof id !== "string" || !id.trim()) throw new Error(message)
+		return id
+	})
 }
 
 async function writeJsonAtomic(output: string, value: unknown): Promise<void> {
@@ -606,6 +661,15 @@ async function readTaskIdsFile(file: string): Promise<string[]> {
 	const taskIds = [...new Set(parsed)] as string[]
 	if (taskIds.length !== parsed.length) throw new Error("--tasks-file contains duplicate task ids")
 	return taskIds
+}
+
+async function readDisagreementTrialIds(args: string[]): Promise<string[]> {
+	const parsed: unknown = JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--disagreements")), "utf8"))
+	if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string" || !id.trim()))
+		throw new Error("--disagreements must contain a JSON array of trial ids")
+	const trialIds = [...new Set(parsed)] as string[]
+	if (trialIds.length !== parsed.length) throw new Error("--disagreements contains duplicate trial ids")
+	return trialIds
 }
 
 function optionalNumberAfter(args: string[], flag: string): number | undefined {

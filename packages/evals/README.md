@@ -61,3 +61,35 @@ Use `benchmark:template`, `benchmark:author-check`, `benchmark:subset`, and
 for persisted-run commands. See [ADDING-EVALS.md](ADDING-EVALS.md) for exercise structure
 and [../../evals](../../evals) for the versioned extension evaluation corpus. The curated
 problem-solving set is [../../evals/problem-solving/v1.yaml](../../evals/problem-solving/v1.yaml).
+
+Model campaigns retain scheduled, scoreable, excluded, and missing trial counts separately in calibration reports.
+Capability calibration still requires five scoreable trials and a fresh quality review. The benchmark `record-model`
+command accepts an optional `--delivery <file.json>` containing the complete delivery record; without it, the denominator
+remains unknown and any replaced model arm loses its old delivery record. Historical reports remain readable.
+
+Calibration report writers share a per-file lock and atomic publication on local filesystems. Model ingestion and keyless
+sync merge against the latest destination report; review and fresh keyless grading reject stale snapshots. Keyless sync
+preserves model delivery alongside its observations and clears quality approval and admission when the keyless evidence
+changes.
+Revoking quality approval or required review coverage also clears admission. Conflicts require a fresh read and an
+explicit retry; approval decisions are never replayed automatically.
+
+Locks use the report's `.calibration.lock` suffix and are not removed based on age. After a crashed writer, stop all writers
+for that report, inspect the retained report and lock's process ID, and remove only the confirmed orphan lock before
+retrying. External editors do not participate in this protocol; stop report writers before manual edits. Network
+filesystems are outside this locking guarantee.
+
+`review-sample`, `release-audit`, and `release` require `--disagreements <file.json>` with independently reviewed
+grader-disagreement trial IDs. Supply an explicit empty array when there are none. The review sample must cover the
+current suite's complete task and trial population; regenerate a legacy sample before a new release.
+
+```sh
+pnpm --filter @alpha-code/evals benchmark:review-sample --disagreements reviewed-disagreements.json
+pnpm --filter @alpha-code/evals benchmark:release-audit --disagreements reviewed-disagreements.json
+```
+
+Subset history updates accept only measurements whose saved task identity matches the selected task's exact version.
+The benchmark `gate` input requires `pairedEvidence` containing sealed control/candidate campaigns, their predeclared
+experiment, the expected model identity, and the predicted capability. The improvement plan's population must be
+`capability:<predictedCapability>` and cover that capability's declared tasks. Aggregate-only legacy inputs remain
+readable but cannot establish a new promotion.

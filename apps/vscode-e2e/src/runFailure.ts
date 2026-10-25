@@ -10,6 +10,7 @@ export const TEST_RUN_FAILURE_CODES = [
 	"host-completion-missing",
 	"host-completion-invalid",
 	"host-startup-timeout",
+	"host-execution-timeout",
 	"host-close-timeout",
 	"host-version-mismatch",
 	"host-not-owned",
@@ -61,6 +62,8 @@ const FAILURE_GUIDANCE: Record<TestRunFailureCode, string> = {
 		"The development host receipt did not match this launch. Preserve the profile and evidence; do not resume from stale completion data.",
 	"host-startup-timeout":
 		"The live test sidecar did not start within its deadline. Inspect the dedicated window and retained lease before another launch.",
+	"host-execution-timeout":
+		"The automatic live test exceeded its overall execution deadline. Inspect the cleanup result and retained evidence before reusing the dedicated profile.",
 	"host-close-timeout":
 		"The dedicated window did not close after completion. Close that window normally and verify ownership before releasing its retained lease.",
 	"setup-incomplete":

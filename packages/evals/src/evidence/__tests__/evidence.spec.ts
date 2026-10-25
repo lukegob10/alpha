@@ -137,6 +137,36 @@ describe("M4 evidence contracts", () => {
 		expect(JSON.stringify(result)).not.toContain(secret)
 	})
 
+	it.each(["line1\nline2", "a\\b", 'a"b'])(
+		"detects configured secrets before and after JSON escaping: %j",
+		(secret) => {
+			expect(containsSecret(`prefix ${secret} suffix`, [secret])).toBe(true)
+			expect(containsSecret({ value: `prefix ${secret} suffix` }, [secret])).toBe(true)
+			expect(containsSecret(redact({ value: secret }, { secrets: [secret] }), [secret])).toBe(false)
+		},
+	)
+
+	it("retains numeric token usage and unknown metrics while redacting credential-shaped values", () => {
+		const value = redact({
+			inputTokens: 42,
+			outputTokens: null,
+			reasoningTokens: 7,
+			tokensIn: 50,
+			token: 1234,
+			apiKey: 1234,
+			request: { outputTokens: "credential", inputTokens: -1 },
+		})
+		expect(value).toMatchObject({ inputTokens: 42, outputTokens: null, reasoningTokens: 7, tokensIn: 50 })
+		expect(value).toMatchObject({
+			token: expect.stringContaining("REDACTED"),
+			apiKey: expect.stringContaining("REDACTED"),
+			request: {
+				outputTokens: expect.stringContaining("REDACTED"),
+				inputTokens: expect.stringContaining("REDACTED"),
+			},
+		})
+	})
+
 	it("creates sequential redacted event envelopes with payload digests", () => {
 		const journal = new EventJournal(identity, { secrets: ["canary"] })
 		const first = journal.append("tool.requested", { token: "canary" }, "2026-01-01T00:00:00.000Z")
@@ -382,6 +412,7 @@ describe("M4 evidence contracts", () => {
 	it.each([
 		{ timedOut: true, exitCode: null, stderr: "timeout" },
 		{ timedOut: false, exitCode: 1, stderr: "failed" },
+		{ timedOut: false, exitCode: 0, stderr: "", outputTruncated: true },
 	])("rejects workspace evidence when a structured Git command fails", async (result) => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "evidence-git-failure-"))
 		const store = new FilesystemArtifactStore(path.join(root, "store"))
@@ -392,7 +423,7 @@ describe("M4 evidence contracts", () => {
 				stopReason: "failed",
 				store,
 				processRunner: {
-					run: async () => ({ ...result, stdout: "", durationMs: 1, outputTruncated: false }),
+					run: async () => ({ outputTruncated: false, ...result, stdout: "", durationMs: 1 }),
 				},
 			}),
 		).rejects.toThrow("git")

@@ -6,7 +6,7 @@ export class WorkflowRequestBudget {
 	usedByPurpose = { task: 0, "reasoning-summary": 0 }
 	exhausted = false
 	failure?: WorkflowFailure
-	model: WorkflowResult["model"] = {}
+	model: WorkflowResult["model"] = { reasoningEffort: undefined }
 	/** Opt-in test fault at the real response boundary; ordinary guards preserve response identity. */
 	transformResponse?: (response: unknown) => unknown
 	responseProbe?: LiveResponseProbe
@@ -14,6 +14,10 @@ export class WorkflowRequestBudget {
 	constructor(
 		readonly limit: number,
 		private readonly expectedModelId?: string,
+		private readonly expectedReasoningEffort: string | undefined = process.env.ALPHA_E2E_PROVIDER_MODE ===
+		"live-copilot"
+			? process.env.ALPHA_E2E_ACTUAL_REASONING_EFFORT
+			: undefined,
 	) {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
 			throw new WorkflowFailure("configuration", "invalid_request_limit", true)
@@ -35,10 +39,27 @@ export class WorkflowRequestBudget {
 			throw this.failure
 		}
 		this.model = {
+			...this.model,
 			id: client.id,
 			family: typeof client.family === "string" ? client.family : undefined,
 			vendor: typeof client.vendor === "string" ? client.vendor : undefined,
 		}
+	}
+
+	/** Verify the sent options, independently of the preflight's intended configuration. */
+	observeRequestOptions(options: unknown): void {
+		if (this.expectedReasoningEffort === undefined) return
+		const request = options && typeof options === "object" ? (options as Record<string, unknown>) : {}
+		const effort = (value: unknown) =>
+			value && typeof value === "object" ? (value as Record<string, unknown>).reasoningEffort : undefined
+		const actual = effort(request.modelOptions)
+		const compatible = effort(request.configuration)
+		const expected = this.expectedReasoningEffort === "disable" ? undefined : this.expectedReasoningEffort
+		if (actual !== expected || (compatible !== undefined && compatible !== expected)) {
+			this.failure = new WorkflowFailure("configuration", "actual_reasoning_effort_mismatch", true)
+			throw this.failure
+		}
+		this.model.reasoningEffort = actual === undefined ? "disable" : String(actual)
 	}
 }
 
@@ -81,6 +102,8 @@ export function guardVsCodeLmHandler(
 					const value: unknown = Reflect.get(client, key, client)
 					if (key === "sendRequest") {
 						return (...requestArgs: unknown[]) => {
+							// Presentation summaries intentionally use a separate, lower effort configuration.
+							if (purpose === "task") budget.observeRequestOptions(requestArgs[1])
 							budget.consume(purpose)
 							const request = budget.used
 							const probe = purpose === "task" ? budget.responseProbe : undefined

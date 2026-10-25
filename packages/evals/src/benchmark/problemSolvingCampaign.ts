@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import * as fs from "node:fs/promises"
+import fs from "node:fs/promises"
 import * as path from "node:path"
 
 import { parse } from "yaml"
@@ -12,8 +12,9 @@ import {
 	type GraderRunResult,
 } from "../grading/index"
 import { ExecaHarnessProcessRunner, systemClock, type HarnessProcessRunner } from "../orchestration/index"
+import { captureNodeTestAssertions } from "../grading/nodeTestCompletion"
 import { benchmarkSuiteManifestSchema, type BenchmarkTaskManifest } from "./contracts"
-import { loadProblemSolvingSet, type ProblemSolvingTask } from "./problemSolving"
+import { assertProblemSolvingFixture, loadProblemSolvingSet, type ProblemSolvingTask } from "./problemSolving"
 
 export const problemSolvingFailureClasses = [
 	"provider",
@@ -341,6 +342,8 @@ export async function runProblemSolvingAttempt(options: {
 	await fs.mkdir(profileDir, { recursive: true })
 	await fs.mkdir(artifactsDir, { recursive: true })
 	await fs.cp(fixture, workspace, { recursive: true })
+	// Bind the copied input before its tests become acceptance authority; the source may have changed during copying.
+	await assertProblemSolvingFixture(task, "workspace", path.dirname(workspace), "Copied problem-solving")
 	// Capture acceptance authority before exposing the editable workspace to the agent.
 	const preparedGrader = await prepareWorkspaceGrader(workspace, task.id)
 	const promptPath = path.join(workspace, "prompt.md")
@@ -375,7 +378,24 @@ export async function runProblemSolvingAttempt(options: {
 		taskId: task.id,
 		promptPath,
 	}
-	const host = await options.runExtension(request)
+	const observed = await options.runExtension(request)
+	const identityMismatch =
+		options.provider === "live-copilot" &&
+		observed.phase === "sample" &&
+		observed.status === "passed" &&
+		(!observed.modelId?.trim() ||
+			!observed.effort?.trim() ||
+			(request.modelId !== undefined && observed.modelId !== request.modelId) ||
+			(request.effort !== undefined && observed.effort !== request.effort))
+	const host: ProblemSolvingHostResult = identityMismatch
+		? {
+				...observed,
+				status: "failed",
+				failureClass: "provider",
+				failureCategory: "configuration",
+				failureCode: "actual_model_mismatch",
+			}
+		: observed
 	const diagnostic = host.phase !== "sample" || options.provider !== "live-copilot"
 	const skipGrader =
 		diagnostic ||
@@ -404,7 +424,7 @@ export async function runProblemSolvingAttempt(options: {
 		buildIdentity: host.buildIdentity,
 		providerMode: options.provider,
 		countsAsSolving: solved,
-		model: { id: host.modelId ?? options.modelId ?? null, effort: host.effort ?? options.effort ?? null },
+		model: { id: host.modelId ?? null, effort: host.effort ?? null },
 		e2eApprovalPolicySha256: host.e2eApprovalPolicySha256 ?? null,
 		tracePath: host.tracePath ?? null,
 		usage: host.usage,
@@ -443,7 +463,17 @@ async function gradeWorkspace(
 		type: "command",
 		hardGate: true,
 		failureClass: "outcome",
-		commands: [{ command: "node", args: ["--test", ...prepared.files] }],
+		commands: [
+			{
+				command: "node",
+				args: ["--test", ...prepared.files],
+				testExecution: {
+					runner: "node-test",
+					expectedTests: prepared.expectedTests,
+					sourceDigests: prepared.sourceDigests,
+				},
+			},
+		],
 		cwd: "workspace",
 		timeoutMs: 30_000,
 		maxOutputBytes: 256_000,
@@ -544,7 +574,15 @@ async function prepareWorkspaceGrader(workspace: string, taskId: string) {
 		failureClass: "outcome",
 		assertions,
 	}
-	return { files: await visibleTestFiles(workspace), integrity, inputs }
+	const files = await visibleTestFiles(workspace)
+	const sourceDigests: Array<{ file: string; digest: string }> = []
+	const expectedTests = files.flatMap((file) => {
+		const input = inputs.find((candidate) => candidate.path === file)
+		if (!input) throw new Error(`Original test selection is missing its owned source: ${file}`)
+		sourceDigests.push({ file, digest: `sha256:${createHash("sha256").update(input.bytes).digest("hex")}` })
+		return captureNodeTestAssertions(file, input.bytes.toString("utf8"))
+	})
+	return { files, integrity, inputs, expectedTests, sourceDigests }
 }
 
 async function visibleTestFiles(workspace: string): Promise<string[]> {
@@ -562,16 +600,23 @@ async function visibleTestFiles(workspace: string): Promise<string[]> {
 }
 
 async function resolveFixture(evalRoot: string, task: ProblemSolvingTask): Promise<string> {
-	if (task.fixture) return path.join(evalRoot, task.fixture)
-	if (task.source !== "alpha-task-bank") {
-		throw new Error(`Task ${task.id} has no local fixture for the extension campaign`)
+	let relative = task.fixture
+	if (!relative) {
+		if (task.source !== "alpha-task-bank") {
+			throw new Error(`Task ${task.id} has no local fixture for the extension campaign`)
+		}
+		const suite = benchmarkSuiteManifestSchema.parse(
+			parse(await fs.readFile(path.join(evalRoot, "frontier-v1.yaml"), "utf8"), { merge: true }),
+		)
+		const entry = suite.tasks.find(
+			(candidate: BenchmarkTaskManifest) => candidate.id === task.id && candidate.version === task.version,
+		)
+		if (!entry) throw new Error(`Frontier fixture is missing for ${task.id}@${task.version}`)
+		relative = entry.fixture
 	}
-	const suite = benchmarkSuiteManifestSchema.parse(
-		parse(await fs.readFile(path.join(evalRoot, "frontier-v1.yaml"), "utf8"), { merge: true }),
-	)
-	const entry = suite.tasks.find((candidate: BenchmarkTaskManifest) => candidate.id === task.id)
-	if (!entry) throw new Error(`Frontier fixture is missing for ${task.id}`)
-	return path.join(evalRoot, entry.fixture)
+	// Holdout bytes are checked only when selected for execution, never while reading the public task registry.
+	await assertProblemSolvingFixture(task, relative, evalRoot, "Problem-solving")
+	return path.resolve(evalRoot, relative)
 }
 
 export function defaultExtensionRunnerPath(repositoryRoot: string): string {

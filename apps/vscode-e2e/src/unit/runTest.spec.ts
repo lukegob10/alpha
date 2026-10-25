@@ -22,6 +22,16 @@ const writeHostPreflight = async (options: HostLaunchOptions, version = "1.138.0
 			actualVSCodeVersion: version,
 			status: code ? "blocked" : "passed",
 			ownershipGate: env.ALPHA_E2E_PROFILE_DIR ? "verified" : undefined,
+			...(env.ALPHA_E2E_PROVIDER_MODE === "live-copilot"
+				? {
+						providerIdentity: {
+							schemaVersion: 1,
+							before: { id: "github.copilot-chat", version: "0.66.0", entrypointSha256: "a".repeat(64) },
+							after: { id: "github.copilot-chat", version: "0.66.0", entrypointSha256: "a".repeat(64) },
+							status: "unchanged",
+						},
+					}
+				: {}),
 			code,
 		}),
 	)

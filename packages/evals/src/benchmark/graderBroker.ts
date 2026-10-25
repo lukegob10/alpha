@@ -47,13 +47,14 @@ const artifactSchema: z.ZodType<ArtifactDescriptor> = z.object({
 	schemaVersion: z.literal(1),
 	id: z.string().min(1),
 	attemptId: z.string().min(1),
-	kind: z.enum([...REQUIRED_ARTIFACT_KINDS, "full_output", "grader_evidence", "other"]),
+	kind: z.enum([...REQUIRED_ARTIFACT_KINDS, "full_output", "grader_evidence", "workspace_snapshot", "other"]),
 	digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 	mediaType: z.string().min(1),
 	sizeBytes: z.number().int().nonnegative(),
 	access: z.enum(["private", "reviewer", "public"]),
 	retention: z.enum(["campaign", "baseline", "permanent"]),
 	uploadState: z.literal("complete"),
+	captureStatus: z.enum(["captured", "captured-empty", "missing", "unavailable", "failed"]).optional(),
 	createdAt: z.string().datetime({ offset: true }),
 })
 const responseSchema = z.discriminatedUnion("ok", [

@@ -11,6 +11,7 @@ interface ModalProps {
 
 export function Modal({ isOpen, onClose, title, children, className = "" }: ModalProps) {
 	const contentRef = useRef<HTMLDivElement>(null)
+	const openerRef = useRef<HTMLElement | null>(null)
 
 	return (
 		<Dialog.Root open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -21,11 +22,19 @@ export function Modal({ isOpen, onClose, title, children, className = "" }: Moda
 						aria-describedby={undefined}
 						onOpenAutoFocus={(event) => {
 							event.preventDefault()
+							const activeElement = contentRef.current?.ownerDocument.activeElement
+							openerRef.current = activeElement instanceof HTMLElement ? activeElement : null
 							const firstControl = contentRef.current?.querySelector<HTMLElement>(
 								'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
 							)
 							const focusTarget = firstControl ?? contentRef.current
 							focusTarget?.focus()
+						}}
+						onCloseAutoFocus={(event) => {
+							// This controlled modal has no Radix Trigger to restore focus to.
+							event.preventDefault()
+							if (openerRef.current?.isConnected) openerRef.current.focus()
+							openerRef.current = null
 						}}
 						className={`surface-overlay relative flex h-[90%] w-[90%] max-w-[1200px] flex-col overflow-hidden rounded-2xl ${className}`}>
 						<Dialog.Title className="sr-only">{title}</Dialog.Title>

@@ -7,7 +7,14 @@ import * as vscode from "vscode"
 import type { AlphaCodeAPI } from "@alpha-code/types"
 
 import { waitFor } from "./utils"
-import { createSerializedJsonWriter, summarizeMochaFailure, type MochaFailureDiagnostic } from "./preflightEvidence"
+import {
+	createSerializedJsonWriter,
+	summarizeMochaFailure,
+	writeJsonAtomically,
+	type MochaFailureDiagnostic,
+} from "./preflightEvidence"
+import { withLiveProviderIdentity } from "../liveProviderIdentity"
+import { readBounded } from "../evidence/paths"
 import { verifyTestHostOwnership } from "../hostOwnership"
 import { discoverLiveCopilotModels, type LiveCopilotPreflightErrorCode } from "../liveModelSelection"
 import {
@@ -122,6 +129,32 @@ async function waitForSetup(
 }
 
 export async function run() {
+	if (process.env.ALPHA_E2E_PROVIDER_MODE !== "live-copilot") return runSuite()
+	await withLiveProviderIdentity(
+		runSuite,
+		() => vscode.extensions.getExtension("GitHub.copilot-chat"),
+		async (providerIdentity) => {
+			const artifactsDir = process.env.ALPHA_E2E_ARTIFACTS_DIR
+			if (!artifactsDir) throw new TestRunError("evidence-failed", "Live conditions require run-owned evidence")
+			const target = path.join(artifactsDir, "host-preflight.json")
+			const preflight = JSON.parse((await readBounded(target, 64 * 1024)).toString("utf8"))
+			if (preflight.runId !== process.env.ALPHA_E2E_RUN_ID)
+				throw new TestRunError("evidence-failed", "Live provider conditions do not match this run")
+			await writeJsonAtomically(target, {
+				...preflight,
+				providerIdentity,
+				...(preflight.status === "passed" &&
+				providerIdentity.status !== "unchanged" &&
+				process.env.ALPHA_E2E_SETUP !== "1"
+					? { status: "blocked", code: "provider-unavailable" }
+					: {}),
+			})
+		},
+		{ setup: process.env.ALPHA_E2E_SETUP === "1" },
+	)
+}
+
+async function runSuite() {
 	const artifactsDir = process.env.ALPHA_E2E_ARTIFACTS_DIR
 	const runId = process.env.ALPHA_E2E_RUN_ID
 	const expectedVersion = process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION

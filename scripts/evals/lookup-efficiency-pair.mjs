@@ -1,6 +1,6 @@
 import fs from "node:fs/promises"
 import { pathToFileURL } from "node:url"
-import { caseIds, evaluateLookupBar } from "./lookup-efficiency-report.mjs"
+import { caseIds, evaluateLookupBar, measurementKinds } from "./lookup-efficiency-report.mjs"
 
 function finiteCount(value) {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
@@ -72,7 +72,7 @@ function indexRun(run, promptIds, declaredSampleCount, role) {
 
 /**
  * Pair reference and candidate lookup reports on the same prompt ids.
- * Revisions may differ; model, reasoning preference, and known cache state must match.
+ * Revisions may differ; other known conditions must match or be an explicit treatment.
  * Missing usage stays unavailable and is never treated as zero.
  */
 export function pairReports(reference, candidate, contract = {}) {
@@ -89,13 +89,26 @@ export function pairReports(reference, candidate, contract = {}) {
 	)
 	const before = indexRun(reference, promptIds, declaredSampleCount, "reference")
 	const after = indexRun(candidate, promptIds, declaredSampleCount, "candidate")
+	const allowedDifferenceFields = contract.allowedDifferenceFields ?? []
+	requireCondition(
+		Array.isArray(allowedDifferenceFields) &&
+			new Set(allowedDifferenceFields).size === allowedDifferenceFields.length &&
+			allowedDifferenceFields.every((field) => ["modelId", "reasoningPreference", "cacheState"].includes(field)),
+		"unknown or duplicate allowed difference field",
+	)
+	const nonAdmissionReasons = []
 	for (const field of ["modelId", "reasoningPreference", "cacheState"]) {
 		const left = reference.identity?.[field]
 		const right = candidate.identity?.[field]
-		if (left && right && left !== "unknown" && right !== "unknown") {
-			requireCondition(left === right, `${field} mismatch`)
-		}
+		const known = (value) => typeof value === "string" && value.trim().length > 0 && value !== "unknown"
+		if (!known(left) || !known(right)) nonAdmissionReasons.push(`${field} is unknown`)
+		else if (left !== right && !allowedDifferenceFields.includes(field))
+			nonAdmissionReasons.push(`${field} mismatch without a declared treatment`)
 	}
+	const kinds = new Set([...before.values(), ...after.values()].map((report) => report.measurementKind))
+	if (kinds.size !== 1 || [...kinds].some((kind) => !measurementKinds.includes(kind)))
+		nonAdmissionReasons.push("measurement kinds are mixed or unknown")
+	const admitted = nonAdmissionReasons.length === 0
 	const samples = []
 	for (const promptId of promptIds) {
 		for (let sampleIndex = 0; sampleIndex < declaredSampleCount; sampleIndex++) {
@@ -115,29 +128,41 @@ export function pairReports(reference, candidate, contract = {}) {
 				candidate: vector(right),
 				delta: {
 					providerRequests:
-						leftRequests === null || rightRequests === null
-							? { value: null, coverage: "unavailable", reason: "Paired request counts are unavailable" }
+						!admitted || leftRequests === null || rightRequests === null
+							? {
+									value: null,
+									coverage: "unavailable",
+									reason: "Comparable paired request counts are unavailable",
+								}
 							: {
 									reference: leftRequests,
 									candidate: rightRequests,
 									delta: rightRequests - leftRequests,
 								},
 					toolResults:
-						leftTools === null || rightTools === null
-							? { value: null, coverage: "unavailable", reason: "Paired tool counts are unavailable" }
+						!admitted || leftTools === null || rightTools === null
+							? {
+									value: null,
+									coverage: "unavailable",
+									reason: "Comparable paired tool counts are unavailable",
+								}
 							: { reference: leftTools, candidate: rightTools, delta: rightTools - leftTools },
 				},
 			})
 		}
 	}
-	const kinds = new Set(
-		[...before.values(), ...after.values()].map((report) => report.measurementKind).filter(Boolean),
-	)
-	const liveMeasurement = [...kinds].some((kind) => kind === "runtime-observation" || kind === "live-supplemental")
+	const liveMeasurement =
+		admitted && [...kinds].some((kind) => kind === "runtime-observation" || kind === "live-supplemental")
 	return {
 		schemaVersion: 1,
 		benchmark: "lookup-efficiency-v1",
-		admitted: true,
+		admitted,
+		nonAdmissionReasons,
+		allowedDifferenceFields: [...allowedDifferenceFields],
+		performanceAcceptance: {
+			status: "not-evaluated",
+			reasons: ["Counter observations do not establish a performance decision"],
+		},
 		declaredSampleCount,
 		promptIds: [...promptIds],
 		medians: {
@@ -148,9 +173,11 @@ export function pairReports(reference, candidate, contract = {}) {
 		},
 		samples,
 		liveMeasurement,
-		interpretation: liveMeasurement
-			? "Paired lookup counters from recorded samples; not a general quality or speed improvement"
-			: "Paired lookup counters only. Scripted traces prove reporter/contract; NOR-36 scripted 2/1 remains a different measurement",
+		interpretation: !admitted
+			? "Descriptive observations only; comparison conditions are incomplete or confounded"
+			: liveMeasurement
+				? "Paired lookup counters from recorded samples; not a general quality or speed improvement"
+				: "Paired lookup counters only. Scripted traces prove reporter/contract; NOR-36 scripted 2/1 remains a different measurement",
 	}
 }
 

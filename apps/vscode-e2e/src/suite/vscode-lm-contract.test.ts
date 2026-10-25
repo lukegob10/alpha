@@ -1,30 +1,41 @@
 import * as assert from "assert"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import * as vscode from "vscode"
 
 import {
 	AlphaCodeEventName,
+	agentLifecycleEventSchema,
 	type AgentLifecycleSnapshot,
 	type AlphaCodeSettings,
+	type ProviderSettings,
 	type TaskReasoningPreference,
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 
 import { assertRequestedHostVersion, setDefaultSuiteTimeout, type ExactTestHostVersion } from "./test-utils"
 import { sleep, waitFor } from "./utils"
+import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
+import { inspectTaskLifecycle, inspectToolTransactions } from "../scenarios/transactionAssertions"
+import { withBoundedFixtureCleanup } from "./proportional-context-support"
 
 type FixtureScenario =
 	| "tool-followup"
 	| "tool-followup-tail"
+	| "tool-followup-tail-error"
 	| "thinking-tool-followup"
+	| "metadata-tool-followup"
+	| "retry-settings"
 	| "cancellation"
 	| "error-recovery"
 	| "no-choices-recovery"
 	| "completion"
 
 interface FixturePart {
-	kind: "thinking" | "tool_call" | "tool_result" | "text" | "unknown"
+	kind: "thinking" | "tool_call" | "tool_result" | "text" | "data" | "unknown"
+	mimeType?: string
+	bytes?: number[]
 	callId?: string
 	name?: string
 	value?: string | string[]
@@ -38,6 +49,8 @@ interface PersistedFixtureMessage {
 	role: string
 	content?: Array<{ type: string; id?: string }>
 	agentResponseItems?: Array<{ type: string; text?: string; vscodeLmThinking?: unknown }>
+	vscodeLmStatefulMarker?: string
+	agentResponseOutcome?: { status: string }
 }
 
 interface FixtureRequest {
@@ -82,9 +95,24 @@ interface ContractTask {
 	clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	approveAsk(): void
 	resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
+	waitForTermination(): Promise<void>
+	flushApiConversationHistoryPersistence(): Promise<void>
+	currentAgentStep?: {
+		snapshot: {
+			context: {
+				contextId: string
+				retryAttempt: number
+				provider: { modelId: string }
+				policy: { digest: string; execution: { command: { allowedPrefixes: readonly string[] } } }
+				instructions: { systemPrompt: string }
+			}
+			digests: { model: string; prompt: string; policy: string; tools: string }
+		}
+	}
 }
 
 interface ContractHostProvider {
+	updateCustomInstructions(instructions?: string): Promise<void>
 	setTaskReasoningPreference(
 		taskId: string | undefined,
 		preference: TaskReasoningPreference,
@@ -105,6 +133,21 @@ const READ_PROOF = "ALPHA_E2E_EARLY_READ_PROOF"
 const READ_COMMAND = `rg --no-config -n ${READ_PROOF} ${READ_PROOF_FILE}`
 const CANCELLATION_PROOF = "ALPHA_E2E_CANCELLATION_STREAM_STARTED"
 const COMPLETION_ASKS = new Set(["completion_result", "resume_completed_task"])
+const MARKER_BYTES = [0, 255, 1, 128, 65]
+
+function jsonObject(value: unknown): Record<string, unknown> {
+	assert.ok(value && typeof value === "object" && !Array.isArray(value))
+	return value as Record<string, unknown>
+}
+
+async function persistedEvidence(provider: ContractHostProvider, taskId: string) {
+	const { taskDirPath } = await provider.getTaskWithId(taskId)
+	const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
+	const events = await readBoundedJson(path.join(taskDirPath, "agent_lifecycle_events.jsonl"), true)
+	assert.deepStrictEqual(inspectToolTransactions(history).errors, [])
+	assert.deepStrictEqual(inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors, [])
+	return { history, events, taskDirPath }
+}
 
 const getHostProvider = (): ContractHostProvider => {
 	const provider = (globalThis.api as unknown as { sidebarProvider?: ContractHostProvider }).sidebarProvider
@@ -634,13 +677,15 @@ suite("Alpha VS Code LM exact-host contract", function () {
 		}
 	})
 
-	test("starts an audited exec_command read while the VS Code LM response tail is held", async () => {
+	const verifyHeldReadTail = async (failTail: boolean) => {
 		const provider = getHostProvider()
 		const callId = "alpha-e2e-command-read-1"
 		// Force bounded output to spill so physical execution can be observed independently of UI publication.
 		const proofLines = 400
 		const cleanupReadProof = await createReadProofFile(proofLines)
-		fixture.reset("tool-followup-tail", { holdAfterToolCallRequestIndexes: [0] })
+		fixture.reset(failTail ? "tool-followup-tail-error" : "tool-followup-tail", {
+			holdAfterToolCallRequestIndexes: [0],
+		})
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
 		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
@@ -735,6 +780,20 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			)
 
 			fixture.releaseToolCallTail(0)
+			if (failTail) {
+				await waitFor(
+					() =>
+						fixture.getRequests().length >= 2 ||
+						provider.getLiveTask(taskId)?.taskAsk?.ask === "resume_task",
+					{
+						timeout: 30_000,
+						description: "the failed tail to persist its result and reach automatic or explicit recovery",
+						onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+					},
+				)
+				if (fixture.getRequests().length < 2)
+					await globalThis.api.sendMessage("Continue using the read result already recorded for this task.")
+			}
 			await waitForRequestCount(provider, fixture, taskId, 2)
 			const toolResultRequest = fixture.getRequests()[1]
 			assert.ok(toolResultRequest, "The follow-up request containing the read result was not recorded")
@@ -769,21 +828,62 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			)
 
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
-			const settled = provider.getAgentLifecycleSnapshot(taskId)
-			assert.deepStrictEqual(
-				settled?.effectStartedToolCallIds.filter((id) => id === callId),
-				[callId],
+			const task = provider.getLiveTask(taskId)!
+			await task.waitForTermination()
+			await task.flushApiConversationHistoryPersistence()
+			const { history, events } = await persistedEvidence(provider, taskId)
+			assert.ok(Array.isArray(events))
+			// Explicit recovery starts a new turn. Its current snapshot intentionally omits
+			// the failed turn's tools; exactly-once evidence belongs to the durable task journal.
+			const taskEvents = events
+				.map((event: unknown) => agentLifecycleEventSchema.parse(event))
+				.filter((event) => event.taskId === taskId)
+			assert.equal(
+				taskEvents.filter(
+					(event) => event.type === "tool_effect_started" && event.payload.toolCallId === callId,
+				).length,
+				1,
 			)
-			assert.deepStrictEqual(
-				settled?.terminalToolCallIds.filter((id) => id === callId),
-				[callId],
-			)
+			const results = taskEvents
+				.filter((event) => event.type === "tool_result_recorded")
+				.map((event) => event.payload.item)
+				.filter((item) => item.toolCallId === callId)
+			assert.equal(results.length, 1)
+			assert.equal(results[0]!.status, "success")
+			if (failTail) {
+				assert.ok(Array.isArray(history))
+				assert.equal(
+					history.filter(
+						(message: PersistedFixtureMessage) => message.agentResponseOutcome?.status === "failed",
+					).length,
+					1,
+					"The interrupted response must remain failed after the healthy continuation",
+				)
+				assert.equal(fixture.getRequests().length, 2, "Recovery must use one bounded continuation")
+				await globalThis.api.clearCurrentTask()
+				await provider.showTaskWithId(taskId)
+				await globalThis.api.sendMessage("Finish briefly from the durable read result after reload.")
+				await waitForRequestCount(provider, fixture, taskId, 3)
+				await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
+				assert.equal(
+					fixture
+						.getRequests()[2]!
+						.messages.flatMap(({ parts }) => parts)
+						.filter((part) => part.kind === "tool_result" && part.callId === callId).length,
+					1,
+				)
+				await provider.getLiveTask(taskId)!.waitForTermination()
+				await persistedEvidence(provider, taskId)
+			}
 		} finally {
 			fixture.releaseToolCallTail(0)
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 			await cleanupReadProof()
 		}
-	})
+	}
+	test("starts one audited read before the held LM tail completes", () => verifyHeldReadTail(false))
+	test("persists one completed read when the held LM tail fails and reloads a healthy continuation", () =>
+		verifyHeldReadTail(true))
 
 	test("settles Alpha cancellation on the requested host and starts a healthy recovery task", async () => {
 		const provider = getHostProvider()
@@ -847,6 +947,224 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			}
 		} finally {
 			fixture.releaseAll()
+		}
+	})
+
+	test("retains captured request and policy across a live profile edit during retry", async () => {
+		const provider = getHostProvider()
+		const originalConfiguration = globalThis.api.getConfiguration()
+		const profileName = `alpha-retry-${randomUUID()}`
+		let createdProfileId: string | undefined
+		fixture.reset("retry-settings", { holdRequestIndexes: [0, 1, 2] })
+		let completedCount = 0
+		const onCompleted = () => completedCount++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		await withBoundedFixtureCleanup(async () => {
+			await provider.updateCustomInstructions("Use the first fixture instruction generation.")
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Complete the frozen retry fixture.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 1)
+			const task = provider.getLiveTask(taskId)!
+			const first = task.currentAgentStep!.snapshot
+			const originalWire = fixture.getRequests()[0]!
+			const nextConfiguration: ProviderSettings = {
+				apiProvider: "vscode-lm",
+				vsCodeLmContextSize: 128_000,
+				vsCodeLmModelSelector: {
+					vendor: FIXTURE_VENDOR,
+					family: FIXTURE_VENDOR,
+					id: "alpha-e2e-next-model",
+					version: "1.0.0",
+				},
+			}
+			// Provider profile APIs accept provider fields only. A spread of global settings
+			// would also restore stale profile metadata during activation.
+			createdProfileId = await globalThis.api.createProfile(profileName, nextConfiguration, false)
+			assert.equal(globalThis.api.getProfileEntry(profileName)?.id, createdProfileId)
+			assert.equal(await globalThis.api.setActiveProfile(profileName), profileName)
+			await provider.updateCustomInstructions("Use the second fixture instruction generation.")
+			await globalThis.api.setConfiguration({
+				...globalThis.api.getConfiguration(),
+				allowedCommands: ["node --version"],
+				autoApprovalEnabled: false,
+			})
+			assert.equal(task.apiConfiguration.vsCodeLmModelSelector?.id, "alpha-e2e-next-model")
+			fixture.releaseRequest(0)
+			await waitForRequestCount(provider, fixture, taskId, 2)
+			const retriedWire = fixture.getRequests()[1]!
+			assert.deepStrictEqual(retriedWire.messages, originalWire.messages)
+			assert.deepStrictEqual(retriedWire.tools, originalWire.tools)
+			assert.deepStrictEqual(retriedWire.configuration, originalWire.configuration)
+			assert.equal(retriedWire.modelId, FIXTURE_MODEL_ID)
+			const retried = task.currentAgentStep!.snapshot
+			assert.equal(retried.context.contextId, first.context.contextId)
+			assert.equal(retried.context.retryAttempt, 1)
+			assert.deepStrictEqual(retried.digests, first.digests)
+			assert.deepStrictEqual(retried.context.policy, first.context.policy)
+			fixture.releaseRequest(1)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			await globalThis.api.sendMessage("Complete a fresh step using the edited profile and instructions.")
+			await waitForRequestCount(provider, fixture, taskId, 3)
+			assert.equal(fixture.getRequests()[2]!.modelId, "alpha-e2e-next-model")
+			const next = task.currentAgentStep!.snapshot
+			assert.notEqual(next.context.contextId, first.context.contextId)
+			assert.notEqual(next.digests.model, first.digests.model)
+			assert.notEqual(next.digests.prompt, first.digests.prompt)
+			assert.ok(next.context.instructions.systemPrompt.includes("second fixture instruction generation"))
+			assert.deepStrictEqual(next.context.policy.execution.command.allowedPrefixes, ["node --version"])
+			fixture.releaseRequest(2)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
+			await task.waitForTermination()
+			await task.flushApiConversationHistoryPersistence()
+			await persistedEvidence(provider, taskId)
+			assert.equal(completedCount, 2)
+			assert.equal(fixture.getRequests().length, 3)
+		}, [
+			() => fixture.releaseAll(),
+			() => globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
+			() => globalThis.api.clearCurrentTask(),
+			async () => {
+				if (!createdProfileId) return
+				const entry = globalThis.api.getProfileEntry(profileName)
+				if (!entry) return
+				assert.equal(entry.id, createdProfileId, "Fixture cleanup cannot delete a replacement profile")
+				await globalThis.api.deleteProfile(profileName)
+			},
+			() => globalThis.api.setConfiguration(originalConfiguration),
+			() => provider.updateCustomInstructions(originalConfiguration.customInstructions),
+		])
+	})
+
+	test("carries known host usage and opaque bytes through tool continuation and task reload", async () => {
+		const provider = getHostProvider()
+		const cleanup = await createReadProofFile()
+		fixture.reset("metadata-tool-followup", { holdRequestIndexes: [1] })
+		let completedCount = 0
+		const onCompleted = () => completedCount++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		const assertReplay = (request: FixtureRequest) => {
+			const calls = request.messages
+				.flatMap(({ parts }) => parts)
+				.filter((part) => part.kind === "tool_call" && part.callId === "alpha-e2e-command-read-1")
+			assert.equal(calls.length, 1)
+			const assistant = request.messages.find(({ parts }) => parts.includes(calls[0]!))!
+			assert.deepStrictEqual(
+				assistant.parts.map((part) => part.kind),
+				["tool_call", "data"],
+			)
+			assert.deepStrictEqual(assistant.parts[1], {
+				kind: "data",
+				mimeType: "stateful_marker",
+				bytes: MARKER_BYTES,
+			})
+			assert.ok(getToolResultText(request, "alpha-e2e-command-read-1").includes(READ_PROOF))
+		}
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Read the proof and retain fixture metadata.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 2)
+			assertReplay(fixture.getRequests()[1]!)
+			const { taskDirPath } = await provider.getTaskWithId(taskId)
+			const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
+			assert.ok(Array.isArray(history))
+			assert.equal(
+				history.filter(
+					(message: PersistedFixtureMessage) =>
+						message.vscodeLmStatefulMarker === Buffer.from(MARKER_BYTES).toString("base64"),
+				).length,
+				1,
+			)
+			fixture.releaseRequest(1)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			await provider.getLiveTask(taskId)!.waitForTermination()
+			const usageRecords = await readBoundedJson(path.join(taskDirPath, "agent_turn_events.jsonl"), true)
+			assert.ok(Array.isArray(usageRecords))
+			const providerUsage = usageRecords
+				.map((record: unknown) => jsonObject(jsonObject(record).event))
+				.filter((event) => event.type === "request_usage" && event.usageSource === "provider")
+			assert.equal(providerUsage.length, 1)
+			assert.equal(providerUsage[0]!.inputTokens, 321)
+			assert.equal(providerUsage[0]!.outputTokens, 45)
+			const requestProjection = provider
+				.getLiveTask(taskId)!
+				.clineMessages!.filter(({ say }) => say === "api_req_started")
+				.map(({ text }) => jsonObject(JSON.parse(text ?? "{}")))
+				.filter((request) => request.tokensIn === 321)
+			assert.equal(requestProjection.length, 1, "Known host usage must reach the request UI once")
+			assert.equal(requestProjection[0]!.tokensOut, 45)
+			assert.ok(
+				!JSON.stringify(usageRecords).includes(Buffer.from(MARKER_BYTES).toString("base64")),
+				"Ordinary request receipts must not expose opaque provider bytes",
+			)
+			await globalThis.api.clearCurrentTask()
+			await provider.showTaskWithId(taskId)
+			await globalThis.api.sendMessage("Complete briefly using the retained tool result and host metadata.")
+			await waitForRequestCount(provider, fixture, taskId, 3)
+			assertReplay(fixture.getRequests()[2]!)
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
+			await provider.getLiveTask(taskId)!.waitForTermination()
+			await persistedEvidence(provider, taskId)
+			assert.equal(fixture.getRequests().length, 3)
+		} finally {
+			fixture.releaseAll()
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await cleanup()
+		}
+	})
+
+	test("preserves image bytes and call pairing across the direct LM boundary and reconstructed follow-up", async () => {
+		fixture.reset("completion")
+		const png = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
+			"base64",
+		)
+		const cancellation = new vscode.CancellationTokenSource()
+		try {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const [model] = await vscode.lm.selectChatModels({ vendor: FIXTURE_VENDOR, id: FIXTURE_MODEL_ID })
+				assert.ok(model)
+				const response = await model.sendRequest(
+					[
+						vscode.LanguageModelChatMessage.User("Inspect the supplied fixture PNG."),
+						vscode.LanguageModelChatMessage.Assistant([
+							new vscode.LanguageModelToolCallPart("fixture-image-1", "view_image", {
+								path: "fixture.png",
+							}),
+						]),
+						vscode.LanguageModelChatMessage.User([
+							new vscode.LanguageModelToolResultPart("fixture-image-1", [
+								vscode.LanguageModelDataPart.image(new Uint8Array(png), "image/png"),
+							]),
+						]),
+					],
+					{},
+					cancellation.token,
+				)
+				for await (const _part of response.stream) {
+					/* drain the owned fixture response */
+				}
+				const request = fixture.getRequests()[attempt]!
+				const assistant = request.messages[1]!.parts[0]!
+				const result = request.messages[2]!.parts[0]!
+				assert.equal(assistant.kind, "tool_call")
+				assert.equal(assistant.callId, "fixture-image-1")
+				assert.equal(result.kind, "tool_result")
+				assert.equal(result.callId, assistant.callId)
+				assert.deepStrictEqual(result.content, [
+					{ kind: "data", mimeType: "image/png", bytes: Array.from(png) },
+				])
+				assert.ok(
+					!request.messages.some(({ parts }) => parts.some((part) => part.kind === "data")),
+					"The image must remain inside its paired tool result",
+				)
+			}
+			assert.deepStrictEqual(fixture.getRequests()[1]!.messages, fixture.getRequests()[0]!.messages)
+		} finally {
+			cancellation.dispose()
 		}
 	})
 

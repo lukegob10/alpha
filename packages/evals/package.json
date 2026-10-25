@@ -22,6 +22,7 @@
 		"benchmark:paired-report": "dotenvx run -f .env.development .env.local -- tsx src/benchmark/cli.ts paired-report",
 		"benchmark:estimate": "tsx src/benchmark/cli.ts estimate",
 		"benchmark:problem-solving-diagnose": "tsx src/benchmark/problemSolvingDiagnosis.ts",
+		"benchmark:improve": "tsx src/improvement/cli.ts",
 		"benchmark:fixture-check": "tsx src/benchmark/cli.ts fixture-check",
 		"_test": "dotenvx run -f .env.test -- vitest run",
 		"test:unit": "dotenvx run -f .env.test -- vitest run --config vitest.unit.config.ts",

@@ -139,7 +139,7 @@ export async function collectOutcomeBuild(root) {
 	}
 }
 
-function validJournal(value, taskId, lifecycle) {
+export function validJournal(value, taskId, lifecycle, { requireCompleted = true } = {}) {
 	if (
 		!onlyKeys(value, ["sourceBytes", "sourceSha256", "projection"]) ||
 		!positive(value.sourceBytes, 4 * 1024 * 1024) ||
@@ -193,10 +193,16 @@ function validJournal(value, taskId, lifecycle) {
 		partitions.set(partition, sequence)
 	}
 	const terminal = projection.events.filter((event) => event.type === "turn_terminal").at(-1)
-	return !lifecycle || terminal?.status === "completed"
+	// Reliability scenarios can independently accept an interrupted/failed task. They still need a terminal journal.
+	return (
+		!lifecycle ||
+		(requireCompleted
+			? terminal?.status === "completed"
+			: ["completed", "interrupted", "failed"].includes(terminal?.status))
+	)
 }
 
-function validConversation(value) {
+export function validConversation(value, { requireTools = true } = {}) {
 	if (
 		!onlyKeys(value, ["sourceBytes", "sourceSha256", "projection"]) ||
 		!positive(value.sourceBytes, 4 * 1024 * 1024) ||
@@ -226,7 +232,7 @@ function validConversation(value) {
 			} else return false
 		}
 	}
-	return calls.size > 0 && [...calls.values()].every(Boolean)
+	return (!requireTools || calls.size > 0) && [...calls.values()].every(Boolean)
 }
 
 function validRepository(value) {

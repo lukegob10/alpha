@@ -73,6 +73,15 @@ The `extended` lane covers instructions, HTML previews, storage recovery, and sc
 broader core gate. Offline evaluator checks use `pnpm test:evals:offline`; the
 [evaluator guide](packages/evals/README.md) covers service-backed checks and fixture authoring.
 
+### Reviewed improvement loop
+
+Run `pnpm --filter @alpha-code/evals benchmark:improve --help` for the evidence and feedback workflow. The
+[operator guide](evals/problem-solving/improvement-loop.md) walks through human adjudication, draft regression
+validation, ranked implementation handoffs, and fresh confirmation through the existing extension-host runner.
+It distinguishes full evaluator evidence, retained host observations, and opt-in future native captures.
+Offline controls and archived results do not establish live quality. Model review and live confirmation require
+explicit configuration and budgets; reports and handoffs remain tool artifacts, and generated tasks require review.
+
 ### Live tests
 
 Live provider runs supplement deterministic checks and require their own credentials and run budget. Use three separate
@@ -90,6 +99,29 @@ Sign in inside the dedicated host. After discovery, repeat setup with the exact 
 `--reasoning-effort`, then finish the readiness check. Omit `--init-profile` after initialization and `--setup` when
 running tests. Setup and model discovery do not prove that a task passed. Never copy credentials between profiles or
 reset unrelated editor data. See the [runner options](apps/vscode-e2e/src/runTest.ts) for current flags.
+
+The live model matrix runs the same complete suite sequentially with **GPT 6 Luna / max**, **Claude Haiku 5.5 / high**,
+then **Grok 4.6 / low**, exclusively on **VS Code 1.138.0**. It prepares the build and deterministic host gates once,
+uses fresh scenario workspaces, and retains separate model reports plus a combined `matrix-result.json`. Every model
+must pass; missing models, unsupported effort, failed scenarios, and incomplete evidence cannot become a passing result.
+Source/build changes or a changed Copilot implementation invalidate the comparison. Model IDs are exact; no fallback is allowed.
+
+After completing dedicated-profile setup, preview the plan without creating a campaign or making live requests:
+
+```sh
+pnpm test:live:matrix --root "<absolute-campaign-root>" --profile-dir "<absolute-profile-root>" --dry-run
+```
+
+Run the matrix with the same paths and `--init-root` for a new empty campaign root. Omit `--init-root` on subsequent runs:
+
+```sh
+pnpm test:live:matrix --root "<absolute-campaign-root>" --profile-dir "<absolute-profile-root>" --init-root
+```
+
+Each model gets one sample per scenario by default. `--max-requests` sets a separate request cap for each model;
+the preview shows their combined cap. `--samples` explicitly increases repetitions. Use `test:live:matrix:core` for
+the smaller core suite or `test:live:matrix:reliability` for lifecycle and recovery coverage. An ordinary model failure
+does not skip the remaining models; cancellation or changed comparison conditions stop further launches.
 
 ## Package and install a local build
 

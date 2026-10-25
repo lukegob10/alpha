@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict"
 import { runCampaign } from "../controller"
 import { parseCampaignConfig } from "../config"
 import type { CampaignConfig, CampaignOperations, CampaignReport, ScenarioResult } from "../types"
+import { compareLiveProviderIdentity } from "../../liveProviderIdentity"
 
 const config = (): CampaignConfig => ({
 	id: "campaign-test",
@@ -91,22 +92,131 @@ test("secondary retention failure preserves the primary authentication outcome",
 	assert.equal(report.retention?.status, "failed")
 })
 
-test("runs the reference host and records independent failures in report-only mode", async () => {
-	const { operations, events, reports } = harness([result("failed"), result("failed"), result()])
-	const report = await runCampaign(config(), operations)
+test("diagnostics follow the original samples and retain their failures separately", async () => {
+	const { operations, events, reports } = harness([result("failed"), result(), result("failed")])
+	const report = await runCampaign({ ...config(), collectionMode: "sample-then-diagnose" }, operations)
 	assert.equal(report.stopReason, "completed")
 	assert.deepEqual(report.counts, { passed: 1, failed: 2, blocked: 0 })
+	assert.deepEqual(report.sampling, {
+		planned: 2,
+		completed: 2,
+		passed: 1,
+		failed: 1,
+		blocked: 0,
+		notRun: 0,
+		diagnosticAttempts: 1,
+	})
 	assert.equal(report.mode, "report-only")
 	assert.equal(report.usage.requests, 3)
 	assert.equal(report.usage.cost, null)
 	assert.deepEqual(events.slice(0, 4), [
 		"run:1.138.0:review:sample",
 		"evidence:attempt-0001",
-		"run:1.138.0:review:reproduce",
+		"run:1.138.0:review-secondary:sample",
 		"evidence:attempt-0002",
 	])
 	assert.equal(reports[0]!.attempts.length, 0, "checkpoint snapshots must not mutate afterward")
 	assert.equal(reports.at(-1)?.stopReason, "completed")
+})
+
+test("ordinary sampling finishes every planned cell after an intermittent failure", async () => {
+	const settings = { ...config(), scenarioIds: ["review"], samples: 3 }
+	const { operations, reports } = harness([result("failed"), result(), result()])
+	const report = await runCampaign(settings, operations)
+	assert.equal(report.stopReason, "completed")
+	assert.deepEqual(
+		report.attempts.map(({ request }) => [request.sample, request.phase]),
+		[
+			[1, "sample"],
+			[2, "sample"],
+			[3, "sample"],
+		],
+	)
+	assert.deepEqual(report.sampling, {
+		planned: 3,
+		completed: 3,
+		passed: 2,
+		failed: 1,
+		blocked: 0,
+		notRun: 0,
+		diagnosticAttempts: 0,
+	})
+	assert.deepEqual(reports[0]!.sampling, { ...report.sampling, completed: 0, passed: 0, failed: 0, notRun: 3 })
+})
+
+test("campaign budgets and workload identity remain the pre-run snapshot across awaited callbacks", async () => {
+	const settings = config()
+	settings.budgets.maxRequests = 1
+	settings.provider = { mode: "live-copilot", modelId: "declared-model", effort: "high" }
+	const { operations, reports } = harness()
+	operations.runScenario = async () => {
+		settings.budgets.maxRequests = 100
+		settings.provider.modelId = "later-model"
+		settings.hosts[0]!.executable = "changed-host"
+		return result()
+	}
+	const report = await runCampaign(settings, operations)
+	assert.equal(report.stopReason, "request_budget")
+	assert.equal(report.attempts.length, 1)
+	assert.deepEqual(report.sampling, {
+		planned: 2,
+		completed: 1,
+		passed: 1,
+		failed: 0,
+		blocked: 0,
+		notRun: 1,
+		diagnosticAttempts: 0,
+	})
+	assert.equal(report.requestedProvider.modelId, "declared-model")
+	assert.equal(report.attempts[0]!.request.provider.modelId, "declared-model")
+	assert.equal(report.attempts[0]!.request.host.executable, undefined)
+	assert.equal(reports[0]!.requestedProvider.modelId, "declared-model")
+})
+
+test("each dispatched request protects the original cell, allowance and provider from callback mutation", async () => {
+	const { operations } = harness()
+	operations.runScenario = async (request) => {
+		assert.equal(Reflect.set(request, "phase", "reproduce"), false)
+		assert.equal(Reflect.set(request, "requestLimit", 1_000), false)
+		assert.equal(Reflect.set(request.provider, "mode", "live-copilot"), false)
+		assert.equal(Reflect.set(request.host, "version", "0.0.0"), false)
+		return result()
+	}
+	const report = await runCampaign(config(), operations)
+	assert.equal(report.stopReason, "completed")
+	assert.deepEqual(
+		report.attempts.map(({ request }) => request.phase),
+		["sample", "sample"],
+	)
+	assert.equal(report.attempts[0]!.request.requestLimit, 20)
+})
+
+test("a passed claim carrying a failure cannot become a successful original sample", async () => {
+	const { operations } = harness([{ ...result(), failure: { class: "assertion", fingerprint: "failed-oracle" } }])
+	const report = await runCampaign(config(), operations)
+	assert.equal(report.stopReason, "infrastructure")
+	assert.equal(report.counts.passed, 0)
+	assert.equal(report.sampling?.passed, 0)
+	assert.equal(report.sampling?.blocked, 1)
+	assert.equal(report.sampling?.notRun, 1)
+})
+
+test("predeclared decision identity and wall-clock start are captured before each dispatch", async () => {
+	const digest = `sha256:${"d".repeat(64)}`
+	const { operations } = harness()
+	operations.wallTime = () => "2026-10-23T12:00:00.000Z"
+	operations.runScenario = async (request) => {
+		assert.equal(request.decisionPlanDigest, digest)
+		assert.equal(request.startedAt, "2026-10-23T12:00:00.000Z")
+		assert.equal(request.timeWindow, "declared-block")
+		return result()
+	}
+	const report = await runCampaign(
+		{ ...config(), decisionPlanDigest: digest, decisionTimeWindow: "declared-block" },
+		operations,
+	)
+	assert.equal(report.stopReason, "completed")
+	assert.ok(report.attempts.every(({ request }) => request.decisionPlanDigest === digest))
 })
 
 test("gate sampling preserves failures and covers remaining cells without paid reproductions", async () => {
@@ -194,6 +304,73 @@ test("attempt timeout waits for abort cleanup and persists a bounded failure", a
 	assert.equal(report.attempts.length, 1)
 })
 
+test("timeout preserves validated cleanup usage and identity without accepting late success", async (context) => {
+	context.mock.timers.enable({ apis: ["setTimeout"] })
+	for (const usage of [
+		{ requests: 7, inputTokens: 100, outputTokens: 20, cost: 0.01 },
+		{ requests: 7, inputTokens: null, outputTokens: 20, cost: null },
+		{ requests: null, inputTokens: null, outputTokens: null, cost: null },
+	]) {
+		let announceStarted!: () => void
+		const started = new Promise<void>((resolve) => {
+			announceStarted = resolve
+		})
+		const { operations, reports } = harness()
+		const observed: ScenarioResult = {
+			...result(),
+			usage,
+			actualHostVersion: "1.138.0",
+			model: { id: "observed-model", effort: "high" },
+			taskIds: ["observed-task"],
+			providerIdentity: compareLiveProviderIdentity(
+				{ id: "github.copilot-chat", version: "1.0.0", entrypointSha256: "a".repeat(64) },
+				{ id: "github.copilot-chat", version: "1.0.0", entrypointSha256: "a".repeat(64) },
+			),
+			performance: { firstResponseMs: 12, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+		}
+		operations.runScenario = async (_request, signal) => {
+			await new Promise<void>((resolve) => {
+				signal.addEventListener("abort", () => resolve(), { once: true })
+				announceStarted()
+			})
+			return observed
+		}
+		const pending = runCampaign(config(), operations)
+		await started
+		context.mock.timers.tick(config().budgets.attemptTimeoutMs)
+		const report = await pending
+		assert.equal(report.stopReason, "time_budget")
+		assert.equal(report.attempts[0]?.result.status, "blocked")
+		assert.equal(report.attempts[0]?.termination, "timeout")
+		assert.equal(report.attempts[0]?.result.failure?.fingerprint, "time_budget")
+		assert.deepEqual(report.attempts[0]?.result.usage, usage)
+		assert.deepEqual(report.usage, usage)
+		assert.deepEqual(report.attempts[0]?.result.model, observed.model)
+		assert.deepEqual(report.attempts[0]?.result.taskIds, observed.taskIds)
+		assert.equal(report.attempts[0]?.result.actualHostVersion, observed.actualHostVersion)
+		assert.deepEqual(report.attempts[0]?.result.providerIdentity, observed.providerIdentity)
+		assert.deepEqual(report.attempts[0]?.result.performance, observed.performance)
+		assert.deepEqual(reports.at(-1)?.usage, usage)
+	}
+})
+
+test("cancellation retains only validated cleanup observations", async () => {
+	for (const valid of [true, false]) {
+		const abort = new AbortController()
+		const { operations } = harness()
+		operations.runScenario = async () => {
+			abort.abort()
+			return { ...result(), usage: { requests: valid ? 7 : -7, inputTokens: 100, outputTokens: 20, cost: null } }
+		}
+		const report = await runCampaign(config(), operations, abort.signal)
+		assert.equal(report.stopReason, "cancelled")
+		assert.equal(report.attempts[0]?.result.status, "blocked")
+		assert.equal(report.attempts[0]?.termination, "cancelled")
+		assert.equal(report.usage.requests, valid ? 7 : null)
+		assert.equal(report.usage.inputTokens, valid ? 100 : null)
+	}
+})
+
 test("critical external blockers do not enter reproduction or repair", async () => {
 	for (const failure of ["authentication", "usage_limit", "unsafe_repair"] as const) {
 		const blocked = result("blocked")
@@ -207,14 +384,17 @@ test("critical external blockers do not enter reproduction or repair", async () 
 	}
 })
 
-test("repeated non-reproductions stop instead of changing a passing fixture", async () => {
-	const { operations } = harness([result("failed"), result(), result()])
-	const report = await runCampaign(config(), operations)
-	assert.equal(report.stopReason, "unreproduced")
+test("non-reproductions remain diagnostic after the complete sample matrix", async () => {
+	const { operations } = harness([result("failed"), result(), result(), result()])
+	const report = await runCampaign({ ...config(), collectionMode: "sample-then-diagnose" }, operations)
+	assert.equal(report.stopReason, "completed")
 	assert.deepEqual(
 		report.attempts.map((entry) => entry.request.phase),
-		["sample", "reproduce", "reproduce"],
+		["sample", "sample", "reproduce", "reproduce"],
 	)
+	assert.equal(report.sampling?.passed, 1)
+	assert.equal(report.sampling?.failed, 1)
+	assert.equal(report.sampling?.diagnosticAttempts, 2)
 })
 
 test("evidence failure stops before another attempt or mutation", async () => {

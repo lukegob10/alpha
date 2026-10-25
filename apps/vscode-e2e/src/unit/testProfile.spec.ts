@@ -7,6 +7,7 @@ import * as path from "node:path"
 import { TestRunError } from "../runFailure"
 import {
 	assertOwnedTestRoot,
+	assertOwnedTestWorkspace,
 	cleanupTestProfile,
 	prepareTestProfile,
 	TEST_ROOT_OWNERSHIP_MARKER,
@@ -46,6 +47,32 @@ const assertProfileInvalid = async (operation: Promise<unknown>, message?: RegEx
 
 const readMarker = async (root: string): Promise<unknown> =>
 	JSON.parse(await fs.readFile(path.join(root, TEST_ROOT_OWNERSHIP_MARKER), "utf8"))
+
+test("assertOwnedTestWorkspace accepts the actual disposable layout without a child marker", async () => {
+	const profile = await prepareTestProfile({ vscodeVersion: VERSION })
+	try {
+		await assert.rejects(assertOwnedTestRoot(profile.workspace), /missing/)
+		await assertOwnedTestWorkspace(profile.workspace)
+		await assertProfileInvalid(assertOwnedTestWorkspace(profile.userDataDir), /workspace child/)
+		await assertProfileInvalid(assertOwnedTestWorkspace(path.join(profile.workspace, "nested")), /workspace child/)
+		assert.equal((await fs.lstat(profile.workspace)).isDirectory(), true)
+	} finally {
+		await cleanupTestProfile(profile, true)
+	}
+})
+
+test("assertOwnedTestWorkspace requires exact persistent marker kinds and rejects an unmarked parent", async (context) => {
+	const root = await createTestArea(context)
+	const profile = await prepareTestProfile(persistentOptions(root))
+	await assertOwnedTestWorkspace(profile.workspace, profile.profileDir)
+	await assertProfileInvalid(assertOwnedTestWorkspace(profile.workspace), /missing/)
+	await assertProfileInvalid(assertOwnedTestWorkspace(profile.workspace, profile.workspace), /kind|profile/)
+	const unmarked = path.join(root, "unmarked", "workspace")
+	await fs.mkdir(unmarked, { recursive: true })
+	await assertProfileInvalid(assertOwnedTestWorkspace(unmarked), /missing/)
+	await assertProfileInvalid(assertOwnedTestWorkspace(unmarked, profile.profileDir), /missing/)
+	assert.deepEqual(await fs.readdir(unmarked), [])
+})
 
 test("initializes and reuses marked persistent profile/workspace roots by exact host version", async (context) => {
 	const root = await createTestArea(context)

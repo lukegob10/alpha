@@ -3,10 +3,10 @@
 # from the Hugging Face v4.0.0 mirror on 2026-09-21. Inclusion rationale is in README.md.
 schemaVersion: 1
 id: problem-solving-v1
-version: 1
+version: 2
 sources:
   - id: alpha-task-bank
-    release: frontier-v1@1
+    release: frontier-v1@2
   - id: terminal-bench
     release: v4.0.0
     repository: harbor-framework/terminal-bench
@@ -17,7 +17,7 @@ sources:
 tasks:
   - id: repo-cache-invalidation
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:8cd79bf103bfecf6873c108eb9a567c4898a7aa2c32804fc2da0160f903496b6
     tags: [debugging, javascript]
@@ -25,15 +25,15 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-stream-backpressure
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
-    version: 1
-    digest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
+    sourceRelease: frontier-v1@2
+    version: 2
+    digest: sha256:69672cdb07be8868d73a17687bd538508f3d64efe4f716994fffa9e1de980bc6
     tags: [backend, javascript]
     lane: core
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: repo-workspace-package-order
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:c1b10ec20be19f15492c88efaeee35bd33b826b981ead70bd2bf2bfcd08bb301
     tags: [refactoring, javascript]
@@ -41,7 +41,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-cli-config-layering
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:9e6f631251259f97a240e079a54a3ea2ac0c9576d56a2dba6601406506da2d2d
     tags: [cli, javascript]
@@ -49,7 +49,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-pagination-cursor
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
     tags: [backend, javascript]
@@ -57,7 +57,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: alpha-repository-rules
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
     tags: [workflow]
@@ -65,7 +65,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: alpha-validation-after-edit
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:ce76f9d7348c824fba352932ceb1d07d551108759eab8db24dd5b32761c6e8fa
     tags: [debugging, workflow]
@@ -73,15 +73,15 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: stateful-api-idempotency
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
-    version: 1
-    digest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
+    sourceRelease: frontier-v1@2
+    version: 2
+    digest: sha256:2d852c8bb019722e14f011c0c210f0094776ac7a67aaed5ee51d305de948b8ab
     tags: [backend]
     lane: core
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: safety-path-policy
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:e3e832c5cf836bc2bea7c7ea7359e6cbab3371d18e697ddf6a55f60e162d99af
     tags: [workflow]
@@ -153,7 +153,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
   - id: repo-config-precedence
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:f8c0742d9b14aede86df7d4ce41cb32adaec170f2dffc65f05c979d85bb3df13
     tags: [javascript]
@@ -161,7 +161,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-auth-session-rotation
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:57b5ea2241f5251f174fb8cd47cd4fdc7294d2372d42d482f1522fa3fd6ca1ab
     tags: [javascript, backend]
@@ -169,7 +169,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-migration-rollback
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:2114cbc303529d15b0f1150e4804f2bfbd0649d122ff5e404d1e9e3a4643e159
     tags: [backend, javascript]
@@ -177,7 +177,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-event-deduplication
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:8db74ad50ffabc6ca5086811b18dc78090c7af907d89f22705815816b22e9549
     tags: [backend, javascript]
@@ -185,7 +185,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-concurrent-file-lock
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:1a26ea505e5400ee9089dc43fcb9e094f2b3b26c2d5bcbe19fdf8b2ea6c361da
     tags: [debugging, javascript]
@@ -193,7 +193,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-plugin-dependency-cycle
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
     tags: [refactoring, javascript]
@@ -201,7 +201,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-transaction-outbox
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
     tags: [backend, javascript]
@@ -209,7 +209,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-rate-limit-window
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:7a8a1871a0439ab1672f607fb67609e92a72c83b8ea6464181c8a2a98515d6c1
     tags: [backend, javascript]
@@ -217,7 +217,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: repo-schema-compatibility
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:ea58b30c06fcc966eafb1f81940f58de60226fe826844d876f0f1b5e53fd77dc
     tags: [backend, javascript]
@@ -225,7 +225,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-worker-shutdown
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:8c03df7c229014bd499b3c7b93bb9b7956aa6c33ff2c83b31e3f87d1061f7119
     tags: [backend, javascript]
@@ -233,7 +233,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: repo-build-artifact-boundary
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
     tags: [refactoring, javascript]
@@ -241,7 +241,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: alpha-context-continuity
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:0b440b4e18f48423149a245896e4766578990b5f275fa228caadb08681f3946c
     tags: [workflow]
@@ -249,7 +249,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: alpha-compaction-resume
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:25866833d0438c75188cf9adab2df881604a697cd9340bbcec712ce5bb5c714e
     tags: [workflow]
@@ -257,7 +257,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: alpha-cancellation-cleanup
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:6461ec65884edd380788924d5171b24f730474d7a457eab4c8630fc9868a18ec
     tags: [cleanup, workflow]
@@ -265,7 +265,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: alpha-resume-idempotency
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:943fa77645748f16cc6b3123073143af0edba005d40d6f3fb355a1aafe088190
     tags: [workflow]
@@ -273,7 +273,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: alpha-tool-result-integrity
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
     tags: [debugging, workflow]
@@ -281,7 +281,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: alpha-scheduler-ordering
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
     tags: [workflow]
@@ -289,7 +289,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: safety-secret-redaction
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:882ba83c2af65649627e09151fedfda7c58459521c06dd498f8499d3678c47bb
     tags: [workflow]
@@ -297,7 +297,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: safety-prompt-injection
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:453d70a0677fac969f612daf25cfb5461949f49a165e0b814fd3b0c11b81d2bd
     tags: [workflow]
@@ -405,7 +405,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 180, gpus: 0, network: disabled }
   - id: holdout-001
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:818a818809b0ce1f3c2cef13920f4e7bb9cbcee3843ab9f7fe2ea2391e646758
     tags: [repository-discovery]
@@ -413,7 +413,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: holdout-002
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:9711d63046d5c342e9d8464709564e53fce8ac5d32994bf2e2a7f8441ec2aab5
     tags: [repository-discovery]
@@ -421,7 +421,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: holdout-003
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:178c5ea7ad8663385c83ce716cca23121b9c10076a72d8f51584337d027e49df
     tags: [repository-discovery]
@@ -429,7 +429,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: holdout-004
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:fa47259f54c7f081c377aabd70007d1361075b4dae42bd1bd71c822e973fbd1d
     tags: [repository-discovery]
@@ -437,7 +437,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: holdout-005
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:5d126173d9403fa76b648b86900f8bb1f848af5629cd3aef3488d1e5e0a032b1
     tags: [workflow]
@@ -445,7 +445,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: holdout-006
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:6b1dba98cc8a2c1fd0043958b2cce8447332b318266459259210b40c433d5f06
     tags: [workflow]
@@ -453,7 +453,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: holdout-007
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:b8dcf70c351d05e81c54633b808f465d488e0fbf84b601a189f2e415e822f19c
     tags: [workflow]
@@ -461,7 +461,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: holdout-008
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
     tags: [workflow]
@@ -469,7 +469,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: holdout-009
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
     tags: [workflow]
@@ -477,7 +477,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
   - id: holdout-010
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
     tags: [debugging]
@@ -485,7 +485,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
   - id: holdout-011
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
     tags: [debugging]
@@ -493,7 +493,7 @@ tasks:
     resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
   - id: holdout-012
     source: alpha-task-bank
-    sourceRelease: frontier-v1@1
+    sourceRelease: frontier-v1@2
     version: 1
     digest: sha256:4eb52d6ebe6dcfc12c3e1a0e098ea002e2db4e6f5399efba3073b9e77bda75a5
     tags: [debugging]

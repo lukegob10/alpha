@@ -37,6 +37,8 @@ test("suite CLI rejects ambiguous or unsafe selection before creating a campaign
 		["--gate", "--suite", "smoke", "--provider", "live-copilot"],
 		["--gate", "--suite", "development", "--provider", "scripted"],
 		["--gate", "--config", "unused.json"],
+		["--diagnose-failures", "--config", "unused.json"],
+		["--gate", "--suite", "core", "--provider", "live-copilot", "--diagnose-failures"],
 		["--max-requests", "100", "--config", "unused.json"],
 		["--suite", "smoke", "--provider", "scripted", "--max-requests", "1e3"],
 		["--suite", "smoke", "--provider", "scripted", "--samples", "0"],
@@ -48,6 +50,37 @@ test("suite CLI rejects ambiguous or unsafe selection before creating a campaign
 			(error: unknown) => error instanceof Error,
 			JSON.stringify(args),
 		)
+})
+
+test("soak dry-run declares sample-only collection or explicit post-sample diagnostics", async (context) => {
+	const output: string[] = []
+	const write = process.stdout.write.bind(process.stdout)
+	context.mock.method(process.stdout, "write", (...args: Parameters<typeof process.stdout.write>) => {
+		// Node's child test protocol also uses stdout; only the CLI's text belongs to this capture.
+		if (typeof args[0] !== "string") return write(...args)
+		output.push(args[0])
+		return true
+	})
+	for (const diagnostics of [false, true]) {
+		const root = path.join(os.tmpdir(), `alpha-soak-preview-${randomUUID()}`)
+		assert.equal(
+			await main([
+				"--suite",
+				"soak",
+				"--provider",
+				"scripted",
+				"--root",
+				root,
+				"--dry-run",
+				...(diagnostics ? ["--diagnose-failures"] : []),
+			]),
+			0,
+		)
+		const planned = JSON.parse(output.at(-1)!)
+		assert.equal(planned.config.collectionMode, diagnostics ? "sample-then-diagnose" : "sample-only")
+		assert.equal(planned.config.samples, 3)
+		await assert.rejects(fs.stat(root), (error: NodeJS.ErrnoException) => error.code === "ENOENT")
+	}
 })
 
 test("core gate dry-run accepts an explicit budget and repeat count without live requests", async () => {

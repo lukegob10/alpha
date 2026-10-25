@@ -2,7 +2,7 @@ import { z } from "zod"
 import { canonicalJson, sha256 } from "../evidence/canonical"
 import { immutableIdentity } from "./identity"
 import { sealCampaignExport } from "./campaign"
-import { experimentVariantSchema, type TrialObservation } from "./types"
+import { experimentVariantSchema, trialPerformanceSchema, type TrialObservation } from "./types"
 
 const digest = z
 	.string()
@@ -18,7 +18,18 @@ const hostCampaignSchema = z.object({
 	version: z.literal(1),
 	id: z.string().min(1),
 	mode: z.literal("report-only"),
-	stopReason: z.literal("completed"),
+	stopReason: z.enum(["completed", "time_budget", "iteration_budget", "request_budget", "cancelled"]),
+	sampling: z
+		.object({
+			planned: z.number().int().nonnegative(),
+			completed: z.number().int().nonnegative(),
+			passed: z.number().int().nonnegative(),
+			failed: z.number().int().nonnegative(),
+			blocked: z.number().int().nonnegative(),
+			notRun: z.number().int().nonnegative(),
+			diagnosticAttempts: z.number().int().nonnegative(),
+		})
+		.optional(),
 	requestedProvider: providerSchema,
 	retention: z.object({ status: z.literal("complete") }),
 	evaluationPlan: z.object({
@@ -37,45 +48,47 @@ const hostCampaignSchema = z.object({
 		unchanged: z.literal(true),
 		missing: z.array(z.string()).length(0),
 	}),
-	attempts: z
-		.array(
-			z.object({
-				request: z.object({
-					campaignId: z.string().min(1),
-					provider: providerSchema,
-					scenarioId: z.string().min(1),
-					sample: z.number().int().nonnegative(),
-					phase: z.string(),
-					host: z.object({ version: z.string().min(1) }),
-				}),
-				result: z.object({
-					retentionFailed: z.literal(false).optional(),
-					status: z.enum(["passed", "failed", "blocked"]),
-					actualHostVersion: z.string().optional(),
-					model: z.object({ id: z.string(), effort: z.string().optional() }).optional(),
-					failure: z
-						.object({
-							class: z.enum([
-								"provider",
-								"tool",
-								"persistence",
-								"lifecycle",
-								"assertion",
-								"authentication",
-								"usage_limit",
-								"unsafe_repair",
-								"infrastructure",
-							]),
-						})
-						.optional(),
-					usage: z.object({ cost: usage, inputTokens: usage, outputTokens: usage }),
-				}),
-				elapsedMs: z.number().finite().nonnegative(),
-				evidence: z.string().min(1),
-				evidenceFailed: z.literal(false).optional(),
+	attempts: z.array(
+		z.object({
+			request: z.object({
+				campaignId: z.string().min(1),
+				provider: providerSchema,
+				scenarioId: z.string().min(1),
+				sample: z.number().int().nonnegative(),
+				phase: z.string(),
+				decisionPlanDigest: digest.optional(),
+				startedAt: z.string().datetime().optional(),
+				timeWindow: z.string().min(1).optional(),
+				host: z.object({ version: z.string().min(1) }),
 			}),
-		)
-		.min(1),
+			result: z.object({
+				retentionFailed: z.literal(false).optional(),
+				status: z.enum(["passed", "failed", "blocked"]),
+				actualHostVersion: z.string().optional(),
+				model: z.object({ id: z.string(), effort: z.string().optional() }).optional(),
+				failure: z
+					.object({
+						class: z.enum([
+							"provider",
+							"tool",
+							"persistence",
+							"lifecycle",
+							"assertion",
+							"authentication",
+							"usage_limit",
+							"unsafe_repair",
+							"infrastructure",
+						]),
+					})
+					.optional(),
+				usage: z.object({ cost: usage, inputTokens: usage, outputTokens: usage }),
+				performance: trialPerformanceSchema.optional(),
+			}),
+			elapsedMs: z.number().finite().nonnegative(),
+			evidence: z.string().min(1),
+			evidenceFailed: z.literal(false).optional(),
+		}),
+	),
 	repairs: z.array(z.unknown()).length(0),
 })
 
@@ -90,7 +103,6 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 	if (campaign.attempts.some(({ result }) => result.status !== "passed" && !result.failure))
 		throw new Error("Campaign result is missing its failure classification")
 	const samples = campaign.attempts.filter(({ request }) => request.phase === "sample")
-	if (!samples.length) throw new Error("Campaign contains no sample attempts")
 	const provider = campaign.requestedProvider
 	const plan = campaign.evaluationPlan
 	if (
@@ -109,8 +121,12 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 			),
 		),
 	)
-	if (expected.size !== samples.length) throw new Error("Campaign sample matrix is incomplete or contains duplicates")
+	const planned = expected.size
+	if (campaign.stopReason === "completed" && expected.size !== samples.length)
+		throw new Error("Campaign sample matrix is incomplete or contains duplicates")
 	for (const { request, result } of samples) {
+		if (request.timeWindow && request.timeWindow !== options.timeWindow)
+			throw new Error("Campaign captured time block differs from export declaration")
 		if (!expected.delete(cellKey(request.scenarioId, request.host.version, request.sample)))
 			throw new Error("Campaign sample is outside expected matrix or duplicated")
 		if (request.campaignId !== campaign.id || canonicalJson(request.provider) !== canonicalJson(provider))
@@ -123,6 +139,17 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 		)
 			throw new Error("Campaign actual model or effort is missing or mismatched")
 	}
+	const observedSampling = {
+		planned,
+		completed: samples.length,
+		passed: samples.filter(({ result }) => result.status === "passed").length,
+		failed: samples.filter(({ result }) => result.status === "failed").length,
+		blocked: samples.filter(({ result }) => result.status === "blocked").length,
+		notRun: expected.size,
+		diagnosticAttempts: campaign.attempts.length - samples.length,
+	}
+	if (campaign.sampling && canonicalJson(campaign.sampling) !== canonicalJson(observedSampling))
+		throw new Error("Campaign sampling denominators disagree with observed attempts")
 	const hosts = [...new Set(samples.map(({ result }) => result.actualHostVersion))].sort()
 	const config = identity.configDigest
 	const variant = experimentVariantSchema.parse({
@@ -146,7 +173,9 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 		retryPolicyDigest: config,
 	})
 	const taskId = (scenario: string, host: string) => `${scenario}:vscode-${host}`
-	const taskIds = [...new Set(samples.map(({ request }) => taskId(request.scenarioId, request.host.version)))].sort()
+	const taskIds = plan.scenarioIds
+		.flatMap((scenario) => plan.hostVersions.map((host) => taskId(scenario, host)))
+		.sort()
 	const taskSet = {
 		schemaVersion: 1 as const,
 		id: "host-scenarios",
@@ -176,12 +205,14 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 			// This is a pairing block label, not a claim of deterministic provider sampling.
 			seed: 0,
 			repetition: request.sample,
-			timeWindow: options.timeWindow,
+			timeWindow: request.timeWindow ?? options.timeWindow,
+			capturedTimeWindow: request.timeWindow,
 			resourceProfileDigest: config,
 			permissionDigest: config,
 			networkMode: variant.networkMode,
 			retryPolicyDigest: config,
 			variantIdentity: immutableIdentity(variant),
+			runId: campaign.id,
 			status,
 			firstAttemptStatus: status,
 			retryAssisted: false,
@@ -191,6 +222,13 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 					? null
 					: result.usage.inputTokens + result.usage.outputTokens,
 			latencyMs: elapsedMs,
+			decisionPlanDigest: request.decisionPlanDigest,
+			startedAt: request.startedAt,
+			performance: {
+				inputTokens: result.usage.inputTokens,
+				outputTokens: result.usage.outputTokens,
+				...result.performance,
+			},
 			capabilities: ["host-contract"],
 			risk: "high",
 			family: "host-scenarios",
@@ -211,10 +249,18 @@ export function exportHostCampaign(value: unknown, options: { timeWindow: string
 			totalCost: campaign.attempts.some(({ result }) => result.usage.cost === null)
 				? null
 				: campaign.attempts.reduce((sum, { result }) => sum + (result.usage.cost ?? 0), 0),
+			sampling: observedSampling,
 		},
 		variant,
 		taskSet,
 		observations,
-		incomplete: [],
+		incomplete:
+			campaign.stopReason === "completed"
+				? []
+				: [
+						{
+							reason: `Campaign stopped with ${campaign.stopReason}; ${expected.size} scheduled samples were not run`,
+						},
+					],
 	})
 }

@@ -217,16 +217,135 @@ test("follow-up documentation accepts equivalent wording but rejects incorrect n
 			["sum([-2, 1]) = -1", true],
 			["`sum([-2, 1])` equals `-1`.", true],
 			["`sum([-2, 1])`\nreturns `-1`.", true],
+			["`sum([-2, 1])` returning `-1`.", true],
+			["sum([-2, 1]) returned -1.", true],
+			["`sum([-2, 1])`, which\nreturns `-1`.", true],
+			["sum([-2, 1]) that returns -1.", true],
+			["sum ( [ -2, 1 ] ) returns -1.", true],
 			["sum([-2, 1]) // => -1", true],
 			["sum([-2, 1]) = -10", false],
 			["sum([-2, 1]) = -1.5", false],
 			["sum([-2, 1]) = -1e2", false],
 			["sum([-2, 1]) does not equal -1", false],
+			["sum([-2, 1]), which does not return -1", false],
+			["sum([-2, 1]) is not -1", false],
+			["sum([-2, 1]) returning -10", false],
+			["sum([-2, 1]), which returns -1.5", false],
+			["sum([-2, 1]) returned -1e2", false],
+			["checksum([-2, 1]) returns -1", false],
 			["sum([-2, 2]) = -1", false],
+			["sum([-2, 2]), which returns -1", false],
 		] as const) {
 			await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), `${sentence}\n`)
 			const checks = await verifyRepositoryFixture(workspace, "followup")
 			assert.equal(allChecksPassed(checks), accepted, `${sentence}: ${JSON.stringify(checks)}`)
 		}
+	})
+})
+
+test("rejects skipped and TODO fixture tests even when the reported test count is positive", async () => {
+	await withTempDirectory(async (directory) => {
+		const workspace = path.join(directory, "fixture")
+		await fs.mkdir(workspace)
+		await createRepositoryFixture(workspace)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.module), FIXTURE_CONTENT.enhancedModule)
+		for (const modifier of ["skip", "todo"]) {
+			await fs.writeFile(
+				path.join(workspace, FIXTURE_FILES.primaryTest),
+				FIXTURE_CONTENT.enhancedTest.replaceAll("test(", `test.${modifier}(`),
+			)
+			assert.notEqual((await runFixtureTests(workspace)).exitCode, 0, modifier)
+		}
+	})
+})
+
+test("requires assertions that reject the missing behavior, rather than matching comments or vacuous calls", async () => {
+	await withTempDirectory(async (directory) => {
+		const workspace = path.join(directory, "fixture")
+		await fs.mkdir(workspace)
+		await createRepositoryFixture(workspace)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.module), FIXTURE_CONTENT.enhancedModule)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), FIXTURE_CONTENT.followupReadme)
+		for (const misleadingCoverage of [
+			"// negative numbers: assert.equal(sum([-2, 1]), -1)\n",
+			'test("negative numbers", () => { sum([-2, 1]) })\n',
+		]) {
+			await fs.writeFile(
+				path.join(workspace, FIXTURE_FILES.primaryTest),
+				FIXTURE_CONTENT.enhancedTest + misleadingCoverage,
+			)
+			const checks = await verifyRepositoryFixture(workspace, "followup")
+			assert.equal(
+				checks.find(({ name }) => name === "followup-negative-number-requirement")?.passed,
+				false,
+				misleadingCoverage,
+			)
+		}
+	})
+})
+
+test("independently verifies negative sums beyond the model-authored example", async () => {
+	await withTempDirectory(async (directory) => {
+		const workspace = path.join(directory, "fixture")
+		await fs.mkdir(workspace)
+		await createRepositoryFixture(workspace)
+		await fs.writeFile(
+			path.join(workspace, FIXTURE_FILES.module),
+			"function sum(values) {\n" +
+				"  if (values[0] < 0) return -1\n" +
+				"  return values.reduce((total, value) => total + value, 0)\n" +
+				"}\nmodule.exports = { sum }\n",
+		)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.primaryTest), FIXTURE_CONTENT.followupPrimaryTest)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), FIXTURE_CONTENT.followupReadme)
+		assert.equal((await runFixtureTests(workspace)).exitCode, 0)
+		const checks = await verifyRepositoryFixture(workspace, "followup")
+		assert.equal(checks.find(({ name }) => name === "enhanced-source")?.passed, false)
+	})
+})
+
+test("requires every accumulated workflow case to be asserted", async () => {
+	await withTempDirectory(async (directory) => {
+		const workspace = path.join(directory, "fixture")
+		await fs.mkdir(workspace)
+		await createRepositoryFixture(workspace)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.module), FIXTURE_CONTENT.enhancedModule)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), FIXTURE_CONTENT.followupReadme)
+		await fs.writeFile(
+			path.join(workspace, FIXTURE_FILES.workflowCases),
+			JSON.stringify([
+				{ step: 1, left: 8, right: -2, sum: 6 },
+				{ step: 2, left: -5, right: 1, sum: -4 },
+			]),
+		)
+		for (const incompleteLoop of [
+			"for (const item of cases) test(`step ${item.step}`, () => { sum([item.left, item.right]) })",
+			"for (const item of cases.slice(0, 1)) test(`step ${item.step}`, () => assert.equal(sum([item.left, item.right]), item.sum))",
+		]) {
+			await fs.writeFile(
+				path.join(workspace, FIXTURE_FILES.primaryTest),
+				`${FIXTURE_CONTENT.followupPrimaryTest}const cases = require("./workflow-cases.json")\n${incompleteLoop}\n`,
+			)
+			const checks = await verifyRepositoryFixture(workspace, "followup")
+			assert.equal(checks.find(({ name }) => name === "workflow-cases-covered")?.passed, false, incompleteLoop)
+		}
+	})
+})
+
+test("accepts equivalent assertions without prescribing test names or assertion syntax", async () => {
+	await withTempDirectory(async (directory) => {
+		const workspace = path.join(directory, "fixture")
+		await fs.mkdir(workspace)
+		await createRepositoryFixture(workspace)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.module), FIXTURE_CONTENT.enhancedModule)
+		await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), FIXTURE_CONTENT.followupReadme)
+		await fs.writeFile(
+			path.join(workspace, FIXTURE_FILES.primaryTest),
+			'const assert = require("node:assert/strict")\n' +
+				'const test = require("node:test")\n' +
+				'const { sum } = require("../lib/stats.cjs")\n' +
+				'test("required outcomes", () => assert.deepEqual([sum([]), sum([1, 2, 3]), sum([-2, 1])], [0, 6, -1]))\n',
+		)
+		await assertChecksPass(workspace, "followup")
 	})
 })

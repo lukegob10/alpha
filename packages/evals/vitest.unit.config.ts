@@ -4,6 +4,8 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
+		// Grader subprocesses and content-addressed filesystem fixtures need bounded file concurrency.
+		maxWorkers: 2,
 		include: [
 			"src/cli/__tests__/**/*.{test,spec}.ts",
 			"src/lifecycle/__tests__/**/*.spec.ts",
@@ -13,6 +15,7 @@ export default defineConfig({
 			"src/evidence/__tests__/**/*.spec.ts",
 			"src/infrastructure/__tests__/**/*.spec.ts",
 			"src/experiments/__tests__/**/*.spec.ts",
+			"src/improvement/__tests__/**/*.spec.ts",
 			"src/benchmark/__tests__/**/*.spec.ts",
 			"src/db/__tests__/**/*.spec.ts",
 		],

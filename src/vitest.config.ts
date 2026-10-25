@@ -11,6 +11,8 @@ export default defineConfig({
 		exclude: [...configDefaults.exclude, "**/{dist,out,build}/**"],
 		setupFiles: ["./vitest.setup.ts"],
 		watch: false,
+		// Turbo runs workspace pools together; cap expensive Task/filesystem workers per package.
+		maxWorkers: 4,
 		reporters,
 		silent,
 		testTimeout: 20_000,

@@ -6,6 +6,7 @@ import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { normalizeVitestEvidence } from "./execution-evidence.mjs"
 import { configureLaneEvidence } from "./lane-evidence.mjs"
+import { hostReceipt } from "./fixtures/evidence.mjs"
 
 const root = fileURLToPath(new URL("../../", import.meta.url))
 const prefix = "alpha-vitest-diagnostics-"
@@ -110,4 +111,72 @@ test("Vitest diagnostics leave the existing failed Node receipt shape unchanged"
 	const evidence = await verifyRaw(receipt, "node")
 	assert.deepEqual(evidence, { status: "failed", reason: "test_execution_failed", receipt })
 	assert.equal(Object.hasOwn(evidence, "failureDiagnostics"), false)
+})
+
+test("missing host receipts cannot establish shutdown or release the shared build lease", async () => {
+	const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "alpha-missing-host-"))
+	try {
+		const collector = await configureLaneEvidence({
+			lane: { commands: [["harness:stress"]], receipts: [{ runner: "extension-host", suite: "stress" }] },
+			name: "stress",
+			root,
+			directory,
+			id: "missing-host-control",
+		})
+		const verdict = await collector.verify({
+			index: 0,
+			args: ["harness:stress"],
+			step: { startedAt: new Date().toISOString() },
+		})
+		assert.equal(verdict.status, "failed")
+		assert.equal(verdict.stage, "host-receipts")
+		assert.equal(verdict.cleanupVerified, false)
+	} finally {
+		assert.ok(path.basename(directory).startsWith("alpha-missing-host-"))
+		await rm(directory, { recursive: true, force: true })
+	}
+})
+
+test("failed host acceptance retains known closure while incomplete or unclosed launches remain unknown", async () => {
+	for (const scenario of ["closed-failure", "missing-next-receipt", "unclosed-failure"]) {
+		const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "alpha-failed-host-"))
+		try {
+			const collector = await configureLaneEvidence({
+				lane: { commands: [["test:smoke:1380"]], receipts: [{ runner: "extension-host", suite: "smoke" }] },
+				name: "host",
+				root,
+				directory,
+				id: "failed-host-control",
+			})
+			const first = {
+				...hostReceipt("extension.test"),
+				startedAt: "2026-10-02T10:00:01Z",
+				completedAt: "2026-10-02T10:00:02Z",
+			}
+			const failed = {
+				...hostReceipt("modes.test"),
+				startedAt: "2026-10-02T10:00:03Z",
+				completedAt: "2026-10-02T10:00:04Z",
+				status: "failed",
+				exitCode: 1,
+				failure: "host-failed",
+				testCounts: { total: 1, passed: 0, pending: 0, executed: 1, failed: 1 },
+			}
+			await writeFile(path.join(directory, "step-0-hosts", `${first.runId}.json`), JSON.stringify(first))
+			if (scenario !== "missing-next-receipt") {
+				if (scenario === "unclosed-failure") failed.hostExitObserved = false
+				await writeFile(path.join(directory, "step-0-hosts", `${failed.runId}.json`), JSON.stringify(failed))
+			}
+			const verdict = await collector.verify({
+				index: 0,
+				args: ["test:smoke:1380"],
+				step: { startedAt: "2026-10-02T10:00:00Z", exitCode: 1 },
+			})
+			assert.equal(verdict.status, "failed")
+			assert.equal(verdict.cleanupVerified, scenario === "closed-failure")
+		} finally {
+			assert.ok(path.basename(directory).startsWith("alpha-failed-host-"))
+			await rm(directory, { recursive: true, force: true })
+		}
+	}
 })

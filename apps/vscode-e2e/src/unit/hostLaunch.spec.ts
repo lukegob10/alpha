@@ -5,11 +5,11 @@ import * as os from "os"
 import * as path from "path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { launchExtensionHost, HostLaunchCancelledError } from "../hostLaunch"
+import { launchExtensionHost, HostLaunchCancelledError, HostLaunchFailureError } from "../hostLaunch"
 import { LIVE_HOST_STARTUP_TIMEOUT_MS } from "../liveHostProtocol"
 import { randomUUID } from "node:crypto"
 
-test("a startup deadline returns unknown close and leaves its owned child alive for inspection", async (context) => {
+test("a startup deadline terminates its owned child and reports verified cleanup", async (context) => {
 	context.mock.timers.enable({ apis: ["setTimeout"] })
 	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-unknown-close-")))
 	const cancellation = new AbortController()
@@ -33,12 +33,16 @@ test("a startup deadline returns unknown close and leaves its owned child alive 
 				},
 				cancellation.signal,
 			),
-			{
-				code: "host-startup-timeout",
+			(error: unknown) => {
+				assert.ok(error instanceof HostLaunchFailureError)
+				assert.equal(error.code, "host-startup-timeout")
+				assert.equal(error.hostExitObserved, true)
+				assert.equal(error.cleanupVerified, true)
+				return true
 			},
 		)
 		assert.ok(ownedPid)
-		assert.doesNotThrow(() => process.kill(ownedPid!, 0))
+		assert.throws(() => process.kill(ownedPid!, 0), { code: "ESRCH" })
 	} finally {
 		// Only this fixture's freshly spawned Node child is cancelled, not a VS Code host.
 		cancellation.abort()

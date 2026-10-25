@@ -74,6 +74,20 @@ describe("ChatRow - inline diff stats and actions", () => {
 		mockPostMessage.mockClear()
 	})
 
+	it.each([
+		{ flags: { isProtected: true }, label: "Alpha wants to edit a protected file", lock: true },
+		{ flags: { isOutsideWorkspace: true }, label: "Alpha wants to edit outside workspace", lock: false },
+	])("shows batch approval scope: $label", ({ flags, label, lock }) => {
+		const message = createToolAskMessage({
+			tool: "appliedDiff",
+			...flags,
+			batchDiffs: [{ path: "file.txt", content: "-old\n+new", changeCount: 1 }],
+		})
+		const { container } = renderChatRow(message)
+		expect(screen.getByText(label)).toBeInTheDocument()
+		expect(!!container.querySelector(".codicon-lock")).toBe(lock)
+	})
+
 	it("exposes sent-message actions as native buttons", () => {
 		const message: AlphaMessage = {
 			type: "say",

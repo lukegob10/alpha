@@ -9,15 +9,23 @@ on:
 
 permissions:
     contents: read
+    actions: read
 
 concurrency:
     group: release-vsix-${{ github.ref }}
     cancel-in-progress: false
 
 jobs:
+    evaluator-contracts:
+        uses: ./.github/workflows/evaluation-contracts.yml
+
     release-vsix:
+        needs: evaluator-contracts
         runs-on: windows-latest
-        timeout-minutes: 90
+        timeout-minutes: 120
+        env:
+            TEMP: ${{ runner.temp }}
+            TMP: ${{ runner.temp }}
 
         steps:
             - name: Checkout code
@@ -66,12 +74,47 @@ jobs:
             - name: Verify managed-agent contracts and certification
               run: pnpm harness run confidence
 
+            - name: Verify rendered composer, transcript and input UI contracts
+              run: pnpm harness run rendered
+
+            - name: Verify bounded lifecycle cancellation and managed budgets
+              run: pnpm harness run stress
+
+            # Enable after an owned signed-in runner or reviewed local run can supply this commit's retained campaign.
+            # Materialize before outcomes captures the compiled harness; later build changes invalidate its evidence.
+            - name: Materialize the fixed sidecar manifest for build comparison
+              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
+              run: node -e "require('./apps/vscode-e2e/out/liveHostProtocol.js').prepareLiveSidecar().catch(() => process.exit(1))"
+
             - name: Verify independent scripted task outcomes
               run: pnpm harness run outcomes
 
+            - name: Download explicitly required live Copilot evidence
+              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
+              uses: actions/download-artifact@v7
+              with:
+                  name: alpha-live-copilot-evidence
+                  path: ${{ runner.temp }}/alpha-live-import
+                  run-id: ${{ vars.ALPHA_LIVE_EVIDENCE_RUN_ID }}
+                  github-token: ${{ github.token }}
+
+            - name: Admit fresh source and build bound live Copilot evidence
+              if: always() && vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
+              env:
+                  ALPHA_LIVE_EVIDENCE_DIR: ${{ runner.temp }}/alpha-live-import
+                  ALPHA_LIVE_EVAL_MODEL_ID: ${{ vars.ALPHA_LIVE_EVAL_MODEL_ID }}
+                  ALPHA_LIVE_EVAL_EFFORT: ${{ vars.ALPHA_LIVE_EVAL_EFFORT }}
+              run: node scripts/ci-live-evidence-policy.mjs
+
+            - name: Record the live evidence operational prerequisite
+              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE != 'true'
+              shell: pwsh
+              run: |
+                  Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value 'Live Copilot acceptance was not requested. An owned authenticated acquisition path and fresh retained source/build-compatible campaign are required before enabling ALPHA_REQUIRE_LIVE_EVIDENCE. Deterministic release gates remain required.'
+
             - name: Require current release evidence
               if: always()
-              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes
+              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes --require rendered --require stress
 
             - name: Verify command auto-approval and outside-path review
               run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
@@ -83,6 +126,12 @@ jobs:
                   name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
                   path: |
                       artifacts/harness/
+                      artifacts/composer-ui/
+                      artifacts/transcript-lifecycle-ui/
+                      artifacts/request-user-input-ui/
+                      ${{ runner.temp }}/alpha-rendered-probe-*/evidence/**
+                      ${{ runner.temp }}/alpha-harness-host-probes-*/evidence-*/**
+                      ${{ runner.temp }}/alpha-harness-host-probes-*/ui-probe-*.json
                       artifacts/core-confidence/*/gate-result.json
                       artifacts/core-confidence/*/prepare-*.json
                       artifacts/core-confidence/*/certification-*.json

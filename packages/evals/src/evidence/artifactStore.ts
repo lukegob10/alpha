@@ -3,7 +3,12 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 
 import { sha256 } from "./canonical"
-import { EVIDENCE_SCHEMA_VERSION, type ArtifactDescriptor, type ArtifactKind } from "./types"
+import {
+	EVIDENCE_SCHEMA_VERSION,
+	type ArtifactCaptureStatus,
+	type ArtifactDescriptor,
+	type ArtifactKind,
+} from "./types"
 
 export type PutArtifactInput = {
 	attemptId: string
@@ -13,6 +18,7 @@ export type PutArtifactInput = {
 	access?: ArtifactDescriptor["access"]
 	retention?: ArtifactDescriptor["retention"]
 	createdAt?: string
+	captureStatus?: ArtifactCaptureStatus
 }
 
 export interface ContentAddressedArtifactStore {
@@ -54,11 +60,13 @@ export class FilesystemArtifactStore implements ContentAddressedArtifactStore {
 			access: input.access ?? "reviewer",
 			retention: input.retention ?? "campaign",
 			uploadState: "complete",
+			captureStatus: input.captureStatus ?? (input.bytes.byteLength ? "captured" : "captured-empty"),
 			createdAt: input.createdAt ?? new Date().toISOString(),
 		}
 	}
 
 	async get(descriptor: ArtifactDescriptor): Promise<Uint8Array | undefined> {
+		if (!/^sha256:[a-f0-9]{64}$/.test(descriptor.digest)) throw new Error("Invalid artifact content digest")
 		const hex = descriptor.digest.slice("sha256:".length)
 		try {
 			return await fs.readFile(path.join(this.root, "sha256", hex.slice(0, 2), hex))

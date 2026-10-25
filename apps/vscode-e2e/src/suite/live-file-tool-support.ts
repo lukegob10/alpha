@@ -15,7 +15,7 @@ import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestRoot } from "../testProfile"
-import { assistantVisibleText } from "./live-transcript-support"
+import { assistantVisibleText, finalAssistantResponse } from "./live-transcript-support"
 import {
 	assertLiveFileToolBoundary,
 	createCompletionReviewAcknowledger,
@@ -97,6 +97,7 @@ export async function runLiveCase(
 		answer: string,
 		task: LiveTask,
 		finalAssistantText: string,
+		finalAssistantCalls: Transaction[],
 	) => Promise<void>,
 	options: { scope?: string; commands?: string[]; requestLimit?: number; timeoutMs?: number } = {},
 ) {
@@ -225,7 +226,16 @@ export async function runLiveCase(
 				calls.every((call) => allowed.has(call.name as ToolName)),
 				"No alternate tool may bypass the probe",
 			)
-			await verify(calls, task.clineMessages, workspace, answer, task, assistantMessages.at(-1) ?? "")
+			const finalResponse = finalAssistantResponse(history)
+			await verify(
+				calls,
+				task.clineMessages,
+				workspace,
+				answer,
+				task,
+				finalResponse.text,
+				finalResponse.toolCallCount > 0 ? calls.slice(-finalResponse.toolCallCount) : [],
+			)
 			passed = true
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error)

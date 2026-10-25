@@ -26,6 +26,7 @@ export type RunTaskOptions = {
 	publish: (taskEvent: TaskEvent) => Promise<void>
 	logger: Logger
 	workspaceRoot?: string
+	signal?: AbortSignal
 	onExecutionIdentity?: (
 		identity: ExecutionIdentity,
 		presentationPolicy?: PresentationModelCallPolicy,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { canonicalJson, sha256 } from "../../evidence/canonical"
 
 import {
 	bootstrapMean95,
@@ -17,6 +18,7 @@ import {
 	segmentExperiment,
 	sealCampaignExport,
 	reportCampaignPair,
+	renderCampaignPair,
 	validateTemplateDiff,
 	type ExperimentStatistics,
 	type ExperimentVariant,
@@ -306,6 +308,10 @@ describe("reference statistics", () => {
 		const controlReceipt = campaign(controlVariant, control)
 		const candidateReceipt = campaign(candidateVariant, candidate)
 		expect(reportCampaignPair(controlReceipt, candidateReceipt, context.manifest).pairCount).toBe(1)
+		const pairedReport = reportCampaignPair(controlReceipt, candidateReceipt, context.manifest)
+		expect(renderCampaignPair({ ...pairedReport, decisionEvidence: undefined })).toContain(
+			"Historical report contains no predeclared decision evidence",
+		)
 		expect(() =>
 			reportCampaignPair({ ...controlReceipt, runId: "tampered" }, candidateReceipt, context.manifest),
 		).toThrow("digest mismatch")
@@ -392,8 +398,14 @@ describe("promotion policy", () => {
 			highRiskRegressions: 0,
 			certified: true,
 			paired: true,
+			decisionEvidence: {
+				status: "accepted" as const,
+				reasons: [],
+				statisticsDigest: sha256(canonicalJson(statistics())),
+			},
 		}
 		expect(evaluatePromotion(base)).toEqual({ allowed: true, reasons: [] })
+		expect(evaluatePromotion({ ...base, decisionEvidence: undefined }).allowed).toBe(false)
 		const blocked = evaluatePromotion({
 			...base,
 			candidate: statistics({
@@ -408,7 +420,7 @@ describe("promotion policy", () => {
 			paired: false,
 		})
 		expect(blocked.allowed).toBe(false)
-		expect(blocked.reasons).toHaveLength(8)
+		expect(blocked.reasons).toHaveLength(9)
 		const undefinedMetrics = evaluatePromotion({
 			...base,
 			candidate: statistics({ consistencyAtK: null, costPerSuccess: null, latencyMs: { p50: null, p95: null } }),
@@ -419,6 +431,13 @@ describe("promotion policy", () => {
 			...base,
 			candidate: statistics({ costPerSuccess: 0, latencyMs: { p50: 0, p95: 0 } }),
 			control: statistics({ costPerSuccess: 0, latencyMs: { p50: 0, p95: 0 } }),
+			decisionEvidence: {
+				status: "accepted",
+				reasons: [],
+				statisticsDigest: sha256(
+					canonicalJson(statistics({ costPerSuccess: 0, latencyMs: { p50: 0, p95: 0 } })),
+				),
+			},
 		})
 		expect(zeroMetrics.allowed).toBe(true)
 	})

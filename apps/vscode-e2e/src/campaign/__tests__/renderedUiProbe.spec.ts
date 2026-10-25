@@ -3,10 +3,58 @@ import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
-import { runExtensionTests, type ExtensionTestRunOptions } from "../../runTest"
+import { runExtensionTests, type ExtensionTestRunOptions, type ExtensionTestRunResult } from "../../runTest"
+import { renderedUiHostAccepted } from "../renderedUiProbe"
+
+test("rendered acceptance rejects incomplete selection and host execution independently of UI observations", () => {
+	const result = {
+		status: "passed",
+		exitCode: 0,
+		execution: "extension-host",
+		providerMode: "scripted",
+		ownershipGate: "verified",
+		captureComplete: true,
+		hostExitObserved: true,
+		actualVSCodeVersion: "1.138.0",
+		retention: { status: "complete" },
+		requireAllTests: true,
+		testSelection: { testFile: "composer-ui.test", grep: null, forbidOnly: true },
+		testCounts: { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 },
+	} as ExtensionTestRunResult
+	assert.equal(renderedUiHostAccepted(result, "composer-ui.test"), true)
+	for (const change of [
+		{ status: "failed" },
+		{ exitCode: 1 },
+		{ execution: "test-seam" },
+		{ providerMode: "live-copilot" },
+		{ ownershipGate: undefined },
+		{ hostExitObserved: false },
+		{ hostCleanupVerified: false },
+		{ captureComplete: false },
+		{ actualVSCodeVersion: "1.125.0" },
+		{ retention: { status: "failed" } },
+		{ failure: "host-failed" },
+		{ requireAllTests: false },
+		{ testSelection: undefined },
+		{ testSelection: { testFile: "foreign.test", grep: null, forbidOnly: true } },
+		{ testSelection: { testFile: "composer-ui.test", grep: "subset", forbidOnly: true } },
+		{ testSelection: { testFile: "composer-ui.test", grep: null, forbidOnly: false } },
+		{ testCounts: undefined },
+		{ testCounts: { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 } },
+		{ testCounts: { total: 0, passed: 0, pending: 0, executed: 0, failed: 0 } },
+		{ testCounts: { total: 2, passed: 1, pending: 0, executed: 2, failed: 1 } },
+		{ testCounts: { total: 2, passed: 1, pending: 0, executed: 1, failed: 0 } },
+	])
+		assert.equal(
+			renderedUiHostAccepted({ ...result, ...change } as ExtensionTestRunResult, "composer-ui.test"),
+			false,
+		)
+})
 
 for (const testFile of [
 	"rendered-ui-probe.test",
+	"reasoning-ui.test",
+	"managed-agents.acceptance.test",
 	"tickets-ui.test",
 	"file-review-ui.test",
 	"task-navigation-ui.test",
@@ -39,7 +87,7 @@ for (const testFile of [
 		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ui-port-test-")))
 		try {
 			let launched = false
-			await runExtensionTests(
+			const receipt = await runExtensionTests(
 				{
 					providerMode: "scripted",
 					vscodeVersion: "1.138.0",
@@ -49,13 +97,13 @@ for (const testFile of [
 					workspace: path.join(root, "workspace"),
 					artifactsDir: path.join(root, "evidence"),
 					initializeProfile: true,
-					...(testFile === "request-user-input-ui.test" ? { requireAllTests: true } : {}),
+					requireAllTests: true,
 				},
 				{
+					acquireLease: async () => async () => {},
 					launch: async (options) => {
 						launched = true
-						if (testFile === "request-user-input-ui.test")
-							assert.equal(options.extensionTestsEnv?.ALPHA_E2E_REQUIRE_ALL_TESTS, "1")
+						assert.equal(options.extensionTestsEnv?.ALPHA_E2E_REQUIRE_ALL_TESTS, "1")
 						assert.equal(
 							options.launchArgs?.filter((value) => value.startsWith("--remote-debugging-port=")).join(),
 							"--remote-debugging-port=0",
@@ -64,7 +112,7 @@ for (const testFile of [
 					},
 				},
 			)
-			assert.equal(launched, true)
+			assert.equal(launched, true, receipt.failure)
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })
 		}

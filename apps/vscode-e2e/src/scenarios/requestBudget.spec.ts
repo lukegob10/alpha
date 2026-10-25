@@ -3,6 +3,83 @@ import { test } from "node:test"
 
 import { guardTaskApi, guardVsCodeLmHandler, WorkflowRequestBudget } from "./requestBudget"
 
+test("live effort is verified on outgoing options before an actual request is counted or sent", async () => {
+	let sends = 0
+	const handler = { getClient: async () => ({ id: "model", sendRequest: (..._args: unknown[]) => ++sends }) }
+	const budget = new WorkflowRequestBudget(3, "model", "high")
+	const restore = guardVsCodeLmHandler(handler, budget)
+	try {
+		const client = await handler.getClient()
+		assert.throws(() => client.sendRequest([], {}), /actual_reasoning_effort_mismatch/)
+		assert.throws(
+			() =>
+				client.sendRequest([], {
+					modelOptions: { reasoningEffort: "high" },
+					configuration: { reasoningEffort: "low" },
+				}),
+			/actual_reasoning_effort_mismatch/,
+		)
+		assert.equal(sends, 0)
+		assert.equal(budget.used, 0)
+		assert.equal(
+			client.sendRequest([], {
+				modelOptions: { reasoningEffort: "high" },
+				configuration: { reasoningEffort: "high" },
+			}),
+			1,
+		)
+		assert.equal(budget.model.reasoningEffort, "high")
+		assert.equal(budget.used, 1)
+	} finally {
+		restore()
+	}
+})
+
+test("the disabled live effort rejects inherited effort in either VS Code options shape", async () => {
+	let sends = 0
+	const handler = { getClient: async () => ({ id: "model", sendRequest: (..._args: unknown[]) => ++sends }) }
+	const budget = new WorkflowRequestBudget(2, "model", "disable")
+	const restore = guardVsCodeLmHandler(handler, budget)
+	try {
+		const client = await handler.getClient()
+		for (const key of ["modelOptions", "configuration"]) {
+			assert.throws(
+				() => client.sendRequest([], { [key]: { reasoningEffort: "high" } }),
+				/actual_reasoning_effort_mismatch/,
+			)
+		}
+		assert.equal(sends, 0)
+		assert.equal(client.sendRequest([], { modelOptions: { contextSize: 128_000 } }), 1)
+		assert.equal(budget.model.reasoningEffort, "disable")
+	} finally {
+		restore()
+	}
+})
+
+test("summary requests retain their distinct effort and cannot replace observed task effort evidence", async () => {
+	const client = Object.freeze({ id: "model", sendRequest: (..._args: unknown[]) => "response" })
+	const task = {
+		api: { getClient: async () => client },
+		createReasoningSummaryHandler: () => ({ getClient: async () => client }),
+	}
+	const budget = new WorkflowRequestBudget(3, "model", "high")
+	const restore = guardTaskApi(task, budget)
+	try {
+		await (
+			await task.createReasoningSummaryHandler().getClient()
+		).sendRequest([], { modelOptions: { reasoningEffort: "low" } })
+		assert.equal(budget.model.reasoningEffort, undefined, "a summary cannot prove the scored task's effort")
+		await (await task.api.getClient()).sendRequest([], { modelOptions: { reasoningEffort: "high" } })
+		await (
+			await task.createReasoningSummaryHandler().getClient()
+		).sendRequest([], { modelOptions: { reasoningEffort: "low" } })
+		assert.equal(budget.model.reasoningEffort, "high")
+		assert.deepEqual(budget.usedByPurpose, { task: 1, "reasoning-summary": 2 })
+	} finally {
+		restore()
+	}
+})
+
 test("auxiliary handlers share the dispatch cap and report a separate purpose count", async () => {
 	let sends = 0
 	const client = Object.freeze({ id: "model", sendRequest: async () => ++sends })

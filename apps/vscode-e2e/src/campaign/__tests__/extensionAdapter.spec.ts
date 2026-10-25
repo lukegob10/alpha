@@ -3,7 +3,13 @@ import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
-import { createExtensionCampaignOperations, projectWorkflowResult, completionReplayPassed } from "../extensionAdapter"
+import {
+	createExtensionCampaignOperations,
+	projectWorkflowResult,
+	projectProviderIdentity,
+	completionReplayPassed,
+} from "../extensionAdapter"
+import { compareLiveProviderIdentity } from "../../liveProviderIdentity"
 import { prepareEvidenceRun } from "../../evidence/paths"
 import { openCampaignRoot } from "../reportStore"
 import { auditRetainedStorage } from "../../evidence/retainedStorageBudget"
@@ -169,10 +175,35 @@ test("projects verified metadata and rejects failed checks behind a passed claim
 	assert.equal(withUsage.result.usage.inputTokens, 11)
 	assert.equal(withUsage.result.usage.outputTokens, 7)
 	assert.equal(withUsage.result.usage.cost, 0.25)
+	assert.deepEqual(withUsage.result.performance, { inputTokens: 11, outputTokens: 7 })
+	assert.equal(projected.result.performance, undefined)
 	const invalid = { ...workflow(), checks: [{ name: "file-effect", passed: false }] }
 	assert.equal(projectWorkflowResult(invalid, request, "run").result.failure?.class, "assertion")
 	assert.throws(() => projectWorkflowResult({ ...workflow(), taskIds: [] }, request, "run"))
 	assert.throws(() => projectWorkflowResult({ ...workflow(), runId: "stale-run" }, request, "run"))
+})
+
+test("live provider observations require exact run correlation and remain stable across reload phases", () => {
+	const projected = projectWorkflowResult(workflow(), request, "run").result
+	const liveRequest = { ...request, provider: { mode: "live-copilot" as const, modelId: "model", effort: "high" } }
+	const before = { id: "github.copilot-chat" as const, version: "1.0.0", entrypointSha256: "a".repeat(64) }
+	const providerIdentity = compareLiveProviderIdentity(before, before)
+	const runner = { runId: "owned-run", providerIdentity }
+	const observed = projectProviderIdentity(projected, liveRequest, runner, "owned-run")
+	assert.equal(observed.status, "passed")
+	assert.deepEqual(observed.providerIdentity, providerIdentity)
+	for (const receipt of [undefined, { ...runner, runId: "stale-run" }, { ...runner, providerIdentity: {} }]) {
+		const blocked = projectProviderIdentity(projected, liveRequest, receipt, "owned-run")
+		assert.equal(blocked.status, "blocked")
+		assert.equal(blocked.usage.requests, 2)
+		assert.equal(blocked.failure?.fingerprint, "provider_identity_unavailable")
+	}
+	const replaced = { ...before, version: "2.0.0", entrypointSha256: "b".repeat(64) }
+	const later = { runId: "next-run", providerIdentity: compareLiveProviderIdentity(replaced, replaced) }
+	const changed = projectProviderIdentity(projected, liveRequest, later, "next-run", observed.providerIdentity)
+	assert.equal(changed.status, "blocked")
+	assert.equal(changed.providerIdentity?.status, "changed")
+	assert.equal(changed.usage.requests, 2)
 })
 
 test("producer and consumer share resource limits and reject malformed result envelopes", () => {
@@ -283,9 +314,12 @@ test("a finished matrix with observed failures has a nonzero exit code", () => {
 test("adapter gates reload continuation on complete evidence, retention and storage admission", async (context) => {
 	for (const scenario of [
 		"complete",
+		"cancel-before-continue",
 		"incomplete-evidence",
 		"capture-exit-failure",
 		"host-exit-failure",
+		"host-cleanup-unverified",
+		"capture-helper-cleanup-unverified",
 		"oversized-receipt",
 		"storage-limit",
 		"retention-failure",
@@ -295,6 +329,7 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 		await openCampaignRoot(root, true)
 		context.after(() => fs.rm(root, { recursive: true, force: true }))
 		const phases: string[] = []
+		const abort = new AbortController()
 		let audits = 0
 		const operations = createExtensionCampaignOperations(
 			{
@@ -352,6 +387,15 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 							phase,
 							status: phase === "prepare" ? "checkpointed" : "passed",
 							requestsUsed: scenario === "capture-exit-failure" ? 57 : 2,
+							...(scenario === "complete"
+								? {
+										usage: {
+											inputTokens: phase === "prepare" ? 11 : 17,
+											outputTokens: phase === "prepare" ? 7 : 9,
+											cost: null,
+										},
+									}
+								: {}),
 							...(scenario === "oversized-receipt"
 								? { unexpected: "x".repeat(MAX_WORKFLOW_RESULT_BYTES) }
 								: {}),
@@ -365,6 +409,9 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 							execution: "extension-host",
 							hostExitObserved: true,
 							ownershipGate: "verified",
+							hostCleanupVerified: scenario === "host-cleanup-unverified" ? false : undefined,
+							captureHelperCleanupVerified:
+								scenario === "capture-helper-cleanup-unverified" ? false : undefined,
 							captureComplete: complete,
 							failure: scenario === "capture-exit-failure" ? "evidence-failed" : undefined,
 						}),
@@ -389,6 +436,7 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 							captureComplete: complete,
 						}),
 					)
+					if (scenario === "cancel-before-continue") abort.abort()
 					return {
 						exitCode: scenario === "capture-exit-failure" || scenario === "host-exit-failure" ? 1 : 0,
 						signal: null,
@@ -401,15 +449,34 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 			},
 		)
 		const reloadRequest = { ...request, scenarioId: "reload-continuation" }
-		if (scenario === "complete") {
+		if (scenario === "cancel-before-continue") {
+			const result = await operations.runScenario(reloadRequest, abort.signal)
+			assert.equal(result.status, "blocked")
+			assert.equal(result.failure?.fingerprint, "campaign_cancelled")
+			assert.equal(result.usage.requests, 2)
+			assert.equal(result.actualHostVersion, "1.138.0")
+			assert.deepEqual(result.taskIds, ["task-1"])
+			assert.deepEqual(phases, ["prepare"])
+			await operations.preserveEvidence(reloadRequest, result)
+		} else if (scenario === "complete") {
 			const result = await operations.runScenario(reloadRequest, new AbortController().signal)
 			assert.equal(result.status, "passed")
 			assert.equal(result.usage.requests, 4)
+			assert.deepEqual(result.performance, { inputTokens: 28, outputTokens: 16 })
 			const evidencePath = await operations.preserveEvidence(reloadRequest, result)
 			const index = JSON.parse(await fs.readFile(path.join(root, evidencePath), "utf8"))
 			assert.equal(index.manifests.length, 2)
 			assert.deepEqual(phases, ["prepare", "continue"])
 			assert.equal(audits, 2)
+		} else if (scenario === "host-cleanup-unverified" || scenario === "capture-helper-cleanup-unverified") {
+			const result = await operations.runScenario(reloadRequest, new AbortController().signal)
+			assert.equal(result.status, "blocked")
+			assert.equal(result.failure?.fingerprint, "host_cleanup_unverified")
+			assert.equal(result.usage.requests, 2)
+			assert.equal(result.actualHostVersion, "1.138.0")
+			assert.deepEqual(result.taskIds, ["task-1"])
+			assert.deepEqual(phases, ["prepare"])
+			await operations.preserveEvidence(reloadRequest, result)
 		} else if (!complete) {
 			const result = await operations.runScenario(reloadRequest, new AbortController().signal)
 			assert.equal(result.status, "blocked")

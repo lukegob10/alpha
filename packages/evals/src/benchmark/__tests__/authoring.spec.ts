@@ -56,6 +56,37 @@ describe("benchmark authoring contract", () => {
 		await expect(loadBenchmarkCatalog(root)).rejects.toThrow("Duplicate benchmark task identity")
 	})
 
+	it("does not give a one-source generated scaffold unmeasured long-context claims", async () => {
+		const generated = await writeTaskTemplate(root, { id: "long-scaffold", profile: "long" })
+		expect(generated.task).toMatchObject({
+			admission: "draft",
+			contextBand: "compact",
+			difficulty: "foundation",
+			editTopology: { kind: "single-file", minFiles: 1 },
+		})
+		expect(await fs.readFile(path.join(generated.fixture, "AUTHORING.md"), "utf8")).toContain(
+			"Requested profile: long",
+		)
+	})
+
+	it("checks candidate smoke duplication while keeping released duplicate evidence visible", async () => {
+		const first = await writeTaskTemplate(root, { id: "smoke-first", profile: "compact" })
+		const second = await writeTaskTemplate(root, { id: "smoke-second", profile: "compact" })
+		const tasks = [first.task, second.task].map((task) => ({ ...task, partition: "smoke" as const }))
+		await writeSuite(tasks)
+		expect((await runAuthoringCheck({ publicRoot: root })).similarity.duplicatePairs).toHaveLength(1)
+		const suite = await writeSuite(tasks, "released")
+		await writeBenchmarkReleaseLock(root, suite, "2026-10-23T00:00:00.000Z")
+		expect((await runAuthoringCheck({ publicRoot: root })).valid).toBe(false)
+		const historical = { ...suite, id: "smoke-v1" }
+		await fs.writeFile(path.join(root, "suite.yaml"), stringify(historical, { lineWidth: 120 }))
+		await writeBenchmarkReleaseLock(root, historical, "2026-10-23T00:00:00.000Z")
+		const released = await runAuthoringCheck({ publicRoot: root })
+		expect(released.similarity.duplicatePairs).toEqual([])
+		expect(released.similarity.historicalDuplicatePairs).toHaveLength(1)
+		expect(released.valid).toBe(true)
+	})
+
 	it("flags noun-substituted prompts and structurally duplicated fixtures", async () => {
 		const first = await writeTaskTemplate(root, { id: "cache-repair", profile: "compact" })
 		const second = await writeTaskTemplate(root, { id: "session-repair", profile: "compact" })
@@ -66,7 +97,63 @@ describe("benchmark authoring contract", () => {
 			expect.objectContaining({ left: "cache-repair@1", right: "session-repair@1", duplicate: true }),
 		])
 		expect(await fs.readFile(report.jsonPath!, "utf8")).toContain("public_task_duplicate")
-		expect(await fs.readFile(report.markdownPath!, "utf8")).toContain("Admission-ready: no")
+		expect(await fs.readFile(report.markdownPath!, "utf8")).toContain("Authoring checks passed: no")
+	})
+
+	it("fingerprints source outside src directories in Python repository layouts", async () => {
+		const first = await writeTaskTemplate(root, { id: "python-first", profile: "compact" })
+		const second = await writeTaskTemplate(root, { id: "python-second", profile: "compact" })
+		for (const generated of [first, second]) {
+			await fs.rename(path.join(generated.fixture, "src"), path.join(generated.fixture, "inventory"))
+			await fs.rm(path.join(generated.fixture, "inventory", "workflow.js"))
+			await fs.writeFile(
+				path.join(generated.fixture, "inventory", "report.py"),
+				"def report(rows):\n    return sorted(rows)\n",
+			)
+		}
+		await fs.writeFile(path.join(first.fixture, "prompt.md"), "Sort inventory records by SKU.\n")
+		await fs.writeFile(path.join(second.fixture, "prompt.md"), "Build a summary for every warehouse.\n")
+		await writeSuite([first.task, second.task])
+		const report = await runAuthoringCheck({ publicRoot: root })
+		expect(report.similarity.duplicatePairs).toEqual([
+			expect.objectContaining({ source: 1, tests: 1, duplicate: true }),
+		])
+	})
+
+	it("measures distinct CommonJS sources instead of classifying them as identical empty fixtures", async () => {
+		const first = await writeTaskTemplate(root, { id: "cjs-records", profile: "compact" })
+		const second = await writeTaskTemplate(root, { id: "cjs-report", profile: "compact" })
+		for (const generated of [first, second]) {
+			await fs.rm(path.join(generated.fixture, "src", "workflow.js"))
+			await fs.writeFile(
+				path.join(generated.fixture, "test", "workflow.test.js"),
+				'import test from "node:test"\nimport assert from "node:assert/strict"\nimport workflow from "../src/workflow.cjs"\ntest("required behavior", () => assert.deepEqual(workflow("input"), "expected"))\n',
+			)
+		}
+		await fs.writeFile(
+			path.join(first.fixture, "src", "workflow.cjs"),
+			'module.exports = (text) => text.split(",").map((word) => word.trim()).filter(Boolean)\n',
+		)
+		await fs.writeFile(
+			path.join(second.fixture, "src", "workflow.cjs"),
+			"module.exports = (rows) => { const counts = new Map(); for (const row of rows) { counts.set(row.key, (counts.get(row.key) ?? 0) + row.quantity) } return Object.fromEntries(counts) }\n",
+		)
+		await fs.writeFile(
+			path.join(first.fixture, "prompt.md"),
+			"Parse comma separated input fields and discard empty records.\n",
+		)
+		await fs.writeFile(
+			path.join(second.fixture, "prompt.md"),
+			"Aggregate invoice quantities for each customer account.\n",
+		)
+		await writeSuite([first.task, second.task])
+		const report = await runAuthoringCheck({ publicRoot: root })
+		expect(report.similarity.duplicatePairs).toEqual([])
+		expect(report.corpus.tasks.map(({ sourceFiles, languages }) => ({ sourceFiles, languages }))).toEqual([
+			{ sourceFiles: 1, languages: ["javascript"] },
+			{ sourceFiles: 1, languages: ["javascript"] },
+		])
+		expect(report.valid).toBe(true)
 	})
 
 	it("rejects unknown graders and missing trace evidence", async () => {

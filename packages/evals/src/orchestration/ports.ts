@@ -68,6 +68,7 @@ export type HarnessProcessSpec = {
 	env?: Record<string, string>
 	timeoutMs: number
 	maxOutputBytes: number
+	signal?: AbortSignal
 }
 
 export type HarnessProcessResult = {

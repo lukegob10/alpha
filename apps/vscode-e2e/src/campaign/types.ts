@@ -1,4 +1,5 @@
 import type { PatchPlan, PatchReceipt } from "./patchPlan"
+import type { LiveProviderIdentityReceipt } from "../liveProviderIdentity"
 
 export const HOST_VERSIONS = ["1.138.0"] as const
 export type HostVersion = (typeof HOST_VERSIONS)[number]
@@ -55,6 +56,31 @@ export interface CampaignUsage {
 	cost: number | null
 }
 
+export const PERFORMANCE_METRICS = [
+	"firstResponseMs",
+	"firstUsefulResponseMs",
+	"hostOverheadMs",
+	"providerMs",
+	"retryDelayMs",
+	"toolsMs",
+	"providerRetries",
+	"inputTokens",
+	"outputTokens",
+	"cacheReadTokens",
+	"cacheWriteTokens",
+	"reasoningTokens",
+] as const
+export type CampaignPerformance = Partial<Record<(typeof PERFORMANCE_METRICS)[number], number | null>>
+export type CampaignCollectionMode = "sample-only" | "sample-then-diagnose"
+export type CampaignCounts = { passed: number; failed: number; blocked: number }
+export interface CampaignSampling extends CampaignCounts {
+	planned: number
+	/** Original attempts with a terminal result, including blocked attempts. */
+	completed: number
+	notRun: number
+	diagnosticAttempts: number
+}
+
 export interface ScenarioResult {
 	status: "passed" | "failed" | "blocked"
 	retentionFailed?: true
@@ -64,6 +90,9 @@ export interface ScenarioResult {
 	actualHostVersion?: HostVersion
 	model?: { id: string; effort?: string }
 	taskIds?: string[]
+	providerIdentity?: LiveProviderIdentityReceipt
+	/** Available observations only; absence or null never implies zero work. */
+	performance?: CampaignPerformance
 }
 
 export interface CampaignRepair {
@@ -83,6 +112,11 @@ export interface CampaignConfig {
 	provider: { mode: "scripted" | "live-copilot"; modelId?: string; effort?: string }
 	budgets: { maxIterations: number; maxRequests: number; maxDurationMs: number; attemptTimeoutMs: number }
 	maxReproductions: number
+	/** Omitted legacy configurations collect original samples; repairs always reproduce synchronously. */
+	collectionMode?: CampaignCollectionMode
+	/** Identity of a decision plan declared before these attempts; absent means no predeclared decision claim. */
+	decisionPlanDigest?: string
+	decisionTimeWindow?: string
 	storageBudget?: { maxBytes: number; maxEntries: number; maxDepth: number }
 	/** Source repair is absent by default. Paths must be explicitly allowed by the user. */
 	repair?: { enabled: true; sourceRoot: string; allowedPaths: string[]; plans: CampaignRepair[] }
@@ -98,6 +132,9 @@ export interface ScenarioRequest {
 	provider: CampaignConfig["provider"]
 	/** The host must enforce this before every provider request, including retries. */
 	requestLimit: number
+	startedAt?: string
+	decisionPlanDigest?: string
+	timeWindow?: string
 }
 
 export interface CampaignAttempt {
@@ -106,6 +143,8 @@ export interface CampaignAttempt {
 	elapsedMs: number
 	evidence?: string
 	evidenceFailed?: true
+	/** A late observed result can retain usage while remaining a non-passing terminal attempt. */
+	termination?: "cancelled" | "timeout"
 }
 
 export interface CampaignEvaluationIdentity {
@@ -127,11 +166,15 @@ export interface CampaignReport {
 	evaluationPlan?: { scenarioIds: string[]; hostVersions: HostVersion[]; samples: number }
 	id: string
 	mode: "report-only" | "reviewed-patch"
+	collectionMode?: CampaignCollectionMode | "reviewed-repair"
 	requestedProvider: CampaignConfig["provider"]
 	startedAt: string
 	finishedAt?: string
 	stopReason?: StopReason
-	counts: { passed: number; failed: number; blocked: number }
+	/** Legacy totals cover every phase; use sampling for original-trial outcomes. */
+	counts: CampaignCounts
+	/** Absent in historical reports; current checkpoints retain the complete original-trial denominator. */
+	sampling?: CampaignSampling
 	usage: CampaignUsage
 	attempts: CampaignAttempt[]
 	repairs: { diagnosisId: string; receipt: PatchReceipt; verified: boolean }[]

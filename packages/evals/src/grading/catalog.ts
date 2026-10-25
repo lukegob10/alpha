@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 
 import { parse } from "yaml"
 
-import type { GraderSpec } from "./types"
+import type { CommandGraderSpec, GraderSpec } from "./types"
 
 type TaskGraderContract = {
 	id: string
@@ -45,7 +45,7 @@ export function isSupportedGraderAlias(alias: string): boolean {
 export function resolveGraderAlias(options: {
 	alias: string
 	taskId: string
-	visibleCommands?: Array<{ command: string; args: string[] }>
+	visibleCommands?: CommandGraderSpec["commands"]
 	budgets?: { modelCalls: number; toolCalls: number; costUsd: number }
 	privateEntrypoint?: string
 	editTopology?: { maxFiles: number; allowedRoots: string[] }
@@ -133,15 +133,15 @@ export function resolveGraderAlias(options: {
 	}
 	const traceAssertions =
 		alias === "trace_retry_budget"
-			? [{ kind: "count-max" as const, eventType: "retry", max: 3 }]
+			? [{ kind: "count-max" as const, eventType: "agent.turn.retry", max: 3 }]
 			: alias === "plan_continuity"
-				? [{ kind: "present" as const, eventType: "plan_retained" }]
+				? [{ kind: "present" as const, eventType: "agent.turn.plan_retained" }]
 				: [
-						{ kind: "present" as const, eventType: "agent.turn.verification_result" },
 						{
-							kind: "ordered" as const,
-							before: "agent.turn.tool_result",
-							after: "agent.turn.verification_result",
+							kind: "verification-after-last-mutation" as const,
+							...(options.visibleCommands?.length
+								? { commands: options.visibleCommands.map(({ command, args }) => ({ command, args })) }
+								: {}),
 						},
 					]
 	return {
@@ -154,10 +154,28 @@ export function resolveGraderAlias(options: {
 
 export function resolveTaskGraderSpecs(options: {
 	task: TaskGraderContract
-	visibleCommands?: Array<{ command: string; args: string[] }>
+	visibleCommands?: CommandGraderSpec["commands"]
 	privateGraders?: PrivateGraderContract[]
 }): GraderSpec[] {
 	const privateGraders = new Map((options.privateGraders ?? []).map((grader) => [grader.id, grader.entrypoint]))
+	const visibleCommands = (
+		options.task.validation?.commands.length ? options.task.validation.commands : (options.visibleCommands ?? [])
+	).map((command) => {
+		const captured = options.visibleCommands?.find(
+			(candidate) =>
+				candidate.command === command.command &&
+				JSON.stringify(candidate.args) === JSON.stringify(command.args),
+		)
+		if (
+			!captured?.testExecution &&
+			command.args[0] === "--test" &&
+			options.visibleCommands?.some((item) => item.testExecution)
+		)
+			throw new Error(
+				`Captured visible test selection does not match the canonical command for ${options.task.id}`,
+			)
+		return captured?.testExecution ? { ...command, testExecution: captured.testExecution } : command
+	})
 	return options.task.graders.map((grader) => {
 		const privateEntrypoint = grader.bundleId ? privateGraders.get(`${options.task.id}.${grader.id}`) : undefined
 		if (grader.bundleId && !privateEntrypoint) {
@@ -166,9 +184,7 @@ export function resolveTaskGraderSpecs(options: {
 		return resolveGraderAlias({
 			alias: grader.alias,
 			taskId: options.task.id,
-			visibleCommands: options.task.validation?.commands.length
-				? options.task.validation.commands
-				: options.visibleCommands,
+			visibleCommands,
 			budgets: options.task.budgets,
 			privateEntrypoint,
 			editTopology: options.task.editTopology,

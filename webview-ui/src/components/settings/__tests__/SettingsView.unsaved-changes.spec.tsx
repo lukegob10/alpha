@@ -1,4 +1,6 @@
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
+import { cleanup, render, screen, fireEvent, waitFor, act, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
@@ -36,141 +38,145 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 }))
 
 // Mock UI components
-vi.mock("@src/components/ui", () => ({
-	ToggleSwitch: ({ checked, onChange, "aria-label": ariaLabel, "data-testid": dataTestId }: any) => (
-		<button role="switch" aria-checked={checked} aria-label={ariaLabel} data-testid={dataTestId} onClick={onChange}>
-			Toggle
-		</button>
-	),
-	Input: ({ value, onChange, placeholder, id, type, className, ...props }: any) => (
-		<input
-			type={type || "text"}
-			value={value}
-			onChange={onChange}
-			placeholder={placeholder}
-			id={id}
-			className={className}
-			{...props}
-		/>
-	),
-	Textarea: ({ value, onChange, placeholder, id, className, ...props }: any) => (
-		<textarea
-			value={value}
-			onChange={onChange}
-			placeholder={placeholder}
-			id={id}
-			className={className}
-			{...props}
-		/>
-	),
-	Checkbox: ({ checked, onCheckedChange, id, className, ...props }: any) => (
-		<input
-			type="checkbox"
-			checked={checked}
-			onChange={(e) => onCheckedChange?.(e.target.checked)}
-			id={id}
-			className={className}
-			{...props}
-		/>
-	),
-	AlertDialog: ({ children, open }: any) => (open ? <div data-testid="alert-dialog">{children}</div> : null),
-	AlertDialogContent: ({ children }: any) => <div>{children}</div>,
-	AlertDialogTitle: ({ children }: any) => <div>{children}</div>,
-	AlertDialogDescription: ({ children }: any) => <div>{children}</div>,
-	AlertDialogCancel: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button>,
-	AlertDialogAction: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button>,
-	AlertDialogHeader: ({ children }: any) => <div>{children}</div>,
-	AlertDialogFooter: ({ children }: any) => <div>{children}</div>,
-	Button: ({ children, onClick, disabled, ...props }: any) => (
-		<button onClick={onClick} disabled={disabled} {...props}>
-			{children}
-		</button>
-	),
-	Tooltip: ({ children }: any) => <>{children}</>,
-	TooltipContent: ({ children }: any) => <div>{children}</div>,
-	TooltipProvider: ({ children }: any) => <>{children}</>,
-	TooltipTrigger: ({ children }: any) => <>{children}</>,
-	StandardTooltip: ({ children, content }: any) => <div title={content}>{children}</div>,
-	Popover: ({ children }: any) => <>{children}</>,
-	PopoverTrigger: ({ children }: any) => <>{children}</>,
-	PopoverContent: ({ children }: any) => <div>{children}</div>,
-	Select: ({ children, value, onValueChange }: any) => (
-		<div data-testid="select" data-value={value}>
-			<button onClick={() => onValueChange && onValueChange("test-change")}>{value}</button>
-			{children}
-		</div>
-	),
-	SelectContent: ({ children }: any) => <div data-testid="select-content">{children}</div>,
-	SelectGroup: ({ children }: any) => <div data-testid="select-group">{children}</div>,
-	SelectItem: ({ children, value }: any) => (
-		<div data-testid={`select-item-${value}`} data-value={value}>
-			{children}
-		</div>
-	),
-	SelectTrigger: ({ children }: any) => <div data-testid="select-trigger">{children}</div>,
-	SelectValue: ({ placeholder }: any) => <div data-testid="select-value">{placeholder}</div>,
-	Slider: ({ value, onValueChange, "data-testid": dataTestId }: any) => (
-		<input
-			type="range"
-			value={value?.[0] ?? 0}
-			onChange={(e) => onValueChange?.([parseFloat(e.target.value)])}
-			data-testid={dataTestId}
-		/>
-	),
-	SearchableSelect: ({ value, onValueChange, options, placeholder }: any) => (
-		<select value={value} onChange={(e) => onValueChange(e.target.value)} data-testid="searchable-select">
-			{placeholder && <option value="">{placeholder}</option>}
-			{options?.map((opt: any) => (
-				<option key={opt.value} value={opt.value}>
-					{opt.label}
-				</option>
-			))}
-		</select>
-	),
-	Collapsible: ({ children, open }: any) => (
-		<div className="collapsible-mock" data-open={open}>
-			{children}
-		</div>
-	),
-	CollapsibleTrigger: ({ children, className, onClick }: any) => (
-		<div className={`collapsible-trigger-mock ${className || ""}`} onClick={onClick}>
-			{children}
-		</div>
-	),
-	CollapsibleContent: ({ children, className }: any) => (
-		<div className={`collapsible-content-mock ${className || ""}`}>{children}</div>
-	),
-	Dialog: ({ children, ...props }: any) => (
-		<div data-testid="dialog" {...props}>
-			{children}
-		</div>
-	),
-	DialogContent: ({ children, ...props }: any) => (
-		<div data-testid="dialog-content" {...props}>
-			{children}
-		</div>
-	),
-	DialogHeader: ({ children, ...props }: any) => (
-		<div data-testid="dialog-header" {...props}>
-			{children}
-		</div>
-	),
-	DialogTitle: ({ children, ...props }: any) => (
-		<div data-testid="dialog-title" {...props}>
-			{children}
-		</div>
-	),
-	DialogDescription: ({ children, ...props }: any) => (
-		<div data-testid="dialog-description" {...props}>
-			{children}
-		</div>
-	),
-	DialogFooter: ({ children, ...props }: any) => (
-		<div data-testid="dialog-footer" {...props}>
-			{children}
-		</div>
-	),
-}))
+vi.mock("@src/components/ui", async () => {
+	const dialogs = await import("@src/components/ui/alert-dialog")
+	return {
+		ToggleSwitch: ({ checked, onChange, "aria-label": ariaLabel, "data-testid": dataTestId }: any) => (
+			<button
+				role="switch"
+				aria-checked={checked}
+				aria-label={ariaLabel}
+				data-testid={dataTestId}
+				onClick={onChange}>
+				Toggle
+			</button>
+		),
+		Input: ({ value, onChange, placeholder, id, type, className, ...props }: any) => (
+			<input
+				type={type || "text"}
+				value={value}
+				onChange={onChange}
+				placeholder={placeholder}
+				id={id}
+				className={className}
+				{...props}
+			/>
+		),
+		Textarea: ({ value, onChange, placeholder, id, className, ...props }: any) => (
+			<textarea
+				value={value}
+				onChange={onChange}
+				placeholder={placeholder}
+				id={id}
+				className={className}
+				{...props}
+			/>
+		),
+		Checkbox: ({ checked, onCheckedChange, id, className, ...props }: any) => (
+			<input
+				type="checkbox"
+				checked={checked}
+				onChange={(e) => onCheckedChange?.(e.target.checked)}
+				id={id}
+				className={className}
+				{...props}
+			/>
+		),
+		...dialogs,
+		AlertDialogContent: (props: React.ComponentProps<typeof dialogs.AlertDialogContent>) => (
+			<dialogs.AlertDialogContent data-testid="alert-dialog" {...props} />
+		),
+		Button: ({ children, onClick, disabled, ...props }: any) => (
+			<button onClick={onClick} disabled={disabled} {...props}>
+				{children}
+			</button>
+		),
+		Tooltip: ({ children }: any) => <>{children}</>,
+		TooltipContent: ({ children }: any) => <div>{children}</div>,
+		TooltipProvider: ({ children }: any) => <>{children}</>,
+		TooltipTrigger: ({ children }: any) => <>{children}</>,
+		StandardTooltip: ({ children, content }: any) => <div title={content}>{children}</div>,
+		Popover: ({ children }: any) => <>{children}</>,
+		PopoverTrigger: ({ children }: any) => <>{children}</>,
+		PopoverContent: ({ children }: any) => <div>{children}</div>,
+		Select: ({ children, value, onValueChange }: any) => (
+			<div data-testid="select" data-value={value}>
+				<button onClick={() => onValueChange && onValueChange("test-change")}>{value}</button>
+				{children}
+			</div>
+		),
+		SelectContent: ({ children }: any) => <div data-testid="select-content">{children}</div>,
+		SelectGroup: ({ children }: any) => <div data-testid="select-group">{children}</div>,
+		SelectItem: ({ children, value }: any) => (
+			<div data-testid={`select-item-${value}`} data-value={value}>
+				{children}
+			</div>
+		),
+		SelectTrigger: ({ children }: any) => <div data-testid="select-trigger">{children}</div>,
+		SelectValue: ({ placeholder }: any) => <div data-testid="select-value">{placeholder}</div>,
+		Slider: ({ value, onValueChange, "data-testid": dataTestId }: any) => (
+			<input
+				type="range"
+				value={value?.[0] ?? 0}
+				onChange={(e) => onValueChange?.([parseFloat(e.target.value)])}
+				data-testid={dataTestId}
+			/>
+		),
+		SearchableSelect: ({ value, onValueChange, options, placeholder }: any) => (
+			<select value={value} onChange={(e) => onValueChange(e.target.value)} data-testid="searchable-select">
+				{placeholder && <option value="">{placeholder}</option>}
+				{options?.map((opt: any) => (
+					<option key={opt.value} value={opt.value}>
+						{opt.label}
+					</option>
+				))}
+			</select>
+		),
+		Collapsible: ({ children, open }: any) => (
+			<div className="collapsible-mock" data-open={open}>
+				{children}
+			</div>
+		),
+		CollapsibleTrigger: ({ children, className, onClick }: any) => (
+			<div className={`collapsible-trigger-mock ${className || ""}`} onClick={onClick}>
+				{children}
+			</div>
+		),
+		CollapsibleContent: ({ children, className }: any) => (
+			<div className={`collapsible-content-mock ${className || ""}`}>{children}</div>
+		),
+		Dialog: ({ children, ...props }: any) => (
+			<div data-testid="dialog" {...props}>
+				{children}
+			</div>
+		),
+		DialogContent: ({ children, ...props }: any) => (
+			<div data-testid="dialog-content" {...props}>
+				{children}
+			</div>
+		),
+		DialogHeader: ({ children, ...props }: any) => (
+			<div data-testid="dialog-header" {...props}>
+				{children}
+			</div>
+		),
+		DialogTitle: ({ children, ...props }: any) => (
+			<div data-testid="dialog-title" {...props}>
+				{children}
+			</div>
+		),
+		DialogDescription: ({ children, ...props }: any) => (
+			<div data-testid="dialog-description" {...props}>
+				{children}
+			</div>
+		),
+		DialogFooter: ({ children, ...props }: any) => (
+			<div data-testid="dialog-footer" {...props}>
+				{children}
+			</div>
+		),
+	}
+})
 
 // Mock ModesView and McpView since they're rendered during indexing
 vi.mock("@src/components/modes/ModesView", () => ({
@@ -405,6 +411,43 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			},
 		})
 		;(useExtensionState as any).mockReturnValue(defaultExtensionState)
+	})
+
+	it("keeps dirty edits and restores Done focus after Escape or Cancel in the real dialog", async () => {
+		const restoreFocus = installNativeTestFocus()
+		const onDone = vi.fn()
+		const user = userEvent.setup()
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<button onClick={() => setApiConfigurationField("apiModelId", "buffered-model")}>
+				{apiConfiguration.apiModelId || "Edit model"}
+			</button>
+		))
+		try {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={onDone} />
+				</QueryClientProvider>,
+			)
+			await user.click(await screen.findByText("Edit model"))
+			const done = screen.getByRole("button", { name: "settings:common.done" })
+			await user.click(done)
+			const dialog = screen.getByRole("alertdialog", { name: "settings:unsavedChangesDialog.title" })
+			const cancel = within(dialog).getByText("settings:unsavedChangesDialog.cancelButton")
+			await waitFor(() => expect(cancel).toHaveFocus())
+			await user.keyboard("{Escape}")
+			await waitFor(() => expect(done).toHaveFocus())
+			expect(screen.getByText("buffered-model")).toBeInTheDocument()
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			expect(onDone).not.toHaveBeenCalled()
+			await user.click(done)
+			await user.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+			await waitFor(() => expect(done).toHaveFocus())
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		} finally {
+			cleanup()
+			restoreFocus()
+		}
 	})
 
 	it("should not show unsaved changes when settings are automatically initialized", async () => {

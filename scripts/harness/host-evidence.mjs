@@ -33,6 +33,20 @@ export const extendedHostFiles = [
 	"scheduled-tasks.acceptance.test",
 	"rich-documents.test",
 ]
+export const renderedHostFiles = [
+	"composer-ui.test",
+	"transcript-lifecycle-ui.test",
+	"request-user-input-ui.test",
+	"managed-agents.acceptance.test",
+]
+export const stressHostFiles = ["managed-agents.cancellation.acceptance.test", "managed-agents.budget.acceptance.test"]
+export const hostSuites = {
+	smoke: smokeHostFiles,
+	confidence: confidenceHostFiles,
+	extended: extendedHostFiles,
+	rendered: renderedHostFiles,
+	stress: stressHostFiles,
+}
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
 const integer = (value) => Number.isSafeInteger(value) && value >= 0
@@ -49,9 +63,8 @@ const completeSelection = (receipt) =>
 	receipt.testSelection.grep === null &&
 	receipt.testSelection.forbidOnly === true
 
-export function validateHostReceipt(value) {
-	const counts = value?.testCounts
-	if (
+function observedHostClosed(value) {
+	return !(
 		value?.schemaVersion !== 1 ||
 		value.kind !== "alpha-extension-test-run" ||
 		typeof value.runId !== "string" ||
@@ -67,7 +80,19 @@ export function validateHostReceipt(value) {
 		!["scripted", "vscode-lm-fixture"].includes(value.providerMode) ||
 		value.execution !== "extension-host" ||
 		value.hostExitObserved !== true ||
+		value.hostCleanupVerified === false ||
 		value.ownershipGate !== "verified" ||
+		!["passed", "failed", "blocked"].includes(value.status) ||
+		!integer(value.exitCode) ||
+		!["persistent", "disposable"].includes(value.profile?.kind) ||
+		!hash(value.profile?.sha256)
+	)
+}
+
+export function validateHostReceipt(value) {
+	const counts = value?.testCounts
+	if (
+		!observedHostClosed(value) ||
 		value.status !== "passed" ||
 		value.exitCode !== 0 ||
 		value.requireAllTests !== true ||
@@ -75,8 +100,6 @@ export function validateHostReceipt(value) {
 		value.failure != null ||
 		value.captureComplete !== true ||
 		value.retentionStatus !== "complete" ||
-		!["persistent", "disposable"].includes(value.profile?.kind) ||
-		!hash(value.profile?.sha256) ||
 		!counts ||
 		!["total", "passed", "pending", "executed", "failed"].every((key) => integer(counts[key])) ||
 		counts.total !== counts.passed + counts.failed + counts.pending ||
@@ -120,14 +143,20 @@ export function validateHostReceipt(value) {
 	}
 }
 
-export async function readHostReceipts(directory, startedAt) {
+async function readHostReceiptValues(directory, startedAt) {
+	if (!Number.isFinite(Date.parse(startedAt))) throw new Error("Missing host execution time boundary")
 	const files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort()
 	if (!files.length || files.length > 100) throw new Error("Missing or oversized host receipt set")
 	const receipts = []
 	const identities = new Set()
 	for (const file of files) {
-		const receipt = validateHostReceipt(await readExecutionJson(path.join(directory, file)))
-		if (identities.has(receipt.runId) || Date.parse(receipt.startedAt) < Date.parse(startedAt))
+		const receipt = await readExecutionJson(path.join(directory, file))
+		if (
+			typeof receipt?.runId !== "string" ||
+			identities.has(receipt.runId) ||
+			!Number.isFinite(Date.parse(receipt.startedAt)) ||
+			Date.parse(receipt.startedAt) < Date.parse(startedAt)
+		)
 			throw new Error("Duplicate or stale host execution receipt")
 		identities.add(receipt.runId)
 		receipts.push(receipt)
@@ -135,15 +164,63 @@ export async function readHostReceipts(directory, startedAt) {
 	return receipts
 }
 
+export async function readHostReceipts(directory, startedAt) {
+	return (await readHostReceiptValues(directory, startedAt)).map(validateHostReceipt)
+}
+
+/** Acceptance and process closure are separate: an assertion failure still leaves a verifiably closed host. */
+export function hostSuiteCleanupVerified(receipts, suite, commandExitCode) {
+	if (
+		!Object.hasOwn(hostSuites, suite) ||
+		!Array.isArray(receipts) ||
+		!receipts.length ||
+		receipts.some((receipt) => !observedHostClosed(receipt)) ||
+		new Set(receipts.map((receipt) => receipt.runId)).size !== receipts.length
+	)
+		return false
+	const expected = hostSuites[suite]
+	const observed = receipts.map((receipt) => receipt.testFile)
+	if (
+		observed.length === expected.length &&
+		new Set(observed).size === expected.length &&
+		expected.every((file) => observed.includes(file))
+	)
+		return true
+	if (!Number.isSafeInteger(commandExitCode) || commandExitCode <= 0 || receipts.length >= expected.length)
+		return false
+	const ordered = receipts.toSorted((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+	if (
+		ordered.some(
+			(receipt, index) =>
+				receipt.testFile !== expected[index] ||
+				(index > 0 && Date.parse(ordered[index - 1].completedAt) > Date.parse(receipt.startedAt)) ||
+				(index < ordered.length - 1 && (receipt.status !== "passed" || receipt.exitCode !== 0)),
+		)
+	)
+		return false
+	const terminal = ordered.at(-1)
+	// These canonical suites serialize hosts and short-circuit after a failed runner. A passing prefix alone
+	// cannot rule out a launched next host whose final receipt is missing, so that case retains the lease.
+	return (
+		["failed", "blocked"].includes(terminal.status) &&
+		Number.isSafeInteger(terminal.exitCode) &&
+		terminal.exitCode > 0
+	)
+}
+
+export async function readHostExecutionEvidence(directory, startedAt, suite, commandExitCode) {
+	const receipts = await readHostReceiptValues(directory, startedAt)
+	return { receipts, cleanupVerified: hostSuiteCleanupVerified(receipts, suite, commandExitCode) }
+}
+
 export function hostSuiteVerdict(receipts, suite) {
-	if (!["smoke", "confidence", "extended"].includes(suite)) return { status: "failed", reason: "unknown_host_suite" }
+	if (!Object.hasOwn(hostSuites, suite)) return { status: "failed", reason: "unknown_host_suite" }
 	try {
 		receipts = receipts.map(validateHostReceipt)
 	} catch {
 		return { status: "failed", reason: "invalid_host_receipt" }
 	}
-	const expected =
-		suite === "smoke" ? smokeHostFiles : suite === "confidence" ? confidenceHostFiles : extendedHostFiles
+	const expected = hostSuites[suite]
 	const observed = receipts.map((receipt) => receipt.testFile)
 	if (receipts.some((receipt) => !completeSelection(receipt)))
 		return { status: "failed", reason: "incomplete_host_selection" }

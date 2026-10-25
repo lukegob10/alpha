@@ -113,6 +113,46 @@ test("reasoning validation follows Alpha capabilities and refuses unknown models
 	assert.equal(validateRequestedReasoningEffort(gpt55, "disable").status, "disabled")
 })
 
+test("an omitted live effort explicitly disables persisted reasoning and records the effective default", () => {
+	const reasoning = validateRequestedReasoningEffort(gpt55)
+	assert.deepEqual(reasoning, { status: "disabled", appliedEffort: "disable" })
+	const configuration = buildLiveCopilotConfiguration(
+		{ enableReasoningEffort: true, reasoningEffort: "high" },
+		{ vendor: "copilot", id: gpt55.id },
+		reasoning,
+	)
+	assert.equal(configuration?.enableReasoningEffort, false)
+	assert.equal(configuration.reasoningEffort, "disable")
+})
+
+test("preflight records the explicit default effort after replacing a prior high-effort profile", async () => {
+	let configuration = { enableReasoningEffort: true, reasoningEffort: "high" } as Parameters<
+		typeof buildLiveCopilotConfiguration
+	>[0]
+	const api = {
+		getConfiguration: () => configuration,
+		setConfiguration: async (next: typeof configuration) => {
+			configuration = next
+		},
+	} as unknown as AlphaCodeAPI
+	const vscode = {
+		extensions: { getExtension: () => ({ isActive: true }) },
+		lm: { onDidChangeChatModels: () => ({ dispose() {} }), selectChatModels: async () => [gpt55] },
+	} as unknown as typeof import("vscode")
+	const result = await configureLiveCopilot(
+		api,
+		{ modelId: gpt55.id },
+		{
+			loadVsCode: async () => vscode,
+			canSendRequest: () => true,
+		},
+	)
+	assert.equal(result.ready, true)
+	assert.equal(result.configuration.reasoningEffort, "disable")
+	assert.equal(configuration.enableReasoningEffort, false)
+	assert.equal(configuration.reasoningEffort, "disable")
+})
+
 test("readAuthMetadata reports the injected ExtensionContext access state", () => {
 	const model = {} as LanguageModelChat
 

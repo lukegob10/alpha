@@ -14,6 +14,36 @@ const resultMessage = (id: string, text: string) => [
 	{ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] },
 ]
 
+test("the opted problem capture plan uses actual tools and keeps failed validation distinct from quality", async () => {
+	const budget = new WorkflowRequestBudget(5)
+	const provider = new WorkflowScriptedAI(budget, "/owned/fixture")
+	provider.setProblemEvidenceContract()
+	const first = []
+	for await (const chunk of provider.createMessage()) first.push(chunk)
+	const call = first.find((chunk) => chunk.type === "tool_call")
+	assert.equal(call?.name, "exec_command")
+	assert.deepEqual(JSON.parse(call!.arguments), {
+		cmd: "node --test test/behavior.test.js",
+		workdir: "/owned/fixture",
+		yield_time_ms: 10_000,
+	})
+	assert.equal(budget.model.id, provider.id)
+	assert.equal(budget.model.reasoningEffort, undefined)
+	const terminal = []
+	for await (const chunk of provider.createMessage(
+		"",
+		resultMessage(call!.id, "Process exited with code 1\nOutput:\nnot ok 1 - stale derived cache"),
+	))
+		terminal.push(chunk)
+	const report = terminal.find((chunk) => chunk.type === "text")
+	assert.match(report!.text, /scripted harness contract/)
+	assert.match(report!.text, /does not establish benchmark solving quality/)
+	assert.equal(
+		terminal.some((chunk) => chunk.type === "tool_call"),
+		false,
+	)
+})
+
 test("scripted command settlement drains the current canonical session before ordinary completion", async () => {
 	const provider = new WorkflowScriptedAI(new WorkflowRequestBudget(20), "/fixture")
 	provider.setPhase("commandSettlement", 1)

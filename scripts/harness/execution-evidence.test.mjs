@@ -129,6 +129,47 @@ test("the pinned Node runner emits a sanitized receipt for passing and skipped t
 	}
 })
 
+test("CLI output capture preserves the Node protocol and independently matching cumulative and file counts", async () => {
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-node-cli-protocol-")))
+	try {
+		const destination = path.join(directory, "execution.json")
+		const source = "apps/vscode-e2e/src/campaign/__tests__/developmentCli.spec.ts"
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--require=tsx/cjs",
+				"--test",
+				"--test-concurrency=1",
+				"--test-name-pattern=suite CLI rejects|soak dry-run",
+				`--test-reporter=${pathToFileURL(path.join(root, "scripts/harness/node-reporter.mjs")).href}`,
+				path.join(root, source),
+			],
+			{
+				cwd: root,
+				encoding: "utf8",
+				windowsHide: true,
+				timeout: 30_000,
+				env: {
+					...process.env,
+					NODE_TEST_CONTEXT: undefined,
+					ALPHA_HARNESS_EVIDENCE_FILE: destination,
+					ALPHA_HARNESS_REPOSITORY_ROOT: root,
+				},
+			},
+		)
+		assert.equal(result.error, undefined)
+		assert.equal(result.signal, null)
+		assert.equal(result.status, 0, result.stderr)
+		const value = validateTestEvidence(JSON.parse(await readFile(destination, "utf8")))
+		const expected = { ...counts, total: 2, passed: 2 }
+		assert.equal(value.success, true)
+		assert.deepEqual(value.counts, expected)
+		assert.deepEqual(value.files, [{ path: source, counts: expected }])
+	} finally {
+		await rm(directory, { recursive: true, force: true })
+	}
+})
+
 const nodeControls = [
 	{
 		name: "failed assertions",

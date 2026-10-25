@@ -312,7 +312,7 @@ function toBuffer(chunk: unknown): Buffer {
 	return Buffer.from(String(chunk))
 }
 
-async function terminateOwnedProcess(
+export async function terminateOwnedProcess(
 	child: ChildProcess,
 	pid: number | undefined,
 	isClosed: () => boolean,
@@ -482,7 +482,7 @@ function isValidPid(pid: number | undefined): pid is number {
 	return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0
 }
 
-function verifyPosixProcessGroupGone(pid: number | undefined): boolean {
+export function verifyPosixProcessGroupGone(pid: number | undefined): boolean {
 	if (!isValidPid(pid)) return false
 	try {
 		process.kill(-pid, 0)

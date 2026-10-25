@@ -13,16 +13,25 @@ export class ExecaHarnessProcessRunner implements HarnessProcessRunner {
 			timeout: spec.timeoutMs,
 			killSignal: "SIGKILL",
 			maxBuffer: Math.max(spec.maxOutputBytes * 64, 64 * 1024 * 1024),
+			...(spec.signal ? { cancelSignal: spec.signal } : {}),
 		})
 		const stdout = capOutput(result.stdout ?? "", spec.maxOutputBytes)
 		const stderr = capOutput(result.stderr ?? "", spec.maxOutputBytes)
+		// Execa 9.6 can finish output collection unsuccessfully after the child has exited zero.
+		// Such results cannot establish either a passing or failing verifier outcome.
+		const incomplete =
+			result.timedOut ||
+			result.isMaxBuffer ||
+			result.isCanceled ||
+			result.isTerminated ||
+			(result.failed && result.exitCode === 0)
 		return {
-			exitCode: result.exitCode ?? null,
+			exitCode: incomplete ? null : (result.exitCode ?? null),
 			stdout: stdout.value,
 			stderr: stderr.value,
 			durationMs: Math.round(performance.now() - startedAt),
 			timedOut: result.timedOut,
-			outputTruncated: stdout.truncated || stderr.truncated,
+			outputTruncated: Boolean(result.isMaxBuffer) || stdout.truncated || stderr.truncated,
 			fullStdout: result.stdout ?? "",
 			fullStderr: result.stderr ?? "",
 		}

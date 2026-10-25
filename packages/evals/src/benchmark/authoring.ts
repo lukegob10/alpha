@@ -6,6 +6,7 @@ import { parse } from "yaml"
 import { privateAuthoringFingerprintsSchema, type PrivateAuthoringFingerprints } from "./contracts"
 import { loadBenchmarkCatalog } from "./loader"
 import { analyzeBenchmarkSimilarity } from "./similarity"
+import { measureBenchmarkCorpus } from "./corpus"
 
 export type AuthoringIssue = { code: string; message: string; tasks?: string[] }
 
@@ -18,6 +19,7 @@ export async function runAuthoringCheck(options: {
 	taskCount: number
 	issues: AuthoringIssue[]
 	similarity: Awaited<ReturnType<typeof analyzeBenchmarkSimilarity>>
+	corpus: Awaited<ReturnType<typeof measureBenchmarkCorpus>>
 	jsonPath?: string
 	markdownPath?: string
 }> {
@@ -28,6 +30,7 @@ export async function runAuthoringCheck(options: {
 			)
 		: undefined
 	const similarity = await analyzeBenchmarkSimilarity(catalog, options.publicRoot, privateFingerprints)
+	const corpus = await measureBenchmarkCorpus(catalog, options.publicRoot)
 	const publicIdentities = new Set(catalog.tasks.keys())
 	const issues: AuthoringIssue[] = [
 		...(privateFingerprints?.tasks ?? [])
@@ -48,7 +51,7 @@ export async function runAuthoringCheck(options: {
 			tasks,
 		})),
 	]
-	const report = { valid: issues.length === 0, taskCount: catalog.tasks.size, issues, similarity }
+	const report = { valid: issues.length === 0, taskCount: catalog.tasks.size, issues, similarity, corpus }
 	if (!options.outputRoot) return report
 	await fs.mkdir(options.outputRoot, { recursive: true })
 	const jsonPath = path.join(options.outputRoot, "benchmark-authoring.json")
@@ -71,13 +74,18 @@ function renderAuthoringSummary(report: {
 	taskCount: number
 	issues: AuthoringIssue[]
 	similarity: Awaited<ReturnType<typeof analyzeBenchmarkSimilarity>>
+	corpus: Awaited<ReturnType<typeof measureBenchmarkCorpus>>
 }): string {
 	const lines = [
 		"# Benchmark Authoring Report",
 		"",
 		`- Contract-valid tasks: ${report.taskCount}`,
-		`- Admission-ready: ${report.valid ? "yes" : "no"}`,
+		`- Authoring checks passed: ${report.valid ? "yes" : "no"}`,
+		"- Admission additionally requires current control certification, model trials, and human quality review.",
 		`- Public duplicate pairs: ${report.similarity.duplicatePairs.length}`,
+		`- Historical released duplicate pairs: ${report.similarity.historicalDuplicatePairs.length}`,
+		`- Public fixture source inventories: ${report.corpus.publicFixturesMeasured}`,
+		`- Historical/current metadata discrepancies requiring versioned review: ${report.corpus.metadataWarnings.length}`,
 		`- Private fingerprint duplicate groups: ${report.similarity.privateDuplicatePairs.length}`,
 		"",
 		"## Issues",

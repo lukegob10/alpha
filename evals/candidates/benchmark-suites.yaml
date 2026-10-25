@@ -1,0 +1,4 @@
+schemaVersion: 1
+suites:
+    - smoke-v2.yaml
+    - repository-pilot-v1.yaml

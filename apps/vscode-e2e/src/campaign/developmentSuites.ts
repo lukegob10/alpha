@@ -1,7 +1,7 @@
 import { alphaReasoningEfforts } from "../liveModelSelection"
 import { WORKFLOW_SCENARIO_IDS, type WorkflowScenarioId } from "../scenarios/contracts"
 import { parseCampaignConfig } from "./config"
-import { HOST_VERSIONS, type CampaignConfig, type CampaignHost } from "./types"
+import { HOST_VERSIONS, type CampaignCollectionMode, type CampaignConfig, type CampaignHost } from "./types"
 import { RELIABILITY_ACCEPTANCE_SCENARIO_IDS, isReliabilityScenario } from "../scenarios/reliabilityCatalog"
 
 export const DEVELOPMENT_SUITE_NAMES = ["smoke", "development", "soak", "reliability", "core"] as const
@@ -16,6 +16,9 @@ export interface DevelopmentSuiteOptions {
 	host?: CampaignHost
 	maxRequests?: number
 	samples?: number
+	collectionMode?: CampaignCollectionMode
+	decisionPlanDigest?: string
+	decisionTimeWindow?: string
 }
 
 /** Routine core-loop coverage; broader reliability and long-context acceptance remain separate. */
@@ -130,5 +133,8 @@ export function createDevelopmentSuite(options: DevelopmentSuiteOptions): Campai
 			attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
 		},
 		maxReproductions: MAX_REPRODUCTIONS,
+		collectionMode: options.collectionMode ?? "sample-only",
+		...(options.decisionPlanDigest === undefined ? {} : { decisionPlanDigest: options.decisionPlanDigest }),
+		...(options.decisionTimeWindow === undefined ? {} : { decisionTimeWindow: options.decisionTimeWindow }),
 	})
 }

@@ -9,6 +9,8 @@ import { rejectSymlinkComponents } from "../evidence/paths"
 import { pnpmCommand, runOwnedProcess } from "./ownedProcess"
 import { CORE_SCENARIO_IDS } from "./developmentSuites"
 import { campaignConfigDigest } from "./config"
+import { campaignAccountingMatches } from "./reportAccounting"
+import { isLiveProviderIdentityReceipt } from "../liveProviderIdentity"
 import type { CampaignConfig, CampaignReport } from "./types"
 
 export function assertLiveGateConfig(config: CampaignConfig): void {
@@ -22,10 +24,11 @@ export function assertLiveGateConfig(config: CampaignConfig): void {
 		!config.provider.modelId ||
 		!config.provider.effort ||
 		config.repair ||
+		config.collectionMode === "sample-then-diagnose" ||
 		!completeSuite
 	)
 		throw new Error(
-			"Live gate requires a complete development, reliability or core suite, exact live model/effort, and no repair",
+			"Live gate requires a complete development, reliability or core suite, exact live model/effort, sample-only collection, and no repair",
 		)
 }
 
@@ -43,7 +46,7 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 						attempt.request.sample === sample,
 				)
 				const valid = attempts.every(
-					({ request, result, evidence, evidenceFailed }) =>
+					({ request, result, evidence, evidenceFailed, termination }) =>
 						request.campaignId === config.id &&
 						request.phase === "sample" &&
 						request.provider.mode === "live-copilot" &&
@@ -52,6 +55,9 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 						result.status === "passed" &&
 						!result.failure &&
 						!result.retentionFailed &&
+						!termination &&
+						isLiveProviderIdentityReceipt(result.providerIdentity) &&
+						result.providerIdentity.status === "unchanged" &&
 						result.actualHostVersion === host.version &&
 						result.model?.id === config.provider.modelId &&
 						result.model?.effort === config.provider.effort &&
@@ -81,6 +87,16 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		),
 	)
 	const attemptsAccountedFor = cells.reduce((sum, cell) => sum + cell.attemptIds.length, 0) === report.attempts.length
+	const providerBefore = report.attempts[0]?.result.providerIdentity?.before
+	const providerImplementationVerified =
+		Boolean(providerBefore) &&
+		report.attempts.every(
+			({ result }) =>
+				isLiveProviderIdentityReceipt(result.providerIdentity) &&
+				result.providerIdentity.status === "unchanged" &&
+				result.providerIdentity.before.version === providerBefore?.version &&
+				result.providerIdentity.before.entrypointSha256 === providerBefore?.entrypointSha256,
+		)
 	const identity = report.evaluationIdentity
 	const identityVerified =
 		identity?.unchanged === true &&
@@ -105,6 +121,8 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		report.id === config.id &&
 		identityVerified &&
 		planVerified &&
+		providerImplementationVerified &&
+		campaignAccountingMatches(report) &&
 		report.mode === "report-only" &&
 		report.requestedProvider.mode === "live-copilot" &&
 		report.requestedProvider.modelId === config.provider.modelId &&
@@ -138,8 +156,13 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		status: passed ? "passed" : "failed",
 		stopReason: report.stopReason ?? "incomplete",
 		retention: report.retention ?? null,
-		provenance: { identityVerified: Boolean(identityVerified), planVerified: Boolean(planVerified) },
+		provenance: {
+			identityVerified: Boolean(identityVerified),
+			planVerified: Boolean(planVerified),
+			providerImplementationVerified,
+		},
 		counts: report.counts,
+		sampling: report.sampling ?? null,
 		provider: config.provider,
 		budgets: config.budgets,
 		samplesPerScenario: config.samples,

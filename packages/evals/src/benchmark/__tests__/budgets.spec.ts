@@ -3,7 +3,7 @@ import {
 	assertCampaignBudgetAuthorized,
 	estimateTierBudget,
 	evaluateEfficiencyRegression,
-} from "../index"
+} from "../budgets"
 
 describe("benchmark cost governance", () => {
 	it.each([
@@ -37,6 +37,72 @@ describe("benchmark cost governance", () => {
 		ledger.settle(0.05, 0.035)
 		ledger.settle(0.05, 0.04)
 		expect(ledger.snapshot()).toMatchObject({ reservedUsd: 0.3, consumedUsd: 0.075, remainingUsd: 0.125 })
+	})
+
+	it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+		"rejects invalid ledger amounts %s without changing reserved or consumed money",
+		(amount) => {
+			expect(() => new CampaignCostLedger(amount)).toThrow(/finite|nonnegative/i)
+			const ledger = new CampaignCostLedger(1)
+			ledger.reserve(0.1)
+			const before = ledger.snapshot()
+			expect(() => ledger.reserve(amount)).toThrow(/finite|nonnegative/i)
+			expect(() => ledger.settle(0.1, amount)).toThrow(/finite|nonnegative/i)
+			expect(() => ledger.settle(amount, 0.05)).toThrow(/finite|nonnegative/i)
+			expect(ledger.snapshot()).toEqual(before)
+		},
+	)
+
+	it.each([null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+		"does not accept an efficiency comparison with an unknown or invalid measurement %s",
+		(measurement) => {
+			const valid = {
+				baselineCostPerSuccess: 1,
+				candidateCostPerSuccess: 1,
+				baselineMedianLatencyMs: 100,
+				candidateMedianLatencyMs: 100,
+				capabilityImproved: true,
+			}
+			for (const field of [
+				"baselineCostPerSuccess",
+				"candidateCostPerSuccess",
+				"baselineMedianLatencyMs",
+				"candidateMedianLatencyMs",
+			] as const)
+				expect(evaluateEfficiencyRegression({ ...valid, [field]: measurement }).accepted).toBe(false)
+		},
+	)
+
+	it("reports unavailable measurements without calling them observed regressions", () => {
+		expect(
+			evaluateEfficiencyRegression({
+				baselineCostPerSuccess: null,
+				candidateCostPerSuccess: 0,
+				baselineMedianLatencyMs: 100,
+				candidateMedianLatencyMs: null,
+				capabilityImproved: true,
+			}),
+		).toEqual({
+			accepted: false,
+			reasons: ["cost_measurement_unavailable_or_invalid", "latency_measurement_unavailable_or_invalid"],
+		})
+		expect(
+			evaluateEfficiencyRegression({
+				baselineCostPerSuccess: 0,
+				candidateCostPerSuccess: 0,
+				baselineMedianLatencyMs: 0,
+				candidateMedianLatencyMs: 0,
+				capabilityImproved: false,
+			}),
+		).toEqual({ accepted: true, reasons: [] })
+	})
+
+	it("retains a known actual cost even when it exceeds the campaign cap", () => {
+		const ledger = new CampaignCostLedger(0.5)
+		ledger.reserve(0.1)
+		expect(() => ledger.settle(0.1, 0.6)).toThrow("hard cap exceeded")
+		expect(ledger.snapshot()).toMatchObject({ reservedUsd: 0, consumedUsd: 0.6, remainingUsd: -0.1 })
+		expect(() => ledger.reserve(0)).toThrow("Insufficient")
 	})
 
 	it("blocks unjustified cost and latency regressions", () => {

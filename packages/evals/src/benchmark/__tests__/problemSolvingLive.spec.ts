@@ -73,15 +73,35 @@ function campaignReceipts(input: {
 					status: input.failure ? "failed" : "passed",
 					requestsUsed: 1,
 					requestsByPurpose: { task: 1, "reasoning-summary": 0 },
-					model: { id: "controlled-model", reasoningEffort: "high" },
+					model: { id: argument("--model-id"), reasoningEffort: argument("--reasoning-effort") },
 					...(input.failure ? { failure: input.failure } : {}),
 				}),
 			)
 		} else if (input.grader === "error") throw new Error("controlled grader failure")
+		const failedAssertions =
+			input.grader === "outcome" && request.args[0]?.endsWith("nodeTestExecution.mjs")
+				? (JSON.parse(request.args[1]!) as { expected: Array<{ file: string; name: string }> }).expected
+				: undefined
 		return {
-			exitCode: request.args.includes("--scenario-id") ? 0 : 1,
+			exitCode: request.args.includes("--scenario-id") || failedAssertions ? 0 : 1,
 			timedOut: false,
-			stdout: "",
+			stdout: failedAssertions
+				? JSON.stringify({
+						schemaVersion: 1,
+						kind: "alpha-expected-node-tests",
+						complete: true,
+						failed: true,
+						timedOut: false,
+						tests: failedAssertions.map(({ name }) => ({
+							file: path.join(path.dirname(request.args[0]!), "nodeTestContext.cjs"),
+							name,
+							passed: false,
+							skipped: false,
+							todo: false,
+						})),
+						completions: [],
+					})
+				: "",
 			stderr: "",
 			durationMs: 0,
 			outputTruncated: false,

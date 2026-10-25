@@ -359,6 +359,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly backgroundIds = new Set<string>()
 	private readonly admissions: Array<{ taskId: string; text: string; after: number }> = []
 	private activePrompt: WorkflowPromptName = "review"
+	private activePromptStep?: number
 	private problemSolving = false
 	private readonly onCompleted = (id: string) => this.completions.set(id, (this.completions.get(id) ?? 0) + 1)
 	private readonly onCreated = (task: HostTask) => {
@@ -459,6 +460,8 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			throw new WorkflowFailure("configuration", "invalid_problem_prompt", true)
 		}
 		this.problemSolving = true
+		if (this.scripted && process.env.ALPHA_E2E_IMPROVEMENT_EVIDENCE === "1")
+			this.scripted.setProblemEvidenceContract()
 		this.configuration.alwaysAllowExecute = true
 		this.configuration.commandExecutionTimeout = 60
 		await this.applyConfiguration()
@@ -506,6 +509,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		// The cancellation fixture must hold a real command ask under canonical policy.
 		this.configuration.approvalMode = prompt === "hold" ? "ask" : "auto"
 		this.activePrompt = prompt
+		this.activePromptStep = undefined
 		this.scripted?.setPhase(prompt)
 		// Policy stays explicit across reloads and never derives from the selected model.
 		await this.applyConfiguration()
@@ -523,6 +527,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		const previousTimestamp = Math.max(previousAsk?.ts ?? 0, task.clineMessages.at(-1)?.ts ?? 0)
 		const guidance = workflowPrompt(prompt, step)
 		this.activePrompt = prompt
+		this.activePromptStep = step
 		this.scripted?.setPhase(prompt, step)
 		this.expectedCompletions.set(taskId, (this.completions.get(taskId) ?? 0) + 1)
 		let admitted = false
@@ -576,25 +581,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			const ask = task.taskAsk
 			if (!ask || ask.partial || this.approvedAsks.has(ask.ts)) return false
 			if (ask.ask === "command") {
-				if (this.problemSolving) {
-					const rejection = problemCommandRejectionReason(
-						ask.text ?? "",
-						task.apiConversationHistory,
-						this.workspace,
-					)
-					if (rejection) throw new WorkflowFailure("policy", `unexpected_command_${rejection}`)
-				} else if (
-					!isApprovedWorkflowCommand(
-						ask.text ?? "",
-						task.apiConversationHistory,
-						this.workspace,
-						workflowCommands(this.activePrompt),
-					)
-				) {
-					throw new WorkflowFailure("policy", "unexpected_command")
-				}
-				this.approvedAsks.add(ask.ts)
-				task.approveAsk()
+				this.approveCommand(task, ask)
 			} else if (ask.ask === "completion_result") {
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				this.approvedAsks.add(ask.ts)
@@ -624,6 +611,24 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			}
 			return false
 		}, "completion_boundary_timeout")
+	}
+
+	private approveCommand(task: HostTask, ask: AlphaMessage): void {
+		if (this.problemSolving) {
+			const rejection = problemCommandRejectionReason(ask.text ?? "", task.apiConversationHistory, this.workspace)
+			if (rejection) throw new WorkflowFailure("policy", `unexpected_command_${rejection}`)
+		} else if (
+			!isApprovedWorkflowCommand(
+				ask.text ?? "",
+				task.apiConversationHistory,
+				this.workspace,
+				workflowCommands(this.activePrompt),
+			)
+		) {
+			throw new WorkflowFailure("policy", "unexpected_command")
+		}
+		this.approvedAsks.add(ask.ts)
+		task.approveAsk()
 	}
 
 	private async latestProviderTimeout(taskId: string): Promise<boolean> {
@@ -686,7 +691,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		// The saved provider callback does not restore global execution policy.
 		// Establish the same dedicated-profile policy before Task construction.
 		await this.applyConfiguration()
-		this.scripted?.setPhase(prompt)
+		this.scripted?.setPhase(prompt, step)
 		const previous = options.reopen ? this.requireTask(taskId) : undefined
 		const summaryCount = (task: HostTask) =>
 			task.apiConversationHistory.filter((message) => record(message)?.isSummary === true).length
@@ -769,7 +774,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		const history = await readBoundedJson(path.join(directory, "api_conversation_history.json"))
 		const events = await readBoundedJson(path.join(directory, "agent_lifecycle_events.jsonl"), true)
 		const transactions = inspectToolTransactions(history)
-		const lifecycle = inspectTaskLifecycle(events, taskId)
+		const lifecycle = inspectTaskLifecycle(events, taskId, { apiHistory: history })
 		return {
 			...transactions,
 			...lifecycle,
@@ -896,7 +901,23 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	}
 
 	async waitForFault(condition: () => boolean): Promise<void> {
-		await this.until(condition, "live_fault_boundary_timeout", 60_000)
+		await this.until(
+			() => {
+				if (condition()) return true
+				if (!this.currentId) return false
+				const task = this.requireTask(this.currentId)
+				const ask = task.taskAsk
+				// A valid tool-first response can need fixture command approval before
+				// any visible text arrives. Advance it through the same policy as complete().
+				if (ask && !ask.partial && !this.approvedAsks.has(ask.ts)) {
+					if (ask.ask !== "command") throw unexpectedAskFailure(ask)
+					this.approveCommand(task, ask)
+				}
+				return condition()
+			},
+			"live_fault_boundary_timeout",
+			60_000,
+		)
 	}
 
 	admissionsAreUnique(taskId: string): boolean {
@@ -989,11 +1010,17 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 
 	async recoverProviderError(taskId: string, requestsBeforeFault = 0): Promise<void> {
 		await this.until(
-			() => {
+			async () => {
 				const task = this.requireTask(taskId)
 				const ask = task.taskAsk
 				if (ask?.ask === "api_req_failed" && !ask.partial) {
 					task.approveAsk()
+					return true
+				}
+				if (ask?.ask === "resume_task" && !ask.partial) {
+					// The transport error may terminalize the turn instead of requesting
+					// a legacy retry approval. Exercise explicit same-task continuation.
+					await this.resume(taskId, this.activePrompt, this.activePromptStep)
 					return true
 				}
 				// Automatic retry is also a valid recovery, but must have reached another real request.

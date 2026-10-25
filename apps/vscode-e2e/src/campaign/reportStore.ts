@@ -30,7 +30,7 @@ export async function openCampaignRoot(root: string, initialize: boolean): Promi
 	return canonical
 }
 
-export async function createReportStore(root: string, campaignId: string) {
+export async function createReportStore<T = CampaignReport>(root: string, campaignId: string) {
 	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(campaignId)) throw new Error("Invalid campaign identifier")
 	const directory = path.join(await openCampaignRoot(root, false), campaignId)
 	await rejectSymlinkComponents(directory)
@@ -39,7 +39,7 @@ export async function createReportStore(root: string, campaignId: string) {
 	let sequence = 0
 	return {
 		directory,
-		async persistReport(report: CampaignReport): Promise<void> {
+		async persistReport(report: T): Promise<void> {
 			const destination = path.join(directory, `report-${String(++sequence).padStart(5, "0")}.json`)
 			await rejectSymlinkComponents(directory)
 			const temporary = path.join(directory, `.report-${randomUUID()}.tmp`)

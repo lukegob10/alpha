@@ -211,6 +211,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const latestExtensionState = useRef(extensionState)
 	latestExtensionState.current = extensionState
 	const confirmDialogHandler = useRef<() => void>()
+	const discardDialogOpenerRef = useRef<HTMLElement | null>(null)
 	const terminalInheritEnvInitial = useRef<boolean>()
 
 	const [cachedState, setCachedState] = useState<SettingsCachedState>(() => ({
@@ -1401,7 +1402,17 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			</div>
 
 			<AlertDialog open={isDiscardDialogShow} onOpenChange={setDiscardDialogShow}>
-				<AlertDialogContent>
+				<AlertDialogContent
+					onOpenAutoFocus={() => {
+						const activeElement = contentRef.current?.ownerDocument.activeElement
+						discardDialogOpenerRef.current = activeElement instanceof HTMLElement ? activeElement : null
+					}}
+					onCloseAutoFocus={(event) => {
+						// The unsaved-changes dialog is also opened by imperative navigation, without a Radix Trigger.
+						event.preventDefault()
+						if (discardDialogOpenerRef.current?.isConnected) discardDialogOpenerRef.current.focus()
+						discardDialogOpenerRef.current = null
+					}}>
 					<AlertDialogHeader>
 						<AlertDialogTitle>
 							<AlertTriangle className="w-5 h-5 text-yellow-500" />

@@ -9,6 +9,7 @@ import {
 	type SetSettingsCachedStateField,
 } from "../managed-agent-settings"
 import { SearchIndexProvider } from "../useSettingsSearch"
+import { renderedAgentSettingsControls } from "../../../../../apps/vscode-e2e/src/ui/agentSettingsContract"
 
 const defaults = () => withManagedAgentSettingsDefaults({} as ExtensionStateContextType)
 function BufferHarness({ initial = defaults() }: { initial?: SettingsCachedState }) {
@@ -22,6 +23,14 @@ function BufferHarness({ initial = defaults() }: { initial?: SettingsCachedState
 	)
 }
 describe("AgentsSettings", () => {
+	it("matches the rendered extension-host probe's current control and accessible-label contract", () => {
+		render(<BufferHarness />)
+		for (const [id, tag, label] of renderedAgentSettingsControls) {
+			const control = screen.getByLabelText(label)
+			expect(control).toHaveAttribute("id", id)
+			expect(control.tagName.toLowerCase()).toBe(tag)
+		}
+	})
 	it("shows Codex agent settings and no retired Alpha controls", () => {
 		render(<BufferHarness />)
 		expect(screen.getByLabelText("Enable subagents")).toBeChecked()

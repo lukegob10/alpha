@@ -509,6 +509,26 @@ export async function assertOwnedTestRoot(root: string, expectedKind?: TestRootK
 	return withProfileInvalid(() => assertOwnedTestRootInternal(root, expectedKind))
 }
 
+/** Persistent workspaces are marked directly; disposable ownership covers the temporary root's exact workspace child. */
+export async function assertOwnedTestWorkspace(workspace: string, profileRoot?: string): Promise<void> {
+	return withProfileInvalid(async () => {
+		const candidate = absolutePath(workspace, "owned test workspace")
+		if (profileRoot !== undefined) {
+			await assertOwnedTestRootInternal(profileRoot, "profile")
+			await assertOwnedTestRootInternal(candidate, "workspace")
+			return
+		}
+		if (path.basename(candidate) !== "workspace") {
+			throw new Error("Disposable hosts require the runner's exact workspace child")
+		}
+		await assertOwnedTestRootInternal(path.dirname(candidate), "temporary")
+		await assertNoLinkComponents(candidate, "owned test workspace")
+		const resolved = await inspectDirectory(candidate, "owned test workspace")
+		if (!resolved) throw new Error("Owned test workspace does not exist")
+		if (!isSamePath(resolved, candidate)) throw new Error("Owned test workspace is a symlink/reparse alias")
+	})
+}
+
 export async function prepareTestProfile(options: TestProfileOptions): Promise<TestProfile> {
 	return withProfileInvalid(async () => {
 		if (!options || typeof options !== "object") throw new Error("Test profile options are required")

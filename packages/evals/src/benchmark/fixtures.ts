@@ -14,7 +14,7 @@ export async function certifyInitialFixtureStates(options: {
 	const runner = options.processRunner ?? new ExecaHarnessProcessRunner()
 	const tasks = [...options.catalog.tasks.values()]
 		.map(({ task }) => task)
-		.filter(({ partition }) => partition === "development" || partition === "regression")
+		.filter(({ partition }) => partition !== "holdout")
 	const results = await pMap(
 		tasks,
 		async (task) => {

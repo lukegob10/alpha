@@ -2,6 +2,7 @@ import pMap from "p-map"
 
 import { EVALS_REPO_PATH, exerciseLanguages, getExercisesForLanguage } from "../exercises/index"
 import { createRun, createTask } from "../db/index"
+import { assertRunAcceptance } from "../lifecycle/index"
 
 import { runEvals } from "./runEvals"
 
@@ -37,5 +38,6 @@ export const runCi = async ({
 		await pMap(exercises, (exercise) => createTask({ runId: run.id, language, exercise }), { concurrency })
 	}
 
-	await runEvals(run.id)
+	const outcomes = await runEvals(run.id)
+	assertRunAcceptance(outcomes, { minimumPassRate: 1 })
 }

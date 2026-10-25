@@ -14,8 +14,14 @@ import {
 	type RequiredEvidence,
 } from "../evidence/index"
 import type { TrialTerminalStatus } from "../lifecycle/index"
-import type { GradeDecision } from "../orchestration/index"
-import { ScriptedGrader, runHostileScenario, type HostileScenario } from "../testing/index"
+import {
+	assertHiddenGraderBoundary,
+	createDefaultGraderRegistry,
+	HiddenGraderBoundaryError,
+	type DiffPolicyGraderSpec,
+} from "../grading/index"
+import { executeRetryPolicy, type GradeDecision } from "../orchestration/index"
+import { ScriptedGrader, runHostileScenario, SeededRandom, VirtualClock, type HostileScenario } from "../testing/index"
 import {
 	certificationSuiteSchema,
 	type CertificationKind,
@@ -78,11 +84,25 @@ export async function runCertificationScenario(scenario: CertificationScenario):
 export async function certifySuite(
 	suite: CertificationSuite,
 	options: { repetitions: number; concurrency: number },
-): Promise<{ canonicalResult: string; runs: CertificationResult[][] }> {
+): Promise<{
+	canonicalResult: string
+	runs: CertificationResult[][]
+	runtimeControls: RuntimeControlReceipt
+}> {
+	if (
+		!Number.isSafeInteger(options.repetitions) ||
+		options.repetitions < 1 ||
+		!Number.isSafeInteger(options.concurrency) ||
+		options.concurrency < 1
+	)
+		throw new Error("Certification requires positive integer repetitions and concurrency")
+	const admittedSuite = certificationSuiteSchema.parse(suite)
 	const runs: CertificationResult[][] = []
 	let canonicalResult: string | undefined
+	let runtimeControls: RuntimeControlReceipt | undefined
 	for (let repetition = 0; repetition < options.repetitions; repetition++) {
-		const results = await mapConcurrent(suite.scenarios, options.concurrency, runAndCompare)
+		runtimeControls = await certifyRuntimeControls()
+		const results = await mapConcurrent(admittedSuite.scenarios, options.concurrency, runAndCompare)
 		const serialized = canonicalJson(results)
 		if (canonicalResult !== undefined && serialized !== canonicalResult) {
 			throw new Error(`Certification drift at repetition ${repetition + 1}`)
@@ -90,7 +110,144 @@ export async function certifySuite(
 		canonicalResult = serialized
 		runs.push(results)
 	}
-	return { canonicalResult: canonicalResult ?? "[]", runs }
+	return { canonicalResult: canonicalResult ?? "[]", runs, runtimeControls: runtimeControls! }
+}
+
+type RuntimeControlReceipt = {
+	schemaVersion: 1
+	id: "harness-runtime-controls-v1"
+	controls: Array<{ id: string; scope: string; passed: true }>
+	classificationOnlyKinds: ["network_violation"]
+}
+
+async function certifyRuntimeControls(): Promise<RuntimeControlReceipt> {
+	const clock = new VirtualClock()
+	const workspaceRoot = path.resolve(os.tmpdir(), "alpha-certification-runtime", "workspace")
+	const registry = createDefaultGraderRegistry()
+	const spec: DiffPolicyGraderSpec = {
+		id: "forbidden-path-v1",
+		version: 1,
+		type: "diff-policy",
+		hardGate: true,
+		failureClass: "safety",
+		forbidden: ["generated/**"],
+	}
+	const context = {
+		workspaceRoot,
+		trace: [],
+		clock,
+		processRunner: {
+			run: async () => {
+				throw new Error("Runtime policy controls cannot execute subprocesses")
+			},
+		},
+	}
+	const allowed = await registry.execute([spec], { ...context, changedPaths: ["src/result.js"] })
+	const denied = await registry.execute([spec], { ...context, changedPaths: ["generated/result.js"] })
+	assertRuntimeControl(
+		"forbidden-path-v1",
+		allowed.decision === "passed" &&
+			denied.decision === "safety_failed" &&
+			denied.results.some(({ diagnostics }) => diagnostics.some(({ code }) => code === "forbidden_path_changed")),
+	)
+
+	let overlapDenied = false
+	try {
+		assertHiddenGraderBoundary({ workspaceRoot, hiddenRoot: path.join(workspaceRoot, "hidden") })
+	} catch (error) {
+		overlapDenied = error instanceof HiddenGraderBoundaryError
+	}
+	assertRuntimeControl("hidden-boundary-v1", overlapDenied)
+	assertHiddenGraderBoundary({ workspaceRoot, hiddenRoot: path.join(path.dirname(workspaceRoot), "hidden") })
+
+	for (const first of [
+		"infrastructure_error",
+		"agent_error",
+		"grader_error",
+		"outcome_failed",
+		"safety_failed",
+		"cancelled",
+	] as const) {
+		const retryable = first === "infrastructure_error" || first === "agent_error" || first === "grader_error"
+		let exhausted = 0
+		const observed: TrialTerminalStatus[] = []
+		const result = await executeRetryPolicy(
+			{ maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 10 },
+			{ clock, random: new SeededRandom(17), sleeper: clock },
+			async (attemptNumber) => {
+				const status = await runtimeAttempt(
+					`runtime-retry-${first}-${attemptNumber}`,
+					attemptNumber === 1 ? first : "passed",
+				)
+				observed.push(status)
+				return status
+			},
+			async () => {
+				exhausted++
+			},
+		)
+		const expected = retryable ? [first, "passed"] : [first]
+		assertRuntimeControl(
+			"retry-selection-v1",
+			canonicalJson(observed) === canonicalJson(expected) &&
+				result.status === expected.at(-1) &&
+				result.attempts.length === expected.length &&
+				!result.exhausted &&
+				exhausted === 0,
+		)
+	}
+	let exhaustionCalls = 0
+	const exhausted = await executeRetryPolicy(
+		{ maxAttempts: 2, baseDelayMs: 10, maxDelayMs: 10 },
+		{ clock, random: new SeededRandom(17), sleeper: clock },
+		async () => runtimeAttempt("runtime-retry-exhausted", "grader_error"),
+		async () => {
+			exhaustionCalls++
+		},
+	)
+	assertRuntimeControl(
+		"retry-selection-v1",
+		exhausted.exhausted &&
+			exhausted.attempts.length === 2 &&
+			exhausted.status === "grader_error" &&
+			exhaustionCalls === 1,
+	)
+	return {
+		schemaVersion: 1,
+		id: "harness-runtime-controls-v1",
+		controls: [
+			{ id: "forbidden-path-v1", scope: "diff-policy", passed: true },
+			{ id: "hidden-boundary-v1", scope: "hidden-grader-boundary", passed: true },
+			{ id: "retry-selection-v1", scope: "attempt-orchestration-and-retry", passed: true },
+		],
+		// Network isolation requires the separately gated infrastructure/host controls.
+		classificationOnlyKinds: ["network_violation"],
+	}
+}
+
+function assertRuntimeControl(id: string, passed: boolean): asserts passed {
+	if (!passed) throw new Error(`Certification runtime control failed: ${id}`)
+}
+
+async function runtimeAttempt(id: string, expected: TrialTerminalStatus): Promise<TrialTerminalStatus> {
+	const attempt = await runHostileScenario({ id, seed: 17, ...runtimeAttemptScript(expected) })
+	assertRuntimeControl(
+		"retry-selection-v1",
+		attempt.status !== undefined && attempt.attempt?.terminalStatus === attempt.status,
+	)
+	return attempt.status
+}
+
+function runtimeAttemptScript(status: TrialTerminalStatus): Partial<HostileScenario> {
+	if (status === "infrastructure_error")
+		return { setup: { outcome: "fault", fault: { kind: "error", message: "owned setup control" } } }
+	if (status === "agent_error")
+		return { agent: { outcome: "fault", fault: { kind: "error", message: "owned agent control" } } }
+	if (status === "grader_error")
+		return { grade: { outcome: "fault", fault: { kind: "error", message: "owned grader control" } } }
+	if (status === "passed" || status === "outcome_failed" || status === "safety_failed" || status === "cancelled")
+		return { grade: { outcome: "decision", decision: status } }
+	throw new Error(`Unsupported runtime retry control status: ${status}`)
 }
 
 async function runAndCompare(scenario: CertificationScenario): Promise<CertificationResult> {
@@ -105,6 +262,8 @@ async function runAndCompare(scenario: CertificationScenario): Promise<Certifica
 }
 
 function attemptScripts(scenario: CertificationScenario): Partial<HostileScenario>[] {
+	// Preserve v1 classification fixtures and historical expected records. Real policy
+	// and retry selection are additionally required by harness-runtime-controls-v1 above.
 	const outcome = (decision: GradeDecision): Partial<HostileScenario> => ({
 		grade: { outcome: "decision", decision },
 	})

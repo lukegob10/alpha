@@ -2,6 +2,7 @@ import { z } from "zod"
 import { canonicalJson, sha256 } from "../evidence/canonical"
 import { immutableIdentity } from "./identity"
 import { buildPairedExperimentReport } from "./reporting"
+import type { ExperimentDecision } from "./policy"
 import {
 	experimentManifestSchema,
 	experimentVariantSchema,
@@ -9,6 +10,7 @@ import {
 	taskSetManifestSchema,
 	trialObservationSchema,
 	type ExperimentManifest,
+	type ExperimentDecisionPlan,
 } from "./types"
 
 /** Portable producer receipt. Incomplete runs stay readable but cannot silently enter a paired report. */
@@ -24,6 +26,17 @@ export const campaignExportSchema = z.object({
 			scoredSamples: z.number().int().nonnegative(),
 			diagnosticAttempts: z.number().int().nonnegative(),
 			totalCost: z.number().finite().nonnegative().nullable(),
+			sampling: z
+				.object({
+					planned: z.number().int().nonnegative(),
+					completed: z.number().int().nonnegative(),
+					passed: z.number().int().nonnegative(),
+					failed: z.number().int().nonnegative(),
+					blocked: z.number().int().nonnegative(),
+					notRun: z.number().int().nonnegative(),
+					diagnosticAttempts: z.number().int().nonnegative(),
+				})
+				.optional(),
 		})
 		.optional(),
 	variant: experimentVariantSchema.nullable(),
@@ -56,6 +69,7 @@ export function declareCampaignPair(
 		template: string
 		allowedDifferenceFields: string[]
 		independentUnit: string
+		decisionPlan?: ExperimentDecisionPlan
 	},
 ): ExperimentManifest {
 	const control = parseCampaignExport(controlValue)
@@ -106,9 +120,15 @@ export function reportCampaignPair(controlValue: unknown, candidateValue: unknow
 	return { ...body, digest: sha256(canonicalJson(body)) }
 }
 
-export function renderCampaignPair(report: ReturnType<typeof reportCampaignPair>): string {
+export function renderCampaignPair(
+	report: Omit<ReturnType<typeof reportCampaignPair>, "decisionEvidence"> & { decisionEvidence?: ExperimentDecision },
+): string {
 	const candidate = report.candidate.overall
 	const effect = candidate.uncertainty
+	const decision: ExperimentDecision = report.decisionEvidence ?? {
+		status: "inconclusive",
+		reasons: ["Historical report contains no predeclared decision evidence"],
+	}
 	return [
 		"# Paired experiment",
 		"",
@@ -116,10 +136,13 @@ export function renderCampaignPair(report: ReturnType<typeof reportCampaignPair>
 		`Pairs: ${report.pairCount}; scoreable: ${candidate.coverage?.pairedScoreable}; excluded: ${candidate.coverage?.pairedExcluded}.`,
 		`Independent unit: ${effect?.independentUnit}; paired clusters: ${effect?.pairedClusters}.`,
 		`Candidate minus control, equal cluster weight: ${effect?.pairedDelta ?? "unavailable"}; empirical 95% interval: ${JSON.stringify(effect?.pairedBootstrap95 ?? null)}.`,
+		`Bounded paired 95% interval: ${JSON.stringify(effect?.pairedBounds95 ?? null)}; this bound requires independent declared sampling units.`,
+		`Declared objective: ${decision.objective ?? "unavailable"}; margin: ${decision.margin ?? "unavailable"}; population: ${decision.population ?? "unavailable"}.`,
 		`Candidate known cost observations: ${candidate.coverage?.knownCost}/${candidate.coverage?.observations}; cost per success: ${candidate.costPerSuccess ?? "unavailable"}.`,
+		`Observed delivery: ${candidate.delivery?.successes ?? "unavailable"}/${candidate.delivery?.attempts ?? "unavailable"}; conditional outcome denominator: ${candidate.denominators?.conditionalOutcome ?? "unavailable"}. Pass-at-k and consistency include unscoreable attempts; their task denominators are ${candidate.denominators?.passAtKTasks ?? "unavailable"} and ${candidate.denominators?.consistencyAtKTasks ?? "unavailable"}.`,
 		`Cost and latency cover all sample attempts; outcome rates exclude unscoreable statuses as counted above. Producer accounting (including diagnostic reproduction): ${JSON.stringify(report.producerEvidence.accounting)}.`,
 		"",
-		"Decision: inconclusive. This report describes the declared sample; promotion guards alone do not establish improvement. Empirical all-success intervals are not future reliability bounds. Scripted runs measure execution contracts, not live planning capability.",
+		`Decision: ${decision.status}. ${decision.reasons.join("; ")}${decision.reasons.length ? "." : ""} This decision concerns only the declared paired outcome claim; promotion guards and performance acceptance are separate. Empirical all-success intervals are not future reliability bounds. Scripted runs measure execution contracts, not live planning capability.`,
 		"",
 	].join("\n")
 }

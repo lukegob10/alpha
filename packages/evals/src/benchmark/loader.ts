@@ -1,4 +1,5 @@
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 
 import { parse } from "yaml"
@@ -60,19 +61,38 @@ export async function findBenchmarkTask(root: string, fixture: string) {
 export async function loadPrivateGraderBundle(
 	task: BenchmarkTaskManifest,
 	privateRoot = process.env.EVALS_PRIVATE_BENCHMARK_ROOT,
-): Promise<{ root: string; manifest: GraderBundleManifest } | undefined> {
+): Promise<
+	{ root: string; manifest: GraderBundleManifest; contentDigest: string; dispose: () => Promise<void> } | undefined
+> {
 	const bundleIds = [...new Set(task.graders.flatMap(({ bundleId }) => (bundleId ? [bundleId] : [])))]
 	const bundleVersions = [
 		...new Set(task.graders.flatMap(({ bundleVersion }) => (bundleVersion ? [bundleVersion] : []))),
+	]
+	const expectedDigests = [
+		...new Set(task.graders.filter(({ bundleId }) => bundleId).map(({ bundleDigest }) => bundleDigest)),
 	]
 	if (bundleIds.length === 0) return undefined
 	if (!privateRoot) throw new Error(`EVALS_PRIVATE_BENCHMARK_ROOT is required for task ${task.id}`)
 	const publicRoot = path.resolve(process.env.ALPHA_EVALS_REPO_PATH ?? path.resolve(process.cwd(), "../../evals"))
 	const privateBase = path.resolve(privateRoot)
-	if (privateBase === publicRoot || privateBase.startsWith(`${publicRoot}${path.sep}`))
+	if (
+		privateBase === publicRoot ||
+		privateBase.startsWith(`${publicRoot}${path.sep}`) ||
+		publicRoot.startsWith(`${privateBase}${path.sep}`)
+	)
+		throw new Error("Private benchmark root must be disjoint from the public benchmark root")
+	const [realPublicBase, realPrivateBase] = await Promise.all([fs.realpath(publicRoot), fs.realpath(privateBase)])
+	if (
+		realPrivateBase === realPublicBase ||
+		realPrivateBase.startsWith(`${realPublicBase}${path.sep}`) ||
+		realPublicBase.startsWith(`${realPrivateBase}${path.sep}`)
+	)
 		throw new Error("Private benchmark root must be disjoint from the public benchmark root")
 	if (bundleIds.length !== 1) throw new Error(`Task ${task.id} references multiple private bundles`)
-	const root = resolveInside(privateRoot, bundleIds[0]!)
+	if (expectedDigests.length !== 1 || !expectedDigests[0])
+		throw new Error(`Task ${task.id} requires one public private-bundle digest`)
+	const root = await fs.realpath(resolveInside(realPrivateBase, bundleIds[0]!))
+	if (!root.startsWith(`${realPrivateBase}${path.sep}`)) throw new Error("Private bundle escapes private root")
 	const manifest = graderBundleManifestSchema.parse(
 		JSON.parse(await fs.readFile(path.join(root, "bundle.json"), "utf8")),
 	)
@@ -125,7 +145,60 @@ export async function loadPrivateGraderBundle(
 			)
 		}
 	}
-	return { root, manifest }
+	const contentDigest = manifest.schemaVersion === 1 ? manifest.digest : manifest.contentDigest
+	if (contentDigest !== expectedDigests[0])
+		throw new Error(`Private bundle differs from public expected digest for ${task.id}`)
+
+	// Execute bytes retained at admission, never the mutable private source directory.
+	// Version 2 attests entrypoints only: unlisted dependency files cannot enter its snapshot.
+	const files = new Map<string, Buffer>()
+	const capture = async (relative: string) => {
+		const file = resolveInside(root, relative)
+		const real = await fs.realpath(file)
+		const realRoot = await fs.realpath(root)
+		if (!real.startsWith(`${realRoot}${path.sep}`) || !(await fs.lstat(file)).isFile())
+			throw new Error("Private grader snapshot contains a linked or non-file input")
+		const bytes = await fs.readFile(file)
+		if (bytes.length > 4 * 1024 * 1024 || files.size >= 1000)
+			throw new Error("Private grader snapshot exceeds its bound")
+		files.set(normalize(relative), bytes)
+	}
+	if (manifest.schemaVersion === 1) {
+		const visit = async (directory: string): Promise<void> => {
+			for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+				const file = path.join(directory, entry.name)
+				if (entry.isSymbolicLink()) throw new Error("Private grader snapshot cannot contain symlinks")
+				if (entry.isDirectory()) await visit(file)
+				else if (normalize(path.relative(root, file)) !== "bundle.json")
+					await capture(path.relative(root, file))
+			}
+		}
+		await visit(root)
+		if (fixtureTreeDigest([...files].map(([relative, bytes]) => ({ path: relative, bytes }))) !== contentDigest)
+			throw new Error("Private grader changed during snapshot capture")
+	} else {
+		for (const grader of manifest.graders) {
+			await capture(grader.entrypoint)
+			if (sha256(files.get(normalize(grader.entrypoint))!) !== grader.digest)
+				throw new Error("Private grader changed during snapshot capture")
+		}
+	}
+	if ([...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) > 32 * 1024 * 1024)
+		throw new Error("Private grader snapshot exceeds its byte bound")
+	const snapshot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-private-grader-"))
+	const dispose = () => fs.rm(snapshot, { recursive: true, force: true })
+	try {
+		for (const [relative, bytes] of files) {
+			const file = resolveInside(snapshot, relative)
+			await fs.mkdir(path.dirname(file), { recursive: true })
+			await fs.writeFile(file, bytes, { flag: "wx", mode: 0o400 })
+		}
+		await fs.writeFile(path.join(snapshot, "bundle.json"), JSON.stringify(manifest), { flag: "wx", mode: 0o400 })
+		return { root: snapshot, manifest, contentDigest, dispose }
+	} catch (error) {
+		await dispose()
+		throw error
+	}
 }
 
 async function validateTaskFiles(

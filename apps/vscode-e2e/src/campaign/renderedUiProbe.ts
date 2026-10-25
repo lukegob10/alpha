@@ -3,7 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
-import { runExtensionTests } from "../runTest"
+import { runExtensionTests, type ExtensionTestRunResult } from "../runTest"
+import { isTestExecutionCounts } from "../runFailure"
 import { exerciseRenderedAcceptance } from "../ui/renderedAcceptance"
 import { exerciseRenderedFileReview } from "../ui/renderedFileReview"
 import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
@@ -21,6 +22,32 @@ interface Target {
 interface Evaluation<T> {
 	result: { value?: T }
 	exceptionDetails?: unknown
+}
+
+/** Renderer observations only establish acceptance alongside the complete owned host execution. */
+export function renderedUiHostAccepted(result: ExtensionTestRunResult, testFile: string): boolean {
+	const counts = result.testCounts
+	return (
+		result.status === "passed" &&
+		result.exitCode === 0 &&
+		result.execution === "extension-host" &&
+		result.providerMode === "scripted" &&
+		result.ownershipGate === "verified" &&
+		result.captureComplete === true &&
+		result.hostExitObserved === true &&
+		result.hostCleanupVerified !== false &&
+		result.actualVSCodeVersion === "1.138.0" &&
+		result.retention?.status === "complete" &&
+		result.failure === undefined &&
+		result.requireAllTests === true &&
+		result.testSelection?.testFile === testFile &&
+		result.testSelection.grep === null &&
+		result.testSelection.forbidOnly === true &&
+		isTestExecutionCounts(counts) &&
+		counts.passed > 0 &&
+		counts.failed === 0 &&
+		counts.pending === 0
+	)
 }
 
 /** The existing host runner owns profiles, activation, evidence and shutdown for both rendered fixtures. */
@@ -48,25 +75,26 @@ export async function runRenderedUiProbe(
 	const combinedSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal
 	const timer = setTimeout(() => abort.abort(), mode !== "probe" ? 360000 : 120000)
 	let hostSettled = false
+	const testFile =
+		mode === "transcript-lifecycle"
+			? "transcript-lifecycle-ui.test"
+			: mode === "request-user-input"
+				? "request-user-input-ui.test"
+				: mode === "composer"
+					? "composer-ui.test"
+					: mode === "file-review"
+						? "file-review-ui.test"
+						: mode === "reasoning"
+							? "reasoning-ui.test"
+							: mode === "acceptance"
+								? "managed-agents.acceptance.test"
+								: "rendered-ui-probe.test"
 	const running = runExtensionTests({
 		providerMode: "scripted",
 		vscodeVersion: "1.138.0",
 		vscodeExecutablePath: executable,
-		testFile:
-			mode === "transcript-lifecycle"
-				? "transcript-lifecycle-ui.test"
-				: mode === "request-user-input"
-					? "request-user-input-ui.test"
-					: mode === "composer"
-						? "composer-ui.test"
-						: mode === "file-review"
-							? "file-review-ui.test"
-							: mode === "reasoning"
-								? "reasoning-ui.test"
-								: mode === "acceptance"
-									? "managed-agents.acceptance.test"
-									: "rendered-ui-probe.test",
-		...(mode === "request-user-input" || mode === "transcript-lifecycle" ? { requireAllTests: true } : {}),
+		testFile,
+		requireAllTests: true,
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -306,15 +334,7 @@ export async function runRenderedUiProbe(
 	}
 	if (operationError) throw operationError
 	assert.ok(result)
-	if (
-		result.status !== "passed" ||
-		result.execution !== "extension-host" ||
-		result.ownershipGate !== "verified" ||
-		result.captureComplete !== true ||
-		result.hostExitObserved !== true ||
-		result.actualVSCodeVersion !== "1.138.0"
-	)
-		observed.status = "failed"
+	if (!renderedUiHostAccepted(result, testFile)) observed.status = "failed"
 	await fs.writeFile(
 		path.join(output, `ui-probe-${nonce}.json`),
 		JSON.stringify({ ...observed, host: result }, null, 2),

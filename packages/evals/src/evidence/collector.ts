@@ -1,21 +1,27 @@
 import type { ContentAddressedArtifactStore } from "./artifactStore"
 import { redact, type RedactionOptions } from "./redaction"
-import { EVIDENCE_SCHEMA_VERSION, type ArtifactDescriptor, type RequiredArtifactKind } from "./types"
+import {
+	EVIDENCE_SCHEMA_VERSION,
+	type ArtifactCaptureStatus,
+	type ArtifactDescriptor,
+	type RequiredArtifactKind,
+} from "./types"
 
-export type RequiredEvidence = Record<RequiredArtifactKind, string | Uint8Array | object>
+export type RequiredEvidence = Record<RequiredArtifactKind, string | Uint8Array | object | undefined>
+export type CaptureStatuses = Partial<Record<RequiredArtifactKind, ArtifactCaptureStatus>>
 
 export async function collectRequiredEvidence(
 	attemptId: string,
 	evidence: RequiredEvidence,
 	store: ContentAddressedArtifactStore,
-	redaction: RedactionOptions = {},
+	redaction: RedactionOptions & { captureStatuses?: CaptureStatuses } = {},
 ): Promise<ArtifactDescriptor[]> {
 	const descriptors: ArtifactDescriptor[] = []
 	for (const [kind, value] of Object.entries(evidence) as [
 		RequiredArtifactKind,
 		RequiredEvidence[RequiredArtifactKind],
 	][]) {
-		const normalized = redact(value, redaction)
+		const normalized = redact(value ?? "", redaction)
 		const bytes =
 			normalized instanceof Uint8Array
 				? normalized
@@ -27,6 +33,9 @@ export async function collectRequiredEvidence(
 				bytes,
 				mediaType: typeof normalized === "object" ? "application/json" : "text/plain; charset=utf-8",
 				access: "reviewer",
+				captureStatus:
+					redaction.captureStatuses?.[kind] ??
+					(value === undefined ? "missing" : bytes.length ? "captured" : "captured-empty"),
 			}),
 		)
 	}
