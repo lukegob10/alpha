@@ -15,6 +15,7 @@ interface CheckpointRestoreDialogProps {
 	open: boolean
 	onOpenChange: (open: boolean) => void
 	onConfirm: (restoreCheckpoint: boolean) => void
+	onCloseAutoFocus?: (event: Event) => void
 	type: "edit" | "delete" | "restart"
 	hasCheckpoint: boolean
 }
@@ -23,6 +24,7 @@ export const CheckpointRestoreDialog: React.FC<CheckpointRestoreDialogProps> = (
 	open,
 	onOpenChange,
 	onConfirm,
+	onCloseAutoFocus,
 	type,
 	hasCheckpoint,
 }) => {
@@ -54,7 +56,7 @@ export const CheckpointRestoreDialog: React.FC<CheckpointRestoreDialogProps> = (
 
 	return (
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
-			<AlertDialogContent>
+			<AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
 				<AlertDialogHeader>
 					<AlertDialogTitle className="text-lg">{title}</AlertDialogTitle>
 					<AlertDialogDescription className="text-base">{description}</AlertDialogDescription>

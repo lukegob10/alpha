@@ -25,17 +25,35 @@ vi.mock("@src/components/ui", () => ({
 	Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
 		<button {...props}>{children}</button>
 	),
-	Select: ({ value, onValueChange }: { value: string; onValueChange: (value: string) => void }) => (
-		<select
-			data-testid={["ENHANCE", "EXPLAIN"].includes(value) ? "support-prompt-type" : "enhancement-api-config"}
-			value={value}
-			onChange={(event) => onValueChange(event.target.value)}>
-			<option value="ENHANCE">Enhance</option>
-			<option value="EXPLAIN">Explain</option>
-			<option value="-">Current configuration</option>
-			<option value="config-1">Config 1</option>
-		</select>
-	),
+	Select: ({ value, onValueChange }: { value: string; onValueChange: (value: string) => void }) => {
+		const isPersonality = value === "default" || value === "none"
+		return (
+			<select
+				data-testid={
+					isPersonality
+						? "personality-control"
+						: ["ENHANCE", "EXPLAIN"].includes(value)
+							? "support-prompt-type"
+							: "enhancement-api-config"
+				}
+				value={value}
+				onChange={(event) => onValueChange(event.target.value)}>
+				{isPersonality ? (
+					<>
+						<option value="default">Default</option>
+						<option value="none">None</option>
+					</>
+				) : (
+					<>
+						<option value="ENHANCE">Enhance</option>
+						<option value="EXPLAIN">Explain</option>
+						<option value="-">Current configuration</option>
+						<option value="config-1">Config 1</option>
+					</>
+				)}
+			</select>
+		)
+	},
 	SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 	SelectItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 	SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -72,6 +90,8 @@ describe("PromptsSettings buffering", () => {
 	})
 
 	const createProps = () => ({
+		personality: "default" as const,
+		setPersonality: vi.fn(),
 		customSupportPrompts: { ENHANCE: "Buffered support prompt" },
 		setCustomSupportPrompts: vi.fn(),
 		includeTaskHistoryInEnhance: false,
@@ -89,6 +109,21 @@ describe("PromptsSettings buffering", () => {
 			window.dispatchEvent(new MessageEvent("message", { data: { type: "enhancedPrompt", requestId, ...data } })),
 		)
 	}
+
+	it("edits the supplied personality buffer without sending settings messages", () => {
+		const props = createProps()
+		const view = render(<PromptsSettings {...props} />)
+		expect(screen.getByTestId("personality-control")).toHaveValue("default")
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "none" } })
+		expect(props.setPersonality).toHaveBeenCalledWith("none")
+		expect(postMessage).not.toHaveBeenCalled()
+
+		view.rerender(<PromptsSettings {...props} personality="none" />)
+		expect(screen.getByTestId("personality-control")).toHaveValue("none")
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+		expect(props.setPersonality).toHaveBeenLastCalledWith("default")
+		expect(postMessage).not.toHaveBeenCalled()
+	})
 
 	it("cancels preview without editing settings or replacing the draft with a late result", () => {
 		const props = createProps()
@@ -218,6 +253,8 @@ describe("PromptsSettings buffering", () => {
 	it("keeps unrelated enhancement responses out of the buffered preview", () => {
 		render(
 			<PromptsSettings
+				personality="default"
+				setPersonality={vi.fn()}
 				customSupportPrompts={{}}
 				setCustomSupportPrompts={vi.fn()}
 				includeTaskHistoryInEnhance={false}
@@ -241,6 +278,8 @@ describe("PromptsSettings buffering", () => {
 		const setEnhancementApiConfigId = vi.fn()
 
 		const props = {
+			personality: "default" as const,
+			setPersonality: vi.fn(),
 			customSupportPrompts: {},
 			setCustomSupportPrompts: vi.fn(),
 			includeTaskHistoryInEnhance: true,
@@ -268,6 +307,8 @@ describe("PromptsSettings buffering", () => {
 	it("previews with the buffered enhancement settings without persisting them", () => {
 		render(
 			<PromptsSettings
+				personality="default"
+				setPersonality={vi.fn()}
 				customSupportPrompts={{ ENHANCE: "Buffered support prompt: {{userInput}}" }}
 				setCustomSupportPrompts={vi.fn()}
 				includeTaskHistoryInEnhance={false}
@@ -296,6 +337,8 @@ describe("PromptsSettings buffering", () => {
 	it("accepts only the latest unchanged preview request and settles its own failure", () => {
 		render(
 			<PromptsSettings
+				personality="default"
+				setPersonality={vi.fn()}
 				customSupportPrompts={{}}
 				setCustomSupportPrompts={vi.fn()}
 				includeTaskHistoryInEnhance={false}

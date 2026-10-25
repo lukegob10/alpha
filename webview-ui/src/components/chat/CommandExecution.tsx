@@ -38,6 +38,8 @@ interface CommandExecutionProps {
 	icon?: JSX.Element | null
 	title?: JSX.Element | null
 	onToggleExpand?: () => void
+	isExpanded?: boolean
+	onExpandedChange?: (expanded: boolean) => void
 }
 
 export const CommandExecution = ({
@@ -46,6 +48,8 @@ export const CommandExecution = ({
 	icon,
 	title,
 	onToggleExpand,
+	isExpanded: controlledExpanded,
+	onExpandedChange,
 	workingDirectory,
 	pathApproval,
 }: CommandExecutionProps) => {
@@ -61,7 +65,8 @@ export const CommandExecution = ({
 
 	// Expansion belongs to the reader. Stream events update the retained output
 	// without opening the terminal or closing it while someone is reading.
-	const [isExpanded, setIsExpanded] = useState(false)
+	const [localExpanded, setLocalExpanded] = useState(false)
+	const isExpanded = controlledExpanded ?? localExpanded
 	const detailsId = useId()
 	const [streamingOutput, setStreamingOutput] = useState("")
 	const [status, setStatus] = useState<CommandExecutionStatus | null>(null)
@@ -210,8 +215,10 @@ export const CommandExecution = ({
 					aria-controls={detailsId}
 					aria-label={`${t(isExpanded ? "chat:commandExecution.collapseOutput" : "chat:commandExecution.expandOutput")}: ${command}`}
 					onClick={() => {
+						const expanded = !isExpanded
+						if (controlledExpanded === undefined) setLocalExpanded(expanded)
+						onExpandedChange?.(expanded)
 						onToggleExpand?.()
-						setIsExpanded((expanded) => !expanded)
 					}}
 					className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
 					<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0", isExpanded && "rotate-90")} />

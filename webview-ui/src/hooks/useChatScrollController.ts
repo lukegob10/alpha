@@ -34,6 +34,49 @@ interface ScrollGeometry {
 	scrollHeight: number
 }
 
+interface ReadingAnchor {
+	attribute: "data-chat-message-ts" | "data-activity-trace-id"
+	identity: string
+	viewportOffset: number
+}
+
+interface PendingReadingAnchor {
+	taskKey: string | undefined
+	taskTs: number
+	scroller: HTMLElement
+	anchors: ReadingAnchor[]
+}
+
+const captureReadingAnchors = (scroller: HTMLElement): ReadingAnchor[] => {
+	const viewportTop = scroller.getBoundingClientRect().top
+	let nearest: HTMLElement | undefined
+	for (const element of scroller.querySelectorAll<HTMLElement>("[data-chat-message-ts], [data-activity-trace-id]")) {
+		const bounds = element.getBoundingClientRect()
+		if (bounds.height <= 0) continue
+		nearest = element
+		if (bounds.bottom > viewportTop) break
+	}
+	if (!nearest) return []
+
+	const trace = nearest.querySelector<HTMLElement>("[data-activity-trace-id]")
+	const traceBounds = trace?.getBoundingClientRect()
+	// A partial render window can move its trace header into a newly mounted older row.
+	const elements =
+		trace && traceBounds && traceBounds.height > 0 && traceBounds.bottom > viewportTop
+			? [trace, nearest]
+			: [nearest]
+	return elements.map((element) => {
+		const attribute = element.hasAttribute("data-chat-message-ts")
+			? "data-chat-message-ts"
+			: "data-activity-trace-id"
+		return {
+			attribute,
+			identity: element.getAttribute(attribute)!,
+			viewportOffset: element.getBoundingClientRect().top - viewportTop,
+		}
+	})
+}
+
 const readGeometry = (element: HTMLElement): ScrollGeometry => ({
 	scrollTop: element.scrollTop,
 	clientHeight: element.clientHeight,
@@ -48,6 +91,7 @@ const dimensionsChanged = (previous: ScrollGeometry, current: ScrollGeometry): b
 	Math.abs(previous.scrollHeight - current.scrollHeight) > GEOMETRY_EPSILON_PX
 
 export interface UseChatScrollControllerOptions {
+	taskKey?: string
 	taskTs: number | undefined
 	itemCount: number
 }
@@ -57,6 +101,7 @@ export interface UseChatScrollControllerReturn {
 	showScrollToBottom: boolean
 	handleScrollToBottomClick: () => void
 	releaseFollow: (reason: ChatScrollReleaseReason) => void
+	preserveReadingAnchor: (update: () => void) => void
 	setScrollerRef: (element: HTMLElement | null) => void
 	setContentRef: (element: HTMLElement | null) => void
 	handleScrollerScroll: (event: React.UIEvent<HTMLElement>) => void
@@ -67,12 +112,14 @@ export interface UseChatScrollControllerReturn {
 }
 
 export function useChatScrollController({
+	taskKey,
 	taskTs,
 	itemCount,
 }: UseChatScrollControllerOptions): UseChatScrollControllerReturn {
 	const hasTask = taskTs !== undefined
 	const [scrollMode, setScrollMode] = useState<ChatScrollMode>(hasTask ? "FOLLOWING" : "BROWSING")
 	const scrollModeRef = useRef<ChatScrollMode>(hasTask ? "FOLLOWING" : "BROWSING")
+	const taskKeyRef = useRef(taskKey)
 	const taskTsRef = useRef(taskTs)
 	const itemCountRef = useRef(itemCount)
 	const scrollerRef = useRef<HTMLElement | null>(null)
@@ -81,7 +128,9 @@ export function useChatScrollController({
 	const pointerScrollingRef = useRef(false)
 	const resizeObserverRef = useRef<ResizeObserver | null>(null)
 	const bottomPinFrameRef = useRef<number | null>(null)
+	const pendingReadingAnchorRef = useRef<PendingReadingAnchor | null>(null)
 
+	taskKeyRef.current = taskKey
 	taskTsRef.current = taskTs
 	itemCountRef.current = itemCount
 
@@ -101,8 +150,7 @@ export function useChatScrollController({
 		setScrollMode(nextMode)
 	}, [])
 
-	// This is the controller's only automatic scroll write. It targets the
-	// browser's exact maximum instead of an estimated virtual-list position.
+	// Bottom following targets the browser's exact maximum instead of an estimated list position.
 	const scheduleBottomPin = useCallback(() => {
 		if (
 			scrollModeRef.current !== "FOLLOWING" ||
@@ -164,19 +212,41 @@ export function useChatScrollController({
 
 	const releaseFollow = useCallback(
 		(_reason: ChatScrollReleaseReason) => {
+			pendingReadingAnchorRef.current = null
 			cancelBottomPin()
 			transitionTo("BROWSING")
 		},
 		[cancelBottomPin, transitionTo],
 	)
 
+	const preserveReadingAnchor = useCallback((update: () => void) => {
+		const scroller = scrollerRef.current
+		const taskTs = taskTsRef.current
+		const anchors =
+			scrollModeRef.current === "BROWSING" && scroller && taskTs !== undefined
+				? captureReadingAnchors(scroller)
+				: []
+		pendingReadingAnchorRef.current =
+			scroller && taskTs !== undefined && anchors.length > 0
+				? { taskKey: taskKeyRef.current, taskTs, scroller, anchors }
+				: null
+		try {
+			update()
+		} catch (error) {
+			pendingReadingAnchorRef.current = null
+			throw error
+		}
+	}, [])
+
 	const enterFollowMode = useCallback(() => {
+		pendingReadingAnchorRef.current = null
 		transitionTo("FOLLOWING")
 		scheduleBottomPin()
 	}, [scheduleBottomPin, transitionTo])
 
 	const setScrollerRef = useCallback(
 		(element: HTMLElement | null) => {
+			if (scrollerRef.current !== element) pendingReadingAnchorRef.current = null
 			scrollerRef.current = element
 			previousGeometryRef.current = element ? readGeometry(element) : null
 			reconnectResizeObserver()
@@ -196,6 +266,7 @@ export function useChatScrollController({
 
 	useEffect(
 		() => () => {
+			pendingReadingAnchorRef.current = null
 			cancelBottomPin()
 			resizeObserverRef.current?.disconnect()
 		},
@@ -205,6 +276,7 @@ export function useChatScrollController({
 	// A new task starts attached to its output. Appending to the same task never
 	// overrides an explicit browsing decision.
 	useLayoutEffect(() => {
+		pendingReadingAnchorRef.current = null
 		cancelBottomPin()
 		pointerScrollingRef.current = false
 		previousGeometryRef.current = scrollerRef.current ? readGeometry(scrollerRef.current) : null
@@ -216,13 +288,46 @@ export function useChatScrollController({
 
 		transitionTo("FOLLOWING")
 		scheduleBottomPin()
-	}, [cancelBottomPin, scheduleBottomPin, taskTs, transitionTo])
+	}, [cancelBottomPin, scheduleBottomPin, taskKey, taskTs, transitionTo])
 
 	useLayoutEffect(() => {
 		if (itemCount > 0 && scrollModeRef.current === "FOLLOWING") {
 			scheduleBottomPin()
 		}
 	}, [itemCount, scheduleBottomPin])
+
+	// History prepends may leave itemCount unchanged. Restore once after their commit,
+	// using a surviving row rather than total height, which can also include new output.
+	useLayoutEffect(() => {
+		const pending = pendingReadingAnchorRef.current
+		pendingReadingAnchorRef.current = null
+		if (
+			!pending ||
+			scrollModeRef.current !== "BROWSING" ||
+			pending.taskKey !== taskKey ||
+			pending.taskTs !== taskTs ||
+			pending.scroller !== scrollerRef.current
+		) {
+			return
+		}
+
+		const scroller = pending.scroller
+		const viewportTop = scroller.getBoundingClientRect().top
+		for (const anchor of pending.anchors) {
+			// Canonical trace IDs may contain punctuation; compare values without building a CSS selector from them.
+			const element = Array.from(scroller.querySelectorAll<HTMLElement>(`[${anchor.attribute}]`)).find(
+				(candidate) => candidate.getAttribute(anchor.attribute) === anchor.identity,
+			)
+			const bounds = element?.getBoundingClientRect()
+			if (!bounds || bounds.height <= 0) continue
+			const displacement = bounds.top - viewportTop - anchor.viewportOffset
+			if (Math.abs(displacement) > GEOMETRY_EPSILON_PX) {
+				scroller.scrollTop = Math.max(0, scroller.scrollTop + displacement)
+			}
+			previousGeometryRef.current = readGeometry(scroller)
+			break
+		}
+	})
 
 	const handleScrollerScroll = useCallback(
 		(event: React.UIEvent<HTMLElement>) => {
@@ -270,6 +375,7 @@ export function useChatScrollController({
 
 	const handleScrollerWheel = useCallback(
 		(event: React.WheelEvent<HTMLElement>) => {
+			pendingReadingAnchorRef.current = null
 			if (event.deltaY < 0 && scrollModeRef.current === "FOLLOWING") {
 				releaseFollow("user-scroll")
 			}
@@ -278,6 +384,7 @@ export function useChatScrollController({
 	)
 
 	const handleScrollerPointerDown = useCallback(() => {
+		pendingReadingAnchorRef.current = null
 		pointerScrollingRef.current = true
 	}, [])
 
@@ -301,6 +408,7 @@ export function useChatScrollController({
 		showScrollToBottom: hasTask && itemCount > 0 && scrollMode === "BROWSING",
 		handleScrollToBottomClick,
 		releaseFollow,
+		preserveReadingAnchor,
 		setScrollerRef,
 		setContentRef,
 		handleScrollerScroll,

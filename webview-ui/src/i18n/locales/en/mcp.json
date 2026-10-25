@@ -60,6 +60,8 @@
 	"execution": {
 		"running": "Running",
 		"completed": "Completed",
-		"error": "Error"
+		"error": "Error",
+		"expandResponse": "Expand response",
+		"collapseResponse": "Collapse response"
 	}
 }

@@ -130,10 +130,49 @@ describe("ChatTextArea", () => {
 		expect(onStop).toHaveBeenCalledTimes(inputValue ? 0 : 1)
 	})
 
-	it("disables repeat streaming submission while retaining the empty-draft Stop action", () => {
+	it.each([
+		{ draft: "text", inputValue: "Keep this correction", selectedImages: [] },
+		{ draft: "images", inputValue: "", selectedImages: ["data:image/png;base64,aGVsbG8="] },
+	])("preserves a streaming $draft draft when Stop is clicked", ({ inputValue, selectedImages }) => {
+		const onStop = vi.fn()
+		render(
+			<ChatTextArea
+				{...defaultProps}
+				inputValue={inputValue}
+				selectedImages={selectedImages}
+				isStreaming
+				onStop={onStop}
+			/>,
+		)
+
+		fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+		expect(onStop).toHaveBeenCalledTimes(1)
+		expect(defaultProps.onSend).not.toHaveBeenCalled()
+		expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+		expect(defaultProps.setSelectedImages).not.toHaveBeenCalled()
+		expect(screen.getByRole("textbox")).toHaveValue(inputValue)
+		if (selectedImages.length > 0) expect(screen.getByRole("img")).toHaveAttribute("src", selectedImages[0])
+	})
+
+	it.each([false, true])("retains Stop while streaming submission is pending with autoSteer=%s", (autoSteer) => {
+		;(useExtensionState as import("vitest").Mock).mockReturnValue({
+			filePaths: [],
+			openedTabs: [],
+			apiConfiguration: { apiProvider: "anthropic" },
+			taskHistory: [],
+			cwd: "/test/workspace",
+			autoSteer,
+		})
 		const onStop = vi.fn()
 		const view = render(
-			<ChatTextArea {...defaultProps} inputValue="NEW_DIRECTION" isStreaming enqueueDisabled onStop={onStop} />,
+			<ChatTextArea
+				{...defaultProps}
+				inputValue="NEW_DIRECTION"
+				isStreaming
+				sendingDisabled
+				enqueueDisabled
+				onStop={onStop}
+			/>,
 		)
 		const send = screen.getByRole("button", {
 			name: (_, element) => element.querySelector(".lucide-send-horizontal") !== null,
@@ -141,13 +180,24 @@ describe("ChatTextArea", () => {
 		expect(send).toBeDisabled()
 		fireEvent.click(send)
 		expect(defaultProps.onSend).not.toHaveBeenCalled()
+		const draftStop = screen.getByRole("button", { name: "Stop" })
+		expect(draftStop).toBeEnabled()
+		fireEvent.click(draftStop)
+		expect(onStop).toHaveBeenCalledTimes(1)
+		expect(screen.getByRole("textbox")).toHaveValue("NEW_DIRECTION")
 		view.rerender(<ChatTextArea {...defaultProps} inputValue="" isStreaming enqueueDisabled onStop={onStop} />)
-		const stop = screen.getByRole("button", {
-			name: (_, element) => element.querySelector(".lucide-square") !== null,
-		})
+		const stop = screen.getByRole("button", { name: "Stop" })
 		expect(stop).toBeEnabled()
 		fireEvent.click(stop)
-		expect(onStop).toHaveBeenCalledTimes(1)
+		expect(onStop).toHaveBeenCalledTimes(2)
+	})
+
+	it.each([
+		{ isStreaming: false, isEditMode: false },
+		{ isStreaming: true, isEditMode: true },
+	])("does not offer Stop with streaming=$isStreaming and editing=$isEditMode", (state) => {
+		render(<ChatTextArea {...defaultProps} {...state} inputValue="Keep this draft" onStop={vi.fn()} />)
+		expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
 	})
 
 	it.each([undefined, false, true])("labels streaming submission with autoSteer=%s", (autoSteer) => {

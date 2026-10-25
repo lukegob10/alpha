@@ -1,44 +1,77 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
+import { projectTranscriptTurns, transcriptTurnIdentity, type TranscriptPrompt } from "./utils/transcriptTurns"
+
 export type ActionActivityKind = "working" | "commands" | "edits" | "worked"
 
 export interface ActionActivity {
-	id: number
+	id: string | number
 	startIndex: number
 	endIndex: number
 	kind: ActionActivityKind
 	count: number
 	durationMs?: number
+	/** Completed turns can leave pending input, failures, and unattributed rows outside their disclosure. */
+	memberIndices?: readonly number[]
 }
 
 const editTools = new Set(["editedExistingFile", "appliedDiff", "newFileCreated", "insertContent", "searchAndReplace"])
 const failureStatuses = new Set(["error", "failed", "denied", "cancelled"])
-const pendingInputAsks = new Set(["command", "followup", "tool", "use_mcp_server"])
 
-function hasPendingUserInput(messages: AlphaMessage[], startIndex: number, endIndex: number): boolean {
-	for (let index = startIndex; index <= endIndex; index++) {
-		const message = messages[index]
-		if (message.type === "say" && message.say === "async_user_input" && message.isAnswered !== true) return true
-		if (message.type === "ask" && pendingInputAsks.has(message.ask ?? "") && message.isAnswered !== true)
-			return true
+function toolPayload(message: AlphaMessage): Record<string, unknown> | undefined {
+	try {
+		const payload: unknown = JSON.parse(message.text || "{}")
+		return typeof payload === "object" && payload !== null && !Array.isArray(payload)
+			? (payload as Record<string, unknown>)
+			: undefined
+	} catch {
+		return undefined
 	}
-	return false
+}
+
+function hasToolFailure(payload: Record<string, unknown> | undefined): boolean {
+	return Boolean(
+		payload &&
+			(payload.cancelled === true ||
+				[payload.status, payload.lifecycleStatus, payload.changeStatus].some(
+					(status) => typeof status === "string" && failureStatuses.has(status),
+				)),
+	)
+}
+
+function needsVisibleAttention(message: AlphaMessage): boolean {
+	if (message.turn?.terminalStatus && message.turn.terminalStatus !== "completed") return true
+	if (message.toolApprovalRequest && message.isAnswered !== true) return true
+	if (message.type === "ask" && message.isAnswered !== true && message.ask !== "completion_result") return true
+	if (message.type !== "say") return false
+	if (message.say === "async_user_input" && message.isAnswered !== true) return true
+	if (
+		message.say === "error" ||
+		message.say === "diff_error" ||
+		message.say === "condense_context_error" ||
+		message.say === "shell_integration_warning"
+	)
+		return true
+	if (message.say === "tool") return hasToolFailure(toolPayload(message))
+	if (message.say === "api_req_started") {
+		const payload = toolPayload(message)
+		return Boolean(payload?.streamingFailedMessage || payload?.cancelReason)
+	}
+	return Boolean(
+		message.subagentGroup?.agents.some(
+			(agent) =>
+				agent.pendingApproval ||
+				agent.parentVerification?.blocking ||
+				(agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)),
+		),
+	)
 }
 
 function toolKind(message: AlphaMessage): ActionActivityKind | undefined {
-	try {
-		const { tool, status, changeStatus, commandExecutionId } = JSON.parse(message.text || "{}") as {
-			tool?: string
-			status?: string
-			changeStatus?: string
-			commandExecutionId?: string
-		}
-		if (tool === "ticket" || (status && failureStatuses.has(status))) return undefined
-		if (changeStatus === "applied" && commandExecutionId) return "commands"
-		return tool && editTools.has(tool) ? "edits" : "working"
-	} catch {
-		return "working"
-	}
+	const payload = toolPayload(message)
+	if (payload?.tool === "ticket" || hasToolFailure(payload)) return undefined
+	if (payload?.changeStatus === "applied" && payload.commandExecutionId) return "commands"
+	return typeof payload?.tool === "string" && editTools.has(payload.tool) ? "edits" : "working"
 }
 
 function actionKind(message: AlphaMessage): ActionActivityKind | undefined {
@@ -77,6 +110,7 @@ export function getActionActivity(
 	let kind: ActionActivityKind = "working"
 	let count = 0
 	let mixed = false
+	let turnIdentity: string | undefined
 	const flush = (endIndex: number) => {
 		if (start < 0) return
 		const activity: ActionActivity = { id: messages[start].ts, startIndex: start, endIndex, kind, count }
@@ -84,13 +118,19 @@ export function getActionActivity(
 		start = -1
 		count = 0
 		mixed = false
+		turnIdentity = undefined
 	}
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]
+		const currentTurnIdentity = message.turn ? transcriptTurnIdentity(message.turn) : undefined
+		if (turnIdentity && currentTurnIdentity && turnIdentity !== currentTurnIdentity) flush(index - 1)
 		// A pending approval can contain buttons inside its row and must never be hidden.
 		const currentKind =
 			message.ts === pendingApprovalTs ||
 			message.ts === failedApiRequestTs ||
+			(message.type === "ask" && message.partial === true) ||
+			(message.turn !== undefined && message.type === "ask" && message.isAnswered !== true) ||
+			(message.turn?.terminalStatus && message.turn.terminalStatus !== "completed") ||
 			(message.toolApprovalRequest && !message.isAnswered)
 				? undefined
 				: actionKind(message)
@@ -109,6 +149,7 @@ export function getActionActivity(
 				kind = currentKind
 			}
 		}
+		turnIdentity ??= currentTurnIdentity
 		count++
 	}
 	flush(messages.length - 1)
@@ -118,51 +159,43 @@ export function getActionActivity(
 /** Groups a completed assistant turn while leaving its prompt and final answer visible. */
 export function getCompletedTurnActivity(
 	messages: AlphaMessage[],
-	initialPromptTs?: number,
+	initialPrompt?: TranscriptPrompt,
 	currentTurnCompleted = false,
 ): Map<number, ActionActivity> {
 	const byIndex = new Map<number, ActionActivity>()
-	let prompt =
-		initialPromptTs !== undefined && Number.isFinite(initialPromptTs) && initialPromptTs > 0
-			? { index: -1, ts: initialPromptTs }
-			: undefined
-	const addTurn = (promptStart: { index: number; ts: number }, summaryIndex: number) => {
-		const startIndex = promptStart.index + 1
-		const endIndex = summaryIndex - 1
-		if (startIndex > endIndex || hasPendingUserInput(messages, startIndex, endIndex)) return
-
+	const turns = projectTranscriptTurns(messages, initialPrompt)
+	for (const turn of turns) {
+		let summaryIndex = turn.terminalStatus === "completed" ? turn.terminalIndex : undefined
+		// Older hosts published ordinary final text before the completion review boundary.
+		if (
+			summaryIndex === undefined &&
+			turn.source === "legacy" &&
+			turn.promptIndex !== undefined &&
+			turn === turns.at(-1) &&
+			currentTurnCompleted
+		) {
+			summaryIndex = turn.indices.findLast(
+				(index) => messages[index].type === "say" && messages[index].say === "text" && !messages[index].partial,
+			)
+		}
+		if (summaryIndex === undefined || (turn.source === "legacy" && turn.promptIndex === undefined)) continue
+		const memberIndices = turn.indices.filter(
+			(index) =>
+				index !== turn.promptIndex &&
+				(turn.source === "canonical" ? index !== summaryIndex : index < summaryIndex) &&
+				!needsVisibleAttention(messages[index]),
+		)
+		if (memberIndices.length === 0) continue
 		const activity: ActionActivity = {
-			id: messages[startIndex].ts,
-			startIndex,
-			endIndex,
+			id: turn.source === "canonical" ? turn.id : messages[memberIndices[0]].ts,
+			startIndex: memberIndices[0],
+			endIndex: memberIndices[memberIndices.length - 1],
 			kind: "worked",
-			count: endIndex - startIndex + 1,
-			durationMs: Math.max(0, messages[summaryIndex].ts - promptStart.ts),
+			count: memberIndices.length,
+			durationMs: Math.max(0, messages[summaryIndex].ts - turn.startTs),
+			memberIndices,
 		}
-		for (let row = startIndex; row <= endIndex; row++) byIndex.set(row, activity)
-	}
-
-	for (let index = 0; index < messages.length; index++) {
-		const message = messages[index]
-		if (message.type === "say" && message.say === "user_feedback") {
-			prompt = { index, ts: message.ts }
-			continue
-		}
-
-		if (message.type !== "say" || message.say !== "completion_result" || message.partial === true) continue
-
-		if (prompt) addTurn(prompt, index)
-		prompt = undefined
-	}
-
-	if (currentTurnCompleted && prompt) {
-		for (let index = messages.length - 1; index > prompt.index; index--) {
-			const message = messages[index]
-			if (message.type === "say" && message.say === "text" && message.partial !== true) {
-				addTurn(prompt, index)
-				break
-			}
-		}
+		for (const index of memberIndices) byIndex.set(index, activity)
 	}
 
 	return byIndex

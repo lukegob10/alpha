@@ -36,6 +36,23 @@ function countChangedLines(originalContent: string, finalContent: string): { add
 	return { added, removed }
 }
 
+interface CapturedDiffViewProps {
+	filePath: string
+	originalContent: string
+	finalContent: string
+}
+
+// Transcript updates recreate the edit projection; unchanged snapshots retain their rendered patch.
+const CapturedDiffView = memo(function CapturedDiffView({
+	filePath,
+	originalContent,
+	finalContent,
+}: CapturedDiffViewProps) {
+	return (
+		<DiffView source={createTwoFilesPatch(filePath, filePath, originalContent, finalContent)} filePath={filePath} />
+	)
+})
+
 const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedChange }: FileChangesPanelProps) => {
 	const { t } = useTranslation()
 	const [panelExpanded, setPanelExpanded] = useState(false)
@@ -248,13 +265,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 							const originalContent = entries[0].originalContent
 							const finalContent = entries[entries.length - 1].finalContent
 							const diffSnapshot = diffFilesByPath.get(path)
-							const hasMergedDiff = originalContent !== undefined && finalContent != null
 							const isExpanded = expandedPaths.has(path)
-							const displayDiff = !isExpanded
-								? ""
-								: hasMergedDiff
-									? createTwoFilesPatch(path, path, originalContent, finalContent)
-									: entries.map((e) => e.diff).join("\n\n")
 							const combinedStats = summariesByPath.get(path)!
 							return (
 								<div key={path}>
@@ -296,7 +307,19 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 										id={`${panelId}-file-${index}`}
 										hidden={!isExpanded}
 										className="max-h-80 overflow-auto border-t border-[var(--border-subtle)]">
-										{isExpanded && <DiffView source={displayDiff} filePath={path} />}
+										{isExpanded &&
+											(originalContent !== undefined && finalContent != null ? (
+												<CapturedDiffView
+													filePath={path}
+													originalContent={originalContent}
+													finalContent={finalContent}
+												/>
+											) : (
+												<DiffView
+													source={entries.map((entry) => entry.diff).join("\n\n")}
+													filePath={path}
+												/>
+											))}
 									</div>
 								</div>
 							)

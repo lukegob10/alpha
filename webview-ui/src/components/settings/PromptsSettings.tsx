@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, FormEvent } from "react"
 import { VSCodeTextArea, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
+import type { Personality } from "@alpha-code/types"
 
 import { supportPrompt, SupportPromptType } from "@alpha/support-prompt"
 
@@ -21,6 +22,8 @@ import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
 
 interface PromptsSettingsProps {
+	personality: Personality
+	setPersonality: (personality: Personality) => void
 	customSupportPrompts: Record<string, string | undefined>
 	setCustomSupportPrompts: (prompts: Record<string, string | undefined>) => void
 	includeTaskHistoryInEnhance: boolean
@@ -30,6 +33,8 @@ interface PromptsSettingsProps {
 }
 
 const PromptsSettings = ({
+	personality,
+	setPersonality,
 	customSupportPrompts,
 	setCustomSupportPrompts,
 	includeTaskHistoryInEnhance,
@@ -168,6 +173,35 @@ const PromptsSettings = ({
 			</SectionHeader>
 
 			<Section>
+				<SearchableSetting
+					settingId="prompts-personality"
+					section="prompts"
+					label={t("settings:prompts.personality.label")}>
+					<label className="block font-medium mb-1" htmlFor="personality-select">
+						{t("settings:prompts.personality.label")}
+					</label>
+					<Select
+						value={personality}
+						onValueChange={(value) => {
+							if (value === "default" || value === "none") setPersonality(value)
+						}}>
+						<SelectTrigger
+							id="personality-select"
+							aria-describedby="personality-description"
+							className="w-full"
+							data-testid="personality-select">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="default">{t("settings:prompts.personality.default")}</SelectItem>
+							<SelectItem value="none">{t("settings:prompts.personality.none")}</SelectItem>
+						</SelectContent>
+					</Select>
+					<div id="personality-description" className="text-sm text-vscode-descriptionForeground mt-1 mb-4">
+						{t("settings:prompts.personality.description")}
+					</div>
+				</SearchableSetting>
+
 				<SearchableSetting
 					settingId="prompts-support-prompt-select"
 					section="prompts"

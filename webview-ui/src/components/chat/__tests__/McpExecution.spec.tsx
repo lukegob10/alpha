@@ -1,5 +1,5 @@
-import React from "react"
-import { act, render, screen } from "@testing-library/react"
+import React, { useState } from "react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 
 import { McpExecution } from "../McpExecution"
 
@@ -16,9 +16,48 @@ vi.mock("react-i18next", () => ({
 
 vi.mock("../../common/CodeBlock", () => ({ default: () => null }))
 vi.mock("../../mcp/McpToolRow", () => ({ default: () => null }))
-vi.mock("../Markdown", () => ({ Markdown: () => null }))
+vi.mock("../Markdown", () => ({ Markdown: ({ markdown }: { markdown: string }) => <div>{markdown}</div> }))
 
 describe("McpExecution", () => {
+	it("restores response disclosure after the parent turn unmounts its body", () => {
+		function FoldableTurn() {
+			const [visible, setVisible] = useState(true)
+			const [expanded, setExpanded] = useState<boolean>()
+			return (
+				<>
+					<button onClick={() => setVisible((value) => !value)}>Toggle turn</button>
+					{visible && (
+						<McpExecution
+							executionId="retained"
+							useMcpServer={{
+								type: "use_mcp_tool",
+								serverName: "server",
+								toolName: "search",
+								arguments: "{}",
+								response: "Retained response",
+							}}
+							isExpanded={expanded}
+							onExpandedChange={setExpanded}
+						/>
+					)}
+				</>
+			)
+		}
+		render(<FoldableTurn />)
+		const responseToggle = screen.getByRole("button", { name: "execution.expandResponse", expanded: false })
+		expect(document.getElementById(responseToggle.getAttribute("aria-controls")!)).not.toBeVisible()
+		fireEvent.click(responseToggle)
+		expect(screen.getByText("Retained response")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.queryByText("Retained response")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.getByText("Retained response")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "execution.collapseResponse", expanded: true }))
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.queryByText("Retained response")).not.toBeInTheDocument()
+	})
+
 	it("renders output status as a running nonterminal state", () => {
 		const { container } = render(<McpExecution executionId="execution-1" />)
 

@@ -138,6 +138,9 @@ export interface ChatRowEnvironment
 	getAlphaMessages: () => AlphaMessage[]
 }
 
+export type ChatRowDisclosureFacet = "reasoning" | "commandOutput" | "mcpResponse"
+export type ChatRowDisclosureState = Partial<Record<ChatRowDisclosureFacet, boolean>>
+
 interface ChatRowProps {
 	message: AlphaMessage
 	/** The persisted opening prompt is say/text, but displays as a user message. */
@@ -151,6 +154,8 @@ interface ChatRowProps {
 	isStreaming: boolean
 	messageActionsDisabled?: boolean
 	onToggleExpand: (ts: number) => void
+	disclosureState?: ChatRowDisclosureState
+	onDisclosureChange?: (messageTs: number, facet: ChatRowDisclosureFacet, expanded: boolean) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
 	onRequestUserInputSubmit?: (answers: RequestUserInputAnswerMap, askMessageTs: number) => boolean | void
 	onRequestUserInputCancel?: (askMessageTs: number) => void
@@ -243,6 +248,8 @@ const ChatRowContentInner = ({
 	isStreaming,
 	messageActionsDisabled = isStreaming,
 	onToggleExpand,
+	disclosureState,
+	onDisclosureChange,
 	onSuggestionClick,
 	onRequestUserInputSubmit,
 	onRequestUserInputCancel,
@@ -269,8 +276,8 @@ const ChatRowContentInner = ({
 		getAlphaMessages,
 		onShowTask,
 	} = environment
-	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
-	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
+	// Historical reports retain their own terminal attribution when later turns change the task status.
+	const isTurnCompleted = message.turn?.terminalStatus === "completed" && message.partial !== true
 	const isAgentMessage = message.type === "say" && message.say === "agent_message"
 	const userMessageActionsDisabled =
 		messageActionsDisabled || !currentTaskId || currentTaskItem?.taskKind === "subagent" || isAgentMessage
@@ -320,6 +327,18 @@ const ChatRowContentInner = ({
 		onToggleExpand(message.ts)
 	}, [onToggleExpand, message.ts])
 	const activityProps = { isExpanded, onToggleExpand: handleToggleExpand }
+	const handleReasoningExpandedChange = useCallback(
+		(expanded: boolean) => onDisclosureChange?.(message.ts, "reasoning", expanded),
+		[message.ts, onDisclosureChange],
+	)
+	const handleCommandExpandedChange = useCallback(
+		(expanded: boolean) => onDisclosureChange?.(message.ts, "commandOutput", expanded),
+		[message.ts, onDisclosureChange],
+	)
+	const handleMcpExpandedChange = useCallback(
+		(expanded: boolean) => onDisclosureChange?.(message.ts, "mcpResponse", expanded),
+		[message.ts, onDisclosureChange],
+	)
 
 	// Handle edit button click
 	const handleEditClick = useCallback(() => {
@@ -343,8 +362,8 @@ const ChatRowContentInner = ({
 	// Handle save edit
 	const handleSaveEdit = useCallback(() => {
 		if (userMessageActionsDisabled) return
-		setIsEditing(false)
-		// Send edited message to backend
+		// Keep the buffer until the host replaces this row. Closing the confirmation
+		// or failing to restart must leave the draft and its attachments available.
 		vscode.postMessage({
 			type: "submitEditedMessage",
 			value: message.ts,
@@ -443,15 +462,15 @@ const ChatRowContentInner = ({
 				]
 			case "completion_result":
 				return [
-					isTaskCompleted ? (
+					isTurnCompleted ? (
 						<span
 							className="codicon codicon-check"
 							style={{ color: successColor, marginBottom: "-1.5px" }}></span>
 					) : (
 						<MessageCircle className="w-4 shrink-0" aria-hidden="true" />
 					),
-					<span style={{ color: isTaskCompleted ? successColor : normalColor, fontWeight: "bold" }}>
-						{t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}
+					<span style={{ color: isTurnCompleted ? successColor : normalColor, fontWeight: "bold" }}>
+						{t(isTurnCompleted ? "chat:taskCompleted" : "chat:completionReport")}
 					</span>,
 				]
 			case "api_req_rate_limit_wait":
@@ -536,7 +555,7 @@ const ChatRowContentInner = ({
 		apiRequestFailedMessage,
 		t,
 		isLast,
-		isTaskCompleted,
+		isTurnCompleted,
 	])
 
 	const headerStyle: React.CSSProperties = {
@@ -1368,6 +1387,8 @@ const ChatRowContentInner = ({
 							isStreaming={isStreaming}
 							isLast={isLast}
 							collapsedByDefault={reasoningBlockCollapsed}
+							isExpanded={disclosureState?.reasoning}
+							onExpandedChange={handleReasoningExpandedChange}
 						/>
 					)
 				case "api_req_started":
@@ -1558,7 +1579,10 @@ const ChatRowContentInner = ({
 											: "user-message cursor-text px-4 py-3",
 								)}>
 								{isEditing ? (
-									<div className="flex flex-col gap-2">
+									<div
+										className="flex flex-col gap-2"
+										data-message-editor-task-id={currentTaskId}
+										data-message-editor-ts={message.ts}>
 										<ChatTextArea
 											inputValue={editedContent}
 											setInputValue={setEditedContent}
@@ -1660,7 +1684,7 @@ const ChatRowContentInner = ({
 					return (
 						<article
 							className="group"
-							aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+							aria-label={t(isTurnCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
 							<Markdown
 								markdown={message.text}
 								partial={message.partial}
@@ -2026,7 +2050,9 @@ const ChatRowContentInner = ({
 								message.toolApprovalRequest?.commandPathApproval ??
 								message.progressStatus?.commandPathApproval
 							}
-							onToggleExpand={handleToggleExpand}
+							onToggleExpand={onDisclosureChange ? undefined : handleToggleExpand}
+							isExpanded={disclosureState?.commandOutput}
+							onExpandedChange={handleCommandExpandedChange}
 							text={message.text}
 							icon={icon}
 							title={title}
@@ -2089,6 +2115,8 @@ const ChatRowContentInner = ({
 										server={server}
 										useMcpServer={useMcpServer}
 										alwaysAllowMcp={alwaysAllowMcp}
+										isExpanded={disclosureState?.mcpResponse}
+										onExpandedChange={handleMcpExpandedChange}
 									/>
 								)}
 							</div>
@@ -2099,7 +2127,7 @@ const ChatRowContentInner = ({
 						return (
 							<article
 								className="group"
-								aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+								aria-label={t(isTurnCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
 								<Markdown
 									markdown={message.text}
 									partial={message.partial}

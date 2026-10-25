@@ -242,7 +242,18 @@ vi.mock("../About", () => ({
 	About: () => null,
 }))
 vi.mock("../PromptsSettings", () => ({
-	default: () => null,
+	default: ({ personality, setPersonality }: { personality: string; setPersonality: (value: string) => void }) => (
+		<label>
+			<select
+				data-testid="personality-control"
+				value={personality}
+				onChange={(event) => setPersonality(event.target.value)}>
+				<option value="default">Default</option>
+				<option value="none">None</option>
+			</select>
+			Built-in personality
+		</label>
+	),
 }))
 vi.mock("../SlashCommandsSettings", () => ({
 	SlashCommandsSettings: () => null,
@@ -348,6 +359,98 @@ describe("SettingsView - Change Detection Fix", () => {
 				mutations: { retry: false },
 			},
 		})
+	})
+
+	it("buffers personality edits across live refreshes and saves an explicit default when restored", () => {
+		const liveState = createExtensionState({ didHydrateState: true })
+		;(useExtensionState as any).mockReturnValue(liveState)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="prompts" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view())
+		expect(screen.getByTestId("personality-control")).toHaveValue("default")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		mockPostMessage.mockClear()
+
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "none" } })
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(liveState).not.toHaveProperty("personality")
+		;(useExtensionState as any).mockReturnValue({ ...liveState, personality: "default" })
+		rerender(view())
+		expect(screen.getByTestId("personality-control")).toHaveValue("none")
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ personality: "none" }),
+			}),
+		)
+
+		mockPostMessage.mockClear()
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ personality: "default" }),
+			}),
+		)
+	})
+
+	it("keeps the personality draft on Cancel and discards it without persistence", () => {
+		const onDone = vi.fn()
+		;(useExtensionState as any).mockReturnValue(
+			createExtensionState({ didHydrateState: true, personality: "none" }),
+		)
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} targetSection="prompts" />
+			</QueryClientProvider>,
+		)
+		mockPostMessage.mockClear()
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+		fireEvent.click(screen.getByText("settings:common.done"))
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+		expect(screen.getByTestId("personality-control")).toHaveValue("default")
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		expect(onDone).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByText("settings:common.done"))
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+		expect(screen.getByTestId("personality-control")).toHaveValue("none")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		expect(onDone).toHaveBeenCalledOnce()
+	})
+
+	it("hydrates and imports the saved personality without marking Settings dirty", () => {
+		const liveState = createExtensionState({ didHydrateState: false })
+		;(useExtensionState as any).mockReturnValue(liveState)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="prompts" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view())
+		;(useExtensionState as any).mockReturnValue({ ...liveState, didHydrateState: true, personality: "none" })
+		rerender(view())
+		expect(screen.getByTestId("personality-control")).toHaveValue("none")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+
+		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+		;(useExtensionState as any).mockReturnValue({
+			...liveState,
+			didHydrateState: true,
+			personality: "none",
+			settingsImportedAt: 1,
+		})
+		rerender(view())
+		expect(screen.getByTestId("personality-control")).toHaveValue("none")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
 	it("defaults to queuing and preserves unsaved steering edits across live state refreshes", async () => {

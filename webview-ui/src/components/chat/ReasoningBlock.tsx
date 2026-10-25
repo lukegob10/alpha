@@ -11,18 +11,28 @@ interface ReasoningBlockProps {
 	isStreaming: boolean
 	isLast: boolean
 	collapsedByDefault?: boolean
+	isExpanded?: boolean
+	onExpandedChange?: (expanded: boolean) => void
 }
 
-export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefault }: ReasoningBlockProps) => {
+export const ReasoningBlock = ({
+	content,
+	isStreaming,
+	isLast,
+	collapsedByDefault,
+	isExpanded: controlledExpanded,
+	onExpandedChange,
+}: ReasoningBlockProps) => {
 	const { t } = useTranslation()
-	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? true)
+	const [localExpanded, setLocalExpanded] = useState(!(collapsedByDefault ?? true))
+	const isExpanded = controlledExpanded ?? localExpanded
 
 	const startTimeRef = useRef<number>(Date.now())
 	const [elapsed, setElapsed] = useState<number>(0)
 	const contentRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
-		setIsCollapsed(collapsedByDefault ?? true)
+		setLocalExpanded(!(collapsedByDefault ?? true))
 	}, [collapsedByDefault])
 
 	useEffect(() => {
@@ -38,13 +48,15 @@ export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefaul
 	const secondsLabel = t("chat:reasoning.seconds", { count: seconds })
 
 	const handleToggle = () => {
-		setIsCollapsed(!isCollapsed)
+		const expanded = !isExpanded
+		if (controlledExpanded === undefined) setLocalExpanded(expanded)
+		onExpandedChange?.(expanded)
 	}
 
 	return (
 		<ActivityStep
-			active={isStreaming && isLast && isCollapsed}
-			isExpanded={!isCollapsed}
+			active={isStreaming && isLast}
+			isExpanded={isExpanded}
 			onToggleExpand={handleToggle}
 			summary={
 				<>
@@ -57,7 +69,7 @@ export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefaul
 					)}
 				</>
 			}>
-			{(content?.trim()?.length ?? 0) > 0 && !isCollapsed && (
+			{(content?.trim()?.length ?? 0) > 0 && isExpanded && (
 				<div
 					ref={contentRef}
 					className="border-l border-vscode-descriptionForeground/20 ml-2 pl-4 pb-1 text-vscode-descriptionForeground break-words">

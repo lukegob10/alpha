@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react"
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react"
 import { ChevronRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -22,10 +22,30 @@ export function ActivityStep({
 	onToggleExpand,
 }: ActivityStepProps) {
 	const detailsId = useId()
+	const toggleRef = useRef<HTMLButtonElement>(null)
+	const detailsRef = useRef<HTMLDivElement>(null)
+	const focusedDetailRef = useRef<HTMLElement>()
 	const isAnimating = active && !isExpanded
+	useLayoutEffect(() => {
+		if (isExpanded) return
+		const focusedDetail = focusedDetailRef.current
+		focusedDetailRef.current = undefined
+		if (!focusedDetail || (focusedDetail.isConnected && !focusedDetail.closest("[hidden]"))) return
+		const focused = document.activeElement
+		const toggle = toggleRef.current
+		if (
+			toggle &&
+			!toggle.closest("[hidden]") &&
+			(focused === document.body || focused === focusedDetail || detailsRef.current?.contains(focused))
+		) {
+			toggle.focus({ preventScroll: true })
+		}
+	}, [isExpanded])
+
 	return (
 		<div>
 			<button
+				ref={toggleRef}
 				type="button"
 				aria-expanded={isExpanded}
 				aria-busy={active || undefined}
@@ -56,7 +76,22 @@ export function ActivityStep({
 					)}
 				</span>
 			</button>
-			<div id={detailsId} hidden={!isExpanded} className="mt-2">
+			<div
+				ref={detailsRef}
+				id={detailsId}
+				hidden={!isExpanded}
+				onFocusCapture={(event) => {
+					focusedDetailRef.current = event.target
+				}}
+				onBlurCapture={(event) => {
+					if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return
+					const focusedDetail = focusedDetailRef.current
+					// Keep an identity through collapse/unmount, but forget deliberate focus moves.
+					if (focusedDetail?.isConnected && !focusedDetail.closest("[hidden]")) {
+						focusedDetailRef.current = undefined
+					}
+				}}
+				className="mt-2">
 				{children}
 			</div>
 		</div>

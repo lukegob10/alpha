@@ -313,6 +313,32 @@ describe("ChatView native scroll behavior", () => {
 		expect(document.querySelector("[data-testid='chat-load-older']")).toBeTruthy()
 	})
 
+	it("keeps a visible history row at its viewport offset when Load older prepends messages", async () => {
+		const baseTs = Date.now() - 10_000
+		const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+			type: "say",
+			say: "text",
+			ts: baseTs + index,
+			text: index === 0 ? "task" : `row-${index}`,
+		}))
+		await hydrate(messages)
+		const scroller = getScrollable()
+		setScrollGeometry(scroller, { scrollHeight: 1_000, clientHeight: 400, scrollTop: 50 })
+		const row = document.querySelector<HTMLElement>(`[data-chat-message-ts="${baseTs + 921}"]`)!
+		vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
+			const renderedCount = document.querySelectorAll("[data-chat-message-ts]").length
+			return new DOMRect(0, 120 + (renderedCount - 80) * 3 - scroller.scrollTop, 300, 40)
+		})
+		const viewportOffset = row.getBoundingClientRect().top
+
+		fireEvent.click(document.querySelector("[data-testid='chat-load-older']") as HTMLElement)
+
+		expect(document.querySelectorAll("[data-chat-message-ts]")).toHaveLength(180)
+		expect(scroller.scrollTop).toBe(350)
+		expect(row.getBoundingClientRect().top).toBe(viewportOffset)
+		expect(getScrollToBottomButton()).toBeVisible()
+	})
+
 	it("uses a real bounded scroller with exact non-virtualized content", async () => {
 		await hydrate()
 		const scroller = getScrollable()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, memo } from "react"
+import { useCallback, useEffect, useId, useMemo, useState, memo } from "react"
 import { Server, ChevronDown } from "lucide-react"
 import { useEvent } from "react-use"
 import { useTranslation } from "react-i18next"
@@ -36,6 +36,8 @@ interface McpExecutionProps {
 	}
 	useMcpServer?: AlphaAskUseMcpServer
 	alwaysAllowMcp?: boolean
+	isExpanded?: boolean
+	onExpandedChange?: (expanded: boolean) => void
 }
 
 export const McpExecution = ({
@@ -47,6 +49,8 @@ export const McpExecution = ({
 	server,
 	useMcpServer,
 	alwaysAllowMcp = false,
+	isExpanded: controlledExpanded,
+	onExpandedChange,
 }: McpExecutionProps) => {
 	const { t } = useTranslation("mcp")
 
@@ -58,7 +62,9 @@ export const McpExecution = ({
 	const [toolName, setToolName] = useState(initialToolName)
 
 	// Only need expanded state for response section (like command output)
-	const [isResponseExpanded, setIsResponseExpanded] = useState(false)
+	const [localExpanded, setLocalExpanded] = useState(false)
+	const isResponseExpanded = controlledExpanded ?? localExpanded
+	const responseId = useId()
 
 	// Try to parse JSON and return both the result and formatted text
 	const tryParseJson = useCallback((text: string): { isJson: boolean; formatted: string } => {
@@ -127,8 +133,10 @@ export const McpExecution = ({
 	const responseIsJson = responseData.isJson
 
 	const onToggleResponseExpand = useCallback(() => {
-		setIsResponseExpanded(!isResponseExpanded)
-	}, [isResponseExpanded])
+		const expanded = !isResponseExpanded
+		if (controlledExpanded === undefined) setLocalExpanded(expanded)
+		onExpandedChange?.(expanded)
+	}, [controlledExpanded, isResponseExpanded, onExpandedChange])
 
 	// Listen for MCP execution status messages
 	const onMessage = useCallback(
@@ -226,7 +234,15 @@ export const McpExecution = ({
 							</div>
 						)}
 						{responseText && responseText.length > 0 && (
-							<Button variant="ghost" size="icon" onClick={onToggleResponseExpand}>
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-label={t(
+									isResponseExpanded ? "execution.collapseResponse" : "execution.expandResponse",
+								)}
+								aria-expanded={isResponseExpanded}
+								aria-controls={responseId}
+								onClick={onToggleResponseExpand}>
 								<ChevronDown
 									className={cn("size-4 transition-transform duration-300", {
 										"rotate-180": isResponseExpanded,
@@ -288,6 +304,7 @@ export const McpExecution = ({
 
 				{/* Response section - collapsible like command output */}
 				<ResponseContainer
+					id={responseId}
 					isExpanded={isResponseExpanded}
 					response={formattedResponseText}
 					isJson={responseIsJson}
@@ -302,12 +319,14 @@ export const McpExecution = ({
 McpExecution.displayName = "McpExecution"
 
 const ResponseContainerInternal = ({
+	id,
 	isExpanded,
 	response,
 	isJson,
 	hasArguments,
 	isPartial = false,
 }: {
+	id: string
 	isExpanded: boolean
 	response: string
 	isJson: boolean
@@ -318,6 +337,8 @@ const ResponseContainerInternal = ({
 	if (!isExpanded || response.length === 0) {
 		return (
 			<div
+				id={id}
+				hidden={!isExpanded}
 				className={cn("overflow-hidden", {
 					"max-h-0": !isExpanded,
 				})}
@@ -327,6 +348,7 @@ const ResponseContainerInternal = ({
 
 	return (
 		<div
+			id={id}
 			className={cn("overflow-hidden", {
 				"max-h-96 overflow-y-auto mt-1 pt-1 border-t border-border/25": hasArguments,
 				"max-h-96 overflow-y-auto mt-1 pt-1": !hasArguments,

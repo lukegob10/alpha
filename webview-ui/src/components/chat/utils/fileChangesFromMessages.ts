@@ -1,6 +1,8 @@
 import type { AlphaMessage, AlphaSayTool } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha/core"
 
+import { projectTranscriptTurns, type TranscriptPrompt } from "./transcriptTurns"
+
 /** File-edit tool names from AlphaSayTool["tool"] plus compatibility aliases. */
 const FILE_EDIT_TOOLS = new Set<string>([
 	"editedExistingFile",
@@ -178,35 +180,27 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 }
 
 /**
- * Splits rendered transcript messages at user follow-ups and returns only turns
- * that contain an applied file edit. The end index lets the transcript place a
- * turn's summary directly below its response instead of aggregating all edits
- * at the bottom of the conversation.
+ * Uses saved turn attribution, or legacy follow-up boundaries, for applied edits.
+ * The end index places each summary below its turn instead of aggregating all
+ * edits at the bottom of the conversation.
  */
-export function fileChangeTurnsFromMessages(messages: AlphaMessage[] | undefined, taskKey = "task"): FileChangeTurn[] {
+export function fileChangeTurnsFromMessages(
+	messages: AlphaMessage[] | undefined,
+	taskKey = "task",
+	initialPrompt?: TranscriptPrompt,
+): FileChangeTurn[] {
 	if (!messages?.length) return []
 
 	const turns: FileChangeTurn[] = []
-	let startIndex = 0
-
-	for (let endIndex = 0; endIndex <= messages.length; endIndex++) {
-		const nextMessage = messages[endIndex]
-		const isTurnBoundary =
-			endIndex === messages.length ||
-			(endIndex > startIndex && nextMessage?.type === "say" && nextMessage.say === "user_feedback")
-
-		if (!isTurnBoundary) continue
-
-		const turnMessages = messages.slice(startIndex, endIndex)
+	for (const turn of projectTranscriptTurns(messages, initialPrompt)) {
+		const turnMessages = turn.indices.map((index) => messages[index])
 		if (turnMessages.length > 0 && fileChangesFromMessages(turnMessages).length > 0) {
 			turns.push({
-				key: `${taskKey}:${turnMessages[0].ts}`,
-				endIndex: endIndex - 1,
+				key: `${taskKey}:${turn.source === "canonical" ? turn.id : turnMessages[0].ts}`,
+				endIndex: turn.indices[turn.indices.length - 1],
 				messages: turnMessages,
 			})
 		}
-
-		startIndex = endIndex
 	}
 
 	return turns

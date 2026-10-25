@@ -2,7 +2,7 @@ import React, { useState } from "react"
 import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
-import { ChatRowContent } from "../ChatRow"
+import { ChatRowContent, type ChatRowDisclosureFacet, type ChatRowDisclosureState } from "../ChatRow"
 
 vi.mock("react-i18next", () => ({
 	useTranslation: () => ({ t: (key: string) => key, i18n: { exists: () => true } }),
@@ -41,6 +41,74 @@ function renderRows(messages: AlphaMessage[]) {
 }
 
 describe("compact activity steps", () => {
+	it.each<{
+		message: AlphaMessage
+		facet: ChatRowDisclosureFacet
+		disclosureState: ChatRowDisclosureState
+	}>([
+		{
+			message: { ts: 10, type: "say", say: "reasoning", text: "Retained reasoning" },
+			facet: "reasoning",
+			disclosureState: { reasoning: true },
+		},
+		{
+			message: { ts: 11, type: "ask", ask: "command", text: "pnpm test\nOutput:\nRetained command output" },
+			facet: "commandOutput",
+			disclosureState: { commandOutput: true },
+		},
+	])("routes the $facet disclosure through its reader-owned state", ({ message, facet, disclosureState }) => {
+		const onDisclosureChange = vi.fn()
+		const onToggleExpand = vi.fn()
+		render(
+			<ExtensionStateContextProvider>
+				<ChatRowContent
+					message={message}
+					isExpanded={false}
+					disclosureState={disclosureState}
+					onDisclosureChange={onDisclosureChange}
+					isLast={false}
+					isStreaming={false}
+					onToggleExpand={onToggleExpand}
+				/>
+			</ExtensionStateContextProvider>,
+		)
+		fireEvent.click(screen.getByRole("button", { expanded: true }))
+		expect(onDisclosureChange).toHaveBeenCalledWith(message.ts, facet, false)
+		expect(onToggleExpand).not.toHaveBeenCalled()
+	})
+
+	it("keeps MCP row and response disclosure choices independent", () => {
+		const onDisclosureChange = vi.fn()
+		const onToggleExpand = vi.fn()
+		render(
+			<ExtensionStateContextProvider>
+				<ChatRowContent
+					message={{
+						ts: 12,
+						type: "ask",
+						ask: "use_mcp_server",
+						text: JSON.stringify({
+							type: "use_mcp_tool",
+							serverName: "search-server",
+							toolName: "search",
+							arguments: "{}",
+							response: "Retained response",
+						}),
+					}}
+					isExpanded={true}
+					disclosureState={{ mcpResponse: true }}
+					onDisclosureChange={onDisclosureChange}
+					isLast={false}
+					isStreaming={false}
+					onToggleExpand={onToggleExpand}
+				/>
+			</ExtensionStateContextProvider>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "execution.collapseResponse", expanded: true }))
+		expect(onDisclosureChange).toHaveBeenCalledWith(12, "mcpResponse", false)
+		expect(onToggleExpand).not.toHaveBeenCalled()
+	})
+
 	it("shows the full multiline progress message in the transcript", () => {
 		renderRows([
 			{ ts: 1, type: "say", say: "text", text: "Checking the code.\n\nThe command path needs an update." },

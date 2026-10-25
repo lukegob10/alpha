@@ -1,7 +1,7 @@
 // npx vitest run src/__tests__/App.spec.tsx
 
 import React from "react"
-import { render, screen, act, cleanup, fireEvent } from "@/utils/test-utils"
+import { render, screen, act, cleanup, fireEvent, waitFor } from "@/utils/test-utils"
 import { vscode } from "@src/utils/vscode"
 import {
 	ExtensionStateContext,
@@ -200,6 +200,93 @@ vi.mock("process.env", () => ({
 }))
 
 describe("App", () => {
+	it.each([false, true])("restores inline edit focus on cancel (checkpoint: %s)", async (hasCheckpoint) => {
+		render(<AppWithProviders />)
+		const editContainer = document.createElement("div")
+		editContainer.dataset.messageEditorTaskId = "original-task"
+		editContainer.dataset.messageEditorTs = "10"
+		const editor = document.createElement("textarea")
+		editor.value = "Keep this revised prompt"
+		editContainer.append(editor)
+		screen.getByTestId("chat-view").append(editContainer)
+		const focus = vi.fn()
+		Object.defineProperty(editor, "focus", { configurable: true, value: focus })
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "showEditMessageDialog",
+						messageTs: 10,
+						taskId: "original-task",
+						text: editor.value,
+						hasCheckpoint,
+					},
+				}),
+			),
+		)
+		fireEvent.click(screen.getByRole("button", { name: "common:answers.cancel" }))
+		await waitFor(() => expect(focus).toHaveBeenCalledWith({ preventScroll: true }))
+		expect(editor).toHaveValue("Keep this revised prompt")
+		expect(editor.isConnected).toBe(true)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "editMessageConfirm" }))
+	})
+
+	it.each([false, true])("skips removed editors on cancel (checkpoint: %s)", async (hasCheckpoint) => {
+		render(<AppWithProviders />)
+		const editContainer = document.createElement("div")
+		editContainer.dataset.messageEditorTaskId = "original-task"
+		editContainer.dataset.messageEditorTs = "10"
+		const editor = document.createElement("textarea")
+		editContainer.append(editor)
+		screen.getByTestId("chat-view").append(editContainer)
+		const focus = vi.fn()
+		Object.defineProperty(editor, "focus", { configurable: true, value: focus })
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "showEditMessageDialog",
+						messageTs: 10,
+						taskId: "original-task",
+						text: "Revised prompt",
+						hasCheckpoint,
+					},
+				}),
+			),
+		)
+		editContainer.remove()
+		fireEvent.click(screen.getByRole("button", { name: "common:answers.cancel" }))
+		await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+		expect(focus).not.toHaveBeenCalled()
+	})
+
+	it.each([false, true])("sends one edit confirmation for repeated activation (checkpoint: %s)", (hasCheckpoint) => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "showEditMessageDialog",
+						messageTs: 10,
+						taskId: "original-task",
+						text: "Revised prompt",
+						hasCheckpoint,
+					},
+				}),
+			),
+		)
+		const confirm = screen.getByRole("button", {
+			name: hasCheckpoint ? "common:confirmation.editOnly" : "common:confirmation.proceed",
+		})
+		act(() => {
+			confirm.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+			confirm.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+		})
+		expect(
+			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "editMessageConfirm"),
+		).toHaveLength(1)
+	})
+
 	it.each([false, true])("confirms a restart with its original task and images (checkpoint: %s)", (hasCheckpoint) => {
 		const { rerender } = render(<AppWithProviders />)
 		const images = ["data:image/png;base64,aGVsbG8="]

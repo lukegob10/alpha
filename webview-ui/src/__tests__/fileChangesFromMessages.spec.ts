@@ -1,5 +1,6 @@
 import type { AlphaMessage } from "@alpha-code/types"
 import { fileChangeTurnsFromMessages, fileChangesFromMessages } from "../components/chat/utils/fileChangesFromMessages"
+import { transcriptTurnIdentity } from "../components/chat/utils/transcriptTurns"
 
 function msg(overrides: Partial<AlphaMessage> & { text: string }): AlphaMessage {
 	return {
@@ -554,6 +555,163 @@ describe("fileChangesFromMessages", () => {
 			["first.ts"],
 			["second.ts"],
 		])
+	})
+
+	it("keeps edits before and after steering in one canonical turn panel", () => {
+		const turn = { runId: "run", turnId: "first" }
+		const edit = (ts: number, path: string): AlphaMessage =>
+			msg({ ts, turn, text: JSON.stringify({ tool: "appliedDiff", path, content: `+${path}` }) })
+		const messages: AlphaMessage[] = [
+			edit(200, "first.ts"),
+			msg({
+				ts: 300,
+				type: "say",
+				say: "user_feedback",
+				turn: { ...turn, inputKind: "steer" },
+				text: "Check types",
+			}),
+			edit(400, "second.ts"),
+			msg({
+				ts: 500,
+				type: "say",
+				say: "user_feedback",
+				turn: { ...turn, inputKind: "steer" },
+				text: "Check lint too",
+			}),
+			msg({
+				ts: 600,
+				type: "say",
+				say: "text",
+				turn: { ...turn, terminalStatus: "completed" },
+				text: "Verified",
+			}),
+			msg({
+				ts: 700,
+				type: "say",
+				say: "user_feedback",
+				turn: { runId: "run", turnId: "second", inputKind: "start" },
+				text: "Next request",
+			}),
+			msg({
+				ts: 800,
+				turn: { runId: "run", turnId: "second" },
+				text: JSON.stringify({ tool: "appliedDiff", path: "third.ts", content: "+third" }),
+			}),
+		]
+
+		const turns = fileChangeTurnsFromMessages(messages, "task", { ts: 100, turn: { ...turn, inputKind: "start" } })
+		expect(turns).toHaveLength(2)
+		expect(turns.map(({ endIndex }) => endIndex)).toEqual([4, 6])
+		expect(turns.map(({ messages }) => fileChangesFromMessages(messages).map(({ path }) => path))).toEqual([
+			["first.ts", "second.ts"],
+			["third.ts"],
+		])
+		expect(turns[0].messages).toEqual(messages.slice(0, 5))
+		expect(turns[0].key).toBe(`task:${transcriptTurnIdentity(turn)}`)
+	})
+
+	it("preserves canonical panel identity as steering and final text append", () => {
+		const turn = { runId: "run", turnId: "first" }
+		const messages: AlphaMessage[] = [
+			msg({ ts: 200, turn, text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", content: "+first" }) }),
+		]
+		const initial = fileChangeTurnsFromMessages(messages, "task")[0]
+		const progressing = fileChangeTurnsFromMessages(
+			[
+				...messages,
+				msg({
+					ts: 300,
+					type: "say",
+					say: "user_feedback",
+					turn: { ...turn, inputKind: "steer" },
+					text: "Verify",
+				}),
+				msg({
+					ts: 400,
+					type: "say",
+					say: "text",
+					turn: { ...turn, terminalStatus: "completed" },
+					text: "Done",
+				}),
+			],
+			"task",
+		)[0]
+		expect(progressing.key).toBe(initial.key)
+		expect(initial.endIndex).toBe(0)
+		expect(progressing.endIndex).toBe(2)
+		expect(initial.messages).toEqual(messages)
+	})
+
+	it("keeps the same turn ID in different runs separate", () => {
+		const messages = ["one", "two"].map((runId, index) =>
+			msg({
+				ts: index + 1,
+				turn: { runId, turnId: "turn" },
+				text: JSON.stringify({ tool: "appliedDiff", path: `${runId}.ts`, content: `+${runId}` }),
+			}),
+		)
+		const turns = fileChangeTurnsFromMessages(messages, "task")
+		expect(turns.map(({ messages }) => fileChangesFromMessages(messages).map(({ path }) => path))).toEqual([
+			["one.ts"],
+			["two.ts"],
+		])
+		expect(new Set(turns.map(({ key }) => key)).size).toBe(2)
+	})
+
+	it("keeps interleaved captured edits in one panel for their original canonical turn", () => {
+		const first = { runId: "run", turnId: "first" }
+		const second = { runId: "run", turnId: "second" }
+		const messages: AlphaMessage[] = [
+			msg({
+				ts: 100,
+				turn: first,
+				text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", content: "+first" }),
+			}),
+			msg({
+				ts: 200,
+				type: "say",
+				say: "text",
+				turn: { ...first, terminalStatus: "completed" },
+				text: "First final",
+			}),
+			msg({
+				ts: 300,
+				turn: second,
+				text: JSON.stringify({ tool: "appliedDiff", path: "second.ts", content: "+second" }),
+			}),
+			msg({
+				ts: 400,
+				turn: first,
+				text: JSON.stringify({ tool: "appliedDiff", path: "late-first.ts", content: "+late" }),
+			}),
+		]
+		const turns = fileChangeTurnsFromMessages(messages, "task")
+		expect(turns.map(({ messages }) => fileChangesFromMessages(messages).map(({ path }) => path))).toEqual([
+			["first.ts", "late-first.ts"],
+			["second.ts"],
+		])
+		expect(turns.map(({ endIndex }) => endIndex)).toEqual([3, 2])
+		expect(turns[0].key).toBe(`task:${transcriptTurnIdentity(first)}`)
+	})
+
+	it("does not silently assign an unattributed edit to a surrounding canonical turn", () => {
+		const turn = { runId: "run", turnId: "first" }
+		const messages: AlphaMessage[] = [
+			msg({ ts: 100, turn, text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", content: "+first" }) }),
+			msg({ ts: 200, text: JSON.stringify({ tool: "appliedDiff", path: "unknown.ts", content: "+unknown" }) }),
+			msg({
+				ts: 300,
+				turn,
+				text: JSON.stringify({ tool: "appliedDiff", path: "second.ts", content: "+second" }),
+			}),
+			msg({ ts: 400, type: "say", say: "text", turn: { ...turn, terminalStatus: "completed" }, text: "Done" }),
+		]
+		const turns = fileChangeTurnsFromMessages(messages, "task")
+		expect(turns.map(({ messages }) => fileChangesFromMessages(messages).map(({ path }) => path))).toEqual([
+			["first.ts", "second.ts"],
+			["unknown.ts"],
+		])
+		expect(turns.map(({ endIndex }) => endIndex)).toEqual([3, 1])
 	})
 
 	it("skips invalid JSON in message text", () => {

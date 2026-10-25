@@ -162,7 +162,13 @@
 		}
 	},
 	"prompts": {
-		"description": "Configure support prompts that are used for quick actions like enhancing prompts, explaining code, and fixing issues. These prompts help Alpha provide better assistance for common development tasks."
+		"description": "Configure Alpha's communication instructions and support prompts for quick actions like enhancing prompts, explaining code, and fixing issues.",
+		"personality": {
+			"label": "Built-in personality",
+			"default": "Default",
+			"none": "None",
+			"description": "Use the model's built-in communication style, or omit its personality instructions. Custom instructions still apply. Changes take effect after saving."
+		}
 	},
 	"codeIndex": {
 		"freshnessNote": "Embeddings are catching up. Validated indexed results and recent saved edits remain searchable; semantic results for the newest code may be incomplete.",

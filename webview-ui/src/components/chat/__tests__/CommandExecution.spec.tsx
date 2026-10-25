@@ -1,6 +1,6 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/chat/__tests__/CommandExecution.spec.tsx
 
-import React from "react"
+import React, { useState } from "react"
 import { render, screen, fireEvent, act } from "@testing-library/react"
 import { useEvent } from "react-use"
 import type { CommandExecutionStatus } from "@alpha-code/types"
@@ -107,6 +107,39 @@ describe("CommandExecution", () => {
 		publishStatus({ executionId: "other-task-command", status: "output", output: "Unrelated" })
 		fireEvent.click(toggle)
 		expect(screen.getByTestId("terminal-output")).toHaveTextContent("All tests passed")
+	})
+
+	it("restores command output disclosure after the parent turn unmounts its body", () => {
+		function FoldableTurn() {
+			const [visible, setVisible] = useState(true)
+			const [expanded, setExpanded] = useState<boolean>()
+			return (
+				<ExtensionStateWrapper>
+					<button onClick={() => setVisible((value) => !value)}>Toggle turn</button>
+					{visible && (
+						<CommandExecution
+							executionId="retained"
+							text={"pnpm test\nOutput:\nComplete output"}
+							isExpanded={expanded}
+							onExpandedChange={setExpanded}
+						/>
+					)}
+				</ExtensionStateWrapper>
+			)
+		}
+		render(<FoldableTurn />)
+		fireEvent.click(screen.getByRole("button", { expanded: false }))
+		expect(screen.getByTestId("terminal-output")).toHaveTextContent("Complete output")
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.queryByTestId("terminal-output")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.getByRole("button", { expanded: true })).toBeInTheDocument()
+		expect(screen.getByTestId("terminal-output")).toHaveTextContent("Complete output")
+		fireEvent.click(screen.getByRole("button", { expanded: true }))
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		fireEvent.click(screen.getByRole("button", { name: "Toggle turn" }))
+		expect(screen.getByRole("button", { expanded: false })).toBeInTheDocument()
+		expect(screen.queryByTestId("terminal-output")).not.toBeInTheDocument()
 	})
 
 	it("shows path review while collapsed and does not offer command rules as a path bypass", () => {

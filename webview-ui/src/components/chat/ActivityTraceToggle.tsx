@@ -5,7 +5,7 @@ import { cn } from "@src/lib/utils"
 import type { ActionActivityKind } from "./actionActivity"
 
 interface ActivityTraceToggleProps {
-	traceId: number
+	traceId: number | string
 	kind: ActionActivityKind
 	count: number
 	durationMs?: number

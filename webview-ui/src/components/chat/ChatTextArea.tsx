@@ -1551,6 +1551,17 @@ export const ChatTextArea = memo(
 										</button>
 									</StandardTooltip>
 								)}
+								{isStreaming && !isEditMode && hasInputContent && (
+									<StandardTooltip content={t("chat:stop.title")}>
+										<button
+											type="button"
+											aria-label={t("chat:stop.title")}
+											onClick={handleStop}
+											className="composer-control chat-composer-icon">
+											<Square aria-hidden="true" className="size-4 stroke-none fill-current" />
+										</button>
+									</StandardTooltip>
+								)}
 								{/* Keep the primary action in place as empty Send becomes ready Send or Stop. */}
 								<StandardTooltip content={sendActionLabel}>
 									<button
