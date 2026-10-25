@@ -433,12 +433,14 @@ describe("convertToVsCodeLmMessages", () => {
 		expect(result).toHaveLength(1)
 		expect(result[0].role).toBe("user")
 		expect(result[0].content).toHaveLength(2)
-		const [textContent, toolResult] = result[0].content as [
-			MockLanguageModelTextPart,
+		const [toolResult, textContent] = result[0].content as [
 			MockLanguageModelToolResultPart,
+			MockLanguageModelTextPart,
 		]
 		expect(textContent.type).toBe("text")
 		expect(toolResult.type).toBe("tool_result")
+		expect(textContent.value).toBe("Here is the result:")
+		expect(toolResult.callId).toBe("tool-1")
 	})
 
 	it("should handle complex assistant messages with tool calls", () => {
@@ -489,7 +491,7 @@ describe("convertToVsCodeLmMessages", () => {
 		])
 	})
 
-	it("preserves ordered user parts around tool results for continuation", () => {
+	it("places all user tool results before context while preserving order within both groups", () => {
 		const result = convertToVsCodeLmMessages([
 			{
 				role: "user",
@@ -504,13 +506,13 @@ describe("convertToVsCodeLmMessages", () => {
 		])
 
 		expect(result[0].content).toMatchObject([
-			{ type: "text", value: "First" },
 			{ type: "tool_result", callId: "tool-1", content: [{ type: "text", value: "Output one" }] },
+			{ type: "tool_result", callId: "tool-2", content: [{ type: "text", value: "Output two" }] },
+			{ type: "text", value: "First" },
 			{ type: "data", mimeType: "image/png", data: expect.any(Uint8Array) },
 			{ type: "text", value: "Second" },
-			{ type: "tool_result", callId: "tool-2", content: [{ type: "text", value: "Output two" }] },
 		])
-		expect(Array.from((result[0].content[2] as MockLanguageModelDataPart).data)).toEqual([104, 101, 108, 108, 111])
+		expect(Array.from((result[0].content[3] as MockLanguageModelDataPart).data)).toEqual([104, 101, 108, 108, 111])
 	})
 
 	it("should convert base64 image blocks to VS Code data parts", () => {

@@ -69,6 +69,8 @@ interface VsCodeLmFixtureControl {
 
 interface ContractTask {
 	apiConfiguration: AlphaCodeSettings
+	userMessageContent: Array<{ type: string; text?: string }>
+	pushToolResultToUserContent(result: { type: "tool_result"; tool_use_id: string }): boolean
 	getReasoningState(): TaskReasoningProjection
 	abort?: boolean
 	didComplete?: boolean
@@ -410,7 +412,10 @@ suite("Alpha VS Code LM exact-host contract", function () {
 	test("carries tool call and result through VS Code LM, then resumes a completed task with the follow-up", async () => {
 		const provider = getHostProvider()
 		const cleanupReadProof = await createReadProofFile()
-		fixture.reset("tool-followup", { holdRequestIndexes: [1] })
+		fixture.reset("tool-followup", { holdRequestIndexes: [0, 1] })
+		const guidance = "Check the results already available, then continue remaining work."
+		let taskWithHook: ContractTask | undefined
+		let originalPublish: ContractTask["pushToolResultToUserContent"] | undefined
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
 		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
@@ -424,6 +429,17 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			assert.ok(initialTask, "The VS Code LM task was not registered with the extension host")
 
 			await waitForRequestCount(provider, fixture, taskId, 1)
+			taskWithHook = initialTask
+			const publish = initialTask.pushToolResultToUserContent
+			originalPublish = publish
+			initialTask.pushToolResultToUserContent = (result) => {
+				if (result.tool_use_id === "alpha-e2e-command-read-1") {
+					// Reproduce host progress feedback arriving before receipt publication.
+					initialTask.userMessageContent.push({ type: "text", text: guidance })
+				}
+				return publish.call(initialTask, result)
+			}
+			fixture.releaseRequest(0)
 			await waitForRequestCount(provider, fixture, taskId, 2)
 			const [firstRequest, secondRequest] = fixture.getRequests()
 			assert.ok(firstRequest, "The initial VS Code LM request was not recorded")
@@ -445,6 +461,13 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			)
 			assert.ok(callMessageIndex >= 0, "The second VS Code LM request omitted the assistant exec_command call")
 			assert.ok(resultMessageIndex > callMessageIndex, "The tool result did not follow its tool call")
+			assert.equal(resultMessageIndex, callMessageIndex + 1, "User context separated the tool call and result")
+			const continuationParts = secondRequest.messages[resultMessageIndex]!.parts
+			assert.equal(continuationParts[0]?.kind, "tool_result", "Host feedback preceded the terminal receipt")
+			assert.ok(
+				continuationParts.some((part) => part.kind === "text" && part.value === guidance),
+				"The request projection discarded the host feedback instead of retaining it after the result",
+			)
 			assert.equal(secondRequest.messages[callMessageIndex]!.role, vscode.LanguageModelChatMessageRole.Assistant)
 			assert.equal(secondRequest.messages[resultMessageIndex]!.role, vscode.LanguageModelChatMessageRole.User)
 			assert.ok(
@@ -499,6 +522,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				"Ordinary assistant text from the same-task follow-up was not retained",
 			)
 		} finally {
+			if (taskWithHook && originalPublish) taskWithHook.pushToolResultToUserContent = originalPublish
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 			await cleanupReadProof()
 		}

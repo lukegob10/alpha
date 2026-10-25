@@ -28,6 +28,66 @@ function patchHistory() {
 }
 
 describe("accepted tool history request projection", () => {
+	it.each(["success", "error", "denied", "cancelled"])(
+		"places existing %s receipts before injected context without changing the saved transaction",
+		(status) => {
+			const state = { opaque: [1, 2] }
+			const guidance = { type: "text", text: "Check the existing results before continuing." }
+			const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } }
+			const context = { type: "text", text: "Preserve this subsequent user context." }
+			const first = {
+				type: "tool_result",
+				tool_use_id: "first",
+				content: [{ type: "text", text: "First output" }, image],
+				is_error: status !== "success",
+				status,
+				provider_state: state,
+			}
+			const second = { ...first, tool_use_id: "second", content: "Second output" }
+			const history = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Before" },
+						{ type: "tool_use", id: "first", name: "read_file", input: {} },
+						{ type: "vscode_lm_thinking", value: "", id: "thinking", metadata: state },
+						{ type: "tool_use", id: "second", name: "read_file", input: {} },
+					],
+					provider_state: state,
+				},
+				{ role: "user", content: [guidance, second, image, first, context], provider_state: state },
+			]
+			const before = structuredClone(history)
+			const normalized = normalizeToolHistory(history)
+			expect(normalized[0]).toBe(history[0])
+			expect(normalized[1].content).toEqual([second, first, guidance, image, context])
+			expect(normalized[1].provider_state).toBe(state)
+			expect(normalizeToolHistory(normalized)).toEqual(normalized)
+			expect(normalizeToolHistory(normalized)[1]).toBe(normalized[1])
+			expect(history).toEqual(before)
+		},
+	)
+
+	it("projects a saved successful patch receipt before a progress reminder for Anthropic continuation", () => {
+		const receipt = {
+			type: "tool_result" as const,
+			tool_use_id: "cleanup-call",
+			content: '{"files":[{"path":"probe.txt","status":"applied"}]}',
+			is_error: false,
+		}
+		const guidance = { type: "text" as const, text: "Check the results already available, then continue." }
+		const history = providerHistory([
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "cleanup-call", name: "apply_patch", input: { patch } }],
+			},
+			{ role: "user", content: [guidance, receipt] },
+		])
+		const before = structuredClone(history)
+		expect(filterNonAnthropicBlocks(history)[1].content).toEqual([receipt, guidance])
+		expect(history).toEqual(before)
+	})
+
 	it.each([
 		{ tool_use_id: "call-1" },
 		{ tool_call_id: "call-1" },

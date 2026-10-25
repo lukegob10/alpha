@@ -55,6 +55,16 @@ export function normalizeToolHistory<T>(messages: readonly T[]): T[] {
 			content.push(result)
 			changed ||= block.tool_use_id !== resultId || "tool_call_id" in block
 		}
+		if (message.role === "user") {
+			const receipts = content.filter((block) => isRecord(block) && block.type === "tool_result")
+			if (receipts.some((receipt, index) => content[index] !== receipt)) {
+				// Tool receipts must precede all user context, including host progress
+				// guidance. Reorder only this request projection so saved effects and
+				// assistant reasoning/part order remain intact across retries and reload.
+				const context = content.filter((block) => !isRecord(block) || block.type !== "tool_result")
+				return { ...message, content: [...receipts, ...context] } as T
+			}
+		}
 		return changed ? ({ ...message, content } as T) : message
 	})
 }

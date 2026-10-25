@@ -139,6 +139,40 @@ describe("VS Code LM canonical contracts", () => {
 		handler.dispose()
 	})
 
+	it("sends a saved receipt before host progress guidance when continuing a completed tool call", async () => {
+		const history: Anthropic.Messages.MessageParam[] = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "cleanup-call", name: "read_file", input: { path: "probe.txt" } }],
+			},
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "Check the results already available, then continue." },
+					{ type: "tool_result", tool_use_id: "cleanup-call", content: "Existing output", is_error: false },
+				],
+			},
+		]
+		const before = structuredClone(history)
+		sendRequest.mockResolvedValueOnce(response([new vscode.LanguageModelTextPart("Review complete.")]))
+		const result = await collectAgentResponse(handler.createMessage("Instructions", history))
+		expect(result.text).toBe("Review complete.")
+		const request = sendRequest.mock.calls[0][0] as vscode.LanguageModelChatMessage[]
+		const continuation = request.find((message) =>
+			message.content.some(
+				(part) => part instanceof vscode.LanguageModelToolResultPart && part.callId === "cleanup-call",
+			),
+		)
+		expect(continuation?.content).toEqual([
+			new vscode.LanguageModelToolResultPart("cleanup-call", [
+				new vscode.LanguageModelTextPart("Existing output"),
+			]),
+			new vscode.LanguageModelTextPart("Check the results already available, then continue."),
+		])
+		expect(sendRequest).toHaveBeenCalledOnce()
+		expect(history).toEqual(before)
+	})
+
 	it("preserves every host thinking part in order with text and tool calls", async () => {
 		const firstThinking = {
 			value: "Inspect the request",
