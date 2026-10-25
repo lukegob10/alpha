@@ -83,6 +83,82 @@ export async function exerciseRenderedReasoning(
 			),
 		)
 	}
+	const checkProgress = async (stage: string) => {
+		const indicator =
+			"[...d.querySelectorAll('[data-testid=progress-indicator]')].find(e=>e.getClientRects().length>0)"
+		const style = `d.defaultView.getComputedStyle(${indicator})`
+		const media = (value: string) =>
+			cdp.request(
+				"Emulation.setEmulatedMedia",
+				{ features: [{ name: "prefers-reduced-motion", value }] },
+				sessionId,
+			)
+		try {
+			await media("no-preference")
+			await waitUntil(
+				() => evaluate<boolean>(`!!${indicator}&&${style}.animationName==='spin'`),
+				Date.now() + 5_000,
+				`${stage}_progress_animation_missing`,
+			)
+			const transform = await evaluate<string>(`${style}.transform`)
+			await waitUntil(
+				() => evaluate<boolean>(`${style}.transform!==${javascriptLiteral(transform)}`),
+				Date.now() + 5_000,
+				`${stage}_progress_must_rotate_without_react_updates`,
+			)
+			const progress = await evaluate<{
+				width: number
+				height: number
+				phases: Array<{ dash: string; transform: string }>
+			}>(`(()=>{
+				const indicator=${indicator};
+				const animation=indicator.getAnimations()[0];
+				const currentTime=animation.currentTime;
+				const style=d.defaultView.getComputedStyle(indicator);
+				try {
+					animation.pause();
+					return {width:parseFloat(style.width),height:parseFloat(style.height),phases:[0,0.25,0.5,0.75,1].map(fraction=>{
+						animation.currentTime=Number(animation.effect.getTiming().duration)*fraction;
+						return {dash:d.defaultView.getComputedStyle(indicator.querySelector('path')).strokeDasharray,
+							transform:d.defaultView.getComputedStyle(indicator).transform};
+					})};
+				} finally {animation.currentTime=currentTime;animation.play();}
+			})()`)
+			await fs.writeFile(path.join(directory, `ui-${stage}-progress.json`), JSON.stringify(progress, null, 2))
+			assert.equal(progress.width, 16, "Progress must retain its size in the activity row")
+			assert.equal(progress.height, 16)
+			assert.equal(new Set(progress.phases.slice(0, 4).map((phase) => phase.transform)).size, 4)
+			for (const phase of progress.phases) {
+				assert.ok(
+					phase.dash === "none" || parseFloat(phase.dash) >= 1,
+					`The spinning arc must remain visible throughout its loop, observed ${phase.dash}`,
+				)
+			}
+			await capture(`${stage}-spinning`)
+			await media("reduce")
+			await waitUntil(
+				() => evaluate<boolean>(`${style}.animationName==='none'&&${indicator}.getAnimations().length===0`),
+				Date.now() + 5_000,
+				`${stage}_progress_must_respect_reduced_motion`,
+			)
+			assert.equal(await evaluate(`${style}.visibility`), "visible")
+			await capture(`${stage}-reduced-motion`)
+			await media("no-preference")
+			await waitUntil(
+				() => evaluate<boolean>(`${style}.animationName==='spin'`),
+				Date.now() + 5_000,
+				`${stage}_progress_must_resume_animation`,
+			)
+			const resumedTransform = await evaluate<string>(`${style}.transform`)
+			await waitUntil(
+				() => evaluate<boolean>(`${style}.transform!==${javascriptLiteral(resumedTransform)}`),
+				Date.now() + 5_000,
+				`${stage}_progress_must_rotate_after_motion_preference_changes`,
+			)
+		} finally {
+			await cdp.request("Emulation.setEmulatedMedia", { features: [] }, sessionId)
+		}
+	}
 	const stages = [
 		"reasoning-high",
 		"reasoning-model-switch",
@@ -107,6 +183,11 @@ export async function exerciseRenderedReasoning(
 		"activity-edge-light",
 		"activity-edge-contrast",
 		"activity-edge-stopped",
+		"progress-running",
+		"progress-hidden",
+		"progress-revealed",
+		"progress-reloaded",
+		"progress-stopped",
 	]
 	try {
 		for (const stage of stages) {
@@ -126,6 +207,47 @@ export async function exerciseRenderedReasoning(
 				Date.now() + 60_000,
 				`reasoning_${stage}_timeout`,
 			)
+			if (stage.startsWith("progress-")) {
+				sessionId = initialSession
+				if (stage === "progress-reloaded") {
+					await check(
+						`d.defaultView.__alphaProgressBeforeReload!==${javascriptLiteral(nonce)}&&!!d.querySelector('[data-testid=chat-view]')`,
+					)
+				}
+				if (stage === "progress-hidden") {
+					await fs.writeFile(
+						path.join(directory, `ui-${stage}.json`),
+						JSON.stringify(await evaluate("({visibility:d.visibilityState})")),
+					)
+				} else {
+					await check("d.body.innerText.includes('Activity chip fixture: keep the working spinner visible.')")
+					if (stage === "progress-stopped") {
+						await check("!d.querySelector('[data-testid=progress-indicator]')")
+						await capture(stage)
+					} else {
+						for (let depth = 0; depth < 3; depth++) {
+							if (
+								await evaluate<boolean>(
+									"[...d.querySelectorAll('[data-testid=progress-indicator]')].some(e=>e.getClientRects().length>0)",
+								)
+							)
+								break
+							await focus("button[data-activity-trace-id][aria-expanded=false]")
+							await key("Enter", "Enter", 13)
+						}
+						await checkProgress(stage)
+					}
+				}
+				if (stage === "progress-revealed") {
+					await evaluate(`(d.defaultView.__alphaProgressBeforeReload=${javascriptLiteral(nonce)})`)
+				}
+				await writeJsonAtomically(
+					path.join(directory, `ui-done-${stage}.json`),
+					{ nonce, stage, status: "passed" },
+					{ rename: fs.link },
+				)
+				continue
+			}
 			if (stage.startsWith("activity-edge")) {
 				sessionId = initialSession
 				if (stage === "activity-edge" && (await evaluate("!!d.querySelector('[data-testid=tab-ui]')"))) {
