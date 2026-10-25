@@ -112,7 +112,7 @@ describe("built-in personality Settings messages", () => {
 		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
 	})
 
-	it.each(["default", "none"] as const)(
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
 		"persists the supported %s choice before projecting state",
 		async (personality) => {
 			let finishWrite!: () => void
@@ -130,7 +130,7 @@ describe("built-in personality Settings messages", () => {
 		},
 	)
 
-	it.each(["pragmatic", "friendly", "", true, 1, null, {}])(
+	it.each(["casual", "Default", "", true, 1, null, {}])(
 		"rejects the unsupported choice %j without replacing the saved preference",
 		async (personality) => {
 			const message = { type: "updateSettings", updatedSettings: { personality } } as unknown as WebviewMessage

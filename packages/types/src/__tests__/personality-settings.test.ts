@@ -12,13 +12,16 @@ describe("built-in personality settings", () => {
 		expect(alphaCodeSettingsSchema.parse({}).personality).toBeUndefined()
 	})
 
-	it.each(["default", "none"] as const)("preserves the explicit %s choice", (personality) => {
-		expect(personalitySchema.parse(personality)).toBe(personality)
-		expect(globalSettingsSchema.parse({ personality })).toEqual({ personality })
-		expect(alphaCodeSettingsSchema.parse({ personality })).toEqual({ personality })
-	})
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
+		"preserves the explicit %s choice",
+		(personality) => {
+			expect(personalitySchema.parse(personality)).toBe(personality)
+			expect(globalSettingsSchema.parse({ personality })).toEqual({ personality })
+			expect(alphaCodeSettingsSchema.parse({ personality })).toEqual({ personality })
+		},
+	)
 
-	it.each(["pragmatic", "friendly", "", true, 1, null, {}])("rejects an unsupported choice %j", (personality) => {
+	it.each(["casual", "Default", "", true, 1, null, {}])("rejects an unsupported choice %j", (personality) => {
 		expect(globalSettingsSchema.safeParse({ personality }).success).toBe(false)
 		expect(alphaCodeSettingsSchema.safeParse({ personality }).success).toBe(false)
 	})

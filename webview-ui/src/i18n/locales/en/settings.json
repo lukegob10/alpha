@@ -166,8 +166,10 @@
 		"personality": {
 			"label": "Built-in personality",
 			"default": "Default",
+			"friendly": "Friendly",
+			"pragmatic": "Pragmatic",
 			"none": "None",
-			"description": "Use the model's built-in communication style, or omit its personality instructions. Custom instructions still apply. Changes take effect after saving."
+			"description": "Default, Friendly, and Pragmatic use the model's built-in communication style, matching the current Codex CLI. None omits its personality instructions. Custom instructions still apply. Changes take effect after saving."
 		}
 	},
 	"codeIndex": {

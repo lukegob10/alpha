@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import PromptsSettings from "../PromptsSettings"
@@ -25,8 +25,16 @@ vi.mock("@src/components/ui", () => ({
 	Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
 		<button {...props}>{children}</button>
 	),
-	Select: ({ value, onValueChange }: { value: string; onValueChange: (value: string) => void }) => {
-		const isPersonality = value === "default" || value === "none"
+	Select: ({
+		value,
+		onValueChange,
+		children,
+	}: {
+		value: string
+		onValueChange: (value: string) => void
+		children: React.ReactNode
+	}) => {
+		const isPersonality = ["default", "friendly", "pragmatic", "none"].includes(value)
 		return (
 			<select
 				data-testid={
@@ -38,24 +46,14 @@ vi.mock("@src/components/ui", () => ({
 				}
 				value={value}
 				onChange={(event) => onValueChange(event.target.value)}>
-				{isPersonality ? (
-					<>
-						<option value="default">Default</option>
-						<option value="none">None</option>
-					</>
-				) : (
-					<>
-						<option value="ENHANCE">Enhance</option>
-						<option value="EXPLAIN">Explain</option>
-						<option value="-">Current configuration</option>
-						<option value="config-1">Config 1</option>
-					</>
-				)}
+				{children}
 			</select>
 		)
 	},
 	SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-	SelectItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+	SelectItem: ({ children, value }: { children: React.ReactNode; value: string }) => (
+		<option value={value}>{children}</option>
+	),
 	SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 	SelectValue: () => null,
 	StandardTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -110,20 +108,32 @@ describe("PromptsSettings buffering", () => {
 		)
 	}
 
-	it("edits the supplied personality buffer without sending settings messages", () => {
-		const props = createProps()
-		const view = render(<PromptsSettings {...props} />)
-		expect(screen.getByTestId("personality-control")).toHaveValue("default")
-		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "none" } })
-		expect(props.setPersonality).toHaveBeenCalledWith("none")
-		expect(postMessage).not.toHaveBeenCalled()
-
-		view.rerender(<PromptsSettings {...props} personality="none" />)
-		expect(screen.getByTestId("personality-control")).toHaveValue("none")
-		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
-		expect(props.setPersonality).toHaveBeenLastCalledWith("default")
-		expect(postMessage).not.toHaveBeenCalled()
+	it("offers all current Codex personality values plus the unset default", () => {
+		render(<PromptsSettings {...createProps()} />)
+		expect(
+			within(screen.getByTestId("personality-control"))
+				.getAllByRole("option")
+				.map((option) => option.getAttribute("value")),
+		).toEqual(["default", "friendly", "pragmatic", "none"])
 	})
+
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
+		"edits the supplied %s personality buffer without sending settings messages",
+		(personality) => {
+			const props = createProps()
+			const view = render(<PromptsSettings {...props} />)
+			expect(screen.getByTestId("personality-control")).toHaveValue("default")
+			fireEvent.change(screen.getByTestId("personality-control"), { target: { value: personality } })
+			expect(props.setPersonality).toHaveBeenCalledWith(personality)
+			expect(postMessage).not.toHaveBeenCalled()
+
+			view.rerender(<PromptsSettings {...props} personality={personality} />)
+			expect(screen.getByTestId("personality-control")).toHaveValue(personality)
+			fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+			expect(props.setPersonality).toHaveBeenLastCalledWith("default")
+			expect(postMessage).not.toHaveBeenCalled()
+		},
+	)
 
 	it("cancels preview without editing settings or replacing the draft with a late result", () => {
 		const props = createProps()

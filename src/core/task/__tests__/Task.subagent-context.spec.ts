@@ -307,6 +307,20 @@ describe("Task managed-child native history startup", () => {
 })
 
 describe("Task invoking-step subagent snapshot", () => {
+	it.each(["friendly", "pragmatic"] as const)(
+		"retains the captured %s choice through a live preference change and retry",
+		(personality) => {
+			const { task, capture, live } = invocationHarness()
+			live.personality = personality
+			const first = capture()
+			live.personality = "none"
+			const retry = capture(1, first)
+
+			expect(retry.getSubagentInvocationContext()?.personality).toBe(personality)
+			expect(task.getSubagentInvocationContext()?.personality).toBe(personality)
+		},
+	)
+
 	it("keeps model, profile, instructions and effective history at the invoking boundary despite live changes", () => {
 		const { task, capture, history, cleanHistory, apiConfiguration, effectiveApiConfiguration, fragments, live } =
 			invocationHarness()

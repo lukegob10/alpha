@@ -175,20 +175,26 @@ function captureNative(
 }
 
 describe("native sub-agent conversation forks", () => {
-	it.each(["default", "none"] as const)("captures and verifies the %s personality across reload", (personality) => {
-		const legacy = captureNative("none", [])
-		const captured = captureNative("none", [], [], route, false, undefined, personality)
-		const restored = JSON.parse(serializeSubagentContextManifest(captured.manifest))
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
+		"captures and verifies the %s personality across reload",
+		(personality) => {
+			const legacy = captureNative("none", [])
+			const captured = captureNative("none", [], [], route, false, undefined, personality)
+			const restored = JSON.parse(serializeSubagentContextManifest(captured.manifest))
 
-		expect(legacy.manifest).not.toHaveProperty("personality")
-		expect(restored.personality).toBe(personality)
-		expect(isValidSubagentContextManifest(restored)).toBe(true)
-		expect(captured.manifest.contextRefs).toContain(`personality:${digestValue(personality)}`)
-		expect(captured.manifest.manifestDigest).not.toBe(legacy.manifest.manifestDigest)
-		expect(
-			isValidSubagentContextManifest({ ...restored, personality: personality === "none" ? "default" : "none" }),
-		).toBe(false)
-	})
+			expect(legacy.manifest).not.toHaveProperty("personality")
+			expect(restored.personality).toBe(personality)
+			expect(isValidSubagentContextManifest(restored)).toBe(true)
+			expect(captured.manifest.contextRefs).toContain(`personality:${digestValue(personality)}`)
+			expect(captured.manifest.manifestDigest).not.toBe(legacy.manifest.manifestDigest)
+			expect(
+				isValidSubagentContextManifest({
+					...restored,
+					personality: personality === "none" ? "default" : "none",
+				}),
+			).toBe(false)
+		},
+	)
 
 	it.each([
 		{

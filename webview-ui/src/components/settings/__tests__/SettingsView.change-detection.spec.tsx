@@ -249,6 +249,8 @@ vi.mock("../PromptsSettings", () => ({
 				value={personality}
 				onChange={(event) => setPersonality(event.target.value)}>
 				<option value="default">Default</option>
+				<option value="friendly">Friendly</option>
+				<option value="pragmatic">Pragmatic</option>
 				<option value="none">None</option>
 			</select>
 			Built-in personality
@@ -361,45 +363,48 @@ describe("SettingsView - Change Detection Fix", () => {
 		})
 	})
 
-	it("buffers personality edits across live refreshes and saves an explicit default when restored", () => {
-		const liveState = createExtensionState({ didHydrateState: true })
-		;(useExtensionState as any).mockReturnValue(liveState)
-		const view = () => (
-			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} targetSection="prompts" />
-			</QueryClientProvider>
-		)
-		const { rerender } = render(view())
-		expect(screen.getByTestId("personality-control")).toHaveValue("default")
-		expect(screen.getByTestId("save-button")).toBeDisabled()
-		mockPostMessage.mockClear()
+	it.each(["none", "friendly", "pragmatic"] as const)(
+		"buffers %s personality edits across live refreshes and saves an explicit default when restored",
+		(personality) => {
+			const liveState = createExtensionState({ didHydrateState: true })
+			;(useExtensionState as any).mockReturnValue(liveState)
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={vi.fn()} targetSection="prompts" />
+				</QueryClientProvider>
+			)
+			const { rerender } = render(view())
+			expect(screen.getByTestId("personality-control")).toHaveValue("default")
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			mockPostMessage.mockClear()
 
-		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "none" } })
-		expect(mockPostMessage).not.toHaveBeenCalled()
-		expect(liveState).not.toHaveProperty("personality")
-		;(useExtensionState as any).mockReturnValue({ ...liveState, personality: "default" })
-		rerender(view())
-		expect(screen.getByTestId("personality-control")).toHaveValue("none")
-		expect(screen.getByTestId("save-button")).toBeEnabled()
-		fireEvent.click(screen.getByTestId("save-button"))
-		expect(mockPostMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({ personality: "none" }),
-			}),
-		)
+			fireEvent.change(screen.getByTestId("personality-control"), { target: { value: personality } })
+			expect(mockPostMessage).not.toHaveBeenCalled()
+			expect(liveState).not.toHaveProperty("personality")
+			;(useExtensionState as any).mockReturnValue({ ...liveState, personality: "default" })
+			rerender(view())
+			expect(screen.getByTestId("personality-control")).toHaveValue(personality)
+			expect(screen.getByTestId("save-button")).toBeEnabled()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "updateSettings",
+					updatedSettings: expect.objectContaining({ personality }),
+				}),
+			)
 
-		mockPostMessage.mockClear()
-		fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
-		expect(mockPostMessage).not.toHaveBeenCalled()
-		fireEvent.click(screen.getByTestId("save-button"))
-		expect(mockPostMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({ personality: "default" }),
-			}),
-		)
-	})
+			mockPostMessage.mockClear()
+			fireEvent.change(screen.getByTestId("personality-control"), { target: { value: "default" } })
+			expect(mockPostMessage).not.toHaveBeenCalled()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "updateSettings",
+					updatedSettings: expect.objectContaining({ personality: "default" }),
+				}),
+			)
+		},
+	)
 
 	it("keeps the personality draft on Cancel and discards it without persistence", () => {
 		const onDone = vi.fn()

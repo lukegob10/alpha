@@ -122,8 +122,12 @@ describe("pinned Codex model instructions", () => {
 		expect(resolveCodexModelPrompt("custom-gpt-5.6-sol-wrapper").isFallback).toBe(true)
 	})
 
-	it.each(codexModelIds)("keeps model %s unchanged with the default personality", (modelId, promptSlug) => {
-		expect(resolveCodexModelPrompt(modelId, "default").instructions).toBe(CODEX_MODEL_INSTRUCTIONS[promptSlug])
+	describe.each(["default", "friendly", "pragmatic"] as const)("%s personality", (personality) => {
+		it.each(codexModelIds)("keeps model %s instructions byte-identical", (modelId, promptSlug) => {
+			expect(resolveCodexModelPrompt(modelId, personality).instructions).toBe(
+				CODEX_MODEL_INSTRUCTIONS[promptSlug],
+			)
+		})
 	})
 
 	it.each(["gpt-6.1-sol", "gpt-5.6-sol", "claude-sonnet-4.6"])(

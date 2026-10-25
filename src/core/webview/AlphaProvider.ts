@@ -1,4 +1,4 @@
-import { assertPrimaryMode, restoreTaskMode } from "@alpha-code/types"
+import { assertPrimaryMode, personalitySchema, restoreTaskMode } from "@alpha-code/types"
 import {
 	taskReasoningPreferenceSchema,
 	type TaskReasoningPreference,
@@ -5146,6 +5146,7 @@ export class AlphaProvider
 		>
 	> {
 		const stateValues = this.contextProxy.getValues()
+		const personality = personalitySchema.safeParse(stateValues.personality)
 		const customModes = await this.customModesManager.getCustomModes()
 
 		// Build the apiConfiguration object combining state values and secrets.
@@ -5239,7 +5240,7 @@ export class AlphaProvider
 			maxTotalImageSize: stateValues.maxTotalImageSize ?? 20,
 			historyPreviewCollapsed: stateValues.historyPreviewCollapsed ?? false,
 			reasoningBlockCollapsed: stateValues.reasoningBlockCollapsed ?? true,
-			personality: stateValues.personality === "none" ? "none" : "default",
+			personality: personality.success ? personality.data : "default",
 			enterBehavior: stateValues.enterBehavior ?? "send",
 			autoSteer: stateValues.autoSteer === true,
 			customCondensingPrompt: stateValues.customCondensingPrompt,

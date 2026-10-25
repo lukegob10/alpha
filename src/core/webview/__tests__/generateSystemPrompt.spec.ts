@@ -66,7 +66,7 @@ describe("generateSystemPrompt", () => {
 		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
 	})
 
-	it.each([undefined, "default", "none"] as const)(
+	it.each([undefined, "default", "friendly", "pragmatic", "none"] as const)(
 		"previews the captured %s personality preference",
 		async (personality) => {
 			const customInstructions = "# Personality\nKeep this user-owned style."

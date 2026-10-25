@@ -70,7 +70,7 @@ describe("ContextProxy", () => {
 			expect(proxy.getValue("personality")).toBeUndefined()
 			expect(await proxy.export()).not.toHaveProperty("personality")
 
-			for (const personality of ["none", "default"] as const) {
+			for (const personality of ["default", "friendly", "pragmatic", "none"] as const) {
 				await proxy.setValues({ personality })
 				const reloaded = new ContextProxy(mockContext)
 				await reloaded.initialize()

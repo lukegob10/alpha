@@ -136,6 +136,8 @@ export function resolveCodexModelPrompt(modelId?: string, personality?: Personal
 	const matchedPromptSlug = matchedModelId ? resolvePromptSlug(matchedModelId) : undefined
 	const promptSlug = matchedPromptSlug ?? DEFAULT_CODEX_MODEL_PROMPT
 
+	// Codex CLI 970111f6 preserves the same catalog template for unset,
+	// friendly, and pragmatic; only none removes its Personality section.
 	return {
 		requestedModelId,
 		matchedModelId: matchedPromptSlug ? matchedModelId : undefined,

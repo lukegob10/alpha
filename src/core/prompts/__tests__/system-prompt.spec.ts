@@ -563,6 +563,12 @@ describe("SYSTEM_PROMPT", () => {
 		const original = await build("default")
 		const omitted = await build("none")
 
+		for (const personality of ["friendly", "pragmatic"] as const) {
+			const alias = await build(personality)
+			expect(alias.instructionParts).toEqual(original.instructionParts)
+			expect(renderSystemPromptFragments(alias)).toBe(renderSystemPromptFragments(original))
+		}
+
 		expect(original.instructionParts[0]?.content).toBe(CODEX_MODEL_INSTRUCTIONS["gpt-6.1-sol"])
 		expect(omitted.instructionParts[0]).toEqual({
 			...original.instructionParts[0],

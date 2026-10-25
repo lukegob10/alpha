@@ -183,7 +183,14 @@ const PromptsSettings = ({
 					<Select
 						value={personality}
 						onValueChange={(value) => {
-							if (value === "default" || value === "none") setPersonality(value)
+							if (
+								value === "default" ||
+								value === "friendly" ||
+								value === "pragmatic" ||
+								value === "none"
+							) {
+								setPersonality(value)
+							}
 						}}>
 						<SelectTrigger
 							id="personality-select"
@@ -194,6 +201,8 @@ const PromptsSettings = ({
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="default">{t("settings:prompts.personality.default")}</SelectItem>
+							<SelectItem value="friendly">{t("settings:prompts.personality.friendly")}</SelectItem>
+							<SelectItem value="pragmatic">{t("settings:prompts.personality.pragmatic")}</SelectItem>
 							<SelectItem value="none">{t("settings:prompts.personality.none")}</SelectItem>
 						</SelectContent>
 					</Select>
