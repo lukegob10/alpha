@@ -1,4 +1,4 @@
-import type { ApprovalMode, Personality } from "@alpha-code/types"
+import type { ApprovalMode } from "@alpha-code/types"
 import type { ProjectInstructionDiscoveryOptions } from "../../services/config-paths"
 
 /**
@@ -18,8 +18,6 @@ export interface SystemPromptSettings {
 	isStealthModel?: boolean
 	/** Effective approval mode captured for this model step. */
 	approvalMode?: ApprovalMode
-	/** Omit only the built-in catalog personality section when explicitly disabled. */
-	personality?: Personality
 	/** Shell selected by exec_command for this model step. */
 	commandShell?: string
 	/** Whether the captured primary tool surface exposes spawn_agent to this prompt. */

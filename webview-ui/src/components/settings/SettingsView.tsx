@@ -290,7 +290,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxGitStatusFiles,
 		customModePrompts,
 		customInstructions,
-		personality,
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
@@ -742,7 +741,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					experiments,
 					customModePrompts,
 					customInstructions,
-					personality: personality ?? "default",
 					customSupportPrompts,
 				},
 			})
@@ -1237,8 +1235,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{/* Prompts Section */}
 			{section === "prompts" && (
 				<PromptsSettings
-					personality={personality ?? "default"}
-					setPersonality={(value) => setCachedStateField("personality", value)}
 					customSupportPrompts={customSupportPrompts || {}}
 					setCustomSupportPrompts={setCustomSupportPromptsField}
 					includeTaskHistoryInEnhance={includeTaskHistoryInEnhance ?? true}

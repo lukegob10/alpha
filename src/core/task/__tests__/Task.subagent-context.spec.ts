@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import type { ModelInfo, Personality, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
+import type { ModelInfo, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
 import type { ApiHandler, ApiHandlerCreateMessageMetadata, ApiInstructionFragment } from "../../../api"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { digestValue } from "../../agent/StepContext"
@@ -88,11 +88,10 @@ interface InvocationStep {
 
 function invocationHarness(toolName = "spawn_agent") {
 	const modelInfo: ModelInfo = { contextWindow: 128_000, maxTokens: 4096, supportsPromptCache: false }
-	const live: { mode: string; modelId: string; systemPrompt: string; personality?: Personality } = {
+	const live: { mode: string; modelId: string; systemPrompt: string } = {
 		mode: "code",
 		modelId: "parent-model",
 		systemPrompt: "Invoking system prompt",
-		personality: "none",
 	}
 	const api = {
 		getModel: () => ({ id: live.modelId, info: modelInfo }),
@@ -184,7 +183,6 @@ function invocationHarness(toolName = "spawn_agent") {
 			undefined,
 			undefined,
 			recoverFromCommittedHistory,
-			live.personality,
 		]) as InvocationStep
 	}
 	return {
@@ -307,29 +305,15 @@ describe("Task managed-child native history startup", () => {
 })
 
 describe("Task invoking-step subagent snapshot", () => {
-	it.each(["friendly", "pragmatic"] as const)(
-		"retains the captured %s choice through a live preference change and retry",
-		(personality) => {
-			const { task, capture, live } = invocationHarness()
-			live.personality = personality
-			const first = capture()
-			live.personality = "none"
-			const retry = capture(1, first)
-
-			expect(retry.getSubagentInvocationContext()?.personality).toBe(personality)
-			expect(task.getSubagentInvocationContext()?.personality).toBe(personality)
-		},
-	)
-
 	it("keeps model, profile, instructions and effective history at the invoking boundary despite live changes", () => {
 		const { task, capture, history, cleanHistory, apiConfiguration, effectiveApiConfiguration, fragments, live } =
 			invocationHarness()
 		const step = capture()
 		const captured = step.getSubagentInvocationContext()
+		expect(captured).not.toHaveProperty("personality")
 		const request = step.getRequest()
 		expect(captured).toMatchObject({
 			mode: "code",
-			personality: "none",
 			reasoningPreference: { kind: "effort", effort: "max" },
 			apiConfiguration: { apiProvider: "openai", apiModelId: "parent-model", reasoningEffort: "max" },
 			apiConfigName: "Invoking parent profile",
@@ -350,7 +334,6 @@ describe("Task invoking-step subagent snapshot", () => {
 		live.modelId = "later-model"
 		live.mode = "architect"
 		live.systemPrompt = "Later system prompt"
-		live.personality = "default"
 		task.reasoningPreference = { kind: "effort", effort: "high" }
 		Reflect.set(task, "_taskApiConfigName", "Later profile")
 
@@ -368,7 +351,6 @@ describe("Task invoking-step subagent snapshot", () => {
 		first.history[0].content = "Child replacement request"
 		first.history.push({ role: "user", content: "Child-only input" })
 		first.apiConfiguration.reasoningEffort = "low"
-		first.personality = "default"
 		if (first.reasoningPreference?.kind !== "effort") throw new Error("Expected a captured effort preference")
 		first.reasoningPreference.effort = "low"
 		first.modelRoute.modelId = "child-selected-model"
@@ -386,7 +368,6 @@ describe("Task invoking-step subagent snapshot", () => {
 		live.mode = "architect"
 		live.modelId = "later-model"
 		live.systemPrompt = "Later system prompt"
-		live.personality = "default"
 		task.reasoningPreference = { kind: "off" }
 		history.push({ role: "user", content: "Later user input" })
 		apiConfiguration.reasoningEffort = "low"
@@ -404,10 +385,9 @@ describe("Task invoking-step subagent snapshot", () => {
 		expect(retry.getRequest()).toEqual(request)
 	})
 
-	it("retains the handler's reasoning choice and personality when committed-history recovery derives a new step", () => {
-		const { task, capture, live, history } = invocationHarness()
+	it("retains the handler's reasoning choice when committed-history recovery derives a new step", () => {
+		const { task, capture, history } = invocationHarness()
 		const first = capture()
-		live.personality = "default"
 		task.reasoningPreference = { kind: "off" }
 		history.push({ role: "user", content: "Settled recovery input" })
 
@@ -415,20 +395,17 @@ describe("Task invoking-step subagent snapshot", () => {
 		expect(recovery.snapshot.context.contextId).not.toBe(first.snapshot.context.contextId)
 		expect(recovery.snapshot.context.parentContextId).toBe(first.snapshot.context.contextId)
 		expect(recovery.getSubagentInvocationContext()).toMatchObject({
-			personality: "none",
 			reasoningPreference: { kind: "effort", effort: "max" },
 			history,
 		})
 	})
 
 	it("uses Default for legacy handlers rather than reading a newer live task preference", () => {
-		const { task, capture, live, reasoningByHandler, api } = invocationHarness()
+		const { task, capture, reasoningByHandler, api } = invocationHarness()
 		reasoningByHandler.delete(api)
-		live.personality = undefined
 		task.reasoningPreference = { kind: "effort", effort: "high" }
 
 		expect(capture().getSubagentInvocationContext()).toMatchObject({
-			personality: "default",
 			reasoningPreference: { kind: "default" },
 		})
 	})

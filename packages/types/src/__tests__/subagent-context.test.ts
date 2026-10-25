@@ -63,7 +63,7 @@ function firstSkill(manifest: SubagentContextManifest): SubagentContextSkill {
 	return skill
 }
 
-describe("captured subagent personality", () => {
+describe("legacy subagent manifest compatibility", () => {
 	it("preserves historical manifests without materializing a personality field", () => {
 		expect(subagentContextManifestSchema.parse(makeManifest())).not.toHaveProperty("personality")
 	})

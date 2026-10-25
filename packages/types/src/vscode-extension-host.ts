@@ -686,7 +686,6 @@ export type ExtensionState = Pick<
 	| "listApiConfigMeta"
 	| "pinnedApiConfigs"
 	| "customInstructions"
-	| "personality"
 	| "dismissedUpsells"
 	| "autoApprovalEnabled"
 	| "approvalMode"

@@ -239,7 +239,7 @@ async function generatePrompt(
 						}),
 			])
 
-	const resolvedCodexPrompt = resolveCodexModelPrompt(modelId, settings?.personality)
+	const resolvedCodexPrompt = resolveCodexModelPrompt(modelId)
 	const codexRuntimeInstructions = resolveCodexRuntimeInstructions(
 		resolvedCodexPrompt.promptSlug,
 		isPlanMode ? "plan" : "default",

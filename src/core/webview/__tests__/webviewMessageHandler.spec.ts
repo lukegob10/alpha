@@ -106,39 +106,26 @@ const mockAlphaProvider = {
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
 
-describe("built-in personality Settings messages", () => {
+describe("Settings persistence barrier", () => {
 	beforeEach(() => {
 		vi.mocked(mockAlphaProvider.contextProxy.setValue).mockClear()
 		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
 	})
 
-	it.each(["default", "friendly", "pragmatic", "none"] as const)(
-		"persists the supported %s choice before projecting state",
-		async (personality) => {
-			let finishWrite!: () => void
-			const writing = new Promise<void>((resolve) => (finishWrite = resolve))
-			vi.mocked(mockAlphaProvider.contextProxy.setValue).mockReturnValueOnce(writing)
-			const save = webviewMessageHandler(mockAlphaProvider, {
-				type: "updateSettings",
-				updatedSettings: { personality },
-			})
-			expect(mockAlphaProvider.contextProxy.setValue).toHaveBeenCalledWith("personality", personality)
-			expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
-			finishWrite()
-			await save
-			expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledOnce()
-		},
-	)
-
-	it.each(["casual", "Default", "", true, 1, null, {}])(
-		"rejects the unsupported choice %j without replacing the saved preference",
-		async (personality) => {
-			const message = { type: "updateSettings", updatedSettings: { personality } } as unknown as WebviewMessage
-			await expect(webviewMessageHandler(mockAlphaProvider, message)).rejects.toThrow()
-			expect(mockAlphaProvider.contextProxy.setValue).not.toHaveBeenCalled()
-			expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
-		},
-	)
+	it.each([false, true])("persists the supported %s choice before projecting state", async (autoSteer) => {
+		let finishWrite!: () => void
+		const writing = new Promise<void>((resolve) => (finishWrite = resolve))
+		vi.mocked(mockAlphaProvider.contextProxy.setValue).mockReturnValueOnce(writing)
+		const save = webviewMessageHandler(mockAlphaProvider, {
+			type: "updateSettings",
+			updatedSettings: { autoSteer },
+		})
+		expect(mockAlphaProvider.contextProxy.setValue).toHaveBeenCalledWith("autoSteer", autoSteer)
+		expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
+		finishWrite()
+		await save
+		expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledOnce()
+	})
 })
 
 describe("prompt enhancement cancellation messages", () => {

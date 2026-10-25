@@ -155,7 +155,6 @@ function captureNative(
 		effectiveText: "Frozen repository and user instructions",
 		sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Repository instructions" }],
 	},
-	personality?: CaptureSubagentContextInput["personality"],
 ) {
 	const input = {
 		parentTaskId: "native-parent",
@@ -163,7 +162,6 @@ function captureNative(
 		forkTurns,
 		history: nativeHistory,
 		instructions,
-		...(personality === undefined ? {} : { personality }),
 		skills: [],
 		cwd: "/workspace",
 		workspaceRoots: ["/workspace"],
@@ -175,24 +173,34 @@ function captureNative(
 }
 
 describe("native sub-agent conversation forks", () => {
-	it.each(["default", "friendly", "pragmatic", "none"] as const)(
-		"captures and verifies the %s personality across reload",
-		(personality) => {
-			const legacy = captureNative("none", [])
-			const captured = captureNative("none", [], [], route, false, undefined, personality)
-			const restored = JSON.parse(serializeSubagentContextManifest(captured.manifest))
+	it("does not capture retired preferences or their context references", () => {
+		const captured = captureNative("none", [])
+		expect(captured.manifest).not.toHaveProperty("personality")
+		expect(captured.manifest.contextRefs.some((ref) => ref.startsWith("personality:"))).toBe(false)
+	})
 
-			expect(legacy.manifest).not.toHaveProperty("personality")
-			expect(restored.personality).toBe(personality)
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
+		"preserves integrity of saved manifests containing retired metadata %s",
+		(personality) => {
+			const { manifestDigest: _, ...captured } = captureNative("none", []).manifest
+			const legacy = {
+				...captured,
+				personality,
+				contextRefs: [...captured.contextRefs, `personality:${digestValue(personality)}`].sort((a, b) =>
+					a.localeCompare(b),
+				),
+			}
+			const manifest = { ...legacy, manifestDigest: digestValue(legacy) }
+			const restored = JSON.parse(serializeSubagentContextManifest(manifest))
+			expect(restored).toEqual(manifest)
 			expect(isValidSubagentContextManifest(restored)).toBe(true)
-			expect(captured.manifest.contextRefs).toContain(`personality:${digestValue(personality)}`)
-			expect(captured.manifest.manifestDigest).not.toBe(legacy.manifest.manifestDigest)
 			expect(
 				isValidSubagentContextManifest({
 					...restored,
 					personality: personality === "none" ? "default" : "none",
 				}),
 			).toBe(false)
+			expect(isValidSubagentContextManifest({ ...restored, personality: undefined })).toBe(false)
 		},
 	)
 

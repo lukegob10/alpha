@@ -15,7 +15,6 @@ import {
 	normalizeAssistantMessageMetadata,
 	toolNames,
 	type AssistantMessageMetadata,
-	type Personality,
 	type SubagentContextManifest,
 	type SubagentContextRuntimePolicy,
 	type SubagentForkTurns,
@@ -117,8 +116,6 @@ export interface CaptureSubagentContextInput {
 		effectiveText: string
 		sources: readonly SubagentContextInstructionSourceInput[]
 	}
-	/** Captured independently of model/provider selection; missing historical values retain the default. */
-	personality?: Personality
 	/** Skills must already be filtered for the child's effective mode. */
 	skills: readonly SubagentContextSkillInput[]
 	cwd: string
@@ -1067,6 +1064,7 @@ function expectedContextRefs(manifest: Omit<SubagentContextManifest, "contextRef
 	return uniqueSorted([
 		...manifest.selectedUserTurns.refs.map(({ ref }) => ref),
 		`instructions:${manifest.instructions.digest}`,
+		// Older saved manifests included this retired setting in their integrity references.
 		...(manifest.personality === undefined ? [] : [`personality:${digestValue(manifest.personality)}`]),
 		...manifest.instructions.sources.map(
 			({ ref, digest }) => `instruction-source:${encodeURIComponent(ref)}:${digest}`,
@@ -1159,7 +1157,6 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 			digest: digestValue(input.instructions.effectiveText),
 			sources,
 		},
-		...(input.personality === undefined ? {} : { personality: input.personality }),
 		skills,
 		modelRoute: sanitizeModelRoute(input.modelRoute),
 		runtimePolicy,

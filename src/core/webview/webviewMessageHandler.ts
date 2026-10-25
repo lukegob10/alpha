@@ -1075,8 +1075,6 @@ export const webviewMessageHandler = async (
 						newValue = globalSettingsSchema.shape.subagentDefaultModel.parse(value) || undefined
 					} else if (key === "subagentAgentTypes") {
 						newValue = value == null ? undefined : subagentAgentTypesSchema.parse(value)
-					} else if (key === "personality") {
-						newValue = globalSettingsSchema.shape.personality.parse(value)
 					} else if (key === "experiments") {
 						if (!value) {
 							continue

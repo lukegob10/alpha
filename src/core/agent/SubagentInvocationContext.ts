@@ -1,6 +1,5 @@
 import type { ApiInstructionFragment } from "../../api"
 import type {
-	Personality,
 	ProviderSettings,
 	SubagentAutoApprovalPolicy,
 	SubagentModelRouteState,
@@ -18,8 +17,6 @@ export interface SubagentInvocationContext {
 	apiConfigName?: string
 	/** Task-only selection captured with the invoking handler; omitted legacy captures use the profile default. */
 	reasoningPreference?: TaskReasoningPreference
-	/** Captured model-owned style preference; historical captures retain the default wording. */
-	personality?: Personality
 	modelRoute: SubagentModelRouteState
 	history: ApiMessage[]
 	finalAssistantMessageIndexes: number[]

@@ -59,28 +59,25 @@ describe("ContextProxy", () => {
 		await proxy.initialize()
 	})
 
-	describe("built-in personality persistence", () => {
-		it("round-trips explicit choices through storage, reload and export while retaining older settings", async () => {
-			const stored = new Map<string, unknown>()
+	describe("retired settings", () => {
+		it("ignores legacy stored and imported values without losing custom instructions", async () => {
+			const stored = new Map<string, unknown>([
+				["personality", "none"],
+				["customInstructions", "My instructions"],
+			])
 			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
-			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
-				if (value === undefined) stored.delete(key)
-				else stored.set(key, value)
-			})
-			expect(proxy.getValue("personality")).toBeUndefined()
-			expect(await proxy.export()).not.toHaveProperty("personality")
+			const reloaded = new ContextProxy(mockContext)
+			await reloaded.initialize()
+			expect(reloaded.getValues()).not.toHaveProperty("personality")
+			expect(await reloaded.export()).toMatchObject({ customInstructions: "My instructions" })
+			expect(await reloaded.export()).not.toHaveProperty("personality")
 
-			for (const personality of ["default", "friendly", "pragmatic", "none"] as const) {
-				await proxy.setValues({ personality })
-				const reloaded = new ContextProxy(mockContext)
-				await reloaded.initialize()
-				expect(reloaded.getValue("personality")).toBe(personality)
-				expect(await reloaded.export()).toMatchObject({ personality })
-			}
-
-			await proxy.resetAllState()
-			expect(stored.has("personality")).toBe(false)
-			expect(proxy.getValue("personality")).toBeUndefined()
+			mockGlobalState.update.mockClear()
+			const imported = { personality: "friendly", customInstructions: "Imported instructions" }
+			await reloaded.setValues(imported)
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("personality", expect.anything())
+			expect(reloaded.getValues()).not.toHaveProperty("personality")
+			expect(await reloaded.export()).toMatchObject({ customInstructions: "Imported instructions" })
 		})
 	})
 

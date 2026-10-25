@@ -1,5 +1,3 @@
-import type { Personality } from "@alpha-code/types"
-
 /**
  * Verbatim model instructions from openai/codex at 4994306e9f80448bde85e770a0b0c93d3fee5665.
  * Source: codex-rs/models-manager/models.json, fetched 2026-09-29; the default retains this literal unchanged.
@@ -105,47 +103,17 @@ export interface ResolvedCodexModelPrompt {
 	instructions: string
 }
 
-/**
- * Catalog-only opt-out, matching openai/codex 970111f6 (2026-10-24),
- * codex-rs/models-manager/src/model_info.rs. User instructions never pass through this transform.
- */
-export function stripCodexModelPersonality(instructions: string): string {
-	let sectionStart: number | undefined
-	let offset = 0
-	while (offset < instructions.length) {
-		const newline = instructions.indexOf("\n", offset)
-		const lineEnd = newline < 0 ? instructions.length : newline
-		let line = instructions.slice(offset, lineEnd)
-		if (newline >= 0 && line.endsWith("\r")) line = line.slice(0, -1)
-
-		if (sectionStart !== undefined) {
-			if (line === "#" || line.startsWith("# ") || line.startsWith("#\t")) {
-				return instructions.slice(0, sectionStart) + instructions.slice(offset)
-			}
-		} else if (line === "# Personality") {
-			sectionStart = offset
-		}
-		offset = newline < 0 ? instructions.length : newline + 1
-	}
-	return sectionStart === undefined ? instructions : instructions.slice(0, sectionStart)
-}
-
-export function resolveCodexModelPrompt(modelId?: string, personality?: Personality): ResolvedCodexModelPrompt {
+export function resolveCodexModelPrompt(modelId?: string): ResolvedCodexModelPrompt {
 	const requestedModelId = modelId?.trim() || undefined
 	const matchedModelId = requestedModelId?.toLowerCase()
 	const matchedPromptSlug = matchedModelId ? resolvePromptSlug(matchedModelId) : undefined
 	const promptSlug = matchedPromptSlug ?? DEFAULT_CODEX_MODEL_PROMPT
 
-	// Codex CLI 970111f6 preserves the same catalog template for unset,
-	// friendly, and pragmatic; only none removes its Personality section.
 	return {
 		requestedModelId,
 		matchedModelId: matchedPromptSlug ? matchedModelId : undefined,
 		promptSlug,
 		isFallback: matchedPromptSlug === undefined,
-		instructions:
-			personality === "none"
-				? stripCodexModelPersonality(CODEX_MODEL_INSTRUCTIONS[promptSlug])
-				: CODEX_MODEL_INSTRUCTIONS[promptSlug],
+		instructions: CODEX_MODEL_INSTRUCTIONS[promptSlug],
 	}
 }

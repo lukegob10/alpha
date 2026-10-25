@@ -26,9 +26,7 @@ describe("generateSystemPrompt", () => {
 		vi.mocked(buildApiHandler).mockReturnValue({
 			getModel: () => ({ id: "gpt-6-luna", info: {} }),
 		} as any)
-		vi.mocked(SYSTEM_PROMPT).mockImplementation(
-			async (...args) => resolveCodexModelPrompt(args[14], args[12]?.personality).instructions,
-		)
+		vi.mocked(SYSTEM_PROMPT).mockImplementation(async (...args) => resolveCodexModelPrompt(args[14]).instructions)
 	})
 
 	it("previews the selected recognized GPT model's prompt", async () => {
@@ -67,7 +65,7 @@ describe("generateSystemPrompt", () => {
 	})
 
 	it.each([undefined, "default", "friendly", "pragmatic", "none"] as const)(
-		"previews the captured %s personality preference",
+		"ignores a retired preference %s in stale state while preserving custom instructions",
 		async (personality) => {
 			const customInstructions = "# Personality\nKeep this user-owned style."
 			const provider = {
@@ -85,11 +83,10 @@ describe("generateSystemPrompt", () => {
 
 			const preview = await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
-			expect(preview).toBe(resolveCodexModelPrompt("gpt-6-luna", personality).instructions)
-			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.personality).toBe(personality)
+			expect(preview).toBe(resolveCodexModelPrompt("gpt-6-luna").instructions)
+			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]).not.toHaveProperty("personality")
 			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[8]).toBe(customInstructions)
-			if (personality === "none") expect(preview).not.toContain("# Personality\n")
-			else expect(preview).toContain("# Personality\n")
+			expect(preview).toContain("# Personality\n")
 		},
 	)
 })

@@ -1333,7 +1333,6 @@ If complete, use attempt_completion.
 		const captured = {
 			mode: "code",
 			reasoningPreference: { kind: "effort", effort: "high" },
-			personality: "none",
 			apiConfiguration: { apiProvider: "openai", openAiModelId: "captured-model" },
 			apiConfigName: "Captured profile",
 			modelRoute: {
@@ -1393,8 +1392,8 @@ If complete, use attempt_completion.
 			profileName: "Captured profile",
 		})
 		expect(descriptor.inheritedInstructions).toBe("Captured applied instructions")
+		expect(descriptor.contextManifest).not.toHaveProperty("personality")
 		expect(descriptor.modelRoute.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
-		expect(descriptor.contextManifest.personality).toBe("none")
 		expect(descriptor.contextManifest.instructions.sources).toContainEqual(
 			expect.objectContaining({ ref: "captured:AGENTS.md" }),
 		)

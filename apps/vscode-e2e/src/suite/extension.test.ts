@@ -12,26 +12,27 @@ suite("Alpha Extension", function () {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
 	})
 
-	test("Codex personality choices retain their identity in settings and both host projections", async () => {
+	test("Retired settings do not reappear in configuration or host projections", async () => {
 		const api = globalThis.api
 		const original = api.getConfiguration()
 		const host = (
 			api as unknown as {
 				sidebarProvider: {
-					getState(): Promise<Pick<AlphaCodeSettings, "personality">>
-					getStateToPostToWebview(): Promise<Pick<AlphaCodeSettings, "personality">>
+					getState(): Promise<object>
+					getStateToPostToWebview(): Promise<object>
 				}
 			}
 		).sidebarProvider
 		try {
-			for (const personality of ["default", "friendly", "pragmatic", "none"] as const) {
-				await api.setConfiguration({ personality })
-				assert.equal(api.getConfiguration().personality, personality)
-				assert.equal((await host.getState()).personality, personality)
-				assert.equal((await host.getStateToPostToWebview()).personality, personality)
+			for (const personality of ["default", "friendly", "pragmatic", "none"]) {
+				const legacy = { ...original, personality }
+				await api.setConfiguration(legacy)
+				assert.ok(!("personality" in api.getConfiguration()))
+				assert.ok(!("personality" in (await host.getState())))
+				assert.ok(!("personality" in (await host.getStateToPostToWebview())))
 			}
 		} finally {
-			await api.setConfiguration({ ...original, personality: original.personality })
+			await api.setConfiguration(original)
 		}
 	})
 

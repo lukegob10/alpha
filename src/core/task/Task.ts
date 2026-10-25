@@ -6,7 +6,6 @@ import {
 	taskDesignHandoffSchema,
 	MAX_DESIGN_HANDOFF_CHARS,
 	type TaskDesignHandoff,
-	type Personality,
 	type AlphaMessageTurn,
 	type TaskGoal,
 	type TaskGoalCreateInput,
@@ -6131,7 +6130,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		designHandoffOverride?: TaskDesignHandoff | null,
 		capturedAutoApprovalPolicy?: SubagentAutoApprovalPolicy,
 		recoverFromCommittedHistory = false,
-		capturedPersonality?: Personality,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
@@ -6256,7 +6254,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let capturedForkContext: SubagentInvocationContext | undefined = forkHistory
 			? {
 					mode,
-					personality: capturedPersonality ?? "default",
 					reasoningPreference: structuredClone(
 						this.reasoningByHandler.get(apiHandler)?.requested ?? { kind: "default" },
 					),
@@ -18649,9 +18646,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				alphaIgnoreInstructions,
 				{
 					todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
-					personality: isSubagent
-						? (this.subagentContextManifest?.personality ?? "default")
-						: state?.personality,
 					useAgentRules:
 						vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,
 					enableSubfolderRules: enableSubfolderRules ?? false,
@@ -19890,9 +19884,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			capturedDesignHandoff ?? null,
 			capturedAutoApprovalPolicy,
 			options.recoveryStep !== undefined,
-			this.taskKind === "subagent"
-				? (this.subagentContextManifest?.personality ?? "default")
-				: state?.personality,
 		)
 		// Capture step and surface together, including a preflight failure before
 		// active request ownership is installed.

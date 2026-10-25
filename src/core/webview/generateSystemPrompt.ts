@@ -14,7 +14,6 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 		apiConfiguration,
 		customModePrompts,
 		customInstructions,
-		personality,
 		mcpEnabled,
 		experiments,
 		language,
@@ -63,7 +62,6 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 				.getConfiguration(Package.name)
 				.get<boolean>("newTaskRequireTodos", false),
 			isStealthModel: modelInfo?.isStealthModel,
-			personality,
 		},
 		undefined, // todoList
 		modelId,

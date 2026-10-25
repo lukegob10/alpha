@@ -1837,22 +1837,13 @@ describe("AlphaProvider", () => {
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
-	test.each([
-		[undefined, "default"],
-		["default", "default"],
-		["none", "none"],
-		["pragmatic", "pragmatic"],
-		["friendly", "friendly"],
-		["", "default"],
-		[1, "default"],
-		[null, "default"],
-	])(
-		"projects the saved personality preference %j as %s consistently to runtime and Settings",
-		async (personality, expected) => {
+	test.each(["default", "friendly", "pragmatic", "none"])(
+		"does not project the retired setting %s to the runtime or Settings",
+		async (personality) => {
 			await mockContext.globalState.update("personality", personality)
 			await provider.contextProxy.initialize()
-			expect((await provider.getState()).personality).toBe(expected)
-			expect((await provider.getStateToPostToWebview()).personality).toBe(expected)
+			expect(await provider.getState()).not.toHaveProperty("personality")
+			expect(await provider.getStateToPostToWebview()).not.toHaveProperty("personality")
 		},
 	)
 
