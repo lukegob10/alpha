@@ -1,5 +1,5 @@
 schemaVersion: 1
 bundles:
   - id: frontier-v1-graders
-    version: 3
-    contentDigest: sha256:638939afb8dd50d241a2af904c7b3533c48f0514f2902341c1aa4b45b49d3718
+    version: 5
+    contentDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
