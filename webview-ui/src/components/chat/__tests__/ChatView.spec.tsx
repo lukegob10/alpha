@@ -4840,7 +4840,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			apiConfiguration: { apiProvider: "anthropic" },
+			apiConfiguration: { apiProvider: "bedrock" },
 			clineMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },

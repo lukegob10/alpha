@@ -1,4 +1,4 @@
-import type { AssistantMessageMetadata, VscodeLmThinking } from "@alpha-code/types"
+import type { AssistantMessageMetadata, GeminiResponse, VscodeLmThinking } from "@alpha-code/types"
 
 /**
  * The stream boundary is intentionally provider-neutral. Providers that have
@@ -147,13 +147,17 @@ export function createLinkedAbortController(options: ApiStreamRequestControl = {
 		}
 	}
 
-	if (options.deadline !== undefined) {
+	if (options.deadline !== undefined && !controller.signal.aborted) {
 		const deadlineMs = options.deadline instanceof Date ? options.deadline.getTime() : options.deadline
 		if (Number.isFinite(deadlineMs)) {
-			const delay = Math.max(0, deadlineMs - Date.now())
-			deadlineTimer = setTimeout(() => {
+			const delay = deadlineMs - Date.now()
+			const abortAtDeadline = () => {
 				if (!controller.signal.aborted) controller.abort(new ApiStreamDeadlineError())
-			}, delay)
+			}
+			// An elapsed deadline is an admission barrier. A zero-delay timer would
+			// still let an SDK dispatch before the next event-loop turn.
+			if (delay <= 0) abortAtDeadline()
+			else deadlineTimer = setTimeout(abortAtDeadline, delay)
 		}
 	}
 
@@ -190,7 +194,12 @@ export function isApiStreamAbortError(error: unknown, signal?: AbortSignal): boo
 /** Semantic model output is distinct from usage, status, and structural events. */
 export function isApiStreamSemanticChunk(chunk: ApiStreamChunk): boolean {
 	// Host-only completion/signature parts carry replay state, not visible output.
-	if (chunk.type === "reasoning" && chunk.vscodeLmThinking !== undefined && chunk.text.length === 0) return false
+	if (
+		chunk.type === "reasoning" &&
+		(chunk.vscodeLmThinking !== undefined || chunk.geminiResponse !== undefined) &&
+		chunk.text.length === 0
+	)
+		return false
 	return (
 		chunk.type === "text" ||
 		chunk.type === "reasoning" ||
@@ -422,6 +431,8 @@ export interface ApiStreamMessageMetadataChunk extends AssistantMessageMetadata 
 export interface ApiStreamReasoningChunk {
 	type: "reasoning"
 	text: string
+	/** Original Gemini parts retain signatures on their exact provider positions. */
+	geminiResponse?: GeminiResponse
 	/** Original VS Code host part; display text is a separate projection. */
 	vscodeLmThinking?: VscodeLmThinking
 	/**
@@ -481,6 +492,8 @@ export interface ApiStreamToolCallChunk {
 	arguments: string
 	/** Position in a provider's ordered output, including text and reasoning. */
 	outputIndex?: number
+	/** Complete provider parts sealed atomically with this accepted Gemini call. */
+	geminiResponse?: GeminiResponse
 }
 
 export interface ApiStreamToolCallStartChunk {
@@ -498,6 +511,8 @@ export interface ApiStreamToolCallDeltaChunk {
 export interface ApiStreamToolCallEndChunk {
 	type: "tool_call_end"
 	id: string
+	/** Complete provider parts sealed atomically with this accepted Gemini call. */
+	geminiResponse?: GeminiResponse
 }
 
 /**

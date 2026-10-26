@@ -921,9 +921,8 @@ export class ProviderSettingsManager {
 						const supportsReasoningBudget =
 							modelInfo.supportsReasoningBudget || modelInfo.requiredReasoningBudget
 
-						// If the model doesn't support reasoning budgets, remove the token fields
+						// The output cap is independent of reasoning controls and must survive export.
 						if (!supportsReasoningBudget) {
-							delete configs[name].modelMaxTokens
 							delete configs[name].modelMaxThinkingTokens
 						}
 					} catch (error) {

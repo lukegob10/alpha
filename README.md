@@ -20,7 +20,10 @@ The exact development and release reference host is VS Code **1.138.0**; it does
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
 policy or workspace protections.
 
-Supported chat providers are GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible.
+Supported chat providers are native OpenAI, Anthropic, Gemini, xAI, OpenRouter, GCP Vertex AI, VS Code LM API, Stellar,
+and OpenAI Compatible. Native providers and OpenRouter offer a curated frontier-model catalog. Select the provider and
+model in Settings, enter that provider's API key, and click **Save**. Choose reasoning separately in the task composer;
+available levels follow the selected model. Existing OpenAI Compatible profiles keep their custom endpoints and models.
 Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
 
 Alpha uses the GitHub CLI (`gh`) through its command tool. Install it where the extension runs and authenticate with

@@ -9,6 +9,10 @@ import {
 	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
 	type ProviderProfileSaveResult,
+	curatedProviders,
+	curatedProviderApiKeyFields,
+	getProviderDefaultModelId,
+	type ProviderSettings,
 } from "@alpha-code/types"
 
 import SettingsView from "../SettingsView"
@@ -619,6 +623,91 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				apiConfiguration: expect.objectContaining({ apiModelId: "buffered-model" }),
 			}),
 		)
+	})
+
+	it.each(curatedProviders)(
+		"buffers %s credentials across host refreshes and saves the edited key",
+		async (provider) => {
+			const keyField = curatedProviderApiKeyFields[provider]
+			const savedConfiguration: ProviderSettings = {
+				apiProvider: provider,
+				apiModelId: getProviderDefaultModelId(provider),
+				[keyField]: "saved-key",
+			}
+			let liveState = { ...defaultExtensionState, apiConfiguration: savedConfiguration }
+			vi.mocked(useExtensionState).mockImplementation(
+				() => liveState as unknown as ReturnType<typeof useExtensionState>,
+			)
+			vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+				<input
+					aria-label="Provider key"
+					type="password"
+					value={apiConfiguration[keyField] ?? ""}
+					onChange={(event) => setApiConfigurationField(keyField, event.target.value)}
+				/>
+			))
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={vi.fn()} />
+				</QueryClientProvider>
+			)
+			const result = render(view())
+			const input = await screen.findByLabelText("Provider key")
+			mockPostMessage.mockClear()
+			fireEvent.change(input, { target: { value: "buffered-key" } })
+			expect(savedConfiguration[keyField]).toBe("saved-key")
+			expect(mockPostMessage).not.toHaveBeenCalled()
+
+			liveState = { ...liveState, apiConfiguration: { ...savedConfiguration, [keyField]: "refreshed-key" } }
+			result.rerender(view())
+			expect(input).toHaveValue("buffered-key")
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "upsertApiConfiguration",
+					apiConfiguration: expect.objectContaining({ apiProvider: provider, [keyField]: "buffered-key" }),
+				}),
+			)
+		},
+	)
+
+	it.each(curatedProviders)("keeps %s key edits on Cancel and discards them without saving", async (provider) => {
+		const keyField = curatedProviderApiKeyFields[provider]
+		const savedConfiguration: ProviderSettings = {
+			apiProvider: provider,
+			apiModelId: getProviderDefaultModelId(provider),
+			[keyField]: "saved-key",
+		}
+		vi.mocked(useExtensionState).mockReturnValue({
+			...defaultExtensionState,
+			apiConfiguration: savedConfiguration,
+		} as unknown as ReturnType<typeof useExtensionState>)
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<input
+				aria-label="Provider key"
+				type="password"
+				value={apiConfiguration[keyField] ?? ""}
+				onChange={(event) => setApiConfigurationField(keyField, event.target.value)}
+			/>
+		))
+		const onDone = vi.fn()
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} />
+			</QueryClientProvider>,
+		)
+		const input = await screen.findByLabelText("Provider key")
+		fireEvent.change(input, { target: { value: "buffered-key" } })
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+		expect(input).toHaveValue("buffered-key")
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+		expect(onDone).toHaveBeenCalledOnce()
+		expect(savedConfiguration[keyField]).toBe("saved-key")
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
 	})
 
 	it("renames only the persisted profile identity while provider edits stay buffered", async () => {

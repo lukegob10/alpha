@@ -1095,6 +1095,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						)}
 						<ApiOptions
 							uriScheme={uriScheme}
+							profileIdentity={cachedApiConfigIdentity.id ?? cachedApiConfigIdentity.name}
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
 							errorMessage={errorMessage}

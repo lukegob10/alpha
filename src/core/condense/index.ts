@@ -8,6 +8,7 @@ import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
 import { getApiStreamErrorMessage } from "../../api/transform/stream"
 import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
+import { isOpaqueProviderContentBlock } from "../task-persistence/providerStateScope"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast, findLastIndex } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
@@ -99,27 +100,31 @@ export function convertToolBlocksToText(
 		return content
 	}
 
-	return content.map((block) => {
-		if (block.type === "tool_use") {
-			return {
-				type: "text" as const,
-				text: toolUseToText(block),
+	// Summarization rewrites tool transactions and instructions, so signed state
+	// cannot be continued here. Exact recent-tail history remains untouched.
+	return content
+		.filter((block) => !isOpaqueProviderContentBlock(block))
+		.map((block) => {
+			if (block.type === "tool_use") {
+				return {
+					type: "text" as const,
+					text: toolUseToText(block),
+				}
 			}
-		}
-		if ((block as unknown as { type?: unknown }).type === "tool_call") {
-			return {
-				type: "text" as const,
-				text: toolCallToText(block as unknown as Record<string, unknown>),
+			if ((block as unknown as { type?: unknown }).type === "tool_call") {
+				return {
+					type: "text" as const,
+					text: toolCallToText(block as unknown as Record<string, unknown>),
+				}
 			}
-		}
-		if (block.type === "tool_result") {
-			return {
-				type: "text" as const,
-				text: toolResultToText(block),
+			if (block.type === "tool_result") {
+				return {
+					type: "text" as const,
+					text: toolResultToText(block),
+				}
 			}
-		}
-		return block
-	})
+			return block
+		})
 }
 
 /**
@@ -303,6 +308,7 @@ const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"goal_usage_receipts",
 	"agentResponseItems",
 	"agentResponseOutcome",
+	"provider_state_scope",
 	"isSummary",
 	"condenseId",
 	"condenseParent",

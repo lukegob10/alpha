@@ -56,6 +56,8 @@ export function* lifecycleResponseItems(
 						responseItem.redactedData !== undefined ||
 						next.vscodeLmThinking !== undefined ||
 						responseItem.vscodeLmThinking !== undefined ||
+						next.geminiResponse !== undefined ||
+						responseItem.geminiResponse !== undefined ||
 						next.summary !== undefined ||
 						responseItem.summary !== undefined)
 				)

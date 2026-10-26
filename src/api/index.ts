@@ -1,7 +1,16 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { type ProviderSettings, type ModelInfo, type ModelRequestPhase, vertexDefaultModelId } from "@alpha-code/types"
+import {
+	type ProviderSettings,
+	type ModelInfo,
+	type ModelRequestPhase,
+	vertexDefaultModelId,
+	isCuratedProvider,
+	getCuratedModelInfo,
+	getModelId,
+	getUnsupportedCuratedProviderSettings,
+} from "@alpha-code/types"
 
 import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
 
@@ -10,6 +19,11 @@ import {
 	AnthropicVertexHandler,
 	VertexOpenAiHandler,
 	OpenAiHandler,
+	OpenAiNativeHandler,
+	AnthropicHandler,
+	GeminiHandler,
+	XAIHandler,
+	OpenRouterHandler,
 	VsCodeLmHandler,
 	StellarHandler,
 } from "./providers"
@@ -140,6 +154,16 @@ export interface ApiHandler {
 export function buildApiHandler(configuration: ProviderSettings & TaskReasoningRuntimeOptions): ApiHandler {
 	const { apiProvider, ...options } = configuration
 	assertSupportedApiProvider(apiProvider)
+	if (isCuratedProvider(apiProvider)) {
+		const unsupportedFields = getUnsupportedCuratedProviderSettings(apiProvider, configuration)
+		if (unsupportedFields.length) {
+			throw new Error(`Unsupported ${apiProvider} settings: ${unsupportedFields.join(", ")}`)
+		}
+		const modelId = getModelId(configuration)
+		if (modelId !== undefined && !getCuratedModelInfo(apiProvider, modelId.trim())) {
+			throw new Error(`Unsupported ${apiProvider} model. Select a model from the supported catalog.`)
+		}
+	}
 
 	// A missing provider is the only configuration that gets a default. Persisted
 	// provider identifiers must never silently fall through to a different
@@ -157,6 +181,16 @@ export function buildApiHandler(configuration: ProviderSettings & TaskReasoningR
 		}
 		case "openai":
 			return new OpenAiHandler(options)
+		case "openai-native":
+			return new OpenAiNativeHandler(options)
+		case "anthropic":
+			return new AnthropicHandler(options)
+		case "gemini":
+			return new GeminiHandler(options)
+		case "xai":
+			return new XAIHandler(options)
+		case "openrouter":
+			return new OpenRouterHandler(options)
 		case "vscode-lm":
 			return new VsCodeLmHandler(options)
 		case "fake-ai":

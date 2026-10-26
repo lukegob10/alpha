@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { createToolPolicySnapshot, isCommandDeniedByPolicy, isPathAllowed } from "../../agent/ToolPolicy"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry, type ToolDescriptor } from "../ToolRegistry"
+import { supportsFunctionCallingRestrictions } from "../../../shared/api"
 
 function schema(name: string) {
 	return {
@@ -46,6 +47,21 @@ function registry() {
 }
 
 describe("TaskToolSurface", () => {
+	it.each(["vertex", "gemini"] as const)("keeps %s historical schemas without granting Plan writes", (provider) => {
+		const surface = createTaskToolSurface({
+			registry: registry(),
+			schemas: [schema("read_file"), schema("write_to_file")],
+			mode: "architect",
+			includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(provider),
+		})
+		expect(surface.schemas.map((tool) => tool.type === "function" && tool.function.name)).toEqual([
+			"read_file",
+			"write_to_file",
+		])
+		expect(surface.allowedFunctionNames).toEqual(["read_file"])
+		expect(surface.resolve("write_to_file")).toBeUndefined()
+		expect(surface.isCallable("write_to_file")).toBe(false)
+	})
 	it.each(["ask", "auto", "bypass"] as const)(
 		"captures the %s approval tier and carries it to child surfaces",
 		(mode) => {

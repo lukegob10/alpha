@@ -2,6 +2,7 @@ import {
 	reasoningEffortsExtended,
 	taskReasoningCustomTokenPattern,
 	resolveOpenAiCustomModelInfo,
+	resolveModelReasoningEffort,
 	type TaskReasoningCapabilities,
 	type TaskReasoningFallbackReason,
 	type TaskReasoningPreference,
@@ -328,7 +329,11 @@ function resolveOnPreference(
 	}
 
 	if (capabilities.kind === "effort") {
-		const effort = selectEffort(configuration, modelInfo, capabilities.efforts ?? [])
+		const effort = selectEffort(
+			configuration,
+			modelInfo,
+			(capabilities.efforts ?? []).filter((effort) => effort !== "none"),
+		)
 		if (effort) {
 			return { effective: { kind: "effort", effort }, patch: activeEffortPatch(effort) }
 		}
@@ -395,12 +400,11 @@ function selectEffort(
 	efforts: ReasoningEffortExtended[],
 	allowFirst = true,
 ): ReasoningEffortExtended | undefined {
-	const configured = configuration.reasoningEffort as string | undefined
-	if (configured && configured !== "disable" && efforts.includes(configured as ReasoningEffortExtended)) {
-		return configured as ReasoningEffortExtended
-	}
-	if (modelInfo.reasoningEffort && efforts.includes(modelInfo.reasoningEffort)) return modelInfo.reasoningEffort
-	return allowFirst ? efforts[0] : undefined
+	return resolveModelReasoningEffort(
+		{ supportsReasoningEffort: efforts, reasoningEffort: modelInfo.reasoningEffort },
+		configuration.reasoningEffort,
+		allowFirst,
+	)
 }
 
 function activeEffortPatch(effort: ReasoningEffortExtended): Partial<TaskReasoningConfiguration> {

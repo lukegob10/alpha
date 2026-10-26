@@ -49,6 +49,12 @@ import { AskIgnoredError } from "./AskIgnoredError"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
+import {
+	canReplayProviderState,
+	hasOpaqueProviderState,
+	isOpaqueProviderContentBlock,
+	providerStateScopeSchema,
+} from "../task-persistence/providerStateScope"
 import { TaskRewindStore, type TaskRewindRecord } from "../task-persistence/TaskRewindStore"
 import { replaceDeliberatelyRemovedToolResults } from "../task-persistence/rewindToolResults"
 import { TaskGoalStore } from "../task-persistence/TaskGoalStore"
@@ -220,7 +226,11 @@ import {
 	toolParamNames,
 	isCommandArtifactRead,
 } from "../../shared/tools"
-import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
+import {
+	getModelMaxOutputTokens,
+	getModelReservedOutputTokens,
+	supportsFunctionCallingRestrictions,
+} from "../../shared/api"
 import {
 	ensureProposedPlanBlock,
 	parseProposedPlan,
@@ -2743,6 +2753,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const canonicalVscodeThinkingProjected =
 				Array.isArray(message.content) &&
 				message.content.some((block) => (block as { type: string }).type === "vscode_lm_thinking")
+			const canonicalGeminiResponseProjected =
+				Array.isArray(message.content) &&
+				message.content.some((block) => (block as { type: string }).type === "gemini_response")
 			const responseId = handler.getResponseId?.()
 			const reasoningData = handler.getEncryptedContent?.()
 			const encryptedReasoningItems = (handler.getReasoningItems?.() ?? []).filter(
@@ -2827,6 +2840,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!canonicalAnthropicThinkingProjected &&
 				!canonicalEncryptedReasoningProjected &&
 				!canonicalVscodeThinkingProjected &&
+				!canonicalGeminiResponseProjected &&
 				reasoning &&
 				!reasoningDetails
 			) {
@@ -2868,7 +2882,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// For non-Anthropic providers (e.g., Gemini 3), persist the thought signature as its own
 			// content block so converters can attach it back to the correct provider-specific fields.
 			// Note: For Anthropic extended thinking, the signature is already included in the thinking block above.
-			if (thoughtSignature && !isAnthropicProtocol) {
+			if (thoughtSignature && !isAnthropicProtocol && !canonicalGeminiResponseProjected) {
 				const thoughtSignatureBlock = {
 					type: "thoughtSignature",
 					thoughtSignature,
@@ -2883,6 +2897,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					messageWithTs.content = [...messageWithTs.content, thoughtSignatureBlock]
 				} else if (!messageWithTs.content) {
 					messageWithTs.content = [thoughtSignatureBlock]
+				}
+			}
+
+			if (hasOpaqueProviderState(messageWithTs)) {
+				const source = responseStep?.snapshot.context.provider
+				const replayModelId = source?.modelId ?? handler.getModel().id
+				if (typeof replayModelId === "string" && replayModelId.length > 0) {
+					const scope = providerStateScopeSchema.safeParse({
+						provider: source?.apiProvider ?? apiProvider ?? "vertex",
+						modelId: replayModelId,
+					})
+					// Optional provenance must not narrow the host's opaque ID contract.
+					if (scope.success) messageWithTs.provider_state_scope = scope.data
 				}
 			}
 
@@ -11822,7 +11849,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
-					includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+					includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(apiConfiguration.apiProvider),
 					catalogCache: this.toolCatalogCache,
 					discoveryHistory: history,
 					signal,
@@ -18788,7 +18815,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							execution: capturedExecution,
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
-							includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+							includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(
+								apiConfiguration.apiProvider,
+							),
 							catalogCache: this.toolCatalogCache,
 							discoveryHistory: this.apiConversationHistory,
 							signal,
@@ -19400,7 +19429,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
-									includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+									includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(
+										apiConfiguration.apiProvider,
+									),
 									catalogCache: this.toolCatalogCache,
 									discoveryHistory: this.apiConversationHistory,
 									signal: stepInterruptionSignal,
@@ -19719,11 +19750,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let allowedFunctionNames: string[] | undefined
 		let taskToolSurface: TaskToolSurface | undefined
 
-		// Vertex requires all tool definitions to be present for history compatibility,
-		// but uses allowedFunctionNames to restrict which tools can be called.
-		// Other supported providers do not use this restriction field,
-		// so they continue to receive only the filtered tools for the current mode.
-		const supportsAllowedFunctionNames = apiConfiguration?.apiProvider === "vertex"
+		// Google transports retain historical declarations, while the captured
+		// allow-list and executable surface enforce the current mode's authority.
+		const supportsAllowedFunctionNames = supportsFunctionCallingRestrictions(apiConfiguration?.apiProvider)
 
 		if (
 			(options.retryCategory === "transport" || options.retryCategory === "rate-limit") &&
@@ -20442,14 +20471,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		for (const msg of messages) {
-			// Host thinking is replayable only to VS Code, never as user content or
-			// another provider's reasoning/signature format. Keep saved history intact.
+			const replayOpaqueState =
+				msg.provider_state_scope === undefined ||
+				canReplayProviderState(msg.provider_state_scope, {
+					provider: apiConfiguration.apiProvider ?? "vertex",
+					modelId: apiHandler.getModel().id,
+				})
+			// Opaque replay state stays on its owning protocol. Keep saved history
+			// intact when a task changes providers or resumes through another adapter.
 			const requestContent = Array.isArray(msg.content)
-				? msg.content.filter(
-						(block) =>
-							(block as { type: string }).type !== "vscode_lm_thinking" ||
-							(msg.role === "assistant" && apiConfiguration.apiProvider === "vscode-lm"),
-					)
+				? msg.content.filter((block) => {
+						if (!replayOpaqueState && isOpaqueProviderContentBlock(block)) return false
+						const type = (block as { type: string }).type
+						if (type === "vscode_lm_thinking") {
+							return msg.role === "assistant" && apiConfiguration.apiProvider === "vscode-lm"
+						}
+						if (type === "gemini_response") {
+							return (
+								msg.role === "assistant" &&
+								(apiConfiguration.apiProvider === "gemini" ||
+									(apiConfiguration.apiProvider === "vertex" &&
+										apiHandler.getModel().id.toLowerCase().startsWith("gemini")))
+							)
+						}
+						return true
+					})
 				: msg.content
 			if (
 				Array.isArray(requestContent) &&
@@ -20470,6 +20516,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const persistedVscodeLmMarker = (msg as ApiMessage & { vscodeLmStatefulMarker?: unknown })
 				.vscodeLmStatefulMarker
 			const vscodeLmMetadata =
+				replayOpaqueState &&
 				msg.role === "assistant" &&
 				apiConfiguration.apiProvider === "vscode-lm" &&
 				typeof persistedVscodeLmMarker === "string"
@@ -20478,7 +20525,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// Standalone reasoning: send encrypted, skip plain text
 			if (msg.type === "reasoning") {
-				if (msg.encrypted_content) {
+				if (replayOpaqueState && msg.encrypted_content) {
 					cleanConversationHistory.push({
 						type: "reasoning",
 						summary: msg.summary,
@@ -20505,7 +20552,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				// Check if this message has reasoning_details (OpenRouter format for Gemini 3, etc.)
 				const msgWithDetails = msg
-				if (msgWithDetails.reasoning_details && Array.isArray(msgWithDetails.reasoning_details)) {
+				if (
+					replayOpaqueState &&
+					msgWithDetails.reasoning_details &&
+					Array.isArray(msgWithDetails.reasoning_details)
+				) {
 					// Build the assistant message with reasoning_details
 					const assistantContent = projectAssistantContent(contentArray)
 

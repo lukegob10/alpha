@@ -1,6 +1,8 @@
 import { setImmediate } from "node:timers/promises"
 
 import {
+	ApiStreamDeadlineError,
+	createLinkedAbortController,
 	getApiStreamErrorMessage,
 	iterateApiStreamWithAbort,
 	normalizeApiStreamErrorMetadata,
@@ -8,6 +10,33 @@ import {
 } from "../stream"
 
 describe("API stream cancellation", () => {
+	it.each([0, -1])("enforces an elapsed deadline synchronously (%s ms)", (offset) => {
+		vi.useFakeTimers()
+		try {
+			const control = createLinkedAbortController({ deadline: new Date(Date.now() + offset) })
+			try {
+				expect(control.signal.aborted).toBe(true)
+				expect(control.signal.reason).toBeInstanceOf(ApiStreamDeadlineError)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				control.dispose()
+			}
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("keeps the caller's cancellation reason when its deadline has also elapsed", () => {
+		const caller = new AbortController()
+		const reason = new Error("Caller stopped the request")
+		caller.abort(reason)
+		const control = createLinkedAbortController({ signal: caller.signal, deadline: Date.now() - 1 })
+		try {
+			expect(control.signal.reason).toBe(reason)
+		} finally {
+			control.dispose()
+		}
+	})
 	it("does not read an already-cancelled source and still closes its iterator", async () => {
 		const controller = new AbortController()
 		controller.abort()

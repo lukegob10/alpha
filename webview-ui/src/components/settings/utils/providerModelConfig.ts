@@ -1,5 +1,13 @@
 import type { ProviderName, ModelInfo, ProviderSettings } from "@alpha-code/types"
-import { vertexDefaultModelId, stellarDefaultModelId } from "@alpha-code/types"
+import {
+	vertexDefaultModelId,
+	stellarDefaultModelId,
+	openAiNativeDefaultModelId,
+	anthropicDefaultModelId,
+	geminiDefaultModelId,
+	xaiDefaultModelId,
+	openRouterDefaultModelId,
+} from "@alpha-code/types"
 
 import { MODELS_BY_PROVIDER } from "../constants"
 
@@ -12,6 +20,11 @@ export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServi
 	vertex: { serviceName: "GCP Vertex AI", serviceUrl: "https://console.cloud.google.com/vertex-ai" },
 	stellar: { serviceName: "Stellar", serviceUrl: "" },
 	openai: { serviceName: "OpenAI Compatible", serviceUrl: "https://platform.openai.com/docs" },
+	"openai-native": { serviceName: "OpenAI", serviceUrl: "https://developers.openai.com/api/docs" },
+	anthropic: { serviceName: "Anthropic", serviceUrl: "https://platform.claude.com/docs" },
+	gemini: { serviceName: "Google Gemini", serviceUrl: "https://ai.google.dev/gemini-api/docs" },
+	xai: { serviceName: "xAI", serviceUrl: "https://docs.x.ai" },
+	openrouter: { serviceName: "OpenRouter", serviceUrl: "https://openrouter.ai/docs" },
 	"vscode-lm": {
 		serviceName: "VS Code LM",
 		serviceUrl: "https://code.visualstudio.com/api/extension-guides/language-model",
@@ -21,6 +34,11 @@ export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServi
 export const PROVIDER_DEFAULT_MODEL_IDS: Partial<Record<ProviderName, string>> = {
 	vertex: vertexDefaultModelId,
 	stellar: stellarDefaultModelId,
+	"openai-native": openAiNativeDefaultModelId,
+	anthropic: anthropicDefaultModelId,
+	gemini: geminiDefaultModelId,
+	xai: xaiDefaultModelId,
+	openrouter: openRouterDefaultModelId,
 }
 
 export const getProviderServiceConfig = (provider: ProviderName): ProviderServiceConfig => {

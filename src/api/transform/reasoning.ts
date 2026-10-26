@@ -2,7 +2,12 @@ import { BetaThinkingConfigParam } from "@anthropic-ai/sdk/resources/beta"
 import OpenAI from "openai"
 import { ThinkingLevel, type GenerateContentConfig } from "@google/genai"
 
-import type { ModelInfo, ProviderSettings, ReasoningEffortExtended } from "@alpha-code/types"
+import {
+	resolveModelReasoningEffort,
+	type ModelInfo,
+	type ProviderSettings,
+	type ReasoningEffortExtended,
+} from "@alpha-code/types"
 
 import { shouldUseReasoningBudget, shouldUseReasoningEffort } from "../../shared/api"
 
@@ -28,6 +33,26 @@ export type GetModelReasoningOptions = {
 	settings: ProviderSettings
 }
 
+/** Omission can re-enable the service default; only declared zero-effort models map Off to none. */
+export function getExplicitOpenAiOffEffort({
+	model,
+	settings,
+	reasoningEffort,
+}: Pick<GetModelReasoningOptions, "model" | "settings" | "reasoningEffort">): "none" | undefined {
+	if (
+		!model.requiredReasoningEffort &&
+		!model.requiredReasoningBudget &&
+		(settings.enableReasoningEffort === false ||
+			settings.reasoningEffort === "disable" ||
+			reasoningEffort === "disable") &&
+		Array.isArray(model.supportsReasoningEffort) &&
+		model.supportsReasoningEffort.includes("none")
+	) {
+		return "none"
+	}
+	return undefined
+}
+
 export const getAnthropicReasoning = ({
 	model,
 	reasoningBudget,
@@ -40,12 +65,18 @@ export const getOpenAiReasoning = ({
 	reasoningEffort,
 	settings,
 }: GetModelReasoningOptions): OpenAiReasoningParams | undefined => {
-	if (!shouldUseReasoningEffort({ model, settings })) return undefined
-	if (reasoningEffort === "disable" || !reasoningEffort) return undefined
+	const offEffort = getExplicitOpenAiOffEffort({ model, settings, reasoningEffort })
+	if (!offEffort) {
+		if (!shouldUseReasoningEffort({ model, settings })) return undefined
+		if (!model.requiredReasoningEffort && reasoningEffort === "disable") return undefined
+	}
+	const effort =
+		offEffort ?? resolveModelReasoningEffort(model, reasoningEffort, model.requiredReasoningEffort === true)
+	if (!effort) return undefined
 
-	// Include "none" | "minimal" | "low" | "medium" | "high" literally
+	// Catalog validation includes effort values newer than the pinned SDK's union.
 	return {
-		reasoning_effort: reasoningEffort as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"],
+		reasoning_effort: effort as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"],
 	}
 }
 
@@ -75,25 +106,17 @@ export const getGeminiReasoning = ({
 	// We intentionally ignore enableReasoningEffort here so that explicitly chosen
 	// efforts in the UI (e.g. "High" for gemini-3-pro-preview) always translate
 	// into a thinkingConfig, regardless of legacy boolean flags.
-	const selectedEffort = (settings.reasoningEffort ?? model.reasoningEffort) as
-		| ReasoningEffortExtended
-		| "disable"
-		| undefined
+	const selectedEffort = settings.reasoningEffort ?? reasoningEffort ?? model.reasoningEffort
 
 	// Respect "off" / unset semantics from the effort selector itself.
-	if (!selectedEffort || selectedEffort === "disable") {
+	if (!model.requiredReasoningEffort && (!selectedEffort || selectedEffort === "disable")) {
 		return undefined
 	}
 
 	// Validate that the selected effort is supported by this specific model.
 	// e.g. gemini-3-pro-preview only supports ["low", "high"] — sending
 	// "medium" (carried over from a different model's settings) causes errors.
-	const effortToUse =
-		Array.isArray(model.supportsReasoningEffort) &&
-		isGeminiThinkingLevel(selectedEffort) &&
-		!model.supportsReasoningEffort.includes(selectedEffort)
-			? model.reasoningEffort
-			: selectedEffort
+	const effortToUse = resolveModelReasoningEffort(model, selectedEffort, model.requiredReasoningEffort === true)
 
 	// Effort-based models on Google GenAI support minimal/low/medium/high levels.
 	if (!effortToUse || !isGeminiThinkingLevel(effortToUse)) {

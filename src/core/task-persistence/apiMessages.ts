@@ -14,6 +14,7 @@ import type { AgentResponseItem, AgentResponseOutcome } from "../agent/AgentResp
 import type { AssistantMessagePhase } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
 import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
+import type { ProviderStateScope } from "./providerStateScope"
 import {
 	assertAuthoritativeTranscriptMissing,
 	assertAuthoritativeTranscriptReplacementAllowed,
@@ -53,6 +54,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	/** Ordered canonical response evidence retained across persistence and context projection. */
 	agentResponseItems?: AgentResponseItem[]
 	agentResponseOutcome?: AgentResponseOutcome
+	/** Producing provider/model for new opaque replay state; absent on legacy transcripts. */
+	provider_state_scope?: ProviderStateScope
 	// For reasoning items stored in API history
 	type?: "reasoning"
 	summary?: any[]

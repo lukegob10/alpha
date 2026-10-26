@@ -1,8 +1,23 @@
 import { z } from "zod"
 
-import { modelInfoSchema, reasoningEffortSettingSchema, verbosityLevelsSchema } from "./model.js"
+import {
+	modelInfoSchema,
+	reasoningEffortSettingSchema,
+	serviceTierSchema,
+	verbosityLevelsSchema,
+	type ModelInfo,
+} from "./model.js"
 import { codebaseIndexProviderSchema } from "./codebase-index.js"
-import { stellarModels, vertexModels, vscodeLlmModels } from "./providers/index.js"
+import {
+	stellarModels,
+	vertexModels,
+	vscodeLlmModels,
+	openAiNativeModels,
+	anthropicModels,
+	geminiModels,
+	xaiModels,
+	openRouterModels,
+} from "./providers/index.js"
 
 /**
  * Shared provider settings and the public provider registry.
@@ -34,8 +49,14 @@ export const fauxProviders = ["fake-ai"] as const
 export type FauxProvider = (typeof fauxProviders)[number]
 export const isFauxProvider = (key: string): key is FauxProvider => fauxProviders.includes(key as FauxProvider)
 
+/** Curated native and router paths share explicit model capabilities. */
+export const curatedProviders = ["openai-native", "anthropic", "gemini", "xai", "openrouter"] as const
+export type CuratedProvider = (typeof curatedProviders)[number]
+export const isCuratedProvider = (value: unknown): value is CuratedProvider =>
+	typeof value === "string" && curatedProviders.includes(value as CuratedProvider)
+
 /** Public provider IDs. Keep this list in sync with the executable factory. */
-export const providerNames = ["vertex", "vscode-lm", "stellar", "openai"] as const
+export const providerNames = ["vertex", "vscode-lm", "stellar", "openai", ...curatedProviders] as const
 export const providerNamesSchema = z.enum(providerNames)
 export type ProviderName = z.infer<typeof providerNamesSchema>
 export const isProviderName = (key: unknown): key is ProviderName =>
@@ -48,22 +69,17 @@ export type OrganizationAllowList = {
 
 /** Provider IDs that are retained only for deterministic compatibility errors. */
 export const retiredProviderNames = [
-	"anthropic",
 	"bedrock",
-	"openrouter",
 	"ollama",
 	"lmstudio",
-	"gemini",
 	"gemini-cli",
 	"openai-codex",
-	"openai-native",
 	"deepseek",
 	"qwen-code",
 	"moonshot",
 	"mistral",
 	"requesty",
 	"unbound",
-	"xai",
 	"litellm",
 	"sambanova",
 	"zai",
@@ -191,6 +207,38 @@ const openAiSchema = baseProviderSettingsSchema.extend({
 	openAiHeaders: z.record(z.string(), z.string()).optional(),
 })
 
+const openAiNativeSchema = apiModelIdProviderModelSchema.extend({
+	openAiNativeApiKey: z.string().optional(),
+	// Retain historical route settings so adapters can validate them before dispatch.
+	openAiNativeBaseUrl: z.string().optional(),
+	openAiNativeServiceTier: serviceTierSchema.optional(),
+})
+
+const anthropicSchema = apiModelIdProviderModelSchema.extend({
+	apiKey: z.string().optional(),
+	anthropicBaseUrl: z.string().optional(),
+	anthropicUseAuthToken: z.boolean().optional(),
+	anthropicBeta1MContext: z.boolean().optional(),
+})
+
+const geminiSchema = apiModelIdProviderModelSchema.extend({
+	geminiApiKey: z.string().optional(),
+	googleGeminiBaseUrl: z.string().optional(),
+})
+
+const xaiSchema = apiModelIdProviderModelSchema.extend({
+	xaiApiKey: z.string().optional(),
+})
+
+const openRouterSchema = apiModelIdProviderModelSchema.extend({
+	openRouterApiKey: z.string().optional(),
+	/** Reader compatibility; new selections use apiModelId. */
+	openRouterModelId: z.string().optional(),
+	openRouterBaseUrl: z.string().optional(),
+	openRouterSpecificProvider: z.string().optional(),
+	openRouterStreamingEnabled: z.boolean().optional(),
+})
+
 const vsCodeLmSchema = baseProviderSettingsSchema.extend({
 	vsCodeLmModelSelector: z
 		.object({
@@ -211,6 +259,11 @@ export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProv
 	vertexSchema.merge(z.object({ apiProvider: z.literal("vertex") })),
 	stellarSchema.merge(z.object({ apiProvider: z.literal("stellar") })),
 	openAiSchema.merge(z.object({ apiProvider: z.literal("openai") })),
+	openAiNativeSchema.merge(z.object({ apiProvider: z.literal("openai-native") })),
+	anthropicSchema.merge(z.object({ apiProvider: z.literal("anthropic") })),
+	geminiSchema.merge(z.object({ apiProvider: z.literal("gemini") })),
+	xaiSchema.merge(z.object({ apiProvider: z.literal("xai") })),
+	openRouterSchema.merge(z.object({ apiProvider: z.literal("openrouter") })),
 	vsCodeLmSchema.merge(z.object({ apiProvider: z.literal("vscode-lm") })),
 	fakeAiSchema.merge(z.object({ apiProvider: z.literal("fake-ai") })),
 	z.object({ apiProvider: z.undefined() }),
@@ -221,12 +274,86 @@ export const providerSettingsSchema = z.object({
 	...vertexSchema.shape,
 	...stellarSchema.shape,
 	...openAiSchema.shape,
+	...openAiNativeSchema.shape,
+	...anthropicSchema.shape,
+	...geminiSchema.shape,
+	...xaiSchema.shape,
+	...openRouterSchema.shape,
 	...vsCodeLmSchema.shape,
 	...fakeAiSchema.shape,
 	...codebaseIndexProviderSchema.shape,
 })
 
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>
+
+export const curatedProviderApiKeyFields = {
+	"openai-native": "openAiNativeApiKey",
+	anthropic: "apiKey",
+	gemini: "geminiApiKey",
+	xai: "xaiApiKey",
+	openrouter: "openRouterApiKey",
+} as const satisfies Record<CuratedProvider, keyof ProviderSettings>
+
+function isUnsupportedCuratedEndpoint(value: string | undefined, origin: string, paths: readonly string[]): boolean {
+	if (value === undefined || value.trim() === "") return false
+	try {
+		const url = new URL(value)
+		return (
+			url.origin !== origin ||
+			url.username !== "" ||
+			url.password !== "" ||
+			url.href.includes("?") ||
+			url.href.includes("#") ||
+			!paths.includes(url.pathname.replace(/\/+$/, ""))
+		)
+	} catch {
+		return true
+	}
+}
+
+/** Preserve saved route intent: unsupported overrides must be repaired before an official-endpoint request. */
+export function getUnsupportedCuratedProviderSettings(
+	provider: CuratedProvider,
+	settings: ProviderSettings,
+): (keyof ProviderSettings)[] {
+	const unsupported: (keyof ProviderSettings)[] = []
+	switch (provider) {
+		case "openai-native":
+			if (isUnsupportedCuratedEndpoint(settings.openAiNativeBaseUrl, "https://api.openai.com", ["/v1"])) {
+				unsupported.push("openAiNativeBaseUrl")
+			}
+			if (settings.openAiNativeServiceTier !== undefined && settings.openAiNativeServiceTier !== "default") {
+				unsupported.push("openAiNativeServiceTier")
+			}
+			break
+		case "anthropic":
+			if (isUnsupportedCuratedEndpoint(settings.anthropicBaseUrl, "https://api.anthropic.com", ["", "/v1"])) {
+				unsupported.push("anthropicBaseUrl")
+			}
+			if (settings.anthropicUseAuthToken) unsupported.push("anthropicUseAuthToken")
+			break
+		case "gemini":
+			if (
+				isUnsupportedCuratedEndpoint(
+					settings.googleGeminiBaseUrl,
+					"https://generativelanguage.googleapis.com",
+					["", "/v1beta"],
+				)
+			) {
+				unsupported.push("googleGeminiBaseUrl")
+			}
+			break
+		case "openrouter":
+			if (isUnsupportedCuratedEndpoint(settings.openRouterBaseUrl, "https://openrouter.ai", ["/api/v1"])) {
+				unsupported.push("openRouterBaseUrl")
+			}
+			if (settings.openRouterSpecificProvider?.trim()) unsupported.push("openRouterSpecificProvider")
+			break
+		case "xai":
+			break
+	}
+	return unsupported
+}
 
 export const providerSettingsWithIdSchema = providerSettingsSchema.extend({ id: z.string().optional() })
 export const discriminatedProviderSettingsWithIdSchema = providerSettingsSchemaDiscriminated.and(
@@ -244,10 +371,18 @@ export const persistedProviderSettingsWithIdSchema = persistedProviderSettingsSc
 
 export const PROVIDER_SETTINGS_KEYS = providerSettingsSchema.keyof().options
 
-export const modelIdKeys = ["apiModelId", "openAiModelId"] as const satisfies readonly (keyof ProviderSettings)[]
+export const modelIdKeys = [
+	"apiModelId",
+	"openAiModelId",
+	"openRouterModelId",
+] as const satisfies readonly (keyof ProviderSettings)[]
 export type ModelIdKey = (typeof modelIdKeys)[number]
 
 export const getModelId = (settings: ProviderSettings): string | undefined => {
+	if (settings.apiProvider === "openrouter") return settings.apiModelId ?? settings.openRouterModelId
+	if (settings.apiProvider === "openai") return settings.openAiModelId
+	if (isProviderName(settings.apiProvider)) return settings.apiModelId
+	// Unknown saved profiles retain the historical diagnostic reader without gaining execution authority.
 	const modelIdKey = modelIdKeys.find((key) => settings[key])
 	return modelIdKey ? settings[modelIdKey] : undefined
 }
@@ -259,13 +394,18 @@ export const isTypicalProvider = (key: unknown): key is TypicalProvider =>
 export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 	vertex: "apiModelId",
 	stellar: "apiModelId",
+	"openai-native": "apiModelId",
+	anthropic: "apiModelId",
+	gemini: "apiModelId",
+	xai: "apiModelId",
+	openrouter: "apiModelId",
 }
 
-/** Vertex Claude uses Anthropic wire semantics; all other approved paths use OpenAI/Gemini semantics. */
-export const ANTHROPIC_STYLE_PROVIDERS: ProviderName[] = []
+/** Direct Anthropic and Vertex Claude preserve the native Messages wire semantics. */
+export const ANTHROPIC_STYLE_PROVIDERS: ProviderName[] = ["anthropic"]
 
 export const getApiProtocol = (provider: ProviderName | undefined, modelId?: string): "anthropic" | "openai" => {
-	if (provider === "vertex" && modelId && modelId.toLowerCase().includes("claude")) {
+	if (provider === "anthropic" || (provider === "vertex" && modelId && modelId.toLowerCase().includes("claude"))) {
 		return "anthropic"
 	}
 
@@ -291,4 +431,26 @@ export const MODELS_BY_PROVIDER: Record<
 		label: "VS Code LM API",
 		models: Object.keys(vscodeLlmModels),
 	},
+	"openai-native": { id: "openai-native", label: "OpenAI", models: Object.keys(openAiNativeModels) },
+	anthropic: { id: "anthropic", label: "Anthropic", models: Object.keys(anthropicModels) },
+	gemini: { id: "gemini", label: "Google Gemini", models: Object.keys(geminiModels) },
+	xai: { id: "xai", label: "xAI", models: Object.keys(xaiModels) },
+	openrouter: { id: "openrouter", label: "OpenRouter", models: Object.keys(openRouterModels) },
+}
+
+export const CURATED_MODELS_BY_PROVIDER: Record<CuratedProvider, Record<string, ModelInfo>> = {
+	"openai-native": openAiNativeModels,
+	anthropic: anthropicModels,
+	gemini: geminiModels,
+	xai: xaiModels,
+	openrouter: openRouterModels,
+}
+
+export const getCuratedProviderModels = (provider: CuratedProvider): Record<string, ModelInfo> =>
+	CURATED_MODELS_BY_PROVIDER[provider]
+
+/** Unknown IDs, including object prototype keys, must never acquire model capabilities. */
+export const getCuratedModelInfo = (provider: CuratedProvider, modelId: string): ModelInfo | undefined => {
+	const models = getCuratedProviderModels(provider)
+	return Object.hasOwn(models, modelId) ? models[modelId] : undefined
 }

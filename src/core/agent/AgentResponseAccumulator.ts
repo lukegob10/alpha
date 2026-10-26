@@ -1,7 +1,9 @@
 import {
 	normalizeAssistantMessageMetadata,
+	snapshotGeminiResponse,
 	snapshotVscodeLmThinking,
 	type AssistantMessageMetadata,
+	type GeminiResponse,
 } from "@alpha-code/types"
 
 import type { ApiStreamChunk } from "../../api/transform/stream"
@@ -103,6 +105,7 @@ export class AgentResponseAccumulator {
 	private readonly opaqueReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private readonly latestReasoningItems = new Map<number, Extract<AgentResponseItem, { type: "reasoning" }>>()
 	private lastReasoningItem: Extract<AgentResponseItem, { type: "reasoning" }> | undefined
+	private geminiResponseItem: Extract<AgentResponseItem, { type: "reasoning" }> | undefined
 	private nextToolOrder = 0
 	private nextSyntheticId = 0
 	private finished = false
@@ -137,10 +140,12 @@ export class AgentResponseAccumulator {
 				return
 
 			case "reasoning": {
+				const geminiResponse = this.snapshotGeminiState(chunk.geminiResponse)
 				const vscodeLmThinking = snapshotVscodeLmThinking(chunk.vscodeLmThinking)
 				const item: Extract<AgentResponseItem, { type: "reasoning" }> = {
 					type: "reasoning",
 					text: chunk.text,
+					...(geminiResponse ? { geminiResponse } : {}),
 					...(vscodeLmThinking ? { vscodeLmThinking } : {}),
 					...(chunk.signature !== undefined ? { signature: chunk.signature } : {}),
 					...(chunk.encryptedContent !== undefined ? { encryptedContent: chunk.encryptedContent } : {}),
@@ -153,6 +158,7 @@ export class AgentResponseAccumulator {
 					...(chunk.id !== undefined ? { id: chunk.id } : {}),
 					...(chunk.summary !== undefined ? { summary: structuredClone(chunk.summary) } : {}),
 				}
+				if (geminiResponse) return this.retainGeminiState(geminiResponse, onItem, item)
 				if (chunk.encryptedContent !== undefined && chunk.outputIndex !== undefined) {
 					const previous = this.opaqueReasoningItems.get(chunk.outputIndex)
 					if (previous) {
@@ -238,6 +244,7 @@ export class AgentResponseAccumulator {
 				return
 
 			case "tool_call": {
+				const geminiResponse = this.snapshotGeminiState(chunk.geminiResponse)
 				const id = asString(chunk.id)
 				let pending = id ? this.pendingTools.get(id) : undefined
 				if (!pending) {
@@ -267,6 +274,7 @@ export class AgentResponseAccumulator {
 				}
 				pending.hasCompletePayload = true
 				this.acceptPendingToolCall(pending)
+				if (geminiResponse && pending.accepted) await this.retainGeminiState(geminiResponse, onItem)
 				return this.announceToolCallNotifications(pending, onToolCallReadyForPreflight, onToolCallCompleted)
 			}
 
@@ -301,10 +309,12 @@ export class AgentResponseAccumulator {
 			}
 
 			case "tool_call_end": {
+				const geminiResponse = this.snapshotGeminiState(chunk.geminiResponse)
 				const pending = this.pendingTools.get(asString(chunk.id))
 				if (pending) {
 					pending.ended = true
 					this.acceptPendingToolCall(pending)
+					if (geminiResponse && pending.accepted) await this.retainGeminiState(geminiResponse, onItem)
 					return this.announceToolCallNotifications(pending, onToolCallReadyForPreflight, onToolCallCompleted)
 				}
 				return
@@ -352,6 +362,32 @@ export class AgentResponseAccumulator {
 					: undefined
 			}
 		}
+	}
+
+	private snapshotGeminiState(value: unknown): GeminiResponse | undefined {
+		if (value === undefined) return undefined
+		const state = snapshotGeminiResponse(value)
+		if (!state) throw new Error("Provider returned invalid Gemini response state.")
+		return state
+	}
+
+	/** The latest complete prefix replaces one replay unit; cancellation cannot expose an unaccepted call. */
+	private retainGeminiState(
+		geminiResponse: GeminiResponse,
+		onItem?: (item: AgentResponseItem) => Promise<void> | void,
+		item: Extract<AgentResponseItem, { type: "reasoning" }> = { type: "reasoning", text: "", geminiResponse },
+	): Promise<void> | void {
+		if (this.geminiResponseItem) {
+			if (this.geminiResponseItem.geminiResponse?.modelId !== geminiResponse.modelId) {
+				throw new Error("Gemini model identity changed within one response.")
+			}
+			this.geminiResponseItem.geminiResponse = geminiResponse
+			if (!item.text) return
+			delete item.geminiResponse
+		} else {
+			this.geminiResponseItem = item
+		}
+		return this.emit(item, onItem, true, item.outputIndex)
 	}
 
 	async finish(

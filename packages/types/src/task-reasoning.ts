@@ -1,6 +1,27 @@
 import { z } from "zod"
 
-import { reasoningEffortExtendedSchema, type ReasoningEffortExtended } from "./model.js"
+import { reasoningEffortExtendedSchema, type ReasoningEffortExtended, type ModelInfo } from "./model.js"
+
+/**
+ * Shared selection for task state and adapter requests; provider encoding happens later.
+ * Model-owned defaults follow Codex's protocol/openai_models/reasoning_effort.rs
+ * at 970111f6cb62cc02fe36a82ea7d71b37a2889c97 (reviewed 2026-10-25).
+ */
+export function resolveModelReasoningEffort(
+	model: Pick<ModelInfo, "supportsReasoningEffort" | "reasoningEffort">,
+	requested: string | undefined,
+	allowFirst = true,
+): ReasoningEffortExtended | undefined {
+	const supported = Array.isArray(model.supportsReasoningEffort)
+		? model.supportsReasoningEffort.filter((effort): effort is ReasoningEffortExtended => effort !== "disable")
+		: undefined
+	const accepts = (value: unknown): value is ReasoningEffortExtended =>
+		reasoningEffortExtendedSchema.safeParse(value).success &&
+		(supported === undefined || supported.includes(value as ReasoningEffortExtended))
+	if (accepts(requested)) return requested
+	if (accepts(model.reasoningEffort)) return model.reasoningEffort
+	return allowFirst ? supported?.[0] : undefined
+}
 
 /**
  * A task-level reasoning choice. This value is deliberately separate from a

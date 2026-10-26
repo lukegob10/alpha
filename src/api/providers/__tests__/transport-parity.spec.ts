@@ -67,6 +67,8 @@ vi.mock("vscode", () => {
 		LanguageModelToolCallPart: ToolCallPart,
 		LanguageModelToolResultPart: ToolResultPart,
 		LanguageModelDataPart: DataPart,
+		// The minimum host has no optional thinking-part constructor.
+		LanguageModelThinkingPart: undefined,
 		LanguageModelChatMessage: {
 			User: (content: unknown) => ({
 				role: "user",
