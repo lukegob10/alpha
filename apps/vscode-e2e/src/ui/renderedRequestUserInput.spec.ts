@@ -7,6 +7,7 @@ import {
 	questionHistoryStateExpression,
 	questionReceiptOutsideWorkExpression,
 	questionViewportDiagnosticsExpression,
+	questionWheelAfterExpression,
 	questionWheelCaptureExpression,
 	questionWheelCleanupExpression,
 	questionWheelProgressExpression,
@@ -26,6 +27,12 @@ function documentFixture(options: { nonce?: string; loading?: boolean; missing?:
 		| undefined
 	let registrations = 0
 	const paints: Array<() => void> = []
+	const focusedElement = {
+		tagName: "H3",
+		outerHTML: "<h3>Review your answers</h3>",
+		isConnected: true,
+		ownerDocument: undefined as unknown,
+	}
 	const registerWheel = (
 		target: "document" | "viewport",
 		name: string,
@@ -39,7 +46,7 @@ function documentFixture(options: { nonce?: string; loading?: boolean; missing?:
 	}
 	const document = {
 		readyState: options.loading ? "loading" : "complete",
-		activeElement: { outerHTML: "<h3>Review your answers</h3>" },
+		activeElement: focusedElement,
 		elementFromPoint: (): unknown => target,
 		addEventListener: (name: string, listener: (event: object) => void, options?: object) =>
 			registerWheel("document", name, listener, options),
@@ -60,6 +67,7 @@ function documentFixture(options: { nonce?: string; loading?: boolean; missing?:
 			selector === "[data-testid=chat-transcript-scroller]" ? (options.missing ? null : viewport) : target,
 		querySelectorAll: (selector: string) => (selector === "[data-testid=user-input-receipt]" ? [{}] : []),
 	}
+	focusedElement.ownerDocument = document
 	const viewport = {
 		tagName: "DIV",
 		parentElement: null,
@@ -164,7 +172,7 @@ class ControlledQuestionRenderer implements Pick<CdpConnection, "request"> {
 }
 
 function captureQuestionWheel(fixture: ReturnType<typeof documentFixture>, renderer: ControlledQuestionRenderer) {
-	const operation = sampleQuestionViewport<{ scrollTop: number }>(
+	const operation = sampleQuestionViewport<{ scrollTop: number; focus: string }>(
 		renderer,
 		"question-renderer",
 		questionWheelCaptureExpression(),
@@ -172,6 +180,37 @@ function captureQuestionWheel(fixture: ReturnType<typeof documentFixture>, rende
 	fixture.paint()
 	fixture.paint()
 	return operation
+}
+
+for (const change of ["body descendants", "identical replacement", "control loses focus"] as const) {
+	test(`native wheel focus tracks node identity: ${change}`, async () => {
+		const fixture = documentFixture()
+		if (change === "body descendants") {
+			fixture.document.activeElement.tagName = "BODY"
+			fixture.document.activeElement.outerHTML = "<body><main>Answers</main></body>"
+		}
+		const renderer = new ControlledQuestionRenderer(fixture)
+		const point = await captureQuestionWheel(fixture, renderer)
+		assert.ok(point.ready)
+		if (change === "body descendants") {
+			fixture.document.activeElement.outerHTML =
+				'<body><main>Answers</main><button aria-label="Scroll to bottom of chat"></button></body>'
+		} else {
+			fixture.document.activeElement = {
+				...fixture.document.activeElement,
+				...(change === "control loses focus" ? { tagName: "BODY", outerHTML: "<body></body>" } : {}),
+			}
+		}
+		const after = await sampleQuestionViewport<{ focus: string; focusPreserved: boolean }>(
+			renderer,
+			"question-renderer",
+			questionWheelAfterExpression(),
+		)
+		assert.ok(after.ready)
+		assert.equal(after.value.focusPreserved, change === "body descendants")
+		assert.ok(after.value.focus.length < 512)
+		assert.equal(after.value.focus.includes("<body"), false, "Focus diagnostics must not serialize descendants")
+	})
 }
 
 test("wheel evidence separates point sampling from trusted delivery after a scroll shift", async () => {
@@ -399,6 +438,13 @@ test("one document observer resets stage evidence, rejects other targets, and de
 	})
 	await sampleQuestionViewport(renderer, "question-renderer", questionWheelCleanupExpression())
 	assert.equal(fixture.hasWheelListener(), false)
+	const after = await sampleQuestionViewport<{ focusPreserved: boolean }>(
+		renderer,
+		"question-renderer",
+		questionWheelAfterExpression(),
+	)
+	assert.ok(after.ready)
+	assert.equal(after.value.focusPreserved, false, "Cleanup must release the captured DOM node")
 })
 
 for (const { name, absent = false, hidden = false, controlled = false, expected } of [

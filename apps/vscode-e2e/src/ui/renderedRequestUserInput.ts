@@ -114,6 +114,12 @@ export function questionViewportDiagnosticsExpression(): string {
 			center:{x,y,hit:describe(hit),ancestors}}})()`
 }
 
+function questionFocusDescriptionExpression(): string {
+	return `(()=>{const e=d.activeElement;return JSON.stringify({tag:e?.tagName?.slice(0,40)??null,
+		id:e?.id?.slice(0,120)??null,label:e?.getAttribute?.('aria-label')?.slice(0,120)??null,
+		testId:e?.getAttribute?.('data-testid')?.slice(0,120)??null})})()`
+}
+
 /**
  * Keep Chromium's blocking input region installed between captures, and let its registration paint before input.
  * https://developer.chrome.com/blog/scrolling-intervention-2/ (verified 2026-10-26).
@@ -136,12 +142,14 @@ export function questionWheelCaptureExpression(): string {
 		}
 		d.defaultView.__alphaQuestionCaptureWheel=undefined;
 		viewport.__alphaQuestionCaptureWheel=undefined;
+		delete viewport.__alphaQuestionCaptureFocus;
 		let frames=2;
 		const sample=()=>{if(!isCurrentQuestionViewport()){resolve(null);return}
 			if(--frames>0){d.defaultView.requestAnimationFrame(sample);return}
 			const r=viewport.getBoundingClientRect(),f=document.getElementById('active-frame')?.getBoundingClientRect();
+			viewport.__alphaQuestionCaptureFocus=d.activeElement;
 			resolve({x:r.left+r.width/2+(f?.left??0),y:r.top+r.height/2+(f?.top??0),
-				scrollTop:viewport.scrollTop,focus:d.activeElement?.outerHTML??'',geometry:(${questionViewportDiagnosticsExpression()})})
+				scrollTop:viewport.scrollTop,focus:(${questionFocusDescriptionExpression()}),geometry:(${questionViewportDiagnosticsExpression()})})
 		};d.defaultView.requestAnimationFrame(sample)})`
 }
 
@@ -150,7 +158,7 @@ export function questionWheelCleanupExpression(): string {
 		if(observer)d.removeEventListener('wheel',observer,true);
 		delete d.__alphaQuestionCaptureWheelObserver;delete d.defaultView.__alphaQuestionCaptureWheel;
 		const viewport=d.querySelector('[data-testid=chat-transcript-scroller]');
-		if(viewport)delete viewport.__alphaQuestionCaptureWheel;return true})()`
+		if(viewport){delete viewport.__alphaQuestionCaptureWheel;delete viewport.__alphaQuestionCaptureFocus}return true})()`
 }
 
 /** Layout and focus can move the viewport between sampling the mouse point and native wheel delivery. */
@@ -158,6 +166,14 @@ export function questionWheelProgressExpression(): string {
 	return `(()=>{const wheel=viewport.__alphaQuestionCaptureWheel,before=wheel?.geometry?.scrollTop;
 		return wheel?.isTrusted===true&&wheel.deltaY===-80&&wheel.cancelable===true&&wheel.eventPhase===1&&Number.isFinite(before)&&
 			viewport.scrollTop<=Math.max(0,before-80)+1})()`
+}
+
+/** Browsing may update descendants of BODY without changing which DOM node owns keyboard focus. */
+export function questionWheelAfterExpression(): string {
+	return `(()=>{const before=viewport.__alphaQuestionCaptureFocus;
+		return {scrollTop:viewport.scrollTop,focus:(${questionFocusDescriptionExpression()}),
+			focusPreserved:!!before&&before===d.activeElement&&before.isConnected&&before.ownerDocument===d,
+			wheel:d.defaultView.__alphaQuestionCaptureWheel}})()`
 }
 
 export function questionReceiptOutsideWorkExpression(parentToggle: string): string {
@@ -343,15 +359,15 @@ export async function exerciseRenderedRequestUserInput(
 				deadline,
 				(value) => value,
 			)
-			const after = await read<{ scrollTop: number; focus: string; wheel: unknown }>(
+			const after = await read<{ scrollTop: number; focus: string; focusPreserved: boolean; wheel: unknown }>(
 				"wheel-after",
-				"({scrollTop:viewport.scrollTop,focus:d.activeElement?.outerHTML??'',wheel:d.defaultView.__alphaQuestionCaptureWheel})",
+				questionWheelAfterExpression(),
 			)
 			await fs.writeFile(
 				path.join(directory, `ui-${stage}-scroll.json`),
 				JSON.stringify({ x, y, deltaY: -80, before: point, after, trustedWheel: true }, null, 2),
 			)
-			assert.equal(after.focus, point.focus, "Native browsing must preserve the current keyboard focus")
+			assert.equal(after.focusPreserved, true, "Native browsing must preserve the current keyboard focus")
 		}
 		const align = async (block: "start" | "end"): Promise<CaptureBounds> => {
 			assert.ok(selector)
