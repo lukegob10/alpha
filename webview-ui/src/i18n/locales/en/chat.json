@@ -511,7 +511,7 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} adds optional local memories and improves conversation reliability.",
+			"welcome": "Alpha v{{version}} improves security and reliability while preserving local memories.",
 			"taskContinuity": "Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
 			"toolsAndProviders": "Choose curated frontier models and supported reasoning settings across providers.",
 			"delegation": "Enable local memories with separate controls for use, background generation, and reset.",

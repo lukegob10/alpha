@@ -1,7 +1,7 @@
 import { spawn } from "child_process"
 import { downloadAndUnzipVSCode, type TestOptions } from "@vscode/test-electron"
 import { TestRunError, type TestRunFailureCode } from "./runFailure"
-import { terminateOwnedProcess, verifyPosixProcessGroupGone } from "./campaign/ownedProcess"
+import { terminateOwnedProcess } from "./campaign/ownedProcess"
 import {
 	watchLiveHost,
 	LIVE_HOST_CLOSE_TIMEOUT_MS,
@@ -93,15 +93,11 @@ export async function launchExtensionHost(
 		let closed = false
 		let monitor: { dispose(): void } | undefined
 		let cleanupTimer: NodeJS.Timeout | undefined
-		let graceTimer: NodeJS.Timeout | undefined
-		let releaseGrace: (() => void) | undefined
 		let failure: TestRunError | undefined
 		let termination: Promise<{ cleanupVerified: boolean }> | undefined
 		const cleanup = () => {
 			monitor?.dispose()
 			clearTimeout(cleanupTimer)
-			clearTimeout(graceTimer)
-			releaseGrace?.()
 			signal?.removeEventListener("abort", cancelled)
 		}
 		const finishFailure = (hostExitObserved: boolean, cleanupVerified: boolean, code?: number) => {
@@ -120,18 +116,9 @@ export async function launchExtensionHost(
 			failure = error
 			monitor?.dispose()
 			cleanupTimer = setTimeout(() => finishFailure(closed, false), LIVE_HOST_CLOSE_TIMEOUT_MS)
-			termination = terminateOwnedProcess(
-				child,
-				child.pid,
-				() => closed,
-				() => {
-					if (closed) return Promise.resolve()
-					return new Promise<void>((done) => {
-						releaseGrace = done
-						graceTimer = setTimeout(done, 1_000)
-					})
-				},
-			).catch(() => ({ cleanupVerified: false }))
+			termination = terminateOwnedProcess(child, child.pid, () => closed, 1_000).catch(() => ({
+				cleanupVerified: false,
+			}))
 		}
 		const cancelled = () => fail(new TestRunError("host-cancelled", "The owned host launch was cancelled"))
 		if (options.liveHost) {
@@ -153,15 +140,11 @@ export async function launchExtensionHost(
 		})
 		child.once("close", (code) => {
 			closed = true
-			clearTimeout(graceTimer)
-			releaseGrace?.()
 			if (settled) return
 			if (failure) {
 				void (async () => {
 					const result = await termination
-					const verified =
-						result?.cleanupVerified === true &&
-						(process.platform === "win32" || verifyPosixProcessGroupGone(child.pid))
+					const verified = result?.cleanupVerified === true
 					finishFailure(true, verified, code ?? undefined)
 				})()
 			} else {

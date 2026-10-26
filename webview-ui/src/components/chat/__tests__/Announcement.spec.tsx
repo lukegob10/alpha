@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.10",
+		version: "3.2.11",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.10" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.11" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.10")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.11")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.10 adds optional local memories and improves conversation reliability."),
+			screen.getByText("Alpha v3.2.11 improves security and reliability while preserving local memories."),
 		).toBeInTheDocument()
 	})
 
@@ -70,7 +70,7 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.10 adds optional local memories and improves conversation reliability."),
+			screen.getByText("Alpha v3.2.11 improves security and reliability while preserving local memories."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(

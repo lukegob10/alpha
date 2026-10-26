@@ -569,6 +569,11 @@ test("real owned helper cancellation awaits the helper and its spawned child", {
 		"const { spawn } = require('node:child_process')",
 		"const fs = require('node:fs')",
 		"const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore',windowsHide:true})",
+		// The fixture owns reaping its child; the runner can prove physical exit,
+		// but cannot control when init reaps a deliberately orphaned descendant.
+		"let cancelled = false",
+		"child.once('close', () => { if (cancelled) process.exit(0) })",
+		"process.once('SIGTERM', () => { cancelled = true; if (child.exitCode !== null || child.signalCode !== null) process.exit(0); else child.kill('SIGTERM') })",
 		"child.once('spawn', () => { fs.writeFileSync(process.argv[1]+'.tmp', JSON.stringify({pid:process.pid,childPid:child.pid})); fs.renameSync(process.argv[1]+'.tmp', process.argv[1]) })",
 		"setInterval(() => {}, 1000)",
 	].join(";\n")

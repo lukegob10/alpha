@@ -1117,7 +1117,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.10-memories-conversation-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.11-security-and-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

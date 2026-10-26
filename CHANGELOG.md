@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.11
+
+### Patch Changes
+
+- Update networking, URI parsing, HTTP body parsing, and test serialization dependencies for current security fixes.
+- Reject oversized schema collections before parsing their elements, with a compatibility backport for the existing Zod schemas.
+- Retain process-tree cleanup ownership after a helper exits, including cancellation while descendants are still running.
+- Update the extension and in-app announcement together while retaining the Windows-only download filename and supported VS Code hosts.
+
 ## 3.2.10
 
 ### Patch Changes
