@@ -30,8 +30,18 @@ pnpm --filter @alpha-code/evals benchmark:fixture-check
 The committed `evals/` corpus and database migrations are versioned test inputs.
 Preserve their bytes and checksum manifests. Generic repository exercises remain because
 they measure the extension's coding behavior; they are not another shipped application.
-See the [evaluation directory guide](../../evals/README.md) for suites, reporting scripts, historical campaigns,
-and generated output locations.
+The [versioned corpus](../../evals/) includes the [Frontier](../../evals/frontier-v1.yaml),
+[smoke](../../evals/smoke-v1.yaml), and [problem-solving](../../evals/problem-solving/v1.yaml) suites.
+Keep historical evidence under `evals/archive/` and `evals/reports/nor36/` byte-for-byte, including original execution
+identities and digests. Archived configurations may refer to retired products; they are not current run commands.
+New campaign and authoring output belongs in ignored `packages/evals/artifacts/campaigns/` and
+`packages/evals/artifacts/authoring/`.
+
+Local measurement procedures remain in the [proportional-scope contract](../../evals/proportional-scope/README.md),
+[request-preflight acceptance](../../evals/proportional-scope/acceptance.md), and
+[lookup contract](../../evals/lookup-efficiency/measurement.md). After `pnpm bundle`, the retained scoped-read and HTML
+preview probes run from the repository root with `pnpm exec tsx scripts/benchmarks/scoped-read.ts` and
+`pnpm exec tsx scripts/measure-html-documents.ts`.
 
 ## Database-backed checks
 
@@ -56,11 +66,19 @@ configurable through `EVALS_DB_PORT` and `EVALS_REDIS_PORT`. Persistent data sta
 
 ## Authoring and running benchmarks
 
-Use `benchmark:template`, `benchmark:author-check`, `benchmark:subset`, and
-`benchmark:run-model` from this package. Run `pnpm --filter @alpha-code/evals cli --help`
-for persisted-run commands. See [ADDING-EVALS.md](ADDING-EVALS.md) for exercise structure
-and [../../evals](../../evals) for the versioned extension evaluation corpus. The curated
-problem-solving set is [../../evals/problem-solving/v1.yaml](../../evals/problem-solving/v1.yaml).
+Use `benchmark:template`, `benchmark:author-check`, `benchmark:subset`, and `benchmark:run-model` from this package.
+Run `pnpm --filter @alpha-code/evals cli --help` for persisted-run commands.
+
+Each exercise needs instructions, an implementation stub, deterministic tests, and a task manifest. A task's `prompt.md`
+takes precedence over `prompts/<language>.md`. Verify that the untouched fixture fails and correct implementations pass;
+use the author checker to reject broken controls before admission. New language support also updates the
+[language configuration](src/exercises/index.ts), [test runner](src/cli/runUnitTest.ts), and
+[runner image](Dockerfile.runner). Change fixture bytes and checksum manifests together through the authoring workflow.
+
+Set `ALPHA_EVALS_REPO_PATH` to an absolute path only when selecting another exercise root, such as `evals/candidates/`.
+Run the same validation, fixture-check, and author-check commands against that root, then unset the override before
+returning to the active corpus. Candidates were publicly exposed on 2026-10-23 and must never become sealed holdout;
+offline controls do not admit them or establish live model quality.
 
 Model campaigns retain scheduled, scoreable, excluded, and missing trial counts separately in calibration reports.
 Capability calibration still requires five scoreable trials and a fresh quality review. The benchmark `record-model`

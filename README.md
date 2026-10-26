@@ -145,7 +145,7 @@ on a selected release branch. It does not publish to the VS Code Marketplace. Se
 ## Resources and contributions
 
 - [Engineering guide](AGENTS.md): architecture, compatibility, security, and validation requirements.
-- [Evaluation inputs](evals/README.md): suites, fixtures, measurement contracts, and historical evidence.
+- [Evaluation inputs](evals/): suites, fixtures, measurement contracts, and historical evidence.
 - [GitHub Issues](https://github.com/lukegob10/alpha/issues): bugs, feature requests, and development questions.
 
 Open an issue before starting a substantial contribution and follow [AGENTS.md](AGENTS.md).

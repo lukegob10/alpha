@@ -26,7 +26,7 @@ Do not use it for ordinary extension or webview changes unless the task also cha
 | Component              | Path                                                   | Purpose                                                                                                                  |
 | ---------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | Evaluation package     | `packages/evals/`                                      | Optional controller, runner, database, evidence, grading, and benchmark tooling that executes the real VS Code extension |
-| VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.125.0 contract tests, scripted providers, and live host harnesses                                        |
+| VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.138.0 reference-host and 1.125.0 compatibility tests, scripted providers, and live host harnesses        |
 | Local extension suites | `evals/`                                               | Deterministic extension and safety suites that are part of Alpha's quality checks                                        |
 | Historical campaigns   | `evals/archive/frontier-campaign/`                     | Archived configurations, authoring reports, and milestone results; new run output belongs in ignored evaluator artifacts |
 | Exercise repository    | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | External language exercises and their tests                                                                              |
@@ -72,7 +72,7 @@ pnpm test
 Use the exact release-host gate when a change affects extension activation, VS Code APIs, task lifecycle, or packaging:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 ```
 
 The default root checks intentionally exclude optional evaluator work. Run all retained workspace checks explicitly when
@@ -99,10 +99,9 @@ by the selected package command. Do not treat an offline or fixture run as evide
 
 ## Adding or changing exercises
 
-Exercises live in the external [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repository. Follow
-[`packages/evals/ADDING-EVALS.md`](../../../packages/evals/ADDING-EVALS.md) for the exercise contract and keep the evaluator's
-language adapters, Docker image, and tests in sync. A new exercise should include its instructions, implementation stub,
-language-specific test, and deterministic success criteria.
+Follow the [authoring guide](../../../packages/evals/README.md#authoring-and-running-benchmarks) for local or external
+exercise roots. Keep the evaluator's language adapters, Docker image, and tests in sync. A new exercise should include
+its instructions, implementation stub, language-specific test, and deterministic success criteria.
 
 Changes to evaluator behavior should include focused package tests and, when the behavior crosses the extension boundary,
 an exact-host or contract test. Preserve historical run records and result values; migrations and compatibility readers

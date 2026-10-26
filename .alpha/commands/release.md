@@ -22,8 +22,8 @@ user's request.
     pnpm lint
     pnpm check-types
     pnpm test
-    pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
-    pnpm --filter @alpha-code/vscode-e2e test:command-paths:1250:run
+    pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+    pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
     pnpm vsix
     ```
 

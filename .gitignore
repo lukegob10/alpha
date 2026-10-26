@@ -39,6 +39,7 @@ logs
 
 # Generated diagnostics, host captures, and gate evidence
 /artifacts/
+/.tmp/
 /packages/evals/artifacts/campaigns/
 /packages/evals/artifacts/authoring/
 
