@@ -7,6 +7,7 @@ import { z } from "zod"
 import { assertKeylessCalibrationComplete } from "./calibration"
 import { benchmarkSuiteManifestSchema, calibrationReportSchema, type BenchmarkTaskManifest } from "./contracts"
 import { digestBenchmarkDirectory } from "./loader"
+import { resolveCalibrationReportPath } from "./calibrationStore"
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/)
 const taskId = z.string().regex(/^[a-z0-9][a-z0-9._/-]*$/)
@@ -164,9 +165,11 @@ async function assertAlphaBankTask(
 export async function assertVisibleBankCalibration(root: string, manifest: ProblemSolvingManifest): Promise<void> {
 	for (const task of manifest.tasks) {
 		if (task.source !== "alpha-task-bank" || task.lane === "holdout") continue
-		const report = calibrationReportSchema.parse(
-			JSON.parse(await fs.readFile(path.join(root, "calibration", `${task.id}.keyless.json`), "utf8")),
+		const reportPath = await resolveCalibrationReportPath(
+			path.join(root, "calibration"),
+			`${task.id}@${task.version}`,
 		)
+		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportPath, "utf8")))
 		if (report.taskIdentity !== `${task.id}@${task.version}`) {
 			throw new Error(`Keyless calibration identity mismatch for ${task.id}`)
 		}

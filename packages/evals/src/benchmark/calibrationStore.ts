@@ -12,6 +12,28 @@ const DEFAULT_LOCK_TIMEOUT_MS = 2_000
 
 export type CalibrationReportSnapshot = { report: CalibrationReport | undefined; revision: string | null }
 
+/** Revised tasks get new report files; historical unversioned reports remain readable with their original identity. */
+export async function resolveCalibrationReportPath(
+	directory: string,
+	taskIdentity: string,
+	options: { write?: boolean } = {},
+): Promise<string> {
+	const match = /^([a-z0-9][a-z0-9._/-]*)@([1-9][0-9]*)$/.exec(taskIdentity)
+	if (!match || match[1]!.split("/").some((part) => !part || part === "." || part === ".."))
+		throw new Error("A safe versioned calibration task identity is required")
+	const versioned = path.join(directory, `${taskIdentity}.keyless.json`)
+	try {
+		await fs.access(versioned)
+		return versioned
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+	}
+	const legacy = path.join(directory, `${match[1]}.keyless.json`)
+	if (!options.write) return legacy
+	const snapshot = await readCalibrationReport(legacy)
+	return snapshot.report?.taskIdentity === taskIdentity ? legacy : versioned
+}
+
 export class CalibrationReportValidationError extends Error {
 	readonly code = "CALIBRATION_REPORT_INVALID"
 	readonly issues: Array<{ message: string }>

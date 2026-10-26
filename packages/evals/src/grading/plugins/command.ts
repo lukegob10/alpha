@@ -1,6 +1,7 @@
 import { evidenceFromText } from "../evidence"
 import { resolveHiddenGraderBoundary } from "../boundary"
 import { inspectNodeTestCompletion, nodeTestCompletionCommand } from "../nodeTestCompletion"
+import { inspectPrivateDecision } from "../privateDecision"
 import type { CommandGraderSpec, GraderContext, GraderPlugin, GraderResult } from "../types"
 
 export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
@@ -25,6 +26,7 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 			const execution = command.testExecution ? nodeTestCompletionCommand(command, cwd, spec.timeoutMs) : command
 			const result = await context.processRunner.run({
 				...execution,
+				command: spec.cwd === "hidden" && execution.command === "node" ? process.execPath : execution.command,
 				cwd,
 				env: spec.cwd === "hidden" ? { EVAL_WORKSPACE_ROOT: workspaceRoot } : undefined,
 				timeoutMs: spec.timeoutMs,
@@ -54,7 +56,32 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 				})
 				return baseResult(spec, "error", diagnostics, evidence)
 			}
-			if (result.exitCode !== 0) {
+			if (spec.decisionFormat === "workspace-v1") {
+				let status: "passed" | "failed" | "error"
+				try {
+					if (result.outputTruncated && result.fullStdout === undefined)
+						throw new Error("Incomplete private grader decision")
+					status = inspectPrivateDecision(result.fullStdout ?? result.stdout, result.exitCode)
+				} catch {
+					diagnostics.push({
+						code: "private_grader_protocol_error",
+						message: "Private grader did not return a valid decision matching its exit code",
+						severity: "error",
+					})
+					return baseResult(spec, "error", diagnostics, evidence)
+				}
+				if (status !== "passed") {
+					diagnostics.push({
+						code: status === "error" ? "private_grader_infrastructure" : "private_grader_rejected",
+						message:
+							status === "error"
+								? "Private grading infrastructure was unavailable"
+								: "Private grader rejected the candidate",
+						severity: "error",
+					})
+					return baseResult(spec, status, diagnostics, evidence)
+				}
+			} else if (result.exitCode !== 0) {
 				diagnostics.push({
 					code: command.testExecution ? "command_test_collector_error" : "command_exit_nonzero",
 					message: `${command.command} exited with ${result.exitCode}`,

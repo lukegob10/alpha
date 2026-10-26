@@ -75,6 +75,7 @@ const record = (name, ...args) => {
 const unused = () => { throw new Error("Unexpected CLI dependency call") }
 export default async (values, callback) => Promise.all(values.map(callback))
 export const EVALS_REPO_PATH = ${JSON.stringify(directory)}
+export const DEFAULT_BENCHMARK_SUBSET_FILE = "frontier-t1-v6.yaml"
 export const disconnect = async () => {}
 export const disconnectRedis = async () => {}
 export const findRun = async () => ({ campaignTier: "t1", modelFallbackAllowed: false, settings: { reasoningEffort: "high" } })
@@ -119,6 +120,8 @@ export const readCalibrationReport = async (file) => {
 		throw error
 	}
 }
+export const resolveCalibrationReportPath = async (directory, identity) =>
+	directory + "/" + identity.slice(0, identity.lastIndexOf("@")) + ".keyless.json"
 export const updateCalibrationReport = async (file, updater, options = {}) => {
 	const current = await readCalibrationReport(file)
 	if (Object.hasOwn(options, "expectedRevision") && options.expectedRevision !== current.revision)
@@ -803,16 +806,33 @@ describe("benchmark CLI calibration publication", () => {
 	it("creates a missing keyless report and deliberately replaces prior approvals on a fresh regrade", async () => {
 		const generated = { ...completeCalibrationReport(), models: [] }
 		for (const prior of [undefined, completeCalibrationReport(true)]) {
+			const output = prior ? "calibration/fixture-task.keyless.json" : "calibration/fixture-task@2.keyless.json"
 			const result = await runCli({
 				command: "calibrate-keyless",
 				args: ["--task", "fixture-task"],
 				inputFiles: prior ? { "calibration/fixture-task.keyless.json": prior } : {},
 				configuration: { generatedReport: generated },
-				outputFiles: ["calibration/fixture-task.keyless.json"],
+				outputFiles: [output],
 				realStore: true,
 			})
 			expect(result.exitCode, result.stderr).toBe(0)
-			expect(JSON.parse(result.retainedFiles["calibration/fixture-task.keyless.json"]!)).toEqual(generated)
+			expect(JSON.parse(result.retainedFiles[output]!)).toEqual(generated)
 		}
+	})
+
+	it("publishes a revised keyless identity without relabeling historical evidence", async () => {
+		const original = { ...completeCalibrationReport(true), taskIdentity: "fixture-task@1" }
+		const generated = { ...completeCalibrationReport(), models: [] }
+		const result = await runCli({
+			command: "calibrate-keyless",
+			args: ["--task", "fixture-task"],
+			inputFiles: { "calibration/fixture-task.keyless.json": original },
+			configuration: { generatedReport: generated },
+			outputFiles: ["calibration/fixture-task@2.keyless.json"],
+			realStore: true,
+		})
+		expect(result.exitCode, result.stderr).toBe(0)
+		expect(result.retainedFiles["calibration/fixture-task.keyless.json"]).toBe(JSON.stringify(original))
+		expect(JSON.parse(result.retainedFiles["calibration/fixture-task@2.keyless.json"]!)).toEqual(generated)
 	})
 })

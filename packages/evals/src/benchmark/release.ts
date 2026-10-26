@@ -9,6 +9,7 @@ import { calibrationReportSchema, type BenchmarkSuiteManifest } from "./contract
 import { assertKeylessCalibrationComplete } from "./calibration"
 import { validateReviewSample, type ReviewSampleManifest } from "./reviewSampling"
 import { digestBenchmarkDirectory, loadBenchmarkCatalog, writeBenchmarkReleaseLock } from "./loader"
+import { resolveCalibrationReportPath } from "./calibrationStore"
 
 export async function releaseFrontierSuite(options: {
 	publicRoot: string
@@ -28,7 +29,7 @@ export async function releaseFrontierSuite(options: {
 	for (const task of current.tasks) {
 		const reportRoot =
 			task.partition === "holdout" ? path.join(privateRoot, "reports") : path.join(publicRoot, "calibration")
-		const reportFile = path.join(reportRoot, `${task.id}.keyless.json`)
+		const reportFile = await resolveCalibrationReportPath(reportRoot, `${task.id}@${task.version}`)
 		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportFile, "utf8")))
 		if (report.taskIdentity !== `${task.id}@${task.version}`)
 			throw new Error(`Calibration report identity mismatch for ${task.id}`)
@@ -88,9 +89,8 @@ export async function auditFrontierRelease(options: {
 	for (const task of current.tasks) {
 		const reportRoot =
 			task.partition === "holdout" ? path.join(privateRoot, "reports") : path.join(publicRoot, "calibration")
-		const report = calibrationReportSchema.parse(
-			JSON.parse(await fs.readFile(path.join(reportRoot, `${task.id}.keyless.json`), "utf8")),
-		)
+		const reportFile = await resolveCalibrationReportPath(reportRoot, `${task.id}@${task.version}`)
+		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportFile, "utf8")))
 		reports.push(report)
 		if (report.taskIdentity !== `${task.id}@${task.version}`)
 			throw new Error(`Calibration report identity mismatch for ${task.id}`)

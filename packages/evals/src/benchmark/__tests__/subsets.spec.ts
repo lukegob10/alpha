@@ -2,6 +2,7 @@ import path from "node:path"
 
 import {
 	applySubsetMeasurements,
+	DEFAULT_BENCHMARK_SUBSET_FILE,
 	loadBenchmarkCatalog,
 	loadBenchmarkSubset,
 	selectBenchmarkSubset,
@@ -9,9 +10,41 @@ import {
 } from "../index"
 
 const publicRoot = path.resolve(process.cwd(), "../../evals")
-const subsetFile = path.join(publicRoot, "subsets", "frontier-t1.yaml")
+const subsetFile = path.join(publicRoot, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE)
 
 describe("high-value benchmark subset", () => {
+	it("retains the original T1 history and carries observations only for unchanged task identities", async () => {
+		const historical = await loadBenchmarkSubset(path.join(publicRoot, "subsets", "frontier-t1.yaml"))
+		const active = await loadBenchmarkSubset(subsetFile)
+		expect(historical).toMatchObject({
+			suiteIdentity: "frontier-v1@2",
+			historyBasis: "mixed",
+			measurementRunIds: [12],
+		})
+		expect(active).toMatchObject({ suiteIdentity: "frontier-v1@6", historyBasis: "mixed", measurementRunIds: [12] })
+		expect(active.requiredCoverage).toEqual(historical.requiredCoverage)
+		expect(active.hardCapUsd).toBe(historical.hardCapUsd)
+		expect(active.taskReservationUsd).toBe(historical.taskReservationUsd)
+		expect(active.stableCore).toHaveLength(6)
+		expect(active.dynamicSlots).toHaveLength(2)
+		for (const id of ["alpha-repository-rules", "repo-transaction-outbox"]) {
+			expect(historical.history[id]).toMatchObject({ costLatencyBasis: "measured", observationCount: 1 })
+			expect(active.history[id]).toMatchObject({
+				taskVersion: 2,
+				costLatencyBasis: "seeded",
+				observationCount: 0,
+			})
+			const manifest = freshHistory(active)
+			expect(() =>
+				applySubsetMeasurements(manifest, [{ taskId: id, taskVersion: 1, costUsd: 0.01, latencyMs: 1 }], 99),
+			).toThrow("Subset measurement version does not match " + id + "@2")
+		}
+		for (const [id, history] of Object.entries(historical.history)) {
+			if (!["alpha-repository-rules", "repo-transaction-outbox"].includes(id))
+				expect(active.history[id]).toEqual(history)
+		}
+	})
+
 	it("rejects stale incoming measurements instead of assigning them the current task version", async () => {
 		const manifest = freshHistory(await loadBenchmarkSubset(subsetFile))
 		const before = structuredClone(manifest)
@@ -178,14 +211,15 @@ describe("high-value benchmark subset", () => {
 			"safety-path-policy",
 			"stateful-api-idempotency",
 			"repo-stream-backpressure",
+			"repo-transaction-outbox",
 			"alpha-tool-result-integrity",
 			"alpha-resume-idempotency",
-			"repo-transaction-outbox",
 		])
 		expect(first.coverage).toMatchObject({
 			"real-repository": 3,
 			"alpha-extension": 2,
 			"safety-stateful": 2,
+			"long-or-multifile": 1,
 			regression: 4,
 		})
 		expect(first.estimatedCostUsd).toBeLessThanOrEqual(0.5)

@@ -123,6 +123,32 @@ afterEach(async () => {
 })
 
 describe("keyless calibration acceptance", () => {
+	it("prefers revised controls while preserving the legacy controls and their identity", async () => {
+		const legacy = path.join(root, "private", "calibration", task.id)
+		const versioned = `${legacy}@2`
+		await fs.cp(legacy, versioned, { recursive: true })
+		const legacyGold = path.join(legacy, "gold", "overlay", "src", "workflow.js")
+		await fs.writeFile(legacyGold, "legacy source for the previous task version")
+		const bytes = await fs.readFile(legacyGold)
+		const report = await run({ ...task, version: 2 })
+		expect(report.taskIdentity).toBe(`${task.id}@2`)
+		expect(report.gold).toEqual({ repetitions: 1, passed: 1 })
+		expect(report.broken.every(({ rejected }) => rejected === 1)).toBe(true)
+		expect(await fs.readFile(legacyGold)).toEqual(bytes)
+	})
+
+	it.each([0, 5, 1.5, Number.NaN])("rejects an invalid calibration concurrency %s", async (concurrency) => {
+		await expect(
+			runKeylessCalibration({
+				task,
+				publicRoot: path.join(root, "public"),
+				privateRoot: path.join(root, "private"),
+				concurrency,
+			}),
+		).rejects.toThrow(/concurrency/)
+		expect(mocks.execute).not.toHaveBeenCalled()
+	})
+
 	it("passes a correct golden source with the captured original checks and rejects the authored broken sources", async () => {
 		const actual = await vi.importActual<typeof import("../../grading/index")>("../../grading/index")
 		mocks.execute.mockImplementation((specs, context) =>

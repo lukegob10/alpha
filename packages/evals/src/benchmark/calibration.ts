@@ -23,7 +23,7 @@ import {
 	type CalibrationReport,
 } from "./contracts"
 import { loadPrivateGraderBundle } from "./loader"
-import { updateCalibrationReport } from "./calibrationStore"
+import { resolveCalibrationReportPath, updateCalibrationReport } from "./calibrationStore"
 
 const rejectionExpectationSchema = z
 	.object({
@@ -41,12 +41,22 @@ export async function runKeylessCalibration(options: {
 	brokenRepetitions?: number
 	determinismRepetitions?: number
 	processRunner?: HarnessProcessRunner
+	concurrency?: number
 }): Promise<CalibrationReport> {
 	const { task, publicRoot, privateRoot } = options
 	const runner = options.processRunner ?? new ExecaHarnessProcessRunner()
+	const concurrency = options.concurrency ?? 4
+	if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4)
+		throw new Error("Keyless calibration concurrency must be an integer from 1 to 4")
 	const fixture =
 		task.partition === "holdout" ? path.join(privateRoot, task.fixture) : path.join(publicRoot, task.fixture)
-	const calibrationRoot = path.join(privateRoot, "calibration", task.id)
+	let calibrationRoot = path.join(privateRoot, "calibration", `${task.id}@${task.version}`)
+	try {
+		await fs.access(calibrationRoot)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		calibrationRoot = path.join(privateRoot, "calibration", task.id)
+	}
 	const privateBundle = await loadPrivateGraderBundle(task, privateRoot)
 	try {
 		const visibleCommands = await captureExpectedNodeTestCommands(fixture, task.validation.commands)
@@ -54,10 +64,13 @@ export async function runKeylessCalibration(options: {
 		const goldRepetitions = options.goldRepetitions ?? 20
 		const brokenRepetitions = options.brokenRepetitions ?? 20
 		const determinismRepetitions = options.determinismRepetitions ?? 50
-		const goldRuns = await repeat(goldRepetitions, () =>
-			withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
-				evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
-			),
+		const goldRuns = await repeat(
+			goldRepetitions,
+			() =>
+				withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
+					evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+				),
+			concurrency,
 		)
 		const brokenIds = (await fs.readdir(path.join(calibrationRoot, "broken"), { withFileTypes: true }))
 			.filter((entry) => entry.isDirectory())
@@ -80,10 +93,13 @@ export async function runKeylessCalibration(options: {
 				} catch {
 					throw new Error(`Broken control ${task.id}/${id} requires a valid expected.json rejection reason`)
 				}
-				const runs = await repeat(brokenRepetitions, () =>
-					withSolution(fixture, solutionRoot, (workspace, changedPaths) =>
-						evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
-					),
+				const runs = await repeat(
+					brokenRepetitions,
+					() =>
+						withSolution(fixture, solutionRoot, (workspace, changedPaths) =>
+							evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+						),
+					concurrency,
 				)
 				for (const { run } of runs) {
 					if (run.decision === "passed") continue
@@ -101,7 +117,7 @@ export async function runKeylessCalibration(options: {
 						canonicalJson(identities(actual)) !== canonicalJson(identities(expectation.diagnostics))
 					) {
 						throw new Error(
-							`Broken control ${task.id}/${id} failed for an unexpected rejection decision or reason`,
+							`Broken control ${task.id}/${id} failed for an unexpected rejection decision or reason: ${run.decision}; ${identities(actual).slice(0, 16).join(", ")}`,
 						)
 					}
 				}
@@ -112,12 +128,15 @@ export async function runKeylessCalibration(options: {
 					expectedCode: expectation.diagnostics[0]!.code,
 				}
 			},
-			3,
+			Math.min(3, concurrency),
 		)
-		const determinismRuns = await repeat(determinismRepetitions, () =>
-			withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
-				evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
-			),
+		const determinismRuns = await repeat(
+			determinismRepetitions,
+			() =>
+				withSolution(fixture, path.join(calibrationRoot, "gold"), (workspace, changedPaths) =>
+					evaluateWorkspace(task, workspace, privateBundle, runner, changedPaths, visibleCommands),
+				),
+			concurrency,
 		)
 		return {
 			schemaVersion: 1,
@@ -159,12 +178,15 @@ export async function syncVisibleKeylessReports(options: {
 	const outputRoot = path.join(publicRoot, "calibration")
 	await fs.mkdir(outputRoot, { recursive: true })
 	for (const task of visible) {
-		const source = path.join(privateRoot, "reports", `${task.id}.keyless.json`)
+		const source = await resolveCalibrationReportPath(
+			path.join(privateRoot, "reports"),
+			`${task.id}@${task.version}`,
+		)
 		const privateReport = calibrationReportSchema.parse(JSON.parse(await fs.readFile(source, "utf8")))
 		if (privateReport.taskIdentity !== `${task.id}@${task.version}`)
 			throw new Error(`Calibration report identity mismatch for ${task.id}`)
 		assertKeylessCalibrationComplete(privateReport)
-		const output = path.join(outputRoot, `${task.id}.keyless.json`)
+		const output = await resolveCalibrationReportPath(outputRoot, `${task.id}@${task.version}`, { write: true })
 		await updateCalibrationReport(output, (existing) => {
 			if (!existing) return privateReport
 			if (existing.taskIdentity !== privateReport.taskIdentity)
@@ -307,7 +329,12 @@ async function withSolution<T>(
 		}
 		return await run(root, changedPaths)
 	} finally {
-		await fs.rm(root, { recursive: true, force: true })
+		await fs.rm(root, {
+			recursive: true,
+			force: true,
+			maxRetries: process.platform === "win32" ? 3 : 0,
+			retryDelay: 100,
+		})
 	}
 }
 
@@ -324,8 +351,8 @@ async function listRelativeFiles(root: string): Promise<string[]> {
 	return files.sort()
 }
 
-async function repeat<T>(count: number, run: () => Promise<T>): Promise<T[]> {
-	return mapCalibration(Array.from({ length: count }), run, Math.min(4, count))
+async function repeat<T>(count: number, run: () => Promise<T>, concurrency: number): Promise<T[]> {
+	return mapCalibration(Array.from({ length: count }), run, Math.min(concurrency, count))
 }
 
 async function mapCalibration<T, R>(values: T[], run: (value: T) => Promise<R>, concurrency: number): Promise<R[]> {

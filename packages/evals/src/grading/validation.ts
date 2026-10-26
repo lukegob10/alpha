@@ -58,10 +58,12 @@ const specSchema: z.ZodType<GraderSpec> = z.union([
 			type: z.literal("command"),
 			commands: z.array(command.extend({ testExecution: testExecution.optional() })).min(1),
 			cwd: z.enum(["workspace", "hidden"]),
+			decisionFormat: z.literal("workspace-v1").optional(),
 			timeoutMs: z.number().int().positive(),
 			maxOutputBytes: z.number().int().positive(),
 		})
-		.strict(),
+		.strict()
+		.refine((spec) => !spec.decisionFormat || spec.cwd === "hidden"),
 	z
 		.object({
 			...base,

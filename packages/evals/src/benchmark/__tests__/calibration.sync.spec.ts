@@ -116,6 +116,27 @@ afterEach(async () => {
 })
 
 describe("visible keyless report synchronization", () => {
+	it("syncs a new version into its own report without inheriting the old version's model admission", async () => {
+		const previous = withModel(keyless(), "luna-high", "historical")
+		previous.humanReview.qualityApproved = true
+		previous.admitted = true
+		await save(output(), previous)
+		const previousBytes = await fs.readFile(output())
+		const privateBytes = await fs.readFile(source())
+		const revised = keyless(`${firstId}@2`)
+		await save(path.join(privateRoot, "reports", `${firstId}@2.keyless.json`), revised)
+		const tasks = new Map(catalog.tasks)
+		const entry = tasks.get(`${firstId}@1`)!
+		tasks.delete(`${firstId}@1`)
+		tasks.set(`${firstId}@2`, { ...entry, task: { ...entry.task, version: 2 } })
+		await syncVisibleKeylessReports({ catalog: { ...catalog, tasks }, publicRoot, privateRoot })
+		expect(
+			JSON.parse(await fs.readFile(path.join(publicRoot, "calibration", `${firstId}@2.keyless.json`), "utf8")),
+		).toEqual(revised)
+		expect(await fs.readFile(output())).toEqual(previousBytes)
+		expect(await fs.readFile(source())).toEqual(privateBytes)
+	})
+
 	it("preserves visible delivery, model observations, and approval together instead of importing private arms", async () => {
 		const visible = withModel(keyless(), "luna-high", "visible")
 		visible.humanReview.reviewer = "visible-reviewer"
@@ -198,7 +219,11 @@ describe("visible keyless report synchronization", () => {
 		options.catalog.tasks.get(`${firstId}@1`)!.task.version = 9
 		resume.resolve()
 		expect((await pending).taskIds[0]).toBe(firstId)
-		expect((await read()).taskIdentity).toBe(`${firstId}@1`)
+		expect(
+			JSON.parse(await fs.readFile(path.join(publicRoot, "calibration", `${firstId}@1.keyless.json`), "utf8"))
+				.taskIdentity,
+		).toBe(`${firstId}@1`)
+		await expect(fs.stat(options.publicRoot)).rejects.toMatchObject({ code: "ENOENT" })
 	})
 
 	it("merges model delivery and review committed after the private source read", async () => {
@@ -227,11 +252,12 @@ describe("visible keyless report synchronization", () => {
 		expect(actual.admitted).toBe(true)
 	})
 
-	it("keeps the visible bytes intact when an existing report belongs to a different task version", async () => {
+	it("rejects an explicit versioned report that belongs to a different task version without changing its bytes", async () => {
 		const visible = keyless(`${firstId}@2`)
-		await save(output(), visible)
-		const bytes = await fs.readFile(output(), "utf8")
+		const versioned = path.join(publicRoot, "calibration", `${firstId}@1.keyless.json`)
+		await save(versioned, visible)
+		const bytes = await fs.readFile(versioned, "utf8")
 		await expect(sync()).rejects.toThrow(/identity mismatch/)
-		expect(await fs.readFile(output(), "utf8")).toBe(bytes)
+		expect(await fs.readFile(versioned, "utf8")).toBe(bytes)
 	})
 })

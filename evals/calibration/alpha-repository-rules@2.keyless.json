@@ -1,0 +1,56 @@
+{
+	"schemaVersion": 1,
+	"taskIdentity": "alpha-repository-rules@2",
+	"calibrationScope": {
+		"schemaVersion": 1,
+		"kind": "keyless-fixture",
+		"measuredGraderIds": [
+			"alpha-repository-rules.visible_tests",
+			"alpha-repository-rules.hidden_tests",
+			"alpha-repository-rules.final_state",
+			"alpha-repository-rules.diff_scope",
+			"alpha-repository-rules.static_boundary_check"
+		],
+		"unmeasuredGraderIds": ["alpha-repository-rules.validation_after_edit", "alpha-repository-rules.usage_limit"],
+		"executionEvidence": "not-measured",
+		"semanticEvidenceVersion": 1
+	},
+	"fixtureInitiallyFails": true,
+	"restraint": false,
+	"gold": {
+		"repetitions": 20,
+		"passed": 20
+	},
+	"broken": [
+		{
+			"id": "compatibility",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "command_test_completion_missing"
+		},
+		{
+			"id": "mutation",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "private_grader_rejected"
+		},
+		{
+			"id": "narrow",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "private_grader_rejected"
+		}
+	],
+	"determinism": {
+		"repetitions": 50,
+		"distinctDigests": 1
+	},
+	"models": [],
+	"humanReview": {
+		"unresolvedFalsePositivePasses": 0,
+		"reviewedTrialIds": [],
+		"reviewer": "",
+		"qualityApproved": false
+	},
+	"admitted": false
+}

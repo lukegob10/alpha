@@ -223,7 +223,13 @@ describe("runUnitTest grader adapter", () => {
 				type: "result",
 				result: {
 					exitCode: 1,
-					stdout: "",
+					stdout: JSON.stringify({
+						schemaVersion: 1,
+						passed: false,
+						decisionCode: "case-regression",
+						evidenceDigest: `sha256:${"a".repeat(64)}`,
+						diagnostic: "",
+					}),
 					stderr: "hidden edge failed",
 					durationMs: 1,
 					timedOut: false,
@@ -253,7 +259,7 @@ describe("runUnitTest grader adapter", () => {
 			}),
 		)
 		expect(processRunner.calls[2]).toMatchObject({
-			command: "node",
+			command: process.execPath,
 			args: ["fixture/grader.mjs"],
 			cwd: hiddenRoot,
 			env: { EVAL_WORKSPACE_ROOT: workspaceRoot },
@@ -272,7 +278,11 @@ describe("runUnitTest grader adapter", () => {
 		})
 		const evidence = evidenceFromText("hidden:stdout", "stdout", "actual verifier output")
 		benchmarkMocks.findBenchmarkTask.mockResolvedValue({
-			task: { id: "private-task", graders: [{ alias: "hidden_tests", bundleId: "private" }] },
+			task: {
+				id: "private-task",
+				budgets: { wallSeconds: 900 },
+				graders: [{ alias: "hidden_tests", bundleId: "private" }],
+			},
 		})
 		benchmarkMocks.submitGraderRequest.mockResolvedValue({
 			run: { decision: "passed", results: [{ evidence: [evidence] }] },
@@ -289,6 +299,11 @@ describe("runUnitTest grader adapter", () => {
 			persist: async () => undefined,
 		})
 		expect(sink).toHaveBeenCalledWith("hidden:stdout", "stdout", "actual verifier output", "text/plain")
+		expect(benchmarkMocks.submitGraderRequest).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.any(Object),
+			1_020_000,
+		)
 		await fs.writeFile(
 			path.join(root, "artifacts", "sha256", descriptor.digest.slice(7, 9), descriptor.digest.slice(7)),
 			"replaced",

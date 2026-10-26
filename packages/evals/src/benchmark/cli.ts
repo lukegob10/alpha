@@ -18,7 +18,12 @@ import { evaluateAdmission } from "./admission"
 import { runKeylessCalibration, syncVisibleKeylessReports } from "./calibration"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
 import { calibrationReportSchema, type CalibrationReport } from "./contracts"
-import { CalibrationReportValidationError, readCalibrationReport, updateCalibrationReport } from "./calibrationStore"
+import {
+	CalibrationReportValidationError,
+	readCalibrationReport,
+	resolveCalibrationReportPath,
+	updateCalibrationReport,
+} from "./calibrationStore"
 import { buildReviewSample } from "./reviewSampling"
 import { auditFrontierRelease, releaseFrontierSuite } from "./release"
 import { runBenchmarkModelCampaign, type ModelCampaignPartition, type ModelCampaignProvider } from "./modelCampaign"
@@ -26,7 +31,12 @@ import { evaluateFrontierConvergence } from "./convergence"
 import { loadBenchmarkCatalog, loadPrivateGraderBundle } from "./loader"
 import { runAuthoringCheck } from "./authoring"
 import { writeTaskTemplate, type TaskTemplateProfile } from "./templates"
-import { applySubsetMeasurements, loadBenchmarkSubset, selectBenchmarkSubset } from "./subsets"
+import {
+	applySubsetMeasurements,
+	DEFAULT_BENCHMARK_SUBSET_FILE,
+	loadBenchmarkSubset,
+	selectBenchmarkSubset,
+} from "./subsets"
 import { assertCampaignBudgetAuthorized, estimateTierBudget, type CampaignTier } from "./budgets"
 import { certifyInitialFixtureStates } from "./fixtures"
 
@@ -51,7 +61,9 @@ async function main() {
 		let taskIds: string[] | undefined
 		if (tier === "t1") {
 			const catalog = await loadBenchmarkCatalog(EVALS_REPO_PATH)
-			const subset = await loadBenchmarkSubset(path.join(EVALS_REPO_PATH, "subsets", "frontier-t1.yaml"))
+			const subset = await loadBenchmarkSubset(
+				path.join(EVALS_REPO_PATH, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE),
+			)
 			selection = selectBenchmarkSubset(catalog, subset)
 			budget = estimateTierBudget("t1", {
 				taskCount: selection.tasks.length,
@@ -98,7 +110,7 @@ async function main() {
 	if (command === "subset") {
 		const catalog = await loadBenchmarkCatalog(EVALS_REPO_PATH)
 		const subsetFile = path.resolve(
-			optionalValueAfter(args, "--file") ?? path.join(EVALS_REPO_PATH, "subsets", "frontier-t1.yaml"),
+			optionalValueAfter(args, "--file") ?? path.join(EVALS_REPO_PATH, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE),
 		)
 		console.log(JSON.stringify(selectBenchmarkSubset(catalog, await loadBenchmarkSubset(subsetFile)), null, 2))
 		return
@@ -106,7 +118,7 @@ async function main() {
 	if (command === "history-update") {
 		const runId = positiveInteger(valueAfter(args, "--run-id"), "--run-id")
 		const subsetFile = path.resolve(
-			optionalValueAfter(args, "--file") ?? path.join(EVALS_REPO_PATH, "subsets", "frontier-t1.yaml"),
+			optionalValueAfter(args, "--file") ?? path.join(EVALS_REPO_PATH, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE),
 		)
 		const [run, tasks, manifest, catalog] = await Promise.all([
 			findRun(runId),
@@ -326,9 +338,8 @@ async function main() {
 					task.partition === "holdout"
 						? path.join(privateRoot, "reports")
 						: path.join(EVALS_REPO_PATH, "calibration")
-				return calibrationReportSchema.parse(
-					JSON.parse(await fs.readFile(path.join(root, `${task.id}.keyless.json`), "utf8")),
-				)
+				const reportPath = await resolveCalibrationReportPath(root, `${task.id}@${task.version}`)
+				return calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportPath, "utf8")))
 			}),
 		)
 		const manifest = buildReviewSample(reports, {
@@ -467,7 +478,9 @@ async function main() {
 		if (tier === "t1") {
 			if (partition !== "visible") throw new Error("T1 runs use the visible high-value subset")
 			const catalog = await loadBenchmarkCatalog(EVALS_REPO_PATH)
-			const manifest = await loadBenchmarkSubset(path.join(EVALS_REPO_PATH, "subsets", "frontier-t1.yaml"))
+			const manifest = await loadBenchmarkSubset(
+				path.join(EVALS_REPO_PATH, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE),
+			)
 			const selection = selectBenchmarkSubset(catalog, manifest)
 			taskIds = requestedTask ? [requestedTask] : selection.tasks.map(({ id }) => id)
 			if (requestedTask && !taskIds.every((id) => selection.tasks.some((task) => task.id === id)))
@@ -556,7 +569,11 @@ async function main() {
 						? path.join(privateRoot, "reports")
 						: path.join(EVALS_REPO_PATH, "calibration")
 				await fs.mkdir(outputRoot, { recursive: true })
-				const output = path.join(outputRoot, `${entry.task.id}.keyless.json`)
+				const output = await resolveCalibrationReportPath(
+					outputRoot,
+					`${entry.task.id}@${entry.task.version}`,
+					{ write: true },
+				)
 				const snapshot = await readCalibrationReport(output)
 				const report = await runKeylessCalibration({
 					task: entry.task,

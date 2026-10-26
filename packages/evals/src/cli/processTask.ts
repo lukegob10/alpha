@@ -41,6 +41,7 @@ import {
 	type EvidenceBundle,
 } from "../evidence/index"
 import type { EvalTraceEvent, GraderEvidence, GraderRunResult } from "../grading/index"
+import { taskGradingTimeoutMs } from "../grading/catalog"
 import type { CommandGraderSpec } from "../grading/types"
 import { captureExpectedNodeTestCommands } from "../grading/nodeTestCompletion"
 import {
@@ -444,6 +445,18 @@ export const processTaskInContainer = async ({
 		return processTask({ taskId, jobToken, logger, processRunner, signal })
 	}
 	const benchmark = await findBenchmarkTask(EVALS_REPO_PATH, `${task.language}/${task.exercise}`)
+	const gradingTimeoutMs = taskGradingTimeoutMs(benchmark.task)
+	const agentTimeoutMs = (run.timeout || 5) * 60_000
+	const containerTimeoutMs = agentTimeoutMs + gradingTimeoutMs
+	// Node clamps an overflowing timer to 1ms; reject before creating an owned attempt or workspace.
+	if (
+		!Number.isSafeInteger(agentTimeoutMs) ||
+		agentTimeoutMs < 1 ||
+		!Number.isSafeInteger(containerTimeoutMs) ||
+		containerTimeoutMs < 1 ||
+		containerTimeoutMs > 2_147_483_647
+	)
+		throw new Error("Invalid task container timeout")
 	const preparedVisibleCommands = await captureExpectedNodeTestCommands(
 		originalTaskFixture(task, benchmark.task),
 		benchmark.task.validation.commands,
@@ -475,119 +488,120 @@ export const processTaskInContainer = async ({
 				}),
 		}
 		let brokerFailure: unknown
-		const brokerPromise = requiresBroker
-			? serveGraderRequest({
-					root: path.join(hostSandbox, "grader-broker"),
-					expectedAttemptId: attempt.id,
-					timeoutMs: Math.max(120_000, (run.timeout || 5) * 60_000),
-					signal: controller.signal,
-					execute: (request) =>
-						executeTrustedGrade({
-							request,
-							task,
-							logger,
-							workspaceRoot: hostWorkspace,
-							processRunner: gradingRunner,
-							hostSandbox,
-							baselineCommit,
-							preparedVisibleCommands,
-							secrets: secretValues(jobToken),
-						}),
-				}).catch((error: unknown) => {
-					brokerFailure = error
-					controller.abort()
-				})
-			: undefined
-
-		if (retry > 0) {
-			const delayMs = calculateBackoffMs(
-				attemptNumber,
-				{
-					maxAttempts: retryLimit + 1,
-					baseDelayMs: 1000,
-					maxDelayMs: 30_000,
-				},
-				systemRandom,
-			)
-			logger.info(`retrying in ${delayMs}ms (attempt ${attemptNumber}/${retryLimit + 1})`)
-			await sleeper.sleep(delayMs)
-		}
-
-		const secretEnv = inheritedSecretEnvironment(jobToken)
-		const trial = await findTrialForTask(task.id)
-		if (!trial) throw new Error(`Trial was not created for task ${task.id}`)
-		const limits = {
-			cpus: 2,
-			memoryBytes: 4 * 1024 * 1024 * 1024,
-			pids: 512,
-			timeoutMs: Math.max(120_000, (run.timeout || 5) * 60_000 + 120_000),
-		}
-		const environmentNames = [
-			"HOST_EXECUTION_METHOD",
-			"EVALS_ATTEMPT",
-			"EVALS_TASK_WORKSPACE_ROOT",
-			"EVALS_GRADER_BROKER_ROOT",
-			...Object.keys(secretEnv),
-			"EVALS_RUNNER_IMAGE_ID",
-			"EVALS_RUNNER_IMAGE_DIGESTS",
-			"EVALS_DOCKER_VERSION",
-			"EVALS_NETWORK_MODE",
-			"EVALS_CPU_LIMIT",
-			"EVALS_MEMORY_LIMIT",
-			"EVALS_PIDS_LIMIT",
-			"EVALS_CONCURRENCY",
-			"EVALS_PERMISSION_PROFILE_DIGEST",
-		]
-		const containerSpec: ContainerSpec = {
-			name: `evals-task-${taskId}.${retry}`,
-			image: "evals-runner",
-			owner: { runId: String(run.id), trialId: String(trial.id), attemptId: String(attempt.id) },
-			command: "sh",
-			args: ["-c", command],
-			envNames: environmentNames,
-			binds: [
-				{ source: hostSandbox, target: "/var/log/evals", readOnly: false },
-				{ source: hostWorkspace, target: "/workspace/eval-task", readOnly: false },
-			],
-			network: "evals_default",
-			limits,
-		}
-		let infrastructure
+		let brokerPromise: Promise<void> | undefined
 		try {
-			infrastructure = await collectInfrastructureManifest(containerSpec, processRunner, run.concurrency ?? 1)
-		} catch (error) {
-			controller.abort()
-			if (brokerPromise) await brokerPromise
-			const current = await currentAttempt(task.id, attempt.id)
-			await finalizeContainerFailure(
-				attempt.id,
-				current,
-				"container_setup_failed",
-				error instanceof Error ? error.message : String(error),
-			)
-			continue
-		}
-		const identityEnv = {
-			EVALS_RUNNER_IMAGE_ID: infrastructure.imageId,
-			EVALS_RUNNER_IMAGE_DIGESTS: infrastructure.repoDigests.join(","),
-			EVALS_DOCKER_VERSION: infrastructure.dockerVersion,
-			EVALS_NETWORK_MODE: infrastructure.networkMode,
-			EVALS_CPU_LIMIT: String(infrastructure.limits.cpus),
-			EVALS_MEMORY_LIMIT: String(infrastructure.limits.memoryBytes),
-			EVALS_PIDS_LIMIT: String(infrastructure.limits.pids),
-			EVALS_CONCURRENCY: String(infrastructure.concurrency),
-			EVALS_PERMISSION_PROFILE_DIGEST: infrastructure.permissionProfileDigest,
-		}
-		const env = {
-			...secretEnv,
-			...identityEnv,
-			HOST_EXECUTION_METHOD: "docker",
-			EVALS_ATTEMPT: String(retry),
-			EVALS_TASK_WORKSPACE_ROOT: "/workspace/eval-task",
-			EVALS_GRADER_BROKER_ROOT: "/var/log/evals/grader-broker",
-		}
+			brokerPromise = requiresBroker
+				? serveGraderRequest({
+						root: path.join(hostSandbox, "grader-broker"),
+						expectedAttemptId: attempt.id,
+						// Startup and evidence collection precede the request; the bounded attempt owns this wait.
+						untilAbort: attemptSignal,
+						execute: (request) =>
+							executeTrustedGrade({
+								request,
+								task,
+								logger,
+								workspaceRoot: hostWorkspace,
+								processRunner: gradingRunner,
+								hostSandbox,
+								baselineCommit,
+								preparedVisibleCommands,
+								secrets: secretValues(jobToken),
+							}),
+					}).catch((error: unknown) => {
+						brokerFailure = error
+						controller.abort()
+					})
+				: undefined
 
-		try {
+			if (retry > 0) {
+				const delayMs = calculateBackoffMs(
+					attemptNumber,
+					{
+						maxAttempts: retryLimit + 1,
+						baseDelayMs: 1000,
+						maxDelayMs: 30_000,
+					},
+					systemRandom,
+				)
+				logger.info(`retrying in ${delayMs}ms (attempt ${attemptNumber}/${retryLimit + 1})`)
+				await sleeper.sleep(delayMs)
+			}
+
+			const secretEnv = inheritedSecretEnvironment(jobToken)
+			const trial = await findTrialForTask(task.id)
+			if (!trial) throw new Error(`Trial was not created for task ${task.id}`)
+			const limits = {
+				cpus: 2,
+				memoryBytes: 4 * 1024 * 1024 * 1024,
+				pids: 512,
+				timeoutMs: containerTimeoutMs,
+			}
+			const environmentNames = [
+				"HOST_EXECUTION_METHOD",
+				"EVALS_ATTEMPT",
+				"EVALS_TASK_WORKSPACE_ROOT",
+				"EVALS_GRADER_BROKER_ROOT",
+				...Object.keys(secretEnv),
+				"EVALS_RUNNER_IMAGE_ID",
+				"EVALS_RUNNER_IMAGE_DIGESTS",
+				"EVALS_DOCKER_VERSION",
+				"EVALS_NETWORK_MODE",
+				"EVALS_CPU_LIMIT",
+				"EVALS_MEMORY_LIMIT",
+				"EVALS_PIDS_LIMIT",
+				"EVALS_CONCURRENCY",
+				"EVALS_PERMISSION_PROFILE_DIGEST",
+			]
+			const containerSpec: ContainerSpec = {
+				name: `evals-task-${taskId}.${retry}`,
+				image: "evals-runner",
+				owner: { runId: String(run.id), trialId: String(trial.id), attemptId: String(attempt.id) },
+				command: "sh",
+				args: ["-c", command],
+				envNames: environmentNames,
+				binds: [
+					{ source: hostSandbox, target: "/var/log/evals", readOnly: false },
+					{ source: hostWorkspace, target: "/workspace/eval-task", readOnly: false },
+				],
+				network: "evals_default",
+				limits,
+			}
+			let infrastructure
+			try {
+				infrastructure = await collectInfrastructureManifest(containerSpec, processRunner, run.concurrency ?? 1)
+			} catch (error) {
+				controller.abort()
+				if (brokerPromise) await brokerPromise
+				const current = await currentAttempt(task.id, attempt.id)
+				await finalizeContainerFailure(
+					attempt.id,
+					current,
+					"container_setup_failed",
+					error instanceof Error ? error.message : String(error),
+				)
+				continue
+			}
+			const identityEnv = {
+				EVALS_RUNNER_IMAGE_ID: infrastructure.imageId,
+				EVALS_RUNNER_IMAGE_DIGESTS: infrastructure.repoDigests.join(","),
+				EVALS_DOCKER_VERSION: infrastructure.dockerVersion,
+				EVALS_NETWORK_MODE: infrastructure.networkMode,
+				EVALS_CPU_LIMIT: String(infrastructure.limits.cpus),
+				EVALS_MEMORY_LIMIT: String(infrastructure.limits.memoryBytes),
+				EVALS_PIDS_LIMIT: String(infrastructure.limits.pids),
+				EVALS_CONCURRENCY: String(infrastructure.concurrency),
+				EVALS_PERMISSION_PROFILE_DIGEST: infrastructure.permissionProfileDigest,
+			}
+			const env = {
+				...secretEnv,
+				...identityEnv,
+				HOST_EXECUTION_METHOD: "docker",
+				EVALS_ATTEMPT: String(retry),
+				EVALS_TASK_WORKSPACE_ROOT: "/workspace/eval-task",
+				EVALS_GRADER_BROKER_ROOT: "/var/log/evals/grader-broker",
+			}
+
 			const result = await docker.run({
 				...containerSpec,
 				image: infrastructure.imageId,

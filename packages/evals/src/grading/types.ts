@@ -48,6 +48,7 @@ export type CommandGraderSpec = BaseGraderSpec & {
 		}
 	}>
 	cwd: "workspace" | "hidden"
+	decisionFormat?: "workspace-v1"
 	timeoutMs: number
 	maxOutputBytes: number
 }

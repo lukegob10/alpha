@@ -9,7 +9,7 @@ import type { TrialTerminalStatus } from "../lifecycle/index"
 import type { BenchmarkPartition } from "./publicTypes"
 import { loadBenchmarkCatalog } from "./loader"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
-import { readCalibrationReport, updateCalibrationReport } from "./calibrationStore"
+import { readCalibrationReport, resolveCalibrationReportPath, updateCalibrationReport } from "./calibrationStore"
 import { benchmarkPartitionSchema, modelCalibrationStatusSchema } from "./contracts"
 import { assertCampaignBudgetAuthorized, type TierBudget } from "./budgets"
 import { sealCampaignExport } from "../experiments/campaign"
@@ -252,7 +252,7 @@ export async function ingestModelCampaign(optionsValue: {
 			partition === "holdout"
 				? path.join(options.privateRoot!, "reports")
 				: path.join(options.publicRoot, "calibration")
-		const reportPath = path.join(reportRoot, `${identity.split("@")[0]}.keyless.json`)
+		const reportPath = await resolveCalibrationReportPath(reportRoot, identity)
 		// Do not query or fabricate controls for tasks without an existing keyless report.
 		if (!(await readCalibrationReport(reportPath)).report) continue
 		const trials: ModelCalibrationTrial[] = []

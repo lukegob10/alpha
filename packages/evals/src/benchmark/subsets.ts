@@ -5,6 +5,8 @@ import { z } from "zod"
 
 import type { BenchmarkCatalog, BenchmarkTaskManifest } from "./contracts"
 
+export const DEFAULT_BENCHMARK_SUBSET_FILE = "frontier-t1-v6.yaml"
+
 const historySchema = z.object({
 	taskVersion: z.number().int().positive().optional(),
 	discrimination: z.number().min(0).max(1),

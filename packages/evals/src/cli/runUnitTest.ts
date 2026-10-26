@@ -16,6 +16,7 @@ import {
 	createDefaultGraderRegistry,
 	evidenceFromText,
 	resolveTaskGraderSpecs,
+	taskGradingTimeoutMs,
 	type EvalTraceEvent,
 	type GraderEvidence,
 	type GraderResult,
@@ -87,7 +88,7 @@ export async function runUnitTest({
 				usage,
 				environment: environment ?? {},
 			},
-			120_000,
+			taskGradingTimeoutMs(manifest),
 		)
 		if (evidenceSink) {
 			const store = new FilesystemArtifactStore(path.resolve(brokerRoot, "..", "artifacts"))

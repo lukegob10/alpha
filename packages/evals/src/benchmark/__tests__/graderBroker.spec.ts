@@ -22,6 +22,52 @@ beforeEach(async () => {
 afterEach(async () => fs.rm(root, { recursive: true, force: true }))
 
 describe("trusted grader broker receipts", () => {
+	it.each([{}, { signal: new AbortController().signal }, { untilAbort: { aborted: false } }])(
+		"rejects a request wait without an owned cancellation signal: %j",
+		async (wait) => {
+			const execute = vi.fn()
+			await expect(
+				// @ts-expect-error Invalid JavaScript callers must fail type admission and runtime validation.
+				serveGraderRequest({ root, execute, ...wait }),
+			).rejects.toThrow("owned cancellation signal")
+			expect(execute).not.toHaveBeenCalled()
+			expect(await fs.readdir(root)).toEqual([])
+		},
+	)
+
+	it("joins an owned request wait when its attempt is cancelled", async () => {
+		const controller = new AbortController()
+		const execute = vi.fn()
+		let settled = false
+		const server = serveGraderRequest({ root, untilAbort: controller.signal, execute }).then(() => {
+			settled = true
+		})
+		try {
+			await Promise.resolve()
+			expect(settled).toBe(false)
+			controller.abort()
+			await server
+			expect(settled).toBe(true)
+			expect(execute).not.toHaveBeenCalled()
+			expect(await fs.readdir(root)).toEqual([])
+		} finally {
+			controller.abort()
+			await server
+		}
+	})
+
+	it("preserves expiry for callers with an explicit request deadline", async () => {
+		const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(1_001)
+		const execute = vi.fn()
+		try {
+			await serveGraderRequest({ root, timeoutMs: 1_000, signal: new AbortController().signal, execute })
+			expect(execute).not.toHaveBeenCalled()
+			expect(await fs.readdir(root)).toEqual([])
+		} finally {
+			clock.mockRestore()
+		}
+	})
+
 	it("does not expose malformed receipt contents in diagnostics", async () => {
 		await fs.writeFile(path.join(root, "response.json"), "secret-canary-invalid-json")
 		await expect(submitGraderRequest(root, request, 1_000)).rejects.toThrow("Invalid trusted grader JSON envelope")

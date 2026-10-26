@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import os from "node:os"
+import fs from "node:fs/promises"
 import path from "node:path"
 import type { CommandToolResult, ExecutionIdentity } from "@alpha-code/types"
 import type { HarnessProcessSpec } from "../../orchestration/index"
 import { TraceAssertionGrader } from "../../grading/plugins/traceAssertion"
+import { evidenceFromText } from "../../grading/index"
+import {
+	serveGraderRequest as serveRealGraderRequest,
+	submitGraderRequest as submitRealGraderRequest,
+} from "../../benchmark/graderBroker"
 import { FilesystemArtifactStore } from "../../evidence/index"
 import { EVALS_REPO_PATH } from "../../exercises/index"
 
@@ -234,6 +240,7 @@ beforeEach(() => {
 	mocks.runTaskInVscode.mockResolvedValue(undefined)
 	mocks.captureExpectedNodeTestCommands.mockImplementation(async (_root, commands) => commands)
 	mocks.runUnitTest.mockResolvedValue({ decision: "passed", results: [] })
+	mocks.serveGraderRequest.mockResolvedValue(undefined)
 	mocks.processRun.mockResolvedValue({
 		exitCode: 0,
 		stdout: "",
@@ -267,6 +274,7 @@ describe("private original test capture and trusted grading", () => {
 				partition: "holdout",
 				fixture: "tasks/private-original/workspace",
 				validation: { commands },
+				budgets: { wallSeconds: 900 },
 				graders: [{ alias: "hidden_tests", bundleId: "private" }],
 			},
 		})
@@ -340,6 +348,11 @@ describe("private original test capture and trusted grading", () => {
 		expect(retained).not.toContain("private-job-secret-canary")
 		expect(retained).toContain("[REDACTED:")
 		const argv = mocks.processRun.mock.calls.find(([spec]) => spec.args[0] === "run")![0].args.join(" ")
+		expect(mocks.processRun.mock.calls.find(([spec]) => spec.args[0] === "run")![0].timeoutMs).toBe(1_320_000)
+		const brokerWait = mocks.serveGraderRequest.mock.calls[0]![0]
+		expect(brokerWait).not.toHaveProperty("timeoutMs")
+		expect(brokerWait.untilAbort).toBeInstanceOf(AbortSignal)
+		expect(brokerWait.untilAbort.aborted).toBe(true)
 		expect(argv).not.toContain(privateRoot)
 		expect(argv).not.toContain("EVALS_PRIVATE_BENCHMARK_ROOT")
 	})
@@ -387,6 +400,157 @@ describe("private original test capture and trusted grading", () => {
 })
 
 describe("processTaskInContainer lifecycle integration", () => {
+	it.each([
+		{ wallSeconds: 2_147_484, error: "Invalid task grading timeout" },
+		{ wallSeconds: 2_147_200, error: "Invalid task container timeout" },
+	])("rejects wall budget $wallSeconds before creating an attempt or workspace", async ({ wallSeconds, error }) => {
+		mocks.findBenchmarkTask.mockResolvedValue({
+			task: {
+				fixture: "javascript/lifecycle",
+				validation: { commands: [] },
+				budgets: { wallSeconds },
+				graders: [{ alias: "hidden_tests", bundleId: "private" }],
+			},
+		})
+		await expect(
+			processTaskInContainer({ taskId: task.id, jobToken: null, logger, maxRetries: 0, processRunner }),
+		).rejects.toThrow(error)
+		expect(mocks.ensureAttempt).not.toHaveBeenCalled()
+		expect(mocks.captureExpectedNodeTestCommands).not.toHaveBeenCalled()
+		expect(mocks.collectInfrastructureManifest).not.toHaveBeenCalled()
+		expect(mocks.serveGraderRequest).not.toHaveBeenCalled()
+		expect(mocks.processRun).not.toHaveBeenCalled()
+	})
+
+	it("aborts and joins its broker when trial lookup fails after launch", async () => {
+		const brokerRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-failed-grader-broker-"))
+		let joined = false
+		mocks.findBenchmarkTask.mockResolvedValue({
+			task: {
+				fixture: "javascript/lifecycle",
+				validation: { commands: [] },
+				graders: [{ alias: "hidden_tests", bundleId: "private" }],
+			},
+		})
+		mocks.serveGraderRequest.mockImplementation((options) =>
+			serveRealGraderRequest({ ...options, root: brokerRoot }).finally(() => {
+				joined = true
+			}),
+		)
+		mocks.findTrialForTask.mockRejectedValueOnce(new Error("trial lookup failed"))
+		try {
+			await processTaskInContainer({ taskId: task.id, jobToken: null, logger, maxRetries: 0, processRunner })
+			expect(joined).toBe(true)
+			expect(mocks.serveGraderRequest.mock.calls[0]![0].untilAbort.aborted).toBe(true)
+			expect(state).toMatchObject({
+				terminalStatus: "infrastructure_error",
+				failureDetail: "trial lookup failed",
+			})
+			expect(mocks.applyAttemptEvent.mock.calls.filter(([, event]) => event.type === "finalize")).toHaveLength(1)
+			expect(mocks.runUnitTest).not.toHaveBeenCalled()
+			expect(mocks.processRun).not.toHaveBeenCalled()
+		} finally {
+			await fs.rm(brokerRoot, { recursive: true, force: true })
+		}
+	})
+
+	it("grades a near-budget completion after delayed startup through the real broker handshake", async () => {
+		const brokerRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-late-grader-broker-"))
+		let resolveRequestWait!: () => void
+		const requestWait = new Promise<void>((resolve) => {
+			resolveRequestWait = resolve
+		})
+		let clockMs = Date.parse("2026-10-26T00:00:00Z")
+		let gradingStarted = false
+		let server: Promise<void> | undefined
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => clockMs)
+		const schedule = globalThis.setTimeout
+		const poll = vi.spyOn(globalThis, "setTimeout").mockImplementation((...args) => {
+			const timer = Reflect.apply(schedule, globalThis, args)
+			if (args[1] === 100) resolveRequestWait()
+			return timer
+		})
+		const inspect = mocks.collectInfrastructureManifest.getMockImplementation()!
+		mocks.collectInfrastructureManifest.mockImplementationOnce(async (...args) => {
+			// Begin startup only after the server is waiting for its first request.
+			await requestWait
+			clockMs += 30_000
+			return inspect(...args)
+		})
+		mocks.findBenchmarkTask.mockResolvedValue({
+			task: {
+				fixture: "javascript/lifecycle",
+				validation: { commands: [] },
+				budgets: { wallSeconds: 900 },
+				graders: [{ alias: "hidden_tests", bundleId: "private" }],
+			},
+		})
+		mocks.runUnitTest.mockResolvedValue({
+			decision: "passed",
+			results: [
+				{
+					graderId: "private-tests",
+					graderVersion: 1,
+					type: "command",
+					status: "passed",
+					hardGate: true,
+					failureClass: "outcome",
+					diagnostics: [],
+					evidence: [evidenceFromText("verifier:stdout", "stdout", "verified")],
+					startedAt: new Date(0).toISOString(),
+					finishedAt: new Date(1).toISOString(),
+					durationMs: 1,
+				},
+			],
+		})
+		mocks.serveGraderRequest.mockImplementation((options) => {
+			server = serveRealGraderRequest({
+				...options,
+				root: brokerRoot,
+				execute: (request) => {
+					gradingStarted = true
+					return options.execute(request)
+				},
+			}).finally(() => {
+				// Expiry must make the client fail deterministically instead of waiting in real time.
+				if (!gradingStarted) clockMs += 1_020_001
+			})
+			return server
+		})
+		mocks.processRun.mockImplementation(async ({ args }: HarnessProcessSpec) => {
+			if (args[0] === "run") {
+				clockMs += 299_000 // The agent completes within its unchanged five-minute budget.
+				const receipt = await submitRealGraderRequest(
+					brokerRoot,
+					{
+						schemaVersion: 1,
+						attemptId: 101,
+						workspaceRoot: "/workspace/eval-task",
+						changedPaths: [],
+						trace: [],
+						environment: {},
+					},
+					1_020_000,
+				)
+				expect(receipt.run.decision).toBe("passed")
+				state = { phase: "grading", terminalStatus: "passed", version: 5 }
+			}
+			return { exitCode: 0, stdout: "", stderr: "", durationMs: 1, timedOut: false, outputTruncated: false }
+		})
+		try {
+			await processTaskInContainer({ taskId: task.id, jobToken: null, logger, maxRetries: 0, processRunner })
+			expect(state.terminalStatus).toBe("passed")
+			expect(mocks.runUnitTest).toHaveBeenCalledOnce()
+			expect(mocks.applyAttemptEvent).not.toHaveBeenCalled()
+			expect(mocks.processRun.mock.calls.find(([spec]) => spec.args[0] === "run")![0].timeoutMs).toBe(1_320_000)
+		} finally {
+			await server
+			clock.mockRestore()
+			poll.mockRestore()
+			await fs.rm(brokerRoot, { recursive: true, force: true })
+		}
+	})
+
 	it("keeps private graders in the trusted controller and removes the Docker socket from agent containers", async () => {
 		mocks.findBenchmarkTask.mockResolvedValue({
 			task: {

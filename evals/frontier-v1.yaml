@@ -1,6 +1,8 @@
+# Revision 6 versions the prompt/hash revisions recorded in 8910093c and the new two-module outbox fixture.
+# Private hashes identify declared assets; calibration and paid/human admission remain separate requirements.
 schemaVersion: 1
 id: frontier-v1
-version: 5
+version: 6
 status: calibrating
 primaryModel: luna-high
 referenceModel: luna-high
@@ -783,15 +785,15 @@ tasks:
     fixtureDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
     promptDigest: sha256:42cf7323b1f8e7029d33679765c1e2f6011dad7307fc66dccff385c389c6d4c4
   - id: repo-transaction-outbox
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
-    fixture: javascript/repo-transaction-outbox
+    fixture: javascript/repo-transaction-outbox-v2
     prompt: prompt.md
     repository:
       upstream: local-snapshot:real-repository
-      commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
+      commit: frontier-v1-visible-v6
+      snapshotDigest: sha256:5b1771b27c70448991cfba3585152ddd0fc09dfd47b440eee743c41b21afbf70
     family: real-repository
     capabilities:
       - transaction
@@ -835,8 +837,8 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: single-file
-      minFiles: 1
+      kind: multi-file
+      minFiles: 2
       maxFiles: 2
       allowedRoots:
         - src
@@ -850,8 +852,8 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
-    promptDigest: sha256:8ec5772db98214942944674a3966ec33023cb161b2a4c2155d1d6121e8f6786e
+    fixtureDigest: sha256:5b1771b27c70448991cfba3585152ddd0fc09dfd47b440eee743c41b21afbf70
+    promptDigest: sha256:8079826e1fa0995ed94eadfb2270e7c6d4ef555a248effac35ef722789b18635
   - id: repo-rate-limit-window
     version: 1
     partition: development
@@ -1133,7 +1135,7 @@ tasks:
     fixtureDigest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
     promptDigest: sha256:81c4471cde5f814f1ae49893bce6cb786c6e58b28a38be912c252d7fc882dff3
   - id: alpha-repository-rules
-    version: 1
+    version: 2
     partition: regression
     admission: calibrating
     fixture: javascript/alpha-repository-rules
@@ -1623,7 +1625,7 @@ tasks:
     fixtureDigest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
     promptDigest: sha256:516a64c669ae8d6ddbf36f9df2535f41a818b03611d1aeabc2b7ea3f1591f84c
   - id: alpha-scheduler-ordering
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
     fixture: javascript/alpha-scheduler-ordering
@@ -2533,7 +2535,7 @@ tasks:
     fixtureDigest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
     promptDigest: sha256:b7cef5d52719579ef0a0f35b9185d1b344f3d45480024a758d82cde54670a347
   - id: holdout-009
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-009/workspace
@@ -2603,7 +2605,7 @@ tasks:
     fixtureDigest: sha256:cf1cef885e443bf93ad6551a22d52155762c672b4b13571e7dc598ed4291533b
     promptDigest: sha256:46aebf7d4bde6d863d601b979e9c538ddeab9b973b62caaa731bde98b72b5146
   - id: holdout-010
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-010/workspace
@@ -2673,7 +2675,7 @@ tasks:
     fixtureDigest: sha256:9026defcef273259fb899e76f6952759eaec53e2ed49a98c15c43f956f1a2469
     promptDigest: sha256:9192db6a94524998b7687216aa8e86d48aba5ac3d7cf899d7593484e96eef3bc
   - id: holdout-011
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-011/workspace

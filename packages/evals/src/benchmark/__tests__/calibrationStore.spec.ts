@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { calibrationReportSchema, type CalibrationReport } from "../contracts"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "../modelCalibration"
-import { CalibrationReportValidationError, readCalibrationReport, updateCalibrationReport } from "../calibrationStore"
+import {
+	CalibrationReportValidationError,
+	readCalibrationReport,
+	resolveCalibrationReportPath,
+	updateCalibrationReport,
+} from "../calibrationStore"
 
 const roots: string[] = []
 const digest = (bytes: string) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
@@ -66,6 +71,39 @@ afterEach(async () => {
 })
 
 describe("calibration report publication", () => {
+	it("publishes a revised identity separately and retains the exact legacy report bytes", async () => {
+		const { root, file, bytes } = await fixture()
+		const revised = { ...report(), taskIdentity: "task@2" }
+		const output = await resolveCalibrationReportPath(root, revised.taskIdentity, { write: true })
+		expect(output).toBe(path.join(root, "task@2.keyless.json"))
+		await updateCalibrationReport(output, () => revised, { expectedRevision: null })
+		expect(await resolveCalibrationReportPath(root, "task@2")).toBe(output)
+		expect((await readCalibrationReport(output)).report).toEqual(revised)
+		expect(await fs.readFile(file, "utf8")).toBe(bytes)
+		expect(await resolveCalibrationReportPath(root, "task@1")).toBe(file)
+	})
+
+	it("prefers explicit versioned evidence and reuses only an identity-matching legacy write target", async () => {
+		const { root, file } = await fixture()
+		expect(await resolveCalibrationReportPath(root, "task@1", { write: true })).toBe(file)
+		const versioned = path.join(root, "task@1.keyless.json")
+		await fs.writeFile(versioned, JSON.stringify(report()))
+		expect(await resolveCalibrationReportPath(root, "task@1")).toBe(versioned)
+		expect(await resolveCalibrationReportPath(root, "task@1", { write: true })).toBe(versioned)
+		expect(await resolveCalibrationReportPath(root, "absent@2", { write: true })).toBe(
+			path.join(root, "absent@2.keyless.json"),
+		)
+	})
+
+	it.each(["../task@2", "task/../other@2", "/task@2", "task\\other@2", "task@0", "task@2/other"])(
+		"rejects an unsafe calibration identity %s before resolving a file",
+		async (identity) => {
+			const { root } = await fixture()
+			await expect(resolveCalibrationReportPath(root, identity)).rejects.toThrow(/safe versioned/)
+			expect(await fs.readdir(root)).toEqual(["task.keyless.json"])
+		},
+	)
+
 	it("reads legacy schema without adding persisted revisions and binds exact retained bytes", async () => {
 		const { file, bytes } = await fixture()
 		const snapshot = await readCalibrationReport(file)

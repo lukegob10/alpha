@@ -878,7 +878,7 @@ describe("native host rich evidence capture", () => {
 		}
 		expect(new Set(variants).size).toBe(3)
 		expect(variants[3]).toBe(variants[0])
-	}, 30_000) // Four complete captures each launch Git and Node; this is an integration fixture.
+	}, 60_000) // Four complete Git/Node captures; one Windows capture measured 9.1s.
 
 	it("revalidates historical raw trace bytes even when generic seals and capture labels are consistent", async () => {
 		const data = await preparedFixture()
