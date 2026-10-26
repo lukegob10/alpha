@@ -45,7 +45,7 @@ function assertion(name, args) {
 				(error) => {
 					state.failed = true
 					recordFailure(state, name, error, ownedCall)
-					throw error
+					throw transportableFailure(error)
 				},
 			)
 		state.context.assert.ok(true)
@@ -54,8 +54,20 @@ function assertion(name, args) {
 	} catch (error) {
 		state.failed = true
 		recordFailure(state, name, error, ownedCall)
-		throw error
+		throw transportableFailure(error)
 	}
+}
+
+function transportableFailure(error) {
+	if (!(error instanceof AssertionError)) return error
+	// Node's test IPC cannot serialize functions or symbols nested in compared
+	// values. Keep the authenticated diagnostic and original stack, while leaving
+	// arbitrary candidate objects out of the error sent to the supervisor.
+	const failure = new AssertionError({ message: String(error.message), operator: String(error.operator) })
+	// AssertionError may append its own comparison diff to a supplied message.
+	failure.message = String(error.message)
+	failure.stack = String(error.stack)
+	return failure
 }
 
 function originalCaller() {

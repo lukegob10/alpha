@@ -86,6 +86,39 @@ async function grade(
 }
 
 describe("expected command assertion completion", () => {
+	it.each(["({ lease: { release() {} } })", "({ lease: Symbol('open') })"])(
+		"retains ordinary assertion failures with nonserializable compared values: %s",
+		async (value) => {
+			const tests =
+				'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { value } from "./solution.js"\n' +
+				'test("original assertions", () => { const actual = value(); assert.deepEqual(actual, { lease: null }); assert.equal(actual.lease, null) })\n'
+			const result = await grade(`export const value = () => ${value}`, tests)
+			expect(result.decision).toBe("outcome_failed")
+			expect(JSON.parse(result.output.stdout!).assertionFailures).toEqual([
+				expect.objectContaining({
+					name: "original assertions",
+					code: "ERR_ASSERTION",
+					message: expect.stringContaining("lease"),
+				}),
+			])
+		},
+	)
+
+	it("retains asynchronous assertion failures with nonserializable compared values", async () => {
+		const tests =
+			'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { value } from "./solution.js"\n' +
+			'test("original assertions", async () => { await assert.rejects(async () => { throw value() }, { lease: null }); assert.ok(false) })\n'
+		const result = await grade("export const value = () => ({ lease: { release() {} } })", tests)
+		expect(result.decision).toBe("outcome_failed")
+		expect(JSON.parse(result.output.stdout!).assertionFailures).toEqual([
+			expect.objectContaining({
+				name: "original assertions",
+				code: "ERR_ASSERTION",
+				message: expect.stringContaining("lease"),
+			}),
+		])
+	})
+
 	it("preserves the original failed assertion cause separately from ordinary worker output", async () => {
 		const tests =
 			'import test from "node:test"\nimport assert from "node:assert/strict"\nimport { value } from "./solution.js"\ntest("original assertions", () => { assert.equal(value(1), 2, "OWNED_REGRESSION_FAILURE"); assert.equal(value(2), 4) })\n'
