@@ -1,4 +1,4 @@
-import type { AlphaMessage, AlphaSayTool } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { projectTranscriptTurns, type TranscriptPrompt } from "./transcriptTurns"
 import { createMessagePayloadSelector } from "./messagePayload"
@@ -29,15 +29,75 @@ export interface FileChangeEntry {
 	commandExecutionId?: string
 }
 
-type FileChangePayload = AlphaSayTool & {
-	finalContent?: string
-	changeStatus?: string
-	commandExecutionId?: string
+interface FileChangePayload {
+	entries: FileChangeEntry[]
+	previewContent?: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+const stringField = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined)
+
+function fileChangeEntry(
+	payload: Record<string, unknown>,
+	diff: string | undefined,
+	commandExecutionId: string | undefined,
+): FileChangeEntry | undefined {
+	if (typeof payload.path !== "string" || !payload.path || !diff) return undefined
+	const stats = payload.diffStats
+	const diffStats =
+		isRecord(stats) &&
+		typeof stats.added === "number" &&
+		typeof stats.removed === "number" &&
+		Number.isFinite(stats.added) &&
+		Number.isFinite(stats.removed)
+			? { added: stats.added, removed: stats.removed }
+			: undefined
+	return {
+		path: payload.path,
+		diff,
+		diffStats,
+		originalContent: stringField(payload.originalContent),
+		finalContent: stringField(payload.finalContent),
+		commandExecutionId,
+	}
 }
 
 const fileChangePayload = createMessagePayloadSelector((payload): FileChangePayload | undefined => {
-	if (typeof payload?.tool !== "string" || !FILE_EDIT_TOOLS.has(payload.tool)) return undefined
-	return payload as FileChangePayload
+	if (
+		typeof payload?.tool !== "string" ||
+		!FILE_EDIT_TOOLS.has(payload.tool) ||
+		(payload.changeStatus !== undefined && payload.changeStatus !== "applied")
+	) {
+		return undefined
+	}
+	// Saved tool JSON is untrusted. Cache only validated fields used by review;
+	// unrelated tool fields and malformed batch members never reach diff rendering.
+	const batchDiffs = payload.batchDiffs
+	const isBatch = Array.isArray(batchDiffs)
+	const files = isBatch ? batchDiffs.filter(isRecord) : [payload]
+	const commandExecutionId = stringField(payload.commandExecutionId)
+	const entries = files.flatMap((file: Record<string, unknown>) => {
+		// Completed records prefer the captured unified patch over legacy edit instructions.
+		let diff = stringField(file.content)
+		if (diff === undefined) {
+			if (isBatch && Array.isArray(file.diffs)) {
+				diff = file.diffs
+					.flatMap((chunk: unknown) =>
+						isRecord(chunk) && typeof chunk.content === "string" ? [chunk.content] : [],
+					)
+					.join("\n")
+			} else if (!isBatch) {
+				// Legacy single-file previews can store their patch in `diff`.
+				diff = stringField(file.diff)
+			}
+		}
+		const entry = fileChangeEntry(file, diff, commandExecutionId)
+		return entry ? [entry] : []
+	})
+	return { entries, previewContent: isBatch ? undefined : stringField(payload.content) }
 })
 
 interface FileChangeCandidate {
@@ -95,54 +155,13 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 		if (isAskTool && !msg.isAnswered) continue
 
 		const tool = fileChangePayload(msg)
-		if (!tool || (tool.changeStatus !== undefined && tool.changeStatus !== "applied")) {
-			continue
-		}
+		if (!tool) continue
 		const source = isSayTool ? "say" : "ask"
-		const commandExecutionId = tool.commandExecutionId ?? msg.commandExecutionId
-
-		// Batch diffs
-		if (tool.batchDiffs && Array.isArray(tool.batchDiffs)) {
-			for (const file of tool.batchDiffs) {
-				if (typeof file.path !== "string" || !file.path) continue
-				const content = file.content ?? file.diffs?.map((d) => d.content).join("\n") ?? ""
-				if (content) {
-					candidates.push({
-						entry: {
-							path: file.path,
-							diff: content,
-							diffStats: file.diffStats,
-							...(typeof file.originalContent === "string"
-								? { originalContent: file.originalContent }
-								: {}),
-							...(typeof file.finalContent === "string" ? { finalContent: file.finalContent } : {}),
-							commandExecutionId,
-						},
-						source,
-					})
-				}
-			}
-			continue
-		}
-
-		// Single file
-		if (typeof tool.path !== "string" || !tool.path) continue
-		// Completed edit records store the canonical unified patch in `content`.
-		// `diff` is the model's raw edit instruction for apply_diff and may not be
-		// renderable as a file diff. Keep the raw value as a compatibility fallback.
-		const diff = tool.content ?? tool.diff ?? ""
-		if (typeof diff === "string" && diff) {
+		for (const entry of tool.entries) {
 			candidates.push({
-				entry: {
-					path: tool.path,
-					diff,
-					diffStats: tool.diffStats,
-					originalContent: tool.originalContent,
-					finalContent: tool.finalContent,
-					commandExecutionId,
-				},
+				entry: { ...entry, commandExecutionId: entry.commandExecutionId ?? msg.commandExecutionId },
 				source,
-				previewContent: isAskTool ? tool.content : undefined,
+				previewContent: isAskTool ? tool.previewContent : undefined,
 			})
 		}
 	}

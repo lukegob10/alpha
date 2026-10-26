@@ -34,6 +34,46 @@ function completedCommandEdit(
 }
 
 describe("fileChangesFromMessages", () => {
+	it("skips malformed batch entries while preserving valid legacy diff chunks", () => {
+		const messages = [
+			msg({
+				text: JSON.stringify({
+					tool: "appliedDiff",
+					batchDiffs: [
+						null,
+						42,
+						{ path: 17, content: "+invalid path" },
+						{ path: "valid.ts", diffs: [null, { content: "+valid" }] },
+					],
+				}),
+			}),
+		]
+		expect(fileChangesFromMessages(messages)).toMatchObject([{ path: "valid.ts", diff: "+valid" }])
+		expect(fileChangesFromMessages(messages)).toHaveLength(1)
+	})
+
+	it("discards malformed captured metadata and retains the message execution identity", () => {
+		const entries = fileChangesFromMessages([
+			msg({
+				commandExecutionId: "message-execution",
+				text: JSON.stringify({
+					tool: "appliedDiff",
+					path: "valid.ts",
+					content: "+valid",
+					diffStats: { added: "1", removed: 0 },
+					originalContent: 17,
+					finalContent: false,
+					commandExecutionId: { invalid: true },
+				}),
+			}),
+		])
+		expect(entries).toHaveLength(1)
+		expect(entries[0]).toMatchObject({ path: "valid.ts", diff: "+valid", commandExecutionId: "message-execution" })
+		expect(entries[0].diffStats).toBeUndefined()
+		expect(entries[0].originalContent).toBeUndefined()
+		expect(entries[0].finalContent).toBeUndefined()
+	})
+
 	it("returns empty array for undefined messages", () => {
 		expect(fileChangesFromMessages(undefined)).toEqual([])
 	})

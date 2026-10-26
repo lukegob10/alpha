@@ -66,7 +66,8 @@ describe("ApiOptions model discovery", () => {
 		view.rerender(options({ apiProvider: "vscode-lm", openAiBaseUrl: "https://unused.example.com/v1" }))
 		await act(() => vi.advanceTimersByTimeAsync(250))
 		expect(requestedAt).toEqual([0])
-		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "requestVsCodeLmModels" })
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestVsCodeLmModels" })
 	})
 
 	it("debounces OpenAI connection edits for 250 ms and sends the latest values", async () => {
@@ -87,7 +88,8 @@ describe("ApiOptions model discovery", () => {
 		await act(() => vi.advanceTimersByTimeAsync(249))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		await act(() => vi.advanceTimersByTimeAsync(1))
-		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "requestOpenAiModels",
 			values: {
 				baseUrl: "https://latest.example.com/v1",
@@ -102,7 +104,8 @@ describe("ApiOptions model discovery", () => {
 		const view = render(options({ apiProvider: "openai", openAiBaseUrl: "https://first.example.com/v1" }))
 		await act(() => vi.advanceTimersByTimeAsync(100))
 		view.rerender(options({ apiProvider: "vscode-lm" }))
-		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "requestVsCodeLmModels" })
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestVsCodeLmModels" })
 		await act(() => vi.advanceTimersByTimeAsync(250))
 		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
 	})

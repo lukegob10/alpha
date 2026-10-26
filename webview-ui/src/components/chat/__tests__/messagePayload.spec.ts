@@ -45,7 +45,8 @@ describe("message payload projections", () => {
 			const message: AlphaMessage = { ts: 1, type: "say", say: "tool", text }
 			expect(project(message)).toBeUndefined()
 			expect(project(message)).toBeUndefined()
-			expect(select).toHaveBeenCalledExactlyOnceWith(undefined)
+			expect(select).toHaveBeenCalledTimes(1)
+			expect(select).toHaveBeenCalledWith(undefined)
 		},
 	)
 })

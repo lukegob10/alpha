@@ -47,7 +47,7 @@ describe("memory summary publication", () => {
 	let version: number
 	let dirty: boolean
 	let eol: number
-	let save: ReturnType<typeof vi.fn>
+	let save: ReturnType<typeof vi.fn<() => Promise<boolean>>>
 	let beforeSave: (() => Promise<void>) | undefined
 	let options: Parameters<MemorySummaryWriter>[2]
 
@@ -80,7 +80,7 @@ describe("memory summary publication", () => {
 				}
 			},
 		}
-		save = vi.fn()
+		save = vi.fn<() => Promise<boolean>>()
 		host.open.mockImplementation(async () => {
 			const original = await fs.readFile(file, "utf8")
 			text = original.replace(/^\uFEFF/, "")

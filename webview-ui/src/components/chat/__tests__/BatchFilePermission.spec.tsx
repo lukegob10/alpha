@@ -122,7 +122,8 @@ describe("BatchFilePermission", () => {
 		expect(source).toHaveFocus()
 		await user.keyboard(key)
 
-		expect(mockVscodePostMessage).toHaveBeenCalledExactlyOnceWith({
+		expect(mockVscodePostMessage).toHaveBeenCalledTimes(1)
+		expect(mockVscodePostMessage).toHaveBeenCalledWith({
 			type: "openFile",
 			text: mockFiles[0].content,
 		})

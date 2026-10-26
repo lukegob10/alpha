@@ -24,6 +24,31 @@ interface MarkdownBlockProps {
 	partial?: boolean
 }
 
+const WINDOWS_ABSOLUTE_PATH = /^[a-z]:(?:[\\/]|%5c|%2f)/i
+const NETWORK_PATH = /^(?:[\\/]|%5c|%2f){2}/i
+
+/** The URL transform and click handler must agree before exposing native file navigation. */
+function getMarkdownFilePath(href: string | undefined): string | undefined {
+	if (!href || /^[#?]/.test(href) || NETWORK_PATH.test(href)) return undefined
+	let filePath = href
+	if (/^file:/i.test(href)) {
+		if (!/^file:\/\//i.test(href)) return undefined
+		try {
+			const url = new URL(href)
+			if (url.hostname || url.search || url.hash || /%(?:2f|5c)/i.test(url.pathname)) return undefined
+			filePath = url.pathname.replace(/^\/(?=[a-z]:\/)/i, "")
+			if (NETWORK_PATH.test(filePath)) return undefined
+		} catch {
+			return undefined
+		}
+	} else if (!WINDOWS_ABSOLUTE_PATH.test(href) && /^[a-z][a-z0-9+.-]*:/i.test(href)) {
+		// A root filename with a line suffix resembles a dotted URI scheme; expose it only as a relative URL.
+		return /^[^\\/:?#\s]+\.[^\\/:?#\s]+:\d+(?:-\d+)?$/.test(href) ? `./${href}` : undefined
+	}
+	// CommonMark percent-encodes backslashes; keep drive paths absolute before the host resolves them.
+	return WINDOWS_ABSOLUTE_PATH.test(filePath) ? filePath.replace(/%5c|%2f|\\/gi, "/") : filePath
+}
+
 const ensureCodeFenceLanguage = () => {
 	return (tree: any) => {
 		visit(tree, "code", (node: any) => {
@@ -244,22 +269,19 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 			},
 			a: ({ href, children, ...props }: any) => {
 				const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-					if (href?.startsWith("alpha-document:")) {
+					if (!href) {
 						e.preventDefault()
-						if (parseHtmlDocumentLink(href)) vscode.postMessage({ type: "openHtmlDocument", text: href })
 						return
 					}
-					// Only process file:// protocol or local file paths
-					const isLocalPath = href?.startsWith("file://") || href?.startsWith("/") || !href?.includes("://")
-
-					if (!isLocalPath) {
+					if (parseHtmlDocumentLink(href)) {
+						e.preventDefault()
+						vscode.postMessage({ type: "openHtmlDocument", text: href })
 						return
 					}
+					let filePath = getMarkdownFilePath(href)
+					if (filePath === undefined) return
 
 					e.preventDefault()
-
-					// Handle absolute vs project-relative paths
-					let filePath = href.replace("file://", "")
 
 					// Extract line number if present
 					const match = filePath.match(/(.*):(\d+)(-\d+)?$/)
@@ -270,7 +292,11 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 					}
 
 					// Add ./ prefix if needed
-					if (!filePath.startsWith("/") && !filePath.startsWith("./")) {
+					if (
+						!filePath.startsWith("/") &&
+						!filePath.startsWith("./") &&
+						!WINDOWS_ABSOLUTE_PATH.test(filePath)
+					) {
 						filePath = "./" + filePath
 					}
 
@@ -282,7 +308,7 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 				}
 
 				return (
-					<a {...props} href={href} onClick={handleClick}>
+					<a {...props} href={href || undefined} onClick={handleClick}>
 						{children}
 					</a>
 				)
@@ -354,7 +380,13 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 	return (
 		<StyledMarkdown>
 			<ReactMarkdown
-				urlTransform={(url) => (parseHtmlDocumentLink(url) ? url : defaultUrlTransform(url))}
+				urlTransform={(url, key) => {
+					if (key !== "href") return defaultUrlTransform(url)
+					if (parseHtmlDocumentLink(url)) return url
+					const filePath = getMarkdownFilePath(url)
+					if (filePath === undefined) return defaultUrlTransform(url)
+					return filePath.startsWith("./") ? filePath : url
+				}}
 				remarkPlugins={[remarkGfm, remarkMath, ensureCodeFenceLanguage]}
 				rehypePlugins={[rehypeKatex as any]}
 				components={components}>
