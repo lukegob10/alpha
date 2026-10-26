@@ -64,11 +64,14 @@ describe("AgentsSettings", () => {
 	it("retains invalid numeric edits and blocks Save", () => {
 		render(<BufferHarness />)
 		const input = screen.getByLabelText("Maximum concurrent managed agents")
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 		fireEvent.change(input, { target: { value: "1.5" } })
 		expect(input).toHaveValue(1.5)
 		expect(input).toHaveAttribute("aria-invalid", "true")
+		expect(screen.getByRole("alert")).toBeVisible()
 		expect(screen.getByRole("button", { name: "Buffered Save" })).toBeDisabled()
 		fireEvent.change(input, { target: { value: "64" } })
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "Buffered Save" })).toBeEnabled()
 	})
 	it("edits model, effort, and instructions while retaining saved authority metadata", () => {

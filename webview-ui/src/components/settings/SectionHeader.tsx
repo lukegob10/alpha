@@ -11,7 +11,7 @@ export const SectionHeader = ({ description, children, className, ...props }: Se
 	return (
 		<div
 			className={cn(
-				"glass-header sticky top-0 z-10 border-b px-5 pt-6 pb-4 text-vscode-sideBar-foreground",
+				"glass-header sticky top-0 z-10 mb-5 border-b px-5 pt-6 pb-4 text-vscode-sideBar-foreground",
 				className,
 			)}
 			{...props}>

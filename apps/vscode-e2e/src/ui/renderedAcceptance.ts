@@ -337,11 +337,49 @@ export async function exerciseRenderedAcceptance(
 				"d.querySelector('[data-testid=save-button]').disabled",
 			)
 			try {
+				for (const section of ["providers", "modes", "autoApprove", "agents", "mcp"]) {
+					await activate(`[data-testid="settings-tab-list"] [data-testid="tab-${section}"]`)
+					await check(
+						`d.querySelector('[data-testid="tab-${section}"]').getAttribute('aria-selected')==='true'`,
+					)
+					await evaluate("(d.querySelector('[data-testid=settings-content]').scrollTop=0,true)")
+					const spacing = await evaluate<{ top: number; left: number; right: number }>(`(()=>{
+						const content=d.querySelector('[data-testid=settings-content]');
+						const header=content.querySelector('h3').parentElement.getBoundingClientRect();
+						const card=content.querySelector('.surface-raised').getBoundingClientRect();
+						const bounds=content.getBoundingClientRect();
+						return {top:card.top-header.bottom,left:card.left-bounds.left,right:bounds.right-card.right};
+					})()`)
+					await capture(`settings-${section}`)
+					assert.ok(
+						spacing.top >= 16,
+						`${section}: the first card needs space below the section divider (was ${spacing.top}px)`,
+					)
+					assert.ok(spacing.left >= 16 && spacing.right >= 16, `${section}: card edges need an inset`)
+				}
 				await activate('[data-testid="settings-tab-list"] [data-testid="tab-agents"]')
 				await check(
 					`(${javascriptLiteral(renderedAgentSettingsControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
 				)
+				const agentFields = await evaluate<{ id: string; gap: number; width: number; available: number }[]>(
+					`(${javascriptLiteral(renderedAgentSettingsControls)}).map(([id])=>{
+						const input=d.querySelector('[data-testid=settings-content] [id="'+id+'"]');
+						const rect=input.getBoundingClientRect(),label=input.labels[0].getBoundingClientRect();
+						return {id,gap:rect.top-label.bottom,width:rect.width,available:input.parentElement.clientWidth};
+					})`,
+				)
+				for (const field of agentFields) {
+					assert.ok(field.gap >= 4, `${field.id}: the control needs space below its label`)
+					assert.ok(field.width <= field.available + 1, `${field.id}: the control must fit its container`)
+				}
+				const concurrency = agentFields.find((field) => field.id === "agents-concurrency")
+				assert.ok(
+					concurrency && concurrency.width <= 120,
+					"Agent concurrency should use a compact numeric input",
+				)
 				await capture("settings-agents-basic")
+				await evaluate("(d.getElementById('agents-new-type-name').scrollIntoView({block:'center'}),true)")
+				await capture("settings-agents-custom")
 			} finally {
 				await activate(`[data-testid="settings-tab-list"] [data-testid=${javascriptLiteral(originalTab)}]`)
 			}
