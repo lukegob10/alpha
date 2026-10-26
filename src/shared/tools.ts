@@ -360,6 +360,19 @@ export type NativeToolArgs = BrowserToolArgs & {
 	search_files: SearchFilesParams
 	list_tickets: { query?: string; status?: TicketStatus; type?: TicketType | null; offset?: number; limit?: number }
 	read_ticket: { id: string }
+	memories_list: { path?: string; cursor?: string; max_results?: number }
+	memories_read: { path: string; line_offset?: number; max_lines?: number }
+	memories_search: {
+		queries: string[]
+		match_mode?: { type: "any" | "all_on_same_line" } | { type: "all_within_lines"; line_count: number }
+		path?: string
+		cursor?: string
+		context_lines?: number
+		case_sensitive?: boolean
+		normalized?: boolean
+		max_results?: number
+	}
+	memories_add_ad_hoc_note: { note: string }
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
@@ -596,6 +609,10 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	codebase_search: "codebase search",
 	list_tickets: "list tickets",
 	read_ticket: "read a ticket",
+	memories_list: "list memories",
+	memories_read: "read a memory",
+	memories_search: "search memories",
+	memories_add_ad_hoc_note: "append a memory note",
 	create_ticket: "create a ticket",
 	update_ticket: "update a ticket",
 	delete_ticket: "delete a ticket",
@@ -630,6 +647,9 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"codebase_search",
 			"list_tickets",
 			"read_ticket",
+			"memories_list",
+			"memories_read",
+			"memories_search",
 		],
 	},
 	edit: {
@@ -639,6 +659,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"create_ticket",
 			"update_ticket",
 			"delete_ticket",
+			"memories_add_ad_hoc_note",
 			"create_goal",
 			"update_goal",
 		],

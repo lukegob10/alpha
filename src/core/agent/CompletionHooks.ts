@@ -3,6 +3,7 @@ import crypto from "node:crypto"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { t } from "../../i18n"
+import { terminateProcessTree } from "../../utils/processTree"
 import type { LifecycleHookTarget } from "./LifecycleHookTargets"
 
 export type { LifecycleHookTarget } from "./LifecycleHookTargets"
@@ -13,6 +14,19 @@ const MAX_OUTPUT_BYTES = 16_384
 const MAX_PROMPT_CHARS = 4_000
 const DEFAULT_TIMEOUT_MS = 5_000
 const MAX_TIMEOUT_MS = 30_000
+// Join the shared helper's bounded discovery/termination and the owned pipe close.
+const PROCESS_CLOSE_TIMEOUT_MS = 11_000
+
+export class HookCommandCleanupError extends Error {
+	constructor(
+		readonly event: LifecycleHookTarget,
+		readonly retryCleanup: () => Promise<void>,
+		cause: unknown,
+	) {
+		super(`${event} hook process cleanup could not be confirmed`, { cause })
+		this.name = "HookCommandCleanupError"
+	}
+}
 
 export type CompletionHookTarget = "Stop" | "SubagentStop"
 
@@ -200,13 +214,20 @@ async function runCommand(
 	} catch {
 		return { exitCode: null, stdout: "", stderr: "", failure: "received non-serializable input" }
 	}
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		let settled = false
 		const stdoutChunks: Buffer[] = []
 		const stderrChunks: Buffer[] = []
 		let outputBytes = 0
 		let failure: string | undefined
 		let terminating: Promise<void> | undefined
+		let exited = false
+		let treeTerminated = false
+		let treeTermination: Promise<void> | undefined
+		let activeCleanup: Promise<void> | undefined
+		let cleanupFailure: unknown
+		let resolveClosed!: () => void
+		const processClosed = new Promise<void>((resolve) => (resolveClosed = resolve))
 		let child: ReturnType<typeof spawn>
 		try {
 			child = spawn(hook.command, hook.args ?? [], {
@@ -232,13 +253,61 @@ async function runCommand(
 			stderrChunks.length = 0
 			resolve({ exitCode, stdout, stderr, failure })
 		}
+		const performCleanup = async (): Promise<void> => {
+			if (!child.pid) return
+			let closeTimeout: ReturnType<typeof setTimeout> | undefined
+			try {
+				const closeDeadline = new Promise<never>((_, fail) => {
+					closeTimeout = setTimeout(
+						() => fail(new Error("Timed out waiting for the hook process to close")),
+						PROCESS_CLOSE_TIMEOUT_MS,
+					)
+				})
+				if (!treeTerminated && !treeTermination) {
+					// Once the captured root exits, its PID can be reused. A failed tree
+					// observation cannot be repaired by signalling that numeric PID again.
+					if (exited) throw cleanupFailure ?? new Error("Hook exited before its process tree was stopped")
+					treeTermination = terminateProcessTree([child.pid], {
+						detachedProcessGroup: process.platform !== "win32" ? child.pid : undefined,
+					}).then(
+						() => {
+							treeTerminated = true
+						},
+						(error) => {
+							treeTermination = undefined
+							throw error
+						},
+					)
+				}
+				await Promise.race([Promise.all([treeTermination, processClosed]), closeDeadline])
+			} catch (error) {
+				cleanupFailure = error
+				throw error
+			} finally {
+				clearTimeout(closeTimeout)
+			}
+		}
+		const cleanup = (): Promise<void> => {
+			activeCleanup ??= performCleanup().finally(() => (activeCleanup = undefined))
+			return activeCleanup
+		}
 		const stop = (reason: string) => {
 			if (settled || failure !== undefined || terminating) return
 			failure = reason
+			clearTimeout(timeout)
 			stdoutChunks.length = 0
 			stderrChunks.length = 0
-			terminating = terminateProcessTree(child)
-			void terminating.finally(() => finish(null))
+			terminating = cleanup()
+			void terminating.then(
+				() => finish(null),
+				(error) => {
+					settled = true
+					signal.removeEventListener("abort", cancel)
+					// The error retains this original child and its retryable cleanup.
+					// Late close/error listeners remain owned until physical settlement.
+					reject(new HookCommandCleanupError(request.hook_event_name, cleanup, error))
+				},
+			)
 		}
 		const cancel = () => stop("cancelled")
 		const timeout = setTimeout(() => {
@@ -266,7 +335,10 @@ async function runCommand(
 				finish(null)
 			}
 		})
+		child.once("exit", () => (exited = true))
 		child.on("close", (exitCode) => {
+			exited = true
+			resolveClosed()
 			if (failure === undefined && !terminating) finish(exitCode)
 		})
 		child.stdin!.on("error", () => {
@@ -277,48 +349,6 @@ async function runCommand(
 			return
 		}
 		child.stdin!.end(input)
-	})
-}
-
-/** Detached POSIX process groups and Windows taskkill include descendants of a hook. */
-async function terminateProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
-	if (!child.pid) return
-	if (process.platform !== "win32") {
-		try {
-			process.kill(-child.pid, "SIGKILL")
-			return
-		} catch {
-			child.kill("SIGKILL")
-			return
-		}
-	}
-	await new Promise<void>((resolve) => {
-		let killer: ReturnType<typeof spawn>
-		try {
-			const systemRoot = process.env.SystemRoot ?? process.env.windir
-			if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error("Windows system root unavailable")
-			killer = spawn(path.join(systemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], {
-				stdio: "ignore",
-				windowsHide: true,
-				shell: false,
-			})
-		} catch {
-			child.kill("SIGKILL")
-			resolve()
-			return
-		}
-		const timer = setTimeout(() => {
-			killer.kill("SIGKILL")
-			child.kill("SIGKILL")
-			resolve()
-		}, 2_000)
-		const done = () => {
-			clearTimeout(timer)
-			child.kill("SIGKILL")
-			resolve()
-		}
-		killer.once("error", done)
-		killer.once("close", done)
 	})
 }
 
@@ -334,16 +364,27 @@ async function runHookCommands(
 	> = new Array(commands.length)
 	let nextIndex = 0
 	let completionOrder = 0
-	await Promise.all(
+	const failedCleanup = new AbortController()
+	const commandSignal = AbortSignal.any([signal, failedCleanup.signal])
+	const workers = await Promise.allSettled(
 		Array.from({ length: Math.min(MAX_CONCURRENT_HOOKS, commands.length) }, async () => {
-			while (!signal.aborted && nextIndex < commands.length) {
+			while (!commandSignal.aborted && nextIndex < commands.length) {
 				const index = nextIndex++
 				const runId = crypto.randomUUID()
-				const result = await runCommand(commands[index], request, signal)
-				results[index] = { ...result, runId, completionOrder: completionOrder++ }
+				try {
+					const result = await runCommand(commands[index], request, commandSignal)
+					results[index] = { ...result, runId, completionOrder: completionOrder++ }
+				} catch (error) {
+					// Join sibling cleanup before returning an unconfirmed physical outcome.
+					failedCleanup.abort(error)
+					throw error
+				}
 			}
 		}),
 	)
+	const errors = workers.flatMap((worker) => (worker.status === "rejected" ? [worker.reason] : []))
+	if (errors.length === 1) throw errors[0]
+	if (errors.length > 1) throw new AggregateError(errors, "Lifecycle hook process cleanup failed")
 	return results
 }
 

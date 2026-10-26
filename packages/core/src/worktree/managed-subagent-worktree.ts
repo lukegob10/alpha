@@ -8,9 +8,15 @@ import { z } from "zod"
 
 import { createWorktreeGitEnvironment } from "./git-environment.js"
 import { worktreeIncludeService } from "./worktree-include.js"
+import {
+	joinWorktreeProcess,
+	WorktreeProcessCleanupError,
+	type WorktreeProcessCancellation,
+} from "./worktree-process.js"
 
 const execFileAsync = promisify(execFile)
 const MAX_GIT_OUTPUT = 100 * 1024 * 1024
+const UNCONFIRMED_STARTUP_PROCESS_CLEANUP = "Worker startup process cleanup is unconfirmed"
 // Managed storage can exceed MAX_PATH even when every path component is valid.
 // Override only our Git invocations; never change the user's repository/global config.
 const GIT_PLATFORM_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : []
@@ -81,6 +87,8 @@ export interface PreparedManagedWorktree {
 	artifact: ManagedWorkerArtifact
 	workspacePath: string
 }
+
+export type ManagedWorkerCreationOptions = WorktreeProcessCancellation
 
 export interface ApplyManagedWorktreeResult {
 	status: "applied" | "conflicted"
@@ -454,24 +462,43 @@ export class ManagedSubagentWorktreeService {
 			await fs.writeFile(registration, `${marker}\n`, "utf8")
 	}
 
+	private async executeGitCommand(
+		cwd: string,
+		args: string[],
+		env: NodeJS.ProcessEnv,
+		buffer: boolean,
+		creation?: ManagedWorkerCreationOptions,
+	): Promise<string | Buffer> {
+		creation?.signal.throwIfAborted()
+		const options = { cwd, env, maxBuffer: MAX_GIT_OUTPUT, windowsHide: true }
+		const execution = buffer
+			? execFileAsync("git", args, { ...options, encoding: "buffer" })
+			: execFileAsync("git", args, { ...options, encoding: "utf8" })
+		return (await joinWorktreeProcess<Awaited<typeof execution>>(execution, execution.child, creation)).stdout
+	}
+
 	private async invokeGit(
 		cwd: string,
 		args: string[],
 		env: NodeJS.ProcessEnv | undefined,
 		buffer: boolean,
+		creation?: ManagedWorkerCreationOptions,
 	): Promise<string | Buffer> {
+		creation?.signal.throwIfAborted()
 		const invocation = await this.prepareGitPaths(cwd, args, env)
-		const execute = async (commandArgs: string[], asBuffer = false): Promise<string | Buffer> => {
+		const execute = async (
+			commandArgs: string[],
+			asBuffer = false,
+			cancellable = true,
+		): Promise<string | Buffer> => {
 			const command = [...GIT_PLATFORM_ARGS, ...invocation.prefix, ...commandArgs]
-			const options = {
-				cwd: invocation.cwd,
-				env: createWorktreeGitEnvironment(invocation.env),
-				maxBuffer: MAX_GIT_OUTPUT,
-				windowsHide: true,
-			}
-			return asBuffer
-				? (await execFileAsync("git", command, { ...options, encoding: "buffer" })).stdout
-				: (await execFileAsync("git", command, { ...options, encoding: "utf8" })).stdout
+			return this.executeGitCommand(
+				invocation.cwd,
+				command,
+				createWorktreeGitEnvironment(invocation.env),
+				asBuffer,
+				cancellable ? creation : undefined,
+			)
 		}
 		let failure: unknown
 		let failed = false
@@ -512,12 +539,13 @@ export class ManagedSubagentWorktreeService {
 		} catch (error) {
 			failed = true
 			failure = error
-			if (invocation.addedWorktree) {
+			if (error instanceof WorktreeProcessCleanupError) retainPaths = true
+			else if (invocation.addedWorktree) {
 				try {
 					// Roll back while an unrepaired Git registration can still reach its
 					// invocation-owned target. Physical-path removal cannot match that alias.
 					const target = invocation.args[3]!
-					const listed = String(await execute(["worktree", "list", "--porcelain", "-z"]))
+					const listed = String(await execute(["worktree", "list", "--porcelain", "-z"], false, false))
 					const registered = listed
 						.split("\0")
 						.find(
@@ -528,7 +556,11 @@ export class ManagedSubagentWorktreeService {
 								),
 						)
 					if (registered) {
-						await execute(["worktree", "remove", "--force", registered.slice("worktree ".length)])
+						await execute(
+							["worktree", "remove", "--force", registered.slice("worktree ".length)],
+							false,
+							false,
+						)
 					}
 				} catch (cleanupError) {
 					retainPaths = true
@@ -554,8 +586,13 @@ export class ManagedSubagentWorktreeService {
 		return output
 	}
 
-	private async git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-		return String(await this.invokeGit(cwd, args, env, false))
+	private async git(
+		cwd: string,
+		args: string[],
+		env?: NodeJS.ProcessEnv,
+		creation?: ManagedWorkerCreationOptions,
+	): Promise<string> {
+		return String(await this.invokeGit(cwd, args, env, false, creation))
 	}
 
 	private async gitBuffer(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Buffer> {
@@ -573,15 +610,24 @@ export class ManagedSubagentWorktreeService {
 			: env
 	}
 
-	private async initializePrivateRepository(destination: string): Promise<void> {
-		await execFileAsync("git", [...GIT_PLATFORM_ARGS, "init", "--bare", "--template=", destination], {
-			cwd: os.tmpdir(),
-			env: createWorktreeGitEnvironment(),
-			maxBuffer: MAX_GIT_OUTPUT,
-			windowsHide: true,
-		})
+	private async initializePrivateRepository(
+		destination: string,
+		creation?: ManagedWorkerCreationOptions,
+	): Promise<void> {
+		await this.executeGitCommand(
+			os.tmpdir(),
+			[...GIT_PLATFORM_ARGS, "init", "--bare", "--template=", destination],
+			createWorktreeGitEnvironment(),
+			false,
+			creation,
+		)
 		// A plain folder has no repository checkout policy; preserve its bytes across quarantine and apply.
-		await this.git(os.tmpdir(), [`--git-dir=${destination}`, "config", "core.autocrlf", "false"])
+		await this.git(
+			os.tmpdir(),
+			[`--git-dir=${destination}`, "config", "core.autocrlf", "false"],
+			undefined,
+			creation,
+		)
 	}
 
 	private shortPrivateRepositoryRoot(artifactId: string): string {
@@ -652,8 +698,9 @@ export class ManagedSubagentWorktreeService {
 		args: string[],
 		env?: NodeJS.ProcessEnv,
 		cwd = artifact.gitRoot,
+		creation?: ManagedWorkerCreationOptions,
 	): Promise<string> {
-		return this.git(cwd, args, this.artifactGitEnv(artifact, env, cwd))
+		return this.git(cwd, args, this.artifactGitEnv(artifact, env, cwd), creation)
 	}
 
 	private async artifactGitBuffer(
@@ -1061,7 +1108,9 @@ export class ManagedSubagentWorktreeService {
 		storagePath: string,
 		taskId: string,
 		validated: ValidatedWorkerScope,
+		creation?: ManagedWorkerCreationOptions,
 	): Promise<PreparedManagedWorktree> {
+		creation?.signal.throwIfAborted()
 		const artifactId = crypto.randomUUID()
 		const dir = this.artifactDir(storagePath, artifactId)
 		let worktreePath = path.join(storagePath, "subagent-worktrees", artifactId)
@@ -1109,27 +1158,44 @@ export class ManagedSubagentWorktreeService {
 					await this.prepareShortPrivateRepository(storagePath, artifact)
 					await this.persist(storagePath, artifact)
 				}
-				await this.initializePrivateRepository(artifact.privateGitDir)
+				await this.initializePrivateRepository(artifact.privateGitDir, creation)
 				await this.persist(storagePath, artifact)
 			}
 			const indexEnv = { GIT_INDEX_FILE: indexPath }
 			const parentCommit = (
-				await this.artifactGit(artifact, ["rev-parse", "--verify", "HEAD"]).catch(() => "")
+				await this.artifactGit(
+					artifact,
+					["rev-parse", "--verify", "HEAD"],
+					undefined,
+					artifact.gitRoot,
+					creation,
+				).catch((error: unknown) => {
+					if (creation?.signal.aborted || error instanceof WorktreeProcessCleanupError) throw error
+					return ""
+				})
 			).trim()
-			if (parentCommit) await this.artifactGit(artifact, ["read-tree", parentCommit], indexEnv)
-			await this.artifactGit(artifact, ["add", "-A"], indexEnv)
-			const tree = (await this.artifactGit(artifact, ["write-tree"], indexEnv)).trim()
+			creation?.signal.throwIfAborted()
+			if (parentCommit)
+				await this.artifactGit(artifact, ["read-tree", parentCommit], indexEnv, artifact.gitRoot, creation)
+			await this.artifactGit(artifact, ["add", "-A"], indexEnv, artifact.gitRoot, creation)
+			const tree = (await this.artifactGit(artifact, ["write-tree"], indexEnv, artifact.gitRoot, creation)).trim()
 			const commitArgs = ["commit-tree", tree]
 			if (parentCommit) commitArgs.push("-p", parentCommit)
 			commitArgs.push("-m", "Alpha worker baseline")
 			const baselineCommit = (
-				await this.artifactGit(artifact, commitArgs, {
-					...indexEnv,
-					GIT_AUTHOR_NAME: "Alpha",
-					GIT_AUTHOR_EMAIL: "alpha@local.invalid",
-					GIT_COMMITTER_NAME: "Alpha",
-					GIT_COMMITTER_EMAIL: "alpha@local.invalid",
-				})
+				await this.artifactGit(
+					artifact,
+					commitArgs,
+					{
+						...indexEnv,
+						GIT_AUTHOR_NAME: "Alpha",
+						GIT_AUTHOR_EMAIL: "alpha@local.invalid",
+						GIT_COMMITTER_NAME: "Alpha",
+						GIT_COMMITTER_EMAIL: "alpha@local.invalid",
+					},
+					artifact.gitRoot,
+					creation,
+				)
 			).trim()
 			await fs.rm(indexPath, { force: true })
 			artifact.baselineCommit = baselineCommit
@@ -1154,15 +1220,40 @@ export class ManagedSubagentWorktreeService {
 				await fs.mkdir(worktreePath)
 				ownsWorktreePath = true
 			}
-			await this.artifactGit(artifact, ["worktree", "add", "--detach", worktreePath, baselineCommit])
+			await this.artifactGit(
+				artifact,
+				["worktree", "add", "--detach", worktreePath, baselineCommit],
+				undefined,
+				artifact.gitRoot,
+				creation,
+			)
 			worktreeAdded = true
-			await this.artifactGit(artifact, ["worktree", "lock", "--reason", "Alpha editing sub-agent", worktreePath])
-			await worktreeIncludeService.copyWorktreeIncludeFiles(validated.gitRoot, worktreePath)
+			await this.artifactGit(
+				artifact,
+				["worktree", "lock", "--reason", "Alpha editing sub-agent", worktreePath],
+				undefined,
+				artifact.gitRoot,
+				creation,
+			)
+			await worktreeIncludeService.copyWorktreeIncludeFiles(validated.gitRoot, worktreePath, undefined, creation)
+			creation?.signal.throwIfAborted()
 			return {
 				artifact,
 				workspacePath: path.join(worktreePath, validated.logicalWorkspaceFromRoot),
 			}
 		} catch (error) {
+			// A failed process join leaves its paths and active artifact as the recovery owner.
+			if (error instanceof WorktreeProcessCleanupError) {
+				if (artifact) {
+					artifact.error = `${UNCONFIRMED_STARTUP_PROCESS_CLEANUP}: ${error.message}`
+					try {
+						await this.persist(storagePath, artifact)
+					} catch (persistenceError) {
+						throw new AggregateError([error, persistenceError], artifact.error)
+					}
+				}
+				throw error
+			}
 			try {
 				if (error instanceof GitStartupPathCleanupError)
 					await this.physicalizeWorktreeRegistration(error.invocation)
@@ -1616,6 +1707,8 @@ export class ManagedSubagentWorktreeService {
 			try {
 				const artifact = await this.load(storagePath, id)
 				if (options.hasTaskOwner?.(artifact.taskId)) continue
+				if (artifact.status === "active" && artifact.error?.startsWith(UNCONFIRMED_STARTUP_PROCESS_CLEANUP))
+					continue
 				const conventionalWorktreePath = path.join(worktreeRoot, artifact.id)
 				let recoverableWorktreePath: string | undefined
 				for (const candidate of [artifact.worktreePath, conventionalWorktreePath]) {

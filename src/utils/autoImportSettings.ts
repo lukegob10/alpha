@@ -18,10 +18,12 @@ export async function autoImportSettings(
 	{ providerSettingsManager, contextProxy, customModesManager }: ImportOptions,
 ): Promise<void> {
 	try {
-		// Get the auto-import settings path from VSCode settings
-		const settingsPath = vscode.workspace.getConfiguration(Package.name).get<string>("autoImportSettingsPath")
+		// Imports can change global approval and provider settings; workspace content cannot authorize them.
+		const settingsPath = vscode.workspace
+			.getConfiguration(Package.name)
+			.inspect?.<unknown>("autoImportSettingsPath")?.globalValue
 
-		if (!settingsPath || settingsPath.trim() === "") {
+		if (typeof settingsPath !== "string" || settingsPath.trim() === "") {
 			outputChannel.appendLine("[AutoImport] No auto-import settings path specified, skipping auto-import")
 			return
 		}

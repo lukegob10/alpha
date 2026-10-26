@@ -27,22 +27,26 @@ interface ProcessedTool {
 
 interface CustomToolsSettingsProps {
 	enabled: boolean
+	isActive: boolean
 	onChange: (enabled: boolean) => void
 }
 
-export const CustomToolsSettings = ({ enabled, onChange }: CustomToolsSettingsProps) => {
+export const CustomToolsSettings = ({ enabled, isActive, onChange }: CustomToolsSettingsProps) => {
 	const { t } = useAppTranslation()
 	const [tools, setTools] = useState<SerializedCustomToolDefinition[]>([])
 	const [isRefreshing, setIsRefreshing] = useState(false)
 	const [refreshError, setRefreshError] = useState<string | null>(null)
 
 	useEffect(() => {
+		// Hidden search-index mounts must not reload the executable tool catalog.
+		if (!isActive) return
+
 		if (enabled) {
 			vscode.postMessage({ type: "refreshCustomTools" })
 		} else {
 			setTools([])
 		}
-	}, [enabled])
+	}, [enabled, isActive])
 
 	useEvent("message", (event: MessageEvent) => {
 		const message = event.data

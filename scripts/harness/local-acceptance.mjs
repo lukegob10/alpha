@@ -62,13 +62,16 @@ export function localAcceptanceExecution(result) {
 	return runs.length > 0 && runs.every((run) => run?.execution === "extension-host") ? "extension-host" : "unverified"
 }
 
-export async function main(args = process.argv.slice(2)) {
+export async function main(
+	args = process.argv.slice(2),
+	{ acquireLease = acquireBuildLease, runSteps = executeSteps } = {},
+) {
 	const options = parseLocalAcceptanceArgs(args)
 	assert.equal((await stat(options.executable)).isFile(), true, "VS Code executable must be an existing file")
 	const pnpmPath = process.env.npm_execpath
 	assert.ok(pnpmPath && /pnpm/i.test(pnpmPath), "Invoke through pnpm harness:acceptance")
 	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-	const release = await acquireBuildLease(root, `local-acceptance:${options.scenario}`)
+	const release = await acquireLease(root, `local-acceptance:${options.scenario}`)
 	const abort = new AbortController()
 	const interrupt = () => abort.abort()
 	process.once("SIGINT", interrupt)
@@ -97,7 +100,7 @@ export async function main(args = process.argv.slice(2)) {
 			steps: commands.map((command) => ({ command: command.join(" "), status: "not_started" })),
 		}
 		stage = "build"
-		await executeSteps({ commands, root, pnpmPath, report, signal: abort.signal, save })
+		await runSteps({ commands, root, pnpmPath, report, signal: abort.signal, save })
 		cleanupVerified = report.cleanupUnverified !== true
 		if (report.status !== "passed") return 1
 		report.status = "running"
@@ -179,6 +182,8 @@ export async function main(args = process.argv.slice(2)) {
 		return report.status === "passed" ? 0 : 1
 	} catch (error) {
 		primaryError = error
+		// Step persistence can fail after recording surviving or unverified child processes.
+		cleanupVerified &&= report?.cleanupUnverified !== true
 		await recordLocalAcceptanceFailure(report, stage, cleanupVerified, save)
 		throw error
 	} finally {

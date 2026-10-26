@@ -290,7 +290,7 @@ describe("OpenAiHandler", () => {
 				id: "message_1",
 				outputIndex: 2,
 			})
-			expect(chunks).not.toContainEqual({ type: "reasoning", text: "Reviewed the patch." })
+			expect(chunks).toContainEqual({ type: "reasoning", text: "Reviewed the patch.", outputIndex: 0 })
 			expect(chunks).toContainEqual({
 				type: "usage",
 				inputTokens: 120,
@@ -1092,6 +1092,7 @@ describe("OpenAiHandler", () => {
 			expect(vi.mocked(OpenAI)).toHaveBeenCalledWith({
 				baseURL: expect.any(String),
 				apiKey: expect.any(String),
+				maxRetries: 0,
 				defaultHeaders: {
 					"HTTP-Referer": "https://github.com/lukegob10/alpha",
 					"X-Title": "Alpha",

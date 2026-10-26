@@ -145,6 +145,14 @@ describe("VertexHandler", () => {
 				{ type: "text", text: "Gemini response part 1" },
 				{ type: "text", text: " part 2" },
 				expect.objectContaining({ type: "usage", inputTokens: 10, outputTokens: 5 }),
+				{
+					type: "reasoning",
+					text: "",
+					geminiResponse: {
+						modelId: "gemini-3.5-flash",
+						parts: [{ text: "Gemini response part 1" }, { text: " part 2" }],
+					},
+				},
 				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
@@ -243,7 +251,14 @@ describe("VertexHandler", () => {
 
 			const toolCallEndIndex = chunks.findIndex((chunk) => chunk.type === "tool_call_end")
 			const tailIndex = chunks.findIndex((chunk) => chunk.type === "text")
-			expect(chunks[toolCallEndIndex]).toEqual({ type: "tool_call_end", id: "gemini-list-1" })
+			expect(chunks[toolCallEndIndex]).toEqual({
+				type: "tool_call_end",
+				id: "gemini-list-1",
+				geminiResponse: {
+					modelId: "gemini-3.5-flash",
+					parts: [{ functionCall: { id: "gemini-list-1", name: "list_files", args: { path: "." } } }],
+				},
+			})
 			expect(tailIndex).toBeGreaterThan(toolCallEndIndex)
 		})
 
@@ -282,6 +297,14 @@ describe("VertexHandler", () => {
 		})
 
 		it("should use non-streaming responses when Vertex streaming is disabled for Gemini", async () => {
+			const geminiResponse = {
+				modelId: "gemini-3.1-flash-lite",
+				parts: [
+					{ text: "Completed response" },
+					{ thought: true, text: "Reasoning trace" },
+					{ functionCall: { id: "vertex-call-123", name: "read_file", args: { path: "src/index.ts" } } },
+				],
+			}
 			handler = new VertexHandler({
 				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
@@ -296,17 +319,7 @@ describe("VertexHandler", () => {
 						candidates: [
 							{
 								content: {
-									parts: [
-										{ text: "Completed response" },
-										{ thought: true, text: "Reasoning trace" },
-										{
-											functionCall: {
-												id: "vertex-call-123",
-												name: "read_file",
-												args: { path: "src/index.ts" },
-											},
-										},
-									],
+									parts: geminiResponse.parts,
 								},
 								groundingMetadata: {
 									groundingChunks: [{ web: { uri: "https://example.com", title: "Example" } }],
@@ -335,7 +348,13 @@ describe("VertexHandler", () => {
 			expect(chunks).toEqual([
 				{ type: "text", text: "Completed response" },
 				{ type: "reasoning", text: "Reasoning trace" },
-				{ type: "tool_call", id: "vertex-call-123", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{
+					type: "tool_call",
+					id: "vertex-call-123",
+					name: "read_file",
+					arguments: '{"path":"src/index.ts"}',
+					geminiResponse,
+				},
 				{ type: "tool_call_end", id: "vertex-call-123" },
 				{ type: "grounding", sources: [{ title: "Example", url: "https://example.com" }] },
 				expect.objectContaining({
@@ -345,6 +364,7 @@ describe("VertexHandler", () => {
 					cacheReadTokens: 2,
 					reasoningTokens: 3,
 				}),
+				{ type: "reasoning", text: "", geminiResponse },
 				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
@@ -487,6 +507,11 @@ describe("VertexHandler", () => {
 			expect(chunks).toEqual([
 				{ type: "text", text: "Retried response" },
 				expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+				{
+					type: "reasoning",
+					text: "",
+					geminiResponse: { modelId: "gemini-3.1-flash-lite", parts: [{ text: "Retried response" }] },
+				},
 				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})

@@ -3,6 +3,7 @@ import { buildApiHandler } from "../../../api"
 import { resolveCodexModelPrompt } from "../../prompts/codex-model-instructions"
 import { SYSTEM_PROMPT } from "../../prompts/system"
 import { generateSystemPrompt } from "../generateSystemPrompt"
+import { DEFAULT_MEMORY_SETTINGS } from "@alpha-code/types"
 
 vi.mock("vscode", () => ({
 	workspace: {
@@ -62,6 +63,40 @@ describe("generateSystemPrompt", () => {
 		await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
 		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
+	})
+
+	it("previews the current task's captured memory instead of the latest host summary", async () => {
+		const getMemoryContext = vi.fn(async () => "Frozen task memory")
+		const readSummary = vi.fn(async () => "New host memory")
+		const provider = {
+			context: {} as vscode.ExtensionContext,
+			cwd: "F:/workspace",
+			getState: vi.fn().mockResolvedValue({ apiConfiguration: { apiProvider: "openai" } }),
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			getCurrentTask: vi.fn().mockReturnValue({ getMemoryContext }),
+			getMemoryStore: vi.fn(() => ({ rootPath: "F:/alpha/memories_v2", readSummary })),
+			getSkillsManager: vi.fn().mockReturnValue(undefined),
+		}
+		await generateSystemPrompt(provider as any, { mode: "code" } as any)
+		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.memoryContext).toBe("Frozen task memory")
+		expect(readSummary).not.toHaveBeenCalled()
+	})
+
+	it("previews enabled host memory when a thread has not been created", async () => {
+		const readSummary = vi.fn(async () => "A learned preference")
+		const provider = {
+			context: {} as vscode.ExtensionContext,
+			cwd: "F:/workspace",
+			getState: vi.fn().mockResolvedValue({ apiConfiguration: { apiProvider: "openai" } }),
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			getCurrentTask: vi.fn().mockReturnValue(undefined),
+			getMemorySettings: vi.fn(() => ({ ...DEFAULT_MEMORY_SETTINGS, enabled: true })),
+			getMemoryStore: vi.fn(() => ({ rootPath: "F:/alpha/memories_v2", readSummary })),
+			getSkillsManager: vi.fn().mockReturnValue(undefined),
+		}
+		await generateSystemPrompt(provider as any, { mode: "code" } as any)
+		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.memoryContext).toContain("A learned preference")
+		expect(readSummary).toHaveBeenCalledOnce()
 	})
 
 	it.each([undefined, "default", "friendly", "pragmatic", "none"] as const)(

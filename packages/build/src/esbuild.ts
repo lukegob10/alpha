@@ -165,7 +165,7 @@ export function copyPaths(copyPaths: [string, string, CopyPathOptions?][], srcDi
 	})
 }
 
-export function copyWasms(srcDir: string, distDir: string): void {
+export function copyWasms(srcDir: string, distDir: string, treeSitterGrammarFiles: readonly string[]): void {
 	fs.mkdirSync(distDir, { recursive: true })
 
 	// Tiktoken WASM file.
@@ -204,14 +204,15 @@ export function copyWasms(srcDir: string, distDir: string): void {
 		throw new Error(`Directory does not exist: ${languageWasmDir}`)
 	}
 
-	// Dynamically read all WASM files from the directory instead of using a hardcoded list.
-	const wasmFiles = fs.readdirSync(languageWasmDir).filter((file) => file.endsWith(".wasm"))
-
-	wasmFiles.forEach((filename) => {
+	// The extension's loader inventory owns which vendor grammars are part of its runtime.
+	treeSitterGrammarFiles.forEach((filename) => {
+		if (!/^tree-sitter-[a-z0-9_]+\.wasm$/u.test(filename)) {
+			throw new Error(`Invalid tree-sitter grammar filename: ${filename}`)
+		}
 		fs.copyFileSync(path.join(languageWasmDir, filename), path.join(distDir, filename))
 	})
 
-	console.log(`[copyWasms] Copied ${wasmFiles.length} tree-sitter language wasms to ${distDir}`)
+	console.log(`[copyWasms] Copied ${treeSitterGrammarFiles.length} tree-sitter language wasms to ${distDir}`)
 
 	// Copy esbuild-wasm files for custom tool transpilation (cross-platform).
 	copyEsbuildWasmFiles(srcDir, distDir)

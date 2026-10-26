@@ -1,5 +1,6 @@
 import * as path from "path"
 import * as fs from "fs/promises"
+import * as os from "os"
 import { randomUUID } from "crypto"
 
 import { prepareTestProfile, cleanupTestProfile } from "./testProfile"
@@ -115,6 +116,7 @@ export interface ExtensionTestRunResult {
 	artifactsDir: string
 	profileDir?: string
 	temporaryRoot?: string
+	alphaHome?: string
 	retained: boolean
 	actualVSCodeVersion?: string
 	actualModelId?: string
@@ -513,11 +515,15 @@ export async function runExtensionTests(
 	let captureHelperCleanupVerified: boolean | undefined
 	let captureHelperCleanupUncertain = false
 	let launchedHostPid: number | undefined
+	let alphaHome: string | undefined
 	try {
 		if (options.signal?.aborted) throw new HostLaunchCancelledError()
 		release = profile.profileDir
 			? await (dependencies.acquireLease ?? acquireProfileLease)(profile.userDataDir)
 			: undefined
+		// Extension activation may capture its host-local store before a test module loads.
+		// Every launch gets its own home, including launches using persistent editor profiles.
+		alphaHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-vscode-e2e-home-")))
 		improvementCapture = await prepareImprovementCapture(
 			{
 				options,
@@ -540,6 +546,7 @@ export async function runExtensionTests(
 					requestedHostVersion: options.vscodeVersion,
 					providerMode: options.providerMode,
 					launchKind,
+					alphaHome,
 					fixtureIsolation: { disabledExtensions, gitExecution: "native-cli" },
 					...(sidecarPath ? { nonce: liveExpected.nonce, sharedDataDir: profile.sharedDataDir } : {}),
 					modelId: options.modelId,
@@ -591,6 +598,7 @@ export async function runExtensionTests(
 			extensionTestsEnv: {
 				...process.env,
 				...options.extensionTestsEnv,
+				ALPHA_HOME: alphaHome,
 				ALPHA_E2E_EXTENSION_ID: extensionId,
 				ALPHA_E2E_INSTALLED_EXTENSION_DIR: options.installedExtensionPath,
 				ALPHA_E2E_LAUNCH_KIND: launchKind,
@@ -687,6 +695,7 @@ export async function runExtensionTests(
 			throw new TestRunError("provider-unavailable", "Live provider identity is missing or changed")
 		result = {
 			...identity,
+			alphaHome,
 			...(completionStatus ? { completionStatus } : {}),
 			status: failure ? (host.status === "blocked" ? "blocked" : "failed") : "passed",
 			hostExitObserved,
@@ -752,6 +761,7 @@ export async function runExtensionTests(
 		}
 		result = {
 			...identity,
+			alphaHome,
 			status: failure === "host-failed" ? "failed" : "blocked",
 			hostExitObserved,
 			hostCleanupVerified,
@@ -866,6 +876,8 @@ export async function runExtensionTests(
 		result.guidance = describeTestRunFailure({ code: result.failure }).guidance
 	}
 	await cleanupTestProfile(profile, result.exitCode === 0)
+	if (alphaHome && result.exitCode === 0)
+		await fs.rm(alphaHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 	if (process.env.ALPHA_HARNESS_EVIDENCE_DIR && result.execution === "extension-host") {
 		try {
 			await writeHarnessReceipt(process.env.ALPHA_HARNESS_EVIDENCE_DIR, options, result, startedAt)

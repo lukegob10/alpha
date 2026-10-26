@@ -564,6 +564,7 @@ describe("executeCommand", () => {
 				abort: vitest.fn(async () => {
 					backgroundProcess.isSettled = true
 					resolveProcess()
+					backgroundProcess.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
 					backgroundProcess.emit("completed")
 				}),
 			})
@@ -596,6 +597,110 @@ describe("executeCommand", () => {
 				)
 			} finally {
 				if (!backgroundProcess.isSettled) await backgroundProcess.abort()
+				vitest.useRealTimers()
+			}
+		})
+	})
+
+	describe("user deadline physical settlement", () => {
+		function pendingCommand() {
+			const pending = new Promise<void>(() => {})
+			const command = Object.assign(new EventEmitter(), {
+				isSettled: false,
+				then: pending.then.bind(pending),
+				catch: pending.catch.bind(pending),
+				finally: pending.finally.bind(pending),
+				continue: vitest.fn(),
+				abort: vitest.fn(),
+			})
+			mockTerminal.process = command
+			mockTerminal.running = true
+			mockTerminal.busy = true
+			mockTerminal.runCommand.mockReturnValue(command)
+			return command
+		}
+
+		it("does not report termination after a void interrupt until physical exit arrives", async () => {
+			vitest.useFakeTimers()
+			const command = pendingCommand()
+			const projectionFailure = new Error("terminal status projection failed")
+			command.on("shell_execution_complete", () => {
+				throw projectionFailure
+			})
+			const settled = vitest.fn()
+			try {
+				const execution = executeCommandInTerminal(mockTask, {
+					executionId: "void-interrupt",
+					command: "controlled command",
+					terminalShellIntegrationDisabled: false,
+					commandExecutionTimeout: 100,
+				}).then((result) => {
+					settled()
+					return result
+				})
+				await vitest.advanceTimersByTimeAsync(100)
+				expect(command.abort).toHaveBeenCalledOnce()
+				expect(settled).not.toHaveBeenCalled()
+				expect(mockTerminal.process).toBe(command)
+				expect(() => command.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })).toThrow(
+					projectionFailure,
+				)
+				await expect(execution).resolves.toEqual([false, expect.stringContaining("command was terminated")])
+				expect(command.listenerCount("terminal_closed")).toBe(0)
+				expect(vitest.getTimerCount()).toBe(0)
+			} finally {
+				vitest.useRealTimers()
+			}
+		})
+
+		it("rejects unconfirmed termination without releasing the original process handle", async () => {
+			vitest.useFakeTimers()
+			const command = pendingCommand()
+			vitest.spyOn(console, "error").mockImplementation(() => undefined)
+			try {
+				const execution = executeCommandInTerminal(mockTask, {
+					executionId: "unconfirmed-interrupt",
+					command: "controlled command",
+					terminalShellIntegrationDisabled: false,
+					commandExecutionTimeout: 100,
+				})
+				const rejected = expect(execution).rejects.toThrow("process cleanup failed")
+				await vitest.advanceTimersByTimeAsync(11_100)
+				await rejected
+				expect(command.abort).toHaveBeenCalledOnce()
+				expect(mockTerminal.process).toBe(command)
+				expect(mockTerminal.running).toBe(true)
+				expect(command.isSettled).toBe(false)
+				expect(command.listenerCount("terminal_closed")).toBe(0)
+				expect(vitest.getTimerCount()).toBe(0)
+			} finally {
+				vitest.restoreAllMocks()
+				vitest.useRealTimers()
+			}
+		})
+
+		it("uses the adapter hard stop and still joins its physical close acknowledgement", async () => {
+			vitest.useFakeTimers()
+			const command = Object.assign(pendingCommand(), { terminate: vitest.fn(async () => undefined) })
+			const settled = vitest.fn()
+			try {
+				const execution = executeCommandInTerminal(mockTask, {
+					executionId: "owned-hard-stop",
+					command: "controlled command",
+					terminalShellIntegrationDisabled: false,
+					commandExecutionTimeout: 100,
+				}).then((result) => {
+					settled()
+					return result
+				})
+				await vitest.advanceTimersByTimeAsync(100)
+				expect(command.terminate).toHaveBeenCalledOnce()
+				expect(command.abort).not.toHaveBeenCalled()
+				expect(settled).not.toHaveBeenCalled()
+				command.emit("terminal_closed")
+				await expect(execution).resolves.toEqual([false, expect.stringContaining("command was terminated")])
+				expect(vitest.getTimerCount()).toBe(0)
+			} finally {
 				vitest.useRealTimers()
 			}
 		})

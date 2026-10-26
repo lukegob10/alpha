@@ -312,8 +312,6 @@ const mockPostMessage = (state: any) => {
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
 				alwaysAllowExecute: false,
-				ttsEnabled: false,
-				ttsSpeed: 1,
 				soundEnabled: false,
 				soundVolume: 0.5,
 				...state,
@@ -323,7 +321,7 @@ const mockPostMessage = (state: any) => {
 	)
 }
 
-const renderSettingsView = (targetSection?: string) => {
+const renderSettingsView = (targetSection?: string, initialState: Record<string, unknown> = {}) => {
 	const onDone = vi.fn()
 	const queryClient = new QueryClient()
 
@@ -336,7 +334,7 @@ const renderSettingsView = (targetSection?: string) => {
 	)
 
 	// Hydrate initial state.
-	mockPostMessage({})
+	mockPostMessage(initialState)
 
 	// Helper function to activate a tab and ensure its content is visible
 	const activateTab = (tabId: string) => {
@@ -422,6 +420,35 @@ describe("SettingsView - Startup rendering", () => {
 					expect(vscode.postMessage).toHaveBeenCalledWith({ type })
 				}
 			}
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
+
+	it("indexes enabled custom tools without refreshing them until Experimental is opened", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("agents", { experiments: { customTools: true } })
+		const refreshRequests = () =>
+			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "refreshCustomTools")
+		try {
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			expect(refreshRequests()).toHaveLength(0)
+
+			const search = screen.getByTestId("settings-search-input")
+			fireEvent.focus(search)
+			fireEvent.change(search, { target: { value: "settings:experimental.CUSTOM_TOOLS.name" } })
+			fireEvent.click(screen.getByRole("option", { name: "settings:experimental.CUSTOM_TOOLS.name" }))
+			expect(refreshRequests()).toHaveLength(1)
+			expect(
+				within(screen.getByTestId("settings-content")).getByRole("checkbox", {
+					name: "settings:experimental.CUSTOM_TOOLS.name",
+				}),
+			).toBeChecked()
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 		} finally {
 			unmount()
 			vi.clearAllTimers()
@@ -619,14 +646,14 @@ describe("SettingsView - Context compaction", () => {
 		const threshold = () => within(getSettingsContent()).getByTestId("condense-threshold-slider")
 		fireEvent.change(threshold(), { target: { value: "65" } })
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
-		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
+		fireEvent.click(screen.getByRole("button", { name: "settings:unsavedChangesDialog.cancelButton" }))
 
 		expect(threshold()).toHaveValue("65")
 		expect(onDone).not.toHaveBeenCalled()
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
-		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+		fireEvent.click(screen.getByRole("button", { name: "settings:unsavedChangesDialog.discardButton" }))
 
 		expect(threshold()).toHaveValue("80")
 		expect(onDone).toHaveBeenCalledTimes(1)
@@ -691,19 +718,31 @@ describe("SettingsView - Sound Settings", () => {
 		vi.clearAllMocks()
 	})
 
-	it("initializes with tts disabled by default", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
+	it("ignores legacy speech settings and buffers notification sound edits until Save", () => {
+		const { getSettingsContent } = renderSettingsView("notifications")
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { ttsEnabled: true, ttsSpeed: 1.5, soundEnabled: false, soundVolume: 0.5 },
+					},
+				}),
+			),
+		)
 		const content = getSettingsContent()
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		expect(ttsCheckbox).not.toBeChecked()
-
-		// Speed slider should not be visible when tts is disabled
+		expect(within(content).queryByTestId("tts-enabled-checkbox")).not.toBeInTheDocument()
 		expect(within(content).queryByTestId("tts-speed-slider")).not.toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(within(content).getByTestId("sound-enabled-checkbox"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(update?.updatedSettings).toMatchObject({ soundEnabled: true, soundVolume: 0.5 })
+		expect(update?.updatedSettings).not.toHaveProperty("ttsEnabled")
+		expect(update?.updatedSettings).not.toHaveProperty("ttsSpeed")
 	})
 
 	it("initializes with sound disabled by default", () => {
@@ -719,34 +758,6 @@ describe("SettingsView - Sound Settings", () => {
 
 		// Volume slider should not be visible when sound is disabled
 		expect(within(content).queryByTestId("sound-volume-slider")).not.toBeInTheDocument()
-	})
-
-	it("toggles tts setting and sends message to VSCode", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-
-		// Enable tts
-		fireEvent.click(ttsCheckbox)
-		expect(ttsCheckbox).toBeChecked()
-
-		// Click Save to save settings
-		const saveButton = screen.getByTestId("save-button")
-		fireEvent.click(saveButton)
-
-		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({
-					ttsEnabled: true,
-				}),
-			}),
-		)
 	})
 
 	it("toggles sound setting and sends message to VSCode", () => {
@@ -777,24 +788,6 @@ describe("SettingsView - Sound Settings", () => {
 		)
 	})
 
-	it("shows tts slider when sound is enabled", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		// Enable tts
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		fireEvent.click(ttsCheckbox)
-
-		// Speed slider should be visible
-		const speedSlider = within(content).getByTestId("tts-speed-slider")
-		expect(speedSlider).toBeInTheDocument()
-		expect(speedSlider).toHaveValue("1")
-	})
-
 	it("shows volume slider when sound is enabled", () => {
 		// Render once and get the activateTab helper
 		const { activateTab, getSettingsContent } = renderSettingsView()
@@ -811,37 +804,6 @@ describe("SettingsView - Sound Settings", () => {
 		const volumeSlider = within(content).getByTestId("sound-volume-slider")
 		expect(volumeSlider).toBeInTheDocument()
 		expect(volumeSlider).toHaveValue("0.5")
-	})
-
-	it("updates speed and sends message to VSCode when slider changes", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		// Enable tts
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		fireEvent.click(ttsCheckbox)
-
-		// Change speed
-		const speedSlider = within(content).getByTestId("tts-speed-slider")
-		fireEvent.change(speedSlider, { target: { value: "0.75" } })
-
-		// Click Save to save settings
-		const saveButton = screen.getByTestId("save-button")
-		fireEvent.click(saveButton)
-
-		// Verify message sent to VSCode
-		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({
-					ttsSpeed: 0.75,
-				}),
-			}),
-		)
 	})
 
 	it("updates volume and sends message to VSCode when slider changes", () => {

@@ -11,7 +11,7 @@ import {
 
 import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
-import { McpHub, type ConnectedMcpConnection } from "../McpHub"
+import { McpHub, ServerConfigSchema, type ConnectedMcpConnection } from "../McpHub"
 import { MAX_MCP_PAGINATION_CURSOR_BYTES } from "../pagination"
 
 type CatalogMethod = "tools/list" | "resources/list" | "resources/templates/list"
@@ -49,6 +49,9 @@ const mocks = vi.hoisted(() => ({
 	writeFile: vi.fn(),
 	injectVariables: vi.fn(),
 	getState: vi.fn(),
+	writeQueues: new Map<string, Promise<void>>(),
+	writeQueued: vi.fn(),
+	beforeWrite: undefined as ((filePath: string, data: unknown) => Promise<void>) | undefined,
 }))
 
 vi.mock("fs/promises", () => ({
@@ -61,9 +64,26 @@ vi.mock("../../../core/webview/AlphaProvider", () => ({ AlphaProvider: class {} 
 vi.mock("../../../utils/fs", () => ({ fileExistsAtPath: vi.fn().mockResolvedValue(true) }))
 vi.mock("../../../utils/config", () => ({ injectVariables: mocks.injectVariables }))
 vi.mock("../../../utils/safeWriteJson", () => ({
-	safeWriteJson: vi.fn(async (filePath: string, data: unknown) => {
-		mocks.files.set(path.resolve(filePath), JSON.stringify(data))
-	}),
+	safeWriteJson: vi.fn(
+		async (filePath: string, data: unknown, options?: { prepareData?: () => unknown | Promise<unknown> }) => {
+			const key = path.resolve(filePath)
+			mocks.writeQueued(key)
+			const previous = mocks.writeQueues.get(key) ?? Promise.resolve()
+			const writing = previous
+				.catch(() => undefined)
+				.then(async () => {
+					const prepared = options?.prepareData ? await options.prepareData() : data
+					await mocks.beforeWrite?.(key, prepared)
+					mocks.files.set(key, JSON.stringify(prepared))
+				})
+			mocks.writeQueues.set(key, writing)
+			try {
+				await writing
+			} finally {
+				if (mocks.writeQueues.get(key) === writing) mocks.writeQueues.delete(key)
+			}
+		},
+	),
 }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
@@ -180,6 +200,9 @@ describe("McpHub complete paginated catalogs", () => {
 		mocks.transports.length = 0
 		mocks.transportStarts.length = 0
 		mocks.files.clear()
+		mocks.writeQueues.clear()
+		mocks.beforeWrite = undefined
+		mocks.writeQueued.mockReset()
 		mocks.injectVariables.mockReset().mockImplementation(async (config: unknown) => config)
 		mocks.getState.mockReset().mockResolvedValue({ mcpEnabled: true })
 		mocks.files.set(settingsPath, JSON.stringify({ mcpServers: {} }))
@@ -216,6 +239,126 @@ describe("McpHub complete paginated catalogs", () => {
 		await hub.updateServerConnections({ shared: options }, source)
 		return connectionFor(hub, source)
 	}
+
+	it("preserves a revoked grant when another settings write was queued before its commit", async () => {
+		const client = createClient("allowed")
+		await connect(client, "global", { ...config, alwaysAllow: ["allowed"] })
+		const writing = deferred<void>()
+		const release = deferred<void>()
+		const queued = deferred<void>()
+		mocks.beforeWrite = async () => {
+			writing.resolve()
+			await release.promise
+		}
+		mocks.writeQueued.mockImplementation(() => {
+			if (mocks.writeQueued.mock.calls.length === 2) queued.resolve()
+		})
+		const revoking = hub.toggleToolAlwaysAllow("shared", "global", "allowed", false)
+		const revoked = revoking.catch((error: unknown) => error)
+		await writing.promise
+		const disabling = hub.toggleToolEnabledForPrompt("shared", "global", "other", false)
+		const disabled = disabling.catch((error: unknown) => error)
+		await queued.promise
+		release.resolve()
+		expect(await Promise.all([revoked, disabled])).toEqual([undefined, undefined])
+
+		const saved = JSON.parse(mocks.files.get(settingsPath)!)
+		expect(saved.mcpServers.shared.alwaysAllow).toEqual([])
+		expect(saved.mcpServers.shared.disabledTools).toEqual(["other"])
+		expect(connectionFor(hub).server.tools?.[0].alwaysAllow).toBe(false)
+	})
+
+	it.each(["global", "project"] as const)("uses a saved %s timeout on the next live tool call", async (source) => {
+		const client = createClient()
+		await connect(client, source, { ...config, timeout: 60 })
+		await hub.updateServerTimeout("shared", 120, source)
+		client.request.mockClear()
+		await hub.callTool("shared", "old", {}, source)
+
+		expect(client.request.mock.calls[0]?.[0].method).toBe("tools/call")
+		expect(client.request.mock.calls[0]?.[2]?.timeout).toBe(120_000)
+	})
+
+	it("rejects an invalid timeout before persisting or changing the live configuration", async () => {
+		await connect(createClient(), "global", { ...config, timeout: 60 })
+		const before = mocks.files.get(settingsPath)
+		await expect(hub.updateServerTimeout("shared", 3601, "global")).rejects.toThrow()
+		expect(mocks.files.get(settingsPath)).toBe(before)
+		expect(JSON.parse(connectionFor(hub).server.config).timeout).toBe(60)
+	})
+
+	it.each(["approval", "timeout"])(
+		"applies a committed %s update to a replacement live connection",
+		async (setting) => {
+			const original = await connect(createClient("allowed"), "global", {
+				...config,
+				alwaysAllow: ["allowed"],
+				timeout: 60,
+			})
+			const writing = deferred<void>()
+			const release = deferred<void>()
+			mocks.beforeWrite = async () => {
+				writing.resolve()
+				await release.promise
+			}
+			const updating =
+				setting === "approval"
+					? hub.toggleToolAlwaysAllow("shared", "global", "allowed", false)
+					: hub.updateServerTimeout("shared", 120, "global")
+			const updated = updating.catch((error: unknown) => error)
+			await writing.promise
+			mocks.clients.push(createClient("allowed"))
+			await hub["connectToServer"]("shared", ServerConfigSchema.parse(config), "global")
+			const replacement = connectionFor(hub)
+			expect(replacement).not.toBe(original)
+			release.resolve()
+
+			expect(await updated).toBeUndefined()
+			if (setting === "approval") expect(replacement.server.tools?.[0].alwaysAllow).toBe(false)
+			else expect(JSON.parse(replacement.server.config).timeout).toBe(120)
+		},
+	)
+
+	it.each(["removed", "disabled", "replaced"])(
+		"does not revive a server %s while a restart is awaiting presentation",
+		async (change) => {
+			await connect()
+			const entering = deferred<void>()
+			const release = deferred<void>()
+			const presentation = hub as unknown as { notifyWebviewOfServerChanges(): Promise<void> }
+			vi.spyOn(presentation, "notifyWebviewOfServerChanges").mockImplementationOnce(async () => {
+				entering.resolve()
+				await release.promise
+			})
+			vi.useFakeTimers()
+			const restarting = hub.restartConnection("shared", "global")
+			await entering.promise
+			if (change === "removed") {
+				mocks.files.set(settingsPath, JSON.stringify({ mcpServers: {} }))
+				await hub.updateServerConnections({}, "global")
+			} else if (change === "disabled") {
+				await hub.toggleServerDisabled("shared", true, "global")
+			} else {
+				const replacement = { ...config, args: ["replacement.js"] }
+				writeSettings("global", replacement)
+				mocks.clients.push(createClient("replacement"))
+				await hub.updateServerConnections({ shared: replacement }, "global")
+			}
+			// A stale restart must never reach another real connection attempt.
+			mocks.clients.push(createClient("stale-restart"))
+			release.resolve()
+			await vi.runAllTimersAsync()
+			await restarting
+			if (change === "removed") expect(hub.connections).toEqual([])
+			else if (change === "disabled") {
+				expect(hub.getAllServers()).toEqual([expect.objectContaining({ disabled: true })])
+			} else {
+				expect(connectionFor(hub).server.tools?.map((tool) => tool.name)).toEqual(["replacement"])
+				expect(JSON.parse(connectionFor(hub).server.config).args).toEqual(["replacement.js"])
+			}
+			expect(mocks.clients).toHaveLength(1)
+		},
+	)
 
 	it("collects tools, resources, and templates through empty and nonempty cursors with later-page grants", async () => {
 		const client = createClient()

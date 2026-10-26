@@ -88,8 +88,7 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 		}
 	})
 
-	// Calculate context tokens, from the last API request started or condense
-	// context message.
+	// Calculate context tokens from the last API usage or successful context reduction.
 	result.contextTokens = 0
 
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -111,6 +110,13 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 			}
 		} else if (message.type === "say" && message.say === "condense_context") {
 			result.contextTokens = message.contextCondense?.newContextTokens ?? 0
+		} else if (message.type === "say" && message.say === "sliding_window_truncation" && message.partial !== true) {
+			const tokens = message.contextTruncation?.newContextTokens
+			if (tokens !== undefined && Number.isFinite(tokens) && tokens >= 0) {
+				result.contextTokens = tokens
+				// A completed reduction, including zero, supersedes older provider usage on reload.
+				break
+			}
 		}
 		if (result.contextTokens) {
 			break

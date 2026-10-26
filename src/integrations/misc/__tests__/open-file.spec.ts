@@ -217,24 +217,20 @@ describe("openFile", () => {
 		})
 	})
 
-	describe("file creation", () => {
-		it("should create new files when create option is true", async () => {
-			const newFilePath = "./new/file.txt"
-			const content = "Hello, world!"
+	describe("open-only file access", () => {
+		it.each(["./new/file.txt", "../outside/new-file.txt", "%2e%2e%2foutside%2fnew-file.txt"])(
+			"never creates missing files for legacy creation options at %s",
+			async (newFilePath) => {
+				const legacyOptions = { create: true, content: "Untrusted content", line: 1 }
 
-			vi.mocked(vscode.workspace.fs.stat).mockRejectedValue(new Error("File not found"))
-			vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue({} as any)
-			vi.mocked(vscode.window.showTextDocument).mockResolvedValue({} as any)
+				vi.mocked(vscode.workspace.fs.stat).mockRejectedValue(new Error("File not found"))
 
-			await openFile(newFilePath, { create: true, content })
+				await openFile(newFilePath, legacyOptions)
 
-			// On Windows, the path will include backslashes instead of forward slashes
-			const expectedPathSegment = process.platform === "win32" ? "new\\file.txt" : "new/file.txt"
-			expect(vscode.workspace.fs.writeFile).toHaveBeenCalledWith(
-				expect.objectContaining({ fsPath: expect.stringContaining(expectedPathSegment) }),
-				Buffer.from(content, "utf8"),
-			)
-			expect(vscode.workspace.openTextDocument).toHaveBeenCalled()
-		})
+				expect(vscode.workspace.fs.writeFile).not.toHaveBeenCalled()
+				expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled()
+				expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.could_not_open_file")
+			},
+		)
 	})
 })

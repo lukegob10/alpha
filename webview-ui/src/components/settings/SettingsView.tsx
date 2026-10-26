@@ -42,6 +42,7 @@ import {
 	providerProfileRenameResultSchema,
 	providerProfileSaveResultSchema,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	memorySettingsSchema,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
 
@@ -77,6 +78,7 @@ import { getManagedAgentSettingsError } from "./agents-settings-validation"
 import { CheckpointSettings } from "./CheckpointSettings"
 import { NotificationSettings } from "./NotificationSettings"
 import { ContextManagementSettings } from "./ContextManagementSettings"
+import { MemorySettings } from "./MemorySettings"
 import { TerminalSettings } from "./TerminalSettings"
 import { ExperimentalSettings } from "./ExperimentalSettings"
 import { LanguageSettings } from "./LanguageSettings"
@@ -243,6 +245,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		autoCondenseContextPercent = 100,
 		autoCondenseContextScope = "full-context",
 		postTurnCondenseContextPercent = DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
+		memorySettings,
 		enableCheckpoints,
 		checkpointTimeout,
 		experiments,
@@ -250,8 +253,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxWorkspaceFiles,
 		mcpEnabled,
 		soundEnabled,
-		ttsEnabled,
-		ttsSpeed,
 		soundVolume,
 		telemetrySetting,
 		terminalOutputPreviewSize,
@@ -659,7 +660,11 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	}, [])
 
 	const managedAgentSettingsError = getManagedAgentSettingsError(cachedState)
-	const settingsErrorMessage = errorMessage ?? (managedAgentSettingsError ? t(managedAgentSettingsError) : undefined)
+	const memorySettingsValid = memorySettings === undefined || memorySettingsSchema.safeParse(memorySettings).success
+	const settingsErrorMessage =
+		errorMessage ??
+		(managedAgentSettingsError ? t(managedAgentSettingsError) : undefined) ??
+		(!memorySettingsValid ? t("settings:memory.invalid") : undefined)
 	const isSettingValid = !settingsErrorMessage
 
 	const handleSubmit = () => {
@@ -695,13 +700,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					autoCondenseContextPercent,
 					autoCondenseContextScope,
 					postTurnCondenseContextPercent,
+					memorySettings,
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
 					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
 					...toManagedAgentSettingsSavePayload(cachedState),
 					soundEnabled: soundEnabled ?? true,
 					soundVolume: soundVolume ?? 0.5,
-					ttsEnabled,
-					ttsSpeed,
 					enableCheckpoints: enableCheckpoints ?? false,
 					checkpointTimeout: checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 					writeDelayMs,
@@ -1154,8 +1158,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{/* Notifications Section */}
 			{section === "notifications" && (
 				<NotificationSettings
-					ttsEnabled={ttsEnabled}
-					ttsSpeed={ttsSpeed}
 					soundEnabled={soundEnabled}
 					soundVolume={soundVolume}
 					setCachedStateField={setCachedStateField}
@@ -1164,27 +1166,33 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			{/* Context Management Section */}
 			{section === "contextManagement" && (
-				<ContextManagementSettings
-					autoCondenseContext={autoCondenseContext}
-					autoCondenseContextPercent={autoCondenseContextPercent}
-					autoCondenseContextScope={autoCondenseContextScope}
-					postTurnCondenseContextPercent={postTurnCondenseContextPercent}
-					maxOpenTabsContext={maxOpenTabsContext}
-					maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
-					showRooIgnoredFiles={showRooIgnoredFiles}
-					enableSubfolderRules={enableSubfolderRules}
-					maxImageFileSize={maxImageFileSize}
-					maxTotalImageSize={maxTotalImageSize}
-					includeDiagnosticMessages={includeDiagnosticMessages}
-					maxDiagnosticMessages={maxDiagnosticMessages}
-					writeDelayMs={writeDelayMs}
-					includeCurrentTime={includeCurrentTime}
-					includeCurrentCost={includeCurrentCost}
-					maxGitStatusFiles={maxGitStatusFiles}
-					customSupportPrompts={customSupportPrompts || {}}
-					setCustomSupportPrompts={setCustomSupportPromptsField}
-					setCachedStateField={setCachedStateField}
-				/>
+				<>
+					<MemorySettings
+						memorySettings={memorySettings}
+						onChange={(value) => setCachedStateField("memorySettings", value)}
+					/>
+					<ContextManagementSettings
+						autoCondenseContext={autoCondenseContext}
+						autoCondenseContextPercent={autoCondenseContextPercent}
+						autoCondenseContextScope={autoCondenseContextScope}
+						postTurnCondenseContextPercent={postTurnCondenseContextPercent}
+						maxOpenTabsContext={maxOpenTabsContext}
+						maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
+						showRooIgnoredFiles={showRooIgnoredFiles}
+						enableSubfolderRules={enableSubfolderRules}
+						maxImageFileSize={maxImageFileSize}
+						maxTotalImageSize={maxTotalImageSize}
+						includeDiagnosticMessages={includeDiagnosticMessages}
+						maxDiagnosticMessages={maxDiagnosticMessages}
+						writeDelayMs={writeDelayMs}
+						includeCurrentTime={includeCurrentTime}
+						includeCurrentCost={includeCurrentCost}
+						maxGitStatusFiles={maxGitStatusFiles}
+						customSupportPrompts={customSupportPrompts || {}}
+						setCustomSupportPrompts={setCustomSupportPromptsField}
+						setCachedStateField={setCachedStateField}
+					/>
+				</>
 			)}
 
 			{/* Terminal Section */}
@@ -1260,7 +1268,11 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 			{/* Experimental Section */}
 			{section === "experimental" && (
-				<ExperimentalSettings setExperimentEnabled={setExperimentEnabled} experiments={experiments} />
+				<ExperimentalSettings
+					setExperimentEnabled={setExperimentEnabled}
+					experiments={experiments}
+					isActive={activeTab === "experimental"}
+				/>
 			)}
 
 			{/* Language Section */}

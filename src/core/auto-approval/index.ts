@@ -251,6 +251,12 @@ export async function checkAutoApproval({
 		if (decisions.includes("auto_deny")) {
 			return { decision: "deny" }
 		}
+		if (
+			isProtected &&
+			(!flags.alwaysAllowWriteProtected || (reviewPolicy && !reviewPolicy.protectedWriteAllowed))
+		) {
+			return { decision: "ask" }
+		}
 		const decision = decisions.every((decision) => decision === "auto_approve") ? "auto_approve" : "ask_user"
 		if (mode === "ask") {
 			return decision === "auto_approve" &&
@@ -391,6 +397,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 			(policy) => getSubagentCommandDecision(input.text!, policy),
 		)
 		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (input.isProtected && !inheritedState.alwaysAllowWriteProtected) return { decision: "ask" }
 		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute) return { decision: "ask" }
 		if (input.requiresExplicitApproval && inheritedMode !== "bypass") return { decision: "ask" }
 		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
@@ -415,7 +422,12 @@ export async function checkAutoApprovalWithInheritedPolicy({
 		// Full Access can skip per-action review only when both the live and captured
 		// grants authorize it. Auto still applies each action's narrower policy.
 		if (input.ask === "command") {
-			if (!input.text || liveResult.decision !== "approve") return { decision: "ask" }
+			if (
+				!input.text ||
+				liveResult.decision !== "approve" ||
+				(input.isProtected && inheritedResult.decision !== "approve")
+			)
+				return { decision: "ask" }
 			const capturedDenials = [
 				inheritedState.commandApproval,
 				...(inheritedState.commandApprovalCeilings ?? []),

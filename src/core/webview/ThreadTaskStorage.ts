@@ -11,13 +11,41 @@ import {
 	providerTranscriptReceiptSchema,
 } from "../task-persistence/ProviderTranscriptStore"
 
-async function readThreadHistoryText(file: string, signal?: AbortSignal): Promise<string | undefined> {
+async function readThreadHistoryText(
+	file: string,
+	signal?: AbortSignal,
+	maxBytes?: number,
+): Promise<string | undefined> {
 	signal?.throwIfAborted()
 	try {
 		const stats = await fs.lstat(file)
 		signal?.throwIfAborted()
 		if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Thread history is not a regular file")
-		if (stats.size > 128 * 1024 * 1024) throw new Error("Thread history exceeds the supported read size")
+		if (stats.size > (maxBytes ?? 128 * 1024 * 1024))
+			throw new Error("Thread history exceeds the supported read size")
+		if (maxBytes !== undefined) {
+			const handle = await fs.open(file, "r")
+			try {
+				const opened = await handle.stat()
+				if (!opened.isFile() || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > maxBytes)
+					throw new Error("Thread history changed while opening")
+				const chunks: Buffer[] = []
+				let length = 0
+				while (length <= maxBytes) {
+					signal?.throwIfAborted()
+					const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes - length + 1))
+					const { bytesRead } = await handle.read(chunk, 0, chunk.length, length)
+					if (!bytesRead) break
+					chunks.push(chunk.subarray(0, bytesRead))
+					length += bytesRead
+				}
+				if (length > maxBytes) throw new Error("Thread history exceeds the supported read size")
+				signal?.throwIfAborted()
+				return Buffer.concat(chunks, length).toString("utf8")
+			} finally {
+				await handle.close()
+			}
+		}
 		const contents = await fs.readFile(file, { encoding: "utf8", signal })
 		signal?.throwIfAborted()
 		return contents
@@ -28,8 +56,17 @@ async function readThreadHistoryText(file: string, signal?: AbortSignal): Promis
 	}
 }
 
-async function assertThreadFallbackAllowed(directory: string, taskId: string, signal?: AbortSignal): Promise<void> {
-	const contents = await readThreadHistoryText(path.join(directory, GlobalFileNames.providerTranscript), signal)
+async function assertThreadFallbackAllowed(
+	directory: string,
+	taskId: string,
+	signal?: AbortSignal,
+	maxBytes?: number,
+): Promise<void> {
+	const contents = await readThreadHistoryText(
+		path.join(directory, GlobalFileNames.providerTranscript),
+		signal,
+		maxBytes,
+	)
 	if (contents === undefined) return
 	let value: unknown
 	try {
@@ -53,8 +90,12 @@ export async function readThreadApiMessages(
 	taskId: string,
 	storagePath: string,
 	signal?: AbortSignal,
+	options?: { maxBytes?: number },
 ): Promise<ApiMessage[]> {
 	signal?.throwIfAborted()
+	const maxBytes = options?.maxBytes
+	if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 128 * 1024 * 1024))
+		throw new Error("Invalid thread history read limit")
 	const directory = await resolveExistingTaskDirectoryPathReadOnly(storagePath, taskId)
 	signal?.throwIfAborted()
 	for (const name of [
@@ -63,9 +104,9 @@ export async function readThreadApiMessages(
 		GlobalFileNames.providerTranscript,
 	]) {
 		signal?.throwIfAborted()
-		if (name === "claude_messages.json") await assertThreadFallbackAllowed(directory, taskId, signal)
+		if (name === "claude_messages.json") await assertThreadFallbackAllowed(directory, taskId, signal, maxBytes)
 		const file = path.join(directory, name)
-		const contents = await readThreadHistoryText(file, signal)
+		const contents = await readThreadHistoryText(file, signal, maxBytes)
 		if (contents === undefined) continue
 		let value: unknown
 		try {

@@ -4,6 +4,7 @@ import { SquareArrowOutUpRight } from "lucide-react"
 import { vscode } from "@src/utils/vscode"
 import { hasComplexMarkdown } from "@src/utils/markdown"
 import { StandardTooltip } from "@src/components/ui"
+import { stripMemoryCitations } from "@alpha/memory-citations"
 
 interface OpenMarkdownPreviewButtonProps {
 	markdown: string | undefined
@@ -11,16 +12,17 @@ interface OpenMarkdownPreviewButtonProps {
 }
 
 export const OpenMarkdownPreviewButton = memo(({ markdown, className }: OpenMarkdownPreviewButtonProps) => {
-	if (!hasComplexMarkdown(markdown)) {
+	const visibleMarkdown = markdown ? stripMemoryCitations(markdown) : markdown
+	if (!hasComplexMarkdown(visibleMarkdown)) {
 		return null
 	}
 
 	const handleClick = (e: React.MouseEvent) => {
 		e.stopPropagation()
-		if (markdown) {
+		if (visibleMarkdown) {
 			vscode.postMessage({
 				type: "openMarkdownPreview",
-				text: markdown,
+				text: visibleMarkdown,
 			})
 		}
 	}

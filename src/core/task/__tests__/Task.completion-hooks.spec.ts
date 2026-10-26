@@ -1,5 +1,10 @@
 import { Task } from "../Task"
-import { readCompletionHookConfig, runCompletionHooks, type CompletionHookTarget } from "../../agent/CompletionHooks"
+import {
+	readCompletionHookConfig,
+	runCompletionHooks,
+	HookCommandCleanupError,
+	type CompletionHookTarget,
+} from "../../agent/CompletionHooks"
 
 vi.mock("../../agent/CompletionHooks", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../agent/CompletionHooks")>()),
@@ -109,6 +114,98 @@ describe("configured completion hook continuations", () => {
 		expect(await evaluation).toEqual({})
 		expect(task.isCompleted()).toBe(false)
 		expect(task.say).not.toHaveBeenCalled()
+	})
+
+	it("retains a cancelled hook's failed cleanup and joins that owner before another hook admission", async () => {
+		const { task, controller } = fixture()
+		const entered = deferred()
+		const fail = deferred()
+		const physicalClose = deferred()
+		const retry = vi.fn(async () => physicalClose.promise)
+		const failure = new HookCommandCleanupError("Stop", retry, new Error("tree kill failed"))
+		vi.mocked(runCompletionHooks).mockImplementation(async () => {
+			entered.resolve()
+			await fail.promise
+			throw failure
+		})
+		const evaluation = task.evaluateCompletionHooks("Candidate")
+		const rejected = expect(evaluation).rejects.toBe(failure)
+		await entered.promise
+		controller.abort()
+		fail.resolve()
+		await rejected
+		expect(task["pendingHookCleanupFailures"]?.has(failure)).toBe(true)
+		const settled = vi.fn()
+		const retrying = task.evaluateCompletionHooks("Must not run another hook").then(settled)
+		expect(retry).toHaveBeenCalledOnce()
+		expect(settled).not.toHaveBeenCalled()
+		physicalClose.resolve()
+		await retrying
+		expect(settled).toHaveBeenCalledExactlyOnceWith({})
+		expect(runCompletionHooks).toHaveBeenCalledOnce()
+		expect(task["pendingHookCleanupFailures"]?.size).toBe(0)
+	})
+
+	it("does not suppress typed cleanup owners inside a mixed aggregate after interruption", async () => {
+		const { task, controller } = fixture()
+		const failure = new HookCommandCleanupError(
+			"Stop",
+			vi.fn(async () => undefined),
+			new Error("tree kill failed"),
+		)
+		const aggregate = new AggregateError([failure, new Error("other hook failure")], "hook failures")
+		vi.mocked(runCompletionHooks).mockImplementation(async () => {
+			controller.abort()
+			throw aggregate
+		})
+		await expect(task.evaluateCompletionHooks("Candidate")).rejects.toBe(aggregate)
+		expect(task["pendingHookCleanupFailures"]?.has(failure)).toBe(true)
+	})
+
+	it("retries physical cleanup during explicit Stop finalization without replaying a rejected hook producer", async () => {
+		const { task, controller } = fixture()
+		const physicalClose = deferred()
+		const retryEntered = deferred()
+		const retry = vi
+			.fn<() => Promise<void>>()
+			.mockRejectedValueOnce(new Error("original process still lives"))
+			.mockImplementationOnce(async () => {
+				retryEntered.resolve()
+				await physicalClose.promise
+			})
+		const failure = new HookCommandCleanupError("Stop", retry, new Error("tree kill failed"))
+		Object.assign(task, {
+			clineMessages: [],
+			apiConversationHistory: [],
+			taskCancellationController: controller,
+			subagentRuntimeUnloadStarted: false,
+			userMessageContent: [],
+			canonicalLifecycleQueue: Promise.resolve(),
+			flushApiConversationHistoryPersistence: vi.fn(async () => undefined),
+			finishCanonicalLifecycleCancellation: vi.fn(async () => undefined),
+			runTerminationLifecycleHooks: vi.fn(async () => undefined),
+			finalizeAgentStopMessage: vi.fn(async () => undefined),
+		})
+		const lifecycle = Promise.reject(failure)
+		const cancellation = {
+			...task["captureTaskCancellationBoundary"](),
+			lifecycle,
+			guard: () => true,
+		}
+		await expect(task["finalizeTerminationAfterAbort"](Promise.resolve(), cancellation)).rejects.toBe(failure)
+		expect(task["pendingHookCleanupFailures"]?.has(failure)).toBe(true)
+		expect(task["runTerminationLifecycleHooks"]).not.toHaveBeenCalled()
+		expect(task["finalizeAgentStopMessage"]).not.toHaveBeenCalled()
+		const retrying = task["finalizeTerminationAfterAbort"](Promise.resolve(), cancellation)
+		await retryEntered.promise
+		expect(task["runTerminationLifecycleHooks"]).not.toHaveBeenCalled()
+		physicalClose.resolve()
+		await retrying
+		expect(retry).toHaveBeenCalledTimes(2)
+		expect(task["pendingHookCleanupFailures"]?.size).toBe(0)
+		expect(task["runTerminationLifecycleHooks"]).toHaveBeenCalledOnce()
+		expect(task["finalizeAgentStopMessage"]).toHaveBeenCalledOnce()
+		expect(runCompletionHooks).not.toHaveBeenCalled()
 	})
 
 	it.each(["Stop", "SubagentStop"] as const)(

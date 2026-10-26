@@ -139,9 +139,58 @@ describe("autoImportSettings", () => {
 		vi.restoreAllMocks()
 	})
 
+	it.each(["workspaceValue", "workspaceFolderValue"])(
+		"ignores an automatic import path supplied only by %s",
+		async (source) => {
+			vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+				get: vi.fn().mockReturnValue("/workspace/settings.json"),
+				inspect: vi.fn().mockReturnValue({ [source]: "/workspace/settings.json" }),
+			} as unknown as vscode.WorkspaceConfiguration)
+			vi.mocked(fileExistsAtPath).mockResolvedValue(true)
+			vi.mocked(fsPromises.readFile).mockResolvedValue(
+				JSON.stringify({
+					providerProfiles: { currentApiConfigName: "default", apiConfigs: {} },
+					globalSettings: { approvalMode: "bypass", approvalModeBypassAcknowledged: true },
+				}),
+			)
+
+			await autoImportSettings(mockOutputChannel, {
+				providerSettingsManager: mockProviderSettingsManager,
+				contextProxy: mockContextProxy,
+				customModesManager: mockCustomModesManager,
+			})
+
+			expect(fileExistsAtPath).not.toHaveBeenCalled()
+			expect(fsPromises.readFile).not.toHaveBeenCalled()
+			expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
+			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
+		},
+	)
+
+	it("uses the user-owned automatic import path despite workspace overrides", async () => {
+		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+			get: vi.fn().mockReturnValue("/workspace/settings.json"),
+			inspect: vi.fn().mockReturnValue({
+				globalValue: "/user/settings.json",
+				workspaceValue: "/workspace/settings.json",
+				workspaceFolderValue: "/folder/settings.json",
+			}),
+		} as unknown as vscode.WorkspaceConfiguration)
+		vi.mocked(fileExistsAtPath).mockResolvedValue(false)
+
+		await autoImportSettings(mockOutputChannel, {
+			providerSettingsManager: mockProviderSettingsManager,
+			contextProxy: mockContextProxy,
+			customModesManager: mockCustomModesManager,
+		})
+
+		expect(fileExistsAtPath).toHaveBeenCalledExactlyOnceWith("/user/settings.json")
+	})
+
 	it("should skip auto-import when no settings path is specified", async () => {
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(""),
+			inspect: vi.fn().mockReturnValue({ globalValue: "" }),
 		} as any)
 
 		await autoImportSettings(mockOutputChannel, {
@@ -160,6 +209,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "~/Documents/roo-config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to return false
@@ -184,6 +234,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "/absolute/path/to/config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to return true
@@ -227,6 +278,7 @@ describe("autoImportSettings", () => {
 	it("warns about retained setup issues without a success toast or raw payload and keeps the configured file authoritative", async () => {
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue("/absolute/path/to/legacy-config.json"),
+			inspect: vi.fn().mockReturnValue({ globalValue: "/absolute/path/to/legacy-config.json" }),
 		} as unknown as ReturnType<typeof vscode.workspace.getConfiguration>)
 		vi.mocked(fileExistsAtPath).mockResolvedValue(true)
 		vi.mocked(fsPromises.readFile).mockResolvedValue(
@@ -269,6 +321,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "~/config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to return true
@@ -296,6 +349,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "~/Documents/config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to return false (so we can check the resolved path)
@@ -316,6 +370,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "Documents/config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to return false (so we can check the resolved path)
@@ -336,6 +391,7 @@ describe("autoImportSettings", () => {
 		const settingsPath = "~/config.json"
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
 			get: vi.fn().mockReturnValue(settingsPath),
+			inspect: vi.fn().mockReturnValue({ globalValue: settingsPath }),
 		} as any)
 
 		// Mock fileExistsAtPath to throw an error

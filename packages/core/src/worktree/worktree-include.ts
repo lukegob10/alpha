@@ -14,6 +14,11 @@ import ignore, { type Ignore } from "ignore"
 
 import type { WorktreeIncludeStatus } from "./types.js"
 import { createWorktreeGitEnvironment } from "./git-environment.js"
+import {
+	joinWorktreeProcess,
+	WorktreeProcessCleanupError,
+	type WorktreeProcessCancellation,
+} from "./worktree-process.js"
 
 /**
  * Progress info for copy tracking.
@@ -32,6 +37,8 @@ export interface CopyProgress {
 export type CopyProgressCallback = (progress: CopyProgress) => void
 
 const execFileAsync = promisify(execFile)
+const MAX_DISCOVERY_ENTRIES = 100_000
+const MAX_DISCOVERY_DEPTH = 64
 
 /**
  * Service for managing .worktreeinclude files and copying files to new worktrees.
@@ -122,7 +129,9 @@ export class WorktreeIncludeService {
 		sourceDir: string,
 		targetDir: string,
 		onProgress?: CopyProgressCallback,
+		cancellation?: WorktreeProcessCancellation,
 	): Promise<string[]> {
+		cancellation?.signal.throwIfAborted()
 		const worktreeIncludePath = path.join(sourceDir, ".worktreeinclude")
 		const gitignorePath = path.join(sourceDir, ".gitignore")
 
@@ -161,7 +170,13 @@ export class WorktreeIncludeService {
 		const gitignoreMatcher = ignore().add(gitignorePatterns)
 
 		// Find items that match BOTH patterns (intersection)
-		const itemsToCopy = await this.findMatchingItems(sourceDir, worktreeIncludeMatcher, gitignoreMatcher)
+		const itemsToCopy = await this.findMatchingItems(
+			sourceDir,
+			worktreeIncludeMatcher,
+			gitignoreMatcher,
+			cancellation?.signal,
+		)
+		cancellation?.signal.throwIfAborted()
 
 		if (itemsToCopy.length === 0) {
 			return []
@@ -177,6 +192,7 @@ export class WorktreeIncludeService {
 		// Copy the items with progress tracking (no total size calculation)
 		const copiedItems: string[] = []
 		for (const item of itemsToCopy) {
+			cancellation?.signal.throwIfAborted()
 			const sourcePath = path.join(sourceDir, item)
 			const targetPath = path.join(targetDir, item)
 
@@ -191,6 +207,7 @@ export class WorktreeIncludeService {
 						item,
 						bytesCopied,
 						onProgress,
+						cancellation,
 					)
 				} else {
 					// Report progress before copying
@@ -209,6 +226,7 @@ export class WorktreeIncludeService {
 				// Report progress after copying
 				onProgress?.({ bytesCopied, itemName: item })
 			} catch (error) {
+				if (cancellation?.signal.aborted || error instanceof WorktreeProcessCleanupError) throw error
 				// Log but don't fail on individual copy errors
 				console.error(`Failed to copy ${item}:`, error)
 			}
@@ -234,7 +252,8 @@ export class WorktreeIncludeService {
 	 * Get the total size on disk of a file or directory (recursively).
 	 * Uses native Node.js fs operations for cross-platform compatibility.
 	 */
-	private async getPathSize(targetPath: string): Promise<number> {
+	private async getPathSize(targetPath: string, signal?: AbortSignal): Promise<number> {
+		signal?.throwIfAborted()
 		try {
 			const stats = await fs.stat(targetPath)
 
@@ -243,11 +262,12 @@ export class WorktreeIncludeService {
 			}
 
 			if (stats.isDirectory()) {
-				return await this.getDirectorySizeRecursive(targetPath)
+				return await this.getDirectorySizeRecursive(targetPath, signal)
 			}
 
 			return 0
 		} catch {
+			signal?.throwIfAborted()
 			return 0
 		}
 	}
@@ -256,27 +276,31 @@ export class WorktreeIncludeService {
 	 * Recursively calculate directory size on disk using Node.js fs.
 	 * Uses parallel processing for better performance on large directories.
 	 */
-	private async getDirectorySizeRecursive(dirPath: string): Promise<number> {
+	private async getDirectorySizeRecursive(dirPath: string, signal?: AbortSignal): Promise<number> {
+		signal?.throwIfAborted()
 		try {
 			const entries = await fs.readdir(dirPath, { withFileTypes: true })
 			const sizes = await Promise.all(
 				entries.map(async (entry) => {
+					signal?.throwIfAborted()
 					const entryPath = path.join(dirPath, entry.name)
 					try {
 						if (entry.isFile()) {
 							const stats = await fs.stat(entryPath)
 							return this.getSizeOnDisk(stats)
 						} else if (entry.isDirectory()) {
-							return await this.getDirectorySizeRecursive(entryPath)
+							return await this.getDirectorySizeRecursive(entryPath, signal)
 						}
 						return 0
 					} catch {
+						signal?.throwIfAborted()
 						return 0 // Skip inaccessible files
 					}
 				}),
 			)
 			return sizes.reduce((sum, size) => sum + size, 0)
 		} catch {
+			signal?.throwIfAborted()
 			return 0
 		}
 	}
@@ -284,11 +308,13 @@ export class WorktreeIncludeService {
 	/**
 	 * Get the current size of a directory (for progress tracking).
 	 */
-	private async getCurrentDirectorySize(dirPath: string): Promise<number> {
+	private async getCurrentDirectorySize(dirPath: string, signal?: AbortSignal): Promise<number> {
+		signal?.throwIfAborted()
 		try {
 			await fs.access(dirPath)
-			return await this.getDirectorySizeRecursive(dirPath)
+			return await this.getDirectorySizeRecursive(dirPath, signal)
 		} catch {
+			signal?.throwIfAborted()
 			return 0
 		}
 	}
@@ -304,16 +330,17 @@ export class WorktreeIncludeService {
 		itemName: string,
 		bytesCopiedBefore: number,
 		onProgress?: CopyProgressCallback,
+		cancellation?: WorktreeProcessCancellation,
 	): Promise<number> {
 		// Ensure parent directory exists
 		await fs.mkdir(path.dirname(target), { recursive: true })
+		cancellation?.signal.throwIfAborted()
 
 		const isWindows = process.platform === "win32"
 
 		// Start the copy process
+		let proc: ReturnType<typeof spawn> | undefined
 		const copyPromise = new Promise<void>((resolve, reject) => {
-			let proc: ReturnType<typeof spawn>
-
 			if (isWindows) {
 				proc = spawn("robocopy", [source, target, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"], {
 					windowsHide: true,
@@ -348,7 +375,7 @@ export class WorktreeIncludeService {
 
 		const pollProgress = async () => {
 			while (polling) {
-				const currentSize = await this.getCurrentDirectorySize(target)
+				const currentSize = await this.getCurrentDirectorySize(target, cancellation?.signal)
 				const totalCopied = bytesCopiedBefore + currentSize
 
 				onProgress?.({
@@ -362,9 +389,10 @@ export class WorktreeIncludeService {
 
 		// Start polling and wait for copy to complete
 		const pollPromise = pollProgress()
+		void pollPromise.catch(() => undefined)
 
 		try {
-			await copyPromise
+			await (proc ? joinWorktreeProcess(copyPromise, proc, cancellation) : copyPromise)
 		} finally {
 			polling = false
 			// Wait for final poll iteration to complete
@@ -372,7 +400,7 @@ export class WorktreeIncludeService {
 		}
 
 		// Get the final size of the copied directory
-		const finalSize = await this.getPathSize(target)
+		const finalSize = await this.getPathSize(target, cancellation?.signal)
 		return bytesCopiedBefore + finalSize
 	}
 
@@ -398,31 +426,41 @@ export class WorktreeIncludeService {
 		sourceDir: string,
 		includeMatcher: Ignore,
 		gitignoreMatcher: Ignore,
+		signal?: AbortSignal,
 	): Promise<string[]> {
 		const matchingItems: string[] = []
+		const pending = [{ relativePath: "", depth: 0 }]
+		let visited = 0
 
-		try {
-			const entries = await fs.readdir(sourceDir, { withFileTypes: true })
-
-			for (const entry of entries) {
-				const relativePath = entry.name
-
-				// Skip .git directory
-				if (relativePath === ".git") continue
-
-				// Check if this path matches both patterns
-				// For .worktreeinclude, we want items that are "ignored" (matched)
-				// For .gitignore, we want items that are "ignored" (matched)
+		while (pending.length > 0) {
+			signal?.throwIfAborted()
+			const directory = pending.pop()!
+			const directoryPath = path.join(sourceDir, directory.relativePath)
+			if (directory.relativePath) {
+				const stats = await fs.lstat(directoryPath).catch(() => undefined)
+				if (!stats?.isDirectory() || stats.isSymbolicLink()) continue
+			}
+			const entries = await fs.readdir(directoryPath, { withFileTypes: true }).catch(() => [])
+			for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+				if (++visited > MAX_DISCOVERY_ENTRIES) {
+					throw new Error(".worktreeinclude discovery exceeded its file entry limit")
+				}
+				if (entry.name.toLowerCase() === ".git" || entry.isSymbolicLink()) continue
+				const relativePath = directory.relativePath ? `${directory.relativePath}/${entry.name}` : entry.name
 				const matchPath = entry.isDirectory() ? `${relativePath}/` : relativePath
 				const matchesWorktreeInclude = includeMatcher.ignores(matchPath)
 				const matchesGitignore = gitignoreMatcher.ignores(matchPath)
 
 				if (matchesWorktreeInclude && matchesGitignore) {
 					matchingItems.push(relativePath)
+				} else if (entry.isDirectory()) {
+					// Parent directories need not match an include pattern for a descendant to match.
+					if (directory.depth >= MAX_DISCOVERY_DEPTH) {
+						throw new Error(".worktreeinclude discovery exceeded its directory depth limit")
+					}
+					pending.push({ relativePath, depth: directory.depth + 1 })
 				}
 			}
-		} catch {
-			return []
 		}
 
 		return matchingItems

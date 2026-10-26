@@ -3,7 +3,8 @@ import type Anthropic from "@anthropic-ai/sdk"
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ApiStreamChunk } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
-import { getToolFreeMetadata, summarizeConversation } from "../index"
+import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
+import { getEffectiveApiHistory, getToolFreeMetadata, summarizeConversation } from "../index"
 
 vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: { instance: { captureContextCondensed: vi.fn() } },
@@ -49,6 +50,65 @@ const completed: ApiStreamChunk = {
 }
 
 describe("isolated summary requests", () => {
+	it("summarizes accepted standalone reasoning history without exposing opaque prefix or tail state", async () => {
+		const { options, messages, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
+		const standaloneReasoning = {
+			type: "reasoning",
+			encrypted_content: "opaque-legacy-reasoning",
+			id: "legacy-reasoning",
+			summary: [],
+		}
+		const tail: ApiMessage[] = [
+			{ role: "user", content: "Continue using the recent result.", ts: 4 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Read the file.", signature: "opaque-tail-signature" },
+					{ type: "tool_use", id: "recent-read", name: "read_file", input: { path: "recent.ts" } },
+				],
+				ts: 5,
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "recent-read", content: "Recent evidence." }],
+				ts: 6,
+			},
+		]
+		const reloaded: ApiMessage[] = JSON.parse(
+			JSON.stringify([
+				messages[0],
+				standaloneReasoning,
+				messages[1],
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "Earlier reasoning.", signature: "opaque-prefix-signature" },
+					],
+					ts: 3,
+				},
+				...tail,
+			]),
+		)
+		const before = structuredClone(reloaded)
+		expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
+
+		const result = await summarizeConversation({ ...options, messages: reloaded, recentTailTokenBudget: 500 })
+
+		expect(result.status).toBe("reduced")
+		expect(handler.createMessage).toHaveBeenCalledOnce()
+		const request = vi.mocked(handler.createMessage).mock.calls[0][1]
+		expect(request.slice(0, -1)).toEqual(messages.slice(0, 2).map(({ role, content }) => ({ role, content })))
+		expect(JSON.stringify(request)).not.toContain(standaloneReasoning.encrypted_content)
+		expect(JSON.stringify(request)).not.toContain("opaque-prefix-signature")
+		expect(JSON.stringify(request)).not.toContain("opaque-tail-signature")
+		const active = getEffectiveApiHistory(result.messages)
+		expect(active.slice(1)).toEqual(tail)
+		active.slice(1).forEach((message, index) => expect(message).toBe(reloaded[index + 4]))
+		expect(result.messages[1]).toEqual({ ...standaloneReasoning, condenseParent: result.condenseId })
+		expect(invalidPersistedApiMessages(result.messages)).toBeUndefined()
+		expect(reloaded).toEqual(before)
+	})
+
 	it("summarizes an oversized old window with the previous model and validates the selected model's budget", async () => {
 		const { options, handler: previous } = fixture([{ type: "text", text: "Complete summary." }, completed])
 		const { handler: selected } = fixture([])

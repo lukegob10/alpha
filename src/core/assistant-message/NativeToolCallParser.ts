@@ -1511,6 +1511,10 @@ export class NativeToolCallParser {
 				case "create_goal":
 				case "get_goal":
 				case "update_goal":
+				case "memories_list":
+				case "memories_read":
+				case "memories_search":
+				case "memories_add_ad_hoc_note":
 					// Keep all fields for the goal handler's strict argument validation.
 					if (this.isArgumentObject(args)) nativeArgs = args as NativeArgsFor<TName>
 					break

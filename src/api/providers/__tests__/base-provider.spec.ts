@@ -1,6 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { ModelInfo } from "@alpha-code/types"
+import { defineCustomTool, parametersSchema as z, type ModelInfo } from "@alpha-code/types"
+import { formatNative, serializeCustomTool } from "@alpha-code/core"
 
 import { BaseProvider } from "../base-provider"
 import type { ApiStream } from "../../transform/stream"
@@ -212,6 +213,39 @@ describe("BaseProvider", () => {
 	})
 
 	describe("convertToolsForOpenAI", () => {
+		it("preserves custom-tool omissions and explicit nulls for the original Zod parser", () => {
+			const parameters = z.object({
+				query: z.string(),
+				format: z.string().optional(),
+				options: z.object({ limit: z.number().optional() }).optional(),
+				nullable: z.string().nullable().optional(),
+			})
+			const tool = formatNative(
+				serializeCustomTool(
+					defineCustomTool({
+						name: "custom_input",
+						description: "Custom input contract",
+						parameters,
+						execute: async () => "done",
+					}),
+				),
+			)
+
+			const [converted] = provider.testConvertToolsForOpenAI([tool])!
+
+			expect(converted.function.strict).toBe(false)
+			expect(converted.function.parameters).toEqual(tool.function.parameters)
+			expect(converted.function.parameters.required).toEqual(["query"])
+			expect(converted.function.parameters.properties.format).toEqual({ type: "string" })
+			expect(converted.function.parameters.properties.options).not.toHaveProperty("required")
+			expect(parameters.parse({ query: "input", options: {}, nullable: null })).toEqual({
+				query: "input",
+				options: {},
+				nullable: null,
+			})
+			expect(parameters.safeParse({ query: "input", format: null }).success).toBe(false)
+		})
+
 		it("should return undefined for undefined input", () => {
 			const result = provider.testConvertToolsForOpenAI(undefined)
 			expect(result).toBeUndefined()

@@ -3,6 +3,7 @@ import type { AgentToolCall } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
+import { TaskMemoryContext } from "../../../services/memory/TaskMemoryContext"
 import { Task } from "../Task"
 
 function harness(taskKind: "primary" | "subagent" | "launched", executionMode: "serial" | "selective-parallel") {
@@ -21,6 +22,13 @@ function harness(taskKind: "primary" | "subagent" | "launched", executionMode: "
 		toolRepetitionDetector: detector,
 		userMessageContent: [],
 		providerRef: { deref: () => provider },
+		taskMemoryContext: new TaskMemoryContext({
+			taskKind: taskKind === "primary" ? "primary" : "subagent",
+			rootPath: "/memory-fixture/memories_v2",
+			readSummary: async () => undefined,
+		}),
+		memoryPreferenceSaveQueue: Promise.resolve(),
+		requireAlphaMessagesSaved: vi.fn(async () => undefined),
 		say: vi.fn(async () => {}),
 		retainWaitAgentResultClaim: vi.fn(),
 	}) as Task
@@ -186,6 +194,7 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 			for (let index = 20; index < 24; index++) await run(index, 19)
 			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(false)
 			expect(callTool).toHaveBeenCalledTimes(24)
+			expect(task.memory.externalContext).toBe(surface === "primary" ? true : undefined)
 			expect(host.userMessageContent).toHaveLength(24)
 			expect(Reflect.get(task, "userMessageContent")).toEqual([
 				{ type: "text", text: expect.stringContaining("external calls returned unchanged results") },

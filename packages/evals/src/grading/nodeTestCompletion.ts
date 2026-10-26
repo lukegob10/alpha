@@ -124,6 +124,9 @@ const receiptSchema = z.object({
 	completions: z.array(
 		z.object({ kind: z.literal("alpha-original-assertions"), file: z.string(), name: z.string() }),
 	),
+	assertionFailures: z
+		.array(z.object({ file: z.string(), name: z.string(), code: z.literal("ERR_ASSERTION"), message: z.string() }))
+		.default([]),
 })
 
 export function nodeTestCompletionCommand(
@@ -185,6 +188,35 @@ export function inspectNodeTestCompletion(
 		)
 	})
 	return completed ? "passed" : "failed"
+}
+
+/** Only the trusted collector's original-assertion proof establishes an intentionally failing fixture. */
+export function hasNodeTestAssertionFailure(output: string, expected: readonly ExpectedTest[]): boolean {
+	let value: unknown
+	try {
+		value = JSON.parse(output)
+	} catch {
+		return false
+	}
+	const parsed = receiptSchema.safeParse(value)
+	if (!parsed.success || parsed.data.timedOut || !parsed.data.failed) return false
+	const contextFile = fileURLToPath(new URL("./nodeTestContext.cjs", import.meta.url))
+	const tests = parsed.data.tests
+	if (
+		tests.length !== expected.length ||
+		tests.some((test) => test.file !== contextFile || test.skipped || test.todo) ||
+		!tests.some((test) => !test.passed)
+	)
+		return false
+	return expected.every(
+		(item) =>
+			tests.filter((test) => test.name === item.name).length ===
+				expected.filter((test) => test.name === item.name).length &&
+			tests.filter((test) => test.name === item.name && !test.passed).length <=
+				parsed.data.assertionFailures.filter(
+					(failure) => failure.file === contextFile && failure.name === item.name,
+				).length,
+	)
 }
 
 function containedFile(cwd: string, file: string): string {

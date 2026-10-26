@@ -3682,6 +3682,41 @@ describe("getVsCodeLmModels", () => {
 		}
 	})
 
+	it("refreshes Copilot models without resolving unrelated vendors", async () => {
+		vi.useFakeTimers()
+		let releaseUnrelatedModels!: (models: (typeof mockLanguageModelChat)[]) => void
+		const unrelatedModels = new Promise<(typeof mockLanguageModelChat)[]>((resolve) => {
+			releaseUnrelatedModels = resolve
+		})
+		const resolveVendor = vi.fn((vendor: string) =>
+			vendor === "copilot" ? Promise.resolve([mockCopilotGpt55LanguageModelChat]) : unrelatedModels,
+		)
+		const selectChatModels = vi.mocked(vscode.lm.selectChatModels)
+		selectChatModels.mockReset().mockImplementation(async (selector = {}) => {
+			// VS Code 1.125.0 and 1.138.0 await every vendor when the selector omits one.
+			const vendors = selector.vendor ? [selector.vendor] : ["copilot", "unrelated"]
+			return (await Promise.all(vendors.map(resolveVendor))).flat()
+		})
+		let completed = false
+		const refresh = getVsCodeLmModels().then((models) => {
+			completed = true
+			return models
+		})
+
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(resolveVendor.mock.calls.map(([vendor]) => vendor)).toEqual(["copilot"])
+			expect(completed).toBe(true)
+			await expect(refresh).resolves.toEqual([
+				expect.objectContaining({ id: mockCopilotGpt55LanguageModelChat.id }),
+			])
+		} finally {
+			releaseUnrelatedModels([])
+			await refresh
+			vi.useRealTimers()
+		}
+	})
+
 	it("refreshes live discovery again after the previous refresh has settled", async () => {
 		const selectChatModels = vscode.lm.selectChatModels as Mock
 		selectChatModels
@@ -3770,7 +3805,7 @@ describe("getVsCodeLmModels", () => {
 
 		const models = await getVsCodeLmModels()
 
-		expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({})
+		expect(vscode.lm.selectChatModels).toHaveBeenCalledWith({ vendor: "copilot" })
 		expect(models).toEqual([
 			expect.objectContaining({ id: unknownModel.id, name: unknownModel.name }),
 			expect.objectContaining({

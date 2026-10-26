@@ -9,11 +9,10 @@ import React, {
 	useRef,
 	useState,
 } from "react"
-import { useEvent } from "react-use"
 import DynamicTextArea from "react-textarea-autosize"
-import { VolumeX, MoreHorizontal, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
+import { MoreHorizontal, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
-import type { AlphaMessage, ApprovalMode, ExtensionMessage } from "@alpha-code/types"
+import type { AlphaMessage, ApprovalMode } from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
 import { WebviewMessage } from "@alpha/WebviewMessage"
@@ -1203,18 +1202,6 @@ export const ChatTextArea = memo(
 				],
 			)
 
-			const [isTtsPlaying, setIsTtsPlaying] = useState(false)
-
-			useEvent("message", (event: MessageEvent) => {
-				const message: ExtensionMessage = event.data
-
-				if (message.type === "ttsStart") {
-					setIsTtsPlaying(true)
-				} else if (message.type === "ttsStop") {
-					setIsTtsPlaying(false)
-				}
-			})
-
 			// Common mode selector handler
 			const handleModeChange = useCallback(
 				(value: Mode) => {
@@ -1596,17 +1583,6 @@ export const ChatTextArea = memo(
 									? t("chat:composer.helpSend", { keyCombination: sendKeyCombination })
 									: t("chat:composer.help")}
 							</span>
-							{isTtsPlaying && (
-								<StandardTooltip content={t("chat:stopTts")}>
-									<button
-										type="button"
-										aria-label={t("chat:stopTts")}
-										onClick={() => vscode.postMessage({ type: "stopTts" })}
-										className="composer-control chat-composer-icon">
-										<VolumeX className="size-4" />
-									</button>
-								</StandardTooltip>
-							)}
 							<IndexingStatusBadge />
 						</div>
 					)}

@@ -21,7 +21,13 @@ vi.mock("../McpHub", () => ({
 			this.disposed = true
 		})
 
-		constructor() {
+		constructor(
+			readonly provider: unknown,
+			readonly options?: {
+				getProvider: () => unknown
+				notifyProviders: (message: unknown) => Promise<void>
+			},
+		) {
 			createdHubs.push(this)
 		}
 	},
@@ -76,6 +82,23 @@ describe("McpServerManager", () => {
 		hub.registerClient()
 		await McpServerManager.unregisterProvider(nextProvider, hub)
 		expect(hub.dispose).toHaveBeenCalledOnce()
+	})
+
+	it("publishes through surviving providers after the constructing provider is released", async () => {
+		const hub = await McpServerManager.getInstance(context, provider)
+		hub.registerClient()
+		const survivor = { context, postMessageToWebview: vi.fn().mockResolvedValue(undefined) } as any
+		expect(await McpServerManager.getInstance(context, survivor)).toBe(hub)
+		hub.registerClient()
+		await McpServerManager.unregisterProvider(provider, hub)
+		const message = { type: "mcpServers", mcpServers: [] }
+
+		await createdHubs[0].options?.notifyProviders(message)
+
+		expect(createdHubs[0].options?.getProvider()).toBe(survivor)
+		expect(survivor.postMessageToWebview).toHaveBeenCalledExactlyOnceWith(message)
+		expect(provider.postMessageToWebview).not.toHaveBeenCalled()
+		expect(hub.dispose).not.toHaveBeenCalled()
 	})
 
 	it("does not decrement a released client again when disposal is retried", async () => {

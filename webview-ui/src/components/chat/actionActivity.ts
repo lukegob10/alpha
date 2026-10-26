@@ -1,6 +1,7 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
 import { projectTranscriptTurns, transcriptTurnIdentity, type TranscriptPrompt } from "./utils/transcriptTurns"
+import { createMessagePayloadSelector } from "./utils/messagePayload"
 
 export type ActionActivityKind = "working" | "commands" | "edits" | "worked"
 
@@ -18,17 +19,6 @@ export interface ActionActivity {
 const editTools = new Set(["editedExistingFile", "appliedDiff", "newFileCreated", "insertContent", "searchAndReplace"])
 const failureStatuses = new Set(["error", "failed", "denied", "cancelled"])
 
-function toolPayload(message: AlphaMessage): Record<string, unknown> | undefined {
-	try {
-		const payload: unknown = JSON.parse(message.text || "{}")
-		return typeof payload === "object" && payload !== null && !Array.isArray(payload)
-			? (payload as Record<string, unknown>)
-			: undefined
-	} catch {
-		return undefined
-	}
-}
-
 function hasToolFailure(payload: Record<string, unknown> | undefined): boolean {
 	return Boolean(
 		payload &&
@@ -38,6 +28,15 @@ function hasToolFailure(payload: Record<string, unknown> | undefined): boolean {
 				)),
 	)
 }
+
+const payloadPresentation = createMessagePayloadSelector((payload) => {
+	const failed = hasToolFailure(payload)
+	let kind: ActionActivityKind | undefined = "working"
+	if (payload?.tool === "ticket" || failed) kind = undefined
+	else if (payload?.changeStatus === "applied" && payload.commandExecutionId) kind = "commands"
+	else if (typeof payload?.tool === "string" && editTools.has(payload.tool)) kind = "edits"
+	return { kind, failed, requestFailed: Boolean(payload?.streamingFailedMessage || payload?.cancelReason) }
+})
 
 function needsVisibleAttention(message: AlphaMessage): boolean {
 	if (message.turn?.terminalStatus && message.turn.terminalStatus !== "completed") return true
@@ -52,11 +51,8 @@ function needsVisibleAttention(message: AlphaMessage): boolean {
 		message.say === "shell_integration_warning"
 	)
 		return true
-	if (message.say === "tool") return hasToolFailure(toolPayload(message))
-	if (message.say === "api_req_started") {
-		const payload = toolPayload(message)
-		return Boolean(payload?.streamingFailedMessage || payload?.cancelReason)
-	}
+	if (message.say === "tool") return payloadPresentation(message).failed
+	if (message.say === "api_req_started") return payloadPresentation(message).requestFailed
 	return Boolean(
 		message.subagentGroup?.agents.some(
 			(agent) =>
@@ -68,10 +64,7 @@ function needsVisibleAttention(message: AlphaMessage): boolean {
 }
 
 function toolKind(message: AlphaMessage): ActionActivityKind | undefined {
-	const payload = toolPayload(message)
-	if (payload?.tool === "ticket" || hasToolFailure(payload)) return undefined
-	if (payload?.changeStatus === "applied" && payload.commandExecutionId) return "commands"
-	return typeof payload?.tool === "string" && editTools.has(payload.tool) ? "edits" : "working"
+	return payloadPresentation(message).kind
 }
 
 function actionKind(message: AlphaMessage): ActionActivityKind | undefined {
@@ -83,12 +76,7 @@ function actionKind(message: AlphaMessage): ActionActivityKind | undefined {
 	if (message.say === "command_output") return "commands"
 	if (message.say === "tool") return toolKind(message)
 	if (message.say === "api_req_started") {
-		try {
-			const info = JSON.parse(message.text || "{}") as { streamingFailedMessage?: string; cancelReason?: string }
-			return info.streamingFailedMessage || info.cancelReason ? undefined : "working"
-		} catch {
-			return "working"
-		}
+		return payloadPresentation(message).requestFailed ? undefined : "working"
 	}
 	if (
 		message.say === "mcp_server_response" ||

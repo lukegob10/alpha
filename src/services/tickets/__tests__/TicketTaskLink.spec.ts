@@ -16,6 +16,7 @@ describe("ticket task linkage", () => {
 	const provider = { createTask, showTaskWithId } as unknown as AlphaProvider
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		showTaskWithId.mockReset()
 		home = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ticket-link-"))
 		store = await TicketStore.forWorkspace(home, home)
 		createTask.mockResolvedValue({ taskId: "linked-task", start, abortTask })
@@ -119,6 +120,45 @@ describe("ticket task linkage", () => {
 		const reopened = await store.update({ id: ticket.id, expectedRevision: canceled.revision, status: "backlog" })
 		await workOnTicket(store, provider, ticket.id, reopened.revision)
 		expect(createTask).toHaveBeenCalledTimes(1)
+	})
+	it("replaces a deleted linked conversation once while preserving its historical association", async () => {
+		const ticket = await store.create({ name: "Continue after conversation deletion" })
+		const linked = await workOnTicket(store, provider, ticket.id, ticket.revision)
+		showTaskWithId.mockImplementation(async (taskId: string) => {
+			if (taskId === "linked-task") throw new Error("Task not found")
+		})
+		createTask.mockResolvedValueOnce({ taskId: "replacement-task", start, abortTask })
+		const results = await Promise.all([
+			workOnTicket(store, provider, linked.id, linked.revision),
+			workOnTicket(store, provider, linked.id, linked.revision),
+		])
+		expect(createTask).toHaveBeenCalledTimes(2)
+		expect(start).toHaveBeenCalledTimes(2)
+		expect(results[0].linkedTaskIds).toEqual(["linked-task", "replacement-task"])
+		expect(results[1]).toEqual(results[0])
+		expect((await store.read(ticket.id)).linkedTaskIds).toEqual(["linked-task", "replacement-task"])
+		expect(showTaskWithId).toHaveBeenLastCalledWith("replacement-task")
+	})
+
+	it("does not replace an existing conversation when opening fails for another reason", async () => {
+		const ticket = await store.create({ name: "Preserve conversation on storage failure" })
+		const linked = await workOnTicket(store, provider, ticket.id, ticket.revision)
+		showTaskWithId.mockRejectedValueOnce(new Error("History storage unavailable"))
+		await expect(workOnTicket(store, provider, linked.id, linked.revision)).rejects.toThrow(
+			"History storage unavailable",
+		)
+		expect(createTask).toHaveBeenCalledTimes(1)
+		expect(start).toHaveBeenCalledTimes(1)
+	})
+
+	it("requires a current ticket revision before replacing a missing conversation", async () => {
+		const ticket = await store.create({ name: "Preserve concurrent edits" })
+		const linked = await workOnTicket(store, provider, ticket.id, ticket.revision)
+		await store.update({ id: linked.id, expectedRevision: linked.revision, name: "Changed after loading" })
+		showTaskWithId.mockRejectedValueOnce(new Error("Task not found"))
+		await expect(workOnTicket(store, provider, linked.id, linked.revision)).rejects.toThrow("Ticket changed")
+		expect(createTask).toHaveBeenCalledTimes(1)
+		expect(start).toHaveBeenCalledTimes(1)
 	})
 	it("aborts the unstarted task if a concurrent edit prevents linkage", async () => {
 		const ticket = await store.create({ name: "Work" })

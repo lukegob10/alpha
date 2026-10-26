@@ -29,6 +29,7 @@ describe("ExecaTerminalProcess physical settlement", () => {
 	let platform: PropertyDescriptor | undefined
 
 	beforeEach(() => {
+		vitest.stubEnv("SystemRoot", "C:\\Windows")
 		platform = Object.getOwnPropertyDescriptor(process, "platform")
 		Object.defineProperty(process, "platform", { value: "win32" })
 		execaMock.mockReset()
@@ -38,6 +39,7 @@ describe("ExecaTerminalProcess physical settlement", () => {
 	afterEach(() => {
 		if (platform) Object.defineProperty(process, "platform", platform)
 		vitest.restoreAllMocks()
+		vitest.unstubAllEnvs()
 	})
 
 	it.each([
@@ -149,7 +151,10 @@ describe("ExecaTerminalProcess physical settlement", () => {
 			expect(command.abort()).toBe(firstStop)
 			await killRequested.promise
 			expect(execFileMock).toHaveBeenCalledTimes(retryTermination ? 2 : 1)
-			expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual(["taskkill.exe", ["/PID", "12345", "/T", "/F"]])
+			expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual([
+				"C:\\Windows\\System32\\taskkill.exe",
+				["/PID", "12345", "/T", "/F"],
+			])
 			killAcknowledged.resolve()
 			await firstStop
 			// Termination acknowledgement alone is not evidence of subprocess exit.

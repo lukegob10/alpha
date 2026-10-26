@@ -13,6 +13,7 @@ import {
 	taskGoalUsageReceiptsSchema,
 	type TaskWorkContext,
 	type TaskWorkPlan,
+	type TaskMemoryState,
 	type AgentMailboxEntry,
 	type AcceptanceReceipt,
 	type AutoCondenseContextScope,
@@ -72,6 +73,7 @@ import {
 	readCompletionHookConfig,
 	runCompletionHooks,
 	runLifecycleHooks,
+	HookCommandCleanupError,
 	type CompletionHookConfig,
 	type CompletionHookPromptProvenance,
 	type LifecycleHookPayload,
@@ -79,6 +81,8 @@ import {
 	type LifecycleHookTarget,
 } from "../agent/CompletionHooks"
 import { LifecycleHookStoppedError } from "../agent/LifecycleHookTargets"
+import { TaskMemoryContext } from "../../services/memory/TaskMemoryContext"
+import { assistantMemoryCitationReferences } from "../../services/memory/MemoryCitations"
 
 /** Process-local abort marker; never lets an old hook continue through a replacement owner. */
 class LifecycleHookOwnershipError extends Error {
@@ -894,6 +898,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	readonly taskKind: "primary" | "subagent"
+	private readonly taskMemoryContext: TaskMemoryContext
+	private memoryPreferenceSaveQueue: Promise<void> = Promise.resolve()
+	private memoryGenerationPreferenceDirty = false
+	private memoryExternalContextDirty = false
 	readonly subagentGroupId?: string
 	readonly subagentNickname?: string
 	readonly subagentRole?: SubagentRole
@@ -1019,6 +1027,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly globalStoragePath: string
 	private readonly agentMessageInbox: AgentMessageInbox
 	private readonly agentMessageAdmissions = new Set<Promise<unknown>>()
+	private independentAgentMessagesMayResume = false
+	private independentAgentWakePromise?: Promise<boolean>
 	private agentStopMessageId?: string
 	/**
 	 * The legacy API-history file remains the provider/runtime authority during
@@ -1206,6 +1216,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private completionHookConfig?: CompletionHookConfig
 	private pendingCompletionHookPrompt?: CompletionHookPromptProvenance
 	private completionHookActive = false
+	private pendingHookCleanupFailures?: Set<HookCommandCleanupError>
 	private lifecycleHookStartSource: "startup" | "resume" = "startup"
 	private lifecycleHookStartConsumed = false
 	private interruptHookPending = false
@@ -2029,6 +2040,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.consecutiveMistakeLimit = consecutiveMistakeLimit ?? DEFAULT_CONSECUTIVE_MISTAKE_LIMIT
 		this.providerRef = new WeakRef(provider)
+		this.taskMemoryContext = new TaskMemoryContext({
+			settings: provider.getMemorySettings?.(),
+			saved: historyItem?.memory,
+			taskKind: this.taskKind,
+			diagnosticSession: this.diagnosticSession,
+			rootPath: provider.getMemoryStore?.().rootPath ?? "",
+			readSummary: async () => this.providerRef.deref()?.getMemoryStore?.().readSummary(),
+			onReadError: () => console.warn(`[Task#${this.taskId}] Alpha memory summary is unavailable`),
+		})
 		this.globalStoragePath = provider.context.globalStorageUri.fsPath
 		this.agentMessageInbox = new AgentMessageInbox(this.taskId, this.globalStoragePath)
 		this.apiConversationHistoryPersistenceKey = `${path.resolve(this.globalStoragePath)}\u0000${this.taskId}`
@@ -2247,12 +2267,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!this.isStreaming &&
 			!this.isAgentTurnEngineActive &&
 			!this.steerMessageAwaitingPersistence &&
-			this.messageQueueService.messages.length > 0
+			(this.messageQueueService.messages.length > 0 ||
+				(this.independentAgentMessagesMayResume && this.didComplete && this.agentMessageInbox.hasPending()))
 		if (!canWake()) return Promise.resolve()
 		// Install the owner before selecting input: queue selection publishes synchronously.
 		const wake = Promise.resolve().then(async () => {
 			if (!canWake()) return
 			const message = this.messageQueueService.messages[0]
+			if (!message) {
+				await this.resumeIndependentAgentMessages()
+				return
+			}
 			if (this.didComplete) {
 				await this.resumeCompletedTaskFollowup(message.text, message.images, "human", [message.id])
 				return
@@ -2586,6 +2611,49 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	/** A fresh private copy of the invoking request boundary, never redacted diagnostic state. */
 	public getSubagentInvocationContext(): SubagentInvocationContext | undefined {
 		return this.currentAgentStep?.getSubagentInvocationContext?.()
+	}
+
+	/** Persisted thread opt-ins; callers cannot mutate the captured read preference. */
+	public get memory(): TaskMemoryState {
+		return this.taskMemoryContext?.snapshot ?? { version: "v2", useMemories: false, generateMemories: false }
+	}
+
+	public getMemoryContext(): Promise<string | undefined> {
+		return this.taskMemoryContext?.getContext() ?? Promise.resolve(undefined)
+	}
+
+	public setMemoryGenerationEnabled(enabled: boolean): Promise<void> {
+		const save = this.memoryPreferenceSaveQueue.then(async () => {
+			const changed = this.taskMemoryContext?.setGenerationEnabled(enabled)
+			if (!changed && !this.memoryGenerationPreferenceDirty) return
+			this.memoryGenerationPreferenceDirty = true
+			try {
+				await this.requireAlphaMessagesSaved("memory generation preference")
+				this.memoryGenerationPreferenceDirty = false
+			} catch (error) {
+				// A failed opt-in must never make an unpersisted transcript eligible.
+				// A failed opt-out remains disabled in this running task.
+				if (enabled) this.taskMemoryContext.setGenerationEnabled(false)
+				throw error
+			}
+		})
+		this.memoryPreferenceSaveQueue = save.catch(() => undefined)
+		return save
+	}
+
+	/** Sticky source provenance used by the optional external-context exclusion. */
+	public markMemoryExternalContext(): Promise<void> {
+		const save = this.memoryPreferenceSaveQueue.then(async () => {
+			const changed = this.taskMemoryContext?.markExternalContext()
+			if (!changed && !this.memoryExternalContextDirty) return
+			// An external effect cannot proceed on a later attempt until its sticky
+			// exclusion flag is durable, even if an earlier save failed.
+			this.memoryExternalContextDirty = true
+			await this.requireAlphaMessagesSaved("memory source provenance")
+			this.memoryExternalContextDirty = false
+		})
+		this.memoryPreferenceSaveQueue = save.catch(() => undefined)
+		return save
 	}
 
 	private approvalStateForAsk(state: TaskRequestState | undefined, approvalMode: ApprovalMode) {
@@ -4440,6 +4508,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return false
 	}
 
+	private async recordFinalizedAssistantMemoryUsage(
+		message: Anthropic.MessageParam,
+		response: AgentResponse | undefined,
+		step: CurrentAgentStep | undefined,
+	): Promise<void> {
+		if (
+			message.role !== "assistant" ||
+			!response ||
+			!step ||
+			!this.memory.useMemories ||
+			this.taskKind === "subagent" ||
+			this.diagnosticSession ||
+			(response.outcome && response.outcome.status !== "completed")
+		)
+			return
+		const references = assistantMemoryCitationReferences(response)
+		if (!references.length) return
+		const eventKey = crypto
+			.createHash("sha256")
+			.update(JSON.stringify([this.taskId, step.stepId, step.attemptId]))
+			.digest("hex")
+		try {
+			await this.providerRef.deref()?.recordMemoryUsage(references, eventKey)
+		} catch {
+			// Learned-memory ranking is optional; an unavailable store cannot undo a
+			// successfully persisted assistant response or expose its private text.
+			console.warn(`[Task#${this.taskId}] Alpha memory citation usage is unavailable`)
+		}
+	}
+
 	private async persistAssistantResponseBeforeEffects(
 		message: Anthropic.MessageParam,
 		reasoning?: string,
@@ -4518,6 +4616,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!ownsResponse()) return false
 
 		this.assistantMessageSavedToHistory = true
+		await this.recordFinalizedAssistantMemoryUsage(message, response, responseStep)
+		if (!ownsResponse()) return false
 		if (response) await this.publishCanonicalLifecycleResponseItems(response, responseStep, ownsResponse)
 		if (!ownsResponse()) return false
 		await this.publishCanonicalLifecyclePendingToolResults(response, responseStep, ownsResponse)
@@ -5572,6 +5672,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					)
 					break
 				case "grounding":
+					if (responseItem.sources.length > 0) await this.markMemoryExternalContext()
 					// Grounding sources are provider metadata, not user-visible lifecycle
 					// items. They remain in the canonical response/transcript boundary.
 					break
@@ -6833,6 +6934,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
 					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
 					approvalMode: this.taskApprovalMode,
+					memory: this.memory,
 					reasoningPreference: reasoning?.preference ?? this.reasoningPreference,
 					reasoningState: reasoning?.state ?? this.reasoningState,
 					workContext: this.workContext,
@@ -8942,6 +9044,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		signal: AbortSignal,
 		captured?: TaskLifecycleHookInvocation,
 	): Promise<LifecycleHookOutcome> {
+		if (this.pendingHookCleanupFailures?.size) await this.retryPendingHookCleanup()
 		signal = AbortSignal.any([signal, this.getTaskLifetimeCancellationSignal()])
 		const invocation = captured ?? this.captureLifecycleHookInvocation()
 		const { guard, config } = invocation
@@ -8971,6 +9074,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (outcome.additionalContext)
 				this.queueLifecycleHookContext(payload.hook_event_name, outcome.additionalContext, guard)
 			return outcome
+		} catch (error) {
+			this.retainHookCleanupFailures(error)
+			throw error
 		} finally {
 			this.assertLifecycleHookOwnership(guard)
 		}
@@ -9047,10 +9153,52 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return outcome
 	}
 
+	private retainHookCleanupFailures(error: unknown, requireOnlyCleanupFailures = false): boolean {
+		const seen = new Set<unknown>()
+		let retained = false
+		const visit = (failure: unknown): boolean => {
+			if (seen.has(failure)) return failure instanceof HookCommandCleanupError
+			seen.add(failure)
+			if (failure instanceof HookCommandCleanupError) {
+				this.pendingHookCleanupFailures ??= new Set()
+				this.pendingHookCleanupFailures.add(failure)
+				retained = true
+				return true
+			}
+			if (!(failure instanceof AggregateError) || failure.errors.length === 0) return false
+			// Visit every sibling even when a different failure also prevents completion.
+			return failure.errors.map(visit).every(Boolean)
+		}
+		const cleanupOnly = visit(error)
+		return requireOnlyCleanupFailures ? cleanupOnly : retained
+	}
+
+	private async retryPendingHookCleanup(): Promise<void> {
+		for (;;) {
+			const pending = [...(this.pendingHookCleanupFailures ?? [])]
+			if (!pending.length) return
+			const results = await Promise.allSettled(
+				pending.map(async (failure) => {
+					try {
+						await failure.retryCleanup()
+						this.pendingHookCleanupFailures?.delete(failure)
+					} catch {
+						// Preserve the typed resource owner rather than the retry's raw cause.
+						throw failure
+					}
+				}),
+			)
+			const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+			if (failures.length === 1) throw failures[0]
+			if (failures.length > 1) throw new AggregateError(failures, "Lifecycle hook process cleanup failed")
+		}
+	}
+
 	/** Run user-configured hooks once for a verified completion candidate. */
 	public async evaluateCompletionHooks(
 		lastAssistantMessage: string,
 	): Promise<{ prompt?: string; hookPrompt?: CompletionHookPromptProvenance }> {
+		if (this.pendingHookCleanupFailures?.size) await this.retryPendingHookCleanup()
 		if (
 			this.abort ||
 			this.getTaskLifetimeCancellationSignal().aborted ||
@@ -9117,6 +9265,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.pendingCompletionHookPrompt = hookPrompt
 			return { prompt: outcome.prompt, hookPrompt }
 		} catch (error) {
+			if (this.retainHookCleanupFailures(error)) throw error
 			this.assertLifecycleHookOwnership(guard)
 			if (interrupted()) return {}
 			throw error
@@ -10191,6 +10340,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return collectDiagnosticsEvidence(sourceDirectory, this.diagnosticSourceTaskId)
 	}
 
+	private shouldExposeMemoryTools(): boolean {
+		const settings = this.providerRef.deref()?.getMemorySettings?.()
+		return (
+			this.taskKind === "primary" &&
+			!this.parentTaskId &&
+			!this.orchestrationParentTaskId &&
+			!this.diagnosticSession &&
+			this.memory.useMemories &&
+			settings?.enabled === true &&
+			settings.dedicatedTools
+		)
+	}
+
 	private shouldExposeAgentLifecycleTools(): boolean {
 		// Primary catalogs stay eager across idle, active, and reloaded sessions.
 		// Managed children are narrowed separately by their frozen authority grants.
@@ -11180,6 +11342,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Independent input can require a consumer after the current lifecycle settles. */
+	public markIndependentAgentMessagesPending(): void {
+		this.independentAgentMessagesMayResume = true
+	}
+
+	/** Coalesce independent wake requests; passive managed-agent mail grants no new turn. */
+	public resumeIndependentAgentMessages(): Promise<boolean> {
+		if (this.independentAgentWakePromise) return this.independentAgentWakePromise
+		if (
+			this.taskKind !== "primary" ||
+			!this.independentAgentMessagesMayResume ||
+			!this.agentMessageInbox.hasPending() ||
+			!this.didComplete ||
+			this.abort ||
+			this.abandoned ||
+			this.steerMessageAwaitingPersistence
+		)
+			return Promise.resolve(false)
+		const wake = this.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent").then(
+			() => true,
+		)
+		this.independentAgentWakePromise = wake
+		const settled = () => {
+			if (this.independentAgentWakePromise === wake) this.independentAgentWakePromise = undefined
+		}
+		void wake.then(settled, settled)
+		return wake
+	}
+
 	public async receiveAgentMessage(message: AgentMessage): Promise<void> {
 		if (this.abort && !this.didComplete) throw new Error("The task is stopped and cannot accept an agent message")
 		await this.agentMessageInbox.receive(message)
@@ -11304,6 +11495,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!(await this.addToApiConversationHistory(entry))) throw new Error("Agent message was not persisted")
 		}
 		await this.agentMessageInbox.deliver(persist)
+		// Consume the wake request with its inbox so later passive mail cannot reopen this turn.
+		if (!this.agentMessageInbox.hasPending()) this.independentAgentMessagesMayResume = false
 		await this.providerRef.deref()?.deliverAgentMessages?.(this, persist)
 	}
 
@@ -11856,6 +12049,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
 					diagnosticSession: this.diagnosticSession,
+					memoryToolsEnabled: this.shouldExposeMemoryTools(),
 					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 					crossTaskRole: this.getCrossTaskRole(),
@@ -12946,6 +13140,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const savedApiHistoryPromise = useRetainedHistory
 				? Promise.resolve(this.apiConversationHistory)
 				: this.getSavedApiConversationHistory({ hydrateOnly: true })
+			// Own read failures while the preview is pending or throws. Awaiting the
+			// original promise below still reports the failure before resuming effects.
+			void savedApiHistoryPromise.catch(() => undefined)
 
 			// Remove any resume messages that may have been added before.
 			const lastRelevantMessageIndex = findLastIndex(
@@ -13464,7 +13661,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		let firstFailure: unknown
 		let failureObserved = false
+		let hookCleanupMayRetry = true
 		const captureFailure = (error: unknown) => {
+			const hookCleanupOnly = this.retainHookCleanupFailures(error, true)
+			if (hookCleanupOnly && hookCleanupMayRetry) return
 			if (!failureObserved) {
 				failureObserved = true
 				firstFailure = error
@@ -13555,6 +13755,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					captureFailure(error)
 				}
 			}
+		}
+
+		// An old producer's rejected promise remains immutable. An explicit Stop
+		// retries only its retained physical cleanup callbacks, never the hook itself.
+		hookCleanupMayRetry = false
+		try {
+			await this.retryPendingHookCleanup()
+		} catch (error) {
+			captureFailure(error)
 		}
 
 		// Tool results may be staged after the assistant tool_use is durable but
@@ -14604,13 +14813,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					return { nextInput: "complete", status: "completed" }
 				}
 
-				const providerRequiresContinuation = sample.response.outcome?.requiresContinuation === true
+				// A thinking-only response resumes from its committed provider state, without a no-tool correction.
+				const responseRequiresContinuation =
+					sample.response.outcome?.requiresContinuation === true ||
+					(sample.response.toolCalls.length === 0 &&
+						!sample.response.text.trim() &&
+						sample.response.items.some((item) => item.type === "reasoning"))
 				this.deferAgentResultNotifications = this.shouldDeferAgentResultNotifications(sample.response)
 				const hasPendingResultNotifications =
 					!this.deferAgentResultNotifications &&
 					this.providerRef.deref()?.hasPendingAgentResultNotifications?.(this) === true
 				let requiresContinuation =
-					providerRequiresContinuation ||
+					responseRequiresContinuation ||
 					this.userMessageContent.length > 0 ||
 					this.hasPendingAgentMessages() ||
 					hasPendingResultNotifications ||
@@ -14643,7 +14857,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						nextUserContent = this.buildUserMessageContent(queuedMessage.text, queuedMessage.images, [
 							queuedMessage.id,
 						])
-					} else if (providerRequiresContinuation) {
+					} else if (responseRequiresContinuation) {
 						// Continue from the completed provider response without adding a
 						// synthetic no-tool error as new user content.
 						nextUserContent = []
@@ -16616,6 +16830,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									// Handle grounding sources separately from regular content
 									// to prevent state persistence issues - store them separately
 									if (chunk.sources && chunk.sources.length > 0) {
+										await this.markMemoryExternalContext()
 										pendingGroundingSources.push(...chunk.sources)
 									}
 									break
@@ -17469,11 +17684,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Check if we have any canonical content to process. Error items are
 					// intentionally considered output so malformed calls terminate as a
 					// failed step instead of entering the empty-response retry loop.
-					const hasTextContent = assistantMessage.length > 0
-
 					const hasToolUses = canonicalResponse!.toolCalls.length > 0
+					const assistantContent = buildCanonicalAssistantHistoryContent(canonicalResponse!)
+					// Empty signed/thinking blocks still carry state that the next request must replay.
+					const hasAssistantContent =
+						assistantContent.some((block) => block.type !== "text" || block.text.length > 0) ||
+						reasoningMessage.length > 0 ||
+						canonicalResponse!.items.some(
+							(item) => item.type === "reasoning" && item.signature !== undefined,
+						)
 					const hasCanonicalError = canonicalResponse?.items.some((item) => item.type === "error") ?? false
 					const responseOutcome = canonicalResponse?.outcome
+					const responseRequiresContinuation = responseOutcome?.requiresContinuation === true
 					const hasNonCompletedOutcome =
 						responseOutcome !== undefined && responseOutcome.status !== "completed"
 					let rejectedToolBatchIsolationError: string | undefined
@@ -17493,7 +17715,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 						if (!ownsResponseStep()) return supersededResult()
 						if (taskWasCancelled()) return await cancelResponseBeforeCommit()
-						if (hasTextContent || hasToolUses) {
+						if (hasAssistantContent || responseRequiresContinuation) {
 							// Reset counter when we get a successful response with content
 							this.consecutiveNoAssistantMessagesCount = 0
 							// Display grounding sources to the user if they exist
@@ -17513,8 +17735,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 							}
-
-							const assistantContent = buildCanonicalAssistantHistoryContent(canonicalResponse!)
 
 							// Reject lifecycle barriers before persistence as well as before effects.
 							// Use the same captured registry as the scheduler so native/MCP aliases
@@ -17930,7 +18150,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					const executeEffects = async (): Promise<TaskStepExecutionResult> => {
 						if (!ownsResponseStep()) return supersededResponseResult()
-						if (hasTextContent || hasToolUses) {
+						if (hasAssistantContent || responseRequiresContinuation) {
 							// All canonical calls are complete and execution is now owned by the
 							// serial scheduler. It commits tool results to the next user message
 							// only after the assistant history write above has completed.
@@ -18065,7 +18285,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							// Retain no-content recovery without coercing a valid child answer.
 							const didToolUse = hasToolUses
 
-							if (!didToolUse && this.taskKind === "subagent" && !canonicalResponse?.text.trim()) {
+							if (
+								!didToolUse &&
+								this.taskKind === "subagent" &&
+								!canonicalResponse?.text.trim() &&
+								!responseRequiresContinuation &&
+								!canonicalResponse!.items.some((item) => item.type === "reasoning")
+							) {
 								// Increment consecutive no-tool-use counter
 								this.consecutiveNoToolUseCount++
 
@@ -18096,7 +18322,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 
 					const hasResponseTransaction =
-						hasTextContent || hasToolUses || hasNonCompletedOutcome || hasCanonicalError
+						hasAssistantContent ||
+						responseRequiresContinuation ||
+						hasNonCompletedOutcome ||
+						hasCanonicalError
 					if (hasResponseTransaction) {
 						let commitPromise: Promise<TaskStepExecutionResult> | undefined
 						let effectsPromise: Promise<TaskStepExecutionResult> | undefined
@@ -18563,7 +18792,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					settings.projectInstructionDiscovery,
 				)
 			: []
-		const effectiveText = await addCustomInstructions(
+		const customInstructionText = await addCustomInstructions(
 			baseInstructions,
 			state?.customInstructions || "",
 			this.cwd,
@@ -18575,6 +18804,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				agentInstructionSources,
 			},
 		)
+		// Include learned context in the frozen aggregate so children do not reread it.
+		const memoryContext = await this.getMemoryContext()
+		const effectiveText = [customInstructionText, memoryContext].filter(Boolean).join("\n\n")
 		const sources: SubagentContextInstructionSourceInput[] = [
 			{
 				kind: "aggregate",
@@ -18640,6 +18872,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.getTaskAllowedToolNames()?.includes("spawn_agent"),
 		)
 		const frozenSubagentInstructions = isSubagent ? await this.getFrozenSubagentInstructions() : undefined
+		const memoryContext = isSubagent ? undefined : await this.getMemoryContext()
 
 		const promptFragments = await (async () => {
 			const provider = this.providerRef.deref()
@@ -18677,6 +18910,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,
 					enableSubfolderRules: enableSubfolderRules ?? false,
 					projectInstructionDiscovery,
+					memoryContext,
 					skillCatalogContextWindow: modelInfo?.contextWindow,
 					newTaskRequireTodos: vscode.workspace
 						.getConfiguration(Package.name)
@@ -18824,6 +19058,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							allowedToolNames: this.getTaskAllowedToolNames(),
 							taskKind: this.taskKind,
 							diagnosticSession: this.diagnosticSession,
+							memoryToolsEnabled: this.shouldExposeMemoryTools(),
 							diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 							enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 							crossTaskRole: this.getCrossTaskRole(),
@@ -19438,6 +19673,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									allowedToolNames: this.getTaskAllowedToolNames(),
 									taskKind: this.taskKind,
 									diagnosticSession: this.diagnosticSession,
+									memoryToolsEnabled: this.shouldExposeMemoryTools(),
 									diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 									enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 									crossTaskRole: this.getCrossTaskRole(),
@@ -19804,6 +20040,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
 					diagnosticSession: this.diagnosticSession,
+					memoryToolsEnabled: this.shouldExposeMemoryTools(),
 					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 					crossTaskRole: this.getCrossTaskRole(),

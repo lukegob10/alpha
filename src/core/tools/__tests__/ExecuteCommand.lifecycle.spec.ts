@@ -165,6 +165,39 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it.each(["explore", "review"] as const)(
+		"records an inherited-permission %s's shared-workspace command changes",
+		async (role) => {
+			const fixture = await createFixture()
+			Object.assign(fixture.task, {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: { runtimePolicy: { authorityModel: "parent", execute: true, mutate: true } },
+			})
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "shared-command",
+				toolCallId: "shared-command-call",
+				command: "command",
+				terminalShellIntegrationDisabled: true,
+			})
+			try {
+				await fixture.launch
+				await fs.writeFile(path.join(fixture.cwd, "fixture.txt"), "changed by managed child\n")
+				await fixture.finishProcess()
+				await execution
+				expect(fixture.provider.reservePrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.store.getVerificationObligations()[0]).toMatchObject({
+					changedFiles: ["fixture.txt"],
+					mutationReservations: [],
+				})
+			} finally {
+				if (!fixture.process.isSettled) await fixture.finishProcess()
+				await execution.catch(() => undefined)
+			}
+		},
+	)
+
 	it.each<{
 		cachedPreview: TerminalOutputPreviewSize | undefined
 		capturedPreview: TerminalOutputPreviewSize | undefined
@@ -440,6 +473,14 @@ describe("primary command timeout mutation receipts", () => {
 
 	it("keeps late output and file changes on the command's captured turn", async () => {
 		const fixture = await createFixture()
+		let acknowledgeCompletion!: () => void
+		const completion = new Promise<void>((resolve) => (acknowledgeCompletion = resolve))
+		vi.mocked(fixture.task.completeCommandExecution).mockImplementation(() => acknowledgeCompletion())
+		let acknowledgeFileChanges!: () => void
+		const fileChanges = new Promise<void>((resolve) => (acknowledgeFileChanges = resolve))
+		vi.mocked(fixture.task.say).mockImplementation(async (type, text) => {
+			if (type === "tool" && text?.includes("appliedDiff")) acknowledgeFileChanges()
+		})
 		let turn = { runId: "original-run", turnId: "original-turn" }
 		fixture.task.captureMessageTurn = vi.fn(() => ({ ...turn }))
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
@@ -457,14 +498,8 @@ describe("primary command timeout mutation receipts", () => {
 		await fs.writeFile(path.join(fixture.cwd, "fixture.txt"), "changed\n")
 		fixture.reportOutput("late output")
 		await fixture.finishProcess()
-		await vi.waitFor(() => expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce())
-		await vi.waitFor(() =>
-			expect(
-				vi
-					.mocked(fixture.task.say)
-					.mock.calls.some(([type, text]) => type === "tool" && text?.includes("appliedDiff")),
-			).toBe(true),
-		)
+		await Promise.all([completion, fileChanges])
+		expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
 		expect(fixture.task.captureMessageTurn).toHaveBeenCalledOnce()
 		const calls = vi
 			.mocked(fixture.task.say)
@@ -617,6 +652,12 @@ describe("primary command timeout mutation receipts", () => {
 			await vi.advanceTimersByTimeAsync(1_100)
 			await execution
 			await vi.advanceTimersByTimeAsync(1_000)
+			if (abortOutcome === "unknown") {
+				// An adapter's successful abort return is not physical-exit evidence.
+				expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.store.getVerificationObligations()[0]?.mutationReservations).toHaveLength(1)
+				await vi.advanceTimersByTimeAsync(11_000)
+			}
 			await vi.waitFor(() => expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce())
 			expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledWith(
 				fixture.task,

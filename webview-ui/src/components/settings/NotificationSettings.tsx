@@ -9,16 +9,12 @@ import { SearchableSetting } from "./SearchableSetting"
 import { Slider } from "../ui"
 
 type NotificationSettingsProps = HTMLAttributes<HTMLDivElement> & {
-	ttsEnabled?: boolean
-	ttsSpeed?: number
 	soundEnabled?: boolean
 	soundVolume?: number
-	setCachedStateField: SetCachedStateField<"ttsEnabled" | "ttsSpeed" | "soundEnabled" | "soundVolume">
+	setCachedStateField: SetCachedStateField<"soundEnabled" | "soundVolume">
 }
 
 export const NotificationSettings = ({
-	ttsEnabled,
-	ttsSpeed,
 	soundEnabled,
 	soundVolume,
 	setCachedStateField,
@@ -30,46 +26,6 @@ export const NotificationSettings = ({
 			<SectionHeader>{t("settings:sections.notifications")}</SectionHeader>
 
 			<Section>
-				<SearchableSetting
-					settingId="notifications-tts"
-					section="notifications"
-					label={t("settings:notifications.tts.label")}>
-					<VSCodeCheckbox
-						checked={ttsEnabled}
-						onChange={(e: any) => setCachedStateField("ttsEnabled", e.target.checked)}
-						data-testid="tts-enabled-checkbox">
-						<span className="font-medium">{t("settings:notifications.tts.label")}</span>
-					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:notifications.tts.description")}
-					</div>
-				</SearchableSetting>
-
-				{ttsEnabled && (
-					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<SearchableSetting
-							settingId="notifications-tts-speed"
-							section="notifications"
-							label={t("settings:notifications.tts.speedLabel")}>
-							<label className="block font-medium mb-1">
-								{t("settings:notifications.tts.speedLabel")}
-							</label>
-							<div className="flex items-center gap-2">
-								<Slider
-									aria-label={t("settings:notifications.tts.speedLabel")}
-									min={0.1}
-									max={2.0}
-									step={0.01}
-									value={[ttsSpeed ?? 1.0]}
-									onValueChange={([value]) => setCachedStateField("ttsSpeed", value)}
-									data-testid="tts-speed-slider"
-								/>
-								<span className="w-10">{((ttsSpeed ?? 1.0) * 100).toFixed(0)}%</span>
-							</div>
-						</SearchableSetting>
-					</div>
-				)}
-
 				<SearchableSetting
 					settingId="notifications-sound"
 					section="notifications"

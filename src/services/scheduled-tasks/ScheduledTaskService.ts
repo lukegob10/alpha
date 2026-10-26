@@ -143,6 +143,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.store = new ScheduledTaskStore(
 			context.globalStorageUri.fsPath,
 			() => vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+			(message) => this.outputChannel.appendLine(`[ScheduledTaskService] ${message}`),
 		)
 	}
 
@@ -459,7 +460,13 @@ export class ScheduledTaskService implements vscode.Disposable {
 			const now = Date.now()
 			for (const task of this.store.getState().tasks) {
 				if (task.workspace && task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= now) {
-					await this.enqueueRun(task, task.nextRunAt, "schedule")
+					try {
+						await this.enqueueRun(task, task.nextRunAt, "schedule")
+					} catch (error) {
+						this.outputChannel.appendLine(
+							`[ScheduledTaskService] Could not queue schedule ${task.id}: ${String(error)}`,
+						)
+					}
 				}
 			}
 		} catch (error) {
@@ -982,7 +989,13 @@ export class ScheduledTaskService implements vscode.Disposable {
 			) {
 				continue
 			}
-			await this.recordSkipped(task, task.nextRunAt, "missed_while_inactive")
+			try {
+				await this.recordSkipped(task, task.nextRunAt, "missed_while_inactive")
+			} catch (error) {
+				this.outputChannel.appendLine(
+					`[ScheduledTaskService] Could not recover missed schedule ${task.id}: ${String(error)}`,
+				)
+			}
 		}
 	}
 

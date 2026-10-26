@@ -7,6 +7,11 @@ import type { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } fro
 import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE } from "./constants"
 import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
 
+export interface CodeIndexConfigurationLoadOptions {
+	/** Activation may reuse the secrets just hydrated by ContextProxy.initialize(). Later loads refresh by default. */
+	refreshSecrets?: boolean
+}
+
 /**
  * Owns persisted code-index settings and supported Google embedding providers.
  *
@@ -214,7 +219,7 @@ export class CodeIndexConfigManager {
 		this.vertexOptions = this.resolveVertexOptions(codebaseIndexConfig, activeVertexOptions, vertexJsonCredentials)
 	}
 
-	public async loadConfiguration(): Promise<{
+	public async loadConfiguration({ refreshSecrets = true }: CodeIndexConfigurationLoadOptions = {}): Promise<{
 		configSnapshot: PreviousConfigSnapshot
 		currentConfig: {
 			isConfigured: boolean
@@ -260,7 +265,7 @@ export class CodeIndexConfigManager {
 			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 
-		await this.contextProxy.refreshSecrets()
+		if (refreshSecrets || !this.contextProxy.isInitialized) await this.contextProxy.refreshSecrets()
 		this._loadAndSetConfiguration()
 		const requiresRestart = this.doesConfigChangeRequireRestart(previousConfigSnapshot)
 

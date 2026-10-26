@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.2.10
+
+### Patch Changes
+
+- Add optional local memories with separate use and background-generation controls, scoped memory tools, citations, and reset support.
+- Restore curated frontier-model choices across native providers and preserve exact Copilot model and supported reasoning selections.
+- Preserve conversation continuity and captured execution settings through follow-ups, recovery, compaction, and reloads.
+- Reduce repeated startup, settings, Copilot model discovery, and completed-chat rendering work, and shrink bundled PDF readers and parser assets.
+- Harden protected-command and browser approvals, cancellation, process cleanup, managed-agent mutation tracking, and concurrent conversation delivery.
+- Preserve concurrent configuration changes and store custom request headers securely; protect memory publication from unsaved edits.
+- Improve scheduled-task durability and timezone recurrence, ticket recovery, indexing containment, and MCP configuration and catalog consistency.
+- Remove retired text-to-speech controls and dependencies while retaining notification sounds, and remove superseded internal reports.
+- Keep Windows x64 package verification and restore the historical `alpha-<version>.vsix` download filename and `Alpha VSIX v<version> (<commit>)` release title.
+- Update the extension version and in-app release announcement together for Alpha 3.2.10. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
 ## 3.2.9
 
 ### Patch Changes

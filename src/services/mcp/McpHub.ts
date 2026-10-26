@@ -22,6 +22,7 @@ import deepEqual from "fast-deep-equal"
 import { z } from "zod"
 
 import type {
+	ExtensionMessage,
 	McpResource,
 	McpResourceResponse,
 	McpResourceTemplate,
@@ -193,6 +194,14 @@ const McpSettingsSchema = z.object({
 	mcpServers: z.record(ServerConfigSchema),
 })
 
+// Preserve unrelated settings and validate only the server changed by a locked mutation.
+const McpSettingsFileSchema = McpSettingsSchema.extend({ mcpServers: z.record(z.unknown()) }).passthrough()
+
+export interface McpHubOptions {
+	getProvider?: () => AlphaProvider | undefined
+	notifyProviders?: (message: ExtensionMessage) => Promise<void>
+}
+
 export class McpHub {
 	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
@@ -206,6 +215,7 @@ export class McpHub {
 	private configChangeDebounceTimers: Map<string, NodeJS.Timeout> = new Map()
 	private isProgrammaticUpdate: boolean = false
 	private flagResetTimer?: NodeJS.Timeout
+	private pendingConfigUpdates = 0
 	private sanitizedNameRegistry: Map<string, string> = new Map()
 	private initializationPromise: Promise<void>
 	private connectionControllers = new Map<ConnectedMcpConnection, AbortController>()
@@ -217,8 +227,12 @@ export class McpHub {
 	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
 	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
+	private catalogRevisions = new WeakMap<ConnectedMcpConnection, number>()
 
-	constructor(provider: AlphaProvider) {
+	constructor(
+		provider: AlphaProvider,
+		private readonly options: McpHubOptions = {},
+	) {
 		this.providerRef = new WeakRef(provider)
 		this.watchMcpSettingsFile().catch((error) => {
 			console.error("Failed to watch global MCP settings:", error)
@@ -235,12 +249,86 @@ export class McpHub {
 		return this.isDisposed
 	}
 
+	private getProvider(): AlphaProvider | undefined {
+		return this.options.getProvider ? this.options.getProvider() : this.providerRef.deref()
+	}
+
 	/**
 	 * Waits until all MCP servers have finished their initial connection attempts.
 	 * Each server individually handles its own timeout, so this will not block indefinitely.
 	 */
 	async waitUntilReady(): Promise<void> {
 		await this.initializationPromise
+	}
+
+	/** A revision is executable only after discovery has settled successfully for this exact connection. */
+	getServerCatalogRevision(server: McpServer): number | undefined {
+		const connection = this.connections.find((entry) => entry.server === server)
+		if (
+			this.isDisposed ||
+			connection?.type !== "connected" ||
+			server.disabled ||
+			server.status !== "connected" ||
+			this.catalogChanges.has(connection) ||
+			this.catalogRefreshControllers.has(connection) ||
+			this.catalogErrors.has(connection)
+		)
+			return undefined
+		return this.catalogRevisions.get(connection) ?? 0
+	}
+
+	/** Join existing discovery without letting one task's cancellation abort a refresh shared by other views. */
+	async awaitCatalogReady(signal?: AbortSignal): Promise<void> {
+		await requestWithAbort(async () => {
+			while (true) {
+				if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
+				signal?.throwIfAborted()
+				const connections = this.connections.filter(
+					(connection): connection is ConnectedMcpConnection =>
+						connection.type === "connected" &&
+						!connection.server.disabled &&
+						connection.server.status === "connected",
+				)
+				const revisions = connections.map((connection) => this.catalogRevisions.get(connection) ?? 0)
+				await Promise.all(
+					connections.map(async (connection) => {
+						try {
+							await this.catalogChanges.get(connection)?.promise
+							const refresh = this.latestCatalogRefresh.get(connection)
+							if (refresh) await this.waitForCurrentCatalog(connection, refresh)
+						} catch (error) {
+							// Reported discovery failures revoke this server's bindings while unrelated tools remain available.
+							if (
+								this.connections.includes(connection) &&
+								connection.server.status === "connected" &&
+								!this.catalogErrors.has(connection)
+							)
+								throw error
+						}
+					}),
+				)
+				signal?.throwIfAborted()
+				const current = this.connections.filter(
+					(connection) =>
+						connection.type === "connected" &&
+						!connection.server.disabled &&
+						connection.server.status === "connected",
+				)
+				if (
+					current.length === connections.length &&
+					connections.every(
+						(connection, index) =>
+							current.includes(connection) &&
+							(this.getServerCatalogRevision(connection.server) === revisions[index] ||
+								(this.catalogErrors.has(connection) &&
+									!this.catalogChanges.has(connection) &&
+									!this.catalogRefreshControllers.has(connection) &&
+									(this.catalogRevisions.get(connection) ?? 0) === revisions[index])),
+					)
+				)
+					return
+			}
+		}, signal)
 	}
 	/**
 	 * Registers a client (e.g., AlphaProvider) using this hub.
@@ -433,7 +521,7 @@ export class McpHub {
 			return
 		}
 
-		const workspaceFolder = this.providerRef.deref()?.cwd ?? getWorkspacePath()
+		const workspaceFolder = this.getProvider()?.cwd ?? getWorkspacePath()
 		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".alpha/mcp.json")
 
 		// Create a file system watcher for the project MCP file pattern
@@ -534,7 +622,7 @@ export class McpHub {
 	}
 
 	async getMcpServersPath(): Promise<string> {
-		const provider = this.providerRef.deref()
+		const provider = this.getProvider()
 		if (!provider) {
 			throw new Error("Provider not available")
 		}
@@ -543,7 +631,7 @@ export class McpHub {
 	}
 
 	async getMcpSettingsFilePath(): Promise<string> {
-		const provider = this.providerRef.deref()
+		const provider = this.getProvider()
 		if (!provider) {
 			throw new Error("Provider not available")
 		}
@@ -651,7 +739,7 @@ export class McpHub {
 
 	// Get project-level MCP configuration path
 	private async getProjectMcpPath(): Promise<string | null> {
-		const workspacePath = this.providerRef.deref()?.cwd ?? getWorkspacePath()
+		const workspacePath = this.getProvider()?.cwd ?? getWorkspacePath()
 		const projectMcpPath = await getProjectMcpConfigPath(workspacePath)
 
 		try {
@@ -702,7 +790,7 @@ export class McpHub {
 	 * @returns Promise<boolean> indicating if MCP is enabled
 	 */
 	private async isMcpEnabled(): Promise<boolean> {
-		const provider = this.providerRef.deref()
+		const provider = this.getProvider()
 		if (!provider) {
 			return true // Default to enabled if provider is not available
 		}
@@ -710,17 +798,28 @@ export class McpHub {
 		return state.mcpEnabled ?? true
 	}
 
-	private async connectToServer(
-		name: string,
-		config: z.infer<typeof ServerConfigSchema>,
-		source: "global" | "project" = "global",
-	): Promise<void> {
+	private beginConnectionAttempt(name: string, source: "global" | "project"): AbortController {
 		if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
 		const key = `${source}:${name}`
 		this.connectionAttempts.get(key)?.abort()
 		const controller = new AbortController()
 		this.connectionAttempts.set(key, controller)
+		return controller
+	}
+
+	private async connectToServer(
+		name: string,
+		config: z.infer<typeof ServerConfigSchema>,
+		source: "global" | "project" = "global",
+		attempt?: AbortController,
+	): Promise<void> {
+		if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
+		const key = `${source}:${name}`
+		const controller = attempt ?? this.beginConnectionAttempt(name, source)
 		try {
+			controller.signal.throwIfAborted()
+			if (this.connectionAttempts.get(key) !== controller)
+				throw new DOMException("MCP connection attempt was superseded", "AbortError")
 			await this.disconnectConnections(name, source)
 			controller.signal.throwIfAborted()
 			await this.connectServerAttempt(name, config, source, controller.signal)
@@ -768,7 +867,7 @@ export class McpHub {
 			const client = new Client(
 				{
 					name: "Alpha",
-					version: this.providerRef.deref()?.context.extension?.packageJSON?.version ?? "1.0.0",
+					version: this.getProvider()?.context.extension?.packageJSON?.version ?? "1.0.0",
 				},
 				{
 					capabilities: {},
@@ -1175,6 +1274,8 @@ export class McpHub {
 		if (this.isDisposed || !this.connections.includes(connection) || connection.server.status === "disconnected") {
 			return Promise.resolve()
 		}
+		// Codex CLI 970111f6 (2026-10-26): invalidate bindings before a later response can resume inference.
+		this.catalogRevisions.set(connection, (this.catalogRevisions.get(connection) ?? 0) + 1)
 		this.catalogRefreshControllers.get(connection)?.controller.abort()
 		const queued = this.catalogChanges.get(connection)
 		if (queued) {
@@ -1556,44 +1657,47 @@ export class McpHub {
 
 	async restartConnection(serverName: string, source?: "global" | "project"): Promise<void> {
 		this.isConnecting = true
-
-		// Check if MCP is globally enabled
-		const mcpEnabled = await this.isMcpEnabled()
-		if (!mcpEnabled) {
-			this.isConnecting = false
+		const connection = this.findConnection(serverName, source)
+		if (!connection) {
+			this.isConnecting = this.connectionAttempts.size > 0
 			return
 		}
-
-		// Get existing connection and update its status
-		const connection = this.findConnection(serverName, source)
-		const config = connection?.server.config
-		if (config) {
+		const serverSource = connection.server.source ?? "global"
+		const key = `${serverSource}:${serverName}`
+		const controller = this.beginConnectionAttempt(serverName, serverSource)
+		const signal = controller.signal
+		const assertCurrent = () => {
+			signal.throwIfAborted()
+			if (
+				this.isDisposed ||
+				this.findConnection(serverName, serverSource) !== connection ||
+				connection.server.disabled
+			)
+				throw new DOMException("MCP restart is no longer current", "AbortError")
+		}
+		try {
+			if (!(await requestWithAbort(() => this.isMcpEnabled(), signal))) return
+			assertCurrent()
 			vscode.window.showInformationMessage(t("mcp:info.server_restarting", { serverName }))
 			connection.server.status = "connecting"
 			connection.server.error = ""
-			await this.notifyWebviewOfServerChanges()
-			await delay(500) // artificial delay to show user that server is restarting
-			try {
-				await this.deleteConnection(serverName, connection.server.source)
-				// Parse the config to validate it
-				const parsedConfig = JSON.parse(config)
-				try {
-					// Validate the config
-					const validatedConfig = this.validateServerConfig(parsedConfig, serverName)
-
-					// Try to connect again using validated config
-					await this.connectToServer(serverName, validatedConfig, connection.server.source || "global")
-					vscode.window.showInformationMessage(t("mcp:info.server_connected", { serverName }))
-				} catch (validationError) {
-					this.showErrorMessage(`Invalid configuration for MCP server "${serverName}"`, validationError)
-				}
-			} catch (error) {
-				this.showErrorMessage(`Failed to restart ${serverName} MCP server connection`, error)
-			}
+			await requestWithAbort(() => this.notifyWebviewOfServerChanges(), signal)
+			assertCurrent()
+			await delay(500, { signal })
+			assertCurrent()
+			const config = await requestWithAbort(() => this.readServerConfigFromFile(serverName, serverSource), signal)
+			assertCurrent()
+			// Retain this attempt's ownership through teardown and startup, rather than admitting a stale restart anew.
+			await this.connectToServer(serverName, config, serverSource, controller)
+			if (this.findConnection(serverName, serverSource)?.server.status === "connected")
+				vscode.window.showInformationMessage(t("mcp:info.server_connected", { serverName }))
+		} catch (error) {
+			if (!signal.aborted) this.showErrorMessage(`Failed to restart ${serverName} MCP server connection`, error)
+		} finally {
+			if (this.connectionAttempts.get(key) === controller) this.connectionAttempts.delete(key)
+			this.isConnecting = this.connectionAttempts.size > 0
 		}
-
-		await this.notifyWebviewOfServerChanges()
-		this.isConnecting = false
+		if (!this.isDisposed) await this.notifyWebviewOfServerChanges()
 	}
 
 	public async refreshAllConnections(): Promise<void> {
@@ -1707,17 +1811,17 @@ export class McpHub {
 			return aIsGlobal ? 1 : -1
 		})
 
-		// Send sorted servers to webview
-		const targetProvider: AlphaProvider | undefined = this.providerRef.deref()
+		const message = {
+			type: "mcpServers" as const,
+			mcpServers: sortedConnections.map((connection) => connection.server),
+		}
+		if (this.options.notifyProviders) {
+			await this.options.notifyProviders(message)
+			return
+		}
+		const targetProvider = this.getProvider()
 
 		if (targetProvider) {
-			const serversToSend = sortedConnections.map((connection) => connection.server)
-
-			const message = {
-				type: "mcpServers" as const,
-				mcpServers: serversToSend,
-			}
-
 			try {
 				await targetProvider.postMessageToWebview(message)
 			} catch (error) {
@@ -1752,7 +1856,7 @@ export class McpHub {
 					connection.server.disabled = disabled
 
 					// If disabling a connected server, disconnect it
-					if (disabled && connection.server.status === "connected") {
+					if (disabled && connection.type === "connected") {
 						// Clean up file watchers when disabling
 						this.removeFileWatchersForServer(serverName, serverSource)
 						await this.deleteConnection(serverName, serverSource)
@@ -1842,9 +1946,9 @@ export class McpHub {
 	 */
 	private async updateServerConfig(
 		serverName: string,
-		configUpdate: Record<string, any>,
+		configUpdate: Record<string, unknown> | ((current: Record<string, unknown>) => Record<string, unknown>),
 		source: "global" | "project" = "global",
-	): Promise<void> {
+	): Promise<Record<string, unknown>> {
 		// Determine which config file to update
 		let configPath: string
 		if (source === "project") {
@@ -1857,62 +1961,54 @@ export class McpHub {
 			configPath = await this.getMcpSettingsFilePath()
 		}
 
-		// Ensure the settings file exists and is accessible
-		try {
-			await fs.access(configPath)
-		} catch (error) {
-			console.error("Settings file not accessible:", error)
-			throw new Error("Settings file not accessible")
-		}
+		let committedConfig: Record<string, unknown> | undefined
+		await this.updateMcpSettings(configPath, (settings) => {
+			const current = settings.mcpServers[serverName]
+			if (!current || typeof current !== "object" || Array.isArray(current))
+				throw new Error(`Server ${serverName} not found in config`)
+			const updated =
+				typeof configUpdate === "function"
+					? configUpdate(current as Record<string, unknown>)
+					: { ...current, ...configUpdate }
+			BaseConfigSchema.parse(updated)
+			settings.mcpServers[serverName] = updated
+			committedConfig = updated
+		})
+		if (!committedConfig) throw new Error(`Server ${serverName} configuration was not updated`)
+		return committedConfig
+	}
 
-		// Read and parse the config file
-		const content = await fs.readFile(configPath, "utf-8")
-		const config = JSON.parse(content)
-
-		// Validate the config structure
-		if (!config || typeof config !== "object") {
-			throw new Error("Invalid config structure")
-		}
-
-		if (!config.mcpServers || typeof config.mcpServers !== "object") {
-			config.mcpServers = {}
-		}
-
-		if (!config.mcpServers[serverName]) {
-			config.mcpServers[serverName] = {}
-		}
-
-		// Create a new server config object to ensure clean structure
-		const serverConfig = {
-			...config.mcpServers[serverName],
-			...configUpdate,
-		}
-
-		// Ensure required fields exist
-		if (!serverConfig.alwaysAllow) {
-			serverConfig.alwaysAllow = []
-		}
-
-		config.mcpServers[serverName] = serverConfig
-
-		// Write the entire config back
-		const updatedConfig = {
-			mcpServers: config.mcpServers,
-		}
-
-		// Set flag to prevent file watcher from triggering server restart
+	private async updateMcpSettings(
+		configPath: string,
+		update: (settings: z.infer<typeof McpSettingsFileSchema>) => void,
+	): Promise<void> {
+		this.pendingConfigUpdates++
 		if (this.flagResetTimer) {
 			clearTimeout(this.flagResetTimer)
+			this.flagResetTimer = undefined
 		}
 		this.isProgrammaticUpdate = true
 		try {
-			await safeWriteJson(configPath, updatedConfig, { prettyPrint: true })
+			await safeWriteJson(configPath, undefined, {
+				prettyPrint: true,
+				prepareData: async () => {
+					if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
+					// Read and merge under the destination's existing write lease so another view cannot restore revoked grants.
+					const settings = McpSettingsFileSchema.parse(JSON.parse(await fs.readFile(configPath, "utf-8")))
+					if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
+					update(settings)
+					return settings
+				},
+			})
 		} finally {
-			// Reset flag after watcher debounce period (non-blocking)
-			this.flagResetTimer = setTimeout(() => {
-				this.isProgrammaticUpdate = false
-				this.flagResetTimer = undefined
-			}, 600)
+			this.pendingConfigUpdates--
+			if (this.isDisposed) this.isProgrammaticUpdate = false
+			else if (this.pendingConfigUpdates === 0) {
+				this.flagResetTimer = setTimeout(() => {
+					this.isProgrammaticUpdate = false
+					this.flagResetTimer = undefined
+				}, 600)
+			}
 		}
 	}
 
@@ -1922,6 +2018,7 @@ export class McpHub {
 		source?: "global" | "project",
 	): Promise<void> {
 		try {
+			timeout = BaseConfigSchema.shape.timeout.parse(timeout)
 			// Find the connection to determine if it's a global or project server
 			const connection = this.findConnection(serverName, source)
 			if (!connection) {
@@ -1929,7 +2026,17 @@ export class McpHub {
 			}
 
 			// Update the server config in the appropriate file
-			await this.updateServerConfig(serverName, { timeout }, connection.server.source || "global")
+			const committed = await this.updateServerConfig(
+				serverName,
+				{ timeout },
+				connection.server.source || "global",
+			)
+			const current = this.findConnection(serverName, connection.server.source)
+			if (current) {
+				const liveConfig = current.server.config ? JSON.parse(current.server.config) : committed
+				current.server.config = JSON.stringify({ ...liveConfig, timeout })
+				current.server.timeout = timeout
+			}
 
 			await this.notifyWebviewOfServerChanges()
 		} catch (error) {
@@ -1963,39 +2070,15 @@ export class McpHub {
 				configPath = await this.getMcpSettingsFilePath()
 			}
 
-			// Ensure the settings file exists and is accessible
-			try {
-				await fs.access(configPath)
-			} catch (error) {
-				throw new Error("Settings file not accessible")
-			}
-
-			const content = await fs.readFile(configPath, "utf-8")
-			const config = JSON.parse(content)
-
-			// Validate the config structure
-			if (!config || typeof config !== "object") {
-				throw new Error("Invalid config structure")
-			}
-
-			if (!config.mcpServers || typeof config.mcpServers !== "object") {
-				config.mcpServers = {}
-			}
-
-			// Remove the server from the settings
-			if (config.mcpServers[serverName]) {
-				delete config.mcpServers[serverName]
-
-				// Write the entire config back
-				const updatedConfig = {
-					mcpServers: config.mcpServers,
-				}
-
-				await safeWriteJson(configPath, updatedConfig, { prettyPrint: true })
-
-				// Update server connections with the correct source
-				await this.updateServerConnections(config.mcpServers, serverSource)
-
+			let removed = false
+			await this.updateMcpSettings(configPath, (settings) => {
+				removed = Object.hasOwn(settings.mcpServers, serverName)
+				delete settings.mcpServers[serverName]
+			})
+			// Only retire this source; an earlier whole-file snapshot could replace another view's update.
+			await this.deleteConnection(serverName, serverSource)
+			await this.notifyWebviewOfServerChanges()
+			if (removed) {
 				vscode.window.showInformationMessage(t("mcp:info.server_deleted", { serverName }))
 			} else {
 				vscode.window.showWarningMessage(t("mcp:info.server_not_found", { serverName }))
@@ -2153,83 +2236,32 @@ export class McpHub {
 			throw new Error(`Server ${serverName} with source ${source} not found`)
 		}
 
-		// Determine the correct config path based on the source
-		let configPath: string
-		if (source === "project") {
-			// Get project MCP config path
-			const projectMcpPath = await this.getProjectMcpPath()
-			if (!projectMcpPath) {
-				throw new Error("Project MCP configuration file not found")
-			}
-			configPath = projectMcpPath
-		} else {
-			// Get global MCP settings path
-			configPath = await this.getMcpSettingsFilePath()
-		}
+		const committed = await this.updateServerConfig(
+			serverName,
+			(current) => {
+				const targetList = BaseConfigSchema.parse(current)[listName]
+				return {
+					...current,
+					[listName]: addTool
+						? [...new Set([...targetList, toolName])]
+						: targetList.filter((name) => name !== toolName),
+				}
+			},
+			source,
+		)
+		const grants = BaseConfigSchema.parse(committed)
+		const current = this.findConnection(serverName, source)
 
-		// Normalize path for cross-platform compatibility
-		// Use a consistent path format for both reading and writing
-		const normalizedPath = process.platform === "win32" ? configPath.replace(/\\/g, "/") : configPath
-
-		// Read the appropriate config file
-		const content = await fs.readFile(normalizedPath, "utf-8")
-		const config = JSON.parse(content)
-
-		if (!config.mcpServers) {
-			config.mcpServers = {}
-		}
-
-		if (!config.mcpServers[serverName]) {
-			config.mcpServers[serverName] = {
-				type: "stdio",
-				command: "node",
-				args: [], // Default to an empty array; can be set later if needed
-			}
-		}
-
-		if (!config.mcpServers[serverName][listName]) {
-			config.mcpServers[serverName][listName] = []
-		}
-
-		const targetList = config.mcpServers[serverName][listName]
-		const toolIndex = targetList.indexOf(toolName)
-
-		if (addTool && toolIndex === -1) {
-			targetList.push(toolName)
-		} else if (!addTool && toolIndex !== -1) {
-			targetList.splice(toolIndex, 1)
-		}
-		const grants = BaseConfigSchema.parse(config.mcpServers[serverName])
-
-		// Set flag to prevent file watcher from triggering server restart
-		if (this.flagResetTimer) {
-			clearTimeout(this.flagResetTimer)
-		}
-		this.isProgrammaticUpdate = true
-		try {
-			await safeWriteJson(normalizedPath, config, { prettyPrint: true })
-		} finally {
-			// Reset flag after watcher debounce period (non-blocking)
-			this.flagResetTimer = setTimeout(() => {
-				this.isProgrammaticUpdate = false
-				this.flagResetTimer = undefined
-			}, 600)
-		}
-
-		if (
-			connection.type === "connected" &&
-			connection.server.status !== "disconnected" &&
-			!connection.server.disabled
-		) {
-			this.assertConnectionCurrent(connection)
+		if (current?.type === "connected" && current.server.status !== "disconnected" && !current.server.disabled) {
+			this.assertConnectionCurrent(current)
 			// Apply persisted host policy immediately, even if subsequent remote discovery fails.
 			const hasWildcard = grants.alwaysAllow.includes("*")
-			connection.server.tools = connection.server.tools?.map((tool) => ({
+			current.server.tools = current.server.tools?.map((tool) => ({
 				...tool,
 				alwaysAllow: hasWildcard || grants.alwaysAllow.includes(tool.name),
 				enabledForPrompt: !grants.disabledTools.includes(tool.name),
 			}))
-			await this.refreshServerCatalog(connection, true)
+			await this.waitForCurrentCatalog(current, this.refreshServerCatalog(current, true))
 			await this.notifyWebviewOfServerChanges()
 		}
 	}

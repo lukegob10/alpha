@@ -1,5 +1,6 @@
 import * as path from "path"
 import { Parser as ParserT, Language as LanguageT, Query as QueryT } from "web-tree-sitter"
+import treeSitterGrammars from "./grammars.json"
 import {
 	javascriptQuery,
 	typescriptQuery,
@@ -37,9 +38,9 @@ export interface LanguageParser {
 	}
 }
 
-async function loadLanguage(langName: string, sourceDirectory?: string) {
+async function loadLanguage(langName: keyof typeof treeSitterGrammars, sourceDirectory?: string) {
 	const baseDir = sourceDirectory || __dirname
-	const wasmPath = path.join(baseDir, `tree-sitter-${langName}.wasm`)
+	const wasmPath = path.join(baseDir, treeSitterGrammars[langName])
 
 	try {
 		const { Language } = require("web-tree-sitter")
@@ -53,8 +54,8 @@ async function loadLanguage(langName: string, sourceDirectory?: string) {
 let isParserInitialized = false
 
 /*
-Using node bindings for tree-sitter is problematic in vscode extensions 
-because of incompatibility with electron. Going the .wasm route has the 
+Using node bindings for tree-sitter is problematic in vscode extensions
+because of incompatibility with electron. Going the .wasm route has the
 advantage of not having to build for multiple architectures.
 
 We use web-tree-sitter and tree-sitter-wasms which provides auto-updating

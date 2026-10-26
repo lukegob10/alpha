@@ -10,7 +10,6 @@ import React, {
 	useState,
 } from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
-import removeMd from "remove-markdown"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
 
@@ -71,6 +70,7 @@ import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
 import { getActionActivity, getCompletedTurnActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
+import { createMessagePayloadSelector } from "./utils/messagePayload"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useTaskComposer, type ComposerSubmission } from "./hooks/useTaskComposer"
 import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
@@ -104,6 +104,7 @@ const MODEL_RESPONSE_DELAY_MS = 30_000
 const MAX_PENDING_HOST_SENDS = 16
 const MAX_DISCLOSURE_TASKS = 16
 const MAX_DISCLOSURES_PER_KIND = 2_048
+const getBatchToolPayload = createMessagePayloadSelector((payload) => payload as AlphaSayTool | undefined)
 
 type PendingHostSend = { taskId: string; text: string; images: string[] }
 
@@ -776,8 +777,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[transcriptIdentity],
 	)
-	const lastTtsRef = useRef<string>("")
-	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
 	const [checkpointWarningState, setCheckpointWarningState] = useState<
 		| {
 				taskId: string
@@ -901,10 +900,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[soundEnabled, playNotification, playCelebration, playProgressLoop],
 	)
-
-	function playTts(text: string) {
-		vscode.postMessage({ type: "playTts", text })
-	}
 
 	useDeepCompareEffect(() => {
 		if (approvalTaskIdRef.current !== visibleCurrentTaskId) {
@@ -2637,39 +2632,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[isHidden, sendingDisabled, enableButtons],
 	)
 
-	useEffect(() => {
-		// This ensures the first message is not read, future user messages are
-		// labeled as `user_feedback`.
-		if (lastMessage && activeMessages.length > 1) {
-			if (
-				typeof lastMessage.text === "string" && // has text (must be string for startsWith)
-				(lastMessage.say === "text" || lastMessage.say === "completion_result") && // is a text message
-				!lastMessage.partial && // not a partial message
-				!lastMessage.text.startsWith("{") // not a json object
-			) {
-				let text = lastMessage?.text || ""
-				const mermaidRegex = /```mermaid[\s\S]*?```/g
-				// remove mermaid diagrams from text
-				text = text.replace(mermaidRegex, "")
-				// remove markdown from text
-				text = removeMd(text)
-
-				// ensure message is not a duplicate of last read message
-				if (text !== lastTtsRef.current) {
-					try {
-						playTts(text)
-						lastTtsRef.current = text
-					} catch (error) {
-						console.error("Failed to execute text-to-speech:", error)
-					}
-				}
-			}
-		}
-
-		// Update previous value.
-		setWasStreaming(isStreaming)
-	}, [isStreaming, lastMessage, wasStreaming, activeMessages.length])
-
 	const groupedMessages = useMemo(() => {
 		const filtered: AlphaMessage[] = visibleMessages
 		const isCompletedToolAsk = (message: AlphaMessage) =>
@@ -2682,25 +2644,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Helper to check if a message is a read_file ask that should be batched
 		const isReadFileAsk = (msg: AlphaMessage): boolean => {
 			if (!isCompletedToolAsk(msg)) return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return tool.tool === "readFile" && !tool.batchFiles // Don't re-batch already batched
-			} catch {
-				return false
-			}
+			const tool = getBatchToolPayload(msg)
+			return tool?.tool === "readFile" && !tool.batchFiles // Don't re-batch already batched
 		}
 
 		// Helper to check if a message is a list_files ask that should be batched
 		const isListFilesAsk = (msg: AlphaMessage): boolean => {
 			if (!isCompletedToolAsk(msg)) return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return (
-					(tool.tool === "listFilesTopLevel" || tool.tool === "listFilesRecursive") && !tool.batchDirs // Don't re-batch already batched
-				)
-			} catch {
-				return false
-			}
+			const tool = getBatchToolPayload(msg)
+			return (
+				(tool?.tool === "listFilesTopLevel" || tool?.tool === "listFilesRecursive") && !tool.batchDirs // Don't re-batch already batched
+			)
 		}
 
 		// Set of tool names that represent file-editing operations
@@ -2715,37 +2669,25 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Helper to check if a message is a file-edit ask that should be batched
 		const isEditFileAsk = (msg: AlphaMessage): boolean => {
 			if (!isCompletedToolAsk(msg)) return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return editFileTools.has(tool.tool) && !tool.batchDiffs // Don't re-batch already batched
-			} catch {
-				return false
-			}
+			const tool = getBatchToolPayload(msg)
+			return tool !== undefined && editFileTools.has(tool.tool) && !tool.batchDiffs // Don't re-batch already batched
 		}
 
 		// Synthesize a batch of consecutive read_file asks into a single message
 		const synthesizeReadFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchFiles = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						lineSnippet: tool.reason || "",
-						isOutsideWorkspace: tool.isOutsideWorkspace || false,
-						key: `${tool.path}${tool.reason ? ` (${tool.reason})` : ""}`,
-						content: tool.content || "",
-					}
-				} catch {
-					return { path: "", lineSnippet: "", key: "", content: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					lineSnippet: tool?.reason || "",
+					isOutsideWorkspace: tool?.isOutsideWorkspace || false,
+					key: `${tool?.path}${tool?.reason ? ` (${tool.reason})` : ""}`,
+					content: tool?.content || "",
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchFiles }),
@@ -2755,25 +2697,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Synthesize a batch of consecutive list_files asks into a single message
 		const synthesizeListFilesBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDirs = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						recursive: tool.tool === "listFilesRecursive",
-						isOutsideWorkspace: tool.isOutsideWorkspace || false,
-						key: tool.path || "",
-					}
-				} catch {
-					return { path: "", recursive: false, key: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					recursive: tool?.tool === "listFilesRecursive",
+					isOutsideWorkspace: tool?.isOutsideWorkspace || false,
+					key: tool?.path || "",
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchDirs }),
@@ -2783,28 +2717,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Synthesize a batch of consecutive file-edit asks into a single message
 		const synthesizeEditFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDiffs = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						changeCount: 1,
-						key: tool.path || "",
-						content: tool.content ?? tool.diff ?? "",
-						diffStats: tool.diffStats,
-						originalContent: tool.originalContent,
-						finalContent: tool.finalContent,
-					}
-				} catch {
-					return { path: "", changeCount: 0, key: "", content: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					changeCount: 1,
+					key: tool?.path || "",
+					content: tool?.content ?? tool?.diff ?? "",
+					diffStats: tool?.diffStats,
+					originalContent: tool?.originalContent,
+					finalContent: tool?.finalContent,
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchDiffs }),
@@ -2887,14 +2813,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [disclosure, completedTurnActivity, groupedMessages, actionActivity])
 	useLayoutEffect(() => {
 		updateDisclosure((current) => {
-			const missing = Object.entries(expandedTraces).filter(([key]) => current.traces[key] === undefined)
+			const available = MAX_DISCLOSURES_PER_KIND - Object.keys(current.traces).length
+			if (available <= 0) return current
+			// Inferred closed defaults need no entry. Only inherit opened work into
+			// spare slots: refilling evicted defaults would loop and displace explicit choices.
+			const missing = Object.entries(expandedTraces)
+				.filter(([key, expanded]) => expanded && current.traces[key] === undefined)
+				.slice(-available)
 			if (!missing.length) return current
-			const traces = boundedDisclosureEntries({ ...current.traces, ...Object.fromEntries(missing) })
-			const entries = Object.entries(traces)
-			return entries.length === Object.keys(current.traces).length &&
-				entries.every(([key, expanded]) => current.traces[key] === expanded)
-				? current
-				: { ...current, traces }
+			return { ...current, traces: { ...current.traces, ...Object.fromEntries(missing) } }
 		})
 	}, [expandedTraces, updateDisclosure])
 	const focusedActivityRef = useRef<{ taskKey?: string; messageTs: number; element: HTMLElement }>()

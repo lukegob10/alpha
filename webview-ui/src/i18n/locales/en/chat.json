@@ -1,4 +1,8 @@
 {
+	"memories": {
+		"approval": "Memory note approval",
+		"appendNote": "Save this request as an Alpha memory note"
+	},
 	"goals": {
 		"approval": "Goal approval",
 		"createApproval": "Create this goal and keep working toward it?",
@@ -224,7 +228,6 @@
 	"pressToSend": "Press {{keyCombination}} to send",
 	"pressToQueue": "Press {{keyCombination}} to queue",
 	"pressToSteer": "Press {{keyCombination}} to send and steer",
-	"stopTts": "Stop text-to-speech",
 	"typeMessage": "Type a message...",
 	"typeTask": "What should I work on?",
 	"composer": {
@@ -508,11 +511,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves long chat reliability and Worker handoffs.",
-			"taskContinuity": "Keep long chats responsive and recover their controls after compaction or a view reload.",
-			"toolsAndProviders": "Use updated Copilot model aliases and supported reasoning controls.",
-			"delegation": "Bring completed Worker changes back automatically while preserving conflict review and existing approvals.",
-			"workspaceExperience": "Create Decision and Review tickets alongside existing ticket types."
+			"welcome": "Alpha v{{version}} adds optional local memories and improves conversation reliability.",
+			"taskContinuity": "Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
+			"toolsAndProviders": "Choose curated frontier models and supported reasoning settings across providers.",
+			"delegation": "Enable local memories with separate controls for use, background generation, and reset.",
+			"workspaceExperience": "Use a cleaner settings layout and notification sounds without legacy speech controls."
 		}
 	},
 	"crossTasks": {

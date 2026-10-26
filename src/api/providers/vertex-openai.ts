@@ -179,6 +179,7 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 				...(this.vertexSettings.extraHeaders ?? {}),
 			},
 			timeout: getApiRequestTimeout(),
+			maxRetries: 0,
 		})
 	}
 }

@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.9",
+		version: "3.2.10",
 	},
 }))
 
@@ -37,11 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.9" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.10" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.9")).toBeInTheDocument()
-		expect(screen.getByText("Alpha v3.2.9 improves long chat reliability and Worker handoffs.")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.10")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.10 adds optional local memories and improves conversation reliability."),
+		).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
@@ -50,29 +52,29 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Keep long chats responsive and recover their controls after compaction or a view reload.",
+				"Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Use updated Copilot model aliases and supported reasoning controls."),
+			screen.getByText("Choose curated frontier models and supported reasoning settings across providers."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Bring completed Worker changes back automatically while preserving conflict review and existing approvals.",
-			),
+			screen.getByText("Enable local memories with separate controls for use, background generation, and reset."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Create Decision and Review tickets alongside existing ticket types."),
+			screen.getByText("Use a cleaner settings layout and notification sounds without legacy speech controls."),
 		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
-		expect(screen.getByText("Alpha v3.2.9 improves long chat reliability and Worker handoffs.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.10 adds optional local memories and improves conversation reliability."),
+		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Keep long chats responsive and recover their controls after compaction or a view reload.",
+				"Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
 			),
 		).toBeInTheDocument()
 	})

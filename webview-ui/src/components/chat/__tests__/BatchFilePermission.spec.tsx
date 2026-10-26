@@ -1,4 +1,6 @@
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { cleanup, render, screen, fireEvent } from "@/utils/test-utils"
+import userEvent from "@testing-library/user-event"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 
 import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
 
@@ -14,6 +16,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 describe("BatchFilePermission", () => {
 	const mockOnPermissionResponse = vi.fn()
+	let restoreFocus: () => void
 
 	const mockFiles = [
 		{
@@ -41,6 +44,12 @@ describe("BatchFilePermission", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		restoreFocus = installNativeTestFocus()
+	})
+
+	afterEach(() => {
+		cleanup()
+		restoreFocus()
 	})
 
 	it("renders file list correctly", () => {
@@ -96,20 +105,28 @@ describe("BatchFilePermission", () => {
 			</TranslationProvider>,
 		)
 
-		// The onClick is on the ToolUseBlockHeader which contains the file path text
-		// Find the header that contains our file path and click it
-		const filePathElement = screen.getByText(/Button\.tsx.*export const Button/)
-		// The ToolUseBlockHeader is the parent div with the flex class
-		const headerElement = filePathElement.closest(".flex.items-center.select-none")
-
-		if (headerElement) {
-			fireEvent.click(headerElement)
-		}
+		fireEvent.click(screen.getByRole("button", { name: /Button\.tsx.*export const Button/ }))
 
 		expect(mockVscodePostMessage).toHaveBeenCalledWith({
 			type: "openFile",
 			text: "src/components/Button.tsx",
 		})
+	})
+
+	it.each(["{Enter}", " "])("opens a source exactly once with %s", async (key) => {
+		const user = userEvent.setup()
+		render(<BatchFilePermission files={[mockFiles[0]]} onPermissionResponse={mockOnPermissionResponse} ts={1} />)
+		const source = screen.getByRole("button", { name: /Button\.tsx/ })
+
+		await user.tab()
+		expect(source).toHaveFocus()
+		await user.keyboard(key)
+
+		expect(mockVscodePostMessage).toHaveBeenCalledExactlyOnceWith({
+			type: "openFile",
+			text: mockFiles[0].content,
+		})
+		expect(source.querySelector("button, a, input, [tabindex]")).toBeNull()
 	})
 
 	it("handles files with paths starting with dot correctly", () => {

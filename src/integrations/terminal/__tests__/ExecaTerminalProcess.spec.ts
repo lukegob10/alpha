@@ -53,6 +53,7 @@ describe("ExecaTerminalProcess", () => {
 	beforeEach(() => {
 		vitest.useFakeTimers()
 		originalEnv = { ...process.env }
+		process.env.SystemRoot = "C:\\Windows"
 		execFileMock.mockReset()
 		execFileMock.mockImplementation((_file, _args, _options, callback) => {
 			callback(null, "", "")
@@ -479,7 +480,7 @@ describe("ExecaTerminalProcess", () => {
 
 			expect(execFileMock).toHaveBeenCalledOnce()
 			expect(execFileMock.mock.calls[0].slice(0, 3)).toEqual([
-				"taskkill.exe",
+				"C:\\Windows\\System32\\taskkill.exe",
 				["/PID", "12345", "/T", "/F"],
 				{ windowsHide: true, timeout: 5_000 },
 			])

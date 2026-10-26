@@ -92,9 +92,8 @@ import { selectImages } from "../../integrations/misc/process-images"
 import { getTheme } from "../../integrations/theme/getTheme"
 import { searchWorkspaceFiles } from "../../services/search/file-search"
 import { fileExistsAtPath } from "../../utils/fs"
-import { playTts, setTtsEnabled, setTtsSpeed, stopTts } from "../../utils/tts"
 import { searchCommits } from "../../utils/git"
-import { exportSettings, importSettingsWithFeedback } from "../config/importExport"
+import { exportSettings } from "../config/importExport"
 import { getOpenAiModels } from "../../api/providers/openai"
 import { getVsCodeLmModels } from "../../api/providers/vscode-lm"
 import { openMention } from "../mentions"
@@ -268,6 +267,9 @@ export const webviewMessageHandler = async (
 	const resolveIncomingImages = async (payload: { text?: string; images?: string[]; taskId?: string }) => {
 		const text = payload.text ?? ""
 		const images = payload.images
+		if (!images?.length && !textHasImageMention(text)) {
+			return { text, images: [] }
+		}
 		const currentTask = payload.taskId ? provider.getLiveTask(payload.taskId) : provider.getCurrentTask()
 		const state = await provider.getState()
 		const resolved = await resolveImageMentions({
@@ -998,25 +1000,30 @@ export const webviewMessageHandler = async (
 			}
 			break
 
+		case "memoryReset":
+			await provider.resetMemories()
+			await provider.postStateToWebview()
+			break
+
+		case "memoryOpenFolder":
+			await provider.openMemoryFolder()
+			break
+
 		case "updateSettings":
 			if (message.updatedSettings) {
 				for (const [key, value] of Object.entries(message.updatedSettings)) {
 					if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) continue
 					let newValue = value
 
-					if (key === "language") {
+					if (key === "memorySettings") {
+						newValue = globalSettingsSchema.shape.memorySettings.parse(value)
+					} else if (key === "language") {
 						newValue = value ?? "en"
 						changeLanguage(newValue as Language)
 					} else if (key === "allowedCommands") {
 						newValue = sanitizeCommandList(value)
 					} else if (key === "deniedCommands") {
 						newValue = sanitizeCommandList(value)
-					} else if (key === "ttsEnabled") {
-						newValue = value ?? true
-						setTtsEnabled(newValue as boolean)
-					} else if (key === "ttsSpeed") {
-						newValue = value ?? 1.0
-						setTtsSpeed(newValue as number)
 					} else if (key === "terminalShellIntegrationTimeout") {
 						if (value !== undefined) {
 							Terminal.setShellIntegrationTimeout(value as number)
@@ -1093,6 +1100,9 @@ export const webviewMessageHandler = async (
 					await provider.contextProxy.setValue(key as keyof AlphaCodeSettings, newValue)
 				}
 
+				if (Object.hasOwn(message.updatedSettings, "memorySettings")) {
+					await provider.refreshMemorySettings()
+				}
 				await provider.postStateToWebview()
 			}
 
@@ -1282,12 +1292,7 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "importSettings": {
-			await importSettingsWithFeedback({
-				providerSettingsManager: provider.providerSettingsManager,
-				contextProxy: provider.contextProxy,
-				customModesManager: provider.customModesManager,
-				provider: provider,
-			})
+			await provider.importSettings()
 
 			break
 		}
@@ -1352,13 +1357,23 @@ export const webviewMessageHandler = async (
 		case "openHtmlDocument":
 			await openHtmlDocumentLink(message.text)
 			break
-		case "openFile":
-			let filePath: string = message.text!
+		case "openFile": {
+			if (typeof message.text !== "string" || !message.text.trim() || message.text.includes("\0")) break
+			if (
+				message.values !== undefined &&
+				(!message.values || typeof message.values !== "object" || Array.isArray(message.values))
+			)
+				break
+			const line: unknown = message.values?.line
+			if (line !== undefined && (typeof line !== "number" || !Number.isSafeInteger(line) || line < 1)) break
+			let filePath = message.text
 			if (!path.isAbsolute(filePath)) {
 				filePath = path.join(getCurrentCwd(), filePath)
 			}
-			openFile(filePath, message.values as { create?: boolean; content?: string; line?: number })
+			// Navigation is read-only; never forward legacy creation/content options from a webview.
+			await openFile(filePath, line === undefined ? undefined : { line })
 			break
+		}
 		case "openDiff": {
 			const result = openDiffPayloadSchema.safeParse(message.payload)
 			if (!result.success) {
@@ -1774,31 +1789,6 @@ export const webviewMessageHandler = async (
 
 			break
 		}
-
-		case "ttsEnabled":
-			const ttsEnabled = message.bool ?? true
-			await updateGlobalState("ttsEnabled", ttsEnabled)
-			setTtsEnabled(ttsEnabled)
-			await provider.postStateToWebview()
-			break
-		case "ttsSpeed":
-			const ttsSpeed = message.value ?? 1.0
-			await updateGlobalState("ttsSpeed", ttsSpeed)
-			setTtsSpeed(ttsSpeed)
-			await provider.postStateToWebview()
-			break
-		case "playTts":
-			if (message.text) {
-				playTts(message.text, {
-					onStart: () => provider.postMessageToWebview({ type: "ttsStart", text: message.text }),
-					onStop: () => provider.postMessageToWebview({ type: "ttsStop", text: message.text }),
-				})
-			}
-
-			break
-		case "stopTts":
-			stopTts()
-			break
 
 		case "updateVSCodeSetting": {
 			const { setting, value } = message
@@ -4132,6 +4122,11 @@ export const webviewMessageHandler = async (
 		}
 
 		case "createWorktree": {
+			const requestId =
+				typeof message.requestId === "string" && message.requestId.length > 0 && message.requestId.length <= 128
+					? message.requestId
+					: undefined
+			const correlation = requestId ? { requestId } : {}
 			try {
 				const { success, message: text } = await handleCreateWorktree(
 					provider,
@@ -4144,16 +4139,22 @@ export const webviewMessageHandler = async (
 					(progress) => {
 						provider.postMessageToWebview({
 							type: "worktreeCopyProgress",
+							...correlation,
 							copyProgressBytesCopied: progress.bytesCopied,
 							copyProgressItemName: progress.itemName,
 						})
 					},
 				)
 
-				await provider.postMessageToWebview({ type: "worktreeResult", success, text })
+				await provider.postMessageToWebview({ type: "worktreeResult", ...correlation, success, text })
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error)
-				await provider.postMessageToWebview({ type: "worktreeResult", success: false, text: errorMessage })
+				await provider.postMessageToWebview({
+					type: "worktreeResult",
+					...correlation,
+					success: false,
+					text: errorMessage,
+				})
 			}
 
 			break

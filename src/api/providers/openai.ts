@@ -219,6 +219,11 @@ interface OpenAiResponsesMessageTextState {
 	lastContentIndex: number
 }
 
+interface OpenAiResponsesReasoningTextState {
+	parts: Map<number, string>
+	lastSummaryIndex: number
+}
+
 export interface OpenAiResponsesReasoningItem {
 	id: string
 	encrypted_content: string
@@ -357,6 +362,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				defaultHeaders: headers,
 				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
 				timeout,
+				maxRetries: 0,
 			})
 		} else if (isAzureOpenAi) {
 			// Azure API shape slightly differs from the core API shape:
@@ -367,6 +373,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
 				defaultHeaders: headers,
 				timeout,
+				maxRetries: 0,
 			})
 		} else {
 			this.client = new OpenAI({
@@ -374,6 +381,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				apiKey,
 				defaultHeaders: headers,
 				timeout,
+				// Shared retry policy owns attempt budgets and server delay advice.
+				maxRetries: 0,
 			})
 		}
 	}
@@ -841,7 +850,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const messageMetadata = new Map<number, AssistantMessageMetadata>()
 		const handledOutputIdentities = new Map<number, string>()
 		const messageText = new Map<number, OpenAiResponsesMessageTextState>()
-		let reasoningSummary = ""
+		const reasoningText = new Map<number, OpenAiResponsesReasoningTextState>()
 		let receivedTerminalEvent = false
 		let incompleteOutputItemObserved = false
 
@@ -923,8 +932,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					if (text !== undefined) yield { type: "text", text, ...metadata }
 					break
 				}
-				case "response.reasoning_summary_text.delta": {
-					reasoningSummary += event.delta
+				case "response.reasoning_summary_text.delta":
+				case "response.reasoning_summary_text.done": {
+					const text = this.reconcileOpenAiResponsesReasoningSummary(
+						event.output_index,
+						event.summary_index,
+						event.type === "response.reasoning_summary_text.delta" ? event.delta : event.text,
+						reasoningText,
+						event.type === "response.reasoning_summary_text.done",
+					)
+					if (text !== undefined) yield { type: "reasoning", text, outputIndex: event.output_index }
 					break
 				}
 				case "response.output_item.done": {
@@ -951,6 +968,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						toolCalls,
 						messageText,
 						messageMetadata,
+						reasoningText,
 					)
 					break
 				}
@@ -963,7 +981,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						handledOutputIdentities,
 						messageText,
 						messageMetadata,
-						reasoningSummary,
+						reasoningText,
 						event.type === "response.incomplete" ? "incomplete" : "completed",
 						incompleteOutputItemObserved,
 					)
@@ -991,7 +1009,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
 		const toolCalls = new Map<number, OpenAiResponsesToolCallState>()
 		const messageText = new Map<number, OpenAiResponsesMessageTextState>()
-		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), messageText, new Map(), "")
+		yield* this.finishOpenAiResponsesResult(response, toolCalls, new Map(), messageText, new Map(), new Map())
 	}
 
 	private async *finishOpenAiResponsesResult(
@@ -1000,7 +1018,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		handledOutputIdentities: Map<number, string>,
 		messageText: Map<number, OpenAiResponsesMessageTextState>,
 		messageMetadata: Map<number, AssistantMessageMetadata>,
-		reasoningSummary: string,
+		reasoningText: Map<number, OpenAiResponsesReasoningTextState>,
 		terminalEvent?: "completed" | "incomplete",
 		incompleteOutputItemObserved = false,
 	): ApiStream {
@@ -1093,17 +1111,20 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					continue
 				}
 			}
-			yield* this.emitOpenAiResponsesOutputItem(item, index, toolCalls, messageText, messageMetadata)
+			yield* this.emitOpenAiResponsesOutputItem(
+				item,
+				index,
+				toolCalls,
+				messageText,
+				messageMetadata,
+				reasoningText,
+			)
 		}
 		if (toolCalls.size > 0 && !interrupted) {
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
 		}
 
 		this.captureOpenAiResponsesState(response)
-		if (!this.responsesEncryptedContent) {
-			const summary = this.responsesSummary?.map((part) => part.text).join("\n") || reasoningSummary
-			if (summary) yield { type: "reasoning", text: summary }
-		}
 		if (!interrupted) yield this.processOpenAiResponsesUsage(response.usage)
 		// Codex can finish this response while requesting another model step.
 		if (interrupted || response.end_turn === false) {
@@ -1131,6 +1152,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		messageText: Map<number, OpenAiResponsesMessageTextState>,
 		messageMetadata: Map<number, AssistantMessageMetadata>,
+		reasoningText: Map<number, OpenAiResponsesReasoningTextState>,
 	): ApiStream {
 		const active = toolCalls.get(outputIndex)
 		if (
@@ -1197,6 +1219,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (item.type === "reasoning") {
+			for (const [summaryIndex, part] of (item.summary ?? []).entries()) {
+				const text = this.reconcileOpenAiResponsesReasoningSummary(
+					outputIndex,
+					summaryIndex,
+					part.text,
+					reasoningText,
+					true,
+				)
+				if (text !== undefined) yield { type: "reasoning", text, outputIndex }
+			}
 			this.captureOpenAiResponsesReasoningItem(item, outputIndex)
 			if (typeof item.encrypted_content === "string" && item.encrypted_content) {
 				yield {
@@ -1237,6 +1269,41 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			)
 			if (text !== undefined) yield { type: "text", text, ...metadata }
 		}
+	}
+
+	private reconcileOpenAiResponsesReasoningSummary(
+		outputIndex: number,
+		summaryIndex: number,
+		text: string,
+		items: Map<number, OpenAiResponsesReasoningTextState>,
+		complete = false,
+	): string | undefined {
+		if (
+			!Number.isSafeInteger(outputIndex) ||
+			outputIndex < 0 ||
+			!Number.isSafeInteger(summaryIndex) ||
+			summaryIndex < 0
+		) {
+			throw new Error("OpenAI Responses reasoning summary has an invalid index")
+		}
+		if (typeof text !== "string") throw new Error("OpenAI Responses reasoning summary has invalid text")
+		const item = items.get(outputIndex) ?? { parts: new Map<number, string>(), lastSummaryIndex: -1 }
+		const previous = item.parts.get(summaryIndex)
+		if (complete && previous !== undefined && !text.startsWith(previous)) {
+			throw new Error("OpenAI Responses reasoning summary did not match its streamed text")
+		}
+		const remainder = complete ? text.slice(previous?.length ?? 0) : text
+		if (remainder && summaryIndex < item.lastSummaryIndex) {
+			throw new Error("OpenAI Responses reasoning summary changed its emitted content order")
+		}
+		// Visible summaries stream independently of the sealed encrypted item. Preserve
+		// the same output index and reconcile final receipts without duplicating text.
+		// Codex 970111f6cb62cc02fe36a82ea7d71b37a2889c97, codex-api/src/sse/responses.rs (2026-10-26).
+		const separator = remainder && summaryIndex > item.lastSummaryIndex && item.lastSummaryIndex >= 0 ? "\n" : ""
+		items.set(outputIndex, item)
+		item.parts.set(summaryIndex, complete ? text : (previous ?? "") + text)
+		if (remainder) item.lastSummaryIndex = summaryIndex
+		return remainder ? separator + remainder : undefined
 	}
 
 	private reconcileOpenAiResponsesTextPart(

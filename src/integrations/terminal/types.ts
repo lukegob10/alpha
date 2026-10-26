@@ -67,6 +67,8 @@ export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessE
 	outputArchiveInterrupted?: boolean
 	writeInput?: (input: string) => void | Promise<void>
 	interrupt?: () => void | Promise<void>
+	/** Hard stop for a user deadline; resolves only after physical command/terminal exit. */
+	terminate?: () => Promise<void>
 	setOutputWriter?: (writer: (chunk: string, signal: AbortSignal) => void | Promise<void>) => void
 	setOutputFinalizer?: (finalizer: () => void | Promise<void>) => void
 	finalizeOutput?: () => Promise<void>

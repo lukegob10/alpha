@@ -229,12 +229,12 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			provider = this.sidebarProvider
 		}
 
-		await provider.removeTaskFromStack()
 		await provider.postStateToWebview()
 		await provider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 		await provider.postMessageToWebview({ type: "invoke", invoke: "newChat", text, images })
 
 		const options: CreateTaskOptions = {
+			preserveExisting: true,
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
 			// Resolve omitted provider settings before changing task state.
 			// Explicit runtime settings retain executable values such as FakeAI callbacks.
@@ -255,10 +255,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
 		await this.waitForWebviewLaunch(5_000)
 
-		const { historyItem } = await this.sidebarProvider.getTaskWithId(taskId, {
-			includeApiConversationHistory: false,
-		})
-		await this.sidebarProvider.createTaskWithHistoryItem(historyItem)
+		await this.sidebarProvider.showTaskWithId(taskId)
 
 		if (this.sidebarProvider.viewLaunched) {
 			await this.sidebarProvider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })

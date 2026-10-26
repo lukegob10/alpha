@@ -212,7 +212,7 @@ jobs:
                   if (@(Get-ChildItem -LiteralPath bin -Filter *.vsix).Count -ne $targets.Count) {
                     throw "Release must contain exactly one Windows x64 VSIX."
                   }
-                  $releaseTitle = "Alpha v$version (Windows x64)"
+                  $releaseTitle = "Alpha VSIX v$version ($shortSha)"
                   $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
                   $versionHeading = [regex]::Escape("## $version")
                   $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
@@ -225,12 +225,14 @@ jobs:
 
                   Commit: ${{ github.sha }}
 
-                  Download the Windows x64 VSIX for Intel/AMD PCs. Install it with: code --install-extension alpha-$version-win32-x64.vsix
+                  Download the Windows x64 VSIX for Intel/AMD PCs. Install it with: code --install-extension alpha-$version.vsix
                   "@
 
                   gh release view "$tag" --json tagName 2>$null
                   if ($LASTEXITCODE -eq 0) {
                     throw "Release $tag already exists; refusing to overwrite its published artifacts."
                   }
-                  gh release create "$tag" @vsixPaths --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  $releaseAsset = Join-Path -Path (Resolve-Path -LiteralPath bin).Path -ChildPath "alpha-$version.vsix"
+                  Move-Item -LiteralPath $vsixPaths[0] -Destination $releaseAsset -ErrorAction Stop
+                  gh release create "$tag" "$releaseAsset" --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
                   if ($LASTEXITCODE -ne 0) { throw "Release creation failed." }

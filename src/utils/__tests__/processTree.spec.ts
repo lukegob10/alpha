@@ -13,6 +13,7 @@ describe("owned detached POSIX process groups", () => {
 
 	beforeEach(() => {
 		vi.useFakeTimers()
+		vi.stubEnv("SystemRoot", "C:\\Windows")
 		platform = Object.getOwnPropertyDescriptor(process, "platform")
 		Object.defineProperty(process, "platform", { value: "linux" })
 		kill = vi.spyOn(process, "kill").mockReturnValue(true)
@@ -23,6 +24,7 @@ describe("owned detached POSIX process groups", () => {
 	afterEach(() => {
 		if (platform) Object.defineProperty(process, "platform", platform)
 		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
 		vi.useRealTimers()
 	})
 
@@ -49,6 +51,22 @@ describe("owned detached POSIX process groups", () => {
 			"Could not verify process-tree cleanup for exited Windows root PID 123",
 		)
 		await expect(terminateProcessTree([123], { allowMissingWindowsRoots: true })).resolves.toBeUndefined()
+		expect(execFile).toHaveBeenCalledWith(
+			"C:\\Windows\\System32\\taskkill.exe",
+			["/PID", "123", "/T", "/F"],
+			expect.anything(),
+			expect.any(Function),
+		)
+	})
+
+	it("rejects a missing or relative Windows system root without searching PATH", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" })
+		vi.stubEnv("SystemRoot", undefined)
+		vi.stubEnv("windir", undefined)
+		await expect(terminateProcessTree([123])).rejects.toThrow("Windows system root is unavailable")
+		vi.stubEnv("SystemRoot", ".\\attacker-controlled")
+		await expect(terminateProcessTree([123])).rejects.toThrow("Windows system root is unavailable")
+		expect(execFile).not.toHaveBeenCalled()
 	})
 
 	it("escalates the original group after a TERM-aware parent exits and observes newly orphaned members", async () => {

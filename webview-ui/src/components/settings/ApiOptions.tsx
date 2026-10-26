@@ -114,8 +114,14 @@ const ApiOptions = ({
 		}
 	}, [selectedModelId, setApiConfigurationField, apiConfiguration.apiModelId, isUnsupportedSelectedProvider])
 
-	// Debounced refresh model updates, only executed 250ms after the user
-	// stops typing.
+	// Copilot discovery has no typed connection fields to debounce.
+	useEffect(() => {
+		if (selectedProvider === "vscode-lm") {
+			vscode.postMessage({ type: "requestVsCodeLmModels" })
+		}
+	}, [selectedProvider])
+
+	// Debounce OpenAI connection edits until the user stops typing.
 	useDebounce(
 		() => {
 			if (selectedProvider === "openai") {
@@ -128,8 +134,6 @@ const ApiOptions = ({
 						openAiHeaders: apiConfiguration.openAiHeaders ?? {},
 					},
 				})
-			} else if (selectedProvider === "vscode-lm") {
-				vscode.postMessage({ type: "requestVsCodeLmModels" })
 			}
 		},
 		250,

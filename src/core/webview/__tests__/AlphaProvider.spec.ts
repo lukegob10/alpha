@@ -21,7 +21,6 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { defaultModeSlug } from "../../../shared/modes"
 import { experimentDefault } from "../../../shared/experiments"
-import { setTtsEnabled } from "../../../utils/tts"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task, TaskOptions } from "../../task/Task"
 import type { McpHub } from "../../../services/mcp/McpHub"
@@ -240,11 +239,6 @@ vi.mock("vscode", () => ({
 		Test: 3,
 	},
 	version: "1.85.0",
-}))
-
-vi.mock("../../../utils/tts", () => ({
-	setTtsEnabled: vi.fn(),
-	setTtsSpeed: vi.fn(),
 }))
 
 vi.mock("../../../api", () => ({
@@ -548,6 +542,51 @@ describe("AlphaProvider", () => {
 		expect(AlphaProvider.getVisibleInstance()).toBe(provider)
 	})
 
+	test.each(["success", "failure"])(
+		"waits for startup configuration before constructor memory initialization (%s)",
+		async (outcome) => {
+			let completeStartup!: () => void
+			let failStartup!: (error: Error) => void
+			const startupReady = new Promise<void>((resolve, reject) => {
+				completeStartup = resolve
+				failStartup = reject
+			})
+			const waiting = new AlphaProvider(
+				mockContext,
+				mockOutputChannel,
+				"sidebar",
+				new ContextProxy(mockContext),
+				startupReady,
+			)
+			let refreshed!: () => void
+			const memoryRefreshed = new Promise<void>((resolve) => (refreshed = resolve))
+			const refresh = vi.spyOn(waiting, "refreshMemorySettings").mockImplementation(async () => refreshed())
+			let failed!: () => void
+			const memoryFailed = new Promise<void>((resolve) => (failed = resolve))
+			const log = vi.spyOn(waiting, "log").mockImplementation((message) => {
+				if (message === "Memory initialization failed; conversation history remains available") failed()
+			})
+			try {
+				await (waiting as unknown as { taskHistoryStoreReady: Promise<void> }).taskHistoryStoreReady
+				expect(refresh).not.toHaveBeenCalled()
+				if (outcome === "success") {
+					completeStartup()
+					await memoryRefreshed
+					expect(refresh).toHaveBeenCalledOnce()
+				} else {
+					failStartup(new Error("Activation failed"))
+					await memoryFailed
+					expect(refresh).not.toHaveBeenCalled()
+				}
+			} finally {
+				completeStartup()
+				await waiting.dispose()
+				refresh.mockRestore()
+				log.mockRestore()
+			}
+		},
+	)
+
 	test("defers managed-child completion publication until the durable lifecycle acknowledgement", () => {
 		const child = Object.assign(new EventEmitter(), {
 			taskId: "managed-child",
@@ -635,13 +674,13 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.9 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.9-chat-worker-reliability"
+	test("shows the v3.2.10 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.10-memories-conversation-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.8-diff-review-startup")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.9-chat-worker-reliability")
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -738,7 +777,6 @@ describe("AlphaProvider", () => {
 			alwaysAllowMcp: false,
 			uriScheme: "vscode",
 			soundEnabled: false,
-			ttsEnabled: false,
 			enableCheckpoints: false,
 			writeDelayMs: 1000,
 			mcpEnabled: true,
@@ -1833,7 +1871,6 @@ describe("AlphaProvider", () => {
 		expect(state.alwaysAllowWriteOutsideWorkspace).toBe(false)
 		expect(state).toHaveProperty("taskHistory")
 		expect(state).toHaveProperty("soundEnabled")
-		expect(state).toHaveProperty("ttsEnabled")
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
@@ -2257,18 +2294,46 @@ describe("AlphaProvider", () => {
 		await messageHandler({ type: "updateSettings", updatedSettings: { soundEnabled: false } })
 		expect(mockContext.globalState.update).toHaveBeenCalledWith("soundEnabled", false)
 		expect(mockPostMessage).toHaveBeenCalled()
+	})
 
-		// Simulate setting tts to enabled
-		await messageHandler({ type: "updateSettings", updatedSettings: { ttsEnabled: true } })
-		expect(setTtsEnabled).toHaveBeenCalledWith(true)
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("ttsEnabled", true)
-		expect(mockPostMessage).toHaveBeenCalled()
+	test("does not project legacy speech settings after reload", async () => {
+		await mockContext.globalState.update("ttsEnabled", true)
+		await mockContext.globalState.update("ttsSpeed", 1.5)
+		await provider.contextProxy.initialize()
+		for (const state of [await provider.getState(), await provider.getStateToPostToWebview()]) {
+			expect(state).not.toHaveProperty("ttsEnabled")
+			expect(state).not.toHaveProperty("ttsSpeed")
+		}
+	})
 
-		// Simulate setting tts to disabled
-		await messageHandler({ type: "updateSettings", updatedSettings: { ttsEnabled: false } })
-		expect(setTtsEnabled).toHaveBeenCalledWith(false)
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("ttsEnabled", false)
-		expect(mockPostMessage).toHaveBeenCalled()
+	test("ignores speech settings from an older webview while saving notification sounds", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		await provider.getStateToPostToWebview()
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		vi.mocked(mockContext.globalState.update).mockClear()
+		await messageHandler({
+			type: "updateSettings",
+			updatedSettings: { ttsEnabled: true, ttsSpeed: 1.5, soundEnabled: true },
+		})
+		expect(mockContext.globalState.update).not.toHaveBeenCalledWith("ttsEnabled", expect.anything())
+		expect(mockContext.globalState.update).not.toHaveBeenCalledWith("ttsSpeed", expect.anything())
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("soundEnabled", true)
+	})
+
+	test.each([
+		{ type: "ttsEnabled", bool: true },
+		{ type: "ttsSpeed", value: 1.5 },
+		{ type: "playTts", text: "Older webview response" },
+		{ type: "stopTts" },
+	])("safely ignores the retired $type message", async (message) => {
+		await provider.resolveWebviewView(mockWebviewView)
+		await provider.getStateToPostToWebview()
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		vi.mocked(mockContext.globalState.update).mockClear()
+		mockPostMessage.mockClear()
+		await expect(messageHandler(message)).resolves.toBeUndefined()
+		expect(mockContext.globalState.update).not.toHaveBeenCalled()
+		expect(mockPostMessage).not.toHaveBeenCalled()
 	})
 
 	test("autoCondenseContext defaults to true", async () => {

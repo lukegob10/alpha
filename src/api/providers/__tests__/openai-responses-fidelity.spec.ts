@@ -57,11 +57,12 @@ function mockStream(...events: unknown[]) {
 	})
 }
 
-async function consume() {
+async function consume(streaming = true) {
 	const handler = new OpenAiHandler({
 		openAiApiKey: "fixture-key",
 		openAiModelId: "gpt-6.1-sol",
 		openAiBaseUrl: "https://api.openai.com/v1",
+		openAiStreamingEnabled: streaming,
 	})
 	const chunks: ApiStreamChunk[] = []
 	const accumulator = new AgentResponseAccumulator()
@@ -89,6 +90,102 @@ describe("OpenAI Responses completed text fidelity", () => {
 	})
 
 	afterEach(() => vi.restoreAllMocks())
+
+	it.each([false, true])(
+		"streams visible summaries before text while retaining opaque state (encrypted=%s)",
+		async (encrypted) => {
+			const reasoning = {
+				type: "reasoning",
+				id: "rs_summary",
+				...(encrypted ? { encrypted_content: "opaque-summary" } : {}),
+				summary: [{ type: "summary_text", text: "Inspecting the code." }],
+			}
+			mockStream(
+				{
+					type: "response.reasoning_summary_text.delta",
+					output_index: 0,
+					summary_index: 0,
+					delta: "Inspecting ",
+				},
+				{ type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "the " },
+				{
+					type: "response.reasoning_summary_text.done",
+					output_index: 0,
+					summary_index: 0,
+					text: "Inspecting the code.",
+				},
+				done(reasoning),
+				delta("Answer", "output_text", 0, 1),
+				done(message("Answer"), 1),
+				completed([reasoning, message("Answer")]),
+			)
+
+			const { chunks, failure, canonical } = await consume()
+
+			expect(failure).toBeUndefined()
+			expect(chunks.flatMap((chunk) => (chunk.type === "reasoning" && chunk.text ? [chunk.text] : []))).toEqual([
+				"Inspecting ",
+				"the ",
+				"code.",
+			])
+			expect(chunks.findIndex((chunk) => chunk.type === "reasoning" && Boolean(chunk.text))).toBeLessThan(
+				chunks.findIndex((chunk) => chunk.type === "text"),
+			)
+			expect(canonical.reasoning).toBe("Inspecting the code.")
+			expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toHaveLength(
+				encrypted ? 1 : 0,
+			)
+			if (encrypted) {
+				expect(canonical.items).toContainEqual({
+					type: "reasoning",
+					text: "",
+					id: "rs_summary",
+					encryptedContent: "opaque-summary",
+					summary: reasoning.summary,
+				})
+			}
+		},
+	)
+
+	it.each([false, true])(
+		"emits summaries supplied only by completed output once (streaming=%s)",
+		async (streaming) => {
+			const reasoning = {
+				type: "reasoning",
+				id: "rs_completed_summary",
+				encrypted_content: "opaque-completed-summary",
+				summary: [
+					{ type: "summary_text", text: "First." },
+					{ type: "summary_text", text: "Second." },
+				],
+			}
+			const output = [reasoning, message("Answer")]
+			if (streaming) mockStream(done(reasoning), done(message("Answer"), 1), completed(output))
+			else responsesCreate.mockResolvedValueOnce(completed(output).response)
+
+			const { chunks, failure, canonical } = await consume(streaming)
+
+			expect(failure).toBeUndefined()
+			expect(canonical.reasoning).toBe("First.\nSecond.")
+			expect(chunks.findIndex((chunk) => chunk.type === "reasoning" && Boolean(chunk.text))).toBeLessThan(
+				chunks.findIndex((chunk) => chunk.type === "text"),
+			)
+			expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toHaveLength(1)
+		},
+	)
+
+	it("retains visible summary deltas on failure without inventing sealed opaque state", async () => {
+		mockStream(
+			{ type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "Inspecting" },
+			{ type: "error", code: "server_error", message: "Fixture disconnected" },
+		)
+
+		const { chunks, failure, canonical } = await consume()
+
+		expect(failure).toMatchObject({ message: expect.stringContaining("Fixture disconnected") })
+		expect(canonical.reasoning).toBe("Inspecting")
+		expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toEqual([])
+	})
 
 	it.each(
 		(["output_text", "refusal"] as const).flatMap((kind) =>
@@ -262,6 +359,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 		const { chunks, failure, canonical, handler } = await consume()
 		expect(failure).toBeUndefined()
 		expect(canonical.items.filter((entry) => entry.type !== "usage")).toEqual([
+			{ type: "reasoning", text: "Retained summary.", outputIndex: 0 },
 			{
 				type: "reasoning",
 				text: "",

@@ -507,8 +507,8 @@ describe("Alpha", () => {
 			reasoningHandlerUsers: new Map(),
 		}) as Task
 
-		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "openrouter" })).toThrow(
-			"Unsupported API provider: openrouter",
+		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "ollama" })).toThrow(
+			"Unsupported API provider: ollama",
 		)
 		expect(task.apiConfiguration).toBe(apiConfiguration)
 		expect(task.api).toBe(api)
@@ -1035,12 +1035,16 @@ describe("Alpha", () => {
 			})
 
 			it("should persist VS Code LM stateful markers and only replay them to that provider", async () => {
+				const vscodeConfiguration: ProviderSettings = { ...mockApiConfig, apiProvider: "vscode-lm" }
 				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
+				// This fixture supplies the marker; capture its owner before testing foreign-provider replay.
+				alphaTask.apiConfiguration = vscodeConfiguration
+				Reflect.set(alphaTask, "effectiveApiConfiguration", vscodeConfiguration)
 				const statefulMarker = "bW9kZWxcXHJlc3BvbnNl"
 				;(alphaTask.api as any).getStatefulMarker = () => statefulMarker
 				vi.spyOn(alphaTask as any, "saveApiConversationHistory").mockResolvedValue(true)
@@ -1051,15 +1055,17 @@ describe("Alpha", () => {
 				})
 				const markerMessage = alphaTask.apiConversationHistory.at(-1)!
 				expect(markerMessage).toHaveProperty("vscodeLmStatefulMarker", statefulMarker)
+				expect(markerMessage).toHaveProperty("provider_state_scope", {
+					provider: "vscode-lm",
+					modelId: alphaTask.api.getModel().id,
+				})
 
-				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
+				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage], {
+					apiHandler: alphaTask.api,
+					apiConfiguration: mockApiConfig,
+				})
 				expect(anthropicHistory[0]).not.toHaveProperty("vscodeLmStatefulMarker")
 
-				alphaTask.apiConfiguration = {
-					...mockApiConfig,
-					apiProvider: "vscode-lm",
-				} as ProviderSettings
-				Reflect.set(alphaTask, "effectiveApiConfiguration", { ...alphaTask.apiConfiguration })
 				const vscodeLmHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
 
 				expect(vscodeLmHistory[0]).toMatchObject({
@@ -8739,7 +8745,7 @@ describe("Alpha", () => {
 			{ tail: "no-choices", autoApprovalEnabled: false },
 			{ tail: "no-choices", autoApprovalEnabled: true },
 		])(
-			"recovers metadata-only Copilot thinking followed by $tail with tool auto-approval=$autoApprovalEnabled",
+			"handles metadata-only Copilot thinking followed by $tail with tool auto-approval=$autoApprovalEnabled",
 			async ({ tail, autoApprovalEnabled }) => {
 				const task = createTask()
 				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
@@ -8775,6 +8781,29 @@ describe("Alpha", () => {
 							yield { type: "text", text: "Recovered answer." }
 						})(),
 					)
+
+				if (tail === "EOF") {
+					await expect(
+						task.runAgentRequests([{ type: "text", text: "start" }], false),
+					).resolves.toMatchObject({
+						status: "completed",
+						response: {
+							text: "",
+							reasoning: "",
+							items: [
+								expect.objectContaining({
+									vscodeLmThinking: expect.objectContaining({ id: "discarded-thinking" }),
+								}),
+							],
+						},
+					})
+					expect(request).toHaveBeenCalledOnce()
+					expect(ask).not.toHaveBeenCalled()
+					expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ type: "retry" }))
+					expect(JSON.stringify(task.apiConversationHistory)).toContain("discarded-thinking")
+					expect(JSON.stringify(task.apiConversationHistory)).toContain("discarded-signature")
+					return
+				}
 
 				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
 					status: "completed",

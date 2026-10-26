@@ -73,6 +73,7 @@ describe("useMcpToolTool", () => {
 		}
 
 		mockTask = {
+			markMemoryExternalContext: vi.fn(async () => undefined),
 			consecutiveMistakeCount: 0,
 			didToolFailInCurrentTurn: false,
 			recordToolError: vi.fn(),
@@ -113,6 +114,10 @@ describe("useMcpToolTool", () => {
 				return metadata.opaqueResultFingerprint
 			}
 			const original = await run({ id: 1, field: "name" })
+			expect(mockTask.markMemoryExternalContext).toHaveBeenCalledOnce()
+			expect(vi.mocked(mockTask.markMemoryExternalContext!).mock.invocationCallOrder[0]).toBeLessThan(
+				callTool.mock.invocationCallOrder[0],
+			)
 			expect(await run({ field: "name", id: 1 })).toBe(original)
 			expect(await run({ id: 2, field: "name" })).not.toBe(original)
 			callTool.mockResolvedValue({ content: [{ type: "text", text: "different external information" }] })

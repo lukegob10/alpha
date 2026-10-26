@@ -1,19 +1,23 @@
 import { EventEmitter } from "node:events"
-import * as path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import i18next from "i18next"
 import common from "../../../i18n/locales/en/common.json"
 import {
 	runCompletionHooks,
 	runLifecycleHooks,
+	HookCommandCleanupError,
 	type CompletionHookCommand,
 	type CompletionHookConfig,
 	type CompletionHookRequest,
 	type LifecycleHookRequest,
 } from "../CompletionHooks"
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }))
+const { spawnMock, terminateProcessTreeMock } = vi.hoisted(() => ({
+	spawnMock: vi.fn(),
+	terminateProcessTreeMock: vi.fn(),
+}))
 vi.mock("node:child_process", () => ({ spawn: spawnMock }))
+vi.mock("../../../utils/processTree", () => ({ terminateProcessTree: terminateProcessTreeMock }))
 
 beforeAll(() => {
 	i18next.addResourceBundle("en", "common", common, true, true)
@@ -143,17 +147,14 @@ function watchedChunk(buffer: Buffer) {
 
 describe("bounded retained hook output through the public runners", () => {
 	let hooks: HookChild[]
-	let killers: HookChild[]
+	let cleanupRequests: HookChild[]
 	let platform: PropertyDescriptor
-	let onKillerSpawn: (() => void) | undefined
-	let taskkillPath: string
+	let onCleanupStarted: (() => void) | undefined
 
 	beforeEach(() => {
 		vi.useFakeTimers()
 		platform = Object.getOwnPropertyDescriptor(process, "platform")!
 		Object.defineProperty(process, "platform", { ...platform, value: "win32" })
-		vi.stubEnv("SystemRoot", process.cwd())
-		taskkillPath = path.join(process.cwd(), "System32", "taskkill.exe")
 		// Even the POSIX controls below must never signal a real process.
 		vi.spyOn(process, "kill").mockImplementation(() => true)
 		vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
@@ -162,27 +163,31 @@ describe("bounded retained hook output through the public runners", () => {
 			return controller.signal
 		})
 		hooks = []
-		killers = []
-		onKillerSpawn = undefined
+		cleanupRequests = []
+		onCleanupStarted = undefined
 		spawnMock.mockReset()
-		spawnMock.mockImplementation((executable: string) => {
-			const child = fakeChild(700 + hooks.length + killers.length)
-			if (executable === taskkillPath) {
-				killers.push(child)
-				const reentrant = onKillerSpawn
-				onKillerSpawn = undefined
-				reentrant?.()
-			} else {
-				hooks.push(child)
-			}
+		spawnMock.mockImplementation(() => {
+			const child = fakeChild(700 + hooks.length)
+			hooks.push(child)
 			return child
+		})
+		terminateProcessTreeMock.mockReset().mockImplementation(() => {
+			const acknowledgement = fakeChild(0)
+			cleanupRequests.push(acknowledgement)
+			const reentrant = onCleanupStarted
+			onCleanupStarted = undefined
+			reentrant?.()
+			return new Promise<void>((resolve, reject) => {
+				acknowledgement.once("close", (code) =>
+					code === 0 ? resolve() : reject(new Error("Tree termination failed")),
+				)
+			})
 		})
 	})
 
 	afterEach(() => {
 		vi.clearAllTimers()
 		vi.restoreAllMocks()
-		vi.unstubAllEnvs()
 		Object.defineProperty(process, "platform", platform)
 		vi.useRealTimers()
 	})
@@ -194,11 +199,11 @@ describe("bounded retained hook output through the public runners", () => {
 		child.stderr.emit("data", Buffer.alloc(4_096, " "))
 		child.stdout.emit("data", Buffer.alloc(4_096, " "))
 		child.stderr.emit("data", Buffer.alloc(4_096, " "))
-		expect(killers).toHaveLength(0)
+		expect(cleanupRequests).toHaveLength(0)
 		child.stderr.emit("data", Buffer.from(" "))
-		expect(killers).toHaveLength(1)
+		expect(cleanupRequests).toHaveLength(1)
 		child.emit("close", 0)
-		killers[0].emit("close", 0)
+		cleanupRequests[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
 	})
@@ -210,7 +215,7 @@ describe("bounded retained hook output through the public runners", () => {
 		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: event.event === "SessionEnd" ? [] : ["Boundary note"] })
-		expect(killers).toHaveLength(0)
+		expect(cleanupRequests).toHaveLength(0)
 	})
 
 	it("rejects an oversized single chunk before copying or decoding it and ignores repeated late chunks", async () => {
@@ -220,7 +225,7 @@ describe("bounded retained hook output through the public runners", () => {
 		void pending.then(settled)
 		const oversized = watchedChunk(Buffer.alloc(1_048_576, "x"))
 		hooks[0].stdout.emit("data", oversized.buffer)
-		expect(killers).toHaveLength(1)
+		expect(cleanupRequests).toHaveLength(1)
 		expect(oversized.copy).not.toHaveBeenCalled()
 		expect(oversized.decode).not.toHaveBeenCalled()
 
@@ -232,17 +237,17 @@ describe("bounded retained hook output through the public runners", () => {
 		hooks[0].emit("close", 0)
 		await vi.advanceTimersByTimeAsync(0)
 		expect(settled).not.toHaveBeenCalled()
-		expect(killers).toHaveLength(1)
+		expect(cleanupRequests).toHaveLength(1)
 		expect(late.copy).not.toHaveBeenCalled()
 		expect(late.decode).not.toHaveBeenCalled()
-		killers[0].emit("close", 0)
+		cleanupRequests[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
 		expect(settled).toHaveBeenCalledTimes(1)
 	})
 
 	it.each(["data", "error", "close", "abort"] as const)(
-		"keeps first-failure ownership during reentrant %s at killer startup",
+		"keeps first-failure ownership during reentrant %s at tree cleanup startup",
 		async (reentrantEvent) => {
 			const event = eventCase("Stop")
 			const controller = new AbortController()
@@ -250,7 +255,7 @@ describe("bounded retained hook output through the public runners", () => {
 			const settled = vi.fn()
 			void pending.then(settled)
 			const late = watchedChunk(Buffer.from("late"))
-			onKillerSpawn = () => {
+			onCleanupStarted = () => {
 				if (reentrantEvent === "data") {
 					hooks[0].stdout.emit("data", late.buffer)
 					hooks[0].stderr.emit("data", late.buffer)
@@ -266,10 +271,11 @@ describe("bounded retained hook output through the public runners", () => {
 
 			await vi.advanceTimersByTimeAsync(0)
 			expect(settled).not.toHaveBeenCalled()
-			expect(killers).toHaveLength(1)
+			expect(cleanupRequests).toHaveLength(1)
 			expect(late.copy).not.toHaveBeenCalled()
 			expect(late.decode).not.toHaveBeenCalled()
-			killers[0].emit("close", 0)
+			hooks[0].emit("close", 0)
+			cleanupRequests[0].emit("close", 0)
 			expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
 		},
 	)
@@ -369,7 +375,7 @@ describe("bounded retained hook output through the public runners", () => {
 	it("charges malformed bytes as raw bytes even when replacement text encodes to more bytes", async () => {
 		const pending = run(eventCase("SessionStart"))
 		hooks[0].stdout.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES, 0xff))
-		expect(killers).toHaveLength(0)
+		expect(cleanupRequests).toHaveLength(0)
 		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({
@@ -401,7 +407,7 @@ describe("bounded retained hook output through the public runners", () => {
 		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: ["Command 0", "Command 1"] })
-		expect(killers).toHaveLength(0)
+		expect(cleanupRequests).toHaveLength(0)
 	})
 
 	it.each(["Stop", "SessionStart", "SessionEnd"] as const)(
@@ -424,7 +430,7 @@ describe("bounded retained hook output through the public runners", () => {
 			void pending.then(settled)
 			hooks[0].stdout.emit("data", Buffer.from('{"continue":'))
 			controller.abort()
-			expect(killers).toHaveLength(1)
+			expect(cleanupRequests).toHaveLength(1)
 			const late = watchedChunk(Buffer.from('false,"stopReason":"Must not reach caller"}'))
 			hooks[0].stdout.emit("data", late.buffer)
 			hooks[0].stderr.emit("data", late.buffer)
@@ -433,7 +439,7 @@ describe("bounded retained hook output through the public runners", () => {
 			expect(settled).not.toHaveBeenCalled()
 			expect(late.copy).not.toHaveBeenCalled()
 			expect(late.decode).not.toHaveBeenCalled()
-			killers[0].emit("close", 0)
+			cleanupRequests[0].emit("close", 0)
 
 			expect(await pending).toEqual({ warnings: [] })
 			expect(settled).toHaveBeenCalledTimes(1)
@@ -441,16 +447,16 @@ describe("bounded retained hook output through the public runners", () => {
 	)
 
 	it.each(["Stop", "SessionStart", "Interrupt"] as const)(
-		"keeps %s timeout ownership while delayed killer output is drained",
+		"keeps %s timeout ownership while tree cleanup remains pending",
 		async (eventName) => {
 			const event = eventCase(eventName)
 			const pending = run(event, new AbortController().signal, [{ ...command, timeoutMs: 100 }])
 			const settled = vi.fn()
 			void pending.then(settled)
 			await vi.advanceTimersByTimeAsync(99)
-			expect(killers).toHaveLength(0)
+			expect(cleanupRequests).toHaveLength(0)
 			await vi.advanceTimersByTimeAsync(1)
-			expect(killers).toHaveLength(1)
+			expect(cleanupRequests).toHaveLength(1)
 			const late = watchedChunk(Buffer.from('{"systemMessage":"Must not publish"}'))
 			hooks[0].stdout.emit("data", late.buffer)
 			hooks[0].stderr.emit("data", late.buffer)
@@ -459,7 +465,7 @@ describe("bounded retained hook output through the public runners", () => {
 			expect(settled).not.toHaveBeenCalled()
 			expect(late.copy).not.toHaveBeenCalled()
 			expect(late.decode).not.toHaveBeenCalled()
-			killers[0].emit("close", 0)
+			cleanupRequests[0].emit("close", 0)
 
 			expect(await pending).toEqual({ warnings: [failure(event, "timed out")] })
 		},
@@ -468,8 +474,8 @@ describe("bounded retained hook output through the public runners", () => {
 	it("retains the first failure after cancellation and releases its timer and abort listener once", async () => {
 		const event = eventCase("Stop")
 		const controller = new AbortController()
-		const addListener = vi.spyOn(controller.signal, "addEventListener")
-		const removeListener = vi.spyOn(controller.signal, "removeEventListener")
+		const addListener = vi.spyOn(AbortSignal.prototype, "addEventListener")
+		const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener")
 		const pending = run(event, controller.signal)
 		const settled = vi.fn()
 		void pending.then(settled)
@@ -479,8 +485,8 @@ describe("bounded retained hook output through the public runners", () => {
 		hooks[0].emit("close", 0)
 		await vi.advanceTimersByTimeAsync(0)
 		expect(settled).not.toHaveBeenCalled()
-		expect(killers).toHaveLength(1)
-		killers[0].emit("close", 0)
+		expect(cleanupRequests).toHaveLength(1)
+		cleanupRequests[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
 		const listener = addListener.mock.calls.find(([type]) => type === "abort")?.[1]
@@ -491,7 +497,7 @@ describe("bounded retained hook output through the public runners", () => {
 		hooks[0].stdout.emit("data", Buffer.from("late"))
 		await vi.advanceTimersByTimeAsync(30_000)
 		expect(settled).toHaveBeenCalledTimes(1)
-		expect(killers).toHaveLength(1)
+		expect(cleanupRequests).toHaveLength(1)
 	})
 
 	it("ignores late data and duplicate close after successful settlement", async () => {
@@ -511,58 +517,124 @@ describe("bounded retained hook output through the public runners", () => {
 		expect(late.copy).not.toHaveBeenCalled()
 		expect(late.decode).not.toHaveBeenCalled()
 		expect(settled).toHaveBeenCalledExactlyOnceWith(outcome)
-		expect(killers).toHaveLength(0)
+		expect(cleanupRequests).toHaveLength(0)
 		expect(vi.getTimerCount()).toBe(0)
 	})
 
-	it("uses the existing two-second Windows killer grace without accepting the hook's early close", async () => {
+	it("waits for physical hook close after the shared tree helper acknowledges termination", async () => {
 		const event = eventCase("Stop")
 		const pending = run(event)
 		const settled = vi.fn()
 		void pending.then(settled)
 		hooks[0].stderr.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES + 1))
-		hooks[0].emit("close", 0)
-		await vi.advanceTimersByTimeAsync(1_999)
+		cleanupRequests[0].emit("close", 0)
+		await vi.advanceTimersByTimeAsync(0)
 		expect(settled).not.toHaveBeenCalled()
-		await vi.advanceTimersByTimeAsync(1)
+		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
-		expect(killers[0].kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
-		expect(hooks[0].kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
+		expect(terminateProcessTreeMock).toHaveBeenCalledExactlyOnceWith([hooks[0].pid], {
+			detachedProcessGroup: undefined,
+		})
 		expect(vi.getTimerCount()).toBe(0)
 	})
 
-	it("keeps no-shell Windows tree termination and tolerates killer spawn failure", async () => {
+	it("rejects failed tree cleanup even when a late hook close reports success", async () => {
 		const event = eventCase("Stop")
 		const pending = run(event)
-		spawnMock.mockImplementationOnce(() => {
-			throw new Error("Controlled taskkill spawn failure")
-		})
+		const rejected = expect(pending).rejects.toBeInstanceOf(HookCommandCleanupError)
 		hooks[0].stderr.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES + 1))
-
-		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
-		expect(spawnMock).toHaveBeenNthCalledWith(2, taskkillPath, ["/PID", String(hooks[0].pid), "/T", "/F"], {
-			stdio: "ignore",
-			windowsHide: true,
-			shell: false,
-		})
-		expect(hooks[0].kill).toHaveBeenCalledExactlyOnceWith("SIGKILL")
+		hooks[0].emit("close", 0)
+		cleanupRequests[0].emit("close", 1)
+		await rejected
+		expect(hooks[0].kill).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
 	})
 
-	it.each([false, true])("keeps POSIX group ownership with direct-child fallback=%s", async (groupFailure) => {
-		Object.defineProperty(process, "platform", { ...platform, value: "linux" })
-		if (groupFailure) {
-			vi.mocked(process.kill).mockImplementation(() => {
-				throw new Error("Controlled missing group")
-			})
+	it("retains cancellation cleanup failure and retries the original child before it exits", async () => {
+		const controller = new AbortController()
+		const pending = run(eventCase("Stop"), controller.signal)
+		const failed = pending.catch((error: unknown) => error)
+		controller.abort()
+		cleanupRequests[0].emit("close", 1)
+		const error = await failed
+		expect(error).toBeInstanceOf(HookCommandCleanupError)
+		if (!(error instanceof HookCommandCleanupError)) throw new Error("Missing cleanup owner")
+		const retry = error.retryCleanup()
+		cleanupRequests[1].emit("close", 0)
+		hooks[0].emit("close", 0)
+		await retry
+		expect(terminateProcessTreeMock.mock.calls.map(([roots]) => roots)).toEqual([[hooks[0].pid], [hooks[0].pid]])
+		expect(spawnMock).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("bounds a missing close and retains its acknowledgement for a later cleanup retry", async () => {
+		const controller = new AbortController()
+		const pending = run(eventCase("Stop"), controller.signal).catch((error: unknown) => error)
+		controller.abort()
+		cleanupRequests[0].emit("close", 0)
+		await vi.advanceTimersByTimeAsync(11_000)
+		const error = await pending
+		expect(error).toBeInstanceOf(HookCommandCleanupError)
+		if (!(error instanceof HookCommandCleanupError)) throw new Error("Missing cleanup owner")
+		expect(error.cause).toMatchObject({ message: "Timed out waiting for the hook process to close" })
+		hooks[0].emit("close", 0)
+		await error.retryCleanup()
+		expect(terminateProcessTreeMock).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("does not re-signal an exited root after cleanup failed", async () => {
+		const controller = new AbortController()
+		const pending = run(eventCase("Stop"), controller.signal).catch((error: unknown) => error)
+		controller.abort()
+		cleanupRequests[0].emit("close", 1)
+		const error = await pending
+		if (!(error instanceof HookCommandCleanupError)) throw new Error("Missing cleanup owner")
+		hooks[0].emit("exit", 0)
+		await expect(error.retryCleanup()).rejects.toThrow("Tree termination failed")
+		expect(terminateProcessTreeMock).toHaveBeenCalledOnce()
+	})
+
+	it("joins sibling hook teardown and stops new admission after one physical cleanup fails", async () => {
+		const pending = run(
+			eventCase("Stop"),
+			new AbortController().signal,
+			Array.from({ length: 5 }, () => command),
+		)
+		const failed = pending.catch((error: unknown) => error)
+		const settled = vi.fn()
+		void failed.then(settled)
+		expect(hooks).toHaveLength(4)
+		hooks[0].stdout.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES + 1))
+		cleanupRequests[0].emit("close", 1)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(cleanupRequests).toHaveLength(4)
+		expect(settled).not.toHaveBeenCalled()
+		for (let index = 1; index < hooks.length; index++) {
+			cleanupRequests[index].emit("close", 0)
+			hooks[index].emit("close", 0)
 		}
+		expect(await failed).toBeInstanceOf(HookCommandCleanupError)
+		expect(spawnMock).toHaveBeenCalledTimes(4)
+		expect(vi.getTimerCount()).toBe(0)
+		hooks[0].emit("close", 0)
+	})
+
+	it("passes its captured POSIX process group through the shared helper", async () => {
+		Object.defineProperty(process, "platform", { ...platform, value: "linux" })
 		const event = eventCase("Stop")
 		const pending = run(event)
 		hooks[0].stdout.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES + 1))
+		cleanupRequests[0].emit("close", 0)
+		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: [failure(event, "output limit exceeded")] })
-		expect(process.kill).toHaveBeenCalledExactlyOnceWith(-hooks[0].pid, "SIGKILL")
-		expect(hooks[0].kill).toHaveBeenCalledTimes(groupFailure ? 1 : 0)
+		expect(terminateProcessTreeMock).toHaveBeenCalledExactlyOnceWith([hooks[0].pid], {
+			detachedProcessGroup: hooks[0].pid,
+		})
+		expect(process.kill).not.toHaveBeenCalled()
 		expect(spawnMock).toHaveBeenCalledTimes(1)
 	})
 })

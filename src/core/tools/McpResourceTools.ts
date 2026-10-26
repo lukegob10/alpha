@@ -81,6 +81,8 @@ async function listResources<T extends object>(
 		if (params.server) {
 			const server = targets[0]
 			assertCurrentServer(server)
+			await task.markMemoryExternalContext?.()
+			assertCurrentServer(server)
 			const page = await fetchPage(hub, server, params.cursor, signal)
 			assertCurrentServer(server)
 			if (page.items.length > MAX_MCP_CATALOG_ITEMS)
@@ -102,6 +104,8 @@ async function listResources<T extends object>(
 			const serverItems = await collectPaginatedCatalog(
 				method,
 				async (params, pageSignal) => {
+					assertCurrentServer(server)
+					await task.markMemoryExternalContext?.()
 					assertCurrentServer(server)
 					const page = await fetchPage(hub, server, params?.cursor, pageSignal)
 					assertCurrentServer(server)
@@ -163,6 +167,8 @@ export class ReadMcpResourceTool extends BaseTool<"read_mcp_resource"> {
 				}
 			}
 			if (!(await approveResourceRequest(callbacks, server, params.uri))) return
+			assertCurrentServer()
+			await task.markMemoryExternalContext?.()
 			assertCurrentServer()
 			const result = await hub.readResource(server.name, params.uri, server.source, signal)
 			assertCurrentServer()

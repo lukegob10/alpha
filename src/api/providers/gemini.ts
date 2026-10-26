@@ -36,6 +36,7 @@ import {
 	createApiStreamOutcome,
 	raceApiStreamAbort,
 	type ApiStream,
+	type ApiStreamUsageChunk,
 	type GroundingSource,
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
@@ -166,7 +167,10 @@ class GeminiResponseCapture {
 	private characters = 0
 	private hasFunctionCall = false
 
-	constructor(private readonly modelId: string) {}
+	constructor(
+		private readonly modelId: string,
+		private readonly requireFunctionCallSignature: boolean,
+	) {}
 
 	add(parts: unknown[] | undefined): void {
 		if (!parts?.length) return
@@ -181,7 +185,7 @@ class GeminiResponseCapture {
 		}
 		for (const part of snapshot.parts) {
 			if (part.functionCall && !this.hasFunctionCall) {
-				if (!part.thoughtSignature)
+				if (this.requireFunctionCallSignature && !part.thoughtSignature)
 					throw new Error("Gemini returned a function call without its thought signature.")
 				this.hasFunctionCall = true
 			}
@@ -857,7 +861,10 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			metadata?.signal?.throwIfAborted()
 			const requestContext = await this.getRequestContext(model)
 			metadata?.signal?.throwIfAborted()
-			const responseCapture = this.transportProvider === "gemini" ? new GeminiResponseCapture(model) : undefined
+			// Both Google routes require original signed Part boundaries on replay.
+			// Custom/older Vertex models can return unsigned calls; the curated native models require a signature.
+			// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures (2026-10-26)
+			const responseCapture = new GeminiResponseCapture(model, this.transportProvider === "gemini")
 			const requestControl = createLinkedAbortController({
 				signal: metadata?.signal,
 				deadline: metadata?.deadline,
@@ -904,6 +911,33 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 			let emittedAnyStreamChunk = false
 			let semanticOutputObserved = false
+			let pendingUsage: ApiStreamUsageChunk | undefined
+			const captureUsage = (usage: GenerateContentResponseUsageMetadata | undefined) => {
+				if (!usage) return
+				const inputTokens = usage.promptTokenCount ?? 0
+				const candidateTokens = usage.candidatesTokenCount ?? 0
+				const cacheReadTokens = usage.cachedContentTokenCount
+				const reasoningTokens = usage.thoughtsTokenCount
+				pendingUsage = {
+					type: "usage",
+					inputTokens,
+					outputTokens: candidateTokens + (reasoningTokens ?? 0),
+					cacheReadTokens,
+					reasoningTokens,
+					totalCost: this.calculateCost({
+						info,
+						inputTokens,
+						outputTokens: candidateTokens,
+						cacheReadTokens,
+						reasoningTokens,
+					}),
+				}
+			}
+			const takeUsage = () => {
+				const usage = pendingUsage
+				pendingUsage = undefined
+				return usage
+			}
 
 			try {
 				throwIfRequestAborted()
@@ -912,6 +946,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 						requestContext.client.models.generateContent(params),
 						`${this.providerName} request for ${requestContext.model}`,
 					)
+					captureUsage(result.usageMetadata)
 
 					let toolCallCounter = 0
 					let hasContent = false
@@ -929,7 +964,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 							functionCall?: { id?: string; name: string; args?: Record<string, unknown> }
 						}>) {
 							throwIfRequestAborted()
-							responseCapture?.add([part])
+							responseCapture.add([part])
 							const thoughtSignature = part.thoughtSignature
 							if (includeThoughtSignatures && thoughtSignature) {
 								this.lastThoughtSignature = thoughtSignature
@@ -944,7 +979,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 								hasContent = true
 								semanticOutputObserved = true
 								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
-								const geminiResponse = responseCapture?.snapshot()
+								const geminiResponse = responseCapture.snapshot()
 								yield {
 									type: "tool_call",
 									id: callId,
@@ -974,36 +1009,15 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 						}
 					}
 
-					if (result.usageMetadata) {
-						const inputTokens = result.usageMetadata.promptTokenCount ?? 0
-						const candidateTokens = result.usageMetadata.candidatesTokenCount ?? 0
-						const cacheReadTokens = result.usageMetadata.cachedContentTokenCount
-						const reasoningTokens = result.usageMetadata.thoughtsTokenCount
-						// Gemini reports candidates and thoughts separately; canonical output includes both.
-						const outputTokens = candidateTokens + (reasoningTokens ?? 0)
-
-						yield {
-							type: "usage",
-							inputTokens,
-							outputTokens,
-							cacheReadTokens,
-							reasoningTokens,
-							totalCost: this.calculateCost({
-								info,
-								inputTokens,
-								outputTokens: candidateTokens,
-								cacheReadTokens,
-								reasoningTokens,
-							}),
-						}
-					}
+					const usage = takeUsage()
+					if (usage) yield usage
 
 					if (!hasContent) {
 						yield { type: "text", text: this.getNoVisibleContentMessage(candidate?.finishReason) }
 					}
 
 					throwIfRequestAborted()
-					const geminiResponse = responseCapture?.snapshot()
+					const geminiResponse = responseCapture.snapshot()
 					if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
 					throwIfRequestAborted()
 					yield createGeminiOutcome(candidate?.finishReason, semanticOutputObserved, metadata, hasContent)
@@ -1015,7 +1029,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					`${this.providerName} stream request for ${requestContext.model}`,
 				)
 
-				let lastUsageMetadata: GenerateContentResponseUsageMetadata | undefined
 				let pendingGroundingMetadata: GroundingMetadata | undefined
 				let finalResponse: { responseId?: string } | undefined
 				let finishReason: string | undefined
@@ -1053,6 +1066,8 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 					const chunk = nextChunk.value
 					emittedAnyStreamChunk = true
+					// Capture billing before yielding any part: cancellation can interrupt delivery of this same chunk.
+					captureUsage(chunk.usageMetadata)
 
 					// Track the final structured response (per SDK pattern: candidate.finishReason)
 					if (chunk.candidates && chunk.candidates[0]?.finishReason) {
@@ -1075,7 +1090,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 								functionCall?: { id?: string; name: string; args: Record<string, unknown> }
 							}>) {
 								throwIfRequestAborted()
-								responseCapture?.add([part])
+								responseCapture.add([part])
 								// Capture thought signatures so they can be persisted into API history.
 								const thoughtSignature = part.thoughtSignature
 								// Persist thought signatures so they can be round-tripped in the next step.
@@ -1119,7 +1134,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 										arguments: args,
 									}
 									throwIfRequestAborted()
-									const geminiResponse = responseCapture?.snapshot()
+									const geminiResponse = responseCapture.snapshot()
 									yield {
 										type: "tool_call_end",
 										id: callId,
@@ -1145,10 +1160,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 						semanticOutputObserved = true
 						yield { type: "text", text: chunk.text }
 					}
-
-					if (chunk.usageMetadata) {
-						lastUsageMetadata = chunk.usageMetadata
-					}
 				}
 
 				if (finalResponse?.responseId) {
@@ -1164,28 +1175,8 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					}
 				}
 
-				if (lastUsageMetadata) {
-					const inputTokens = lastUsageMetadata.promptTokenCount ?? 0
-					const candidateTokens = lastUsageMetadata.candidatesTokenCount ?? 0
-					const cacheReadTokens = lastUsageMetadata.cachedContentTokenCount
-					const reasoningTokens = lastUsageMetadata.thoughtsTokenCount
-					const outputTokens = candidateTokens + (reasoningTokens ?? 0)
-
-					yield {
-						type: "usage",
-						inputTokens,
-						outputTokens,
-						cacheReadTokens,
-						reasoningTokens,
-						totalCost: this.calculateCost({
-							info,
-							inputTokens,
-							outputTokens: candidateTokens,
-							cacheReadTokens,
-							reasoningTokens,
-						}),
-					}
-				}
+				const usage = takeUsage()
+				if (usage) yield usage
 
 				if (!hasContent) {
 					yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
@@ -1193,12 +1184,15 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 				// EOF is transport closure; only STOP is successful provider completion.
 				throwIfRequestAborted()
-				const geminiResponse = responseCapture?.snapshot()
+				const geminiResponse = responseCapture.snapshot()
 				if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
 				throwIfRequestAborted()
 				yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata, hasContent)
 				return
 			} catch (error) {
+				// Flush observed usage on failure/cancellation, never from finally: consumer return must stay terminal.
+				const usage = takeUsage()
+				if (usage) yield usage
 				if (metadata?.signal?.aborted) {
 					throwIfRequestAborted()
 					throw error

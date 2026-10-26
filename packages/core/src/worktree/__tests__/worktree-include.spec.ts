@@ -283,6 +283,69 @@ describe("WorktreeIncludeService", () => {
 			expect(copiedContent).toBe("LOCAL_VAR=value")
 		})
 
+		it("copies nested matches while respecting negations in either pattern file", async () => {
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "packages/*/*.env\n!packages/app/excluded.env")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "*.env\n!packages/app/public.env")
+			await fs.mkdir(path.join(sourceDir, "packages", "app"), { recursive: true })
+			for (const name of ["private.env", "excluded.env", "public.env"]) {
+				await fs.writeFile(path.join(sourceDir, "packages", "app", name), name)
+			}
+
+			expect(await service.copyWorktreeIncludeFiles(sourceDir, targetDir)).toEqual(["packages/app/private.env"])
+			expect(await fs.readFile(path.join(targetDir, "packages", "app", "private.env"), "utf8")).toBe(
+				"private.env",
+			)
+			await expect(fs.access(path.join(targetDir, "packages", "app", "excluded.env"))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+			await expect(fs.access(path.join(targetDir, "packages", "app", "public.env"))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+		})
+
+		it("copies nested directory-only matches without requiring their parents to match", async () => {
+			const included = path.join(sourceDir, "packages", "app", "dependencies")
+			await fs.mkdir(included, { recursive: true })
+			await fs.writeFile(path.join(included, "dependency.js"), "module contents")
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "packages/*/dependencies/")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "dependencies/")
+
+			expect(await service.copyWorktreeIncludeFiles(sourceDir, targetDir)).toEqual(["packages/app/dependencies"])
+			expect(
+				await fs.readFile(path.join(targetDir, "packages", "app", "dependencies", "dependency.js"), "utf8"),
+			).toBe("module contents")
+		})
+
+		it("does not traverse symlinks or nested Git metadata to discover matching files", async () => {
+			const outside = path.join(tempDir, "outside")
+			await fs.mkdir(outside)
+			await fs.writeFile(path.join(outside, "private.env"), "outside contents")
+			await fs.mkdir(path.join(sourceDir, "packages", ".git"), { recursive: true })
+			await fs.writeFile(path.join(sourceDir, "packages", ".git", "private.env"), "git metadata")
+			await fs.symlink(
+				outside,
+				path.join(sourceDir, "packages", "linked"),
+				process.platform === "win32" ? "junction" : "dir",
+			)
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "**/*.env")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "*.env")
+
+			expect(await service.copyWorktreeIncludeFiles(sourceDir, targetDir)).toEqual([])
+			expect(await fs.readdir(targetDir)).toEqual([])
+			expect(await fs.readFile(path.join(outside, "private.env"), "utf8")).toBe("outside contents")
+		})
+
+		it("fails explicitly when nested discovery exceeds its depth bound", async () => {
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "**/*.env")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "*.env")
+			const nested = path.join(sourceDir, ...Array.from({ length: 65 }, () => "d"))
+			await fs.mkdir(nested, { recursive: true })
+			await fs.writeFile(path.join(nested, "private.env"), "too deep")
+
+			await expect(service.copyWorktreeIncludeFiles(sourceDir, targetDir)).rejects.toThrow(/depth/i)
+			expect(await fs.readdir(targetDir)).toEqual([])
+		})
+
 		it("should ignore comment lines in pattern files", async () => {
 			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "# comment\nnode_modules\n# another comment")
 			await fs.writeFile(path.join(sourceDir, ".gitignore"), "node_modules")

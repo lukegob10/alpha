@@ -6,6 +6,8 @@ import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS, type AlphaCodeSettings } from "@a
 
 import { ContextProxy } from "../ContextProxy"
 
+const secretStorageKeys = [...SECRET_STATE_KEYS, "openAiHeaders"]
+
 vi.mock("vscode", () => ({
 	Uri: {
 		file: vi.fn((path) => ({ path })),
@@ -60,6 +62,32 @@ describe("ContextProxy", () => {
 	})
 
 	describe("retired settings", () => {
+		it("ignores stored and imported speech settings while preserving notification sounds", async () => {
+			const stored = new Map<string, unknown>([
+				["ttsEnabled", true],
+				["ttsSpeed", 1.5],
+				["soundEnabled", true],
+				["soundVolume", 0.4],
+			])
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			const reloaded = new ContextProxy(mockContext)
+			await reloaded.initialize()
+			expect(reloaded.getValues()).not.toHaveProperty("ttsEnabled")
+			expect(reloaded.getValues()).not.toHaveProperty("ttsSpeed")
+			expect(await reloaded.export()).toMatchObject({ soundEnabled: true, soundVolume: 0.4 })
+			expect(await reloaded.export()).not.toHaveProperty("ttsEnabled")
+			expect(await reloaded.export()).not.toHaveProperty("ttsSpeed")
+
+			mockGlobalState.update.mockClear()
+			const imported = { ttsEnabled: true, ttsSpeed: 2, soundEnabled: false, soundVolume: 0.6 }
+			await reloaded.setValues(imported)
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("ttsEnabled", expect.anything())
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("ttsSpeed", expect.anything())
+			expect(reloaded.getValues()).not.toHaveProperty("ttsEnabled")
+			expect(reloaded.getValues()).not.toHaveProperty("ttsSpeed")
+			expect(await reloaded.export()).toMatchObject({ soundEnabled: false, soundVolume: 0.6 })
+		})
+
 		it("ignores legacy stored and imported values without losing custom instructions", async () => {
 			const stored = new Map<string, unknown>([
 				["personality", "none"],
@@ -185,8 +213,8 @@ describe("ContextProxy", () => {
 		})
 
 		it("should initialize secret cache with all secret keys", () => {
-			expect(mockSecrets.get).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length)
-			for (const key of SECRET_STATE_KEYS) {
+			expect(mockSecrets.get).toHaveBeenCalledTimes(secretStorageKeys.length)
+			for (const key of secretStorageKeys) {
 				expect(mockSecrets.get).toHaveBeenCalledWith(key)
 			}
 		})
@@ -576,11 +604,11 @@ describe("ContextProxy", () => {
 			await proxy.resetAllState()
 
 			// Should have called delete for each key
-			for (const key of SECRET_STATE_KEYS) {
+			for (const key of secretStorageKeys) {
 				expect(mockSecrets.delete).toHaveBeenCalledWith(key)
 			}
 			// Total calls should equal the number of secret keys
-			expect(mockSecrets.delete).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length)
+			expect(mockSecrets.delete).toHaveBeenCalledTimes(secretStorageKeys.length)
 		})
 
 		it("should reinitialize caches after reset", async () => {

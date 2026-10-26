@@ -4,6 +4,7 @@ import * as fs from "fs"
 import * as childProcess from "child_process"
 import ignore from "ignore"
 import { arePathsEqual } from "../../utils/path"
+import { getPathRelativeToRoot } from "../../core/tools/pathSafety"
 import { createRipgrepProcessError, executeWithRipgrepFallback, getBinPath } from "../../services/ripgrep"
 import { DIRS_TO_IGNORE } from "./constants"
 
@@ -441,32 +442,88 @@ async function createStrictIgnoreInstance(
 	const ignoreInstance = ignore()
 	let remainingBytes = STRICT_IGNORE_BYTE_LIMIT
 	for (const directory of directories.reverse()) {
-		signal?.throwIfAborted()
-		const ignorePath = path.join(directory, ".gitignore")
-		let stat: fs.Stats
-		try {
-			stat = await fs.promises.lstat(ignorePath)
-		} catch (error) {
-			signal?.throwIfAborted()
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-			throw error
-		}
-		signal?.throwIfAborted()
-		if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
-			throw new Error(`Strict file listing cannot load a linked or nonregular .gitignore: ${ignorePath}`)
-		}
-		const canonical = await fs.promises.realpath(ignorePath)
-		signal?.throwIfAborted()
-		if (path.relative(ignorePath, canonical) !== "") {
-			throw new Error(`Strict file listing cannot follow a .gitignore alias: ${ignorePath}`)
-		}
-		const content = await readStrictIgnoreFile(ignorePath, stat, remainingBytes, signal)
-		signal?.throwIfAborted()
+		const content = await loadStrictIgnoreFile(path.join(directory, ".gitignore"), remainingBytes, signal)
+		if (!content) continue
 		remainingBytes -= content.length
 		ignoreInstance.add(content.toString("utf8"))
 	}
 	ignoreInstance.add(".gitignore")
 	return ignoreInstance
+}
+
+/** Read current workspace rules for one candidate, including plain folders, without traversing sibling trees. */
+export async function isFileIgnoredByGitignore(
+	filePath: string,
+	workspaceRoot: string,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	signal?.throwIfAborted()
+	const root = path.resolve(workspaceRoot)
+	const candidate = path.resolve(root, filePath)
+	if (getPathRelativeToRoot(root, candidate) === undefined) return true
+	const canonicalRoot = await fs.promises.realpath(root)
+	const directories: string[] = []
+	for (let directory = path.dirname(candidate); ; directory = path.dirname(directory)) {
+		if (directories.length === STRICT_IGNORE_DIRECTORY_LIMIT) {
+			throw new Error("Strict file listing exceeded the ignore-directory traversal limit.")
+		}
+		directories.push(directory)
+		if (path.relative(root, directory) === "") break
+	}
+	const layers: Array<{ directory: string; rules: ReturnType<typeof ignore> }> = []
+	const ignored = (target: string, isDirectory = false) => {
+		let result = false
+		for (const layer of layers) {
+			const relative = path.relative(layer.directory, target).replace(/\\/g, "/")
+			const match = layer.rules.test(relative + (isDirectory ? "/" : ""))
+			if (match.ignored || match.unignored) result = match.ignored
+		}
+		return result
+	}
+	let remainingBytes = STRICT_IGNORE_BYTE_LIMIT
+	for (const directory of directories.reverse()) {
+		signal?.throwIfAborted()
+		// Git cannot re-include a file through rules inside an already excluded parent.
+		if (directory !== root && ignored(directory, true)) return true
+		const canonicalDirectory = await fs.promises.realpath(directory)
+		signal?.throwIfAborted()
+		if (getPathRelativeToRoot(canonicalRoot, canonicalDirectory) === undefined) {
+			throw new Error("Ignore discovery cannot leave the captured workspace.")
+		}
+		const content = await loadStrictIgnoreFile(path.join(canonicalDirectory, ".gitignore"), remainingBytes, signal)
+		if (!content) continue
+		remainingBytes -= content.length
+		layers.push({ directory, rules: ignore().add(content.toString("utf8")) })
+	}
+	return ignored(candidate)
+}
+
+async function loadStrictIgnoreFile(
+	ignorePath: string,
+	remainingBytes: number,
+	signal?: AbortSignal,
+): Promise<Buffer | undefined> {
+	signal?.throwIfAborted()
+	let stat: fs.Stats
+	try {
+		stat = await fs.promises.lstat(ignorePath)
+	} catch (error) {
+		signal?.throwIfAborted()
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+		throw error
+	}
+	signal?.throwIfAborted()
+	if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+		throw new Error(`Strict file listing cannot load a linked or nonregular .gitignore: ${ignorePath}`)
+	}
+	const canonical = await fs.promises.realpath(ignorePath)
+	signal?.throwIfAborted()
+	if (path.relative(ignorePath, canonical) !== "") {
+		throw new Error(`Strict file listing cannot follow a .gitignore alias: ${ignorePath}`)
+	}
+	const content = await readStrictIgnoreFile(ignorePath, stat, remainingBytes, signal)
+	signal?.throwIfAborted()
+	return content
 }
 
 /** Read at most the remaining budget plus one overflow byte, and always join handle close. */

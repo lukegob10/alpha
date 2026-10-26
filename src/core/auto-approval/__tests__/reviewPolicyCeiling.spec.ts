@@ -16,6 +16,7 @@ import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
 import { applyExecutionProfile, resolveExecutionProfile } from "../../agent/ExecutionProfile"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
+import { createSubagentCommandApprovalPolicy } from "../commands"
 
 const protectedWrite = JSON.stringify({ tool: "editedExistingFile", path: ".alphaignore" })
 const mcpUse = (overrides: Record<string, unknown> = {}) =>
@@ -75,6 +76,67 @@ describe("captured tool review ceiling", () => {
 		await expect(
 			checkAutoApproval({ state: live, reviewPolicy, ask: "tool", text: protectedWrite, isProtected: true }),
 		).resolves.toEqual({ decision: testCase.decision })
+	})
+
+	it.each([
+		{ captured: false, live: true, decision: "ask" },
+		{ captured: true, live: false, decision: "ask" },
+		{ captured: true, live: true, decision: "approve" },
+	])("intersects protected command-write options ($captured/$live → $decision)", async (testCase) => {
+		const live = state()
+		live.allowedCommands = ["Set-Content"]
+		live.alwaysAllowWriteProtected = testCase.captured
+		const reviewPolicy = captureToolReviewPolicy(live)
+		live.alwaysAllowWriteProtected = testCase.live
+
+		await expect(
+			checkAutoApproval({
+				state: live,
+				reviewPolicy,
+				ask: "command",
+				text: "Set-Content AGENTS.md synthetic-content",
+				isProtected: true,
+			}),
+		).resolves.toEqual({ decision: testCase.decision })
+	})
+
+	it.each([false, true])("retains inherited protected command-write permission %s", async (permitted) => {
+		const live = state()
+		live.allowedCommands = ["Set-Content"]
+		const inheritedState = {
+			...disabledSubagentAutoApprovalPolicy,
+			...deriveAutoApprovalFlags("auto"),
+			alwaysAllowWriteProtected: permitted,
+			commandApproval: createSubagentCommandApprovalPolicy(["Set-Content"], []),
+		}
+
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: live,
+				inheritedState,
+				reviewPolicy: captureToolReviewPolicy(live),
+				ask: "command",
+				text: "Set-Content AGENTS.md synthetic-content",
+				isProtected: true,
+			}),
+		).resolves.toEqual({ decision: permitted ? "approve" : "ask" })
+	})
+
+	it("retains explicit command denials before protected-write review", async () => {
+		const live = state()
+		live.allowedCommands = ["Set-Content"]
+		live.deniedCommands = ["Set-Content"]
+		live.alwaysAllowWriteProtected = false
+
+		await expect(
+			checkAutoApproval({
+				state: live,
+				reviewPolicy: captureToolReviewPolicy(live),
+				ask: "command",
+				text: "Set-Content AGENTS.md synthetic-content",
+				isProtected: true,
+			}),
+		).resolves.toEqual({ decision: "deny" })
 	})
 
 	it.each(["ask", "auto"] as const)("requires both captured and live exact MCP grants in %s", async (mode) => {
@@ -148,6 +210,15 @@ describe("captured tool review ceiling", () => {
 			checkAutoApproval({ state: live, reviewPolicy, ask: "tool", text: protectedWrite, isProtected: true }),
 		).resolves.toEqual({ decision: "approve" })
 		await expect(
+			checkAutoApproval({
+				state: live,
+				reviewPolicy,
+				ask: "command",
+				text: "Set-Content AGENTS.md synthetic-content",
+				isProtected: true,
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
 			checkAutoApproval({ state: live, reviewPolicy, ask: "use_mcp_server", text: mcpUse() }),
 		).resolves.toEqual({ decision: "approve" })
 	})
@@ -164,6 +235,7 @@ describe("captured tool review ceiling", () => {
 		expect(inferApprovalModeFromPolicy(inheritedState)).toBe("bypass")
 		for (const input of [
 			{ ask: "tool" as const, text: protectedWrite, isProtected: true },
+			{ ask: "command" as const, text: "Set-Content AGENTS.md synthetic-content", isProtected: true },
 			{ ask: "use_mcp_server" as const, text: mcpUse() },
 		]) {
 			await expect(

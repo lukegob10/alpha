@@ -100,7 +100,28 @@ async function checkWorktreeAutoOpen(
 
 // This method is called when your extension is activated.
 // Your extension is activated the very first time the command is executed.
-export async function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext) {
+	let completeStartupConfiguration!: () => void
+	let failStartupConfiguration!: (error: unknown) => void
+	const startupConfigurationReady = new Promise<void>((resolve, reject) => {
+		completeStartupConfiguration = resolve
+		failStartupConfiguration = reject
+	})
+	// Own rejection even if activation fails before the provider can subscribe to readiness.
+	void startupConfigurationReady.catch(() => undefined)
+	return activateExtension(context, startupConfigurationReady).then(
+		(api) => {
+			completeStartupConfiguration()
+			return api
+		},
+		(error: unknown) => {
+			failStartupConfiguration(error)
+			throw error
+		},
+	)
+}
+
+async function activateExtension(context: vscode.ExtensionContext, startupConfigurationReady: Promise<void>) {
 	const activationStartedAt = performance.now()
 	await loadExtensionEnvironment(path.join(__dirname, "..", ".env"))
 	const performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
@@ -139,6 +160,20 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	const contextProxy = await ContextProxy.getInstance(context)
+	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy, startupConfigurationReady)
+
+	// Settle imported provider and approval settings before indexing, schedules, or task surfaces admit work.
+	try {
+		await autoImportSettings(outputChannel, {
+			providerSettingsManager: provider.providerSettingsManager,
+			contextProxy: provider.contextProxy,
+			customModesManager: provider.customModesManager,
+		})
+	} catch (error) {
+		outputChannel.appendLine(
+			`[AutoImport] Error during auto-import: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	}
 
 	// Initialize code index managers for all workspace folders.
 	if (vscode.workspace.workspaceFolders) {
@@ -147,7 +182,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 			if (manager) {
 				// Initialize in background; do not block extension activation
-				void manager.initialize(contextProxy).catch((error) => {
+				void manager.initialize(contextProxy, { refreshSecrets: false }).catch((error) => {
 					const message = error instanceof Error ? error.message : String(error)
 					outputChannel.appendLine(
 						`[CodeIndexManager] Error during background CodeIndexManager configuration/indexing for ${folder.uri.fsPath}: ${message}`,
@@ -159,7 +194,6 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy)
 	const ticketPanel = new TicketPanel(context, provider)
 	const incidentPanel = new IncidentPanel(context, provider)
 	context.subscriptions.push(
@@ -186,19 +220,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			webviewOptions: { retainContextWhenHidden: true },
 		}),
 	)
-
-	// Auto-import configuration if specified in settings.
-	try {
-		await autoImportSettings(outputChannel, {
-			providerSettingsManager: provider.providerSettingsManager,
-			contextProxy: provider.contextProxy,
-			customModesManager: provider.customModesManager,
-		})
-	} catch (error) {
-		outputChannel.appendLine(
-			`[AutoImport] Error during auto-import: ${error instanceof Error ? error.message : String(error)}`,
-		)
-	}
 
 	registerCommands({ context, outputChannel, provider })
 	registerEditorChatSerializer({ context, outputChannel })

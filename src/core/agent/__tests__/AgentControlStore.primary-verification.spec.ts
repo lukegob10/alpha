@@ -98,6 +98,113 @@ const recordAppliedWorker = async (
 	})
 
 describe("AgentControlStore primary verification", () => {
+	it("retains a shared-workspace child's mutation attribution through lifecycle publication and reload", async () => {
+		const { store, persistence } = await setup()
+		await store.createAgent({
+			taskId: "review-1",
+			parentTaskId: "root-1",
+			nickname: "review",
+			role: "review",
+			objective: "Make the authorized correction",
+			status: "running",
+		})
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "child-edit")
+		await store.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			contributorTaskId: "review-1",
+			workspacePath,
+			fileVersions: { "src/a.ts": "child-content" },
+			reservationToken: "child-edit",
+		})
+		await store.updateAgentSnapshot("review-1", { phase: "verifying" }, "root-1")
+		await store.updateAgentStatus("review-1", "completed", { snapshot: { summary: "Corrected" } }, "root-1")
+		const restored = new AgentControlStore(persistence)
+		await restored.initialize()
+
+		expect(restored.getAgent("review-1", "root-1")?.snapshot?.metadata).toMatchObject({
+			sharedWorkspaceChangedFiles: ["src/a.ts"],
+		})
+		expect(restored.getVerificationObligations({ parentTaskId: "root-1" })[0]).toMatchObject({
+			changedFiles: ["src/a.ts"],
+			fileVersions: { "src/a.ts": "child-content" },
+			mutationReservations: [],
+		})
+		await restored.updateAgentStatus("review-1", "pending", { snapshot: { phase: "queued" } }, "root-1")
+		expect(restored.getAgent("review-1", "root-1")?.snapshot?.metadata?.sharedWorkspaceChangedFiles).toBeUndefined()
+		expect(restored.getVerificationObligations({ parentTaskId: "root-1" })[0]?.changedFiles).toEqual(["src/a.ts"])
+	})
+
+	it("commits shared-workspace attribution only with a valid parent receipt", async () => {
+		const { store } = await setup()
+		await store.createAgent({
+			taskId: "review-1",
+			parentTaskId: "root-1",
+			nickname: "review",
+			role: "review",
+			objective: "Make the authorized correction",
+			status: "running",
+		})
+		await expect(
+			store.recordPrimaryMutation({
+				rootTaskId: "root-1",
+				parentTaskId: "root-1",
+				contributorTaskId: "review-1",
+				workspacePath,
+				fileVersions: { "src/a.ts": "child-content" },
+				reservationToken: "missing-reservation",
+			}),
+		).rejects.toThrow("did not match an active reservation")
+		expect(store.getAgent("review-1", "root-1")?.snapshot?.metadata).toBeUndefined()
+		expect(store.getVerificationObligations()).toEqual([])
+	})
+
+	it("attributes a nested shared edit to its managed ancestors without accepting a peer's receipt", async () => {
+		const { store } = await setup()
+		for (const [taskId, parentTaskId] of [
+			["review-1", "root-1"],
+			["explore-1", "review-1"],
+			["peer", "root-1"],
+		] as const) {
+			await store.createAgent({
+				taskId,
+				parentTaskId,
+				nickname: taskId,
+				role: "review",
+				objective: "Correct shared source",
+				status: "running",
+			})
+		}
+		await store.reservePrimaryMutation("review-1", "root-1", workspacePath, "peer-attempt")
+		await expect(
+			store.recordPrimaryMutation({
+				rootTaskId: "root-1",
+				parentTaskId: "review-1",
+				contributorTaskId: "peer",
+				workspacePath,
+				fileVersions: { "src/a.ts": "peer-content" },
+				reservationToken: "peer-attempt",
+			}),
+		).rejects.toThrow("must be a descendant")
+		expect(store.getVerificationObligations({ parentTaskId: "review-1" })[0]?.mutationReservations).toEqual([
+			"peer-attempt",
+		])
+		expect(store.getAgent("peer")?.snapshot?.metadata).toBeUndefined()
+
+		await store.reservePrimaryMutation("root-1", "root-1", workspacePath, "nested-edit")
+		await store.recordPrimaryMutation({
+			rootTaskId: "root-1",
+			parentTaskId: "root-1",
+			contributorTaskId: "explore-1",
+			workspacePath,
+			fileVersions: { "src/nested.ts": "nested-content" },
+			reservationToken: "nested-edit",
+		})
+		for (const taskId of ["explore-1", "review-1"]) {
+			expect(store.getAgent(taskId)?.snapshot?.metadata?.sharedWorkspaceChangedFiles).toEqual(["src/nested.ts"])
+		}
+	})
+
 	it("accepts successful arbitrary process evidence without inferring a test classification", async () => {
 		const { store, persistence } = await setup()
 		const obligation = (await recordPrimary(store, { "app.py": "source-version" }))!

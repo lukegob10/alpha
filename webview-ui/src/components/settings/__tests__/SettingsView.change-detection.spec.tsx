@@ -304,8 +304,6 @@ describe("SettingsView - Change Detection Fix", () => {
 		maxWorkspaceFiles: 200,
 		mcpEnabled: false,
 		soundEnabled: false,
-		ttsEnabled: false,
-		ttsSpeed: 1.0,
 		soundVolume: 0.5,
 		telemetrySetting: "unset" as const,
 		terminalOutputLineLimit: 500,

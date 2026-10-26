@@ -26,6 +26,13 @@ model in Settings, enter that provider's API key, and click **Save**. Choose rea
 available levels follow the selected model. Existing OpenAI Compatible profiles keep their custom endpoints and models.
 Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
 
+Enable optional local memory in **Settings → Context → Memories**, then **Save**. Use and generation have separate
+controls; background generation uses the selected provider and can incur model usage. Memory uses eligible idle
+conversations and stores `memory_summary.md` and `rollout_summaries/` under `~/.alpha/memories_v2/` (or
+`$ALPHA_HOME/memories_v2/`). Use changes apply to new conversations; generation changes also apply to the displayed
+conversation. Turning memory off retains its files. **Reset all memories** removes learned state without deleting
+conversations. Optional memory tools provide scoped retrieval and user-requested remember, correct, or forget notes.
+
 Alpha uses the GitHub CLI (`gh`) through its command tool. Install it where the extension runs and authenticate with
 `gh auth login`. Commands use the selected approval policy.
 
@@ -153,9 +160,11 @@ For an automated build and installation, run `pnpm install:vsix`. It installs fr
 output, builds the VSIX, and asks before installing with `--force`. Use `--editor=code`, `--editor=code-insiders`, or
 `--editor=cursor` to select an editor command; `-y` skips prompts. Restart the editor after installation.
 
-The [release workflow](.github/workflows/release-vsix.yml) publishes verified Windows x64 packages to GitHub Releases
-after its validation gates. It runs automatically for `src/package.json` changes on `main` and supports manual dispatch
-on a selected release branch. It does not publish to the VS Code Marketplace. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The [release workflow](.github/workflows/release-vsix.yml) publishes a verified Windows x64 package as
+`alpha-<version>.vsix` to GitHub Releases after its validation gates. Local and retained CI packages keep their target
+suffix; the published download keeps the historical release filename. The workflow runs automatically for
+`src/package.json` changes on `main` and supports manual dispatch on a selected release branch. It does not publish to
+the VS Code Marketplace. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Resources and contributions
 

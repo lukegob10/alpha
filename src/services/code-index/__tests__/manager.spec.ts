@@ -1,6 +1,8 @@
 import { CodeIndexManager } from "../manager"
 import { CodeIndexServiceFactory } from "../service-factory"
 import { CodeIndexOrchestrator } from "../orchestrator"
+import { CacheManager } from "../cache-manager"
+import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
 import type { MockedClass } from "vitest"
 import * as path from "path"
 
@@ -491,6 +493,112 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			const createdEmbedder = mockServiceFactoryInstance.createServices.mock.results[0].value.embedder
 			expect(mockServiceFactoryInstance.validateEmbedder).toHaveBeenCalledWith(createdEmbedder)
 			expect(mockStateManager.setSystemState).not.toHaveBeenCalledWith("Error", expect.any(String))
+		})
+
+		it("does not recreate services when disposed during startup configuration loading", async () => {
+			const configuration = deferred<{ requiresRestart: boolean }>()
+			const configurationStarted = deferred<void>()
+			const configManager = (manager as any)._configManager
+			configManager.loadConfiguration.mockImplementation(() => {
+				configurationStarted.resolve(undefined)
+				return configuration.promise
+			})
+			;(manager as any)._cacheManager = { initialize: vi.fn() }
+			mockServiceFactoryInstance.validateEmbedder.mockResolvedValue({ valid: true })
+			const initialization = manager.initialize({} as Parameters<CodeIndexManager["initialize"]>[0])
+			await configurationStarted.promise
+			manager.dispose()
+			configuration.resolve({ requiresRestart: false })
+			await initialization
+
+			expect(mockServiceFactoryInstance.createServices).not.toHaveBeenCalled()
+			expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+			expect(manager.isInitialized).toBe(false)
+			expect(mockStateManager.dispose).toHaveBeenCalledOnce()
+		})
+
+		it("does not recreate services when disposed during startup cache loading", async () => {
+			const cache = deferred<void>()
+			const cacheStarted = deferred<void>()
+			const initializeCache = vi.spyOn(CacheManager.prototype, "initialize").mockImplementation(() => {
+				cacheStarted.resolve(undefined)
+				return cache.promise
+			})
+			mockServiceFactoryInstance.validateEmbedder.mockResolvedValue({ valid: true })
+			const initialization = manager.initialize({} as Parameters<CodeIndexManager["initialize"]>[0])
+			try {
+				await cacheStarted.promise
+				manager.dispose()
+				cache.resolve(undefined)
+				await initialization
+
+				expect(mockServiceFactoryInstance.createServices).not.toHaveBeenCalled()
+				expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+				expect(manager.isInitialized).toBe(false)
+			} finally {
+				cache.resolve(undefined)
+				await initialization
+				initializeCache.mockRestore()
+			}
+		})
+
+		it.each(["initialize", "handleSettingsChange"] as const)(
+			"releases provisional watchers when disposed during %s validation",
+			async (operation) => {
+				const validation = deferred<{ valid: boolean }>()
+				const validationStarted = deferred<void>()
+				;(manager as any)._cacheManager = { initialize: vi.fn() }
+				;(manager as any)._configManager.loadConfiguration.mockResolvedValue({ requiresRestart: true })
+				mockServiceFactoryInstance.validateEmbedder.mockImplementation(() => {
+					validationStarted.resolve(undefined)
+					return validation.promise
+				})
+				const initialization =
+					operation === "initialize"
+						? manager.initialize({} as Parameters<CodeIndexManager["initialize"]>[0])
+						: manager.handleSettingsChange()
+				await validationStarted.promise
+				manager.dispose()
+				const provisionalDisposals = mockFileWatcher.dispose.mock.calls.length
+				validation.resolve({ valid: true })
+				await initialization
+
+				expect(provisionalDisposals).toBe(1)
+				expect(mockFileWatcher.dispose).toHaveBeenCalledOnce()
+				expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+				expect(manager.isInitialized).toBe(false)
+				expect(mockStateManager.dispose).toHaveBeenCalledOnce()
+			},
+		)
+
+		it("releases the ignore watcher when service creation fails", async () => {
+			const disposeIgnore = vi.spyOn(AlphaIgnoreController.prototype, "dispose")
+			mockServiceFactoryInstance.createServices.mockImplementation(() => {
+				throw new Error("Invalid configuration")
+			})
+			try {
+				await expect((manager as any)._recreateServices()).rejects.toThrow("Invalid configuration")
+				expect(disposeIgnore).toHaveBeenCalledOnce()
+			} finally {
+				disposeIgnore.mockRestore()
+			}
+		})
+
+		it("keeps disposal terminal across queued recovery and later initialization", async () => {
+			const recovery = manager.recoverFromError()
+			manager.dispose()
+			manager.dispose()
+			await recovery
+			await manager.initialize({} as Parameters<CodeIndexManager["initialize"]>[0])
+			await manager.handleSettingsChange()
+			await manager.startIndexing()
+
+			expect(mockServiceFactoryInstance.createServices).not.toHaveBeenCalled()
+			expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+			expect(mockStateManager.setSystemState).not.toHaveBeenCalled()
+			expect(mockStateManager.dispose).toHaveBeenCalledOnce()
+			expect(manager.isInitialized).toBe(false)
+			expect(CodeIndexManager.getInstance(mockContext)).not.toBe(manager)
 		})
 
 		it.each([true, false])(

@@ -50,6 +50,7 @@ import {
 	captureWorkspaceMutationDiffBaseline,
 	createWorkspaceMutationDiffs,
 	compareWorkspaceMutationState,
+	requiresWorkspaceMutationReceipt,
 	type WorkspaceMutationDiff,
 	type WorkspaceMutationDiffBaseline,
 	type WorkspaceMutationState,
@@ -139,7 +140,7 @@ async function finalizeCommandMutationReceipt(
 	physicalExecutionId: string,
 	onIncomplete: () => void,
 ): Promise<WorkspaceMutationDiff[]> {
-	if (task.taskKind !== "primary") return []
+	if (!requiresWorkspaceMutationReceipt(task)) return []
 
 	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
 	if (mutationBaseline) {
@@ -798,7 +799,10 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
 			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
 
-			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(canonicalCommand)
+			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(
+				canonicalCommand,
+				customCwd,
+			)
 
 			if (ignoredFileAttemptedToAccess) {
 				preLaunchFailure("policy_denied", { kind: "user-action" }, [
@@ -1754,7 +1758,7 @@ export async function executeCommandInTerminal(
 		}
 	}
 
-	if (task.taskKind === "primary") {
+	if (requiresWorkspaceMutationReceipt(task)) {
 		try {
 			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
 			try {
@@ -1772,7 +1776,7 @@ export async function executeCommandInTerminal(
 			releaseTerminalReservation()
 			return cancellationResult()
 		}
-		if (task.taskKind === "primary") {
+		if (requiresWorkspaceMutationReceipt(task)) {
 			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.reservePrimaryMutation(task, physicalExecutionId)
@@ -1939,8 +1943,26 @@ export async function executeCommandInTerminal(
 		// This owner outlives the foreground race. The agent may already have
 		// received a background session when the process-lifetime timeout fires.
 		userTimeoutFinalization = (async () => {
+			let stopTimer: ReturnType<typeof setTimeout> | undefined
+			let acknowledgeExit!: () => void
+			const physicalExit = new Promise<void>((resolve) => (acknowledgeExit = resolve))
+			// Physical acknowledgement must survive a later presentation observer throwing.
+			process.prependOnceListener("shell_execution_complete", acknowledgeExit)
+			process.prependOnceListener("terminal_closed", acknowledgeExit)
+			if (exitDetails) acknowledgeExit()
 			try {
-				await Promise.resolve().then(() => process.abort())
+				const stop = exitDetails
+					? Promise.resolve()
+					: Promise.resolve().then(() => (process.terminate ? process.terminate() : process.abort()))
+				await Promise.race([
+					Promise.all([stop, physicalExit]),
+					new Promise<never>((_, reject) => {
+						stopTimer = setTimeout(
+							() => reject(new Error("Timed out confirming command termination after its user deadline")),
+							11_000,
+						)
+					}),
+				])
 			} catch (error) {
 				const cleanupError = new CommandExecutionLifecycleError(
 					"await-command-process",
@@ -1960,6 +1982,10 @@ export async function executeCommandInTerminal(
 					}
 				}
 				throw cleanupError
+			} finally {
+				clearTimeout(stopTimer)
+				process.removeListener("shell_execution_complete", acknowledgeExit)
+				process.removeListener("terminal_closed", acknowledgeExit)
 			}
 
 			if (!mutationReservationAcquired) return

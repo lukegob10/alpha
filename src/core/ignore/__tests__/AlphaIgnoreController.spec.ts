@@ -393,6 +393,42 @@ describe("AlphaIgnoreController", () => {
 			expect(controller.validateCommand("less README.md")).toBeUndefined()
 		})
 
+		it.each(["secrets", path.resolve(TEST_CWD, "secrets")])(
+			"blocks relative reads from the command working directory %s",
+			(workingDirectory) => {
+				expect(controller.validateCommand("cat keys.json", workingDirectory)).toBe("keys.json")
+				expect(controller.validateCommand("Get-Content -LiteralPath keys.json", workingDirectory)).toBe(
+					"keys.json",
+				)
+			},
+		)
+
+		it("resolves quoted, substituted, and named operands from the command working directory", () => {
+			expect(controller.validateCommand('cat "api keys.json"', "secrets")).toBe("api keys.json")
+			expect(controller.validateCommand('echo "$(cat keys.json)"', "secrets")).toBe("keys.json")
+			expect(controller.validateCommand("Get-Content -Path:keys.json", "secrets")).toBe("keys.json")
+		})
+
+		it("retains traversal and absolute-path handling from a command subdirectory", () => {
+			const ignoredPath = path.resolve(TEST_CWD, "secrets/keys.json")
+			expect(controller.validateCommand("cat ../secrets/keys.json", "src")).toBe("../secrets/keys.json")
+			expect(controller.validateCommand(`cat "${ignoredPath}"`, "src")).toBe(ignoredPath)
+			expect(controller.validateCommand("cat ../README.md", "src")).toBeUndefined()
+			expect(controller.validateCommand("cat app.ts", "src")).toBeUndefined()
+		})
+
+		it("checks a command working directory alias against its ignored canonical target", () => {
+			vi.mocked(fsSync.realpathSync).mockImplementation((filePath) => {
+				const candidate = filePath.toString()
+				if (candidate.endsWith(path.join("secret-alias", "keys.json"))) {
+					return path.resolve(TEST_CWD, "secrets/keys.json")
+				}
+				return candidate
+			})
+
+			expect(controller.validateCommand("cat keys.json", "secret-alias")).toBe("keys.json")
+		})
+
 		/**
 		 * Tests commands with various arguments and flags
 		 */

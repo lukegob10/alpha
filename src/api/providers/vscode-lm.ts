@@ -1621,9 +1621,10 @@ export function getVsCodeLmModels() {
 
 async function discoverVsCodeLmModels() {
 	try {
+		// An unscoped selector waits for every VS Code vendor, including unrelated providers.
 		const models =
 			(await withApiRequestTimeout(
-				vscode.lm.selectChatModels({}),
+				vscode.lm.selectChatModels({ vendor: "copilot" }),
 				"VS Code LM model list refresh",
 				getApiRequestTimeout(),
 			)) || []

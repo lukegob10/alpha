@@ -41,6 +41,7 @@ import type { GoalAccountingBinding } from "../../agent/GoalStepAccounting"
 import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
+import { captureVerificationContent } from "../../agent/VerificationScope"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -226,7 +227,7 @@ const makeMailboxRecipient = (provider: AlphaProvider, history: ApiMessage[] = [
 		apiConversationHistory: history,
 		providerRef: { deref: () => provider },
 		agentMessageAdmissions: new Set(),
-		agentMessageInbox: { deliver: async () => undefined },
+		agentMessageInbox: { deliver: async () => undefined, hasPending: () => false },
 		saveApiConversationHistory: vi.fn(async () => true),
 		addToApiConversationHistory: vi.fn(async (message: ApiMessage) => {
 			history.push(message)
@@ -313,6 +314,150 @@ describe("AlphaProvider root lifecycle ownership", () => {
 })
 
 describe("AlphaProvider bounded sub-agent preparation", () => {
+	it("cancels Worker Git preparation before creating a child Task", async () => {
+		const provider = makeProviderHarness()
+		Reflect.set(provider, "context", { globalStorageUri: { fsPath: "F:/storage" } })
+		const parent = makeParent()
+		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["value.ts"],
+			gitRelativeScope: ["value.ts"],
+			fileWriteScope: ["value.ts"],
+			gitRelativeFileScope: ["value.ts"],
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+			{ objective: "Correct the source", agent_kind: "worker", write_scope: ["value.ts"] },
+		])
+		Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+		const cancellation = new AbortController()
+		let enterCreation!: () => void
+		const creationEntered = new Promise<void>((resolve) => (enterCreation = resolve))
+		const createTask = vi.fn()
+		Reflect.set(provider, "createTask", createTask)
+		vi.spyOn(managedSubagentWorktreeService, "create").mockImplementation(
+			async (_storage, _taskId, _scope, options) => {
+				expect(options?.signal).toBe(cancellation.signal)
+				enterCreation()
+				return await new Promise<never>((_resolve, reject) =>
+					options!.signal.addEventListener("abort", () => reject(options!.signal.reason), { once: true }),
+				)
+			},
+		)
+		const run = Reflect.get(provider, "runSubagentEnvelope").call(
+			provider,
+			prepared.envelopes[0],
+			cancellation.signal,
+		) as Promise<unknown>
+		void run.catch(() => undefined)
+		await creationEntered
+		const reason = new Error("Parent stopped during Git preparation")
+		cancellation.abort(reason)
+		await expect(run).rejects.toBe(reason)
+		expect(createTask).not.toHaveBeenCalled()
+	})
+
+	it("publishes durable changed-file metadata for an inherited-permission Review result", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-shared-review-result-"))
+		try {
+			const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+			Reflect.set(provider, "context", { globalStorageUri: { fsPath: workspace } })
+			const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "shared_correction",
+				agent_type: "review",
+				message: "Implement the authorized source correction",
+			})
+			await Reflect.get(provider, "ensurePreparedSubagentControlRecords").call(provider, parent, prepared)
+			Reflect.set(
+				provider,
+				"createTask",
+				vi.fn(async (_text: string, _images: unknown, _parent: unknown, options: Record<string, unknown>) => {
+					const child = Object.assign(new EventEmitter(), options, {
+						taskId: prepared.envelopes[0].id,
+						cwd: workspace,
+						clineMessages: [{ type: "say", say: "completion_result", text: "Corrected the source." }],
+						getTokenUsage: () => ({ totalTokensIn: 1, totalTokensOut: 1 }),
+						getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+						finalizeSubagentHistory: vi.fn(async () => undefined),
+						start: () => {
+							void (async () => {
+								await provider.reservePrimaryMutation(child as unknown as Task, "review-edit")
+								await fs.writeFile(path.join(workspace, "value.ts"), "export const value = 2\n")
+								await provider.recordPrimaryMutation(
+									child as unknown as Task,
+									await captureVerificationContent(workspace, ["value.ts"]),
+									false,
+									"review-edit",
+								)
+								child.emit(AlphaCodeEventName.TaskCompleted, child.taskId, child.getTokenUsage())
+							})().catch((error: unknown) => child.emit("error", error))
+						},
+					})
+					return child
+				}),
+			)
+			const result = await Reflect.get(provider, "runSubagentEnvelope").call(
+				provider,
+				prepared.envelopes[0],
+				new AbortController().signal,
+			)
+			expect(result).toMatchObject({ status: "completed", changedFiles: ["value.ts"] })
+			expect(prepared.group.agents[0].changedFiles).toEqual(["value.ts"])
+			expect(prepared.group.agents[0].requiresParentVerification).toBe(true)
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["explorer", "review"])(
+		"allows an inherited-permission %s to delegate a Worker within its captured authority",
+		async (agentType) => {
+			const provider = makeProviderHarness(3, { maxConcurrentSubagents: 3, approvalMode: "bypass" })
+			const root = makeParent()
+			const direct = await provider.prepareSubagentGroup(root as unknown as Task, {
+				task_name: "authorized_parent",
+				agent_type: agentType,
+				message: "Coordinate the authorized correction",
+			})
+			const manifest = Reflect.get(provider, "subagentDescriptors").get(direct.envelopes[0].id).contextManifest
+			const parent = {
+				...makeParent(),
+				taskId: direct.envelopes[0].id,
+				rootTaskId: root.taskId,
+				taskKind: "subagent",
+				subagentRole: direct.group.agents[0].role,
+				subagentContextManifest: manifest,
+			}
+			vi.spyOn(managedSubagentWorktreeService, "validateScope").mockImplementation(
+				async (workspacePath, scope) => ({
+					gitRoot: workspacePath,
+					logicalWorkspace: workspacePath,
+					logicalWorkspaceFromRoot: "",
+					writeScope: scope,
+					gitRelativeScope: scope,
+					fileWriteScope: [],
+					gitRelativeFileScope: [],
+				}),
+			)
+
+			const nested = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "authorized_worker",
+				agent_type: "worker",
+				message: "Implement the authorized correction",
+			})
+			expect(nested.envelopes[0]).toMatchObject({
+				parentTaskId: parent.taskId,
+				rootTaskId: root.taskId,
+				depth: 2,
+				policy: { mutate: true, delegate: true },
+				scope: { workspaceRoots: [path.resolve(parent.cwd)], allowedPaths: [path.resolve(parent.cwd)] },
+			})
+		},
+	)
+
 	it.each(["explorer", "review"])("inherits Full Access and the captured tool catalog for %s", async (agentType) => {
 		const provider = makeProviderHarness(2, { approvalMode: "bypass" })
 		const parent = makeParent()

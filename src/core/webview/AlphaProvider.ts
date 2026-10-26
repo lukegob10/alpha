@@ -8,6 +8,7 @@ import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/T
 import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
 import { arePathsEqual } from "../../utils/path"
+import { terminateProcessTree } from "../../utils/processTree"
 import os from "os"
 import * as path from "path"
 import fs from "fs/promises"
@@ -108,6 +109,7 @@ import {
 	TaskLifecycleState,
 	AlphaCodeEventName,
 	DEFAULT_WRITE_DELAY_MS,
+	DEFAULT_MEMORY_SETTINGS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
 	MAX_MANAGED_AGENT_TREE_ACTIVITY,
@@ -178,7 +180,6 @@ import { captureProjectInstructionDiscoveryOptions } from "../../services/config
 import type { ScheduledTaskService } from "../../services/scheduled-tasks"
 
 import { fileExistsAtPath } from "../../utils/fs"
-import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
 import { getWorkspaceGitInfo } from "../../utils/git"
 import { getWorkspacePath } from "../../utils/path"
 import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
@@ -188,9 +189,11 @@ import { setPanel } from "../../activate/registerCommands"
 import { t } from "../../i18n"
 
 import { assertSupportedApiProvider } from "../../shared/api"
-import { buildApiHandler } from "../../api"
+import { buildApiHandler, type ApiHandler } from "../../api"
+import { getApiProtocol, historyItemSchema } from "@alpha-code/types"
 
 import { ContextProxy } from "../config/ContextProxy"
+import { importSettingsWithFeedback } from "../config/importExport"
 import {
 	ProviderSettingsManager,
 	ProviderProfileRenameError,
@@ -211,6 +214,7 @@ import {
 } from "../agent/AgentControlStore"
 import {
 	captureVerificationContent,
+	requiresWorkspaceMutationReceipt,
 	resolveCommandVerification,
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
@@ -284,6 +288,11 @@ import {
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
+import { memorySettingsSchema, type MemorySettings } from "@alpha-code/types"
+import { MemoryStore } from "../../services/memory/MemoryStore"
+import { MemoryModel } from "../../services/memory/MemoryModel"
+import { MemoryCoordinator } from "../../services/memory/MemoryCoordinator"
+import type { MemorySource } from "../../services/memory/MemoryTypes"
 import { resolveWebviewHtml } from "./webviewHtml"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
@@ -535,6 +544,7 @@ export class AlphaProvider
 	private static activeInstances: Set<AlphaProvider> = new Set()
 	private static focusedInstance?: AlphaProvider
 	private static readonly configurationQueues = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
+	private static readonly memoryOperationQueues = new Map<string, Promise<void>>()
 	private disposables: vscode.Disposable[] = []
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
@@ -624,6 +634,11 @@ export class AlphaProvider
 	private currentWorkspacePath: string | undefined
 	private _disposed = false
 	private disposal?: Promise<void>
+	private memoryStore?: MemoryStore
+	private memoryCoordinator?: MemoryCoordinator
+	private memorySettingsSnapshot?: MemorySettings
+	private memoryCoordinatorSettings?: MemorySettings
+	private memorySourceProviders = new Map<string, AlphaProvider>()
 
 	private recentTasksCache?: string[]
 	public readonly taskHistoryStore: TaskHistoryStore
@@ -660,6 +675,296 @@ export class AlphaProvider
 			),
 		)
 		return result
+	}
+
+	public getMemorySettings(): MemorySettings {
+		if (!this.contextProxy) return { ...DEFAULT_MEMORY_SETTINGS }
+		const result = memorySettingsSchema.safeParse(this.contextProxy.getValue("memorySettings") ?? {})
+		return result.success ? result.data : { ...DEFAULT_MEMORY_SETTINGS }
+	}
+
+	public getMemoryStore(): MemoryStore {
+		return (this.memoryStore ??= MemoryStore.forDefaultHome())
+	}
+
+	/** All views sharing Alpha home serialize settings, explicit writes, and reset together. */
+	private enqueueMemoryOperation<T>(operation: () => Promise<T>): Promise<T> {
+		const home = this.getMemoryStore().home
+		const key =
+			[...AlphaProvider.memoryOperationQueues.keys()].find((candidate) => arePathsEqual(candidate, home)) ?? home
+		const result = (AlphaProvider.memoryOperationQueues.get(key) ?? Promise.resolve()).then(operation)
+		const settled = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		AlphaProvider.memoryOperationQueues.set(key, settled)
+		void settled.then(() => {
+			if (AlphaProvider.memoryOperationQueues.get(key) === settled)
+				AlphaProvider.memoryOperationQueues.delete(key)
+		})
+		return result
+	}
+
+	private memoryPeers(): AlphaProvider[] {
+		const home = this.getMemoryStore().home
+		return [...new Set([this, ...AlphaProvider.activeInstances])].filter(
+			(peer) => !peer._disposed && peer.contextProxy && arePathsEqual(peer.getMemoryStore().home, home),
+		)
+	}
+
+	private memoryOwner(): AlphaProvider | undefined {
+		return this.memoryPeers().find((peer) => peer.memoryCoordinator)
+	}
+
+	/** Settings are persisted before this updates the displayed thread's generation preference. */
+	public refreshMemorySettings(): Promise<void> {
+		return this.enqueueMemoryOperation(async () => {
+			if (this._disposed) return
+			const settings = this.getMemorySettings()
+			const previous = this.memorySettingsSnapshot
+			let preferenceFailure: { error: unknown } | undefined
+			try {
+				if (previous && previous.generateMemories !== settings.generateMemories) {
+					await this.getCurrentTask()?.setMemoryGenerationEnabled(settings.generateMemories)
+				}
+			} catch (error) {
+				preferenceFailure = { error }
+			}
+			if (!preferenceFailure) {
+				for (const peer of this.memoryPeers()) {
+					if (peer.contextProxy === this.contextProxy) peer.memorySettingsSnapshot = settings
+				}
+			}
+			await this.synchronizeMemoryCoordinator(settings)
+			if (preferenceFailure && !this._disposed) throw preferenceFailure.error
+		})
+	}
+
+	private async synchronizeMemoryCoordinator(settings: MemorySettings): Promise<void> {
+		const peers = this.memoryPeers()
+		const owner = peers.find((peer) => peer.memoryCoordinator)
+		if (settings.enabled && owner && isDeepStrictEqual(owner.memoryCoordinatorSettings, settings)) return
+		for (const peer of peers) {
+			const coordinator = peer.memoryCoordinator
+			peer.memoryCoordinator = undefined
+			peer.memoryCoordinatorSettings = undefined
+			await coordinator?.dispose()
+		}
+		if (!settings.enabled || this._disposed) return
+		const configurations = new WeakMap<ApiHandler, ProviderSettings>()
+		const model = new MemoryModel({
+			createHandler: (phase) => {
+				const captured = this.getProviderSettingsSnapshot()
+				const current = this.getMemorySettings()
+				const override = phase === "extraction" ? current.extractModel : current.consolidationModel
+				const configuration = override
+					? this.applyIndependentTaskModel(captured, undefined, override)
+					: captured
+				const handler = buildApiHandler(configuration)
+				configurations.set(handler, configuration)
+				return handler
+			},
+			getProtocol: (handler) => {
+				const provider = configurations.get(handler)?.apiProvider
+				return getApiProtocol(isProviderName(provider) ? provider : undefined, handler.getModel().id)
+			},
+		})
+		this.memoryCoordinator = new MemoryCoordinator({
+			store: this.getMemoryStore(),
+			model,
+			getSettings: () => this.getMemorySettings(),
+			listSources: () => this.listMemorySources(),
+			readSource: (source, signal) => {
+				const provider = this.memorySourceProviders.get(source.id)
+				if (!provider || provider._disposed) throw new Error("Memory source is no longer available")
+				// Codex tails JSONL evidence; Alpha stores one JSON transcript. Skip files
+				// over 8 MiB before parsing to keep background scans off large histories.
+				return readThreadApiMessages(source.id, provider.contextProxy.globalStorageUri.fsPath, signal, {
+					maxBytes: 8 * 1024 * 1024,
+				})
+			},
+			isSourceCurrent: (source) => this.isMemorySourceCurrent(source),
+			onError: () => this.log("Background memory update failed; it will retry within the memory job limits"),
+		})
+		this.memoryCoordinatorSettings = settings
+		// A read-only enabled store still tracks citations/notes; wake itself performs
+		// no disk or model work when generation is disabled.
+		this.memoryCoordinator.wake()
+	}
+
+	private wakeMemories(): void {
+		if (this._disposed || !this.getMemorySettings().enabled) return
+		void this.enqueueMemoryOperation(async () => {
+			if (this._disposed) return
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			this.memoryOwner()?.memoryCoordinator?.wake()
+		}).catch(() => this.log("Background memory startup failed"))
+	}
+
+	private activeMemoryTaskIds(): Set<string> {
+		const active = new Set<string>()
+		for (const peer of this.memoryPeers()) {
+			for (const id of peer.taskSessions.getLiveTaskIds()) active.add(id)
+			const selected = peer.getCurrentTask()?.taskId
+			if (selected) active.add(selected)
+		}
+		return active
+	}
+
+	private memorySource(item: HistoryItem, active: ReadonlySet<string>): MemorySource | undefined {
+		if (
+			(item.taskKind ?? "primary") !== "primary" ||
+			item.parentTaskId ||
+			item.orchestrationParentTaskId ||
+			(item.rootTaskId && item.rootTaskId !== item.id) ||
+			item.diagnosticSession
+		)
+			return undefined
+		return {
+			id: item.id,
+			updatedAt: item.ts,
+			workspace: item.workspace,
+			// Codex records generation independently of its feature gate and reads
+			// legacy missing memory_mode as Enabled (openai/codex@970111f6).
+			generateMemories: item.memory?.generateMemories ?? true,
+			externalContext: item.memory?.externalContext,
+			active: active.has(item.id),
+		}
+	}
+
+	private async listMemorySources(): Promise<MemorySource[]> {
+		const peers = this.memoryPeers()
+		await Promise.all(peers.map((peer) => peer.taskHistoryStoreReady))
+		const active = this.activeMemoryTaskIds()
+		const sources = new Map<string, MemorySource>()
+		const origins = new Map<string, AlphaProvider>()
+		const ambiguous = new Set<string>()
+		for (const peer of peers) {
+			if (peer._disposed) continue
+			for (const item of peer.taskHistoryStore.getAll()) {
+				const source = this.memorySource(item, active)
+				if (!source || ambiguous.has(source.id)) continue
+				const origin = origins.get(source.id)
+				if (
+					origin &&
+					!arePathsEqual(
+						origin.contextProxy.globalStorageUri.fsPath,
+						peer.contextProxy.globalStorageUri.fsPath,
+					)
+				) {
+					sources.delete(source.id)
+					origins.delete(source.id)
+					ambiguous.add(source.id)
+					continue
+				}
+				if ((sources.get(source.id)?.updatedAt ?? -Infinity) > source.updatedAt) continue
+				sources.set(source.id, source)
+				origins.set(source.id, peer)
+			}
+		}
+		this.memorySourceProviders = origins
+		return [...sources.values()]
+	}
+
+	private async isMemorySourceCurrent(source: MemorySource): Promise<boolean> {
+		const provider = this.memorySourceProviders.get(source.id)
+		if (!provider || provider._disposed || this.activeMemoryTaskIds().has(source.id)) return false
+		const directory = await resolveExistingTaskDirectoryPathReadOnly(
+			provider.contextProxy.globalStorageUri.fsPath,
+			source.id,
+		)
+		const file = path.join(directory, GlobalFileNames.historyItem)
+		const limit = 4 * 1024 * 1024
+		const stats = await fs.lstat(file)
+		if (!stats.isFile() || stats.isSymbolicLink() || stats.size > limit)
+			throw new Error("Invalid memory source metadata")
+		const handle = await fs.open(file, "r")
+		let item: HistoryItem
+		try {
+			const opened = await handle.stat()
+			if (!opened.isFile() || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > limit)
+				throw new Error("Memory source metadata changed while opening")
+			const buffer = Buffer.alloc(limit + 1)
+			let length = 0
+			while (length < buffer.length) {
+				const result = await handle.read(buffer, length, buffer.length - length, length)
+				if (!result.bytesRead) break
+				length += result.bytesRead
+			}
+			if (length > limit) throw new Error("Memory source metadata exceeds its supported size")
+			item = historyItemSchema.parse(JSON.parse(buffer.toString("utf8", 0, length)))
+		} finally {
+			await handle.close()
+		}
+		const current = this.memorySource(item, this.activeMemoryTaskIds())
+		const settings = this.getMemorySettings()
+		return Boolean(
+			settings.enabled &&
+				settings.generateMemories &&
+				current &&
+				current.id === source.id &&
+				!current.active &&
+				current.generateMemories &&
+				current.updatedAt === source.updatedAt &&
+				(!settings.disableOnExternalContext || !current.externalContext),
+		)
+	}
+
+	public async openMemoryFolder(): Promise<void> {
+		const store = this.getMemoryStore()
+		await this.enqueueMemoryOperation(() => store.initialize())
+		await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(store.rootPath))
+	}
+
+	public recordMemoryUsage(paths: string[], eventKey?: string): Promise<void> {
+		if (this._disposed || !this.getMemorySettings().enabled || !paths.length) return Promise.resolve()
+		return this.enqueueMemoryOperation(async () => {
+			if (this._disposed || !this.getMemorySettings().enabled) return
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			const coordinator = this.memoryOwner()?.memoryCoordinator
+			if (eventKey === undefined) await coordinator?.recordUsage(paths)
+			else await coordinator?.recordUsage(paths, eventKey)
+		})
+	}
+
+	public addMemoryNote(text: string, signal?: AbortSignal): Promise<string> {
+		return this.enqueueMemoryOperation(async () => {
+			signal?.throwIfAborted()
+			if (this._disposed || !this.getMemorySettings().enabled) throw new Error("Memory is disabled")
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			signal?.throwIfAborted()
+			const coordinator = this.memoryOwner()?.memoryCoordinator
+			if (!coordinator) throw new Error("Memory is unavailable")
+			return coordinator.recordNote(text, signal)
+		})
+	}
+
+	public resetMemories(): Promise<void> {
+		return this.enqueueMemoryOperation(async () => {
+			for (const peer of this.memoryPeers()) {
+				const coordinator = peer.memoryCoordinator
+				peer.memoryCoordinator = undefined
+				peer.memoryCoordinatorSettings = undefined
+				await coordinator?.dispose()
+			}
+			// No queued note or settings refresh can acquire a new writer until the
+			// reset transaction has removed files and invalidated persisted claims.
+			await this.getMemoryStore().reset()
+		})
+	}
+
+	private stopMemoryServices(): Promise<void> {
+		// Abort the owned model immediately, before waiting behind any queued reset.
+		const coordinator = this.memoryCoordinator
+		this.memoryCoordinator = undefined
+		this.memoryCoordinatorSettings = undefined
+		const stopped = coordinator?.dispose() ?? Promise.resolve()
+		void stopped.catch(() => undefined)
+		return this.enqueueMemoryOperation(async () => {
+			await stopped
+			const successor = this.memoryPeers().find((peer) => peer.getMemorySettings().enabled)
+			if (successor) await successor.synchronizeMemoryCoordinator(successor.getMemorySettings())
+		})
 	}
 
 	public async getReasoningCapabilities(
@@ -812,7 +1117,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.9-chat-worker-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.10-memories-conversation-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -821,6 +1126,7 @@ export class AlphaProvider
 		private readonly outputChannel: vscode.OutputChannel,
 		private readonly renderContext: "sidebar" | "editor" = "sidebar",
 		public readonly contextProxy: ContextProxy,
+		startupConfigurationReady: Promise<void> = Promise.resolve(),
 	) {
 		super()
 		this.workspaceMutationGate = WorkspaceMutationGate.forGlobalStorage(this.contextProxy.globalStorageUri.fsPath)
@@ -862,7 +1168,13 @@ export class AlphaProvider
 				this.scheduleGlobalStateWriteThrough()
 			},
 		})
+		this.memorySettingsSnapshot = this.getMemorySettings()
 		this.taskHistoryStoreReady = this.initializeTaskHistoryStore()
+		void Promise.all([this.taskHistoryStoreReady, startupConfigurationReady])
+			.then(() => this.refreshMemorySettings())
+			.catch(() => {
+				this.log("Memory initialization failed; conversation history remains available")
+			})
 		void this.taskHistoryStoreReady.catch((error) => {
 			this.log(`Failed to initialize TaskHistoryStore: ${error}`)
 		})
@@ -910,6 +1222,8 @@ export class AlphaProvider
 
 			// Create named listener functions so we can remove them later.
 			const onTaskStarted = () => {
+				if (instance.taskKind === "primary" && !instance.parentTaskId && !instance.orchestrationParentTaskId)
+					this.wakeMemories()
 				this.markTaskLifecycle(instance.taskId, TaskLifecycleState.Running)
 				void this.updateAgentControlRootStatus(instance.taskId, "running")
 				this.retryIndependentTaskCompletionsForParent(instance.taskId)
@@ -1326,6 +1640,9 @@ export class AlphaProvider
 
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
+		const memoryStopped = this.stopMemoryServices()
+		// Cleanup joins this below; foreground cancellation must not wait for a background model.
+		void memoryStopped.catch(() => undefined)
 		this.log("Disposing AlphaProvider...")
 		cancelPromptEnhancements(this)
 		cancelTicketSearches(this)
@@ -1424,6 +1741,7 @@ export class AlphaProvider
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
 		})
 		await this.flushGlobalStateWriteThrough()
+		await memoryStopped
 		await this.taskHistoryStore.dispose()
 		this.subagentNicknameRegistry?.clear()
 		this.taskSessions.disposeView()
@@ -1602,8 +1920,6 @@ export class AlphaProvider
 				terminalZshP10k = false,
 				terminalPowershellCounter = false,
 				terminalZdotdir = false,
-				ttsEnabled,
-				ttsSpeed,
 			}) => {
 				Terminal.setShellIntegrationTimeout(terminalShellIntegrationTimeout)
 				Terminal.setShellIntegrationDisabled(terminalShellIntegrationDisabled)
@@ -1613,8 +1929,6 @@ export class AlphaProvider
 				Terminal.setTerminalZshP10k(terminalZshP10k)
 				Terminal.setPowershellCounter(terminalPowershellCounter)
 				Terminal.setTerminalZdotdir(terminalZdotdir)
-				setTtsEnabled(ttsEnabled ?? false)
-				setTtsSpeed(ttsSpeed ?? 1)
 			},
 			(error) => {
 				this.log(
@@ -2548,7 +2862,7 @@ export class AlphaProvider
 			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 		if (taskHistoryItem) {
-			await this.updateTaskHistory({ ...taskHistoryItem, mode })
+			await this.updateTaskHistory({ ...taskHistoryItem, mode }, { preserveMode: false })
 		}
 
 		if (typeof task.setTaskMode === "function") {
@@ -2761,6 +3075,20 @@ export class AlphaProvider
 		}
 		// Compensation must still repair later name references when an earlier derived-store write rejects.
 		if (failed) throw new ProviderProfileRenameError("saveFailed")
+	}
+
+	public async importSettings(filePath?: string): Promise<void> {
+		await this.enqueueConfiguration(() =>
+			importSettingsWithFeedback(
+				{
+					providerSettingsManager: this.providerSettingsManager,
+					contextProxy: this.contextProxy,
+					customModesManager: this.customModesManager,
+					provider: this,
+				},
+				filePath,
+			),
+		)
 	}
 
 	upsertProviderProfile(
@@ -4859,8 +5187,6 @@ export class AlphaProvider
 			autoCondenseContextScope,
 			postTurnCondenseContextPercent,
 			soundEnabled,
-			ttsEnabled,
-			ttsSpeed,
 			enableCheckpoints,
 			checkpointTimeout,
 			soundVolume,
@@ -4901,6 +5227,7 @@ export class AlphaProvider
 			enterBehavior,
 			autoSteer,
 			customCondensingPrompt,
+			memorySettings,
 			codebaseIndexConfig,
 			codebaseIndexModels,
 			profileThresholds,
@@ -5030,8 +5357,6 @@ export class AlphaProvider
 			scheduledTasks: scheduledTaskState?.tasks ?? [],
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			soundEnabled: soundEnabled ?? false,
-			ttsEnabled: ttsEnabled ?? false,
-			ttsSpeed: ttsSpeed ?? 1.0,
 			enableCheckpoints: enableCheckpoints ?? true,
 			checkpointTimeout: checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			shouldShowAnnouncement:
@@ -5081,6 +5406,7 @@ export class AlphaProvider
 			enterBehavior: enterBehavior ?? "send",
 			autoSteer: autoSteer === true,
 			customCondensingPrompt,
+			memorySettings: memorySettings ?? DEFAULT_MEMORY_SETTINGS,
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: codebaseIndexConfig?.codebaseIndexEnabled ?? false,
@@ -5158,6 +5484,7 @@ export class AlphaProvider
 			apiConfiguration: providerSettings,
 			lastShownAnnouncementId: stateValues.lastShownAnnouncementId,
 			customInstructions: stateValues.customInstructions,
+			memorySettings: stateValues.memorySettings ?? DEFAULT_MEMORY_SETTINGS,
 			apiModelId: stateValues.apiModelId,
 			approvalMode: approval.approvalMode,
 			approvalModeBypassAcknowledged: approval.approvalModeBypassAcknowledged,
@@ -5196,8 +5523,6 @@ export class AlphaProvider
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
 			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
 			soundEnabled: stateValues.soundEnabled ?? false,
-			ttsEnabled: stateValues.ttsEnabled ?? false,
-			ttsSpeed: stateValues.ttsSpeed ?? 1.0,
 			enableCheckpoints: stateValues.enableCheckpoints ?? true,
 			checkpointTimeout: stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			soundVolume: stateValues.soundVolume,
@@ -5352,13 +5677,19 @@ export class AlphaProvider
 	 *
 	 * @param item The history item to update or add
 	 * @param options.broadcast Whether to broadcast the updated history to the webview (default: true)
+	 * @param options.preserveMode Retain durable mode unless this write owns an explicit user mode change.
 	 * @returns The updated task history array
 	 */
-	async updateTaskHistory(item: HistoryItem, options: { broadcast?: boolean } = {}): Promise<HistoryItem[]> {
-		const { broadcast = true } = options
+	async updateTaskHistory(
+		item: HistoryItem,
+		options: { broadcast?: boolean; preserveMode?: boolean } = {},
+	): Promise<HistoryItem[]> {
+		const { broadcast = true, preserveMode = true } = options
 		const previousItem = this.taskHistoryStore.get(item.id)
 
-		const history = await this.taskHistoryStore.upsert(item)
+		const history = preserveMode
+			? await this.taskHistoryStore.upsert(item, { preserveMode: true })
+			: await this.taskHistoryStore.upsert(item)
 		this.recentTasksCache = undefined
 
 		// Broadcast the updated history to the webview if requested.
@@ -5468,7 +5799,9 @@ export class AlphaProvider
 	}
 
 	public async setValue<K extends keyof AlphaCodeSettings>(key: K, value: AlphaCodeSettings[K]) {
+		if (key === "memorySettings") this.memorySettingsSnapshot ??= this.getMemorySettings()
 		await this.contextProxy.setValue(key, value)
+		if (key === "memorySettings") await this.refreshMemorySettings()
 		if (key === "maxConcurrentTasks") {
 			this.setMaxConcurrentTasks(
 				(value as AlphaCodeSettings["maxConcurrentTasks"]) ?? DEFAULT_MAX_CONCURRENT_TASKS,
@@ -5486,7 +5819,10 @@ export class AlphaProvider
 
 	public async setValues(values: AlphaCodeSettings) {
 		if (values.mode !== undefined) assertPrimaryMode(values.mode)
+		const memoryChanged = Object.hasOwn(values, "memorySettings")
+		if (memoryChanged) this.memorySettingsSnapshot ??= this.getMemorySettings()
 		await this.contextProxy.setValues(values)
+		if (memoryChanged) await this.refreshMemorySettings()
 		if (values.maxConcurrentTasks !== undefined) {
 			this.setMaxConcurrentTasks(values.maxConcurrentTasks)
 		}
@@ -5506,6 +5842,7 @@ export class AlphaProvider
 		}
 
 		await this.contextProxy.resetAllState()
+		await this.refreshMemorySettings()
 		await this.providerSettingsManager.resetAllConfigs()
 		await this.customModesManager.resetCustomModes()
 		await this.removeTaskFromStack()
@@ -6021,6 +6358,7 @@ export class AlphaProvider
 			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
 		}
 
+		const taskApprovalMode = parent.getTaskApprovalMode()
 		const taskMode = await parent.getTaskMode()
 		const taskApiConfigName = await parent.getTaskApiConfigName()
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
@@ -6032,6 +6370,10 @@ export class AlphaProvider
 			workspacePath = worktree.workspacePath
 		}
 
+		// Independent roots outlive their launching editor; the sidebar owns host-lifetime execution.
+		const runtimeOwner =
+			this.getHostProviders().find((provider) => !provider._disposed && provider.renderContext === "sidebar") ??
+			this
 		let child: Task | undefined
 		try {
 			throwIfCancelled()
@@ -6042,7 +6384,7 @@ export class AlphaProvider
 			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
 			if (options?.model)
 				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
-			child = await this.createTask(normalizedObjective, undefined, undefined, {
+			child = await runtimeOwner.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
 				startTask: false,
 				presentationModelCalls: parent.presentationModelCalls,
@@ -6052,7 +6394,7 @@ export class AlphaProvider
 				historyWorkspacePath: parent.historyWorkspacePath,
 				taskMode,
 				taskApiConfigName,
-				taskApprovalMode: parent.getTaskApprovalMode(),
+				taskApprovalMode,
 				apiConfiguration,
 				reasoningPreference: structuredClone(parent.reasoningPreference),
 				subagentDelegationPolicy: structuredClone(parent.subagentDelegationPolicy),
@@ -6068,12 +6410,17 @@ export class AlphaProvider
 					: {}),
 			})
 			if (options?.title || options?.model) {
-				const history = await this.ensureCrossTaskHistory(child)
-				if (options.model) await this.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
-				if (options.title) await this.renameTask(child.taskId, options.title.trim())
+				const history = await runtimeOwner.ensureCrossTaskHistory(child)
+				if (options.model)
+					await runtimeOwner.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
+				if (options.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
 			}
 			throwIfCancelled()
-			const record = await this.getCrossTaskRecord(this.taskHistoryStore.get(child.taskId), child, false)
+			const record = await runtimeOwner.getCrossTaskRecord(
+				runtimeOwner.taskHistoryStore.get(child.taskId),
+				child,
+				false,
+			)
 			throwIfCancelled()
 			// Keep the child provisional until every await needed for its receipt has
 			// succeeded. No model turn can run before the caller has a usable identity.
@@ -6609,6 +6956,16 @@ export class AlphaProvider
 		})
 	}
 
+	private async serializeIndependentCompletionDelivery(
+		taskId: string,
+		operation: () => Promise<void>,
+	): Promise<void> {
+		await this.taskSessions.runOwnershipOperation(`independent-delivery:${taskId}`, async () => {
+			await this.taskHistoryStore.invalidate?.(taskId)
+			await operation()
+		})
+	}
+
 	private getIndependentCompletionId(taskId: string, timestamp: number): string {
 		return `completion:${crypto.createHash("sha256").update(`${taskId}:${timestamp}`).digest("hex")}`
 	}
@@ -6676,7 +7033,7 @@ export class AlphaProvider
 		const owner = this.getTaskOwner(child.taskId)
 		if (owner && owner !== this) return owner.notifyIndependentTaskCompletion(child, parentWasWaiting, completion)
 		await this.taskHistoryStoreReady
-		await this.serializeIndependentCompletion(child.taskId, () =>
+		await this.serializeIndependentCompletionDelivery(child.taskId, () =>
 			this.deliverIndependentCompletion(child.taskId, completion, parentWasWaiting),
 		)
 	}
@@ -6687,100 +7044,102 @@ export class AlphaProvider
 		completion: { ts: number; text: string },
 		parentWasWaiting = false,
 	): Promise<void> {
-		let history = this.taskHistoryStore.get(taskId)
-		if (
-			!history?.orchestrationParentTaskId ||
-			history.orchestrationNotifyCompletion === false ||
-			history.taskKind === "subagent"
-		)
-			return
-		let receipts = history.orchestrationCompletionNotifications ?? []
-		let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
-		if (receipt?.deliveredAt !== undefined) return
-		if (!receipt) {
-			// Only settled receipts may be evicted. Full pending outboxes reject admission.
-			if (receipts.length >= 100) {
-				const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
-				if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
-				receipts = receipts.filter((_, index) => index !== settled)
-			}
-			receipt = {
-				id: this.getIndependentCompletionId(taskId, completion.ts),
-				turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
-				completionMessageTs: completion.ts,
-				createdAt: Date.now(),
-				deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
-			}
-			receipts = [...receipts, receipt]
-			await this.updateTaskHistory(
-				{ ...history, orchestrationCompletionNotifications: receipts },
-				{ broadcast: false },
+		let delivery:
+			| { parentId: string; receiptId: string; deliveredVia: "wait" | "inbox"; enqueue: boolean }
+			| undefined
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (
+				!history?.orchestrationParentTaskId ||
+				history.orchestrationNotifyCompletion === false ||
+				history.taskKind === "subagent"
 			)
-		}
-
-		const parentId = history.orchestrationParentTaskId
-		const parent = this.getLiveTask(parentId)
-		const receiptId = receipt.id
-		if (receipt.deliveredVia === "wait") {
-			// Only the canonical saved transcript proves consumption; an in-memory Promise does not.
-			const savedHistory = await readApiMessages({
-				taskId: parentId,
-				globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-			})
-			if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
-				if (parent && !parent.abort && !parent.isCompleted()) return
-				// A host restart or terminated parent cannot finish that old wait. Transfer its
-				// reserved identity to the inbox before delivering, preserving exactly-once replay.
-				const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
-				receipt = transferredReceipt
-				receipts = receipts.map((item) => (item.id === receiptId ? transferredReceipt : item))
+				return
+			let receipts = history.orchestrationCompletionNotifications ?? []
+			let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
+			if (receipt?.deliveredAt !== undefined) return
+			if (!receipt) {
+				// Only settled receipts may be evicted; pending outboxes remain bounded.
+				if (receipts.length >= 100) {
+					const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
+					if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
+					receipts = receipts.filter((_, index) => index !== settled)
+				}
+				receipt = {
+					id: this.getIndependentCompletionId(taskId, completion.ts),
+					turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
+					completionMessageTs: completion.ts,
+					createdAt: Date.now(),
+					deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
+				}
+				receipts = [...receipts, receipt]
 				await this.updateTaskHistory(
 					{ ...history, orchestrationCompletionNotifications: receipts },
 					{ broadcast: false },
 				)
 			}
-		}
-
-		if (receipt.deliveredVia !== "wait") {
-			if (parent && parent.taskKind !== "primary")
-				throw new Error("The completion recipient is not a primary task")
-			const apiHistory =
-				parent?.apiConversationHistory ??
-				(await readApiMessages({
+			const parentId = history.orchestrationParentTaskId
+			const parent = this.getLiveTask(parentId)
+			if (receipt.deliveredVia === "wait") {
+				// Only the saved transcript proves consumption of a successful wait result.
+				const savedHistory = await readApiMessages({
 					taskId: parentId,
 					globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-				}))
-			// A failed receipt write after transcript commit must not append or start another turn.
-			if (!apiHistory.some((message) => message.agent_message_id === receipt.id)) {
-				const message = {
-					id: receipt.id,
-					senderTaskId: taskId,
-					text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
-				}
-				if (parent) {
-					await parent.receiveAgentMessage(message)
-					if (parent.isCompleted())
-						await parent.resumeCompletedTaskFollowup(
-							"Continue with the pending agent messages.",
-							[],
-							"agent",
-						)
-				} else {
-					await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
+				})
+				if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
+					if (parent && !parent.abort && !parent.isCompleted()) return
+					const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
+					receipt = transferredReceipt
+					receipts = receipts.map((item) => (item.id === transferredReceipt.id ? transferredReceipt : item))
+					await this.updateTaskHistory(
+						{ ...history, orchestrationCompletionNotifications: receipts },
+						{ broadcast: false },
+					)
 				}
 			}
+			let enqueue = false
+			if (receipt.deliveredVia !== "wait") {
+				if (parent && parent.taskKind !== "primary")
+					throw new Error("The completion recipient is not a primary task")
+				const apiHistory =
+					parent?.apiConversationHistory ??
+					(await readApiMessages({
+						taskId: parentId,
+						globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
+					}))
+				const receiptId = receipt.id
+				// Retrying a failed receipt write must not append committed input again.
+				enqueue = !apiHistory.some((message) => message.agent_message_id === receiptId)
+			}
+			delivery = { parentId, receiptId: receipt.id, deliveredVia: receipt.deliveredVia ?? "inbox", enqueue }
+		})
+		if (!delivery) return
+		const { parentId, receiptId, deliveredVia, enqueue } = delivery
+		// Recipient append/resume may itself finalize older wait receipts. Never hold
+		// the child's receipt-write fence across that callback or its mailbox lock.
+		if (enqueue) {
+			const message = {
+				id: receiptId,
+				senderTaskId: taskId,
+				text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
+			}
+			if (this.getLiveTask(parentId)) await this.deliverIndependentTaskMessage(parentId, message)
+			else await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
 		}
-		history = this.taskHistoryStore.get(taskId) ?? history
-		const deliveredVia = receipt.deliveredVia ?? "inbox"
-		await this.updateTaskHistory(
-			{
-				...history,
-				orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? receipts).map(
-					(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
-				),
-			},
-			{ broadcast: false },
-		)
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (history?.orchestrationParentTaskId !== parentId)
+				throw new Error("Completion recipient changed during delivery")
+			await this.updateTaskHistory(
+				{
+					...history,
+					orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? []).map(
+						(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
+					),
+				},
+				{ broadcast: false },
+			)
+		})
 	}
 
 	public retryIndependentTaskCompletionsForParent(parentId: string): void {
@@ -6892,7 +7251,7 @@ export class AlphaProvider
 	}
 
 	private async reconcileIndependentTaskCompletion(taskId: string): Promise<void> {
-		await this.serializeIndependentCompletion(taskId, async () => {
+		await this.serializeIndependentCompletionDelivery(taskId, async () => {
 			const current = this.taskHistoryStore.get(taskId)
 			if (!current?.orchestrationParentTaskId || current.orchestrationNotifyCompletion === false) return
 			const messages = await readTaskMessages({
@@ -6959,15 +7318,32 @@ export class AlphaProvider
 			}
 			if (options?.model) await owner.setCrossTaskModel(target, options.model)
 			this.throwIfThreadCancelled(options?.signal)
-			await target.receiveAgentMessage(input)
-			if (target.isCompleted()) {
-				await target.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
-				return { task_id: resolvedTargetTaskId, status: "resumed" }
-			}
-			// Messages remain passive at approvals, structured questions, and other
-			// human input boundaries. They cannot answer or approve on the user's behalf.
-			return { task_id: resolvedTargetTaskId, status: "buffered" }
+			return owner.admitIndependentTaskMessage(target, input)
 		})
+	}
+
+	private async deliverIndependentTaskMessage(
+		taskId: string,
+		message: AgentMessage,
+	): Promise<{ task_id: string; status: string }> {
+		return this.taskSessions.runOwnershipOperation(`cross-task:${taskId}`, async () => {
+			const owner = this.getTaskOwner(taskId) ?? this
+			const target = owner.getLiveTask(taskId)
+			if (!target || target.taskKind !== "primary") throw new Error("The recipient task is not live")
+			return owner.admitIndependentTaskMessage(target, message)
+		})
+	}
+
+	/** Called under the same recipient fence for explicit sends and automatic completion input. */
+	private async admitIndependentTaskMessage(
+		target: Task,
+		message: AgentMessage,
+	): Promise<{ task_id: string; status: string }> {
+		target.markIndependentAgentMessagesPending()
+		await target.receiveAgentMessage(message)
+		const resumed = await target.resumeIndependentAgentMessages()
+		// Mail cannot answer an approval or a human question; its intent survives lifecycle settlement.
+		return { task_id: target.taskId, status: resumed ? "resumed" : "buffered" }
 	}
 
 	public async steerIndependentTask(
@@ -7683,13 +8059,14 @@ export class AlphaProvider
 		}
 		assertSupportedApiProvider(apiConfiguration.apiProvider)
 
-		if (!parentTask && options.preserveExisting && !options.background) {
+		const preserveExisting = options.preserveExisting !== false
+		if (!parentTask && preserveExisting && !options.background) {
 			await this.finalizeActiveCompletionCandidate()
 			this.assertTaskAdmissionOpen()
 		}
 
-		// Single-open-task invariant: always enforce for user-initiated top-level tasks
-		if (!parentTask && !options.preserveExisting) await this.removeTaskFromStack()
+		// New roots preserve existing runtimes; replacement requires an explicit compatibility option.
+		if (!parentTask && !preserveExisting) await this.removeTaskFromStack()
 		this.assertTaskAdmissionOpen()
 
 		const {
@@ -8410,7 +8787,7 @@ export class AlphaProvider
 		const orchestrationSettings = this.getResolvedSubagentOrchestrationSettings()
 		const controlRoot = await this.ensureAgentControlRoot(parent)
 		const orchestrationBases = normalizedDrafts.map((draft) =>
-			this.getSubagentAncestryAndLimits(parent, draft.agent_kind, orchestrationSettings),
+			this.getSubagentAncestryAndLimits(parent, draft.agent_kind, orchestrationSettings, authorityModel),
 		)
 		const provisionalDelegationPolicies = normalizedDrafts.map(() =>
 			resolveSubagentDelegationPolicy({
@@ -9913,17 +10290,42 @@ export class AlphaProvider
 		}
 	}
 
+	/** Shared-workspace peers settle effects in the nearest primary or isolated Worker owner. */
+	private getWorkspaceMutationOwner(task: Task): Task | undefined {
+		if (!requiresWorkspaceMutationReceipt(task)) return undefined
+		let owner = task
+		const visited = new Set<string>()
+		while (owner.taskKind === "subagent" && requiresWorkspaceMutationReceipt(owner)) {
+			if (visited.has(owner.taskId)) throw new Error("Shared-workspace mutation ancestry contains a cycle")
+			visited.add(owner.taskId)
+			const parentTaskId = owner.subagentContextManifest?.parentTaskId
+			const parent =
+				this.subagentDescriptors.get(owner.taskId)?.parent ??
+				owner.parentTask ??
+				(parentTaskId ? this.getLiveTask(parentTaskId) : undefined)
+			if (!parent || parent.taskId !== parentTaskId || !arePathsEqual(parent.cwd, owner.cwd)) {
+				throw new Error("Shared-workspace mutation has no matching parent workspace owner")
+			}
+			owner = parent
+		}
+		if (owner.taskKind !== "primary" && owner.subagentRole !== "worker") {
+			throw new Error("Shared-workspace mutation has no writable workspace owner")
+		}
+		return owner
+	}
+
 	/** Persist parent command outcomes and project resulting verification transitions. */
 	public async reservePrimaryMutation(parent: Task, token: string): Promise<void> {
-		if (parent.taskKind !== "primary") return
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner) return
 		const options: AgentControlTransactionOptions = {
 			signal: parent.getTaskLifetimeCancellationSignal(),
 			operation: "reserve-primary-mutation",
 		}
-		const root = await this.ensureAgentControlRoot(parent, options)
-		const workspacePath = await fs.realpath(parent.cwd)
+		const root = await this.ensureAgentControlRoot(owner, options)
+		const workspacePath = await fs.realpath(owner.cwd)
 		await this.agentControlStore.reservePrimaryMutation(
-			parent.taskId,
+			owner.taskId,
 			root.rootTaskId,
 			workspacePath,
 			token,
@@ -9932,14 +10334,10 @@ export class AlphaProvider
 	}
 
 	public async releasePrimaryMutation(parent: Task, token: string, observationIncomplete = false): Promise<void> {
-		if (parent.taskKind !== "primary") return
-		const root = await this.ensureAgentControlRoot(parent)
-		await this.agentControlStore.releasePrimaryMutation(
-			parent.taskId,
-			root.rootTaskId,
-			token,
-			observationIncomplete,
-		)
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner) return
+		const root = await this.ensureAgentControlRoot(owner)
+		await this.agentControlStore.releasePrimaryMutation(owner.taskId, root.rootTaskId, token, observationIncomplete)
 	}
 
 	public async recordPrimaryMutation(
@@ -9948,18 +10346,20 @@ export class AlphaProvider
 		scopeUnresolved = false,
 		reservationToken?: string,
 	): Promise<boolean> {
-		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return false
-		const root = await this.ensureAgentControlRoot(parent)
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner || Object.keys(fileVersions).length === 0) return false
+		const root = await this.ensureAgentControlRoot(owner)
 		// Unknown-scope debt must survive a command removing its workspace. Prefer
 		// the admitted reservation identity; unresolved obligations cannot earn credit.
 		const workspacePath = scopeUnresolved
 			? (this.agentControlStore
-					.getVerificationObligations({ parentTaskId: parent.taskId, rootTaskId: root.rootTaskId })
-					.find((item) => item.origin === "primary")?.workspacePath ?? parent.cwd)
-			: await fs.realpath(parent.cwd)
+					.getVerificationObligations({ parentTaskId: owner.taskId, rootTaskId: root.rootTaskId })
+					.find((item) => item.origin === "primary")?.workspacePath ?? owner.cwd)
+			: await fs.realpath(owner.cwd)
 		const obligation = await this.agentControlStore.recordPrimaryMutation({
 			rootTaskId: root.rootTaskId,
-			parentTaskId: parent.taskId,
+			parentTaskId: owner.taskId,
+			...(owner !== parent ? { contributorTaskId: parent.taskId } : {}),
 			workspacePath,
 			fileVersions,
 			scopeUnresolved,
@@ -9967,7 +10367,7 @@ export class AlphaProvider
 		})
 		if (obligation && isBlockingParentVerification(obligation)) {
 			try {
-				await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
+				await this.publishParentVerificationTransition(owner, obligation, root.rootTaskId)
 			} catch (error) {
 				// The receipt and reservation settlement above are already durable. Keep
 				// mailbox/UI projection best-effort so a presentation failure cannot be
@@ -11831,6 +12231,7 @@ export class AlphaProvider
 		parent: Task,
 		role: "explore" | "review" | "worker",
 		settings: ResolvedSubagentOrchestrationSettings,
+		authorityModel?: "parent",
 	): Pick<SubagentManifestOrchestration, "ancestry" | "limits"> {
 		const parentOrchestration = parent.subagentContextManifest?.orchestration
 		if (parent.taskKind === "subagent") {
@@ -11841,8 +12242,14 @@ export class AlphaProvider
 			if (!parent.subagentContextManifest?.runtimePolicy.delegate) {
 				throw new Error("authority_denied: this managed agent was not granted delegation authority")
 			}
+			// Codex 970111f6 permits Explorer -> Worker ancestry; V2 still inherits captured policy and scope.
+			const inheritsWriteAuthority =
+				authorityModel === "parent" &&
+				parent.subagentContextManifest.runtimePolicy.authorityModel === "parent" &&
+				parent.subagentContextManifest.runtimePolicy.mutate
 			if (
 				role === "worker" &&
+				!inheritsWriteAuthority &&
 				(parent.subagentRole !== "worker" || parent.subagentContextManifest?.runtimePolicy.role !== "worker")
 			) {
 				throw new Error("authority_denied: only a managed Worker may grant a descendant Worker")
@@ -12793,6 +13200,7 @@ export class AlphaProvider
 		try {
 			return await this.executeSubagentEnvelope(envelope, signal)
 		} catch (error) {
+			if (signal.aborted && error === signal.reason) throw error
 			// A managed-agent control record exists before its Task. Preserve the
 			// distinction so presentation never advertises an unresolvable task ID.
 			if (this.getLiveTask(envelope.id) || this.taskHistoryStore.get(envelope.id)) throw error
@@ -12805,6 +13213,7 @@ export class AlphaProvider
 		envelope: InternalTaskEnvelope,
 		signal: AbortSignal,
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
+		signal.throwIfAborted()
 		const descriptor = this.subagentDescriptors.get(envelope.id)
 		if (!descriptor) throw new Error(`Missing sub-agent descriptor for ${envelope.id}`)
 		const finalizedManifest = finalizedSubagentContextManifestSchema.safeParse(descriptor.contextManifest)
@@ -12833,11 +13242,17 @@ export class AlphaProvider
 				?.startedAt ?? Date.now()
 		if (role === "worker") {
 			if (!descriptor.validatedScope) throw new Error("Worker scope preflight was not prepared")
-			descriptor.managedWorktree = await managedSubagentWorktreeService.create(
-				this.context.globalStorageUri.fsPath,
-				envelope.id,
-				descriptor.validatedScope,
-			)
+			try {
+				descriptor.managedWorktree = await managedSubagentWorktreeService.create(
+					this.context.globalStorageUri.fsPath,
+					envelope.id,
+					descriptor.validatedScope,
+					{ signal, terminateProcessTree },
+				)
+			} catch (error) {
+				if (signal.aborted && error !== signal.reason) descriptor.runtimeCleanupFailed = true
+				throw error
+			}
 		}
 		const basePrompt = buildSubagentPrompt({
 			nickname,
@@ -12881,6 +13296,7 @@ export class AlphaProvider
 
 		let child: Task
 		try {
+			signal.throwIfAborted()
 			const subagentAuthority =
 				role === "worker"
 					? {
@@ -12984,6 +13400,12 @@ export class AlphaProvider
 		}
 
 		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
+		const sharedWorkspaceChangedFiles = (): string[] => {
+			if (role === "worker" || finalizedManifest.data.runtimePolicy.authorityModel !== "parent") return []
+			const files = this.agentControlStore.getAgent(envelope.id, ancestry.rootTaskId)?.snapshot?.metadata
+				?.sharedWorkspaceChangedFiles
+			return Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : []
+		}
 		const currentRunMessages: AlphaMessage[] = []
 		let cleanupFailed = false
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
@@ -13027,7 +13449,7 @@ export class AlphaProvider
 						status,
 						summary,
 						evidence: inspectedPaths.map((reference) => ({ kind: "file", reference })),
-						changedFiles: [],
+						changedFiles: sharedWorkspaceChangedFiles(),
 						verification: [],
 						remainingRisks: status === "completed" ? [] : [summary],
 						usage: {
@@ -13294,7 +13716,10 @@ export class AlphaProvider
 			},
 		}
 		try {
-			await this.applySubagentResult(this.preparedSubagentGroups.get(groupId), result)
+			await this.applySubagentResult(this.preparedSubagentGroups.get(groupId), {
+				...result,
+				requiresParentVerification: result.changedFiles.length > 0,
+			})
 		} catch (error) {
 			// The group runner retries an unacknowledged terminal publication. Do not
 			// turn a successful child into a failed child because its first UI/history

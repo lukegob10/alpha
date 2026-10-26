@@ -143,6 +143,30 @@ describe("scheduled profiles and skills", () => {
 		expect(service.getState().tasks).toEqual([])
 	})
 
+	it("starts valid schedules after reloading an invalid due record and preserves that record", async () => {
+		const task = await service.createTask(payload())
+		await service.dispose()
+		const invalid = {
+			...task,
+			id: "invalid-schedule",
+			name: "A malformed schedule",
+			schedule: { type: "unsupported" },
+			nextRunAt: Date.now() - 120_000,
+		}
+		const file = path.join(tmpDir, "scheduled-tasks", "scheduled_tasks.json")
+		await fs.writeFile(file, JSON.stringify([invalid, task]), "utf8")
+		service = new ScheduledTaskService(
+			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
+			provider as unknown as AlphaProvider,
+			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+		)
+		await service.initialize()
+		const running = await runNow(task.id)
+		expect(running.status).toBe("running")
+		expect(service.getState().tasks.map((schedule) => schedule.id)).toEqual([task.id])
+		expect(JSON.parse(await fs.readFile(file, "utf8"))).toContainEqual(invalid)
+	})
+
 	it("does not fail a running schedule when another window opens the same repository", async () => {
 		const task = await service.createTask(payload())
 		const running = await runNow(task.id)
@@ -211,7 +235,7 @@ describe("scheduled profiles and skills", () => {
 		await editor.upsertRun({
 			id: "orphaned-run",
 			taskId: task.id,
-			ownerId: "closed-window",
+			ownerId: "299ad2b6-c3a8-477a-8d9d-a0cd57fbd884",
 			status: "queued",
 			trigger: "schedule",
 			scheduledFor: task.nextRunAt!,

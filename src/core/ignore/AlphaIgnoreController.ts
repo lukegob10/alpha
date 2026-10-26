@@ -124,9 +124,10 @@ export class AlphaIgnoreController {
 	/**
 	 * Check if a terminal command should be allowed to execute based on file access patterns
 	 * @param command - Terminal command to validate
+	 * @param workingDirectory - Command working directory, relative to the workspace root when not absolute
 	 * @returns path of file that is being accessed if it is being accessed, undefined if command is allowed
 	 */
-	validateCommand(command: string): string | undefined {
+	validateCommand(command: string, workingDirectory: string = "."): string | undefined {
 		// Always allow if no .alphaignore exists
 		if (this.alphaIgnoreContent === undefined) {
 			return undefined
@@ -161,7 +162,7 @@ export class AlphaIgnoreController {
 				const inlinePathParameter = argument.match(/^-(?:LiteralPath|Path):(.+)$/i)
 				if (argument.startsWith("-") && !inlinePathParameter) continue
 				const candidatePath = inlinePathParameter?.[1] ?? argument
-				if (!this.validateAccess(candidatePath)) {
+				if (!this.validateAccess(path.resolve(this.cwd, workingDirectory, candidatePath))) {
 					return candidatePath
 				}
 			}

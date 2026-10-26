@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import { MEMORY_TOOL_NAMES } from "../prompts/tools/native-tools/memories"
 import { diagnosticTaskIdentitySchema, type ApprovalMode } from "@alpha-code/types"
 
 import { digestValue } from "../agent/StepContext"
@@ -70,6 +71,8 @@ export interface TaskToolSurfaceInput {
 	readGrant?: TaskReadGrant
 	/** Host-owned capability flag persisted with diagnostic tasks and restored on reload. */
 	diagnosticSession?: boolean
+	/** Opt-in host capability, captured only for a primary root conversation. */
+	memoryToolsEnabled?: boolean
 	/** Incident task whose redacted evidence the diagnostic tool may read. */
 	diagnosticSourceTaskId?: string
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
@@ -98,6 +101,8 @@ export interface TaskToolSurface {
 	/** Host-owned diagnostic authority retained when a cached surface is projected. */
 	readonly diagnosticSession: boolean
 	readonly diagnosticSourceTaskId?: string
+	/** Captured host-local memory authority retained across catalog projections. */
+	readonly memoryToolsEnabled: boolean
 	/** Policy-aware lookup that fails closed for hidden or disabled names. */
 	readonly resolve: (name: string) => ToolDescriptor | undefined
 	readonly isCallable: (name: string) => boolean
@@ -339,6 +344,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 	const providerSchemas = providedSchemas !== undefined ? capturedSchemas : registry.getSchemas()
 	const source = asPolicySource(input.policy)
 	const diagnosticSession = input.diagnosticSession === true
+	const memoryToolsEnabled = !diagnosticSession && input.taskKind !== "subagent" && input.memoryToolsEnabled === true
 	const includeAllToolsWithRestrictions = !diagnosticSession && input.includeAllToolsWithRestrictions === true
 	const profile = resolveProfile(input)
 
@@ -354,7 +360,8 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		: normalizeSchemas(providerSchemas, registry, true).filter(
 				(schema) =>
 					schema.type !== "function" ||
-					canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence",
+					(canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence" &&
+						(memoryToolsEnabled || !MEMORY_TOOL_NAMES.has(canonicalizeToolName(schema.function.name)))),
 			)
 	const schemaNames = functionNames(allSchemas)
 	const schemaNameSet = new Set(schemaNames)
@@ -467,6 +474,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		readGrant,
 		profile: { id: profile.id, digest: executionProfileDigest(profile) },
 		diagnosticSession,
+		memoryToolsEnabled,
 		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 	})
@@ -482,6 +490,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		digest,
 		profile,
 		diagnosticSession,
+		memoryToolsEnabled,
 		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 		resolve: (name: string) => {

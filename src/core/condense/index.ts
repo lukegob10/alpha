@@ -137,10 +137,18 @@ export function convertToolBlocksToText(
 export function transformMessagesForCondensing<
 	T extends { role: string; content: string | Anthropic.Messages.ContentBlockParam[] },
 >(messages: T[]): T[] {
-	return messages.map((msg) => ({
-		...msg,
-		content: convertToolBlocksToText(msg.content),
-	}))
+	return (
+		messages
+			// Legacy standalone reasoning records have opaque state but no role/content.
+			// They remain in stored history; rewritten summary input cannot continue them.
+			.filter((msg) => !("type" in msg && msg.type === "reasoning"))
+			.map((msg) => ({
+				...msg,
+				content: convertToolBlocksToText(msg.content),
+			}))
+			// Stripping signed state can leave a reasoning-only assistant record empty.
+			.filter((msg) => msg.content.length > 0)
+	)
 }
 
 /**

@@ -421,6 +421,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		}
 
 		try {
+			await task.markMemoryExternalContext?.()
 			// McpHub selects its connection and starts client.request synchronously. Keep this guard
 			// immediately before dispatch, with no await between the guard and call.
 			signal?.throwIfAborted()

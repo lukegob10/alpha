@@ -666,6 +666,22 @@ export async function manageContext({
 		)
 		if (!Number.isFinite(prevContextTokens) || prevContextTokens < 0)
 			return { messages, summary: "", cost, prevContextTokens, status: "no_progress" }
+		// Historical usage can overstate retained input after a reduction or provider
+		// change. Preserve a fitting recount unless recovery requires a real reduction.
+		if (!forceTruncation && prevContextTokens <= allowedTokens) {
+			return {
+				messages,
+				summary: "",
+				cost,
+				prevContextTokens,
+				newContextTokens: prevContextTokens,
+				error,
+				errorDetails,
+				diagnostic,
+				status: "unchanged",
+				targetContextTokens: allowedTokens,
+			}
+		}
 		targetContextTokens = getCompactionTargetTokens({
 			contextWindow,
 			reservedTokens,

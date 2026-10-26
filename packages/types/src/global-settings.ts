@@ -26,6 +26,7 @@ import {
 	subagentTokenLimitSchema,
 } from "./subagent-orchestration.js"
 import { approvalModeSchema } from "./approval-mode.js"
+import { memorySettingsSchema } from "./memory.js"
 import { subagentAgentTypesSchema } from "./subagent.js"
 import { reasoningEffortExtendedSchema } from "./model.js"
 
@@ -114,6 +115,7 @@ export const globalSettingsSchema = z.object({
 	dismissedUpsells: z.array(z.string()).optional(),
 
 	customCondensingPrompt: z.string().optional(),
+	memorySettings: memorySettingsSchema.optional(),
 
 	autoApprovalEnabled: z.boolean().optional(),
 	approvalMode: approvalModeSchema.optional(),
@@ -213,8 +215,6 @@ export const globalSettingsSchema = z.object({
 		.max(MAX_CHECKPOINT_TIMEOUT_SECONDS)
 		.optional(),
 
-	ttsEnabled: z.boolean().optional(),
-	ttsSpeed: z.number().optional(),
 	soundEnabled: z.boolean().optional(),
 	soundVolume: z.number().optional(),
 
@@ -376,8 +376,6 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 	commandTimeoutAllowlist: [],
 	preventCompletionWithOpenTodos: false,
 
-	ttsEnabled: false,
-	ttsSpeed: 1,
 	soundEnabled: false,
 	soundVolume: 0.5,
 

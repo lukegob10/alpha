@@ -14,6 +14,7 @@ import {
 	createApiStreamError,
 	createApiStreamOutcome,
 	type ApiStream,
+	type ApiStreamChunk,
 } from "../../../api/transform/stream"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { createAgentResponse } from "../../agent/AgentResponse"
@@ -116,6 +117,8 @@ async function harness(
 	policy: ConstructorParameters<typeof AgentRetryPolicy>[0] = {},
 	options: {
 		realCompletion?: boolean
+		taskKind?: Task["taskKind"]
+		apiProvider?: ProviderSettings["apiProvider"]
 		onReadEffect?: () => void
 		finalizeEarlyRead?: (callId: string) => Promise<void>
 	} = {},
@@ -211,7 +214,7 @@ async function harness(
 		log: vi.fn(),
 	}
 	const configuration: ProviderSettings = {
-		apiProvider: "openai",
+		apiProvider: options.apiProvider ?? "openai",
 		openAiModelId: "original-model",
 		openAiApiKey: "synthetic-test-key",
 	}
@@ -252,6 +255,7 @@ async function harness(
 		taskId,
 		task: "Finish the answer safely.",
 		taskMode: "code",
+		taskKind: options.taskKind,
 		taskApprovalMode: "ask",
 		taskApiConfigName: "recovery-fixture",
 		workspacePath: cwd,
@@ -368,6 +372,188 @@ beforeEach(() => vi.clearAllMocks())
 afterEach(async () => {
 	for (const fixture of fixtures.splice(0)) await fixture.cleanup()
 	vi.restoreAllMocks()
+})
+
+describe("Task canonical response admission", () => {
+	const thinking = {
+		value: "",
+		id: "retained-thinking",
+		metadata: { signature: "retained-signature", complete: true },
+		modelId: "original-model",
+		modelVendor: "copilot",
+		modelVersion: "original-model",
+	}
+	const reasoningCases: Array<{
+		name: string
+		chunk: Extract<ApiStreamChunk, { type: "reasoning" }>
+		taskKind?: Task["taskKind"]
+		apiProvider?: ProviderSettings["apiProvider"]
+	}> = [
+		{ name: "visible reasoning", chunk: { type: "reasoning", text: "Inspecting the requested module." } },
+		{
+			name: "visible host thinking",
+			chunk: { type: "reasoning", text: "Inspecting the requested module.", vscodeLmThinking: thinking },
+			apiProvider: "vscode-lm",
+		},
+		{
+			name: "empty host thinking",
+			chunk: { type: "reasoning", text: "", vscodeLmThinking: thinking },
+			apiProvider: "vscode-lm",
+		},
+		{
+			name: "managed-child thinking",
+			chunk: { type: "reasoning", text: "", vscodeLmThinking: thinking },
+			taskKind: "subagent",
+			apiProvider: "vscode-lm",
+		},
+		{
+			name: "opaque reasoning",
+			chunk: {
+				type: "reasoning",
+				text: "",
+				encryptedContent: opaqueState,
+				id: "retained-reasoning",
+				summary: [],
+			},
+		},
+		{ name: "sealed empty reasoning", chunk: { type: "reasoning", text: "", signature: "retained-signature" } },
+		{
+			name: "Gemini replay state",
+			chunk: {
+				type: "reasoning",
+				text: "",
+				geminiResponse: { modelId: "original-model", parts: [{ thoughtSignature: "retained-signature" }] },
+			},
+			apiProvider: "gemini",
+		},
+	]
+
+	it.each(reasoningCases)(
+		"commits completed $name before continuing the real Task turn",
+		async ({ chunk, taskKind, apiProvider }) => {
+			let fixture!: Awaited<ReturnType<typeof harness>>
+			fixture = await harness(
+				async function* (attempt) {
+					if (attempt === 1) {
+						yield chunk
+						yield createApiStreamOutcome({
+							status: "completed",
+							semanticOutputObserved: chunk.text.length > 0,
+						})
+						return
+					}
+					expect(attempt).toBe(2)
+					expect((await fixture.history()).at(-1)?.agentResponseItems).toEqual([chunk])
+					yield { type: "text", text: "The answer after retained reasoning." }
+					yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				},
+				{},
+				{ taskKind, apiProvider },
+			)
+
+			await fixture.run()
+
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			expect(fixture.effect).not.toHaveBeenCalled()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant).toHaveLength(2)
+			expect(assistant[0].agentResponseItems).toEqual([chunk])
+			expect(assistant[0].agentResponseOutcome).toEqual({ status: "completed" })
+			expect(fixture.createMessage.mock.calls[1][1].filter((message) => message.role === "user")).toHaveLength(1)
+			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).not.toContain("You did not use a tool")
+			if (chunk.vscodeLmThinking || chunk.geminiResponse) {
+				expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain("retained-signature")
+			}
+			if (chunk.encryptedContent) {
+				expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain("opaque-reasoning+/=")
+			}
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.events.filter((event) => event.type === "response_terminal")).toEqual([
+				{ type: "response_terminal", status: "completed" },
+				{ type: "response_terminal", status: "completed" },
+			])
+			expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("commits a successful continuation-only boundary without empty-response recovery", async () => {
+		const fixture = await harness(async function* (attempt) {
+			if (attempt === 1) {
+				yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
+				return
+			}
+			expect(attempt).toBe(2)
+			yield { type: "text", text: "The requested continuation completed." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+		expect(assistant).toHaveLength(2)
+		expect(assistant[0]).toMatchObject({
+			content: [],
+			agentResponseItems: [],
+			agentResponseOutcome: { status: "completed", requiresContinuation: true },
+		})
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		expect(fixture.events.filter((event) => event.type === "response_terminal")).toHaveLength(2)
+		expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+		expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+	})
+
+	it.each(["failed", "incomplete", "cancelled"] as const)(
+		"persists replay state from an explicit %s reasoning-only response without continuing",
+		async (status) => {
+			const chunk = { type: "reasoning" as const, text: "", vscodeLmThinking: thinking }
+			const fixture = await harness(async function* () {
+				yield chunk
+				yield createApiStreamOutcome({ status, reason: "Provider terminal boundary.", retryable: false })
+			})
+
+			await fixture.run()
+
+			expect(fixture.task.isCompleted()).toBe(false)
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.effect).not.toHaveBeenCalled()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant).toHaveLength(1)
+			expect(assistant[0].agentResponseItems).toEqual([chunk])
+			expect(assistant[0].agentResponseOutcome).toMatchObject({ status, retryable: false })
+			expect(fixture.events.filter((event) => event.type === "response_terminal")).toHaveLength(1)
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.task.finalizeTaskCompletion).not.toHaveBeenCalled()
+		},
+	)
+
+	it("keeps a genuinely empty completed response on the existing bounded retry path", async () => {
+		const fixture = await harness(async function* (attempt) {
+			if (attempt === 1) {
+				yield { type: "usage", inputTokens: 10, outputTokens: 0 }
+				yield createApiStreamOutcome({ status: "completed" })
+				return
+			}
+			expect(attempt).toBe(2)
+			yield { type: "text", text: "The recovered answer." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		fixture.live.autoApprovalEnabled = true
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(1)
+		expect((await fixture.history()).filter((message) => message.role === "assistant")).toHaveLength(1)
+		expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+	})
 })
 
 describe("Task committed partial stream recovery", () => {

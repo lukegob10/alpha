@@ -62,7 +62,6 @@
 		"rehype-katex": "^7.0.1",
 		"remark-gfm": "^4.0.1",
 		"remark-math": "^6.0.0",
-		"remove-markdown": "^0.6.0",
 		"shell-quote": "^1.8.2",
 		"shiki": "^3.2.1",
 		"stacktrace-js": "^2.0.2",

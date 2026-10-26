@@ -13,6 +13,8 @@ export interface SystemPromptSettings {
 	projectInstructionDiscovery?: ProjectInstructionDiscoveryOptions
 	/** Selected provider model's context window captured for this step. */
 	skillCatalogContextWindow?: number
+	/** Thread-local advisory memory snapshot, already bounded by the memory store. */
+	memoryContext?: string
 	newTaskRequireTodos: boolean
 	/** When true, model should hide vendor/company identity in responses */
 	isStealthModel?: boolean

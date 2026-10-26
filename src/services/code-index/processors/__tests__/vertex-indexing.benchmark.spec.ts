@@ -18,6 +18,13 @@ vi.mock("@google/genai", () => ({
 vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureEvent: vi.fn() } } }))
 vi.mock("fs/promises", () => ({ stat: vi.fn(async () => ({ size: 1024 })) }))
 vi.mock("../../../glob/list-files", () => ({ listFiles: vi.fn(async () => [files, false]) }))
+vi.mock("../../shared/get-relative-path", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../shared/get-relative-path")>()),
+	resolveIndexFilePath: async (filePath: string) => ({
+		absolutePath: filePath,
+		relativePath: filePath.slice("/workspace/".length),
+	}),
+}))
 vi.mock("../../../../utils/path", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../../utils/path")>()),
 	getWorkspacePathForContext: () => "/workspace",
@@ -28,6 +35,9 @@ vi.mock("../../../../core/ignore/AlphaIgnoreController", () => ({
 		dispose() {}
 		filterPaths(paths: string[]) {
 			return paths
+		}
+		validateAccess() {
+			return true
 		}
 	},
 }))

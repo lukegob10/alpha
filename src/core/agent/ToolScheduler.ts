@@ -46,6 +46,7 @@ import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import { AskIgnoredError } from "../task/AskIgnoredError"
+import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 import type { Task } from "../task/Task"
 import { validateToolUse } from "../tools/validateToolUse"
 import type { AgentResponse, AgentToolCall } from "./AgentResponse"
@@ -523,6 +524,7 @@ interface PreparedCall {
 	pathIdentities?: ReadonlyArray<{ absolute: string; canonical: string }>
 	requiresExplicitApproval?: boolean
 	commandPathApproval?: { outsidePaths: string[]; unresolved: boolean }
+	protectedCommandWrite?: boolean
 }
 
 function scopeContains(root: string, candidate: string): boolean {
@@ -689,6 +691,9 @@ function normalizeAgentToolCall(value: unknown): AgentToolCall {
 }
 
 function getPathArguments(toolName: string, argumentsValue: Record<string, unknown>): unknown[] {
+	// These are store-relative resource identifiers. The captured memory capability
+	// and MemoryStore validate their host-owned namespace; workspace paths grant no access.
+	if (["memories_list", "memories_read", "memories_search", "memories_add_ad_hoc_note"].includes(toolName)) return []
 	const candidates = ["path", "file_path", "cwd", "directory"].map((key) => argumentsValue[key])
 	if (toolName === "generate_image") {
 		candidates.push(argumentsValue.image)
@@ -1943,7 +1948,9 @@ export class ToolScheduler {
 	}
 
 	private async raceCancellation<T>(operation: () => Promise<T>): Promise<T | undefined> {
-		if (this.isCancelled()) {
+		// Sibling fence failures abort the batch while the task itself can remain active.
+		const signal = this.executionSignal
+		if (this.isCancelled() || signal.aborted) {
 			return undefined
 		}
 
@@ -1951,9 +1958,7 @@ export class ToolScheduler {
 		let abortListener: (() => void) | undefined
 		const cancellation = new Promise<undefined>((resolve) => {
 			abortListener = () => resolve(undefined)
-			if (this.options.signal) {
-				this.options.signal.addEventListener("abort", abortListener, { once: true })
-			}
+			signal.addEventListener("abort", abortListener, { once: true })
 			// Task.abort is a legacy boolean without an event source. Poll only
 			// while an interactive host callback is pending so cancellation can
 			// release the approval lane deterministically in that compatibility path.
@@ -1970,8 +1975,8 @@ export class ToolScheduler {
 			if (interval) {
 				clearInterval(interval)
 			}
-			if (abortListener && this.options.signal) {
-				this.options.signal.removeEventListener("abort", abortListener)
+			if (abortListener) {
+				signal.removeEventListener("abort", abortListener)
 			}
 		}
 	}
@@ -2127,6 +2132,10 @@ export class ToolScheduler {
 				const commandCwd = path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : ".")
 				const scope = assessCommandPaths(args.command, commandCwd, roots?.length ? roots : [taskRoot])
 				pathArguments.push(...scope.writePaths)
+				const protectedFiles = this.toolTask.alphaProtectedController ?? new AlphaProtectedController(taskRoot)
+				prepared.protectedCommandWrite = scope.writePaths.some((candidate) =>
+					protectedFiles.isWriteProtected(candidate),
+				)
 				const outsidePaths = !isPathAllowed(this.options.policy, commandCwd, taskRoot)
 					? [...new Set([commandCwd, ...scope.outsidePaths])]
 					: scope.outsidePaths
@@ -2146,6 +2155,8 @@ export class ToolScheduler {
 		}
 		prepared.requiresExplicitApproval =
 			!!prepared.commandPathApproval ||
+			(prepared.protectedCommandWrite &&
+				this.options.policy?.approval.reviewPolicy?.protectedWriteAllowed !== true) ||
 			(canonicalName !== "exec_command" &&
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
@@ -2420,7 +2431,11 @@ export class ToolScheduler {
 							"An approval request cannot run in an approval-free parallel lane.",
 						)
 					}
-					const [, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
+					const [, partialMessage, originalProgressStatus, requestedForceApproval, callRequiresExplicit] =
+						args
+					const forceApproval =
+						requestedForceApproval === true ||
+						(type === "command" && prepared.protectedCommandWrite === true)
 					const progressStatus =
 						type === "command" && prepared.commandPathApproval
 							? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }

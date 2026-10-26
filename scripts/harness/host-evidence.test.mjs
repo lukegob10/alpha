@@ -233,22 +233,30 @@ test("a completed disposable smoke receipt cannot infer ownership from passed te
 	assert.throws(() => validateHostReceipt(receipt), /receipt/)
 })
 
-test("smoke contracts require the provider selected by their canonical scripts", () => {
-	const receipts = smokeHostFiles.map((file) => ({
-		...hostReceipt(file),
-		providerMode: file === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted",
-	}))
+test("smoke contracts require the provider selected by their canonical scripts", async () => {
+	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
+	const receipts = manifest.scripts["test:smoke:1380:run"]
+		.split(" && ")
+		.filter((command) => command.includes("--file "))
+		.map((command) => ({
+			...hostReceipt(command.match(/--file ([\w.-]+)/)[1]),
+			providerMode: command.match(/--provider ([\w-]+)/)[1],
+		}))
 	assert.equal(hostSuiteVerdict(receipts, "smoke").status, "passed")
-	for (const index of [0, smokeHostFiles.indexOf("vscode-lm-contract.test")]) {
+	for (const index of [
+		0,
+		smokeHostFiles.indexOf("vscode-lm-contract.test"),
+		smokeHostFiles.indexOf("claude-copilot-contract.test"),
+	]) {
 		const modified = structuredClone(receipts)
 		modified[index].providerMode = modified[index].providerMode === "scripted" ? "vscode-lm-fixture" : "scripted"
 		assert.equal(hostSuiteVerdict(modified, "smoke").status, "failed")
 	}
 })
 
-test("confidence composes all thirteen smoke hosts and five core hosts without admitting unit fixtures", () => {
-	assert.equal(smokeHostFiles.length, 13)
-	assert.equal(confidenceHostFiles.length, 18)
+test("confidence composes all fifteen smoke hosts and five core hosts without admitting unit fixtures", () => {
+	assert.equal(smokeHostFiles.length, 15)
+	assert.equal(confidenceHostFiles.length, 20)
 	assert.deepEqual(confidenceHostFiles.slice(0, smokeHostFiles.length), smokeHostFiles)
 	const receipts = confidenceHostFiles.map(hostReceipt)
 	assert.equal(hostSuiteVerdict(receipts, "confidence").status, "passed")

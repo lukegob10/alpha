@@ -66,6 +66,8 @@ export interface BuildToolsOptions {
 	taskKind?: "primary" | "subagent"
 	/** Restricts the task to the host-owned diagnostic evidence reader. */
 	diagnosticSession?: boolean
+	/** Root-task memory access captured with the provider schema and policy boundary. */
+	memoryToolsEnabled?: boolean
 	diagnosticSourceTaskId?: string
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
@@ -141,7 +143,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 16
+const TOOL_CATALOG_SCHEMA_VERSION = 17
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -226,6 +228,7 @@ function serverState(servers: readonly McpServer[], mcpHub?: McpHub, cache?: Tas
 			disabled: server.disabled === true,
 			connection: connection && cache ? cache.identity(connection) : undefined,
 			client: connection?.client && cache ? cache.identity(connection.client) : undefined,
+			catalogRevision: mcpHub?.getServerCatalogRevision?.(server),
 			tools: server.tools
 				? [...server.tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 				: [],
@@ -252,11 +255,14 @@ function captureMcpAvailability(
 			parallelRead: boolean
 			connection: ReturnType<typeof connectionFor>
 			client: unknown
+			catalogRevision: number | undefined
 			schemaDigest: string
 		}
 	>()
 	for (const server of servers) {
 		if (server.status !== "connected" || server.disabled) continue
+		const catalogRevision = mcpHub?.getServerCatalogRevision?.(server)
+		if (mcpHub?.getServerCatalogRevision && catalogRevision === undefined) continue
 		const connection = connectionFor(mcpHub, server)
 		for (const tool of [...(server.tools ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
 			const name = canonicalizeToolName(buildMcpToolName(server.name, tool.name))
@@ -269,6 +275,7 @@ function captureMcpAvailability(
 				parallelRead: isMcpReadOnlyHint(tool.annotations),
 				connection,
 				client: connection?.client,
+				catalogRevision,
 				schemaDigest: digestValue(schema),
 			})
 		}
@@ -294,6 +301,8 @@ function captureMcpAvailability(
 				.getServers()
 				.find((item) => item.name === expected.serverName && item.source === expected.source)
 			if (!server || server.disabled || server.status !== "connected") return false
+			if (mcpHub.getServerCatalogRevision && mcpHub.getServerCatalogRevision(server) !== expected.catalogRevision)
+				return false
 			const connection = connectionFor(mcpHub, server)
 			if (connection !== expected.connection || connection?.client !== expected.client) return false
 			const tool = server.tools?.find(
@@ -409,6 +418,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			)
 	}
 	customTools = availableCustomTools(customTools)
+	if (!diagnosticSession) {
+		const hub = provider.getMcpHub()
+		if (hub?.awaitCatalogReady) await awaitCatalogInput(hub.awaitCatalogReady(options.signal), options.signal)
+		options.signal?.throwIfAborted()
+	}
 	// All live reads precede this synchronous capture. No await may split key construction from its factory.
 	const mcpHub = diagnosticSession ? undefined : provider.getMcpHub()
 	const servers = diagnosticSession
@@ -444,6 +458,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				allowedToolNames: orderedNames(allowedToolNames),
 				taskKind,
 				diagnosticSession,
+				memoryToolsEnabled: options.memoryToolsEnabled === true,
 				diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 				enableAgentLifecycleTools,
 				crossTaskRole,
@@ -499,6 +514,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		// Build native tools with dynamic read_file tool based on settings.
 		const nativeTools = getNativeTools({
 			diagnosticSession,
+			memoryToolsEnabled: options.memoryToolsEnabled === true,
 			supportsImages,
 			availableBrowserToolNames,
 			taskKind,
@@ -574,8 +590,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		]
 
 		// Filter MCP tools based on mode restrictions.
-		const mcpTools = buildMcpServerTools(servers, includeAllToolsWithRestrictions)
-		const connectedMcpTools = includeAllToolsWithRestrictions ? buildMcpServerTools(servers) : mcpTools
+		const callableMcpServers = servers.filter(
+			(server) => !mcpHub?.getServerCatalogRevision || mcpHub.getServerCatalogRevision(server) !== undefined,
+		)
+		const mcpTools = buildMcpServerTools(
+			includeAllToolsWithRestrictions ? servers : callableMcpServers,
+			includeAllToolsWithRestrictions,
+		)
+		const connectedMcpTools = includeAllToolsWithRestrictions ? buildMcpServerTools(callableMcpServers) : mcpTools
 		const filteredMcpTools = disabledTools.includes("use_mcp_tool")
 			? []
 			: filterMcpToolsForMode(connectedMcpTools, mode, customModes, experiments)
@@ -665,6 +687,7 @@ function createCapturedToolSurface(input: {
 		reviewPolicy: options.reviewPolicy,
 		readGrant: options.readGrant,
 		diagnosticSession: options.diagnosticSession,
+		memoryToolsEnabled: options.memoryToolsEnabled,
 		diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 		mode: options.mode,
 		cwd: options.cwd,

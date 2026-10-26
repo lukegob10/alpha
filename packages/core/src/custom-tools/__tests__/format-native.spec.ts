@@ -39,7 +39,7 @@ describe("formatNative", () => {
 				name: "simple_tool",
 				description: "A simple tool",
 				parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
-				strict: true,
+				strict: false,
 			},
 		})
 	})
@@ -100,6 +100,7 @@ describe("formatNative", () => {
 		const serialized = serializeCustomTool(tool)
 		const result = formatNative(serialized)
 
+		expect(result.function.strict).toBe(false)
 		expect(result.function.parameters?.required).toEqual([])
 		expect(result.function.parameters?.properties).toEqual({
 			format: {

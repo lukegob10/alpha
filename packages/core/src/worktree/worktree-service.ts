@@ -248,7 +248,9 @@ export class WorktreeService {
 	 */
 	async checkoutBranch(cwd: string, branch: string): Promise<WorktreeResult> {
 		try {
-			await execFileAsync("git", ["checkout", branch], { cwd, env: createWorktreeGitEnvironment() })
+			// git-switch's branch-only contract rejects checkout path restoration and option injection.
+			// Reviewed against https://git-scm.com/docs/git-switch on 2026-10-26.
+			await execFileAsync("git", ["switch", "--", branch], { cwd, env: createWorktreeGitEnvironment() })
 			return {
 				success: true,
 				message: `Checked out branch ${branch}`,

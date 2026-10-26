@@ -1,7 +1,7 @@
 import type { AlphaMessage, AlphaSayTool } from "@alpha-code/types"
-import { safeJsonParse } from "@alpha/core"
 
 import { projectTranscriptTurns, type TranscriptPrompt } from "./transcriptTurns"
+import { createMessagePayloadSelector } from "./messagePayload"
 
 /** File-edit tool names from AlphaSayTool["tool"] plus compatibility aliases. */
 const FILE_EDIT_TOOLS = new Set<string>([
@@ -34,6 +34,11 @@ type FileChangePayload = AlphaSayTool & {
 	changeStatus?: string
 	commandExecutionId?: string
 }
+
+const fileChangePayload = createMessagePayloadSelector((payload): FileChangePayload | undefined => {
+	if (typeof payload?.tool !== "string" || !FILE_EDIT_TOOLS.has(payload.tool)) return undefined
+	return payload as FileChangePayload
+})
 
 interface FileChangeCandidate {
 	entry: FileChangeEntry
@@ -89,12 +94,8 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 		if ((!isSayTool && !isAskTool) || !msg.text || msg.partial) continue
 		if (isAskTool && !msg.isAnswered) continue
 
-		const tool = safeJsonParse<FileChangePayload>(msg.text)
-		if (
-			!tool ||
-			!FILE_EDIT_TOOLS.has(tool.tool as string) ||
-			(tool.changeStatus !== undefined && tool.changeStatus !== "applied")
-		) {
+		const tool = fileChangePayload(msg)
+		if (!tool || (tool.changeStatus !== undefined && tool.changeStatus !== "applied")) {
 			continue
 		}
 		const source = isSayTool ? "say" : "ask"

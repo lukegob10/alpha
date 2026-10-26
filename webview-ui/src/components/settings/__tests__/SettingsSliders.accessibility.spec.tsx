@@ -17,24 +17,13 @@ function translateSetting(key: string) {
 vi.mock("@/i18n/TranslationContext", () => ({ useAppTranslation: () => ({ t: translateSetting }) }))
 
 describe("settings slider accessibility", () => {
-	it("names notification sliders and keeps keyboard changes in the settings edit buffer", () => {
+	it("names the notification volume slider and keeps keyboard changes in the settings edit buffer", () => {
 		const setCachedStateField = vi.fn()
-		render(
-			<NotificationSettings
-				ttsEnabled
-				ttsSpeed={1}
-				soundEnabled
-				soundVolume={0.4}
-				setCachedStateField={setCachedStateField}
-			/>,
-		)
+		render(<NotificationSettings soundEnabled soundVolume={0.4} setCachedStateField={setCachedStateField} />)
 
-		const speed = screen.getByRole("slider", { name: settingsLocale.notifications.tts.speedLabel })
 		const volume = screen.getByRole("slider", { name: settingsLocale.notifications.sound.volumeLabel })
-		fireEvent.keyDown(speed, { key: "ArrowRight" })
 		fireEvent.keyDown(volume, { key: "ArrowRight" })
 
-		expect(setCachedStateField).toHaveBeenCalledWith("ttsSpeed", 1.01)
 		expect(setCachedStateField).toHaveBeenCalledWith("soundVolume", 0.41)
 	})
 

@@ -39,9 +39,12 @@ export class VSCodeBrowserTool<TName extends BrowserToolName> extends BaseTool<T
 	async execute(params: BrowserToolArgs[TName], task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { handleError, pushToolResult, setResultMetadata, signal } = callbacks
 
-		await task.say("tool", browserActionMessage(this.name, params, "running"), undefined, true)
-
 		try {
+			// Alpha admits and journals the effect before VS Code applies its own confirmation policy.
+			if (!(await callbacks.askApproval("tool", browserActionMessage(this.name, params, "running")))) return
+			signal?.throwIfAborted()
+			await task.say("tool", browserActionMessage(this.name, params, "running"), undefined, true)
+
 			const result = await invokeVSCodeBrowserTool(this.name, params, signal)
 			task.consecutiveMistakeCount = 0
 			setResultMetadata?.({ status: "success" })

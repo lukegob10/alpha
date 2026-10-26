@@ -52,6 +52,8 @@ vi.mock("../../task/Task", () => ({
 		const task = {
 			taskId: options.historyItem?.id ?? options.taskId ?? `created-${++providerTestState.nextTaskId}`,
 			instanceId: `instance-${providerTestState.nextTaskId}`,
+			taskKind: "primary",
+			clineMessages: [],
 			parentTask: options.parentTask,
 			rootTask: options.rootTask,
 			reasoningPreference: options.reasoningPreference ??
@@ -114,7 +116,6 @@ vi.mock("../../../integrations/workspace/WorkspaceTracker", () => ({
 vi.mock("../../../api/providers/fetchers/modelCache", () => ({ getModels: vi.fn(), flushModels: vi.fn() }))
 vi.mock("../../../integrations/misc/extract-text", () => ({ extractTextFromFile: vi.fn() }))
 vi.mock("../../../utils/safeWriteJson")
-vi.mock("../../../utils/tts", () => ({ setTtsEnabled: vi.fn(), setTtsSpeed: vi.fn() }))
 vi.mock("p-wait-for", () => ({ default: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("delay", () => {
 	const delay = () => Promise.resolve()
@@ -524,6 +525,25 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 		expect(state.newTaskReasoningPreference).toEqual({ kind: "effort", effort: "medium" })
 		expect(task.reasoningPreference).toEqual({ kind: "effort", effort: "low" })
 		expect(provider.postStateToWebview).not.toHaveBeenCalled()
+	})
+
+	it("keeps ten default root admissions live and preserves explicit replacement", async () => {
+		const { provider } = providerHarness()
+		const sessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
+		sessions.setMaxLiveTasks(10)
+		vi.spyOn(provider as any, "finalizeActiveCompletionCandidate").mockResolvedValue(undefined)
+		const tasks = await Promise.all(Array.from({ length: 10 }, (_, index) => provider.createTask(`Work ${index}`)))
+
+		expect(sessions.getLiveTaskCount()).toBe(10)
+		expect(new Set(tasks.map((task) => task.taskId)).size).toBe(10)
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+		for (const task of tasks) expect(task.start).toHaveBeenCalledOnce()
+		await expect(provider.createTask("Over capacity")).rejects.toThrow("Maximum live task limit reached (10)")
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+
+		const replacement = providerHarness()
+		await replacement.provider.createTask("Explicit replacement", undefined, undefined, { preserveExisting: false })
+		expect(replacement.provider.removeTaskFromStack).toHaveBeenCalledOnce()
 	})
 
 	it("snapshots the composer preference for a new task and the parent preference for a child", async () => {

@@ -11,11 +11,13 @@ export const smokeHostFiles = [
 	"command-file-diff.test",
 	"tool-search.acceptance.test",
 	"alpha-tickets.acceptance.test",
+	"memories.acceptance.test",
 	"request-user-input-async.test",
 	"update-plan.acceptance.test",
 	"view-image.acceptance.test",
 	"compaction-acceptance.test",
 	"vscode-lm-contract.test",
+	"claude-copilot-contract.test",
 	"background-command-completion.test",
 ]
 export const confidenceHostFiles = [
@@ -32,6 +34,7 @@ export const extendedHostFiles = [
 	"storage-recovery.test",
 	"scheduled-tasks.acceptance.test",
 	"rich-documents.test",
+	"cross-task-orchestration.acceptance.test",
 ]
 export const renderedHostFiles = [
 	"composer-ui.test",
@@ -236,7 +239,9 @@ export function hostSuiteVerdict(receipts, suite) {
 		receipts.some(
 			(receipt) =>
 				receipt.providerMode !==
-				(receipt.testFile === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted"),
+				(["vscode-lm-contract.test", "claude-copilot-contract.test"].includes(receipt.testFile)
+					? "vscode-lm-fixture"
+					: "scripted"),
 		)
 	)
 		return { status: "failed", reason: "wrong_host_provider" }

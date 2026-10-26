@@ -4,6 +4,8 @@ import * as path from "path"
 import * as lockfile from "proper-lockfile"
 
 import {
+	scheduledTaskSchema,
+	scheduledTaskRunSchema,
 	taskReasoningPreferenceSchema,
 	taskReasoningStateSchema,
 	type ScheduledTask,
@@ -12,22 +14,27 @@ import {
 } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import { withFileLock } from "../../core/task-persistence/atomicWrite"
+import { atomicWriteText, withFileLock } from "../../core/task-persistence/atomicWrite"
 import { arePathsEqual } from "../../utils/path"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import { getStorageBasePath } from "../../utils/storage"
 
 const OWNER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const storedTaskSchema = scheduledTaskSchema.omit({ reasoningPreference: true }).passthrough()
+const storedRunSchema = scheduledTaskRunSchema.omit({ reasoningPreference: true, reasoningState: true }).passthrough()
 
 export class ScheduledTaskStore {
 	private tasks = new Map<string, ScheduledTask>()
 	private runs = new Map<string, ScheduledTaskRun>()
+	private rejectedTasks: unknown[] = []
+	private rejectedRuns: unknown[] = []
 	private writeLock: Promise<void> = Promise.resolve()
 	private storageDir: Promise<string> | undefined
 
 	constructor(
 		private readonly globalStoragePath: string,
 		private readonly openWorkspacePaths?: () => string[],
+		private readonly onWarning?: (message: string) => void,
 	) {}
 
 	async initialize(): Promise<void> {
@@ -277,44 +284,101 @@ export class ScheduledTaskStore {
 
 	private async loadTasks(strict = false): Promise<void> {
 		try {
-			const raw = await fs.readFile(await this.getTasksPath(), "utf8")
-			const parsed = JSON.parse(raw)
-			const tasks = Array.isArray(parsed) ? parsed : parsed.tasks
+			const tasks = await this.readCollection(await this.getTasksPath(), "tasks")
 			const loaded = new Map<string, ScheduledTask>()
-			for (const item of tasks ?? []) {
-				if (this.isScheduledTask(item)) {
-					loaded.set(item.id, this.normalizeTask(item))
+			const rejected: unknown[] = []
+			for (const item of tasks) {
+				try {
+					const task = this.normalizeTask(item)
+					loaded.set(task.id, task)
+				} catch {
+					rejected.push(item)
 				}
 			}
+			if (rejected.length && rejected.length !== this.rejectedTasks.length) {
+				this.onWarning?.(`${rejected.length} invalid scheduled task records retained for recovery`)
+			}
 			this.tasks = loaded
+			this.rejectedTasks = rejected
 		} catch (error) {
 			if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error
 			this.tasks.clear()
+			this.rejectedTasks = []
 		}
 	}
 
 	private async loadRuns(strict = false): Promise<void> {
 		try {
-			const raw = await fs.readFile(await this.getRunsPath(), "utf8")
-			const parsed = JSON.parse(raw)
-			const runs = Array.isArray(parsed) ? parsed : parsed.runs
+			const runs = await this.readCollection(await this.getRunsPath(), "runs")
 			const loaded = new Map<string, ScheduledTaskRun>()
-			for (const item of runs ?? []) {
-				if (this.isScheduledTaskRun(item)) {
-					loaded.set(item.id, this.normalizeRun(item))
+			const rejected: unknown[] = []
+			for (const item of runs) {
+				try {
+					const run = this.normalizeRun(item)
+					loaded.set(run.id, run)
+				} catch {
+					rejected.push(item)
 				}
 			}
+			if (rejected.length && rejected.length !== this.rejectedRuns.length) {
+				this.onWarning?.(`${rejected.length} invalid scheduled run records retained for recovery`)
+			}
 			this.runs = loaded
+			this.rejectedRuns = rejected
 		} catch (error) {
 			if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error
 			this.runs.clear()
+			this.rejectedRuns = []
+		}
+	}
+
+	private async readCollection(file: string, key: "tasks" | "runs"): Promise<unknown[]> {
+		const parse = (raw: string): unknown[] => {
+			const parsed: unknown = JSON.parse(raw)
+			const records = Array.isArray(parsed)
+				? parsed
+				: parsed && typeof parsed === "object"
+					? Reflect.get(parsed, key)
+					: undefined
+			if (!Array.isArray(records)) throw new Error(`Invalid scheduled ${key} collection`)
+			return records
+		}
+		try {
+			return parse(await fs.readFile(file, "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			// Older writers moved the authoritative file aside before replacing it.
+			// Recovery holds the project transaction lock and leaves every backup intact.
+			const prefix = `.${path.basename(file)}.bak_`
+			const backups = (await fs.readdir(path.dirname(file)))
+				.filter((name) => name.startsWith(prefix) && /^\d+_[a-z0-9]+\.tmp$/.test(name.slice(prefix.length)))
+				.sort(
+					(a, b) =>
+						Number(b.slice(prefix.length).split("_")[0]) - Number(a.slice(prefix.length).split("_")[0]),
+				)
+			for (const backup of backups) {
+				let raw: string
+				let records: unknown[]
+				try {
+					raw = await fs.readFile(path.join(path.dirname(file), backup), "utf8")
+					records = parse(raw)
+				} catch {
+					continue
+				}
+				await atomicWriteText(file, raw, { requireAtomicReplace: true })
+				this.onWarning?.(`Recovered scheduled ${key} from a retained storage backup`)
+				return records
+			}
+			if (backups.length) throw new Error(`Scheduled ${key} backups require manual recovery`)
+			throw error
 		}
 	}
 
 	private async writeTasks(tasks: ReadonlyMap<string, ScheduledTask> = this.tasks): Promise<void> {
 		await safeWriteJson(
 			await this.getTasksPath(),
-			Array.from(tasks.values()).sort((a, b) => a.name.localeCompare(b.name)),
+			[...Array.from(tasks.values()).sort((a, b) => a.name.localeCompare(b.name)), ...this.rejectedTasks],
+			{ atomicReplace: true },
 		)
 	}
 
@@ -347,22 +411,13 @@ export class ScheduledTaskStore {
 	private async writeRuns(runs: ReadonlyMap<string, ScheduledTaskRun> = this.runs): Promise<void> {
 		await safeWriteJson(
 			await this.getRunsPath(),
-			Array.from(runs.values()).sort((a, b) => b.scheduledFor - a.scheduledFor),
+			[...Array.from(runs.values()).sort((a, b) => b.scheduledFor - a.scheduledFor), ...this.rejectedRuns],
+			{ atomicReplace: true },
 		)
 	}
 
-	private isScheduledTask(value: unknown): value is ScheduledTask {
-		const task = value as Partial<ScheduledTask>
-		return (
-			typeof task?.id === "string" &&
-			typeof task.name === "string" &&
-			typeof task.prompt === "string" &&
-			typeof task.enabled === "boolean" &&
-			typeof task.schedule?.type === "string"
-		)
-	}
-
-	private normalizeTask(task: ScheduledTask): ScheduledTask {
+	private normalizeTask(value: unknown): ScheduledTask {
+		const task = storedTaskSchema.parse(value)
 		const parsed = taskReasoningPreferenceSchema.safeParse(task.reasoningPreference ?? { kind: "default" })
 		if (parsed.success) {
 			return { ...task, reasoningPreference: parsed.data }
@@ -370,19 +425,8 @@ export class ScheduledTaskStore {
 		return { ...task, reasoningPreference: { kind: "default" } }
 	}
 
-	private isScheduledTaskRun(value: unknown): value is ScheduledTaskRun {
-		const run = value as Partial<ScheduledTaskRun>
-		return (
-			typeof run?.id === "string" &&
-			typeof run.taskId === "string" &&
-			typeof run.status === "string" &&
-			typeof run.trigger === "string" &&
-			typeof run.scheduledFor === "number" &&
-			typeof run.prompt === "string"
-		)
-	}
-
-	private normalizeRun(run: ScheduledTaskRun): ScheduledTaskRun {
+	private normalizeRun(value: unknown): ScheduledTaskRun {
+		const run = storedRunSchema.parse(value)
 		const preferenceResult = taskReasoningPreferenceSchema.safeParse(run.reasoningPreference ?? { kind: "default" })
 		const stateResult =
 			run.reasoningState === undefined ? undefined : taskReasoningStateSchema.safeParse(run.reasoningState)

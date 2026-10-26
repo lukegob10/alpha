@@ -20,6 +20,23 @@ describe("taskMetadata sub-agent routing", () => {
 		await fs.rm(storageRoot, { recursive: true, force: true })
 	})
 
+	it("round-trips the captured thread memory preferences and external provenance", async () => {
+		const memory = { version: "v2" as const, useMemories: false, generateMemories: true, externalContext: true }
+		const { historyItem } = await taskMetadata({
+			taskId: "memory-thread",
+			taskNumber: 1,
+			messages: [],
+			globalStoragePath: storageRoot,
+			workspace,
+			memory,
+		})
+		const reloaded = historyItemSchema.parse(JSON.parse(JSON.stringify(historyItem)))
+		expect(reloaded.memory).toEqual(memory)
+		expect(historyItem.memory).not.toBe(memory)
+		memory.generateMemories = false
+		expect(historyItem.memory?.generateMemories).toBe(true)
+	})
+
 	it.each([false, undefined] as const)(
 		"preserves presentation model-call policy %s across a history serialization round trip",
 		async (presentationModelCalls) => {

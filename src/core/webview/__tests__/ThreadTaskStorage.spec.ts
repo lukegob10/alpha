@@ -79,6 +79,36 @@ describe("readThreadApiMessages", () => {
 		expect(await fs.readdir(directory)).toEqual([path.basename(file)])
 	})
 
+	it("skips oversized background evidence before reading or parsing it", async () => {
+		const file = path.join(directory, "api_conversation_history.json")
+		const backgroundLimit = 8 * 1024 * 1024
+		const largeMessages: ApiMessage[] = [{ role: "user", content: "x".repeat(backgroundLimit) }]
+		await fs.writeFile(file, JSON.stringify(largeMessages))
+		const open = vi.spyOn(fs, "open")
+		await expect(
+			readThreadApiMessages(taskId, storagePath, undefined, { maxBytes: backgroundLimit }),
+		).rejects.toThrow(/supported read size/i)
+		expect(open).not.toHaveBeenCalled()
+		open.mockRestore()
+		const unbounded = await readThreadApiMessages(taskId, storagePath)
+		expect(unbounded).toHaveLength(1)
+		expect(unbounded[0].content).toHaveLength(backgroundLimit)
+	})
+
+	it.each(["api_conversation_history.json", "claude_messages.json"])(
+		"reads bounded %s evidence without changing the source",
+		async (filename) => {
+			const file = path.join(directory, filename)
+			const contents = JSON.stringify(messages)
+			await fs.writeFile(file, contents)
+			await expect(readThreadApiMessages(taskId, storagePath, undefined, { maxBytes: 1024 })).resolves.toEqual(
+				messages,
+			)
+			expect(await fs.readFile(file, "utf8")).toBe(contents)
+			expect(await fs.readdir(directory)).toEqual([filename])
+		},
+	)
+
 	it("rejects an invalid v2 identity instead of serving a stale fallback", async () => {
 		const receipt = await saveApiMessages({ taskId, globalStoragePath: storagePath, messages })
 		const store = new ProviderTranscriptStore(taskId, storagePath)

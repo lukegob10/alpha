@@ -24,7 +24,7 @@ import { findMatchingResourceOrTemplate } from "@src/utils/mcp"
 import { vscode } from "@src/utils/vscode"
 import { formatPathTooltip } from "@src/utils/formatPathTooltip"
 
-import { ToolUseBlock, ToolUseBlockHeader } from "../common/ToolUseBlock"
+import { ToolUseBlock, ToolUseBlockHeader, ToolUseBlockHeaderButton } from "../common/ToolUseBlock"
 import UpdateTodoListToolBlock from "./UpdateTodoListToolBlock"
 import { isTaskOperationApproval, ToolApprovalDetails } from "./ToolApprovalDetails"
 import { resolveLegacyChildLink } from "./utils/legacyChildLink"
@@ -786,6 +786,17 @@ const ChatRowContentInner = ({
 				return <TicketActivity tool={tool} />
 			case "goal":
 				return <GoalApproval activity={tool.goalActivity} />
+			case "memory":
+				return (
+					<div
+						className="min-w-0 space-y-2 break-words"
+						role="group"
+						aria-label={t("chat:memories.approval")}>
+						<div className="font-medium">{t("chat:memories.appendNote")}</div>
+						<div className="whitespace-pre-wrap">{tool.content}</div>
+						<div className="text-vscode-descriptionForeground break-all">{tool.path}</div>
+					</div>
+				)
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -842,7 +853,7 @@ const ChatRowContentInner = ({
 						}>
 						<div className="pl-6">
 							<ToolUseBlock>
-								<ToolUseBlockHeader
+								<ToolUseBlockHeaderButton
 									className="group"
 									onClick={() =>
 										vscode.postMessage({
@@ -857,12 +868,13 @@ const ChatRowContentInner = ({
 											{formatPathTooltip(tool.path, tool.reason)}
 										</span>
 									</PathTooltip>
-									<div style={{ flexGrow: 1 }}></div>
+									<span className="flex-grow" />
 									<SquareArrowOutUpRight
-										className="w-4 shrink-0 codicon codicon-link-external opacity-0 group-hover:opacity-100 transition-opacity"
+										aria-hidden="true"
+										className="w-4 shrink-0 codicon codicon-link-external opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
 										style={{ fontSize: 13.5, margin: "1px 0" }}
 									/>
-								</ToolUseBlockHeader>
+								</ToolUseBlockHeaderButton>
 							</ToolUseBlock>
 						</div>
 					</ActivityStep>

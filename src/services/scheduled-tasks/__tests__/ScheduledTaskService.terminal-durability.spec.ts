@@ -161,6 +161,30 @@ describe("scheduled terminal result durability", () => {
 		await fs.rm(tmpDir, { recursive: true, force: true })
 	})
 
+	it("continues admitting due schedules when another schedule's claim fails", async () => {
+		const first = await service.createTask(payload({ name: "A unavailable schedule" }))
+		const second = await service.createTask(payload({ name: "B valid schedule" }))
+		const editor = new ScheduledTaskStore(tmpDir)
+		await editor.initialize()
+		for (const task of [first, second]) {
+			await editor.updateTask(task.id, (current) => ({ ...current, nextRunAt: Date.now() - 1 }))
+		}
+		const claimRun = ScheduledTaskStore.prototype.claimRun
+		vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(function (
+			this: ScheduledTaskStore,
+			...args
+		) {
+			if (args[0] === first.id) return Promise.reject(new Error("Claim unavailable"))
+			return claimRun.apply(this, args)
+		})
+		const started = deferred<AlphaTask>()
+		onStart = started.resolve
+		await advanceTick()
+		await started.promise
+		expect(service.getState().runs.find((run) => run.taskId === second.id)?.status).toBe("running")
+		expect(output).toHaveBeenCalledWith(expect.stringContaining(`Could not queue schedule ${first.id}`))
+	})
+
 	it.each(terminalCases)(
 		"retains the first %s result after a transient write failure, even if the next event conflicts",
 		async (event, expectedStatus, conflictingEvent) => {

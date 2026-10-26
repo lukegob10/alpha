@@ -40,11 +40,13 @@ const globalSettingsExportSchema = globalSettingsSchema.omit({
 })
 
 export class ContextProxy {
-	private static readonly vertexCredentialLocks = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
+	private static readonly credentialLocks = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
+	private static readonly openAiHeadersSecretKey = "openAiHeaders"
 	private readonly originalContext: vscode.ExtensionContext
 
 	private stateCache: GlobalState
 	private secretCache: SecretState
+	private openAiHeadersRevision = 0
 	private _isInitialized = false
 
 	constructor(context: vscode.ExtensionContext) {
@@ -60,6 +62,8 @@ export class ContextProxy {
 
 	public async initialize() {
 		for (const key of GLOBAL_STATE_KEYS) {
+			// Keep the public settings shape while loading credential-bearing headers only through the secure reader.
+			if (key === "openAiHeaders") continue
 			try {
 				// Revert to original assignment
 				this.stateCache[key] = this.originalContext.globalState.get(key)
@@ -281,6 +285,9 @@ export class ContextProxy {
 	}
 
 	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K]) {
+		if (key === "openAiHeaders") {
+			return this.storeOpenAiHeaders(providerSettingsSchema.shape.openAiHeaders.parse(value))
+		}
 		if (key === "newTaskReasoningPreference") {
 			// A quick-control acknowledgement must never expose an unpersisted choice.
 			return this.originalContext.globalState.update(key, value).then(() => {
@@ -313,7 +320,7 @@ export class ContextProxy {
 		this.secretCache[key] = value
 
 		if (key === "vertexJsonCredentials") {
-			return this.withVertexCredentialLock(async () => {
+			return this.withCredentialLock(async () => {
 				this.secretCache[key] = value
 				if (value === undefined) {
 					// Clear the legacy copy first so reload cannot restore removed credentials.
@@ -341,8 +348,9 @@ export class ContextProxy {
 	}
 
 	private async loadSecrets(operation: "loading" | "refreshing"): Promise<void> {
-		await Promise.all(
-			SECRET_STATE_KEYS.map((key) => {
+		const headersRevision = this.openAiHeadersRevision
+		await Promise.all([
+			...SECRET_STATE_KEYS.map((key) => {
 				const load = async () => {
 					let loaded = false
 					try {
@@ -355,19 +363,57 @@ export class ContextProxy {
 					}
 					if (key === "vertexJsonCredentials") await this.migrateLegacyVertexCredentials(loaded)
 				}
-				return key === "vertexJsonCredentials" ? this.withVertexCredentialLock(load) : load()
+				return key === "vertexJsonCredentials" ? this.withCredentialLock(load) : load()
 			}),
-		)
+			this.withCredentialLock(() => this.loadOpenAiHeaders(headersRevision)),
+		])
 	}
 
-	private withVertexCredentialLock(operation: () => Promise<void>): Promise<void> {
-		const previous = ContextProxy.vertexCredentialLocks.get(this.originalContext.secrets) ?? Promise.resolve()
+	private withCredentialLock(operation: () => Promise<void>): Promise<void> {
+		const previous = ContextProxy.credentialLocks.get(this.originalContext.secrets) ?? Promise.resolve()
 		const next = previous.then(operation)
-		ContextProxy.vertexCredentialLocks.set(
+		ContextProxy.credentialLocks.set(
 			this.originalContext.secrets,
 			next.catch(() => {}),
 		)
 		return next
+	}
+
+	private storeOpenAiHeaders(headers: ProviderSettings["openAiHeaders"]): Promise<void> {
+		const serialized = headers === undefined ? undefined : JSON.stringify(headers)
+		this.openAiHeadersRevision++
+		this.stateCache.openAiHeaders = headers
+		return this.withCredentialLock(async () => {
+			if (serialized === undefined) {
+				// Remove plaintext first so a later reload cannot restore explicitly cleared headers.
+				await this.originalContext.globalState.update("openAiHeaders", undefined)
+				await this.originalContext.secrets.delete(ContextProxy.openAiHeadersSecretKey)
+			} else {
+				await this.originalContext.secrets.store(ContextProxy.openAiHeadersSecretKey, serialized)
+				await this.originalContext.globalState.update("openAiHeaders", undefined)
+			}
+		})
+	}
+
+	private async loadOpenAiHeaders(revision: number): Promise<void> {
+		try {
+			const serialized = await this.originalContext.secrets.get(ContextProxy.openAiHeadersSecretKey)
+			const legacy = this.originalContext.globalState.get<unknown>("openAiHeaders")
+			const headers = providerSettingsSchema.shape.openAiHeaders.parse(
+				serialized === undefined ? legacy : JSON.parse(serialized),
+			)
+			// A refresh started before a profile edit must not replace that edit's synchronous projection.
+			if (this.openAiHeadersRevision === revision) this.stateCache.openAiHeaders = headers
+			if (serialized === undefined && headers !== undefined) {
+				await this.originalContext.secrets.store(ContextProxy.openAiHeadersSecretKey, JSON.stringify(headers))
+			}
+			// Existing secure data wins; failed reads or writes leave both durable copies available for retry.
+			if (legacy !== undefined) await this.originalContext.globalState.update("openAiHeaders", undefined)
+		} catch {
+			logger.error(
+				"Could not load or migrate custom headers in SecretStorage; the operation will retry on refresh",
+			)
+		}
 	}
 
 	private async migrateLegacyVertexCredentials(secretLoaded: boolean): Promise<void> {
@@ -486,6 +532,7 @@ export class ContextProxy {
 			...PROVIDER_SETTINGS_KEYS.filter((key) => !isSecretStateKey(key))
 				.filter((key) => this.stateCache[key] !== undefined)
 				.reduce((acc, key) => ({ ...acc, [key]: undefined }), {} as ProviderSettings),
+			openAiHeaders: undefined,
 			// Preserve profile replacement semantics from when this field lived in global state.
 			...(this.secretCache.vertexJsonCredentials !== undefined ? { vertexJsonCredentials: undefined } : {}),
 			...values,
@@ -561,7 +608,10 @@ export class ContextProxy {
 		this.secretCache = {}
 
 		await Promise.all([
-			...GLOBAL_STATE_KEYS.map((key) => this.originalContext.globalState.update(key, undefined)),
+			...GLOBAL_STATE_KEYS.filter((key) => key !== "openAiHeaders").map((key) =>
+				this.originalContext.globalState.update(key, undefined),
+			),
+			this.storeOpenAiHeaders(undefined),
 			...SECRET_STATE_KEYS.map((key) =>
 				key === "vertexJsonCredentials"
 					? this.storeSecret(key, undefined)

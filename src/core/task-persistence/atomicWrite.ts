@@ -64,7 +64,7 @@ export async function withFileLock<T>(filePath: string, operation: () => Promise
 export async function atomicWriteText(
 	filePath: string,
 	contents: string,
-	options: { requireAtomicReplace?: boolean } = {},
+	options: { requireAtomicReplace?: boolean; mode?: number } = {},
 ): Promise<void> {
 	const absolutePath = path.resolve(filePath)
 	const directory = path.dirname(absolutePath)
@@ -74,9 +74,12 @@ export async function atomicWriteText(
 		directory,
 		`.${path.basename(absolutePath)}.new_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`,
 	)
+	let ownsTemporary = false
 
 	try {
-		const handle = await fs.open(temporaryPath, "w")
+		// Restrictive stores must protect the temporary file before any bytes reach disk.
+		const handle = await fs.open(temporaryPath, "wx", options.mode)
+		ownsTemporary = true
 		try {
 			await handle.writeFile(contents, "utf8")
 			await handle.sync()
@@ -100,14 +103,14 @@ export async function atomicWriteText(
 			await fs.rename(temporaryPath, absolutePath)
 		}
 	} finally {
-		await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+		if (ownsTemporary) await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
 	}
 }
 
 export async function atomicWriteJson(
 	filePath: string,
 	value: unknown,
-	options: { requireAtomicReplace?: boolean } = {},
+	options: { requireAtomicReplace?: boolean; mode?: number } = {},
 ): Promise<void> {
 	await atomicWriteText(filePath, `${JSON.stringify(value)}\n`, options)
 }

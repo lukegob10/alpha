@@ -27,6 +27,7 @@ import skill from "./skill"
 import searchFiles from "./search_files"
 import updatePlan from "./update_plan"
 import { goalTools } from "./goals"
+import { memoryTools } from "./memories"
 
 export { getMcpServerTools } from "./mcp_server"
 export { convertOpenAIToolToAnthropic, convertOpenAIToolsToAnthropic } from "./converters"
@@ -38,6 +39,8 @@ export type { ReadFileToolOptions } from "./read_file"
 export interface NativeToolsOptions {
 	/** Expose only the redacted diagnostic evidence reader for a host-created diagnostic task. */
 	diagnosticSession?: boolean
+	/** Captured, opt-in root-task authority to access the host-local memory namespace. */
+	memoryToolsEnabled?: boolean
 	/** Whether the model supports image processing (default: false) */
 	supportsImages?: boolean
 	/** Browser tools currently registered by VS Code. Omit to include the full catalog (primarily for tests). */
@@ -85,6 +88,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 	if (options.diagnosticSession) return [readDiagnosticEvidence]
 
 	const {
+		memoryToolsEnabled = false,
 		supportsImages = false,
 		availableBrowserToolNames,
 		taskKind = "primary",
@@ -112,6 +116,9 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 
 	return [
 		...ticketTools,
+		...(memoryToolsEnabled && taskKind === "primary" && crossTaskRole !== "child"
+			? memoryTools.filter((tool) => !planMode || tool.function.name !== "memories_add_ad_hoc_note")
+			: []),
 		...(taskKind === "primary" && crossTaskRole !== "child"
 			? goalTools.filter((tool) => !planMode || tool.function.name === "get_goal")
 			: []),

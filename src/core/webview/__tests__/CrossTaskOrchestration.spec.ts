@@ -58,10 +58,18 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		isTurnActive: vi.fn(() => true),
 		steerUserMessage: vi.fn(async () => undefined),
 		steerAgentMessage: vi.fn(async () => "steered"),
+		markIndependentAgentMessagesPending: vi.fn(),
+		resumeIndependentAgentMessages: async function () {
+			if (!this.isCompleted()) return false
+			await this.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
+			return true
+		},
 		receiveAgentMessage: vi.fn(async () => undefined),
 		recordAgentStopRequest: vi.fn(async () => undefined),
 		resumeWithAgentMessages: vi.fn(async () => undefined),
-		resumeCompletedTaskFollowup: vi.fn(async () => undefined),
+		resumeCompletedTaskFollowup: vi.fn(
+			async (_text?: string, _images?: string[], _origin?: "human" | "agent") => undefined,
+		),
 		submitUserMessage: vi.fn(async () => undefined),
 		start: vi.fn(),
 		messageQueueService: { addMessage: vi.fn(() => true) },
@@ -636,6 +644,118 @@ describe("Cross-task orchestration host", () => {
 			).resolves.toEqual({ task_id: parent.taskId, status: "steered" })
 		},
 	)
+
+	it.each(["completion", "explicit"])(
+		"serializes ten %s inputs and another send through one recipient admission",
+		async (kind) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			let completed = true
+			let admitting = false
+			let entered!: () => void
+			let release!: () => void
+			const starting = new Promise<void>((resolve) => {
+				entered = resolve
+			})
+			const barrier = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			const parent = createTask({
+				isCompleted: vi.fn(() => completed),
+				resumeCompletedTaskFollowup: vi.fn(async () => {
+					if (admitting) throw new Error("A completed-task follow-up is already being admitted")
+					admitting = true
+					entered()
+					await barrier
+					completed = false
+				}),
+			})
+			tasks.set(parent.taskId, parent)
+			const children = Array.from({ length: 10 }, (_, index) =>
+				createTask({
+					taskId: `child-${index}`,
+					orchestrationParentTaskId: parent.taskId,
+					clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: `Result ${index}` }],
+				}),
+			)
+			for (const child of children) history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
+			const results = Promise.allSettled([
+				...children.map((child) =>
+					kind === "completion"
+						? internals.notifyIndependentTaskCompletion(child)
+						: provider.sendIndependentTaskMessage(
+								child as unknown as Task,
+								"parent",
+								`Result ${child.taskId}`,
+							),
+				),
+				provider.sendIndependentTaskMessage(children[0] as unknown as Task, "parent", "Additional context"),
+			])
+			await starting
+			release()
+			const settled = await results
+
+			expect(settled.every((result) => result.status === "fulfilled")).toBe(true)
+			expect(parent.resumeCompletedTaskFollowup).toHaveBeenCalledOnce()
+			expect(parent.receiveAgentMessage).toHaveBeenCalledTimes(11)
+			for (const child of kind === "completion" ? children : []) {
+				expect(history.get(child.taskId)?.orchestrationCompletionNotifications).toEqual([
+					expect.objectContaining({ completionMessageTs: 100, deliveredAt: expect.any(Number) }),
+				])
+			}
+		},
+	)
+
+	it("releases the completion receipt fence before recipient finalization settles older wait receipts", async () => {
+		const { internals, tasks, history } = createProviderFixture()
+		const parent = createTask({ isCompleted: vi.fn(() => true) })
+		const child = createTask({
+			taskId: "child-1",
+			orchestrationParentTaskId: parent.taskId,
+			clineMessages: [{ ts: 200, type: "say", say: "completion_result", text: "New result" }],
+		})
+		tasks.set(parent.taskId, parent)
+		history.set(child.taskId, {
+			...taskHistoryItem(child.taskId, parent.taskId),
+			orchestrationCompletionNotifications: [
+				{
+					id: "old-receipt",
+					turnId: "old-turn",
+					completionMessageTs: 100,
+					createdAt: 100,
+					deliveredVia: "wait",
+				},
+			],
+		})
+		const serialize = internals.serializeIndependentCompletion.bind(internals)
+		let receiptFenceHeld = false
+		internals.serializeIndependentCompletion = vi.fn<
+			(id: string, operation: () => Promise<void>, strict?: boolean) => Promise<void>
+		>(async (id, operation, strict) => {
+			if (receiptFenceHeld) throw new Error("Completion receipt fence re-entered by recipient finalization")
+			return serialize(
+				id,
+				async () => {
+					receiptFenceHeld = true
+					try {
+						await operation()
+					} finally {
+						receiptFenceHeld = false
+					}
+				},
+				strict,
+			)
+		})
+		parent.resumeCompletedTaskFollowup.mockImplementation(async () => {
+			await internals.settleIndependentTaskWaitReceipts(parent.taskId, child.taskId, new Set(["old-receipt"]))
+		})
+
+		await expect(internals.notifyIndependentTaskCompletion(child)).resolves.toBeUndefined()
+
+		expect(history.get(child.taskId)?.orchestrationCompletionNotifications).toEqual([
+			expect.objectContaining({ id: "old-receipt", deliveredAt: expect.any(Number) }),
+			expect.objectContaining({ completionMessageTs: 200, deliveredAt: expect.any(Number) }),
+		])
+	})
 
 	it("returns a completed child's result to a parent that has finished its turn", async () => {
 		const { provider, internals, tasks, history, metadata } = createProviderFixture()

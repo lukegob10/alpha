@@ -180,6 +180,7 @@ export class StellarHandler extends OpenAiHandler {
 			apiKey: token,
 			defaultHeaders: DEFAULT_HEADERS,
 			timeout: getApiRequestTimeout(),
+			maxRetries: 0,
 		})
 	}
 }

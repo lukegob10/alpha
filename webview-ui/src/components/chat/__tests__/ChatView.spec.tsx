@@ -493,6 +493,38 @@ const renderChatView = (props: Partial<ChatViewProps> = {}, ref?: React.Ref<Chat
 	)
 }
 
+describe("ChatView retired speech playback", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each(["text", "completion_result"])(
+		"does not request speech for finalized %s messages or replay",
+		async (say) => {
+			const view = renderChatView()
+			const prompt: AlphaMessage = { type: "say", say: "task", ts: 1, text: "Original prompt" }
+			const response: AlphaMessage = { type: "say", say, ts: 2, text: "Completed answer", partial: true }
+			const state = { currentTaskId: "speech-retired", ttsEnabled: true, ttsSpeed: 1.5 }
+			mockPostMessage({ ...state, clineMessages: [prompt, response] })
+			await view.findByText(/Completed answer/)
+			vi.mocked(vscode.postMessage).mockClear()
+
+			for (let refresh = 0; refresh < 2; refresh++) {
+				await act(async () => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "state",
+								state: { ...state, clineMessages: [prompt, { ...response, partial: false }] },
+							},
+						}),
+					)
+				})
+				expect(view.getByText(/Completed answer/)).toBeInTheDocument()
+				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "playTts" }))
+			}
+		},
+	)
+})
+
 describe("ChatView checkpoint initialization warnings", () => {
 	beforeEach(() => vi.clearAllMocks())
 
@@ -1163,6 +1195,49 @@ describe("ChatView activity trace", () => {
 		expect(view.getByTestId("chat-message-5")).toBeVisible()
 		expect(view.getByTestId("chat-message-3")).not.toBeVisible()
 		for (const index of [1, 2, 4]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+	})
+
+	it("settles completed-turn disclosures beyond the bounded preference cache", () => {
+		const view = renderChatView()
+		const messages: AlphaMessage[] = Array.from({ length: 2_049 }, (_, index) => {
+			const attributedTurn = turn(`bounded-${index}`)
+			return [
+				{
+					ts: index * 3 + 100,
+					type: "say" as const,
+					say: "user_feedback",
+					text: `Prompt ${index}`,
+					turn: { ...attributedTurn, inputKind: "start" as const },
+				},
+				{
+					ts: index * 3 + 101,
+					type: "say" as const,
+					say: "reasoning",
+					text: "Inspecting",
+					turn: attributedTurn,
+				},
+				{
+					ts: index * 3 + 102,
+					type: "say" as const,
+					say: "text",
+					text: `Answer ${index}`,
+					turn: { ...attributedTurn, terminalStatus: "completed" as const },
+				},
+			]
+		}).flat()
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "state", state: { currentTaskId: "bounded-disclosures", clineMessages: messages } },
+				}),
+			)
+		})
+		expect(view.getByTestId(`chat-message-${messages.length - 2}`)).toHaveTextContent("Answer 2048")
+		const latestTurn = view.getAllByRole("button", { name: /chat:activityTrace.workedFor/ }).at(-1)!
+		fireEvent.click(latestTurn)
+		expect(latestTurn).toHaveAttribute("aria-expanded", "true")
+		fireEvent.click(latestTurn)
+		expect(latestTurn).toHaveAttribute("aria-expanded", "false")
 	})
 
 	it("retains independent task disclosure choices through navigation and an empty hydration packet", async () => {

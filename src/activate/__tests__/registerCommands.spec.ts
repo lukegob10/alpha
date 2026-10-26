@@ -113,6 +113,21 @@ describe("registerCommands", () => {
 		vi.clearAllMocks()
 	})
 
+	it.each([undefined, "/user/settings.json"])("routes settings import %s through its provider", async (filePath) => {
+		const importSettings = vi.fn().mockResolvedValue(undefined)
+		const visibleProvider = { importSettings } as unknown as AlphaProvider
+		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(visibleProvider)
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: visibleProvider })
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([command]) => command === "alpha.importSettings")![1]
+
+		await callback(filePath)
+
+		expect(importSettings).toHaveBeenCalledExactlyOnceWith(filePath)
+	})
+
 	it("backgrounds the active task instead of aborting it when the plus button starts a blank task", async () => {
 		const startBlankTask = vi.fn().mockResolvedValue(undefined)
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)

@@ -17,7 +17,16 @@ import { evidenceFromText } from "../evidence"
 const roots: string[] = []
 
 afterEach(async () => {
-	for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true })
+	// Windows can retain directory handles briefly after the worker's PID is gone. Node 24.21.0's bounded
+	// fs.rm EBUSY retry contract: https://nodejs.org/download/release/v24.21.0/docs/api/fs.html#fspromisesrmpath-options
+	// Verified 2026-10-26; exhausted cleanup still fails, and the worker-death assertion remains mandatory.
+	for (const root of roots.splice(0))
+		await fs.rm(root, {
+			recursive: true,
+			force: true,
+			maxRetries: process.platform === "win32" ? 3 : 0,
+			retryDelay: 100,
+		})
 })
 
 async function grade(

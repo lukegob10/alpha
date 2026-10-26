@@ -2,8 +2,74 @@ import type { AlphaMessage } from "@alpha-code/types"
 
 import { getActionActivity, getCompletedTurnActivity } from "../actionActivity"
 import { transcriptTurnIdentity } from "../utils/transcriptTurns"
+import { fileChangesFromMessages, fileChangeTurnsFromMessages } from "../utils/fileChangesFromMessages"
 
 describe("action activity projection", () => {
+	it("reuses completed tool payloads while the tail streams and refreshes replaced or reloaded history", () => {
+		const turn = { runId: "cached-run", turnId: "completed-turn" }
+		const edit: AlphaMessage = {
+			ts: 200,
+			type: "say",
+			say: "tool",
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				path: "before.ts",
+				content: "+before",
+				changeStatus: "applied",
+			}),
+			turn,
+		}
+		const messages: AlphaMessage[] = [
+			{
+				ts: 100,
+				type: "say",
+				say: "user_feedback",
+				text: "Edit the file",
+				turn: { ...turn, inputKind: "start" },
+			},
+			edit,
+			{ ts: 300, type: "say", say: "text", text: "Done", turn: { ...turn, terminalStatus: "completed" } },
+			{ ts: 400, type: "say", say: "text", text: "Streaming", partial: true },
+		]
+		const project = (history: AlphaMessage[]) => {
+			getActionActivity(history)
+			getCompletedTurnActivity(history)
+			return fileChangeTurnsFromMessages(history).flatMap((turn) => fileChangesFromMessages(turn.messages))
+		}
+		const parse = vi.spyOn(JSON, "parse")
+		try {
+			expect(project(messages)).toMatchObject([{ path: "before.ts" }])
+			parse.mockClear()
+			for (let index = 0; index < 120; index++) {
+				project([...messages.slice(0, -1), { ...messages.at(-1)!, text: `Streaming ${index}` }])
+			}
+			expect(parse.mock.calls.filter(([text]) => text === edit.text)).toHaveLength(0)
+
+			const replacement = {
+				...edit,
+				text: JSON.stringify({
+					tool: "appliedDiff",
+					path: "after.ts",
+					content: "+after",
+					changeStatus: "applied",
+				}),
+			}
+			const replaced = messages.map((message) => (message.ts === edit.ts ? replacement : message))
+			expect(project(replaced)).toMatchObject([{ path: "after.ts" }])
+			const replacementParses = parse.mock.calls.filter(([text]) => text === replacement.text).length
+			expect(replacementParses).toBeGreaterThan(0)
+			expect(project(replaced)).toMatchObject([{ path: "after.ts" }])
+			expect(parse.mock.calls.filter(([text]) => text === replacement.text)).toHaveLength(replacementParses)
+			const reloaded: AlphaMessage[] = JSON.parse(JSON.stringify(replaced))
+			expect(project(reloaded)).toMatchObject([{ path: "after.ts" }])
+			expect(parse.mock.calls.filter(([text]) => text === replacement.text).length).toBeGreaterThan(
+				replacementParses,
+			)
+		} finally {
+			parse.mockRestore()
+		}
+	})
+
 	it("projects completed turn activity separately from its prompt and final response", () => {
 		const messages: AlphaMessage[] = [
 			{ ts: 200, type: "say", say: "text", text: "I’ll inspect the ignore rules." },

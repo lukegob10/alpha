@@ -44,11 +44,12 @@ import { safeWriteJson } from "../../../utils/safeWriteJson"
 
 // Mock safeWriteJson
 vi.mock("../../../utils/safeWriteJson", () => ({
-	safeWriteJson: vi.fn(async (filePath, data) => {
+	safeWriteJson: vi.fn(async (filePath, data, options) => {
 		// Instead of trying to write to the file system, just call fs.writeFile mock
 		// This avoids the complex file locking and temp file operations
 		const fs = await import("fs/promises")
-		return fs.writeFile(filePath, JSON.stringify(data), "utf8")
+		const prepared = options?.prepareData ? await options.prepareData() : data
+		return fs.writeFile(filePath, JSON.stringify(prepared), "utf8")
 	}),
 }))
 
@@ -418,13 +419,12 @@ describe("McpHub", () => {
 
 			await mcpHub.updateServerTimeout("test-server", 120, "project")
 
-			expect(safeWriteJson).toHaveBeenCalledWith(
-				path.join("/test/workspace", ".alpha", "mcp.json"),
-				expect.objectContaining({
-					mcpServers: expect.objectContaining({ "test-server": expect.objectContaining({ timeout: 120 }) }),
-				}),
-				{ prettyPrint: true },
-			)
+			expect(safeWriteJson).toHaveBeenCalledWith(path.join("/test/workspace", ".alpha", "mcp.json"), undefined, {
+				prettyPrint: true,
+				prepareData: expect.any(Function),
+			})
+			const written = vi.mocked(fsPromises.writeFile).mock.calls.at(-1)?.[1]
+			expect(JSON.parse(written as string).mcpServers["test-server"].timeout).toBe(120)
 		})
 
 		it("watches the canonical project MCP settings path", async () => {
@@ -1960,11 +1960,7 @@ describe("McpHub", () => {
 				}
 				mcpHub.connections = [mockConnectionInitial]
 
-				// Update with invalid timeout
-				await mcpHub.updateServerTimeout("test-server", 3601)
-
-				// Config is written
-				expect(fs.writeFile).toHaveBeenCalled()
+				await expect(mcpHub.updateServerTimeout("test-server", 3601)).rejects.toThrow()
 
 				// Setup connection with invalid timeout
 				const mockConnectionInvalid: ConnectedMcpConnection = {

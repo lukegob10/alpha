@@ -1,4 +1,5 @@
 import { execFile, type ExecFileException } from "node:child_process"
+import { win32 as windowsPath } from "node:path"
 import psTree from "ps-tree"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
@@ -152,8 +153,13 @@ function throwTerminationErrors(errors: readonly unknown[]): void {
 
 function terminateWindowsProcessTree(pid: number, allowMissingRoot: boolean): Promise<void> {
 	return new Promise((resolve, reject) => {
+		const systemRoot = process.env.SystemRoot ?? process.env.windir
+		if (!systemRoot || !windowsPath.isAbsolute(systemRoot)) {
+			reject(new Error("Windows system root is unavailable for process-tree termination"))
+			return
+		}
 		execFile(
-			"taskkill.exe",
+			windowsPath.join(systemRoot, "System32", "taskkill.exe"),
 			["/PID", String(pid), "/T", "/F"],
 			{ windowsHide: true, timeout: PROCESS_TERMINATION_TIMEOUT_MS },
 			(error: ExecFileException | null) => {

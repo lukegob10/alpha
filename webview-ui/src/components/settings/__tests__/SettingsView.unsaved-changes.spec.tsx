@@ -5,6 +5,7 @@ import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
 import {
+	DEFAULT_MEMORY_SETTINGS,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
 	type ProviderProfileRenameResult,
@@ -368,8 +369,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		maxWorkspaceFiles: 200,
 		mcpEnabled: false,
 		soundEnabled: false,
-		ttsEnabled: false,
-		ttsSpeed: 1.0,
 		soundVolume: 0.5,
 		telemetrySetting: "unset",
 		terminalOutputLineLimit: 500,
@@ -1796,6 +1795,40 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			)
 		},
 	)
+
+	it("keeps memory edits buffered across live refreshes until Save", async () => {
+		let liveState = {
+			...defaultExtensionState,
+			memorySettings: { ...DEFAULT_MEMORY_SETTINGS, enabled: true },
+		}
+		vi.mocked(useExtensionState).mockImplementation(
+			() => liveState as unknown as ReturnType<typeof useExtensionState>,
+		)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="contextManagement" />
+			</QueryClientProvider>
+		)
+		const result = render(view())
+		const useMemories = await screen.findByLabelText("settings:memory.useMemories.label")
+		fireEvent.click(useMemories)
+		expect(useMemories).not.toBeChecked()
+		expect(liveState.memorySettings.useMemories).toBe(true)
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		liveState = { ...liveState, memorySettings: { ...DEFAULT_MEMORY_SETTINGS, enabled: true } }
+		result.rerender(view())
+		expect(screen.getByLabelText("settings:memory.useMemories.label")).not.toBeChecked()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					memorySettings: { ...DEFAULT_MEMORY_SETTINGS, enabled: true, useMemories: false },
+				}),
+			}),
+		)
+	})
 
 	it("keeps non-provider settings isolated from live extension state until Save", async () => {
 		const liveState = { ...defaultExtensionState, soundEnabled: false }

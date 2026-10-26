@@ -78,6 +78,7 @@ const mockAlphaProvider = {
 	updateTaskApprovalMode: vi.fn(),
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
+	importSettings: vi.fn(),
 	renameProviderProfile: vi.fn(),
 	upsertProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
@@ -110,6 +111,24 @@ describe("Settings persistence barrier", () => {
 	beforeEach(() => {
 		vi.mocked(mockAlphaProvider.contextProxy.setValue).mockClear()
 		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
+	})
+
+	it("routes settings imports through the provider and waits for its configuration barrier", async () => {
+		let release!: () => void
+		const held = new Promise<void>((resolve) => (release = resolve))
+		vi.mocked(mockAlphaProvider.importSettings).mockReturnValueOnce(held)
+		let settled = false
+		const importing = webviewMessageHandler(mockAlphaProvider, { type: "importSettings" }).then(() => {
+			settled = true
+		})
+		try {
+			expect(mockAlphaProvider.importSettings).toHaveBeenCalledOnce()
+			expect(settled).toBe(false)
+		} finally {
+			release()
+		}
+		await importing
+		expect(settled).toBe(true)
 	})
 
 	it.each([false, true])("persists the supported %s choice before projecting state", async (autoSteer) => {
@@ -951,6 +970,42 @@ beforeEach(() => {
 	vi.mocked(mockAlphaProvider.canAcceptTaskInput).mockReturnValue(true)
 })
 
+describe("webviewMessageHandler - open-only source navigation", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue(undefined)
+	})
+
+	it("forwards only a validated line option and drops legacy write options", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "openFile",
+			text: "src/file.ts",
+			values: { line: 3, create: true, content: "Untrusted content" },
+		})
+
+		expect(openFile).toHaveBeenCalledExactlyOnceWith(path.join(mockAlphaProvider.cwd, "src/file.ts"), {
+			line: 3,
+		})
+	})
+
+	it.each([undefined, "", " ", "file\u0000.ts", 123])("ignores an invalid source path %j", async (text) => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "openFile", text } as WebviewMessage)
+		expect(openFile).not.toHaveBeenCalled()
+	})
+
+	it.each([null, [], { line: 0 }, { line: -1 }, { line: 1.5 }, { line: "3" }, { line: NaN }, { line: Infinity }])(
+		"ignores invalid navigation options %j",
+		async (values) => {
+			await webviewMessageHandler(mockAlphaProvider, {
+				type: "openFile",
+				text: "src/file.ts",
+				values,
+			} as WebviewMessage)
+			expect(openFile).not.toHaveBeenCalled()
+		},
+	)
+})
+
 describe("webviewMessageHandler - captured diff review", () => {
 	const payload = {
 		title: "Alpha Diff: src/file.ts",
@@ -1432,6 +1487,60 @@ describe("webviewMessageHandler - image mentions", () => {
 		})
 	})
 
+	it.each(["newTask", "askResponse", "resumeCompletedTask"] as const)(
+		"admits image-free %s before a full-state read can block input",
+		async (type) => {
+			let signalBoundary!: (boundary: "provider state" | "task admission") => void
+			const firstBoundary = new Promise<"provider state" | "task admission">((resolve) => {
+				signalBoundary = resolve
+			})
+			let releaseState!: () => void
+			const state = new Promise<unknown>((resolve) => {
+				releaseState = () => resolve({ maxImageFileSize: 5, maxTotalImageSize: 20 })
+			})
+			const getState = vi.fn(() => {
+				signalBoundary("provider state")
+				return state
+			})
+			const submitUserMessage = vi.fn(async () => signalBoundary("task admission"))
+			const task = {
+				taskId: "task-1",
+				getActiveAskTimestamp: () => 10,
+				isCompleted: () => true,
+				submitUserMessage,
+			}
+			const createTask = vi.fn(async () => {
+				signalBoundary("task admission")
+				return task
+			})
+			const host = {
+				...mockAlphaProvider,
+				getState,
+				createTask,
+				getCurrentTask: () => task,
+				getLiveTask: () => task,
+			} as unknown as AlphaProvider
+			const submission = webviewMessageHandler(host, {
+				type,
+				text: "plain guidance @/notes.md",
+				images: [],
+				taskId: "task-1",
+				requestId: "plain-text-admission",
+				...(type === "askResponse" ? { askResponse: "messageResponse", askMessageTs: 10 } : {}),
+			})
+			try {
+				expect(await firstBoundary).toBe("task admission")
+				expect(getState).not.toHaveBeenCalled()
+				expect(resolveImageMentions).not.toHaveBeenCalled()
+				await submission
+				expect(type === "newTask" ? createTask : submitUserMessage).toHaveBeenCalledOnce()
+			} finally {
+				releaseState()
+				await submission
+			}
+		},
+	)
+
 	it("should resolve image mentions for askResponse payloads", async () => {
 		const mockHandleWebviewAskResponse = vi.fn()
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
@@ -1497,7 +1606,7 @@ describe("webviewMessageHandler - image mentions", () => {
 		expect(mockAlphaProvider.queueMessageForTaskDurably).toHaveBeenCalledWith(
 			"task-1",
 			"Fresh human reply",
-			["data:image/png;base64,from-mention"],
+			[],
 			undefined,
 			{ source: "human" },
 		)
@@ -2558,7 +2667,7 @@ describe("webviewMessageHandler - newTask", () => {
 
 		expect(mockAlphaProvider.createTask).toHaveBeenCalledWith(
 			"Build the feature",
-			["data:image/png;base64,from-mention"],
+			[],
 			undefined,
 			{ taskId: "task-1", preserveExisting: true },
 			undefined,

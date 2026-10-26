@@ -943,6 +943,8 @@ export class ProviderSettingsManager {
 			return await this.lock(async () => {
 				const previous = await this.load()
 				const { profiles: imported } = readPersistedProviderProfiles(providerProfiles, () => this.generateId())
+				const hasImportedProfiles =
+					Object.keys(imported.apiConfigs).length + Object.keys(imported.retainedApiConfigs ?? {}).length > 0
 				const source: ProviderProfiles = {
 					...imported,
 					apiConfigs: { ...imported.apiConfigs },
@@ -983,6 +985,15 @@ export class ProviderSettingsManager {
 				}
 				if (Object.keys(retained).length) imported.retainedApiConfigs = retained
 				else delete imported.retainedApiConfigs
+				if (!hasImportedProfiles) imported.currentApiConfigName = previous.currentApiConfigName
+				else if (
+					!Object.hasOwn(imported.apiConfigs, imported.currentApiConfigName) &&
+					!Object.hasOwn(retained, imported.currentApiConfigName)
+				) {
+					throw new Error(
+						`Selected profile "${imported.currentApiConfigName}" was not found. No provider was substituted.`,
+					)
+				}
 				const remapId = createImportedProfileIdRemapper(source, imported)
 				for (const id of options.referencedIds ?? []) remapId(id)
 				imported.modeApiConfigs = {

@@ -13,7 +13,9 @@ export function hostReceipt(testFile = "core-loop.test") {
 		scenarioPhase: null,
 		requestedHostVersion: "1.138.0",
 		actualHostVersion: "1.138.0",
-		providerMode: testFile === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted",
+		providerMode: ["vscode-lm-contract.test", "claude-copilot-contract.test"].includes(testFile)
+			? "vscode-lm-fixture"
+			: "scripted",
 		profile: { kind: "persistent", sha256: "a".repeat(64) },
 		status: "passed",
 		exitCode: 0,
