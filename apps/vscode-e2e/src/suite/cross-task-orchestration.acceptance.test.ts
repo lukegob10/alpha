@@ -17,13 +17,22 @@ import {
 import { waitFor, waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
 
-type ScriptChunk =
-	| { type: "text"; text: string }
-	| { type: "tool_call"; id: string; name: string; arguments: string }
-	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
+import {
+	COLLECT_CHILD_RESULTS,
+	ConcurrentThreadsAI,
+	findLatestToolResult,
+	type ScriptChunk,
+} from "../scenarios/concurrentThreadsFixture"
 
 interface CrossTaskHostProvider {
 	closeTask(taskId: string): Promise<void>
+	createIndependentTask(
+		parent: HostTask,
+		objective: string,
+		workspaceMode: "shared",
+		signal: undefined,
+		options: { notifyOnCompletion: true },
+	): Promise<{ task_id: string }>
 	createTask(
 		text: string,
 		images: undefined,
@@ -59,30 +68,9 @@ interface HostTask {
 	abort: boolean
 	didComplete: boolean
 	approveAsk(): void
+	submitUserMessage(text: string): Promise<void>
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
-}
-
-function findLatestToolResult(messages: unknown[]): string {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const content = (messages[index] as { content?: unknown } | undefined)?.content
-		if (!Array.isArray(content)) continue
-		for (let contentIndex = content.length - 1; contentIndex >= 0; contentIndex--) {
-			const block = content[contentIndex] as { type?: string; content?: unknown } | undefined
-			if (block?.type === "tool_result") {
-				if (typeof block.content === "string") return block.content
-				if (Array.isArray(block.content)) {
-					return block.content
-						.flatMap((item: { type?: string; text?: unknown }) =>
-							item.type === "text" && typeof item.text === "string" ? [item.text] : [],
-						)
-						.join("\n")
-				}
-				return JSON.stringify(block.content)
-			}
-		}
-	}
-	throw new Error("The scripted model did not receive a terminal tool result")
 }
 
 class CrossTaskAcceptanceAI {
@@ -486,101 +474,6 @@ class IndependentThreadAI {
 	}
 }
 
-class ConcurrentThreadsAI {
-	readonly id = "concurrent-threads-e2e"
-	readonly started = new Set<string>()
-	readonly receivedResults = new Set<string>()
-	readonly children: string[] = []
-	private rootTaskId?: string
-	private readonly turns = new Map<string, number>()
-	private releaseRequests!: () => void
-	private readonly mayFinish = new Promise<void>((resolve) => {
-		this.releaseRequests = resolve
-	})
-
-	constructor(private readonly childCount = 0) {}
-
-	release(): void {
-		this.releaseRequests()
-	}
-
-	async *createMessage(
-		_system: string,
-		messages: unknown[],
-		metadata?: { taskId?: string; signal?: AbortSignal; tools?: Array<{ function?: { name?: string } }> },
-	): AsyncGenerator<ScriptChunk> {
-		const taskId = metadata?.taskId
-		assert.ok(taskId)
-		const turn = this.turns.get(taskId) ?? 0
-		this.turns.set(taskId, turn + 1)
-		if (this.childCount > 0) this.rootTaskId ??= taskId
-		if (taskId === this.rootTaskId) {
-			if (turn > 0 && turn <= this.childCount) {
-				const created = JSON.parse(findLatestToolResult(messages)) as { threadId: string }
-				assert.ok(created.threadId, "Every create_thread call must return its child ID")
-				this.children.push(created.threadId)
-			}
-			if (turn < this.childCount) {
-				assert.ok(metadata?.tools?.some((tool) => tool.function?.name === "create_thread"))
-				yield {
-					type: "tool_call",
-					id: `${taskId}-create-${turn}`,
-					name: "create_thread",
-					arguments: JSON.stringify({ prompt: `Concurrent child ${turn + 1}` }),
-				}
-			} else {
-				if (turn > this.childCount) {
-					const history = JSON.stringify(messages)
-					for (const childId of this.children) {
-						if (history.includes(`Concurrent child ${childId} completed.`))
-							this.receivedResults.add(childId)
-					}
-					assert.ok(this.receivedResults.size > 0, "A resumed coordinator must receive child results")
-					assert.ok(turn <= this.childCount * 2 + 1, "Child results must not cause duplicate wake loops")
-				}
-				yield {
-					type: "text",
-					text: `Launched ${this.children.length}; integrated ${this.receivedResults.size}.`,
-				}
-			}
-		} else {
-			assert.equal(turn, 0, "Each concurrent worker should need one model request")
-			const signal = metadata?.signal
-			assert.ok(signal)
-			this.started.add(taskId)
-			let cancelled!: () => void
-			const cancellation = new Promise<void>((resolve) => {
-				cancelled = resolve
-			})
-			if (signal.aborted) cancelled()
-			else signal.addEventListener("abort", cancelled, { once: true })
-			try {
-				await Promise.race([this.mayFinish, cancellation])
-			} finally {
-				signal.removeEventListener("abort", cancelled)
-			}
-			if (signal.aborted) return
-			yield { type: "text", text: `Concurrent child ${taskId} completed.` }
-		}
-		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
-	}
-
-	getModel() {
-		return {
-			id: this.id,
-			info: { contextWindow: 128_000, maxTokens: 8_192, supportsImages: false, supportsPromptCache: false },
-		}
-	}
-
-	async countTokens(content: unknown[]): Promise<number> {
-		return Math.max(1, Math.ceil(JSON.stringify(content).length / 4))
-	}
-
-	async completePrompt(): Promise<string> {
-		return ""
-	}
-}
-
 suite("Cross-task deterministic Extension Host acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
@@ -662,7 +555,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 		}
 	})
 
-	test("one chat launches ten children that survive its completion and deliver every result", async () => {
+	test("ten native child threads survive completion and are collected by an explicit human follow-up", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		assert.equal(vscode.version, "1.138.0")
 		const api = globalThis.api
@@ -716,14 +609,123 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				assert.equal(provider.getLiveTask(childId)?.didComplete, false)
 			}
 			scripted.release()
+			await waitFor(() => scripted.children.every((id) => completed.has(id)), {
+				timeout: 60_000,
+				description: "all ten native child threads to complete",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			for (const childId of scripted.children) await provider.getLiveTask(childId)?.waitForTermination()
+			await root.waitForTermination()
+			assert.equal(root.didComplete, true)
+			assert.equal(scripted.coordinatorRequests, 11, "Native thread completion must not wake its creator")
+			assert.equal(scripted.receivedResults.size, 0)
+			for (const childId of scripted.children) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationNotifyCompletion, false)
+				assert.equal(historyItem.orchestrationCompletionNotifications, undefined)
+			}
+			await root.submitUserMessage(COLLECT_CHILD_RESULTS)
 			await waitFor(
 				() => scripted.receivedResults.size === 10 && provider.getLiveTask(rootId!)?.didComplete === true,
-				{ timeout: 60_000, description: "the coordinator to integrate all ten completion messages" },
+				{
+					timeout: 60_000,
+					description: "the coordinator to explicitly collect all ten native thread results",
+					onTimeout: () => scripted.getDiagnostics(),
+				},
 			)
-			assert.ok(scripted.children.every((id) => completed.has(id)))
+			assert.equal(provider.getLiveTask(rootId), root, "Collection must reuse the coordinator runtime")
+			assert.deepEqual(scripted.receivedResults, childIds)
+			for (const childId of scripted.children) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationParentTaskId, rootId)
+				assert.equal(historyItem.orchestrationCompletionNotifications, undefined)
+			}
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const childId of scripted.children) await provider.closeTask(childId)
+			if (rootId) await provider.closeTask(rootId)
+			await api.setConfiguration(original)
+		}
+	})
+
+	test("ten children with host completion notifications survive their coordinator and deliver one durable receipt each", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		assert.equal(vscode.version, "1.138.0")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI(10, "host")
+		const childIds: string[] = []
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result")
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		let rootId: string | undefined
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 11,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			rootId = await api.startNewTask({
+				configuration,
+				text: "Launch ten new chat threads for this project and collect their results.",
+			})
+			const root = provider.getLiveTask(rootId)
+			assert.ok(root)
+			await waitFor(() => scripted.coordinatorRequests === 1, {
+				description: "the coordinator request to own the host launch barrier",
+			})
+			for (let index = 0; index < 10; index++) {
+				const child = await provider.createIndependentTask(
+					root,
+					`Concurrent child ${index + 1}`,
+					"shared",
+					undefined,
+					{
+						notifyOnCompletion: true,
+					},
+				)
+				childIds.push(child.task_id)
+			}
+			scripted.registerHostChildren(childIds)
+			await waitFor(() => scripted.started.size === 10 && completed.has(rootId!), {
+				timeout: 60_000,
+				description: "ten host-notified children running after coordinator completion",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			assert.equal(new Set(childIds).size, 10)
+			assert.equal(root.didComplete, true)
+			for (const childId of childIds) {
+				assert.equal(provider.getLiveTask(childId)?.abort, false)
+				assert.equal(provider.getLiveTask(childId)?.didComplete, false)
+			}
+			scripted.release()
+			await waitFor(() => scripted.receivedResults.size === 10 && root.didComplete, {
+				timeout: 60_000,
+				description: "the coordinator to integrate all ten host completion messages",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			assert.deepEqual(scripted.receivedResults, new Set(childIds))
+			assert.equal(provider.getLiveTask(rootId), root)
+			assert.ok(childIds.every((id) => completed.has(id)))
 			await waitFor(
 				async () => {
-					for (const childId of scripted.children) {
+					for (const childId of childIds) {
 						const { historyItem } = await provider.getTaskWithId(childId, {
 							includeApiConversationHistory: false,
 						})
@@ -733,9 +735,10 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				},
 				{ timeout: 30_000, description: "all child completion receipts to become durable" },
 			)
-			for (const childId of scripted.children) {
+			for (const childId of childIds) {
 				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
 				assert.equal(historyItem.orchestrationParentTaskId, rootId)
+				assert.equal(historyItem.orchestrationNotifyCompletion, true)
 				assert.equal(historyItem.orchestrationCompletionNotifications?.length, 1)
 				assert.ok(historyItem.orchestrationCompletionNotifications?.[0]?.deliveredAt)
 			}
@@ -743,7 +746,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			scripted.release()
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			api.off(AlphaCodeEventName.Message, onMessage)
-			for (const childId of scripted.children) await provider.closeTask(childId)
+			for (const childId of childIds) await provider.closeTask(childId)
 			if (rootId) await provider.closeTask(rootId)
 			await api.setConfiguration(original)
 		}

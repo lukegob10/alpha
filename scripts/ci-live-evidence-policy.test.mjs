@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -15,7 +15,8 @@ const now = Date.parse("2026-10-23T14:00:00Z")
 const timestamp = new Date(now - 60_000).toISOString()
 
 async function fixture(run) {
-	const root = await mkdtemp(path.join(os.tmpdir(), "alpha-ci-live-admission-"))
+	// Admission rejects symlink components, including the macOS system-temp /var alias.
+	const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-ci-live-admission-")))
 	const write = async (relative, value) => {
 		const destination = path.join(root, relative)
 		await mkdir(path.dirname(destination), { recursive: true })
@@ -280,6 +281,33 @@ test("imports a fresh source-bound live campaign through actual host and indepen
 		assert.equal(receipt.profileSha256.length, 1)
 		assert.ok(!JSON.stringify(receipt).includes("owned-profile"))
 	})
+})
+
+test("rejects symlinked evidence roots before source or build capture", async () => {
+	const owned = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-ci-live-alias-")))
+	const alias = path.join(owned, "temp-alias")
+	let linked = false
+	try {
+		const target = path.join(owned, "physical-temp")
+		await mkdir(target)
+		await symlink(target, alias, process.platform === "win32" ? "junction" : "dir")
+		linked = true
+		assert.equal(await realpath(alias), target)
+		const receipt = await admitLiveEvidence(
+			{ repositoryRoot: owned, evidenceDirectory: alias, modelId: "exact-model", effort: "high", now },
+			{
+				captureIdentity: async () => assert.fail("No source capture through an evidence symlink"),
+				captureBuild: async () => assert.fail("No build capture through an evidence symlink"),
+			},
+		)
+		assert.equal(receipt.status, "blocked")
+		assert.equal(receipt.reason, "invalid_live_evidence")
+	} finally {
+		if (linked) await unlink(alias)
+		assert.equal(path.dirname(owned), await realpath(os.tmpdir()))
+		assert.match(path.basename(owned), /^alpha-ci-live-alias-/)
+		await rm(owned, { recursive: true, force: true })
+	}
 })
 
 test("missing evidence stays blocked without accessing the source or requesting a provider", async () => {

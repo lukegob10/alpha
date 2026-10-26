@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
+import { format } from "node:util"
 import ts from "typescript"
 import {
 	evaluateIntegrationRow,
@@ -15,6 +16,59 @@ import {
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const script = fileURLToPath(new URL("./certification/managed-agent-milestone-certify.mjs", import.meta.url))
+
+function collectDeclaredTestTitles(file, source) {
+	const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+	const titles = []
+	const visit = (node) => {
+		if (
+			ts.isCallExpression(node) &&
+			node.arguments[0] &&
+			ts.isStringLiteralLike(node.arguments[0]) &&
+			/^(?:it|test)(?:[.(]|$)/.test(node.expression.getText(parsed))
+		) {
+			const title = node.arguments[0].text
+			const each = node.expression
+			let table =
+				ts.isCallExpression(each) && /\.each$/.test(each.expression.getText(parsed))
+					? each.arguments[0]
+					: undefined
+			while (table && (ts.isAsExpression(table) || ts.isParenthesizedExpression(table))) table = table.expression
+			// Expand only statically known scalar-string rows with one supported placeholder.
+			// Dynamic tables remain unresolved; never execute tests or invent concrete identities.
+			if (
+				table &&
+				ts.isArrayLiteralExpression(table) &&
+				table.elements.every(ts.isStringLiteralLike) &&
+				(title.match(/%(?:%|[a-zA-Z#$])/g) ?? []).filter((token) => token !== "%%").join("") === "%s"
+			) {
+				for (const row of table.elements) titles.push(format(title, row.text))
+			} else titles.push(title)
+		}
+		ts.forEachChild(node, visit)
+	}
+	visit(parsed)
+	return titles
+}
+
+test("managed declaration binding expands literal each rows without executing dynamic fixtures", () => {
+	const titles = collectDeclaredTestTitles(
+		"fixture.spec.ts",
+		`it("plain case", () => {})
+		it.each(["canonical", "legacy", "empty-canonical", "matching"] as const)("ACKs %s IDs", () => {})
+		it.each(loadCases())("dynamic %s IDs", () => {})
+		it.each(["canonical"])("unresolved %s %s IDs", () => {})`,
+	)
+	assert.deepEqual(titles, [
+		"plain case",
+		"ACKs canonical IDs",
+		"ACKs legacy IDs",
+		"ACKs empty-canonical IDs",
+		"ACKs matching IDs",
+		"dynamic %s IDs",
+		"unresolved %s %s IDs",
+	])
+})
 
 test("managed-agent certification discovers its public lifecycle regression suites exactly once", () => {
 	const result = spawnSync(process.execPath, [script, "--list"], {
@@ -181,20 +235,7 @@ test("every managed requirement binds declared tests in its selected owning trac
 				)
 				if (!cache.has(binding.file)) {
 					const source = await readFile(path.join(root, binding.file), "utf8")
-					const parsed = ts.createSourceFile(binding.file, source, ts.ScriptTarget.Latest, true)
-					const titles = []
-					const visit = (node) => {
-						if (
-							ts.isCallExpression(node) &&
-							node.arguments[0] &&
-							ts.isStringLiteralLike(node.arguments[0]) &&
-							/^(?:it|test)(?:[.(]|$)/.test(node.expression.getText(parsed))
-						)
-							titles.push(node.arguments[0].text)
-						ts.forEachChild(node, visit)
-					}
-					visit(parsed)
-					cache.set(binding.file, titles)
+					cache.set(binding.file, collectDeclaredTestTitles(binding.file, source))
 				}
 				const expression = new RegExp(binding.pattern, "ims")
 				assert.ok(

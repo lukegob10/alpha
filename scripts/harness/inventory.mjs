@@ -558,6 +558,7 @@ export const hostTestInventory = [
 		[
 			"alpha-tickets-live.test",
 			"approval-github-live.test",
+			"claude-copilot-live.test",
 			"command-file-diff-live.test",
 			"file-tools-live.test",
 			"harness-quality-live.test",
@@ -628,7 +629,6 @@ export const hostTestInventory = [
 	),
 	...ownedTests(
 		[
-			"cross-task-orchestration.acceptance.test",
 			"diff-preview-ownership.test",
 			"command-artifact-workflow.astra.test",
 			"managed-agents.non-git.acceptance.test",

@@ -4,11 +4,61 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { createRequire } from "node:module"
 import os from "node:os"
 import path from "node:path"
+import process from "node:process"
 import test from "node:test"
-import { promisify } from "node:util"
+import { URL } from "node:url"
+import { promisify, stripVTControlCharacters } from "node:util"
 
 const require = createRequire(import.meta.url)
 const execute = promisify(execFile)
+
+function assertTaskCacheHit(stdout, task, detail = "") {
+	const prefix = `${task}:`
+	const groups = []
+	for (const raw of stdout.split(/\r?\n/u)) {
+		const line = stripVTControlCharacters(raw).trim()
+		if (line.startsWith("::group::")) {
+			groups.push(line.slice("::group::".length))
+			continue
+		}
+		if (line === "::endgroup::") {
+			groups.pop()
+			continue
+		}
+		const prefixed = line.startsWith(prefix)
+		const status = prefixed ? line.slice(prefix.length).trim() : line
+		if (
+			(prefixed || groups.at(-1) === task) &&
+			/^cache hit, (?:replaying|suppressing) logs [0-9a-f]+$/u.test(status)
+		)
+			return
+	}
+	assert.fail(`Expected a cache hit for ${task}.\n${detail}\n${stdout}`)
+}
+
+const cacheTask = "@alpha-code/vscode-webview:build"
+const cacheHit = "cache hit, replaying logs fcbdf3d3d0512649"
+const cacheMiss = "cache miss, executing fcbdf3d3d0512649"
+for (const [name, stdout, expected] of [
+	["accepts prefixed local output", `${cacheTask}: ${cacheHit}`, true],
+	["accepts GitHub task groups", `::group::${cacheTask}\n${cacheHit}\n$ node build.mjs\n::endgroup::`, true],
+	["accepts ANSI task labels", `\u001b[35m${cacheTask}:\u001b[0m ${cacheHit}`, true],
+	["accepts a task's suppressed cache logs", `${cacheTask}: cache hit, suppressing logs fcbdf3d3d0512649`, true],
+	["rejects another task's prefixed hit", `alpha:bundle: ${cacheHit}\n${cacheTask}: ${cacheMiss}`, false],
+	["rejects another task's grouped hit", `::group::alpha:bundle\n${cacheHit}\n::endgroup::`, false],
+	["rejects hits after a task group closes", `::group::${cacheTask}\n${cacheMiss}\n::endgroup::\n${cacheHit}`, false],
+	["rejects payload text mentioning a cache hit", `${cacheTask}: $ echo ${cacheHit}`, false],
+	[
+		"rejects hits in a nested different task group",
+		`::group::${cacheTask}\n::group::alpha:bundle\n${cacheHit}\n::endgroup::\n::endgroup::`,
+		false,
+	],
+]) {
+	test(`cache status ${name}`, () => {
+		if (expected) assert.doesNotThrow(() => assertTaskCacheHit(stdout, cacheTask))
+		else assert.throws(() => assertTaskCacheHit(stdout, cacheTask), /Expected a cache hit/u)
+	})
+}
 
 test("bundle cache restores every owned asset and tracks external copy inputs", { timeout: 90_000 }, async () => {
 	const temporaryParent = await realpath(os.tmpdir())
@@ -92,7 +142,7 @@ await writeFile("../src/webview-ui/build/assets/index.js", "fixture webview")
 		await run("bundle", "alpha")
 		await write("src/webview-ui/audio/notification.wav", "owned by extension bundle")
 		const restoredWebview = await run("build", "@alpha-code/vscode-webview")
-		assert.match(restoredWebview.stdout, /@alpha-code\/vscode-webview:build:[^\r\n]*cache hit/u)
+		assertTaskCacheHit(restoredWebview.stdout, "@alpha-code/vscode-webview:build")
 		assert.equal(await read("src/webview-ui/audio/notification.wav"), "owned by extension bundle")
 		const beforeCleaning = await bundleTask()
 
@@ -116,7 +166,7 @@ await writeFile("../src/webview-ui/build/assets/index.js", "fixture webview")
 		)
 		assert.equal(afterCleaning.hash, beforeCleaning.hash, "cleaning generated outputs must retain the bundle hash")
 		const restored = await run("bundle", "alpha")
-		assert.match(restored.stdout, /alpha:bundle:[^\r\n]*cache hit/u, warmedBundle.stderr + restored.stderr)
+		assertTaskCacheHit(restored.stdout, "alpha:bundle", warmedBundle.stderr + restored.stderr)
 		for (const name of ["README.md", "CHANGELOG.md", "LICENSE"])
 			assert.equal(await read(`src/${name}`), `${name} source`)
 		assert.equal(await read("src/assets/vscode-material-icons/icons/3d.svg"), "fixture icon")
