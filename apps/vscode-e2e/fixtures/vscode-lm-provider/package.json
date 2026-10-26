@@ -9,7 +9,8 @@
 		"vscode": "^1.125.0"
 	},
 	"activationEvents": [
-		"onLanguageModelChat:alpha-e2e"
+		"onLanguageModelChat:alpha-e2e",
+		"onLanguageModelChat:copilot"
 	],
 	"main": "./extension.js",
 	"contributes": {
@@ -17,6 +18,10 @@
 			{
 				"vendor": "alpha-e2e",
 				"displayName": "Alpha E2E"
+			},
+			{
+				"vendor": "copilot",
+				"displayName": "Alpha deterministic Claude fixture"
 			}
 		]
 	}

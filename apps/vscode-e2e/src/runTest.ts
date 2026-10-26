@@ -40,7 +40,11 @@ import {
 import { finalizeRunEvidence, finalizeRunRetention, type RunRetentionReport } from "./runEvidence"
 import { validateLiveSetupTimeout } from "./suite/liveCopilot"
 import { writeHarnessReceipt } from "./harnessReceipt"
-import { isLiveProviderIdentityReceipt, type LiveProviderIdentityReceipt } from "./liveProviderIdentity"
+import {
+	isLiveProviderIdentityReceipt,
+	LIVE_PROVIDER_EXTENSION_ID,
+	type LiveProviderIdentityReceipt,
+} from "./liveProviderIdentity"
 import {
 	prepareImprovementCapture,
 	validateImprovementCaptureOptions,
@@ -475,6 +479,14 @@ export async function runExtensionTests(
 		)
 	}
 	const startedAt = new Date().toISOString()
+	// Fixtures use the real Git executable. Keep optional SCM observers isolated in live hosts too:
+	// bundled Copilot 0.53 crashes when a fixture repository opens.
+	// VS Code 1.138.0 languageModels.ts rejects duplicate vendor registrations (retrieved 2026-10-25).
+	// The deterministic Claude fixture owns the copilot vendor only in the vscode-lm-fixture lane.
+	const disabledExtensions = [
+		"vscode.git",
+		...(options.providerMode === "vscode-lm-fixture" ? [LIVE_PROVIDER_EXTENSION_ID] : []),
+	]
 	const liveExpected = { runId, nonce: randomUUID(), actualVSCodeVersion: options.vscodeVersion }
 	let repositoryBefore: RepositoryEvidence | undefined
 	const identity = {
@@ -528,7 +540,7 @@ export async function runExtensionTests(
 					requestedHostVersion: options.vscodeVersion,
 					providerMode: options.providerMode,
 					launchKind,
-					fixtureIsolation: { disabledExtensions: ["vscode.git"], gitExecution: "native-cli" },
+					fixtureIsolation: { disabledExtensions, gitExecution: "native-cli" },
 					...(sidecarPath ? { nonce: liveExpected.nonce, sharedDataDir: profile.sharedDataDir } : {}),
 					modelId: options.modelId,
 					modelFamily: options.modelFamily,
@@ -574,9 +586,7 @@ export async function runExtensionTests(
 				`--extensions-dir=${profile.extensionsDir}`,
 				...(profile.sharedDataDir ? [`--shared-data-dir=${profile.sharedDataDir}`] : []),
 				"--new-window",
-				// Fixtures exercise the real Git executable, not VS Code's SCM API. Keep optional SCM observers
-				// isolated in live hosts too: bundled Copilot 0.53 crashes when a fixture repository opens.
-				"--disable-extension=vscode.git",
+				...disabledExtensions.map((id) => `--disable-extension=${id}`),
 			],
 			extensionTestsEnv: {
 				...process.env,

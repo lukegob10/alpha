@@ -70,3 +70,57 @@ test("response observation propagates failures and closes the underlying iterato
 	assert.ok(closed)
 	assert.equal(probe.observations[1]?.ended, false)
 })
+
+test("the optional part hook observes the original object before the adapter receives it", async () => {
+	const parts = [{ value: "", id: "native", metadata: { encrypted_content: "opaque" } }, { value: "answer" }]
+	const order: string[] = []
+	const probe = new LiveResponseProbe((part, request) => {
+		assert.equal(request, 4)
+		assert.equal(part, parts[order.length / 2])
+		order.push("observed")
+	})
+	const wrapped = probe.wrap(
+		{
+			stream: (async function* () {
+				yield* parts
+			})(),
+		},
+		4,
+		2,
+	) as { stream: AsyncIterable<unknown> }
+	for await (const part of wrapped.stream) {
+		assert.equal(order.at(-1), "observed")
+		assert.equal(part, parts[Math.floor(order.length / 2)])
+		order.push("delivered")
+	}
+	assert.deepEqual(order, ["observed", "delivered", "observed", "delivered"])
+	assert.equal(probe.observations[0]?.ended, true)
+	assert.doesNotMatch(JSON.stringify(probe.observations), /opaque|answer/)
+})
+
+test("a failed part hook closes the native source before delivering invalid state", async () => {
+	let closed = false
+	let delivered = false
+	const probe = new LiveResponseProbe(() => {
+		throw new Error("invalid native thinking")
+	})
+	const wrapped = probe.wrap(
+		{
+			stream: (async function* () {
+				try {
+					yield { value: "", metadata: { signature: 42 } }
+				} finally {
+					closed = true
+				}
+			})(),
+		},
+		1,
+		0,
+	) as { stream: AsyncIterable<unknown> }
+	await assert.rejects(async () => {
+		for await (const _part of wrapped.stream) delivered = true
+	}, /invalid native thinking/)
+	assert.equal(delivered, false)
+	assert.equal(closed, true)
+	assert.equal(probe.observations[0]?.ended, false)
+})

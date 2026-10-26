@@ -9,14 +9,17 @@ export interface ResponseObservation {
 /** Counts response shapes only; never retains prompts, output text, or opaque provider state. */
 export class LiveResponseProbe {
 	readonly observations: ResponseObservation[] = []
+	constructor(private readonly onPart?: (part: unknown, request: number) => void) {}
 
 	wrap(response: unknown, request: number, toolCount: number): unknown {
 		if (!response || typeof response !== "object" || !("stream" in response)) return response
 		const source = response.stream as AsyncIterable<unknown>
 		const observation: ResponseObservation = { request, toolCount, parts: {}, textCharacters: 0, ended: false }
 		this.observations.push(observation)
+		const onPart = this.onPart
 		const stream = (async function* () {
 			for await (const part of source) {
+				onPart?.(part, request)
 				const object = part !== null && typeof part === "object" ? (part as Record<string, unknown>) : undefined
 				const kind =
 					typeof part === "string"

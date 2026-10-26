@@ -103,6 +103,18 @@ Sign in inside the dedicated host. After discovery, repeat setup with the exact 
 running tests. Setup and model discovery do not prove that a task passed. Never copy credentials between profiles or
 reset unrelated editor data. See the [runner options](apps/vscode-e2e/src/runTest.ts) for current flags.
 
+Claude has dedicated deterministic and live suites on VS Code 1.138.0. After the build commands above, run the
+mechanical fixture without credentials, then run the live suite with the exact Claude model ID returned by discovery:
+
+```sh
+pnpm test:claude:mechanical
+pnpm test:claude:live --model-id "<exact-copilot-claude-model-id>" --reasoning-effort high --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>"
+```
+
+Use a supported reasoning effort for the selected Claude model. Both commands require every selected test to execute;
+the live suite uses the signed-in dedicated profile and retains the actual model, host, request counts, and task results.
+An unavailable Claude model cannot fall back to another model or count as a live pass.
+
 The live model matrix runs the same complete suite sequentially with **GPT 6 Luna / max**, **Claude Haiku 5.5 / high**,
 then **Grok 4.6 / low**, exclusively on **VS Code 1.138.0**. It prepares the build and deterministic host gates once,
 uses fresh scenario workspaces, and retains separate model reports plus a combined `matrix-result.json`. Every model

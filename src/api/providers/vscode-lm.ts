@@ -109,13 +109,14 @@ type VsCodeLmModelConfiguration = {
 	contextSize?: number
 }
 
-type VsCodeLm122RequestOptions = vscode.LanguageModelChatRequestOptions & {
+type VsCodeLmCompatibleRequestOptions = vscode.LanguageModelChatRequestOptions & {
 	/**
 	 * VS Code 1.122 forwards this runtime property to Copilot as
 	 * `ProvideLanguageModelChatResponseOptions.modelConfiguration`.
 	 * Keep `modelOptions` too: it is the stable public request surface.
 	 */
 	configuration?: VsCodeLmModelConfiguration
+	includeEncryptedThinking?: boolean
 }
 
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
@@ -409,7 +410,7 @@ function applyVsCodeLmModelConfiguration(
 		requestOptions.modelOptions._enableThinking = true
 	}
 
-	const compatibleRequestOptions = requestOptions as VsCodeLm122RequestOptions
+	const compatibleRequestOptions = requestOptions as VsCodeLmCompatibleRequestOptions
 	compatibleRequestOptions.configuration = {
 		...(compatibleRequestOptions.configuration ?? {}),
 		...configuration,
@@ -1232,8 +1233,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 			// Create the response stream with required options
-			const requestOptions: vscode.LanguageModelChatRequestOptions = {
+			const requestOptions: VsCodeLmCompatibleRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
+			}
+			if (typeof Reflect.get(vscode, "LanguageModelThinkingPart") === "function") {
+				// Copilot omits opaque replay state unless requested, independently of effort settings.
+				// VS Code 1.125/1.138 forward this optional field without proposal enablement.
+				// Verified 2026-10-25: microsoft/vscode@4f383697191fef7129052d5396d5709d5799934a.
+				requestOptions.includeEncryptedThinking = true
 			}
 
 			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options), client)

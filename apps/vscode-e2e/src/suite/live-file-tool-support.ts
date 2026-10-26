@@ -99,7 +99,14 @@ export async function runLiveCase(
 		finalAssistantText: string,
 		finalAssistantCalls: Transaction[],
 	) => Promise<void>,
-	options: { scope?: string; commands?: string[]; requestLimit?: number; timeoutMs?: number } = {},
+	options: {
+		scope?: string
+		commands?: string[]
+		requestLimit?: number
+		timeoutMs?: number
+		onTaskRequest?: WorkflowRequestBudget["onTaskRequest"]
+		responseProbe?: WorkflowRequestBudget["responseProbe"]
+	} = {},
 ) {
 	assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot", "This suite requires a real Copilot model")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE!
@@ -122,6 +129,8 @@ export async function runLiveCase(
 	const provider = (api as unknown as { sidebarProvider: LiveProvider }).sidebarProvider
 	if (tools.includes("skill")) await provider.getSkillsManager?.()?.refreshSkills()
 	const budget = new WorkflowRequestBudget(options.requestLimit ?? 12, process.env.ALPHA_E2E_ACTUAL_MODEL_ID)
+	budget.onTaskRequest = options.onTaskRequest
+	budget.responseProbe = options.responseProbe
 	const releases: Array<() => void> = []
 	let task: LiveTask | undefined
 	let completed = 0

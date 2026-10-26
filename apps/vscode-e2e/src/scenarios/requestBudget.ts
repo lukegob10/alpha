@@ -10,6 +10,8 @@ export class WorkflowRequestBudget {
 	/** Opt-in test fault at the real response boundary; ordinary guards preserve response identity. */
 	transformResponse?: (response: unknown) => unknown
 	responseProbe?: LiveResponseProbe
+	/** Optional evidence assertion at the existing dispatch fence; follows handler replacement and prepared clients. */
+	onTaskRequest?: (client: Record<string, unknown>, messages: unknown, options: unknown) => void
 
 	constructor(
 		readonly limit: number,
@@ -103,7 +105,14 @@ export function guardVsCodeLmHandler(
 					if (key === "sendRequest") {
 						return (...requestArgs: unknown[]) => {
 							// Presentation summaries intentionally use a separate, lower effort configuration.
-							if (purpose === "task") budget.observeRequestOptions(requestArgs[1])
+							if (purpose === "task") {
+								budget.observeRequestOptions(requestArgs[1])
+								budget.onTaskRequest?.(
+									client as Record<string, unknown>,
+									requestArgs[0],
+									requestArgs[1],
+								)
+							}
 							budget.consume(purpose)
 							const request = budget.used
 							const probe = purpose === "task" ? budget.responseProbe : undefined
