@@ -8,6 +8,7 @@ import {
 } from "@alpha-code/types"
 
 import type { NativeToolArgs } from "../../shared/tools"
+import { findLast } from "../../shared/array"
 import type { Task } from "../task/Task"
 import type { CrossTaskOrchestrationProvider } from "../webview/CrossTaskOrchestration"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
@@ -115,9 +116,8 @@ function waitForRefresh(signal: AbortSignal): Promise<void> {
 function threadPoll(read: ThreadReadResult, afterCursor?: string): ThreadWaitPoll {
 	const turn = read.turns[0]
 	const latestItem = turn?.items.at(-1)
-	const recentItems = turn?.items.slice().reverse()
-	const assistantMessage = recentItems?.find((item) => item.type === "agentMessage")
-	const toolMarker = recentItems?.find((item) => item.type === "toolCall")
+	const assistantMessage = turn ? findLast(turn.items, (item) => item.type === "agentMessage") : undefined
+	const toolMarker = turn ? findLast(turn.items, (item) => item.type === "toolCall") : undefined
 	const cursor = JSON.stringify({
 		updatedAt: read.thread.updatedAt,
 		status: read.thread.status,
@@ -135,7 +135,7 @@ function threadPoll(read: ThreadReadResult, afterCursor?: string): ThreadWaitPol
 		latestTurn: turn ? { id: turn.id, status: turn.status, error: turn.error ?? null } : null,
 		latestAssistantMessageId: assistantMessage?.id ?? null,
 		latestAssistantMessage:
-			changed && assistantMessage && turn
+			changed && assistantMessage?.type === "agentMessage" && turn
 				? {
 						id: assistantMessage.id,
 						turnId: turn.id,
@@ -145,7 +145,7 @@ function threadPoll(read: ThreadReadResult, afterCursor?: string): ThreadWaitPol
 				: null,
 		latestToolMarkerId: toolMarker?.id ?? null,
 		latestToolMarker:
-			changed && toolMarker && turn
+			changed && toolMarker?.type === "toolCall" && turn
 				? {
 						id: toolMarker.id,
 						turnId: turn.id,

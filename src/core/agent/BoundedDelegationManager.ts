@@ -166,7 +166,6 @@ export class BoundedDelegationManager {
 		}
 
 		let acquired = false
-		let timer: ReturnType<typeof setTimeout> | undefined
 		const started = Date.now()
 		try {
 			if (controller.signal.aborted) throw controller.signal.reason
@@ -179,10 +178,6 @@ export class BoundedDelegationManager {
 			// A lifecycle observer may synchronously cancel the run in response to
 			// the started notification. Do not invoke the child runner in that case.
 			if (controller.signal.aborted) throw controller.signal.reason
-			timer = setTimeout(
-				() => controller.abort(new InternalTaskCancellationError("timed_out", "internal task timed out")),
-				envelope.budget.timeoutMs,
-			)
 			const result = await this.runner(envelope, controller.signal)
 			if (result.taskId !== envelope.id) {
 				throw new Error(`Sub-agent runner returned task ${result.taskId} for handle ${envelope.id}`)
@@ -229,7 +224,6 @@ export class BoundedDelegationManager {
 						: "failed",
 			}
 		} finally {
-			if (timer) clearTimeout(timer)
 			if (parentListenerAttached) parentSignal?.removeEventListener("abort", cancelFromParent)
 			if (acquired) this.release(rootKey)
 			if (this.activeRuns.get(envelope.id) === controller) this.activeRuns.delete(envelope.id)
@@ -238,19 +232,35 @@ export class BoundedDelegationManager {
 	async runBatch(envelopes: InternalTaskEnvelope[], parentSignal?: AbortSignal): Promise<InternalTaskResult[]> {
 		const ids = new Set(envelopes.map((item) => item.id))
 		if (ids.size !== envelopes.length) throw new Error("Duplicate child task ID in delegation batch")
+		for (const item of envelopes) {
+			if (this.activeRuns.has(item.id)) throw new Error(`Internal task is already running: ${item.id}`)
+		}
 		const remaining = new Map(envelopes.map((item) => [item.id, item]))
-		const results = new Map<string, InternalTaskResult>()
 		for (const item of envelopes)
 			for (const dependency of item.dependencies)
 				if (!ids.has(dependency)) throw new Error(`Unknown child dependency: ${dependency}`)
+		// Validate the entire graph before any runner can create side effects.
+		const scheduled = new Set<string>()
+		const batches: InternalTaskEnvelope[][] = []
 		while (remaining.size) {
 			const ready = [...remaining.values()]
-				.filter((item) => item.dependencies.every((id) => results.has(id)))
+				.filter((item) => item.dependencies.every((id) => scheduled.has(id)))
 				.sort((a, b) => a.id.localeCompare(b.id))
 			if (!ready.length) throw new Error("Cyclic child dependencies")
+			batches.push(ready)
+			for (const item of ready) {
+				scheduled.add(item.id)
+				remaining.delete(item.id)
+			}
+		}
+		const results = new Map<string, InternalTaskResult>()
+		for (const ready of batches) {
+			// Other submissions may have claimed a later stage while its dependencies ran.
+			for (const item of ready) {
+				if (this.activeRuns.has(item.id)) throw new Error(`Internal task is already running: ${item.id}`)
+			}
 			for (const result of await Promise.all(ready.map((item) => this.run(item, parentSignal)))) {
 				results.set(result.taskId, result)
-				remaining.delete(result.taskId)
 			}
 		}
 		return envelopes.map((item) => results.get(item.id)!)

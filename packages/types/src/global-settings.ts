@@ -26,7 +26,9 @@ import {
 	subagentTokenLimitSchema,
 } from "./subagent-orchestration.js"
 import { approvalModeSchema } from "./approval-mode.js"
+import { memorySettingsSchema } from "./memory.js"
 import { subagentAgentTypesSchema } from "./subagent.js"
+import { reasoningEffortExtendedSchema } from "./model.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -113,6 +115,7 @@ export const globalSettingsSchema = z.object({
 	dismissedUpsells: z.array(z.string()).optional(),
 
 	customCondensingPrompt: z.string().optional(),
+	memorySettings: memorySettingsSchema.optional(),
 
 	autoApprovalEnabled: z.boolean().optional(),
 	approvalMode: approvalModeSchema.optional(),
@@ -148,19 +151,23 @@ export const globalSettingsSchema = z.object({
 	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
 	/** Root-wide live managed-child cap, independent from maxConcurrentTasks. */
 	maxConcurrentSubagents: maxConcurrentSubagentsSchema.optional(),
-	/** Whether the model may delegate proactively or only after an explicit user request. */
+	subagentsEnabled: z.boolean().optional(),
+	subagentDefaultModel: z.string().trim().max(256).optional(),
+	subagentDefaultReasoningEffort: reasoningEffortExtendedSchema.nullish(),
+	subagentInterruptMessage: z.boolean().optional(),
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentDelegationPolicy: subagentDelegationPolicySchema.optional(),
-	/** Root-relative nesting ceiling. A direct child has depth 1. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentMaxDepth: subagentMaxDepthSchema.optional(),
-	/** Per-role wall-clock timeouts in milliseconds; omitted roles retain their defaults. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentRoleTimeoutsMs: subagentRoleTimeoutsMsSchema.optional(),
-	/** Per-child cumulative input-token ceiling. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentMaxInputTokens: subagentTokenLimitSchema.optional(),
-	/** Per-child cumulative output-token ceiling. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentMaxOutputTokens: subagentTokenLimitSchema.optional(),
-	/** Optional aggregate input-plus-output token budget for one root tree; null disables it. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentRootTokenBudget: subagentRootTokenBudgetSchema.optional(),
-	/** Optional aggregate provider-reported cost budget for one root tree; null disables it. */
+	/** @deprecated Accepted for historical imports only; ignored by current agent execution. */
 	subagentRootCostBudget: subagentRootCostBudgetSchema.optional(),
 	subagentDefaultApiConfigId: z.string().optional(),
 	subagentAgentTypes: subagentAgentTypesSchema.optional(),
@@ -208,8 +215,6 @@ export const globalSettingsSchema = z.object({
 		.max(MAX_CHECKPOINT_TIMEOUT_SECONDS)
 		.optional(),
 
-	ttsEnabled: z.boolean().optional(),
-	ttsSpeed: z.number().optional(),
 	soundEnabled: z.boolean().optional(),
 	soundVolume: z.number().optional(),
 
@@ -308,6 +313,12 @@ export type AlphaCodeSettings = GlobalSettings & ProviderSettings
  */
 export const SECRET_STATE_KEYS = [
 	"openAiApiKey",
+	"openAiNativeApiKey",
+	"apiKey",
+	"geminiApiKey",
+	"xaiApiKey",
+	"openRouterApiKey",
+	"vertexJsonCredentials",
 	"codeIndexQdrantApiKey",
 	"codebaseIndexVertexJsonCredentials",
 	"codebaseIndexGeminiApiKey",
@@ -365,8 +376,6 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 	commandTimeoutAllowlist: [],
 	preventCompletionWithOpenTodos: false,
 
-	ttsEnabled: false,
-	ttsSpeed: 1,
 	soundEnabled: false,
 	soundVolume: 0.5,
 

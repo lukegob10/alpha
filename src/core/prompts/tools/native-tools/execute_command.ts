@@ -16,7 +16,7 @@ Examples:
 { "cmd": "pnpm exec tsc --noEmit" }`
 
 const CMD_DESCRIPTION = `Shell command to execute.`
-const WORKDIR_DESCRIPTION = `Working directory for the command. Defaults to the turn cwd.`
+const WORKDIR_DESCRIPTION = `Omit to use the turn cwd. A relative subdirectory resolves from that cwd; use an absolute path only when needed.`
 const PLAN_WORKDIR_DESCRIPTION = `Optional workspace-relative working directory. Absolute paths, '..' traversal, and paths that resolve through a symlink outside the task workspace are rejected`
 const MAX_OUTPUT_TOKENS_DESCRIPTION = `Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.`
 

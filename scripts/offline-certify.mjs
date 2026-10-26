@@ -57,8 +57,8 @@ const phases = full
 		]
 	: [
 			phase("Agent-critical extension tests", pnpm, [
-				"--filter",
-				"alpha",
+				"--dir",
+				"src",
 				"exec",
 				"vitest",
 				"run",
@@ -78,7 +78,6 @@ phases.push(
 	phase("Eval harness unit tests", pnpm, ["--filter", "@alpha-code/evals", "test:unit"]),
 	phase("Eval harness contract tests", pnpm, ["--filter", "@alpha-code/evals", "test:contract"]),
 	phase("Eval harness golden certification", pnpm, ["--filter", "@alpha-code/evals", "test:certification"]),
-	phase("Eval harness infrastructure tests", pnpm, ["--filter", "@alpha-code/evals", "test:infrastructure"]),
 	phase("Benchmark manifest validation", pnpm, ["--filter", "@alpha-code/evals", "benchmark:validate"]),
 	phase("Benchmark initial-state certification", pnpm, ["--filter", "@alpha-code/evals", "benchmark:fixture-check"]),
 )

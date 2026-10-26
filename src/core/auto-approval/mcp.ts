@@ -27,7 +27,3 @@ export function getMcpToolApprovalGrant(
 
 	return undefined
 }
-
-export function isMcpToolAlwaysAllowed(mcpServerUse: McpServerUse, mcpServers: McpServer[] | undefined): boolean {
-	return getMcpToolApprovalGrant(mcpServerUse, mcpServers) !== undefined
-}

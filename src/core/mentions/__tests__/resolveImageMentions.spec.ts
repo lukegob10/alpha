@@ -1,6 +1,9 @@
 import * as path from "path"
+import * as fs from "fs/promises"
 
 import { resolveImageMentions } from "../resolveImageMentions"
+
+vi.mock("fs/promises", () => ({ realpath: vi.fn() }))
 
 vi.mock("../../tools/helpers/imageHelpers", () => ({
 	isSupportedImageFormat: vi.fn((ext: string) =>
@@ -42,6 +45,7 @@ describe("resolveImageMentions", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mockReadImageAsDataUrl.mockReset()
+		vi.mocked(fs.realpath).mockImplementation(async (value) => path.resolve(value.toString()))
 		// Default: validation passes
 		mockValidateImage.mockResolvedValue({ isValid: true, sizeInMB: 0.1 })
 	})
@@ -64,6 +68,111 @@ describe("resolveImageMentions", () => {
 		)
 		expect(result.text).toBe("Please look at @/assets/cat.png")
 		expect(result.images).toEqual([dataUrl])
+	})
+
+	it("loads image descendants whose names begin with two dots", async () => {
+		const buffer = Buffer.from("dotted-image")
+		const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt(dataUrl, buffer))
+
+		const result = await resolveImageMentions({ text: "@/..images/cat.png", cwd: "/workspace" })
+
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.resolve("/workspace", "..images/cat.png"),
+			undefined,
+			5 * 1024 * 1024,
+		)
+		expect(result.images).toEqual([dataUrl])
+	})
+
+	it.each(["../outside.png", "../workspace-other/cat.png", "nested/../../outside.png"])(
+		"does not load images outside the workspace through %s",
+		async (relativePath) => {
+			const result = await resolveImageMentions({ text: `@/${relativePath}`, cwd: "/workspace" })
+
+			expect(mockValidateImage).not.toHaveBeenCalled()
+			expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+			expect(result.images).toEqual([])
+		},
+	)
+
+	it("does not treat the workspace directory itself as an image", async () => {
+		const result = await resolveImageMentions({ text: "@/../workspace.png", cwd: "/workspace.png" })
+
+		expect(mockValidateImage).not.toHaveBeenCalled()
+		expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+		expect(result.images).toEqual([])
+	})
+
+	it.each(["linked.png", "linked-directory/image.png"])("rejects an outside symlink through %s", async (name) => {
+		const cwd = path.resolve("/workspace")
+		const candidate = path.join(cwd, name)
+		vi.mocked(fs.realpath).mockImplementation(async (value) =>
+			path.resolve(value.toString()) === candidate ? path.resolve("/outside/image.png") : cwd,
+		)
+
+		const result = await resolveImageMentions({ text: `@/${name}`, cwd })
+
+		expect(mockValidateImage).not.toHaveBeenCalled()
+		expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+		expect(result.images).toEqual([])
+	})
+
+	it("reads the canonical in-workspace target of an image symlink", async () => {
+		const cwd = path.resolve("/workspace")
+		const target = path.join(cwd, "assets", "image.png")
+		vi.mocked(fs.realpath).mockImplementation(async (value) =>
+			path.resolve(value.toString()) === path.join(cwd, "linked.png") ? target : cwd,
+		)
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt("data:image/png;base64,YQ==", Buffer.from("a")))
+
+		const result = await resolveImageMentions({ text: "@/linked.png", cwd })
+
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(target, undefined, 5 * 1024 * 1024)
+		expect(result.images).toEqual(["data:image/png;base64,YQ=="])
+	})
+
+	it("admits images under a symlinked workspace root", async () => {
+		const cwd = path.resolve("/workspace-alias")
+		const realRoot = path.resolve("/workspace")
+		vi.mocked(fs.realpath).mockImplementation(async (value) =>
+			path.resolve(value.toString()) === cwd ? realRoot : path.join(realRoot, "image.png"),
+		)
+		mockReadImageAsDataUrl.mockResolvedValue(imageReceipt("data:image/png;base64,YQ==", Buffer.from("a")))
+
+		await resolveImageMentions({ text: "@/image.png", cwd })
+
+		expect(mockReadImageAsDataUrl).toHaveBeenCalledWith(
+			path.join(realRoot, "image.png"),
+			undefined,
+			5 * 1024 * 1024,
+		)
+	})
+
+	it("skips images when their canonical target cannot be resolved", async () => {
+		vi.mocked(fs.realpath).mockRejectedValue(Object.assign(new Error("missing target"), { code: "ENOENT" }))
+
+		const result = await resolveImageMentions({ text: "@/missing.png", cwd: "/workspace" })
+
+		expect(mockValidateImage).not.toHaveBeenCalled()
+		expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+		expect(result.images).toEqual([])
+	})
+
+	it("rechecks ignore policy against the admitted canonical target", async () => {
+		const cwd = path.resolve("/workspace")
+		const target = path.join(cwd, "private", "image.png")
+		vi.mocked(fs.realpath).mockImplementation(async (value) =>
+			path.resolve(value.toString()) === cwd ? cwd : target,
+		)
+		const alphaIgnoreController = { validateAccess: vi.fn((value: string) => value !== target) }
+
+		const result = await resolveImageMentions({ text: "@/linked.png", cwd, alphaIgnoreController })
+
+		expect(alphaIgnoreController.validateAccess).toHaveBeenCalledWith(target)
+		expect(mockValidateImage).not.toHaveBeenCalled()
+		expect(mockReadImageAsDataUrl).not.toHaveBeenCalled()
+		expect(result.images).toEqual([])
 	})
 
 	it("should support gif images (matching read_file)", async () => {
@@ -151,6 +260,22 @@ describe("resolveImageMentions", () => {
 		})
 
 		expect(result.images).toHaveLength(1)
+	})
+
+	it("keeps the first occurrence order across supplied and mentioned images", async () => {
+		const existing = "data:image/png;base64,ZXhpc3Rpbmc="
+		const added = "data:image/png;base64,YWRkZWQ="
+		mockReadImageAsDataUrl
+			.mockResolvedValueOnce(imageReceipt(existing, Buffer.from("existing")))
+			.mockResolvedValueOnce(imageReceipt(added, Buffer.from("added")))
+
+		const result = await resolveImageMentions({
+			text: "@/existing.png @/added.png",
+			images: [existing, existing],
+			cwd: "/workspace",
+		})
+
+		expect(result.images).toEqual([existing, added])
 	})
 
 	it("should skip images when supportsImages is false", async () => {

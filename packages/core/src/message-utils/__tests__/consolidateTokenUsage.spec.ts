@@ -116,6 +116,60 @@ describe("consolidateTokenUsage", () => {
 			expect(result.contextTokens).toBe(5000)
 			expect(result.totalCost).toBeCloseTo(0.05)
 		})
+
+		it.each([0, 300])("restores the latest completed truncation baseline of %s tokens", (newContextTokens) => {
+			const messages: AlphaMessage[] = [
+				createApiReqMessage(1000, { tokensIn: 1900, tokensOut: 0, cost: 0.01 }),
+				{
+					ts: 1001,
+					type: "say",
+					say: "sliding_window_truncation",
+					contextTruncation: {
+						truncationId: "saved-truncation",
+						messagesRemoved: 6,
+						prevContextTokens: 1900,
+						newContextTokens,
+					},
+				},
+				createApiReqMessage(1002, {}),
+			]
+
+			expect(consolidateTokenUsage(JSON.parse(JSON.stringify(messages)))).toMatchObject({
+				contextTokens: newContextTokens,
+				totalTokensIn: 1900,
+				totalTokensOut: 0,
+				totalCost: 0.01,
+			})
+			expect(
+				consolidateTokenUsage([...messages, createApiReqMessage(1003, { tokensIn: 400, tokensOut: 50 })])
+					.contextTokens,
+			).toBe(450)
+		})
+
+		it.each([
+			{ newContextTokens: 300, partial: true },
+			{ newContextTokens: NaN, partial: false },
+			{ newContextTokens: Infinity, partial: false },
+			{ newContextTokens: -1, partial: false },
+		])("ignores an incomplete or invalid truncation baseline: %j", ({ newContextTokens, partial }) => {
+			expect(
+				consolidateTokenUsage([
+					createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50 }),
+					{
+						ts: 1001,
+						type: "say",
+						say: "sliding_window_truncation",
+						partial,
+						contextTruncation: {
+							truncationId: "pending-truncation",
+							messagesRemoved: 2,
+							prevContextTokens: 150,
+							newContextTokens,
+						},
+					},
+				]).contextTokens,
+			).toBe(150)
+		})
 	})
 
 	describe("invalid data handling", () => {

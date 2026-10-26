@@ -139,6 +139,46 @@ const storage = () => path.join(os.tmpdir(), `alpha-host-ownership-${crypto.rand
 describe("agent hotkey view ownership", () => {
 	beforeEach(() => vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined))
 
+	it("keeps independently launched tasks alive when the originating editor is disposed", async () => {
+		const host = storage()
+		const sidebar = makeProvider(host)
+		const editor = makeProvider(host)
+		Object.assign(editor, { renderContext: "editor" })
+		const parent = Object.assign(makeTask("launcher"), {
+			metadata: { task: "Launch a new chat thread" },
+			workspacePath: "C:/repo",
+			historyWorkspacePath: "C:/repo",
+			apiConversationHistory: [],
+			getTaskApiConfigName: vi.fn(async () => "profile-a"),
+			getTaskApprovalMode: vi.fn(() => "ask"),
+			isCompleted: vi.fn(() => false),
+			isTurnActive: vi.fn(() => true),
+		})
+		await editor.addTaskToStack(parent)
+		const child = Object.assign(makeTask("independent"), {
+			start: vi.fn(),
+			workspacePath: parent.workspacePath,
+			isCompleted: vi.fn(() => false),
+			isTurnActive: vi.fn(() => true),
+		})
+		for (const owner of [sidebar, editor]) {
+			vi.spyOn(owner, "createTask").mockImplementation(async (_text, _images, _parent, options) => {
+				Object.assign(child, { orchestrationParentTaskId: options?.orchestrationParentTaskId })
+				await owner.addTaskToStack(child, { focus: false })
+				return child
+			})
+		}
+
+		await editor.createIndependentTask(parent, "Continue independently", "shared")
+
+		expect(sidebar.createTask).toHaveBeenCalledOnce()
+		expect(editor.createTask).not.toHaveBeenCalled()
+		expect(sidebar.getTaskOwner(child.taskId)).toBe(sidebar)
+		await editor.dispose()
+		expect(child.abortTask).not.toHaveBeenCalled()
+		expect(sidebar.getLiveTask(child.taskId)).toBe(child)
+	})
+
 	it("routes keyboard commands to the focused sidebar despite an active editor panel", async () => {
 		const sidebar = makeProvider(storage())
 		const editor = makeProvider(storage())
@@ -716,6 +756,58 @@ describe("AlphaProvider host ownership", () => {
 })
 
 describe("AlphaProvider final history disposal", () => {
+	it("starts cleanup for sidebar and editor providers and joins both before global shutdown", async () => {
+		const sidebar = makeProvider(storage())
+		const editor = makeProvider(storage())
+		Object.assign(editor, { renderContext: "editor" })
+		const held = barrier()
+		const disposeSidebar = vi.spyOn(sidebar, "dispose").mockImplementationOnce(() => held.promise)
+		const disposeEditor = vi.spyOn(editor, "dispose").mockResolvedValue(undefined)
+		let settled = false
+		const closing = AlphaProvider.disposeAll().then(() => {
+			settled = true
+		})
+		try {
+			expect(disposeSidebar).toHaveBeenCalledOnce()
+			expect(disposeEditor).toHaveBeenCalledOnce()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+		} finally {
+			held.resolve()
+			await closing
+		}
+	})
+
+	it("joins other provider cleanup before reporting an aggregated failure", async () => {
+		const sidebar = makeProvider(storage())
+		const editor = makeProvider(storage())
+		const failure = new Error("Sidebar cleanup failed")
+		const held = barrier()
+		vi.spyOn(sidebar, "dispose").mockRejectedValue(failure)
+		const disposeEditor = vi.spyOn(editor, "dispose").mockImplementationOnce(() => held.promise)
+		let settled = false
+		const closing = AlphaProvider.disposeAll()
+		const outcome = closing.then(
+			() => {
+				settled = true
+			},
+			(error: unknown) => {
+				settled = true
+				return error
+			},
+		)
+		try {
+			expect(disposeEditor).toHaveBeenCalledOnce()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+		} finally {
+			held.resolve()
+		}
+		const error = await outcome
+		expect(error).toBeInstanceOf(AggregateError)
+		expect((error as AggregateError).errors).toEqual([failure])
+	})
+
 	it("keeps provider disposal pending until the final history write settles", async () => {
 		const owner = makeProvider(storage())
 		const entered = barrier()
@@ -918,7 +1010,10 @@ describe("AlphaProvider task admission", () => {
 		const replacement = prepareTask("replacement")
 
 		await expect(
-			owner.createTask("replacement", undefined, undefined, { taskId: replacement.taskId }),
+			owner.createTask("replacement", undefined, undefined, {
+				taskId: replacement.taskId,
+				preserveExisting: false,
+			}),
 		).resolves.toBe(replacement)
 		expect(previous.abortTask).toHaveBeenCalledOnce()
 		expect(replacement.start).toHaveBeenCalledOnce()

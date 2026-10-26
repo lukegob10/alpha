@@ -25,7 +25,7 @@ export type ReasoningEffortWithMinimal = z.infer<typeof reasoningEffortWithMinim
  * Extended Reasoning Effort (includes "none", "minimal", and provider-specific maximum levels)
  * Note: "disable" is a UI/control value, not a value sent as effort
  */
-export const reasoningEffortsExtended = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+export const reasoningEffortsExtended = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const
 
 export const reasoningEffortExtendedSchema = z.enum(reasoningEffortsExtended)
 
@@ -43,6 +43,7 @@ export const reasoningEffortSettingValues = [
 	"high",
 	"xhigh",
 	"max",
+	"ultra",
 ] as const
 export const reasoningEffortSettingSchema = z.enum(reasoningEffortSettingValues)
 
@@ -103,9 +104,7 @@ export const modelInfoSchema = z.object({
 	supportsStreaming: z.boolean().optional(),
 	defaultTemperature: z.number().optional(),
 	requiredReasoningBudget: z.boolean().optional(),
-	supportsReasoningEffort: z
-		.union([z.boolean(), z.array(z.enum(["disable", "none", "minimal", "low", "medium", "high", "xhigh", "max"]))])
-		.optional(),
+	supportsReasoningEffort: z.union([z.boolean(), z.array(reasoningEffortSettingSchema)]).optional(),
 	requiredReasoningEffort: z.boolean().optional(),
 	preserveReasoning: z.boolean().optional(),
 	supportedParameters: z.array(modelParametersSchema).optional(),

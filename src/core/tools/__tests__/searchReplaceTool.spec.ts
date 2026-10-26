@@ -4,7 +4,6 @@ import fs from "fs/promises"
 import type { MockedFunction } from "vitest"
 
 import { fileExistsAtPath } from "../../../utils/fs"
-import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import { getReadablePath } from "../../../utils/path"
 import { ToolUse, ToolResponse } from "../../../shared/tools"
 import { searchReplaceTool } from "../SearchReplaceTool"
@@ -44,10 +43,6 @@ vi.mock("../../prompts/responses", () => ({
 	},
 }))
 
-vi.mock("../../../utils/pathUtils", () => ({
-	isPathOutsideWorkspace: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock("../../../utils/path", () => ({
 	getReadablePath: vi.fn().mockReturnValue("test/path.txt"),
 }))
@@ -82,7 +77,6 @@ describe("searchReplaceTool", () => {
 	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
 		(path: string, encoding: string) => Promise<string>
 	>
-	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
 	const mockedPathIsAbsolute = path.isAbsolute as MockedFunction<typeof path.isAbsolute>
@@ -100,7 +94,6 @@ describe("searchReplaceTool", () => {
 		mockedPathIsAbsolute.mockReturnValue(false)
 		mockedFileExistsAtPath.mockResolvedValue(true)
 		mockedFsReadFile.mockResolvedValue(testFileContent)
-		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
 
 		mockAlphaTask.cwd = "/"

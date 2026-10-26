@@ -24,6 +24,27 @@ const setScrollGeometry = (
 	})
 }
 
+const createReadingAnchor = (
+	scroller: HTMLElement,
+	attribute: "data-chat-message-ts" | "data-activity-trace-id",
+	identity: string,
+	position: { top: number; height: number },
+) => {
+	const element = document.createElement("div")
+	element.setAttribute(attribute, identity)
+	vi.spyOn(element, "getBoundingClientRect").mockImplementation(
+		() =>
+			new DOMRect(
+				0,
+				scroller.getBoundingClientRect().top + position.top - scroller.scrollTop,
+				300,
+				position.height,
+			),
+	)
+	scroller.append(element)
+	return element
+}
+
 const emitScroll = (result: { current: ReturnType<typeof useChatScrollController> }, scroller: HTMLElement) => {
 	act(() => {
 		result.current.handleScrollerScroll({
@@ -203,5 +224,147 @@ describe("useChatScrollController", () => {
 		flushFrame()
 		expect(result.current.scrollMode).toBe("FOLLOWING")
 		expect(scroller.scrollTop).toBe(600)
+	})
+
+	it("preserves the visible message offset when history prepends and output appends in one commit", () => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		flushFrame()
+		act(() => result.current.releaseFollow("load-older"))
+		scroller.scrollTop = 450
+		vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 40, 300, 400))
+		createReadingAnchor(scroller, "data-chat-message-ts", "200", { top: 200, height: 100 })
+		const position = { top: 430, height: 120 }
+		const message = createReadingAnchor(scroller, "data-chat-message-ts", "400", position)
+		message.setAttribute("data-chat-message-index", "1")
+		const viewportOffset = message.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				// Prepending moves this row by 300px; independently appended output adds another 600px.
+				position.top += 300
+				message.setAttribute("data-chat-message-index", "20")
+				setScrollGeometry(scroller, { scrollHeight: 1_900, clientHeight: 400, scrollTop: 450 })
+				rerender(initialProps)
+			})
+		})
+
+		expect(scroller.scrollTop).toBe(750)
+		expect(message.getBoundingClientRect().top - scroller.getBoundingClientRect().top).toBe(viewportOffset)
+		expect(result.current.scrollMode).toBe("BROWSING")
+	})
+
+	it("tracks a trace control when loading history moves its header into another row", () => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		flushFrame()
+		act(() => result.current.releaseFollow("load-older"))
+		scroller.scrollTop = 450
+		const traceId = 'turn:run"id]:turn\\id'
+		const previousPosition = { top: 500, height: 80 }
+		const previousRow = createReadingAnchor(scroller, "data-chat-message-ts", "500", previousPosition)
+		const previousControl = createReadingAnchor(scroller, "data-activity-trace-id", traceId, {
+			top: 500,
+			height: 30,
+		})
+		previousRow.append(previousControl)
+		const viewportOffset = previousControl.getBoundingClientRect().top
+		let nextControl: HTMLElement | undefined
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				previousPosition.height = 0
+				previousControl.remove()
+				const nextRow = createReadingAnchor(scroller, "data-chat-message-ts", "300", { top: 730, height: 80 })
+				nextControl = createReadingAnchor(scroller, "data-activity-trace-id", traceId, { top: 730, height: 30 })
+				nextRow.append(nextControl)
+				setScrollGeometry(scroller, { scrollHeight: 1_300, clientHeight: 400, scrollTop: 450 })
+				rerender(initialProps)
+			})
+		})
+
+		expect(scroller.scrollTop).toBe(680)
+		expect(nextControl?.getBoundingClientRect().top).toBe(viewportOffset)
+		expect(result.current.scrollMode).toBe("BROWSING")
+	})
+
+	it("lets explicit checkpoint navigation supersede a pending history anchor", () => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		flushFrame()
+		act(() => result.current.releaseFollow("load-older"))
+		scroller.scrollTop = 450
+		const position = { top: 500, height: 80 }
+		createReadingAnchor(scroller, "data-chat-message-ts", "500", position)
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				position.top += 300
+			})
+			result.current.releaseFollow("checkpoint-navigation")
+			rerender(initialProps)
+		})
+
+		expect(scroller.scrollTop).toBe(450)
+	})
+
+	it("does not carry a pending history anchor into a task with the same transcript timestamps", () => {
+		const { result, rerender, initialProps, scroller } = createHarness({ taskKey: "task-one" })
+		flushFrame()
+		act(() => result.current.releaseFollow("load-older"))
+		scroller.scrollTop = 450
+		const position = { top: 500, height: 80 }
+		createReadingAnchor(scroller, "data-chat-message-ts", "500", position)
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				position.top += 300
+				rerender({ ...initialProps, taskKey: "task-two" })
+			})
+		})
+
+		expect(scroller.scrollTop).toBe(450)
+		flushFrame()
+		expect(result.current.scrollMode).toBe("FOLLOWING")
+		expect(scroller.scrollTop).toBe(600)
+	})
+
+	it("does not restore a history anchor onto a replacement scroller", () => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		flushFrame()
+		act(() => result.current.releaseFollow("load-older"))
+		scroller.scrollTop = 450
+		const position = { top: 500, height: 80 }
+		createReadingAnchor(scroller, "data-chat-message-ts", "500", position)
+		const replacement = document.createElement("div")
+		setScrollGeometry(replacement, { scrollHeight: 1_300, clientHeight: 400, scrollTop: 100 })
+		createReadingAnchor(replacement, "data-chat-message-ts", "500", { top: 800, height: 80 })
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				position.top += 300
+				result.current.setScrollerRef(replacement)
+				rerender(initialProps)
+			})
+		})
+
+		expect(scroller.scrollTop).toBe(450)
+		expect(replacement.scrollTop).toBe(100)
+	})
+
+	it("keeps following output when a preserving update runs without browsing ownership", () => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		flushFrame()
+		const position = { top: 650, height: 80 }
+		createReadingAnchor(scroller, "data-chat-message-ts", "650", position)
+
+		act(() => {
+			result.current.preserveReadingAnchor(() => {
+				position.top += 300
+				setScrollGeometry(scroller, { scrollHeight: 1_300, clientHeight: 400, scrollTop: 600 })
+				rerender({ ...initialProps, itemCount: 4 })
+			})
+		})
+		flushFrame()
+
+		expect(result.current.scrollMode).toBe("FOLLOWING")
+		expect(scroller.scrollTop).toBe(900)
 	})
 })

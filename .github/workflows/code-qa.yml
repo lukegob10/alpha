@@ -8,7 +8,13 @@ on:
         types: [opened, reopened, ready_for_review, synchronize]
         branches: [main]
 
+permissions:
+    contents: read
+
 jobs:
+    evaluator-contracts:
+        uses: ./.github/workflows/evaluation-contracts.yml
+
     knip:
         runs-on: ubuntu-latest
         steps:
@@ -108,6 +114,11 @@ jobs:
         runs-on: windows-latest
         timeout-minutes: 45
         steps:
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             - name: Checkout code
               uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
@@ -146,6 +157,11 @@ jobs:
         runs-on: windows-latest
         timeout-minutes: 60
         steps:
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
@@ -171,6 +187,42 @@ jobs:
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/report-*.json
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/attempt-*/evidence-index.json
                       ${{ runner.temp }}/alpha-harness-outcomes/*/*/host-evidence/**
+                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
+                  retention-days: 14
+                  if-no-files-found: error
+
+    vscode-1380-rendered:
+        name: VS Code 1.138.0 rendered UI contracts
+        runs-on: windows-latest
+        timeout-minutes: 45
+        steps:
+            # Runner state is unavailable in job-level environment expressions.
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Run bounded composer, transcript and input UI contracts
+              run: pnpm harness run rendered
+            - name: Require complete rendered UI execution evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-rendered.json --require rendered
+            - name: Retain rendered UI evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: rendered-ui-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      artifacts/harness/
+                      artifacts/composer-ui/
+                      artifacts/transcript-lifecycle-ui/
+                      artifacts/request-user-input-ui/
+                      ${{ runner.temp }}/alpha-rendered-probe-*/evidence/**
+                      ${{ runner.temp }}/alpha-harness-host-probes-*/ui-probe-*.json
                       ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
                   retention-days: 14
                   if-no-files-found: error

@@ -1,4 +1,4 @@
-import type { PairedTrial, TrialObservation } from "./types"
+import { performanceMetricNames, type ObservationStatus, type PairedTrial, type TrialObservation } from "./types"
 
 export type ExperimentStatistics = {
 	outcome: {
@@ -17,6 +17,19 @@ export type ExperimentStatistics = {
 	graderErrorRate: number
 	firstAttemptReliability: number
 	retryAssistedCapability: number | null
+	delivery?: { attempts: number; successes: number; rate: number | null }
+	denominators?: {
+		conditionalOutcome: number
+		delivery: number
+		passAtKTasks: number
+		consistencyAtKTasks: number
+		latency: number
+		costAttempts: number
+	}
+	performance?: Record<
+		(typeof performanceMetricNames)[number],
+		{ known: number; missing: number; p50: number | null; p95: number | null }
+	>
 	coverage?: {
 		observations: number
 		scoreable: number
@@ -27,7 +40,7 @@ export type ExperimentStatistics = {
 		retryAssisted: number
 	}
 	uncertainty?: {
-		independentUnit: "task" | "repository" | "attempt"
+		independentUnit: "task" | "repository" | "family" | "attempt"
 		clusters: number
 		mean: number | null
 		bootstrap95: [number, number] | null
@@ -35,6 +48,7 @@ export type ExperimentStatistics = {
 		pairedClusters: number
 		pairedDelta: number | null
 		pairedBootstrap95: [number, number] | null
+		pairedBounds95?: [number, number] | null
 	}
 }
 
@@ -48,6 +62,10 @@ export type SegmentedExperimentStatistics = {
 
 const scored = new Set(["passed", "outcome_failed", "safety_failed", "agent_error", "budget_exhausted"])
 
+export function isScoreableObservationStatus(status: ObservationStatus): boolean {
+	return scored.has(status)
+}
+
 export function summarizeExperiment(
 	observations: TrialObservation[],
 	pairs: PairedTrial[],
@@ -56,7 +74,7 @@ export function summarizeExperiment(
 		bootstrapSeed?: number
 		consistencyK?: number
 		passK?: number
-		independentUnit?: "task" | "repository" | "attempt"
+		independentUnit?: "task" | "repository" | "family" | "attempt"
 	} = {},
 ): ExperimentStatistics {
 	const eligible = observations.filter(({ status }) => scored.has(status))
@@ -76,6 +94,7 @@ export function summarizeExperiment(
 	const retryAssisted = eligible.filter((value) => value.retryAssisted)
 	const independentUnit = options.independentUnit ?? "task"
 	const clusterKey = (value: TrialObservation) => {
+		if (independentUnit === "family") return value.family
 		if (independentUnit === "repository") {
 			if (!value.repository)
 				throw new Error("Repository uncertainty requires repository identity on every observation")
@@ -93,7 +112,11 @@ export function summarizeExperiment(
 		for (const row of rows) {
 			const key = clusterKey(row.observation)
 			const tasks = groups.get(key) ?? new Map<string, number[]>()
-			const task = JSON.stringify([row.observation.taskId, row.observation.taskVersion])
+			const task = JSON.stringify([
+				row.observation.repository ?? null,
+				row.observation.taskId,
+				row.observation.taskVersion,
+			])
 			tasks.set(task, [...(tasks.get(task) ?? []), row.value])
 			groups.set(key, tasks)
 		}
@@ -118,6 +141,38 @@ export function summarizeExperiment(
 	const interval = (values: number[]) =>
 		values.length ? bootstrapMean95(values, options.bootstrapSamples ?? 2_000, options.bootstrapSeed ?? 9412) : null
 	return {
+		delivery: {
+			attempts: observations.length,
+			successes,
+			rate: observations.length ? successes / observations.length : null,
+		},
+		denominators: {
+			conditionalOutcome: eligible.length,
+			delivery: observations.length,
+			passAtKTasks: groupByTask(observations).filter((group) => group.length >= (options.passK ?? 1)).length,
+			consistencyAtKTasks: groupByTask(observations).filter(
+				(group) => group.length >= (options.consistencyK ?? 3),
+			).length,
+			latency: observations.length,
+			costAttempts: observations.length,
+		},
+		performance: Object.fromEntries(
+			performanceMetricNames.map((name) => {
+				const values = observations.flatMap((observation) => {
+					const value = observation.performance?.[name]
+					return value == null ? [] : [value]
+				})
+				return [
+					name,
+					{
+						known: values.length,
+						missing: observations.length - values.length,
+						p50: quantile(values, 0.5),
+						p95: quantile(values, 0.95),
+					},
+				]
+			}),
+		) as NonNullable<ExperimentStatistics["performance"]>,
 		coverage: {
 			observations: observations.length,
 			scoreable: eligible.length,
@@ -142,6 +197,7 @@ export function summarizeExperiment(
 			pairedClusters: deltas.length,
 			pairedDelta: mean(deltas),
 			pairedBootstrap95: interval(deltas),
+			pairedBounds95: boundedPairedMean95(deltas),
 		},
 		outcome: {
 			successes,
@@ -176,6 +232,16 @@ export function summarizeExperiment(
 			? fraction(retryAssisted, ({ status }) => status === "passed")
 			: null,
 	}
+}
+
+/** Hoeffding bounds for independent unit means in [-1, 1]; unlike an empirical bootstrap, ties cannot imply certainty. */
+export function boundedPairedMean95(values: number[]): [number, number] | null {
+	if (!values.length) return null
+	if (values.some((value) => !Number.isFinite(value) || value < -1 || value > 1))
+		throw new Error("Paired unit differences must be finite values in [-1, 1]")
+	const mean = values.reduce((sum, value) => sum + value, 0) / values.length
+	const radius = Math.sqrt((2 * Math.log(40)) / values.length)
+	return [Math.max(-1, mean - radius), Math.min(1, mean + radius)]
 }
 
 export function segmentExperiment(

@@ -102,9 +102,10 @@ class CompactionScriptedAI {
 	}
 
 	async countTokens(content: unknown[]): Promise<number> {
-		// A bounded synthetic tokenizer makes the archived response large while leaving fixed prompt costs stable.
+		// The visible response alone crosses the post-turn threshold. Host-side
+		// canonical evidence must not be needed to inflate the request count.
 		return content.reduce<number>(
-			(tokens, block) => tokens + (JSON.stringify(block).includes(ARCHIVE_MARKER) ? 600 : 3),
+			(tokens, block) => tokens + (JSON.stringify(block).includes(ARCHIVE_MARKER) ? 1_600 : 3),
 			0,
 		)
 	}
@@ -693,6 +694,14 @@ suite("Alpha native compaction acceptance", function () {
 		assert.ok(provider)
 		const original = api.getConfiguration()
 		const model = new CompactionScriptedAI()
+		const postTurnPercent = 60
+		const modelInfo = model.getModel().info
+		// Match the fixture's input allowance after output reservation and the 10% safety buffer.
+		const allowedInputTokens =
+			modelInfo.contextWindow - modelInfo.maxTokens - Math.floor(modelInfo.contextWindow * 0.1)
+		const archiveTokens = await model.countTokens([{ type: "text", text: ARCHIVE_MARKER }])
+		assert.ok(archiveTokens > (allowedInputTokens * postTurnPercent) / 100)
+		assert.ok(archiveTokens < allowedInputTokens)
 		const completions: string[] = []
 		const createdTasks: string[] = []
 		const onCompleted = (taskId: string) => completions.push(taskId)
@@ -716,7 +725,7 @@ suite("Alpha native compaction acceptance", function () {
 				autoCondenseContext: true,
 				autoCondenseContextPercent: 100,
 				autoCondenseContextScope: "full-context",
-				postTurnCondenseContextPercent: 60,
+				postTurnCondenseContextPercent: postTurnPercent,
 			}
 			const taskId = await api.startNewTask({
 				configuration,

@@ -35,6 +35,106 @@ import { WorkflowFailure } from "./contracts"
 
 const workspace = process.cwd()
 
+test("fault observation advances only scoped command approvals until the requested response boundary", async () => {
+	for (const allowed of [true, false]) {
+		let injected = false
+		let approvals = 0
+		const task = {
+			taskId: "tool-first-fault",
+			taskAsk: { ts: 1, type: "ask", ask: "command", text: WORKFLOW_COMMANDS.test } as AlphaMessage,
+			apiConversationHistory: history(WORKFLOW_COMMANDS.test, allowed ? workspace : path.dirname(workspace)),
+			approveAsk: () => {
+				approvals++
+				injected = true
+			},
+		}
+		const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task, focusTask: async () => true })
+		const api = Object.assign(new EventEmitter(), {
+			sidebarProvider: provider,
+			getConfiguration: () => ({}),
+			setConfiguration: async () => {},
+			startNewTask: async () => task.taskId,
+			cancelCurrentTask: async () => {},
+		})
+		const host = new ExtensionWorkflowHost(
+			api as unknown as AlphaCodeAPI,
+			workspace,
+			"live-copilot",
+			new WorkflowRequestBudget(10),
+			5_000,
+		)
+		try {
+			await host.start("review")
+			if (allowed) await host.waitForFault(() => injected)
+			else
+				await assert.rejects(
+					host.waitForFault(() => injected),
+					/unexpected_command/,
+				)
+			assert.equal(approvals, allowed ? 1 : 0)
+		} finally {
+			await host.dispose()
+		}
+	}
+})
+
+test("provider recovery resumes the same task with its current context-probe step", async () => {
+	const budget = new WorkflowRequestBudget(10)
+	const task = {
+		taskId: "resumable-fault",
+		taskAsk: undefined as AlphaMessage | undefined,
+		clineMessages: [] as AlphaMessage[],
+		approveAsk: () => assert.fail("resume_task requires explicit same-task input, not approval"),
+	}
+	let starts = 0
+	const messages: string[] = []
+	const provider = Object.assign(new EventEmitter(), {
+		getLiveTask: () => task,
+		focusTask: async () => true,
+		viewLaunched: true,
+		getStateToPostToWebview: async () => ({ currentTaskId: task.taskId }),
+	})
+	const api = Object.assign(new EventEmitter(), {
+		sidebarProvider: provider,
+		getConfiguration: () => ({}),
+		setConfiguration: async () => {},
+		startNewTask: async () => {
+			starts++
+			return task.taskId
+		},
+		cancelCurrentTask: async () => {},
+		isReady: () => true,
+		isTaskInHistory: async (id: string) => id === task.taskId,
+		getCurrentTaskStack: () => [task.taskId],
+		sendMessage: async (text: string) => {
+			messages.push(text)
+			const message: AlphaMessage = {
+				ts: Math.max(task.taskAsk?.ts ?? 0, task.clineMessages.at(-1)?.ts ?? 0) + 1,
+				type: "say",
+				say: "user_feedback",
+				text,
+			}
+			task.clineMessages.push(message)
+			task.taskAsk = undefined
+			budget.consume()
+			api.emit(AlphaCodeEventName.Message, { taskId: task.taskId, action: "created", message })
+		},
+	})
+	const host = new ExtensionWorkflowHost(api as unknown as AlphaCodeAPI, workspace, "live-copilot", budget, 5_000)
+	try {
+		await host.start("review")
+		await host.followup(task.taskId, "contextProbe", 3)
+		task.taskAsk = { ts: 2, type: "ask", ask: "resume_task", partial: false }
+		await host.recoverProviderError(task.taskId)
+		assert.equal(starts, 1)
+		assert.equal(messages.length, 2)
+		assert.equal(messages[1], messages[0])
+		assert.equal(budget.used, 2)
+	} finally {
+		await host.dispose()
+	}
+})
+
 for (const failCancellation of [false, true]) {
 	test(`workflow disposal restores the full original configuration after ${failCancellation ? "failed cancellation" : "completion"}`, async () => {
 		const original: AlphaCodeSettings = {

@@ -1,0 +1,163 @@
+{
+	"schemaVersion": 1,
+	"claim": "observable-reference-map-only",
+	"upstream": {
+		"repository": "https://github.com/openai/codex",
+		"commit": "970111f6cb62cc02fe36a82ea7d71b37a2889c97",
+		"retrievedOn": "2026-10-23"
+	},
+	"executionScope": "Local references are checked for freshness. This map does not run upstream tests or establish differential equivalence.",
+	"excluded": ["Codex sandbox architecture", "Source code and prompt copying", "A parallel agent runtime"],
+	"contracts": [
+		{
+			"id": "completion",
+			"invariant": "Visible assistant output may finish a turn when no continuation remains; a nonterminal response must continue before a follow-up is admitted.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/scenarios_partial_answers.rs",
+					"test": "partial_answers_preserve_phase_across_sampling_continuation"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "src/core/agent/__tests__/AgentTurnEngine.spec.ts",
+					"test": "treats a visible assistant response without tool calls as a completed turn"
+				},
+				{
+					"path": "src/core/agent/__tests__/AgentTurnEngine.spec.ts",
+					"test": "continues after a normally completed response requires another step despite final-answer text"
+				}
+			],
+			"normalization": [
+				"Compare terminality and continuation order, not message wording or provider phase names."
+			],
+			"divergence": {
+				"status": "unverified",
+				"explanation": "Alpha's implicit completion and continuation contracts are mapped; provider phase-history equivalence has not been measured."
+			}
+		},
+		{
+			"id": "tool-outcomes",
+			"invariant": "Malformed tool intent and unsuccessful execution must produce an explicit non-success result with the original call identity.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/tool_harness.rs",
+					"test": "apply_patch_reports_parse_diagnostics"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "src/core/agent/__tests__/ToolScheduler.policy-denial-status.spec.ts",
+					"test": "keeps unavailable tools and malformed arguments as errors"
+				},
+				{
+					"path": "src/core/agent/__tests__/ToolScheduler.policy-denial-status.spec.ts",
+					"test": "does not duplicate a denied provider-history receipt when an accepted call is replayed"
+				}
+			],
+			"normalization": [
+				"Compare call identity, effect admission, and semantic outcome; retain failure diagnostics separately from displayed text."
+			],
+			"divergence": {
+				"status": "intentional",
+				"explanation": "Alpha retains success, error, denied, and cancelled as native outcomes. Provider-specific unsuccessful status encodings must not collapse into success."
+			}
+		},
+		{
+			"id": "cancellation",
+			"invariant": "Cancellation settles accepted tools before terminal task interruption and releases owned work exactly once.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/dynamic_tool_cancellation.rs",
+					"test": "interrupt_completes_cancelled_dynamic_call"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "apps/vscode-e2e/src/suite/managed-agents.cancellation.acceptance.test.ts",
+					"test": "cancels a held provider stream and command process tree with one terminal per task"
+				}
+			],
+			"normalization": [
+				"Ignore opaque task IDs and timestamps; preserve call/result pairing and tool-before-turn settlement order."
+			],
+			"divergence": {
+				"status": "unverified",
+				"explanation": "The mapped Alpha test additionally covers child processes. Cross-product cancellation ordering is a reference target, not an executed comparison."
+			}
+		},
+		{
+			"id": "step-settings",
+			"invariant": "Captured settings remain immutable within their logical execution boundary, and retries retain captured instruction identity.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/step_settings_snapshots.rs",
+					"test": "ordinary_settings_updates_keep_the_running_turn_snapshot"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "src/core/agent/__tests__/StepContext.spec.ts",
+					"test": "captures instruction identity independently from routing identity and retains it on retries"
+				},
+				{
+					"path": "src/core/agent/__tests__/StepContext.spec.ts",
+					"test": "captures an exact immutable request snapshot and redacts credentials"
+				}
+			],
+			"normalization": [
+				"Compare captured configuration and instruction digests at explicit boundaries; exclude credential bytes."
+			],
+			"divergence": {
+				"status": "unverified",
+				"explanation": "Alpha tests immutable per-step contexts; the upstream test freezes ordinary thread settings across a running turn. Mid-turn host-update semantics require a dedicated comparison."
+			}
+		},
+		{
+			"id": "compaction-reload",
+			"invariant": "Compaction preserves resumable task facts and valid tool transactions, and reload sends the intended reduced model context.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/compact_resume_fork.rs",
+					"test": "compact_resume_and_fork_preserve_model_history_view"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "apps/vscode-e2e/src/suite/compaction-acceptance.test.ts",
+					"test": "compacts after a turn, reloads the archive, and sends reduced context on follow-up"
+				}
+			],
+			"normalization": [
+				"Compare retained facts, call/result pairing, and model-visible ordering; permit provider-specific summary and archive representations."
+			],
+			"divergence": {
+				"status": "unverified",
+				"explanation": "Alpha's mapped contract covers compaction and reload. The upstream fork branch is not established by that local test."
+			}
+		},
+		{
+			"id": "child-restoration",
+			"invariant": "Cold restoration retains child identity, hierarchy, and narrowed authority and can route subsequent work without duplicating a child.",
+			"upstreamTests": [
+				{
+					"path": "codex-rs/core/tests/suite/multi_agent_resume.rs",
+					"test": "cold_root_resume_restores_agent_identity_and_role_on_followup"
+				}
+			],
+			"alphaTests": [
+				{
+					"path": "apps/vscode-e2e/src/suite/nested-restart.test.ts",
+					"test": "retains hierarchy, routes results, releases capacity and recovers Worker artifacts"
+				}
+			],
+			"normalization": [
+				"Compare graph relationships, identity continuity, and authority scope; ignore storage layout and generated IDs."
+			],
+			"divergence": {
+				"status": "unverified",
+				"explanation": "Alpha uses native managed-agent storage and workspaces. The map does not assert equivalence of upstream role configuration or restoration internals."
+			}
+		}
+	]
+}

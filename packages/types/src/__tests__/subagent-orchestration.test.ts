@@ -1,10 +1,6 @@
 import {
 	DEFAULT_MAX_CONCURRENT_SUBAGENTS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
-	DEFAULT_SUBAGENT_MAX_DEPTH,
-	DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-	DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
-	DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
 	GLOBAL_STATE_KEYS,
 	createSubagentEffectiveLimits,
 	finalizeSubagentDelegationPolicy,
@@ -110,10 +106,10 @@ describe("sub-agent orchestration contracts", () => {
 		expect(resolveSubagentOrchestrationSettings()).toEqual({
 			maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
 			delegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
-			maxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
-			roleTimeoutsMs: DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
-			maxInputTokens: DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-			maxOutputTokens: DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
+			maxDepth: null,
+			roleTimeoutsMs: null,
+			maxInputTokens: null,
+			maxOutputTokens: null,
 			rootTokenBudget: null,
 			rootCostBudget: null,
 		})
@@ -132,46 +128,33 @@ describe("sub-agent orchestration contracts", () => {
 		).toEqual({
 			maxConcurrentSubagents: DEFAULT_MAX_CONCURRENT_SUBAGENTS,
 			delegationPolicy: DEFAULT_SUBAGENT_DELEGATION_POLICY,
-			maxDepth: DEFAULT_SUBAGENT_MAX_DEPTH,
-			roleTimeoutsMs: DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
-			maxInputTokens: DEFAULT_SUBAGENT_MAX_INPUT_TOKENS,
-			maxOutputTokens: DEFAULT_SUBAGENT_MAX_OUTPUT_TOKENS,
+			maxDepth: null,
+			roleTimeoutsMs: null,
+			maxInputTokens: null,
+			maxOutputTokens: null,
 			rootTokenBudget: null,
 			rootCostBudget: null,
 		})
 	})
 
-	it("merges a partial role-timeout override without changing other defaults", () => {
+	it("ignores retired preferences while preserving the configured thread cap", () => {
 		expect(
 			resolveSubagentOrchestrationSettings({
-				maxConcurrentSubagents: 6,
+				maxConcurrentSubagents: 64,
 				subagentDelegationPolicy: "proactive",
-				subagentMaxDepth: 4,
-				subagentRoleTimeoutsMs: { worker: 1_200_000 },
-				subagentMaxInputTokens: 32_000,
-				subagentMaxOutputTokens: 8_000,
-				subagentRootTokenBudget: 200_000,
-				subagentRootCostBudget: 25,
+				subagentMaxDepth: 1,
+				subagentRoleTimeoutsMs: { worker: 10_000 },
+				subagentMaxInputTokens: 1,
+				subagentMaxOutputTokens: 1,
+				subagentRootTokenBudget: 1,
+				subagentRootCostBudget: 0.01,
 			}),
-		).toEqual({
-			maxConcurrentSubagents: 6,
-			delegationPolicy: "proactive",
-			maxDepth: 4,
-			roleTimeoutsMs: {
-				explore: DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS.explore,
-				review: DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS.review,
-				worker: 1_200_000,
-			},
-			maxInputTokens: 32_000,
-			maxOutputTokens: 8_000,
-			rootTokenBudget: 200_000,
-			rootCostBudget: 25,
-		})
+		).toEqual({ ...resolveSubagentOrchestrationSettings(), maxConcurrentSubagents: 64 })
 	})
 
 	it.each([
 		["maxConcurrentSubagents", 0],
-		["maxConcurrentSubagents", 17],
+		["maxConcurrentSubagents", Number.MAX_SAFE_INTEGER + 1],
 		["subagentDelegationPolicy", "automatic"],
 		["subagentMaxDepth", 0],
 		["subagentMaxDepth", 6],
@@ -309,7 +292,7 @@ describe("sub-agent orchestration contracts", () => {
 				...orchestration,
 				ancestry: { ...orchestration.ancestry, depth: 4 },
 			}).success,
-		).toBe(false)
+		).toBe(true)
 
 		const settings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: 3,
@@ -322,13 +305,10 @@ describe("sub-agent orchestration contracts", () => {
 		expect(createSubagentEffectiveLimits(settings, "review", 9)).toEqual({
 			maxConcurrentTasks: 9,
 			maxConcurrentSubagents: 3,
-			maxInputTokens: 20_000,
-			maxOutputTokens: 5_000,
-			roleTimeoutsMs: {
-				...DEFAULT_SUBAGENT_ROLE_TIMEOUTS_MS,
-				review: 240_000,
-			},
-			timeoutMs: 240_000,
+			maxInputTokens: null,
+			maxOutputTokens: null,
+			roleTimeoutsMs: null,
+			timeoutMs: null,
 			rootTokenBudget: null,
 			rootCostBudget: null,
 		})

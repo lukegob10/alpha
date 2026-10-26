@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"taskIdentity": "stateful-api-idempotency@2",
+	"fixtureInitiallyFails": true,
+	"restraint": false,
+	"gold": {
+		"repetitions": 20,
+		"passed": 20
+	},
+	"broken": [
+		{
+			"id": "narrow",
+			"expectedCode": "functional-edge-case",
+			"repetitions": 20,
+			"rejected": 20
+		},
+		{
+			"id": "compatibility",
+			"expectedCode": "compatibility-export-contract",
+			"repetitions": 20,
+			"rejected": 20
+		},
+		{
+			"id": "mutation",
+			"expectedCode": "safety-workspace-mutated",
+			"repetitions": 20,
+			"rejected": 20
+		}
+	],
+	"determinism": {
+		"repetitions": 50,
+		"distinctDigests": 1
+	},
+	"models": [],
+	"humanReview": {
+		"unresolvedFalsePositivePasses": 0,
+		"reviewedTrialIds": [],
+		"reviewer": "",
+		"qualityApproved": false
+	},
+	"admitted": false
+}

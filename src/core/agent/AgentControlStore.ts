@@ -1255,6 +1255,8 @@ export interface ParentCommandVerificationEvidence {
 export interface RecordPrimaryMutationInput {
 	rootTaskId: string
 	parentTaskId: string
+	/** Managed descendant that made the shared-workspace change, attributed with the parent's receipt. */
+	contributorTaskId?: string
 	workspacePath: string
 	fileVersions: Record<string, string>
 	/** Settle this admitted mutation together with the final content receipt. */
@@ -1956,13 +1958,15 @@ export class AgentControlStore {
 			record.groupId = input.groupId
 		}
 
+		const newAdmission = status === "pending" && record.status !== "pending"
 		record.status = status
 		this.claimRecordOwnership(record)
 		record.updatedAt = timestamp
 		if (input.pendingFollowupEventId === null) delete record.pendingFollowupEventId
 		else if (input.pendingFollowupEventId !== undefined)
 			record.pendingFollowupEventId = input.pendingFollowupEventId
-		if (input.snapshot) record.snapshot = clone(input.snapshot)
+		if (input.snapshot) this.replaceAgentSnapshot(record, input.snapshot, newAdmission)
+		else if (newAdmission && record.snapshot?.metadata) delete record.snapshot.metadata.sharedWorkspaceChangedFiles
 		if (ACTIVE_STATUSES.has(status) && record.snapshot) {
 			delete record.snapshot.stopReason
 			if (Object.keys(record.snapshot).length === 0) delete record.snapshot
@@ -2009,10 +2013,20 @@ export class AgentControlStore {
 			const record = this.requireMutableRecord(draft, target, rootTaskId)
 			this.assertRecordOwned(draft, record, "update its runtime snapshot")
 			this.claimRecordOwnership(record)
-			record.snapshot = clone(snapshot)
+			this.replaceAgentSnapshot(record, snapshot)
 			record.updatedAt = this.now()
 			return clone(record)
 		})
+	}
+
+	private replaceAgentSnapshot(record: AgentRecord, snapshot: AgentRuntimeSnapshot, newAdmission = false): void {
+		const changedFiles = record.snapshot?.metadata?.sharedWorkspaceChangedFiles
+		record.snapshot = clone(snapshot)
+		if (newAdmission) {
+			if (record.snapshot.metadata) delete record.snapshot.metadata.sharedWorkspaceChangedFiles
+		} else if (changedFiles !== undefined) {
+			record.snapshot.metadata = { ...record.snapshot.metadata, sharedWorkspaceChangedFiles: clone(changedFiles) }
+		}
 	}
 
 	resolveTarget(target: string, options: ResolveAgentTargetOptions = {}): ResolvedAgentTarget | undefined {
@@ -2303,6 +2317,34 @@ export class AgentControlStore {
 			if (input.reservationToken !== undefined) {
 				if (!this.settlePrimaryMutationReservation(draft, input.parentTaskId, input.reservationToken)) {
 					throw new Error("Primary mutation receipt failed to settle its active reservation")
+				}
+			}
+			if (input.contributorTaskId !== undefined && !input.scopeUnresolved) {
+				const contributor = this.requireMutableRecord(draft, input.contributorTaskId, input.rootTaskId)
+				const owner = this.requireMutableRecord(draft, input.parentTaskId, input.rootTaskId)
+				if (!contributor.path.startsWith(`${owner.path}/`)) {
+					throw new Error("Shared-workspace mutation contributor must be a descendant of its receipt owner")
+				}
+				let current: AgentRecord | undefined = contributor
+				while (current && current.taskId !== owner.taskId) {
+					this.assertRecordOwned(draft, current, "attribute its workspace mutation")
+					const previous = current.snapshot?.metadata?.sharedWorkspaceChangedFiles
+					const changedFiles = [
+						...new Set([
+							...(Array.isArray(previous)
+								? previous.filter((file): file is string => typeof file === "string")
+								: []),
+							...Object.keys(input.fileVersions),
+						]),
+					]
+						.sort()
+						.slice(0, 256)
+					current.snapshot = {
+						...current.snapshot,
+						metadata: { ...current.snapshot?.metadata, sharedWorkspaceChangedFiles: changedFiles },
+					}
+					const parentTaskId: string | undefined = current.parentTaskId
+					current = draft.agents.find((agent) => agent.taskId === parentTaskId)
 				}
 			}
 			return clone(obligation)

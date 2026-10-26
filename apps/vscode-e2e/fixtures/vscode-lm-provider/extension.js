@@ -7,10 +7,21 @@ const MODEL = Object.freeze({
 	version: "1.0.0",
 	maxInputTokens: 128_000,
 	maxOutputTokens: 8_192,
-	capabilities: { imageInput: false, toolCalling: true },
+	capabilities: { imageInput: true, toolCalling: true },
 })
+const NEXT_MODEL = Object.freeze({ ...MODEL, id: "alpha-e2e-next-model", maxInputTokens: 64_000 })
+// This provider exists only in the vscode-lm-fixture lane. Its ID cannot be mistaken for live Copilot evidence.
+const CLAUDE_MODEL = Object.freeze({
+	...MODEL,
+	id: "alpha-e2e-fixture-claude-sonnet-4.6",
+	name: "Alpha deterministic Claude fixture",
+	family: "claude-sonnet-4.6",
+})
+const MARKER_BYTES = [0, 255, 1, 128, 65]
+const KNOWN_USAGE = { prompt_tokens: 321, completion_tokens: 45 }
 
 const READ_COMMAND = "rg --no-config -n ALPHA_E2E_EARLY_READ_PROOF alpha-e2e-stream-read-proof.txt"
+const CLAUDE_READ_COMMAND = "rg --no-config -n ALPHA_E2E_CLAUDE_READ_PROOF alpha-e2e-claude-read-proof.txt"
 const CANCELLATION_PROOF = "ALPHA_E2E_CANCELLATION_STREAM_STARTED"
 
 let scenario = "tool-followup"
@@ -44,6 +55,8 @@ const summarizePart = (part) => {
 		return { kind: "tool_result", callId: part.callId, content: part.content.map(summarizePart) }
 	}
 	if (part instanceof vscode.LanguageModelTextPart) return { kind: "text", value: part.value }
+	if (part instanceof vscode.LanguageModelDataPart)
+		return { kind: "data", mimeType: part.mimeType, bytes: Array.from(part.data) }
 	return { kind: "unknown", value: String(part) }
 }
 
@@ -142,7 +155,7 @@ const isReasoningSummaryRequest = (messages, options) => {
 
 const provider = {
 	provideLanguageModelChatInformation() {
-		return [MODEL]
+		return [MODEL, NEXT_MODEL]
 	},
 
 	async provideLanguageModelChatResponse(_model, messages, options, progress, token) {
@@ -161,7 +174,9 @@ const provider = {
 			scenario,
 			cancelled: token.isCancellationRequested,
 			modelId: _model.id,
-			configuration: options.configuration,
+			configuration: options.modelConfiguration ?? options.configuration,
+			modelOptions: options.modelOptions,
+			includeEncryptedThinking: options.includeEncryptedThinking,
 			messages: messages.map((message) => ({
 				role: message.role,
 				parts: message.content.map(summarizePart),
@@ -191,10 +206,15 @@ const provider = {
 				throw new Error("Response contained no choices.")
 			}
 			if (!(await waitForRelease(requestIndex, token))) return
+			if (scenario === "retry-settings" && requestIndex === 0)
+				throw new Error("Deterministic VS Code LM retry settings failure")
 
 			if (
 				(scenario === "tool-followup" ||
 					scenario === "tool-followup-tail" ||
+					scenario === "tool-followup-tail-error" ||
+					scenario === "metadata-tool-followup" ||
+					scenario === "claude-tool-followup" ||
 					scenario === "thinking-tool-followup") &&
 				requestIndex === 0
 			) {
@@ -215,17 +235,68 @@ const provider = {
 						}),
 					)
 				}
+				if (scenario === "claude-tool-followup") {
+					if (typeof vscode.LanguageModelThinkingPart !== "function") {
+						throw new Error("The Claude fixture requires a host with LanguageModelThinkingPart")
+					}
+					// Native Copilot bridge at microsoft/vscode 4f383697, retrieved 2026-10-25:
+					// extension/conversation/vscode-node/languageModelAccess.ts gates encrypted state.
+					progress.report(
+						new vscode.LanguageModelThinkingPart("Inspect the Claude fixture", "claude-thinking-1", {
+							vscode_thinking_origin_api: "messages",
+						}),
+					)
+					if (options.includeEncryptedThinking === true) {
+						progress.report(
+							new vscode.LanguageModelThinkingPart("", "claude-thinking-1", {
+								encrypted_content: "synthetic-claude-encrypted-state",
+								vscode_thinking_origin_api: "messages",
+							}),
+						)
+					}
+					progress.report(
+						new vscode.LanguageModelThinkingPart("", "", {
+							vscode_reasoning_done: true,
+							vscode_thinking_origin_api: "messages",
+						}),
+					)
+				}
 				progress.report(
-					new vscode.LanguageModelToolCallPart("alpha-e2e-command-read-1", "exec_command", {
-						cmd: READ_COMMAND,
-					}),
+					new vscode.LanguageModelToolCallPart(
+						scenario === "claude-tool-followup" ? "alpha-e2e-claude-read-1" : "alpha-e2e-command-read-1",
+						"exec_command",
+						{
+							cmd: scenario === "claude-tool-followup" ? CLAUDE_READ_COMMAND : READ_COMMAND,
+							// The full 400-line archive proves physical completion. Keep the provider
+							// receipt below the lifecycle journal's bounded value size for exact correlation.
+							...(scenario === "tool-followup-tail" || scenario === "tool-followup-tail-error"
+								? { max_output_tokens: 256 }
+								: {}),
+						},
+					),
 				)
-				if (scenario === "tool-followup-tail" && heldToolCallTailIndexes.has(requestIndex)) {
+				if (scenario === "metadata-tool-followup") {
+					// Verified 2026-10-23 against vscode.d.ts and extHostLanguageModels.ts at
+					// microsoft/vscode tags 1.125.0 and 1.138.0: generic data parts cross the LM wire.
+					progress.report(new vscode.LanguageModelDataPart(new Uint8Array(MARKER_BYTES), "stateful_marker"))
+					progress.report(
+						new vscode.LanguageModelDataPart(
+							new TextEncoder().encode(JSON.stringify(KNOWN_USAGE)),
+							"usage",
+						),
+					)
+				}
+				if (
+					(scenario === "tool-followup-tail" || scenario === "tool-followup-tail-error") &&
+					heldToolCallTailIndexes.has(requestIndex)
+				) {
 					recordEvent("provider-tool-call-reported", requestIndex, token)
 					const released = await waitForToolCallTailRelease(requestIndex, token)
 					recordEvent(released ? "provider-tail-released" : "provider-tail-cancelled", requestIndex, token)
 					if (!released) return
 				}
+				if (scenario === "tool-followup-tail-error")
+					throw new Error("Deterministic VS Code LM failure after the accepted read")
 				return
 			}
 
@@ -286,6 +357,14 @@ const control = {
 }
 
 function activate(context) {
+	context.subscriptions.push(
+		vscode.lm.registerLanguageModelChatProvider("copilot", {
+			...provider,
+			provideLanguageModelChatInformation() {
+				return [CLAUDE_MODEL]
+			},
+		}),
+	)
 	context.subscriptions.push(vscode.lm.registerLanguageModelChatProvider("alpha-e2e", provider))
 	return control
 }

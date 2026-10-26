@@ -7,6 +7,7 @@ import { z } from "zod"
 import { assertKeylessCalibrationComplete } from "./calibration"
 import { benchmarkSuiteManifestSchema, calibrationReportSchema, type BenchmarkTaskManifest } from "./contracts"
 import { digestBenchmarkDirectory } from "./loader"
+import { resolveCalibrationReportPath } from "./calibrationStore"
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/)
 const taskId = z.string().regex(/^[a-z0-9][a-z0-9._/-]*$/)
@@ -85,7 +86,7 @@ export async function loadProblemSolvingSet(root: string): Promise<ProblemSolvin
 }
 
 export async function validateProblemSolvingSet(manifest: ProblemSolvingManifest, root: string): Promise<void> {
-	const frontierTasks = await loadFrontierTasks(root)
+	const frontier = await loadFrontierTasks(root)
 	const releases = new Map<string, string>()
 	for (const source of manifest.sources) {
 		if (releases.has(source.id)) throw new Error(`Duplicate problem-solving source: ${source.id}`)
@@ -94,6 +95,8 @@ export async function validateProblemSolvingSet(manifest: ProblemSolvingManifest
 	for (const sourceId of problemSolvingSources) {
 		if (!releases.has(sourceId)) throw new Error(`Problem-solving set is missing source ${sourceId}`)
 	}
+	if (releases.get("alpha-task-bank") !== frontier.release)
+		throw new Error(`Alpha task bank source release must match the loaded suite ${frontier.release}`)
 	const terminalBench = manifest.sources.find(({ id }) => id === "terminal-bench")
 	if (terminalBench?.release !== "v4.0.0" || terminalBench.repository !== "harbor-framework/terminal-bench") {
 		throw new Error("Terminal-Bench tasks must be pinned to harbor-framework/terminal-bench v4.0.0")
@@ -111,7 +114,7 @@ export async function validateProblemSolvingSet(manifest: ProblemSolvingManifest
 			for (const tag of task.tags) coreTags.add(tag)
 			assertCoreTask(task)
 		}
-		if (task.source === "alpha-task-bank") assertAlphaBankTask(task, frontierTasks)
+		if (task.source === "alpha-task-bank") await assertAlphaBankTask(task, frontier.tasks, root)
 		if (task.source === "alpha-native") await assertNativeTask(task, root)
 		if (task.source === "terminal-bench" && task.fixture)
 			throw new Error(`Terminal-Bench task ${task.id} is pinned externally and cannot embed a local fixture`)
@@ -135,10 +138,11 @@ function assertCoreTask(task: ProblemSolvingTask): void {
 	if (task.resources.network === "required") throw new Error(`Core task ${task.id} requires network access`)
 }
 
-function assertAlphaBankTask(
+async function assertAlphaBankTask(
 	task: ProblemSolvingTask,
 	frontierTasks: ReadonlyMap<string, BenchmarkTaskManifest>,
-): void {
+	root: string,
+): Promise<void> {
 	const entry = frontierTasks.get(`${task.id}@${task.version}`)
 	if (!entry) throw new Error(`Alpha task bank is missing ${task.id}@${task.version}`)
 	if (entry.fixtureDigest !== task.digest) {
@@ -153,14 +157,19 @@ function assertAlphaBankTask(
 	if (task.lane !== "holdout" && entry.partition === "holdout") {
 		throw new Error(`Frontier holdout ${task.id} cannot leave the holdout lane`)
 	}
+	if (task.fixture !== undefined && path.resolve(root, task.fixture) !== path.resolve(root, entry.fixture))
+		throw new Error(`Alpha task ${task.id} fixture path does not match the frontier fixture`)
+	if (entry.partition !== "holdout") await assertProblemSolvingFixture(task, entry.fixture, root, "Alpha task bank")
 }
 
 export async function assertVisibleBankCalibration(root: string, manifest: ProblemSolvingManifest): Promise<void> {
 	for (const task of manifest.tasks) {
 		if (task.source !== "alpha-task-bank" || task.lane === "holdout") continue
-		const report = calibrationReportSchema.parse(
-			JSON.parse(await fs.readFile(path.join(root, "calibration", `${task.id}.keyless.json`), "utf8")),
+		const reportPath = await resolveCalibrationReportPath(
+			path.join(root, "calibration"),
+			`${task.id}@${task.version}`,
 		)
+		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportPath, "utf8")))
 		if (report.taskIdentity !== `${task.id}@${task.version}`) {
 			throw new Error(`Keyless calibration identity mismatch for ${task.id}`)
 		}
@@ -168,21 +177,53 @@ export async function assertVisibleBankCalibration(root: string, manifest: Probl
 	}
 }
 
-async function loadFrontierTasks(root: string): Promise<Map<string, BenchmarkTaskManifest>> {
+async function loadFrontierTasks(root: string): Promise<{
+	release: string
+	tasks: Map<string, BenchmarkTaskManifest>
+}> {
 	const suite = benchmarkSuiteManifestSchema.parse(
 		parse(await fs.readFile(path.join(root, "frontier-v1.yaml"), "utf8"), { merge: true }),
 	)
 	if (suite.id !== "frontier-v1") throw new Error("Expected the frontier-v1 task bank")
-	return new Map(suite.tasks.map((task) => [`${task.id}@${task.version}`, task]))
+	return {
+		release: `${suite.id}@${suite.version}`,
+		tasks: new Map(suite.tasks.map((task) => [`${task.id}@${task.version}`, task])),
+	}
 }
 
 async function assertNativeTask(task: ProblemSolvingTask, root: string): Promise<void> {
 	if (!task.fixture) throw new Error(`Alpha-native task ${task.id} requires a fixture path`)
-	const fixture = path.resolve(root, task.fixture)
+	await assertProblemSolvingFixture(task, task.fixture, root, "Alpha-native")
+}
+
+export async function assertProblemSolvingFixture(
+	task: ProblemSolvingTask,
+	relative: string,
+	root: string,
+	source: string,
+): Promise<void> {
+	const fixture = path.resolve(root, relative)
 	const rootPath = path.resolve(root)
 	if (fixture !== rootPath && !fixture.startsWith(`${rootPath}${path.sep}`)) {
-		throw new Error(`Alpha-native fixture escapes the eval root: ${task.fixture}`)
+		throw new Error(`${source} fixture escapes the eval root: ${relative}`)
 	}
+	const [realRoot, realFixture] = await Promise.all([fs.realpath(rootPath), fs.realpath(fixture)])
+	if (realFixture !== realRoot && !realFixture.startsWith(`${realRoot}${path.sep}`))
+		throw new Error(`${source} fixture escapes the eval root: ${relative}`)
+	// The canonical digest follows file links; reject them before reading fixture bytes or copying execution inputs.
+	async function assertUnlinked(directory: string): Promise<void> {
+		const metadata = await fs.lstat(directory)
+		if (metadata.isSymbolicLink()) throw new Error(`${source} fixture cannot contain symbolic links`)
+		if (!metadata.isDirectory()) {
+			if (!metadata.isFile()) throw new Error(`${source} fixture contains a non-file input`)
+			return
+		}
+		for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+			if (entry.isDirectory() && [".git", "node_modules"].includes(entry.name)) continue
+			await assertUnlinked(path.join(directory, entry.name))
+		}
+	}
+	await assertUnlinked(fixture)
 	const actual = await digestBenchmarkDirectory(fixture)
-	if (actual !== task.digest) throw new Error(`Alpha-native task ${task.id} fixture digest mismatch`)
+	if (actual !== task.digest) throw new Error(`${source} task ${task.id} fixture digest mismatch`)
 }

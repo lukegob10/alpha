@@ -8,8 +8,9 @@ import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
 import { getApiStreamErrorMessage } from "../../api/transform/stream"
 import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
+import { isOpaqueProviderContentBlock } from "../task-persistence/providerStateScope"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
-import { findLast } from "../../shared/array"
+import { findLast, findLastIndex } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
@@ -99,27 +100,31 @@ export function convertToolBlocksToText(
 		return content
 	}
 
-	return content.map((block) => {
-		if (block.type === "tool_use") {
-			return {
-				type: "text" as const,
-				text: toolUseToText(block),
+	// Summarization rewrites tool transactions and instructions, so signed state
+	// cannot be continued here. Exact recent-tail history remains untouched.
+	return content
+		.filter((block) => !isOpaqueProviderContentBlock(block))
+		.map((block) => {
+			if (block.type === "tool_use") {
+				return {
+					type: "text" as const,
+					text: toolUseToText(block),
+				}
 			}
-		}
-		if ((block as unknown as { type?: unknown }).type === "tool_call") {
-			return {
-				type: "text" as const,
-				text: toolCallToText(block as unknown as Record<string, unknown>),
+			if ((block as unknown as { type?: unknown }).type === "tool_call") {
+				return {
+					type: "text" as const,
+					text: toolCallToText(block as unknown as Record<string, unknown>),
+				}
 			}
-		}
-		if (block.type === "tool_result") {
-			return {
-				type: "text" as const,
-				text: toolResultToText(block),
+			if (block.type === "tool_result") {
+				return {
+					type: "text" as const,
+					text: toolResultToText(block),
+				}
 			}
-		}
-		return block
-	})
+			return block
+		})
 }
 
 /**
@@ -132,10 +137,18 @@ export function convertToolBlocksToText(
 export function transformMessagesForCondensing<
 	T extends { role: string; content: string | Anthropic.Messages.ContentBlockParam[] },
 >(messages: T[]): T[] {
-	return messages.map((msg) => ({
-		...msg,
-		content: convertToolBlocksToText(msg.content),
-	}))
+	return (
+		messages
+			// Legacy standalone reasoning records have opaque state but no role/content.
+			// They remain in stored history; rewritten summary input cannot continue them.
+			.filter((msg) => !("type" in msg && msg.type === "reasoning"))
+			.map((msg) => ({
+				...msg,
+				content: convertToolBlocksToText(msg.content),
+			}))
+			// Stripping signed state can leave a reasoning-only assistant record empty.
+			.filter((msg) => msg.content.length > 0)
+	)
 }
 
 /**
@@ -294,9 +307,20 @@ function waitForOperation<T>(pending: Promise<T>, signal?: AbortSignal): Promise
 const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"content",
 	"ts",
+	// These host receipts are stripped from provider requests. Canonical response
+	// evidence contains the same output already counted through content.
+	"input_origin",
+	"queued_message_ids",
+	"agent_message_id",
+	"hook_prompt",
+	"goal_usage_receipts",
+	"agentResponseItems",
+	"agentResponseOutcome",
+	"provider_state_scope",
 	"isSummary",
 	"condenseId",
 	"condenseParent",
+	"condenseCopyParent",
 	"isTruncationMarker",
 	"truncationId",
 	"truncationParent",
@@ -466,6 +490,7 @@ function createVerbatimUserMessage(
 	}
 	delete message.condenseId
 	delete message.condenseParent
+	delete message.condenseCopyParent
 	delete message.isSummary
 	delete message.isTruncationMarker
 	delete message.truncationId
@@ -599,18 +624,18 @@ export async function countContextTokens(
  * truncation, where a call and result may have been hidden as a pair.
  */
 export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
-	const callIds = new Set<string>()
-	for (const pair of getToolCallResultPairs(messages).values()) {
-		if (pair.callMessageIndexes.length > 0) callIds.add(pair.id)
-	}
-
+	const pendingCallIds = new Set<string>()
 	let changed = false
 	const filtered = messages
 		.map((message) => {
 			if (!Array.isArray(message.content)) return message
 			const filteredContent = message.content.filter((block) => {
+				const callId = getToolCallId(block)
+				if (callId !== undefined) pendingCallIds.add(callId)
 				const resultId = getToolResultId(block)
-				return !resultId || callIds.has(resultId)
+				// A later reused ID cannot acknowledge an earlier orphan result,
+				// and each call occurrence owns only one terminal receipt.
+				return resultId === undefined || pendingCallIds.delete(resultId)
 			})
 			if (filteredContent.length === message.content.length) return message
 			changed = true
@@ -678,18 +703,6 @@ export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[]
 
 	return [...messages, syntheticMessage]
 }
-
-/**
- * Produces an API-safe history by completing orphan calls and removing orphan
- * results.  The operation is non-destructive and preserves the original array
- * when no repair is required.
- */
-export function ensureToolCallResultIntegrity(messages: ApiMessage[]): ApiMessage[] {
-	return filterOrphanToolResults(injectSyntheticToolResults(messages))
-}
-
-/** Alias used by context policies that describe repair as preservation. */
-export const preserveToolCallResultPairs = ensureToolCallResultIntegrity
 
 /**
  * Extracts <command> blocks from a message's content.
@@ -839,10 +852,6 @@ export function getToolFreeMetadata(
 	delete isolated.instructionFragments
 	return isolated
 }
-
-/** Alias for consumers that prefer an imperative name. */
-export const createToolFreeMetadata = getToolFreeMetadata
-export const getToolFreeRequestMetadata = getToolFreeMetadata
 
 /**
  * Summarizes the conversation messages using an LLM call.
@@ -1304,6 +1313,7 @@ ${commandBlocks}
 
 	// Generate a unique condenseId for this summary
 	const condenseId = crypto.randomUUID()
+	const carriedUserMessages = verbatimUserMessages.map((message) => ({ ...message, condenseCopyParent: condenseId }))
 
 	// Creation time stays newer than every original record even though the summary
 	// is inserted before the tail. Timestamp-based rewind then restores the prefix.
@@ -1318,7 +1328,7 @@ ${commandBlocks}
 	}
 
 	const newContextTokens = await countContextTokens(
-		[summaryMessage, ...verbatimUserMessages, ...retainedMessages],
+		[summaryMessage, ...carriedUserMessages, ...retainedMessages],
 		apiHandler,
 		systemPrompt,
 		metadata,
@@ -1350,7 +1360,7 @@ ${commandBlocks}
 	const newMessages = messages.map((msg) =>
 		prefix.has(msg) && !msg.condenseParent ? { ...msg, condenseParent: condenseId } : msg,
 	)
-	newMessages.splice(insertIndex, 0, summaryMessage, ...verbatimUserMessages)
+	newMessages.splice(insertIndex, 0, summaryMessage, ...carriedUserMessages)
 	return finish(
 		{
 			messages: newMessages,
@@ -1377,14 +1387,8 @@ ${commandBlocks}
  * so the first message since the last summary is guaranteed to be a user message.
  */
 export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[] {
-	const lastSummaryIndexReverse = [...messages].reverse().findIndex((message) => message.isSummary)
-
-	if (lastSummaryIndexReverse === -1) {
-		return messages
-	}
-
-	const lastSummaryIndex = messages.length - lastSummaryIndexReverse - 1
-	return messages.slice(lastSummaryIndex)
+	const lastSummaryIndex = findLastIndex(messages, (message) => !!message.isSummary)
+	return lastSummaryIndex === -1 ? messages : messages.slice(lastSummaryIndex)
 }
 
 /**
@@ -1404,70 +1408,33 @@ export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[
  * @returns The filtered history that should be sent to the API
  */
 export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
-	// Find the most recent summary message
 	const lastSummary = findLast(messages, (msg) => msg.isSummary === true)
-
-	if (lastSummary) {
-		// Fresh start model: return only messages from the summary onwards
-		const summaryIndex = messages.indexOf(lastSummary)
-		let messagesFromSummary = messages.slice(summaryIndex)
-
-		// Filter orphan results against the active fresh-start history.  This is
-		// intentionally done before truncation filtering and again afterward: a
-		// truncation marker can hide the only matching call.
-		messagesFromSummary = filterOrphanToolResults(messagesFromSummary)
-
-		// Still need to filter out any truncated messages within this range
-		const existingTruncationIds = new Set<string>()
-		for (const msg of messagesFromSummary) {
-			if (msg.isTruncationMarker && msg.truncationId) {
-				existingTruncationIds.add(msg.truncationId)
-			}
-		}
-
-		return filterOrphanToolResults(
-			messagesFromSummary.filter((msg) => {
-				// Filter out truncated messages if their truncation marker exists
-				if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-					return false
-				}
-				return true
-			}),
-		)
-	}
-
-	// No summary - filter based on condenseParent and truncationParent as before
-	// This handles the case of orphaned condenseParent tags (summary was deleted via rewind)
-
-	// Collect all condenseIds of summaries that exist in the current history
 	const existingSummaryIds = new Set<string>()
-	// Collect all truncationIds of truncation markers that exist in the current history
-	const existingTruncationIds = new Set<string>()
-
 	for (const msg of messages) {
-		if (msg.isSummary && msg.condenseId) {
-			existingSummaryIds.add(msg.condenseId)
-		}
+		if (msg.isSummary && msg.condenseId) existingSummaryIds.add(msg.condenseId)
+	}
+	// Filter orphan results against the fresh-start history before truncation and
+	// again afterward: a truncation marker can hide the only matching call.
+	const activeMessages = lastSummary
+		? filterOrphanToolResults(messages.slice(messages.indexOf(lastSummary)))
+		: messages
+
+	const existingTruncationIds = new Set<string>()
+	for (const msg of activeMessages) {
 		if (msg.isTruncationMarker && msg.truncationId) {
 			existingTruncationIds.add(msg.truncationId)
 		}
 	}
 
-	// Filter out messages whose condenseParent points to an existing summary
-	// or whose truncationParent points to an existing truncation marker.
-	// Messages with orphaned parents (summary/marker was deleted) are included.
+	// Deleted markers restore originals; carried user copies belong to the summary
+	// that produced them and must disappear with it, including before cleanup runs.
 	return filterOrphanToolResults(
-		messages.filter((msg) => {
-			// Filter out condensed messages if their summary exists
-			if (msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) {
-				return false
-			}
-			// Filter out truncated messages if their truncation marker exists
-			if (msg.truncationParent && existingTruncationIds.has(msg.truncationParent)) {
-				return false
-			}
-			return true
-		}),
+		activeMessages.filter(
+			(msg) =>
+				!(msg.condenseCopyParent && !existingSummaryIds.has(msg.condenseCopyParent)) &&
+				!(!lastSummary && msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) &&
+				!(msg.truncationParent && existingTruncationIds.has(msg.truncationParent)),
+		),
 	)
 }
 
@@ -1497,37 +1464,40 @@ export function cleanupAfterTruncation(messages: ApiMessage[]): ApiMessage[] {
 		}
 	}
 
-	// Clear orphaned parent references for messages whose summary or truncation marker was deleted
-	return messages.map((msg) => {
-		let needsUpdate = false
+	// Copies are derived records, so rewind removes them instead of reactivating
+	// them alongside their originals. Legacy records without ownership stay intact.
+	return messages
+		.filter((msg) => !msg.condenseCopyParent || existingSummaryIds.has(msg.condenseCopyParent))
+		.map((msg) => {
+			let needsUpdate = false
 
-		// Check for orphaned condenseParent
-		if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
-			needsUpdate = true
-		}
-
-		// Check for orphaned truncationParent
-		if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
-			needsUpdate = true
-		}
-
-		if (needsUpdate) {
-			// Create a new object without orphaned parent references
-			const { condenseParent, truncationParent, ...rest } = msg
-			const result: ApiMessage = rest as ApiMessage
-
-			// Keep condenseParent if its summary still exists
-			if (condenseParent && existingSummaryIds.has(condenseParent)) {
-				result.condenseParent = condenseParent
+			// Check for orphaned condenseParent
+			if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
+				needsUpdate = true
 			}
 
-			// Keep truncationParent if its truncation marker still exists
-			if (truncationParent && existingTruncationIds.has(truncationParent)) {
-				result.truncationParent = truncationParent
+			// Check for orphaned truncationParent
+			if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
+				needsUpdate = true
 			}
 
-			return result
-		}
-		return msg
-	})
+			if (needsUpdate) {
+				// Create a new object without orphaned parent references
+				const { condenseParent, truncationParent, ...rest } = msg
+				const result: ApiMessage = rest as ApiMessage
+
+				// Keep condenseParent if its summary still exists
+				if (condenseParent && existingSummaryIds.has(condenseParent)) {
+					result.condenseParent = condenseParent
+				}
+
+				// Keep truncationParent if its truncation marker still exists
+				if (truncationParent && existingTruncationIds.has(truncationParent)) {
+					result.truncationParent = truncationParent
+				}
+
+				return result
+			}
+			return msg
+		})
 }

@@ -139,6 +139,48 @@ const exactIdentity = (): import("@alpha-code/types").ExecutionIdentity => ({
 	identityScope: "observed-entrypoint-and-manifest",
 })
 
+it("rejects an already aborted controller before launching or dispatching and disposes its listener", async () => {
+	const controller = new AbortController()
+	controller.abort(new Error("controller lease lost"))
+	const removed = vi.spyOn(controller.signal, "removeEventListener")
+	await expect(runTaskInVscode({ ...input(), signal: controller.signal })).rejects.toThrow("controller lease lost")
+	expect(mocks.spawn).not.toHaveBeenCalled()
+	expect(mocks.send).not.toHaveBeenCalled()
+	expect(removed).toHaveBeenCalledWith("abort", expect.any(Function))
+})
+
+it("propagates controller loss to the existing owned process cancellation before startup dispatch", async () => {
+	const controller = new AbortController()
+	const removed = vi.spyOn(controller.signal, "removeEventListener")
+	const pending = runTaskInVscode({ ...input(), signal: controller.signal })
+	const rejection = expect(pending).rejects.toThrow("controller lease lost")
+	expect(mocks.spawn).toHaveBeenCalledOnce()
+	controller.abort(new Error("controller lease lost"))
+	expect(mocks.spawn.mock.calls[0]![2].cancelSignal.aborted).toBe(true)
+	await vi.advanceTimersByTimeAsync(3000)
+	await rejection
+	expect(mocks.send).not.toHaveBeenCalled()
+	expect(mocks.reap).toHaveBeenCalledOnce()
+	expect(removed).toHaveBeenCalledWith("abort", expect.any(Function))
+})
+
+it("rejects controller loss during an active task without persisting a successful finish", async () => {
+	const controller = new AbortController()
+	mocks.wait.mockResolvedValueOnce(undefined).mockImplementationOnce(async (predicate) => {
+		const listener = mocks.listeners.get(IpcMessageType.TaskEvent) as unknown as (event: TaskEvent) => Promise<void>
+		await listener({ eventName: AlphaCodeEventName.TaskCreated, payload: ["root"] })
+		await listener({ eventName: AlphaCodeEventName.TaskStarted, payload: ["root"] })
+		controller.abort(new Error("controller lease lost"))
+		expect(predicate()).toBe(true)
+	})
+	const pending = runTaskInVscode({ ...input(), signal: controller.signal })
+	const rejection = expect(pending).rejects.toThrow("controller lease lost")
+	await vi.advanceTimersByTimeAsync(3000)
+	await rejection
+	expect(mocks.updateTask.mock.calls.some(([, value]) => "finishedAt" in value)).toBe(false)
+	expect(mocks.reap).toHaveBeenCalledOnce()
+})
+
 const emitUsage = (
 	taskId: string,
 	cost: number,

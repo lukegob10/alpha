@@ -2,7 +2,6 @@ import type OpenAI from "openai"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { getCommandChainOperator, getRulesSection } from "../../../sections/rules"
-import { getToolUseGuidelinesSection } from "../../../sections/tool-use-guidelines"
 import * as shellUtils from "../../../../../utils/shell"
 import { createExecCommandTool } from "../execute_command"
 import { getNativeTools } from ".."
@@ -68,8 +67,5 @@ describe("native file inspection surface", () => {
 			"workspace-scoped commands for file inspection",
 		)
 		expect(toolFunction(createExecCommandTool(true)).description).toContain("strict Plan mode")
-		expect(getToolUseGuidelinesSection()).toContain("exec_command calls with rg")
-		expect(getToolUseGuidelinesSection(undefined, true)).toContain("exec_command calls with rg")
-		expect(getToolUseGuidelinesSection()).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
 	})
 })

@@ -5,6 +5,11 @@ import { createHash } from "crypto"
 
 import { FileWatcher } from "../file-watcher"
 
+// Unit fixtures use virtual paths; real junction admission is covered by indexing-containment.spec.ts.
+vi.mock("../../shared/get-relative-path", () => ({
+	resolveIndexFilePath: vi.fn(async (filePath: string) => ({ absolutePath: filePath, relativePath: filePath })),
+}))
+
 const deferred = <T>() => {
 	let resolve!: (value: T) => void
 	const promise = new Promise<T>((resolvePromise) => {

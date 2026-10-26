@@ -4,6 +4,7 @@ import {
 	type ModelInfo,
 	type ProviderSettings,
 	ANTHROPIC_DEFAULT_MAX_TOKENS,
+	resolveModelReasoningEffort,
 } from "@alpha-code/types"
 
 /** Reject saved unsupported IDs before changing task lifecycle or provider state. */
@@ -23,6 +24,11 @@ export function assertSupportedApiProvider(provider: unknown): void {
 // of ProviderSettings, which is persisted as a provider profile.
 export type TaskReasoningRuntimeOptions = {
 	taskReasoningCustomEffort?: string
+}
+
+/** These transports retain historical tool schemas and restrict calls separately. */
+export function supportsFunctionCallingRestrictions(provider: ProviderSettings["apiProvider"]): boolean {
+	return provider === "vertex" || provider === "gemini"
 }
 
 export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> &
@@ -52,6 +58,11 @@ export const shouldUseReasoningEffort = ({
 	model: ModelInfo
 	settings?: ProviderSettings
 }): boolean => {
+	// Required thinking cannot be disabled by an imported profile or a direct
+	// adapter call that bypasses task-level preference resolution.
+	if (model.requiredReasoningEffort) {
+		return resolveModelReasoningEffort(model, settings?.reasoningEffort) !== undefined
+	}
 	// Explicit off switch
 	if (settings?.enableReasoningEffort === false) return false
 

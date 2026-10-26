@@ -18,6 +18,17 @@ function schema(name: string) {
 }
 
 describe("ToolRegistry", () => {
+	it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])(
+		"keeps the unknown tool name %s outside the alias namespace",
+		(name) => {
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+
+			expect(canonicalizeToolName(name)).toBe(name)
+			expect(registry.resolve(name)).toBeUndefined()
+			expect(createToolPolicySnapshot({ visibleTools: [name] }).visibleTools).toEqual([name])
+		},
+	)
+
 	it.each(["descriptor", "alias"])("keeps rejected registration atomic after a %s conflict", (conflict) => {
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		const fixture = (name: string, aliases: string[]) => ({

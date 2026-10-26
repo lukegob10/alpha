@@ -152,6 +152,50 @@ describe("bounded context recovery policy", () => {
 		expect(handler.createMessage).not.toHaveBeenCalled()
 	})
 
+	it.each([false, true])(
+		"recounts stale over-limit usage before truncating fitting input (forced=%s)",
+		async (forceCompaction) => {
+			const handler = createCountingHandler()
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Original requirement" },
+				{ role: "assistant", content: "Earlier work" },
+				{ role: "user", content: "Continue" },
+			]
+			const before = structuredClone(messages)
+			const measured = await condenseModule.countContextTokens(messages, handler, "System")
+			const beforeCompact = vi.fn(async () => {})
+			expect(measured).toBeLessThan(800)
+
+			const result = await manageContext({
+				messages,
+				totalTokens: 100_000,
+				contextWindow: 1000,
+				maxTokens: 100,
+				apiHandler: handler,
+				autoCondenseContext: false,
+				autoCondenseContextPercent: 50,
+				systemPrompt: "System",
+				taskId: "fitting-recount",
+				beforeCompact,
+				forceCompaction,
+			})
+
+			if (forceCompaction) {
+				expect(beforeCompact).toHaveBeenCalledOnce()
+				expect(result.status).not.toBe("unchanged")
+			} else {
+				expect(beforeCompact).not.toHaveBeenCalled()
+				expect(result.status).toBe("unchanged")
+				expect(result.newContextTokens).toBe(measured)
+				expect(result.prevContextTokens).toBe(measured)
+				expect(result.truncationId).toBeUndefined()
+			}
+			expect(result.messages).toBe(messages)
+			expect(messages).toEqual(before)
+			expect(handler.createMessage).not.toHaveBeenCalled()
+		},
+	)
+
 	it("keeps tool call/result pairs together when truncating", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Initial task", ts: 1 },
@@ -253,10 +297,10 @@ describe("bounded context recovery policy", () => {
 		}
 	})
 
-	it("returns exhausted when truncation cannot change an unchanged input", async () => {
+	it("returns exhausted when truncation cannot reduce an over-limit single message", async () => {
 		const handler = createCountingHandler()
 		const result = await manageContext({
-			messages: [{ role: "user", content: "Only message" }],
+			messages: [{ role: "user", content: "Only message".repeat(100) }],
 			totalTokens: 901,
 			contextWindow: 1000,
 			maxTokens: 100,

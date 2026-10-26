@@ -4,7 +4,7 @@ import * as path from "path"
 import * as os from "os"
 import { EventEmitter } from "events"
 
-import { listFiles } from "../list-files"
+import { isFileIgnoredByGitignore, listFiles } from "../list-files"
 import { getBinPath } from "../../ripgrep"
 
 vi.mock("child_process", () => ({ spawn: vi.fn() }))
@@ -168,7 +168,7 @@ describe("strict listing ignore-file boundary", () => {
 		expect(closed).toHaveBeenCalledOnce()
 	})
 
-	it.each(["cancellation", "deadline"] as const)(
+	it.each(["cancellation", "deadline", "file-policy cancellation"] as const)(
 		"joins an in-flight bounded read and close after %s",
 		async (kind) => {
 			await fs.promises.writeFile(path.join(workspaceRoot, ".gitignore"), "ignored/\n")
@@ -194,7 +194,10 @@ describe("strict listing ignore-file boundary", () => {
 				return handle
 			})
 			if (kind === "deadline") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-			const listing = listFiles(target, false, 200, controller.signal, options())
+			const listing =
+				kind === "file-policy cancellation"
+					? isFileIgnoredByGitignore(path.join(target, "file.ts"), workspaceRoot, controller.signal)
+					: listFiles(target, false, 200, controller.signal, options())
 			const settled = vi.fn()
 			void listing.then(settled, settled)
 			const rejected =
@@ -218,5 +221,51 @@ describe("strict listing ignore-file boundary", () => {
 	it("rejects a requested directory outside the captured root", async () => {
 		await expect(listFiles(fixtureRoot, false, 200, undefined, options())).rejects.toThrow("captured workspace")
 		expect(childProcess.spawn).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		{ name: "root anchoring", root: "/file.ts\n", nested: "", file: "file.ts", expected: false },
+		{ name: "nested anchoring", root: "", nested: "/file.ts\n", file: "file.ts", expected: true },
+		{ name: "nested anchor depth", root: "", nested: "/file.ts\n", file: "deeper/file.ts", expected: false },
+		{ name: "nested negation", root: "*.ts\n", nested: "!file.ts\n", file: "file.ts", expected: false },
+		{ name: "excluded parent", root: "listed/\n", nested: "!file.ts\n", file: "file.ts", expected: true },
+	])("checks $name with per-directory Git rules in a plain folder", async ({ root, nested, file, expected }) => {
+		await fs.promises.writeFile(path.join(workspaceRoot, ".gitignore"), root)
+		await fs.promises.writeFile(path.join(target, ".gitignore"), nested)
+		const filePath = path.join(target, file)
+		await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+		await fs.promises.writeFile(filePath, "source fixture")
+		const readdir = vi.spyOn(fs.promises, "readdir")
+
+		await expect(isFileIgnoredByGitignore(filePath, workspaceRoot)).resolves.toBe(expected)
+		expect(readdir).not.toHaveBeenCalled()
+		expect(childProcess.spawn).not.toHaveBeenCalled()
+	})
+
+	it("fails closed when a current per-file ignore rule cannot be read", async () => {
+		const failure = Object.assign(new Error("ignore policy unavailable"), { code: "EACCES" })
+		vi.spyOn(fs.promises, "lstat").mockRejectedValueOnce(failure)
+
+		await expect(isFileIgnoredByGitignore(path.join(target, "file.ts"), workspaceRoot)).rejects.toBe(failure)
+	})
+
+	it("keeps the strict byte budget on per-file rule checks", async () => {
+		await fs.promises.writeFile(path.join(workspaceRoot, ".gitignore"), "#".repeat(65_537))
+		const open = vi.spyOn(fs.promises, "open")
+
+		await expect(isFileIgnoredByGitignore(path.join(target, "file.ts"), workspaceRoot)).rejects.toThrow(
+			"64 KiB ignore-file budget",
+		)
+		expect(open).not.toHaveBeenCalled()
+	})
+
+	it("keeps the strict directory limit on per-file rule checks", async () => {
+		const filePath = path.join(workspaceRoot, ...Array.from({ length: 64 }, () => "d"), "file.ts")
+		const open = vi.spyOn(fs.promises, "open")
+
+		await expect(isFileIgnoredByGitignore(filePath, workspaceRoot)).rejects.toThrow(
+			"ignore-directory traversal limit",
+		)
+		expect(open).not.toHaveBeenCalled()
 	})
 })

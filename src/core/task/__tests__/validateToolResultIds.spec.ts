@@ -1,5 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { TelemetryService } from "@alpha-code/telemetry"
+import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
 import {
 	validateAndFixToolResultIds,
 	ToolResultIdMismatchError,
@@ -19,6 +20,47 @@ vi.mock("@alpha-code/telemetry", () => ({
 describe("validateAndFixToolResultIds", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it.each([
+		{ name: "legacy ID", ids: { tool_call_id: "wrong-id" } },
+		{ name: "empty canonical ID", ids: { tool_use_id: "", tool_call_id: "wrong-id" } },
+		{ name: "matching aliases", ids: { tool_use_id: "wrong-id", tool_call_id: "wrong-id" } },
+	])("keeps $name aliases coherent when repairing a result by position", ({ ids }) => {
+		const input: unknown = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "tool-123", name: "read_file", input: {} }],
+			},
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						...ids,
+						content: "Original failed receipt",
+						is_error: true,
+						provider_state: { cursor: "keep" },
+					},
+				],
+			},
+		]
+		expect(invalidPersistedApiMessages(input)).toBeUndefined()
+		const before = structuredClone(input)
+		const [assistant, user] = input as Anthropic.MessageParam[]
+		const repaired = validateAndFixToolResultIds(user, [assistant])
+		expect(repaired.content).toEqual([
+			{
+				type: "tool_result",
+				tool_use_id: "tool-123",
+				tool_call_id: "tool-123",
+				content: "Original failed receipt",
+				is_error: true,
+				provider_state: { cursor: "keep" },
+			},
+		])
+		expect(invalidPersistedApiMessages([assistant, repaired])).toBeUndefined()
+		expect(input).toEqual(before)
 	})
 
 	describe("when there is no previous assistant message", () => {

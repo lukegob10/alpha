@@ -20,6 +20,8 @@ const INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE: TerminalOutputCleanupState = {
 	pending: "",
 }
 const MAX_CSI_PREFIX_CHARACTERS = MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS
+const INTERRUPT_GRACE_MS = 250
+const TERMINAL_CLOSE_TIMEOUT_MS = 5_000
 
 export class TerminalProcess extends BaseTerminalProcess {
 	private terminalRef: WeakRef<Terminal>
@@ -30,6 +32,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private disposeRunResources?: () => void
 	private activeIterator?: AsyncIterator<string>
 	private shellExecutionReported = false
+	private terminationPromise?: Promise<void>
 
 	constructor(terminal: Terminal) {
 		super()
@@ -446,6 +449,55 @@ export class TerminalProcess extends BaseTerminalProcess {
 		}
 	}
 
+	public terminate(): Promise<void> {
+		if (this.terminationPromise) return this.terminationPromise
+		const termination = this.terminateOwnedCommand().catch((error) => {
+			if (this.terminationPromise === termination) this.terminationPromise = undefined
+			throw error
+		})
+		this.terminationPromise = termination
+		return termination
+	}
+
+	private async terminateOwnedCommand(): Promise<void> {
+		if (this.shellExecutionReported || this.terminalClosedSignal.aborted) return
+		const terminal = this.terminal
+		const ownsCommand = () => terminal.process === this
+		if (!ownsCommand()) throw new Error("Command ownership changed before terminal termination")
+		let acknowledgeExit!: () => void
+		const exited = new Promise<void>((resolve) => (acknowledgeExit = resolve))
+		this.prependOnceListener("shell_execution_complete", acknowledgeExit)
+		this.prependOnceListener("terminal_closed", acknowledgeExit)
+		let timer: ReturnType<typeof setTimeout> | undefined
+		try {
+			this.abort()
+			if (!this.commandSubmitted) this.completeCancellationBeforeLaunch()
+			await Promise.race([
+				exited,
+				new Promise<void>((resolve) => (timer = setTimeout(resolve, INTERRUPT_GRACE_MS))),
+			])
+			clearTimeout(timer)
+			if (this.shellExecutionReported || this.terminalClosedSignal.aborted) return
+			// A shell event can release this terminal for another command. Never
+			// escalate Ctrl-C by disposing a replacement process's terminal.
+			if (!ownsCommand()) throw new Error("Command ownership changed before terminal termination")
+			terminal.terminal.dispose()
+			await Promise.race([
+				exited,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() => reject(new Error("Timed out waiting for the owned terminal to close")),
+						TERMINAL_CLOSE_TIMEOUT_MS,
+					)
+				}),
+			])
+		} finally {
+			clearTimeout(timer)
+			this.removeListener("shell_execution_complete", acknowledgeExit)
+			this.removeListener("terminal_closed", acknowledgeExit)
+		}
+	}
+
 	public writeInput(input: string): void {
 		if (!this.commandSubmitted || this.isSettled || this.terminal.process !== this)
 			throw new Error("Command is no longer accepting input")
@@ -460,6 +512,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 	private completeCancellationBeforeLaunch(): boolean {
 		if (!this.aborted || this.commandSubmitted) return false
+		if (this.shellExecutionReported) return true
 		this.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
 		this.emit("completed", "")
 		this.emit("continue")

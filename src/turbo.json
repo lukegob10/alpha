@@ -4,7 +4,21 @@
 	"tasks": {
 		"bundle": {
 			"dependsOn": ["^build", "@alpha-code/vscode-webview#build"],
-			"outputs": ["dist/**"]
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/README.md",
+				"$TURBO_ROOT$/CHANGELOG.md",
+				"$TURBO_ROOT$/LICENSE",
+				"$TURBO_ROOT$/webview-ui/audio/**"
+			],
+			"outputs": [
+				"dist/**",
+				"README.md",
+				"CHANGELOG.md",
+				"LICENSE",
+				"assets/vscode-material-icons/**",
+				"webview-ui/audio/**"
+			]
 		},
 		"vsix": {
 			"dependsOn": ["bundle"],

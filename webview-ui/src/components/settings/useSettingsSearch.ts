@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, createContext, useContext } from "react"
 import { Fzf } from "fzf"
 
-import { SectionName } from "./SettingsView"
+import type { SectionName } from "./SettingsView"
 
 export interface SearchableSettingData {
 	settingId: string
@@ -72,35 +72,6 @@ export function useSearchIndexRegistry(getSectionLabel: (section: SectionName) =
 	return { contextValue, index }
 }
 
-/**
- * Scan the DOM for searchable settings within a container.
- * This is called once on mount to build the index.
- */
-export function scanDOMForSearchableSettings(
-	container: Element,
-	getSectionLabel: (section: SectionName) => string,
-): SearchableSettingData[] {
-	const settings: SearchableSettingData[] = []
-	const elements = container.querySelectorAll("[data-searchable]")
-
-	elements.forEach((el) => {
-		const settingId = el.getAttribute("data-setting-id")
-		const section = el.getAttribute("data-setting-section") as SectionName | null
-		const label = el.getAttribute("data-setting-label")
-
-		if (settingId && section && label) {
-			settings.push({
-				settingId,
-				section,
-				label,
-				sectionLabel: getSectionLabel(section),
-			})
-		}
-	})
-
-	return settings
-}
-
 interface UseSettingsSearchOptions {
 	index: SearchableSettingData[]
 }
@@ -128,13 +99,15 @@ export function useSettingsSearch({ index }: UseSettingsSearchOptions) {
 		}
 
 		const fzfResults = fzf.find(searchQuery)
-		return fzfResults.slice(0, 10).map((result) => ({
-			settingId: result.item.settingId,
-			section: result.item.section,
-			label: result.item.label,
-			sectionLabel: result.item.sectionLabel,
-			positions: result.positions,
-		}))
+		const sections = new Map<SectionName, SearchResult[]>()
+		for (const result of fzfResults.slice(0, 10)) {
+			const setting = { ...result.item, positions: result.positions }
+			const group = sections.get(setting.section)
+			if (group) group.push(setting)
+			else sections.set(setting.section, [setting])
+		}
+		// Keyboard navigation must follow the same section grouping as the visible popup.
+		return Array.from(sections.values()).flat()
 	}, [fzf, searchQuery])
 
 	const clearSearch = useCallback(() => {

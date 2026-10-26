@@ -9,14 +9,18 @@ import { calibrationReportSchema, type BenchmarkSuiteManifest } from "./contract
 import { assertKeylessCalibrationComplete } from "./calibration"
 import { validateReviewSample, type ReviewSampleManifest } from "./reviewSampling"
 import { digestBenchmarkDirectory, loadBenchmarkCatalog, writeBenchmarkReleaseLock } from "./loader"
+import { resolveCalibrationReportPath } from "./calibrationStore"
 
 export async function releaseFrontierSuite(options: {
 	publicRoot: string
 	privateRoot: string
 	reviewer: string
+	disagreementTrialIds: string[]
 }): Promise<{ suite: BenchmarkSuiteManifest; output: string }> {
-	if (!options.reviewer.trim()) throw new Error("A human reviewer identity is required to release a benchmark")
-	const catalog = await loadBenchmarkCatalog(options.publicRoot)
+	const { publicRoot, privateRoot, reviewer } = options
+	const disagreementTrialIds = captureDisagreementTrialIds(options.disagreementTrialIds)
+	if (!reviewer.trim()) throw new Error("A human reviewer identity is required to release a benchmark")
+	const catalog = await loadBenchmarkCatalog(publicRoot)
 	const current = catalog.suites.find(({ id }) => id === "frontier-v1")
 	if (!current) throw new Error("frontier-v1 suite is missing")
 	validateFrontierBankShape(current)
@@ -24,20 +28,19 @@ export async function releaseFrontierSuite(options: {
 	const reports = []
 	for (const task of current.tasks) {
 		const reportRoot =
-			task.partition === "holdout"
-				? path.join(options.privateRoot, "reports")
-				: path.join(options.publicRoot, "calibration")
-		const reportFile = path.join(reportRoot, `${task.id}.keyless.json`)
-		const result = evaluateAdmission(JSON.parse(await fs.readFile(reportFile, "utf8")))
+			task.partition === "holdout" ? path.join(privateRoot, "reports") : path.join(publicRoot, "calibration")
+		const reportFile = await resolveCalibrationReportPath(reportRoot, `${task.id}@${task.version}`)
+		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportFile, "utf8")))
+		if (report.taskIdentity !== `${task.id}@${task.version}`)
+			throw new Error(`Calibration report identity mismatch for ${task.id}`)
+		const result = evaluateAdmission(report)
 		if (!result.admitted || !result.report)
 			throw new Error(
 				`Task ${task.id} has not passed admission: ${result.issues.map(({ code }) => code).join(", ")}`,
 			)
 		reports.push(result.report)
 		const fixtureRoot =
-			task.partition === "holdout"
-				? path.join(options.privateRoot, task.fixture)
-				: path.join(options.publicRoot, task.fixture)
+			task.partition === "holdout" ? path.join(privateRoot, task.fixture) : path.join(publicRoot, task.fixture)
 		const fixtureDigest = await digestBenchmarkDirectory(fixtureRoot)
 		const promptDigest = sha256(await fs.readFile(path.join(fixtureRoot, task.prompt)))
 		tasks.push({
@@ -48,11 +51,11 @@ export async function releaseFrontierSuite(options: {
 			repository: { ...task.repository, snapshotDigest: fixtureDigest },
 		})
 	}
-	await assertReviewSampleComplete(options.privateRoot, current.version, reports)
+	await assertReviewSampleComplete(privateRoot, current, reports, disagreementTrialIds)
 	const suite: BenchmarkSuiteManifest = { ...current, status: "released", tasks }
-	const output = path.join(options.publicRoot, "frontier-v1.yaml")
+	const output = path.join(publicRoot, "frontier-v1.yaml")
 	await fs.writeFile(output, stringify(suite, { lineWidth: 120 }))
-	await writeBenchmarkReleaseLock(options.publicRoot, suite)
+	await writeBenchmarkReleaseLock(publicRoot, suite)
 	return { suite, output }
 }
 
@@ -70,8 +73,11 @@ export type FrontierReleaseAudit = {
 export async function auditFrontierRelease(options: {
 	publicRoot: string
 	privateRoot: string
+	disagreementTrialIds: string[]
 }): Promise<FrontierReleaseAudit> {
-	const catalog = await loadBenchmarkCatalog(options.publicRoot)
+	const { publicRoot, privateRoot } = options
+	const disagreementTrialIds = captureDisagreementTrialIds(options.disagreementTrialIds)
+	const catalog = await loadBenchmarkCatalog(publicRoot)
 	const current = catalog.suites.find(({ id }) => id === "frontier-v1")
 	if (!current) throw new Error("frontier-v1 suite is missing")
 	validateFrontierBankShape(current)
@@ -82,12 +88,9 @@ export async function auditFrontierRelease(options: {
 	const reports = []
 	for (const task of current.tasks) {
 		const reportRoot =
-			task.partition === "holdout"
-				? path.join(options.privateRoot, "reports")
-				: path.join(options.publicRoot, "calibration")
-		const report = calibrationReportSchema.parse(
-			JSON.parse(await fs.readFile(path.join(reportRoot, `${task.id}.keyless.json`), "utf8")),
-		)
+			task.partition === "holdout" ? path.join(privateRoot, "reports") : path.join(publicRoot, "calibration")
+		const reportFile = await resolveCalibrationReportPath(reportRoot, `${task.id}@${task.version}`)
+		const report = calibrationReportSchema.parse(JSON.parse(await fs.readFile(reportFile, "utf8")))
 		reports.push(report)
 		if (report.taskIdentity !== `${task.id}@${task.version}`)
 			throw new Error(`Calibration report identity mismatch for ${task.id}`)
@@ -105,10 +108,14 @@ export async function auditFrontierRelease(options: {
 	const blockers: string[] = []
 	let reviewSampleReady = false
 	try {
-		await assertReviewSampleComplete(options.privateRoot, current.version, reports)
+		await assertReviewSampleComplete(privateRoot, current, reports, disagreementTrialIds)
 		reviewSampleReady = true
-	} catch {
-		blockers.push("suite-level deterministic human-review sample is incomplete")
+	} catch (error) {
+		blockers.push(
+			error instanceof Error && error.message.startsWith("Legacy review sample lacks")
+				? "suite-level human-review sample requires a fresh complete population digest"
+				: "suite-level deterministic human-review sample is incomplete or lacks independent obligations",
+		)
 	}
 	if (keylessComplete !== tasks) blockers.push(`${tasks - keylessComplete} task(s) lack complete keyless evidence`)
 	if (lunaCalibrated !== tasks) blockers.push(`${tasks - lunaCalibrated} task(s) lack five Luna High trials`)
@@ -126,14 +133,28 @@ export async function auditFrontierRelease(options: {
 	}
 }
 
+function captureDisagreementTrialIds(trialIds: string[]): string[] {
+	if (!Array.isArray(trialIds) || trialIds.some((id) => typeof id !== "string" || !id.trim()))
+		throw new Error("Independent grader-disagreement obligations must be an explicit array of trial ids")
+	if (new Set(trialIds).size !== trialIds.length)
+		throw new Error("Independent grader-disagreement obligations must contain unique trial ids")
+	return [...trialIds]
+}
+
 async function assertReviewSampleComplete(
 	privateRoot: string,
-	suiteVersion: number,
+	suite: BenchmarkSuiteManifest,
 	reports: ReturnType<typeof calibrationReportSchema.parse>[],
+	disagreementTrialIds: string[],
 ): Promise<void> {
-	const file = path.join(privateRoot, "reviews", `frontier-v1-review-sample-v${suiteVersion}.json`)
+	const file = path.join(privateRoot, "reviews", `frontier-v1-review-sample-v${suite.version}.json`)
 	const manifest = JSON.parse(await fs.readFile(file, "utf8")) as ReviewSampleManifest
-	validateReviewSample(reports, manifest)
+	validateReviewSample(
+		reports,
+		manifest,
+		{ taskIdentities: suite.tasks.map(({ id, version }) => `${id}@${version}`), disagreementTrialIds },
+		{ requirePopulationDigest: true },
+	)
 }
 
 export function validateFrontierBankShape(suite: BenchmarkSuiteManifest): void {

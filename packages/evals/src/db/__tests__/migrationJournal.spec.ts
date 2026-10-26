@@ -19,6 +19,17 @@ const lock = JSON.parse(readFileSync(new URL("meta/released-migrations.lock.json
 const sha256 = (value: Buffer) => createHash("sha256").update(value).digest("hex")
 
 describe("released database migration history", () => {
+	it("adds attempt provenance and capture status without relabeling historical rows", () => {
+		const sql = readFileSync(new URL("0014_attempt_evidence_identity.sql", migrationsRoot), "utf8")
+		expect(sql.match(/ADD COLUMN/g)).toHaveLength(4)
+		expect(sql).toContain('"attempts" ADD COLUMN "evidence_manifest" jsonb')
+		expect(sql).not.toMatch(/\b(?:UPDATE|DELETE|DROP|NOT NULL|DEFAULT)\b/i)
+		const snapshot = JSON.parse(readFileSync(new URL("meta/0014_snapshot.json", migrationsRoot), "utf8"))
+		for (const column of ["task_definition_identity", "variant_identity", "evidence_manifest"])
+			expect(snapshot.tables["public.attempts"].columns[column].notNull).toBe(false)
+		expect(snapshot.tables["public.artifacts"].columns.capture_status.notNull).toBe(false)
+	})
+
 	it("keeps shipped journal identities, timestamps, ordering, and SQL immutable", () => {
 		expect(lock.schemaVersion).toBe(1)
 		expect(journal.dialect).toBe(lock.dialect)

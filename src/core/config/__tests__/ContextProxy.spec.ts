@@ -6,6 +6,8 @@ import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS, type AlphaCodeSettings } from "@a
 
 import { ContextProxy } from "../ContextProxy"
 
+const secretStorageKeys = [...SECRET_STATE_KEYS, "openAiHeaders"]
+
 vi.mock("vscode", () => ({
 	Uri: {
 		file: vi.fn((path) => ({ path })),
@@ -59,6 +61,54 @@ describe("ContextProxy", () => {
 		await proxy.initialize()
 	})
 
+	describe("retired settings", () => {
+		it("ignores stored and imported speech settings while preserving notification sounds", async () => {
+			const stored = new Map<string, unknown>([
+				["ttsEnabled", true],
+				["ttsSpeed", 1.5],
+				["soundEnabled", true],
+				["soundVolume", 0.4],
+			])
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			const reloaded = new ContextProxy(mockContext)
+			await reloaded.initialize()
+			expect(reloaded.getValues()).not.toHaveProperty("ttsEnabled")
+			expect(reloaded.getValues()).not.toHaveProperty("ttsSpeed")
+			expect(await reloaded.export()).toMatchObject({ soundEnabled: true, soundVolume: 0.4 })
+			expect(await reloaded.export()).not.toHaveProperty("ttsEnabled")
+			expect(await reloaded.export()).not.toHaveProperty("ttsSpeed")
+
+			mockGlobalState.update.mockClear()
+			const imported = { ttsEnabled: true, ttsSpeed: 2, soundEnabled: false, soundVolume: 0.6 }
+			await reloaded.setValues(imported)
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("ttsEnabled", expect.anything())
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("ttsSpeed", expect.anything())
+			expect(reloaded.getValues()).not.toHaveProperty("ttsEnabled")
+			expect(reloaded.getValues()).not.toHaveProperty("ttsSpeed")
+			expect(await reloaded.export()).toMatchObject({ soundEnabled: false, soundVolume: 0.6 })
+		})
+
+		it("ignores legacy stored and imported values without losing custom instructions", async () => {
+			const stored = new Map<string, unknown>([
+				["personality", "none"],
+				["customInstructions", "My instructions"],
+			])
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			const reloaded = new ContextProxy(mockContext)
+			await reloaded.initialize()
+			expect(reloaded.getValues()).not.toHaveProperty("personality")
+			expect(await reloaded.export()).toMatchObject({ customInstructions: "My instructions" })
+			expect(await reloaded.export()).not.toHaveProperty("personality")
+
+			mockGlobalState.update.mockClear()
+			const imported = { personality: "friendly", customInstructions: "Imported instructions" }
+			await reloaded.setValues(imported)
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("personality", expect.anything())
+			expect(reloaded.getValues()).not.toHaveProperty("personality")
+			expect(await reloaded.export()).toMatchObject({ customInstructions: "Imported instructions" })
+		})
+	})
+
 	describe("automatic steering persistence", () => {
 		it("keeps missing values unset and round-trips explicit choices through storage and export", async () => {
 			const stored = new Map<string, unknown>()
@@ -108,51 +158,34 @@ describe("ContextProxy", () => {
 		})
 	})
 
-	describe("legacy subagent budget defaults", () => {
-		const migrationKey = "subagentBudgetDefaultsMigrationV1"
-
-		function useStoredValues(entries: [string, unknown][]) {
-			const stored = new Map<string, unknown>(entries)
+	describe("retired agent settings", () => {
+		it("removes customized legacy settings once without changing task history or current settings", async () => {
+			const history = [{ id: "old-task", subagentContextManifest: { limits: { timeoutMs: 10_000 } } }]
+			const stored = new Map<string, unknown>([
+				["subagentMaxInputTokens", 32_000],
+				["subagentRoleTimeoutsMs", { worker: 10_000 }],
+				["subagentDefaultApiConfigId", "old-profile"],
+				["taskHistory", history],
+				["subagentDefaultModel", "new-model"],
+			])
 			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
 			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
 				if (value === undefined) stored.delete(key)
 				else stored.set(key, value)
 			})
-			return stored
-		}
-
-		it("clears the old default pair so existing installations inherit the larger budget", async () => {
-			const stored = useStoredValues([
-				["subagentMaxInputTokens", 16_000],
-				["subagentMaxOutputTokens", 4_000],
-			])
 			const migrated = new ContextProxy(mockContext)
 			await migrated.initialize()
-
 			expect(migrated.getValue("subagentMaxInputTokens")).toBeUndefined()
-			expect(migrated.getValue("subagentMaxOutputTokens")).toBeUndefined()
-			expect(stored.get(migrationKey)).toBe("done")
-
-			const updatesAfterMigration = mockGlobalState.update.mock.calls.length
+			expect(stored.has("subagentRoleTimeoutsMs")).toBe(false)
+			expect(stored.has("subagentDefaultApiConfigId")).toBe(false)
+			expect(stored.get("taskHistory")).toBe(history)
+			expect(stored.get("subagentDefaultModel")).toBe("new-model")
+			const writes = mockGlobalState.update.mock.calls.length
 			await new ContextProxy(mockContext).initialize()
-			expect(mockGlobalState.update).toHaveBeenCalledTimes(updatesAfterMigration)
-		})
-
-		it("preserves customized limits and resumes a partially completed migration", async () => {
-			const stored = useStoredValues([
-				["subagentMaxInputTokens", 16_000],
-				["subagentMaxOutputTokens", 8_000],
-			])
-			await new ContextProxy(mockContext).initialize()
-			expect(stored.get("subagentMaxInputTokens")).toBe(16_000)
-			expect(stored.get("subagentMaxOutputTokens")).toBe(8_000)
-
-			stored.set(migrationKey, "started")
-			stored.delete("subagentMaxInputTokens")
-			stored.set("subagentMaxOutputTokens", 4_000)
-			await new ContextProxy(mockContext).initialize()
-			expect(stored.has("subagentMaxOutputTokens")).toBe(false)
-			expect(stored.get(migrationKey)).toBe("done")
+			expect(mockGlobalState.update).toHaveBeenCalledTimes(writes)
+			await migrated.setValues({ subagentMaxInputTokens: 1, subagentRoleTimeoutsMs: { worker: 10_000 } })
+			expect(stored.has("subagentMaxInputTokens")).toBe(false)
+			expect(await migrated.export()).not.toHaveProperty("subagentRoleTimeoutsMs")
 		})
 	})
 
@@ -169,7 +202,7 @@ describe("ContextProxy", () => {
 
 	describe("constructor", () => {
 		it("should initialize state cache with all global state keys", () => {
-			// +3 for the condensing-prompt and subagent-budget migration checks.
+			// +3 for condensing-prompt and legacy Vertex credential migration checks.
 			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3)
 			for (const key of GLOBAL_STATE_KEYS) {
 				expect(mockGlobalState.get).toHaveBeenCalledWith(key)
@@ -177,12 +210,11 @@ describe("ContextProxy", () => {
 			// Also check for migration calls
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customCondensingPrompt")
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customSupportPrompts")
-			expect(mockGlobalState.get).toHaveBeenCalledWith("subagentBudgetDefaultsMigrationV1")
 		})
 
 		it("should initialize secret cache with all secret keys", () => {
-			expect(mockSecrets.get).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length)
-			for (const key of SECRET_STATE_KEYS) {
+			expect(mockSecrets.get).toHaveBeenCalledTimes(secretStorageKeys.length)
+			for (const key of secretStorageKeys) {
 				expect(mockSecrets.get).toHaveBeenCalledWith(key)
 			}
 		})
@@ -559,8 +591,8 @@ describe("ContextProxy", () => {
 				expect(mockGlobalState.update).toHaveBeenCalledWith(key, undefined)
 			}
 
-			// Total calls include initial setup, a migration marker write on each initialization, and reset.
-			const expectedUpdateCalls = 4 + GLOBAL_STATE_KEYS.length
+			// Total calls include initial setup, and reset.
+			const expectedUpdateCalls = 3 + GLOBAL_STATE_KEYS.length
 			expect(mockGlobalState.update).toHaveBeenCalledTimes(expectedUpdateCalls)
 		})
 
@@ -572,11 +604,11 @@ describe("ContextProxy", () => {
 			await proxy.resetAllState()
 
 			// Should have called delete for each key
-			for (const key of SECRET_STATE_KEYS) {
+			for (const key of secretStorageKeys) {
 				expect(mockSecrets.delete).toHaveBeenCalledWith(key)
 			}
 			// Total calls should equal the number of secret keys
-			expect(mockSecrets.delete).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length)
+			expect(mockSecrets.delete).toHaveBeenCalledTimes(secretStorageKeys.length)
 		})
 
 		it("should reinitialize caches after reset", async () => {

@@ -19,6 +19,6 @@
 		"@alpha-code/config-typescript": "workspace:^",
 		"@types/node": "^24.1.0",
 		"@types/node-ipc": "^9.2.3",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	}
 }

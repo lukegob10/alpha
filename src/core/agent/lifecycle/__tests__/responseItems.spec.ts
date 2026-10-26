@@ -61,6 +61,29 @@ describe("lifecycle response projection", () => {
 		]
 		expect([...lifecycleResponseItems(items, "step")].map((item) => item.responseItem)).toEqual(items)
 	})
+	it.each([
+		[{ id: "first" }, { id: "second" }],
+		[{ outputIndex: 0 }, { outputIndex: 1 }],
+		[{ encryptedContent: "first" }, { encryptedContent: "second" }],
+		[{ redactedData: "first" }, { redactedData: "second" }],
+		[{ summary: [{ text: "First." }] }, { summary: [{ text: "Second." }] }],
+		[{ vscodeLmThinking: { value: "First." } }, { vscodeLmThinking: { value: "Second." } }],
+	])("preserves reasoning source boundaries %j and %j", (first, second) => {
+		const items: AgentResponseItem[] = [
+			{ type: "reasoning", text: "First.", ...structuredClone(first) },
+			{ type: "reasoning", text: "Second.", ...structuredClone(second) },
+		]
+		expect([...lifecycleResponseItems(items, "step")].map(({ responseItem }) => responseItem)).toEqual(items)
+	})
+	it("groups compatible plaintext reasoning fragments from the same source", () => {
+		const items: AgentResponseItem[] = [
+			{ type: "reasoning", text: "First ", id: "reasoning", outputIndex: 0, signature: "signature" },
+			{ type: "reasoning", text: "thought.", id: "reasoning", outputIndex: 0, signature: "signature" },
+		]
+		expect([...lifecycleResponseItems(items, "step")]).toEqual([
+			{ itemId: "step:items-0-1", responseItem: { ...items[0], text: "First thought." } },
+		])
+	})
 	it("keeps merged display values bounded without losing text", () => {
 		const items: AgentResponseItem[] = Array.from({ length: 30 }, () => ({ type: "text", text: "x".repeat(1000) }))
 		const projected = [...lifecycleResponseItems(items, "step")].map(({ responseItem }) => responseItem)

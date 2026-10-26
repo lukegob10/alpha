@@ -49,15 +49,17 @@ describe("packaged skill-builder", () => {
 	it("documents the open standard, target hosts, sources, and behavior evaluation", () => {
 		const standards = readFileSync(path.join(skillDirectory, "references/standard-and-hosts.md"), "utf8")
 		for (const required of [
-			"Sources were checked on 2026-09-20",
+			"Primary references:",
 			"https://agentskills.io/specification",
 			"## Alpha profile",
 			"## Cursor profile",
 			"## Claude Code profile",
 			"## Codex profile",
-			"current validator accepts only the six portable fields",
+			"Check the installed validator's supported fields",
 			"Create every new Alpha project skill under `.agents/skills/`",
-			"~/.cursor/skills-cursor/",
+			"https://cursor.com/docs/skills",
+			"https://code.claude.com/docs/en/skills",
+			"https://github.com/openai/codex",
 			"Compatibility means verified behavior",
 		]) {
 			expect(standards).toContain(required)

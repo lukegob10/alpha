@@ -6,7 +6,7 @@ import { atomicWriteText, withFileLock } from "../atomicWrite"
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
-	return { ...actual, rename: vi.fn(actual.rename), rm: vi.fn(actual.rm) }
+	return { ...actual, open: vi.fn(actual.open), rename: vi.fn(actual.rename), rm: vi.fn(actual.rm) }
 })
 
 let directory: string
@@ -18,6 +18,7 @@ beforeEach(async () => {
 	await fs.writeFile(filePath, "previous snapshot")
 	vi.mocked(fs.rename).mockClear()
 	vi.mocked(fs.rm).mockClear()
+	vi.mocked(fs.open).mockClear()
 })
 
 afterEach(async () => {
@@ -27,6 +28,23 @@ afterEach(async () => {
 })
 
 describe("atomic replacement under filesystem contention", () => {
+	it("creates private replacement bytes with exclusive restrictive permissions", async () => {
+		await atomicWriteText(filePath, "private replacement", { requireAtomicReplace: true, mode: 0o600 })
+
+		expect(fs.open).toHaveBeenCalledWith(expect.stringContaining(".snapshot.json.new_"), "wx", 0o600)
+		expect(await fs.readFile(filePath, "utf8")).toBe("private replacement")
+		if (process.platform !== "win32") expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600)
+	})
+
+	it("does not remove a temporary path it could not create exclusively", async () => {
+		const failure = Object.assign(new Error("temporary name already exists"), { code: "EEXIST" })
+		vi.mocked(fs.open).mockRejectedValueOnce(failure)
+
+		await expect(atomicWriteText(filePath, "private replacement", { mode: 0o600 })).rejects.toBe(failure)
+		expect(fs.rm).not.toHaveBeenCalled()
+		expect(await fs.readFile(filePath, "utf8")).toBe("previous snapshot")
+	})
+
 	it.each(["EPERM", "EACCES", "EBUSY"])(
 		"retries transient %s without deleting the previous snapshot",
 		async (code) => {

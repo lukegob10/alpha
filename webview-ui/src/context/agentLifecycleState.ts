@@ -1,8 +1,6 @@
 import {
-	agentLifecycleEventSchema,
 	agentLifecycleEventMessageSchema,
 	agentLifecycleDegradedMessageSchema,
-	agentLifecycleDegradedSignalSchema,
 	agentLifecycleSnapshotSchema,
 	agentLifecycleSnapshotMessageSchema,
 	type AgentLifecycleEvent,
@@ -61,62 +59,33 @@ function isDirectLifecycleSnapshot(value: unknown): boolean {
 	return Boolean(record && record.version === 1 && typeof record.taskId === "string" && "lastSequence" in record)
 }
 
+// Legacy direct records use the same wire validation, including serializable tool data.
 export function parseAgentLifecycleSnapshot(value: unknown): AgentLifecycleSnapshot | undefined {
-	if (isDirectLifecycleSnapshot(value)) {
-		const parsed = agentLifecycleSnapshotSchema.safeParse(value)
-		return parsed.success ? parsed.data : undefined
-	}
-
-	const record = asRecord(value)
-	const aliases = [record?.payload, record?.snapshot, record?.agentLifecycleSnapshot].filter(
-		(candidate) => candidate !== undefined,
+	const envelope = agentLifecycleSnapshotMessageSchema.safeParse(
+		isDirectLifecycleSnapshot(value) ? { type: "agentLifecycleSnapshot", payload: value } : value,
 	)
-	if (aliases.length > 1 && aliases.some((candidate) => JSON.stringify(candidate) !== JSON.stringify(aliases[0]))) {
-		return undefined
-	}
-	const envelope = agentLifecycleSnapshotMessageSchema.safeParse(value)
 	if (!envelope.success) return undefined
 	return envelope.data.payload ?? envelope.data.snapshot ?? envelope.data.agentLifecycleSnapshot
 }
 
 export function parseAgentLifecycleEvent(value: unknown): AgentLifecycleEvent | undefined {
-	if (isDirectLifecycleEvent(value)) {
-		const parsed = agentLifecycleEventSchema.safeParse(value)
-		return parsed.success ? parsed.data : undefined
-	}
-
-	const record = asRecord(value)
-	const aliases = [record?.payload, record?.event, record?.agentLifecycleEvent].filter(
-		(candidate) => candidate !== undefined,
+	const envelope = agentLifecycleEventMessageSchema.safeParse(
+		isDirectLifecycleEvent(value) ? { type: "agentLifecycleEvent", payload: value } : value,
 	)
-	if (aliases.length > 1 && aliases.some((candidate) => JSON.stringify(candidate) !== JSON.stringify(aliases[0]))) {
-		return undefined
-	}
-	const envelope = agentLifecycleEventMessageSchema.safeParse(value)
 	if (!envelope.success) return undefined
 	return envelope.data.payload ?? envelope.data.event ?? envelope.data.agentLifecycleEvent
 }
 
 export function parseAgentLifecycleDegraded(value: unknown): AgentLifecycleDegradedSignal | undefined {
 	const record = asRecord(value)
-	if (
-		record &&
-		record.version === 1 &&
+	const isDirectSignal =
+		record?.version === 1 &&
 		typeof record.taskId === "string" &&
 		typeof record.degraded === "boolean" &&
 		typeof record.occurredAt === "number"
-	) {
-		const parsed = agentLifecycleDegradedSignalSchema.safeParse(value)
-		return parsed.success ? parsed.data : undefined
-	}
-
-	const aliases = [record?.payload, record?.signal, record?.agentLifecycleDegraded].filter(
-		(candidate) => candidate !== undefined,
+	const envelope = agentLifecycleDegradedMessageSchema.safeParse(
+		isDirectSignal ? { type: "agentLifecycleDegraded", payload: value } : value,
 	)
-	if (aliases.length > 1 && aliases.some((candidate) => JSON.stringify(candidate) !== JSON.stringify(aliases[0]))) {
-		return undefined
-	}
-	const envelope = agentLifecycleDegradedMessageSchema.safeParse(value)
 	if (!envelope.success) return undefined
 	return envelope.data.payload ?? envelope.data.signal ?? envelope.data.agentLifecycleDegraded
 }

@@ -50,6 +50,7 @@ import {
 	captureWorkspaceMutationDiffBaseline,
 	createWorkspaceMutationDiffs,
 	compareWorkspaceMutationState,
+	requiresWorkspaceMutationReceipt,
 	type WorkspaceMutationDiff,
 	type WorkspaceMutationDiffBaseline,
 	type WorkspaceMutationState,
@@ -139,7 +140,7 @@ async function finalizeCommandMutationReceipt(
 	physicalExecutionId: string,
 	onIncomplete: () => void,
 ): Promise<WorkspaceMutationDiff[]> {
-	if (task.taskKind !== "primary") return []
+	if (!requiresWorkspaceMutationReceipt(task)) return []
 
 	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
 	if (mutationBaseline) {
@@ -798,7 +799,10 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
 			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
 
-			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(canonicalCommand)
+			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(
+				canonicalCommand,
+				customCwd,
+			)
 
 			if (ignoredFileAttemptedToAccess) {
 				preLaunchFailure("policy_denied", { kind: "user-action" }, [
@@ -812,7 +816,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const initialAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			const initialAuthorityDenial = await task.getTaskCommandDenialReason?.(
+				canonicalCommand,
+				customCwd,
+				host ? "audited-read" : "shell",
+			)
 			if (initialAuthorityDenial) {
 				denyByTaskCommandAuthority(initialAuthorityDenial)
 				return
@@ -834,7 +842,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const postApprovalAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			const postApprovalAuthorityDenial = await task.getTaskCommandDenialReason?.(
+				canonicalCommand,
+				customCwd,
+				host ? "audited-read" : "shell",
+			)
 			if (postApprovalAuthorityDenial) {
 				denyByTaskCommandAuthority(postApprovalAuthorityDenial)
 				return
@@ -1155,6 +1167,7 @@ export async function executeCommandInTerminal(
 		capturedOutputPreviewSize,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
+	const commandTurn = task.captureMessageTurn?.() ?? null
 	const commandStartedAt = performance.now()
 	const project = (
 		slot: CommandPresentationSlot,
@@ -1184,6 +1197,9 @@ export async function executeCommandInTerminal(
 	let fileChangesPublished = false
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const isManagedCommandAgent =
+		task.taskKind === "subagent" &&
+		(isManagedWorker || task.subagentContextManifest?.runtimePolicy.execute === true)
 	const executionMode =
 		capturedExecutionMode ?? (typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug)
 	const isPlanMode = executionMode === planModeSlug
@@ -1198,7 +1214,7 @@ export async function executeCommandInTerminal(
 				recovery: { kind: reason === "policy_denied" ? "user-action" : "repair" },
 			}),
 		)
-	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
+	const restrictCommandCwdToWorkspace = isManagedCommandAgent || isPlanMode
 	const cancellationResult = (): [boolean, ToolResponse] => {
 		if (toolCallId)
 			void project("evidence", () => {
@@ -1210,7 +1226,7 @@ export async function executeCommandInTerminal(
 	const taskWasCancelled = () =>
 		task.abort || (stepOwnsLaunch && signal?.aborted) || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
-	if (tty === true && (isManagedWorker || isPlanMode)) {
+	if (tty === true && (isManagedCommandAgent || isPlanMode)) {
 		rejectBeforeLaunch("policy_denied", "interactive-terminal")
 		if (toolCallId)
 			void project("evidence", () => {
@@ -1218,18 +1234,13 @@ export async function executeCommandInTerminal(
 			})
 		return [false, "Interactive terminals require a foreground Code task; this command was not started."]
 	}
-	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
+	if (isPlanMode && customCwd && path.isAbsolute(customCwd)) {
 		rejectBeforeLaunch("policy_denied", customCwd)
 		if (toolCallId)
 			void project("evidence", () => {
 				task.failCommandExecution?.(toolCallId)
 			})
-		return [
-			false,
-			isPlanMode
-				? "Plan commands may use only workspace-relative command directories."
-				: "Editing workers may use only workspace-relative command directories.",
-		]
+		return [false, "Plan commands may use only workspace-relative command directories."]
 	}
 	if (!customCwd) {
 		workingDir = task.cwd
@@ -1290,7 +1301,7 @@ export async function executeCommandInTerminal(
 	const terminalProvider =
 		tty === true
 			? "vscode"
-			: tty === false || isManagedWorker || terminalShellIntegrationDisabled
+			: tty === false || isManagedCommandAgent || terminalShellIntegrationDisabled
 				? "execa"
 				: "vscode"
 	const provider = capturedProvider ?? (await task.providerRef.deref())
@@ -1449,6 +1460,7 @@ export async function executeCommandInTerminal(
 					await task.say("command_output", text, undefined, partial, undefined, undefined, {
 						isNonInteractive: true,
 						commandExecutionId: executionId,
+						turn: commandTurn,
 					})
 				} catch (error) {
 					console.error("[ExecuteCommandTool] Failed to publish command output:", error)
@@ -1699,6 +1711,7 @@ export async function executeCommandInTerminal(
 								await task
 									.say("tool", payload, undefined, false, undefined, undefined, {
 										isNonInteractive: true,
+										turn: commandTurn,
 									})
 									.catch((error) =>
 										console.warn(
@@ -1745,7 +1758,7 @@ export async function executeCommandInTerminal(
 		}
 	}
 
-	if (task.taskKind === "primary") {
+	if (requiresWorkspaceMutationReceipt(task)) {
 		try {
 			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
 			try {
@@ -1763,7 +1776,7 @@ export async function executeCommandInTerminal(
 			releaseTerminalReservation()
 			return cancellationResult()
 		}
-		if (task.taskKind === "primary") {
+		if (requiresWorkspaceMutationReceipt(task)) {
 			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.reservePrimaryMutation(task, physicalExecutionId)
@@ -1915,13 +1928,41 @@ export async function executeCommandInTerminal(
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
 	let userTimeoutFinalization: Promise<void> | undefined
+	const clearUserTimeout = () => {
+		clearTimeout(userTimeoutId)
+		process.removeListener("shell_execution_complete", clearUserTimeout)
+		process.removeListener("terminal_closed", clearUserTimeout)
+		process.removeListener("completed", clearUserTimeoutIfInactive)
+		process.removeListener("error", clearUserTimeoutIfInactive)
+	}
+	const clearUserTimeoutIfInactive = () => {
+		if (terminal.process !== process || !terminal.running) clearUserTimeout()
+	}
 	const finalizeUserTimeout = (): Promise<void> => {
 		if (userTimeoutFinalization) return userTimeoutFinalization
 		// This owner outlives the foreground race. The agent may already have
 		// received a background session when the process-lifetime timeout fires.
 		userTimeoutFinalization = (async () => {
+			let stopTimer: ReturnType<typeof setTimeout> | undefined
+			let acknowledgeExit!: () => void
+			const physicalExit = new Promise<void>((resolve) => (acknowledgeExit = resolve))
+			// Physical acknowledgement must survive a later presentation observer throwing.
+			process.prependOnceListener("shell_execution_complete", acknowledgeExit)
+			process.prependOnceListener("terminal_closed", acknowledgeExit)
+			if (exitDetails) acknowledgeExit()
 			try {
-				await Promise.resolve().then(() => process.abort())
+				const stop = exitDetails
+					? Promise.resolve()
+					: Promise.resolve().then(() => (process.terminate ? process.terminate() : process.abort()))
+				await Promise.race([
+					Promise.all([stop, physicalExit]),
+					new Promise<never>((_, reject) => {
+						stopTimer = setTimeout(
+							() => reject(new Error("Timed out confirming command termination after its user deadline")),
+							11_000,
+						)
+					}),
+				])
 			} catch (error) {
 				const cleanupError = new CommandExecutionLifecycleError(
 					"await-command-process",
@@ -1941,6 +1982,10 @@ export async function executeCommandInTerminal(
 					}
 				}
 				throw cleanupError
+			} finally {
+				clearTimeout(stopTimer)
+				process.removeListener("shell_execution_complete", acknowledgeExit)
+				process.removeListener("terminal_closed", acknowledgeExit)
 			}
 
 			if (!mutationReservationAcquired) return
@@ -1997,6 +2042,7 @@ export async function executeCommandInTerminal(
 			racers.push(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
+						clearUserTimeout()
 						isUserTimedOut = true
 						// The timeout now owns the terminal outcome. A callback emitted by
 						// process cleanup may still flush output, but it must not settle the
@@ -2020,6 +2066,11 @@ export async function executeCommandInTerminal(
 								await task.say(
 									"error",
 									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+									undefined,
+									undefined,
+									undefined,
+									undefined,
+									{ turn: commandTurn },
 								)
 								assertOwnership?.()
 							}).catch((error) => console.error("Failed to report a background command timeout:", error))
@@ -2045,7 +2096,15 @@ export async function executeCommandInTerminal(
 			await finalizeUserTimeout()
 			await project("failure", async (assertOwnership) => {
 				assertOwnership?.()
-				await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
+				await task.say(
+					"error",
+					t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+					undefined,
+					undefined,
+					undefined,
+					undefined,
+					{ turn: commandTurn },
+				)
 				assertOwnership?.()
 				task.didToolFailInCurrentTurn = true
 			})
@@ -2088,18 +2147,21 @@ export async function executeCommandInTerminal(
 		throw processError
 	} finally {
 		clearTimeout(agentTimeoutId)
-		const keepUserTimeoutForBackground =
-			commandExecutionTimeout > 0 && runInBackground && !completed && !exitDetails && process.isSettled !== true
-		if (keepUserTimeoutForBackground) {
-			const clearBackgroundUserTimeout = () => {
-				clearTimeout(userTimeoutId)
-				process.removeListener("completed", clearBackgroundUserTimeout)
-				process.removeListener("error", clearBackgroundUserTimeout)
-			}
-			process.once("completed", clearBackgroundUserTimeout)
-			process.once("error", clearBackgroundUserTimeout)
+		const keepUserTimeout =
+			commandExecutionTimeout > 0 &&
+			!isUserTimedOut &&
+			!exitDetails &&
+			((runInBackground && !completed && process.isSettled !== true) ||
+				(terminal.taskId === task.taskId && terminal.process === process && terminal.running))
+		if (keepUserTimeout) {
+			// Reader completion/error does not prove physical exit. Keep the hard
+			// ceiling on that original command until its shell exits or closes.
+			process.once("shell_execution_complete", clearUserTimeout)
+			process.once("terminal_closed", clearUserTimeout)
+			process.on("completed", clearUserTimeoutIfInactive)
+			process.on("error", clearUserTimeoutIfInactive)
 		} else {
-			clearTimeout(userTimeoutId)
+			clearUserTimeout()
 		}
 		clearTimeout(pendingCommandOutputEmitTimer)
 		if (task.terminalProcess === process) task.terminalProcess = undefined

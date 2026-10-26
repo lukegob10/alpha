@@ -2,7 +2,7 @@
 
 import type { ModeConfig } from "@alpha-code/types"
 
-import { modes } from "../../../shared/modes"
+import { FileRestrictionError, modes } from "../../../shared/modes"
 import { TOOL_GROUPS } from "../../../shared/tools"
 
 import { validateToolUse, isToolAllowedForMode } from "../validateToolUse"
@@ -326,6 +326,72 @@ describe("mode-validator", () => {
 						["apply_patch"],
 					),
 				).toThrow()
+			})
+
+			it.each([
+				{ operation: "Add", lines: ["  *** Add File: forbidden.ts", "+forbidden"] },
+				{ operation: "Delete", lines: ["\t*** Delete File: forbidden.ts"] },
+				{ operation: "Update", lines: ["  *** Update File: forbidden.ts", "@@", "-old", "+new"] },
+			])("validates a padded $operation header after an allowed Add", ({ lines }) => {
+				const patch = [
+					"*** Begin Patch",
+					"*** Add File: src/allowed.ts",
+					"+allowed",
+					...lines,
+					"*** End Patch",
+				].join("\n")
+
+				expect(() =>
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch },
+						undefined,
+						["apply_patch"],
+					),
+				).toThrow(FileRestrictionError)
+			})
+
+			it("keeps marker-looking update context outside the file restriction path set", () => {
+				const patch = [
+					"*** Begin Patch",
+					"*** Update File: src/allowed.ts",
+					"@@",
+					" *** Add File: forbidden.ts",
+					"-old",
+					"+new",
+					"*** End Patch",
+				].join("\n")
+
+				expect(
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch },
+						undefined,
+						["apply_patch"],
+					),
+				).toBe(true)
+			})
+
+			it("rejects malformed patches before granting a restricted edit", () => {
+				const patch = "*** Begin Patch\n*** Add File: src/allowed.ts\n+allowed\ninvalid\n*** End Patch"
+
+				expect(() =>
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch },
+						undefined,
+						["apply_patch"],
+					),
+				).toThrow("not a valid hunk header")
 			})
 		})
 

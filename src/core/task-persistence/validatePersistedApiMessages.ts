@@ -1,7 +1,8 @@
-import { snapshotVscodeLmThinking, taskGoalUsageReceiptsSchema } from "@alpha-code/types"
+import { snapshotGeminiResponse, snapshotVscodeLmThinking, taskGoalUsageReceiptsSchema } from "@alpha-code/types"
 
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
 import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
+import { providerStateScopeSchema } from "./providerStateScope"
 
 /**
  * Validate the stable provider-history protocol without discarding open-ended
@@ -13,6 +14,13 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 	for (const [messageIndex, candidate] of value.entries()) {
 		const location = `message ${messageIndex}`
 		if (!isRecord(candidate)) return `${location} must be an object`
+		if (
+			candidate.provider_state_scope !== undefined &&
+			((candidate.role !== undefined && candidate.role !== "assistant") ||
+				!providerStateScopeSchema.safeParse(candidate.provider_state_scope).success)
+		) {
+			return `${location} has invalid provider state scope`
+		}
 		if (
 			candidate.input_origin !== undefined &&
 			candidate.input_origin !== "human" &&
@@ -37,6 +45,12 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 				!taskGoalUsageReceiptsSchema.safeParse(candidate.goal_usage_receipts).success)
 		) {
 			return `${location} has invalid goal usage receipts`
+		}
+		if (
+			candidate.condenseCopyParent !== undefined &&
+			(candidate.role !== "user" || !hasNonemptyId(candidate.condenseCopyParent))
+		) {
+			return `${location} has invalid carried user copy provenance`
 		}
 		if (candidate.reasoning_details !== undefined && !Array.isArray(candidate.reasoning_details)) {
 			return `${location} has invalid reasoning details`
@@ -88,6 +102,11 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 				case "thoughtSignature":
 					if (!hasNonemptyId(block.thoughtSignature))
 						return `${blockLocation} has an invalid thought signature`
+					break
+				case "gemini_response":
+					if (candidate.role !== "assistant" || !snapshotGeminiResponse(block.geminiResponse)) {
+						return `${blockLocation} has invalid Gemini response state`
+					}
 					break
 				case "tool_use":
 					if (typeof block.id !== "string" || block.id.length === 0)

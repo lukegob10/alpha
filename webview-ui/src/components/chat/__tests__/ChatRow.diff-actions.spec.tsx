@@ -1,5 +1,7 @@
 import React from "react"
-import { act, fireEvent, render, screen } from "@/utils/test-utils"
+import { act, cleanup, fireEvent, render, screen } from "@/utils/test-utils"
+import userEvent from "@testing-library/user-event"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -69,9 +71,49 @@ function renderChatRow(message: AlphaMessage, isExpanded = false) {
 }
 
 describe("ChatRow - inline diff stats and actions", () => {
+	let restoreFocus: () => void
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mockPostMessage.mockClear()
+		restoreFocus = installNativeTestFocus()
+	})
+
+	afterEach(() => {
+		cleanup()
+		restoreFocus()
+	})
+
+	it.each(["{Enter}", " "])("opens a read source from the keyboard with %s", async (key) => {
+		const user = userEvent.setup()
+		renderChatRow(
+			createToolAskMessage({ tool: "readFile", path: "src/file.ts", content: "src/file.ts", startLine: 3 }),
+			true,
+		)
+		const source = screen.getByRole("button", { name: /src\/file\.ts/ })
+		await user.tab()
+		await user.tab()
+		expect(source).toHaveFocus()
+		await user.keyboard(key)
+
+		expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "openFile")).toEqual([
+			[{ type: "openFile", text: "src/file.ts", values: { line: 3 } }],
+		])
+		expect(source.querySelector("button, a, input, [tabindex]")).toBeNull()
+	})
+
+	it.each([
+		{ flags: { isProtected: true }, label: "Alpha wants to edit a protected file", lock: true },
+		{ flags: { isOutsideWorkspace: true }, label: "Alpha wants to edit outside workspace", lock: false },
+	])("shows batch approval scope: $label", ({ flags, label, lock }) => {
+		const message = createToolAskMessage({
+			tool: "appliedDiff",
+			...flags,
+			batchDiffs: [{ path: "file.txt", content: "-old\n+new", changeCount: 1 }],
+		})
+		const { container } = renderChatRow(message)
+		expect(screen.getByText(label)).toBeInTheDocument()
+		expect(!!container.querySelector(".codicon-lock")).toBe(lock)
 	})
 
 	it("exposes sent-message actions as native buttons", () => {

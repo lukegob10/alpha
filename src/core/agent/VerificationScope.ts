@@ -6,10 +6,11 @@ import { promisify } from "util"
 import { createTwoFilesPatch } from "diff"
 
 import type { ToolUse } from "../../shared/tools"
-import { parsePatch } from "../tools/apply-patch/parser"
+import { getPatchPaths } from "../tools/apply-patch/parser"
 import { fingerprintContent } from "../tools/contentVersion"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
+import type { Task } from "../task/Task"
 
 const execFileAsync = promisify(execFile)
 const MAX_PATHS = 256
@@ -25,6 +26,21 @@ const MAX_PRESENTATION_FILES = 64
 const MAX_PRESENTATION_DURATION_MS = 2_000
 
 export type VerificationContent = Record<string, string>
+
+/** Isolated Workers export receipts at capture; inherited-permission peers mutate their parent's workspace. */
+export function requiresWorkspaceMutationReceipt(
+	task: Pick<Task, "taskKind" | "subagentRole" | "subagentContextManifest">,
+): boolean {
+	if (task.taskKind === "primary") return true
+	const policy = task.subagentContextManifest?.runtimePolicy
+	return (
+		task.taskKind === "subagent" &&
+		task.subagentRole !== "worker" &&
+		policy?.role !== "worker" &&
+		policy?.authorityModel === "parent" &&
+		policy.mutate
+	)
+}
 
 /** Callers must distinguish unavailable observation from a captured empty change set. */
 export class VerificationScopeError extends Error {
@@ -166,9 +182,7 @@ export function extractMutationPaths(block: ToolUse): string[] | undefined {
 			if (typeof patch !== "string" || Buffer.byteLength(patch) > MAX_FILE_BYTES) {
 				throw new VerificationScopeError("Mutation patch is missing or exceeds the bound")
 			}
-			paths = parsePatch(patch).hunks.flatMap((hunk) =>
-				hunk.type === "UpdateFile" && hunk.movePath ? [hunk.path, hunk.movePath] : [hunk.path],
-			)
+			paths = getPatchPaths(patch)
 			break
 		}
 		default:

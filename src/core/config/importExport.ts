@@ -89,8 +89,6 @@ export async function importSettingsFromPath(
 	})
 
 	try {
-		const previousProviderProfiles = await providerSettingsManager.export()
-
 		const rawData = JSON.parse(await fs.readFile(filePath, "utf-8"))
 		const { providerProfiles: rawProfiles, globalSettings = {} } = lenientSchema.parse(rawData)
 		const { profiles: rawProviderProfiles } = readPersistedProviderProfiles(rawProfiles, randomUUID)
@@ -146,45 +144,16 @@ export async function importSettingsFromPath(
 			}
 		}
 
-		const retained = { ...previousProviderProfiles.retainedApiConfigs, ...rawProviderProfiles.retainedApiConfigs }
-		for (const name of Object.keys(validApiConfigs)) {
-			if (!Object.hasOwn(rawProviderProfiles.retainedApiConfigs ?? {}, name)) delete retained[name]
-		}
-		const hasImportedProfiles =
-			Object.keys(validApiConfigs).length + Object.keys(rawProviderProfiles.retainedApiConfigs ?? {}).length > 0
-		const currentApiConfigName = hasImportedProfiles
-			? rawProviderProfiles.currentApiConfigName
-			: previousProviderProfiles.currentApiConfigName
+		// Merge only imported entries with current saved state inside the manager's write lock.
+		// An export snapshot here would overwrite saves, renames, or deletions made during file I/O.
 		const providerProfiles: ProviderProfiles = {
-			currentApiConfigName,
-			apiConfigs: {
-				...previousProviderProfiles.apiConfigs,
-				...validApiConfigs,
-			},
-			modeApiConfigs: {
-				...previousProviderProfiles.modeApiConfigs,
-				...rawProviderProfiles.modeApiConfigs,
-			},
-			...(Object.keys(retained).length ? { retainedApiConfigs: retained } : {}),
-		}
-		if (
-			hasImportedProfiles &&
-			!Object.hasOwn(providerProfiles.apiConfigs, currentApiConfigName) &&
-			!Object.hasOwn(retained, currentApiConfigName)
-		) {
-			return {
-				success: false,
-				error: `Selected profile "${currentApiConfigName}" was not found. No provider was substituted.`,
-			}
+			...rawProviderProfiles,
+			apiConfigs: validApiConfigs,
 		}
 		// A retained import shadows a same-named older executable profile until
 		// the user explicitly repairs it; it must never inherit those old settings.
 		for (const name of Object.keys(rawProviderProfiles.retainedApiConfigs ?? {}))
 			delete providerProfiles.apiConfigs[name]
-
-		await Promise.all(
-			(globalSettings.customModes ?? []).map((mode) => customModesManager.updateCustomMode(mode.slug, mode)),
-		)
 
 		// OpenAI Compatible settings are now correctly stored in codebaseIndexConfig
 		// They will be imported automatically with the config - no special handling needed
@@ -210,6 +179,10 @@ export async function importSettingsFromPath(
 					typeof id === "string" ? [[role, remapId(id)]] : [],
 				),
 			)
+		// Reject invalid profile selections and references before any custom-mode file can be changed.
+		for (const mode of globalSettings.customModes ?? []) {
+			await customModesManager.updateCustomMode(mode.slug, mode)
+		}
 		await contextProxy.setValues(finalSettings)
 
 		// Set the current provider.

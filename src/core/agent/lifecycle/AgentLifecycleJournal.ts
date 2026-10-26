@@ -728,7 +728,10 @@ function snapshotFromEvent(event: AgentLifecycleEvent): AgentLifecycleSnapshot {
 
 function validateAndRedactEvent(value: unknown, taskId: string, maxValueLength: number): AgentLifecycleEvent {
 	const redacted = redactLifecycleValue(value, maxValueLength)
-	const result = agentLifecycleEventSchema.safeParse(redacted)
+	// Reduce the same value that JSONL will retain, including omission of
+	// undefined properties and null conversion inside unknown tool payloads.
+	const persisted: unknown = JSON.parse(JSON.stringify(redacted))
+	const result = agentLifecycleEventSchema.safeParse(persisted)
 	if (!result.success) {
 		throw new AgentLifecycleRecoveryError(
 			"invalid_event",
@@ -1067,18 +1070,21 @@ function stableJson(value: unknown): string {
 
 function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value
-	if (typeof value === "number") return Number.isFinite(value) ? value : String(value)
+	if (typeof value === "number") return Number.isFinite(value) ? value : null
 	if (typeof value === "bigint") return `${value}n`
-	if (typeof value === "undefined") return "[undefined]"
+	if (typeof value === "undefined") return undefined
 	if (typeof value !== "object") return String(value)
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen))
-	return Object.fromEntries(
-		Object.keys(value as Record<string, unknown>)
-			.sort()
-			.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => canonicalize(entry, seen))
+		: Object.fromEntries(
+				Object.keys(value as Record<string, unknown>)
+					.sort()
+					.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
+			)
+	seen.delete(value)
+	return result
 }
 
 const SECRET_KEY_PATTERN =
@@ -1111,11 +1117,14 @@ function redactLifecycleValue(
 	if (value instanceof Date) return value.toISOString()
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen))
-	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-			entryKey,
-			redactLifecycleValue(entryValue, maxValueLength, seen, entryKey),
-		]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen))
+		: Object.fromEntries(
+				Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+					entryKey,
+					redactLifecycleValue(entryValue, maxValueLength, seen, entryKey),
+				]),
+			)
+	seen.delete(value)
+	return result
 }

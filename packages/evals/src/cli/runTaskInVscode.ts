@@ -157,6 +157,7 @@ export const runTaskInVscode = async ({
 	jobToken,
 	workspaceRoot,
 	onExecutionIdentity,
+	signal,
 }: RunTaskOptions) => {
 	const controller = new AbortController()
 	let client: IpcClient | undefined
@@ -180,7 +181,11 @@ export const runTaskInVscode = async ({
 	}
 	let failure: { error: unknown } | undefined
 	let outcome: "agent_error" | "budget_exhausted" | "cancelled" | "completed" = "completed"
+	const abortFromOwner = () => controller.abort(signal?.reason)
+	if (signal?.aborted) abortFromOwner()
+	else signal?.addEventListener("abort", abortFromOwner, { once: true })
 	try {
+		controller.signal.throwIfAborted()
 		const { language, exercise } = task
 		const workspacePath = workspaceRoot ?? getTaskWorkspacePath(task)
 		const taskPromptPath = path.join(workspacePath, "prompt.md")
@@ -222,6 +227,7 @@ export const runTaskInVscode = async ({
 			delete env.VSCODE_PORTABLE
 			logger.info(`retaining isolated benchmark profile -> ${benchmarkHost.profileRoot}`)
 		}
+		controller.signal.throwIfAborted()
 		subprocess = execa(launch.command, launch.args, { env, extendEnv: false, cancelSignal, shell: false })
 		// Observe rejection immediately, before startup sleeps or IPC polling attach another await.
 		void subprocess.catch((error: unknown) => {
@@ -233,6 +239,7 @@ export const runTaskInVscode = async ({
 
 		// Give VSCode some time to spawn before connecting to its unix socket.
 		await new Promise((resolve) => setTimeout(resolve, 3_000))
+		controller.signal.throwIfAborted()
 		throwIfProcessFailed()
 		let attempts = 5
 
@@ -245,6 +252,7 @@ export const runTaskInVscode = async ({
 				const disconnected = client
 				client = undefined
 				disconnected?.disconnect()
+				controller.signal.throwIfAborted()
 				throwIfProcessFailed()
 				attempts--
 
@@ -696,6 +704,7 @@ export const runTaskInVscode = async ({
 			isClientDisconnected = true
 		})
 
+		controller.signal.throwIfAborted()
 		client.sendCommand({
 			commandName: TaskCommandName.StartNewTask,
 			data: {
@@ -713,7 +722,12 @@ export const runTaskInVscode = async ({
 
 		try {
 			await pWaitFor(
-				() => !!taskFinishedAt || !!taskAbortedAt || isClientDisconnected || !!processState.failure,
+				() =>
+					controller.signal.aborted ||
+					!!taskFinishedAt ||
+					!!taskAbortedAt ||
+					isClientDisconnected ||
+					!!processState.failure,
 				{
 					interval: 1_000,
 					timeout: timeoutMs,
@@ -732,11 +746,13 @@ export const runTaskInVscode = async ({
 			taskFinishedAt = Date.now()
 		}
 
+		controller.signal.throwIfAborted()
 		throwIfProcessFailed()
 		if (costAccountingFailure) throw costAccountingFailure
 		if (costSettings && taskTimedOut)
 			throw new Error("Governed evaluation did not reach a terminal event before timeout")
 		await finishEventEffects()
+		controller.signal.throwIfAborted()
 		throwIfProcessFailed()
 		if (!taskFinishedAt && !taskTimedOut && !taskAbortedAt) {
 			logger.error("client disconnected before task finished")
@@ -774,6 +790,7 @@ export const runTaskInVscode = async ({
 	} catch (error) {
 		failure = { error }
 	} finally {
+		signal?.removeEventListener("abort", abortFromOwner)
 		if (failure) controller.abort()
 		try {
 			await finishEventEffects?.()

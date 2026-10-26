@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import type { ExtensionMessage, WebviewMessage } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
+import { initializeSourceMaps } from "@src/utils/sourceMapInitializer"
 
 import AppWithProviders from "../App"
 
@@ -29,8 +30,7 @@ vi.mock("@src/utils/TelemetryClient", () => ({
 }))
 
 vi.mock("@src/utils/sourceMapInitializer", () => ({
-	initializeSourceMaps: vi.fn(),
-	exposeSourceMapsForDebugging: vi.fn(),
+	initializeSourceMaps: vi.fn(() => vi.fn()),
 }))
 
 describe("App startup", () => {
@@ -63,7 +63,10 @@ describe("App startup", () => {
 		expect(launches).toBe(1)
 		expect(screen.getByTestId("startup-chat")).toHaveTextContent("Hydrated on launch 1")
 
+		const disposeSourceMaps = vi.mocked(initializeSourceMaps).mock.results.at(-1)?.value
 		firstMount.unmount()
+		expect(disposeSourceMaps).toHaveBeenCalledTimes(1)
+		expect(disposeSourceMaps).toHaveBeenCalledWith()
 		render(app)
 		expect(launches).toBe(2)
 		expect(screen.getByTestId("startup-chat")).toHaveTextContent("Hydrated on launch 2")

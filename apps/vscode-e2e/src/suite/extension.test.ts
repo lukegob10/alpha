@@ -12,6 +12,30 @@ suite("Alpha Extension", function () {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
 	})
 
+	test("Retired settings do not reappear in configuration or host projections", async () => {
+		const api = globalThis.api
+		const original = api.getConfiguration()
+		const host = (
+			api as unknown as {
+				sidebarProvider: {
+					getState(): Promise<object>
+					getStateToPostToWebview(): Promise<object>
+				}
+			}
+		).sidebarProvider
+		try {
+			for (const personality of ["default", "friendly", "pragmatic", "none"]) {
+				const legacy = { ...original, personality }
+				await api.setConfiguration(legacy)
+				assert.ok(!("personality" in api.getConfiguration()))
+				assert.ok(!("personality" in (await host.getState())))
+				assert.ok(!("personality" in (await host.getStateToPostToWebview())))
+			}
+		} finally {
+			await api.setConfiguration(original)
+		}
+	})
+
 	test("Ticket editor opens once and can be closed", async () => {
 		const activeColumn = vscode.window.tabGroups.activeTabGroup.viewColumn
 		const ticketTabs = () =>

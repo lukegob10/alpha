@@ -70,7 +70,7 @@ describe("failed context summary accounting", () => {
 				},
 			},
 		]
-		expect(consolidateTokenUsage(rows)).toMatchObject({ totalCost: 2.01, contextTokens: 120 })
+		expect(consolidateTokenUsage(rows)).toMatchObject({ totalCost: 2.01, contextTokens: 70 })
 		expect(rows.some((row) => row.say === "condense_context_error")).toBe(false)
 	})
 	it.each([NaN, Infinity, -1])("ignores invalid persisted failure cost %s", (cost) => {

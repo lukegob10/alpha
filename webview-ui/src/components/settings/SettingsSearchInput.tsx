@@ -3,24 +3,28 @@ import { Search, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-import { Input } from "@/components/ui"
+import { Input } from "@/components/ui/input"
 
 export interface SettingsSearchInputProps {
 	value: string
 	onChange: (value: string) => void
 	onFocus?: () => void
-	onBlur?: () => void
 	onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
 	inputRef?: RefObject<HTMLInputElement>
+	isOpen: boolean
+	resultsId: string
+	activeResultId?: string
 }
 
 export function SettingsSearchInput({
 	value,
 	onChange,
 	onFocus,
-	onBlur,
 	onKeyDown,
 	inputRef,
+	isOpen,
+	resultsId,
+	activeResultId,
 }: SettingsSearchInputProps) {
 	const { t } = useAppTranslation()
 	const [isExpanded, setIsExpanded] = useState(false)
@@ -35,7 +39,6 @@ export function SettingsSearchInput({
 		if (!value) {
 			setIsExpanded(false)
 		}
-		onBlur?.()
 	}
 
 	const isWide = isExpanded || !!value
@@ -47,6 +50,12 @@ export function SettingsSearchInput({
 				ref={inputRef}
 				data-testid="settings-search-input"
 				type="text"
+				role="combobox"
+				aria-label={t("settings:search.placeholder")}
+				aria-autocomplete="list"
+				aria-expanded={isOpen}
+				aria-controls={isOpen ? resultsId : undefined}
+				aria-activedescendant={isOpen ? activeResultId : undefined}
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				onFocus={handleFocus}
@@ -62,9 +71,12 @@ export function SettingsSearchInput({
 			{value && (
 				<button
 					type="button"
-					onClick={() => onChange("")}
-					className="absolute cursor-pointer right-2 top-1/2 -translate-y-1/2 text-vscode-descriptionForeground hover:text-vscode-foreground focus:outline-none"
-					aria-label="Clear search">
+					onClick={() => {
+						onChange("")
+						inputRef?.current?.focus()
+					}}
+					className="absolute cursor-pointer right-2 top-1/2 -translate-y-1/2 text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-vscode-focusBorder"
+					aria-label={t("history:clearSearch")}>
 					<X className="size-3.5" />
 				</button>
 			)}

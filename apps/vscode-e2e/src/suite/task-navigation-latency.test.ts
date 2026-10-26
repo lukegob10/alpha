@@ -7,6 +7,7 @@ import type { AlphaMessage } from "@alpha-code/types"
 
 import { withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
+import { latencyObservation } from "../evidence/latencyObservation"
 
 interface NavigationTask {
 	abort: boolean
@@ -147,6 +148,8 @@ suite("Task navigation latency on a completed multi-step task", function () {
 			assert.ok((await fs.stat(persisted.uiMessagesFilePath)).size > 0)
 			const report = {
 				schemaVersion: 1,
+				...latencyObservation(),
+				sampleCounts: { titlebarNewChat: 1, coldTaskReopen: 1, warmTaskReopen: 1 },
 				hostVersion: vscode.version,
 				provider: "scripted",
 				requestCount: scripted.requests,

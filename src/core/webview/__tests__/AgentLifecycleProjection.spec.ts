@@ -118,6 +118,71 @@ describe("AgentLifecycleProjector", () => {
 		expect(projector.getSnapshot(ids.taskId)).toMatchObject({ phase: "waiting", lastSequence: 3 })
 	})
 
+	it.each([false, true])("initializes the first event after a terminal turn: %s", (hasPreviousTurn) => {
+		const projector = new AgentLifecycleProjector()
+		if (hasPreviousTurn) {
+			projector.ingestSnapshot(
+				emptySnapshot({
+					status: "completed",
+					lastSequence: 1,
+					terminalEventId: "completed-1",
+					terminalAt: 1,
+					processedEvents: [{ eventId: "completed-1", sequence: 1, fingerprint: "complete" }],
+				}),
+			)
+		}
+
+		const projected = projector.ingestEvent({
+			...phaseEvent("next-1", 1, "planning"),
+			runId: "run-2",
+			turnId: "turn-2",
+		})
+
+		expect(projected.kind).toBe("applied")
+		expect(projected.previousSnapshot).toBeUndefined()
+		expect(projector.getSnapshot(ids.taskId)).toMatchObject({
+			runId: "run-2",
+			turnId: "turn-2",
+			phase: "planning",
+			lastSequence: 1,
+			status: "in_progress",
+		})
+	})
+
+	it.each([
+		{ previous: "none", sequence: 2, reason: "sequence_gap" },
+		{ previous: "completed", sequence: 2, reason: "identity_conflict" },
+		{ previous: "in_progress", sequence: 1, reason: "identity_conflict" },
+	] as const)("preserves initialization guards: %j", ({ previous, sequence, reason }) => {
+		const projector = new AgentLifecycleProjector()
+		if (previous !== "none") {
+			projector.ingestSnapshot(
+				emptySnapshot(
+					previous === "completed"
+						? {
+								status: previous,
+								lastSequence: 1,
+								terminalEventId: "completed-1",
+								terminalAt: 1,
+								processedEvents: [{ eventId: "completed-1", sequence: 1, fingerprint: "complete" }],
+							}
+						: {},
+				),
+			)
+		}
+		const before = projector.getSnapshot(ids.taskId)
+
+		const projected = projector.ingestEvent({
+			...phaseEvent("next-1", sequence, "planning"),
+			runId: "run-2",
+			turnId: "turn-2",
+		})
+
+		expect(projected.kind).toBe("resync_required")
+		expect(projected.request?.reason).toBe(reason)
+		expect(projector.getSnapshot(ids.taskId)).toEqual(before)
+	})
+
 	it("keeps task streams correlated independently", () => {
 		const projector = new AgentLifecycleProjector()
 		const taskB = "task-b"

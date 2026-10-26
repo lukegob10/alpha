@@ -3,8 +3,8 @@
 Use this guide for critical, frequently reused, script-backed, destructive, externally integrated, or routing-sensitive
 skills. Scale the suite to the risk; a small explainable regression set is better than a large unreviewed benchmark.
 
-The evaluation method follows the Agent Skills evaluation and description-optimization guides plus OpenAI's 2026
-evaluation pattern:
+The evaluation method follows the Agent Skills evaluation and description-optimization guides plus OpenAI's skill
+evaluation guidance:
 
 - https://agentskills.io/skill-creation/evaluating-skills
 - https://agentskills.io/skill-creation/optimizing-descriptions

@@ -2,6 +2,7 @@ import {
 	reasoningEffortsExtended,
 	taskReasoningCustomTokenPattern,
 	resolveOpenAiCustomModelInfo,
+	resolveModelReasoningEffort,
 	type TaskReasoningCapabilities,
 	type TaskReasoningFallbackReason,
 	type TaskReasoningPreference,
@@ -67,24 +68,14 @@ export function resolveTaskReasoning(
 	const requested = preference ?? DEFAULT_PREFERENCE
 	const capabilities = getTaskReasoningCapabilities(configuration, model)
 
-	if (requested.kind === "default") {
-		const defaultResolution = resolveDefaultPreference(capabilities, configuration, model)
-		return {
-			// Preserve object identity when the profile already expresses the
-			// adapter's default. Task construction uses this to avoid rebuilding
-			// handlers and their host listeners.
-			configuration: applyRuntimeChanges(configuration, defaultResolution.patch),
-			state: {
-				requested,
-				effective: defaultResolution.effective,
-				capabilities,
-				...(defaultResolution.fallbackReason ? { fallbackReason: defaultResolution.fallbackReason } : {}),
-			},
-		}
-	}
-
-	const resolution = resolvePreference(requested, capabilities, configuration, model)
+	const resolution =
+		requested.kind === "default"
+			? resolveDefaultPreference(capabilities, configuration, model)
+			: resolvePreference(requested, capabilities, configuration, model)
 	return {
+		// Preserve object identity when the profile already expresses the
+		// adapter's default. Task construction uses this to avoid rebuilding
+		// handlers and their host listeners.
 		configuration: applyRuntimeChanges(configuration, resolution.patch),
 		state: {
 			requested,
@@ -338,7 +329,11 @@ function resolveOnPreference(
 	}
 
 	if (capabilities.kind === "effort") {
-		const effort = selectEffort(configuration, modelInfo, capabilities.efforts ?? [])
+		const effort = selectEffort(
+			configuration,
+			modelInfo,
+			(capabilities.efforts ?? []).filter((effort) => effort !== "none"),
+		)
 		if (effort) {
 			return { effective: { kind: "effort", effort }, patch: activeEffortPatch(effort) }
 		}
@@ -405,12 +400,11 @@ function selectEffort(
 	efforts: ReasoningEffortExtended[],
 	allowFirst = true,
 ): ReasoningEffortExtended | undefined {
-	const configured = configuration.reasoningEffort as string | undefined
-	if (configured && configured !== "disable" && efforts.includes(configured as ReasoningEffortExtended)) {
-		return configured as ReasoningEffortExtended
-	}
-	if (modelInfo.reasoningEffort && efforts.includes(modelInfo.reasoningEffort)) return modelInfo.reasoningEffort
-	return allowFirst ? efforts[0] : undefined
+	return resolveModelReasoningEffort(
+		{ supportsReasoningEffort: efforts, reasoningEffort: modelInfo.reasoningEffort },
+		configuration.reasoningEffort,
+		allowFirst,
+	)
 }
 
 function activeEffortPatch(effort: ReasoningEffortExtended): Partial<TaskReasoningConfiguration> {

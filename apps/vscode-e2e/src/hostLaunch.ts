@@ -1,6 +1,7 @@
 import { spawn } from "child_process"
 import { downloadAndUnzipVSCode, type TestOptions } from "@vscode/test-electron"
-import { TestRunError } from "./runFailure"
+import { TestRunError, type TestRunFailureCode } from "./runFailure"
+import { terminateOwnedProcess, verifyPosixProcessGroupGone } from "./campaign/ownedProcess"
 import {
 	watchLiveHost,
 	LIVE_HOST_CLOSE_TIMEOUT_MS,
@@ -12,12 +13,33 @@ export type HostLaunchOptions = Omit<TestOptions, "extensionTestsPath"> &
 	(
 		| { launchKind?: "extension-test"; extensionTestsPath: string }
 		| { launchKind: "development-sidecar"; extensionTestsPath?: never }
-	) & { liveHost?: { artifactsDir: string; expected: LiveHostExpected } }
+	) & {
+		liveHost?: {
+			artifactsDir: string
+			expected: LiveHostExpected
+			interactiveSetup?: boolean
+			executionTimeoutMs?: number
+		}
+	}
 
-/** A numeric cancellation exit is published only after close; a bounded unknown close retains ownership. */
+/** Root close and tree cleanup remain distinct; unknown cleanup must retain the profile lease. */
 export class HostLaunchCancelledError extends TestRunError {
-	constructor(readonly hostExitCode?: number) {
+	constructor(
+		readonly hostExitCode?: number,
+		readonly cleanupVerified = false,
+		readonly hostExitObserved = hostExitCode !== undefined,
+	) {
 		super("host-cancelled", "The owned VS Code launch was cancelled")
+	}
+}
+
+export class HostLaunchFailureError extends TestRunError {
+	constructor(
+		code: TestRunFailureCode,
+		readonly hostExitObserved: boolean,
+		readonly cleanupVerified: boolean,
+	) {
+		super(code, "The owned VS Code launch did not complete")
 	}
 }
 
@@ -60,36 +82,64 @@ export async function launchExtensionHost(
 	const child = spawn(executable, args, {
 		shell: false,
 		windowsHide: false,
+		detached: process.platform !== "win32",
 		// A retained unknown-close GUI must not keep the campaign runner's output pipes alive.
 		// Normal-host diagnostics live in its owned receipts/profile logs, not raw console capture.
 		stdio: launchKind === "development-sidecar" ? "ignore" : "inherit",
 		env: extensionTestsEnv,
-		signal,
 	})
 	return new Promise<number>((resolve, reject) => {
 		let settled = false
+		let closed = false
 		let monitor: { dispose(): void } | undefined
-		let cancelTimer: NodeJS.Timeout | undefined
+		let cleanupTimer: NodeJS.Timeout | undefined
+		let graceTimer: NodeJS.Timeout | undefined
+		let releaseGrace: (() => void) | undefined
+		let failure: TestRunError | undefined
+		let termination: Promise<{ cleanupVerified: boolean }> | undefined
 		const cleanup = () => {
 			monitor?.dispose()
-			clearTimeout(cancelTimer)
+			clearTimeout(cleanupTimer)
+			clearTimeout(graceTimer)
+			releaseGrace?.()
 			signal?.removeEventListener("abort", cancelled)
 		}
-		const fail = (error: Error) => {
+		const finishFailure = (hostExitObserved: boolean, cleanupVerified: boolean, code?: number) => {
 			if (settled) return
 			settled = true
 			cleanup()
-			// Unknown close is not success. Leave the window/profile lease intact for inspection.
 			child.unref()
-			reject(error)
+			reject(
+				failure?.code === "host-cancelled"
+					? new HostLaunchCancelledError(code, cleanupVerified, hostExitObserved)
+					: new HostLaunchFailureError(failure?.code ?? "host-failed", hostExitObserved, cleanupVerified),
+			)
 		}
-		const cancelled = () => {
+		const fail = (error: TestRunError) => {
+			if (settled || failure) return
+			failure = error
 			monitor?.dispose()
-			cancelTimer = setTimeout(() => fail(new HostLaunchCancelledError()), LIVE_HOST_CLOSE_TIMEOUT_MS)
+			cleanupTimer = setTimeout(() => finishFailure(closed, false), LIVE_HOST_CLOSE_TIMEOUT_MS)
+			termination = terminateOwnedProcess(
+				child,
+				child.pid,
+				() => closed,
+				() => {
+					if (closed) return Promise.resolve()
+					return new Promise<void>((done) => {
+						releaseGrace = done
+						graceTimer = setTimeout(done, 1_000)
+					})
+				},
+			).catch(() => ({ cleanupVerified: false }))
 		}
+		const cancelled = () => fail(new TestRunError("host-cancelled", "The owned host launch was cancelled"))
 		if (options.liveHost) {
 			try {
-				monitor = watchLiveHost(options.liveHost.artifactsDir, options.liveHost.expected, fail)
+				monitor = watchLiveHost(options.liveHost.artifactsDir, options.liveHost.expected, fail, {
+					interactiveSetup: options.liveHost.interactiveSetup,
+					executionTimeoutMs: options.liveHost.executionTimeoutMs,
+				})
 			} catch {
 				fail(new TestRunError("host-completion-invalid", "Unable to observe live host receipts"))
 			}
@@ -99,17 +149,28 @@ export async function launchExtensionHost(
 			if (signal?.aborted) cancelled()
 		}
 		child.once("error", (error: NodeJS.ErrnoException) => {
-			// Node emits AbortError before close. That event is not evidence that a host has exited.
 			if (error.code !== "ABORT_ERR") fail(new TestRunError("host-failed", "The VS Code process could not start"))
 		})
 		child.once("close", (code) => {
+			closed = true
+			clearTimeout(graceTimer)
+			releaseGrace?.()
 			if (settled) return
-			settled = true
-			cleanup()
-			if (signal?.aborted) reject(new HostLaunchCancelledError(code ?? undefined))
-			else if (code === null)
-				reject(new TestRunError("host-failed", "The VS Code process ended without an exit code"))
-			else resolve(code)
+			if (failure) {
+				void (async () => {
+					const result = await termination
+					const verified =
+						result?.cleanupVerified === true &&
+						(process.platform === "win32" || verifyPosixProcessGroupGone(child.pid))
+					finishFailure(true, verified, code ?? undefined)
+				})()
+			} else {
+				settled = true
+				cleanup()
+				if (code === null)
+					reject(new TestRunError("host-failed", "The VS Code process ended without an exit code"))
+				else resolve(code)
+			}
 		})
 		if (child.pid !== undefined) onSpawn?.(child.pid)
 	})

@@ -704,6 +704,45 @@ describe("ticket editor", () => {
 		expect(requests("create")[0].operation).toMatchObject({ input: { name: `New ${type}`, type } })
 	})
 
+	it.each(["in-progress", "complete", "canceled"] as const)(
+		"retains the created ticket when its initial %s status update fails",
+		async (status) => {
+			vi.mocked(vscode.getState).mockReturnValue({
+				project: "project",
+				draft: { ...draft, name: "New ticket", status },
+				editing: true,
+			})
+			render(<TicketsView />)
+			fireEvent.click(screen.getByRole("button", { name: "save" }))
+			const created = { ...ticket, name: "New ticket", revision: "created" }
+			reply({ type: "ticketResponse", requestId: requests("create")[0].requestId, result: created })
+			await waitFor(() => expect(requests("update")).toHaveLength(1))
+			reply({
+				type: "ticketResponse",
+				requestId: requests("update")[0].requestId,
+				error: "Status update failed",
+			})
+			await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Status update failed"))
+			expect(screen.getByRole("textbox", { name: "name" })).toHaveValue("New ticket")
+			expect(screen.getByRole("combobox", { name: "status" })).toHaveValue(status)
+			expect(vscode.setState).toHaveBeenLastCalledWith(
+				expect.objectContaining({ ticket: created, draft: expect.objectContaining({ status }), editing: true }),
+			)
+			fireEvent.click(screen.getByRole("button", { name: "save" }))
+			expect(requests("create")).toHaveLength(1)
+			expect(requests("update")).toHaveLength(2)
+			expect(requests("update")[1].operation).toMatchObject({
+				input: { id: created.id, expectedRevision: created.revision, name: created.name, status },
+			})
+			reply({
+				type: "ticketResponse",
+				requestId: requests("update")[1].requestId,
+				result: { ...created, status, revision: "saved" },
+			})
+			await screen.findByRole("article", { name: created.name })
+		},
+	)
+
 	it.each(["feature", "decision", "review"] as const)("preserves %s filtering through navigation", async (type) => {
 		vi.useFakeTimers()
 		vi.mocked(vscode.getState).mockReturnValue({ project: "project", typeFilter: "bug", offset: 50 })
@@ -747,6 +786,17 @@ describe("ticket editor", () => {
 		expect(screen.getByLabelText("name")).toHaveValue("Unsaved")
 		fireEvent.click(screen.getByText("discardAction"))
 		expect(screen.getByLabelText("name")).toHaveValue("")
+	})
+
+	it.each(["complete", "canceled"] as const)("requires reopening a %s draft before starting work", (status) => {
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		fireEvent.change(screen.getByRole("combobox", { name: "status" }), { target: { value: status } })
+		const work = screen.getByRole("button", { name: "work" })
+		expect(work).toBeDisabled()
+		fireEvent.click(work)
+		expect(requests("update")).toHaveLength(0)
+		expect(requests("work")).toHaveLength(0)
 	})
 
 	it("saves edits before starting linked work", async () => {

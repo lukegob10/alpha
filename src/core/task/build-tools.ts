@@ -9,7 +9,6 @@ import {
 	type ModeConfig,
 	type ModelInfo,
 	type ApprovalMode,
-	type ToolName,
 	type McpServer,
 } from "@alpha-code/types"
 import { customToolRegistry, formatNative, serializeCustomTool } from "@alpha-code/core"
@@ -32,7 +31,7 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicyInput, ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
-import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
+import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
@@ -62,11 +61,13 @@ export interface BuildToolsOptions {
 	 */
 	includeAllToolsWithRestrictions?: boolean
 	/** Optional task-lane authority cap applied after mode filtering. */
-	allowedToolNames?: readonly ToolName[]
+	allowedToolNames?: readonly string[]
 	/** Selects role-specific schemas for primary and managed-child tasks. */
 	taskKind?: "primary" | "subagent"
 	/** Restricts the task to the host-owned diagnostic evidence reader. */
 	diagnosticSession?: boolean
+	/** Root-task memory access captured with the provider schema and policy boundary. */
+	memoryToolsEnabled?: boolean
 	diagnosticSourceTaskId?: string
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
@@ -142,7 +143,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 16
+const TOOL_CATALOG_SCHEMA_VERSION = 17
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -227,6 +228,7 @@ function serverState(servers: readonly McpServer[], mcpHub?: McpHub, cache?: Tas
 			disabled: server.disabled === true,
 			connection: connection && cache ? cache.identity(connection) : undefined,
 			client: connection?.client && cache ? cache.identity(connection.client) : undefined,
+			catalogRevision: mcpHub?.getServerCatalogRevision?.(server),
 			tools: server.tools
 				? [...server.tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 				: [],
@@ -253,11 +255,14 @@ function captureMcpAvailability(
 			parallelRead: boolean
 			connection: ReturnType<typeof connectionFor>
 			client: unknown
+			catalogRevision: number | undefined
 			schemaDigest: string
 		}
 	>()
 	for (const server of servers) {
 		if (server.status !== "connected" || server.disabled) continue
+		const catalogRevision = mcpHub?.getServerCatalogRevision?.(server)
+		if (mcpHub?.getServerCatalogRevision && catalogRevision === undefined) continue
 		const connection = connectionFor(mcpHub, server)
 		for (const tool of [...(server.tools ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
 			const name = canonicalizeToolName(buildMcpToolName(server.name, tool.name))
@@ -270,6 +275,7 @@ function captureMcpAvailability(
 				parallelRead: isMcpReadOnlyHint(tool.annotations),
 				connection,
 				client: connection?.client,
+				catalogRevision,
 				schemaDigest: digestValue(schema),
 			})
 		}
@@ -295,6 +301,8 @@ function captureMcpAvailability(
 				.getServers()
 				.find((item) => item.name === expected.serverName && item.source === expected.source)
 			if (!server || server.disabled || server.status !== "connected") return false
+			if (mcpHub.getServerCatalogRevision && mcpHub.getServerCatalogRevision(server) !== expected.catalogRevision)
+				return false
 			const connection = connectionFor(mcpHub, server)
 			if (connection !== expected.connection || connection?.client !== expected.client) return false
 			const tool = server.tools?.find(
@@ -312,18 +320,6 @@ function captureMcpAvailability(
 		}
 	}
 	return { targets: captured, isCurrent }
-}
-
-/**
- * Builds the complete tools array for native protocol requests.
- * Combines native tools and MCP tools, filtered by mode restrictions.
- *
- * @param options - Configuration options for building the tools
- * @returns Array of filtered native and MCP tools
- */
-export async function buildNativeToolsArray(options: BuildToolsOptions): Promise<OpenAI.Chat.ChatCompletionTool[]> {
-	const result = await buildNativeToolsArrayWithRestrictions(options)
-	return result.tools
 }
 
 /**
@@ -391,6 +387,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		taskKind === "primary" &&
 		crossTaskRole !== "none" &&
 		isExplicitIndependentTaskRequest(options.userRequestText)
+	const allowIndependentTaskFork =
+		!diagnosticSession &&
+		taskKind === "primary" &&
+		crossTaskRole !== "none" &&
+		isExplicitThreadForkRequest(options.userRequestText)
 	const legacyCrossTaskToolNames = ["create_task", "list_tasks", "wait_task", "send_task_message"].filter(
 		(name) => includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, name),
 	)
@@ -417,6 +418,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			)
 	}
 	customTools = availableCustomTools(customTools)
+	if (!diagnosticSession) {
+		const hub = provider.getMcpHub()
+		if (hub?.awaitCatalogReady) await awaitCatalogInput(hub.awaitCatalogReady(options.signal), options.signal)
+		options.signal?.throwIfAborted()
+	}
 	// All live reads precede this synchronous capture. No await may split key construction from its factory.
 	const mcpHub = diagnosticSession ? undefined : provider.getMcpHub()
 	const servers = diagnosticSession
@@ -452,10 +458,12 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				allowedToolNames: orderedNames(allowedToolNames),
 				taskKind,
 				diagnosticSession,
+				memoryToolsEnabled: options.memoryToolsEnabled === true,
 				diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 				enableAgentLifecycleTools,
 				crossTaskRole,
 				allowIndependentTaskCreation,
+				allowIndependentTaskFork,
 				legacyCrossTaskToolNames,
 				namedAgentTypes,
 				todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
@@ -506,6 +514,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		// Build native tools with dynamic read_file tool based on settings.
 		const nativeTools = getNativeTools({
 			diagnosticSession,
+			memoryToolsEnabled: options.memoryToolsEnabled === true,
 			supportsImages,
 			availableBrowserToolNames,
 			taskKind,
@@ -518,6 +527,10 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				allowIndependentTaskCreation ||
 				(includeAllToolsWithRestrictions === true &&
 					historyContainsToolName(options.discoveryHistory, "create_thread")),
+			includeForkThreadSchema:
+				allowIndependentTaskFork ||
+				(includeAllToolsWithRestrictions === true &&
+					historyContainsToolName(options.discoveryHistory, "fork_thread")),
 			legacyCrossTaskToolNames,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			namedAgentTypes,
@@ -563,6 +576,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			const name = getToolName(tool)
 			return (
 				(name !== "create_thread" || allowIndependentTaskCreation) &&
+				(name !== "fork_thread" || allowIndependentTaskFork) &&
 				!legacyCrossTaskToolNames.includes(name) &&
 				name !== "access_mcp_resource" &&
 				(canDiscover || (name !== "tool_search" && name !== "discover_tools"))
@@ -576,8 +590,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		]
 
 		// Filter MCP tools based on mode restrictions.
-		const mcpTools = buildMcpServerTools(servers, includeAllToolsWithRestrictions)
-		const connectedMcpTools = includeAllToolsWithRestrictions ? buildMcpServerTools(servers) : mcpTools
+		const callableMcpServers = servers.filter(
+			(server) => !mcpHub?.getServerCatalogRevision || mcpHub.getServerCatalogRevision(server) !== undefined,
+		)
+		const mcpTools = buildMcpServerTools(
+			includeAllToolsWithRestrictions ? servers : callableMcpServers,
+			includeAllToolsWithRestrictions,
+		)
+		const connectedMcpTools = includeAllToolsWithRestrictions ? buildMcpServerTools(callableMcpServers) : mcpTools
 		const filteredMcpTools = disabledTools.includes("use_mcp_tool")
 			? []
 			: filterMcpToolsForMode(connectedMcpTools, mode, customModes, experiments)
@@ -667,6 +687,7 @@ function createCapturedToolSurface(input: {
 		reviewPolicy: options.reviewPolicy,
 		readGrant: options.readGrant,
 		diagnosticSession: options.diagnosticSession,
+		memoryToolsEnabled: options.memoryToolsEnabled,
 		diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 		mode: options.mode,
 		cwd: options.cwd,

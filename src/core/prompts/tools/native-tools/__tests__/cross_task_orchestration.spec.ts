@@ -18,21 +18,44 @@ const threadNames = [
 ]
 const legacyNames = ["create_task", "list_tasks", "wait_task", "send_task_message"]
 
-function namesFor(role: "root" | "child" | "none", includeCreateThreadSchema = false) {
-	return getNativeTools({ crossTaskRole: role, includeCreateThreadSchema })
+function namesFor(role: "root" | "child" | "none", includeCreateThreadSchema = false, includeForkThreadSchema = false) {
+	return getNativeTools({ crossTaskRole: role, includeCreateThreadSchema, includeForkThreadSchema })
 		.filter((tool) => tool.type === "function" && threadNames.includes(tool.function.name))
 		.map((tool) => (tool.type === "function" ? tool.function.name : ""))
 }
 
 describe("thread orchestration tool surface", () => {
-	it("offers peer controls to independent primary tasks and gates only explicit creation", () => {
+	it("offers peer controls and independently gates fresh creation and history forks", () => {
 		for (const role of ["root", "child"] as const) {
-			expect(namesFor(role)).toEqual(threadNames.filter((name) => name !== "create_thread"))
-			expect(namesFor(role, true)).toEqual(threadNames)
+			expect(namesFor(role)).toEqual(
+				threadNames.filter((name) => !["create_thread", "fork_thread"].includes(name)),
+			)
+			expect(namesFor(role, true)).toEqual(threadNames.filter((name) => name !== "fork_thread"))
+			expect(namesFor(role, false, true)).toEqual(threadNames.filter((name) => name !== "create_thread"))
+			expect(namesFor(role, true, true)).toEqual(threadNames)
 		}
 		expect(namesFor("none")).toEqual([])
 		const managed = getNativeTools({ taskKind: "subagent", crossTaskRole: "root", includeCreateThreadSchema: true })
 		expect(managed.some((tool) => tool.type === "function" && threadNames.includes(tool.function.name))).toBe(false)
+	})
+
+	it("describes fresh handoffs separately from explicit history-preserving forks", () => {
+		const tools = getNativeTools({
+			crossTaskRole: "root",
+			includeCreateThreadSchema: true,
+			includeForkThreadSchema: true,
+		})
+		const description = (name: string) =>
+			tools.flatMap((tool) =>
+				tool.type === "function" && tool.function.name === name ? [tool.function.description] : [],
+			)[0]
+		expect(description("create_thread")).toContain("empty conversation history")
+		expect(description("create_thread")).toContain("concise, self-contained prompt with ticket references")
+		expect(description("create_thread")).toContain("do not copy the old transcript or compaction summary")
+		expect(description("fork_thread")).toContain(
+			"only when the user explicitly requests a fork or retaining that history",
+		)
+		expect(description("fork_thread")).toContain("remains idle")
 	})
 
 	it("retains historical task schemas only when provider replay explicitly needs them", () => {

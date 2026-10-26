@@ -93,10 +93,29 @@ describe("context management tool metadata admission", () => {
 
 	it("includes prepared schemas in truncation counts with automatic condensation disabled", async () => {
 		const { options, prepareTools, countTokens } = fixture()
+		// The authoritative recount must remain over limit until the removable middle step is hidden.
+		countTokens.mockImplementation(async (blocks) =>
+			blocks.some((block) => block.type === "text" && block.text === "Three") ? 900 : 10,
+		)
 		const result = await manageContext({ ...options, totalTokens: 801, autoCondenseContext: false })
 		expect(prepareTools).toHaveBeenCalledOnce()
 		expect(condense.summarizeConversation).not.toHaveBeenCalled()
 		expect(result.messagesRemoved).toBeGreaterThan(0)
+		expect(result.prevContextTokens).toBeGreaterThan(800)
+		expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
+		expect(result.status).toBe("reduced")
+		expect(countTokens.mock.calls.some(([blocks]) => JSON.stringify(blocks).includes("read_file"))).toBe(true)
+	})
+
+	it("counts prepared schemas while preserving history that fits the authoritative recount", async () => {
+		const { options, prepareTools, countTokens } = fixture()
+		const result = await manageContext({ ...options, totalTokens: 801, autoCondenseContext: false })
+		expect(prepareTools).toHaveBeenCalledOnce()
+		expect(condense.summarizeConversation).not.toHaveBeenCalled()
+		expect(result.messages).toBe(options.messages)
+		expect(result.status).toBe("unchanged")
+		expect(result.messagesRemoved).toBeUndefined()
+		expect(result.newContextTokens).toBeLessThanOrEqual(800)
 		expect(countTokens.mock.calls.some(([blocks]) => JSON.stringify(blocks).includes("read_file"))).toBe(true)
 	})
 

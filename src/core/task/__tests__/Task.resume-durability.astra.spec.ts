@@ -111,6 +111,61 @@ function harness(saved: ApiMessage[], retained = false) {
 afterEach(() => vi.restoreAllMocks())
 
 describe("Task resumed input durability", () => {
+	it.each(["read failure", "cancelled read", "preview failure"] as const)(
+		"owns provider-history rejection while the UI preview is pending (%s)",
+		async (scenario) => {
+			const { task, save } = harness(savedToolHistory())
+			const previewEntered = deferred()
+			const previewReleased = deferred()
+			const readFailure = new Error("fixture: saved provider history is unreadable")
+			const previewFailure = new Error("fixture: preview publication failed")
+			let rejectHistory!: (error: Error) => void
+			Reflect.set(
+				task,
+				"getSavedApiConversationHistory",
+				() => new Promise<ApiMessage[]>((_resolve, reject) => (rejectHistory = reject)),
+			)
+			Reflect.set(task, "providerRef", {
+				deref: () => ({
+					postTaskStateToWebview: async () => {
+						previewEntered.resolve()
+						await previewReleased.promise
+						if (scenario === "preview failure") throw previewFailure
+					},
+				}),
+			})
+			Reflect.set(
+				task,
+				"wakeQueuedInputWhenIdle",
+				vi.fn(async () => undefined),
+			)
+			vi.spyOn(console, "error").mockImplementation(() => undefined)
+			const unhandled: unknown[] = []
+			const onUnhandled = (error: unknown) => unhandled.push(error)
+			process.on("unhandledRejection", onUnhandled)
+			const resume = task.resumeWithEditedMessage("Continue with the saved task")
+			const result = resume.then(
+				() => undefined,
+				(error: unknown) => error,
+			)
+			try {
+				await previewEntered.promise
+				if (scenario === "cancelled read") task.abort = true
+				rejectHistory(readFailure)
+				// A controlled event-loop boundary exposes unowned rejections without sleeps.
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				expect(unhandled).toEqual([])
+			} finally {
+				previewReleased.resolve()
+				await result
+				process.off("unhandledRejection", onUnhandled)
+			}
+			if (scenario === "cancelled read") expect(await result).toBeInstanceOf(Error)
+			else expect(await result).toBe(scenario === "preview failure" ? previewFailure : readFailure)
+			expect(save).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each([false, true])("preserves a committed tail after preparation failure (retained=%s)", async (retained) => {
 		const saved = savedToolHistory()
 		const { task, save, readDurable } = harness(saved, retained)

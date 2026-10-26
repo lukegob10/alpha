@@ -89,6 +89,34 @@ describe("telemetry error utilities", () => {
 			expect(getErrorMessage(error)).toBe("Rate limit exceeded: free-models-per-day")
 		})
 
+		it.each([{ raw: 42 }, { raw: true }, { raw: ["not a message"] }, { raw: { private: "not a message" } }])(
+			"ignores malformed upstream metadata %j and preserves a valid nested message",
+			({ raw }) => {
+				expect(
+					getErrorMessage({
+						status: 500,
+						message: "Request failed",
+						error: { message: "Upstream error", metadata: { raw } },
+					}),
+				).toBe("Upstream error")
+			},
+		)
+
+		it("falls back to a valid primary message when nested message fields are malformed", () => {
+			expect(
+				getErrorMessage({
+					status: 500,
+					message: "Request failed",
+					error: { message: { detail: "invalid message" }, metadata: { raw: 42 } },
+				}),
+			).toBe("Request failed")
+		})
+
+		it("returns undefined when a status-bearing payload contains no string message", () => {
+			expect(getErrorMessage({ status: 500, message: 42 })).toBeUndefined()
+			expect(getErrorMessage({ status: 500, error: { message: true } })).toBeUndefined()
+		})
+
 		it("should fallback to nested error.message when metadata.raw is undefined", () => {
 			const error = {
 				status: 400,

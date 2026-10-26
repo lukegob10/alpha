@@ -74,7 +74,15 @@ describe("Task retained sub-agent follow-up", () => {
 		await (task as any).resumeTaskFromHistory("Check the edge case next")
 
 		expect(ask).not.toHaveBeenCalled()
-		expect((task as any).say).toHaveBeenCalledWith("user_feedback", "Check the edge case next")
+		expect((task as any).say).toHaveBeenCalledWith(
+			"user_feedback",
+			"Check the edge case next",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			expect.objectContaining({ turn: null }),
+		)
 		expect(overwriteApiConversationHistory).not.toHaveBeenCalled()
 		expect(task.apiConversationHistory).toHaveLength(2)
 		expect(initiateTaskLoop).toHaveBeenCalledWith(

@@ -104,19 +104,21 @@ export function createAgentLifecycleSnapshot(input: AgentLifecycleSnapshotInput)
 
 function canonicalize(value: unknown, seen = new WeakSet<object>()): unknown {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value
-	if (typeof value === "number") return Number.isFinite(value) ? value : String(value)
+	if (typeof value === "number") return Number.isFinite(value) ? value : null
 	if (typeof value === "bigint") return `${value}n`
-	if (typeof value === "undefined") return "[undefined]"
+	if (typeof value === "undefined") return undefined
 	if (typeof value !== "object") return String(value)
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
-	if (Array.isArray(value)) return value.map((entry) => canonicalize(entry, seen))
-
-	return Object.fromEntries(
-		Object.keys(value as Record<string, unknown>)
-			.sort()
-			.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
-	)
+	const result = Array.isArray(value)
+		? value.map((entry) => canonicalize(entry, seen))
+		: Object.fromEntries(
+				Object.keys(value as Record<string, unknown>)
+					.sort()
+					.map((key) => [key, canonicalize((value as Record<string, unknown>)[key], seen)]),
+			)
+	seen.delete(value)
+	return result
 }
 
 /** Stable content identity used only for replay/conflict detection. */

@@ -1,4 +1,5 @@
 import type { ToolName } from "@alpha-code/types"
+import { posix as paths } from "node:path"
 
 /** Retrieval tools whose results can support a claim. Completion text cannot. */
 const RETRIEVAL_TOOLS = new Set(["exec_command", "read_file", "search_files"])
@@ -6,7 +7,7 @@ const COMPLETION_TOOL = "attempt_completion"
 
 export interface QualityCall {
 	name: string
-	input?: { path?: unknown; files?: unknown; result?: unknown; cmd?: unknown; workdir?: unknown }
+	input?: { path?: unknown; files?: unknown; result?: unknown; outcome?: unknown; cmd?: unknown; workdir?: unknown }
 	result: string
 	isError: boolean
 }
@@ -14,6 +15,8 @@ export interface QualityCall {
 export interface QualityObservation {
 	answer: string
 	calls: readonly QualityCall[]
+	/** Captured fixture root. Missing provenance remains readable but cannot earn grounding credit. */
+	workspace?: string
 }
 
 export interface DimensionScore {
@@ -46,6 +49,8 @@ export interface QualityCase {
 	forbidden: readonly string[]
 	/** Span that must appear in a successful read or search result. */
 	evidence: string
+	/** Additional definition spans required to support the claim, rather than just identify an export. */
+	supportingEvidence?: readonly string[]
 	/** Fixture file whose successful tool result must contain the evidence. */
 	sourcePath: string
 	absence?: boolean
@@ -83,7 +88,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		requestLimit: 8,
 		expected: "700",
 		forbidden: ["900", "250"],
-		evidence: "item.cents * item.quantity",
+		evidence: "exports.total = (items) => items.reduce((sum, item) => sum + item.cents * item.quantity, 0)",
 		sourcePath: "live-quality/supported-total/invoice.cjs",
 		milestones: ["exec_command"],
 		maxSteps: 3,
@@ -101,6 +106,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		expected: "250",
 		forbidden: ["400"],
 		evidence: "module.exports = { total }",
+		supportingEvidence: ["function total() { return 250"],
 		sourcePath: "live-quality/exported-symbol/totals.cjs",
 		milestones: ["exec_command"],
 		maxSteps: 3,
@@ -140,46 +146,180 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 	},
 ]
 
-export function visibleAnswer(calls: readonly QualityCall[], transcript: string): string {
-	const completed = calls.flatMap((call) => {
-		const result = call.name === COMPLETION_TOOL ? call.input?.result : undefined
-		return typeof result === "string" && result.trim() ? [result] : []
-	})
-	return completed.length > 0 ? completed.join("\n") : transcript
+/** Calls belong to the final assistant response; earlier commentary and candidates are not final output. */
+export function visibleAnswer(calls: readonly QualityCall[], finalAssistantText: string): string {
+	if (finalAssistantText.trim()) return finalAssistantText
+	const completion = calls.at(-1)
+	if (
+		completion?.name !== COMPLETION_TOOL ||
+		completion.isError ||
+		(completion.input?.outcome !== undefined && completion.input.outcome !== "completed")
+	)
+		return ""
+	const result = completion.input?.result
+	if (typeof result !== "string" || !result.trim()) return ""
+	const receipt = completion.result.trim()
+	if (receipt === "" || receipt === "(tool did not return anything)") return result
+	try {
+		const terminal: unknown = JSON.parse(receipt)
+		return terminal !== null &&
+			typeof terminal === "object" &&
+			!Array.isArray(terminal) &&
+			"status" in terminal &&
+			terminal.status === "success" &&
+			"outcome" in terminal &&
+			terminal.outcome === "completed"
+			? result
+			: ""
+	} catch {
+		return ""
+	}
 }
 
-function sourceMatches(path: unknown, sourcePath: string): boolean {
-	if (typeof path !== "string") return false
-	const normalized = path.replaceAll("\\", "/").replace(/\/$/, "")
-	return normalized === sourcePath || normalized.endsWith(`/${sourcePath}`)
+function absolutePath(value: string, base?: string): string | undefined {
+	const normalized = value.replaceAll("\\", "/")
+	if (!paths.isAbsolute(normalized) && !/^[a-z]:\//i.test(normalized) && !base) return undefined
+	const resolved = paths.normalize(
+		base && !paths.isAbsolute(normalized) && !/^[a-z]:\//i.test(normalized) ? `${base}/${normalized}` : normalized,
+	)
+	return /^[a-z]:\//i.test(resolved) ? resolved.toLowerCase() : resolved
 }
 
-function retrievedSource(call: QualityCall, sourcePath: string): boolean {
+function sourceMatches(value: unknown, sourcePath: string, workspace: string, workdir = workspace): boolean {
+	return typeof value === "string" && absolutePath(value, workdir) === absolutePath(sourcePath, workspace)
+}
+
+/** Only simple read commands can establish provenance; paths in patterns or shell code cannot. */
+function commandWords(command: string): string[] | undefined {
+	const words: string[] = []
+	let word = ""
+	let quote: string | undefined
+	for (const character of command) {
+		if (quote) {
+			if (character === quote) quote = undefined
+			else word += character
+		} else if (character === '"' || character === "'") quote = character
+		else if (/[;&|<>\r\n`]/.test(character)) return undefined
+		else if (/\s/.test(character)) {
+			if (word) words.push(word)
+			word = ""
+		} else word += character
+	}
+	if (quote || command.includes("$(")) return undefined
+	if (word) words.push(word)
+	return words
+}
+
+function commandSource(command: string): string | undefined {
+	const words = commandWords(command)
+	const executable = words
+		?.shift()
+		?.replaceAll("\\", "/")
+		.split("/")
+		.at(-1)
+		?.replace(/\.exe$/i, "")
+	if (!words || (executable !== "rg" && executable !== "cut")) return undefined
+	const valueOptions =
+		executable === "rg"
+			? new Set([
+					"-e",
+					"--regexp",
+					"-f",
+					"--file",
+					"-g",
+					"--glob",
+					"--iglob",
+					"-t",
+					"--type",
+					"-T",
+					"--type-not",
+					"-A",
+					"--after-context",
+					"-B",
+					"--before-context",
+					"-C",
+					"--context",
+					"-m",
+					"--max-count",
+					"-M",
+					"--max-columns",
+					"--max-filesize",
+					"-E",
+					"--encoding",
+					"-j",
+					"--threads",
+				])
+			: new Set([
+					"-b",
+					"--bytes",
+					"-c",
+					"--characters",
+					"-f",
+					"--fields",
+					"-d",
+					"--delimiter",
+					"--output-delimiter",
+				])
+	const operands: string[] = []
+	let optionsEnded = false
+	let explicitPattern = false
+	for (let index = 0; index < words.length; index++) {
+		const word = words[index]!
+		if (!optionsEnded && word === "--") {
+			optionsEnded = true
+			continue
+		}
+		if (!optionsEnded && word.startsWith("-")) {
+			// Replacements, custom delimiters, and preprocessors can synthesize the
+			// expected definition without retrieving its original source text.
+			if (/^--(?:replace|pre|output-delimiter)(?:=|$)/.test(word)) return undefined
+			if (executable === "rg" && !word.startsWith("--")) {
+				for (const option of word.slice(1)) {
+					if (option === "r") return undefined
+					if (valueOptions.has(`-${option}`)) break
+				}
+			}
+			if (/^(?:-e.+|-(?:e|f)|--(?:regexp|file)(?:=.*)?)$/.test(word)) explicitPattern = true
+			if (valueOptions.has(word)) {
+				if (++index >= words.length) return undefined
+			} else if (/^-[A-Za-z]\d+$/.test(word) || word.includes("=")) continue
+			continue
+		}
+		operands.push(word)
+	}
+	if (executable === "rg" && !explicitPattern) operands.shift()
+	return operands.length === 1 ? operands[0] : undefined
+}
+
+function retrievedSource(call: QualityCall, sourcePath: string, workspace: string): boolean {
 	if (call.isError) return false
 	if (call.name === "exec_command") {
 		if (typeof call.input?.cmd !== "string") return false
-		const command = call.input.cmd.replaceAll("\\", "/")
-		if (command.includes(sourcePath)) return true
-		const parts = sourcePath.split("/")
-		const filename = parts.pop()
-		const directory = parts.join("/")
-		if (!filename || !directory || !sourceMatches(call.input.workdir, directory)) return false
-		return command.split(/[\s"']+/).includes(filename)
+		const workdir = typeof call.input.workdir === "string" ? absolutePath(call.input.workdir) : workspace
+		return workdir !== undefined && sourceMatches(commandSource(call.input.cmd), sourcePath, workspace, workdir)
 	}
 	if (call.name === "read_file") {
-		if (sourceMatches(call.input?.path, sourcePath)) return true
+		if (sourceMatches(call.input?.path, sourcePath, workspace)) return true
 		return (
 			Array.isArray(call.input?.files) &&
+			call.input.files.length === 1 &&
 			call.input.files.some(
 				(file) =>
 					file !== null &&
 					typeof file === "object" &&
-					sourceMatches((file as { path?: unknown }).path, sourcePath),
+					sourceMatches((file as { path?: unknown }).path, sourcePath, workspace),
 			)
 		)
 	}
-	if (call.name === "search_files") return call.result.replaceAll("\\", "/").includes(sourcePath)
+	if (call.name === "search_files") return sourceMatches(call.input?.path, sourcePath, workspace)
 	return false
+}
+
+function normalizedEvidence(value: string): string {
+	return value
+		.replace(/^(?:[^:\r\n]+:)*\s*\d+[:-]\s?/gm, "")
+		.replace(/\s+/g, " ")
+		.trim()
 }
 
 function score(partial: Omit<DimensionScore, "passed">): DimensionScore {
@@ -191,21 +331,28 @@ function stepsOf(calls: readonly QualityCall[]): QualityCall[] {
 }
 
 export function scoreGroundedness(
-	spec: Pick<QualityCase, "expected" | "forbidden" | "evidence" | "sourcePath" | "absence">,
+	spec: Pick<QualityCase, "expected" | "forbidden" | "evidence" | "supportingEvidence" | "sourcePath" | "absence">,
 	observation: QualityObservation,
 ): DimensionScore {
 	const answer = observation.answer.trim()
 	const claim =
 		spec.absence === true ? answer.toLowerCase() === spec.expected.toLowerCase() : answer === spec.expected
 	const decoysClear = spec.forbidden.every((item) => !answer.includes(item))
-	const evidenceFound = observation.calls.some(
-		(call) =>
-			RETRIEVAL_TOOLS.has(call.name) &&
-			retrievedSource(call, spec.sourcePath) &&
-			call.result.includes(spec.evidence),
+	const workspace = observation.workspace && absolutePath(observation.workspace)
+	const retrieved = workspace
+		? observation.calls
+				.filter((call) => RETRIEVAL_TOOLS.has(call.name) && retrievedSource(call, spec.sourcePath, workspace))
+				.map((call) => normalizedEvidence(call.result))
+		: []
+	const evidenceFound = [spec.evidence, ...(spec.supportingEvidence ?? [])].every((span) =>
+		retrieved.some((result) => result.includes(normalizedEvidence(span))),
 	)
 	const hits = [claim, decoysClear, evidenceFound].filter(Boolean).length
-	const missing = [claim ? "" : "claim", decoysClear ? "" : "decoy", evidenceFound ? "" : "evidence"].filter(Boolean)
+	const missing = [
+		claim ? "" : "claim",
+		decoysClear ? "" : "decoy",
+		evidenceFound ? "" : workspace ? "evidence" : "workspace provenance",
+	].filter(Boolean)
 	return score({
 		name: "groundedness",
 		dimension: "groundedness",

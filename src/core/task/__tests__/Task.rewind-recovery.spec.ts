@@ -10,6 +10,7 @@ import { createAgentLifecycleSnapshot } from "../../agent/lifecycle/reducer"
 import { TaskRewindStore } from "../../task-persistence/TaskRewindStore"
 import { buildCanonicalAssistantHistoryContent } from "../../task-persistence/canonicalAssistantHistory"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
 
 let directory: string
 const retainedUi: AlphaMessage[] = [{ ts: 100, type: "say", say: "text", text: "prompt" }]
@@ -18,6 +19,28 @@ const removedCall: ApiMessage = {
 	ts: 200,
 	role: "assistant",
 	content: [{ type: "tool_use", id: "deleted-call", name: "read_file", input: { path: "file.txt" } }],
+}
+
+const persistedCallFormats = [
+	{ name: "canonical call", call: removedCall.content[0] },
+	{
+		name: "legacy call",
+		call: { type: "tool_call", tool_call_id: "deleted-call", name: "read_file", arguments: { path: "file.txt" } },
+	},
+	{
+		name: "empty canonical alias",
+		call: { type: "tool_call", id: "", tool_call_id: "deleted-call", name: "read_file", arguments: {} },
+	},
+	{
+		name: "matching aliases",
+		call: { type: "tool_call", id: "deleted-call", tool_call_id: "deleted-call", name: "read_file", arguments: {} },
+	},
+] as const
+
+function persistedCall(call: unknown): ApiMessage {
+	const history: unknown = [{ ...removedCall, content: [call] }]
+	expect(invalidPersistedApiMessages(history)).toBeUndefined()
+	return (history as ApiMessage[])[0]
 }
 
 beforeEach(async () => {
@@ -227,30 +250,53 @@ describe("Task rewind/reload consistency", () => {
 		expect(replacement.apiConversationHistory).toEqual(retainedApi)
 	})
 
-	it("does not restore a deliberately deleted result for a retained historical tool call", async () => {
-		const { task, snapshot } = fixture()
-		snapshot.items = snapshot.items.map((item) =>
-			item.type === "tool_result" ? { ...item, output: "DELETED_OUTPUT" } : item,
-		)
-		task.apiConversationHistory.push({
-			role: "user",
-			ts: 250,
-			content: [{ type: "tool_result", tool_use_id: "deleted-call", content: "DELETED_OUTPUT" }],
-		})
-		await task.commitConversationRewind(retainedUi, [...retainedApi, removedCall])
-		await task.reconcileRecoveredCanonicalToolCallTranscript(snapshot)
-		expect(JSON.stringify(task.apiConversationHistory)).not.toContain("DELETED_OUTPUT")
-		expect(task.apiConversationHistory[2]).toMatchObject({
-			role: "user",
-			content: [expect.objectContaining({ type: "tool_result", tool_use_id: "deleted-call", is_error: true })],
-		})
-	})
+	it.each(persistedCallFormats)(
+		"does not restore a deliberately deleted result for a retained $name after reload",
+		async ({ call }) => {
+			const { task, store } = fixture()
+			const assistant = persistedCall(call)
+			const previous: ApiMessage[] = [
+				...retainedApi,
+				assistant,
+				{
+					role: "user",
+					ts: 250,
+					content: [{ type: "tool_result", tool_use_id: "deleted-call", content: "DELETED_OUTPUT" }],
+				},
+			]
+			const before = structuredClone(previous)
+			task.apiConversationHistory = previous
+			await task.commitConversationRewind(retainedUi, [...retainedApi, assistant])
+			expect(previous).toEqual(before)
+			expect((await store.read())?.exclusions).toEqual([{ runId: "run", turnId: "turn", toolCallIds: [] }])
+			const savedHistory = structuredClone(task.apiConversationHistory)
 
-	it("preserves recoverability for retained calls while excluding only removed calls", async () => {
+			const { task: replacement, snapshot } = fixture()
+			snapshot.items = snapshot.items.map((item) =>
+				item.type === "tool_result" ? { ...item, output: "DELETED_OUTPUT" } : item,
+			)
+			replacement.apiConversationHistory = savedHistory
+			await replacement.recoverConversationRewind()
+			await replacement.reconcileRecoveredCanonicalToolCallTranscript(snapshot)
+			expect(replacement.apiConversationHistory).toEqual(savedHistory)
+			expect(JSON.stringify(replacement.apiConversationHistory)).not.toContain("DELETED_OUTPUT")
+			expect(replacement.apiConversationHistory[2]).toMatchObject({
+				role: "user",
+				content: [
+					expect.objectContaining({ type: "tool_result", tool_use_id: "deleted-call", is_error: true }),
+				],
+			})
+		},
+	)
+
+	it.each(persistedCallFormats)("preserves recoverability for a retained $name", async ({ call }) => {
 		const { task, store, snapshot } = fixture()
-		await task.commitConversationRewind(retainedUi, [...retainedApi, removedCall])
+		const assistant = persistedCall(call)
+		task.apiConversationHistory = [...retainedApi, assistant]
+		await task.commitConversationRewind(retainedUi, [...retainedApi, assistant])
 		expect((await store.read())?.exclusions).toEqual([{ runId: "run", turnId: "turn", toolCallIds: [] }])
 		expect(await task.reconcileRecoveredCanonicalToolCallTranscript(snapshot)).toBe(true)
 		expect(task.apiConversationHistory).toHaveLength(3)
+		expect(task.apiConversationHistory[1]).toEqual(assistant)
 	})
 })

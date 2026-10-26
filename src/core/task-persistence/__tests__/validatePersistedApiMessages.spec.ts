@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest"
 
 import { invalidPersistedApiMessages } from "../validatePersistedApiMessages"
 
+describe("persisted carried user copies", () => {
+	it("accepts legacy user records and preserves optional producing-summary links across reload", () => {
+		const history = [
+			{ role: "user", content: "Historical user request" },
+			{ role: "user", content: "Carried user request", condenseCopyParent: "summary-1" },
+		]
+		const reloaded = JSON.parse(JSON.stringify(history))
+		expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
+		expect(reloaded).toEqual(history)
+	})
+
+	it.each(["", 7, null, {}])("rejects malformed producing-summary links (%j)", (condenseCopyParent) => {
+		expect(invalidPersistedApiMessages([{ role: "user", content: "Carried request", condenseCopyParent }])).toBe(
+			"message 0 has invalid carried user copy provenance",
+		)
+	})
+
+	it("rejects carried user copy provenance on assistant records", () => {
+		expect(
+			invalidPersistedApiMessages([{ role: "assistant", content: "Response", condenseCopyParent: "summary-1" }]),
+		).toBe("message 0 has invalid carried user copy provenance")
+	})
+})
+
 describe("persisted tool ID alias compatibility", () => {
 	it.each([
 		{ type: "tool_use", id: "private-first-id", tool_call_id: "private-other-id", name: "read_file", input: {} },

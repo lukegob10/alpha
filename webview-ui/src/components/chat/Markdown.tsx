@@ -1,6 +1,7 @@
 import { memo, type ReactNode } from "react"
 
 import { parseProposedPlan } from "@alpha/plan-mode"
+import { stripMemoryCitations } from "@alpha/memory-citations"
 import { useTranslation } from "react-i18next"
 
 import MarkdownBlock from "../common/MarkdownBlock"
@@ -23,8 +24,9 @@ export const Markdown = memo(
 			return null
 		}
 
-		const proposedPlan = parseProposedPlan(markdown, partial === true)
-		const renderedMarkdown = proposedPlan?.content ?? markdown
+		const visibleMarkdown = stripMemoryCitations(markdown, partial === true)
+		const proposedPlan = parseProposedPlan(visibleMarkdown, partial === true)
+		const renderedMarkdown = proposedPlan?.content ?? visibleMarkdown
 		const canImplementPlan = Boolean(onImplementPlan && proposedPlan?.complete && partial !== true)
 
 		return (

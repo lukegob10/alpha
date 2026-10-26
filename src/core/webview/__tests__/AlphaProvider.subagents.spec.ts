@@ -41,6 +41,7 @@ import type { GoalAccountingBinding } from "../../agent/GoalStepAccounting"
 import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
+import { captureVerificationContent } from "../../agent/VerificationScope"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -52,6 +53,9 @@ const makeProviderHarness = (
 	availableCapacity = 2,
 	routingSettings: {
 		subagentDefaultApiConfigId?: string
+		subagentDefaultModel?: string
+		subagentDefaultReasoningEffort?: "low" | "medium" | "high"
+		subagentsEnabled?: boolean
 		subagentAgentTypes?: Record<
 			string,
 			{
@@ -223,7 +227,7 @@ const makeMailboxRecipient = (provider: AlphaProvider, history: ApiMessage[] = [
 		apiConversationHistory: history,
 		providerRef: { deref: () => provider },
 		agentMessageAdmissions: new Set(),
-		agentMessageInbox: { deliver: async () => undefined },
+		agentMessageInbox: { deliver: async () => undefined, hasPending: () => false },
 		saveApiConversationHistory: vi.fn(async () => true),
 		addToApiConversationHistory: vi.fn(async (message: ApiMessage) => {
 			history.push(message)
@@ -310,6 +314,224 @@ describe("AlphaProvider root lifecycle ownership", () => {
 })
 
 describe("AlphaProvider bounded sub-agent preparation", () => {
+	it("cancels Worker Git preparation before creating a child Task", async () => {
+		const provider = makeProviderHarness()
+		Reflect.set(provider, "context", { globalStorageUri: { fsPath: "F:/storage" } })
+		const parent = makeParent()
+		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["value.ts"],
+			gitRelativeScope: ["value.ts"],
+			fileWriteScope: ["value.ts"],
+			gitRelativeFileScope: ["value.ts"],
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
+			{ objective: "Correct the source", agent_kind: "worker", write_scope: ["value.ts"] },
+		])
+		Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+		const cancellation = new AbortController()
+		let enterCreation!: () => void
+		const creationEntered = new Promise<void>((resolve) => (enterCreation = resolve))
+		const createTask = vi.fn()
+		Reflect.set(provider, "createTask", createTask)
+		vi.spyOn(managedSubagentWorktreeService, "create").mockImplementation(
+			async (_storage, _taskId, _scope, options) => {
+				expect(options?.signal).toBe(cancellation.signal)
+				enterCreation()
+				return await new Promise<never>((_resolve, reject) =>
+					options!.signal.addEventListener("abort", () => reject(options!.signal.reason), { once: true }),
+				)
+			},
+		)
+		const run = Reflect.get(provider, "runSubagentEnvelope").call(
+			provider,
+			prepared.envelopes[0],
+			cancellation.signal,
+		) as Promise<unknown>
+		void run.catch(() => undefined)
+		await creationEntered
+		const reason = new Error("Parent stopped during Git preparation")
+		cancellation.abort(reason)
+		await expect(run).rejects.toBe(reason)
+		expect(createTask).not.toHaveBeenCalled()
+	})
+
+	it("publishes durable changed-file metadata for an inherited-permission Review result", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-shared-review-result-"))
+		try {
+			const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+			Reflect.set(provider, "context", { globalStorageUri: { fsPath: workspace } })
+			const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "shared_correction",
+				agent_type: "review",
+				message: "Implement the authorized source correction",
+			})
+			await Reflect.get(provider, "ensurePreparedSubagentControlRecords").call(provider, parent, prepared)
+			Reflect.set(
+				provider,
+				"createTask",
+				vi.fn(async (_text: string, _images: unknown, _parent: unknown, options: Record<string, unknown>) => {
+					const child = Object.assign(new EventEmitter(), options, {
+						taskId: prepared.envelopes[0].id,
+						cwd: workspace,
+						clineMessages: [{ type: "say", say: "completion_result", text: "Corrected the source." }],
+						getTokenUsage: () => ({ totalTokensIn: 1, totalTokensOut: 1 }),
+						getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+						finalizeSubagentHistory: vi.fn(async () => undefined),
+						start: () => {
+							void (async () => {
+								await provider.reservePrimaryMutation(child as unknown as Task, "review-edit")
+								await fs.writeFile(path.join(workspace, "value.ts"), "export const value = 2\n")
+								await provider.recordPrimaryMutation(
+									child as unknown as Task,
+									await captureVerificationContent(workspace, ["value.ts"]),
+									false,
+									"review-edit",
+								)
+								child.emit(AlphaCodeEventName.TaskCompleted, child.taskId, child.getTokenUsage())
+							})().catch((error: unknown) => child.emit("error", error))
+						},
+					})
+					return child
+				}),
+			)
+			const result = await Reflect.get(provider, "runSubagentEnvelope").call(
+				provider,
+				prepared.envelopes[0],
+				new AbortController().signal,
+			)
+			expect(result).toMatchObject({ status: "completed", changedFiles: ["value.ts"] })
+			expect(prepared.group.agents[0].changedFiles).toEqual(["value.ts"])
+			expect(prepared.group.agents[0].requiresParentVerification).toBe(true)
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["explorer", "review"])(
+		"allows an inherited-permission %s to delegate a Worker within its captured authority",
+		async (agentType) => {
+			const provider = makeProviderHarness(3, { maxConcurrentSubagents: 3, approvalMode: "bypass" })
+			const root = makeParent()
+			const direct = await provider.prepareSubagentGroup(root as unknown as Task, {
+				task_name: "authorized_parent",
+				agent_type: agentType,
+				message: "Coordinate the authorized correction",
+			})
+			const manifest = Reflect.get(provider, "subagentDescriptors").get(direct.envelopes[0].id).contextManifest
+			const parent = {
+				...makeParent(),
+				taskId: direct.envelopes[0].id,
+				rootTaskId: root.taskId,
+				taskKind: "subagent",
+				subagentRole: direct.group.agents[0].role,
+				subagentContextManifest: manifest,
+			}
+			vi.spyOn(managedSubagentWorktreeService, "validateScope").mockImplementation(
+				async (workspacePath, scope) => ({
+					gitRoot: workspacePath,
+					logicalWorkspace: workspacePath,
+					logicalWorkspaceFromRoot: "",
+					writeScope: scope,
+					gitRelativeScope: scope,
+					fileWriteScope: [],
+					gitRelativeFileScope: [],
+				}),
+			)
+
+			const nested = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "authorized_worker",
+				agent_type: "worker",
+				message: "Implement the authorized correction",
+			})
+			expect(nested.envelopes[0]).toMatchObject({
+				parentTaskId: parent.taskId,
+				rootTaskId: root.taskId,
+				depth: 2,
+				policy: { mutate: true, delegate: true },
+				scope: { workspaceRoots: [path.resolve(parent.cwd)], allowedPaths: [path.resolve(parent.cwd)] },
+			})
+		},
+	)
+
+	it.each(["explorer", "review"])("inherits Full Access and the captured tool catalog for %s", async (agentType) => {
+		const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+		const parent = makeParent()
+		const instructions = await parent.captureEffectiveInheritedInstructions()
+		Object.assign(parent, {
+			getSubagentInvocationContext: () => ({
+				mode: "code",
+				apiConfiguration: parent.apiConfiguration,
+				apiConfigName: "Parent",
+				modelRoute: {
+					source: "parent",
+					resolution: "selected",
+					profileName: "Parent",
+					provider: "openai",
+					modelId: "alpha-model",
+				},
+				history: [],
+				finalAssistantMessageIndexes: [],
+				instructions,
+				allowedTools: [
+					"exec_command",
+					"apply_patch",
+					"use_mcp_tool",
+					"mcp__docs__search",
+					"create_ticket",
+					"spawn_agent",
+				],
+			}),
+		})
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "inherit_permissions",
+			agent_type: agentType,
+			message: "Run the requested checks and implement the authorized correction",
+		})
+		const policy = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+			.runtimePolicy
+		expect(policy).toMatchObject({
+			authorityModel: "parent",
+			mode: "code",
+			execute: true,
+			mutate: true,
+			network: true,
+			externalSideEffects: true,
+			writeScope: ["."],
+			autoApproval: { alwaysAllowWrite: true, alwaysAllowExecute: true, alwaysAllowMcp: true },
+		})
+		expect(policy.allowedTools).toEqual(
+			expect.arrayContaining(["apply_patch", "use_mcp_tool", "mcp--docs--search", "create_ticket"]),
+		)
+		expect(policy.allowedTools).not.toContain("delete_ticket")
+		expect(prepared.requiresExplicitApproval).toBe(false)
+	})
+
+	it("keeps a new agent in its parent's Plan mode and write ceiling", async () => {
+		const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+		const parent = makeParent()
+		parent.getTaskMode.mockResolvedValue("architect")
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "plan_inspection",
+			agent_type: "explorer",
+			message: "Inspect the implementation",
+		})
+		const policy = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+			.runtimePolicy
+		expect(policy).toMatchObject({
+			authorityModel: "parent",
+			mode: "architect",
+			mutate: false,
+			network: false,
+			externalSideEffects: false,
+		})
+		expect(policy.allowedTools).not.toContain("apply_patch")
+		expect(policy.allowedTools).not.toContain("use_mcp_tool")
+	})
 	it.each(["budget_limited", "paused", "complete", "replacement"] as const)(
 		"retains the invoking goal owner through queued launch after %s",
 		async (stop) => {
@@ -466,7 +688,24 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		expect(prepared.requiresExplicitApproval).toBe(true)
 	})
 
-	it("applies a named agent type while letting the spawn model override its configured model", async () => {
+	it("does not freeze unavailable parent reasoning as an explicit custom agent override", async () => {
+		const provider = makeProviderHarness(2, {
+			subagentAgentTypes: {
+				researcher: { description: "Inspects code", role: "explore", model: "configured-model" },
+			},
+		})
+		const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+			task_name: "research_agent",
+			message: "Inspect the agent loop",
+			agent_type: "researcher",
+		})
+		const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
+		expect(descriptor.modelRoute.apiConfiguration.openAiModelId).toBe("configured-model")
+		expect(descriptor.modelRoute.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(descriptor.modelRoute.apiConfiguration.enableReasoningEffort).toBeUndefined()
+	})
+
+	it("applies a named agent type after spawn defaults while inheriting the parent provider", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -504,13 +743,13 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			role: "explore",
 			modelRoute: {
 				source: "spawn",
-				profileName: "Research profile",
-				modelId: "spawn-model",
-				requestedModelId: "spawn-model",
-				requestedReasoningEffort: "high",
+				profileName: "Parent",
+				modelId: "configured-model",
+				requestedModelId: "configured-model",
+				requestedReasoningEffort: "medium",
 			},
 		})
-		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("research-profile")
+		expect(prepared.group.agents[0].modelRoute?.profileId).toBeUndefined()
 		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
 		expect(descriptor.inheritedInstructions).toContain("Cite the inspected source paths.")
 		expect(descriptor.contextManifest.instructions.sources).toEqual(
@@ -558,23 +797,24 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			})
 			const route = prepared.group.agents[0].modelRoute
 			expect(route).toMatchObject({
-				profileId: "type-profile",
-				profileName: "Auditor",
-				provider: "vertex",
+				profileId: undefined,
+				profileName: "Parent",
+				provider: "openai",
 				modelId: "configured-type-model",
 				requestedReasoningEffort: "medium",
 			})
 			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
 			expect(descriptor.modelRoute.apiConfiguration).toMatchObject({
-				apiProvider: "vertex",
-				apiModelId: "configured-type-model",
-				vertexJsonCredentials: "type-secret",
+				apiProvider: "openai",
+				openAiModelId: "configured-type-model",
 				reasoningEffort: "medium",
 			})
-			expect(prepared.requiresExplicitApproval).toBe(true)
+			expect(prepared.inheritsParentPermissions).toBe(true)
+			expect(prepared.requiresExplicitApproval).toBe(false)
 			expect(descriptor.contextManifest.runtimePolicy).toMatchObject({
-				mutate: false,
-				execute: false,
+				authorityModel: "parent",
+				mutate: true,
+				execute: true,
 				autoApproval: { alwaysAllowWrite: false, alwaysAllowExecute: false, alwaysAllowSubagents: false },
 			})
 			expect(JSON.stringify(prepared.group)).not.toContain("type-secret")
@@ -584,33 +824,30 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 	it.each([
 		["model", "spawn-model", "medium"],
 		["effort", "configured-model", "high"],
-	] as const)(
-		"allows a spawn %s override while retaining the other named type default",
-		async (override, model, effort) => {
-			const provider = makeProviderHarness(2, {
-				subagentAgentTypes: {
-					researcher: {
-						description: "Inspects code",
-						role: "review",
-						model: "configured-model",
-						reasoningEffort: "medium",
-					},
+	] as const)("applies the custom agent after a spawn %s choice", async (override, model, effort) => {
+		const provider = makeProviderHarness(2, {
+			subagentAgentTypes: {
+				researcher: {
+					description: "Inspects code",
+					role: "review",
+					model: "configured-model",
+					reasoningEffort: "medium",
 				},
-			})
-			const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
-				task_name: "typed_override",
-				message: "Inspect the effective model settings",
-				agent_type: "researcher",
-				fork_turns: "none",
-				...(override === "model" ? { model } : { reasoning_effort: effort }),
-			})
-			expect(prepared.group.agents[0].modelRoute).toMatchObject({
-				provider: "openai",
-				modelId: model,
-				requestedReasoningEffort: effort,
-			})
-		},
-	)
+			},
+		})
+		const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+			task_name: "typed_override",
+			message: "Inspect the effective model settings",
+			agent_type: "researcher",
+			fork_turns: "none",
+			...(override === "model" ? { model } : { reasoning_effort: effort }),
+		})
+		expect(prepared.group.agents[0].modelRoute).toMatchObject({
+			provider: "openai",
+			modelId: "configured-model",
+			requestedReasoningEffort: "medium",
+		})
+	})
 
 	it("rejects an unconfigured named agent type before reserving capacity", async () => {
 		const provider = makeProviderHarness()
@@ -1020,7 +1257,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 				read: true,
 				execute: false,
 				mutate: false,
-				delegate: false,
+				delegate: true,
 				network: false,
 				externalSideEffects: false,
 			})
@@ -1029,7 +1266,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 				provider: "openai",
 				model: "alpha-model",
 			})
-			expect(envelope.budget.timeoutMs).toBe(120_000)
+			expect(envelope.budget.timeoutMs).toBeNull()
 		}
 		expect(prepared.group.agents.map((agent) => agent.nickname)).toEqual([
 			SUBAGENT_CALLSIGNS[0],
@@ -1240,6 +1477,7 @@ If complete, use attempt_completion.
 		const capturedText = `CAPTURED_PARENT_CONTEXT ${"complete context ".repeat(2_000)} END_CAPTURED_CONTEXT`
 		const captured = {
 			mode: "code",
+			reasoningPreference: { kind: "effort", effort: "high" },
 			apiConfiguration: { apiProvider: "openai", openAiModelId: "captured-model" },
 			apiConfigName: "Captured profile",
 			modelRoute: {
@@ -1284,6 +1522,7 @@ If complete, use attempt_completion.
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
 		parent.apiConversationHistory = [{ role: "user", content: "LIVE_REPLACEMENT" }]
 		parent.apiConfiguration.openAiModelId = "live-model"
+		Object.assign(parent, { reasoningPreference: { kind: "off" } })
 		parent.getTaskMode.mockResolvedValue("architect")
 		parent.captureEffectiveInheritedInstructions.mockResolvedValue({
 			effectiveText: "Live changed instructions",
@@ -1298,6 +1537,8 @@ If complete, use attempt_completion.
 			profileName: "Captured profile",
 		})
 		expect(descriptor.inheritedInstructions).toBe("Captured applied instructions")
+		expect(descriptor.contextManifest).not.toHaveProperty("personality")
+		expect(descriptor.modelRoute.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
 		expect(descriptor.contextManifest.instructions.sources).toContainEqual(
 			expect.objectContaining({ ref: "captured:AGENTS.md" }),
 		)
@@ -1312,53 +1553,122 @@ If complete, use attempt_completion.
 	})
 
 	it.each([
-		{ apiProvider: "vertex", apiModelId: "other-provider-model" },
-		{ apiProvider: "openai", openAiModelId: "other-model" },
-		{ apiProvider: "openai", openAiModelId: "alpha-model" },
-	])("rebuilds forked history for a configured route change: %j", async (childConfiguration) => {
-		const provider = makeProviderHarness(2, { subagentApiConfigByRole: { review: "different-route" } }, [
-			{ id: "different-route", name: "Configured child", ...childConfiguration },
-		])
-		const parent = makeParent()
+		{ label: "captured parent", spawnEffort: undefined, agentEffort: undefined, expected: "high" },
+		{ label: "explicit spawn", spawnEffort: "low", agentEffort: undefined, expected: "low" },
+		{ label: "configured agent", spawnEffort: "low", agentEffort: "medium", expected: "medium" },
+	] as const)("launches with the $label reasoning selection after the live parent changes", async (testCase) => {
+		const provider = makeProviderHarness(2, {
+			subagentAgentTypes: {
+				inspector: { description: "Inspects code", role: "review", reasoningEffort: testCase.agentEffort },
+			},
+		})
+		const parent = Object.assign(makeParent(), { reasoningPreference: { kind: "effort", effort: "high" } })
+		const instructions = await parent.captureEffectiveInheritedInstructions()
 		Object.assign(parent, {
-			getSubagentInvocationContext: vi.fn(() => ({
+			getSubagentInvocationContext: () => ({
 				mode: "code",
-				apiConfiguration: structuredClone(parent.apiConfiguration),
+				apiConfiguration: { ...parent.apiConfiguration, reasoningEffort: "high" },
 				apiConfigName: "Parent",
+				reasoningPreference: { kind: "effort", effort: "high" },
 				modelRoute: {
 					source: "parent",
 					resolution: "selected",
 					provider: "openai",
 					modelId: "alpha-model",
-					profileId: "parent-route",
 					profileName: "Parent",
 				},
-				history: [
-					{ role: "user", content: "Inspect the requested change" },
-					{
-						role: "assistant",
-						content: "Portable final response",
-						phase: "final_answer",
-						vscodeLmStatefulMarker: "parent-state",
-						previous_response_id: "parent-response-chain",
-						internal_chat_message_metadata_passthrough: { content_item_kinds: ["model-specific"] },
-					},
-				],
-				finalAssistantMessageIndexes: [1],
-				instructions: { effectiveText: "Captured instructions", sources: [] },
-			})),
+				history: [],
+				finalAssistantMessageIndexes: [],
+				instructions,
+			}),
 		})
-		const prepared = await provider.prepareSubagentGroup(parent as any, [
-			{ objective: "Inspect forked history", agent_kind: "review", fork_turns: "all" },
-		])
-		const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
-		expect(descriptor.historyFork).toMatchObject({ kind: "native", requiresContextRebuild: true })
-		expect(descriptor.historyFork.messages).toEqual([
-			{ role: "user", content: "Inspect the requested change", input_origin: "agent" },
-			{ role: "assistant", content: "Portable final response", input_origin: "agent", phase: "final_answer" },
-		])
-		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("different-route")
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+			task_name: "captured_reasoning",
+			message: "Inspect the effective reasoning selection",
+			agent_type: "inspector",
+			fork_turns: "none",
+			...(testCase.spawnEffort ? { reasoning_effort: testCase.spawnEffort } : {}),
+		})
+		Object.assign(parent, { reasoningPreference: { kind: "off" } })
+		const create = vi.spyOn(provider, "createTask").mockImplementation(async (_text, _images, _parent, options) => {
+			expect(options?.apiConfiguration?.reasoningEffort).toBe(testCase.expected)
+			expect(options?.reasoningPreference).toEqual(
+				testCase.label === "captured parent" ? { kind: "effort", effort: "high" } : { kind: "default" },
+			)
+			const emitter = new EventEmitter()
+			return Object.assign(emitter, {
+				taskId: options?.taskId,
+				taskKind: "subagent",
+				rootTaskId: parent.taskId,
+				clineMessages: [{ type: "say", say: "completion_result", text: "Selection inspected." }],
+				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0, totalCost: 0 }),
+				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+				finalizeSubagentHistory: vi.fn(async () => undefined),
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn(async () => undefined),
+				start: () => emitter.emit(AlphaCodeEventName.TaskCompleted, options?.taskId, {}),
+			}) as unknown as Task
+		})
+		Reflect.get(provider, "finalizePreparedSubagentAuthorization").call(provider, prepared)
+		await Reflect.get(provider, "runSubagentEnvelope").call(
+			provider,
+			prepared.envelopes[0],
+			new AbortController().signal,
+		)
+		expect(create).toHaveBeenCalledOnce()
 	})
+
+	it.each([
+		{ apiProvider: "vertex", apiModelId: "other-provider-model" },
+		{ apiProvider: "openai", openAiModelId: "other-model" },
+		{ apiProvider: "openai", openAiModelId: "alpha-model" },
+	])(
+		"retains parent history when obsolete profile settings request a route change: %j",
+		async (childConfiguration) => {
+			const provider = makeProviderHarness(2, { subagentApiConfigByRole: { review: "different-route" } }, [
+				{ id: "different-route", name: "Configured child", ...childConfiguration },
+			])
+			const parent = makeParent()
+			Object.assign(parent, {
+				getSubagentInvocationContext: vi.fn(() => ({
+					mode: "code",
+					apiConfiguration: structuredClone(parent.apiConfiguration),
+					apiConfigName: "Parent",
+					modelRoute: {
+						source: "parent",
+						resolution: "selected",
+						provider: "openai",
+						modelId: "alpha-model",
+						profileId: "parent-route",
+						profileName: "Parent",
+					},
+					history: [
+						{ role: "user", content: "Inspect the requested change" },
+						{
+							role: "assistant",
+							content: "Portable final response",
+							phase: "final_answer",
+							vscodeLmStatefulMarker: "parent-state",
+							previous_response_id: "parent-response-chain",
+							internal_chat_message_metadata_passthrough: { content_item_kinds: ["model-specific"] },
+						},
+					],
+					finalAssistantMessageIndexes: [1],
+					instructions: { effectiveText: "Captured instructions", sources: [] },
+				})),
+			})
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect forked history", agent_kind: "review", fork_turns: "all" },
+			])
+			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
+			expect(descriptor.historyFork).toMatchObject({ kind: "native", requiresContextRebuild: true })
+			expect(descriptor.historyFork.messages[1]).toMatchObject({
+				internal_chat_message_metadata_passthrough: { content_item_kinds: ["model-specific"] },
+			})
+			expect(descriptor.historyFork.messages[1]).not.toHaveProperty("previous_response_id")
+			expect(prepared.group.agents[0].modelRoute?.provider).toBe("openai")
+		},
+	)
 
 	it("does not replace an explicitly unnamed invoking profile with a live profile name", async () => {
 		const provider = makeProviderHarness()
@@ -2306,7 +2616,7 @@ If complete, use attempt_completion.
 		).rejects.toThrow('Sub-agent task_name "backend_review" is already in use')
 	})
 
-	it("applies saved role profiles without mutating the parent route or exposing credentials", async () => {
+	it("ignores obsolete role profiles and inherits the parent without exposing credentials", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -2339,19 +2649,19 @@ If complete, use attempt_completion.
 		])
 
 		expect(prepared.envelopes.map((envelope) => envelope.modelRoute)).toEqual([
-			expect.objectContaining({ provider: "openai", model: "fast/model" }),
-			expect.objectContaining({ provider: "vertex", model: "review-model" }),
+			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
+			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
 		])
 		expect(prepared.group.agents.map((agent) => agent.modelRoute)).toEqual([
-			expect.objectContaining({ source: "role", profileName: "Fast Explorer", modelId: "fast/model" }),
-			expect.objectContaining({ source: "role", profileName: "Deep Reviewer", modelId: "review-model" }),
+			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
+			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
 		])
 		expect(JSON.stringify(prepared.group)).not.toContain("secret")
 		expect(parent.apiConfiguration).toEqual(originalParentConfiguration)
 	})
 
 	it.each(["explore", "review"] as const)(
-		"uses the configured default profile for an unrouted %s role",
+		"ignores obsolete profile defaults for an unrouted %s role",
 		async (role) => {
 			const provider = makeProviderHarness(2, { subagentDefaultApiConfigId: "default-id" }, [
 				{ id: "default-id", name: "Default child", apiProvider: "openai", openAiModelId: "default-model" },
@@ -2360,10 +2670,9 @@ If complete, use attempt_completion.
 				{ objective: "Inspect the configured default", agent_kind: role },
 			])
 			expect(prepared.group.agents[0].modelRoute).toMatchObject({
-				source: "default",
-				profileId: "default-id",
-				profileName: "Default child",
-				modelId: "default-model",
+				source: "parent",
+				profileName: "Parent",
+				modelId: "alpha-model",
 			})
 		},
 	)
@@ -2372,8 +2681,8 @@ If complete, use attempt_completion.
 		["missing-id", "missing"],
 		["unconfigured-id", "unconfigured"],
 	] as const)(
-		"records the %s role profile fallback instead of silently selecting another saved route",
-		async (profileId, reason) => {
+		"ignores an obsolete %s role profile instead of selecting another provider",
+		async (profileId, _reason) => {
 			const provider = makeProviderHarness(
 				2,
 				{ subagentDefaultApiConfigId: "default-id", subagentApiConfigByRole: { review: profileId } },
@@ -2386,10 +2695,8 @@ If complete, use attempt_completion.
 				{ objective: "Inspect the unavailable profile", agent_kind: "review" },
 			])
 			expect(prepared.group.agents[0].modelRoute).toMatchObject({
-				source: "role",
-				resolution: "fallback",
-				requestedProfileId: profileId,
-				fallbackReason: reason,
+				source: "parent",
+				resolution: "selected",
 				profileName: "Parent",
 				modelId: "alpha-model",
 			})
@@ -2491,6 +2798,17 @@ If complete, use attempt_completion.
 				reasoning_effort: "high",
 			})
 			const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+			// Simulate a legacy route captured before profile routing was retired.
+			manifest.modelRoute = {
+				source: "role",
+				resolution: "selected",
+				profileId: "captured-id",
+				profileName: "Captured child",
+				provider: "vertex",
+				modelId: "captured-model",
+				requestedModelId: "captured-model",
+				requestedReasoningEffort: "high",
+			}
 			settings.subagentApiConfigByRole.review = "replacement-id"
 			profiles[0].name = "Renamed captured child"
 			profiles[0].apiModelId = "changed-profile-model"
@@ -2531,6 +2849,14 @@ If complete, use attempt_completion.
 			{ objective: "Inspect captured route", agent_kind: "review" },
 		])
 		const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
+		manifest.modelRoute = {
+			source: "default",
+			resolution: "selected",
+			profileId: "captured-id",
+			profileName: "Captured child",
+			provider: "openai",
+			modelId: "captured-model",
+		}
 		Object.assign(profiles[0], changedConfiguration)
 		await expect(
 			(provider as any).restoreCapturedSubagentModelRoute(
@@ -2543,7 +2869,7 @@ If complete, use attempt_completion.
 	})
 
 	it("captures configured Worker routing before an awaited workspace-scope check", async () => {
-		const settings = { subagentApiConfigByRole: { worker: "captured-worker" } }
+		const settings = { subagentDefaultModel: "captured-model" }
 		const provider = makeProviderHarness(2, settings, [
 			{ id: "captured-worker", name: "Captured Worker", apiProvider: "openai", openAiModelId: "captured-model" },
 			{ id: "later-worker", name: "Later Worker", apiProvider: "openai", openAiModelId: "later-model" },
@@ -2572,12 +2898,11 @@ If complete, use attempt_completion.
 			fork_turns: "none",
 		})
 		await checkingScope
-		settings.subagentApiConfigByRole.worker = "later-worker"
+		settings.subagentDefaultModel = "later-model"
 		release()
 		const prepared = await preparing
 		expect(prepared.group.agents[0].modelRoute).toMatchObject({
-			source: "role",
-			profileId: "captured-worker",
+			source: "spawn",
 			modelId: "captured-model",
 		})
 	})
@@ -2597,7 +2922,7 @@ If complete, use attempt_completion.
 		})
 	})
 
-	it("launches concurrent children with their captured saved role routes", async () => {
+	it("launches concurrent children with the inherited parent route", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{ subagentApiConfigByRole: { explore: "explore-id", review: "review-id" } },
@@ -2672,20 +2997,13 @@ If complete, use attempt_completion.
 		expect(peak).toBe(2)
 		expect(result.status).toBe("completed")
 		expect(launchOptions).toHaveLength(2)
-		expect(launchOptions.find((options) => options.subagentRole === "explore")).toMatchObject({
-			taskApiConfigName: "Fast Explorer",
-			apiConfiguration: { apiProvider: "openai", openAiModelId: "fast/model", openAiApiKey: "explore-secret" },
-			subagentModelRoute: { source: "role", modelId: "fast/model" },
-		})
-		expect(launchOptions.find((options) => options.subagentRole === "review")).toMatchObject({
-			taskApiConfigName: "Deep Reviewer",
-			apiConfiguration: {
-				apiProvider: "vertex",
-				apiModelId: "review-model",
-				vertexJsonCredentials: "review-secret",
-			},
-			subagentModelRoute: { source: "role", modelId: "review-model" },
-		})
+		for (const options of launchOptions) {
+			expect(options).toMatchObject({
+				taskApiConfigName: "Parent",
+				apiConfiguration: parentSnapshot,
+				subagentModelRoute: { source: "parent", modelId: "alpha-model" },
+			})
+		}
 		expect(parent.apiConfiguration).toEqual(parentSnapshot)
 	})
 
@@ -2760,7 +3078,7 @@ If complete, use attempt_completion.
 			stopReason: "output_token_limit",
 			summary: "Sub-agent output token limit exceeded (11/10).",
 		},
-	] as const)("stops a child deterministically at its frozen $label token limit", async (testCase) => {
+	] as const)("completes a child despite a retired $label token limit", async (testCase) => {
 		const provider = makeProviderHarness(2, testCase.settings)
 		const parent = makeParent()
 		let child: any
@@ -2795,19 +3113,15 @@ If complete, use attempt_completion.
 
 		const result = await (provider as any).runSubagentEnvelope(prepared.envelopes[0], new AbortController().signal)
 
-		expect(result).toMatchObject({
-			status: "cancelled",
-			stopReason: testCase.stopReason,
-			summary: testCase.summary,
-		})
-		expect(prepared.group.agents[0]).toMatchObject({
-			status: "cancelled",
-			stopReason: testCase.stopReason,
-			error: testCase.summary,
-		})
-		expect(child.cancelCurrentRequest).toHaveBeenCalledOnce()
-		expect(child.abortTask).toHaveBeenCalledOnce()
-		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith("cancelled", testCase.summary, testCase.stopReason)
+		expect(result).toMatchObject({ status: "completed", stopReason: "completed" })
+		expect(prepared.group.agents[0]).toMatchObject({ status: "completed", stopReason: "completed" })
+		expect(child.cancelCurrentRequest).not.toHaveBeenCalled()
+		expect(child.abortTask).not.toHaveBeenCalled()
+		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith(
+			"completed",
+			"This report exceeds the frozen limit.",
+			"completed",
+		)
 	})
 
 	it("lets a default-budget child continue after three ordinary model requests", async () => {
@@ -3510,7 +3824,7 @@ If complete, use attempt_completion.
 		expect(after.manifestDigest).not.toBe(before.manifestDigest)
 	})
 
-	it("auto-authorizes proactive policy and trusted per-task opt-in without pending approval", async () => {
+	it("ignores the retired proactive setting while preserving session grants and task opt-in", async () => {
 		const autoApproval = {
 			approvalMode: "auto" as const,
 			autoApprovalEnabled: true,
@@ -3530,9 +3844,9 @@ If complete, use attempt_completion.
 		).contextManifest
 		expect(proactive.requiresExplicitApproval).toBe(false)
 		expect(proactiveManifest.orchestration.delegationPolicy).toMatchObject({
-			policy: "proactive",
-			source: "settings",
-			authorization: "proactive-policy",
+			policy: "explicit-only",
+			source: "default",
+			authorization: "session-policy",
 			explicitUserRequest: false,
 		})
 		expect(finalizedSubagentContextManifestSchema.safeParse(proactiveManifest).success).toBe(true)
@@ -3813,7 +4127,7 @@ If complete, use attempt_completion.
 		expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(false)
 	})
 
-	it("allows read-only descendants within frozen depth while denying depth, delegation, and Worker widening", async () => {
+	it("permits nested read-only agents without a depth ceiling while denying authority widening", async () => {
 		const provider = makeProviderHarness(2, {
 			maxConcurrentSubagents: 3,
 			subagentDelegationPolicy: "proactive",
@@ -3841,8 +4155,8 @@ If complete, use attempt_completion.
 			rootTaskId: root.taskId,
 			parentTaskId: directTaskId,
 			depth: 2,
-			policy: { read: true, execute: false, mutate: false, delegate: false },
-			budget: { maxDepth: 2, maxConcurrency: 3 },
+			policy: { read: true, execute: false, mutate: false, delegate: true },
+			budget: { maxDepth: null, maxConcurrency: 3 },
 		})
 
 		const nestedTaskId = nested.envelopes[0].id
@@ -3854,11 +4168,12 @@ If complete, use attempt_completion.
 			subagentContextManifest: (provider as any).subagentDescriptors.get(nestedTaskId).contextManifest,
 			subagentDelegationPolicy: "proactive",
 		}
-		await expect(
-			provider.prepareSubagentGroup(grandchild as any, [
-				{ objective: "Exceed the frozen depth", agent_kind: "explore" },
-			]),
-		).rejects.toThrow("depth_limit")
+		;(provider as any).releaseSubagentGroup(direct.group.groupId)
+		const third = await provider.prepareSubagentGroup(grandchild as any, [
+			{ objective: "Inspect a deeper layer", agent_kind: "explore" },
+		])
+		expect(third.envelopes[0]).toMatchObject({ depth: 3, budget: { maxDepth: null } })
+		;(provider as any).releaseSubagentGroup(third.group.groupId)
 		await expect(
 			provider.prepareSubagentGroup(child as any, [
 				{
@@ -3933,7 +4248,7 @@ If complete, use attempt_completion.
 			rootTaskId: root.taskId,
 			parentTaskId: directTaskId,
 			depth: 2,
-			policy: { read: true, execute: true, mutate: true, delegate: false },
+			policy: { read: true, execute: true, mutate: true, delegate: true },
 			scope: {
 				workspaceRoots: [expect.stringMatching(/subagent-worktrees[\\/]outer-worker$/)],
 				allowedPaths: [expect.stringMatching(/src[\\/]nested\.ts$/)],
@@ -4870,9 +5185,9 @@ If complete, use attempt_completion.
 		const expectedLimits = {
 			maxConcurrentTasks: 3,
 			maxConcurrentSubagents: 3,
-			maxInputTokens: 250_000,
-			maxOutputTokens: 16_000,
-			roleTimeoutsMs: { explore: 120_000, review: 120_000, worker: 900_000 },
+			maxInputTokens: null,
+			maxOutputTokens: null,
+			roleTimeoutsMs: null,
 			rootTokenBudget: null,
 			rootCostBudget: null,
 		}
@@ -4881,8 +5196,8 @@ If complete, use attempt_completion.
 		expect(beforePreparation.agents).toEqual([])
 		expect(beforePreparation.rootOrchestration).toEqual({
 			source: "configured",
-			delegationPolicy: "proactive",
-			maxDepth: 2,
+			delegationPolicy: "explicit-only",
+			maxDepth: null,
 			limits: expectedLimits,
 		})
 		expect(subagentRootOrchestrationSummarySchema.safeParse(beforePreparation.rootOrchestration).success).toBe(true)
@@ -4901,8 +5216,8 @@ If complete, use attempt_completion.
 		const afterPreparation = (await provider.listAgents(parent as any)) as any
 		expect(afterPreparation.rootOrchestration).toEqual({
 			source: "frozen",
-			delegationPolicy: "proactive",
-			maxDepth: 2,
+			delegationPolicy: "explicit-only",
+			maxDepth: null,
 			limits: expectedLimits,
 		})
 	})
@@ -5587,7 +5902,7 @@ If complete, use attempt_completion.
 			rootTaskId: root.rootTaskId,
 			reloadedAt: expect.any(Number),
 			capacity: { active: 1, queued: 0, terminal: 1, limit: 3 },
-			budgets: { tokenLimit: 50_000, costLimit: 5 },
+			budgets: { tokenLimit: null, costLimit: null },
 		})
 		expect(projection.nodes).toEqual([
 			expect.objectContaining({ taskId: root.taskId, path: "/root", depth: 0, role: "root" }),
@@ -5596,8 +5911,8 @@ If complete, use attempt_completion.
 				parentTaskId: root.taskId,
 				path: "/root/durable-parent",
 				depth: 1,
-				maxDepth: 3,
-				delegationPolicy: "proactive",
+				maxDepth: null,
+				delegationPolicy: "explicit-only",
 			}),
 			expect.objectContaining({
 				taskId: grandchild.taskId,
@@ -5640,7 +5955,7 @@ If complete, use attempt_completion.
 		expect(parent.beginAgentWait).not.toHaveBeenCalled()
 	})
 
-	it.each([NaN, Infinity, -1, 9_999, 3_600_001, 10_000.5])(
+	it.each([NaN, Infinity, 3_600_001, 10_000.5])(
 		"rejects an invalid host wait deadline %s before reading the mailbox",
 		async (timeoutMs) => {
 			const provider = makeProviderHarness()
@@ -6933,65 +7248,90 @@ If complete, use attempt_completion.
 		])
 	})
 
-	it("ACKs a reload-preserved native wait claim with a persisted receipt without redelivery", async () => {
-		const persistence = new InMemoryAgentControlPersistence()
-		const beforeReload = new AgentControlStore(persistence)
-		await beforeReload.initialize()
-		await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
-		await beforeReload.appendEvent({
-			eventId: "reload-result-persisted",
-			recipient: "parent-1",
-			kind: "result",
-			name: "agent_failed",
-			payload: { taskId: "reload-child-persisted", status: "failed", stopReason: "runtime_error" },
-		})
-		const claimed = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
+	it.each(["canonical", "legacy", "empty-canonical", "matching"] as const)(
+		"ACKs a reload-preserved native wait claim with %s IDs without redelivery",
+		async (alias) => {
+			const persistence = new InMemoryAgentControlPersistence()
+			const beforeReload = new AgentControlStore(persistence)
+			await beforeReload.initialize()
+			await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
+			await beforeReload.appendEvent({
+				eventId: "reload-result-persisted",
+				recipient: "parent-1",
+				kind: "result",
+				name: "agent_failed",
+				payload: { taskId: "reload-child-persisted", status: "failed", stopReason: "runtime_error" },
+			})
+			const claimed = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
 
-		const afterReload = new AgentControlStore(persistence)
-		await afterReload.initialize()
-		const provider = makeProviderHarness()
-		;(provider as any).agentControlStore = afterReload
-		;(provider as any).agentControlStoreReady = Promise.resolve()
-		const parent = makeParent()
-		parent.apiConversationHistory = [
-			{
-				role: "assistant",
-				content: [{ type: "tool_use", id: "call.reload.receipt", name: "wait_agent", input: {} }],
-			},
-			{
-				role: "user",
-				content: [
-					{
-						type: "tool_result",
-						tool_use_id: "call_reload_receipt",
-						content: JSON.stringify({
-							timedOut: false,
-							source: "managed_agent_mailbox",
-							claimId: claimed.claimId,
-							eventCount: claimed.entries.length,
-						}),
-					},
-					{
-						type: "text",
-						text: serializeAgentNotification(claimed.entries[0]),
-					},
-				],
-			},
-		] as any
+			const afterReload = new AgentControlStore(persistence)
+			await afterReload.initialize()
+			const provider = makeProviderHarness()
+			;(provider as any).agentControlStore = afterReload
+			;(provider as any).agentControlStoreReady = Promise.resolve()
+			const parent = makeParent()
+			const callId = "call.reload.receipt"
+			const resultId = "call_reload_receipt"
+			const call =
+				alias === "canonical"
+					? { type: "tool_use", id: callId, name: "wait_agent", input: {} }
+					: {
+							type: "tool_call",
+							id: alias === "legacy" ? undefined : alias === "empty-canonical" ? "" : callId,
+							tool_call_id: callId,
+							name: "wait_agent",
+							input: {},
+						}
+			parent.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [call],
+				},
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							...(alias === "canonical"
+								? { tool_use_id: resultId }
+								: {
+										tool_use_id:
+											alias === "legacy"
+												? undefined
+												: alias === "empty-canonical"
+													? ""
+													: resultId,
+										tool_call_id: resultId,
+									}),
+							content: JSON.stringify({
+								timedOut: false,
+								source: "managed_agent_mailbox",
+								claimId: claimed.claimId,
+								eventCount: claimed.entries.length,
+							}),
+						},
+						{
+							type: "text",
+							text: serializeAgentNotification(claimed.entries[0]),
+						},
+					],
+				},
+			] as any
 
-		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
-			timedOut: false,
-			events: [],
-			alreadyDelivered: true,
-		})
-		expect(parent.forgetWaitAgentResultClaim).toHaveBeenCalledWith(claimed.claimId)
-		expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([])
-		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
-			timedOut: false,
-			noActiveAgents: true,
-			events: [],
-		})
-	})
+			await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+				timedOut: false,
+				events: [],
+				alreadyDelivered: true,
+			})
+			expect(parent.forgetWaitAgentResultClaim).toHaveBeenCalledWith(claimed.claimId)
+			expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([])
+			await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toEqual({
+				timedOut: false,
+				noActiveAgents: true,
+				events: [],
+			})
+		},
+	)
 
 	it("redelivers a reload-preserved claim when its wait receipt lacks child notifications", async () => {
 		const persistence = new InMemoryAgentControlPersistence()
@@ -7038,7 +7378,7 @@ If complete, use attempt_completion.
 		])
 	})
 
-	it("recovers a legacy orchestration omission with frozen legacy defaults", async () => {
+	it("recovers a legacy orchestration omission without reviving execution limits", async () => {
 		const provider = makeProviderHarness(2, {
 			maxConcurrentSubagents: 8,
 			subagentDelegationPolicy: "proactive",
@@ -7128,7 +7468,7 @@ If complete, use attempt_completion.
 				rootTaskId: parent.taskId,
 				parentTaskId: parent.taskId,
 				depth: 1,
-				maxDepth: 1,
+				maxDepth: null,
 			},
 			delegationPolicy: {
 				policy: "explicit-only",
@@ -7138,18 +7478,18 @@ If complete, use attempt_completion.
 			},
 			limits: {
 				maxConcurrentTasks: 3,
-				maxConcurrentSubagents: 2,
-				maxInputTokens: 16_000,
-				maxOutputTokens: 4_000,
-				timeoutMs: 120_000,
+				maxConcurrentSubagents: 3,
+				maxInputTokens: null,
+				maxOutputTokens: null,
+				timeoutMs: null,
 			},
 		})
 		expect(restored.envelopes[0].budget).toMatchObject({
-			maxDepth: 1,
-			maxConcurrency: 2,
-			maxInputTokens: 16_000,
-			maxOutputTokens: 4_000,
-			timeoutMs: 120_000,
+			maxDepth: null,
+			maxConcurrency: 3,
+			maxInputTokens: null,
+			maxOutputTokens: null,
+			timeoutMs: null,
 		})
 		expect((provider as any).__historyItems.get(taskId).subagentContextManifest).toEqual(migratedManifest)
 		expect(
@@ -7157,7 +7497,7 @@ If complete, use attempt_completion.
 		).toEqual(migratedManifest)
 	})
 
-	it("rehydrates a child with its frozen delegation policy and role timeout despite changed settings", async () => {
+	it("rehydrates a child with its frozen delegation policy without reviving role timeouts", async () => {
 		const routingSettings: Parameters<typeof makeProviderHarness>[1] = {
 			approvalMode: "auto",
 			subagentDelegationPolicy: "proactive",
@@ -7181,8 +7521,8 @@ If complete, use attempt_completion.
 		)
 		expect(capturedManifest.selectedUserTurns).toMatchObject({ count: 1, refs: [expect.any(Object)] })
 		expect(capturedManifest.orchestration).toMatchObject({
-			delegationPolicy: { policy: "proactive" },
-			limits: { timeoutMs: 180_000 },
+			delegationPolicy: { policy: "explicit-only" },
+			limits: { timeoutMs: null },
 		})
 		expect(capturedManifest.runtimePolicy.autoApproval).toMatchObject({
 			autoApprovalEnabled: true,
@@ -7281,7 +7621,7 @@ If complete, use attempt_completion.
 			(provider as any).subagentDescriptors.get(retained.taskId)?.contextManifest.runtimePolicy.autoApproval,
 		).toEqual(capturedManifest.runtimePolicy.autoApproval)
 		const restored = startPreparedSubagentRun.mock.calls[0][1]
-		expect(restored.envelopes[0].budget.timeoutMs).toBe(180_000)
+		expect(restored.envelopes[0].budget.timeoutMs).toBeNull()
 		expect(restored.envelopes[0].budget.timeoutMs).not.toBe(routingSettings.subagentRoleTimeoutsMs.explore)
 		expect(restored.envelopes[0].scope.contextRefs).toEqual(capturedManifest.contextRefs)
 		expect(restored.envelopes[0].skills).toEqual(
@@ -7392,7 +7732,7 @@ If complete, use attempt_completion.
 		expect(start).not.toHaveBeenCalled()
 	})
 
-	it("rejects a restored follow-up from persisted root-budget exhaustion despite relaxed current settings", async () => {
+	it("permits a restored follow-up despite a historical root-budget stop reason", async () => {
 		const routingSettings = { subagentRootCostBudget: 1 as number | null }
 		const provider = makeProviderHarness(2, routingSettings)
 		const parent = makeParent()
@@ -7460,10 +7800,14 @@ If complete, use attempt_completion.
 		;(provider as any).exhaustedSubagentRootBudgets.clear()
 		routingSettings.subagentRootCostBudget = null
 
-		await expect(
-			provider.followupAgentTask(parent as any, retained.path, "Try after the extension reload"),
-		).rejects.toThrow("root_cost_budget")
-		expect((provider as any).exhaustedSubagentRootBudgets.get(root.rootTaskId)).toBe("root_cost_budget")
+		const restored = await (provider as any).restorePreparedSubagentForFollowup(
+			parent,
+			retained,
+			"Try after reload",
+		)
+		expect(() =>
+			(provider as any).assertRetainedAgentRelaunchCapacity(retained, restored, capturedManifest),
+		).not.toThrow()
 	})
 
 	it("rejects a tampered retained context manifest instead of recapturing on follow-up", async () => {

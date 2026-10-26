@@ -43,7 +43,7 @@ const countLimit = (value: number | undefined, fallback: number) =>
 
 const isWithinPath = (root: string, candidate: string): boolean => {
 	const relative = path.relative(path.resolve(root), path.resolve(candidate))
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
 /** Full, non-consuming snapshot. Runtime summaries pass includeTransient:false. */

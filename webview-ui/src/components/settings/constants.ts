@@ -1,8 +1,15 @@
-import { type ProviderName, type ModelInfo, vertexModels, stellarModels } from "@alpha-code/types"
+import {
+	type ProviderName,
+	type ModelInfo,
+	vertexModels,
+	stellarModels,
+	CURATED_MODELS_BY_PROVIDER,
+} from "@alpha-code/types"
 
 export const MODELS_BY_PROVIDER: Partial<Record<ProviderName, Record<string, ModelInfo>>> = {
 	vertex: vertexModels,
 	stellar: stellarModels,
+	...CURATED_MODELS_BY_PROVIDER,
 }
 
 export const PROVIDERS = [
@@ -10,4 +17,9 @@ export const PROVIDERS = [
 	{ value: "openai", label: "OpenAI Compatible", proxy: true },
 	{ value: "stellar", label: "Stellar", proxy: false },
 	{ value: "vscode-lm", label: "VS Code LM API", proxy: false },
+	{ value: "openai-native", label: "OpenAI", proxy: false },
+	{ value: "anthropic", label: "Anthropic", proxy: false },
+	{ value: "gemini", label: "Google Gemini", proxy: false },
+	{ value: "xai", label: "xAI", proxy: false },
+	{ value: "openrouter", label: "OpenRouter", proxy: true },
 ].sort((a, b) => a.label.localeCompare(b.label))

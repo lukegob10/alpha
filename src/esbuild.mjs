@@ -8,6 +8,8 @@ import * as console from "node:console"
 
 import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-code/build"
 import { resolveLanceDbNativeDependencies } from "./lancedb-native.mjs"
+import { defaultPdfRuntimePlugin } from "./pdf-default-runtime.mjs"
+import treeSitterGrammars from "./services/tree-sitter/grammars.json" with { type: "json" }
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -188,6 +190,7 @@ async function main() {
 	 * @type {import('esbuild').Plugin[]}
 	 */
 	const plugins = [
+		defaultPdfRuntimePlugin(),
 		{
 			name: "copyFiles",
 			setup(build) {
@@ -209,7 +212,7 @@ async function main() {
 		{
 			name: "copyWasms",
 			setup(build) {
-				build.onEnd(() => copyWasms(srcDir, distDir))
+				build.onEnd(() => copyWasms(srcDir, distDir, Object.values(treeSitterGrammars)))
 			},
 		},
 		{

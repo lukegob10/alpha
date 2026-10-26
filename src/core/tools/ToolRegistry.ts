@@ -1,4 +1,6 @@
 import { executeTicketTool } from "./TicketTools"
+import { executeMemoryTool } from "./MemoryTool"
+import { memoryTools, MEMORY_READ_TOOL_NAMES } from "../prompts/tools/native-tools/memories"
 import { ticketTools } from "../prompts/tools/native-tools/tickets"
 import { goalTools } from "../prompts/tools/native-tools/goals"
 import { executeGoalTool } from "./GoalTools"
@@ -11,12 +13,17 @@ import {
 	browserToolNames,
 	discoverToolsParamsSchema,
 	toolSearchParamsSchema,
+	toolNames as validToolNames,
 	type CustomToolDefinition,
 } from "@alpha-code/types"
 
 import type { NativeToolArgs, ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
-import { captureVerificationContent, extractMutationPaths } from "../agent/VerificationScope"
+import {
+	captureVerificationContent,
+	extractMutationPaths,
+	requiresWorkspaceMutationReceipt,
+} from "../agent/VerificationScope"
 import path from "path"
 import { isPathWithinRoot } from "./pathSafety"
 import { isCommandArtifactRead, TOOL_ALIASES } from "../../shared/tools"
@@ -704,6 +711,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 				: name === "create_ticket" ||
 					  name === "update_ticket" ||
 					  name === "delete_ticket" ||
+					  name === "memories_add_ad_hoc_note" ||
 					  name === "use_mcp_tool" ||
 					  name.startsWith("mcp") ||
 					  name === "custom_tool" ||
@@ -719,6 +727,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
 		requiresApproval:
+			!MEMORY_READ_TOOL_NAMES.has(name) &&
 			name !== "get_goal" &&
 			name !== "read_diagnostic_evidence" &&
 			name !== "report_progress" &&
@@ -841,12 +850,11 @@ function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, n
 				}
 				// Receipts and checkpoints describe this workspace only. Approved external
 				// edits are recorded in the tool transaction, not attributed to workspace verification.
-				const paths =
-					task.taskKind === "primary"
-						? extractMutationPaths(call)?.filter((candidate) =>
-								isPathWithinRoot(task.cwd, path.resolve(task.cwd, candidate)),
-							)
-						: undefined
+				const paths = requiresWorkspaceMutationReceipt(task)
+					? extractMutationPaths(call)?.filter((candidate) =>
+							isPathWithinRoot(task.cwd, path.resolve(task.cwd, candidate)),
+						)
+					: undefined
 				const before = paths?.length ? await captureVerificationContent(task.cwd, paths) : undefined
 				const mutationOwner = task.providerRef.deref()
 				const reservation = callbacks.toolCallId ?? randomUUID()
@@ -956,6 +964,19 @@ export class ToolRegistry {
 					execute: executeTicketTool,
 				})
 		}
+		for (const schema of memoryTools) {
+			const name = schema.function.name
+			if (schemas.has(name))
+				this.register({
+					name,
+					aliases: [],
+					schema,
+					capabilities: getToolCapabilities(name),
+					statusSource: "handler",
+					maxOutputChars: 100000,
+					execute: executeMemoryTool,
+				})
+		}
 		for (const schema of goalTools) {
 			const name = schema.function.name
 			if (schemas.has(name))
@@ -1062,7 +1083,10 @@ export class ToolRegistry {
 		this.registerBuiltIn("handle_dialog", handleDialogTool, schemas)
 		this.registerBuiltIn("run_playwright_code", runPlaywrightCodeTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
-		this.registerBuiltIn("view_image", viewImageTool, schemas)
+		const executeViewImage = executeBaseTool(viewImageTool, "view_image")
+		this.registerBuiltIn("view_image", viewImageTool, schemas, (context) =>
+			executeViewImage({ ...context, callbacks: { ...context.callbacks, supportsImages } }),
+		)
 		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)
@@ -1077,7 +1101,7 @@ export class ToolRegistry {
 				capabilities: getToolCapabilities("tool_search"),
 				maxOutputChars: discovery?.maxOutputChars,
 				exposure: "eager",
-				execute: async ({ call, signal, callbacks }) => {
+				execute: async ({ task, call, signal, callbacks }) => {
 					signal?.throwIfAborted()
 					if (!discovery) throw new Error("Tool discovery is unavailable for this catalog.")
 					const parsed =
@@ -1085,6 +1109,8 @@ export class ToolRegistry {
 							? discoverToolsParamsSchema.safeParse(call.nativeArgs)
 							: toolSearchParamsSchema.safeParse(call.nativeArgs)
 					if (!parsed.success) throw new Error("Invalid tool discovery arguments.")
+					await task.markMemoryExternalContext?.()
+					signal?.throwIfAborted()
 					callbacks.pushToolResult(
 						discovery.execute({ query: parsed.data.query, limit: parsed.data.limit }, signal),
 					)
@@ -1387,4 +1413,25 @@ export class ToolRegistry {
 
 function canonicalizeAlias(alias: string): string {
 	return canonicalizeToolName(alias)
+}
+
+/** Capture custom membership with the executable registry, including its owned aliases. */
+export function captureCustomToolNames(registry: Pick<ToolRegistry, "list">): ReadonlySet<string> {
+	const nativeNames: readonly string[] = validToolNames
+	const names = new Set<string>()
+	for (const descriptor of registry.list()) {
+		if (
+			nativeNames.includes(descriptor.name) ||
+			descriptor.name.startsWith("mcp_") ||
+			parseMcpToolName(descriptor.name)
+		) {
+			continue
+		}
+		for (const name of [descriptor.name, ...descriptor.aliases]) {
+			if (!nativeNames.includes(name) && !name.startsWith("mcp_") && !parseMcpToolName(name)) {
+				names.add(name)
+			}
+		}
+	}
+	return names
 }

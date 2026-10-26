@@ -1,4 +1,31 @@
 import path from "path"
+import { realpath } from "fs/promises"
+import { getPathRelativeToRoot } from "../../../core/tools/pathSafety"
+import { isFileIgnoredByGitignore } from "../../glob/list-files"
+
+/** Resolve the read target before consuming source, while retaining the discovered path as its index identity. */
+export async function resolveIndexFilePath(
+	filePath: string,
+	workspaceRoot: string,
+	signal?: AbortSignal,
+): Promise<{ absolutePath: string; relativePath: string } | undefined> {
+	signal?.throwIfAborted()
+	const candidate = path.resolve(workspaceRoot, filePath)
+	const discoveredRelativePath = getPathRelativeToRoot(workspaceRoot, candidate)
+	if (discoveredRelativePath === undefined) return undefined
+	const [canonicalRoot, canonicalFile] = await Promise.all([realpath(workspaceRoot), realpath(candidate)])
+	signal?.throwIfAborted()
+	const relativePath = getPathRelativeToRoot(canonicalRoot, canonicalFile)
+	if (
+		relativePath === undefined ||
+		(await isFileIgnoredByGitignore(candidate, workspaceRoot, signal)) ||
+		(relativePath !== discoveredRelativePath &&
+			(await isFileIgnoredByGitignore(canonicalFile, canonicalRoot, signal)))
+	) {
+		return undefined
+	}
+	return { absolutePath: canonicalFile, relativePath }
+}
 
 /**
  * Generates a normalized absolute path from a given file path and workspace root.

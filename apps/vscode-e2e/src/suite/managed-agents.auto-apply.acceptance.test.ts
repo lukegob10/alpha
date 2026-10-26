@@ -54,6 +54,7 @@ interface HostProvider {
 	getTaskWithId(taskId: string): Promise<{ taskDirPath: string }>
 	getStateToPostToWebview(): Promise<ExtensionState>
 	cancelAgent(parent: LiveTask, target: string, reason: string): Promise<unknown>
+	interruptAgent(parent: LiveTask, target: string): Promise<unknown>
 }
 
 interface Observation {
@@ -330,6 +331,9 @@ suite("Managed-agent automatic Apply Extension Host acceptance", function () {
 			await waitFor(() => observation.childIds.size === CHILD_COUNT, {
 				description: "all five child provider barriers",
 			})
+			const interruptedChildId = observation.childIds.get(2)
+			assert.ok(interruptedChildId)
+			await provider.interruptAgent(root, interruptedChildId)
 			for (const child of [3, 4]) {
 				await provider.cancelAgent(
 					root,
@@ -425,7 +429,7 @@ suite("Managed-agent automatic Apply Extension Host acceptance", function () {
 			})
 			assert.deepEqual(
 				terminal.map(({ status }) => status),
-				["completed", "timed_out", "cancelled", "cancelled", "completed"],
+				["completed", "interrupted", "cancelled", "cancelled", "completed"],
 			)
 			assert.equal(tree.capacity.active, 0)
 			assert.equal(tree.capacity.queued, 0)

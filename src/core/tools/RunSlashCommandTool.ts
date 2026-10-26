@@ -4,6 +4,7 @@ import { getCommand, getCommandNames } from "../../services/command/commands"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
+import { digestValue } from "../agent/StepContext"
 import {
 	buildSkillApprovalMessage,
 	buildSkillResult,
@@ -67,6 +68,12 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 						return
 					}
 
+					callbacks.signal?.throwIfAborted()
+					await task.recordLoadedSkill?.(
+						commandName,
+						skillContent.path,
+						digestValue(skillContent.instructions),
+					)
 					pushToolResult(buildSkillResult(commandName, args, skillContent))
 					return
 				}
@@ -97,6 +104,7 @@ export class RunSlashCommandTool extends BaseTool<"run_slash_command"> {
 				return
 			}
 
+			callbacks.signal?.throwIfAborted()
 			// Model-invoked commands load instructions; only user actions may change execution mode.
 
 			// Build the result message

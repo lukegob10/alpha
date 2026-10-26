@@ -25,20 +25,33 @@ vi.mock("vscode", () => ({
 const taskCwd = path.resolve("tracker-task-worktree")
 
 function createWatcher() {
+	let create: ((uri: vscode.Uri) => unknown) | undefined
 	let change: ((uri: vscode.Uri) => unknown) | undefined
+	let remove: ((uri: vscode.Uri) => unknown) | undefined
 	const watcher = {
 		ignoreCreateEvents: false,
 		ignoreChangeEvents: false,
 		ignoreDeleteEvents: false,
-		onDidCreate: vi.fn(() => ({ dispose: vi.fn() })),
-		onDidDelete: vi.fn(() => ({ dispose: vi.fn() })),
+		onDidCreate: vi.fn((listener: (uri: vscode.Uri) => unknown) => {
+			create = listener
+			return { dispose: vi.fn() }
+		}),
+		onDidDelete: vi.fn((listener: (uri: vscode.Uri) => unknown) => {
+			remove = listener
+			return { dispose: vi.fn() }
+		}),
 		onDidChange: vi.fn((listener: (uri: vscode.Uri) => unknown) => {
 			change = listener
 			return { dispose: vi.fn() }
 		}),
 		dispose: vi.fn(),
 	}
-	return { watcher, fireChange: () => change?.(vscode.Uri.file(path.join(taskCwd, "src/one.ts"))) }
+	return {
+		watcher,
+		fireCreate: () => create?.(vscode.Uri.file(path.join(taskCwd, "src/one.ts"))),
+		fireChange: () => change?.(vscode.Uri.file(path.join(taskCwd, "src/one.ts"))),
+		fireDelete: () => remove?.(vscode.Uri.file(path.join(taskCwd, "src/one.ts"))),
+	}
 }
 
 beforeEach(() => {
@@ -307,6 +320,18 @@ describe("FileContextTracker watcher ownership", () => {
 		tracker.dispose()
 	})
 
+	it.each(["fireCreate", "fireDelete"] as const)("retains tracked file existence changes (%s)", async (event) => {
+		const tracker = createTracker()
+		const events = createWatcher()
+		vi.mocked(vscode.workspace.createFileSystemWatcher).mockReturnValue(events.watcher)
+		await tracker.trackFileContext("src/one.ts", "read_tool")
+
+		events[event]()
+
+		expect(tracker.captureRecentlyModifiedFiles().files).toEqual(["src/one.ts"])
+		tracker.dispose()
+	})
+
 	it("does not guess the author of an event after an already-watched Alpha write", async () => {
 		const tracker = createTracker()
 		const { watcher, fireChange } = createWatcher()
@@ -369,7 +394,7 @@ describe("FileContextTracker watcher ownership", () => {
 
 	it("ignores queued watcher callbacks and new tracking after idempotent disposal", async () => {
 		const tracker = createTracker()
-		const { watcher, fireChange } = createWatcher()
+		const { watcher, fireCreate, fireChange, fireDelete } = createWatcher()
 		vi.mocked(vscode.workspace.createFileSystemWatcher).mockReturnValue(watcher)
 		await tracker.trackFileContext("src/one.ts", "read_tool")
 		vi.mocked(tracker.getTaskMetadata).mockClear()
@@ -377,7 +402,9 @@ describe("FileContextTracker watcher ownership", () => {
 		tracker.dispose()
 		tracker.dispose()
 
+		fireCreate()
 		fireChange()
+		fireDelete()
 		await tracker.trackFileContext("src/two.ts", "read_tool")
 		await tracker.addFileToFileContextTracker("task-1", "src/three.ts", "user_edited")
 		await tracker.setupFileWatcher("src/four.ts")
@@ -418,7 +445,9 @@ describe("FileContextTracker watcher ownership", () => {
 		const tracking = vi.spyOn(replacement, "trackFileContext")
 		newEvents.fireChange()
 		const receipt = replacement.captureRecentlyModifiedFiles()
+		oldEvents.fireCreate()
 		oldEvents.fireChange()
+		oldEvents.fireDelete()
 		receipt.commit()
 		releaseRead({ files_in_context: [] })
 		await Promise.all([pending, tracking.mock.results[0].value])

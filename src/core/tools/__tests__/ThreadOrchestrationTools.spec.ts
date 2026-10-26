@@ -290,6 +290,40 @@ describe("native thread orchestration tools", () => {
 		expect(callbacks.askApproval).not.toHaveBeenCalled()
 	})
 
+	it("selects the latest assistant and tool items without reordering the thread history", async () => {
+		const { task, provider, callbacks, results } = fixture()
+		const read = snapshot()
+		read.turns[0].items = [
+			{ type: "agentMessage", id: "earlier-answer", text: "Initial findings." },
+			{ type: "toolCall", id: "earlier-tool", name: "read_file", status: "completed" },
+			{ type: "agentMessage", id: "answer", text: "Verified outcome.", phase: "final_answer" },
+			{ type: "toolCall", id: "tool", name: "exec_command", status: "completed" },
+			{ type: "toolResult", id: "result", text: "Passed.", status: "completed" },
+		]
+		Object.freeze(read.turns[0].items)
+		provider.readIndependentThread.mockResolvedValueOnce(read)
+
+		await waitThreadsTool.execute({ targets: [{ threadId: "peer" }], timeoutMs: 0 }, task, callbacks)
+
+		expect(results[0]).toMatchObject({
+			polls: [
+				{
+					latestAssistantMessageId: "answer",
+					latestAssistantMessage: { id: "answer", text: "Verified outcome.", phase: "final_answer" },
+					latestToolMarkerId: "tool",
+					latestToolMarker: { id: "tool", name: "exec_command", status: "completed" },
+				},
+			],
+		})
+		expect(read.turns[0].items.map(({ id }) => id)).toEqual([
+			"earlier-answer",
+			"earlier-tool",
+			"answer",
+			"tool",
+			"result",
+		])
+	})
+
 	it("uses afterCursor to avoid waking repeatedly on the same completed turn", async () => {
 		vi.useFakeTimers()
 		const { task, callbacks, results } = fixture()

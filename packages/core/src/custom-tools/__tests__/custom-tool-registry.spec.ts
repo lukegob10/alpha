@@ -23,6 +23,7 @@ describe("CustomToolRegistry", () => {
 	let nativeRegistryRoot: string
 	let nativeRegistryBundle: string
 
+	// This fixture bundles the real registry through the WASM compiler before native Node scenarios run.
 	beforeAll(async () => {
 		nativeRegistryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "custom-tool-native-registry-"))
 		nativeRegistryBundle = path.join(nativeRegistryRoot, "registry.mjs")
@@ -32,7 +33,7 @@ describe("CustomToolRegistry", () => {
 			external: NODE_BUILTIN_MODULES,
 			banner: COMMONJS_REQUIRE_BANNER,
 		})
-	})
+	}, 60_000)
 
 	afterAll(async () => {
 		if (nativeRegistryRoot) await fs.rm(nativeRegistryRoot, { recursive: true, force: true })

@@ -1,6 +1,6 @@
 schemaVersion: 1
 id: frontier-t1
-suiteIdentity: frontier-v1@1
+suiteIdentity: frontier-v1@2
 tier: t1
 historyBasis: mixed
 measurementRunIds:
@@ -70,6 +70,7 @@ history:
     costLatencyBasis: measured
     observationCount: 1
   stateful-api-idempotency:
+    taskVersion: 2
     discrimination: 0.9
     severity: 1
     graderConfidence: 0.95
@@ -77,9 +78,10 @@ history:
     meanLatencyMs: 72787
     redundancy: 0.1
     regressionValue: 0.8
-    costLatencyBasis: measured
-    observationCount: 1
+    costLatencyBasis: seeded
+    observationCount: 0
   repo-stream-backpressure:
+    taskVersion: 2
     discrimination: 0.9
     severity: 0.85
     graderConfidence: 0.9
@@ -87,8 +89,8 @@ history:
     meanLatencyMs: 81747
     redundancy: 0.1
     regressionValue: 0.6
-    costLatencyBasis: measured
-    observationCount: 1
+    costLatencyBasis: seeded
+    observationCount: 0
   alpha-tool-result-integrity:
     discrimination: 0.95
     severity: 0.95

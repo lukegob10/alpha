@@ -7,6 +7,11 @@ import FileChangesPanel from "../components/chat/FileChangesPanel"
 
 const mockPostMessage = vi.fn()
 
+vi.mock("diff", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("diff")>()
+	return { ...actual, createTwoFilesPatch: vi.fn(actual.createTwoFilesPatch) }
+})
+
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
 		postMessage: (...args: unknown[]) => mockPostMessage(...args),
@@ -345,6 +350,122 @@ describe("FileChangesPanel", () => {
 		)
 		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		expect(screen.getByRole("button", { name: /^src\/foo.ts/ })).toHaveAttribute("aria-expanded", "false")
+	})
+
+	it("reuses captured inline patches during unrelated text streaming", () => {
+		const originalContent = Array.from({ length: 10_000 }, (_, index) => `const line_${index} = ${index}\n`).join(
+			"",
+		)
+		const finalContent = originalContent.replace("const line_5000 = 5000\n", "const line_5000 = 5001\n")
+		const edits = Array.from({ length: 3 }, (_, index) => ({
+			...completedCommandEdit(`src/large-${index + 1}.ts`, originalContent, finalContent, `large-${index + 1}`),
+			ts: index + 1,
+		}))
+		const durations: number[] = []
+		const recordDuration: React.ProfilerOnRenderCallback = (_id, _phase, actualDuration) => {
+			durations.push(actualDuration)
+		}
+		const panel = (messages: AlphaMessage[]) => (
+			<TranslationProvider>
+				<React.Profiler id="file-changes-streaming" onRender={recordDuration}>
+					<FileChangesPanel clineMessages={messages} taskId="streaming-task" />
+				</React.Profiler>
+			</TranslationProvider>
+		)
+		const view = render(panel(edits))
+		fireEvent.click(screen.getByText("Files edited: 3").closest("button")!)
+		for (const path of ["src/large-1.ts", "src/large-2.ts"]) {
+			fireEvent.click(screen.getByRole("button", { name: path }))
+		}
+		expect(screen.getAllByTestId("file-diff")).toHaveLength(2)
+		vi.mocked(createTwoFilesPatch).mockClear()
+		durations.length = 0
+
+		for (let delta = 1; delta <= 200; delta++) {
+			// Each rerender flushes independently, matching individually delivered stream deltas.
+			view.rerender(
+				panel([
+					...edits,
+					{ type: "say", say: "text", ts: 100, text: `Checking ${"step ".repeat(delta)}`, partial: true },
+				]),
+			)
+		}
+
+		const sortedDurations = [...durations].sort((left, right) => left - right)
+		console.info("FileChangesPanel streaming workload", {
+			files: 3,
+			linesPerFile: 10_000,
+			expandedFiles: 2,
+			textDeltas: 200,
+			patchCalls: vi.mocked(createTwoFilesPatch).mock.calls.length,
+			commits: durations.length,
+			totalActualDurationMs: durations.reduce((total, duration) => total + duration, 0),
+			p95ActualDurationMs: sortedDurations[Math.ceil(sortedDurations.length * 0.95) - 1],
+		})
+		expect(durations).toHaveLength(200)
+		expect(vi.mocked(createTwoFilesPatch).mock.calls.length).toBe(0)
+		expect(screen.getAllByTestId("file-diff")).toHaveLength(2)
+	}, 30_000)
+
+	it.each([
+		{ endpoint: "original", originalContent: "earlier\n", finalContent: "after\n" },
+		{ endpoint: "final", originalContent: "before\n", finalContent: "later\n" },
+	])(
+		"refreshes an expanded diff when its captured $endpoint content changes",
+		({ originalContent, finalContent }) => {
+			const path = "src/file.ts"
+			const initial = completedCommandEdit(path, "before\n", "after\n", "initial")
+			const replacement = completedCommandEdit(path, originalContent, finalContent, "replacement")
+			const { rerender } = renderPanel([initial], "task-a")
+			fireEvent.click(screen.getByRole("button", { name: path }))
+			vi.mocked(createTwoFilesPatch).mockClear()
+
+			rerender(
+				<TranslationProvider>
+					<FileChangesPanel clineMessages={[replacement]} taskId="task-a" />
+				</TranslationProvider>,
+			)
+
+			expect(createTwoFilesPatch).toHaveBeenCalledWith(path, path, originalContent, finalContent)
+			expect(screen.getByTestId("file-diff").textContent).toContain(`-${originalContent.trim()}`)
+			expect(screen.getByTestId("file-diff").textContent).toContain(`+${finalContent.trim()}`)
+			expect(screen.getByRole("button", { name: path })).toHaveAttribute("aria-expanded", "true")
+		},
+	)
+
+	it("uses the new captured path and task after resetting inline disclosure", () => {
+		const initial = completedCommandEdit("./src/old.ts", "before\n", "after\n", "initial")
+		const renamed = completedCommandEdit("src/new.ts", "before\n", "renamed\n", "renamed")
+		const nextTask = completedCommandEdit("src/new.ts", "other before\n", "other after\n", "other")
+		const { rerender } = renderPanel([initial], "task-a")
+		fireEvent.click(screen.getByRole("button", { name: "src/old.ts" }))
+		expect(screen.getByTestId("file-diff").textContent).toContain("src/old.ts")
+
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={[renamed]} taskId="task-a" />
+			</TranslationProvider>,
+		)
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+		vi.mocked(createTwoFilesPatch).mockClear()
+		fireEvent.click(screen.getByRole("button", { name: "src/new.ts" }))
+		expect(createTwoFilesPatch).toHaveBeenCalledWith("src/new.ts", "src/new.ts", "before\n", "renamed\n")
+		expect(screen.getByTestId("file-diff").textContent).toContain("src/new.ts")
+		expect(screen.getByTestId("file-diff").textContent).not.toContain("src/old.ts")
+
+		rerender(
+			<TranslationProvider>
+				<FileChangesPanel clineMessages={[nextTask]} taskId="task-b" />
+			</TranslationProvider>,
+		)
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
+		vi.mocked(createTwoFilesPatch).mockClear()
+		fireEvent.click(screen.getByRole("button", { name: "src/new.ts" }))
+		expect(createTwoFilesPatch).toHaveBeenCalledTimes(1)
+		expect(createTwoFilesPatch).toHaveBeenCalledWith("src/new.ts", "src/new.ts", "other before\n", "other after\n")
+		expect(screen.getByTestId("file-diff").textContent).toContain("-other before")
+		expect(screen.getByTestId("file-diff").textContent).toContain("+other after")
 	})
 })
 

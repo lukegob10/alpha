@@ -68,7 +68,7 @@ describe("spawn_agent request contracts", () => {
 		{ model: " " },
 		{ model: "m".repeat(257) },
 		{ reasoning_effort: "disable" },
-		{ reasoning_effort: "ultra" },
+		{ reasoning_effort: "unsupported" },
 		{ fork_turns: "0" },
 		{ fork_turns: "01" },
 		{ agent_type: "Invalid Name" },
@@ -163,7 +163,7 @@ describe("spawn_agent request contracts", () => {
 		expect(
 			subagentModelRouteStateSchema.safeParse({
 				...legacyRoute,
-				requestedReasoningEffort: "ultra",
+				requestedReasoningEffort: "unsupported",
 			}).success,
 		).toBe(false)
 	})

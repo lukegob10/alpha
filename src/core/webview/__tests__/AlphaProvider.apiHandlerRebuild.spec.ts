@@ -124,11 +124,6 @@ vi.mock("vscode", () => ({
 	version: "1.85.0",
 }))
 
-vi.mock("../../../utils/tts", () => ({
-	setTtsEnabled: vi.fn(),
-	setTtsSpeed: vi.fn(),
-}))
-
 vi.mock("../../../api", () => ({
 	buildApiHandler: vi.fn(),
 }))

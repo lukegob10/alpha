@@ -241,9 +241,7 @@ vi.mock("../LanguageSettings", () => ({
 vi.mock("../About", () => ({
 	About: () => null,
 }))
-vi.mock("../PromptsSettings", () => ({
-	default: () => null,
-}))
+vi.mock("../PromptsSettings", () => ({ default: () => null }))
 vi.mock("../SlashCommandsSettings", () => ({
 	SlashCommandsSettings: () => null,
 }))
@@ -306,8 +304,6 @@ describe("SettingsView - Change Detection Fix", () => {
 		maxWorkspaceFiles: 200,
 		mcpEnabled: false,
 		soundEnabled: false,
-		ttsEnabled: false,
-		ttsSpeed: 1.0,
 		soundVolume: 0.5,
 		telemetrySetting: "unset" as const,
 		terminalOutputLineLimit: 500,
@@ -348,6 +344,25 @@ describe("SettingsView - Change Detection Fix", () => {
 				mutations: { retry: false },
 			},
 		})
+	})
+
+	it("does not resave a retired preference supplied by stale state", async () => {
+		;(useExtensionState as any).mockReturnValue({
+			...createExtensionState({ didHydrateState: true, autoSteer: false }),
+			personality: "none",
+		})
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="ui" />
+			</QueryClientProvider>,
+		)
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).not.toBeChecked())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const save = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(save?.updatedSettings).toMatchObject({ autoSteer: true })
+		expect(save?.updatedSettings).not.toHaveProperty("personality")
 	})
 
 	it("defaults to queuing and preserves unsaved steering edits across live state refreshes", async () => {

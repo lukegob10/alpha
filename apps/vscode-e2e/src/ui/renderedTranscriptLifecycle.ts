@@ -5,6 +5,7 @@ import * as path from "node:path"
 import type { CdpConnection } from "./cdp"
 import { javascriptLiteral } from "./javascriptLiteral"
 import { exerciseRenderedSelectionLayout } from "./renderedSelectionLayout"
+import { exerciseUnattendedLifecycle } from "./renderedUnattendedLifecycle"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
 
@@ -19,6 +20,12 @@ interface TranscriptSample {
 	composerDisabled: boolean
 	textLength: number
 }
+
+export const TURN_DISCLOSURE_THEMES = [
+	{ stage: "turn-dark", theme: "Default Dark Modern", className: "vscode-dark" },
+	{ stage: "turn-light", theme: "Default Light Modern", className: "vscode-light" },
+	{ stage: "turn-contrast", theme: "Default High Contrast", className: "vscode-high-contrast" },
+] as const
 
 /** Exercise the built App and real ChatRows in the owned reference Chromium renderer. */
 export async function exerciseRenderedTranscriptLifecycle(
@@ -182,9 +189,59 @@ export async function exerciseRenderedTranscriptLifecycle(
 			await sample(`transcript-growing-${cycle}`)
 			await acknowledge(`transcript-growing-${cycle}`)
 			await sample(`transcript-compact-${cycle}`)
+			if (cycle === "three") {
+				await evaluate("d.querySelector('button[aria-label=\"Expand context details\"]').click()")
+				const compactButton =
+					"[...d.querySelectorAll('button')].find(e=>e.textContent.includes('Intelligently condense context'))"
+				try {
+					await waitUntil(
+						() => evaluate<boolean>(`!!(${compactButton})&&!(${compactButton}).disabled`),
+						Date.now() + 10_000,
+						"transcript_compact_control_timeout",
+					)
+				} catch (error) {
+					await fs.writeFile(
+						path.join(directory, "ui-compaction-controls.json"),
+						JSON.stringify(
+							await evaluate(
+								`([...d.querySelectorAll('button')].map(e=>({label:e.getAttribute('aria-label'),text:e.textContent.slice(0,90),disabled:e.disabled,expanded:e.getAttribute('aria-expanded')})))`,
+							),
+							null,
+							2,
+						),
+					)
+					throw error
+				}
+				await evaluate(`(${compactButton}).click()`)
+			}
 			await acknowledge(`transcript-compact-${cycle}`)
-			await sample(`transcript-busy-${cycle}`)
+			// Opening the context details deliberately releases following before manual compaction.
+			await sample(`transcript-busy-${cycle}`, true, cycle !== "three")
+			if (cycle === "three") {
+				await evaluate(`(d.defaultView.__alphaBeforeBusyReload=${javascriptLiteral(nonce)})`)
+			}
 			await acknowledge(`transcript-busy-${cycle}`)
+			if (cycle === "three") {
+				await ready("transcript-reloaded-busy")
+				const rehydration: { stage: string; lastObserved?: unknown } = { stage: "reload-bootstrap" }
+				observations.push(rehydration)
+				await waitUntil(
+					async () => {
+						const state = await evaluate<{ documentReplaced: boolean; transcriptPresent: boolean }>(
+							`({documentReplaced:d.defaultView.__alphaBeforeBusyReload!==${javascriptLiteral(nonce)},
+								transcriptPresent:!!d.querySelector('[data-testid=chat-transcript-content]'),
+								rootChildren:d.getElementById('root')?.childElementCount??-1,
+								toolbarPresent:!!d.querySelector('.chat-toolbar')})`,
+						)
+						rehydration.lastObserved = state
+						return state.documentReplaced && state.transcriptPresent
+					},
+					Date.now() + 20_000,
+					"transcript_busy_rehydration_timeout",
+				)
+				await sample("transcript-reloaded-busy")
+				await acknowledge("transcript-reloaded-busy")
+			}
 			if (cycle === "two") {
 				await sample("transcript-hidden", false)
 				await acknowledge("transcript-hidden")
@@ -195,6 +252,11 @@ export async function exerciseRenderedTranscriptLifecycle(
 			assert.equal(completed.composerDisabled, false, "Compaction must restore the composer")
 			await acknowledge(`transcript-compacted-${cycle}`)
 		}
+		const unattendedStages = await exerciseUnattendedLifecycle(cdp, workbenchSession, directory, nonce, {
+			evaluate,
+			ready,
+			acknowledge,
+		})
 		await ready("transcript-browse")
 		await activate("d.querySelector('[data-testid=chat-load-older]')")
 		const browsing = await sample("transcript-browse", true, false)
@@ -215,15 +277,133 @@ export async function exerciseRenderedTranscriptLifecycle(
 			{ evaluate, ready, acknowledge },
 			signal,
 		)
+		await ready("transcript-turn-disclosure")
+		const parentToggle =
+			"[...d.querySelectorAll('button[data-activity-trace-id]')].find(e=>e.dataset.activityTraceId.startsWith('turn:'))"
+		await waitUntil(
+			() => evaluate<boolean>(`!!(${parentToggle})&&d.body.innerText.includes('TURN_FINAL_EVIDENCE')`),
+			Date.now() + 15_000,
+			"transcript_turn_disclosure_timeout",
+		)
+		assert.equal(await evaluate(`(${parentToggle}).getAttribute('aria-expanded')`), "false")
+		assert.equal(await evaluate("d.body.innerText.includes('TURN_OPENING_EVIDENCE')"), true)
+		assert.equal(await evaluate("d.body.innerText.includes('TURN_STEERING_EVIDENCE')"), false)
+		assert.equal(await evaluate("d.body.innerText.includes('TURN_COMMENTARY_EVIDENCE')"), false)
+		await activate(parentToggle)
+		await waitUntil(
+			() =>
+				evaluate<boolean>(
+					"d.body.innerText.includes('TURN_STEERING_EVIDENCE')&&d.body.innerText.includes('TURN_COMMENTARY_EVIDENCE')",
+				),
+			Date.now() + 5_000,
+			"transcript_turn_expand_timeout",
+		)
+		const reasoningToggle =
+			"[...d.querySelectorAll('button.activity-row-header')].find(e=>e.textContent.includes('Thinking'))"
+		await activate(reasoningToggle)
+		await waitUntil(
+			() => evaluate<boolean>("d.body.innerText.includes('TURN_REASONING_EVIDENCE')"),
+			Date.now() + 5_000,
+			"transcript_reasoning_expand_timeout",
+		)
+		await activate(parentToggle)
+		assert.equal(await evaluate("d.body.innerText.includes('TURN_REASONING_EVIDENCE')"), false)
+		await activate(parentToggle)
+		await waitUntil(
+			() => evaluate<boolean>("d.body.innerText.includes('TURN_REASONING_EVIDENCE')"),
+			Date.now() + 5_000,
+			"transcript_nested_choice_restore_timeout",
+		)
+		for (const width of [240, 320]) {
+			const narrow = await evaluate<{
+				overflow: number
+				disclosureControls: number
+				invalidControls: string[]
+			}>(`(()=>{
+				const content=d.querySelector('[data-testid=chat-transcript-content]');content.style.maxWidth='${width}px';
+				const controls=[...content.querySelectorAll('[aria-controls]')];
+				const invalidControls=controls.filter(e=>e.getAttribute('aria-controls').split(/\\s+/).filter(Boolean).some(id=>!d.getElementById(id))).map(e=>e.outerHTML.slice(0,1000));
+				return {overflow:content.scrollWidth-content.clientWidth,disclosureControls:controls.length,invalidControls};})()`)
+			observations.push({ stage: "turn-disclosure", width, ...narrow })
+			assert.ok(narrow.overflow <= 1, `Turn controls must fit a ${width}px transcript`)
+			assert.ok(narrow.disclosureControls >= 2, "The turn and nested disclosure controls must be mounted")
+			assert.deepEqual(narrow.invalidControls, [], "Disclosure controls must reference mounted elements")
+		}
+		await evaluate("d.querySelector('[data-testid=chat-transcript-content]').style.maxWidth=''")
+		await acknowledge("transcript-turn-disclosure")
+		try {
+			await cdp.request(
+				"Emulation.setEmulatedMedia",
+				{
+					features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+				},
+				sessionId,
+			)
+			for (const { stage, className } of TURN_DISCLOSURE_THEMES) {
+				await ready(stage)
+				await waitUntil(
+					() => evaluate<boolean>(`d.body.classList.contains(${javascriptLiteral(className)})`),
+					Date.now() + 5_000,
+					`${stage}_theme_timeout`,
+				)
+				await waitUntil(
+					() =>
+						evaluate<boolean>(`(()=>{
+							const reference=d.createElement('span');reference.style.color='var(--vscode-editor-foreground,var(--vscode-foreground))';d.body.append(reference);
+							try {
+								const native=d.defaultView.getComputedStyle(reference).color;
+								const expected=${javascriptLiteral(className)}==='vscode-dark'?d.defaultView.getComputedStyle(d.querySelector('.app-shell')).color:native;
+								const paragraphs=['TURN_COMMENTARY_EVIDENCE','TURN_FINAL_EVIDENCE'].map(text=>[...d.querySelectorAll('article p')].find(e=>e.textContent===text));
+								return (${javascriptLiteral(className)}!=='vscode-high-contrast'||native==='rgb(255, 255, 255)')&&paragraphs.every(e=>!!e&&d.defaultView.getComputedStyle(e).color===expected);
+							} finally {reference.remove();}
+						})()`),
+					Date.now() + 5_000,
+					`${stage}_assistant_foreground_timeout`,
+				)
+				assert.equal(
+					await evaluate("d.defaultView.matchMedia('(prefers-reduced-motion: reduce)').matches"),
+					true,
+				)
+				const capture = async (name: string) => {
+					const screenshot = await cdp.request<{ data: string }>(
+						"Page.captureScreenshot",
+						{ format: "png", captureBeyondViewport: false },
+						workbenchSession,
+					)
+					await fs.writeFile(path.join(directory, name), Buffer.from(screenshot.data, "base64"))
+				}
+				for (const width of [240, 320]) {
+					await evaluate(
+						`d.querySelector('[data-testid=chat-transcript-content]').style.maxWidth='${width}px'`,
+					)
+					await activate(parentToggle)
+					assert.equal(await evaluate("d.body.innerText.includes('TURN_STEERING_EVIDENCE')"), false)
+					await capture(`ui-${stage}-${width}-collapsed.png`)
+					await activate(parentToggle)
+					assert.equal(await evaluate("d.body.innerText.includes('TURN_STEERING_EVIDENCE')"), true)
+					assert.equal(await evaluate("d.body.innerText.includes('TURN_REASONING_EVIDENCE')"), true)
+					await capture(`ui-${stage}-${width}.png`)
+				}
+				await acknowledge(stage)
+			}
+		} finally {
+			await cdp.request("Emulation.setEmulatedMedia", { features: [] }, sessionId)
+			await evaluate("d.querySelector('[data-testid=chat-transcript-content]').style.maxWidth=''")
+		}
 		assert.equal(fatalEventCount, 0, "The renderer must not emit unhandled exceptions or crash notifications")
 		assert.deepEqual(violations, [], "Following a growing transcript must keep its mounted rows bounded")
 		return [
 			"selected-task-before-hydration",
 			"bounded-growing-transcript",
 			"three-real-compactions",
+			"reload-during-queued-compaction",
 			"hidden-reveal",
+			...unattendedStages,
 			"browsing-preserved",
 			...selectionStages,
+			"canonical-turn-steering-disclosure",
+			"nested-disclosure-restored",
+			"turn-themes-narrow-reduced-motion",
 			"no-renderer-fatal-events",
 		]
 	} finally {

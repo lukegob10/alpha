@@ -12,7 +12,19 @@ export type SurgicalEditTool = "apply_patch" | "edit"
 
 const RETIRED_EDIT_TOOLS = new Set(["apply_diff", "search_replace", "edit_file"])
 const SURGICAL_EDIT_TOOLS = new Set<SurgicalEditTool>(["apply_patch", "edit"])
-const ROUTED_PROVIDERS = new Set(["copilot", "openai", "stellar", "vertex", "vertex-openai", "vscode-lm"])
+const ROUTED_PROVIDERS = new Set([
+	"copilot",
+	"openai",
+	"openai-native",
+	"anthropic",
+	"gemini",
+	"xai",
+	"openrouter",
+	"stellar",
+	"vertex",
+	"vertex-openai",
+	"vscode-lm",
+])
 
 function normalizeIdentifier(identifier: string | undefined): string | undefined {
 	const value = identifier?.trim().toLowerCase()

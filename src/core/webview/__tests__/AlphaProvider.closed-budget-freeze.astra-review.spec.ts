@@ -167,7 +167,7 @@ describe("closed child history deletion preserves frozen root limits", () => {
 		{ setting: { subagentRootTokenBudget: 50_000 }, stopReason: "root_token_budget" },
 		{ setting: { subagentRootCostBudget: 5 }, stopReason: "root_cost_budget" },
 	])(
-		"still enforces $stopReason after deleting the final child's history and reloading",
+		"does not revive $stopReason after deleting the final child's history and reloading",
 		async ({ setting, stopReason }) => {
 			const harness = makeHarness(setting)
 			const prepared = await harness.provider.prepareSubagentGroup(harness.parent as unknown as Task, [
@@ -194,13 +194,15 @@ describe("closed child history deletion preserves frozen root limits", () => {
 			})
 			await harness.provider.closeAgent(harness.parent as unknown as Task, handle.taskId)
 
-			// Control: retained history makes the identical post-reload admission deny.
+			// Retained history preserves usage without imposing the retired allowance.
 			const withHistory = await reloadHarness(harness)
 			await expect(
 				withHistory.provider.prepareSubagentGroup(withHistory.parent as unknown as Task, [
 					{ objective: "Try with current default settings", agent_kind: "review" },
 				]),
-			).rejects.toThrow(stopReason)
+			).resolves.toMatchObject({
+				envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+			})
 
 			await harness.provider.deleteTaskFromState(handle.taskId)
 			expect(harness.history.has(handle.taskId)).toBe(false)
@@ -219,7 +221,9 @@ describe("closed child history deletion preserves frozen root limits", () => {
 					withoutHistory.provider.prepareSubagentGroup(withoutHistory.parent as unknown as Task, [
 						{ objective: "Try with relaxed settings", agent_kind: "review" },
 					]),
-				).rejects.toThrow(stopReason)
+				).resolves.toMatchObject({
+					envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+				})
 			}
 		},
 	)
@@ -254,7 +258,7 @@ describe("closed child history deletion preserves frozen root limits", () => {
 		const restored = Reflect.get(reloaded.provider, "subagentDescriptors").get(prepared.envelopes[0].id)
 			.contextManifest.orchestration
 		expect(restored.ancestry).toEqual(manifest.orchestration!.ancestry)
-		expect(restored.limits).toEqual({ ...manifest.orchestration!.limits, timeoutMs: 15_000 })
+		expect(restored.limits).toEqual({ ...manifest.orchestration!.limits, timeoutMs: null })
 	})
 
 	it("retains the first root ceilings across several closed children and skips legacy empty tombstones", async () => {
@@ -282,7 +286,9 @@ describe("closed child history deletion preserves frozen root limits", () => {
 			reloaded.provider.prepareSubagentGroup(reloaded.parent as unknown as Task, [
 				{ objective: "Try after all child history is deleted", agent_kind: "review" },
 			]),
-		).rejects.toThrow("root_token_budget")
+		).resolves.toMatchObject({
+			envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+		})
 	})
 
 	it("keeps the retained-history fallback for old tombstones without orchestration", async () => {
@@ -298,7 +304,9 @@ describe("closed child history deletion preserves frozen root limits", () => {
 			reloaded.provider.prepareSubagentGroup(reloaded.parent as unknown as Task, [
 				{ objective: "Try from a legacy tombstone", agent_kind: "review" },
 			]),
-		).rejects.toThrow("root_cost_budget")
+		).resolves.toMatchObject({
+			envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+		})
 	})
 
 	it("captures orchestration from retained history when a legacy control snapshot lacks it", async () => {
@@ -314,7 +322,9 @@ describe("closed child history deletion preserves frozen root limits", () => {
 			reloaded.provider.prepareSubagentGroup(reloaded.parent as unknown as Task, [
 				{ objective: "Try after deleting legacy child history", agent_kind: "review" },
 			]),
-		).rejects.toThrow("root_cost_budget")
+		).resolves.toMatchObject({
+			envelopes: [expect.objectContaining({ budget: expect.objectContaining({ timeoutMs: null }) })],
+		})
 	})
 
 	it("purges retained orchestration when the owning root itself is deleted", async () => {

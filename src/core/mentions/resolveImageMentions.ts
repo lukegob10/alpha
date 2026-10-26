@@ -1,4 +1,5 @@
 import * as path from "path"
+import * as fs from "fs/promises"
 
 import { mentionRegexGlobal, unescapeSpaces } from "../../shared/context-mentions"
 import {
@@ -32,7 +33,7 @@ export interface ResolveImageMentionsResult {
 
 function isPathWithinCwd(absPath: string, cwd: string): boolean {
 	const rel = path.relative(cwd, absPath)
-	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
+	return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
 }
 
 function isImagePathMention(mention: string): boolean {
@@ -50,17 +51,6 @@ export function textHasImageMention(text: string): boolean {
 		if (mention && isImagePathMention(mention)) return true
 	}
 	return false
-}
-
-function dedupePreserveOrder(values: string[]): string[] {
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const v of values) {
-		if (seen.has(v)) continue
-		seen.add(v)
-		result.push(v)
-	}
-	return result
 }
 
 /**
@@ -126,8 +116,12 @@ export async function resolveImageMentions({
 
 		// Validate image size limits (matches read_file behavior)
 		try {
+			const [realCwd, realPath] = await Promise.all([fs.realpath(cwd), fs.realpath(absPath)])
+			if (!isPathWithinCwd(realPath, realCwd)) continue
+			if (alphaIgnoreController && !alphaIgnoreController.validateAccess(realPath)) continue
+			// Read the admitted target so a later alias change cannot redirect the read.
 			const validationResult = await validateImageForProcessing(
-				absPath,
+				realPath,
 				supportsImages,
 				maxImageFileSize,
 				maxTotalImageSize,
@@ -140,7 +134,7 @@ export async function resolveImageMentions({
 			}
 
 			const { dataUrl, buffer } = await readImageAsDataUrlWithBuffer(
-				absPath,
+				realPath,
 				undefined,
 				Math.floor(
 					Math.min(maxImageFileSize, maxTotalImageSize - imageMemoryTracker.getTotalMemoryUsed()) *
@@ -157,6 +151,6 @@ export async function resolveImageMentions({
 		}
 	}
 
-	const merged = dedupePreserveOrder([...existingImages, ...newImages]).slice(0, MAX_IMAGES_PER_MESSAGE)
+	const merged = [...new Set([...existingImages, ...newImages])].slice(0, MAX_IMAGES_PER_MESSAGE)
 	return { text, images: merged }
 }

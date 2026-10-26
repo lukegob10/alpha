@@ -23,6 +23,8 @@ import {
 	ApiStreamDeadlineError,
 	createLinkedAbortController,
 	createApiStreamError,
+	getApiStreamErrorMessage,
+	normalizeApiStreamErrorMetadata,
 	raceApiStreamAbort,
 	type LinkedAbortController,
 	type ApiStreamRequestMetadata,
@@ -107,13 +109,14 @@ type VsCodeLmModelConfiguration = {
 	contextSize?: number
 }
 
-type VsCodeLm122RequestOptions = vscode.LanguageModelChatRequestOptions & {
+type VsCodeLmCompatibleRequestOptions = vscode.LanguageModelChatRequestOptions & {
 	/**
 	 * VS Code 1.122 forwards this runtime property to Copilot as
 	 * `ProvideLanguageModelChatResponseOptions.modelConfiguration`.
 	 * Keep `modelOptions` too: it is the stable public request surface.
 	 */
 	configuration?: VsCodeLmModelConfiguration
+	includeEncryptedThinking?: boolean
 }
 
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
@@ -407,7 +410,7 @@ function applyVsCodeLmModelConfiguration(
 		requestOptions.modelOptions._enableThinking = true
 	}
 
-	const compatibleRequestOptions = requestOptions as VsCodeLm122RequestOptions
+	const compatibleRequestOptions = requestOptions as VsCodeLmCompatibleRequestOptions
 	compatibleRequestOptions.configuration = {
 		...(compatibleRequestOptions.configuration ?? {}),
 		...configuration,
@@ -795,12 +798,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		try {
 			// Check if the client is already initialized
 			if (this.client) {
-				console.debug("Alpha <Language Model API>: Client already initialized")
 				return
 			}
 			// Create a new client instance
 			await this.getClient()
-			console.debug("Alpha <Language Model API>: Client initialized successfully")
 		} catch (error) {
 			// Handle errors during client initialization
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
@@ -992,7 +993,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 		// Validate input
 		if (!text || fallbackTokens === 0) {
-			console.debug("Alpha <Language Model API>: Empty text provided for token counting")
 			return 0
 		}
 
@@ -1065,17 +1065,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			// Handle specific error types
 			if (error instanceof vscode.CancellationError) {
-				console.debug("Alpha <Language Model API>: Token counting cancelled")
 				return useFallback()
 			}
 
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
 			console.warn("Alpha <Language Model API>: Token counting failed:", errorMessage)
-
-			// Log additional error details if available
-			if (error instanceof Error && error.stack) {
-				console.debug("Token counting error stack:", error.stack)
-			}
 
 			return useFallback()
 		} finally {
@@ -1150,17 +1144,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		}
 
 		if (!this.client) {
-			console.debug("Alpha <Language Model API>: Getting client with options:", {
-				vsCodeLmModelSelector: this.options.vsCodeLmModelSelector,
-				hasOptions: !!this.options,
-				selectorKeys: this.options.vsCodeLmModelSelector ? Object.keys(this.options.vsCodeLmModelSelector) : [],
-			})
-
-			// Use default empty selector if none provided to get all available models
-			const selector = this.options?.vsCodeLmModelSelector || {}
+			const selector = this.options.vsCodeLmModelSelector || {}
 			const pendingClient = this.resolveConfiguredClient()
 			try {
-				console.debug("Alpha <Language Model API>: Creating client with selector:", selector)
 				const client = await withApiRequestTimeout(
 					raceApiStreamAbort(pendingClient, signal),
 					"VS Code LM model selection",
@@ -1247,8 +1233,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 			// Create the response stream with required options
-			const requestOptions: vscode.LanguageModelChatRequestOptions = {
+			const requestOptions: VsCodeLmCompatibleRequestOptions = {
 				justification: `Alpha would like to use '${client.name}' from '${client.vendor}', Click 'Allow' to proceed.`,
+			}
+			if (typeof Reflect.get(vscode, "LanguageModelThinkingPart") === "function") {
+				// Copilot omits opaque replay state unless requested, independently of effort settings.
+				// VS Code 1.125/1.138 forward this optional field without proposal enablement.
+				// Verified 2026-10-25: microsoft/vscode@4f383697191fef7129052d5396d5709d5799934a.
+				requestOptions.includeEncryptedThinking = true
 			}
 
 			applyVsCodeLmModelConfiguration(requestOptions, getVsCodeLmModelConfiguration(client, this.options), client)
@@ -1357,7 +1349,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				} else if (!isToolIntent && isLanguageModelTextPartLike(chunk)) {
 					// Validate text part value
 					if (typeof chunk.value !== "string") {
-						console.warn("Alpha <Language Model API>: Invalid text part value received:", chunk.value)
+						console.warn("Alpha <Language Model API>: Invalid text part value received")
 						continue
 					}
 
@@ -1398,19 +1390,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					const usage = getVsCodeLmUsage(chunk)
 					if (usage) {
 						reportedUsage = usage
-					} else {
-						console.debug("Alpha <Language Model API>: Ignoring malformed usage metadata chunk")
 					}
 				} else if (isVsCodeLmStatefulMarkerChunk(chunk)) {
 					const marker = encodeVsCodeLmStatefulMarker(chunk)
 					if (marker) {
 						responseStatefulMarker = marker
-						console.debug("Alpha <Language Model API>: Preserving stateful response marker")
-					} else {
-						console.debug("Alpha <Language Model API>: Ignoring malformed stateful response marker")
 					}
 				} else {
-					console.warn("Alpha <Language Model API>: Unknown chunk type received:", chunk)
+					console.warn("Alpha <Language Model API>: Unknown chunk type received")
 				}
 			}
 
@@ -1442,24 +1429,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			}
 
 			if (error instanceof Error) {
-				console.error("Alpha <Language Model API>: Stream error details:", {
-					message: error.message,
-					stack: error.stack,
-					name: error.name,
-				})
-
 				throw normalizeVsCodeLmStreamError(error, requestPhase, semanticOutputObserved)
-			} else if (typeof error === "object" && error !== null) {
-				// Handle error-like objects
-				const errorDetails = JSON.stringify(error, null, 2)
-				console.error("Alpha <Language Model API>: Stream error object:", errorDetails)
-				throw new Error(`Alpha <Language Model API>: Response stream error: ${errorDetails}`)
-			} else {
-				// Fallback for unknown error types
-				const errorMessage = String(error)
-				console.error("Alpha <Language Model API>: Unknown stream error:", errorMessage)
-				throw new Error(`Alpha <Language Model API>: Response stream error: ${errorMessage}`)
 			}
+			throw Object.assign(
+				new Error(`Alpha <Language Model API>: Response stream error: ${getApiStreamErrorMessage(error)}`),
+				normalizeApiStreamErrorMetadata(error, metadata),
+				{ phase: requestPhase, semanticOutputObserved },
+			)
 		} finally {
 			requestFinished = true
 			// Keep observed state on the matching response even if cancellation or a
@@ -1527,8 +1503,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		const fallbackId = this.options.vsCodeLmModelSelector
 			? stringifyVsCodeLmModelSelector(this.options.vsCodeLmModelSelector)
 			: "vscode-lm"
-
-		console.debug("Alpha <Language Model API>: No client available, using fallback model info")
 
 		const info = applyCopilotToolPreferences(
 			{ id: fallbackId },
@@ -1612,8 +1586,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					continue
 				} else if (isLanguageModelTextPartLike(chunk)) {
 					result += chunk.value
-				} else if (isVsCodeLmStatefulMarkerChunk(chunk)) {
-					console.debug("Alpha <Language Model API>: Ignoring completion stateful response marker")
 				}
 			}
 			return result
@@ -1649,9 +1621,10 @@ export function getVsCodeLmModels() {
 
 async function discoverVsCodeLmModels() {
 	try {
+		// An unscoped selector waits for every VS Code vendor, including unrelated providers.
 		const models =
 			(await withApiRequestTimeout(
-				vscode.lm.selectChatModels({}),
+				vscode.lm.selectChatModels({ vendor: "copilot" }),
 				"VS Code LM model list refresh",
 				getApiRequestTimeout(),
 			)) || []
@@ -1672,9 +1645,7 @@ async function discoverVsCodeLmModels() {
 				})),
 		)
 	} catch (error) {
-		console.error(
-			`Error fetching VS Code LM models: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-		)
+		console.error("Error fetching VS Code LM models:", normalizeApiStreamErrorMetadata(error))
 		return []
 	}
 }

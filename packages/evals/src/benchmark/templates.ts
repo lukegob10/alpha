@@ -106,7 +106,8 @@ export async function writeTaskTemplate(
 		restraint?: boolean
 	},
 ) {
-	const task = createTaskTemplate(options)
+	// A generated one-source scaffold has no evidence for the requested medium/long workload yet.
+	const task = createTaskTemplate({ ...options, profile: "compact" })
 	const fixture = path.join(root, task.fixture)
 	await fs.mkdir(path.join(fixture, "src"), { recursive: true })
 	await fs.mkdir(path.join(fixture, "test"), { recursive: true })
@@ -133,5 +134,10 @@ export async function writeTaskTemplate(
 		) + "\n",
 	)
 	await fs.writeFile(path.join(fixture, "task.template.yaml"), stringify(task, { lineWidth: 120 }))
+	await fs.writeFile(
+		path.join(fixture, "AUTHORING.md"),
+		`Requested profile: ${options.profile}. This is a compact, one-source scaffold, not an admitted task.\n` +
+			"Implement and measure the requested workload before raising context, topology or difficulty claims.\n",
+	)
 	return { task, fixture }
 }

@@ -319,6 +319,21 @@ describe("SkillsManager versioned file mutations", () => {
 		},
 	)
 
+	it("retains the installed skill boundary after its provider weak reference is unavailable", async () => {
+		const linkedDirectory = path.dirname(skillPath)
+		const targetDirectory = path.join(root, "extension", "assets", "skills", "test-skill")
+		await disk.mkdir(path.dirname(targetDirectory), { recursive: true })
+		await disk.rename(linkedDirectory, targetDirectory)
+		await disk.symlink(targetDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir")
+		vi.spyOn(WeakRef.prototype, "deref").mockReturnValue(undefined)
+
+		await expect(manager.updateSkillModes("test-skill", "project", ["architect"])).rejects.toThrow(
+			"skills:errors.builtin_read_only",
+		)
+		expect(host.openTextDocument).not.toHaveBeenCalled()
+		expect(await disk.readFile(path.join(targetDirectory, "SKILL.md"), "utf-8")).toBe(initialText)
+	})
+
 	it("rejects a dirty document opened through another symlink URI for the same skill", async () => {
 		const linkedDirectory = path.dirname(skillPath)
 		const targetDirectory = path.join(root, "personal-skills", "test-skill")

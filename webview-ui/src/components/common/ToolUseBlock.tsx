@@ -16,3 +16,14 @@ export const ToolUseBlockHeader = ({ className, ...props }: React.HTMLAttributes
 		{...props}
 	/>
 )
+
+export const ToolUseBlockHeaderButton = ({ className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+	<button
+		type="button"
+		className={cn(
+			"flex w-full items-center select-none rounded-sm border-0 bg-transparent p-0 text-left font-mono text-sm text-vscode-descriptionForeground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder",
+			className,
+		)}
+		{...props}
+	/>
+)

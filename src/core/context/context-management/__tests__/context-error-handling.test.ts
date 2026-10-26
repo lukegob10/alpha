@@ -117,6 +117,19 @@ describe("checkContextWindowExceededError", () => {
 	})
 
 	describe("Anthropic errors", () => {
+		it.each([undefined, "context_length_exceeded", "invalid_request_error", "unknown"])(
+			"uses the error message to classify context exhaustion with code %s",
+			(code) => {
+				for (const [message, expected] of [
+					["prompt is too long", true],
+					["Invalid model specified", false],
+				] as const) {
+					const error = { error: { error: { type: "invalid_request_error", code, message } } }
+					expect(checkContextWindowExceededError(error)).toBe(expected)
+				}
+			},
+		)
+
 		it("should detect Anthropic context window error", () => {
 			const error = {
 				error: {

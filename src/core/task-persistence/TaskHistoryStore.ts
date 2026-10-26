@@ -219,7 +219,7 @@ export class TaskHistoryStore {
 	 * Writes the per-task file immediately (source of truth),
 	 * updates the in-memory Map, and schedules a debounced index write.
 	 */
-	async upsert(item: HistoryItem): Promise<HistoryItem[]> {
+	async upsert(item: HistoryItem, options: { preserveMode?: boolean } = {}): Promise<HistoryItem[]> {
 		return this.withLock(async () => {
 			const existing = this.cache.get(item.id)
 
@@ -227,7 +227,7 @@ export class TaskHistoryStore {
 			let merged = existing ? { ...existing, ...item } : item
 
 			// Write per-task file (source of truth)
-			merged = await this.writeTaskFile(merged)
+			merged = await this.writeTaskFile(merged, options)
 
 			// Update in-memory cache
 			this.cache.set(merged.id, merged)
@@ -733,7 +733,7 @@ export class TaskHistoryStore {
 	/**
 	 * Write a HistoryItem to its per-task `history_item.json` file.
 	 */
-	private async writeTaskFile(item: HistoryItem): Promise<HistoryItem> {
+	private async writeTaskFile(item: HistoryItem, options: { preserveMode?: boolean }): Promise<HistoryItem> {
 		const filePath = await this.getTaskFilePath(item.id)
 		let merged = item
 		let expectedContent: string | undefined
@@ -747,6 +747,9 @@ export class TaskHistoryStore {
 					merged = {
 						...current.item,
 						...item,
+						// Metadata projections cannot undo a host mode change committed while
+						// their metadata was being prepared. Legacy records still initialize it.
+						...(options.preserveMode && current.item.mode !== undefined ? { mode: current.item.mode } : {}),
 						displayName: current.item.displayName,
 						generatedTitle: current.item.generatedTitle,
 					}

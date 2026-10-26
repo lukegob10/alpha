@@ -23,5 +23,9 @@ export function formatNative(tool: SerializedCustomToolDefinition): OpenAI.Chat.
 		parameters = { type: "object", properties: {}, required: [], additionalProperties: false }
 	}
 
-	return { type: "function", function: { ...tool, strict: true, parameters } }
+	return {
+		type: "function",
+		// Strict providers encode optional fields as null, which the original Zod parser may reject.
+		function: { name: tool.name, description: tool.description, strict: false, parameters },
+	}
 }

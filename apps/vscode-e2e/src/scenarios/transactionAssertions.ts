@@ -6,6 +6,7 @@
  * set of static error codes so a scenario can report an integrity failure
  * without leaking transcript contents, identifiers, or tool output.
  */
+import { isDeepStrictEqual } from "node:util"
 
 export type ToolTransactionErrorCode =
 	| "api_history_not_array"
@@ -51,6 +52,20 @@ export type LifecycleInspectionErrorCode =
 	| "lifecycle_event_after_turn_terminal"
 	| "lifecycle_missing_turn_terminal"
 	| "lifecycle_open_turn_not_last"
+	| "lifecycle_tool_payload_invalid"
+	| "lifecycle_duplicate_tool_call"
+	| "lifecycle_tool_without_accepted_call"
+	| "lifecycle_duplicate_tool_effect"
+	| "lifecycle_tool_effect_after_result"
+	| "lifecycle_tool_effect_without_approval"
+	| "lifecycle_duplicate_tool_result"
+	| "lifecycle_missing_tool_result"
+	| "lifecycle_approval_invalid"
+	| "lifecycle_approval_unresolved"
+	| "lifecycle_tool_status_mismatch"
+	| "lifecycle_transcript_invalid"
+	| "lifecycle_transcript_call_mismatch"
+	| "lifecycle_transcript_result_mismatch"
 
 export interface TaskLifecycleInspection {
 	completedTurns: number
@@ -66,6 +81,8 @@ export interface InspectTaskLifecycleOptions {
 	 * to contain a terminal event for every started turn.
 	 */
 	allowOpenLastTurn?: boolean
+	/** Correlate retained provider transactions; compaction may omit older journal transactions. */
+	apiHistory?: unknown
 }
 
 type JsonObject = Record<string, unknown>
@@ -128,6 +145,44 @@ function isResultContent(value: unknown): boolean {
 					(block.type !== "text" || typeof block.text === "string"),
 			))
 	)
+}
+
+type ToolOutcome = "success" | "error" | "denied" | "cancelled" | "indeterminate"
+
+function toolOutcome(value: unknown): ToolOutcome | undefined {
+	if (value === "completed" || value === "success") return "success"
+	if (value === "failed" || value === "error") return "error"
+	if (value === "denied" || value === "cancelled" || value === "indeterminate") return value
+	return undefined
+}
+
+function resultText(content: unknown): string | undefined {
+	if (typeof content === "string") return content
+	if (Array.isArray(content) && content.every((block) => isObject(block) && block.type === "text"))
+		return content.map((block) => block.text).join("\n")
+	return undefined
+}
+
+function legacyFailureOutcome(content: unknown): ToolOutcome | undefined {
+	const text = resultText(content)?.trim()
+	// Recognize only owned terminal envelopes. Retrieved prose, JSON records,
+	// and command output containing these words do not establish a tool status.
+	if (
+		text === "Error: cancelled" ||
+		text === "Tool execution was cancelled." ||
+		/^Tool call was not executed because (?:the task|the provider response) was cancelled\.$/.test(text ?? "")
+	)
+		return "cancelled"
+	if (text === "Error: denied" || text === "Command control was denied") return "denied"
+	return undefined
+}
+
+function receiptOutcome(block: JsonObject): ToolOutcome | undefined {
+	return toolOutcome(block.status) ?? legacyFailureOutcome(block.content)
+}
+
+function receiptId(block: JsonObject): unknown {
+	return block.tool_use_id ?? block.tool_call_id
 }
 
 function addError<T extends string>(errors: Set<T>, code: T): void {
@@ -216,9 +271,24 @@ export function inspectToolTransactions(apiHistory: unknown): ToolTransactionIns
 			if (blockValue.is_error !== undefined && typeof blockValue.is_error !== "boolean") {
 				addError(errors, "tool_result_status_invalid")
 			}
+			const outcome = receiptOutcome(blockValue)
+			if (
+				(blockValue.status !== undefined && !toolOutcome(blockValue.status)) ||
+				(toolOutcome(blockValue.status) === "success" &&
+					legacyFailureOutcome(blockValue.content) !== undefined) ||
+				(outcome !== undefined &&
+					(outcome === "success" ? blockValue.is_error === true : blockValue.is_error !== true))
+			)
+				addError(errors, "tool_result_status_invalid")
 			if (!isResultContent(blockValue.content)) addError(errors, "tool_result_content_invalid")
 
-			const id = blockValue.tool_use_id
+			const id = receiptId(blockValue)
+			if (
+				blockValue.tool_use_id !== undefined &&
+				blockValue.tool_call_id !== undefined &&
+				blockValue.tool_use_id !== blockValue.tool_call_id
+			)
+				addError(errors, "tool_result_id_invalid")
 			if (!isNonEmptyString(id)) {
 				addError(errors, "tool_result_id_invalid")
 				continue
@@ -253,6 +323,183 @@ export function inspectToolTransactions(apiHistory: unknown): ToolTransactionIns
 
 interface LifecycleTurnState {
 	terminalStatus?: LifecycleTerminalStatus
+}
+
+interface ObservedTool {
+	turnKey: string
+	name: string
+	input: unknown
+	effectStarted: boolean
+	outcome?: ToolOutcome
+	output?: unknown
+}
+
+interface ObservedApproval {
+	turnKey: string
+	toolCallId?: string
+	status: "requested" | "approved" | "denied" | "cancelled"
+}
+
+function approvalStatus(value: unknown): ObservedApproval["status"] | undefined {
+	return value === "requested" || value === "approved" || value === "denied" || value === "cancelled"
+		? value
+		: undefined
+}
+
+function inspectToolEvent(
+	type: string,
+	payload: JsonObject | undefined,
+	turnKey: string,
+	tools: Map<string, ObservedTool>,
+	approvals: Map<string, ObservedApproval>,
+	errors: Set<LifecycleInspectionErrorCode>,
+): void {
+	const item = isObject(payload?.item) ? payload.item : undefined
+	const itemEvent = type === "item_added" || type === "item_updated"
+	if (type === "tool_call_accepted" || (itemEvent && item?.type === "tool_call")) {
+		if (
+			!item ||
+			item.type !== "tool_call" ||
+			!isNonEmptyString(item.toolCallId) ||
+			!isNonEmptyString(item.name) ||
+			!("arguments" in item) ||
+			(item.status !== undefined && !["accepted", "rejected", "cancelled"].includes(String(item.status))) ||
+			(item.accepted !== undefined && typeof item.accepted !== "boolean")
+		) {
+			addError(errors, "lifecycle_tool_payload_invalid")
+			return
+		}
+		if (item.status === "rejected" || item.status === "cancelled" || item.accepted === false) {
+			if (type === "tool_call_accepted") addError(errors, "lifecycle_tool_payload_invalid")
+			return
+		}
+		if (tools.has(item.toolCallId)) addError(errors, "lifecycle_duplicate_tool_call")
+		else tools.set(item.toolCallId, { turnKey, name: item.name, input: item.arguments, effectStarted: false })
+		return
+	}
+	if (type === "approval_requested" || type === "approval_resolved" || (itemEvent && item?.type === "approval")) {
+		const status = approvalStatus(item?.status)
+		if (
+			!item ||
+			item.type !== "approval" ||
+			!isNonEmptyString(item.approvalId) ||
+			!status ||
+			(item.toolCallId !== undefined && !isNonEmptyString(item.toolCallId))
+		) {
+			addError(errors, "lifecycle_approval_invalid")
+			return
+		}
+		const key = JSON.stringify([turnKey, item.approvalId])
+		const previous = approvals.get(key)
+		const toolCallId = isNonEmptyString(item.toolCallId) ? item.toolCallId : previous?.toolCallId
+		if (toolCallId && tools.get(toolCallId)?.turnKey !== turnKey)
+			addError(errors, "lifecycle_tool_without_accepted_call")
+		if (status === "requested") {
+			const tool = toolCallId ? tools.get(toolCallId) : undefined
+			// A later grant cannot retroactively authorize an already-started
+			// effect or reopen a tool whose terminal outcome is durable.
+			if (tool?.outcome !== undefined) addError(errors, "lifecycle_approval_invalid")
+			else if (tool?.effectStarted) addError(errors, "lifecycle_tool_effect_without_approval")
+			if (previous || type === "approval_resolved") addError(errors, "lifecycle_approval_invalid")
+			else approvals.set(key, { turnKey, toolCallId, status: "requested" })
+		} else if (
+			!previous ||
+			previous.status !== "requested" ||
+			(previous.toolCallId !== undefined && toolCallId !== previous.toolCallId) ||
+			type === "approval_requested"
+		) {
+			addError(errors, "lifecycle_approval_invalid")
+		} else {
+			previous.status = status
+			if (toolCallId && tools.get(toolCallId)?.effectStarted && status !== "approved")
+				addError(errors, "lifecycle_tool_effect_without_approval")
+		}
+		return
+	}
+	if (
+		type !== "tool_effect_started" &&
+		type !== "tool_result_recorded" &&
+		!(itemEvent && item?.type === "tool_result")
+	)
+		return
+	const id = type === "tool_effect_started" ? payload?.toolCallId : item?.toolCallId
+	if (!isNonEmptyString(id)) {
+		addError(errors, "lifecycle_tool_payload_invalid")
+		return
+	}
+	const tool = tools.get(id)
+	if (!tool || tool.turnKey !== turnKey) {
+		addError(errors, "lifecycle_tool_without_accepted_call")
+		return
+	}
+	const permissions = [...approvals.values()].filter(
+		(approval) => approval.turnKey === turnKey && approval.toolCallId === id,
+	)
+	if (type === "tool_effect_started") {
+		if (tool.effectStarted) addError(errors, "lifecycle_duplicate_tool_effect")
+		if (tool.outcome !== undefined) addError(errors, "lifecycle_tool_effect_after_result")
+		if (permissions.some((approval) => approval.status !== "approved"))
+			addError(errors, "lifecycle_tool_effect_without_approval")
+		tool.effectStarted = true
+		return
+	}
+	const outcome = toolOutcome(item?.status)
+	if (!item || item.type !== "tool_result" || !outcome || (item.output === undefined && item.result === undefined)) {
+		addError(errors, "lifecycle_tool_payload_invalid")
+		return
+	}
+	if (tool.outcome !== undefined) {
+		addError(errors, "lifecycle_duplicate_tool_result")
+		return
+	}
+	if (
+		(outcome === "denied" && tool.effectStarted) ||
+		permissions.some(
+			(approval) =>
+				approval.status === "requested" ||
+				((approval.status === "denied" || approval.status === "cancelled") && outcome !== approval.status),
+		)
+	)
+		addError(errors, "lifecycle_tool_status_mismatch")
+	tool.outcome = outcome
+	tool.output = item.output !== undefined ? item.output : item.result
+}
+
+function comparableOutput(value: unknown): unknown {
+	const text = resultText(value)
+	return text === "" ? "(tool did not return anything)" : (text ?? value)
+}
+
+function inspectTranscriptCorrelation(
+	history: unknown,
+	tools: Map<string, ObservedTool>,
+	errors: Set<LifecycleInspectionErrorCode>,
+): void {
+	if (inspectToolTransactions(history).errors.length > 0) addError(errors, "lifecycle_transcript_invalid")
+	if (!Array.isArray(history)) return
+	for (const message of history) {
+		if (!isObject(message) || !Array.isArray(message.content)) continue
+		for (const block of message.content) {
+			if (!isObject(block)) continue
+			if (message.role === "assistant" && block.type === "tool_use") {
+				const tool = isNonEmptyString(block.id) ? tools.get(block.id) : undefined
+				if (!tool || tool.name !== block.name || !isDeepStrictEqual(tool.input, block.input))
+					addError(errors, "lifecycle_transcript_call_mismatch")
+			} else if (message.role === "user" && block.type === "tool_result") {
+				const id = receiptId(block)
+				const tool = isNonEmptyString(id) ? tools.get(id) : undefined
+				const outcome = toolOutcome(block.status)
+				if (
+					!tool ||
+					!tool.outcome ||
+					(tool.outcome === "success" ? block.is_error === true : block.is_error !== true) ||
+					(outcome !== undefined && tool.outcome !== "indeterminate" && outcome !== tool.outcome) ||
+					!isDeepStrictEqual(comparableOutput(tool.output), comparableOutput(block.content))
+				)
+					addError(errors, "lifecycle_transcript_result_mismatch")
+			}
+		}
+	}
 }
 
 function readPayload(event: JsonObject, errors: Set<LifecycleInspectionErrorCode>): JsonObject | undefined {
@@ -363,6 +610,8 @@ export function inspectTaskLifecycle(
 	}
 
 	const turns = new Map<string, LifecycleTurnState>()
+	const tools = new Map<string, ObservedTool>()
+	const approvals = new Map<string, ObservedApproval>()
 	const eventIds = new Set<string>()
 	let lastObservedTurnKey: string | undefined
 	let lastStartedTurnKey: string | undefined
@@ -457,15 +706,30 @@ export function inspectTaskLifecycle(
 			if (type !== "phase_changed") addError(errors, "lifecycle_event_without_turn_start")
 			continue
 		}
-		if (existing.terminalStatus !== undefined) addError(errors, "lifecycle_event_after_turn_terminal")
+		if (existing.terminalStatus !== undefined) {
+			addError(errors, "lifecycle_event_after_turn_terminal")
+			continue
+		}
+		inspectToolEvent(type, payload, turnKey, tools, approvals, errors)
 	}
 
 	for (const [turnKey, state] of turns) {
-		if (state.terminalStatus !== undefined) continue
+		if (state.terminalStatus !== undefined) {
+			if ([...tools.values()].some((tool) => tool.turnKey === turnKey && tool.outcome === undefined))
+				addError(errors, "lifecycle_missing_tool_result")
+			if (
+				[...approvals.values()].some(
+					(approval) => approval.turnKey === turnKey && approval.status === "requested",
+				)
+			)
+				addError(errors, "lifecycle_approval_unresolved")
+			continue
+		}
 		if (options.allowOpenLastTurn && turnKey === lastStartedTurnKey && turnKey === lastObservedTurnKey) continue
 		if (options.allowOpenLastTurn) addError(errors, "lifecycle_open_turn_not_last")
 		addError(errors, "lifecycle_missing_turn_terminal")
 	}
+	if ("apiHistory" in options) inspectTranscriptCorrelation(options.apiHistory, tools, errors)
 
 	return { ...counts, errors: [...errors] }
 }

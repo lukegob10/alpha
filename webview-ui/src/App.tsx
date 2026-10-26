@@ -9,7 +9,7 @@ import { MarketplaceViewStateManager } from "./components/marketplace/Marketplac
 
 import { vscode } from "./utils/vscode"
 import { telemetryClient } from "./utils/TelemetryClient"
-import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
+import { initializeSourceMaps } from "./utils/sourceMapInitializer"
 import { initializeWebviewErrorReporting } from "./utils/webviewErrors"
 import { ExtensionStateContextProvider, useShellState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
@@ -118,6 +118,39 @@ const App = () => {
 		hasCheckpoint: false,
 		images: [],
 	})
+	const editMessageConfirmedRef = useRef(false)
+	const handleEditMessageConfirm = useCallback(
+		(restoreCheckpoint?: boolean) => {
+			if (!editMessageDialogState.isOpen || editMessageConfirmedRef.current) return
+			editMessageConfirmedRef.current = true
+			vscode.postMessage({
+				type: "editMessageConfirm",
+				taskId: editMessageDialogState.taskId,
+				messageTs: editMessageDialogState.messageTs,
+				text: editMessageDialogState.text,
+				images: editMessageDialogState.images,
+				...(restoreCheckpoint === undefined ? {} : { restoreCheckpoint }),
+			})
+			setEditMessageDialogState((prev) => ({ ...prev, isOpen: false }))
+		},
+		[editMessageDialogState],
+	)
+	const handleEditDialogCloseAutoFocus = useCallback(
+		(event: Event) => {
+			if (editMessageConfirmedRef.current || editMessageDialogState.messageAction === "restart") return
+			const editor = Array.from(document.querySelectorAll<HTMLElement>("[data-message-editor-task-id]"))
+				.find(
+					(element) =>
+						element.dataset.messageEditorTaskId === editMessageDialogState.taskId &&
+						element.dataset.messageEditorTs === String(editMessageDialogState.messageTs),
+				)
+				?.querySelector<HTMLTextAreaElement>("textarea")
+			if (!editor?.isConnected || editor.closest("[hidden]")) return
+			event.preventDefault()
+			editor.focus({ preventScroll: true })
+		},
+		[editMessageDialogState.messageAction, editMessageDialogState.messageTs, editMessageDialogState.taskId],
+	)
 
 	const settingsRef = useRef<SettingsViewRef>(null)
 	const chatViewRef = useRef<ChatViewRef>(null)
@@ -210,6 +243,7 @@ const App = () => {
 				message.messageTs &&
 				(message.text || message.images?.length)
 			) {
+				editMessageConfirmedRef.current = false
 				setEditMessageDialogState({
 					isOpen: true,
 					taskId: message.taskId ?? currentTaskId,
@@ -269,16 +303,11 @@ const App = () => {
 	useEffect(() => {
 		const disposeErrorReporting = initializeWebviewErrorReporting()
 		// Initialize source maps for better error reporting in production
-		initializeSourceMaps()
-
-		// Expose source map debugging utilities in production
-		if (process.env.NODE_ENV === "production") {
-			exposeSourceMapsForDebugging()
+		const disposeSourceMaps = initializeSourceMaps()
+		return () => {
+			disposeSourceMaps()
+			disposeErrorReporting()
 		}
-
-		// Log initialization for debugging
-		console.debug("App initialized with source map support")
-		return disposeErrorReporting
 	}, [])
 
 	// Focus the WebView when non-interactive content is clicked (only in editor/tab mode)
@@ -390,33 +419,16 @@ const App = () => {
 					type={editMessageDialogState.messageAction ?? "edit"}
 					hasCheckpoint={editMessageDialogState.hasCheckpoint}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
-					onConfirm={(restoreCheckpoint: boolean) => {
-						vscode.postMessage({
-							type: "editMessageConfirm",
-							taskId: editMessageDialogState.taskId,
-							messageTs: editMessageDialogState.messageTs,
-							text: editMessageDialogState.text,
-							images: editMessageDialogState.images,
-							restoreCheckpoint,
-						})
-						setEditMessageDialogState((prev) => ({ ...prev, isOpen: false }))
-					}}
+					onCloseAutoFocus={handleEditDialogCloseAutoFocus}
+					onConfirm={handleEditMessageConfirm}
 				/>
 			) : (
 				<MemoizedEditMessageDialog
 					open={editMessageDialogState.isOpen}
 					type={editMessageDialogState.messageAction ?? "edit"}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
-					onConfirm={() => {
-						vscode.postMessage({
-							type: "editMessageConfirm",
-							taskId: editMessageDialogState.taskId,
-							messageTs: editMessageDialogState.messageTs,
-							text: editMessageDialogState.text,
-							images: editMessageDialogState.images,
-						})
-						setEditMessageDialogState((prev) => ({ ...prev, isOpen: false }))
-					}}
+					onCloseAutoFocus={handleEditDialogCloseAutoFocus}
+					onConfirm={() => handleEditMessageConfirm()}
 				/>
 			)}
 		</>

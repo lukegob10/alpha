@@ -93,9 +93,7 @@ function normalizedMatch(lines: string[], pattern: string[], startIndex: number)
  * 3. Ignoring leading and trailing whitespace
  * 4. Unicode-normalized (handles typographic characters)
  *
- * When eof is true, first try starting at the end-of-file (so that patterns
- * intended to match file endings are applied at the end), and fall back to
- * searching from start if needed.
+ * When eof is true, start at the final possible match without moving before start.
  *
  * Special cases handled defensively:
  * - Empty pattern → returns start (no-op match)
@@ -117,7 +115,8 @@ export function seekSequence(lines: string[], pattern: string[], start: number, 
 		return null
 	}
 
-	const searchStart = eof && lines.length >= pattern.length ? lines.length - pattern.length : start
+	// Codex CLI 970111f6: EOF anchoring cannot reuse lines consumed by earlier chunks.
+	const searchStart = eof ? Math.max(lines.length - pattern.length, start) : start
 
 	const maxStart = lines.length - pattern.length
 

@@ -57,6 +57,22 @@ const configuration = (overrides: Partial<ProviderSettings> = {}): ProviderSetti
 })
 
 describe("resolveTaskReasoning", () => {
+	it.each([undefined, { kind: "default" }, { kind: "effort", effort: "high" }] as const)(
+		"retains an unchanged profile for preference %j",
+		(preference) => {
+			const profile = configuration({ enableReasoningEffort: true, reasoningEffort: "high" })
+			const result = resolveTaskReasoning(profile, preference, {
+				id: "test-model",
+				info: modelInfo({ supportsReasoningEffort: ["low", "high"], reasoningEffort: "high" }),
+			})
+
+			expect(result.configuration).toBe(profile)
+			expect(result.state.requested).toEqual(preference ?? { kind: "default" })
+			expect(result.state.effective).toEqual({ kind: "effort", effort: "high" })
+			expect(result.state).not.toHaveProperty("fallbackReason")
+		},
+	)
+
 	it("keeps the requested effort when an explicit custom capability list rejects it", () => {
 		const info = modelInfo({ supportsReasoningEffort: ["none", "low"], reasoningEffort: "low" })
 		const profile = configuration({ enableReasoningEffort: true, openAiCustomModelInfo: info })

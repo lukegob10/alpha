@@ -1,12 +1,20 @@
 import {
 	getApiProtocol,
+	getModelId,
+	curatedProviders,
+	getCuratedModelInfo,
+	getCuratedProviderModels,
+	curatedProviderApiKeyFields,
+	isCuratedProvider,
 	MODELS_BY_PROVIDER,
 	persistedProviderSettingsSchema,
 	providerNames,
 	providerSettingsSchemaDiscriminated,
 	providerSettingsEntrySchema,
 } from "../provider-settings.js"
+import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS } from "../global-settings.js"
 import { stellarDefaultModelId } from "../providers/stellar.js"
+import { getProviderDefaultModelId } from "../providers/index.js"
 
 describe("supported provider settings", () => {
 	it("keeps old profile metadata compatible and preserves bounded availability metadata", () => {
@@ -35,12 +43,31 @@ describe("supported provider settings", () => {
 		).toBe(false)
 	})
 
-	it("exposes exactly the four public provider IDs", () => {
-		expect(providerNames).toEqual(["vertex", "vscode-lm", "stellar", "openai"])
-		expect(Object.keys(MODELS_BY_PROVIDER)).toEqual(["vertex", "stellar", "vscode-lm"])
+	it("exposes the curated native providers without changing the compatible endpoint identity", () => {
+		expect(providerNames).toEqual([
+			"vertex",
+			"vscode-lm",
+			"stellar",
+			"openai",
+			"openai-native",
+			"anthropic",
+			"gemini",
+			"xai",
+			"openrouter",
+		])
+		expect(Object.keys(MODELS_BY_PROVIDER)).toEqual([
+			"vertex",
+			"stellar",
+			"vscode-lm",
+			"openai-native",
+			"anthropic",
+			"gemini",
+			"xai",
+			"openrouter",
+		])
 	})
 
-	it.each(["openrouter", "unknown-future-provider"])(
+	it.each(["bedrock", "unknown-future-provider"])(
 		"rejects %s in executable profiles while preserving saved data",
 		(apiProvider) => {
 			const saved = { apiProvider, legacyModelId: "saved-model" }
@@ -48,6 +75,62 @@ describe("supported provider settings", () => {
 			expect(persistedProviderSettingsSchema.parse(saved)).toEqual(saved)
 		},
 	)
+
+	it.each([
+		["openai-native", "openAiNativeApiKey"],
+		["anthropic", "apiKey"],
+		["gemini", "geminiApiKey"],
+		["xai", "xaiApiKey"],
+		["openrouter", "openRouterApiKey"],
+	])("keeps %s credentials in SecretStorage and filters other provider fields", (apiProvider, credential) => {
+		const parsed = providerSettingsSchemaDiscriminated.parse({
+			apiProvider,
+			apiModelId: "selected-model",
+			[credential]: "saved-secret",
+			openAiApiKey: "unrelated-secret",
+			openAiBaseUrl: "https://unrelated.example/v1",
+		})
+		expect(parsed).toEqual({ apiProvider, apiModelId: "selected-model", [credential]: "saved-secret" })
+		expect(SECRET_STATE_KEYS).toContain(credential)
+		expect(GLOBAL_STATE_KEYS).not.toContain(credential)
+	})
+
+	it.each(curatedProviders)("shares %s defaults and model metadata without accepting prototype keys", (provider) => {
+		const models = getCuratedProviderModels(provider)
+		const defaultModelId = getProviderDefaultModelId(provider)
+		expect(Object.keys(models).length).toBeGreaterThan(0)
+		expect(getCuratedModelInfo(provider, defaultModelId)).toBe(models[defaultModelId])
+		expect(MODELS_BY_PROVIDER[provider].models).toEqual(Object.keys(models))
+		expect(getCuratedModelInfo(provider, "unknown-model")).toBeUndefined()
+		expect(getCuratedModelInfo(provider, "__proto__")).toBeUndefined()
+		expect(getCuratedModelInfo(provider, "constructor")).toBeUndefined()
+		expect(isCuratedProvider(provider)).toBe(true)
+		expect(SECRET_STATE_KEYS).toContain(curatedProviderApiKeyFields[provider])
+	})
+
+	it("does not apply curated model capabilities to compatible, retired, or unknown providers", () => {
+		for (const provider of ["openai", "vertex", "bedrock", "unknown-provider", undefined]) {
+			expect(isCuratedProvider(provider)).toBe(false)
+		}
+	})
+
+	it("preserves legacy OpenRouter selection without allowing stale provider fields to override it", () => {
+		const saved = providerSettingsSchemaDiscriminated.parse({
+			apiProvider: "openrouter",
+			openRouterModelId: "legacy-model",
+			openRouterApiKey: "saved-secret",
+			openRouterBaseUrl: "https://openrouter.ai/api/v1",
+			openRouterSpecificProvider: "saved-provider",
+		})
+		expect(saved).toMatchObject({ openRouterModelId: "legacy-model", openRouterSpecificProvider: "saved-provider" })
+		expect(getModelId(saved)).toBe("legacy-model")
+		expect(getModelId({ ...saved, apiModelId: "selected-model" })).toBe("selected-model")
+		expect(getModelId({ ...saved, apiModelId: "" })).toBe("")
+		expect(getModelId({ apiProvider: "openai-native", openAiModelId: "unrelated-model" })).toBeUndefined()
+		expect(getModelId({ apiProvider: "openai", apiModelId: "stale-model", openAiModelId: "selected-model" })).toBe(
+			"selected-model",
+		)
+	})
 
 	it("retains Stellar connection and Helix settings in provider profiles", () => {
 		const parsed = providerSettingsSchemaDiscriminated.parse({
@@ -97,7 +180,8 @@ describe("supported provider settings", () => {
 })
 
 describe("getApiProtocol", () => {
-	it("uses Anthropic wire semantics only for Vertex Claude models", () => {
+	it("uses Anthropic wire semantics for direct Anthropic and Vertex Claude models", () => {
+		expect(getApiProtocol("anthropic", "claude-sonnet-5")).toBe("anthropic")
 		expect(getApiProtocol("vertex", "claude-3-opus")).toBe("anthropic")
 		expect(getApiProtocol("vertex", "Claude-3-Sonnet")).toBe("anthropic")
 		expect(getApiProtocol("vertex", "gemini-3.7-flash")).toBe("openai")
@@ -105,6 +189,7 @@ describe("getApiProtocol", () => {
 	})
 
 	it("uses OpenAI semantics for all other approved providers and missing settings", () => {
+		expect(getApiProtocol("openrouter", "anthropic/claude-sonnet-5")).toBe("openai")
 		expect(getApiProtocol("openai", "claude-3-sonnet")).toBe("openai")
 		expect(getApiProtocol("stellar", "Meta-Llama-3.3-70B-Instruct")).toBe("openai")
 		expect(getApiProtocol("vscode-lm")).toBe("openai")

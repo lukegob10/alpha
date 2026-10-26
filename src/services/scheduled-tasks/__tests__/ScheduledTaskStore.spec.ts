@@ -6,18 +6,21 @@ import type { ScheduledTask, ScheduledTaskRun, TaskReasoningState } from "@alpha
 
 import { ScheduledTaskStore } from "../ScheduledTaskStore"
 
+vi.mock("fs/promises", async (importOriginal) => {
+	const original = await importOriginal<typeof import("fs/promises")>()
+	return { ...original, rename: vi.fn(original.rename) }
+})
+
 vi.mock("../../../utils/storage", () => ({
 	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
 }))
 
-const { safeWriteJsonMock } = vi.hoisted(() => ({
-	safeWriteJsonMock: vi.fn(async (filePath: string, data: any) => {
-		await fs.mkdir(path.dirname(filePath), { recursive: true })
-		await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
-	}),
-}))
+const { safeWriteJsonMock } = vi.hoisted(() => ({ safeWriteJsonMock: vi.fn() }))
 
-vi.mock("../../../utils/safeWriteJson", () => ({ safeWriteJson: safeWriteJsonMock }))
+vi.mock("../../../utils/safeWriteJson", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../../utils/safeWriteJson")>()
+	return { ...original, safeWriteJson: safeWriteJsonMock.mockImplementation(original.safeWriteJson) }
+})
 
 const makeTask = (overrides: Partial<ScheduledTask> = {}): ScheduledTask => ({
 	id: "task-1",
@@ -68,6 +71,8 @@ describe("ScheduledTaskStore", () => {
 	})
 
 	afterEach(async () => {
+		vi.mocked(fs.rename).mockReset()
+		vi.restoreAllMocks()
 		await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
 	})
 
@@ -197,7 +202,7 @@ describe("ScheduledTaskStore", () => {
 		await editingWindow.initialize()
 		const claimed = await originalWindow.claimRun("task-1", 1_000, "schedule", (current) => ({
 			task: { ...current, nextRunAt: undefined },
-			run: makeRun({ workspace: repoA, ownerId: "original-window" }),
+			run: makeRun({ workspace: repoA, ownerId: "26ecc491-458a-480e-9f69-737fef9739d8" }),
 		}))
 		expect(claimed).toBeDefined()
 		await editingWindow.updateTask("task-1", (current) => ({
@@ -344,5 +349,86 @@ describe("ScheduledTaskStore", () => {
 		await freshStore.initialize()
 
 		expect(freshStore.getState().tasks).toEqual([])
+	})
+
+	it.each(["scheduled_tasks.json", "scheduled_task_runs.json"])(
+		"keeps %s authoritative until its atomic replacement commits",
+		async (filename) => {
+			await store.upsertTask(makeTask())
+			await store.upsertRun(makeRun())
+			const file = path.join(tmpDir, "scheduled-tasks", filename)
+			const previous = await fs.readFile(file, "utf8")
+			let entered!: () => void
+			let release!: () => void
+			const committing = new Promise<void>((resolve) => (entered = resolve))
+			const gate = new Promise<void>((resolve) => (release = resolve))
+			const rename = vi.mocked(fs.rename).getMockImplementation()!
+			vi.mocked(fs.rename).mockImplementation(async (source, destination) => {
+				if (String(destination) === file && String(source).includes(".new_")) {
+					entered()
+					await gate
+				}
+				await rename(source, destination)
+			})
+			const update =
+				filename === "scheduled_tasks.json"
+					? store.upsertTask(makeTask({ name: "Updated schedule" }))
+					: store.upsertRun(makeRun({ status: "running" }))
+			try {
+				await committing
+				expect(await fs.readFile(file, "utf8")).toBe(previous)
+			} finally {
+				release()
+				await update
+			}
+		},
+	)
+
+	it("recovers legacy backup files without deleting their recovery evidence", async () => {
+		await store.upsertTask(makeTask())
+		await store.upsertRun(makeRun())
+		const directory = path.join(tmpDir, "scheduled-tasks")
+		for (const name of ["scheduled_tasks.json", "scheduled_task_runs.json"]) {
+			await fs.rename(path.join(directory, name), path.join(directory, `.${name}.bak_1000_recovery.tmp`))
+		}
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getState()).toEqual(store.getState())
+		await reloaded.updateTask("task-1", (task) => ({ ...task, name: "Recovered schedule" }))
+		for (const name of ["scheduled_tasks.json", "scheduled_task_runs.json"]) {
+			expect(await fs.readFile(path.join(directory, `.${name}.bak_1000_recovery.tmp`), "utf8")).toBeTruthy()
+		}
+	})
+
+	it("isolates invalid records and retains their original data through valid mutations", async () => {
+		const directory = path.join(tmpDir, "scheduled-tasks")
+		const invalidTask = { ...makeTask({ id: "invalid-task" }), schedule: { type: "unsupported" } }
+		const invalidRun = { ...makeRun({ id: "invalid-run" }), status: "unknown-status", preserved: "recovery data" }
+		await writeJson(path.join(directory, "scheduled_tasks.json"), [invalidTask, makeTask()])
+		await writeJson(path.join(directory, "scheduled_task_runs.json"), [invalidRun, makeRun()])
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getState().tasks.map((task) => task.id)).toEqual(["task-1"])
+		expect(reloaded.getState().runs.map((run) => run.id)).toEqual(["run-1"])
+		await reloaded.updateTask("task-1", (task) => ({ ...task, name: "Valid edit" }))
+		await reloaded.upsertRun(makeRun({ status: "running" }))
+		expect(JSON.parse(await fs.readFile(path.join(directory, "scheduled_tasks.json"), "utf8"))).toContainEqual(
+			invalidTask,
+		)
+		expect(JSON.parse(await fs.readFile(path.join(directory, "scheduled_task_runs.json"), "utf8"))).toContainEqual(
+			invalidRun,
+		)
+	})
+
+	it("normalizes legacy interval defaults and preserves unknown fields on valid records", async () => {
+		const legacyTask = { ...makeTask(), schedule: { type: "daily", startAt: 1_000, timezone: "UTC" }, future: true }
+		await writeJson(path.join(tmpDir, "scheduled-tasks", "scheduled_tasks.json"), [legacyTask])
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getTask("task-1")?.schedule).toMatchObject({ intervalDays: 1 })
+		await reloaded.updateTask("task-1", (task) => ({ ...task, name: "Updated legacy task" }))
+		expect(
+			JSON.parse(await fs.readFile(path.join(tmpDir, "scheduled-tasks", "scheduled_tasks.json"), "utf8"))[0],
+		).toMatchObject({ future: true })
 	})
 })

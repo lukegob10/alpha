@@ -1,4 +1,5 @@
 import { execFile, type ExecFileException } from "node:child_process"
+import { win32 as windowsPath } from "node:path"
 import psTree from "ps-tree"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
@@ -42,13 +43,14 @@ export async function terminateProcessTree(roots: readonly number[], options: Pr
 	const errors: unknown[] = discoveryResults.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],
 	)
+	const groupSignalErrors: unknown[] = []
 	if (group !== undefined && options.graceful) {
 		try {
 			if (signalProcessGroup(group, "SIGTERM")) {
 				await new Promise<void>((resolve) => setTimeout(resolve, PROCESS_TERMINATION_GRACE_MS))
 			}
 		} catch (error) {
-			errors.push(error)
+			groupSignalErrors.push(error)
 		}
 	}
 
@@ -77,14 +79,29 @@ export async function terminateProcessTree(roots: readonly number[], options: Pr
 			// owned group still includes those children after they are re-parented.
 			signalProcessGroup(group, "SIGKILL")
 		} catch (error) {
-			errors.push(error)
+			groupSignalErrors.push(error)
 		}
 	}
+	let physicalSettlementConfirmed = false
+	let settlementFailure: unknown
 	try {
 		await waitForPosixProcessSettlement(terminatedPids, group)
+		physicalSettlementConfirmed = true
 	} catch (error) {
-		errors.push(error)
+		settlementFailure = error
 	}
+	for (const error of groupSignalErrors) {
+		// Darwin killpg skips zombies and can return EPERM for a stopped group.
+		// Only independent observation of every owned PID/group can establish that
+		// race; a live member or unavailable process state remains a cleanup failure.
+		const exitedDarwinGroup =
+			process.platform === "darwin" &&
+			physicalSettlementConfirmed &&
+			error instanceof Error &&
+			(error.cause as NodeJS.ErrnoException | undefined)?.code === "EPERM"
+		if (!exitedDarwinGroup) errors.push(error)
+	}
+	if (settlementFailure) errors.push(settlementFailure)
 	throwTerminationErrors(errors)
 }
 
@@ -152,8 +169,13 @@ function throwTerminationErrors(errors: readonly unknown[]): void {
 
 function terminateWindowsProcessTree(pid: number, allowMissingRoot: boolean): Promise<void> {
 	return new Promise((resolve, reject) => {
+		const systemRoot = process.env.SystemRoot ?? process.env.windir
+		if (!systemRoot || !windowsPath.isAbsolute(systemRoot)) {
+			reject(new Error("Windows system root is unavailable for process-tree termination"))
+			return
+		}
 		execFile(
-			"taskkill.exe",
+			windowsPath.join(systemRoot, "System32", "taskkill.exe"),
 			["/PID", String(pid), "/T", "/F"],
 			{ windowsHide: true, timeout: PROCESS_TERMINATION_TIMEOUT_MS },
 			(error: ExecFileException | null) => {

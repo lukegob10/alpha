@@ -60,10 +60,28 @@ test("offline certification reuses its invoking pnpm CLI without a standalone in
 		const { result, calls } = await run(["--skip-private"])
 		assert.equal(result.error, undefined)
 		assert.equal(result.status, 0, result.stderr)
-		assert.equal(calls.length, 9)
-		assert.deepEqual(calls[0].args.slice(0, 5), ["--filter", "alpha", "exec", "vitest", "run"])
+		assert.deepEqual(calls[0].args.slice(0, 5), ["--dir", "src", "exec", "vitest", "run"])
+		assert.equal(calls.length, 8)
 		assert.ok(calls.every((call) => call.offline === "1" && !call.hasProviderKey))
-		assert.match(result.stdout, /Offline certification passed \(9 phases/u)
+		assert.match(result.stdout, /Offline certification passed \(8 phases/u)
+	})
+})
+
+test("offline certification never selects Redis or Docker contracts", async () => {
+	await withPnpm(async (run) => {
+		const { result, calls } = await run(["--skip-private"])
+		assert.equal(result.status, 0, result.stderr)
+		assert.deepEqual(
+			calls.flatMap((call) =>
+				call.args.filter((argument) => ["test:infrastructure", "test:redis", "test:docker"].includes(argument)),
+			),
+			[],
+		)
+		for (const command of ["test:unit", "test:contract", "test:certification"])
+			assert.ok(
+				calls.some((call) => call.args.includes(command)),
+				command,
+			)
 	})
 })
 

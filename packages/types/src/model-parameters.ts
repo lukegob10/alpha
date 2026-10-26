@@ -2,6 +2,7 @@ import type { ModelInfo } from "./model.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import { getNativeOpenAiModelCapabilities } from "./providers/openai.js"
 import { resolveVertexGatewayRoute } from "./providers/vertex.js"
+import { getCuratedModelInfo, isCuratedProvider } from "./provider-settings.js"
 
 type OpenAiRouteSettings = Pick<ProviderSettings, "openAiBaseUrl" | "openAiUseAzure" | "openAiR1FormatEnabled">
 
@@ -23,9 +24,12 @@ export function usesOpenAiReasoningFamilyChat(modelId: string): boolean {
 
 export type ModelParameterRoute =
 	| "openai-responses"
+	| "xai-responses"
 	| "openai-chat-completions"
 	| "vertex-anthropic"
 	| "vertex-gemini"
+	| "anthropic-messages"
+	| "gemini"
 	| "vscode-lm"
 	| "unsupported"
 
@@ -61,10 +65,24 @@ export function resolveModelParameterApplicability({
 	requestKind?: "task" | "single-completion"
 }): ModelParameterApplicability {
 	const selectedProvider = provider ?? settings.apiProvider ?? "vertex"
+	if (isCuratedProvider(selectedProvider)) {
+		// Saved custom metadata cannot widen a curated route's request controls.
+		model = getCuratedModelInfo(selectedProvider, modelId)
+		if (!model) return { route: "unsupported", supportsTemperature: false, supportsVerbosity: false }
+	}
 	let route: ModelParameterRoute = "unsupported"
 	let requestModelId = modelId
 	let hasNativeOpenAiRoute = false
-	if (selectedProvider === "openai") {
+	if (selectedProvider === "openai-native" || selectedProvider === "xai") {
+		hasNativeOpenAiRoute = selectedProvider === "openai-native"
+		route = selectedProvider === "xai" ? "xai-responses" : "openai-responses"
+	} else if (selectedProvider === "anthropic") {
+		route = "anthropic-messages"
+	} else if (selectedProvider === "gemini") {
+		route = "gemini"
+	} else if (selectedProvider === "openrouter") {
+		route = "openai-chat-completions"
+	} else if (selectedProvider === "openai") {
 		hasNativeOpenAiRoute = usesOpenAiResponsesApi(modelId, settings)
 		route = hasNativeOpenAiRoute && requestKind === "task" ? "openai-responses" : "openai-chat-completions"
 	} else if (selectedProvider === "stellar") {
@@ -99,23 +117,31 @@ export function resolveModelParameterApplicability({
 	const consumesTemperature =
 		route === "vertex-anthropic" ||
 		route === "vertex-gemini" ||
+		route === "anthropic-messages" ||
+		route === "gemini" ||
+		route === "xai-responses" ||
 		(route === "openai-chat-completions" && !hasNativeOpenAiRoute && !usesOpenAiReasoningFamilyChat(requestModelId))
 	const hasTemperatureCapability = supportsModelTemperature(
 		model,
-		route === "openai-chat-completions" && !hasNativeOpenAiRoute,
+		route === "openai-chat-completions" && !hasNativeOpenAiRoute && !isCuratedProvider(selectedProvider),
 	)
 	const hasActiveReasoningBudget =
 		model?.requiredReasoningBudget === true ||
 		(model?.supportsReasoningBudget === true && settings.enableReasoningEffort === true)
 	const requiresFixedTemperature =
-		consumesTemperature && hasTemperatureCapability && hasActiveReasoningBudget && route !== "vertex-gemini"
+		consumesTemperature &&
+		hasTemperatureCapability &&
+		hasActiveReasoningBudget &&
+		route !== "vertex-gemini" &&
+		route !== "gemini"
 	return {
 		route,
 		supportsTemperature: consumesTemperature && hasTemperatureCapability && !requiresFixedTemperature,
 		...(requiresFixedTemperature ? { fixedTemperature: 1 } : {}),
 		// Native text-only Chat Completions consumes top-level verbosity; task
 		// Responses consumes text.verbosity. Gate both by the same model metadata.
-		supportsVerbosity: hasNativeOpenAiRoute && model?.supportsVerbosity === true,
+		supportsVerbosity:
+			(hasNativeOpenAiRoute || selectedProvider === "openrouter") && model?.supportsVerbosity === true,
 	}
 }
 
@@ -138,13 +164,25 @@ export function resolveOptionalOutputTokenLimit({
 	model,
 	settings = {},
 	route,
+	enforceModelMaximum = false,
 }: {
 	model: ModelInfo
 	settings?: Pick<ProviderSettings, "includeMaxTokens" | "modelMaxTokens">
 	route?: ModelParameterRoute
+	/** Curated catalog ceilings are verified; custom endpoint metadata may be incomplete. */
+	enforceModelMaximum?: boolean
 }): number | undefined {
 	if (!isMaxOutputTokensIncluded(settings)) return undefined
 	const limit = validateOptionalOutputTokenLimit(settings.modelMaxTokens ?? model.maxTokens)
+	if (
+		enforceModelMaximum &&
+		limit !== undefined &&
+		typeof model.maxTokens === "number" &&
+		model.maxTokens > 0 &&
+		limit > model.maxTokens
+	) {
+		throw new RangeError("Output token limit exceeds the model maximum.")
+	}
 	if (limit !== undefined && route === "openai-responses" && limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS) {
 		throw new RangeError(
 			`Native Responses output token limit must be at least ${MIN_OPENAI_RESPONSES_OUTPUT_TOKENS} or -1 for the server default.`,

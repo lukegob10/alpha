@@ -193,7 +193,7 @@ describe("OpenAI reasoning persistence and replay", () => {
 		expect(response.toolCalls).toEqual([
 			{ type: "tool_call", id: "read-call", name: "read_file", arguments: { path: "a.ts" } },
 		])
-		expect(response.items.filter((item) => item.type === "reasoning")).toEqual([
+		const expectedOpaqueReasoning = [
 			{
 				type: "reasoning",
 				text: "",
@@ -208,7 +208,21 @@ describe("OpenAI reasoning persistence and replay", () => {
 				id: secondReasoning.id,
 				summary: secondReasoning.summary,
 			},
-		])
+		]
+		const expectedVisibleReasoning = [
+			{ type: "reasoning", text: "First summary.", outputIndex: 1 },
+			{ type: "reasoning", text: "Second summary.", outputIndex: 3 },
+		]
+		// A late summary follows its already-received opaque item at the same source position.
+		// Both remain canonical evidence; provider-history projection below must replay only the sealed item.
+		expect(response.items.filter((item) => item.type === "reasoning")).toEqual(
+			expectedOpaqueReasoning.flatMap((opaque, index) =>
+				variant === "updated summary"
+					? [opaque, expectedVisibleReasoning[index]]
+					: [expectedVisibleReasoning[index], opaque],
+			),
+		)
+		expect(response.reasoning).toBe("First summary.Second summary.")
 		expect(handler.getReasoningItems()).toHaveLength(2)
 
 		const task = createTaskHistoryBridge(handler)

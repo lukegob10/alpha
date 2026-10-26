@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import { z } from "zod"
 
-import type { TelemetryClient } from "@alpha-code/types"
+import { TelemetryEventName, type TelemetryClient } from "@alpha-code/types"
 
 import { TelemetryService } from "../TelemetryService"
 
@@ -24,6 +25,32 @@ function createClientWithPendingCleanup() {
 }
 
 describe("TelemetryService", () => {
+	it("reports bounded validation issue codes without messages, values, or record keys", () => {
+		const owned = createClientWithPendingCleanup()
+		const service = new TelemetryService([owned.client])
+		const privateValue = `telemetry-secret-canary-${"x".repeat(8_192)}`
+		const error = new z.ZodError(
+			Array.from({ length: 100 }, () => ({
+				code: z.ZodIssueCode.custom,
+				path: [privateValue],
+				message: privateValue,
+				params: { received: privateValue },
+			})),
+		)
+		service.captureSchemaValidationError({ schemaName: "ProviderSettings", error })
+		expect(owned.client.capture).toHaveBeenCalledExactlyOnceWith({
+			event: TelemetryEventName.SCHEMA_VALIDATION_ERROR,
+			properties: {
+				schemaName: "ProviderSettings",
+				error: { issueCount: 100, issues: Array.from({ length: 20 }, () => ({ code: "custom" })) },
+			},
+		})
+		const captured = JSON.stringify(vi.mocked(owned.client.capture).mock.calls)
+		expect(captured).not.toContain("telemetry-secret-canary")
+		expect(captured.length).toBeLessThan(1_024)
+		owned.finishCleanup()
+	})
+
 	it("waits for every client to finish shutdown before resolving", async () => {
 		const first = createClientWithPendingCleanup()
 		const second = createClientWithPendingCleanup()

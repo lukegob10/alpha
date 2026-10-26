@@ -10,7 +10,6 @@ import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { ContextProxy } from "../core/config/ContextProxy"
 import { focusPanel } from "../utils/focusPanel"
 import { handleNewTask } from "./handleTask"
-import { importSettingsWithFeedback } from "../core/config/importExport"
 import { t } from "../i18n"
 import { manageTaskGoal } from "./goalCommands"
 import { generateErrorDiagnostics } from "../core/webview/diagnosticsHandler"
@@ -191,15 +190,7 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 			return
 		}
 
-		await importSettingsWithFeedback(
-			{
-				providerSettingsManager: visibleProvider.providerSettingsManager,
-				contextProxy: visibleProvider.contextProxy,
-				customModesManager: visibleProvider.customModesManager,
-				provider: visibleProvider,
-			},
-			filePath,
-		)
+		await visibleProvider.importSettings(filePath)
 	},
 	focusInput: async () => {
 		try {

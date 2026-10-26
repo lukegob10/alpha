@@ -1,6 +1,7 @@
 import { canonicalJson, sha256 } from "../evidence/index"
 import { immutableIdentity } from "./identity"
 import { pairTrials } from "./pairing"
+import { evaluateExperimentDecision, type ExperimentDecision } from "./policy"
 import { segmentExperiment, type SegmentedExperimentStatistics } from "./statistics"
 import {
 	experimentManifestSchema,
@@ -17,7 +18,7 @@ import { diffVariants, validateDeclaredVariantDiff, validateTemplateDiff, type V
 
 export type PairedExperimentReport = {
 	schemaVersion: 1
-	statisticsVersion: 2
+	statisticsVersion: 3
 	controlVariantIdentity: string
 	candidateVariantIdentity: string
 	fullyPaired: true
@@ -27,6 +28,7 @@ export type PairedExperimentReport = {
 	safetyFailures: number
 	highRiskRegressions: number
 	variantDifferences: VariantDifference[]
+	decisionEvidence: ExperimentDecision
 	digest: string
 }
 
@@ -74,15 +76,26 @@ export function buildPairedExperimentReport(
 	if (!context.manifest.allowedDifferenceFields?.length)
 		throw new Error("Paired reports require explicit allowedDifferenceFields")
 	validateDeclaredVariantDiff(variantDifferences, context.manifest.allowedDifferenceFields)
+	const statisticsOptions = { independentUnit: context.manifest.independentUnit }
+	const controlStatistics = segmentExperiment(control, pairs, statisticsOptions)
+	const candidateStatistics = segmentExperiment(candidate, pairs, statisticsOptions)
 	const body = {
 		schemaVersion: 1 as const,
-		statisticsVersion: 2 as const,
+		statisticsVersion: 3 as const,
 		controlVariantIdentity,
 		candidateVariantIdentity,
 		fullyPaired: true as const,
 		pairCount: pairs.length,
-		control: segmentExperiment(control, pairs, { independentUnit: context.manifest.independentUnit }),
-		candidate: segmentExperiment(candidate, pairs, { independentUnit: context.manifest.independentUnit }),
+		control: controlStatistics,
+		candidate: candidateStatistics,
+		decisionEvidence: evaluateExperimentDecision(
+			context.manifest.decisionPlan,
+			candidateStatistics.overall,
+			pairs,
+			{
+				taskSetIdentity: immutableIdentity(context.taskSet),
+			},
+		),
 		safetyFailures: candidate.filter(({ status }) => status === "safety_failed").length,
 		highRiskRegressions: pairs.filter(
 			({ control: baseline, candidate: changed }) =>

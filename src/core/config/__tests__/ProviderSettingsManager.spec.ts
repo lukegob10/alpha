@@ -70,6 +70,22 @@ describe("ProviderSettingsManager", () => {
 			await expect(providerSettingsManager.getAvailableProfile("selected")).resolves.toBeUndefined()
 		})
 
+		it("preserves Vertex service-account JSON in saved profile reads", async () => {
+			await providerSettingsManager.initialize()
+			const vertexJsonCredentials = JSON.stringify({
+				type: "service_account",
+				private_key: "fixture-private-key",
+			})
+			mockSecrets.get.mockResolvedValue(savedProfiles({ apiProvider: "vertex", vertexJsonCredentials }))
+			mockSecrets.store.mockClear()
+
+			await expect(providerSettingsManager.getAvailableProfile("selected")).resolves.toMatchObject({
+				apiProvider: "vertex",
+				vertexJsonCredentials,
+			})
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+		})
+
 		it.each([
 			["invalid", { apiProvider: "openai", modelTemperature: "invalid-temperature" }],
 			["unsupported", { apiProvider: "future-provider" }],

@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CodeIndexConfigManager } from "../config-manager"
+import { ContextProxy } from "../../../core/config/ContextProxy"
+import { SECRET_STATE_KEYS } from "@alpha-code/types"
+import type * as vscode from "vscode"
 
 type StoredState = Record<string, unknown> | undefined
 
@@ -37,6 +40,77 @@ describe("CodeIndexConfigManager", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
+	it.each([
+		{ roots: 1, refreshSecrets: true },
+		{ roots: 4, refreshSecrets: true },
+		{ roots: 1, refreshSecrets: false },
+		{ roots: 4, refreshSecrets: false },
+	])("bounds startup reads ($roots roots, refresh=$refreshSecrets)", async ({ roots, refreshSecrets }) => {
+		const persisted = new Map<string, unknown>([
+			["codebaseIndexConfig", vertexConfig({ codebaseIndexEnabled: false })],
+		])
+		const secrets = new Map<string, string>([["codebaseIndexGeminiApiKey", "initial-index-secret"]])
+		const getSecret = vi.fn(async (key: string) => secrets.get(key))
+		const contextProxy = new ContextProxy({
+			globalState: {
+				get: (key: string) => persisted.get(key),
+				update: async (key: string, value: unknown) => {
+					if (value === undefined) persisted.delete(key)
+					else persisted.set(key, value)
+				},
+			},
+			secrets: {
+				get: getSecret,
+				store: async (key: string, value: string) => {
+					secrets.set(key, value)
+				},
+			},
+		} as unknown as vscode.ExtensionContext)
+		await contextProxy.initialize()
+		const hydrationReads = getSecret.mock.calls.length
+		const refreshSecretsSpy = vi.spyOn(contextProxy, "refreshSecrets")
+		const managers = Array.from({ length: roots }, () => new CodeIndexConfigManager(contextProxy))
+		await Promise.all(managers.map((manager) => manager.loadConfiguration({ refreshSecrets })))
+		const expectedHydrationReads = SECRET_STATE_KEYS.length + 1 // Custom headers retain their public setting shape.
+		const expectedRefreshes = refreshSecrets ? roots : 0
+		const expectedStartupReads = expectedHydrationReads * (expectedRefreshes + 1)
+		expect(new Set(getSecret.mock.calls.map(([key]) => key))).toEqual(
+			new Set([...SECRET_STATE_KEYS, "openAiHeaders"]),
+		)
+
+		expect({
+			roots,
+			hydrationReads,
+			startupReads: getSecret.mock.calls.length,
+			refreshes: refreshSecretsSpy.mock.calls.length,
+		}).toEqual({
+			roots,
+			hydrationReads: expectedHydrationReads,
+			startupReads: expectedStartupReads,
+			refreshes: expectedRefreshes,
+		})
+		for (const manager of managers) expect(manager.isFeatureEnabled).toBe(false)
+
+		secrets.set("codebaseIndexGeminiApiKey", "rotated-index-secret")
+		persisted.set("vertexJsonCredentials", "legacy-chat-secret")
+		await managers[0].loadConfiguration()
+		expect(refreshSecretsSpy).toHaveBeenCalledTimes(expectedRefreshes + 1)
+		expect(getSecret).toHaveBeenCalledTimes(expectedStartupReads + expectedHydrationReads)
+		expect(contextProxy.getSecret("codebaseIndexGeminiApiKey")).toBe("rotated-index-secret")
+		expect(managers[0].getConfig().geminiApiKey).toBe("rotated-index-secret")
+		expect(secrets.get("vertexJsonCredentials")).toBe("legacy-chat-secret")
+		expect(persisted.has("vertexJsonCredentials")).toBe(false)
+	})
+
+	it("refreshes an uninitialized proxy even when snapshot reuse was requested", async () => {
+		const context = createContextProxy(vertexConfig())
+		const manager = new CodeIndexConfigManager(context as unknown as ContextProxy)
+
+		await manager.loadConfiguration({ refreshSecrets: false })
+
+		expect(context.refreshSecrets).toHaveBeenCalledOnce()
+	})
+
 	it("normalizes old result limits and applies search-only changes without restarting the index", async () => {
 		const context = createContextProxy(vertexConfig({ codebaseIndexSearchMaxResults: 200 }))
 		const manager = new CodeIndexConfigManager(context as any)

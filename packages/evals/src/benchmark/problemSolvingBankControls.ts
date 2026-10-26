@@ -73,29 +73,14 @@ const pipelineReference = `export async function exportRecords(records, write, {
 `
 
 const pipelineAlternative = `export async function exportRecords(records, write, { concurrency = 2, signal } = {}) {
-	let active = 0
-	let cursor = 0
-	return new Promise((resolve, reject) => {
-		const next = () => {
-			if (cursor >= records.length && active === 0) {
-				resolve(undefined)
-				return
-			}
-			while (active < concurrency && cursor < records.length) {
-				const record = records[cursor]
-				cursor += 1
-				active += 1
-				Promise.resolve()
-					.then(() => write(record, signal))
-					.then(() => {
-						active -= 1
-						next()
-					})
-					.catch(reject)
-			}
-		}
-		next()
-	})
+	const batchSize = Math.max(1, Math.floor(concurrency))
+	for (let index = 0; index < records.length; index += batchSize) {
+		if (signal?.aborted) throw signal.reason ?? new Error("aborted")
+		await Promise.all(records.slice(index, index + batchSize).map(async (record) => {
+			if (signal?.aborted) throw signal.reason ?? new Error("aborted")
+			await write(record, signal)
+		}))
+	}
 }
 `
 
@@ -269,18 +254,27 @@ const traceBroken = `export function validatedAfterLastEdit(events) {
 
 const paymentsReference = `export async function charge(store, provider, key, amount) {
 	if (store.has(key)) return store.get(key)
-	const result = await provider.charge(amount)
+	const pending = Promise.resolve().then(() => provider.charge(amount))
+	store.set(key, pending)
+	const result = await pending
 	store.set(key, result)
 	return result
 }
 `
 
-const paymentsAlternative = `export async function charge(store, provider, key, amount) {
-	const existing = store.get(key)
-	if (existing !== undefined) return existing
-	const result = await provider.charge(amount)
-	if (!store.has(key)) store.set(key, result)
-	return store.get(key)
+const paymentsAlternative = `export function charge(store, provider, key, amount) {
+	if (store.has(key)) return Promise.resolve(store.get(key))
+	const reservation = Promise.withResolvers()
+	store.set(key, reservation.promise)
+	try {
+		Promise.resolve(provider.charge(amount)).then((result) => {
+			store.set(key, result)
+			reservation.resolve(result)
+		}, reservation.reject)
+	} catch (error) {
+		reservation.reject(error)
+	}
+	return reservation.promise
 }
 `
 

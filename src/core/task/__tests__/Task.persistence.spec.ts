@@ -647,7 +647,10 @@ describe("Task persistence", () => {
 			{ type: "reasoning", text: "Second block.", signature: "second-signature" },
 			{ type: "text", text: "After." },
 		])
-		;(task as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+		;(task as any).api = {
+			getModel: task.api.getModel.bind(task.api),
+			getThoughtSignature: () => "legacy-aggregate-signature",
+		}
 
 		const persisted = await (task as any).persistAssistantResponseBeforeEffects(
 			{
@@ -680,7 +683,10 @@ describe("Task persistence", () => {
 			startTask: false,
 		})
 		task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
-		;(task as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+		;(task as any).api = {
+			getModel: task.api.getModel.bind(task.api),
+			getThoughtSignature: () => "legacy-aggregate-signature",
+		}
 		const accumulator = new AgentResponseAccumulator()
 		await accumulator.add({ type: "reasoning", text: "First block." })
 		await accumulator.add({ type: "thinking_complete", signature: "first-signature" })
@@ -725,7 +731,10 @@ describe("Task persistence", () => {
 			],
 			{ status: "failed", reason: "provider failure" },
 		)
-		;(anthropicTask as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+		;(anthropicTask as any).api = {
+			getModel: anthropicTask.api.getModel.bind(anthropicTask.api),
+			getThoughtSignature: () => "legacy-aggregate-signature",
+		}
 
 		const terminal = await (anthropicTask as any).persistTerminalCanonicalResponse(
 			terminalResponse,
@@ -751,6 +760,7 @@ describe("Task persistence", () => {
 			{ type: "text", text: "Answer." },
 		])
 		;(openAiTask as any).api = {
+			getModel: openAiTask.api.getModel.bind(openAiTask.api),
 			getEncryptedContent: () => ({ encrypted_content: "encrypted-reasoning", id: "reasoning-id" }),
 			getThoughtSignature: () => "provider-signature",
 			getReasoningDetails: () => [{ type: "summary", text: "provider detail" }],
@@ -795,7 +805,12 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 			task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
-			Object.assign(task, { api: { getThoughtSignature: () => "legacy-aggregate-signature" } })
+			Object.assign(task, {
+				api: {
+					getModel: task.api.getModel.bind(task.api),
+					getThoughtSignature: () => "legacy-aggregate-signature",
+				},
+			})
 			const response = createAgentResponse([item], { status: "cancelled", reason: "interrupted" })
 
 			const result = await task["persistTerminalCanonicalResponse"](response, "cancelled", "interrupted")
@@ -821,7 +836,12 @@ describe("Task persistence", () => {
 			startTask: false,
 		})
 		task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
-		Object.assign(task, { api: { getThoughtSignature: () => "legacy-aggregate-signature" } })
+		Object.assign(task, {
+			api: {
+				getModel: task.api.getModel.bind(task.api),
+				getThoughtSignature: () => "legacy-aggregate-signature",
+			},
+		})
 		const response = createAgentResponse(
 			[
 				{ type: "reasoning", text: "", signature: "sealed-empty", outputIndex: 0 },

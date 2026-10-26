@@ -120,6 +120,32 @@ export interface CheckAutoApprovalInput {
 	requiresExplicitApproval?: boolean
 }
 
+function parseToolApprovalMetadata(text: string | undefined): AlphaSayTool | undefined {
+	let tool: AlphaSayTool
+	try {
+		tool = JSON.parse(text || "{}")
+	} catch {
+		return undefined
+	}
+	if (!tool || typeof tool !== "object" || Array.isArray(tool) || typeof tool.tool !== "string") return undefined
+	// Malformed metadata must not crash preflight or silently drop its workspace boundary.
+	if (
+		(tool.isOutsideWorkspace !== undefined && typeof tool.isOutsideWorkspace !== "boolean") ||
+		(tool.batchFiles !== undefined &&
+			(!Array.isArray(tool.batchFiles) ||
+				tool.batchFiles.some(
+					(file) =>
+						!file ||
+						typeof file !== "object" ||
+						Array.isArray(file) ||
+						(file.isOutsideWorkspace !== undefined && typeof file.isOutsideWorkspace !== "boolean"),
+				)))
+	) {
+		return undefined
+	}
+	return tool
+}
+
 export async function checkAutoApproval({
 	state,
 	commandPolicy,
@@ -225,6 +251,12 @@ export async function checkAutoApproval({
 		if (decisions.includes("auto_deny")) {
 			return { decision: "deny" }
 		}
+		if (
+			isProtected &&
+			(!flags.alwaysAllowWriteProtected || (reviewPolicy && !reviewPolicy.protectedWriteAllowed))
+		) {
+			return { decision: "ask" }
+		}
 		const decision = decisions.every((decision) => decision === "auto_approve") ? "auto_approve" : "ask_user"
 		if (mode === "ask") {
 			return decision === "auto_approve" &&
@@ -247,17 +279,8 @@ export async function checkAutoApproval({
 	}
 
 	if (ask === "tool") {
-		let tool: AlphaSayTool | undefined
-
-		try {
-			tool = JSON.parse(text || "{}")
-		} catch (error) {
-			console.error("Failed to parse tool:", error)
-		}
-
-		if (!tool) {
-			return { decision: "ask" }
-		}
+		const tool = parseToolApprovalMetadata(text)
+		if (!tool) return { decision: "ask" }
 
 		const toolName: string = tool.tool
 		if (toolName === "delegateTask" || toolName === "spawnAgent") {
@@ -355,14 +378,26 @@ export async function checkAutoApprovalWithInheritedPolicy({
 }): Promise<CheckAutoApprovalResult> {
 	if (!inheritedState) return checkAutoApproval(input)
 	if (isNonBlockingAsk(input.ask)) return { decision: "approve" }
+	if (input.ask === "tool" && !parseToolApprovalMetadata(input.text)) return { decision: "ask" }
 	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
+		if (input.ask === "use_mcp_server") {
+			return checkAutoApproval({
+				...input,
+				state: { ...input.state, ...inheritedState, approvalMode: inheritedMode },
+				reviewPolicy: {
+					protectedWriteAllowed: inheritedState.alwaysAllowWriteProtected,
+					mcp: inheritedState.mcpApproval ?? { enabled: false, grants: [] },
+				},
+			})
+		}
 		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
 		if (!input.text) return { decision: "ask" }
 		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
 			(policy) => getSubagentCommandDecision(input.text!, policy),
 		)
 		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (input.isProtected && !inheritedState.alwaysAllowWriteProtected) return { decision: "ask" }
 		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute) return { decision: "ask" }
 		if (input.requiresExplicitApproval && inheritedMode !== "bypass") return { decision: "ask" }
 		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
@@ -376,6 +411,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
 	if (liveMode === "ask" || inheritedMode === "ask") return { decision: "ask" }
 	if (liveMode === "bypass" && inheritedMode === "bypass") {
+		if (input.ask === "use_mcp_server" && inheritedResult.decision !== "approve") return { decision: "ask" }
 		if (
 			input.reviewPolicy &&
 			(input.ask === "use_mcp_server" || (input.ask === "tool" && input.isProtected)) &&
@@ -386,7 +422,12 @@ export async function checkAutoApprovalWithInheritedPolicy({
 		// Full Access can skip per-action review only when both the live and captured
 		// grants authorize it. Auto still applies each action's narrower policy.
 		if (input.ask === "command") {
-			if (!input.text || liveResult.decision !== "approve") return { decision: "ask" }
+			if (
+				!input.text ||
+				liveResult.decision !== "approve" ||
+				(input.isProtected && inheritedResult.decision !== "approve")
+			)
+				return { decision: "ask" }
 			const capturedDenials = [
 				inheritedState.commandApproval,
 				...(inheritedState.commandApprovalCeilings ?? []),

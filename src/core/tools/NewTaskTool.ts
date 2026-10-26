@@ -22,9 +22,10 @@ export class NewTaskTool extends BaseTool<"new_task"> {
 
 	async execute(params: NewTaskParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { mode, message, todos } = params
-		const { askApproval, handleError, pushToolResult } = callbacks
+		const { askApproval, handleError, pushToolResult, signal } = callbacks
 
 		try {
+			signal?.throwIfAborted()
 			// Validate required parameters.
 			if (!mode) {
 				task.consecutiveMistakeCount++
@@ -51,6 +52,7 @@ export class NewTaskTool extends BaseTool<"new_task"> {
 			}
 
 			const state = await provider.getState()
+			signal?.throwIfAborted()
 
 			// Use Package.name (dynamic at build time) as the VSCode configuration namespace.
 			// Supports multiple extension variants (e.g., stable/nightly) without hardcoded strings.
@@ -104,23 +106,26 @@ export class NewTaskTool extends BaseTool<"new_task"> {
 			})
 
 			const didApprove = await askApproval("tool", toolMessage)
+			signal?.throwIfAborted()
 
 			if (!didApprove) {
 				return
 			}
 
-			// Delegate parent and open child as sole active task
-			const child = await (provider as any).delegateParentAndOpenChild({
+			// The host owns the committed handoff after its cancellable preparation.
+			const child = await provider.delegateParentAndOpenChild({
 				parentTaskId: task.taskId,
 				message: unescapedMessage,
 				initialTodos: todoItems,
 				mode,
+				...(signal ? { signal } : {}),
 			})
 
 			// Reflect delegation in tool result (no pause/unpause, no wait)
 			pushToolResult(`Delegated to child task ${child.taskId}`)
 			return
 		} catch (error) {
+			if (signal?.aborted) throw error
 			await handleError("creating new task", error)
 			return
 		}

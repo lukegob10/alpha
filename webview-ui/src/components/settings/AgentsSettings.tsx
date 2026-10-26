@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState, type HTMLAttributes } from "react"
+import { useState, type HTMLAttributes } from "react"
 import {
 	DEFAULT_MAX_CONCURRENT_TASKS,
+	reasoningEffortsExtended,
+	reasoningEffortExtendedSchema,
 	subagentAgentTypeDefinitionSchema,
 	subagentSpawnAgentTypeSchema,
-	type ProviderSettingsEntry,
 	type SubagentAgentTypeDefinition,
 } from "@alpha-code/types"
-
 import { Button } from "@/components/ui/button"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-
+import { cn } from "@/lib/utils"
 import { Section } from "./Section"
 import { SectionHeader } from "./SectionHeader"
 import { SearchableSetting } from "./SearchableSetting"
@@ -19,154 +19,36 @@ import {
 	type SettingsCachedState,
 	type SetSettingsCachedStateField,
 } from "./managed-agent-settings"
-import {
-	getManagedAgentSettingsIssues,
-	MANAGED_AGENT_ROLES,
-	parseManagedAgentNumericInput,
-	parseManagedAgentTimeoutSeconds,
-	parseOptionalManagedAgentNumericInput,
-} from "./agents-settings-validation"
+import { getManagedAgentSettingsIssues, parseManagedAgentNumericInput } from "./agents-settings-validation"
 
 const inputClassName =
-	"max-w-full rounded bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1 focus-visible:outline focus-visible:outline-vscode-focusBorder"
+	"min-h-8 min-w-0 max-w-full self-start rounded bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1 focus-visible:outline focus-visible:outline-vscode-focusBorder"
+const fieldClassName = "flex min-w-0 flex-col gap-2"
 
 interface AgentsSettingsProps extends HTMLAttributes<HTMLDivElement> {
 	values: SettingsCachedState
 	setCachedStateField: SetSettingsCachedStateField
-	listApiConfigMeta?: ProviderSettingsEntry[]
 }
 
-interface NumberSettingProps {
-	settingId: string
-	label: string
-	description: string
-	value: number | null
-	min: number
-	max?: number
-	step?: number | "any"
-	placeholder?: string
-	error?: string
-	onChange: (rawValue: string, badInput: boolean) => void
-}
-
-function NumberSetting({
-	settingId,
-	label,
-	description,
-	value,
-	min,
-	max,
-	step = 1,
-	placeholder,
-	error,
-	onChange,
-}: NumberSettingProps) {
-	return (
-		<SearchableSetting settingId={settingId} section="agents" label={label}>
-			<div className="flex flex-col gap-2">
-				<label className="font-medium" htmlFor={settingId}>
-					{label}
-				</label>
-				<input
-					id={settingId}
-					data-testid={settingId}
-					className={`${inputClassName} w-44`}
-					type="number"
-					min={min}
-					max={max}
-					step={step}
-					placeholder={placeholder}
-					value={value !== null && Number.isFinite(value) ? value : ""}
-					aria-invalid={!!error}
-					aria-describedby={`${settingId}-description${error ? ` ${settingId}-error` : ""}`}
-					onChange={(event) => onChange(event.target.value, event.target.validity.badInput)}
-				/>
-				<p id={`${settingId}-description`} className="text-vscode-descriptionForeground text-sm m-0">
-					{description}
-				</p>
-				{error && (
-					<p id={`${settingId}-error`} role="alert" className="text-vscode-errorForeground text-sm m-0">
-						{error}
-					</p>
-				)}
-			</div>
-		</SearchableSetting>
-	)
-}
-
-interface ProfileSelectProps {
-	id: string
-	label: string
-	value: string | undefined
-	inheritLabel: string
-	profiles: ProviderSettingsEntry[]
-	onChange: (profileId: string | undefined) => void
-}
-
-function ProfileSelect({ id, label, value, inheritLabel, profiles, onChange }: ProfileSelectProps) {
+export function AgentsSettings({ values, setCachedStateField, ...props }: AgentsSettingsProps) {
 	const { t } = useAppTranslation()
-	const selectedProfile = profiles.find((profile) => profile.id === value)
-	const missing = !!value && !selectedProfile
-	const unconfigured = !!selectedProfile && !selectedProfile.apiProvider
-	const warning = missing
-		? t("agents:profile.missingWarning")
-		: unconfigured
-			? t("agents:profile.unconfiguredWarning")
-			: undefined
-
-	return (
-		<div className="flex flex-col gap-2">
-			<label className="font-medium" htmlFor={id}>
-				{label}
-			</label>
-			<select
-				id={id}
-				data-testid={id}
-				className={`${inputClassName} w-full`}
-				value={value ?? ""}
-				aria-describedby={warning ? `${id}-warning` : undefined}
-				onChange={(event) => onChange(event.target.value || undefined)}>
-				<option value="">{inheritLabel}</option>
-				{missing && <option value={value}>{t("agents:profile.missingOption", { id: value })}</option>}
-				{profiles.map((profile) => (
-					<option key={profile.id} value={profile.id}>
-						{profile.name}
-					</option>
-				))}
-			</select>
-			{warning && (
-				<p id={`${id}-warning`} className="text-vscode-descriptionForeground text-sm m-0">
-					{warning}
-				</p>
-			)}
-		</div>
-	)
-}
-
-export function AgentsSettings({ values, setCachedStateField, listApiConfigMeta = [], ...props }: AgentsSettingsProps) {
-	const { t } = useAppTranslation()
-	const advancedRef = useRef<HTMLDetailsElement>(null)
 	const [newTypeName, setNewTypeName] = useState("")
 	const [newTypeDescription, setNewTypeDescription] = useState("")
 	const [showNewTypeError, setShowNewTypeError] = useState(false)
 	const issues = getManagedAgentSettingsIssues(values)
-	const advancedHasError = issues.some(
-		({ settingId }) => settingId !== "agents-concurrency" && settingId !== "agents-delegation-policy",
-	)
-	useEffect(() => {
-		if (advancedHasError && advancedRef.current) advancedRef.current.open = true
-	}, [advancedHasError])
-	const errorFor = (settingId: string) => {
-		const issue = issues.find((candidate) => candidate.settingId === settingId)
+	const errorFor = (id: string) => {
+		const issue = issues.find((candidate) => candidate.settingId === id)
 		return issue ? t(issue.translationKey) : undefined
 	}
 	const types = values.subagentAgentTypes ?? {}
-	const updateType = (name: string, update: Partial<SubagentAgentTypeDefinition>) => {
+	const updateType = (name: string, update: Partial<SubagentAgentTypeDefinition>) =>
 		setCachedStateField("subagentAgentTypes", { ...types, [name]: { ...types[name], ...update } })
-	}
 	const addType = () => {
 		const name = newTypeName.trim()
-		const definition = subagentAgentTypeDefinitionSchema.safeParse({ description: newTypeDescription })
+		const definition = subagentAgentTypeDefinitionSchema.safeParse({
+			description: newTypeDescription,
+			developerInstructions: "",
+		})
 		if (
 			!subagentSpawnAgentTypeSchema.safeParse(name).success ||
 			!definition.success ||
@@ -181,341 +63,256 @@ export function AgentsSettings({ values, setCachedStateField, listApiConfigMeta 
 		setNewTypeDescription("")
 		setShowNewTypeError(false)
 	}
-	const childTokenLimits = MANAGED_AGENT_SETTING_LIMITS.inputTokens
-	const timeoutLimits = MANAGED_AGENT_SETTING_LIMITS.timeoutMs
-
+	const effortOptions = (
+		<>
+			<option value="">{t("agents:inherit")}</option>
+			{reasoningEffortsExtended.map((effort) => (
+				<option key={effort} value={effort}>
+					{effort}
+				</option>
+			))}
+		</>
+	)
 	return (
 		<div {...props}>
 			<SectionHeader description={t("agents:description")}>{t("agents:title")}</SectionHeader>
 			<Section>
 				<p className="text-vscode-descriptionForeground text-sm m-0">{t("agents:timing")}</p>
-				<NumberSetting
-					settingId="agents-concurrency"
-					label={t("agents:concurrency.label")}
-					description={t("agents:concurrency.description", {
-						...MANAGED_AGENT_SETTING_LIMITS.maxConcurrentSubagents,
-						default: DEFAULT_MANAGED_AGENT_SETTINGS.maxConcurrentSubagents,
-					})}
-					value={values.maxConcurrentSubagents}
-					{...MANAGED_AGENT_SETTING_LIMITS.maxConcurrentSubagents}
-					error={errorFor("agents-concurrency")}
-					onChange={(rawValue) =>
-						setCachedStateField("maxConcurrentSubagents", parseManagedAgentNumericInput(rawValue))
-					}
-				/>
-				<p data-testid="agents-task-capacity" className="text-vscode-descriptionForeground text-sm m-0">
-					{t("agents:concurrency.taskCapacity", {
-						capacity: values.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
-					})}
-				</p>
 				<SearchableSetting
-					settingId="agents-delegation-policy"
+					settingId="agents-enabled"
 					section="agents"
-					label={t("agents:delegation.label")}>
-					<div className="flex flex-col gap-2">
-						<label className="font-medium" htmlFor="agents-delegation-policy">
-							{t("agents:delegation.label")}
-						</label>
-						<select
-							id="agents-delegation-policy"
-							data-testid="agents-delegation-policy"
-							className={`${inputClassName} w-full`}
-							value={values.subagentDelegationPolicy}
-							aria-invalid={!!errorFor("agents-delegation-policy")}
-							aria-describedby="agents-delegation-policy-description"
-							onChange={(event) =>
-								setCachedStateField(
-									"subagentDelegationPolicy",
-									event.target.value === "proactive" ? "proactive" : "explicit-only",
-								)
-							}>
-							<option value="explicit-only">{t("agents:delegation.explicitOnly")}</option>
-							<option value="proactive">{t("agents:delegation.proactive")}</option>
-						</select>
-						<p
-							id="agents-delegation-policy-description"
-							className="text-vscode-descriptionForeground text-sm m-0">
-							{t("agents:delegation.description")}
-						</p>
-						{errorFor("agents-delegation-policy") && (
-							<p role="alert">{errorFor("agents-delegation-policy")}</p>
-						)}
-					</div>
+					label={t("agents:enabled.label")}
+					className={fieldClassName}>
+					<label className="flex items-center gap-2">
+						<input
+							type="checkbox"
+							checked={values.subagentsEnabled}
+							onChange={(event) => setCachedStateField("subagentsEnabled", event.target.checked)}
+						/>
+						{t("agents:enabled.label")}
+					</label>
+					<p className="text-vscode-descriptionForeground text-sm m-0">{t("agents:enabled.description")}</p>
 				</SearchableSetting>
 				<SearchableSetting
-					settingId="agents-default-profile"
+					settingId="agents-concurrency"
 					section="agents"
-					label={t("agents:defaultProfile.label")}>
-					<ProfileSelect
-						id="agents-default-profile"
-						label={t("agents:defaultProfile.label")}
-						value={values.subagentDefaultApiConfigId}
-						inheritLabel={t("agents:defaultProfile.inherit")}
-						profiles={listApiConfigMeta}
-						onChange={(profileId) => setCachedStateField("subagentDefaultApiConfigId", profileId)}
+					label={t("agents:concurrency.label")}
+					className={fieldClassName}>
+					<label htmlFor="agents-concurrency">{t("agents:concurrency.label")}</label>
+					<input
+						id="agents-concurrency"
+						data-testid="agents-concurrency"
+						className={cn(inputClassName, "w-24")}
+						type="number"
+						step={1}
+						{...MANAGED_AGENT_SETTING_LIMITS.maxConcurrentSubagents}
+						value={Number.isFinite(values.maxConcurrentSubagents) ? values.maxConcurrentSubagents : ""}
+						aria-invalid={!!errorFor("agents-concurrency")}
+						aria-describedby="agents-concurrency-description agents-concurrency-error"
+						onChange={(event) =>
+							setCachedStateField(
+								"maxConcurrentSubagents",
+								parseManagedAgentNumericInput(event.target.value),
+							)
+						}
 					/>
-					<p className="text-vscode-descriptionForeground text-sm mt-2 mb-0">
-						{t("agents:defaultProfile.description")}
+					<p id="agents-concurrency-description" className="text-vscode-descriptionForeground text-sm m-0">
+						{t("agents:concurrency.description", {
+							default: DEFAULT_MANAGED_AGENT_SETTINGS.maxConcurrentSubagents,
+						})}
+					</p>
+					<p
+						id="agents-concurrency-error"
+						className="m-0"
+						hidden={!errorFor("agents-concurrency")}
+						role={errorFor("agents-concurrency") ? "alert" : undefined}>
+						{errorFor("agents-concurrency")}
+					</p>
+					<p data-testid="agents-task-capacity" className="text-vscode-descriptionForeground text-sm m-0">
+						{t("agents:concurrency.taskCapacity", {
+							capacity: values.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
+						})}
 					</p>
 				</SearchableSetting>
-				<details ref={advancedRef} data-agents-advanced>
-					<summary className="font-medium cursor-pointer">{t("agents:advanced.title")}</summary>
-					<div className="flex flex-col gap-6 mt-4">
-						<NumberSetting
-							settingId="agents-depth"
-							label={t("agents:depth.label")}
-							description={t("agents:depth.description", {
-								...MANAGED_AGENT_SETTING_LIMITS.maxDepth,
-								default: DEFAULT_MANAGED_AGENT_SETTINGS.subagentMaxDepth,
-							})}
-							value={values.subagentMaxDepth}
-							{...MANAGED_AGENT_SETTING_LIMITS.maxDepth}
-							error={errorFor("agents-depth")}
-							onChange={(rawValue) =>
-								setCachedStateField("subagentMaxDepth", parseManagedAgentNumericInput(rawValue))
-							}
-						/>
-						<fieldset className="border-0 p-0 m-0 flex flex-col gap-4">
-							<legend className="font-medium mb-2">{t("agents:timeouts.title")}</legend>
-							{MANAGED_AGENT_ROLES.map((role) => (
-								<NumberSetting
-									key={role}
-									settingId={`agents-timeout-${role}`}
-									label={t("agents:timeouts.label", { role: t(`agents:roles.${role}`) })}
-									description={t("agents:timeouts.description", {
-										min: timeoutLimits.min / 1_000,
-										max: timeoutLimits.max / 1_000,
-										explore: DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.explore / 1_000,
-										review: DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.review / 1_000,
-										worker: DEFAULT_MANAGED_AGENT_SETTINGS.subagentRoleTimeoutsMs.worker / 1_000,
-									})}
-									value={values.subagentRoleTimeoutsMs[role] / 1_000}
-									min={timeoutLimits.min / 1_000}
-									max={timeoutLimits.max / 1_000}
-									step={0.001}
-									error={errorFor(`agents-timeout-${role}`)}
-									onChange={(rawValue) =>
-										setCachedStateField("subagentRoleTimeoutsMs", {
-											...values.subagentRoleTimeoutsMs,
-											[role]: parseManagedAgentTimeoutSeconds(rawValue),
-										})
-									}
-								/>
-							))}
-						</fieldset>
-						{(["input", "output"] as const).map((direction) => {
-							const field = direction === "input" ? "subagentMaxInputTokens" : "subagentMaxOutputTokens"
-							return (
-								<NumberSetting
-									key={direction}
-									settingId={`agents-${direction}-tokens`}
-									label={t(`agents:${direction}Tokens.label`)}
-									description={t(`agents:${direction}Tokens.description`, {
-										...childTokenLimits,
-										default: DEFAULT_MANAGED_AGENT_SETTINGS[field],
-									})}
-									value={values[field]}
-									{...childTokenLimits}
-									error={errorFor(`agents-${direction}-tokens`)}
-									onChange={(rawValue) =>
-										setCachedStateField(field, parseManagedAgentNumericInput(rawValue))
-									}
-								/>
+				<SearchableSetting
+					settingId="agents-default-model"
+					section="agents"
+					label={t("agents:defaultModel.label")}
+					className={fieldClassName}>
+					<label htmlFor="agents-default-model">{t("agents:defaultModel.label")}</label>
+					<input
+						id="agents-default-model"
+						data-testid="agents-default-model"
+						className={cn(inputClassName, "w-full max-w-sm")}
+						value={values.subagentDefaultModel}
+						placeholder={t("agents:inherit")}
+						aria-invalid={!!errorFor("agents-default-model")}
+						onChange={(event) => setCachedStateField("subagentDefaultModel", event.target.value)}
+					/>
+					<p className="text-vscode-descriptionForeground text-sm m-0">
+						{t("agents:defaultModel.description")}
+					</p>
+					{errorFor("agents-default-model") && (
+						<p className="m-0" role="alert">
+							{errorFor("agents-default-model")}
+						</p>
+					)}
+				</SearchableSetting>
+				<SearchableSetting
+					settingId="agents-default-reasoning"
+					section="agents"
+					label={t("agents:defaultReasoning.label")}
+					className={fieldClassName}>
+					<label htmlFor="agents-default-reasoning">{t("agents:defaultReasoning.label")}</label>
+					<select
+						id="agents-default-reasoning"
+						data-testid="agents-default-reasoning"
+						className={cn(inputClassName, "w-48")}
+						value={values.subagentDefaultReasoningEffort ?? ""}
+						onChange={(event) => {
+							const effort = reasoningEffortExtendedSchema.safeParse(event.target.value)
+							setCachedStateField(
+								"subagentDefaultReasoningEffort",
+								effort.success ? effort.data : undefined,
 							)
-						})}
-						<NumberSetting
-							settingId="agents-root-tokens"
-							label={t("agents:rootTokens.label")}
-							description={t("agents:rootTokens.description", MANAGED_AGENT_SETTING_LIMITS.rootTokens)}
-							value={values.subagentRootTokenBudget}
-							{...MANAGED_AGENT_SETTING_LIMITS.rootTokens}
-							placeholder={t("agents:rootTokens.placeholder")}
-							error={errorFor("agents-root-tokens")}
-							onChange={(rawValue, badInput) =>
-								setCachedStateField(
-									"subagentRootTokenBudget",
-									parseOptionalManagedAgentNumericInput(rawValue, badInput),
-								)
-							}
+						}}>
+						{effortOptions}
+					</select>
+					<p className="text-vscode-descriptionForeground text-sm m-0">
+						{t("agents:defaultReasoning.description")}
+					</p>
+				</SearchableSetting>
+				<SearchableSetting
+					settingId="agents-interrupt-message"
+					section="agents"
+					label={t("agents:interruptMessage.label")}
+					className={fieldClassName}>
+					<label className="flex items-center gap-2">
+						<input
+							type="checkbox"
+							checked={values.subagentInterruptMessage}
+							onChange={(event) => setCachedStateField("subagentInterruptMessage", event.target.checked)}
 						/>
-						<NumberSetting
-							settingId="agents-root-cost"
-							label={t("agents:rootCost.label")}
-							description={t("agents:rootCost.description")}
-							value={values.subagentRootCostBudget}
-							min={0}
-							step="any"
-							placeholder={t("agents:rootCost.placeholder")}
-							error={errorFor("agents-root-cost")}
-							onChange={(rawValue, badInput) =>
-								setCachedStateField(
-									"subagentRootCostBudget",
-									parseOptionalManagedAgentNumericInput(rawValue, badInput),
-								)
-							}
-						/>
-						<p className="text-vscode-descriptionForeground text-sm m-0">{t("agents:budgetTiming")}</p>
-						<fieldset className="border-0 p-0 m-0 flex flex-col gap-4">
-							<legend className="font-medium mb-2">{t("agents:roleProfiles.title")}</legend>
-							<p className="text-vscode-descriptionForeground text-sm m-0">
-								{t("agents:roleProfiles.description")}
-							</p>
-							{MANAGED_AGENT_ROLES.map((role) => (
-								<SearchableSetting
-									key={role}
-									settingId={`agents-profile-${role}`}
-									section="agents"
-									label={t("agents:roleProfiles.label", { role: t(`agents:roles.${role}`) })}>
-									<ProfileSelect
-										id={`agents-profile-${role}`}
-										label={t("agents:roleProfiles.label", { role: t(`agents:roles.${role}`) })}
-										value={values.subagentApiConfigByRole?.[role]}
-										inheritLabel={t("agents:roleProfiles.inherit")}
-										profiles={listApiConfigMeta}
-										onChange={(profileId) => {
-											const next = { ...values.subagentApiConfigByRole }
-											if (profileId) next[role] = profileId
-											else delete next[role]
-											setCachedStateField("subagentApiConfigByRole", next)
-										}}
-									/>
-								</SearchableSetting>
-							))}
-						</fieldset>
-						<SearchableSetting settingId="agents-types" section="agents" label={t("agents:types.title")}>
-							<div className="flex flex-col gap-4">
-								<h4 className="font-medium m-0">{t("agents:types.title")}</h4>
-								<p className="text-vscode-descriptionForeground text-sm m-0">
-									{t("agents:types.description")}
-								</p>
-								{errorFor("agents-types") && (
-									<p
-										id="agents-types-error"
-										role="alert"
-										className="text-vscode-errorForeground text-sm m-0">
-										{errorFor("agents-types")}
-									</p>
-								)}
-								{Object.entries(types).map(([name, definition]) => (
-									<fieldset
-										key={name}
-										className="border border-vscode-input-border rounded p-3 flex flex-col gap-3 min-w-0">
-										<legend className="font-medium px-1">{name}</legend>
-										<label htmlFor={`agents-type-${name}-description`}>
-											{t("agents:types.descriptionLabel", { name })}
-										</label>
-										<textarea
-											id={`agents-type-${name}-description`}
-											className={`${inputClassName} w-full resize-y min-h-16`}
-											value={definition.description}
-											aria-invalid={!!errorFor("agents-types")}
-											aria-describedby={
-												errorFor("agents-types") ? "agents-types-error" : undefined
-											}
-											onChange={(event) => updateType(name, { description: event.target.value })}
-										/>
-										<label htmlFor={`agents-type-${name}-role`}>
-											{t("agents:types.roleLabel", { name })}
-										</label>
-										<select
-											id={`agents-type-${name}-role`}
-											className={`${inputClassName} w-full`}
-											value={definition.role ?? "default"}
-											onChange={(event) => {
-												const role = event.target.value
-												if (
-													role === "default" ||
-													role === "explore" ||
-													role === "review" ||
-													role === "worker"
-												) {
-													updateType(name, { role })
-												}
-											}}>
-											{(["default", ...MANAGED_AGENT_ROLES] as const).map((role) => (
-												<option key={role} value={role}>
-													{t(`agents:roles.${role}`)}
-												</option>
-											))}
-										</select>
-										<ProfileSelect
-											id={`agents-type-${name}-profile`}
-											label={t("agents:types.profileLabel", { name })}
-											value={definition.apiConfigId}
-											inheritLabel={t("agents:types.inherit")}
-											profiles={listApiConfigMeta}
-											onChange={(profileId) => updateType(name, { apiConfigId: profileId })}
-										/>
-										{definition.model && (
-											<p className="text-vscode-descriptionForeground text-sm m-0">
-												{t("agents:types.modelOverride", { model: definition.model })}
-											</p>
-										)}
-										{definition.reasoningEffort && (
-											<p className="text-vscode-descriptionForeground text-sm m-0">
-												{t("agents:types.reasoningOverride", {
-													effort: definition.reasoningEffort,
-												})}
-											</p>
-										)}
-										{definition.developerInstructions && (
-											<p className="text-vscode-descriptionForeground text-sm m-0">
-												{t("agents:types.instructionsOverride")}
-											</p>
-										)}
-										<Button
-											type="button"
-											variant="secondary"
-											onClick={() => {
-												const next = { ...types }
-												delete next[name]
-												setCachedStateField("subagentAgentTypes", next)
-											}}>
-											{t("agents:types.remove", { name })}
-										</Button>
-									</fieldset>
-								))}
-								{Object.keys(types).length === 0 && (
-									<p className="text-vscode-descriptionForeground text-sm m-0">
-										{t("agents:types.empty")}
-									</p>
-								)}
-								<label htmlFor="agents-new-type-name">{t("agents:types.name")}</label>
-								<input
-									id="agents-new-type-name"
-									className={`${inputClassName} w-full`}
-									value={newTypeName}
-									aria-describedby="agents-new-type-name-hint"
-									onChange={(event) => setNewTypeName(event.target.value)}
-								/>
-								<p
-									id="agents-new-type-name-hint"
-									className="text-vscode-descriptionForeground text-sm m-0">
-									{t("agents:types.nameHint")}
-								</p>
-								<label htmlFor="agents-new-type-description">{t("agents:types.newDescription")}</label>
-								<textarea
-									id="agents-new-type-description"
-									className={`${inputClassName} w-full resize-y min-h-16`}
-									value={newTypeDescription}
-									onChange={(event) => setNewTypeDescription(event.target.value)}
-								/>
-								{showNewTypeError && (
-									<p role="alert" className="text-vscode-errorForeground text-sm m-0">
-										{t("agents:validation.newType")}
-									</p>
-								)}
-								<Button
-									type="button"
-									variant="secondary"
-									onClick={addType}
-									disabled={Object.keys(types).length >= 24}>
-									{t("agents:types.add")}
-								</Button>
-							</div>
-						</SearchableSetting>
+						{t("agents:interruptMessage.label")}
+					</label>
+					<p className="text-vscode-descriptionForeground text-sm m-0">
+						{t("agents:interruptMessage.description")}
+					</p>
+				</SearchableSetting>
+				<SearchableSetting
+					settingId="agents-types"
+					section="agents"
+					label={t("agents:types.title")}
+					className="flex min-w-0 flex-col gap-4">
+					<div className={fieldClassName}>
+						<h4 className="font-medium m-0">{t("agents:types.title")}</h4>
+						<p className="text-vscode-descriptionForeground text-sm m-0">{t("agents:types.description")}</p>
 					</div>
-				</details>
+					{errorFor("agents-types") && (
+						<p id="agents-types-error" className="m-0" role="alert">
+							{errorFor("agents-types")}
+						</p>
+					)}
+					{Object.entries(types).map(([name, definition]) => (
+						<fieldset
+							key={name}
+							className="border border-vscode-input-border rounded p-3 flex flex-col gap-4 min-w-0">
+							<legend>{name}</legend>
+							<div className={fieldClassName}>
+								<label htmlFor={name + "-description"}>
+									{t("agents:types.descriptionLabel", { name })}
+								</label>
+								<textarea
+									id={name + "-description"}
+									className={cn(inputClassName, "w-full resize-y")}
+									value={definition.description}
+									aria-invalid={!!errorFor("agents-types")}
+									aria-describedby={errorFor("agents-types") ? "agents-types-error" : undefined}
+									onChange={(event) => updateType(name, { description: event.target.value })}
+								/>
+							</div>
+							<div className={fieldClassName}>
+								<label htmlFor={name + "-model"}>{t("agents:types.modelLabel", { name })}</label>
+								<input
+									id={name + "-model"}
+									className={cn(inputClassName, "w-full max-w-sm")}
+									value={definition.model ?? ""}
+									placeholder={t("agents:inherit")}
+									onChange={(event) => updateType(name, { model: event.target.value || undefined })}
+								/>
+							</div>
+							<div className={fieldClassName}>
+								<label htmlFor={name + "-reasoning"}>
+									{t("agents:types.reasoningLabel", { name })}
+								</label>
+								<select
+									id={name + "-reasoning"}
+									className={cn(inputClassName, "w-48")}
+									value={definition.reasoningEffort ?? ""}
+									onChange={(event) => {
+										const effort = reasoningEffortExtendedSchema.safeParse(event.target.value)
+										updateType(name, { reasoningEffort: effort.success ? effort.data : undefined })
+									}}>
+									{effortOptions}
+								</select>
+							</div>
+							<div className={fieldClassName}>
+								<label htmlFor={name + "-instructions"}>
+									{t("agents:types.instructionsLabel", { name })}
+								</label>
+								<textarea
+									id={name + "-instructions"}
+									className={cn(inputClassName, "w-full resize-y")}
+									value={definition.developerInstructions ?? ""}
+									onChange={(event) =>
+										updateType(name, { developerInstructions: event.target.value })
+									}
+								/>
+							</div>
+							<Button
+								type="button"
+								variant="secondary"
+								onClick={() => {
+									const next = { ...types }
+									delete next[name]
+									setCachedStateField("subagentAgentTypes", next)
+								}}>
+								{t("agents:types.remove", { name })}
+							</Button>
+						</fieldset>
+					))}
+					{Object.keys(types).length === 0 && <p className="m-0">{t("agents:types.empty")}</p>}
+					<div className={fieldClassName}>
+						<label htmlFor="agents-new-type-name">{t("agents:types.name")}</label>
+						<input
+							id="agents-new-type-name"
+							className={cn(inputClassName, "w-full max-w-xs")}
+							value={newTypeName}
+							aria-describedby="agents-new-type-name-hint"
+							onChange={(event) => setNewTypeName(event.target.value)}
+						/>
+						<p id="agents-new-type-name-hint" className="text-vscode-descriptionForeground text-sm m-0">
+							{t("agents:types.nameHint")}
+						</p>
+					</div>
+					<div className={fieldClassName}>
+						<label htmlFor="agents-new-type-description">{t("agents:types.newDescription")}</label>
+						<textarea
+							id="agents-new-type-description"
+							className={cn(inputClassName, "w-full resize-y")}
+							value={newTypeDescription}
+							onChange={(event) => setNewTypeDescription(event.target.value)}
+						/>
+					</div>
+					{showNewTypeError && (
+						<p className="m-0" role="alert">
+							{t("agents:validation.newType")}
+						</p>
+					)}
+					<Button type="button" variant="secondary" className="self-start" onClick={addType}>
+						{t("agents:types.add")}
+					</Button>
+				</SearchableSetting>
 			</Section>
 		</div>
 	)

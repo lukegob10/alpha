@@ -157,9 +157,10 @@ async function runVisible(id: string, testFile: string, workspaceRoot: string) {
 describe("problem-solving task set", () => {
 	it("pins the bank, Terminal-Bench v4.0.0, and native tasks into core, development, and holdout", async () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
+		expect(manifest.version).toBe(3)
 		const lanes = new Set(manifest.tasks.map(({ lane }) => lane))
 		expect(manifest.sources.map(({ id, release }) => [id, release])).toEqual([
-			["alpha-task-bank", "frontier-v1@1"],
+			["alpha-task-bank", "frontier-v1@6"],
 			["terminal-bench", "v4.0.0"],
 			["alpha-native", "problem-solving-v1@1"],
 		])
@@ -192,9 +193,42 @@ describe("problem-solving task set", () => {
 		await expect(validateProblemSolvingSet(networked, evalRoot)).rejects.toThrow(/requires network access/)
 	})
 
-	it("requires complete keyless calibration for every visible bank task", async () => {
+	it("binds the declared Alpha task-bank release to the loaded source suite", async () => {
+		const manifest = await loadProblemSolvingSet(evalRoot)
+		const stale = structuredClone(manifest)
+		stale.sources.find(({ id }) => id === "alpha-task-bank")!.release = "frontier-v1@999"
+		for (const task of stale.tasks) {
+			if (task.source === "alpha-task-bank") task.sourceRelease = "frontier-v1@999"
+		}
+		await expect(validateProblemSolvingSet(stale, evalRoot)).rejects.toThrow(/Alpha task bank source release/)
+	})
+
+	it("accepts current evidence and rejects legacy calibration for every revised visible identity", async () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
 		await assertVisibleBankCalibration(evalRoot, manifest)
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-stale-bank-calibration-"))
+		try {
+			await fs.mkdir(path.join(root, "calibration"))
+			for (const id of [
+				"repo-stream-backpressure",
+				"stateful-api-idempotency",
+				"alpha-repository-rules",
+				"alpha-scheduler-ordering",
+				"repo-transaction-outbox",
+			]) {
+				const task = manifest.tasks.find((task) => task.id === id)!
+				expect(task.version).toBe(2)
+				await fs.copyFile(
+					path.join(evalRoot, "calibration", id + ".keyless.json"),
+					path.join(root, "calibration", id + ".keyless.json"),
+				)
+				await expect(assertVisibleBankCalibration(root, { ...manifest, tasks: [task] })).rejects.toThrow(
+					"Keyless calibration identity mismatch for " + id,
+				)
+			}
+		} finally {
+			await removeOwnedTemporaryRoot(root)
+		}
 		expect(
 			manifest.tasks.filter(({ source, lane }) => source === "alpha-task-bank" && lane !== "holdout").length,
 		).toBe(28)
@@ -310,3 +344,10 @@ describe("problem-solving task set", () => {
 		}
 	}, 120_000)
 })
+
+async function removeOwnedTemporaryRoot(root: string): Promise<void> {
+	const relative = path.relative(os.tmpdir(), path.resolve(root))
+	if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
+		throw new Error("Refusing cleanup outside the owned temporary directory")
+	await fs.rm(root, { recursive: true, force: true })
+}

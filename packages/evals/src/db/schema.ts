@@ -6,9 +6,11 @@ import type { AlphaCodeSettings, ToolName, ToolUsage } from "@alpha-code/types"
 import type { ExerciseLanguage } from "../exercises/index"
 import type {
 	ArtifactAccess,
+	ArtifactCaptureStatus,
 	ArtifactKind,
 	ArtifactUploadState,
 	EvalEvent,
+	EvidenceBundle,
 	TaskManifest,
 	VariantManifest,
 } from "../evidence/index"
@@ -175,6 +177,9 @@ export const attempts = pgTable(
 			.notNull()
 			.$type<"legacy_missing" | "pending" | "valid" | "invalid">(),
 		evidenceBundleDigest: text("evidence_bundle_digest"),
+		taskDefinitionIdentity: text("task_definition_identity"),
+		variantIdentity: text("variant_identity"),
+		evidenceManifest: jsonb("evidence_manifest").$type<EvidenceBundle>(),
 		startedAt: timestamp("started_at"),
 		finishedAt: timestamp("finished_at"),
 		createdAt: timestamp("created_at").notNull(),
@@ -268,6 +273,7 @@ export const artifacts = pgTable(
 		access: text().notNull().$type<ArtifactAccess>(),
 		retention: text().notNull().$type<"campaign" | "baseline" | "permanent">(),
 		uploadState: text("upload_state").notNull().$type<ArtifactUploadState>(),
+		captureStatus: text("capture_status").$type<ArtifactCaptureStatus>(),
 		storageKey: text("storage_key").notNull(),
 		createdAt: timestamp("created_at").notNull(),
 	},

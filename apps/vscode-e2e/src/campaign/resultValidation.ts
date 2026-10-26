@@ -1,4 +1,11 @@
-import { FAILURE_CLASSES, HOST_VERSIONS, type ScenarioResult } from "./types"
+import { isLiveProviderIdentityReceipt } from "../liveProviderIdentity"
+import {
+	FAILURE_CLASSES,
+	HOST_VERSIONS,
+	PERFORMANCE_METRICS,
+	type CampaignPerformance,
+	type ScenarioResult,
+} from "./types"
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -12,6 +19,8 @@ export function validateScenarioResult(input: unknown): ScenarioResult {
 	}
 	if (input.retentionFailed !== undefined && input.retentionFailed !== true)
 		throw new Error("Invalid retention status")
+	if (input.status === "passed" && (input.failure !== undefined || input.retentionFailed === true))
+		throw new Error("Scenario success contradicts its failure evidence")
 	for (const metric of ["requests", "inputTokens", "outputTokens", "cost"] as const) {
 		const value = input.usage[metric]
 		if (
@@ -50,6 +59,33 @@ export function validateScenarioResult(input: unknown): ScenarioResult {
 		(!Array.isArray(input.taskIds) || input.taskIds.length > 100 || !input.taskIds.every(safeId))
 	)
 		throw new Error("Invalid task IDs")
+	if (input.providerIdentity !== undefined && !isLiveProviderIdentityReceipt(input.providerIdentity))
+		throw new Error("Invalid live provider identity")
+	let performance: CampaignPerformance | undefined
+	if (input.performance !== undefined) {
+		if (!isRecord(input.performance)) throw new Error("Invalid scenario performance")
+		performance = {}
+		for (const metric of PERFORMANCE_METRICS) {
+			const value = input.performance[metric]
+			if (value === undefined) continue
+			if (
+				value !== null &&
+				(typeof value !== "number" ||
+					!Number.isFinite(value) ||
+					value < 0 ||
+					((metric.endsWith("Tokens") || metric === "providerRetries") && !Number.isSafeInteger(value)))
+			)
+				throw new Error("Invalid scenario performance")
+			if (
+				(metric === "inputTokens" || metric === "outputTokens") &&
+				value !== null &&
+				input.usage[metric] !== null &&
+				value !== input.usage[metric]
+			)
+				throw new Error("Inconsistent scenario token observations")
+			performance[metric] = value as number | null
+		}
+	}
 	// Deliberate projection: unknown fields may contain prompts or provider payloads.
 	return {
 		status: input.status as ScenarioResult["status"],
@@ -73,5 +109,7 @@ export function validateScenarioResult(input: unknown): ScenarioResult {
 			: { actualHostVersion: input.actualHostVersion as ScenarioResult["actualHostVersion"] }),
 		...(model === undefined ? {} : { model }),
 		...(input.taskIds === undefined ? {} : { taskIds: [...(input.taskIds as string[])] }),
+		...(input.providerIdentity === undefined ? {} : { providerIdentity: structuredClone(input.providerIdentity) }),
+		...(performance === undefined || Object.keys(performance).length === 0 ? {} : { performance }),
 	}
 }

@@ -1,9 +1,9 @@
-# NOR-36 independent efficiency acceptance
+# Proportional-scope measurement and acceptance
 
-September 5, 2026. Production reference: current `main-v2` at
-`8b574a6cbfa8a2ca90fd296878e6410fb6b6c208`, including the completed NOR-33/NOR-37 corrections. This lane owns
-measurement and independent acceptance; implementation and final host gates are coordinated separately. Historical
-failed-completion references are excluded from equal-quality comparisons.
+This lane measures request preparation and the fixed engine/scheduler workloads. Declare the reference and candidate
+source/build identities before each comparison. Both sides must pass the same quality oracle; incomplete or failed
+work cannot serve as an equal-quality cost baseline. Retained historical reports remain evaluation data in
+[reports/nor36](../reports/nor36/), separate from this current procedure.
 
 ## Measurement contract
 
@@ -35,16 +35,9 @@ establish whole-task completion or time to useful answer.
 
 ## Baseline and predeclared acceptance
 
-Before candidate integration, the first exploratory run on unchanged production source passed all nine preflight samples:
-each made two catalog-builder calls and one provider request, preserved the fixed request/history/response, and captured
-the final read grant. Schema byte counts were 33,033 / 34,204 / 33,676 for no/small/large MCP catalogs. Local schema-token
-estimates were 10,665 / 11,034 / 10,868. Measurement files were uncommitted during this exploratory run, so clean-source
-reports are required for final pairing. The existing engine/scheduler cases passed 7/7; the original reporter/calibration
-tests passed 23/23.
+The request-preparation regression contract requires:
 
-Acceptance, declared before integrating runtime edits:
-
-- Each noncompacting continuation must make **one** catalog-builder call instead of two. Record actual schema-factory
+- Each noncompacting continuation must make **one** catalog-builder call. Record actual schema-factory
   calls to distinguish cache hits from rebuilt work. Do not translate either count reduction into a wall-time percentage.
 - All nine requests must preserve logical request/schema digests, byte counts, local token estimates, response text,
   model/tool/command counts, tool transactions, opaque history, and final read-grant authority.
@@ -57,79 +50,8 @@ Acceptance, declared before integrating runtime edits:
 - All seven unchanged class oracles must continue passing, including complex/security/audit/escalation coverage. Do not
   shorten actions or weaken required checks to produce a lower counter.
 
-The proposed broad 25% tool/command and 20% input-token improvements remain unproven. The chosen interventions remove
-local request-preparation work; outgoing request tokens and fixed model decisions are expected to stay unchanged.
-
-## Final paired result
-
-The clean reference was measurement-only commit `78e6139c082f7fd8bb30aabebb367734e19d566f`, with production unchanged
-from `8b574a6`. The clean candidate was merge `e1ca2c78c6bc24ff7072292ecd379b492c255761`, preserving both the
-measurement commit and implementation tip `f82e939bbd9dfe0267734f0ef299ec18c67b6141` (including `7600788`). The
-loaded measurement source, fixture, runtime, configuration, and cache protocol identities matched. Both used Node
-20.19.2/pnpm 10.8.1 in the same isolated checkout. No comparative elapsed-time window was used.
-
-All **nine paired continuations passed**. Every sample reduced catalog-builder calls **2 to 1** and actual native-schema
-factory executions **2 to 1**. The factory runs inside a catalog cache miss; this establishes removed schema-building work
-in the declared fresh-catalog workload, rather than only fewer wrapper entries. Every other sample field was exactly equal:
-logical request/schema digests, request bytes, local estimates, output bytes, quality, and model/tool/command counts.
-This is not a claim of 50% faster requests. The reports omit elapsed times.
-
-| MCP catalog | Samples per side | Catalog calls, before → after | Schema factories, before → after | Schema bytes, both | Local schema estimate, both |
-| ----------- | ---------------: | ----------------------------- | -------------------------------- | -----------------: | --------------------------: |
-| None        |                3 | 2 → 1                         | 2 → 1                            |             33,033 |                      10,665 |
-| Small       |                3 | 2 → 1                         | 2 → 1                            |             34,204 |                      11,034 |
-| Large       |                3 | 2 → 1                         | 2 → 1                            |             33,676 |                      10,868 |
-
-Each continuation made one provider request, emitted no tools, and ran no commands. System text was 90 bytes / 23 local
-estimated tokens; messages were 398 bytes / 155 local estimated tokens; response text was 47 bytes. The provider fixture
-does not measure usage. Large MCP catalogs retain the existing deferred-discovery behavior, explaining their smaller
-outgoing schema than a fully expanded catalog. The complete [reference](../reports/nor36/nor36-preflight-reference-20260905.json),
-[candidate](../reports/nor36/nor36-preflight-candidate-20260905.json), and
-[admission result](../reports/nor36/nor36-preflight-comparison-20260905.json) contain only allowlisted counters and identities.
-
-All **42 engine observations** (seven classes × three invocations × two revisions) passed. For each class, the six
-existing reports were exactly equal after excluding only source revision. The
-[engine evidence](../reports/nor36/nor36-engine-oracle-pair-20260905.json) retains the equal metrics once per class and the six
-original report hashes. Provider usage, completion-stage observations, and timing remain unavailable where unobserved.
-
-| Class                    | Model requests | Tool results | Commands | Tool-output bytes | Discovery / implementation / validation / finalization tools |
-| ------------------------ | -------------: | -----------: | -------: | ----------------: | ------------------------------------------------------------ |
-| Conversation             |              1 |            0 |        0 |                 0 | 0 / 0 / 0 / 0                                                |
-| Narrow lookup            |              2 |            1 |        0 |                36 | 1 / 0 / 0 / 0                                                |
-| Small edit               |              4 |            3 |        1 |               171 | 1 / 1 / 1 / 0                                                |
-| Cross-component bug      |              6 |            5 |        1 |               534 | 2 / 2 / 1 / 0                                                |
-| Security change          |              4 |            3 |        1 |               178 | 1 / 1 / 1 / 0                                                |
-| Comprehensive audit      |              6 |            5 |        0 |               856 | 5 / 0 / 0 / 0                                                |
-| Stale-context escalation |              6 |            5 |        1 |               391 | 2 / 2 / 1 / 0                                                |
-
-Each has one finalization request. The escalation fixture retains its stale rejection, reread, successful retry, external
-content, required check, and two recovery tools. Reported repetitions/check reruns are zero under the existing fixture
-fingerprints. Those fingerprints are not a production evidence-reuse contract. The audit oracle remains a seeded fixture
-check, not an independent judgment of arbitrary model findings.
-
-Independent review found no blocking issue in the production compaction or instruction changes. The candidate's exact
-instruction snapshots and eight discovery cases passed in this lane; the implementation lane's measured scan counts
-were 5 → 1 with AGENTS enabled, 4 → 1 with AGENTS disabled/injected, and 0 with subfolder rules disabled. This lane did
-not independently rerun those new instruction fixtures against the old implementation. Their baseline attribution
-remains explicitly with the implementation lane; no broad default-path or instruction-token reduction is claimed.
-
-An earlier candidate run had identical passing results but a concurrent snapshot suite rewrote CRLF to LF, marking
-the working tree modified despite an empty Git content diff. That run was excluded from final pairing. The content-identical
-snapshot index was refreshed and final measurements ran again without that suite. No snapshot content was updated.
-
-Validation in this lane: 121 focused instruction/lazy-metadata/Task-compaction/retained-retry tests passed on the candidate;
-all reported engine and preflight observations passed; 86 reporter/admission tests and explicit touched-file ESLint passed.
-The measurement-only checkpoint passed its augmented source/benchmark typecheck; final production type validation is
-recorded centrally below. Formatting and staged `pnpm exec lint-staged` passed. Commit creation disabled the hook wrapper
-because it invokes `npx`, contrary to the pnpm-only contract.
-
-The orchestrator reports central `pnpm lint` (12/12 packages), `pnpm check-types` (13/13), and exact
-`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` passing on clean `f82e939`. It verified that the merged candidate's
-production directories are byte-identical to that source. These local setup changes do not alter managed-agent contracts;
-no fresh full managed-agent certification was required. No live-model, provider-token, or useful-answer latency result
-was established, and the broader NOR-36/NOR-31 acceptance remains open.
-The tested extension bundle SHA-256 was
-`209a28cc8544a159f4997a3d0d389c0731d259a07f92ee976439b9607205d7cd` (runner-declared central artifact identity).
+Catalog-call reductions measure local request preparation. Whole-task tool, token, or latency improvements require
+their own repeated comparable workloads and cannot be inferred from this fixture's fixed decisions.
 
 ## Paired evidence admission
 
@@ -143,7 +65,7 @@ an admitted paired performance run; report that limitation rather than inventing
 
 ## Commands and external prerequisites
 
-Use Node 20.19.2 and pnpm 10.8.1. Frozen dependency installation and the existing types build are setup requirements.
+Use Node 24.21.0, npm 11.19.0, and pnpm 11.24.0. Frozen dependency installation and the existing types build are setup requirements.
 
 ```sh
 node --test scripts/evals/proportional-scope-report.test.mjs scripts/evals/proportional-scope-compare.test.mjs
@@ -155,15 +77,10 @@ pnpm exec eslint --config src/eslint.config.mjs scripts/benchmarks/nor36-request
 
 Set `ALPHA_NOR36_PREFLIGHT_REPORT` to an output JSON filename outside the measured checkout. Set `ALPHA_SCOPE_REPORT_DIR`
 to a separate output directory for each engine invocation. Commit measurement source before final baseline/candidate
-runs. Retain full source and harness identities. The orchestrator owns final integrated exact VS Code 1.122.1 smoke,
-targeted context/completion suites, managed certification when applicable, and any quiet paired elapsed-time window.
+runs. Retain full source and harness identities. Run the exact VS Code 1.138.0 reference gate and affected
+context/completion suites after implementation; host adapter changes also require the 1.125.0 compatibility gate.
 
-The documented live E2E path is `apps/vscode-e2e/src/suite/index.ts`: `--provider live` requires
-`OPENROUTER_API_KEY` and selects `openai/gpt-4.1` through OpenRouter. In this isolated checkout the variable and
-`apps/vscode-e2e/.env.local` are absent. No secret store, unrelated authentication, or credential file was inspected.
-Broader live strategy evidence requires an authorized configured provider through a documented Alpha interface and a
-declared repeated workload/model/cache/quality protocol; deterministic structural evidence can proceed independently.
-
-Two actual GPT-6 Astra medium subagents contributed: `/root/measurement_audit` reviewed the seven-class evidence and
-implemented the bounded paired admission helper; `/root/runtime_oracle_audit` independently reviewed existing read/context
-invariants and the candidate compaction/instruction diff. The lead integrates and verifies their work.
+Live strategy evidence requires an authorized configured provider through a documented Alpha interface and a declared
+repeated workload/model/cache/quality protocol. See [live tests](../../README.md#live-tests)
+for current Copilot setup and [testing](../../README.md#testing) for host gates. Scripted structural
+evidence can proceed without provider credentials. Never use missing live measurements as a zero-cost observation.

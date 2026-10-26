@@ -118,14 +118,27 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
+function normalizePhaseFailure(phase: AgentTurnPhaseResult): AgentTurnPhaseResult {
+	// An omitted status cannot turn a reported host error into assistant completion.
+	if (phase.status !== undefined || phase.error === undefined) return phase
+	return { ...phase, status: "failed", reason: phase.reason ?? errorMessage(phase.error) }
+}
+
+function normalizeContinuationFailure<TInput>(
+	continuation: AgentTurnContinuation<TInput> | undefined,
+): AgentTurnContinuation<TInput> | undefined {
+	return continuation ? { ...continuation, ...normalizePhaseFailure(continuation) } : undefined
+}
+
 function mergePhaseResult(current: AgentTurnPhaseResult, next: AgentTurnPhaseResult | void): AgentTurnPhaseResult {
 	// Completion and cleanup still run after a fault, but cannot replace the
 	// first terminal phase or its diagnostics with a secondary failure.
 	if (!next || (current.status && current.status !== "completed")) return current
+	next = normalizePhaseFailure(next)
 	return {
 		status: next.status ?? current.status,
 		reason: next.reason ?? current.reason,
-		error: next.error ?? current.error,
+		error: next.error !== undefined ? next.error : current.error,
 	}
 }
 
@@ -145,7 +158,7 @@ function outcomeStatus(response: AgentResponse): AgentTurnStepStatus | undefined
 function captureResponsePhase(phase: AgentTurnPhaseResult, response: AgentResponse): AgentTurnPhaseResult {
 	if (phase.status && phase.status !== "completed") return phase
 	const status = outcomeStatus(response)
-	if (!status) return phase
+	if (!status) return normalizePhaseFailure(phase)
 	return {
 		...phase,
 		status,
@@ -232,6 +245,20 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 		return input
 	}
 
+	private canCompleteImplicitly(
+		response: AgentResponse,
+		requiresContinuation: boolean | undefined,
+		step: number,
+	): boolean {
+		return (
+			response.toolCalls.length === 0 &&
+			response.text.trim().length > 0 &&
+			!requiresContinuation &&
+			!response.outcome?.requiresContinuation &&
+			(this.host.canCompleteWithoutTools?.(response, step) ?? true)
+		)
+	}
+
 	private async runLegacy(initialInput: TInput): Promise<AgentTurnOutcome> {
 		let input = initialInput
 		let steps = 0
@@ -243,7 +270,13 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					result = await host.runStep(input)
 				} catch (error) {
-					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+					return terminalOutcome(
+						host.shouldAbort() ? "aborted" : "failed",
+						steps,
+						undefined,
+						errorMessage(error),
+						error,
+					)
 				}
 				steps += 1
 				result = { ...result, ...captureResponsePhase(result, result.response) }
@@ -290,13 +323,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					)
 				}
 
-				const isVisibleNoToolResponse =
-					result.response.toolCalls.length === 0 && result.response.text.trim().length > 0
-				const completedWithoutTools =
-					isVisibleNoToolResponse &&
-					!result.requiresContinuation &&
-					!result.response.outcome?.requiresContinuation &&
-					(this.host.canCompleteWithoutTools?.(result.response, steps) ?? true)
+				const completedWithoutTools = this.canCompleteImplicitly(
+					result.response,
+					result.requiresContinuation,
+					steps,
+				)
 
 				const requiresContinuation =
 					result.requiresContinuation || result.response.outcome?.requiresContinuation
@@ -316,7 +347,18 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						response: result.response,
 						completionReason: result.nextInput === "complete" ? "host" : "assistant",
 					}
-					const admission = await this.host.admitCompletion?.(outcome)
+					let admission: AgentTurnContinuation<TInput> | undefined
+					try {
+						admission = normalizeContinuationFailure(await this.host.admitCompletion?.(outcome))
+					} catch (admissionError) {
+						return terminalOutcome(
+							this.host.shouldAbort() ? "aborted" : "failed",
+							steps,
+							result.response,
+							errorMessage(admissionError),
+							admissionError,
+						)
+					}
 					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, result.response)
 					if (admission?.status && admission.status !== "completed") {
 						return terminalOutcome(
@@ -363,7 +405,13 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				try {
 					sample = await this.host.sampleStep!(input)
 				} catch (error) {
-					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+					return terminalOutcome(
+						this.host.shouldAbort() ? "aborted" : "failed",
+						steps,
+						undefined,
+						errorMessage(error),
+						error,
+					)
 				}
 				steps += 1
 
@@ -430,8 +478,12 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 								reason,
 							)
 						} else {
-							const continuation = await this.host.selectContinuation?.(sample, steps)
-							if (!continuation) {
+							const continuation = normalizeContinuationFailure(
+								await this.host.selectContinuation?.(sample, steps),
+							)
+							if (this.host.shouldAbort()) {
+								outcome = terminalOutcome("aborted", steps, sample.response, reason)
+							} else if (!continuation) {
 								outcome = terminalOutcome(
 									"incomplete",
 									steps,
@@ -447,13 +499,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 									continuation.error,
 								)
 							} else {
-								const isVisibleNoToolResponse =
-									sample.response.toolCalls.length === 0 && sample.response.text.trim().length > 0
-								const completedWithoutTools =
-									isVisibleNoToolResponse &&
-									!continuation.requiresContinuation &&
-									!sample.response.outcome?.requiresContinuation &&
-									(this.host.canCompleteWithoutTools?.(sample.response, steps) ?? true)
+								const completedWithoutTools = this.canCompleteImplicitly(
+									sample.response,
+									continuation.requiresContinuation,
+									steps,
+								)
 								const requiresContinuation =
 									continuation.requiresContinuation || sample.response.outcome?.requiresContinuation
 								if (continuation.nextInput === "complete" && requiresContinuation) {
@@ -481,7 +531,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						}
 					}
 					if (outcome?.status === "completed") {
-						const admission = await this.host.admitCompletion?.(outcome)
+						const admission = normalizeContinuationFailure(await this.host.admitCompletion?.(outcome))
 						if (this.host.shouldAbort()) {
 							outcome = terminalOutcome("aborted", steps, sample.response)
 						} else if (admission?.status && admission.status !== "completed") {
@@ -508,7 +558,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				} catch (decisionError) {
 					recoveryEligible = false
 					outcome = terminalOutcome(
-						"failed",
+						this.host.shouldAbort() ? "aborted" : "failed",
 						steps,
 						sample.response,
 						errorMessage(decisionError),
@@ -546,6 +596,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							...(reason ? { reason } : {}),
 							...(error !== undefined ? { error } : {}),
 						})
+						// An error-only admission is a secondary failure, just like a thrown
+						// callback. Decline recovery without replacing the original boundary.
+						if (recovery?.status === undefined && recovery?.error !== undefined) recovery = undefined
 					} catch {
 						return this.host.shouldAbort()
 							? terminalOutcome("aborted", steps, sample.response, reason)
@@ -558,7 +611,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 							steps,
 							sample.response,
 							recovery.reason ?? reason,
-							error ?? recovery.error,
+							error !== undefined ? error : recovery.error,
 						)
 					}
 					if (

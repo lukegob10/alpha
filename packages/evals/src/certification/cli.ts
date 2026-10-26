@@ -15,5 +15,6 @@ console.log(
 		serialRuns: serial.runs.length,
 		concurrentRuns: concurrent.runs.length,
 		canonicalResult: serial.canonicalResult,
+		runtimeControls: serial.runtimeControls,
 	}),
 )

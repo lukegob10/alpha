@@ -1,5 +1,7 @@
-import type { AlphaMessage, AlphaSayTool } from "@alpha-code/types"
-import { safeJsonParse } from "@alpha/core"
+import type { AlphaMessage } from "@alpha-code/types"
+
+import { projectTranscriptTurns, type TranscriptPrompt } from "./transcriptTurns"
+import { createMessagePayloadSelector } from "./messagePayload"
 
 /** File-edit tool names from AlphaSayTool["tool"] plus compatibility aliases. */
 const FILE_EDIT_TOOLS = new Set<string>([
@@ -27,11 +29,76 @@ export interface FileChangeEntry {
 	commandExecutionId?: string
 }
 
-type FileChangePayload = AlphaSayTool & {
-	finalContent?: string
-	changeStatus?: string
-	commandExecutionId?: string
+interface FileChangePayload {
+	entries: FileChangeEntry[]
+	previewContent?: string
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+const stringField = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined)
+
+function fileChangeEntry(
+	payload: Record<string, unknown>,
+	diff: string | undefined,
+	commandExecutionId: string | undefined,
+): FileChangeEntry | undefined {
+	if (typeof payload.path !== "string" || !payload.path || !diff) return undefined
+	const stats = payload.diffStats
+	const diffStats =
+		isRecord(stats) &&
+		typeof stats.added === "number" &&
+		typeof stats.removed === "number" &&
+		Number.isFinite(stats.added) &&
+		Number.isFinite(stats.removed)
+			? { added: stats.added, removed: stats.removed }
+			: undefined
+	return {
+		path: payload.path,
+		diff,
+		diffStats,
+		originalContent: stringField(payload.originalContent),
+		finalContent: stringField(payload.finalContent),
+		commandExecutionId,
+	}
+}
+
+const fileChangePayload = createMessagePayloadSelector((payload): FileChangePayload | undefined => {
+	if (
+		typeof payload?.tool !== "string" ||
+		!FILE_EDIT_TOOLS.has(payload.tool) ||
+		(payload.changeStatus !== undefined && payload.changeStatus !== "applied")
+	) {
+		return undefined
+	}
+	// Saved tool JSON is untrusted. Cache only validated fields used by review;
+	// unrelated tool fields and malformed batch members never reach diff rendering.
+	const batchDiffs = payload.batchDiffs
+	const isBatch = Array.isArray(batchDiffs)
+	const files = isBatch ? batchDiffs.filter(isRecord) : [payload]
+	const commandExecutionId = stringField(payload.commandExecutionId)
+	const entries = files.flatMap((file: Record<string, unknown>) => {
+		// Completed records prefer the captured unified patch over legacy edit instructions.
+		let diff = stringField(file.content)
+		if (diff === undefined) {
+			if (isBatch && Array.isArray(file.diffs)) {
+				diff = file.diffs
+					.flatMap((chunk: unknown) =>
+						isRecord(chunk) && typeof chunk.content === "string" ? [chunk.content] : [],
+					)
+					.join("\n")
+			} else if (!isBatch) {
+				// Legacy single-file previews can store their patch in `diff`.
+				diff = stringField(file.diff)
+			}
+		}
+		const entry = fileChangeEntry(file, diff, commandExecutionId)
+		return entry ? [entry] : []
+	})
+	return { entries, previewContent: isBatch ? undefined : stringField(payload.content) }
+})
 
 interface FileChangeCandidate {
 	entry: FileChangeEntry
@@ -87,59 +154,14 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 		if ((!isSayTool && !isAskTool) || !msg.text || msg.partial) continue
 		if (isAskTool && !msg.isAnswered) continue
 
-		const tool = safeJsonParse<FileChangePayload>(msg.text)
-		if (
-			!tool ||
-			!FILE_EDIT_TOOLS.has(tool.tool as string) ||
-			(tool.changeStatus !== undefined && tool.changeStatus !== "applied")
-		) {
-			continue
-		}
+		const tool = fileChangePayload(msg)
+		if (!tool) continue
 		const source = isSayTool ? "say" : "ask"
-		const commandExecutionId = tool.commandExecutionId ?? msg.commandExecutionId
-
-		// Batch diffs
-		if (tool.batchDiffs && Array.isArray(tool.batchDiffs)) {
-			for (const file of tool.batchDiffs) {
-				if (typeof file.path !== "string" || !file.path) continue
-				const content = file.content ?? file.diffs?.map((d) => d.content).join("\n") ?? ""
-				if (content) {
-					candidates.push({
-						entry: {
-							path: file.path,
-							diff: content,
-							diffStats: file.diffStats,
-							...(typeof file.originalContent === "string"
-								? { originalContent: file.originalContent }
-								: {}),
-							...(typeof file.finalContent === "string" ? { finalContent: file.finalContent } : {}),
-							commandExecutionId,
-						},
-						source,
-					})
-				}
-			}
-			continue
-		}
-
-		// Single file
-		if (typeof tool.path !== "string" || !tool.path) continue
-		// Completed edit records store the canonical unified patch in `content`.
-		// `diff` is the model's raw edit instruction for apply_diff and may not be
-		// renderable as a file diff. Keep the raw value as a compatibility fallback.
-		const diff = tool.content ?? tool.diff ?? ""
-		if (typeof diff === "string" && diff) {
+		for (const entry of tool.entries) {
 			candidates.push({
-				entry: {
-					path: tool.path,
-					diff,
-					diffStats: tool.diffStats,
-					originalContent: tool.originalContent,
-					finalContent: tool.finalContent,
-					commandExecutionId,
-				},
+				entry: { ...entry, commandExecutionId: entry.commandExecutionId ?? msg.commandExecutionId },
 				source,
-				previewContent: isAskTool ? tool.content : undefined,
+				previewContent: isAskTool ? tool.previewContent : undefined,
 			})
 		}
 	}
@@ -178,35 +200,27 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 }
 
 /**
- * Splits rendered transcript messages at user follow-ups and returns only turns
- * that contain an applied file edit. The end index lets the transcript place a
- * turn's summary directly below its response instead of aggregating all edits
- * at the bottom of the conversation.
+ * Uses saved turn attribution, or legacy follow-up boundaries, for applied edits.
+ * The end index places each summary below its turn instead of aggregating all
+ * edits at the bottom of the conversation.
  */
-export function fileChangeTurnsFromMessages(messages: AlphaMessage[] | undefined, taskKey = "task"): FileChangeTurn[] {
+export function fileChangeTurnsFromMessages(
+	messages: AlphaMessage[] | undefined,
+	taskKey = "task",
+	initialPrompt?: TranscriptPrompt,
+): FileChangeTurn[] {
 	if (!messages?.length) return []
 
 	const turns: FileChangeTurn[] = []
-	let startIndex = 0
-
-	for (let endIndex = 0; endIndex <= messages.length; endIndex++) {
-		const nextMessage = messages[endIndex]
-		const isTurnBoundary =
-			endIndex === messages.length ||
-			(endIndex > startIndex && nextMessage?.type === "say" && nextMessage.say === "user_feedback")
-
-		if (!isTurnBoundary) continue
-
-		const turnMessages = messages.slice(startIndex, endIndex)
+	for (const turn of projectTranscriptTurns(messages, initialPrompt)) {
+		const turnMessages = turn.indices.map((index) => messages[index])
 		if (turnMessages.length > 0 && fileChangesFromMessages(turnMessages).length > 0) {
 			turns.push({
-				key: `${taskKey}:${turnMessages[0].ts}`,
-				endIndex: endIndex - 1,
+				key: `${taskKey}:${turn.source === "canonical" ? turn.id : turnMessages[0].ts}`,
+				endIndex: turn.indices[turn.indices.length - 1],
 				messages: turnMessages,
 			})
 		}
-
-		startIndex = endIndex
 	}
 
 	return turns

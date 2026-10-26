@@ -217,6 +217,8 @@ describe("incoming chat presentation", () => {
 		await task["presentSteeringInput"]({ text: "Internal wake", images: [], isAgentMessageWake: true })
 		expect(say).not.toHaveBeenCalled()
 		await task["presentSteeringInput"]({ text: "Human steering", images: [], inputOrigin: "human" })
-		expect(say).toHaveBeenCalledWith("user_feedback", "Human steering", [])
+		expect(say).toHaveBeenCalledWith("user_feedback", "Human steering", [], undefined, undefined, undefined, {
+			queuedMessageIds: undefined,
+		})
 	})
 })

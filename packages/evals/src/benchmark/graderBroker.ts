@@ -47,13 +47,14 @@ const artifactSchema: z.ZodType<ArtifactDescriptor> = z.object({
 	schemaVersion: z.literal(1),
 	id: z.string().min(1),
 	attemptId: z.string().min(1),
-	kind: z.enum([...REQUIRED_ARTIFACT_KINDS, "full_output", "grader_evidence", "other"]),
+	kind: z.enum([...REQUIRED_ARTIFACT_KINDS, "full_output", "grader_evidence", "workspace_snapshot", "other"]),
 	digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 	mediaType: z.string().min(1),
 	sizeBytes: z.number().int().nonnegative(),
 	access: z.enum(["private", "reviewer", "public"]),
 	retention: z.enum(["campaign", "baseline", "permanent"]),
 	uploadState: z.literal("complete"),
+	captureStatus: z.enum(["captured", "captured-empty", "missing", "unavailable", "failed"]).optional(),
 	createdAt: z.string().datetime({ offset: true }),
 })
 const responseSchema = z.discriminatedUnion("ok", [
@@ -102,17 +103,29 @@ export async function submitGraderRequest(
 	throw new Error(`Trusted grader broker timed out after ${timeoutMs}ms`)
 }
 
-export async function serveGraderRequest(options: {
-	root: string
-	timeoutMs: number
-	signal: AbortSignal
-	expectedAttemptId?: number
-	execute(request: GraderBrokerRequest): Promise<{ run: GraderRunResult; artifacts: ArtifactDescriptor[] }>
-}): Promise<void> {
+export async function serveGraderRequest(
+	options: {
+		root: string
+		expectedAttemptId?: number
+		execute(request: GraderBrokerRequest): Promise<{ run: GraderRunResult; artifacts: ArtifactDescriptor[] }>
+	} & (
+		| { timeoutMs: number; signal: AbortSignal; untilAbort?: never }
+		| { untilAbort: AbortSignal; timeoutMs?: never; signal?: never }
+	),
+): Promise<void> {
+	const signal = options.untilAbort ?? options.signal
+	if (
+		!(signal instanceof AbortSignal) ||
+		(options.timeoutMs === undefined && options.untilAbort === undefined) ||
+		(options.untilAbort !== undefined && (options.timeoutMs !== undefined || options.signal !== undefined))
+	)
+		throw new Error("Trusted grader request wait requires an owned cancellation signal or an explicit deadline")
+	if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0))
+		throw new Error("Invalid trusted grader request timeout")
 	const requestPath = path.join(options.root, "request.json")
 	const responsePath = path.join(options.root, "response.json")
-	const deadline = Date.now() + options.timeoutMs
-	while (!options.signal.aborted && Date.now() < deadline) {
+	const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs
+	while (!signal.aborted && (deadline === undefined || Date.now() < deadline)) {
 		try {
 			const parsed = requestSchema.safeParse(await readEnvelope(requestPath))
 			if (!parsed.success) throw new Error("Invalid trusted grader request")

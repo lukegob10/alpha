@@ -4,6 +4,7 @@ import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { GoalController } from "../../agent/goals/GoalController"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
+import { accountGoalResponse } from "../../agent/GoalStepAccounting"
 import type { GoalStateStore, TaskGoalEnvelope } from "../../task-persistence/TaskGoalStore"
 
 vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureTaskCompleted: vi.fn() } } }))
@@ -445,6 +446,29 @@ describe("Task idle continuation completion authority", () => {
 })
 
 describe("Task goal integration through the shared turn engine", () => {
+	it("persists disjoint elapsed receipts when response billing fails before replay", async () => {
+		const { task, controller } = fixture()
+		await controller.create({ objective: "Finish the objective." }, "user")
+		const clock = vi.spyOn(Date, "now").mockReturnValue(900)
+		const step = (await task["beginGoalStep"]())!
+		vi.spyOn(controller, "recordUsage").mockRejectedValueOnce(new Error("usage write failed"))
+		clock.mockReturnValue(1_000)
+		await expect(
+			accountGoalResponse(step, createAgentResponse([{ type: "usage", inputTokens: 10, outputTokens: 2 }])),
+		).rejects.toThrow("usage write failed")
+		task.apiConversationHistory = [
+			{ role: "assistant", content: "Progress.", goal_usage_receipts: [step.usageReceipt!] },
+		]
+
+		clock.mockReturnValue(1_200)
+		await task["settleGoalStep"](step)
+		expect(task.apiConversationHistory[0].goal_usage_receipts?.map(({ timeMs }) => timeMs)).toEqual([100, 200])
+		expect(task["saveApiConversationHistory"]).toHaveBeenCalledOnce()
+		await task["reconcileGoalUsageFromHistory"]()
+		await task["reconcileGoalUsageFromHistory"]()
+		expect(await controller.get()).toMatchObject({ tokensUsed: 12, timeUsedMs: 300 })
+	})
+
 	it("continues ordinary assistant progress until explicit goal completion, then completes once", async () => {
 		const { task, controller } = fixture()
 		await controller.create({ objective: "Finish the objective." }, "user")
@@ -559,6 +583,7 @@ describe("Task goal integration through the shared turn engine", () => {
 		vi.mocked(task["beginCanonicalLifecycleTurn"]).mockImplementationOnce(async () => {
 			queue.addMessage("Use the new correction.")
 			task["invalidateGoalContinuation"]()
+			return false
 		})
 		vi.mocked(task.runAgentRequests).mockImplementation(async () => {
 			expect(await controller.get()).toMatchObject({ status: "active" })

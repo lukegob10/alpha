@@ -1,3 +1,5 @@
+import path from "path"
+
 type WorkspaceMutationRequest<T> = {
 	taskId: string
 	label: string
@@ -16,8 +18,21 @@ export class WorkspaceMutationCancelledError extends Error {
 }
 
 export class WorkspaceMutationGate {
+	private static readonly hosts = new Map<string, WorkspaceMutationGate>()
 	private active = false
 	private queue: WorkspaceMutationRequest<unknown>[] = []
+
+	/** Sibling views must retain one owner even while another provider is closing or reopening. */
+	static forGlobalStorage(globalStoragePath: string): WorkspaceMutationGate {
+		const resolvedPath = path.resolve(globalStoragePath)
+		const key = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath
+		let gate = this.hosts.get(key)
+		if (!gate) {
+			gate = new WorkspaceMutationGate()
+			this.hosts.set(key, gate)
+		}
+		return gate
+	}
 
 	/**
 	 * Acquire the gate synchronously only when no mutation is active or queued.
@@ -31,13 +46,14 @@ export class WorkspaceMutationGate {
 		run: () => Promise<T>,
 		isCancelled?: () => boolean,
 	): Promise<T> | undefined {
-		void taskId
-		void label
 		if (this.active || this.queue.length > 0 || isCancelled?.()) return undefined
 
 		this.active = true
 		return Promise.resolve()
-			.then(run)
+			.then(() => {
+				if (isCancelled?.()) throw new WorkspaceMutationCancelledError(taskId, label)
+				return run()
+			})
 			.finally(() => {
 				this.active = false
 				this.drain()

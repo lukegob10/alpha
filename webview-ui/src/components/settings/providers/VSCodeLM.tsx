@@ -142,11 +142,18 @@ function findMatchingModelId(
 
 	// Legacy selectors sometimes contain a documented family but no live opaque ID.
 	// Resolve those only when the canonical capability mapping is unambiguous.
+	// An explicit ID or version must remain unavailable when its exact route is gone.
+	if (selector.id || selector.version) {
+		return undefined
+	}
 	const canonicalModelId = getVscodeLlmModelId(selector)
 	if (!canonicalModelId) {
 		return undefined
 	}
-	const canonicalMatches = models.filter((model) => getVscodeLlmModelId(model) === canonicalModelId)
+	const canonicalMatches = models.filter(
+		(model) =>
+			(!selector.vendor || selector.vendor === model.vendor) && getVscodeLlmModelId(model) === canonicalModelId,
+	)
 	return canonicalMatches.length === 1 ? getVsCodeLmPickerKey(canonicalMatches[0]) : undefined
 }
 

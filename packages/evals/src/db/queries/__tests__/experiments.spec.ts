@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm"
 import { describe, expect, it } from "vitest"
+import { canonicalJson, sha256 } from "../../../evidence/canonical"
 
 import {
 	immutableIdentity,
@@ -114,7 +115,15 @@ describe("immutable experiment and baseline governance", () => {
 				experimentIdentity: immutableIdentity(manifest),
 				variantIdentity: candidateIdentity,
 				taskSetIdentity,
-				report: { control: statistics, candidate: statistics },
+				report: {
+					control: statistics,
+					candidate: statistics,
+					decisionEvidence: {
+						status: "accepted",
+						reasons: [],
+						statisticsDigest: sha256(canonicalJson(statistics)),
+					},
+				},
 				policy: POLICIES["release-candidate-v1"],
 				reviewer: "quality-owner",
 				rationale: "paired improvement with no regressions",

@@ -153,8 +153,14 @@ export class TelemetryService {
 	}
 
 	public captureSchemaValidationError({ schemaName, error }: { schemaName: string; error: ZodError }): void {
-		// https://zod.dev/ERROR_HANDLING?id=formatting-errors
-		this.captureEvent(TelemetryEventName.SCHEMA_VALIDATION_ERROR, { schemaName, error: error.format() })
+		// Messages, paths, and received values may contain imported credentials or user-authored record keys.
+		this.captureEvent(TelemetryEventName.SCHEMA_VALIDATION_ERROR, {
+			schemaName,
+			error: {
+				issueCount: error.issues.length,
+				issues: error.issues.slice(0, 20).map(({ code }) => ({ code })),
+			},
+		})
 	}
 
 	public captureDiffApplicationError(taskId: string, consecutiveMistakeCount: number): void {

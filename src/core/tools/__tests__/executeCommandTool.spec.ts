@@ -169,7 +169,7 @@ describe("executeCommandTool", () => {
 				pushToolResult: mockPushToolResult,
 			})
 			expect(mockAskApproval).toHaveBeenCalledWith("command", command)
-			expect(mockAlphaTask.alphaIgnoreController.validateCommand).toHaveBeenCalledWith(command)
+			expect(mockAlphaTask.alphaIgnoreController.validateCommand).toHaveBeenCalledWith(command, undefined)
 			const terminal = await vitest.mocked(TerminalRegistry.getOrCreateTerminal).mock.results[0].value
 			expect(terminal.runCommand).toHaveBeenCalledWith(command, expect.any(Object), undefined)
 		},
@@ -784,12 +784,34 @@ describe("executeCommandTool", () => {
 			})
 
 			// Verify
-			expect(validateCommandMock).toHaveBeenCalledWith("cat .env")
+			expect(validateCommandMock).toHaveBeenCalledWith("cat .env", undefined)
 			expect(mockAlphaTask.say).toHaveBeenCalledWith("rooignore_error", ".env")
 			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith(".env")
 			expect(mockPushToolResult).toHaveBeenCalledWith(mockAlphaIgnoreError)
 			expect(mockAskApproval).not.toHaveBeenCalled()
 			// executeCommandInTerminal should not be called since alphaignore blocked it
+		})
+
+		it("blocks ignored relative reads using the requested command working directory before approval", async () => {
+			mockToolUse.nativeArgs = { command: "Get-Content keys.json", cwd: "secrets" }
+			mockAlphaTask.alphaIgnoreController.validateCommand.mockImplementation(
+				(_command: string, workingDirectory?: string) =>
+					workingDirectory === "secrets" ? "keys.json" : undefined,
+			)
+			const setResultMetadata = vitest.fn()
+
+			await executeCommandTool.handle(mockAlphaTask as Task, mockToolUse, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				setResultMetadata,
+			})
+
+			expect(mockAskApproval).not.toHaveBeenCalled()
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(mockAlphaTask.say).toHaveBeenCalledWith("rooignore_error", "keys.json")
+			expect(setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "denied" }))
+			expect(mockHandleError).not.toHaveBeenCalled()
 		})
 	})
 
@@ -905,6 +927,45 @@ describe("executeCommandTool", () => {
 	})
 
 	describe("Plan command working-directory confinement", () => {
+		it("allows a Worker Git command in an absolute directory inside its worktree", async () => {
+			mockAlphaTask.taskKind = "subagent"
+			mockAlphaTask.subagentRole = "worker"
+			mockAlphaTask.cwd = path.resolve("worker-worktree")
+			vitest.mocked(TerminalRegistry.getOrCreateTerminal).mockRejectedValueOnce(new Error("terminal unavailable"))
+
+			await expect(
+				executeCommandInTerminalActual(mockAlphaTask as Task, {
+					executionId: "worker-git-absolute",
+					command: "git status --short",
+					customCwd: mockAlphaTask.cwd,
+				}),
+			).rejects.toThrow("terminal unavailable")
+
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
+				mockAlphaTask.cwd,
+				mockAlphaTask.taskId,
+				"execa",
+			)
+		})
+
+		it("rejects an absolute Worker directory that escapes through a junction", async () => {
+			mockAlphaTask.taskKind = "subagent"
+			mockAlphaTask.subagentRole = "worker"
+			mockAlphaTask.cwd = path.resolve("worker-worktree")
+			vitest
+				.mocked(fs.realpath)
+				.mockResolvedValueOnce(mockAlphaTask.cwd)
+				.mockResolvedValueOnce(path.resolve("outside"))
+
+			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
+				executionId: "worker-cwd-junction",
+				command: "git status",
+				customCwd: path.join(mockAlphaTask.cwd, "linked"),
+			})
+
+			expect(result).toEqual([false, "Editing worker command directory is outside its isolated workspace."])
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		})
 		it("rejects an absolute working directory before opening a terminal", async () => {
 			mockAlphaTask.getTaskMode = vitest.fn().mockResolvedValue("architect")
 

@@ -9,6 +9,7 @@ import * as vscode from "vscode"
 import type { AlphaMessage } from "@alpha-code/types"
 
 import { waitFor, waitUntilCompleted } from "./utils"
+import { latencyObservation } from "../evidence/latencyObservation"
 
 const execFileAsync = promisify(execFile)
 
@@ -229,6 +230,8 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 			const serviceDurations = samples.map(({ serviceDurationMs }) => serviceDurationMs).sort((a, b) => a - b)
 			const report = {
 				schemaVersion: 1,
+				...latencyObservation(),
+				sampleCount: samples.length,
 				hostVersion: vscode.version,
 				extensionHostNode: process.versions.node,
 				provider: "scripted",

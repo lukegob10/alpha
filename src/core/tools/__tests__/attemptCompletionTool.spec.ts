@@ -190,6 +190,24 @@ describe("attemptCompletionTool", () => {
 		expect(mockHandleError).not.toHaveBeenCalled()
 	})
 
+	it("reports completion failures with the task completion context", async () => {
+		const error = new Error("Completion hooks failed")
+		vi.mocked(mockTask.evaluateCompletionHooks!).mockRejectedValueOnce(error)
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "failed-primary-completion",
+		})
+
+		expect(mockHandleError).toHaveBeenCalledExactlyOnceWith("completing task", error)
+		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+		expect(mockPushToolResult).not.toHaveBeenCalled()
+	})
+
 	it("keeps completion hooks authoritative before finishing a goal turn", async () => {
 		vi.mocked(mockTask.completeGoalTurn!).mockResolvedValue(true)
 		vi.mocked(mockTask.evaluateCompletionHooks!).mockResolvedValue({ prompt: "Run the required validation." })

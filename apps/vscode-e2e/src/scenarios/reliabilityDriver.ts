@@ -8,7 +8,8 @@ import type { WorkflowRequestBudget } from "./requestBudget"
 import { aggregateTaskUsage, type WorkflowDependencies, type WorkflowOptions } from "./workflowDriver"
 import type { ReliabilityScenarioId } from "./reliabilityCatalog"
 import {
-	CONTEXT_PROBE_ANCHOR,
+	CONTEXT_PROBE_CHALLENGE_STEP,
+	CONTEXT_PROBE_RETAINED_FACTS,
 	contextProbeReceipt,
 	isLongContextScenario,
 	MAX_CONTEXT_PROBE_TURNS,
@@ -79,8 +80,35 @@ export async function runReliabilityScenario(
 			throw new WorkflowFailure("configuration", "reliability_requires_live_copilot", true)
 		if (!Number.isSafeInteger(options.turns) || options.turns < 4 || options.turns > MAX_CONTEXT_PROBE_TURNS)
 			throw new WorkflowFailure("configuration", "invalid_budget", true)
-		await repository.create()
+		const fixture = await repository.create()
 		for (const item of await repository.verify("baseline")) check(`baseline_${item.name}`, item.passed)
+		let committedContextEffect: string | undefined
+		const prepareContext = async () => {
+			await measure("committed_context_setup", async () => {
+				taskId = await host.start("enhance")
+				result.taskIds.push(taskId)
+				await host.complete(taskId)
+				await inspect(taskId)
+				for (const item of await repository.verify("enhanced")) check(`setup_${item.name}`, item.passed)
+				await host.followup(taskId, "commit")
+				await host.complete(taskId)
+				await inspect(taskId)
+				for (const item of await repository.verify("committed")) check(`setup_${item.name}`, item.passed)
+				committedContextEffect = await repository.readCommit()
+				check(
+					"context_setup_effect_committed",
+					!!committedContextEffect && committedContextEffect !== fixture.initialCommit,
+				)
+			})
+		}
+		const inspectRetiredContext = async () => {
+			for (const [index, fact] of CONTEXT_PROBE_RETAINED_FACTS.entries()) {
+				const evidence = host.inspectCompactionEvidence(taskId!, fact)
+				check(`summary_retained_fact_${index}`, evidence.summaryRetainedFact)
+			}
+			check("committed_effect_not_repeated", (await repository.readCommit()) === committedContextEffect)
+			for (const item of await repository.verify("committed")) check(`preserved_${item.name}`, item.passed)
+		}
 		if (isLongContextScenario(options.scenarioId)) {
 			budget.responseProbe = responseProbe
 			const observeContext = (phase: string, step: number) => {
@@ -88,11 +116,11 @@ export async function runReliabilityScenario(
 				contextObservations.push({ phase, ...observation })
 				check(`${phase}_correct_receipt`, observation.receiptPresent)
 			}
+			await prepareContext()
 			await measure("initial_probe", async () => {
-				taskId = await host.start("contextProbe")
-				result.taskIds.push(taskId)
-				await host.complete(taskId)
-				await inspect(taskId)
+				await host.followup(taskId!, "contextProbe", 0)
+				await host.complete(taskId!)
+				await inspect(taskId!)
 				observeContext("initial", 0)
 			})
 			for (let step = 1; step < options.turns; step++) {
@@ -132,42 +160,43 @@ export async function runReliabilityScenario(
 			const beforeCompaction = budget.used
 			await measure("late_compaction", async () => check("late_summary_persisted", await host.condense(taskId!)))
 			check("late_compaction_used_real_provider", budget.used > beforeCompaction)
-			await measure("post_compaction_restart", async () => {
-				await host.resume(taskId!, "contextProbe", options.turns + 1, { reopen: true })
+			await measure("post_compaction_reopen", async () => {
+				await host.resume(taskId!, "contextProbe", CONTEXT_PROBE_CHALLENGE_STEP, { reopen: true })
 				check("compacted_task_reopened", true)
 				await host.complete(taskId!)
 				await inspect(taskId!)
-				observeContext("post_compaction", options.turns + 1)
+				observeContext("post_compaction", CONTEXT_PROBE_CHALLENGE_STEP)
 			})
-			for (const item of await repository.verify("baseline")) check(`probe_preserved_${item.name}`, item.passed)
-			await measure("late_problem_solving", async () => {
-				await host.followup(taskId!, "enhance")
+			await inspectRetiredContext()
+			await measure("late_requirement_followup", async () => {
+				await host.followup(taskId!, "followup")
 				await host.complete(taskId!)
 				await inspect(taskId!)
-				for (const item of await repository.verify("enhanced")) check(`late_fix_${item.name}`, item.passed)
-				check("late_fix_tests_pass", (await repository.test()).exitCode === 0)
+				for (const item of await repository.verify("followup")) check(`late_followup_${item.name}`, item.passed)
+				check("late_followup_tests_pass", (await repository.test()).exitCode === 0)
+				check("late_followup_did_not_repeat_commit", (await repository.readCommit()) === committedContextEffect)
 			})
 		} else if (options.scenarioId === "context-compaction") {
-			taskId = await host.start("contextProbe")
-			result.taskIds.push(taskId)
-			await host.complete(taskId)
-			await inspect(taskId)
-			check("initial_anchor_receipt", host.inspectContext(taskId, contextProbeReceipt(0)).receiptPresent)
+			await prepareContext()
+			await host.followup(taskId!, "contextProbe", 0)
+			await host.complete(taskId!)
+			await inspect(taskId!)
+			check("initial_probe_receipt", host.inspectContext(taskId!, contextProbeReceipt(0)).receiptPresent)
 			// Keep a bounded prefix outside the compactor's recent-turn tail.
 			for (let step = 1; step < 6; step++) {
-				await host.followup(taskId, "contextProbe", step)
-				await host.complete(taskId)
-				await inspect(taskId)
+				await host.followup(taskId!, "contextProbe", step)
+				await host.complete(taskId!)
+				await inspect(taskId!)
 				check(
-					`retained_anchor_receipt_${step}`,
-					host.inspectContext(taskId, contextProbeReceipt(step)).receiptPresent,
+					`retained_probe_receipt_${step}`,
+					host.inspectContext(taskId!, contextProbeReceipt(step)).receiptPresent,
 				)
 			}
 			const requestsBefore = budget.used
 			await measure("manual_compaction", async () => check("new_summary_persisted", await host.condense(taskId!)))
 			check("compaction_used_real_model", budget.used > requestsBefore)
-			const compacted = host.inspectCompactionEvidence(taskId, CONTEXT_PROBE_ANCHOR)
-			check("compaction_summary_has_anchor", compacted.summaryRetainedFact)
+			const compacted = host.inspectCompactionEvidence(taskId!, CONTEXT_PROBE_RETAINED_FACTS[0])
+			await inspectRetiredContext()
 			check(
 				"compaction_receipt_matches_summary",
 				!!compacted.summaryId && compacted.receiptId === compacted.summaryId,
@@ -178,16 +207,21 @@ export async function runReliabilityScenario(
 					compacted.currentTokens !== undefined &&
 					compacted.currentTokens < compacted.previousTokens,
 			)
-			await measure("post_compaction_reopen", () => host.resume(taskId!, "contextProbe", 6, { reopen: true }))
-			await host.complete(taskId)
-			await inspect(taskId)
-			const reopened = host.inspectCompactionEvidence(taskId, CONTEXT_PROBE_ANCHOR)
+			await measure("post_compaction_reopen", () =>
+				host.resume(taskId!, "contextProbe", CONTEXT_PROBE_CHALLENGE_STEP, { reopen: true }),
+			)
+			await host.complete(taskId!)
+			await inspect(taskId!)
+			const reopened = host.inspectCompactionEvidence(taskId!, CONTEXT_PROBE_RETAINED_FACTS[0])
 			check(
 				"compaction_summary_reloaded",
 				reopened.summaryId === compacted.summaryId && reopened.summaryRetainedFact,
 			)
-			check("reopened_anchor_receipt", host.inspectContext(taskId, contextProbeReceipt(6)).receiptPresent)
-			for (const item of await repository.verify("baseline")) check(`probe_preserved_${item.name}`, item.passed)
+			check(
+				"retired_context_challenge_passed",
+				host.inspectContext(taskId!, contextProbeReceipt(CONTEXT_PROBE_CHALLENGE_STEP)).receiptPresent,
+			)
+			await inspectRetiredContext()
 		} else if (options.scenarioId === "background-isolation") {
 			fault.arm("pause")
 			budget.transformResponse = (response) => fault.wrap(response)
@@ -216,12 +250,18 @@ export async function runReliabilityScenario(
 					: options.scenarioId === "provider-error-recovery"
 						? "error"
 						: "empty",
+				options.scenarioId === "provider-empty-recovery" ? "before-output" : "after-text",
 			)
 			budget.transformResponse = (response) => fault.wrap(response)
 			taskId = await host.start("review")
 			result.taskIds.push(taskId)
 			await measure("real_response_fault", () => host.waitForFault(() => fault.injected))
 			check("real_provider_part_observed", fault.observedParts > 0 && budget.used > 0)
+			if (options.scenarioId !== "provider-empty-recovery")
+				check(
+					"accepted_text_before_fault",
+					fault.deliveredParts > 0 && fault.deliveredBoundary === "after-text",
+				)
 			if (options.scenarioId === "stream-cancel-recovery") {
 				try {
 					await measure("cancel_held_stream", () => host.cancelAtStreamBoundary(taskId!))
@@ -326,7 +366,12 @@ export async function runReliabilityScenario(
 			model: budget.model,
 			observations,
 			contextObservations,
-			fault: { injected: fault.injected, observedParts: fault.observedParts },
+			fault: {
+				injected: fault.injected,
+				observedParts: fault.observedParts,
+				deliveredParts: fault.deliveredParts,
+				deliveredBoundary: fault.deliveredBoundary,
+			},
 			secondEmpty: { injected: secondEmpty.injected, observedParts: secondEmpty.observedParts },
 			responses: responseProbe.observations,
 		})

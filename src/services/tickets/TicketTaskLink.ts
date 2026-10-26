@@ -45,8 +45,14 @@ async function launchTicket(
 			throw new Error("Reopen the ticket before starting work")
 		const linked = ticket.linkedTaskIds.at(-1)
 		if (linked) {
-			await provider.showTaskWithId(linked)
-			return ticket
+			try {
+				await provider.showTaskWithId(linked)
+				return ticket
+			} catch (error) {
+				// History deletion leaves the association as audit evidence. Only a
+				// confirmed missing conversation permits a replacement under this lock.
+				if (!(error instanceof Error) || error.message !== "Task not found") throw error
+			}
 		}
 		if (ticket.revision !== revision) throw new Error("Ticket changed; reload before starting work")
 		const task = await provider.createTask(

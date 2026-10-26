@@ -18,6 +18,7 @@ import {
 	extensionBundleDigest,
 	launchExtension,
 	orderProblemSolvingPromptVariants,
+	readProblemSolvingRunPaths,
 	runLiveProblemSolvingCore,
 } from "../problemSolvingLive"
 
@@ -72,15 +73,35 @@ function campaignReceipts(input: {
 					status: input.failure ? "failed" : "passed",
 					requestsUsed: 1,
 					requestsByPurpose: { task: 1, "reasoning-summary": 0 },
-					model: { id: "controlled-model", reasoningEffort: "high" },
+					model: { id: argument("--model-id"), reasoningEffort: argument("--reasoning-effort") },
 					...(input.failure ? { failure: input.failure } : {}),
 				}),
 			)
 		} else if (input.grader === "error") throw new Error("controlled grader failure")
+		const failedAssertions =
+			input.grader === "outcome" && request.args[0]?.endsWith("nodeTestExecution.mjs")
+				? (JSON.parse(request.args[1]!) as { expected: Array<{ file: string; name: string }> }).expected
+				: undefined
 		return {
-			exitCode: request.args.includes("--scenario-id") ? 0 : 1,
+			exitCode: request.args.includes("--scenario-id") || failedAssertions ? 0 : 1,
 			timedOut: false,
-			stdout: "",
+			stdout: failedAssertions
+				? JSON.stringify({
+						schemaVersion: 1,
+						kind: "alpha-expected-node-tests",
+						complete: true,
+						failed: true,
+						timedOut: false,
+						tests: failedAssertions.map(({ name }) => ({
+							file: path.join(path.dirname(request.args[0]!), "nodeTestContext.cjs"),
+							name,
+							passed: false,
+							skipped: false,
+							todo: false,
+						})),
+						completions: [],
+					})
+				: "",
 			stderr: "",
 			durationMs: 0,
 			outputTruncated: false,
@@ -95,6 +116,32 @@ afterEach(async () => {
 })
 
 describe("live problem-solving runner configuration", () => {
+	it("uses only explicitly configured profile and output roots", () => {
+		const attemptRoot = path.resolve(os.tmpdir(), "alpha-live-output")
+		const profileDir = path.resolve(os.tmpdir(), "alpha-live-profile")
+		expect(
+			readProblemSolvingRunPaths({
+				PROBLEM_SOLVING_ATTEMPT_ROOT: attemptRoot,
+				PROBLEM_SOLVING_PROFILE_DIR: profileDir,
+			}),
+		).toEqual({ attemptRoot, profileDir })
+	})
+
+	it.each(["PROBLEM_SOLVING_ATTEMPT_ROOT", "PROBLEM_SOLVING_PROFILE_DIR"])(
+		"rejects missing or invalid %s before a live run can select an operator profile",
+		(key) => {
+			const valid = {
+				PROBLEM_SOLVING_ATTEMPT_ROOT: path.resolve(os.tmpdir(), "alpha-live-output"),
+				PROBLEM_SOLVING_PROFILE_DIR: path.resolve(os.tmpdir(), "alpha-live-profile"),
+			}
+			for (const value of [undefined, "", "relative-path", `${path.parse(process.cwd()).root}invalid\0path`]) {
+				expect(() => readProblemSolvingRunPaths({ ...valid, [key]: value })).toThrow(
+					`${key} must name an explicit absolute path`,
+				)
+			}
+		},
+	)
+
 	it.each([
 		{
 			name: "provider timeout",

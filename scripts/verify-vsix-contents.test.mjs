@@ -331,7 +331,13 @@ for (const entry of [
 		)
 	})
 
-for (const entry of ["extension/.env", "extension/dist/nested/.env.local", "extension/assets/.env.production"])
+for (const entry of [
+	"extension/.env",
+	"extension/dist/nested/.env.local",
+	"extension/assets/.env.production",
+	"extension/.ENV",
+	"extension/dist/nested/.Env.local",
+])
 	test(`VSIX content verification refuses packaged credentials at ${entry}`, async () => {
 		await withArchive([...required, entry], ({ archive }) => {
 			const result = runVerifier([archive])

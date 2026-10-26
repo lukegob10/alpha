@@ -139,6 +139,40 @@ describe("VS Code LM canonical contracts", () => {
 		handler.dispose()
 	})
 
+	it("sends a saved receipt before host progress guidance when continuing a completed tool call", async () => {
+		const history: Anthropic.Messages.MessageParam[] = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "cleanup-call", name: "read_file", input: { path: "probe.txt" } }],
+			},
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "Check the results already available, then continue." },
+					{ type: "tool_result", tool_use_id: "cleanup-call", content: "Existing output", is_error: false },
+				],
+			},
+		]
+		const before = structuredClone(history)
+		sendRequest.mockResolvedValueOnce(response([new vscode.LanguageModelTextPart("Review complete.")]))
+		const result = await collectAgentResponse(handler.createMessage("Instructions", history))
+		expect(result.text).toBe("Review complete.")
+		const request = sendRequest.mock.calls[0][0] as vscode.LanguageModelChatMessage[]
+		const continuation = request.find((message) =>
+			message.content.some(
+				(part) => part instanceof vscode.LanguageModelToolResultPart && part.callId === "cleanup-call",
+			),
+		)
+		expect(continuation?.content).toEqual([
+			new vscode.LanguageModelToolResultPart("cleanup-call", [
+				new vscode.LanguageModelTextPart("Existing output"),
+			]),
+			new vscode.LanguageModelTextPart("Check the results already available, then continue."),
+		])
+		expect(sendRequest).toHaveBeenCalledOnce()
+		expect(history).toEqual(before)
+	})
+
 	it("preserves every host thinking part in order with text and tool calls", async () => {
 		const firstThinking = {
 			value: "Inspect the request",
@@ -721,9 +755,19 @@ describe("VS Code LM canonical contracts", () => {
 	})
 
 	it("keeps unknown future response parts compatible without turning valid text into failure", async () => {
-		const { result } = await observe([new vscode.LanguageModelTextPart("Complete."), { futurePart: true }])
-		expect(result.text).toBe("Complete.")
-		expect(result.outcome).toBeUndefined()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+		try {
+			const { result } = await observe([
+				new vscode.LanguageModelTextPart("Complete."),
+				{ futurePart: true, opaqueState: "private-host-state" },
+			])
+			expect(result.text).toBe("Complete.")
+			expect(result.outcome).toBeUndefined()
+			expect(warn).toHaveBeenCalledWith("Alpha <Language Model API>: Unknown chunk type received")
+			expect(JSON.stringify(warn.mock.calls)).not.toContain("private-host-state")
+		} finally {
+			warn.mockRestore()
+		}
 	})
 
 	it.each(["gpt-5.6-sol", "gpt-6-luna"])(

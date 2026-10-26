@@ -2,14 +2,14 @@ import * as fs from "fs/promises"
 
 import { parse } from "yaml"
 
-import type { GraderSpec } from "./types"
+import type { CommandGraderSpec, GraderSpec } from "./types"
 
 type TaskGraderContract = {
 	id: string
-	budgets: { modelCalls: number; toolCalls: number; costUsd: number }
+	budgets: { modelCalls: number; toolCalls: number; costUsd: number; wallSeconds?: number }
 	validation: { commands: Array<{ command: string; args: string[] }> }
 	editTopology: { maxFiles: number; allowedRoots: string[] }
-	graders: Array<{ id: string; alias: string; bundleId?: string }>
+	graders: Array<{ id: string; alias: string; bundleId?: string; version?: number }>
 }
 
 type PrivateGraderContract = { id: string; entrypoint: string }
@@ -42,17 +42,44 @@ export function isSupportedGraderAlias(alias: string): boolean {
 	return supportedAliases.has(alias)
 }
 
+const defaultCommandTimeoutMs = 120_000
+const maxTimerMs = 2_147_483_647
+
+function checkedTimeout(timeoutMs: number): number {
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > maxTimerMs)
+		throw new Error("Invalid task grading timeout")
+	return timeoutMs
+}
+
+function privateCommandTimeoutMs(budgets?: TaskGraderContract["budgets"]): number {
+	if (budgets?.wallSeconds === undefined) return defaultCommandTimeoutMs
+	if (!Number.isSafeInteger(budgets.wallSeconds) || budgets.wallSeconds < 1)
+		throw new Error("Invalid task grading wall budget")
+	return checkedTimeout(Math.max(defaultCommandTimeoutMs, budgets.wallSeconds * 1000))
+}
+
+/** The broker and container must allow every sequential grader to finish after agent execution. */
+export function taskGradingTimeoutMs(task: TaskGraderContract): number {
+	let timeoutMs = defaultCommandTimeoutMs
+	for (const grader of task.graders) {
+		if (grader.alias === "visible_tests") timeoutMs += task.validation.commands.length * defaultCommandTimeoutMs
+		else if (grader.alias.startsWith("hidden_")) timeoutMs += privateCommandTimeoutMs(task.budgets)
+	}
+	return checkedTimeout(timeoutMs)
+}
+
 export function resolveGraderAlias(options: {
 	alias: string
 	taskId: string
-	visibleCommands?: Array<{ command: string; args: string[] }>
-	budgets?: { modelCalls: number; toolCalls: number; costUsd: number }
+	version?: number
+	visibleCommands?: CommandGraderSpec["commands"]
+	budgets?: TaskGraderContract["budgets"]
 	privateEntrypoint?: string
 	editTopology?: { maxFiles: number; allowedRoots: string[] }
 }): GraderSpec {
 	const { alias, taskId } = options
 	if (!supportedAliases.has(alias)) throw new Error(`Unknown grader alias: ${alias}`)
-	const common = { id: `${taskId}.${alias}`, version: 1, hardGate: true }
+	const common = { id: `${taskId}.${alias}`, version: options.version ?? 1, hardGate: true }
 	if (alias === "visible_tests") {
 		if (!options.visibleCommands?.length) throw new Error(`Visible commands are required for ${taskId}`)
 		return {
@@ -73,7 +100,8 @@ export function resolveGraderAlias(options: {
 			failureClass: alias === "hidden_traversal_cases" ? "safety" : "outcome",
 			commands: [{ command: "node", args: [options.privateEntrypoint] }],
 			cwd: "hidden",
-			timeoutMs: 120_000,
+			decisionFormat: "workspace-v1",
+			timeoutMs: privateCommandTimeoutMs(options.budgets),
 			maxOutputBytes: 1_048_576,
 		}
 	}
@@ -133,15 +161,15 @@ export function resolveGraderAlias(options: {
 	}
 	const traceAssertions =
 		alias === "trace_retry_budget"
-			? [{ kind: "count-max" as const, eventType: "retry", max: 3 }]
+			? [{ kind: "count-max" as const, eventType: "agent.turn.retry", max: 3 }]
 			: alias === "plan_continuity"
-				? [{ kind: "present" as const, eventType: "plan_retained" }]
+				? [{ kind: "present" as const, eventType: "agent.turn.plan_retained" }]
 				: [
-						{ kind: "present" as const, eventType: "agent.turn.verification_result" },
 						{
-							kind: "ordered" as const,
-							before: "agent.turn.tool_result",
-							after: "agent.turn.verification_result",
+							kind: "verification-after-last-mutation" as const,
+							...(options.visibleCommands?.length
+								? { commands: options.visibleCommands.map(({ command, args }) => ({ command, args })) }
+								: {}),
 						},
 					]
 	return {
@@ -154,10 +182,28 @@ export function resolveGraderAlias(options: {
 
 export function resolveTaskGraderSpecs(options: {
 	task: TaskGraderContract
-	visibleCommands?: Array<{ command: string; args: string[] }>
+	visibleCommands?: CommandGraderSpec["commands"]
 	privateGraders?: PrivateGraderContract[]
 }): GraderSpec[] {
 	const privateGraders = new Map((options.privateGraders ?? []).map((grader) => [grader.id, grader.entrypoint]))
+	const visibleCommands = (
+		options.task.validation?.commands.length ? options.task.validation.commands : (options.visibleCommands ?? [])
+	).map((command) => {
+		const captured = options.visibleCommands?.find(
+			(candidate) =>
+				candidate.command === command.command &&
+				JSON.stringify(candidate.args) === JSON.stringify(command.args),
+		)
+		if (
+			!captured?.testExecution &&
+			command.args[0] === "--test" &&
+			options.visibleCommands?.some((item) => item.testExecution)
+		)
+			throw new Error(
+				`Captured visible test selection does not match the canonical command for ${options.task.id}`,
+			)
+		return captured?.testExecution ? { ...command, testExecution: captured.testExecution } : command
+	})
 	return options.task.graders.map((grader) => {
 		const privateEntrypoint = grader.bundleId ? privateGraders.get(`${options.task.id}.${grader.id}`) : undefined
 		if (grader.bundleId && !privateEntrypoint) {
@@ -166,9 +212,8 @@ export function resolveTaskGraderSpecs(options: {
 		return resolveGraderAlias({
 			alias: grader.alias,
 			taskId: options.task.id,
-			visibleCommands: options.task.validation?.commands.length
-				? options.task.validation.commands
-				: options.visibleCommands,
+			version: grader.version,
+			visibleCommands,
 			budgets: options.task.budgets,
 			privateEntrypoint,
 			editTopology: options.task.editTopology,

@@ -2,6 +2,7 @@ import { and, asc, eq } from "drizzle-orm"
 
 import {
 	canonicalJson,
+	evidenceBundleDigest,
 	manifestIdentity,
 	sha256,
 	type ArtifactDescriptor,
@@ -49,6 +50,7 @@ export function persistArtifactDescriptors(attemptId: number, descriptors: Artif
 				access: descriptor.access,
 				retention: descriptor.retention,
 				uploadState: descriptor.uploadState,
+				captureStatus: descriptor.captureStatus,
 				storageKey: `${storageRoot.replaceAll("\\", "/")}/sha256/${descriptor.digest.slice(7, 9)}/${descriptor.digest.slice(7)}`,
 				createdAt: new Date(descriptor.createdAt),
 			})),
@@ -86,11 +88,44 @@ export async function recordEvidenceIntegrity(input: {
 	taskIdentity: string
 	variantIdentity: string
 	bundleDigest?: string
+	bundle?: EvidenceBundle
 }) {
 	return db.transaction(async (tx) => {
+		const [current] = await tx.select().from(attempts).where(eq(attempts.id, input.attemptId)).for("update")
+		if (!current) throw new Error(`Attempt ${input.attemptId} not found while recording evidence integrity`)
+		if (current.evidenceStatus === "valid") {
+			if (
+				input.status !== "valid" ||
+				input.taskIdentity !== current.taskDefinitionIdentity ||
+				input.variantIdentity !== current.variantIdentity ||
+				input.bundleDigest !== current.evidenceBundleDigest
+			)
+				throw new Error(`Attempt ${input.attemptId} evidence is sealed`)
+			return current
+		}
+		if (
+			input.status === "valid" &&
+			(!/^sha256:[a-f0-9]{64}$/.test(input.bundleDigest ?? "") ||
+				!input.bundle ||
+				!input.taskIdentity ||
+				!input.variantIdentity ||
+				input.bundle.attemptId !== String(input.attemptId) ||
+				input.bundle.trialId !== String(current.trialId) ||
+				input.bundle.taskIdentity !== input.taskIdentity ||
+				input.bundle.variantIdentity !== input.variantIdentity ||
+				evidenceBundleDigest(input.bundle) !== input.bundleDigest)
+		)
+			throw new Error(`Attempt ${input.attemptId} requires a complete evidence bundle digest`)
 		const [attempt] = await tx
 			.update(attempts)
-			.set({ evidenceStatus: input.status, evidenceBundleDigest: input.bundleDigest, updatedAt: new Date() })
+			.set({
+				evidenceStatus: input.status,
+				evidenceBundleDigest: input.bundleDigest,
+				taskDefinitionIdentity: input.taskIdentity,
+				variantIdentity: input.variantIdentity,
+				evidenceManifest: input.status === "valid" ? input.bundle : undefined,
+				updatedAt: new Date(),
+			})
 			.where(eq(attempts.id, input.attemptId))
 			.returning()
 		if (!attempt) throw new Error(`Attempt ${input.attemptId} not found while recording evidence integrity`)
@@ -156,15 +191,35 @@ export async function getReconstructableEvidenceBundle(attemptId: number): Promi
 	if (!attempt) throw new Error(`Attempt ${attemptId} not found`)
 	if (attempt.evidenceStatus !== "valid")
 		throw new Error(`Attempt ${attemptId} evidence is ${attempt.evidenceStatus}`)
-	if (!attempt.trial.taskDefinitionIdentity || !attempt.trial.variantIdentity)
-		throw new Error(`Attempt ${attemptId} lacks immutable identities`)
-	return {
+	const bound = Boolean(
+		attempt.taskDefinitionIdentity &&
+			attempt.variantIdentity &&
+			attempt.evidenceBundleDigest &&
+			attempt.evidenceManifest,
+	)
+	if (bound) {
+		const sealed = attempt.evidenceManifest!
+		if (
+			sealed.schemaVersion !== 1 ||
+			sealed.attemptId !== String(attempt.id) ||
+			sealed.trialId !== String(attempt.trialId) ||
+			sealed.runId !== String(attempt.trial.task.runId) ||
+			sealed.taskIdentity !== attempt.taskDefinitionIdentity ||
+			sealed.variantIdentity !== attempt.variantIdentity ||
+			evidenceBundleDigest(sealed) !== attempt.evidenceBundleDigest
+		)
+			throw new Error(`Attempt ${attemptId} evidence bundle digest mismatch`)
+		return { ...sealed, identityStatus: "attempt-bound", bundleDigest: attempt.evidenceBundleDigest! }
+	}
+	// Legacy trial identities may belong to a later retry. Never attribute them to this attempt.
+	const bundle: EvidenceBundle = {
 		schemaVersion: 1,
 		runId: String(attempt.trial.task.runId),
 		trialId: String(attempt.trialId),
 		attemptId: String(attempt.id),
-		taskIdentity: attempt.trial.taskDefinitionIdentity,
-		variantIdentity: attempt.trial.variantIdentity,
+		taskIdentity: "unavailable:legacy-attempt-identity",
+		variantIdentity: "unavailable:legacy-attempt-identity",
+		identityStatus: "legacy-unavailable",
 		events: attempt.events.map((event) => ({
 			schemaVersion: 1,
 			runId: String(attempt.trial.task.runId),
@@ -189,7 +244,9 @@ export async function getReconstructableEvidenceBundle(attemptId: number): Promi
 			access: artifact.access,
 			retention: artifact.retention,
 			uploadState: artifact.uploadState,
+			...(artifact.captureStatus ? { captureStatus: artifact.captureStatus } : {}),
 			createdAt: artifact.createdAt.toISOString(),
 		})),
 	}
+	return bundle
 }

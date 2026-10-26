@@ -7,6 +7,100 @@ import { Task, getSubagentAllowedToolNames } from "../Task"
 
 describe("sub-agent task authority", () => {
 	it.each(["explore", "review", "worker"] as const)(
+		"permits trusted audited reads while retaining the %s shell ceiling",
+		(role) => {
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: {
+					skills: [],
+					runtimePolicy: {
+						authorityModel: "parent",
+						read: true,
+						execute: false,
+						allowedTools: ["exec_command"],
+					},
+				},
+			}) as Task
+			expect(child.getTaskCommandDenialReason("rg pattern file.ts")).toBeDefined()
+			expect(child.getTaskCommandDenialReason("rg pattern file.ts", undefined, "audited-read")).toBeUndefined()
+		},
+	)
+
+	it.each([
+		{ read: false, allowedTools: ["exec_command"] },
+		{ read: true, allowedTools: ["attempt_completion"] },
+	])("requires both read authority and a command-tool grant for audited execution: %j", (runtimePolicy) => {
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
+			subagentRole: "review",
+			subagentContextManifest: {
+				skills: [],
+				runtimePolicy: { authorityModel: "parent", execute: false, ...runtimePolicy },
+			},
+		}) as Task
+		expect(child.getTaskCommandDenialReason("rg pattern file.ts", undefined, "audited-read")).toBeDefined()
+	})
+
+	it.each(["explore", "review", "worker"] as const)(
+		"inherits the captured parent tools and command authority independently of the %s role",
+		(role) => {
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: {
+					skills: [],
+					runtimePolicy: {
+						authorityModel: "parent",
+						allowedTools: [
+							"exec_command",
+							"apply_patch",
+							"use_mcp_tool",
+							"create_ticket",
+							"mcp__docs__search",
+						],
+						execute: true,
+						mutate: true,
+						network: true,
+						externalSideEffects: true,
+						delegate: false,
+					},
+				},
+			}) as Task
+			expect(child.getTaskCommandDenialReason("git status")).toBeUndefined()
+			expect(child.getTaskCommandDenialReason("git switch -c implementation")).toBeUndefined()
+			expect(child.isToolAllowedForTask("apply_patch")).toBe(true)
+			expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(true)
+			expect(child.isToolAllowedForTask("mcp__docs__search")).toBe(true)
+			expect(child.isToolAllowedForTask("create_ticket")).toBe(true)
+			expect(child.isToolAllowedForTask("spawn_agent")).toBe(false)
+			expect(child.isToolAllowedForTask("delete_ticket")).toBe(false)
+		},
+	)
+	it("disables new spawns without disabling inspection or cancellation", () => {
+		const task = Object.assign(Object.create(Task.prototype), {
+			taskKind: "primary",
+			providerRef: { deref: () => ({ getValue: () => false }) },
+		}) as Task
+		expect(task.isToolAllowedForTask("spawn_agent")).toBe(false)
+		expect(task.isToolAllowedForTask("list_agents")).toBe(true)
+		expect(task.isToolAllowedForTask("interrupt_agent")).toBe(true)
+		expect(task.isToolAllowedForTask("cancel_agent")).toBe(true)
+	})
+
+	it.each([true, false])("records interruption context only when enabled (%s)", async (enabled) => {
+		const persist = vi.fn(async () => true)
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
+			addToApiConversationHistory: persist,
+			providerRef: { deref: () => ({ getValue: () => enabled }) },
+		}) as Task
+		await child.recordSubagentInterruption()
+		expect(persist).toHaveBeenCalledTimes(enabled ? 1 : 0)
+		if (enabled)
+			expect(persist).toHaveBeenCalledWith(expect.objectContaining({ input_origin: "agent", role: "user" }))
+	})
+	it.each(["explore", "review", "worker"] as const)(
 		"keeps passive same-tree communication in nondelegating frozen %s profiles",
 		(role) => {
 			const child = Object.assign(Object.create(Task.prototype), {
@@ -74,31 +168,35 @@ describe("sub-agent task authority", () => {
 		])
 	})
 
-	it("stops a backgrounded command still owned by a managed Worker", async () => {
-		const backgroundProcess = Object.assign(new EventEmitter(), { abort: vi.fn() })
-		backgroundProcess.abort.mockImplementation(() => backgroundProcess.emit("completed"))
-		const getTerminals = vi
-			.spyOn(TerminalRegistry, "getTerminals")
-			.mockReturnValue([{ taskId: "worker-1", busy: true, process: backgroundProcess } as any])
-		const child = Object.assign(Object.create(Task.prototype), {
-			taskId: "worker-1",
-			taskKind: "subagent",
-			subagentRole: "worker",
-			commandExecutionEvidence: new Map(),
-		}) as Task
-		child.beginCommandExecution("call-1", "execution-1")
+	it.each(["worker", "explore", "review"] as const)(
+		"stops a backgrounded command owned by an inherited %s",
+		async (role) => {
+			const backgroundProcess = Object.assign(new EventEmitter(), { abort: vi.fn() })
+			backgroundProcess.abort.mockImplementation(() => backgroundProcess.emit("completed"))
+			const getTerminals = vi
+				.spyOn(TerminalRegistry, "getTerminals")
+				.mockReturnValue([{ taskId: "worker-1", busy: true, process: backgroundProcess } as any])
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskId: "worker-1",
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: { runtimePolicy: { authorityModel: "parent", execute: true } },
+				commandExecutionEvidence: new Map(),
+			}) as Task
+			child.beginCommandExecution("call-1", "execution-1")
 
-		try {
-			await (child as any).stopActiveTaskCommands()
-		} finally {
-			getTerminals.mockRestore()
-		}
+			try {
+				await (child as any).stopActiveTaskCommands()
+			} finally {
+				getTerminals.mockRestore()
+			}
 
-		expect(backgroundProcess.abort).toHaveBeenCalledOnce()
-		expect(child.getCommandExecutionEvidence()).toEqual([
-			expect.objectContaining({ toolCallId: "call-1", status: "cancelled" }),
-		])
-	})
+			expect(backgroundProcess.abort).toHaveBeenCalledOnce()
+			expect(child.getCommandExecutionEvidence()).toEqual([
+				expect.objectContaining({ toolCallId: "call-1", status: "cancelled" }),
+			])
+		},
+	)
 
 	it("cancels command evidence even when process launch has not become visible", async () => {
 		const getTerminals = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([])
@@ -301,20 +399,30 @@ describe("sub-agent task authority", () => {
 		expect(child.getTaskToolDenialReason("write_file", { path: "outside.ts" })).toContain("not allowed")
 		expect(
 			child.getTaskToolDenialReason("apply_patch", {
-				patch: "*** Begin Patch\n*** Update File: outside.ts\n*** End Patch",
+				patch: "*** Begin Patch\n*** Update File: outside.ts\n@@\n-old\n+new\n*** End Patch",
 			}),
 		).toContain("outside")
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: "*** Begin Patch\n*** Add File: core/task/allowed.ts\n+ok\n  *** Add File: outside.ts\n+outside\n*** End Patch",
+			}),
+		).toContain("outside")
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: "*** Begin Patch\n*** Update File: outside.ts\n*** End Patch",
+			}),
+		).toContain("valid patch")
 	})
 
-	it("requires final assistant text after the research deadline", () => {
+	it("ignores a legacy research deadline while retaining read-only authority", () => {
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskKind: "subagent",
+			subagentRole: "review",
 			subagentResearchDeadlineAt: Date.now() - 1,
 		}) as Task
-
-		expect(child.isToolAllowedForTask("exec_command")).toBe(false)
-		expect(child.getTaskToolDenialReason("exec_command")).toContain("give a final assistant answer")
-		expect(child.isToolAllowedForTask("attempt_completion")).toBe(false)
+		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
+		expect(child.getTaskToolDenialReason("exec_command")).toBeUndefined()
+		expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
 	})
 
 	it("persists the exact terminal status after a managed child stops", async () => {

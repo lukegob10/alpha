@@ -269,16 +269,23 @@ function redactCredentialText(text: string): string {
 function sanitizeEvidenceText(text: string, classifyRuntimeRecord = false): string {
 	const normalized = normalizeEvidenceText(text)
 	if (classifyRuntimeRecord && isRuntimeOnlyTextRecord(normalized)) return ""
-	const preserveEnvironmentLiteral = !classifyRuntimeRecord || DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN.test(normalized)
+	const hasHumanEnvelope = DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN.test(normalized)
+	const preserveEnvironmentLiteral = !classifyRuntimeRecord || hasHumanEnvelope
 
-	const withoutRuntimeContext = (
-		preserveEnvironmentLiteral ? normalized : normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n")
-	).replace(SYSTEM_REMINDER_PATTERN, "\n")
+	const withoutEnvironmentContext = preserveEnvironmentLiteral
+		? normalized
+		: normalized.replace(ENVIRONMENT_DETAILS_PATTERN, "\n")
+	// A human can ask about literal protocol markup. The envelope establishes
+	// its provenance; only structured tool blocks can be replayed as tool calls.
+	const withoutRuntimeContext = hasHumanEnvelope
+		? withoutEnvironmentContext
+		: withoutEnvironmentContext
+				.replace(SYSTEM_REMINDER_PATTERN, "\n")
+				.replace(TOOL_MARKUP_BLOCK_PATTERN, "\n")
+				.replace(TOOL_MARKUP_SELF_CLOSING_PATTERN, "\n")
+				.replace(FUNCTION_MARKUP_PATTERN, "\n")
 
 	return redactCredentialText(withoutRuntimeContext)
-		.replace(TOOL_MARKUP_BLOCK_PATTERN, "\n")
-		.replace(TOOL_MARKUP_SELF_CLOSING_PATTERN, "\n")
-		.replace(FUNCTION_MARKUP_PATTERN, "\n")
 		.replace(/[ \t]+\n/g, "\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()
@@ -1016,6 +1023,8 @@ function sanitizeAutoApprovalPolicy(
 		alwaysAllowWriteOutsideWorkspace: input.alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected: input.alwaysAllowWriteProtected,
 		...(input.alwaysAllowTickets !== undefined ? { alwaysAllowTickets: input.alwaysAllowTickets } : {}),
+		...(input.alwaysAllowMcp !== undefined ? { alwaysAllowMcp: input.alwaysAllowMcp } : {}),
+		...(input.mcpApproval !== undefined ? { mcpApproval: input.mcpApproval } : {}),
 		alwaysAllowExecute: input.alwaysAllowExecute,
 		alwaysAllowSubagents: input.alwaysAllowSubagents,
 		commandApproval: sanitizeCommandApproval(input.commandApproval),
@@ -1029,6 +1038,8 @@ function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePo
 	const autoApproval = input.autoApproval ? sanitizeAutoApprovalPolicy(input.autoApproval) : undefined
 	const withoutDigest = {
 		role: input.role,
+		...(input.authorityModel ? { authorityModel: input.authorityModel } : {}),
+		...(input.mode ? { mode: input.mode } : {}),
 		read: input.read,
 		execute: input.execute,
 		mutate: input.mutate,
@@ -1053,6 +1064,8 @@ function expectedContextRefs(manifest: Omit<SubagentContextManifest, "contextRef
 	return uniqueSorted([
 		...manifest.selectedUserTurns.refs.map(({ ref }) => ref),
 		`instructions:${manifest.instructions.digest}`,
+		// Older saved manifests included this retired setting in their integrity references.
+		...(manifest.personality === undefined ? [] : [`personality:${digestValue(manifest.personality)}`]),
 		...manifest.instructions.sources.map(
 			({ ref, digest }) => `instruction-source:${encodeURIComponent(ref)}:${digest}`,
 		),

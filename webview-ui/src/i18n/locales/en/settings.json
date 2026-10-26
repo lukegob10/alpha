@@ -162,7 +162,7 @@
 		}
 	},
 	"prompts": {
-		"description": "Configure support prompts that are used for quick actions like enhancing prompts, explaining code, and fixing issues. These prompts help Alpha provide better assistance for common development tasks."
+		"description": "Configure Alpha's support prompts for quick actions like enhancing prompts, explaining code, and fixing issues."
 	},
 	"codeIndex": {
 		"freshnessNote": "Embeddings are catching up. Validated indexed results and recent saved edits remain searchable; semantic results for the newest code may be incomplete.",
@@ -354,6 +354,21 @@
 		"selectOptionsFirst": "Select at least one option below to enable auto-approval"
 	},
 	"providers": {
+		"names": {
+			"vertex": "GCP Vertex AI",
+			"stellar": "Stellar",
+			"openai": "OpenAI Compatible",
+			"vscode-lm": "VS Code LM API",
+			"openai-native": "OpenAI",
+			"anthropic": "Anthropic",
+			"gemini": "Google Gemini",
+			"xai": "xAI",
+			"openrouter": "OpenRouter"
+		},
+		"providerApiKey": "{{provider}} API Key",
+		"manageApiKeys": "Manage {{provider}} API keys",
+		"useProviderDefaults": "Use provider defaults",
+		"outputTokenLimitDescription": "When included, leave blank for the model default or enter -1 for the provider default.",
 		"providerDocumentation": "{{provider}} documentation",
 		"configProfile": "Configuration Profile",
 		"description": "Save different API configurations to quickly switch between providers and settings.",
@@ -395,7 +410,7 @@
 		"searchProviderPlaceholder": "Search providers",
 		"noProviderMatchFound": "No providers found",
 		"noMatchFound": "No matching profiles found",
-		"retiredProviderMessage": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
+		"retiredProviderMessage": "This saved provider is no longer supported. Select an available provider in Settings.",
 		"vscodeLmDescription": "The VS Code Language Model API lets Alpha use models made available by providers such as GitHub Copilot in this VS Code window.",
 		"apiKeyStorageNotice": "API keys are stored securely in VSCode's Secret Storage",
 		"useCustomBaseUrl": "Use custom base URL",
@@ -560,11 +575,6 @@
 			"label": "Enable sound effects",
 			"description": "When enabled, Alpha will play sound effects for notifications and events.",
 			"volumeLabel": "Volume"
-		},
-		"tts": {
-			"label": "Enable text-to-speech",
-			"description": "When enabled, Alpha will read aloud its responses using text-to-speech.",
-			"speedLabel": "Speed"
 		}
 	},
 	"contextManagement": {
@@ -853,6 +863,7 @@
 		"maxThinkingTokens": "Max Thinking Tokens"
 	},
 	"validation": {
+		"unsupportedProviderSettings": "This saved provider uses unsupported settings: {{fields}}. Use provider defaults to clear these settings before saving.",
 		"apiKey": "You must provide a valid API key.",
 		"googleCloud": "You must provide a Google Cloud project ID and region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
@@ -863,6 +874,7 @@
 		"openAi": "You must provide a valid base URL, API key, and model ID.",
 		"outputTokenLimit": "Output token limit must be a positive whole number or -1 for the server default.",
 		"responsesOutputTokenLimit": "The Responses API requires an output token limit of at least {{minimum}}, or -1 for the server default.",
+		"modelOutputTokenLimit": "Output token limit cannot exceed this model's maximum of {{maximum}} tokens.",
 		"modelAvailability": "The model ID ({{modelId}}) you provided is not available. Please choose a different model.",
 		"modelDeprecated": "This model is no longer available. Please select a different model.",
 		"providerNotAllowed": "Provider '{{provider}}' is not allowed by your organization",
@@ -905,5 +917,28 @@
 			"output": "Output",
 			"cacheReads": "Cache reads"
 		}
+	},
+	"memory": {
+		"title": "Memories",
+		"description": "Alpha can learn preferences and useful context from eligible prior conversations on this extension host. Background updates use your selected provider and can incur model usage. Save changes to apply these settings.",
+		"enabled": {
+			"label": "Enable memories",
+			"description": "Off by default. Turning this off stops memory use and generation while keeping existing files."
+		},
+		"useMemories": {
+			"label": "Use memories",
+			"description": "Use saved memories starting with the next conversation. Existing conversations keep their captured context."
+		},
+		"generateMemories": {
+			"label": "Generate memories",
+			"description": "Allow this conversation and future conversations to contribute memories after they have been idle."
+		},
+		"openFolder": "Open memory folder",
+		"reset": "Reset all memories",
+		"resetTitle": "Reset all memories?",
+		"resetDescription": "Delete local memory files and conversation summaries for this Alpha home. Existing conversations and their captured context stay intact. This cannot be undone.",
+		"confirmReset": "Delete memories",
+		"cancel": "Cancel",
+		"invalid": "Memory settings are invalid. Check the saved memory configuration."
 	}
 }

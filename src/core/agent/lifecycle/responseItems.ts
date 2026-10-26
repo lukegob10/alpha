@@ -47,7 +47,19 @@ export function* lifecycleResponseItems(
 				if (
 					next.type === "reasoning" &&
 					responseItem.type === "reasoning" &&
-					next.signature !== responseItem.signature
+					(next.signature !== responseItem.signature ||
+						next.id !== responseItem.id ||
+						next.outputIndex !== responseItem.outputIndex ||
+						next.encryptedContent !== undefined ||
+						responseItem.encryptedContent !== undefined ||
+						next.redactedData !== undefined ||
+						responseItem.redactedData !== undefined ||
+						next.vscodeLmThinking !== undefined ||
+						responseItem.vscodeLmThinking !== undefined ||
+						next.geminiResponse !== undefined ||
+						responseItem.geminiResponse !== undefined ||
+						next.summary !== undefined ||
+						responseItem.summary !== undefined)
 				)
 					break
 				if (responseItem.text.length + next.text.length > MAX_FRAGMENT_TEXT) break

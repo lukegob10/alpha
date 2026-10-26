@@ -866,6 +866,8 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			terminalOutputPreviewSize: "medium",
 			maxConcurrentTasks: 6,
 			maxConcurrentSubagents: 4,
+			subagentsEnabled: true,
+			subagentInterruptMessage: true,
 			subagentDelegationPolicy: "proactive",
 			subagentMaxDepth: 2,
 			subagentRoleTimeoutsMs: { worker: 120_000 },
@@ -1148,8 +1150,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 
 			const persisted = api.getConfiguration()
 			assert.equal(persisted.maxConcurrentSubagents, 4)
-			assert.equal(persisted.subagentMaxDepth, 2)
-			assert.equal(persisted.subagentDelegationPolicy, "proactive")
+			assert.equal(persisted.subagentsEnabled, true)
+			assert.equal(persisted.subagentInterruptMessage, true)
+			assert.equal(persisted.subagentMaxDepth, undefined)
+			assert.equal(persisted.subagentDelegationPolicy, undefined)
 
 			await waitFor(
 				() => {

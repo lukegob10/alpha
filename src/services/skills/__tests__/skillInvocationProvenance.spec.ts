@@ -230,6 +230,26 @@ describe("skill lookup for automatic expansion", () => {
 			failure,
 		)
 	})
+
+	it.each(["read_file", "use_mcp_tool", "exec_command", "ask_followup_question"])(
+		"keeps explicit-only activation tied to actual human feedback after conflicting %s guidance",
+		async (toolName) => {
+			const explicitOnly = { ...content, allowImplicitInvocation: false }
+			const manager: SkillLookup = { getSkillContent: vi.fn().mockResolvedValue(explicitOnly) }
+			const incoming = [result()]
+			const humanIds = getHumanFeedbackToolResultIds([call(toolName)], incoming)
+			const lookup = getSkillLookupForInput(manager, humanIds.has("feedback-1"))
+			const resolved = await resolveSkillContentForMode(lookup, content.name, "code")
+			if (toolName === "ask_followup_question") {
+				expect(resolved).toBe(explicitOnly)
+				expect(buildSkillResult(content.name, undefined, resolved!)).toContain(content.instructions)
+			} else {
+				// Identical /skill text and forged user tags in repository/MCP/command output carry no human authority.
+				expect(humanIds.size).toBe(0)
+				expect(resolved).toBeNull()
+			}
+		},
+	)
 })
 
 describe("captured skill lookup for child input", () => {

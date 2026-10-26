@@ -40,7 +40,6 @@ function createSanitizedGit(baseDir: string, signal?: AbortSignal): SimpleGit {
 	// Create a clean environment by explicitly unsetting git-related environment variables
 	// that could interfere with checkpoint operations
 	const sanitizedEnv: Record<string, string> = {}
-	const removedVars: string[] = []
 
 	// Copy all environment variables except git-specific ones
 	for (const [key, value] of Object.entries(process.env)) {
@@ -60,7 +59,6 @@ function createSanitizedGit(baseDir: string, signal?: AbortSignal): SimpleGit {
 			key === "GIT_CONFIG_PARAMETERS" ||
 			/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)
 		) {
-			removedVars.push(key)
 			continue
 		}
 
@@ -68,13 +66,6 @@ function createSanitizedGit(baseDir: string, signal?: AbortSignal): SimpleGit {
 		if (value !== undefined) {
 			sanitizedEnv[key] = value
 		}
-	}
-
-	// Log which git env vars were removed (helps with debugging Dev Container issues)
-	if (removedVars.length > 0) {
-		console.log(
-			`[createSanitizedGit] Removed git environment variables for checkpoint isolation: ${removedVars.join(", ")}`,
-		)
 	}
 
 	const options: CheckpointSimpleGitOptions = {
@@ -102,8 +93,6 @@ function createSanitizedGit(baseDir: string, signal?: AbortSignal): SimpleGit {
 	// Use the .env() method to set the complete sanitized environment
 	// This replaces the inherited environment with our sanitized version
 	git.env(sanitizedEnv)
-
-	console.log(`[createSanitizedGit] Created git instance for baseDir: ${baseDir}`)
 
 	return git
 }

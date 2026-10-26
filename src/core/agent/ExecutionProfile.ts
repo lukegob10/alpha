@@ -132,13 +132,6 @@ export function applyExecutionProfile(
 		),
 		outputLimits: policy.outputLimits,
 		execution: policy.execution,
-		// Kept as a compatibility argument for older call sites; policy creation
-		// computes its own digest and intentionally ignores this value.
-		digest: digestValue({
-			profile: executionProfileDigest(profile),
-			parentPolicy: policy.digest,
-			allowedFunctionNames,
-		}),
 	})
 
 	if (options.includeAllToolsWithRestrictions) {

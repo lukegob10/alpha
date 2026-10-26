@@ -9,6 +9,7 @@ import {
 	findTrialForTask,
 	finishRun,
 	getTasks,
+	getRunOutcomeSummary,
 	getPresentationModelCallPolicyEvents,
 	settleTrialAfterRetries,
 	updateTask,
@@ -16,9 +17,11 @@ import {
 import { CampaignCostLedger } from "../benchmark/budgets"
 import { canonicalJson, sha256 } from "../evidence/index"
 import { EVALS_REPO_PATH } from "../exercises/index"
+import { assertCompleteRun, type RunOutcomeSummary } from "../lifecycle/index"
 
 import { Logger, getTag, isDockerContainer, resetEvalsRepo, commitEvalsRepoChanges } from "./utils"
-import { startHeartbeat, stopHeartbeat } from "./redis"
+import { assertHeartbeatOwnership, startHeartbeat, stopHeartbeat } from "./redis"
+import { reconcileRunBeforeDispatch } from "./reconcileRun"
 import { processTask, processTaskInContainer } from "./processTask"
 import { presentationModelCallPolicySchema } from "./types"
 
@@ -29,7 +32,7 @@ export const runEvals = async (runId: number) => {
 		throw new Error(`Run ${run.id} already finished.`)
 	}
 
-	const tasks = await getTasks(runId)
+	let tasks = await getTasks(runId)
 
 	if (tasks.length === 0) {
 		throw new Error(`Run ${run.id} has no tasks.`)
@@ -65,14 +68,36 @@ export const runEvals = async (runId: number) => {
 
 	let heartbeat: Awaited<ReturnType<typeof startHeartbeat>> | undefined
 	let failure: { error: unknown } | undefined
+	let outcomeSummary: RunOutcomeSummary | undefined
+	const failedDispatches: number[] = []
+	const controller = new AbortController()
+	const interrupt = () => controller.abort(new Error("Evaluation controller interrupted"))
+	process.once("SIGINT", interrupt)
+	process.once("SIGTERM", interrupt)
 	try {
 		logger.info(`running ${tasks.length} task(s)`)
+		heartbeat = await startHeartbeat(run.id, 10, interrupt)
+		const assertOwnership = async () => {
+			controller.signal.throwIfAborted()
+			try {
+				await assertHeartbeatOwnership(run.id, heartbeat!)
+			} catch (error) {
+				controller.abort(error)
+				throw error
+			}
+		}
+		await reconcileRunBeforeDispatch({
+			runId: run.id,
+			taskIds: tasks.map(({ id }) => id),
+			containerized,
+			assertOwnership,
+		})
+		tasks = await getTasks(runId)
 
 		if (managesLegacyCheckout) {
 			await resetEvalsRepo({ run, cwd: EVALS_REPO_PATH })
 		}
 
-		heartbeat = await startHeartbeat(run.id)
 		const queue = new PQueue({ concurrency: run.concurrency })
 
 		const STAGGER_DELAY_MS = 5000
@@ -80,13 +105,25 @@ export const runEvals = async (runId: number) => {
 
 		const createTaskRunner = (task: (typeof filteredTasks)[number]) => async () => {
 			try {
+				await assertOwnership()
 				if (task.benchmarkPartition === "holdout") await assertVisibleGatePassed(run.id)
 				if (containerized) {
-					return await processTaskInContainer({ taskId: task.id, jobToken: run.jobToken, logger })
+					return await processTaskInContainer({
+						taskId: task.id,
+						jobToken: run.jobToken,
+						logger,
+						signal: controller.signal,
+					})
 				} else {
-					return await processTask({ taskId: task.id, jobToken: run.jobToken, logger })
+					return await processTask({
+						taskId: task.id,
+						jobToken: run.jobToken,
+						logger,
+						signal: controller.signal,
+					})
 				}
 			} catch (error) {
+				failedDispatches.push(task.id)
 				logger.error("error processing task", error)
 				// A failed governed attempt cannot establish known spend or authorize another paid dispatch.
 				if (run.campaignHardCapUsd !== null) throw error
@@ -132,6 +169,10 @@ export const runEvals = async (runId: number) => {
 			await queue.onIdle()
 		}
 
+		await assertOwnership()
+		outcomeSummary = await getRunOutcomeSummary(run.id)
+		assertCompleteRun(outcomeSummary)
+		logger.info("classified outcomes", outcomeSummary)
 		logger.info("finishRun")
 		const result = await finishRun(run.id)
 		logger.info("result ->", {
@@ -148,9 +189,15 @@ export const runEvals = async (runId: number) => {
 		if (managesLegacyCheckout) {
 			await commitEvalsRepoChanges({ run, cwd: EVALS_REPO_PATH })
 		}
+		if (outcomeSummary.invalid || failedDispatches.length)
+			throw new Error(
+				`Evaluation run contains invalid outcomes: ${JSON.stringify({ ...outcomeSummary, failedDispatches })}`,
+			)
 	} catch (error) {
 		failure = { error }
 	} finally {
+		process.removeListener("SIGINT", interrupt)
+		process.removeListener("SIGTERM", interrupt)
 		try {
 			logger.info("cleaning up")
 			if (heartbeat !== undefined) await stopHeartbeat(run.id, heartbeat)
@@ -165,6 +212,7 @@ export const runEvals = async (runId: number) => {
 		}
 	}
 	if (failure) throw failure.error
+	return outcomeSummary!
 }
 
 function requireActualTaskCost(taskId: number, cost: number | null | undefined): number {

@@ -1,6 +1,7 @@
 import fs from "fs"
 import os from "os"
 import * as path from "path"
+import { parsePatch } from "../apply-patch/parser"
 
 import {
 	getTaskDisplayPath,
@@ -153,6 +154,97 @@ describe("managed worker path presentation", () => {
 		}
 	})
 
+	it("rejects aliases into Git metadata while allowing ordinary GitHub files", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-git-metadata-"))
+		try {
+			const worktree = path.join(tempRoot, "worktree")
+			fs.mkdirSync(path.join(worktree, ".git"), { recursive: true })
+			fs.mkdirSync(path.join(worktree, ".github"))
+			fs.writeFileSync(path.join(worktree, ".git", "config"), "metadata\n")
+			fs.symlinkSync(
+				path.join(worktree, ".git"),
+				path.join(worktree, "metadata-link"),
+				process.platform === "win32" ? "junction" : "dir",
+			)
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: worktree,
+				subagentWriteScope: ["."],
+			}
+
+			for (const candidate of ["metadata-link", "metadata-link/config", "metadata-link/new-config"]) {
+				expect(isWorkerWritePathAllowed(worker, candidate)).toBe(false)
+			}
+			expect(isWorkerWritePathAllowed(worker, ".github/workflows/check.yml")).toBe(true)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
+	it.runIf(process.platform === "win32")("rejects case variants of the worktree Git metadata file", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-git-case-"))
+		try {
+			fs.writeFileSync(path.join(tempRoot, ".git"), "gitdir: private-metadata\n")
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: tempRoot,
+				subagentWriteScope: ["."],
+			}
+
+			for (const candidate of [".git", ".GIT", ".Git"]) {
+				expect(isWorkerWritePathAllowed(worker, candidate)).toBe(false)
+			}
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
+	it("rejects a dangling directory alias into missing Git metadata", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-git-missing-"))
+		try {
+			fs.symlinkSync(
+				path.join(tempRoot, ".git"),
+				path.join(tempRoot, "metadata-link"),
+				process.platform === "win32" ? "junction" : "dir",
+			)
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: tempRoot,
+				subagentWriteScope: ["."],
+			}
+
+			expect(isWorkerWritePathAllowed(worker, "metadata-link/new-config")).toBe(false)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
+	it("allows scoped descendant names beginning with dots while rejecting parent traversal", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-dot-path-"))
+		try {
+			const worktree = path.join(tempRoot, "worktree")
+			fs.mkdirSync(path.join(worktree, "..notes"), { recursive: true })
+			fs.writeFileSync(path.join(worktree, "..notes", "existing.ts"), "existing\n")
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: worktree,
+				subagentWriteScope: ["..notes"],
+				subagentAuthority: { role: "worker" as const, fileWriteScope: [] as string[] },
+			}
+
+			expect(isWorkerWritePathAllowed(worker, "..notes/existing.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, "..notes/new.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, "../..notes/outside.ts")).toBe(false)
+			expect(isWorkerWritePathAllowed(worker, ".")).toBe(false)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
 	it("rejects a junction escape from worker write-scope", () => {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-junction-"))
 		try {
@@ -208,6 +300,22 @@ describe("managed worker path presentation", () => {
 		expect(command.command).toBe(`echo leaked > "${logicalFile}"`)
 		expect(command.workdir).toBe(".")
 		expect(command.cwd).toBe(".")
+	})
+
+	it("remaps padded logical patch targets while preserving marker-like context", () => {
+		const logicalSource = path.join(logicalWorkspace, "src", "source.ts")
+		const logicalDestination = path.join(logicalWorkspace, "src", "destination.ts")
+		const literalHeader = ` *** Add File: ${logicalSource}`
+		const patch = `*** Begin Patch\n*** Add File: src/allowed.ts\n+allowed\n  *** Update File: ${logicalSource}\n*** Move to: ${logicalDestination}\n@@\n${literalHeader}\n-old\n+new\n*** End Patch`
+
+		const remapped = normalizeTaskToolArguments(task, "apply_patch", { patch })
+		const [added, updated] = parsePatch(String(remapped.patch)).hunks
+		expect(added?.path).toBe("src/allowed.ts")
+		expect(updated?.path).toBe("src/source.ts")
+		if (updated?.type !== "UpdateFile") throw new Error("Expected update hunk")
+		expect(updated.movePath).toBe("src/destination.ts")
+		expect(updated.chunks[0]?.oldLines).toEqual([`*** Add File: ${logicalSource}`, "old"])
+		expect(String(remapped.patch)).toContain(literalHeader)
 	})
 
 	it("redacts the managed worktree from a generated system prompt", () => {

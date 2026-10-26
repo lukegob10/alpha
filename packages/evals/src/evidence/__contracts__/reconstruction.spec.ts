@@ -74,7 +74,8 @@ describe("M4 reconstruction contract", () => {
 			store,
 			secrets: ["canary-secret"],
 		})
-		expect(descriptors).toHaveLength(REQUIRED_ARTIFACT_KINDS.length)
+		expect(descriptors).toHaveLength(REQUIRED_ARTIFACT_KINDS.length + 1)
+		expect(descriptors.some(({ kind }) => kind === "workspace_snapshot")).toBe(true)
 		expect(descriptors.every(({ uploadState }) => uploadState === "complete")).toBe(true)
 		const finalDiff = descriptors.find(({ kind }) => kind === "final_diff")!
 		expect(new TextDecoder().decode(await store.get(finalDiff))).toContain("deleted file mode")
@@ -91,7 +92,8 @@ describe("M4 reconstruction contract", () => {
 			processRunner: runner,
 			store,
 		})
-		expect(fallbackDescriptors).toHaveLength(REQUIRED_ARTIFACT_KINDS.length)
+		expect(fallbackDescriptors).toHaveLength(REQUIRED_ARTIFACT_KINDS.length + 1)
+		expect(fallbackDescriptors.find(({ kind }) => kind === "transcript")?.captureStatus).toBe("missing")
 		await expect(readEvidenceLog(root)).rejects.toThrow()
 	})
 

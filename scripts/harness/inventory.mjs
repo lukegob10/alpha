@@ -1,3 +1,5 @@
+import { hostSuites } from "./host-evidence.mjs"
+
 // Declarative index of existing owners. Discovery is evidence of a definition, never a passing test or live outcome.
 export const surfaces = [
 	"agent-loop",
@@ -302,7 +304,7 @@ export const evidenceInventory = [
 	host("host-instructions", "prompts-instructions", ["instruction-discovery.acceptance.test"], {
 		lanes: ["extended"],
 	}),
-	host("host-lm", "model-provider", ["vscode-lm-contract.test", "vscode-lm-empty-recovery.test"]),
+	host("host-lm", "model-provider", ["vscode-lm-contract.test"]),
 	host("host-context", "context-construction", ["long-context-fanout.test", "proportional-context.test"]),
 	host("host-storage", "memory-persistence", ["storage-recovery.test", "storage-restart.test"], {
 		columns: ["e2e", "robustness"],
@@ -345,18 +347,41 @@ export const evidenceInventory = [
 			"managed-agents.cancellation.acceptance.test",
 			"managed-agents.budget.acceptance.test",
 		],
-		{ columns: ["e2e", "robustness"], layers: [2, 7] },
+		{ columns: ["e2e", "robustness"], layers: [2, 7], lanes: ["confidence", "stress"] },
 	),
 	host("host-permissions", "permissions", ["approval-mode.test", "command-path-approval.test"], {
 		columns: ["e2e", "security"],
 		layers: [2, 8],
 	}),
-	host("host-recovery", "retry-recovery", ["nested-restart.test", "vscode-lm-empty-recovery.test"], {
+	host("host-authority-effects", "permissions", ["security-authority.acceptance.test"], {
+		lanes: [],
+		columns: ["e2e", "security"],
+		layers: [2, 8],
+		scope: "Defined deterministic forced-call enforcement and sentinel effects; no inferred live model resistance",
+	}),
+	host("host-recovery", "retry-recovery", ["nested-restart.test"], {
+		lanes: [],
 		columns: ["e2e", "robustness"],
 		layers: [2, 7],
+		scope: "Separate phased manual nested-restart driver; no host/confidence lane claims this execution",
 	}),
 	host("host-compaction", "compaction", ["compaction-acceptance.test"]),
 	host("host-ui", "ui-extension", ["extension.test", "modes.test", "rendered-ui-probe.test", "history-ui.test"]),
+	host(
+		"host-rendered-interactions",
+		"ui-extension",
+		[
+			"composer-ui.test",
+			"transcript-lifecycle-ui.test",
+			"request-user-input-ui.test",
+			"managed-agents.acceptance.test",
+		],
+		{
+			lanes: ["rendered"],
+			columns: ["e2e", "regression"],
+			scope: "Scripted rendered interactions only; optional drivers remain separately inventoried",
+		},
+	),
 	{
 		id: "evaluator-contracts",
 		surfaces: ["test-execution", "permissions", "retry-recovery", "git"],
@@ -469,6 +494,18 @@ export const evidenceInventory = [
 		promotion: "unavailable",
 	},
 	{
+		id: "codex-observable-reference-map",
+		surfaces: ["agent-loop", "tool-routing", "retry-recovery", "compaction", "subagents"],
+		columns: ["component"],
+		layers: [2],
+		source: ["evals/agent-workflows/codex-observable-reference-v1.json"],
+		tests: ["packages/evals/src/benchmark/__tests__/codexReference.spec.ts"],
+		lanes: ["offline"],
+		kind: "alignment-definition",
+		scope: "Pinned observable reference/local test freshness only; no differential execution or behavioral equivalence claim",
+		promotion: "unavailable",
+	},
+	{
 		id: "live-suites",
 		surfaces,
 		columns: ["live"],
@@ -478,12 +515,219 @@ export const evidenceInventory = [
 			"apps/vscode-e2e/src/suite/live-quality.test.ts",
 			"apps/vscode-e2e/src/suite/harness-quality-live.test.ts",
 			"apps/vscode-e2e/src/suite/approval-github-live.test.ts",
+			"apps/vscode-e2e/src/suite/vscode-lm-empty-recovery.test.ts",
+			"apps/vscode-e2e/src/suite/managed-delegation-live.test.ts",
+			"apps/vscode-e2e/src/suite/security-injection-live.test.ts",
 		],
 		lanes: [],
 		kind: "live-definition",
 		scope: "Defined supplemental live suites; no live or production receipt imported by this offline inventory",
 		promotion: "unavailable",
 	},
+]
+
+const testPath = (file) => `apps/vscode-e2e/src/suite/${file}.ts`
+const ownedTests = (files, cadence, owner, reason, providers = ["scripted"], drivers = []) =>
+	files.map((file) => ({ path: testPath(file), cadence, owner, reason, providers, drivers, lanes: [] }))
+const requiredFiles = [...new Set(Object.values(hostSuites).flat())]
+
+/** Cadence is declared ownership, not an execution receipt or a claim of complete product coverage. */
+export const hostTestInventory = [
+	...requiredFiles.map((file) => ({
+		path: testPath(file),
+		cadence: ["managed-agents.cancellation.acceptance.test", "managed-agents.budget.acceptance.test"].includes(file)
+			? "release"
+			: "pr",
+		owner: "apps/vscode-e2e",
+		reason: "Bounded exact-host acceptance; admission requires every test in each selected file",
+		providers: [file === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted"],
+		drivers: ["apps/vscode-e2e/src/runTest.ts"],
+		lanes: Object.entries(hostSuites)
+			.filter(([, files]) => files.includes(file))
+			.map(([suite]) => (suite === "smoke" ? "host" : suite)),
+	})),
+	...ownedTests(
+		["workflow.test"],
+		"pr",
+		"apps/vscode-e2e workflow campaign",
+		"Only the smoke scenario roster is mandatory; broader workflow and live scenarios remain separate",
+		["scripted", "live-copilot"],
+		["apps/vscode-e2e/src/runCampaign.ts"],
+	).map((entry) => ({ ...entry, lanes: ["outcomes"] })),
+	...ownedTests(
+		[
+			"alpha-tickets-live.test",
+			"approval-github-live.test",
+			"claude-copilot-live.test",
+			"command-file-diff-live.test",
+			"file-tools-live.test",
+			"harness-quality-live.test",
+			"live-quality.test",
+			"read-evidence-live.test",
+			"security-injection-live.test",
+			"vscode-lm-empty-recovery.test",
+		],
+		"live",
+		"apps/vscode-e2e live Copilot suites",
+		"Opt-in model observations require an owned signed-in profile, exact model and explicit request budget",
+		["live-copilot"],
+		["apps/vscode-e2e/src/runTest.ts"],
+	),
+	...ownedTests(
+		["managed-delegation-live.test"],
+		"manual",
+		"apps/vscode-e2e managed delegation outcomes",
+		"Scripted controls and opt-in live synthesis/integration share a driver; neither is inferred from ordinary host gates",
+		["scripted", "live-copilot"],
+		["apps/vscode-e2e/src/runTest.ts"],
+	).map((entry) => ({ ...entry, additionalCadences: ["live"] })),
+	...ownedTests(
+		["markdown-lists.test"],
+		"live",
+		"apps/vscode-e2e legacy provider smoke",
+		"Legacy direct-provider diagnostics; not substituted for deterministic or Copilot gates",
+		["live", "live-copilot"],
+		["apps/vscode-e2e/src/runTest.ts"],
+	),
+	...ownedTests(
+		["task.test"],
+		"manual",
+		"apps/vscode-e2e task smoke",
+		"Selected-file basic completion supports a scripted control or an explicitly configured live provider",
+		["scripted", "live", "live-copilot"],
+		["apps/vscode-e2e/src/runTest.ts"],
+	),
+	...ownedTests(
+		["reasoning-ui.test", "file-review-ui.test", "tickets-ui.test", "task-navigation-ui.test", "history-ui.test"],
+		"manual",
+		"apps/vscode-e2e rendered drivers",
+		"Broader renderer interactions require their owned nonce/barrier driver; outside the bounded rendered lane",
+		["scripted"],
+		["apps/vscode-e2e/src/campaign/renderedUiProbe.ts", "apps/vscode-e2e/src/runHistoryUi.ts"],
+	),
+	...ownedTests(
+		["rendered-ui-probe.test"],
+		"manual",
+		"apps/vscode-e2e rendered onboarding",
+		"Onboarding-only probe uses the local acceptance renderer driver; does not establish task UI completeness",
+		["scripted"],
+		["apps/vscode-e2e/src/campaign/renderedUiProbe.ts"],
+	),
+	...ownedTests(
+		["checkpoint-init.perf.test", "first-prompt-latency.test", "task-navigation-latency.test"],
+		"manual",
+		"apps/vscode-e2e performance probes",
+		"Diagnostic timings require a separately declared matched workload and budget for performance acceptance",
+	),
+	...ownedTests(
+		["proportional-context.test", "proportional-completion.test", "command-settlement.test"],
+		"manual",
+		"apps/vscode-e2e bounded workflow diagnostics",
+		"Selected-file scripted/live diagnostics have separate measurement conditions and are not broad host acceptance",
+		["scripted", "live-copilot"],
+		["apps/vscode-e2e/src/runTest.ts"],
+	),
+	...ownedTests(
+		[
+			"diff-preview-ownership.test",
+			"command-artifact-workflow.astra.test",
+			"managed-agents.non-git.acceptance.test",
+			"managed-agents.auto-apply.acceptance.test",
+			"security-authority.acceptance.test",
+		],
+		"manual",
+		"apps/vscode-e2e extended integration diagnostics",
+		"Existing targeted host contracts remain explicit optional selections rather than inferred full-bank passes",
+	),
+	...ownedTests(
+		["nested-restart.test", "managed-agents.termination.test", "storage-restart.test", "task-history-churn.test"],
+		"manual",
+		"apps/vscode-e2e phased recovery campaigns",
+		"Requires the corresponding multiprocess phase driver and retained shutdown receipts",
+		["scripted"],
+		["apps/vscode-e2e/src/runCampaign.ts", "scripts/harness/local-acceptance.mjs"],
+	),
+	...ownedTests(
+		["editor-chat-reload.test", "rich-documents-preferences.test", "rich-documents-reopen.test"],
+		"manual",
+		"apps/vscode-e2e profile and document recovery",
+		"Phased reopen diagnostics must be selected through their explicit profile/phase preparation",
+	),
+	...ownedTests(
+		["profile-persistence.test", "saved-live-profile-discovery.test"],
+		"manual",
+		"apps/vscode-e2e owned profile preparation",
+		"Profile/setup diagnostics establish preparation only, not a live task quality result",
+	),
+	...ownedTests(
+		["installed-extension.test"],
+		"manual",
+		"apps/vscode-e2e installed artifact validation",
+		"Requires an explicitly installed artifact path; source-host passes cannot stand in for packaged execution",
+	),
+]
+
+const driver = (path, cadence, owner, reason) => ({ path, cadence, owner, reason })
+export const hostDriverInventory = [
+	driver("apps/vscode-e2e/src/runTest.ts", "pr", "extension-host", "Canonical selected-file host owner"),
+	driver("apps/vscode-e2e/src/runCoreConfidence.ts", "pr", "core confidence", "Composes strict smoke/core receipts"),
+	driver("apps/vscode-e2e/src/runUnitTests.ts", "pr", "tooling", "Runner units only; never host execution"),
+	driver(
+		"apps/vscode-e2e/src/runCampaign.ts",
+		"pr",
+		"workflow campaign",
+		"Only the smoke roster is a mandatory outcome lane",
+	),
+	...["runComposerUi", "runTranscriptLifecycleUi", "runRequestUserInputUi"].map((name) =>
+		driver(`apps/vscode-e2e/src/${name}.ts`, "pr", "rendered", "Bounded scripted renderer lane"),
+	),
+	...[
+		"runReasoningUi",
+		"runFileReviewUi",
+		"runHistoryUi",
+		"runTicketsUi",
+		"runTaskNavigationUi",
+		"runEditorChatReload",
+	].map((name) =>
+		driver(
+			`apps/vscode-e2e/src/${name}.ts`,
+			"manual",
+			"rendered/reload diagnostics",
+			"Explicit optional owned driver",
+		),
+	),
+	...[
+		"hostTerminationCampaign",
+		"nestedRestartCampaign",
+		"sharedStorageCampaign",
+		"storageRecoveryCampaign",
+		"taskHistoryChurnCampaign",
+	].map((name) =>
+		driver(
+			`apps/vscode-e2e/src/campaign/${name}.ts`,
+			"manual",
+			"recovery/stress",
+			"Phased process/ownership diagnostics require dedicated fixture roots",
+		),
+	),
+	driver(
+		"apps/vscode-e2e/src/campaign/renderedUiProbe.ts",
+		"pr",
+		"rendered",
+		"Selected modes are mandatory; other modes remain manual",
+	),
+	driver(
+		"scripts/harness/local-acceptance.mjs",
+		"manual",
+		"local acceptance",
+		"Explicit executable and output roots; no inferred CI execution",
+	),
+	driver(
+		"scripts/harness/host-probes.mjs",
+		"release",
+		"rendered/stress selection",
+		"Stress is a bounded release selection; rendered-acceptance also runs in the PR renderer lane",
+	),
 ]
 
 export const layerGaps = {

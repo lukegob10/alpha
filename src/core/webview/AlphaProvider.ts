@@ -5,9 +5,10 @@ import {
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/TaskReasoning"
-import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
+import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
 import { arePathsEqual } from "../../utils/path"
+import { terminateProcessTree } from "../../utils/processTree"
 import os from "os"
 import * as path from "path"
 import fs from "fs/promises"
@@ -25,6 +26,8 @@ import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
+import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
+import { captureToolReviewPolicy } from "../auto-approval"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
@@ -106,10 +109,9 @@ import {
 	TaskLifecycleState,
 	AlphaCodeEventName,
 	DEFAULT_WRITE_DELAY_MS,
+	DEFAULT_MEMORY_SETTINGS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
-	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
 	MAX_MANAGED_AGENT_TREE_ACTIVITY,
 	MAX_MANAGED_AGENT_TREE_NODES,
 	DEFAULT_MODES,
@@ -124,6 +126,7 @@ import {
 	type ModelInfo,
 	isProviderName,
 	createSubagentEffectiveLimits,
+	retireSubagentExecutionLimits,
 	finalizedSubagentContextManifestSchema,
 	finalizeSubagentDelegationPolicy,
 	resolveSubagentDelegationPolicy,
@@ -177,19 +180,20 @@ import { captureProjectInstructionDiscoveryOptions } from "../../services/config
 import type { ScheduledTaskService } from "../../services/scheduled-tasks"
 
 import { fileExistsAtPath } from "../../utils/fs"
-import { setTtsEnabled, setTtsSpeed } from "../../utils/tts"
 import { getWorkspaceGitInfo } from "../../utils/git"
 import { getWorkspacePath } from "../../utils/path"
-import { sanitizeToolUseId } from "../../utils/tool-id"
+import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 
 import { setPanel } from "../../activate/registerCommands"
 
 import { t } from "../../i18n"
 
 import { assertSupportedApiProvider } from "../../shared/api"
-import { buildApiHandler } from "../../api"
+import { buildApiHandler, type ApiHandler } from "../../api"
+import { getApiProtocol, historyItemSchema } from "@alpha-code/types"
 
 import { ContextProxy } from "../config/ContextProxy"
+import { importSettingsWithFeedback } from "../config/importExport"
 import {
 	ProviderSettingsManager,
 	ProviderProfileRenameError,
@@ -210,6 +214,7 @@ import {
 } from "../agent/AgentControlStore"
 import {
 	captureVerificationContent,
+	requiresWorkspaceMutationReceipt,
 	resolveCommandVerification,
 	type CommandVerificationDiagnostic,
 } from "../agent/VerificationScope"
@@ -283,6 +288,11 @@ import {
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
+import { memorySettingsSchema, type MemorySettings } from "@alpha-code/types"
+import { MemoryStore } from "../../services/memory/MemoryStore"
+import { MemoryModel } from "../../services/memory/MemoryModel"
+import { MemoryCoordinator } from "../../services/memory/MemoryCoordinator"
+import type { MemorySource } from "../../services/memory/MemoryTypes"
 import { resolveWebviewHtml } from "./webviewHtml"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
@@ -374,7 +384,6 @@ async function flushLegacyHandoffMessagesDurably(
 	}
 }
 
-const SUBAGENT_RESEARCH_WINDOW_MS = 75_000
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 const BLOCKING_SUBAGENT_RESULT_DELIVERY = "delegate_task"
@@ -535,6 +544,7 @@ export class AlphaProvider
 	private static activeInstances: Set<AlphaProvider> = new Set()
 	private static focusedInstance?: AlphaProvider
 	private static readonly configurationQueues = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
+	private static readonly memoryOperationQueues = new Map<string, Promise<void>>()
 	private disposables: vscode.Disposable[] = []
 	private webviewDisposables: vscode.Disposable[] = []
 	private view?: vscode.WebviewView | vscode.WebviewPanel
@@ -565,12 +575,11 @@ export class AlphaProvider
 	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
 	private newTaskDraftMode: Mode = defaultModeSlug
-	private readonly workspaceMutationGate = new WorkspaceMutationGate()
+	private readonly workspaceMutationGate: WorkspaceMutationGate
 	private readonly subagentNicknameRegistry = new SubagentNicknameRegistry()
 	private readonly preparedSubagentGroups = new Map<string, PreparedSubagentGroup>()
 	private readonly subagentGroupControllers = new Map<string, AbortController>()
 	private readonly reservedSubagentSlots = new Map<string, SubagentSlotReservation>()
-	private readonly exhaustedSubagentRootBudgets = new Map<string, "root_token_budget" | "root_cost_budget">()
 	private readonly publishedSubagentResults = new Set<string>()
 	private readonly subagentDescriptors = new Map<
 		string,
@@ -625,6 +634,11 @@ export class AlphaProvider
 	private currentWorkspacePath: string | undefined
 	private _disposed = false
 	private disposal?: Promise<void>
+	private memoryStore?: MemoryStore
+	private memoryCoordinator?: MemoryCoordinator
+	private memorySettingsSnapshot?: MemorySettings
+	private memoryCoordinatorSettings?: MemorySettings
+	private memorySourceProviders = new Map<string, AlphaProvider>()
 
 	private recentTasksCache?: string[]
 	public readonly taskHistoryStore: TaskHistoryStore
@@ -661,6 +675,296 @@ export class AlphaProvider
 			),
 		)
 		return result
+	}
+
+	public getMemorySettings(): MemorySettings {
+		if (!this.contextProxy) return { ...DEFAULT_MEMORY_SETTINGS }
+		const result = memorySettingsSchema.safeParse(this.contextProxy.getValue("memorySettings") ?? {})
+		return result.success ? result.data : { ...DEFAULT_MEMORY_SETTINGS }
+	}
+
+	public getMemoryStore(): MemoryStore {
+		return (this.memoryStore ??= MemoryStore.forDefaultHome())
+	}
+
+	/** All views sharing Alpha home serialize settings, explicit writes, and reset together. */
+	private enqueueMemoryOperation<T>(operation: () => Promise<T>): Promise<T> {
+		const home = this.getMemoryStore().home
+		const key =
+			[...AlphaProvider.memoryOperationQueues.keys()].find((candidate) => arePathsEqual(candidate, home)) ?? home
+		const result = (AlphaProvider.memoryOperationQueues.get(key) ?? Promise.resolve()).then(operation)
+		const settled = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		AlphaProvider.memoryOperationQueues.set(key, settled)
+		void settled.then(() => {
+			if (AlphaProvider.memoryOperationQueues.get(key) === settled)
+				AlphaProvider.memoryOperationQueues.delete(key)
+		})
+		return result
+	}
+
+	private memoryPeers(): AlphaProvider[] {
+		const home = this.getMemoryStore().home
+		return [...new Set([this, ...AlphaProvider.activeInstances])].filter(
+			(peer) => !peer._disposed && peer.contextProxy && arePathsEqual(peer.getMemoryStore().home, home),
+		)
+	}
+
+	private memoryOwner(): AlphaProvider | undefined {
+		return this.memoryPeers().find((peer) => peer.memoryCoordinator)
+	}
+
+	/** Settings are persisted before this updates the displayed thread's generation preference. */
+	public refreshMemorySettings(): Promise<void> {
+		return this.enqueueMemoryOperation(async () => {
+			if (this._disposed) return
+			const settings = this.getMemorySettings()
+			const previous = this.memorySettingsSnapshot
+			let preferenceFailure: { error: unknown } | undefined
+			try {
+				if (previous && previous.generateMemories !== settings.generateMemories) {
+					await this.getCurrentTask()?.setMemoryGenerationEnabled(settings.generateMemories)
+				}
+			} catch (error) {
+				preferenceFailure = { error }
+			}
+			if (!preferenceFailure) {
+				for (const peer of this.memoryPeers()) {
+					if (peer.contextProxy === this.contextProxy) peer.memorySettingsSnapshot = settings
+				}
+			}
+			await this.synchronizeMemoryCoordinator(settings)
+			if (preferenceFailure && !this._disposed) throw preferenceFailure.error
+		})
+	}
+
+	private async synchronizeMemoryCoordinator(settings: MemorySettings): Promise<void> {
+		const peers = this.memoryPeers()
+		const owner = peers.find((peer) => peer.memoryCoordinator)
+		if (settings.enabled && owner && isDeepStrictEqual(owner.memoryCoordinatorSettings, settings)) return
+		for (const peer of peers) {
+			const coordinator = peer.memoryCoordinator
+			peer.memoryCoordinator = undefined
+			peer.memoryCoordinatorSettings = undefined
+			await coordinator?.dispose()
+		}
+		if (!settings.enabled || this._disposed) return
+		const configurations = new WeakMap<ApiHandler, ProviderSettings>()
+		const model = new MemoryModel({
+			createHandler: (phase) => {
+				const captured = this.getProviderSettingsSnapshot()
+				const current = this.getMemorySettings()
+				const override = phase === "extraction" ? current.extractModel : current.consolidationModel
+				const configuration = override
+					? this.applyIndependentTaskModel(captured, undefined, override)
+					: captured
+				const handler = buildApiHandler(configuration)
+				configurations.set(handler, configuration)
+				return handler
+			},
+			getProtocol: (handler) => {
+				const provider = configurations.get(handler)?.apiProvider
+				return getApiProtocol(isProviderName(provider) ? provider : undefined, handler.getModel().id)
+			},
+		})
+		this.memoryCoordinator = new MemoryCoordinator({
+			store: this.getMemoryStore(),
+			model,
+			getSettings: () => this.getMemorySettings(),
+			listSources: () => this.listMemorySources(),
+			readSource: (source, signal) => {
+				const provider = this.memorySourceProviders.get(source.id)
+				if (!provider || provider._disposed) throw new Error("Memory source is no longer available")
+				// Codex tails JSONL evidence; Alpha stores one JSON transcript. Skip files
+				// over 8 MiB before parsing to keep background scans off large histories.
+				return readThreadApiMessages(source.id, provider.contextProxy.globalStorageUri.fsPath, signal, {
+					maxBytes: 8 * 1024 * 1024,
+				})
+			},
+			isSourceCurrent: (source) => this.isMemorySourceCurrent(source),
+			onError: () => this.log("Background memory update failed; it will retry within the memory job limits"),
+		})
+		this.memoryCoordinatorSettings = settings
+		// A read-only enabled store still tracks citations/notes; wake itself performs
+		// no disk or model work when generation is disabled.
+		this.memoryCoordinator.wake()
+	}
+
+	private wakeMemories(): void {
+		if (this._disposed || !this.getMemorySettings().enabled) return
+		void this.enqueueMemoryOperation(async () => {
+			if (this._disposed) return
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			this.memoryOwner()?.memoryCoordinator?.wake()
+		}).catch(() => this.log("Background memory startup failed"))
+	}
+
+	private activeMemoryTaskIds(): Set<string> {
+		const active = new Set<string>()
+		for (const peer of this.memoryPeers()) {
+			for (const id of peer.taskSessions.getLiveTaskIds()) active.add(id)
+			const selected = peer.getCurrentTask()?.taskId
+			if (selected) active.add(selected)
+		}
+		return active
+	}
+
+	private memorySource(item: HistoryItem, active: ReadonlySet<string>): MemorySource | undefined {
+		if (
+			(item.taskKind ?? "primary") !== "primary" ||
+			item.parentTaskId ||
+			item.orchestrationParentTaskId ||
+			(item.rootTaskId && item.rootTaskId !== item.id) ||
+			item.diagnosticSession
+		)
+			return undefined
+		return {
+			id: item.id,
+			updatedAt: item.ts,
+			workspace: item.workspace,
+			// Codex records generation independently of its feature gate and reads
+			// legacy missing memory_mode as Enabled (openai/codex@970111f6).
+			generateMemories: item.memory?.generateMemories ?? true,
+			externalContext: item.memory?.externalContext,
+			active: active.has(item.id),
+		}
+	}
+
+	private async listMemorySources(): Promise<MemorySource[]> {
+		const peers = this.memoryPeers()
+		await Promise.all(peers.map((peer) => peer.taskHistoryStoreReady))
+		const active = this.activeMemoryTaskIds()
+		const sources = new Map<string, MemorySource>()
+		const origins = new Map<string, AlphaProvider>()
+		const ambiguous = new Set<string>()
+		for (const peer of peers) {
+			if (peer._disposed) continue
+			for (const item of peer.taskHistoryStore.getAll()) {
+				const source = this.memorySource(item, active)
+				if (!source || ambiguous.has(source.id)) continue
+				const origin = origins.get(source.id)
+				if (
+					origin &&
+					!arePathsEqual(
+						origin.contextProxy.globalStorageUri.fsPath,
+						peer.contextProxy.globalStorageUri.fsPath,
+					)
+				) {
+					sources.delete(source.id)
+					origins.delete(source.id)
+					ambiguous.add(source.id)
+					continue
+				}
+				if ((sources.get(source.id)?.updatedAt ?? -Infinity) > source.updatedAt) continue
+				sources.set(source.id, source)
+				origins.set(source.id, peer)
+			}
+		}
+		this.memorySourceProviders = origins
+		return [...sources.values()]
+	}
+
+	private async isMemorySourceCurrent(source: MemorySource): Promise<boolean> {
+		const provider = this.memorySourceProviders.get(source.id)
+		if (!provider || provider._disposed || this.activeMemoryTaskIds().has(source.id)) return false
+		const directory = await resolveExistingTaskDirectoryPathReadOnly(
+			provider.contextProxy.globalStorageUri.fsPath,
+			source.id,
+		)
+		const file = path.join(directory, GlobalFileNames.historyItem)
+		const limit = 4 * 1024 * 1024
+		const stats = await fs.lstat(file)
+		if (!stats.isFile() || stats.isSymbolicLink() || stats.size > limit)
+			throw new Error("Invalid memory source metadata")
+		const handle = await fs.open(file, "r")
+		let item: HistoryItem
+		try {
+			const opened = await handle.stat()
+			if (!opened.isFile() || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > limit)
+				throw new Error("Memory source metadata changed while opening")
+			const buffer = Buffer.alloc(limit + 1)
+			let length = 0
+			while (length < buffer.length) {
+				const result = await handle.read(buffer, length, buffer.length - length, length)
+				if (!result.bytesRead) break
+				length += result.bytesRead
+			}
+			if (length > limit) throw new Error("Memory source metadata exceeds its supported size")
+			item = historyItemSchema.parse(JSON.parse(buffer.toString("utf8", 0, length)))
+		} finally {
+			await handle.close()
+		}
+		const current = this.memorySource(item, this.activeMemoryTaskIds())
+		const settings = this.getMemorySettings()
+		return Boolean(
+			settings.enabled &&
+				settings.generateMemories &&
+				current &&
+				current.id === source.id &&
+				!current.active &&
+				current.generateMemories &&
+				current.updatedAt === source.updatedAt &&
+				(!settings.disableOnExternalContext || !current.externalContext),
+		)
+	}
+
+	public async openMemoryFolder(): Promise<void> {
+		const store = this.getMemoryStore()
+		await this.enqueueMemoryOperation(() => store.initialize())
+		await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(store.rootPath))
+	}
+
+	public recordMemoryUsage(paths: string[], eventKey?: string): Promise<void> {
+		if (this._disposed || !this.getMemorySettings().enabled || !paths.length) return Promise.resolve()
+		return this.enqueueMemoryOperation(async () => {
+			if (this._disposed || !this.getMemorySettings().enabled) return
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			const coordinator = this.memoryOwner()?.memoryCoordinator
+			if (eventKey === undefined) await coordinator?.recordUsage(paths)
+			else await coordinator?.recordUsage(paths, eventKey)
+		})
+	}
+
+	public addMemoryNote(text: string, signal?: AbortSignal): Promise<string> {
+		return this.enqueueMemoryOperation(async () => {
+			signal?.throwIfAborted()
+			if (this._disposed || !this.getMemorySettings().enabled) throw new Error("Memory is disabled")
+			await this.synchronizeMemoryCoordinator(this.getMemorySettings())
+			signal?.throwIfAborted()
+			const coordinator = this.memoryOwner()?.memoryCoordinator
+			if (!coordinator) throw new Error("Memory is unavailable")
+			return coordinator.recordNote(text, signal)
+		})
+	}
+
+	public resetMemories(): Promise<void> {
+		return this.enqueueMemoryOperation(async () => {
+			for (const peer of this.memoryPeers()) {
+				const coordinator = peer.memoryCoordinator
+				peer.memoryCoordinator = undefined
+				peer.memoryCoordinatorSettings = undefined
+				await coordinator?.dispose()
+			}
+			// No queued note or settings refresh can acquire a new writer until the
+			// reset transaction has removed files and invalidated persisted claims.
+			await this.getMemoryStore().reset()
+		})
+	}
+
+	private stopMemoryServices(): Promise<void> {
+		// Abort the owned model immediately, before waiting behind any queued reset.
+		const coordinator = this.memoryCoordinator
+		this.memoryCoordinator = undefined
+		this.memoryCoordinatorSettings = undefined
+		const stopped = coordinator?.dispose() ?? Promise.resolve()
+		void stopped.catch(() => undefined)
+		return this.enqueueMemoryOperation(async () => {
+			await stopped
+			const successor = this.memoryPeers().find((peer) => peer.getMemorySettings().enabled)
+			if (successor) await successor.synchronizeMemoryCoordinator(successor.getMemorySettings())
+		})
 	}
 
 	public async getReasoningCapabilities(
@@ -813,7 +1117,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.9-chat-worker-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.10-memories-conversation-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -822,8 +1126,10 @@ export class AlphaProvider
 		private readonly outputChannel: vscode.OutputChannel,
 		private readonly renderContext: "sidebar" | "editor" = "sidebar",
 		public readonly contextProxy: ContextProxy,
+		startupConfigurationReady: Promise<void> = Promise.resolve(),
 	) {
 		super()
+		this.workspaceMutationGate = WorkspaceMutationGate.forGlobalStorage(this.contextProxy.globalStorageUri.fsPath)
 		if ("lm" in vscode && vscode.lm?.onDidChangeChatModels)
 			this.disposables.push(
 				vscode.lm.onDidChangeChatModels(() => {
@@ -862,7 +1168,13 @@ export class AlphaProvider
 				this.scheduleGlobalStateWriteThrough()
 			},
 		})
+		this.memorySettingsSnapshot = this.getMemorySettings()
 		this.taskHistoryStoreReady = this.initializeTaskHistoryStore()
+		void Promise.all([this.taskHistoryStoreReady, startupConfigurationReady])
+			.then(() => this.refreshMemorySettings())
+			.catch(() => {
+				this.log("Memory initialization failed; conversation history remains available")
+			})
 		void this.taskHistoryStoreReady.catch((error) => {
 			this.log(`Failed to initialize TaskHistoryStore: ${error}`)
 		})
@@ -910,6 +1222,8 @@ export class AlphaProvider
 
 			// Create named listener functions so we can remove them later.
 			const onTaskStarted = () => {
+				if (instance.taskKind === "primary" && !instance.parentTaskId && !instance.orchestrationParentTaskId)
+					this.wakeMemories()
 				this.markTaskLifecycle(instance.taskId, TaskLifecycleState.Running)
 				void this.updateAgentControlRootStatus(instance.taskId, "running")
 				this.retryIndependentTaskCompletionsForParent(instance.taskId)
@@ -1116,6 +1430,8 @@ export class AlphaProvider
 	async removeTaskFromStack(options?: {
 		skipDelegationRepair?: boolean
 		taskId?: string
+		/** Provisional admission cleanup must never stop a successor with the same ID. */
+		expectedTask?: Task
 		requireAbortSuccess?: boolean
 		/** Only the child-owned, already-persisted legacy handoff may defer joining itself. */
 		ownedDelegationHandoff?: boolean
@@ -1127,6 +1443,9 @@ export class AlphaProvider
 		if (!currentTask) {
 			return
 		}
+		if (options?.expectedTask && currentTask !== options.expectedTask) {
+			throw new Error(`Task ${currentTask.taskId} runtime changed before provisional cleanup`)
+		}
 		const owner = this.getTaskOwner(currentTask.taskId)
 		if (owner && owner !== this) {
 			await owner.removeTaskFromStack({ ...options, taskId: currentTask.taskId })
@@ -1134,6 +1453,9 @@ export class AlphaProvider
 		}
 		await this.taskSessions.runOwnershipOperation(currentTask.taskId, async () => {
 			const canonicalTask = this.getLiveTask(currentTask.taskId)
+			if (options?.expectedTask && canonicalTask !== options.expectedTask) {
+				throw new Error(`Task ${currentTask.taskId} runtime changed before provisional cleanup`)
+			}
 			if (canonicalTask && canonicalTask !== currentTask) return
 			if (!canonicalTask && currentTask.taskKind === "subagent") return
 			await this.removeOwnedTaskFromStack(currentTask, options)
@@ -1289,6 +1611,15 @@ export class AlphaProvider
 		this.codeIndexStatusSubscription = undefined
 	}
 
+	/** Join every view's owned tasks before extension-wide stores and services stop. */
+	static async disposeAll(): Promise<void> {
+		const outcomes = await Promise.allSettled([...this.activeInstances].map((provider) => provider.dispose()))
+		const failures: unknown[] = outcomes.flatMap((outcome) =>
+			outcome.status === "rejected" ? [outcome.reason] : [],
+		)
+		if (failures.length) throw new AggregateError(failures, "Task provider cleanup failed")
+	}
+
 	dispose(): Promise<void> {
 		if (this.disposal) return this.disposal
 		let resolve!: () => void
@@ -1309,6 +1640,9 @@ export class AlphaProvider
 
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
+		const memoryStopped = this.stopMemoryServices()
+		// Cleanup joins this below; foreground cancellation must not wait for a background model.
+		void memoryStopped.catch(() => undefined)
 		this.log("Disposing AlphaProvider...")
 		cancelPromptEnhancements(this)
 		cancelTicketSearches(this)
@@ -1400,7 +1734,6 @@ export class AlphaProvider
 		}
 		this.scopedSkillsManagers?.clear()
 		this.skillsManager = undefined
-		this.marketplaceManager?.cleanup()
 		this.customModesManager?.dispose()
 		await this.scheduledTaskService?.dispose()
 		this.scheduledTaskService = undefined
@@ -1408,6 +1741,7 @@ export class AlphaProvider
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
 		})
 		await this.flushGlobalStateWriteThrough()
+		await memoryStopped
 		await this.taskHistoryStore.dispose()
 		this.subagentNicknameRegistry?.clear()
 		this.taskSessions.disposeView()
@@ -1586,8 +1920,6 @@ export class AlphaProvider
 				terminalZshP10k = false,
 				terminalPowershellCounter = false,
 				terminalZdotdir = false,
-				ttsEnabled,
-				ttsSpeed,
 			}) => {
 				Terminal.setShellIntegrationTimeout(terminalShellIntegrationTimeout)
 				Terminal.setShellIntegrationDisabled(terminalShellIntegrationDisabled)
@@ -1597,8 +1929,6 @@ export class AlphaProvider
 				Terminal.setTerminalZshP10k(terminalZshP10k)
 				Terminal.setPowershellCounter(terminalPowershellCounter)
 				Terminal.setTerminalZdotdir(terminalZdotdir)
-				setTtsEnabled(ttsEnabled ?? false)
-				setTtsSpeed(ttsSpeed ?? 1)
 			},
 			(error) => {
 				this.log(
@@ -1721,7 +2051,6 @@ export class AlphaProvider
 				| "historyWorkspacePath"
 				| "subagentPrivateWorkspaceRoot"
 				| "subagentAuthority"
-				| "subagentResearchDeadlineAt"
 				| "apiConfiguration"
 			>
 		},
@@ -2030,7 +2359,6 @@ export class AlphaProvider
 			historyWorkspacePath: options?.subagentRuntime?.historyWorkspacePath,
 			subagentPrivateWorkspaceRoot: options?.subagentRuntime?.subagentPrivateWorkspaceRoot,
 			subagentAuthority: options?.subagentRuntime?.subagentAuthority,
-			subagentResearchDeadlineAt: options?.subagentRuntime?.subagentResearchDeadlineAt,
 			onCreated: (instance) => {
 				// The constructor may begin a history resume immediately after this
 				// callback. Establish ownership before it emits or reads persistence.
@@ -2534,7 +2862,7 @@ export class AlphaProvider
 			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 		if (taskHistoryItem) {
-			await this.updateTaskHistory({ ...taskHistoryItem, mode })
+			await this.updateTaskHistory({ ...taskHistoryItem, mode }, { preserveMode: false })
 		}
 
 		if (typeof task.setTaskMode === "function") {
@@ -2747,6 +3075,20 @@ export class AlphaProvider
 		}
 		// Compensation must still repair later name references when an earlier derived-store write rejects.
 		if (failed) throw new ProviderProfileRenameError("saveFailed")
+	}
+
+	public async importSettings(filePath?: string): Promise<void> {
+		await this.enqueueConfiguration(() =>
+			importSettingsWithFeedback(
+				{
+					providerSettingsManager: this.providerSettingsManager,
+					contextProxy: this.contextProxy,
+					customModesManager: this.customModesManager,
+					provider: this,
+				},
+				filePath,
+			),
+		)
 	}
 
 	upsertProviderProfile(
@@ -3146,52 +3488,55 @@ export class AlphaProvider
 	}
 
 	async showTaskWithId(id: string, cachedTranscriptRevision?: number) {
+		const alreadySelected = id === this.getCurrentTask()?.taskId
 		const generation = ++this.taskNavigationGeneration
 		const stillCurrent = () => generation === this.taskNavigationGeneration
+		const reportSuperseded = async () => {
+			// Results have task identity but no request identity. An obsolete open
+			// cannot report failure over a newer open of the same selected task.
+			if (!this.isTaskSelected(id)) await this.postTaskOpenResult(id, false)
+		}
 		let publishTranscript = false
 		try {
-			if (id !== this.getCurrentTask()?.taskId) {
+			// Selection is installed before its state publication can finish. A
+			// repeated open must take over publication, even when already selected.
+			const focused = await this.focusTask(id, generation)
+			if (!stillCurrent()) {
+				await reportSuperseded()
+				return
+			}
+			if (!focused) {
+				const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
 				if (!stillCurrent()) {
-					await this.postTaskOpenResult(id, false)
+					await reportSuperseded()
 					return
 				}
-				const focused = await this.focusTask(id, generation)
+				await this.createTaskWithHistoryItem(historyItem, {
+					preserveExisting: true,
+					deferTranscript: true,
+					navigationGeneration: generation,
+				})
 				if (!stillCurrent()) {
-					await this.postTaskOpenResult(id, false)
+					await reportSuperseded()
 					return
 				}
-				if (!focused) {
-					const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
-					if (!stillCurrent()) {
-						await this.postTaskOpenResult(id, false)
-						return
-					}
-					await this.createTaskWithHistoryItem(historyItem, {
-						preserveExisting: true,
-						deferTranscript: true,
-						navigationGeneration: generation,
-					})
-					if (!stillCurrent()) {
-						await this.postTaskOpenResult(id, false)
-						return
-					}
-					publishTranscript = true
-				} else {
-					const transcriptRevision = this.taskSessions.getTranscriptRevision(id)
-					publishTranscript =
-						cachedTranscriptRevision === undefined ||
-						cachedTranscriptRevision !== transcriptRevision ||
-						this.publishedTaskTranscriptRevisions.get(id) !== transcriptRevision
-				}
+				publishTranscript = true
+			} else {
+				const transcriptRevision = this.taskSessions.getTranscriptRevision(id)
+				publishTranscript =
+					alreadySelected ||
+					cachedTranscriptRevision === undefined ||
+					cachedTranscriptRevision !== transcriptRevision ||
+					this.publishedTaskTranscriptRevisions.get(id) !== transcriptRevision
 			}
 
 			if (!stillCurrent()) {
-				await this.postTaskOpenResult(id, false)
+				await reportSuperseded()
 				return
 			}
 			await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 			if (!stillCurrent()) {
-				await this.postTaskOpenResult(id, false)
+				await reportSuperseded()
 				return
 			}
 			await this.postTaskOpenResult(id, true)
@@ -3278,6 +3623,7 @@ export class AlphaProvider
 
 			// Collect all task IDs to delete (parent + all subtasks)
 			const allIdsToDelete: string[] = [id]
+			const seenTaskIds = new Set(allIdsToDelete)
 
 			if (cascadeSubtasks) {
 				// Recursively collect all child IDs
@@ -3288,6 +3634,9 @@ export class AlphaProvider
 						})
 						if (item.childIds && item.childIds.length > 0) {
 							for (const childId of item.childIds) {
+								// Persisted lineage can contain repeated edges or cycles.
+								if (seenTaskIds.has(childId)) continue
+								seenTaskIds.add(childId)
 								allIdsToDelete.push(childId)
 								await collectChildIds(childId)
 							}
@@ -4512,7 +4861,7 @@ export class AlphaProvider
 
 	/** Capture the effective approval grant without persisting plaintext command rules. */
 	public snapshotSubagentAutoApprovalPolicy(
-		settings: AlphaCodeSettings,
+		settings: AlphaCodeSettings & Pick<ExtensionState, "mcpServers">,
 		commandListsResolved = false,
 	): SubagentAutoApprovalPolicy {
 		const flags = resolveApprovalFlags(settings)
@@ -4525,8 +4874,13 @@ export class AlphaProvider
 		const allowlist = shouldDeriveApprovalFlags(settings)
 			? effectiveCommandAllowlistForMode(migrateApprovalMode(settings), allowedCommands)
 			: allowedCommands
+		const mcp = captureToolReviewPolicy({
+			...settings,
+			mcpServers: settings.mcpServers ?? this.getMcpHub()?.getServers(),
+		}).mcp
 		return {
 			...flags,
+			mcpApproval: { enabled: mcp.enabled, grants: [...mcp.grants] },
 			commandApproval: createSubagentCommandApprovalPolicy(allowlist, deniedCommands),
 		}
 	}
@@ -4554,6 +4908,23 @@ export class AlphaProvider
 				live.alwaysAllowWriteOutsideWorkspace && inherited.alwaysAllowWriteOutsideWorkspace,
 			alwaysAllowWriteProtected: live.alwaysAllowWriteProtected && inherited.alwaysAllowWriteProtected,
 			alwaysAllowTickets: live.alwaysAllowTickets === true && inherited.alwaysAllowTickets === true,
+			alwaysAllowMcp: live.alwaysAllowMcp === true && inherited.alwaysAllowMcp === true,
+			mcpApproval: {
+				enabled: live.mcpApproval?.enabled === true && inherited.mcpApproval?.enabled === true,
+				grants:
+					inferApprovalModeFromPolicy(live) === "bypass"
+						? [...(inherited.mcpApproval?.grants ?? [])]
+						: (live.mcpApproval?.grants ?? []).filter(
+								(grant) =>
+									inferApprovalModeFromPolicy(inherited) === "bypass" ||
+									inherited.mcpApproval?.grants.some(
+										(ceiling) =>
+											grant.serverName === ceiling.serverName &&
+											grant.toolName === ceiling.toolName &&
+											grant.source === ceiling.source,
+									),
+							),
+			},
 			alwaysAllowExecute: live.alwaysAllowExecute && inherited.alwaysAllowExecute,
 			alwaysAllowSubagents: live.alwaysAllowSubagents && inherited.alwaysAllowSubagents,
 			commandApproval: live.commandApproval,
@@ -4707,17 +5078,17 @@ export class AlphaProvider
 					record.role === "root"
 						? 0
 						: (orchestration?.ancestry.depth ?? managedAgentDepthFromPath(record.path)),
-				maxDepth:
-					record.role === "root"
-						? (firstFrozenOrchestration?.ancestry.maxDepth ?? settings.maxDepth)
-						: orchestration?.ancestry.maxDepth,
+				maxDepth: null,
 				delegationPolicy:
 					record.role === "root"
 						? (firstFrozenOrchestration?.delegationPolicy.policy ??
 							rootTask?.subagentDelegationPolicy ??
 							settings.delegationPolicy)
 						: orchestration?.delegationPolicy.policy,
-				effectiveLimits: record.role === "root" ? undefined : orchestration?.limits,
+				effectiveLimits:
+					record.role === "root" || !orchestration
+						? undefined
+						: retireSubagentExecutionLimits(orchestration.limits),
 				stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 				usage,
 				attention,
@@ -4765,8 +5136,8 @@ export class AlphaProvider
 			activity,
 			capacity: { active, queued, terminal, limit: capacityLimit },
 			budgets: {
-				tokenLimit: firstFrozenOrchestration?.limits.rootTokenBudget ?? settings.rootTokenBudget,
-				costLimit: firstFrozenOrchestration?.limits.rootCostBudget ?? settings.rootCostBudget,
+				tokenLimit: null,
+				costLimit: null,
 			},
 			omittedNodeCount: allNodes.length - nodes.length,
 			omittedActivityCount: recentMailbox.totalCount - activity.length,
@@ -4804,16 +5175,11 @@ export class AlphaProvider
 			alwaysAllowTickets,
 			maxConcurrentTasks,
 			maxConcurrentSubagents,
-			subagentDelegationPolicy,
-			subagentMaxDepth,
-			subagentRoleTimeoutsMs,
-			subagentMaxInputTokens,
-			subagentMaxOutputTokens,
-			subagentRootTokenBudget,
-			subagentRootCostBudget,
-			subagentDefaultApiConfigId,
+			subagentsEnabled,
+			subagentDefaultModel,
+			subagentDefaultReasoningEffort,
+			subagentInterruptMessage,
 			subagentAgentTypes,
-			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext,
@@ -4821,8 +5187,6 @@ export class AlphaProvider
 			autoCondenseContextScope,
 			postTurnCondenseContextPercent,
 			soundEnabled,
-			ttsEnabled,
-			ttsSpeed,
 			enableCheckpoints,
 			checkpointTimeout,
 			soundVolume,
@@ -4863,6 +5227,7 @@ export class AlphaProvider
 			enterBehavior,
 			autoSteer,
 			customCondensingPrompt,
+			memorySettings,
 			codebaseIndexConfig,
 			codebaseIndexModels,
 			profileThresholds,
@@ -4920,13 +5285,6 @@ export class AlphaProvider
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents,
-			subagentDelegationPolicy,
-			subagentMaxDepth,
-			subagentRoleTimeoutsMs,
-			subagentMaxInputTokens,
-			subagentMaxOutputTokens,
-			subagentRootTokenBudget,
-			subagentRootCostBudget,
 		})
 		let managedAgentTree: ManagedAgentTreeProjection | undefined
 		if (currentTask) {
@@ -4964,16 +5322,11 @@ export class AlphaProvider
 			alwaysAllowTickets: alwaysAllowTickets ?? false,
 			maxConcurrentTasks: maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS,
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
-			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
-			subagentMaxDepth: orchestrationSettings.maxDepth,
-			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
-			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
-			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
-			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
-			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
-			subagentDefaultApiConfigId,
+			subagentsEnabled: subagentsEnabled ?? true,
+			subagentDefaultModel,
+			subagentDefaultReasoningEffort,
+			subagentInterruptMessage: subagentInterruptMessage ?? true,
 			subagentAgentTypes,
-			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
@@ -5004,8 +5357,6 @@ export class AlphaProvider
 			scheduledTasks: scheduledTaskState?.tasks ?? [],
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			soundEnabled: soundEnabled ?? false,
-			ttsEnabled: ttsEnabled ?? false,
-			ttsSpeed: ttsSpeed ?? 1.0,
 			enableCheckpoints: enableCheckpoints ?? true,
 			checkpointTimeout: checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			shouldShowAnnouncement:
@@ -5055,6 +5406,7 @@ export class AlphaProvider
 			enterBehavior: enterBehavior ?? "send",
 			autoSteer: autoSteer === true,
 			customCondensingPrompt,
+			memorySettings: memorySettings ?? DEFAULT_MEMORY_SETTINGS,
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: codebaseIndexConfig?.codebaseIndexEnabled ?? false,
@@ -5125,13 +5477,6 @@ export class AlphaProvider
 		const approval = this.projectApprovalSettings(stateValues)
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
-			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
-			subagentMaxDepth: stateValues.subagentMaxDepth,
-			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
-			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
-			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
-			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		})
 
 		// Return the same structure as before.
@@ -5139,6 +5484,7 @@ export class AlphaProvider
 			apiConfiguration: providerSettings,
 			lastShownAnnouncementId: stateValues.lastShownAnnouncementId,
 			customInstructions: stateValues.customInstructions,
+			memorySettings: stateValues.memorySettings ?? DEFAULT_MEMORY_SETTINGS,
 			apiModelId: stateValues.apiModelId,
 			approvalMode: approval.approvalMode,
 			approvalModeBypassAcknowledged: approval.approvalModeBypassAcknowledged,
@@ -5154,16 +5500,11 @@ export class AlphaProvider
 			alwaysAllowTickets: approval.alwaysAllowTickets,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
-			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
-			subagentMaxDepth: orchestrationSettings.maxDepth,
-			subagentRoleTimeoutsMs: orchestrationSettings.roleTimeoutsMs,
-			subagentMaxInputTokens: orchestrationSettings.maxInputTokens,
-			subagentMaxOutputTokens: orchestrationSettings.maxOutputTokens,
-			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
-			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
-			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
+			subagentsEnabled: stateValues.subagentsEnabled ?? true,
+			subagentDefaultModel: stateValues.subagentDefaultModel,
+			subagentDefaultReasoningEffort: stateValues.subagentDefaultReasoningEffort,
+			subagentInterruptMessage: stateValues.subagentInterruptMessage ?? true,
 			subagentAgentTypes: stateValues.subagentAgentTypes,
-			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
 			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
@@ -5182,8 +5523,6 @@ export class AlphaProvider
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
 			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
 			soundEnabled: stateValues.soundEnabled ?? false,
-			ttsEnabled: stateValues.ttsEnabled ?? false,
-			ttsSpeed: stateValues.ttsSpeed ?? 1.0,
 			enableCheckpoints: stateValues.enableCheckpoints ?? true,
 			checkpointTimeout: stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			soundVolume: stateValues.soundVolume,
@@ -5338,13 +5677,19 @@ export class AlphaProvider
 	 *
 	 * @param item The history item to update or add
 	 * @param options.broadcast Whether to broadcast the updated history to the webview (default: true)
+	 * @param options.preserveMode Retain durable mode unless this write owns an explicit user mode change.
 	 * @returns The updated task history array
 	 */
-	async updateTaskHistory(item: HistoryItem, options: { broadcast?: boolean } = {}): Promise<HistoryItem[]> {
-		const { broadcast = true } = options
+	async updateTaskHistory(
+		item: HistoryItem,
+		options: { broadcast?: boolean; preserveMode?: boolean } = {},
+	): Promise<HistoryItem[]> {
+		const { broadcast = true, preserveMode = true } = options
 		const previousItem = this.taskHistoryStore.get(item.id)
 
-		const history = await this.taskHistoryStore.upsert(item)
+		const history = preserveMode
+			? await this.taskHistoryStore.upsert(item, { preserveMode: true })
+			: await this.taskHistoryStore.upsert(item)
 		this.recentTasksCache = undefined
 
 		// Broadcast the updated history to the webview if requested.
@@ -5454,7 +5799,9 @@ export class AlphaProvider
 	}
 
 	public async setValue<K extends keyof AlphaCodeSettings>(key: K, value: AlphaCodeSettings[K]) {
+		if (key === "memorySettings") this.memorySettingsSnapshot ??= this.getMemorySettings()
 		await this.contextProxy.setValue(key, value)
+		if (key === "memorySettings") await this.refreshMemorySettings()
 		if (key === "maxConcurrentTasks") {
 			this.setMaxConcurrentTasks(
 				(value as AlphaCodeSettings["maxConcurrentTasks"]) ?? DEFAULT_MAX_CONCURRENT_TASKS,
@@ -5472,7 +5819,10 @@ export class AlphaProvider
 
 	public async setValues(values: AlphaCodeSettings) {
 		if (values.mode !== undefined) assertPrimaryMode(values.mode)
+		const memoryChanged = Object.hasOwn(values, "memorySettings")
+		if (memoryChanged) this.memorySettingsSnapshot ??= this.getMemorySettings()
 		await this.contextProxy.setValues(values)
+		if (memoryChanged) await this.refreshMemorySettings()
 		if (values.maxConcurrentTasks !== undefined) {
 			this.setMaxConcurrentTasks(values.maxConcurrentTasks)
 		}
@@ -5492,6 +5842,7 @@ export class AlphaProvider
 		}
 
 		await this.contextProxy.resetAllState()
+		await this.refreshMemorySettings()
 		await this.providerSettingsManager.resetAllConfigs()
 		await this.customModesManager.resetCustomModes()
 		await this.removeTaskFromStack()
@@ -6007,6 +6358,7 @@ export class AlphaProvider
 			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
 		}
 
+		const taskApprovalMode = parent.getTaskApprovalMode()
 		const taskMode = await parent.getTaskMode()
 		const taskApiConfigName = await parent.getTaskApiConfigName()
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
@@ -6018,7 +6370,11 @@ export class AlphaProvider
 			workspacePath = worktree.workspacePath
 		}
 
-		let childCreated = false
+		// Independent roots outlive their launching editor; the sidebar owns host-lifetime execution.
+		const runtimeOwner =
+			this.getHostProviders().find((provider) => !provider._disposed && provider.renderContext === "sidebar") ??
+			this
+		let child: Task | undefined
 		try {
 			throwIfCancelled()
 			const { fakeAi, ...providerSettings } = parent.apiConfiguration
@@ -6028,8 +6384,9 @@ export class AlphaProvider
 			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
 			if (options?.model)
 				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
-			const child = await this.createTask(normalizedObjective, undefined, undefined, {
+			child = await runtimeOwner.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
+				startTask: false,
 				presentationModelCalls: parent.presentationModelCalls,
 				preserveExisting: true,
 				background: true,
@@ -6037,7 +6394,7 @@ export class AlphaProvider
 				historyWorkspacePath: parent.historyWorkspacePath,
 				taskMode,
 				taskApiConfigName,
-				taskApprovalMode: parent.getTaskApprovalMode(),
+				taskApprovalMode,
 				apiConfiguration,
 				reasoningPreference: structuredClone(parent.reasoningPreference),
 				subagentDelegationPolicy: structuredClone(parent.subagentDelegationPolicy),
@@ -6052,28 +6409,43 @@ export class AlphaProvider
 						}
 					: {}),
 			})
-			childCreated = true
 			if (options?.title || options?.model) {
-				const history = await this.ensureCrossTaskHistory(child)
-				if (options.model) await this.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
-				if (options.title) await this.renameTask(child.taskId, options.title.trim())
+				const history = await runtimeOwner.ensureCrossTaskHistory(child)
+				if (options.model)
+					await runtimeOwner.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
+				if (options.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
 			}
-			if (signal?.aborted) {
-				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled", {
-					notifyRecipient: false,
-				})
-				throwIfCancelled()
-			}
-			const record = await this.getCrossTaskRecord(this.taskHistoryStore.get(child.taskId), child, false)
-			if (signal?.aborted) {
-				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled", {
-					notifyRecipient: false,
-				})
-				throwIfCancelled()
-			}
+			throwIfCancelled()
+			const record = await runtimeOwner.getCrossTaskRecord(
+				runtimeOwner.taskHistoryStore.get(child.taskId),
+				child,
+				false,
+			)
+			throwIfCancelled()
+			// Keep the child provisional until every await needed for its receipt has
+			// succeeded. No model turn can run before the caller has a usable identity.
+			child.start()
 			return record
 		} catch (error) {
-			if (!childCreated) await worktree?.cleanup()
+			// Admission can reject after its own cleanup failed. Its registered
+			// handle still owns resources even when createTask did not return it.
+			const provisionalChild = child ?? this.getLiveTask(taskId)
+			try {
+				if (provisionalChild) {
+					await this.stopIndependentTask(
+						parent,
+						taskId,
+						"Task creation failed before returning its thread identity",
+						{ notifyRecipient: false, expectedTask: provisionalChild },
+					)
+				} else {
+					await worktree?.cleanup()
+				}
+			} catch (cleanupError) {
+				throw new AggregateError([error, cleanupError], `Failed to clean up provisional task ${taskId}`, {
+					cause: error,
+				})
+			}
 			throw error
 		}
 	}
@@ -6214,6 +6586,16 @@ export class AlphaProvider
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(caller)
 		this.throwIfThreadCancelled(signal)
+		if (
+			!isExplicitThreadForkRequest(
+				extractUserRequestText(
+					caller.apiConversationHistory,
+					caller.orchestrationParentTaskId ? undefined : caller.metadata?.task,
+				),
+			)
+		) {
+			throw new Error("Forking requires an explicit user request to fork or retain conversation history")
+		}
 		return this.taskSessions.runOwnershipOperation(`cross-task:${sourceTaskId}`, async () => {
 			const owner = this.getTaskOwner(sourceTaskId) ?? this
 			const source = await owner.getDirectCrossTask(caller, sourceTaskId, true)
@@ -6574,6 +6956,16 @@ export class AlphaProvider
 		})
 	}
 
+	private async serializeIndependentCompletionDelivery(
+		taskId: string,
+		operation: () => Promise<void>,
+	): Promise<void> {
+		await this.taskSessions.runOwnershipOperation(`independent-delivery:${taskId}`, async () => {
+			await this.taskHistoryStore.invalidate?.(taskId)
+			await operation()
+		})
+	}
+
 	private getIndependentCompletionId(taskId: string, timestamp: number): string {
 		return `completion:${crypto.createHash("sha256").update(`${taskId}:${timestamp}`).digest("hex")}`
 	}
@@ -6641,7 +7033,7 @@ export class AlphaProvider
 		const owner = this.getTaskOwner(child.taskId)
 		if (owner && owner !== this) return owner.notifyIndependentTaskCompletion(child, parentWasWaiting, completion)
 		await this.taskHistoryStoreReady
-		await this.serializeIndependentCompletion(child.taskId, () =>
+		await this.serializeIndependentCompletionDelivery(child.taskId, () =>
 			this.deliverIndependentCompletion(child.taskId, completion, parentWasWaiting),
 		)
 	}
@@ -6652,100 +7044,102 @@ export class AlphaProvider
 		completion: { ts: number; text: string },
 		parentWasWaiting = false,
 	): Promise<void> {
-		let history = this.taskHistoryStore.get(taskId)
-		if (
-			!history?.orchestrationParentTaskId ||
-			history.orchestrationNotifyCompletion === false ||
-			history.taskKind === "subagent"
-		)
-			return
-		let receipts = history.orchestrationCompletionNotifications ?? []
-		let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
-		if (receipt?.deliveredAt !== undefined) return
-		if (!receipt) {
-			// Only settled receipts may be evicted. Full pending outboxes reject admission.
-			if (receipts.length >= 100) {
-				const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
-				if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
-				receipts = receipts.filter((_, index) => index !== settled)
-			}
-			receipt = {
-				id: this.getIndependentCompletionId(taskId, completion.ts),
-				turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
-				completionMessageTs: completion.ts,
-				createdAt: Date.now(),
-				deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
-			}
-			receipts = [...receipts, receipt]
-			await this.updateTaskHistory(
-				{ ...history, orchestrationCompletionNotifications: receipts },
-				{ broadcast: false },
+		let delivery:
+			| { parentId: string; receiptId: string; deliveredVia: "wait" | "inbox"; enqueue: boolean }
+			| undefined
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (
+				!history?.orchestrationParentTaskId ||
+				history.orchestrationNotifyCompletion === false ||
+				history.taskKind === "subagent"
 			)
-		}
-
-		const parentId = history.orchestrationParentTaskId
-		const parent = this.getLiveTask(parentId)
-		const receiptId = receipt.id
-		if (receipt.deliveredVia === "wait") {
-			// Only the canonical saved transcript proves consumption; an in-memory Promise does not.
-			const savedHistory = await readApiMessages({
-				taskId: parentId,
-				globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-			})
-			if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
-				if (parent && !parent.abort && !parent.isCompleted()) return
-				// A host restart or terminated parent cannot finish that old wait. Transfer its
-				// reserved identity to the inbox before delivering, preserving exactly-once replay.
-				const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
-				receipt = transferredReceipt
-				receipts = receipts.map((item) => (item.id === receiptId ? transferredReceipt : item))
+				return
+			let receipts = history.orchestrationCompletionNotifications ?? []
+			let receipt = receipts.find((item) => item.completionMessageTs === completion.ts)
+			if (receipt?.deliveredAt !== undefined) return
+			if (!receipt) {
+				// Only settled receipts may be evicted; pending outboxes remain bounded.
+				if (receipts.length >= 100) {
+					const settled = receipts.findIndex((item) => item.deliveredAt !== undefined)
+					if (settled < 0) throw new Error(`Task ${taskId} has 100 undelivered completion notifications`)
+					receipts = receipts.filter((_, index) => index !== settled)
+				}
+				receipt = {
+					id: this.getIndependentCompletionId(taskId, completion.ts),
+					turnId: this.getAgentLifecycleSnapshot(taskId)?.turnId ?? `legacy:${completion.ts}`,
+					completionMessageTs: completion.ts,
+					createdAt: Date.now(),
+					deliveredVia: parentWasWaiting || this.independentTaskWaiters.has(taskId) ? "wait" : "inbox",
+				}
+				receipts = [...receipts, receipt]
 				await this.updateTaskHistory(
 					{ ...history, orchestrationCompletionNotifications: receipts },
 					{ broadcast: false },
 				)
 			}
-		}
-
-		if (receipt.deliveredVia !== "wait") {
-			if (parent && parent.taskKind !== "primary")
-				throw new Error("The completion recipient is not a primary task")
-			const apiHistory =
-				parent?.apiConversationHistory ??
-				(await readApiMessages({
+			const parentId = history.orchestrationParentTaskId
+			const parent = this.getLiveTask(parentId)
+			if (receipt.deliveredVia === "wait") {
+				// Only the saved transcript proves consumption of a successful wait result.
+				const savedHistory = await readApiMessages({
 					taskId: parentId,
 					globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-				}))
-			// A failed receipt write after transcript commit must not append or start another turn.
-			if (!apiHistory.some((message) => message.agent_message_id === receipt.id)) {
-				const message = {
-					id: receipt.id,
-					senderTaskId: taskId,
-					text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
-				}
-				if (parent) {
-					await parent.receiveAgentMessage(message)
-					if (parent.isCompleted())
-						await parent.resumeCompletedTaskFollowup(
-							"Continue with the pending agent messages.",
-							[],
-							"agent",
-						)
-				} else {
-					await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
+				})
+				if (!this.hasIndependentWaitReceipt(savedHistory, receipt.id, taskId)) {
+					if (parent && !parent.abort && !parent.isCompleted()) return
+					const transferredReceipt = { ...receipt, deliveredVia: "inbox" as const }
+					receipt = transferredReceipt
+					receipts = receipts.map((item) => (item.id === transferredReceipt.id ? transferredReceipt : item))
+					await this.updateTaskHistory(
+						{ ...history, orchestrationCompletionNotifications: receipts },
+						{ broadcast: false },
+					)
 				}
 			}
+			let enqueue = false
+			if (receipt.deliveredVia !== "wait") {
+				if (parent && parent.taskKind !== "primary")
+					throw new Error("The completion recipient is not a primary task")
+				const apiHistory =
+					parent?.apiConversationHistory ??
+					(await readApiMessages({
+						taskId: parentId,
+						globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
+					}))
+				const receiptId = receipt.id
+				// Retrying a failed receipt write must not append committed input again.
+				enqueue = !apiHistory.some((message) => message.agent_message_id === receiptId)
+			}
+			delivery = { parentId, receiptId: receipt.id, deliveredVia: receipt.deliveredVia ?? "inbox", enqueue }
+		})
+		if (!delivery) return
+		const { parentId, receiptId, deliveredVia, enqueue } = delivery
+		// Recipient append/resume may itself finalize older wait receipts. Never hold
+		// the child's receipt-write fence across that callback or its mailbox lock.
+		if (enqueue) {
+			const message = {
+				id: receiptId,
+				senderTaskId: taskId,
+				text: completion.text ? `Completed.\n${completion.text}` : "Completed.",
+			}
+			if (this.getLiveTask(parentId)) await this.deliverIndependentTaskMessage(parentId, message)
+			else await new AgentMessageInbox(parentId, this.contextProxy.globalStorageUri.fsPath).receive(message)
 		}
-		history = this.taskHistoryStore.get(taskId) ?? history
-		const deliveredVia = receipt.deliveredVia ?? "inbox"
-		await this.updateTaskHistory(
-			{
-				...history,
-				orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? receipts).map(
-					(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
-				),
-			},
-			{ broadcast: false },
-		)
+		await this.serializeIndependentCompletion(taskId, async () => {
+			const history = this.taskHistoryStore.get(taskId)
+			if (history?.orchestrationParentTaskId !== parentId)
+				throw new Error("Completion recipient changed during delivery")
+			await this.updateTaskHistory(
+				{
+					...history,
+					orchestrationCompletionNotifications: (history.orchestrationCompletionNotifications ?? []).map(
+						(item) => (item.id === receiptId ? { ...item, deliveredAt: Date.now(), deliveredVia } : item),
+					),
+				},
+				{ broadcast: false },
+			)
+		})
 	}
 
 	public retryIndependentTaskCompletionsForParent(parentId: string): void {
@@ -6857,7 +7251,7 @@ export class AlphaProvider
 	}
 
 	private async reconcileIndependentTaskCompletion(taskId: string): Promise<void> {
-		await this.serializeIndependentCompletion(taskId, async () => {
+		await this.serializeIndependentCompletionDelivery(taskId, async () => {
 			const current = this.taskHistoryStore.get(taskId)
 			if (!current?.orchestrationParentTaskId || current.orchestrationNotifyCompletion === false) return
 			const messages = await readTaskMessages({
@@ -6924,15 +7318,32 @@ export class AlphaProvider
 			}
 			if (options?.model) await owner.setCrossTaskModel(target, options.model)
 			this.throwIfThreadCancelled(options?.signal)
-			await target.receiveAgentMessage(input)
-			if (target.isCompleted()) {
-				await target.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
-				return { task_id: resolvedTargetTaskId, status: "resumed" }
-			}
-			// Messages remain passive at approvals, structured questions, and other
-			// human input boundaries. They cannot answer or approve on the user's behalf.
-			return { task_id: resolvedTargetTaskId, status: "buffered" }
+			return owner.admitIndependentTaskMessage(target, input)
 		})
+	}
+
+	private async deliverIndependentTaskMessage(
+		taskId: string,
+		message: AgentMessage,
+	): Promise<{ task_id: string; status: string }> {
+		return this.taskSessions.runOwnershipOperation(`cross-task:${taskId}`, async () => {
+			const owner = this.getTaskOwner(taskId) ?? this
+			const target = owner.getLiveTask(taskId)
+			if (!target || target.taskKind !== "primary") throw new Error("The recipient task is not live")
+			return owner.admitIndependentTaskMessage(target, message)
+		})
+	}
+
+	/** Called under the same recipient fence for explicit sends and automatic completion input. */
+	private async admitIndependentTaskMessage(
+		target: Task,
+		message: AgentMessage,
+	): Promise<{ task_id: string; status: string }> {
+		target.markIndependentAgentMessagesPending()
+		await target.receiveAgentMessage(message)
+		const resumed = await target.resumeIndependentAgentMessages()
+		// Mail cannot answer an approval or a human question; its intent survives lifecycle settlement.
+		return { task_id: target.taskId, status: resumed ? "resumed" : "buffered" }
 	}
 
 	public async steerIndependentTask(
@@ -6960,7 +7371,7 @@ export class AlphaProvider
 		parent: Task,
 		taskId: string,
 		reason?: string,
-		options?: { notifyRecipient?: boolean },
+		options?: { notifyRecipient?: boolean; expectedTask?: Task },
 	): Promise<{ task_id: string; status: string }> {
 		this.assertCrossTaskRoot(parent)
 		return this.taskSessions.runOwnershipOperation(`cross-task:${taskId}`, async () => {
@@ -6968,6 +7379,7 @@ export class AlphaProvider
 			return owner.stopIndependentTaskUnderControl(parent, taskId, {
 				reason,
 				notifyRecipient: options?.notifyRecipient !== false,
+				...(options?.expectedTask ? { expectedTask: options.expectedTask } : {}),
 			})
 		})
 	}
@@ -6975,28 +7387,40 @@ export class AlphaProvider
 	private async stopIndependentTaskUnderControl(
 		parent: Task,
 		taskId: string,
-		options: { reason?: string; notifyRecipient?: boolean } = {},
+		options: { reason?: string; notifyRecipient?: boolean; expectedTask?: Task } = {},
 	): Promise<{ task_id: string; status: string }> {
 		const { history, task } = await this.getDirectCrossTask(parent, taskId)
+		if (options.expectedTask && task && task !== options.expectedTask) {
+			throw new Error(`Task ${taskId} runtime changed before provisional cleanup`)
+		}
 		if (!task) {
+			if (options.expectedTask) return { task_id: taskId, status: "already_terminal" }
 			this.assertSavedThreadControlAllowed(history, task, "stopping")
 			return { task_id: taskId, status: "already_terminal" }
 		}
-		if (this.isCrossTaskTerminal(this.getCrossTaskLifecycle(history, task))) {
+		if (!options.expectedTask && this.isCrossTaskTerminal(this.getCrossTaskLifecycle(history, task))) {
 			return { task_id: taskId, status: "already_terminal" }
 		}
-		if (task.abort) return { task_id: taskId, status: "stopping" }
+		if (!options.expectedTask && task.abort) return { task_id: taskId, status: "stopping" }
 		if (options.notifyRecipient) await task.recordAgentStopRequest(parent.taskId, options.reason)
-		await this.agentControlStoreReady
-		if (this.agentControlStore)
-			await this.cancelManagedTaskDescendants(
-				taskId,
-				this.getAgentControlRootTaskId(task),
-				`Managed descendants cancelled because thread ${taskId} stopped`,
-			)
+		// A provisional task was admitted with startTask:false and owns no child
+		// runs. Its exact runtime still needs cleanup when an earlier abort failed.
+		if (!options.expectedTask) {
+			await this.agentControlStoreReady
+			if (this.agentControlStore)
+				await this.cancelManagedTaskDescendants(
+					taskId,
+					this.getAgentControlRootTaskId(task),
+					`Managed descendants cancelled because thread ${taskId} stopped`,
+				)
+		}
 		// cancelTask rehydrates cancelled tasks so a user can resume them. An explicit
 		// orchestration stop must leave the child closed instead of restarting it.
-		await this.removeTaskFromStack({ taskId, requireAbortSuccess: true })
+		await this.removeTaskFromStack({
+			taskId,
+			requireAbortSuccess: true,
+			...(options.expectedTask ? { expectedTask: options.expectedTask } : {}),
+		})
 		await this.taskLifecycleHistoryWrites.get(taskId)
 		const stoppedHistory = this.taskHistoryStore.get(taskId)
 		if (stoppedHistory?.status === "completed" || stoppedHistory?.status === "failed") {
@@ -7615,13 +8039,6 @@ export class AlphaProvider
 		const experiments = stateValues.experiments ?? experimentDefault
 		const currentSubagentDelegationPolicy = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
-			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
-			subagentMaxDepth: stateValues.subagentMaxDepth,
-			subagentRoleTimeoutsMs: stateValues.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: stateValues.subagentMaxInputTokens,
-			subagentMaxOutputTokens: stateValues.subagentMaxOutputTokens,
-			subagentRootTokenBudget: stateValues.subagentRootTokenBudget,
-			subagentRootCostBudget: stateValues.subagentRootCostBudget,
 		}).delegationPolicy
 		let apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
@@ -7642,13 +8059,14 @@ export class AlphaProvider
 		}
 		assertSupportedApiProvider(apiConfiguration.apiProvider)
 
-		if (!parentTask && options.preserveExisting && !options.background) {
+		const preserveExisting = options.preserveExisting !== false
+		if (!parentTask && preserveExisting && !options.background) {
 			await this.finalizeActiveCompletionCandidate()
 			this.assertTaskAdmissionOpen()
 		}
 
-		// Single-open-task invariant: always enforce for user-initiated top-level tasks
-		if (!parentTask && !options.preserveExisting) await this.removeTaskFromStack()
+		// New roots preserve existing runtimes; replacement requires an explicit compatibility option.
+		if (!parentTask && !preserveExisting) await this.removeTaskFromStack()
 		this.assertTaskAdmissionOpen()
 
 		const {
@@ -8260,6 +8678,11 @@ export class AlphaProvider
 			)
 		}
 		const invocation = parent.getSubagentInvocationContext?.()
+		const parentReasoningPreference: TaskReasoningPreference = structuredClone(
+			invocation
+				? (invocation.reasoningPreference ?? { kind: "default" })
+				: (parent.reasoningPreference ?? { kind: "default" }),
+		)
 		const invokingApprovalMode = parent.getStepApprovalMode?.()
 		const parentHistory =
 			invocation?.history ?? structuredClone(getEffectiveApiHistory(parent.apiConversationHistory))
@@ -8269,13 +8692,23 @@ export class AlphaProvider
 		}
 		const parentMode = invocation?.mode ?? (await parent.getTaskMode())
 		const parentAuthority = this.getParentDelegationAuthority(parent)
+		if (parentMode !== "code") {
+			parentAuthority.policy = {
+				...parentAuthority.policy,
+				mutate: false,
+				network: false,
+				externalSideEffects: false,
+			}
+		}
 		const settings = this.contextProxy.getValues()
 		// Route preferences belong to this preparation, including time spent awaiting Worker scope validation.
-		const defaultProfileId = settings.subagentDefaultApiConfigId
-		const profileByRole = { ...settings.subagentApiConfigByRole }
+		if (settings.subagentsEnabled === false) throw new Error("Subagents are disabled in Agents settings")
+		const defaultModel = settings.subagentDefaultModel
+		const defaultReasoningEffort = settings.subagentDefaultReasoningEffort ?? undefined
 		const spawnRequest: SpawnAgentRequest | undefined = Array.isArray(drafts)
 			? undefined
 			: normalizeSpawnAgentRequest(drafts)
+		const authorityModel = spawnRequest?.source === "codex-v2" ? ("parent" as const) : undefined
 		const configuredTypes = subagentAgentTypesSchema.parse(settings.subagentAgentTypes ?? {})
 		const typeName = spawnRequest?.source === "codex-v2" ? (spawnRequest.agent_type ?? "default") : undefined
 		const typeDefinition =
@@ -8327,7 +8760,7 @@ export class AlphaProvider
 				"Plan mode permits only read-only Explore and Review sub-agents; switch to Code for Worker edits",
 			)
 		}
-		assertSubagentTaskAuthorities(normalizedDrafts)
+		if (!authorityModel) assertSubagentTaskAuthorities(normalizedDrafts)
 		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
 		const liveApprovalMode = migrateApprovalMode(settings)
 		const parentApprovalMode = invokingApprovalMode ?? liveApprovalMode
@@ -8354,18 +8787,16 @@ export class AlphaProvider
 		const orchestrationSettings = this.getResolvedSubagentOrchestrationSettings()
 		const controlRoot = await this.ensureAgentControlRoot(parent)
 		const orchestrationBases = normalizedDrafts.map((draft) =>
-			this.getSubagentAncestryAndLimits(parent, draft.agent_kind, orchestrationSettings),
+			this.getSubagentAncestryAndLimits(parent, draft.agent_kind, orchestrationSettings, authorityModel),
 		)
 		const provisionalDelegationPolicies = normalizedDrafts.map(() =>
 			resolveSubagentDelegationPolicy({
-				settingsPolicy: settings.subagentDelegationPolicy,
+				settingsPolicy: undefined,
 				frozenTaskPolicy:
 					parent.subagentContextManifest?.orchestration?.delegationPolicy.policy ??
 					parent.subagentDelegationPolicy,
-				// Settings may immediately narrow an already-open proactive task.
-				// They may never widen a task frozen as explicit-only.
-				requestedChildPolicy:
-					settings.subagentDelegationPolicy === "explicit-only" ? "explicit-only" : undefined,
+				// Retired proactive preferences cannot widen captured authority.
+				requestedChildPolicy: "explicit-only",
 				taskExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled === true,
 			}),
 		)
@@ -8376,7 +8807,7 @@ export class AlphaProvider
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
 		const approvalMode = inferApprovalModeFromPolicy(childAutoApprovalPolicy)
-		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible
+		const requiresExplicitApproval = !authorityModel && (approvalMode === "ask" || !autoEligible)
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
 			delegationPolicy:
@@ -8386,35 +8817,17 @@ export class AlphaProvider
 						})
 					: provisionalDelegationPolicies[index],
 		}))
-		const requestedPolicies = normalizedDrafts.map((draft, index) =>
-			this.getRequestedSubagentPolicy(
-				draft.agent_kind,
-				orchestrations[index].ancestry.depth < orchestrations[index].ancestry.maxDepth,
-			),
+		const requestedPolicies = normalizedDrafts.map((draft) =>
+			authorityModel ? { ...parentAuthority.policy } : this.getRequestedSubagentPolicy(draft.agent_kind, true),
 		)
 		const effectivePolicies = normalizedDrafts.map((draft, index) =>
-			resolveInternalTaskPolicy(parentAuthority.policy, requestedPolicies[index], draft.agent_kind),
+			resolveInternalTaskPolicy(
+				parentAuthority.policy,
+				requestedPolicies[index],
+				draft.agent_kind,
+				authorityModel,
+			),
 		)
-		const exhaustedRootBudget = this.getSubagentRootBudgetExhaustion(controlRoot.rootTaskId)
-		if (exhaustedRootBudget) {
-			throw new Error(`${exhaustedRootBudget}: this orchestration root has exhausted its frozen budget`)
-		}
-		const rootUsageAtPrepare = this.getSubagentRootUsage(controlRoot.rootTaskId)
-		const rootTokenBudget = orchestrations[0].limits.rootTokenBudget
-		const rootCostBudget = orchestrations[0].limits.rootCostBudget
-		if (rootTokenBudget !== null && rootUsageAtPrepare.tokens >= rootTokenBudget) {
-			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_token_budget")
-			throw new Error(
-				`root_token_budget: root usage ${rootUsageAtPrepare.tokens} has exhausted the frozen budget ${rootTokenBudget}`,
-			)
-		}
-		if (rootCostBudget !== null && rootUsageAtPrepare.cost >= rootCostBudget) {
-			this.exhaustedSubagentRootBudgets.set(controlRoot.rootTaskId, "root_cost_budget")
-			throw new Error(
-				`root_cost_budget: root usage ${rootUsageAtPrepare.cost} has exhausted the frozen budget ${rootCostBudget}`,
-			)
-		}
-
 		if (normalizedDrafts.filter((draft) => draft.agent_kind === "worker").length > 1) {
 			throw new Error("A delegation batch can contain at most one worker")
 		}
@@ -8482,7 +8895,11 @@ export class AlphaProvider
 			),
 		)
 		const workerWriteScopes = normalizedDrafts.map((draft, index) =>
-			draft.agent_kind === "worker" ? [...validatedScopes[index]!.writeScope] : undefined,
+			draft.agent_kind === "worker"
+				? [...validatedScopes[index]!.writeScope]
+				: authorityModel && effectivePolicies[index].mutate
+					? [...(inheritedWriteScope ?? ["."])]
+					: undefined,
 		)
 
 		const createdAt = Date.now()
@@ -8496,18 +8913,22 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
-						defaultProfileId,
-						profileByRole: typeDefinition?.apiConfigId
-							? { ...profileByRole, [draft.agent_kind]: typeDefinition.apiConfigId }
-							: profileByRole,
+						parentReasoningPreference,
 						profileLoader: this.providerSettingsManager,
+						defaultModelId: defaultModel,
+						defaultReasoningEffort,
+						agentModelId: typeDefinition?.model,
+						agentReasoningEffort: typeDefinition?.reasoningEffort,
+						resolveModelDefaultReasoningEffort: async (configuration) => {
+							const state = await this.resolveReasoningCapabilities(configuration, { kind: "default" })
+							return state.effective.kind === "effort" ? state.effective.effort : undefined
+						},
 						...(spawnRequest?.source === "codex-v2"
 							? {
-									requestedModelId: spawnRequest.model ?? typeDefinition?.model,
-									requestedReasoningEffort:
-										spawnRequest.reasoning_effort ?? typeDefinition?.reasoningEffort,
+									requestedModelId: spawnRequest.model,
+									requestedReasoningEffort: spawnRequest.reasoning_effort,
 								}
-							: {}),
+							: { requestedModelId: defaultModel, requestedReasoningEffort: defaultReasoningEffort }),
 					}),
 				),
 			),
@@ -8567,9 +8988,15 @@ export class AlphaProvider
 				const role = draft.agent_kind
 				const effectivePolicy = effectivePolicies[index]
 				const validatedScope = validatedScopes[index]
-				const allowedTools = [
-					...getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate),
-				]
+				const allowedTools = authorityModel
+					? getInheritedSubagentToolNames(
+							invocation?.allowedTools ??
+								parent.getTaskAllowedToolNames?.() ??
+								getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate),
+							effectivePolicy,
+							inheritedSkills.length > 0,
+						)
+					: [...getSubagentAllowedToolNames(role, inheritedSkills.length > 0, effectivePolicy.delegate)]
 				return captureSubagentContext({
 					parentTaskId: parent.taskId,
 					capturedAt: createdAt,
@@ -8591,13 +9018,16 @@ export class AlphaProvider
 					orchestration: orchestrations[index],
 					runtimePolicy: {
 						role,
+						...(authorityModel ? { authorityModel, mode: parentMode as "code" | "architect" } : {}),
 						...effectivePolicy,
 						allowedTools,
 						workspaceRoots: [parent.cwd],
-						...(draft.agent_kind === "worker"
+						...(workerWriteScopes[index]
 							? {
 									writeScope: workerWriteScopes[index]!,
-									fileWriteScope: [...validatedScope!.fileWriteScope],
+									fileWriteScope: [
+										...(validatedScope?.fileWriteScope ?? parentAuthority.fileAllowedPaths ?? []),
+									],
 								}
 							: {}),
 						autoApproval: childAutoApprovalPolicy,
@@ -8628,6 +9058,7 @@ export class AlphaProvider
 					depth: orchestration.ancestry.depth,
 					objective: draft.objective,
 					agentKind: draft.agent_kind,
+					authorityModel,
 					expectedOutput: draft.expected_output,
 					parentPolicy: parentAuthority.policy,
 					requestedPolicy: requestedPolicies[index],
@@ -8705,7 +9136,12 @@ export class AlphaProvider
 				usage: { durationMs: 0 },
 			})),
 		}))
-		const prepared = { group, envelopes, requiresExplicitApproval }
+		const prepared = {
+			group,
+			envelopes,
+			requiresExplicitApproval,
+			...(authorityModel ? { inheritsParentPermissions: true } : {}),
+		}
 		this.preparedSubagentGroups.set(groupId, prepared)
 		this.taskSessions.setReservedTaskIds(
 			groupId,
@@ -8813,6 +9249,7 @@ export class AlphaProvider
 		parent: Task,
 		prepared: PreparedSubagentGroup,
 		parentSignal: AbortSignal,
+		requestSignal?: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
 		const parentLifetimeSignal = parent.getTaskLifetimeCancellationSignal()
 		if (this.preparedSubagentGroups.get(prepared.group.groupId) !== prepared) {
@@ -8833,6 +9270,7 @@ export class AlphaProvider
 			parentSignal,
 			parentLifetimeSignal,
 			finalizationBinding.admissionSignal,
+			...(requestSignal ? [requestSignal] : []),
 		])
 		const controlRecords = new Map<string, AgentRecord>()
 		let admissionEntered = false
@@ -8852,11 +9290,12 @@ export class AlphaProvider
 				return await this.startPreparedSubagentRun(
 					parent,
 					prepared,
-					admissionSignal,
+					parentSignal,
 					controlRecord,
 					false,
 					parentLifetimeSignal,
 					finalizationBinding,
+					admissionSignal,
 				)
 			} catch (error) {
 				if (
@@ -8939,21 +9378,25 @@ export class AlphaProvider
 			parent,
 			parentLifetimeSignal,
 		),
+		requestSignal?: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
 		// The record is published before invoking this asynchronous admission producer.
-		const admissionSignal = AbortSignal.any([
+		const lifetimeSignal = AbortSignal.any([
 			parentSignal,
 			parentLifetimeSignal,
 			finalizationBinding.admissionSignal,
 		])
+		// The invoking step can stop admission, but accepted children remain owned
+		// by the parent task's lifetime rather than its current model request.
+		const admissionSignal = requestSignal ? AbortSignal.any([lifetimeSignal, requestSignal]) : lifetimeSignal
 		return this.startPreparedSubagentRunUnderFinalization(
 			parent,
 			prepared,
-			admissionSignal,
+			lifetimeSignal,
 			controlRecord,
 			isFollowup,
-			parentLifetimeSignal,
 			finalizationBinding,
+			admissionSignal,
 		).catch(async (error) => {
 			if (
 				finalizationBinding.isAdmitting() &&
@@ -8983,10 +9426,10 @@ export class AlphaProvider
 		parentSignal: AbortSignal,
 		controlRecord: AgentRecord,
 		isFollowup: boolean,
-		parentLifetimeSignal: AbortSignal,
 		finalizationBinding: SubagentFinalizationBinding,
+		admissionSignal: AbortSignal,
 	): Promise<SubagentSpawnHandle> {
-		this.assertSubagentAdmissionSignals([parentSignal, parentLifetimeSignal, finalizationBinding.admissionSignal])
+		this.assertSubagentAdmissionSignals([admissionSignal])
 		const envelope = prepared.envelopes[0]
 		const agent = prepared.group.agents[0]
 		const controller = new AbortController()
@@ -9038,11 +9481,7 @@ export class AlphaProvider
 
 		try {
 			await this.attachSubagentGroupToParentHistory(parent, prepared)
-			this.assertSubagentAdmissionSignals([
-				parentSignal,
-				parentLifetimeSignal,
-				finalizationBinding.admissionSignal,
-			])
+			this.assertSubagentAdmissionSignals([admissionSignal])
 			const currentControl = this.agentControlStore.getAgent(controlRecord.taskId, controlRecord.rootTaskId)
 			if (
 				controlRecord.pendingFollowupEventId &&
@@ -9101,14 +9540,7 @@ export class AlphaProvider
 		} catch (error) {
 			parentSignal.removeEventListener("abort", cancelFromParent)
 			if (!controller.signal.aborted) controller.abort(error)
-			if (
-				!launched &&
-				this.isExpectedSubagentAdmissionCancellation(error, [
-					parentSignal,
-					parentLifetimeSignal,
-					finalizationBinding.admissionSignal,
-				])
-			) {
+			if (!launched && this.isExpectedSubagentAdmissionCancellation(error, [admissionSignal])) {
 				unsubscribe()
 				if (this.subagentGroupControllers.get(prepared.group.groupId) === controller) {
 					this.subagentGroupControllers.delete(prepared.group.groupId)
@@ -9858,17 +10290,42 @@ export class AlphaProvider
 		}
 	}
 
+	/** Shared-workspace peers settle effects in the nearest primary or isolated Worker owner. */
+	private getWorkspaceMutationOwner(task: Task): Task | undefined {
+		if (!requiresWorkspaceMutationReceipt(task)) return undefined
+		let owner = task
+		const visited = new Set<string>()
+		while (owner.taskKind === "subagent" && requiresWorkspaceMutationReceipt(owner)) {
+			if (visited.has(owner.taskId)) throw new Error("Shared-workspace mutation ancestry contains a cycle")
+			visited.add(owner.taskId)
+			const parentTaskId = owner.subagentContextManifest?.parentTaskId
+			const parent =
+				this.subagentDescriptors.get(owner.taskId)?.parent ??
+				owner.parentTask ??
+				(parentTaskId ? this.getLiveTask(parentTaskId) : undefined)
+			if (!parent || parent.taskId !== parentTaskId || !arePathsEqual(parent.cwd, owner.cwd)) {
+				throw new Error("Shared-workspace mutation has no matching parent workspace owner")
+			}
+			owner = parent
+		}
+		if (owner.taskKind !== "primary" && owner.subagentRole !== "worker") {
+			throw new Error("Shared-workspace mutation has no writable workspace owner")
+		}
+		return owner
+	}
+
 	/** Persist parent command outcomes and project resulting verification transitions. */
 	public async reservePrimaryMutation(parent: Task, token: string): Promise<void> {
-		if (parent.taskKind !== "primary") return
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner) return
 		const options: AgentControlTransactionOptions = {
 			signal: parent.getTaskLifetimeCancellationSignal(),
 			operation: "reserve-primary-mutation",
 		}
-		const root = await this.ensureAgentControlRoot(parent, options)
-		const workspacePath = await fs.realpath(parent.cwd)
+		const root = await this.ensureAgentControlRoot(owner, options)
+		const workspacePath = await fs.realpath(owner.cwd)
 		await this.agentControlStore.reservePrimaryMutation(
-			parent.taskId,
+			owner.taskId,
 			root.rootTaskId,
 			workspacePath,
 			token,
@@ -9877,14 +10334,10 @@ export class AlphaProvider
 	}
 
 	public async releasePrimaryMutation(parent: Task, token: string, observationIncomplete = false): Promise<void> {
-		if (parent.taskKind !== "primary") return
-		const root = await this.ensureAgentControlRoot(parent)
-		await this.agentControlStore.releasePrimaryMutation(
-			parent.taskId,
-			root.rootTaskId,
-			token,
-			observationIncomplete,
-		)
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner) return
+		const root = await this.ensureAgentControlRoot(owner)
+		await this.agentControlStore.releasePrimaryMutation(owner.taskId, root.rootTaskId, token, observationIncomplete)
 	}
 
 	public async recordPrimaryMutation(
@@ -9893,18 +10346,20 @@ export class AlphaProvider
 		scopeUnresolved = false,
 		reservationToken?: string,
 	): Promise<boolean> {
-		if (parent.taskKind !== "primary" || Object.keys(fileVersions).length === 0) return false
-		const root = await this.ensureAgentControlRoot(parent)
+		const owner = this.getWorkspaceMutationOwner(parent)
+		if (!owner || Object.keys(fileVersions).length === 0) return false
+		const root = await this.ensureAgentControlRoot(owner)
 		// Unknown-scope debt must survive a command removing its workspace. Prefer
 		// the admitted reservation identity; unresolved obligations cannot earn credit.
 		const workspacePath = scopeUnresolved
 			? (this.agentControlStore
-					.getVerificationObligations({ parentTaskId: parent.taskId, rootTaskId: root.rootTaskId })
-					.find((item) => item.origin === "primary")?.workspacePath ?? parent.cwd)
-			: await fs.realpath(parent.cwd)
+					.getVerificationObligations({ parentTaskId: owner.taskId, rootTaskId: root.rootTaskId })
+					.find((item) => item.origin === "primary")?.workspacePath ?? owner.cwd)
+			: await fs.realpath(owner.cwd)
 		const obligation = await this.agentControlStore.recordPrimaryMutation({
 			rootTaskId: root.rootTaskId,
-			parentTaskId: parent.taskId,
+			parentTaskId: owner.taskId,
+			...(owner !== parent ? { contributorTaskId: parent.taskId } : {}),
 			workspacePath,
 			fileVersions,
 			scopeUnresolved,
@@ -9912,7 +10367,7 @@ export class AlphaProvider
 		})
 		if (obligation && isBlockingParentVerification(obligation)) {
 			try {
-				await this.publishParentVerificationTransition(parent, obligation, root.rootTaskId)
+				await this.publishParentVerificationTransition(owner, obligation, root.rootTaskId)
 			} catch (error) {
 				// The receipt and reservation settlement above are already durable. Keep
 				// mailbox/UI projection best-effort so a presentation failure cannot be
@@ -10389,12 +10844,12 @@ export class AlphaProvider
 		const settings = this.getResolvedSubagentOrchestrationSettings()
 		const effectiveLimits =
 			frozen?.limits ?? createSubagentEffectiveLimits(settings, "worker", this.taskSessions.getMaxLiveTasks())
-		const { timeoutMs: _roleSpecificTimeout, ...limits } = structuredClone(effectiveLimits)
+		const { timeoutMs: _roleSpecificTimeout, ...limits } = retireSubagentExecutionLimits(effectiveLimits)
 
 		return subagentRootOrchestrationSummarySchema.parse({
 			source: frozen ? "frozen" : "configured",
 			delegationPolicy: frozen?.delegationPolicy.policy ?? settings.delegationPolicy,
-			maxDepth: frozen?.ancestry.maxDepth ?? settings.maxDepth,
+			maxDepth: null,
 			limits,
 		})
 	}
@@ -10425,12 +10880,12 @@ export class AlphaProvider
 			modelRouteId: record.snapshot?.modelRouteId,
 			usage: record.snapshot?.usage,
 			depth: orchestration?.ancestry.depth,
-			maxDepth: orchestration?.ancestry.maxDepth,
+			maxDepth: null,
 			delegationPolicy: orchestration?.delegationPolicy.policy,
 			delegationPolicyProvenance: orchestration?.delegationPolicy
 				? structuredClone(orchestration.delegationPolicy)
 				: undefined,
-			effectiveLimits: orchestration?.limits ? structuredClone(orchestration.limits) : undefined,
+			effectiveLimits: orchestration?.limits ? retireSubagentExecutionLimits(orchestration.limits) : undefined,
 			stopReason: record.terminalResult?.stopReason ?? record.snapshot?.stopReason,
 			requiresParentVerification:
 				parentVerification?.blocking || parentVerification?.status === "required"
@@ -10447,8 +10902,9 @@ export class AlphaProvider
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "assistant" || !Array.isArray(message.content)) continue
 			for (const block of message.content) {
-				if (block.type === "tool_use" && block.name === "wait_agent") {
-					waitToolCallIds.add(sanitizeToolUseId(block.id))
+				const callId = getToolCallId(block)
+				if (callId !== undefined && "name" in block && block.name === "wait_agent") {
+					waitToolCallIds.add(sanitizeToolUseId(callId))
 				}
 			}
 		}
@@ -10462,10 +10918,12 @@ export class AlphaProvider
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "user" || !Array.isArray(message.content)) continue
 			for (const block of message.content) {
+				const resultId = getToolResultId(block)
 				if (
 					block.type !== "tool_result" ||
 					block.is_error ||
-					!waitToolCallIds.has(sanitizeToolUseId(block.tool_use_id))
+					resultId === undefined ||
+					!waitToolCallIds.has(sanitizeToolUseId(resultId))
 				)
 					continue
 				const textParts =
@@ -10965,7 +11423,9 @@ export class AlphaProvider
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		const manifest =
 			this.subagentDescriptors.get(record.taskId)?.contextManifest ?? record.snapshot?.contextManifest
-		return manifest?.orchestration?.delegationPolicy.policy !== "proactive"
+		// An existing approved agent keeps its captured authority for follow-ups.
+		// Only legacy records that need an authorization migration require a fresh approval.
+		return !finalizedSubagentContextManifestSchema.safeParse(manifest).success
 	}
 
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
@@ -11280,24 +11740,6 @@ export class AlphaProvider
 			throw new Error(
 				`Not enough root-wide child capacity to resume ${record.path}; effective root child maximum: ${limits.maxConcurrentSubagents}.`,
 			)
-		}
-		const history = this.taskHistoryStore.get(record.taskId)
-		if ((history?.tokensIn ?? 0) >= limits.maxInputTokens) {
-			throw new Error(`input_token_limit: agent ${record.path} exhausted its frozen input token limit`)
-		}
-		if ((history?.tokensOut ?? 0) >= limits.maxOutputTokens) {
-			throw new Error(`output_token_limit: agent ${record.path} exhausted its frozen output token limit`)
-		}
-		const exhaustion = this.getSubagentRootBudgetExhaustion(record.rootTaskId)
-		if (exhaustion) throw new Error(`${exhaustion}: this orchestration root has exhausted its frozen budget`)
-		const rootUsage = this.getSubagentRootUsage(record.rootTaskId)
-		if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
-			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_token_budget")
-			throw new Error(`root_token_budget: this orchestration root has exhausted its frozen token budget`)
-		}
-		if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
-			this.exhaustedSubagentRootBudgets.set(record.rootTaskId, "root_cost_budget")
-			throw new Error(`root_cost_budget: this orchestration root has exhausted its frozen cost budget`)
 		}
 	}
 
@@ -11714,30 +12156,7 @@ export class AlphaProvider
 		const settings = this.contextProxy.getValues()
 		return resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: settings.maxConcurrentSubagents,
-			subagentDelegationPolicy: settings.subagentDelegationPolicy,
-			subagentMaxDepth: settings.subagentMaxDepth,
-			subagentRoleTimeoutsMs: settings.subagentRoleTimeoutsMs,
-			subagentMaxInputTokens: settings.subagentMaxInputTokens,
-			subagentMaxOutputTokens: settings.subagentMaxOutputTokens,
-			subagentRootTokenBudget: settings.subagentRootTokenBudget,
-			subagentRootCostBudget: settings.subagentRootCostBudget,
 		})
-	}
-
-	private getSubagentRootBudgetExhaustion(rootTaskId: string): "root_token_budget" | "root_cost_budget" | undefined {
-		const retained = this.exhaustedSubagentRootBudgets.get(rootTaskId)
-		if (retained) return retained
-		const persisted = [
-			...this.agentControlStore
-				.listAgents({ rootTaskId, includeRoot: false })
-				.map((record) => record.terminalResult?.stopReason ?? record.snapshot?.stopReason),
-			...this.agentControlStore.listClosedAgents(rootTaskId).map((record) => record.stopReason),
-		].find(
-			(reason): reason is "root_token_budget" | "root_cost_budget" =>
-				reason === "root_token_budget" || reason === "root_cost_budget",
-		)
-		if (persisted) this.exhaustedSubagentRootBudgets.set(rootTaskId, persisted)
-		return persisted
 	}
 
 	private getSubagentRootUsage(rootTaskId: string): { tokens: number; cost: number } {
@@ -11788,48 +12207,6 @@ export class AlphaProvider
 		}
 	}
 
-	private exhaustSubagentRootBudget(
-		rootTaskId: string,
-		currentTaskId: string,
-		stopReason: "root_token_budget" | "root_cost_budget",
-		message: string,
-	): void {
-		this.exhaustedSubagentRootBudgets.set(rootTaskId, stopReason)
-		const cancelled = new Set<string>([currentTaskId])
-		for (const prepared of this.preparedSubagentGroups.values()) {
-			for (const envelope of prepared.envelopes) {
-				if ((envelope.rootTaskId ?? envelope.parentTaskId) !== rootTaskId || cancelled.has(envelope.id))
-					continue
-				cancelled.add(envelope.id)
-				if (!this.asyncSubagentRunManager.cancel(envelope.id, message, stopReason)) {
-					this.boundedDelegationManager.cancel(envelope.id, message, stopReason)
-				}
-			}
-		}
-		for (const record of this.agentControlStore.listAgents({
-			rootTaskId,
-			includeRoot: false,
-			statuses: ["pending", "running", "cancelling"],
-		})) {
-			if (!cancelled.has(record.taskId)) {
-				cancelled.add(record.taskId)
-				if (!this.asyncSubagentRunManager.cancel(record.taskId, message, stopReason)) {
-					this.boundedDelegationManager.cancel(record.taskId, message, stopReason)
-				}
-			}
-			void this.agentControlStore
-				.appendEvent({
-					rootTaskId,
-					sender: rootTaskId,
-					recipient: record.taskId,
-					kind: "control",
-					name: "root_budget_exhausted",
-					payload: { stopReason, message },
-				})
-				.catch((error) => this.log(`Failed to persist root budget cancellation: ${String(error)}`))
-		}
-	}
-
 	private findFrozenRootOrchestration(rootTaskId: string): SubagentManifestOrchestration | undefined {
 		return (
 			this.agentControlStore
@@ -11854,37 +12231,32 @@ export class AlphaProvider
 		parent: Task,
 		role: "explore" | "review" | "worker",
 		settings: ResolvedSubagentOrchestrationSettings,
+		authorityModel?: "parent",
 	): Pick<SubagentManifestOrchestration, "ancestry" | "limits"> {
 		const parentOrchestration = parent.subagentContextManifest?.orchestration
 		if (parent.taskKind === "subagent") {
-			// Legacy children intentionally retain the original depth-one semantics,
-			// independent of any settings changed after they were created.
+			// Retain captured permission ceilings; nesting has no independent execution limit.
 			const parentDepth = parentOrchestration?.ancestry.depth ?? 1
-			const maxDepth = parentOrchestration?.ancestry.maxDepth ?? 1
+			const maxDepth = null
 			const depth = parentDepth + 1
-			if (depth > maxDepth) {
-				throw new Error(`depth_limit: maximum managed-agent depth ${maxDepth} has been reached`)
-			}
 			if (!parent.subagentContextManifest?.runtimePolicy.delegate) {
 				throw new Error("authority_denied: this managed agent was not granted delegation authority")
 			}
+			// Codex 970111f6 permits Explorer -> Worker ancestry; V2 still inherits captured policy and scope.
+			const inheritsWriteAuthority =
+				authorityModel === "parent" &&
+				parent.subagentContextManifest.runtimePolicy.authorityModel === "parent" &&
+				parent.subagentContextManifest.runtimePolicy.mutate
 			if (
 				role === "worker" &&
+				!inheritsWriteAuthority &&
 				(parent.subagentRole !== "worker" || parent.subagentContextManifest?.runtimePolicy.role !== "worker")
 			) {
 				throw new Error("authority_denied: only a managed Worker may grant a descendant Worker")
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings({
-				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
-			})
+			const legacySettings = resolveSubagentOrchestrationSettings()
 			const limits: SubagentEffectiveLimits = parentOrchestration?.limits
-				? {
-						...structuredClone(parentOrchestration.limits),
-						// A descendant may select a different role, but every role timeout
-						// comes from the root-frozen map rather than current settings.
-						timeoutMs: parentOrchestration.limits.roleTimeoutsMs[role],
-					}
+				? retireSubagentExecutionLimits(parentOrchestration.limits)
 				: createSubagentEffectiveLimits(
 						legacySettings,
 						role,
@@ -11903,17 +12275,14 @@ export class AlphaProvider
 
 		const frozenRootOrchestration = this.findFrozenRootOrchestration(parent.taskId)
 		const rootLimits: SubagentEffectiveLimits = frozenRootOrchestration
-			? {
-					...structuredClone(frozenRootOrchestration.limits),
-					timeoutMs: frozenRootOrchestration.limits.roleTimeoutsMs[role],
-				}
+			? retireSubagentExecutionLimits(frozenRootOrchestration.limits)
 			: createSubagentEffectiveLimits(settings, role, this.taskSessions.getMaxLiveTasks())
 		return {
 			ancestry: {
 				rootTaskId: parent.taskId,
 				parentTaskId: parent.taskId,
 				depth: 1,
-				maxDepth: frozenRootOrchestration?.ancestry.maxDepth ?? settings.maxDepth,
+				maxDepth: null,
 			},
 			limits: rootLimits,
 		}
@@ -12127,10 +12496,7 @@ export class AlphaProvider
 			if (record.parentTaskId !== record.rootTaskId || parent.taskId !== record.rootTaskId) {
 				throw new Error(`recovery_failed: nested legacy agent ${record.path} has no trustworthy ancestry`)
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings({
-				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
-			})
+			const legacySettings = resolveSubagentOrchestrationSettings()
 			const legacyDecision = finalizeSubagentDelegationPolicy(resolveSubagentDelegationPolicy({}), {
 				authorization: "group-approval",
 				groupApproved: true,
@@ -12140,7 +12506,7 @@ export class AlphaProvider
 					rootTaskId: record.rootTaskId,
 					parentTaskId: record.parentTaskId,
 					depth: 1,
-					maxDepth: 1,
+					maxDepth: null,
 				},
 				delegationPolicy: legacyDecision,
 				limits: createSubagentEffectiveLimits(legacySettings, agent.role, DEFAULT_MAX_CONCURRENT_TASKS),
@@ -12194,6 +12560,7 @@ export class AlphaProvider
 			depth: orchestration.ancestry.depth,
 			objective: record.objective,
 			agentKind: agent.role,
+			authorityModel: contextManifest.runtimePolicy.authorityModel,
 			expectedOutput: [instruction],
 			parentPolicy: parentAuthority.policy,
 			requestedPolicy: {
@@ -12207,7 +12574,7 @@ export class AlphaProvider
 			},
 			workspaceRoots,
 			parentWorkspaceRoots: parentAuthority.workspaceRoots,
-			allowedPaths: agent.role === "worker" ? agent.writeScope : undefined,
+			allowedPaths: capturedPolicy.writeScope ?? (agent.role === "worker" ? agent.writeScope : undefined),
 			parentAllowedPaths: parentAuthority.allowedPaths,
 			parentFileAllowedPaths: parentAuthority.fileAllowedPaths,
 			sharedWorkspace: agent.role !== "worker",
@@ -12833,6 +13200,7 @@ export class AlphaProvider
 		try {
 			return await this.executeSubagentEnvelope(envelope, signal)
 		} catch (error) {
+			if (signal.aborted && error === signal.reason) throw error
 			// A managed-agent control record exists before its Task. Preserve the
 			// distinction so presentation never advertises an unresolvable task ID.
 			if (this.getLiveTask(envelope.id) || this.taskHistoryStore.get(envelope.id)) throw error
@@ -12845,6 +13213,7 @@ export class AlphaProvider
 		envelope: InternalTaskEnvelope,
 		signal: AbortSignal,
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
+		signal.throwIfAborted()
 		const descriptor = this.subagentDescriptors.get(envelope.id)
 		if (!descriptor) throw new Error(`Missing sub-agent descriptor for ${envelope.id}`)
 		const finalizedManifest = finalizedSubagentContextManifestSchema.safeParse(descriptor.contextManifest)
@@ -12873,11 +13242,17 @@ export class AlphaProvider
 				?.startedAt ?? Date.now()
 		if (role === "worker") {
 			if (!descriptor.validatedScope) throw new Error("Worker scope preflight was not prepared")
-			descriptor.managedWorktree = await managedSubagentWorktreeService.create(
-				this.context.globalStorageUri.fsPath,
-				envelope.id,
-				descriptor.validatedScope,
-			)
+			try {
+				descriptor.managedWorktree = await managedSubagentWorktreeService.create(
+					this.context.globalStorageUri.fsPath,
+					envelope.id,
+					descriptor.validatedScope,
+					{ signal, terminateProcessTree },
+				)
+			} catch (error) {
+				if (signal.aborted && error !== signal.reason) descriptor.runtimeCleanupFailed = true
+				throw error
+			}
 		}
 		const basePrompt = buildSubagentPrompt({
 			nickname,
@@ -12889,6 +13264,7 @@ export class AlphaProvider
 			delegationPolicy: finalizedManifest.data.orchestration.delegationPolicy.policy,
 			depth: ancestry.depth,
 			maxDepth: ancestry.maxDepth,
+			authorityModel: finalizedManifest.data.runtimePolicy.authorityModel,
 		})
 		const inheritedSkillCatalog = renderInheritedSkillCatalog(
 			finalizedManifest.data.skills.map(({ name, description, path, allowImplicitInvocation }) => ({
@@ -12920,6 +13296,7 @@ export class AlphaProvider
 
 		let child: Task
 		try {
+			signal.throwIfAborted()
 			const subagentAuthority =
 				role === "worker"
 					? {
@@ -12934,7 +13311,7 @@ export class AlphaProvider
 							logicalWorkspace: parent.historyWorkspacePath,
 							approvalProvenance: descriptor.approvalProvenance,
 						}
-			const researchDeadlineAt = role === "worker" ? undefined : Date.now() + SUBAGENT_RESEARCH_WINDOW_MS
+
 			if (followupInstruction) {
 				const { historyItem } = await this.getTaskWithId(envelope.id, { includeApiConversationHistory: false })
 				const activeHistory = {
@@ -12963,7 +13340,6 @@ export class AlphaProvider
 							historyWorkspacePath: parent.historyWorkspacePath,
 							subagentPrivateWorkspaceRoot: descriptor.managedWorktree?.artifact.worktreePath,
 							subagentAuthority,
-							subagentResearchDeadlineAt: researchDeadlineAt,
 							apiConfiguration: structuredClone(modelRoute.apiConfiguration),
 						},
 					},
@@ -12977,14 +13353,15 @@ export class AlphaProvider
 					preserveExisting: true,
 					startTask: false,
 					initialStatus: "active",
-					taskMode: "code",
+					taskMode: finalizedManifest.data.runtimePolicy.mode ?? "code",
 					taskApprovalMode: inferApprovalModeFromPolicy(
 						finalizedManifest.data.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy,
 					),
 					taskApiConfigName: modelRoute.apiConfigName,
 					apiConfiguration: structuredClone(modelRoute.apiConfiguration),
+					reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
 					enableCheckpoints: false,
-					workspacePath: descriptor.managedWorktree?.workspacePath,
+					workspacePath: descriptor.managedWorktree?.workspacePath ?? parent.cwd,
 					historyWorkspacePath: parent.historyWorkspacePath,
 					subagentPrivateWorkspaceRoot: descriptor.managedWorktree?.artifact.worktreePath,
 					taskKind: "subagent",
@@ -13003,7 +13380,6 @@ export class AlphaProvider
 						: {}),
 					subagentWriteScope: descriptor.writeScope,
 					subagentAuthority,
-					subagentResearchDeadlineAt: researchDeadlineAt,
 				})
 				// The private instruction body must be durably verified before the only
 				// launch descriptor copy is discarded and the background loop starts.
@@ -13024,6 +13400,12 @@ export class AlphaProvider
 		}
 
 		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
+		const sharedWorkspaceChangedFiles = (): string[] => {
+			if (role === "worker" || finalizedManifest.data.runtimePolicy.authorityModel !== "parent") return []
+			const files = this.agentControlStore.getAgent(envelope.id, ancestry.rootTaskId)?.snapshot?.metadata
+				?.sharedWorkspaceChangedFiles
+			return Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : []
+		}
 		const currentRunMessages: AlphaMessage[] = []
 		let cleanupFailed = false
 		let result = await new Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>(
@@ -13067,7 +13449,7 @@ export class AlphaProvider
 						status,
 						summary,
 						evidence: inspectedPaths.map((reference) => ({ kind: "file", reference })),
-						changedFiles: [],
+						changedFiles: sharedWorkspaceChangedFiles(),
 						verification: [],
 						remainingRisks: status === "completed" ? [] : [summary],
 						usage: {
@@ -13148,6 +13530,13 @@ export class AlphaProvider
 						} catch (error) {
 							captureFailure(error)
 						}
+						if (status === "interrupted") {
+							try {
+								await child.recordSubagentInterruption?.()
+							} catch (error) {
+								captureFailure(error)
+							}
+						}
 						if (failureObserved) throw firstFailure
 					}
 					void stopChild().then(
@@ -13165,57 +13554,8 @@ export class AlphaProvider
 						},
 					)
 				}
-				const stopForBudget = (
-					stopReason: "input_token_limit" | "output_token_limit" | "root_token_budget" | "root_cost_budget",
-					summary: string,
-					usage: TokenUsage,
-				) => {
-					if (stopReason === "root_token_budget" || stopReason === "root_cost_budget") {
-						this.exhaustSubagentRootBudget(ancestry.rootTaskId, child.taskId, stopReason, summary)
-					}
-					stopAndFinish("cancelled", usage, summary, stopReason)
-				}
-				const enforceBudgets = (): boolean => {
-					if (settled) return true
-					const usage = child.getTokenUsage()
-					if (usage.totalTokensIn >= limits.maxInputTokens) {
-						stopForBudget(
-							"input_token_limit",
-							`Sub-agent input token limit exceeded (${usage.totalTokensIn}/${limits.maxInputTokens}).`,
-							usage,
-						)
-						return true
-					}
-					if (usage.totalTokensOut >= limits.maxOutputTokens) {
-						stopForBudget(
-							"output_token_limit",
-							`Sub-agent output token limit exceeded (${usage.totalTokensOut}/${limits.maxOutputTokens}).`,
-							usage,
-						)
-						return true
-					}
-					const rootUsage = this.getSubagentRootUsage(ancestry.rootTaskId)
-					if (limits.rootTokenBudget !== null && rootUsage.tokens >= limits.rootTokenBudget) {
-						stopForBudget(
-							"root_token_budget",
-							`Root sub-agent token budget exceeded (${rootUsage.tokens}/${limits.rootTokenBudget}).`,
-							usage,
-						)
-						return true
-					}
-					if (limits.rootCostBudget !== null && rootUsage.cost >= limits.rootCostBudget) {
-						stopForBudget(
-							"root_cost_budget",
-							`Root sub-agent cost budget exceeded (${rootUsage.cost}/${limits.rootCostBudget}).`,
-							usage,
-						)
-						return true
-					}
-					return false
-				}
 				const onMessage = ({ message }: { message: AlphaMessage }) => {
 					currentRunMessages.push(message)
-					if (enforceBudgets()) return
 					const phase = this.getSubagentPhaseForMessage(message)
 					if (!phase) return
 					void this.updateSubagentPhase(groupId, child.taskId, phase).catch((error) =>
@@ -13224,9 +13564,7 @@ export class AlphaProvider
 				}
 
 				const onCompleted = (_taskId: string, tokenUsage: TokenUsage) => {
-					if (!enforceBudgets()) {
-						finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
-					}
+					finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed", tokenUsage)
 				}
 				const onAborted = () => {
 					if (signal.aborted) return
@@ -13378,7 +13716,10 @@ export class AlphaProvider
 			},
 		}
 		try {
-			await this.applySubagentResult(this.preparedSubagentGroups.get(groupId), result)
+			await this.applySubagentResult(this.preparedSubagentGroups.get(groupId), {
+				...result,
+				requiresParentVerification: result.changedFiles.length > 0,
+			})
 		} catch (error) {
 			// The group runner retries an unacknowledged terminal publication. Do not
 			// turn a successful child into a failed child because its first UI/history
@@ -13502,7 +13843,7 @@ export class AlphaProvider
 
 	public async surfaceSubagentApproval(
 		child: Task,
-		type: "command" | "protected_write",
+		type: "command" | "protected_write" | "mcp" | "tool",
 		text?: string,
 	): Promise<void> {
 		const descriptor = this.subagentDescriptors.get(child.taskId)
@@ -13511,10 +13852,18 @@ export class AlphaProvider
 		if (!descriptor || !prepared || !agent) return
 		let operation = text?.trim() || (type === "command" ? "Run command" : "Protected write")
 		let scope: string | undefined
-		if (type === "protected_write") {
+		if (type !== "command") {
 			try {
-				const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string }
-				operation = payload.tool ?? "Protected write"
+				const payload = JSON.parse(text ?? "{}") as {
+					tool?: string
+					path?: string
+					serverName?: string
+					toolName?: string
+				}
+				operation =
+					type === "mcp"
+						? [payload.serverName, payload.toolName].filter(Boolean).join(" / ") || operation
+						: (payload.tool ?? operation)
 				scope = payload.path
 			} catch {
 				// Keep the original display text when metadata is malformed.
@@ -14450,8 +14799,10 @@ export class AlphaProvider
 		message: string
 		initialTodos: TodoItem[]
 		mode: string
+		signal?: AbortSignal
 	}): Promise<Task> {
 		const { parentTaskId, message, initialTodos, mode } = params
+		params.signal?.throwIfAborted()
 		const owner = this.getTaskOwner(parentTaskId)
 		if (owner && owner !== this) return owner.delegateParentAndOpenChild(params)
 		assertPrimaryMode(mode)
@@ -14473,6 +14824,7 @@ export class AlphaProvider
 		const modeProviderProfile = await this.getModeProviderProfile(mode)
 		const childTaskApiConfigName =
 			modeProviderProfile?.name ?? (await parent.getTaskApiConfigName()) ?? (await this.getProviderProfile())
+		params.signal?.throwIfAborted()
 		const childApiConfiguration = modeProviderProfile?.providerSettings ?? parent.apiConfiguration
 		const selectedParentViews = this.getHostProviders()
 			.filter((provider) => provider.isTaskSelected(parentTaskId))
@@ -14499,7 +14851,9 @@ export class AlphaProvider
 		let flushSuccess = false
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (retryDelayMs > 0) await delay(retryDelayMs)
+			params.signal?.throwIfAborted()
 			flushSuccess = await parent.flushPendingToolResultsToHistory()
+			params.signal?.throwIfAborted()
 			if (flushSuccess) break
 		}
 		if (!flushSuccess) {
@@ -14508,9 +14862,9 @@ export class AlphaProvider
 			)
 		}
 
-		// 3) Enforce single-open invariant by closing/disposing the parent first
-		//    This ensures we never have >1 tasks open at any time during delegation.
-		//    Await abort completion to ensure clean disposal and prevent unhandled rejections.
+		// Handoff commits here. Removing the parent intentionally cancels its request;
+		// finish the child transition after that cancellation instead of interrupting it.
+		params.signal?.throwIfAborted()
 		await this.removeTaskFromStack({ taskId: parentTaskId, skipDelegationRepair: true })
 
 		// 4) Create child as sole active (parent reference preserved for lineage)

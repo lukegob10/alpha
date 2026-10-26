@@ -136,17 +136,24 @@ describe("verification scope observations", () => {
 		)
 	})
 
-	it.skipIf(process.platform !== "win32")(
-		"admits the actual Windows temporary-directory short alias",
-		async (context) => {
-			const alias = path.join(tmpdir(), path.basename(root))
-			if (alias === root) context.skip("This host does not expose a short temporary-directory alias")
-			expect(await fs.realpath(alias)).toBe(root)
+	it("admits host temporary-directory spelling and canonical workspace paths", async () => {
+		await write("src/source.ts", "export const value = 1")
+		const hostSpelling = path.join(tmpdir(), path.basename(root))
+		expect(await fs.realpath(hostSpelling)).toBe(root)
+		for (const workspaceRoot of [hostSpelling, root]) {
 			await expect(
-				resolveCommandVerification({ workspaceRoot: alias, cwd: alias, command: "vitest run" }),
-			).resolves.toMatchObject({ scopePath: root })
-		},
-	)
+				resolveCommandVerification({
+					workspaceRoot,
+					cwd: path.join(workspaceRoot, "src"),
+					command: "vitest run",
+					changedFiles: ["src/source.ts"],
+				}),
+			).resolves.toMatchObject({ scopePath: root, assurance: "process", matchedFiles: ["src/source.ts"] })
+			await expect(
+				captureVerificationContent(workspaceRoot, [path.join(workspaceRoot, "src/source.ts")]),
+			).resolves.toEqual({ "src/source.ts": fingerprintContent("export const value = 1") })
+		}
+	})
 
 	it("does not treat directories, excessive files, or oversized content as an empty observation", async () => {
 		await write("large.ts", "")
@@ -227,6 +234,20 @@ describe("verification scope observations", () => {
 			"missing",
 		)
 		expect(extractMutationPaths({ ...block, name: "read_file", nativeArgs: undefined })).toBeUndefined()
+	})
+
+	it("observes padded patch operations without treating marker-like context as a mutation", () => {
+		const block: ToolUse<"apply_patch"> = {
+			type: "tool_use",
+			name: "apply_patch",
+			params: {},
+			partial: false,
+			nativeArgs: {
+				patch: "*** Begin Patch\n*** Add File: allowed.ts\n+new\n  *** Update File: before.ts\n*** Move to: after.ts\n@@\n *** Delete File: context.ts\n-old\n+new\n*** End Patch",
+			},
+		}
+
+		expect(extractMutationPaths(block)).toEqual(["after.ts", "allowed.ts", "before.ts"])
 	})
 
 	it.each([

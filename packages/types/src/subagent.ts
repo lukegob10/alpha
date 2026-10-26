@@ -22,7 +22,7 @@ export const subagentSpawnForkTurnsSchema = z.union([
 export const subagentSpawnAgentTypeSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)
 export type SubagentSpawnAgentType = z.infer<typeof subagentSpawnAgentTypeSchema>
 
-/** Named agent definitions narrow a child role and layer provider settings over parent inheritance. */
+/** Named agent definitions specialize the task and model; permissions and provider authority come from the parent. */
 export const subagentAgentTypeDefinitionSchema = z
 	.object({
 		description: z.string().trim().min(1).max(500),

@@ -4,13 +4,57 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { OutcomeProofError, outcomeProofVerdict, readOutcomeProofs } from "./outcome-proof.mjs"
+import {
+	OutcomeProofError,
+	outcomeProofVerdict,
+	readOutcomeProofs,
+	validConversation,
+	validJournal,
+} from "./outcome-proof.mjs"
 import { proofFixture } from "./fixtures/outcome-proof.mjs"
 import { require as tsRequire } from "tsx/cjs/api"
 
 const { joinProjectedEvidence } = tsRequire("../../apps/vscode-e2e/src/evidence/journalProjection.ts", import.meta.url)
 
 const verdict = (fixture) => outcomeProofVerdict(fixture.proofs, fixture.campaign, fixture.receipts, fixture.build)
+
+test("text-only live intake can relax tool presence while retaining every recorded call/result constraint", () => {
+	const fixture = proofFixture()
+	const conversation = fixture.proofs[0].artifacts[4].value
+	assert.equal(validConversation(conversation), true)
+	const textOnly = { ...conversation, projection: [{ role: "assistant", tools: [] }] }
+	assert.equal(validConversation(textOnly), false)
+	assert.equal(validConversation(textOnly, { requireTools: false }), true)
+	for (const projection of [
+		[],
+		[conversation.projection[0]],
+		[conversation.projection[1]],
+		[conversation.projection[0], conversation.projection[0], conversation.projection[1]],
+		[{ role: "assistant", tools: [{ type: "call", idSha256: "bad-id" }] }],
+	])
+		assert.equal(validConversation({ ...conversation, projection }, { requireTools: false }), false)
+})
+
+test("structural reliability intake retains turn partitioning and a terminal status without weakening outcome proofs", () => {
+	const fixture = proofFixture()
+	const taskId = fixture.campaign.attempts[0].result.taskIds[0]
+	const journal = fixture.proofs[0].artifacts[2].value
+	for (const status of ["interrupted", "failed"]) {
+		journal.projection.events[0].status = status
+		assert.equal(validJournal(journal, taskId, true), false)
+		assert.equal(validJournal(journal, taskId, true, { requireCompleted: false }), true)
+	}
+	for (const status of ["running", "invented"]) {
+		journal.projection.events[0].status = status
+		assert.equal(validJournal(journal, taskId, true, { requireCompleted: false }), false)
+	}
+	journal.projection.events[0].status = "failed"
+	journal.projection.events[0].sequence = 2
+	assert.equal(validJournal(journal, taskId, true, { requireCompleted: false }), false)
+	journal.projection.events[0].sequence = 1
+	journal.projection.events[0].type = "turn_started"
+	assert.equal(validJournal(journal, taskId, true, { requireCompleted: false }), false)
+})
 
 test("outcome journal admission accepts only known request metadata and preserves legacy evidence", () => {
 	const withRequestMetadata = () => {

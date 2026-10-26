@@ -7,6 +7,7 @@ import {
 	evidenceFromText,
 	GraderRegistry,
 	matchesGlob,
+	validateGraderRun,
 	type GraderContext,
 	type GraderPlugin,
 	type GraderResult,
@@ -121,6 +122,39 @@ describe("fail-closed grading evidence", () => {
 	it("does not aggregate an unknown or skipped result as a pass", () => {
 		expect(aggregateGraderResults([{ status: "skipped" } as unknown as GraderResult])).toBe("grader_error")
 	})
+
+	it.each(["outcome", "safety"] as const)(
+		"does not credit a %s failure when the plugin also reports an execution error",
+		async (failureClass) => {
+			const result: GraderResult = {
+				graderId: base.id,
+				graderVersion: base.version,
+				type: "command",
+				status: "failed",
+				hardGate: true,
+				failureClass,
+				startedAt: "2026-10-24T00:00:00Z",
+				finishedAt: "2026-10-24T00:00:01Z",
+				durationMs: 1_000,
+				diagnostics: [
+					{ code: "runner_unavailable", message: "The runner did not complete", severity: "error" },
+				],
+				evidence: [evidenceFromText("partial", "report", "Partial grader progress")],
+				error: "The grader process failed before evaluation completed",
+			}
+			expect(aggregateGraderResults([result])).toBe("grader_error")
+			expect(() =>
+				validateGraderRun({
+					decision: failureClass === "safety" ? "safety_failed" : "outcome_failed",
+					results: [result],
+				}),
+			).toThrow()
+			const plugin: GraderPlugin = { type: "command", execute: vi.fn(async () => result) }
+			const run = await new GraderRegistry().register(plugin).execute([{ ...command, failureClass }], context())
+			expect(run.decision).toBe("grader_error")
+			expect(run.results[0]!.status).toBe("error")
+		},
+	)
 
 	it.each([null, {}, { status: "passed", evidence: [] }])(
 		"rejects incomplete result envelopes during aggregation",

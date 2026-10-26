@@ -94,6 +94,7 @@ export function buildOpenAiResponsesInput(
 	messages: readonly unknown[],
 	store: boolean | undefined,
 	freeformApplyPatch = true,
+	options: { preserveReasoningIds?: boolean } = {},
 ): OpenAI.Responses.ResponseInputItem[] {
 	const input: OpenAI.Responses.ResponseInputItem[] = []
 	const instructions = instructionFragments ?? [{ role: "system" as const, content: systemPrompt }]
@@ -106,7 +107,7 @@ export function buildOpenAiResponsesInput(
 	for (const candidate of normalizeToolHistory(messages)) {
 		if (!isRecord(candidate)) continue
 		if (candidate.type === "reasoning") {
-			const item = toReasoningInput(candidate, store)
+			const item = toReasoningInput(candidate, store, options.preserveReasoningIds)
 			if (item) input.push(item)
 			continue
 		}
@@ -194,7 +195,7 @@ export function buildOpenAiResponsesInput(
 			}
 			flushAssistantText()
 			if (block.type === "reasoning") {
-				const reasoningItem = toReasoningInput(block, store)
+				const reasoningItem = toReasoningInput(block, store, options.preserveReasoningIds)
 				if (reasoningItem) {
 					input.push(reasoningItem)
 				} else if (typeof block.text === "string" && block.text) {
@@ -307,13 +308,14 @@ export function encodeOpenAiCustomToolInputDelta(name: string, input: string): s
 function toReasoningInput(
 	candidate: Record<string, unknown>,
 	store: boolean | undefined,
+	preserveReasoningIds = false,
 ): OpenAI.Responses.ResponseInputItem | undefined {
 	if (typeof candidate.encrypted_content !== "string") return undefined
 	const item = {
 		type: "reasoning" as const,
 		encrypted_content: candidate.encrypted_content,
 		summary: Array.isArray(candidate.summary) ? candidate.summary : [],
-		...(store !== false && typeof candidate.id === "string" ? { id: candidate.id } : {}),
+		...((store !== false || preserveReasoningIds) && typeof candidate.id === "string" ? { id: candidate.id } : {}),
 	}
 	// OpenAI accepts stateless reasoning items without an id when store is false.
 	return item as unknown as OpenAI.Responses.ResponseInputItem

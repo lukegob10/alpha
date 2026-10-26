@@ -22,15 +22,18 @@ vi.mock("react-i18next", () => ({
 }))
 
 describe("ChatRow render isolation", () => {
-	it.each(["interrupted", "blocked", "failed", undefined] as const)(
-		"does not label a completion report as task success when the task status is %s",
-		(status) => {
+	it.each(["completed", "interrupted", "failed", undefined] as const)(
+		"keeps the report's %s terminal attribution when the current task status changes",
+		(terminalStatus) => {
 			const message: AlphaMessage = {
 				ts: 2,
 				type: "say",
 				say: "completion_result",
-				text: "The task record ended as interrupted.",
+				text: "A historical response.",
 				partial: false,
+				...(terminalStatus === undefined
+					? {}
+					: { turn: { runId: "run-one", turnId: "turn-one", terminalStatus } }),
 			}
 			const environment: ChatRowEnvironment = {
 				mcpServers: [],
@@ -40,7 +43,7 @@ describe("ChatRow render isolation", () => {
 				currentTaskId: "original-task",
 				currentTaskItem: {
 					id: "original-task",
-					status,
+					status: "active",
 				},
 				getAlphaMessages: () => [message],
 			}
@@ -55,20 +58,50 @@ describe("ChatRow render isolation", () => {
 				/>
 			)
 			const { rerender } = render(row(environment))
-			expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
-			expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
+			const label = terminalStatus === "completed" ? "chat:taskCompleted" : "chat:completionReport"
+			expect(screen.getByRole("article", { name: label })).toBeInTheDocument()
 			expect(screen.getByText(message.text!)).toBeInTheDocument()
 			const completed = { ...environment.currentTaskItem!, status: "completed" as const }
 			rerender(row({ ...environment, currentTaskItem: completed }))
-			expect(screen.getByRole("article", { name: "chat:taskCompleted" })).toBeInTheDocument()
-			expect(screen.queryByRole("article", { name: "chat:completionReport" })).not.toBeInTheDocument()
-			// A stale snapshot for a different task cannot authorize the success label.
+			expect(screen.getByRole("article", { name: label })).toBeInTheDocument()
+			rerender(row({ ...environment, currentTaskItem: { ...completed, status: "interrupted" } }))
+			expect(screen.getByRole("article", { name: label })).toBeInTheDocument()
 			rerender(row({ ...environment, currentTaskItem: { ...completed, id: "another-task" } }))
-			expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
-			expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
+			expect(screen.getByRole("article", { name: label })).toBeInTheDocument()
+			if (terminalStatus !== "completed")
+				expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
 			expect(mockUseExtensionState).not.toHaveBeenCalled()
 		},
 	)
+
+	it("keeps a partial completion report neutral before its terminal row is accepted", () => {
+		const message: AlphaMessage = {
+			ts: 2,
+			type: "say",
+			say: "completion_result",
+			text: "Still streaming",
+			partial: true,
+			turn: { runId: "run-one", turnId: "turn-one", terminalStatus: "completed" },
+		}
+		render(
+			<ChatRow
+				message={message}
+				environment={{
+					mcpServers: [],
+					alwaysAllowMcp: false,
+					mode: "code",
+					reasoningBlockCollapsed: true,
+					getAlphaMessages: () => [message],
+				}}
+				isExpanded={false}
+				isLast={true}
+				isStreaming={true}
+				onToggleExpand={() => {}}
+			/>,
+		)
+		expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
+		expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
+	})
 
 	it("renders from its stable environment without reading root transcript state", () => {
 		const message: AlphaMessage = {

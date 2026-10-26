@@ -648,51 +648,7 @@ export class AgentIncidentMonitor {
 		if (this.diagnosticTaskIds.has(event.taskId)) return undefined
 
 		const task = this.getOrCreateTask(event.taskId, event.occurredAt)
-		if (!task || task.seenEventIds.has(hashEvidenceId(event.eventId))) return undefined
-		this.rememberEventId(task, event.eventId)
-		task.lastLiveEventAt = Math.max(task.lastLiveEventAt, event.occurredAt)
-		task.updatedAt = Math.max(task.updatedAt, event.occurredAt)
-		this.captureToolContext(task, event)
-		this.processTurnEvent(task, event)
-
-		const state = eventState(event)
-		if (state && event.occurredAt >= task.stateAt) {
-			task.state = state
-			task.stateAt = event.occurredAt
-		}
-
-		const projectedTimeline = timelineProjection(event)
-		if (projectedTimeline) {
-			this.addTimeline(task, {
-				id: hashEvidenceId(`timeline\0${event.taskId}\0${event.eventId}`),
-				at: event.occurredAt,
-				kind: projectedTimeline.kind,
-				label: projectedTimeline.label,
-				sequence: event.sequence,
-			})
-		}
-
-		let newAlert: IncidentDashboardAlert | undefined
-		if (isFailureEvent(event)) {
-			const failedTool =
-				task.recentFailedTool?.runIdSha256 === hashEvidenceId(event.runId) &&
-				task.recentFailedTool.turnIdSha256 === hashEvidenceId(event.turnId)
-					? task.recentFailedTool
-					: undefined
-			const alert = this.addAlert({
-				task,
-				kind: "turn_failed",
-				at: event.occurredAt,
-				identity: `${event.runId}\0${event.turnId}`,
-				reference: eventReference(event),
-				tool: failedTool,
-				origin: "live",
-			})
-			if (alert) newAlert = this.toDashboardAlert(alert)
-		}
-
-		this.publish()
-		return newAlert
+		return task ? this.processEvent(task, event, "live") : undefined
 	}
 
 	/**
@@ -748,7 +704,7 @@ export class AgentIncidentMonitor {
 			for (const candidate of events) {
 				if (!agentLifecycleEventSchema.safeParse(candidate).success || candidate.taskId !== seed.taskId)
 					continue
-				this.processRestoredEvent(task, candidate)
+				this.processEvent(task, candidate, "restored")
 			}
 
 			if (isFailureTaskStatus(seed.status)) {
@@ -934,9 +890,14 @@ export class AgentIncidentMonitor {
 		return () => this.listeners.delete(listener)
 	}
 
-	private processRestoredEvent(task: TaskRecord, event: AgentLifecycleEvent): void {
+	private processEvent(
+		task: TaskRecord,
+		event: AgentLifecycleEvent,
+		origin: "live" | "restored",
+	): IncidentDashboardAlert | undefined {
 		if (this.diagnosticTaskIds.has(event.taskId) || task.seenEventIds.has(hashEvidenceId(event.eventId))) return
 		this.rememberEventId(task, event.eventId)
+		if (origin === "live") task.lastLiveEventAt = Math.max(task.lastLiveEventAt, event.occurredAt)
 		task.updatedAt = Math.max(task.updatedAt, event.occurredAt)
 		this.captureToolContext(task, event)
 		this.processTurnEvent(task, event)
@@ -955,22 +916,26 @@ export class AgentIncidentMonitor {
 				sequence: event.sequence,
 			})
 		}
+		let newAlert: IncidentDashboardAlert | undefined
 		if (isFailureEvent(event)) {
 			const failedTool =
 				task.recentFailedTool?.runIdSha256 === hashEvidenceId(event.runId) &&
 				task.recentFailedTool.turnIdSha256 === hashEvidenceId(event.turnId)
 					? task.recentFailedTool
 					: undefined
-			this.addAlert({
+			const alert = this.addAlert({
 				task,
 				kind: "turn_failed",
 				at: event.occurredAt,
 				identity: `${event.runId}\0${event.turnId}`,
 				reference: eventReference(event),
 				tool: failedTool,
-				origin: "restored",
+				origin,
 			})
+			if (alert) newAlert = this.toDashboardAlert(alert)
 		}
+		if (origin === "live") this.publish()
+		return newAlert
 	}
 
 	private processTurnEvent(task: TaskRecord, event: AgentLifecycleEvent): void {

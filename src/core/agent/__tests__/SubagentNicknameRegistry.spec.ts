@@ -85,6 +85,15 @@ describe("SubagentNicknameRegistry", () => {
 		)
 	})
 
+	it("rejects duplicate preferred names in one batch without retaining reservations", () => {
+		const registry = sequentialRegistry()
+
+		expect(() => registry.assign("root", "failed", 2, [], ["shared_alias", "SHARED_ALIAS"])).toThrow(
+			"already in use",
+		)
+		expect(registry.assign("root", "retry", 1, [], ["shared_alias"])).toEqual(["shared_alias"])
+	})
+
 	it("rejects batches outside the public one-to-two limit", () => {
 		const registry = sequentialRegistry()
 		expect(() => registry.assign("root", "first", 3)).toThrow("one or two")

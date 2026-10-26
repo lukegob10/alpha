@@ -5,7 +5,10 @@ import {
 	stellarDefaultModelId,
 	stellarModels,
 	openAiModelInfoSaneDefaults,
+	curatedProviders,
+	getProviderDefaultModelId,
 } from "@alpha-code/types"
+import { MODELS_BY_PROVIDER } from "@/components/settings/constants"
 
 import { useSelectedModel } from "../useSelectedModel"
 
@@ -18,7 +21,7 @@ describe("selected model metadata", () => {
 		})
 	})
 
-	it.each(["anthropic", "openrouter", "future-provider", "fake-ai"])(
+	it.each(["bedrock", "ollama", "future-provider", "fake-ai"])(
 		"preserves %s without showing metadata from a supported public provider",
 		(provider) => {
 			expect(
@@ -32,6 +35,56 @@ describe("selected model metadata", () => {
 				info: undefined,
 				isLoading: false,
 				isError: false,
+			})
+		},
+	)
+
+	it.each(curatedProviders)("uses the curated %s catalog and default without rewriting settings", (provider) => {
+		const configuration: ProviderSettings = { apiProvider: provider }
+		const id = getProviderDefaultModelId(provider)
+		expect(useSelectedModel(configuration)).toMatchObject({
+			provider,
+			id,
+			info: MODELS_BY_PROVIDER[provider]?.[id],
+			isError: false,
+		})
+		expect(configuration.apiModelId).toBeUndefined()
+	})
+
+	it.each(curatedProviders)(
+		"preserves an unavailable saved %s model without borrowing default capabilities",
+		(provider) => {
+			const configuration: ProviderSettings = { apiProvider: provider, apiModelId: "unavailable-saved-model" }
+			expect(useSelectedModel(configuration)).toMatchObject({
+				provider,
+				id: "unavailable-saved-model",
+				info: undefined,
+				isError: true,
+			})
+			expect(configuration.apiModelId).toBe("unavailable-saved-model")
+		},
+	)
+
+	it("projects the legacy OpenRouter model ID while preferring an explicitly configured canonical ID", () => {
+		const id = getProviderDefaultModelId("openrouter")
+		expect(useSelectedModel({ apiProvider: "openrouter", openRouterModelId: id })).toMatchObject({
+			id,
+			isError: false,
+		})
+		expect(useSelectedModel({ apiProvider: "openrouter", openRouterModelId: id, apiModelId: "" })).toMatchObject({
+			id: "",
+			info: undefined,
+			isError: true,
+		})
+	})
+
+	it.each(["__proto__", "constructor", "toString"])(
+		"treats inherited catalog key %s as unavailable",
+		(apiModelId) => {
+			expect(useSelectedModel({ apiProvider: "openai-native", apiModelId })).toMatchObject({
+				id: apiModelId,
+				info: undefined,
+				isError: true,
 			})
 		},
 	)

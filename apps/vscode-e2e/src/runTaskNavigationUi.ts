@@ -13,6 +13,7 @@ import { writeJsonAtomically } from "./suite/preflightEvidence"
 import { TEST_ROOT_OWNERSHIP_MARKER } from "./testProfile"
 import { CdpConnection } from "./ui/cdp"
 import { nativeChatHeaderExpression } from "./ui/nativeChatHeader"
+import { latencyObservation, summarizeLatencyObservations as summarize } from "./evidence/latencyObservation"
 
 interface Target {
 	targetId: string
@@ -109,13 +110,6 @@ function summarizeSystem(before: SystemSnapshot, after: SystemSnapshot) {
 		freeMemoryAfterBytes: after.freeMemoryBytes,
 		cpuSampleIntervalMs: totalDeltaMs,
 	}
-}
-
-function summarize(values: number[]) {
-	if (!values.length) return null
-	const ordered = [...values].sort((left, right) => left - right)
-	const at = (quantile: number) => ordered[Math.max(0, Math.ceil(quantile * ordered.length) - 1)]!
-	return { count: ordered.length, p50: at(0.5), p95: at(0.95), max: ordered.at(-1)! }
 }
 
 function requireHostSuccess(
@@ -702,6 +696,7 @@ export async function runTaskNavigationUi(executable: string, output: string, ex
 		const navigationMeasurements = measurements.filter((item) => item.phase !== "process-cold-first-task-open")
 		const report = {
 			schemaVersion: 1,
+			...latencyObservation(),
 			hostVersion: expectedHostVersion,
 			provider: "scripted",
 			modelRequests: 0,
@@ -799,7 +794,7 @@ export async function runTaskNavigationUi(executable: string, output: string, ex
 		}
 		const reportPath = path.join(root, "task-navigation-ui-benchmark.json")
 		await fs.writeFile(reportPath, JSON.stringify(report, null, 2), { flag: "wx" })
-		return { status: "passed" as const, reportPath, root, report }
+		return { status: "passed" as const, ...latencyObservation(), reportPath, root, report }
 	} finally {
 		connection?.close()
 		activePhase?.abort.abort()

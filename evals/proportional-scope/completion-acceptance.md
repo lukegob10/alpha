@@ -1,22 +1,16 @@
 # Final-stage acceptance protocol
 
-Declared September 5, 2026, before the NOR-37 candidate measurement. The fixture is implemented; the candidate passed and
-the reference failed durable quality, as recorded below. It measures completion settlement in actual API-created Tasks;
-model strategy and physical verification quality remain unmeasured. NOR-36 owns the separate fixture and reports. NOR-37
-owns production completion behavior.
+This fixture measures completion settlement in actual API-created Tasks. Its offline provider fixes model decisions;
+model strategy and physical verification quality require separate observations. Preserve the workload, settlement
+schedule, and quality oracle when comparing source revisions.
 
 ## Fixed workloads and provider policy
 
-Use `apps/vscode-e2e/src/suite/proportional-completion.test.ts` on exact VS Code 1.122.1. Each revision runs three fresh
-Tasks per scenario in one shared host, using identical fixture source, input, configuration, conditional provider policy,
-and settlement schedule. The reference source is `530d737ec07ba6c4feac0f6745960de224496944`; record the exact integrated
-candidate and loaded extension bundle digest. Host launches remain centrally coordinated. Do not execute during a quiet
-measurement window.
+Use `apps/vscode-e2e/src/suite/proportional-completion.test.ts` on exact VS Code 1.138.0. Each revision runs
+three fresh Tasks per scenario in one shared host, using identical fixture source, input, configuration, conditional
+provider policy, and settlement schedule. Record each source revision and loaded extension bundle digest. Run builds
+and host measurements serially.
 
-The candidate requires NOR-37 `211c687354e1eb8a9e95884b009db5d2eaf193c7`, its NOR-33 `c0cb247` dependency, and the
-corrective root-lifecycle work beginning with `fc3b25a62b94197480d06d7c66422ede353a549c`, or their integrated equivalents.
-Central integration records the final correction set before the candidate host run. The fixture depends on
-`proportional-context-support.ts` from the earlier NOR-36 fixture commits.
 It uses structural adapters for existing runtime observation methods so the identical compiled fixture can run against
 the reference bundle, which lacks the metrics getter. No production code from the candidate may enter the reference build.
 
@@ -26,7 +20,7 @@ changes the provider policy or settlement timing. Compile the same fixture for b
 `apps/vscode-e2e` in the directory without spaces:
 
 ```sh
-node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file proportional-completion.test
+node ./out/runTest.js --vscode-version 1.138.0 --provider scripted --file proportional-completion.test
 ```
 
 Require matching reported fixture and policy digests for the pair. The fixture digest covers the loaded test JavaScript
@@ -109,8 +103,8 @@ observe at least two requests while meeting the same quality oracle before claim
 finishes in one request, record unchanged optimal behavior. If baseline blocks, report a completion-correctness difference
 and its observed wasted requests separately; do not turn an incomplete run into a latency or equal-quality cost baseline.
 Require all three paired samples per scenario to meet quality before reporting scenario-level savings. This narrow
-runtime regression can support a request-count improvement attributed to NOR-37; it cannot establish the broader NOR-36
-25% reduction in median narrow-task tool/command count.
+runtime regression can support a request-count improvement attributed to the tested completion change. Whole-task
+tool/command improvements require a separate workload and comparison.
 
 ## Measurement and attribution
 
@@ -124,7 +118,7 @@ Count terminal evidence registration separately from physical command launches a
 command scenario has one evidence registration, zero physical command launches, and zero model-emitted tool calls. Do not
 describe zero physical launches as a tool reduction.
 
-NOR-37's optional getter returns cumulative Task-lifetime counters, first-candidate usage, persistence-settled time, and
+The optional runtime metrics getter returns cumulative Task-lifetime counters, first-candidate usage, persistence-settled time, and
 completed or blocked usage snapshots. User-guidance recovery can reset its allowance without resetting these metrics.
 Retain this provenance separately from canonical per-request event usage. An absent getter on baseline is unavailable,
 not zero. Do not infer per-phase usage from timestamp order or subtract noncumulative `contextTokens` values.
@@ -137,65 +131,3 @@ uncontended paired timing experiment is declared.
 
 Conversation-only and narrow-lookup fixtures retain their existing one- and two-request thresholds. Their counts may
 already be optimal. Do not add exploration classifications, caching, or prompt policy to manufacture further savings.
-
-## Initial host fixture diagnosis
-
-The first central reference run on exact 1.122.1 (production `530d737`, fixture-only checkout `bad3939`) timed out in both
-scenarios after entering the logged `waiting (completion)` state. The fixture omitted the on-screen review acknowledgment;
-`autoApprovalEnabled` did not acknowledge that boundary. Source inspection of `Task.ask`, `getOffscreenAutoAskResponse`,
-and existing managed-agent/mode E2E tests established the missing user-adapter action. Its visible-answer oracle also
-omitted the canonical promoted completion row. These samples are **fixture integration failures**, not evidence of a
-baseline correctness regression, request savings, or latency. The correction applies to both roles and the minimal context
-fixtures. Matching corrected fixture/helper/policy digests and new paired runs are required before any accepted result.
-
-The next central reference attempt reached Task completion but observed a `running` AgentControlStore root. The
-documented source contract in `prepareTaskCompletionLifecycle` requires that root to be durably completed before the
-primary event. Source tracing found that the final completion gate invokes `ensureAgentControlRoot` after root preparation;
-that method reopens non-running roots, while event forwarding uses `rootAlreadyPrepared: true`. This is a production
-lifecycle concern referred to NOR-37, not permission to discard the durable assertion. The added Task-owned join rules out
-event/journal timing without mutating or repairing the measured state. No equal-quality cost result is admitted while
-this root-state check fails.
-
-The third central reference attempt used the lifecycle-join correction on exact VS Code 1.122.1. Both scenarios failed
-the unchanged root assertion after `waitForTermination()` returned. The bounded assertion diagnostics establish the
-following observations, one attempted sample per scenario before each scenario stopped:
-
-| Scenario            | Provider requests | Completion events | UI acknowledgments | Original settlement durable | Root after lifecycle join |
-| ------------------- | ----------------: | ----------------: | -----------------: | --------------------------- | ------------------------- |
-| Command publication |                 2 |                 1 |                  1 | true                        | running                   |
-| No-op receipt       |                 2 |                 1 |                  1 | true                        | running                   |
-
-These are actual failed correctness samples, not three admitted paired samples and not an equal-quality cost baseline.
-The log is `nor36-reference-completion-durable.log` in the central runner's temporary output directory. NOR-37 separately
-reported reproducing the root reopening with real Task/provider/store integration and correcting it; the passing central
-candidate host result follows below. No second model request may be inferred from provider usage-owner indexes: the table
-uses the fixture's direct invocation counter printed by the failed durable assertion.
-
-## Passing candidate and acceptance limits
-
-The central exact-1.122.1 candidate run at `a64816cb917fb32b0ca8baa9834e2f96a1332e1a` passed both scenarios, three fresh Tasks
-each, with no fixture or provider-policy changes between reference and candidate. The compiled fixture/helper equality
-was verified by the central runner. Bundle SHA-256:
-`7aae92b32fa983e6bad113371cfb1411fddecba4510fe2ff1b3c6c0b21f80ceb`.
-The [allowlisted candidate report](../reports/nor36/nor-36-completion-candidate-2026-09-05.json) records fixture digest
-`bd251c5348d3a4cc1e489fd59dacb9f6f66ea3cc7dcdf5606b7a446a37d2570a` and policy digest
-`2a8f50b3d44b8a0ceb040361371c36c726f2a91b7b6705225434e0b2b7f66ba4`, plus source/build/configuration/cache declarations.
-
-Every candidate sample had one provider request, zero recovery requests, zero model-emitted tools, zero physical commands,
-one completion event, and one UI acknowledgment. Durable-root and original-settlement assertions passed after the
-Task-owned lifecycle join. Completion metrics were one candidate, zero rejections, zero repair tools, and positive runtime
-waiting. This satisfies the declared candidate threshold. The controlled command adapter still contributes exactly one
-terminal-evidence registration, not a physical verifier execution.
-
-All six captured requests contained 15,974 system-text bytes, 997 JSON message bytes, 17,081 JSON schema bytes, and 40
-emitted assistant-text bytes. These are the recorded component sizes, not token counts or complete transport sizes.
-Provider usage remains unavailable. Raw timing observations include controlled delay and host/UI overhead and carry no
-latency-improvement or percentile-stability claim.
-
-The reference's two-request samples failed durable correctness; the candidate's one-request samples passed. Report that
-quality difference and bounded candidate behavior, with attribution to NOR-37's shared completion/root corrections. Do
-not report a percentage speedup, equal-quality cost saving, NOR-36's proposed tool/command or input-token target, or improved
-model strategy from this comparison. The separate
-[candidate context report](../reports/nor36/nor-36-context-candidate-2026-09-05.json) passed three conversation samples
-at one request/no tools and three scoped lookups at two requests/one actual read each. Those are fixed-script contract
-results; no additional reference run or exploration policy change is implied.

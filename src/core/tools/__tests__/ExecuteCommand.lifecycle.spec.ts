@@ -32,7 +32,11 @@ async function createFixture(
 	let launched!: () => void
 	const launch = new Promise<void>((resolve) => (launched = resolve))
 	let resolveProcess!: () => void
-	const processPromise = new Promise<void>((resolve) => (resolveProcess = resolve))
+	let rejectProcess!: (error: Error) => void
+	const processPromise = new Promise<void>((resolve, reject) => {
+		resolveProcess = resolve
+		rejectProcess = reject
+	})
 	let completionObserversCalled!: () => void
 	const completionBarrier = new Promise<void>((resolve) => (completionObserversCalled = resolve))
 	let callbacks!: AlphaTerminalCallbacks
@@ -43,18 +47,21 @@ async function createFixture(
 		finally: processPromise.finally.bind(processPromise),
 		continue: vi.fn(),
 		abort: vi.fn(async () => {
-			if (process.isSettled) return
+			if (!terminal.running) return
 			await beforeAbort()
 			if (abortOutcome === "reject") throw new Error("physical cleanup failed")
 			if (abortOutcome === "exit") {
+				terminal.running = false
 				callbacks.onShellExecutionComplete(
 					{ exitCode: 130, signalName: "SIGINT" },
 					process as unknown as AlphaTerminalProcess,
 				)
+				process.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
 			}
 			await callbacks.onCompleted("stopped", process as unknown as AlphaTerminalProcess)
 			process.isSettled = true
 			terminal.busy = false
+			terminal.running = false
 			process.emit("completed", "stopped")
 			resolveProcess()
 		}),
@@ -64,6 +71,7 @@ async function createFixture(
 		id: 1,
 		taskId: "timeout-root",
 		busy: true,
+		running: true,
 		process,
 		getCurrentWorkingDirectory: () => cwd,
 		runCommand: (_command: string, handlers: AlphaTerminalCallbacks) => {
@@ -118,16 +126,24 @@ async function createFixture(
 		cwd,
 		task,
 		process,
+		terminal,
 		store,
 		provider,
 		launch,
 		completionBarrier,
 		releaseProcess: resolveProcess,
+		failReader: (error: Error) => {
+			process.isSettled = true
+			process.emit("error", error)
+			rejectProcess(error)
+		},
 		reportArchiveOutput: (chunk: string) =>
 			callbacks.onOutput?.(chunk, process as unknown as AlphaTerminalProcess, lifetime.signal),
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
 		finishProcess: async (joinObservers = false) => {
+			terminal.running = false
 			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
+			process.emit("shell_execution_complete", { exitCode: 0 })
 			await callbacks.onCompleted("finished", process as unknown as AlphaTerminalProcess)
 			process.isSettled = true
 			terminal.busy = false
@@ -140,12 +156,48 @@ async function createFixture(
 			}
 			resolveProcess()
 		},
-		reportShellExit: () =>
-			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess),
+		reportShellExit: () => {
+			terminal.running = false
+			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
+			process.emit("shell_execution_complete", { exitCode: 0 })
+		},
 	}
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it.each(["explore", "review"] as const)(
+		"records an inherited-permission %s's shared-workspace command changes",
+		async (role) => {
+			const fixture = await createFixture()
+			Object.assign(fixture.task, {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: { runtimePolicy: { authorityModel: "parent", execute: true, mutate: true } },
+			})
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "shared-command",
+				toolCallId: "shared-command-call",
+				command: "command",
+				terminalShellIntegrationDisabled: true,
+			})
+			try {
+				await fixture.launch
+				await fs.writeFile(path.join(fixture.cwd, "fixture.txt"), "changed by managed child\n")
+				await fixture.finishProcess()
+				await execution
+				expect(fixture.provider.reservePrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.store.getVerificationObligations()[0]).toMatchObject({
+					changedFiles: ["fixture.txt"],
+					mutationReservations: [],
+				})
+			} finally {
+				if (!fixture.process.isSettled) await fixture.finishProcess()
+				await execution.catch(() => undefined)
+			}
+		},
+	)
+
 	it.each<{
 		cachedPreview: TerminalOutputPreviewSize | undefined
 		capturedPreview: TerminalOutputPreviewSize | undefined
@@ -350,6 +402,137 @@ describe("primary command timeout mutation receipts", () => {
 		}
 	})
 
+	it.each(["before", "after"] as const)(
+		"keeps the hard timeout when the output reader fails %s yielding",
+		async (readerFailureTime) => {
+			const fixture = await createFixture()
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "reader-failure",
+				toolCallId: "reader-failure-call",
+				command: "long-running-command",
+				terminalShellIntegrationDisabled: true,
+				agentTimeout: 1_000,
+				commandExecutionTimeout: 2_000,
+			}).catch((error: unknown) => error)
+			try {
+				await fixture.launch
+				if (readerFailureTime === "after") {
+					await vi.advanceTimersByTimeAsync(1_100)
+					await execution
+				}
+				fixture.failReader(new Error("output reader failed while shell is running"))
+				await execution
+				await vi.waitFor(() => expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce())
+				expect(fixture.terminal.running).toBe(true)
+				expect(fixture.process.abort).not.toHaveBeenCalled()
+				const shellListeners = fixture.process.listenerCount("shell_execution_complete")
+				const closeListeners = fixture.process.listenerCount("terminal_closed")
+				await vi.advanceTimersByTimeAsync(2_000)
+				expect(fixture.process.abort).toHaveBeenCalledOnce()
+				expect(fixture.terminal.running).toBe(false)
+				expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+				expect(fixture.process.listenerCount("shell_execution_complete")).toBe(shellListeners - 1)
+				expect(fixture.process.listenerCount("terminal_closed")).toBe(closeListeners - 1)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				if (fixture.terminal.running) await fixture.process.abort()
+				await execution
+			}
+		},
+	)
+
+	it.each(["shell exit", "terminal close"] as const)(
+		"clears a failed reader's hard timeout on physical %s",
+		async (completion) => {
+			const fixture = await createFixture()
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "reader-completion",
+				toolCallId: "reader-completion-call",
+				command: "long-running-command",
+				terminalShellIntegrationDisabled: true,
+				agentTimeout: 1_000,
+				commandExecutionTimeout: 2_000,
+			}).catch((error: unknown) => error)
+			await fixture.launch
+			fixture.failReader(new Error("output reader failed"))
+			await execution
+			if (completion === "shell exit") fixture.reportShellExit()
+			else {
+				fixture.terminal.running = false
+				fixture.process.emit("terminal_closed")
+			}
+			await vi.advanceTimersByTimeAsync(3_000)
+			expect(fixture.process.abort).not.toHaveBeenCalled()
+			expect(fixture.process.listenerCount("shell_execution_complete")).toBe(0)
+			expect(fixture.process.listenerCount("terminal_closed")).toBe(0)
+		},
+	)
+
+	it("keeps late output and file changes on the command's captured turn", async () => {
+		const fixture = await createFixture()
+		let acknowledgeCompletion!: () => void
+		const completion = new Promise<void>((resolve) => (acknowledgeCompletion = resolve))
+		vi.mocked(fixture.task.completeCommandExecution).mockImplementation(() => acknowledgeCompletion())
+		let acknowledgeFileChanges!: () => void
+		const fileChanges = new Promise<void>((resolve) => (acknowledgeFileChanges = resolve))
+		vi.mocked(fixture.task.say).mockImplementation(async (type, text) => {
+			if (type === "tool" && text?.includes("appliedDiff")) acknowledgeFileChanges()
+		})
+		let turn = { runId: "original-run", turnId: "original-turn" }
+		fixture.task.captureMessageTurn = vi.fn(() => ({ ...turn }))
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "captured-turn",
+			toolCallId: "captured-turn-call",
+			command: "long-running-command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 1_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		turn = { runId: "later-run", turnId: "later-turn" }
+		await fs.writeFile(path.join(fixture.cwd, "fixture.txt"), "changed\n")
+		fixture.reportOutput("late output")
+		await fixture.finishProcess()
+		await Promise.all([completion, fileChanges])
+		expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+		expect(fixture.task.captureMessageTurn).toHaveBeenCalledOnce()
+		const calls = vi
+			.mocked(fixture.task.say)
+			.mock.calls.filter(([type]) => type === "command_output" || type === "tool")
+		expect(calls.length).toBeGreaterThan(1)
+		for (const call of calls)
+			expect(call[6]).toMatchObject({ turn: { runId: "original-run", turnId: "original-turn" } })
+	})
+
+	it("keeps a background timeout notice on the command's captured turn", async () => {
+		const fixture = await createFixture()
+		let turn = { runId: "original-run", turnId: "original-turn" }
+		fixture.task.captureMessageTurn = vi.fn(() => ({ ...turn }))
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "captured-timeout-turn",
+			toolCallId: "captured-timeout-turn-call",
+			command: "long-running-command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 1_000,
+			commandExecutionTimeout: 2_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		turn = { runId: "later-run", turnId: "later-turn" }
+		await vi.advanceTimersByTimeAsync(1_000)
+		const notices = vi.mocked(fixture.task.say).mock.calls.filter(([type]) => type === "error")
+		expect(notices).toHaveLength(1)
+		expect(notices[0][6]).toEqual({ turn: { runId: "original-run", turnId: "original-turn" } })
+		expect(fixture.task.captureMessageTurn).toHaveBeenCalledOnce()
+	})
+
 	it("settles the same no-op receipt when the hard timeout occurs before foreground return", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
@@ -469,6 +652,12 @@ describe("primary command timeout mutation receipts", () => {
 			await vi.advanceTimersByTimeAsync(1_100)
 			await execution
 			await vi.advanceTimersByTimeAsync(1_000)
+			if (abortOutcome === "unknown") {
+				// An adapter's successful abort return is not physical-exit evidence.
+				expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.store.getVerificationObligations()[0]?.mutationReservations).toHaveLength(1)
+				await vi.advanceTimersByTimeAsync(11_000)
+			}
 			await vi.waitFor(() => expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce())
 			expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledWith(
 				fixture.task,
@@ -517,7 +706,17 @@ describe("primary command timeout mutation receipts", () => {
 		)
 		expect(fixture.process.isSettled).toBe(true)
 		expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
-		expect(fixture.task.say).toHaveBeenCalledWith("error", expect.any(String))
+		expect(fixture.task.say).toHaveBeenCalledWith(
+			"error",
+			expect.any(String),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{
+				turn: null,
+			},
+		)
 	})
 
 	it.each(["cancelled", "denied"] as const)(

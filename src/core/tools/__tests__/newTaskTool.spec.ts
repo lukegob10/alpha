@@ -1,6 +1,7 @@
-// npx vitest core/tools/__tests__/newTaskTool.spec.ts
+// pnpm --dir src test core/tools/__tests__/newTaskTool.spec.ts
 
 import type { AskApproval, HandleError, NativeToolArgs, ToolUse } from "../../../shared/tools"
+import type { TodoItem } from "@alpha-code/types"
 
 // Mock vscode module
 vi.mock("vscode", () => ({
@@ -33,7 +34,7 @@ vi.mock("../../prompts/responses", () => ({
 	},
 }))
 
-vi.mock("../updateTodoListTool", () => ({
+vi.mock("../UpdateTodoListTool", () => ({
 	parseMarkdownChecklist: vi.fn((md: string) => {
 		// Simple mock implementation
 		const lines = md.split("\n").filter((line) => line.trim())
@@ -70,19 +71,18 @@ const mockPushToolResult = vi.fn()
 const mockEmit = vi.fn()
 const mockRecordToolError = vi.fn()
 const mockSayAndCreateMissingParamError = vi.fn()
-const mockStartSubtask = vi
-	.fn<(message: string, todoItems: any[], mode: string) => Promise<MockAlphaInstance>>()
-	.mockResolvedValue({ taskId: "mock-subtask-id" })
-
-// Adapter to satisfy legacy expectations while exercising new delegation path
-const mockDelegateParentAndOpenChild = vi.fn(
-	async (args: { parentTaskId: string; message: string; initialTodos: any[]; mode: string }) => {
-		// Call legacy spy so existing expectations still pass
-		await mockStartSubtask(args.message, args.initialTodos, args.mode)
-		return { taskId: "child-1" }
-	},
-)
+const mockDelegateParentAndOpenChild = vi
+	.fn<
+		(args: {
+			parentTaskId: string
+			message: string
+			initialTodos: TodoItem[]
+			mode: string
+		}) => Promise<MockAlphaInstance>
+	>()
+	.mockResolvedValue({ taskId: "child-1" })
 const mockCheckpointSave = vi.fn()
+const mockGetState = vi.fn(() => ({ customModes: [], mode: "ask" }))
 
 // Mock the Alpha instance and its methods/properties
 const mockAlphaTask = {
@@ -96,10 +96,9 @@ const mockAlphaTask = {
 	taskId: "mock-parent-task-id",
 	enableCheckpoints: false,
 	checkpointSave: mockCheckpointSave,
-	startSubtask: mockStartSubtask,
 	providerRef: {
 		deref: vi.fn(() => ({
-			getState: vi.fn(() => ({ customModes: [], mode: "ask" })),
+			getState: mockGetState,
 			handleModeSwitch: vi.fn(),
 			delegateParentAndOpenChild: mockDelegateParentAndOpenChild,
 		})),
@@ -156,6 +155,63 @@ describe("newTaskTool", () => {
 		} as any)
 	})
 
+	it.each(["settings", "approval"] as const)(
+		"does not delegate when cancellation arrives during %s preparation",
+		async (stage) => {
+			const controller = new AbortController()
+			const reason = new Error("The invoking step was cancelled")
+			if (stage === "settings") {
+				mockGetState.mockImplementationOnce(() => {
+					controller.abort(reason)
+					return { customModes: [], mode: "ask" }
+				})
+			} else {
+				mockAskApproval.mockImplementationOnce(async () => {
+					controller.abort(reason)
+					return true
+				})
+			}
+
+			await expect(
+				newTaskTool.execute({ mode: "code", message: "Delegation request" }, mockAlphaTask as any, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					signal: controller.signal,
+				}),
+			).rejects.toBe(reason)
+			expect(mockDelegateParentAndOpenChild).not.toHaveBeenCalled()
+			expect(mockHandleError).not.toHaveBeenCalled()
+			expect(mockPushToolResult).not.toHaveBeenCalled()
+			if (stage === "settings") expect(mockAskApproval).not.toHaveBeenCalled()
+		},
+	)
+
+	it("passes cancellation ownership to host preparation without cancelling the committed handoff", async () => {
+		const controller = new AbortController()
+		mockDelegateParentAndOpenChild.mockImplementationOnce(async () => {
+			controller.abort()
+			return { taskId: "child-1" }
+		})
+
+		await newTaskTool.execute({ mode: "code", message: "Delegation request" }, mockAlphaTask as any, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			signal: controller.signal,
+		})
+
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Delegation request",
+			initialTodos: [],
+			mode: "code",
+			signal: controller.signal,
+		})
+		expect(mockPushToolResult).toHaveBeenCalledWith("Delegated to child task child-1")
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
 	it("should correctly un-escape \\\\@ to \\@ in the message passed to the new task", async () => {
 		const block: ToolUse<"new_task"> = {
 			type: "tool_use", // Add required 'type' property
@@ -177,15 +233,16 @@ describe("newTaskTool", () => {
 		// Verify askApproval was called
 		expect(mockAskApproval).toHaveBeenCalled()
 
-		// Verify the message passed to startSubtask reflects the code's behavior in unit tests
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"Review this: \\@file1.txt and also \\\\\\@file2.txt", // Unit Test Expectation: \\@ -> \@, \\\\@ -> \\\\@
-			expect.arrayContaining([
+		// Verify delegation receives the unescaped message and parsed checklist.
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Review this: \\@file1.txt and also \\\\\\@file2.txt",
+			initialTodos: expect.arrayContaining([
 				expect.objectContaining({ content: "First task" }),
 				expect.objectContaining({ content: "Second task" }),
 			]),
-			"code",
-		)
+			mode: "code",
+		})
 
 		// Verify side effects
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
@@ -209,11 +266,12 @@ describe("newTaskTool", () => {
 			pushToolResult: mockPushToolResult,
 		})
 
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"This is already unescaped: \\@file1.txt", // Expected: \@ remains \@
-			expect.any(Array),
-			"code",
-		)
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "This is already unescaped: \\@file1.txt",
+			initialTodos: expect.any(Array),
+			mode: "code",
+		})
 	})
 
 	it("should not un-escape non-escaped @", async () => {
@@ -234,11 +292,12 @@ describe("newTaskTool", () => {
 			pushToolResult: mockPushToolResult,
 		})
 
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"A normal mention @file1.txt", // Expected: @ remains @
-			expect.any(Array),
-			"code",
-		)
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "A normal mention @file1.txt",
+			initialTodos: expect.any(Array),
+			mode: "code",
+		})
 	})
 
 	it("should handle mixed escaping scenarios", async () => {
@@ -259,11 +318,12 @@ describe("newTaskTool", () => {
 			pushToolResult: mockPushToolResult,
 		})
 
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"Mix: @file0.txt, \\@file1.txt, \\@file2.txt, \\\\\\@file3.txt", // Unit Test Expectation: @->@, \@->\@, \\@->\@, \\\\@->\\\\@
-			expect.any(Array),
-			"code",
-		)
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Mix: @file0.txt, \\@file1.txt, \\@file2.txt, \\\\\\@file3.txt",
+			initialTodos: expect.any(Array),
+			mode: "code",
+		})
 	})
 
 	it("should handle missing todos parameter gracefully (backward compatibility)", async () => {
@@ -290,7 +350,12 @@ describe("newTaskTool", () => {
 		expect(mockAlphaTask.recordToolError).not.toHaveBeenCalledWith("new_task")
 
 		// Should create task with empty todos array
-		expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Test message",
+			initialTodos: [],
+			mode: "code",
+		})
 
 		// Should complete successfully
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
@@ -315,14 +380,15 @@ describe("newTaskTool", () => {
 		})
 
 		// Should parse and include todos when provided
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"Test message with todos",
-			expect.arrayContaining([
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Test message with todos",
+			initialTodos: expect.arrayContaining([
 				expect.objectContaining({ content: "First task" }),
 				expect.objectContaining({ content: "Second task" }),
 			]),
-			"code",
-		)
+			mode: "code",
+		})
 
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
 	})
@@ -391,15 +457,16 @@ describe("newTaskTool", () => {
 			pushToolResult: mockPushToolResult,
 		})
 
-		expect(mockStartSubtask).toHaveBeenCalledWith(
-			"Test message",
-			expect.arrayContaining([
+		expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+			parentTaskId: mockAlphaTask.taskId,
+			message: "Test message",
+			initialTodos: expect.arrayContaining([
 				expect.objectContaining({ content: "Pending task", status: "pending" }),
 				expect.objectContaining({ content: "Completed task", status: "completed" }),
 				expect.objectContaining({ content: "In progress task", status: "in_progress" }),
 			]),
-			"code",
-		)
+			mode: "code",
+		})
 	})
 
 	describe("VSCode setting: newTaskRequireTodos", () => {
@@ -433,7 +500,12 @@ describe("newTaskTool", () => {
 			expect(mockAlphaTask.recordToolError).not.toHaveBeenCalledWith("new_task")
 
 			// Should create task with empty todos array
-			expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
+			expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+				parentTaskId: mockAlphaTask.taskId,
+				message: "Test message",
+				initialTodos: [],
+				mode: "code",
+			})
 
 			// Should complete successfully
 			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
@@ -469,7 +541,7 @@ describe("newTaskTool", () => {
 			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("new_task")
 
 			// Should NOT create task
-			expect(mockStartSubtask).not.toHaveBeenCalled()
+			expect(mockDelegateParentAndOpenChild).not.toHaveBeenCalled()
 			expect(mockPushToolResult).not.toHaveBeenCalledWith(
 				expect.stringContaining("Successfully created new task"),
 			)
@@ -504,14 +576,15 @@ describe("newTaskTool", () => {
 			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 
 			// Should create task with parsed todos
-			expect(mockStartSubtask).toHaveBeenCalledWith(
-				"Test message",
-				expect.arrayContaining([
+			expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+				parentTaskId: mockAlphaTask.taskId,
+				message: "Test message",
+				initialTodos: expect.arrayContaining([
 					expect.objectContaining({ content: "First task" }),
 					expect.objectContaining({ content: "Second task" }),
 				]),
-				"code",
-			)
+				mode: "code",
+			})
 
 			// Should complete successfully
 			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
@@ -546,7 +619,12 @@ describe("newTaskTool", () => {
 			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 
 			// Should create task with empty todos array
-			expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
+			expect(mockDelegateParentAndOpenChild).toHaveBeenCalledWith({
+				parentTaskId: mockAlphaTask.taskId,
+				message: "Test message",
+				initialTodos: [],
+				mode: "code",
+			})
 
 			// Should complete successfully
 			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Delegated to child task"))
@@ -618,7 +696,7 @@ describe("newTaskTool", () => {
 })
 
 describe("newTaskTool delegation flow", () => {
-	it("delegates to provider and does not call legacy startSubtask", async () => {
+	it("delegates to the provider with the parent identity", async () => {
 		// Arrange: stub provider delegation
 		const providerSpy = {
 			getState: vi.fn().mockResolvedValue({
@@ -630,7 +708,6 @@ describe("newTaskTool delegation flow", () => {
 		} as any
 
 		// Use a fresh local cline instance to avoid cross-test interference
-		const localStartSubtask = vi.fn()
 		const localEmit = vi.fn()
 		const localAlpha = {
 			ask: vi.fn(),
@@ -643,7 +720,6 @@ describe("newTaskTool delegation flow", () => {
 			taskId: "mock-parent-task-id",
 			enableCheckpoints: false,
 			checkpointSave: mockCheckpointSave,
-			startSubtask: localStartSubtask,
 			providerRef: {
 				deref: vi.fn(() => providerSpy),
 			},
@@ -674,9 +750,6 @@ describe("newTaskTool delegation flow", () => {
 			initialTodos: [],
 			mode: "code",
 		})
-
-		// Assert: legacy path not used
-		expect(localStartSubtask).not.toHaveBeenCalled()
 
 		// Assert: no pause/unpause events emitted in delegation path
 		const pauseEvents = (localEmit as any).mock.calls.filter(

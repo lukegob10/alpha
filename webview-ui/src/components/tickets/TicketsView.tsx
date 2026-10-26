@@ -418,11 +418,20 @@ export default function TicketsView() {
 					},
 				})
 			: await request({ action: "create", input: { ...fields, parentId } })
-		if (!ticket && status !== "backlog" && result && "id" in result)
+		if (!ticket && status !== "backlog") {
+			const created = ticketSchema.parse(result)
+			// Creation is already durable. Preserve its identity and the desired draft
+			// so a failed status update can be retried without creating another ticket.
+			ticketChangeSequence.current++
+			latest.current = { ...latest.current, id: created.id, revision: created.revision }
+			returnToTicket.current = created.id
+			setTicket(created)
+			setRefresh((value) => value + 1)
 			result = await request({
 				action: "update",
-				input: { id: result.id, expectedRevision: result.revision, status },
+				input: { id: created.id, expectedRevision: created.revision, status },
 			})
+		}
 		accept(result)
 		setRefresh((value) => value + 1)
 		return ticketSchema.parse(result)
@@ -896,7 +905,9 @@ export default function TicketsView() {
 								)}
 								<button
 									type="button"
-									disabled={!draft.name.trim() || draft.status === "complete"}
+									disabled={
+										!draft.name.trim() || draft.status === "complete" || draft.status === "canceled"
+									}
 									onClick={startWork}>
 									{t("work")}
 								</button>

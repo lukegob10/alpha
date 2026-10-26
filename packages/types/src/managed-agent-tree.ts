@@ -44,7 +44,7 @@ export const managedAgentTreeNodeProjectionSchema = z
 		startedAt: z.number().nonnegative().optional(),
 		finishedAt: z.number().nonnegative().optional(),
 		depth: z.number().int().nonnegative(),
-		maxDepth: z.number().int().nonnegative().optional(),
+		maxDepth: z.number().int().nonnegative().nullable().optional(),
 		delegationPolicy: subagentDelegationPolicySchema.optional(),
 		effectiveLimits: subagentEffectiveLimitsSchema.optional(),
 		stopReason: subagentStopReasonSchema.optional(),

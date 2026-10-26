@@ -133,18 +133,8 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			// Apply the replacement
-			let newContent: string
-			if (replaceAll) {
-				// Replace all occurrences
-				const searchPattern = new RegExp(escapeRegExp(normalizedOld), "g")
-				newContent = fileContent.replace(searchPattern, () => normalizedNew)
-			} else {
-				// Replace single occurrence (already verified uniqueness above)
-				newContent = fileContent.replace(normalizedOld, () => normalizedNew)
-			}
-
-			newContent = projection.restore(newContent)
+			// Multiple matches are allowed only when replace_all is enabled above.
+			const newContent = projection.restore(fileContent.replaceAll(normalizedOld, () => normalizedNew))
 			// Check if any changes were made
 			if (newContent === originalFileContent) {
 				pushToolResult(`No changes needed for '${relPath}'`)
@@ -273,15 +263,6 @@ export class EditTool extends BaseTool<"edit"> {
 
 		await task.ask("tool", JSON.stringify(sharedMessageProps), block.partial).catch(() => {})
 	}
-}
-
-/**
- * Escapes special regex characters in a string
- * @param input String to escape regex characters in
- * @returns Escaped string safe for regex pattern matching
- */
-function escapeRegExp(input: string): string {
-	return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 export const editTool = new EditTool()

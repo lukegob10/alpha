@@ -4,9 +4,16 @@ import path from "node:path"
 
 import type { HarnessProcessRunner } from "../orchestration/index"
 import type { ContentAddressedArtifactStore } from "./artifactStore"
-import { collectRequiredEvidence, type RequiredEvidence } from "./collector"
+import { collectRequiredEvidence, type CaptureStatuses, type RequiredEvidence } from "./collector"
 import type { ArtifactDescriptor } from "./types"
 import { canonicalJson, sha256 } from "./canonical"
+import { containsSecret } from "./redaction"
+import {
+	parseWorkspaceSnapshot,
+	workspaceSnapshotPath,
+	workspaceSnapshotTreeDigest,
+	type WorkspaceSnapshot,
+} from "./workspaceSnapshot"
 
 export type WorkspaceEvidenceInput = {
 	attemptId: string
@@ -20,22 +27,29 @@ export type WorkspaceEvidenceInput = {
 	processRunner: HarnessProcessRunner
 	store: ContentAddressedArtifactStore
 	secrets?: string[]
+	baselineCommit?: string
+	captureStatuses?: CaptureStatuses
 }
 
 export async function collectWorkspaceEvidence(input: WorkspaceEvidenceInput): Promise<ArtifactDescriptor[]> {
-	const [diff, status, tree] = await Promise.all([
-		runGit(input, ["diff", "--binary", "--no-ext-diff"]),
+	const [diff, status, snapshot] = await Promise.all([
+		runGit(input, [
+			"diff",
+			"--binary",
+			"--no-ext-diff",
+			...(input.baselineCommit ? [input.baselineCommit, "--"] : []),
+		]),
 		runGit(input, ["status", "--short", "--untracked-files=all"]),
-		digestWorkspaceTree(input),
+		captureWorkspaceSnapshot(input),
 	])
 	const evidence: RequiredEvidence = {
 		final_diff: diff,
 		git_status: status,
-		tree_digest: tree.trim(),
-		transcript: input.transcript ?? input.extensionLog ?? "",
-		final_response: input.finalResponse ?? "",
-		test_output: input.testOutput ?? "",
-		extension_log: input.extensionLog ?? "",
+		tree_digest: workspaceSnapshotTreeDigest(snapshot),
+		transcript: input.transcript,
+		final_response: input.finalResponse,
+		test_output: input.testOutput,
+		extension_log: input.extensionLog,
 		environment_manifest: {
 			platform: process.platform,
 			architecture: process.arch,
@@ -52,10 +66,71 @@ export async function collectWorkspaceEvidence(input: WorkspaceEvidenceInput): P
 			concurrency: Number(process.env.EVALS_CONCURRENCY ?? 1),
 			permissionProfileDigest: process.env.EVALS_PERMISSION_PROFILE_DIGEST ?? "local-process",
 		},
-		usage: input.usage ?? {},
+		usage: input.usage !== null && typeof input.usage === "object" ? input.usage : undefined,
 		stop_reason: input.stopReason,
 	}
-	return collectRequiredEvidence(input.attemptId, evidence, input.store, { secrets: input.secrets })
+	const descriptors = await collectRequiredEvidence(input.attemptId, evidence, input.store, {
+		secrets: input.secrets,
+		captureStatuses: input.captureStatuses,
+	})
+	descriptors.push(
+		await input.store.put({
+			attemptId: input.attemptId,
+			kind: "workspace_snapshot",
+			bytes: Buffer.from(JSON.stringify(snapshot)),
+			mediaType: "application/json",
+			access: "reviewer",
+		}),
+	)
+	return descriptors
+}
+
+async function captureWorkspaceSnapshot(
+	input: Pick<WorkspaceEvidenceInput, "workspace" | "processRunner" | "baselineCommit" | "secrets">,
+): Promise<WorkspaceSnapshot> {
+	const root = await fs.realpath(input.workspace)
+	// A model-edited .gitignore must not hide final implementation bytes. Installed
+	// dependencies are reproducible from the retained manifests and are excluded explicitly.
+	const listing = await runGit(input, ["ls-files", "--cached", "--others", "--exclude=node_modules/", "-z"])
+	const snapshot: WorkspaceSnapshot = {
+		schemaVersion: 1,
+		baselineCommit: input.baselineCommit,
+		excludedDirectories: ["node_modules"],
+		files: [],
+	}
+	let total = 0
+	for (const relative of [...new Set(listing.split("\0").filter(Boolean))].sort()) {
+		if (!workspaceSnapshotPath(relative)) throw new Error("Invalid workspace snapshot path")
+		const file = path.resolve(root, relative)
+		let metadata
+		try {
+			let component = root
+			for (const part of relative.split("/")) {
+				component = path.join(component, part)
+				if ((await fs.lstat(component)).isSymbolicLink())
+					throw new Error("Workspace snapshot cannot follow symlinks")
+			}
+			metadata = await fs.lstat(file)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+			throw error
+		}
+		if (!metadata.isFile() || metadata.size > 4 * 1024 * 1024 || snapshot.files.length >= 2000)
+			throw new Error("Workspace snapshot file bound exceeded")
+		const bytes = await fs.readFile(file)
+		total += bytes.length
+		if (total > 32 * 1024 * 1024 || bytes.length > 4 * 1024 * 1024)
+			throw new Error("Workspace snapshot byte bound exceeded")
+		if (containsSecret(bytes.toString("utf8"), input.secrets ?? []))
+			throw new Error("Workspace snapshot contains protected secret material")
+		snapshot.files.push({
+			path: relative,
+			bytesBase64: bytes.toString("base64"),
+			digest: sha256(bytes),
+			executable: Boolean(metadata.mode & 0o111),
+		})
+	}
+	return parseWorkspaceSnapshot(snapshot)
 }
 
 export async function digestWorkspaceTree(
@@ -82,6 +157,16 @@ export async function readEvidenceLog(logPath: string): Promise<string> {
 		return await fs.readFile(logPath, "utf8")
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""
+		throw error
+	}
+}
+
+/** Missing evidence remains distinguishable from an existing, legitimately empty capture. */
+export async function readOptionalEvidenceLog(logPath: string): Promise<string | undefined> {
+	try {
+		return await fs.readFile(logPath, "utf8")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
 		throw error
 	}
 }
@@ -129,6 +214,7 @@ async function runGit(
 		timeoutMs: 30_000,
 		maxOutputBytes: 10 * 1024 * 1024,
 	})
-	if (result.timedOut || result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`)
+	if (result.timedOut || result.exitCode !== 0 || result.outputTruncated)
+		throw new Error(`git ${args[0]} evidence is incomplete`)
 	return result.stdout
 }

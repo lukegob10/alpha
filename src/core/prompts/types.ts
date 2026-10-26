@@ -13,6 +13,8 @@ export interface SystemPromptSettings {
 	projectInstructionDiscovery?: ProjectInstructionDiscoveryOptions
 	/** Selected provider model's context window captured for this step. */
 	skillCatalogContextWindow?: number
+	/** Thread-local advisory memory snapshot, already bounded by the memory store. */
+	memoryContext?: string
 	newTaskRequireTodos: boolean
 	/** When true, model should hide vendor/company identity in responses */
 	isStealthModel?: boolean
@@ -24,6 +26,8 @@ export interface SystemPromptSettings {
 	codexRootDelegationAvailable?: boolean
 	/** Narrow child authority used to omit capabilities the child cannot call. */
 	subagentRole?: "explore" | "review" | "worker"
+	/** New roles inherit authority; old manifests keep their historical role restrictions. */
+	subagentInheritsPermissions?: boolean
 	/** Whether the managed child received a frozen, mode-filtered skill catalog. */
 	subagentHasInheritedSkills?: boolean
 	/** Whether this managed child uses a frozen parent context package. */

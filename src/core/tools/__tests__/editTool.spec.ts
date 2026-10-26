@@ -4,7 +4,6 @@ import fs from "fs/promises"
 import type { MockedFunction } from "vitest"
 
 import { fileExistsAtPath } from "../../../utils/fs"
-import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import { getReadablePath } from "../../../utils/path"
 import { ToolUse, ToolResponse } from "../../../shared/tools"
 import { editTool } from "../EditTool"
@@ -44,10 +43,6 @@ vi.mock("../../prompts/responses", () => ({
 	},
 }))
 
-vi.mock("../../../utils/pathUtils", () => ({
-	isPathOutsideWorkspace: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock("../../../utils/path", () => ({
 	getReadablePath: vi.fn().mockReturnValue("test/path.txt"),
 }))
@@ -80,7 +75,6 @@ describe("editTool", () => {
 	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
 		(path: string, encoding: string) => Promise<string>
 	>
-	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
 	const mockedPathIsAbsolute = path.isAbsolute as MockedFunction<typeof path.isAbsolute>
@@ -98,7 +92,6 @@ describe("editTool", () => {
 		mockedPathIsAbsolute.mockReturnValue(false)
 		mockedFileExistsAtPath.mockResolvedValue(true)
 		mockedFsReadFile.mockResolvedValue(testFileContent)
-		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
 
 		mockTask.cwd = "/"
@@ -266,6 +259,21 @@ describe("editTool", () => {
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.diffViewProvider.editType).toBe("modify")
 			expect(mockAskApproval).toHaveBeenCalled()
+		})
+
+		it.each(["\n", "\r\n"])("preserves literal patterns, replacement text, BOM and %j endings", async (eol) => {
+			const oldString = "[value].*+$"
+			const replacement = "$& $$ $'"
+			await executeEditTool(
+				{ old_string: oldString, new_string: replacement, replace_all: "true" },
+				{ fileContent: `\uFEFF${oldString}${eol}unchanged${eol}${oldString}` },
+			)
+
+			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+				`\uFEFF${replacement}${eol}unchanged${eol}${replacement}`,
+				true,
+			)
+			expect(mockAskApproval).toHaveBeenCalledTimes(1)
 		})
 	})
 

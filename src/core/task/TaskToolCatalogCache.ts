@@ -421,6 +421,7 @@ export class TaskToolCatalogCache {
 			profile: entry.full.profile,
 			diagnosticSession: entry.full.diagnosticSession,
 			diagnosticSourceTaskId: entry.full.diagnosticSourceTaskId,
+			memoryToolsEnabled: entry.full.memoryToolsEnabled,
 			includeAllToolsWithRestrictions: entry.full.includeAllToolsWithRestrictions,
 			applyProfile: false,
 		})

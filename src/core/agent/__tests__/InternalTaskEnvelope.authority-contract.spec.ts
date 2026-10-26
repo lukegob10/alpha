@@ -17,6 +17,25 @@ const base: BuildInternalTaskEnvelopeInput = {
 }
 
 describe("InternalTaskEnvelope authority contract", () => {
+	it.each(["explore", "review", "worker"])("inherits parent authority independently of the %s role", (agentKind) => {
+		const policy = { ...base.parentPolicy, network: true, externalSideEffects: true }
+		const envelope = buildInternalTaskEnvelope({
+			...base,
+			parentPolicy: policy,
+			agentKind,
+			authorityModel: "parent",
+		})
+		expect(envelope.policy).toEqual(policy)
+		expect(envelope.authorityModel).toBe("parent")
+		expect(() =>
+			buildInternalTaskEnvelope({
+				...base,
+				agentKind,
+				authorityModel: "parent",
+				requestedPolicy: { network: true },
+			}),
+		).toThrow("cannot widen parent authority: network")
+	})
 	it.each(["toString", "constructor", "__proto__"])("rejects inherited route name %s", (modelRouteId) => {
 		expect(() => buildInternalTaskEnvelope({ ...base, modelRouteId })).toThrow("Unknown model route")
 	})

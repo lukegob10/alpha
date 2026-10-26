@@ -145,7 +145,7 @@ RUN cp -r /roo/.vscode-template /roo/.vscode
 
 # Build the Alpha extension (for VSCode execution method)
 RUN pnpm vsix \
-    && node -e "const fs=require('node:fs');const p=require('./src/package.json');fs.copyFileSync('bin/'+p.name+'-'+p.version+'.vsix','bin/alpha-code.vsix')" \
+    && node -e "const fs=require('node:fs');const p=require('./src/package.json');const {hostVsixTarget}=require('./src/lancedb-native.mjs');fs.copyFileSync('bin/'+p.name+'-'+p.version+'-'+hostVsixTarget()+'.vsix','bin/alpha-code.vsix')" \
     && yes | code --no-sandbox --user-data-dir /roo/.vscode --install-extension bin/alpha-code.vsix
 
 # Copy entrypoint script

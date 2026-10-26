@@ -3,6 +3,7 @@ import {
 	type ProviderSettings,
 	type VerbosityLevel,
 	type ReasoningEffortExtended,
+	resolveModelReasoningEffort,
 } from "@alpha-code/types"
 
 import {
@@ -20,6 +21,7 @@ import {
 	type GeminiReasoningParams,
 	getAnthropicReasoning,
 	getOpenAiReasoning,
+	getExplicitOpenAiOffEffort,
 	getGeminiReasoning,
 } from "./reasoning"
 
@@ -88,7 +90,10 @@ export function getModelParams({
 
 	let temperature: ModelParams["temperature"] = customTemperature ?? model.defaultTemperature ?? defaultTemperature
 	let reasoningBudget: ModelParams["reasoningBudget"] = undefined
-	let reasoningEffort: ModelParams["reasoningEffort"] = undefined
+	let reasoningEffort: ModelParams["reasoningEffort"] =
+		format === "openai"
+			? getExplicitOpenAiOffEffort({ model, settings, reasoningEffort: customReasoningEffort })
+			: undefined
 	let verbosity: VerbosityLevel | undefined = customVerbosity
 
 	if (shouldUseReasoningBudget({ model, settings })) {
@@ -123,15 +128,12 @@ export function getModelParams({
 		// "Traditional" reasoning models use the `reasoningEffort` parameter.
 		// Only fallback to model default if user hasn't explicitly set a value.
 		// If customReasoningEffort is "disable", don't fallback to model default.
-		const effort =
-			customReasoningEffort !== undefined
-				? customReasoningEffort
-				: (model.reasoningEffort as ReasoningEffortExtended | "disable" | undefined)
+		const effort = resolveModelReasoningEffort(model, customReasoningEffort, model.requiredReasoningEffort === true)
 		// Capability and settings checks are handled by shouldUseReasoningEffort.
 		// Here we simply propagate the resolved effort into the params, while
 		// still treating "disable" as an omission.
-		if (effort && effort !== "disable") {
-			reasoningEffort = effort as ReasoningEffortExtended
+		if (effort) {
+			reasoningEffort = effort
 		}
 	}
 

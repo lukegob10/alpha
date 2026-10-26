@@ -274,7 +274,7 @@ export function getCommandSearchSource(command: string): CommandSearchSource | u
 	const tokens = tokenizeSearchStage(leadingStage)
 	const executable = tokens[0] ? commandExecutableName(tokens[0]) : undefined
 	if (!executable) return undefined
-	const direct = SEARCH_EXECUTABLES[executable]
+	const direct = Object.hasOwn(SEARCH_EXECUTABLES, executable) ? SEARCH_EXECUTABLES[executable] : undefined
 	if (direct) return direct
 	if (executable !== "git") return undefined
 

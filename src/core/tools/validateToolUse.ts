@@ -15,13 +15,24 @@ import {
 	expandLegacyThreadToolDisables,
 } from "../../shared/tools"
 import { parseMcpToolName } from "../../utils/mcp-name"
+import { getPatchPaths } from "./apply-patch/parser"
 
 const executableNativeToolNames: readonly string[] = validToolNames
+
+function hasCustomTool(toolName: string, capturedCustomToolNames?: ReadonlySet<string>): boolean {
+	// A supplied empty catalog is authoritative; only legacy callers consult the live registry.
+	return capturedCustomToolNames !== undefined
+		? capturedCustomToolNames.has(toolName)
+		: customToolRegistry.has(toolName)
+}
 
 const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"get_goal",
 	"list_tickets",
 	"read_ticket",
+	"memories_list",
+	"memories_read",
+	"memories_search",
 	"read_file",
 	"view_image",
 	"search_files",
@@ -50,13 +61,17 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
  * Note: This does NOT check if the tool is allowed for a specific mode,
  * only that the tool actually exists.
  */
-export function isValidToolName(toolName: string, experiments?: Record<string, boolean>): toolName is ToolName {
+export function isValidToolName(
+	toolName: string,
+	experiments?: Record<string, boolean>,
+	capturedCustomToolNames?: ReadonlySet<string>,
+): toolName is ToolName {
 	// Check if it's a valid static tool
 	if ((executableNativeToolNames as readonly string[]).includes(toolName)) {
 		return true
 	}
 
-	if (experiments?.customTools && customToolRegistry.has(toolName)) {
+	if (experiments?.customTools && hasCustomTool(toolName, capturedCustomToolNames)) {
 		return true
 	}
 
@@ -76,10 +91,10 @@ export function validateToolUse(
 	toolParams?: Record<string, unknown>,
 	experiments?: Record<string, boolean>,
 	includedTools?: string[],
+	capturedCustomToolNames?: ReadonlySet<string>,
 ): void {
 	// First, check if the tool name is actually a valid/known tool
-	// This catches completely invalid tool names like "edit_file" that don't exist
-	if (!isValidToolName(toolName, experiments)) {
+	if (!isValidToolName(toolName, experiments, capturedCustomToolNames)) {
 		throw new Error(
 			`Unknown tool "${toolName}". This tool does not exist. Please use one of the available tools: ${executableNativeToolNames.join(", ")}.`,
 		)
@@ -95,6 +110,7 @@ export function validateToolUse(
 			toolParams,
 			experiments,
 			includedTools,
+			capturedCustomToolNames,
 		)
 	) {
 		throw new Error(`Tool "${toolName}" is not allowed in ${mode} mode.`)
@@ -113,34 +129,6 @@ const EDIT_OPERATION_PARAMS = [
 	"old_string", // Used by search_replace and edit_file
 	"new_string", // Used by search_replace and edit_file
 ] as const
-
-// Markers used in apply_patch format to identify file operations
-const PATCH_FILE_MARKERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "] as const
-
-/**
- * Extract file paths from apply_patch content.
- * The patch format uses add, delete, update, and move markers followed by a file path.
- * @param patchContent The patch content string
- * @returns Array of file paths found in the patch
- */
-function extractFilePathsFromPatch(patchContent: string): string[] {
-	const filePaths: string[] = []
-	const lines = patchContent.split("\n")
-
-	for (const line of lines) {
-		for (const marker of PATCH_FILE_MARKERS) {
-			if (line.startsWith(marker)) {
-				const path = line.substring(marker.length).trim()
-				if (path) {
-					filePaths.push(path)
-				}
-				break
-			}
-		}
-	}
-
-	return filePaths
-}
 
 function getGroupOptions(group: GroupEntry): GroupOptions | undefined {
 	return Array.isArray(group) ? group[1] : undefined
@@ -178,6 +166,7 @@ export function isToolAllowedForMode(
 	toolParams?: Record<string, any>, // All tool parameters
 	experiments?: Record<string, boolean>,
 	includedTools?: string[], // Opt-in tools explicitly included (e.g., from modelInfo)
+	capturedCustomToolNames?: ReadonlySet<string>,
 ): boolean {
 	// Resolve alias to canonical name (e.g., "search_and_replace" → "edit")
 	const resolvedTool = TOOL_ALIASES[tool] ?? tool
@@ -239,9 +228,8 @@ export function isToolAllowedForMode(
 		return true
 	}
 
-	// For now, allow all custom tools in any mode.
-	// As a follow-up we should expand the custom tool definition to include mode restrictions.
-	if (experiments?.customTools && customToolRegistry.has(tool)) {
+	// Custom definitions retain their captured authority after Plan and explicit deny checks.
+	if (experiments?.customTools && hasCustomTool(tool, capturedCustomToolNames)) {
 		return true
 	}
 
@@ -312,7 +300,7 @@ export function isToolAllowedForMode(
 
 			// Handle apply_patch: extract file paths from patch content and validate each
 			if (tool === "apply_patch" && typeof toolParams?.patch === "string") {
-				const patchFilePaths = extractFilePathsFromPatch(toolParams.patch)
+				const patchFilePaths = getPatchPaths(toolParams.patch)
 				for (const patchFilePath of patchFilePaths) {
 					const normalizedPatchPath = normalizeRestrictedFilePath(patchFilePath)
 					if (!normalizedPatchPath || !doesFileMatchRegex(normalizedPatchPath, options.fileRegex)) {

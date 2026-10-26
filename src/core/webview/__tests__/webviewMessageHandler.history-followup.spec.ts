@@ -159,8 +159,17 @@ describe("restored task follow-up routing", () => {
 				await new Promise<void>((resolve) => (releaseImages = resolve))
 				return {} as Awaited<ReturnType<AlphaProvider["getState"]>>
 			})
-			const pending = webviewMessageHandler(provider, request)
-			await resolving
+			// Attached images use provider limits; plain text bypasses this resolution boundary.
+			const pending = webviewMessageHandler(provider, {
+				...request,
+				images: ["data:image/png;base64,attached"],
+			})
+			await Promise.race([
+				resolving,
+				pending.then(() => {
+					throw new Error("The image-bearing follow-up did not reach the resolution boundary")
+				}),
+			])
 			if (transition === "active") task.isStreaming = true
 			else if (transition === "aborted") task.abort = true
 			else vi.mocked(provider.getLiveTask).mockReturnValue(undefined)

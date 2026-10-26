@@ -4,6 +4,8 @@ import * as vscode from "vscode"
 import { API } from "../api"
 import { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { TaskCommandName } from "@alpha-code/types"
+import { openAlphaInNewTab } from "../../activate/registerCommands"
+import type { Task } from "../../core/task/Task"
 
 const ipcMock = vi.hoisted(() => ({
 	handler: undefined as undefined | ((clientId: string, command: any) => void),
@@ -14,6 +16,7 @@ const ipcMock = vi.hoisted(() => ({
 }))
 
 vi.mock("vscode")
+vi.mock("../../activate/registerCommands", () => ({ openAlphaInNewTab: vi.fn() }))
 vi.mock("../../core/webview/AlphaProvider")
 vi.mock("@alpha-code/ipc", () => ({
 	IpcServer: vi.fn().mockImplementation(function () {
@@ -61,6 +64,45 @@ describe("API - SendMessage Command", () => {
 		api = new API(mockOutputChannel, mockProvider, undefined, true)
 		// Override the log method to use our mock
 		;(api as any).log = mockLog
+	})
+
+	it.each([false, true])("preserves existing API chats when starting another task with newTab=%s", async (newTab) => {
+		const remove = vi.fn(async () => undefined)
+		const create = vi.fn(async () => ({ taskId: "new-task" }) as Task)
+		Object.assign(mockProvider, {
+			removeTaskFromStack: remove,
+			createTask: create,
+			postStateToWebview: vi.fn(async () => undefined),
+		})
+		vi.mocked(openAlphaInNewTab).mockResolvedValue(mockProvider)
+		vi.mocked(vscode.commands.executeCommand).mockClear()
+
+		expect(await api.startNewTask({ configuration: { apiProvider: "openai" }, text: "New work", newTab })).toBe(
+			"new-task",
+		)
+		expect(remove).not.toHaveBeenCalled()
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.files.revert")
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.closeAllEditors")
+		expect(create).toHaveBeenCalledWith(
+			"New work",
+			undefined,
+			undefined,
+			expect.objectContaining({ preserveExisting: true }),
+			expect.anything(),
+		)
+	})
+
+	it("opens an API chat through canonical navigation without reconstructing its runtime", async () => {
+		const show = vi.fn(async () => undefined)
+		const read = vi.fn(async () => ({ historyItem: { id: "running-task" } }))
+		const replace = vi.fn(async () => ({}) as Task)
+		Object.assign(mockProvider, { showTaskWithId: show, getTaskWithId: read, createTaskWithHistoryItem: replace })
+
+		await api.resumeTask("running-task")
+
+		expect(show).toHaveBeenCalledWith("running-task")
+		expect(read).not.toHaveBeenCalled()
+		expect(replace).not.toHaveBeenCalled()
 	})
 
 	it("should handle SendMessage command with text only", async () => {

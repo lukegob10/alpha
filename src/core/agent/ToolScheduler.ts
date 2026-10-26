@@ -46,6 +46,7 @@ import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import { AskIgnoredError } from "../task/AskIgnoredError"
+import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 import type { Task } from "../task/Task"
 import { validateToolUse } from "../tools/validateToolUse"
 import type { AgentResponse, AgentToolCall } from "./AgentResponse"
@@ -57,7 +58,7 @@ import type {
 	ToolDescriptor,
 	ToolRegistry,
 } from "../tools/ToolRegistry"
-import { canonicalizeToolName } from "../tools/ToolRegistry"
+import { canonicalizeToolName, captureCustomToolNames } from "../tools/ToolRegistry"
 import {
 	getToolOutputLimit,
 	isCommandDeniedByPolicy,
@@ -523,6 +524,7 @@ interface PreparedCall {
 	pathIdentities?: ReadonlyArray<{ absolute: string; canonical: string }>
 	requiresExplicitApproval?: boolean
 	commandPathApproval?: { outsidePaths: string[]; unresolved: boolean }
+	protectedCommandWrite?: boolean
 }
 
 function scopeContains(root: string, candidate: string): boolean {
@@ -689,6 +691,9 @@ function normalizeAgentToolCall(value: unknown): AgentToolCall {
 }
 
 function getPathArguments(toolName: string, argumentsValue: Record<string, unknown>): unknown[] {
+	// These are store-relative resource identifiers. The captured memory capability
+	// and MemoryStore validate their host-owned namespace; workspace paths grant no access.
+	if (["memories_list", "memories_read", "memories_search", "memories_add_ad_hoc_note"].includes(toolName)) return []
 	const candidates = ["path", "file_path", "cwd", "directory"].map((key) => argumentsValue[key])
 	if (toolName === "generate_image") {
 		candidates.push(argumentsValue.image)
@@ -737,7 +742,15 @@ const OUTSIDE_WORKSPACE_TOOLS = new Set([
 
 function assertPathIdentities(prepared: PreparedCall): void {
 	for (const { absolute, canonical } of prepared.pathIdentities ?? []) {
-		if (path.relative(canonical, resolvePathWithExistingAncestor(absolute)) !== "") {
+		let currentCanonical: string
+		try {
+			currentCanonical = resolvePathWithExistingAncestor(absolute)
+		} catch {
+			throw new ToolReadDeniedError(
+				`Path target could not be safely resolved: ${absolute}. Check the path and retry.`,
+			)
+		}
+		if (path.relative(canonical, currentCanonical) !== "") {
 			throw new ToolReadDeniedError(
 				`Path target changed during execution or approval: ${absolute}. Retry with the current path.`,
 			)
@@ -761,6 +774,7 @@ function getVerificationOutput(content: ToolResponse): string {
 export class ToolScheduler {
 	private readonly approvalMutex = new AsyncMutex()
 	private readonly admissionMutex = new AsyncMutex()
+	private readonly capturedCustomToolNames: ReadonlySet<string>
 	private effectFenceFailure?: ToolEffectFenceError
 	private batchController = new AbortController()
 	private approvalAbortRequested = false
@@ -794,7 +808,9 @@ export class ToolScheduler {
 	private readonly deferredVerificationEventIds = new Set<string>()
 	private deferredBatchFinishedEvent?: Extract<AgentTurnEvent, { type: "tool_batch_finished" }>
 
-	constructor(private readonly options: ToolSchedulerOptions) {}
+	constructor(private readonly options: ToolSchedulerOptions) {
+		this.capturedCustomToolNames = captureCustomToolNames(options.registry)
+	}
 
 	private get executionHost(): ToolExecutionHost {
 		const host = this.options.executionHost ?? (this.options.task as unknown as ToolExecutionHost | undefined)
@@ -997,19 +1013,7 @@ export class ToolScheduler {
 		const capabilities = item?.descriptor?.capabilities
 		const captured = item?.descriptor && this.options.policy?.capabilities[item.descriptor.name]
 		if (item?.mcpReadPrepared) {
-			return (
-				this.executionMode === "selective-parallel" &&
-				capabilities?.parallelMcpRead === true &&
-				capabilities.concurrency === "serial" &&
-				capabilities.sideEffects === "external" &&
-				capabilities.requiresApproval &&
-				!capabilities.controlFlow &&
-				captured?.parallelMcpRead === true &&
-				captured.concurrency === "serial" &&
-				captured.sideEffects === "external" &&
-				captured.requiresApproval &&
-				!captured.controlFlow
-			)
+			return this.canPrepareParallelMcpRead(item)
 		}
 		if (item?.commandRead) {
 			return (
@@ -1944,7 +1948,9 @@ export class ToolScheduler {
 	}
 
 	private async raceCancellation<T>(operation: () => Promise<T>): Promise<T | undefined> {
-		if (this.isCancelled()) {
+		// Sibling fence failures abort the batch while the task itself can remain active.
+		const signal = this.executionSignal
+		if (this.isCancelled() || signal.aborted) {
 			return undefined
 		}
 
@@ -1952,9 +1958,7 @@ export class ToolScheduler {
 		let abortListener: (() => void) | undefined
 		const cancellation = new Promise<undefined>((resolve) => {
 			abortListener = () => resolve(undefined)
-			if (this.options.signal) {
-				this.options.signal.addEventListener("abort", abortListener, { once: true })
-			}
+			signal.addEventListener("abort", abortListener, { once: true })
 			// Task.abort is a legacy boolean without an event source. Poll only
 			// while an interactive host callback is pending so cancellation can
 			// release the approval lane deterministically in that compatibility path.
@@ -1971,8 +1975,8 @@ export class ToolScheduler {
 			if (interval) {
 				clearInterval(interval)
 			}
-			if (abortListener && this.options.signal) {
-				this.options.signal.removeEventListener("abort", abortListener)
+			if (abortListener) {
+				signal.removeEventListener("abort", abortListener)
 			}
 		}
 	}
@@ -2076,15 +2080,22 @@ export class ToolScheduler {
 					prepared.descriptor = descriptor
 					return prepared
 				}
-				const taskRoot = this.executionHost.cwd ?? (this.toolTask as TaskPathContext).cwd
-				const commandCwd = path.resolve(
-					taskRoot,
-					typeof argumentsValue.cwd === "string" ? argumentsValue.cwd : ".",
-					invocation.workdir ?? ".",
-				)
-				argumentsValue = normalizeTaskToolArguments(this.toolTask as TaskPathContext, "apply_patch", {
-					patch: rebaseApplyPatchPaths(invocation.patch, taskRoot, commandCwd),
-				})
+				try {
+					const taskRoot = this.executionHost.cwd ?? (this.toolTask as TaskPathContext).cwd
+					const commandCwd = path.resolve(
+						taskRoot,
+						typeof argumentsValue.cwd === "string" ? argumentsValue.cwd : ".",
+						invocation.workdir ?? ".",
+					)
+					argumentsValue = normalizeTaskToolArguments(this.toolTask as TaskPathContext, "apply_patch", {
+						patch: rebaseApplyPatchPaths(invocation.patch, taskRoot, commandCwd),
+					})
+				} catch (error) {
+					prepared.validationError = this.errorMessage(error)
+					reject("invalid_arguments")
+					prepared.descriptor = descriptor
+					return prepared
+				}
 				canonicalName = "apply_patch"
 				descriptor = patchDescriptor
 			}
@@ -2121,6 +2132,10 @@ export class ToolScheduler {
 				const commandCwd = path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : ".")
 				const scope = assessCommandPaths(args.command, commandCwd, roots?.length ? roots : [taskRoot])
 				pathArguments.push(...scope.writePaths)
+				const protectedFiles = this.toolTask.alphaProtectedController ?? new AlphaProtectedController(taskRoot)
+				prepared.protectedCommandWrite = scope.writePaths.some((candidate) =>
+					protectedFiles.isWriteProtected(candidate),
+				)
 				const outsidePaths = !isPathAllowed(this.options.policy, commandCwd, taskRoot)
 					? [...new Set([commandCwd, ...scope.outsidePaths])]
 					: scope.outsidePaths
@@ -2140,6 +2155,8 @@ export class ToolScheduler {
 		}
 		prepared.requiresExplicitApproval =
 			!!prepared.commandPathApproval ||
+			(prepared.protectedCommandWrite &&
+				this.options.policy?.approval.reviewPolicy?.protectedWriteAllowed !== true) ||
 			(canonicalName !== "exec_command" &&
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
@@ -2151,10 +2168,17 @@ export class ToolScheduler {
 							this.executionHost.cwd,
 						),
 				))
-		prepared.pathIdentities = pathArguments.map((candidate) => {
-			const absolute = this.resolvePolicyPath(canonicalName, candidate)
-			return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
-		})
+		try {
+			prepared.pathIdentities = pathArguments.map((candidate) => {
+				const absolute = this.resolvePolicyPath(canonicalName, candidate)
+				return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
+			})
+		} catch (error) {
+			prepared.validationError = `Unable to safely resolve tool paths: ${this.errorMessage(error)}`
+			reject("policy_denied", "workspace")
+			prepared.descriptor = descriptor
+			return prepared
+		}
 		for (const candidate of pathArguments) {
 			if (
 				!outsideAccess &&
@@ -2222,6 +2246,7 @@ export class ToolScheduler {
 						requestedArgumentsValue,
 						this.options.experiments,
 						this.options.includedTools,
+						this.capturedCustomToolNames,
 					)
 				}
 				validateToolUse(
@@ -2232,6 +2257,7 @@ export class ToolScheduler {
 					(toolCall.nativeArgs ?? {}) as Record<string, unknown>,
 					this.options.experiments,
 					this.options.includedTools,
+					this.capturedCustomToolNames,
 				)
 			}
 		} catch (error) {
@@ -2405,7 +2431,11 @@ export class ToolScheduler {
 							"An approval request cannot run in an approval-free parallel lane.",
 						)
 					}
-					const [, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
+					const [, partialMessage, originalProgressStatus, requestedForceApproval, callRequiresExplicit] =
+						args
+					const forceApproval =
+						requestedForceApproval === true ||
+						(type === "command" && prepared.protectedCommandWrite === true)
 					const progressStatus =
 						type === "command" && prepared.commandPathApproval
 							? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
@@ -2505,16 +2535,6 @@ export class ToolScheduler {
 						callId: prepared.call.id,
 						toolName: interceptedPatch ? approvalToolName : prepared.call.name,
 					})
-					if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
-						await publishApprovalResult({
-							type: "approval_result",
-							requestId,
-							decision: "approved",
-							reason: "Approved by an exact task-session grant.",
-						})
-						return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
-					}
-
 					let approval: ToolApprovalResponse | undefined
 					let typedDecision: ToolApprovalDecision | undefined
 					let approvalEventReason: string | undefined
@@ -2548,6 +2568,18 @@ export class ToolScheduler {
 								})
 								return undefined
 							}
+						}
+						// Codex 970111f6 runs permission hooks before consulting user approval
+						// caches. A prior session grant cannot override a current hook denial.
+						if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
+							assertPathIdentities(prepared)
+							await publishApprovalResult({
+								type: "approval_result",
+								requestId,
+								decision: "approved",
+								reason: "Approved by an exact task-session grant.",
+							})
+							return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
 						}
 						if (typedApprovalHost && approvalRequest) {
 							const response = await this.raceCancellation(() =>

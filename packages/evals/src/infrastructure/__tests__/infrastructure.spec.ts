@@ -42,6 +42,34 @@ class FakeRunner implements HarnessProcessRunner {
 }
 
 describe("structured Docker adapter", () => {
+	it("supports opt-in offline confinement without changing existing container defaults", async () => {
+		const confined = {
+			...spec,
+			pull: "never" as const,
+			readOnlyRootFilesystem: true,
+			dropAllCapabilities: true,
+			noNewPrivileges: true,
+			maxOutputBytes: 65_536,
+		}
+		expect(containerArgs(confined)).toEqual(
+			expect.arrayContaining([
+				"--pull",
+				"never",
+				"--read-only",
+				"--cap-drop",
+				"ALL",
+				"--security-opt",
+				"no-new-privileges=true",
+			]),
+		)
+		const previous = containerArgs(spec)
+		expect(previous).not.toContain("--pull")
+		expect(previous).not.toContain("--read-only")
+		const runner = new FakeRunner([success()])
+		await new DockerCliAdapter(runner).run(confined)
+		expect(runner.calls[0]!.maxOutputBytes).toBe(65_536)
+	})
+
 	it("builds resource-scoped argv without secret values or shell composition", async () => {
 		const args = containerArgs(spec)
 		expect(args).toContain("alpha.evals.attempt-id=attempt")
@@ -61,11 +89,126 @@ describe("structured Docker adapter", () => {
 			Status: "Up",
 			Labels: "alpha.evals.managed=true,alpha.evals.run-id=run,alpha.evals.trial-id=trial,alpha.evals.attempt-id=attempt",
 		})
-		const runner = new FakeRunner([success(row), success("abc"), success("[]")])
+		const runner = new FakeRunner([success(row), success("abc"), success()])
 		const adapter = new DockerCliAdapter(runner)
 		expect(await adapter.cleanup(spec.owner)).toEqual(["abc"])
 		expect(runner.calls[0]!.args.join(" ")).toContain("alpha.evals.attempt-id=attempt")
 		expect(runner.calls[1]!.args).toEqual(["rm", "--force", "abc"])
+		expect(runner.calls[2]!.args[0]).toBe("ps")
+	})
+
+	it.each(["timeout", "launch-failure", "interruption"])("verifies owned cleanup after %s", async (kind) => {
+		const row = JSON.stringify({ ID: "owned", Names: spec.name, Status: "Up", Labels: "alpha.evals.managed=true" })
+		const calls: HarnessProcessSpec[] = []
+		const runner = {
+			run: async (input: HarnessProcessSpec) => {
+				calls.push(input)
+				if (input.args[0] === "run") {
+					if (kind !== "timeout") throw new Error(kind)
+					return { ...success(), timedOut: true }
+				}
+				if (input.args[0] === "ps") return success(calls.length === 2 ? row : "")
+				return success()
+			},
+		}
+		const result = new DockerCliAdapter(runner).run(spec)
+		if (kind === "timeout") await expect(result).resolves.toMatchObject({ timedOut: true })
+		else await expect(result).rejects.toThrow(kind)
+		expect(calls.map(({ args }) => args[0])).toEqual(["run", "ps", "rm", "ps"])
+		expect(calls[1]!.args).toContain("label=alpha.evals.attempt-id=attempt")
+	})
+
+	it("fails closed when cleanup cannot prove that the old container stopped", async () => {
+		const row = JSON.stringify({ ID: "owned", Names: spec.name, Status: "Up", Labels: "alpha.evals.managed=true" })
+		const runner = new FakeRunner([success(), success(row), success(), success(row)])
+		await expect(new DockerCliAdapter(runner).run(spec)).rejects.toThrow("Unable to verify cleanup")
+	})
+
+	it("retains both the launch fault and the cleanup fault when cleanup cannot be verified", async () => {
+		const launch = new Error("launch failed")
+		const cleanup = new Error("cleanup failed")
+		let calls = 0
+		const runner: HarnessProcessRunner = {
+			run: async () => {
+				throw calls++ === 0 ? launch : cleanup
+			},
+		}
+		const failure = await new DockerCliAdapter(runner).run(spec).catch((error: unknown) => error)
+		expect(failure).toBeInstanceOf(Error)
+		expect(failure).toMatchObject({ cause: expect.any(AggregateError) })
+		expect(failure).toMatchObject({ cause: { errors: [launch, cleanup] } })
+	})
+
+	it.each(["timeout", "launch-failure", "interruption", "missing-id", "truncated-id"])(
+		"cleans owned detached services after %s",
+		async (kind) => {
+			const controller = new AbortController()
+			const calls: HarnessProcessSpec[] = []
+			let listings = 0
+			const runner: HarnessProcessRunner = {
+				run: async (input) => {
+					calls.push(input)
+					if (input.args[0] === "run") {
+						if (kind === "launch-failure") throw new Error("launch-failure")
+						if (kind === "interruption") controller.abort(new Error("interrupted"))
+						return {
+							...success(kind === "missing-id" ? "" : "a".repeat(64)),
+							timedOut: kind === "timeout",
+							outputTruncated: kind === "truncated-id",
+						}
+					}
+					if (input.args[0] === "ps")
+						return success(
+							listings++ === 0
+								? JSON.stringify({
+										ID: "owned",
+										Names: spec.name,
+										Status: "Up",
+										Labels: "alpha.evals.managed=true",
+									})
+								: "",
+						)
+					return success()
+				},
+			}
+			await expect(
+				new DockerCliAdapter(runner).runDetached({ ...spec, signal: controller.signal }),
+			).rejects.toThrow()
+			expect(calls.map(({ args }) => args[0])).toEqual(["run", "ps", "rm", "ps"])
+			expect(calls[0]!.signal).toBe(controller.signal)
+			expect(calls[1]!.args).toContain("label=alpha.evals.attempt-id=attempt")
+			expect(calls.slice(1).every(({ signal }) => signal === undefined)).toBe(true)
+		},
+	)
+
+	it("keeps a successful detached service running until its owner removes it", async () => {
+		const id = "a".repeat(64)
+		const runner = new FakeRunner([success(id)])
+		expect(await new DockerCliAdapter(runner).runDetached(spec)).toBe(id)
+		expect(runner.calls.map(({ args }) => args[0])).toEqual(["run"])
+	})
+
+	it("does not launch a detached service after cancellation", async () => {
+		const controller = new AbortController()
+		controller.abort(new Error("cancelled before launch"))
+		const runner = new FakeRunner([success("a".repeat(64))])
+		await expect(new DockerCliAdapter(runner).runDetached({ ...spec, signal: controller.signal })).rejects.toThrow(
+			"cancelled before launch",
+		)
+		expect(runner.calls).toHaveLength(0)
+	})
+
+	it("retains detached launch and cleanup faults and prevents false cleanup success", async () => {
+		const launch = new Error("detached launch failed")
+		const cleanup = new Error("detached cleanup failed")
+		let calls = 0
+		const runner: HarnessProcessRunner = {
+			run: async () => {
+				throw calls++ === 0 ? launch : cleanup
+			},
+		}
+		const failure = await new DockerCliAdapter(runner).runDetached(spec).catch((error: unknown) => error)
+		expect(failure).toMatchObject({ name: "ContainerCleanupError", cause: { errors: [launch, cleanup] } })
 	})
 
 	it("collects immutable runtime and image provenance", async () => {

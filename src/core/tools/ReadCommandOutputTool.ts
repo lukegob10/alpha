@@ -5,6 +5,7 @@ import { createHash } from "node:crypto"
 
 import { Task } from "../task/Task"
 import { getTaskDirectoryPath } from "../../utils/storage"
+import { t } from "../../i18n"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { withCommandOutputSearch, type CommandOutputMatcher } from "./helpers/commandOutputSearch"
@@ -402,6 +403,16 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 					return
 				}
 			}
+			// A byte budget no larger than the host's character budget also fits
+			// after UTF-8 decoding, so pagination describes the delivered page.
+			const responseLimit = Math.min(
+				limit,
+				Math.max(0, Math.floor(callbacks.getRemainingOutputChars?.() ?? limit)),
+			)
+			if (responseLimit < READ_COMMAND_OUTPUT_MIN_LIMIT_BYTES) {
+				await reportError(t("tools:commandOutputSearch.outputBudget"))
+				return
+			}
 
 			// Get the task directory path
 			const provider = await awaitWithAbort(Promise.resolve(task.providerRef.deref()), signal)
@@ -458,7 +469,14 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 
 			if (search !== undefined) {
 				// Search mode: filter lines matching the pattern
-				const searchResult = await this.searchInArtifact(artifactPath, search, offset, totalSize, limit, signal)
+				const searchResult = await this.searchInArtifact(
+					artifactPath,
+					search,
+					offset,
+					totalSize,
+					responseLimit,
+					signal,
+				)
 				result = searchResult.content
 				stateFingerprint = searchResult.stateFingerprint
 				matchCount = searchResult.matchCount
@@ -469,7 +487,7 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				searchIncomplete = searchResult.incomplete
 			} else {
 				// Normal read mode with offset/limit
-				const readResult = await this.readArtifact(artifactPath, offset, limit, totalSize, signal)
+				const readResult = await this.readArtifact(artifactPath, offset, responseLimit, totalSize, signal)
 				result = readResult.content
 				stateFingerprint = readResult.stateFingerprint
 				readStart = readResult.readStart

@@ -74,6 +74,8 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 			assertCurrentServer()
 			await task.say("mcp_server_request_started")
 			assertCurrentServer()
+			await task.markMemoryExternalContext?.()
+			assertCurrentServer()
 			const resourceResult = await mcpHub.readResource(server.name, uri, server.source, signal)
 			assertCurrentServer()
 			if (!resourceResult) {

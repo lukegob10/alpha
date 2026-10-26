@@ -527,6 +527,47 @@ describe("SYSTEM_PROMPT", () => {
 		expect(userContextPart?.role).toBe("user")
 	})
 
+	it.each([
+		[defaultModeSlug, undefined],
+		[planModeSlug, undefined],
+		[defaultModeSlug, "worker"],
+	] as const)(
+		"preserves the complete model prompt and custom instructions in %s mode for child role %s",
+		async (mode, subagentRole) => {
+			const customInstructions = "# Personality\nUSER_OWNED_TONE\n## Writing style\nUSER_OWNED_WRITING"
+			const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				undefined,
+				undefined,
+				mode,
+				{ code: { roleDefinition: "USER_OWNED_ROLE", customInstructions: customInstructions } },
+				undefined,
+				customInstructions,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: false,
+					newTaskRequireTodos: false,
+					approvalMode: "auto",
+					subagentRole,
+					subagentUsesFrozenContext: Boolean(subagentRole),
+					subagentFrozenInstructions: subagentRole ? customInstructions : undefined,
+				},
+				undefined,
+				"gpt-6.1-sol",
+			)
+			expect(fragments.instructionParts[0]?.content).toBe(CODEX_MODEL_INSTRUCTIONS["gpt-6.1-sol"])
+			expect(fragments.userContext).toContain(customInstructions)
+			expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(
+				renderSystemPromptFragments(fragments),
+			)
+		},
+	)
+
 	it("tells Copilot GPT-5.6 Sol to call the native patch tool and reports the command shell", async () => {
 		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
 			mockContext,
@@ -906,6 +947,40 @@ describe("SYSTEM_PROMPT", () => {
 				expect(prompt).toContain("read-only child task")
 				expect(alphaToolContract).not.toContain("exec_command")
 			}
+		},
+	)
+
+	it.each(["explore", "review", "worker"] as const)(
+		"describes inherited permissions for a new %s role",
+		async (subagentRole) => {
+			const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				createMockMcpHub(true),
+				undefined,
+				defaultModeSlug,
+				undefined,
+				undefined,
+				undefined,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					subagentRole,
+					subagentInheritsPermissions: true,
+					subagentUsesFrozenContext: true,
+				},
+			)
+			const overlay =
+				fragments.instructionParts.find(({ origin }) => origin === "alpha-feature-overlay")?.content ?? ""
+			expect(overlay).toContain("ALPHA MCP TOOLS")
+			expect(overlay).toContain("parent's captured execution and approval policy")
+			expect(overlay).not.toContain("This child is read-only")
+			expect(overlay).not.toMatch(/Do not stage|Do not commit|Do not.*change remotes/)
 		},
 	)
 

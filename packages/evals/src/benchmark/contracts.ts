@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { trialTerminalStatuses } from "../lifecycle/types"
+
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/)
 const id = z.string().regex(/^[a-z0-9][a-z0-9._/-]*$/)
 
@@ -98,6 +100,18 @@ export const benchmarkTaskManifestSchema = z
 		}),
 		repetitions: z.object({ smoke: z.number().int().positive(), scored: z.number().int().positive() }),
 		graders: z.array(benchmarkGraderReferenceSchema).min(1),
+		improvement: z
+			.object({
+				schemaVersion: z.literal(1),
+				proposalDigest: digest,
+				feedbackDigest: digest,
+				reviewDigest: digest,
+				sourceBundleDigest: digest,
+				sourceTaskIdentity: z.string().min(1),
+				policyDigest: digest,
+			})
+			.strict()
+			.optional(),
 	})
 	.superRefine((task, context) => {
 		if (task.admission === "calibrating" || task.admission === "admitted") {
@@ -236,10 +250,97 @@ export const privateAuthoringFingerprintsSchema = z.object({
 	),
 })
 
+export const modelCalibrationScoreableStatuses = [
+	"passed",
+	"outcome_failed",
+	"safety_failed",
+	"budget_exhausted",
+	"agent_error",
+] as const
+
+export const modelCalibrationStatusSchema = z.enum(["missing", "pending", "running", ...trialTerminalStatuses])
+
+export const modelCalibrationDeliverySchema = z
+	.object({
+		model: z.enum(["luna-high", "sol-high"]),
+		taskIdentity: z.string().trim().min(1),
+		runId: z.number().int().positive(),
+		scheduled: z.number().int().positive(),
+		scoreable: z.number().int().nonnegative(),
+		excluded: z.number().int().nonnegative(),
+		missing: z.number().int().nonnegative(),
+		statusCounts: z
+			.object({
+				missing: z.number().int().nonnegative(),
+				pending: z.number().int().nonnegative(),
+				running: z.number().int().nonnegative(),
+				passed: z.number().int().nonnegative(),
+				outcome_failed: z.number().int().nonnegative(),
+				safety_failed: z.number().int().nonnegative(),
+				budget_exhausted: z.number().int().nonnegative(),
+				agent_error: z.number().int().nonnegative(),
+				infrastructure_error: z.number().int().nonnegative(),
+				grader_error: z.number().int().nonnegative(),
+				cancelled: z.number().int().nonnegative(),
+				human_handoff: z.number().int().nonnegative(),
+			})
+			.strict(),
+		trials: z
+			.array(
+				z
+					.object({
+						id: z.string().trim().min(1),
+						status: modelCalibrationStatusSchema,
+						attemptCount: z.number().int().nonnegative().optional(),
+						retryAssisted: z.boolean().optional(),
+					})
+					.strict(),
+			)
+			.min(1),
+	})
+	.strict()
+	.superRefine((delivery, context) => {
+		const counts = Object.fromEntries(modelCalibrationStatusSchema.options.map((status) => [status, 0]))
+		for (const trial of delivery.trials) counts[trial.status]!++
+		const scoreable = modelCalibrationScoreableStatuses.reduce((total, status) => total + counts[status]!, 0)
+		for (const [field, expected] of [
+			["scheduled", delivery.trials.length],
+			["scoreable", scoreable],
+			["excluded", delivery.trials.length - scoreable],
+			["missing", counts.missing],
+		] as const) {
+			if (delivery[field] !== expected)
+				context.addIssue({
+					code: "custom",
+					path: [field],
+					message: `${field} must match scheduled trial statuses`,
+				})
+		}
+		for (const status of modelCalibrationStatusSchema.options)
+			if (delivery.statusCounts[status] !== counts[status])
+				context.addIssue({
+					code: "custom",
+					path: ["statusCounts", status],
+					message: "Status count must match scheduled trial rows",
+				})
+		if (new Set(delivery.trials.map(({ id }) => id)).size !== delivery.trials.length)
+			context.addIssue({ code: "custom", path: ["trials"], message: "Scheduled trial ids must be unique" })
+	})
+
 export const calibrationReportSchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		taskIdentity: z.string().min(1),
+		calibrationScope: z
+			.object({
+				schemaVersion: z.literal(1),
+				kind: z.literal("keyless-fixture"),
+				measuredGraderIds: z.array(id).min(1),
+				unmeasuredGraderIds: z.array(id),
+				executionEvidence: z.literal("not-measured"),
+				semanticEvidenceVersion: z.literal(1),
+			})
+			.optional(),
 		fixtureInitiallyFails: z.boolean(),
 		restraint: z.boolean().default(false),
 		gold: z.object({ repetitions: z.number().int().min(20), passed: z.number().int().nonnegative() }),
@@ -264,6 +365,8 @@ export const calibrationReportSchema = z
 				safetyFailureTrialIds: z.array(z.string()).default([]),
 			}),
 		),
+		// Legacy reports did not record campaign delivery; absence means unknown, never zero.
+		modelDelivery: z.array(modelCalibrationDeliverySchema).optional(),
 		humanReview: z.object({
 			unresolvedFalsePositivePasses: z.literal(0),
 			reviewedTrialIds: z.array(z.string()),
@@ -273,6 +376,24 @@ export const calibrationReportSchema = z
 		admitted: z.boolean(),
 	})
 	.superRefine((report, context) => {
+		if (new Set(report.broken.map(({ id }) => id)).size !== report.broken.length)
+			context.addIssue({
+				code: "custom",
+				path: ["broken"],
+				message: "Broken control identities must be unique",
+			})
+		if (report.calibrationScope) {
+			const graderIds = [
+				...report.calibrationScope.measuredGraderIds,
+				...report.calibrationScope.unmeasuredGraderIds,
+			]
+			if (new Set(graderIds).size !== graderIds.length)
+				context.addIssue({
+					code: "custom",
+					path: ["calibrationScope"],
+					message: "Measured and unmeasured grader identities must be unique and disjoint",
+				})
+		}
 		const allTrialIds: string[] = []
 		for (const [index, model] of report.models.entries()) {
 			if (model.passed > model.repetitions)
@@ -332,12 +453,69 @@ export const calibrationReportSchema = z
 				path: ["humanReview", "reviewedTrialIds"],
 				message: "Human review must reference declared model trials",
 			})
+		const delivery = report.modelDelivery ?? []
+		if (new Set(delivery.map(({ model }) => model)).size !== delivery.length)
+			context.addIssue({ code: "custom", path: ["modelDelivery"], message: "Model delivery arms must be unique" })
+		const deliveredIds = delivery.flatMap(({ trials }) => trials.map(({ id }) => id))
+		if (new Set(deliveredIds).size !== deliveredIds.length)
+			context.addIssue({
+				code: "custom",
+				path: ["modelDelivery"],
+				message: "Scheduled trial ids must be globally unique",
+			})
+		for (const [index, observed] of delivery.entries()) {
+			if (observed.taskIdentity !== report.taskIdentity)
+				context.addIssue({
+					code: "custom",
+					path: ["modelDelivery", index, "taskIdentity"],
+					message: "Delivery task identity must match its calibration report",
+				})
+			const models = report.models.filter(({ model }) => model === observed.model)
+			const scoreableStatuses = new Set<string>(modelCalibrationScoreableStatuses)
+			const scoreableIds = new Set(
+				observed.trials.filter(({ status }) => scoreableStatuses.has(status)).map(({ id }) => id),
+			)
+			const safetyFailureIds = new Set(
+				observed.trials.filter(({ status }) => status === "safety_failed").map(({ id }) => id),
+			)
+			if (observed.scoreable < 5) {
+				if (models.length)
+					context.addIssue({
+						code: "custom",
+						path: ["modelDelivery", index],
+						message: "Under-five delivery cannot retain a capability calibration arm",
+					})
+			} else if (
+				models.length !== 1 ||
+				models[0]!.repetitions !== observed.scoreable ||
+				models[0]!.passed !== observed.statusCounts.passed ||
+				models[0]!.trialIds.some((id) => !scoreableIds.has(id)) ||
+				models[0]!.safetyFailureTrialIds.length !== observed.statusCounts.safety_failed ||
+				models[0]!.safetyFailureTrialIds.some((id) => !safetyFailureIds.has(id))
+			) {
+				context.addIssue({
+					code: "custom",
+					path: ["modelDelivery", index],
+					message: "Delivery must match its scoreable model trial identities and outcomes",
+				})
+			}
+			const otherIds = new Set(
+				report.models.filter(({ model }) => model !== observed.model).flatMap(({ trialIds }) => trialIds),
+			)
+			if (observed.trials.some(({ id }) => otherIds.has(id)))
+				context.addIssue({
+					code: "custom",
+					path: ["modelDelivery", index],
+					message: "Scheduled trial ids cannot belong to another model arm",
+				})
+		}
 	})
 
 export type BenchmarkSuiteManifest = z.infer<typeof benchmarkSuiteManifestSchema>
 export type BenchmarkTaskManifest = z.infer<typeof benchmarkTaskManifestSchema>
 export type GraderBundleManifest = z.infer<typeof graderBundleManifestSchema>
 export type CalibrationReport = z.infer<typeof calibrationReportSchema>
+export type ModelCalibrationDelivery = z.infer<typeof modelCalibrationDeliverySchema>
 export type BenchmarkReleaseLock = z.infer<typeof benchmarkReleaseLockSchema>
 export type PrivateAuthoringFingerprints = z.infer<typeof privateAuthoringFingerprintsSchema>
 

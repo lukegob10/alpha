@@ -63,6 +63,51 @@ function firstSkill(manifest: SubagentContextManifest): SubagentContextSkill {
 	return skill
 }
 
+describe("legacy subagent manifest compatibility", () => {
+	it("preserves historical manifests without materializing a personality field", () => {
+		expect(subagentContextManifestSchema.parse(makeManifest())).not.toHaveProperty("personality")
+	})
+
+	it.each(["default", "friendly", "pragmatic", "none"] as const)(
+		"retains %s through a saved manifest round trip",
+		(personality) => {
+			const saved = JSON.stringify(subagentContextManifestSchema.parse(makeManifest({ personality })))
+			expect(subagentContextManifestSchema.parse(JSON.parse(saved)).personality).toBe(personality)
+		},
+	)
+
+	it.each([null, true, "casual", "None", ""])("rejects unsupported personality %j", (personality) => {
+		expect(subagentContextManifestSchema.safeParse({ ...makeManifest(), personality }).success).toBe(false)
+	})
+})
+
+describe("inherited subagent authority", () => {
+	it.each(["explore", "review", "worker"] as const)("retains parent authority for a new %s role", (role) => {
+		const manifest = makeManifest()
+		manifest.runtimePolicy = {
+			...manifest.runtimePolicy,
+			role,
+			authorityModel: "parent",
+			mode: "code",
+			execute: true,
+			mutate: true,
+			network: true,
+			externalSideEffects: true,
+			writeScope: ["."],
+		}
+		expect(subagentContextManifestSchema.parse(manifest).runtimePolicy).toEqual(manifest.runtimePolicy)
+	})
+
+	it("keeps old roles read-only and requires an explicit scope for inherited writes", () => {
+		const manifest = makeManifest()
+		manifest.runtimePolicy.execute = true
+		expect(subagentContextManifestSchema.safeParse(manifest).success).toBe(false)
+		manifest.runtimePolicy.authorityModel = "parent"
+		manifest.runtimePolicy.mutate = true
+		expect(subagentContextManifestSchema.safeParse(manifest).success).toBe(false)
+	})
+})
+
 function descriptionQuotaSkills(totalBytes: number, fullDescription: string) {
 	const propertyBytes = (description: string) =>
 		Buffer.byteLength(`,"description":${JSON.stringify(description)}`, "utf8")

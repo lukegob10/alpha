@@ -10,7 +10,6 @@ import React, {
 	useState,
 } from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
-import removeMd from "remove-markdown"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
 
@@ -60,7 +59,7 @@ import { chatToolbarActions } from "./chatToolbarActions"
 import { SubagentDock } from "./SubagentDock"
 import { CrossTaskPanel } from "./CrossTaskPanel"
 import Announcement from "./Announcement"
-import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
+import ChatRow, { type ChatRowDisclosureFacet, type ChatRowDisclosureState, type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
 import { ChatTextArea } from "./ChatTextArea"
 import TaskHeader, { type TaskHeaderProps } from "./TaskHeader"
@@ -71,6 +70,7 @@ import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
 import { getActionActivity, getCompletedTurnActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
+import { createMessagePayloadSelector } from "./utils/messagePayload"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useTaskComposer, type ComposerSubmission } from "./hooks/useTaskComposer"
 import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
@@ -102,10 +102,25 @@ const completedTaskResponseAskTypes = new Set<AlphaAsk>(["completion_result", "r
 const approvalAskTypes = new Set<AlphaAsk>(["tool", "command", "use_mcp_server"])
 const MODEL_RESPONSE_DELAY_MS = 30_000
 const MAX_PENDING_HOST_SENDS = 16
+const MAX_DISCLOSURE_TASKS = 16
+const MAX_DISCLOSURES_PER_KIND = 2_048
+const getBatchToolPayload = createMessagePayloadSelector((payload) => payload as AlphaSayTool | undefined)
 
 type PendingHostSend = { taskId: string; text: string; images: string[] }
 
-const computeChatItemKey = (index: number, message: AlphaMessage) => `${message.ts}:${index}`
+interface TranscriptDisclosureState {
+	rows: Record<number, boolean>
+	facets: Record<number, ChatRowDisclosureState>
+	traces: Record<string, boolean>
+}
+
+const emptyTranscriptDisclosure: TranscriptDisclosureState = { rows: {}, facets: {}, traces: {} }
+const traceDisclosureKey = (trace: Pick<ActionActivity, "id" | "kind">) =>
+	`${trace.kind === "worked" ? "turn" : "action"}:${trace.id}`
+const boundedDisclosureEntries = <T,>(entries: Record<string, T>): Record<string, T> =>
+	Object.fromEntries(Object.entries(entries).slice(-MAX_DISCLOSURES_PER_KIND))
+const activityRowId = (taskKey: string | undefined, messageTs: number, parent = false) =>
+	`${parent ? "turn" : "action"}-row-${encodeURIComponent(taskKey ?? "draft")}-${messageTs}`
 
 const isCompletedTaskResponseAsk = (ask: AlphaAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
@@ -147,13 +162,15 @@ interface ChatTranscriptRowsProps {
 	toggleRowExpansion: (ts: number) => void
 	renderedGroupedMessages: AlphaMessage[]
 	actionActivity: Map<number, ActionActivity>
-	expandedTraces: Record<number, boolean>
+	completedTurnActivity: Map<number, ActionActivity>
+	expandedTraces: Record<string, boolean>
 	fileChangeTurnsByEndIndex: Map<number, FileChangeTurn>
 	itemContent: (index: number, message: AlphaMessage) => React.ReactNode
 	loadOlderTranscript: () => void
 	revealTranscriptIndex: (index: number) => void
 	releaseFollow: (reason: ChatScrollReleaseReason) => void
-	setTraceExpanded: (id: number, expanded: boolean, kind: ActionActivity["kind"]) => void
+	preserveReadingAnchor: (update: () => void) => void
+	setTraceExpanded: (id: number | string, expanded: boolean, kind: ActionActivity["kind"]) => void
 	handleFileChangesExpandedChange: () => void
 	loadOlderLabel: string
 	loadAllLabel: string
@@ -171,12 +188,14 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 	toggleRowExpansion,
 	renderedGroupedMessages,
 	actionActivity,
+	completedTurnActivity,
 	expandedTraces,
 	fileChangeTurnsByEndIndex,
 	itemContent,
 	loadOlderTranscript,
 	revealTranscriptIndex,
 	releaseFollow,
+	preserveReadingAnchor,
 	setTraceExpanded,
 	handleFileChangesExpandedChange,
 	loadOlderLabel,
@@ -186,6 +205,21 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 		return null
 	}
 	const lastRenderedMessageIndex = transcriptStartIndex + renderedGroupedMessages.length - 1
+	const firstTraceIndices = new Map<string, number>()
+	const traceControls = new Map<string, string[]>()
+	for (let localIndex = 0; localIndex < renderedGroupedMessages.length; localIndex++) {
+		const index = transcriptStartIndex + localIndex
+		for (const trace of [completedTurnActivity.get(index), actionActivity.get(index)]) {
+			if (!trace) continue
+			const key = traceDisclosureKey(trace)
+			if (!firstTraceIndices.has(key)) firstTraceIndices.set(key, index)
+			const controls = traceControls.get(key) ?? []
+			controls.push(
+				activityRowId(transcriptTaskKey, renderedGroupedMessages[localIndex].ts, trace.kind === "worked"),
+			)
+			traceControls.set(key, controls)
+		}
+	}
 
 	return (
 		<>
@@ -204,14 +238,14 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 				/>
 			)}
 			{hasOlderTranscript && (
-				<div className="flex justify-center gap-2 px-[15px] py-2">
+				<div className="flex flex-wrap justify-center gap-2 px-[15px] py-2">
 					<Button
 						variant="secondary"
 						size="sm"
 						data-testid="chat-load-older"
 						onClick={() => {
 							releaseFollow("load-older")
-							loadOlderTranscript()
+							preserveReadingAnchor(loadOlderTranscript)
 						}}>
 						{loadOlderLabel}
 					</Button>
@@ -221,7 +255,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 						data-testid="chat-load-all"
 						onClick={() => {
 							releaseFollow("load-older")
-							revealTranscriptIndex(0)
+							preserveReadingAnchor(() => revealTranscriptIndex(0))
 						}}>
 						{loadAllLabel}
 					</Button>
@@ -229,41 +263,46 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 			)}
 			{renderedGroupedMessages.flatMap((message, localIndex) => {
 				const index = transcriptStartIndex + localIndex
+				const parentTrace = completedTurnActivity.get(index)
+				const parentExpanded = parentTrace ? Boolean(expandedTraces[traceDisclosureKey(parentTrace)]) : true
 				const trace = actionActivity.get(index)
-				const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
+				const traceExpanded = trace ? Boolean(expandedTraces[traceDisclosureKey(trace)]) : false
 				const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
+				const renderTraceToggle = (activity: ActionActivity, expanded: boolean) => (
+					<ActivityTraceToggle
+						traceId={traceDisclosureKey(activity)}
+						kind={activity.kind}
+						count={activity.count}
+						durationMs={activity.durationMs}
+						active={isTurnActive && !parentTrace && activity.endIndex === lastRenderedMessageIndex}
+						expanded={expanded}
+						controls={traceControls.get(traceDisclosureKey(activity))?.join(" ") ?? ""}
+						onToggle={() => {
+							releaseFollow("row-expansion")
+							setTraceExpanded(activity.id, !expanded, activity.kind)
+						}}
+					/>
+				)
 				const row = (
-					<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
-						{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
-							<ActivityTraceToggle
-								traceId={trace.id}
-								kind={trace.kind}
-								count={trace.count}
-								durationMs={trace.durationMs}
-								active={
-									isTurnActive &&
-									trace.kind !== "worked" &&
-									trace.endIndex === lastRenderedMessageIndex
-								}
-								expanded={traceExpanded}
-								controls={Array.from(
-									{ length: trace.endIndex - index + 1 },
-									(_, offset) => `activity-row-${index + offset}`,
-								).join(" ")}
-								onToggle={() => {
-									releaseFollow("row-expansion")
-									setTraceExpanded(trace.id, !traceExpanded, trace.kind)
-								}}
-							/>
-						)}
-						{/* Live actions keep their listeners; completed turns stay unmounted during follow-ups. */}
-						<div
-							id={`activity-row-${index}`}
-							hidden={Boolean(trace) && !traceExpanded}
-							data-chat-message-index={index}
-							data-testid={`chat-message-${index}`}>
-							{(!trace || traceExpanded || (isTurnActive && trace.kind !== "worked")) &&
-								itemContent(index, message)}
+					<div key={`${transcriptTaskKey}:${message.ts}`} data-chat-message-ts={message.ts}>
+						{parentTrace &&
+							index === firstTraceIndices.get(traceDisclosureKey(parentTrace)) &&
+							renderTraceToggle(parentTrace, parentExpanded)}
+						<div id={activityRowId(transcriptTaskKey, message.ts, true)} hidden={!parentExpanded}>
+							{parentExpanded &&
+								trace &&
+								index === firstTraceIndices.get(traceDisclosureKey(trace)) &&
+								renderTraceToggle(trace, traceExpanded)}
+							{/* Completed work unmounts; live actions retain stream listeners behind their disclosure. */}
+							<div
+								id={activityRowId(transcriptTaskKey, message.ts)}
+								hidden={Boolean(trace) && !traceExpanded}
+								data-chat-message-index={index}
+								data-testid={`chat-message-${index}`}>
+								{parentExpanded &&
+									(!trace || traceExpanded || (isTurnActive && !parentTrace)) &&
+									itemContent(index, message)}
+							</div>
 						</div>
 					</div>
 				)
@@ -597,7 +636,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Host admission is asynchronous. Show the exact submitted input until the
 	// task-owned queue projection arrives, without granting local queue authority.
 	const pendingQueuePreview =
-		pendingQueueRequest && !visibleMessageQueue.some((message) => message.id === pendingQueueRequest.requestId)
+		pendingQueueRequest &&
+		!transcriptQueuedMessageIds.has(pendingQueueRequest.requestId) &&
+		!visibleMessageQueue.some((message) => message.id === pendingQueueRequest.requestId)
 			? {
 					id: pendingQueueRequest.requestId,
 					timestamp: pendingQueueRequest.clientSubmittedAt ?? 0,
@@ -707,10 +748,35 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [isVisibleTaskLifecycleDegraded, shouldClearTerminalControls, visibleCurrentTaskId])
 	const [_didClickCancel, setDidClickCancel] = useState(false)
 	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
-	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
-	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
-	const lastTtsRef = useRef<string>("")
-	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
+	const transcriptIdentity = visibleCurrentTaskId ?? (task ? String(task.ts) : undefined)
+	const [disclosureCache, setDisclosureCache] = useState<Record<string, TranscriptDisclosureState>>({})
+	const disclosure = (transcriptIdentity && disclosureCache[transcriptIdentity]) || emptyTranscriptDisclosure
+	const expandedRows = disclosure.rows
+	const updateDisclosure = useCallback(
+		(update: (current: TranscriptDisclosureState) => TranscriptDisclosureState) => {
+			if (!transcriptIdentity) return
+			setDisclosureCache((cache) => {
+				const current = cache[transcriptIdentity] ?? emptyTranscriptDisclosure
+				const next = update(current)
+				if (current === next) return cache
+				const retained = Object.entries(cache)
+					.filter(([key]) => key !== transcriptIdentity)
+					.slice(-(MAX_DISCLOSURE_TASKS - 1))
+				return Object.fromEntries([
+					...retained,
+					[
+						transcriptIdentity,
+						{
+							rows: boundedDisclosureEntries(next.rows),
+							facets: boundedDisclosureEntries(next.facets),
+							traces: boundedDisclosureEntries(next.traces),
+						},
+					],
+				])
+			})
+		},
+		[transcriptIdentity],
+	)
 	const [checkpointWarningState, setCheckpointWarningState] = useState<
 		| {
 				taskId: string
@@ -834,10 +900,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[soundEnabled, playNotification, playCelebration, playProgressLoop],
 	)
-
-	function playTts(text: string) {
-		vscode.postMessage({ type: "playTts", text })
-	}
 
 	useDeepCompareEffect(() => {
 		if (approvalTaskIdRef.current !== visibleCurrentTaskId) {
@@ -1139,7 +1201,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Reset UI states when task changes. The scroll controller has its own
 	// task-keyed layout effect.
 	useEffect(() => {
-		setExpandedRows({})
 		everVisibleMessagesTsRef.current.clear()
 		setCurrentFollowUpTs(null)
 		setIsCondensing(false)
@@ -2571,64 +2632,29 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[isHidden, sendingDisabled, enableButtons],
 	)
 
-	useEffect(() => {
-		// This ensures the first message is not read, future user messages are
-		// labeled as `user_feedback`.
-		if (lastMessage && activeMessages.length > 1) {
-			if (
-				typeof lastMessage.text === "string" && // has text (must be string for startsWith)
-				(lastMessage.say === "text" || lastMessage.say === "completion_result") && // is a text message
-				!lastMessage.partial && // not a partial message
-				!lastMessage.text.startsWith("{") // not a json object
-			) {
-				let text = lastMessage?.text || ""
-				const mermaidRegex = /```mermaid[\s\S]*?```/g
-				// remove mermaid diagrams from text
-				text = text.replace(mermaidRegex, "")
-				// remove markdown from text
-				text = removeMd(text)
-
-				// ensure message is not a duplicate of last read message
-				if (text !== lastTtsRef.current) {
-					try {
-						playTts(text)
-						lastTtsRef.current = text
-					} catch (error) {
-						console.error("Failed to execute text-to-speech:", error)
-					}
-				}
-			}
-		}
-
-		// Update previous value.
-		setWasStreaming(isStreaming)
-	}, [isStreaming, lastMessage, wasStreaming, activeMessages.length])
-
 	const groupedMessages = useMemo(() => {
 		const filtered: AlphaMessage[] = visibleMessages
+		const isCompletedToolAsk = (message: AlphaMessage) =>
+			message.type === "ask" &&
+			message.ask === "tool" &&
+			message.turn === undefined &&
+			message.partial !== true &&
+			message.isAnswered === true
 
 		// Helper to check if a message is a read_file ask that should be batched
 		const isReadFileAsk = (msg: AlphaMessage): boolean => {
-			if (msg.type !== "ask" || msg.ask !== "tool") return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return tool.tool === "readFile" && !tool.batchFiles // Don't re-batch already batched
-			} catch {
-				return false
-			}
+			if (!isCompletedToolAsk(msg)) return false
+			const tool = getBatchToolPayload(msg)
+			return tool?.tool === "readFile" && !tool.batchFiles // Don't re-batch already batched
 		}
 
 		// Helper to check if a message is a list_files ask that should be batched
 		const isListFilesAsk = (msg: AlphaMessage): boolean => {
-			if (msg.type !== "ask" || msg.ask !== "tool") return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return (
-					(tool.tool === "listFilesTopLevel" || tool.tool === "listFilesRecursive") && !tool.batchDirs // Don't re-batch already batched
-				)
-			} catch {
-				return false
-			}
+			if (!isCompletedToolAsk(msg)) return false
+			const tool = getBatchToolPayload(msg)
+			return (
+				(tool?.tool === "listFilesTopLevel" || tool?.tool === "listFilesRecursive") && !tool.batchDirs // Don't re-batch already batched
+			)
 		}
 
 		// Set of tool names that represent file-editing operations
@@ -2642,38 +2668,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		// Helper to check if a message is a file-edit ask that should be batched
 		const isEditFileAsk = (msg: AlphaMessage): boolean => {
-			if (msg.type !== "ask" || msg.ask !== "tool") return false
-			try {
-				const tool = JSON.parse(msg.text || "{}")
-				return editFileTools.has(tool.tool) && !tool.batchDiffs // Don't re-batch already batched
-			} catch {
-				return false
-			}
+			if (!isCompletedToolAsk(msg)) return false
+			const tool = getBatchToolPayload(msg)
+			return tool !== undefined && editFileTools.has(tool.tool) && !tool.batchDiffs // Don't re-batch already batched
 		}
 
 		// Synthesize a batch of consecutive read_file asks into a single message
 		const synthesizeReadFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchFiles = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						lineSnippet: tool.reason || "",
-						isOutsideWorkspace: tool.isOutsideWorkspace || false,
-						key: `${tool.path}${tool.reason ? ` (${tool.reason})` : ""}`,
-						content: tool.content || "",
-					}
-				} catch {
-					return { path: "", lineSnippet: "", key: "", content: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					lineSnippet: tool?.reason || "",
+					isOutsideWorkspace: tool?.isOutsideWorkspace || false,
+					key: `${tool?.path}${tool?.reason ? ` (${tool.reason})` : ""}`,
+					content: tool?.content || "",
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchFiles }),
@@ -2683,25 +2697,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Synthesize a batch of consecutive list_files asks into a single message
 		const synthesizeListFilesBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDirs = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						recursive: tool.tool === "listFilesRecursive",
-						isOutsideWorkspace: tool.isOutsideWorkspace || false,
-						key: tool.path || "",
-					}
-				} catch {
-					return { path: "", recursive: false, key: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					recursive: tool?.tool === "listFilesRecursive",
+					isOutsideWorkspace: tool?.isOutsideWorkspace || false,
+					key: tool?.path || "",
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchDirs }),
@@ -2711,28 +2717,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Synthesize a batch of consecutive file-edit asks into a single message
 		const synthesizeEditFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDiffs = batch.map((batchMsg) => {
-				try {
-					const tool = JSON.parse(batchMsg.text || "{}")
-					return {
-						path: tool.path || "",
-						changeCount: 1,
-						key: tool.path || "",
-						content: tool.content ?? tool.diff ?? "",
-						diffStats: tool.diffStats,
-						originalContent: tool.originalContent,
-						finalContent: tool.finalContent,
-					}
-				} catch {
-					return { path: "", changeCount: 0, key: "", content: "" }
+				const tool = getBatchToolPayload(batchMsg)
+				return {
+					path: tool?.path || "",
+					changeCount: 1,
+					key: tool?.path || "",
+					content: tool?.content ?? tool?.diff ?? "",
+					diffStats: tool?.diffStats,
+					originalContent: tool?.originalContent,
+					finalContent: tool?.finalContent,
 				}
 			})
 
-			let firstTool
-			try {
-				firstTool = JSON.parse(batch[0].text || "{}")
-			} catch {
-				return batch[0]
-			}
+			const firstTool = getBatchToolPayload(batch[0])
+			if (!firstTool) return batch[0]
 			return {
 				...batch[0],
 				text: JSON.stringify({ ...firstTool, batchDiffs }),
@@ -2755,7 +2753,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		return result
 	}, [isCondensing, visibleMessages])
 	const fileChangeTurns = useMemo(
-		() => fileChangeTurnsFromMessages(groupedMessages, visibleCurrentTaskId ?? (task ? String(task.ts) : "task")),
+		() =>
+			fileChangeTurnsFromMessages(
+				groupedMessages,
+				visibleCurrentTaskId ?? (task ? String(task.ts) : "task"),
+				task,
+			),
 		[groupedMessages, task, visibleCurrentTaskId],
 	)
 	const fileChangeTurnsByEndIndex = useMemo(
@@ -2763,8 +2766,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[fileChangeTurns],
 	)
 	const transcriptRootMessageTs = activeMessages.at(0)?.ts
-	const transcriptIdentity = visibleCurrentTaskId ?? (task ? String(task.ts) : undefined)
 	const transcriptTaskKey = transcriptIdentity
+	const transcriptWindowKey = transcriptIdentity
 		? `${transcriptIdentity}:${transcriptRootMessageTs ?? "pending"}`
 		: undefined
 	const pendingApprovalTs =
@@ -2782,75 +2785,54 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 		return undefined
 	}, [activeMessages, lastMessage])
-	const [traceExpansion, setTraceExpansion] = useState<{
-		taskKey?: string
-		expanded: Record<number, boolean>
-		individualGroups: Record<number, true>
-	}>({ expanded: {}, individualGroups: {} })
-	const actionActivity = useMemo(() => {
-		const activity = getActionActivity(groupedMessages, pendingApprovalTs, failedApiRequestTs)
-		const completedActivity = getCompletedTurnActivity(
-			groupedMessages,
-			task?.ts,
-			hasCompletedTranscriptBoundary || isVisibleTaskCompleted,
-		)
-		const individualGroups = traceExpansion.taskKey === transcriptTaskKey ? traceExpansion.individualGroups : {}
-		const individuallyControlledTurns = new Set<number>()
-		for (const [index, turn] of completedActivity) {
-			const group = activity.get(index)
-			if (group && individualGroups[group.id]) individuallyControlledTurns.add(turn.id)
-		}
-		// Completion may fold untouched turns, but must not replace controls the reader has used.
-		for (const [index, trace] of completedActivity) {
-			if (!individuallyControlledTurns.has(trace.id)) activity.set(index, trace)
-		}
-		return activity
-	}, [
-		groupedMessages,
-		pendingApprovalTs,
-		failedApiRequestTs,
-		task?.ts,
-		hasCompletedTranscriptBoundary,
-		isVisibleTaskCompleted,
-		traceExpansion,
-		transcriptTaskKey,
-	])
-	const focusedActivityRef = useRef<{ taskKey?: string; index: number }>()
-	useEffect(() => {
-		// Removed or replaced action groups must not reuse an old expansion choice.
-		const traceIds = new Set(Array.from(actionActivity.values(), (trace) => trace.id))
-		setTraceExpansion((current) => {
-			if (current.taskKey !== transcriptTaskKey)
-				return { taskKey: transcriptTaskKey, expanded: {}, individualGroups: {} }
-			const entries = Object.entries(current.expanded)
-			const retained = entries.filter(([id]) => traceIds.has(Number(id)))
-			const individualGroups = Object.entries(current.individualGroups)
-			const retainedGroups = individualGroups.filter(([id]) => traceIds.has(Number(id)))
-			return retained.length === entries.length && retainedGroups.length === individualGroups.length
-				? current
-				: {
-						...current,
-						expanded: Object.fromEntries(retained),
-						individualGroups: Object.fromEntries(retainedGroups),
-					}
-		})
-	}, [actionActivity, transcriptTaskKey])
-	const expandedTraces = useMemo(
-		() => (traceExpansion.taskKey === transcriptTaskKey ? traceExpansion.expanded : {}),
-		[traceExpansion, transcriptTaskKey],
+	const actionActivity = useMemo(
+		() => getActionActivity(groupedMessages, pendingApprovalTs, failedApiRequestTs),
+		[groupedMessages, pendingApprovalTs, failedApiRequestTs],
 	)
+	const completedTurnActivity = useMemo(
+		() => getCompletedTurnActivity(groupedMessages, task, hasCompletedTranscriptBoundary),
+		[groupedMessages, task, hasCompletedTranscriptBoundary],
+	)
+	const expandedTraces = useMemo(() => {
+		const choices = { ...disclosure.traces }
+		for (const turn of new Set(completedTurnActivity.values())) {
+			const key = traceDisclosureKey(turn)
+			if (choices[key] !== undefined) continue
+			// Preserve work the reader already opened when its canonical parent first appears.
+			choices[key] = (turn.memberIndices ?? []).some((index) => {
+				const message = groupedMessages[index]
+				const action = actionActivity.get(index)
+				return (
+					disclosure.rows[message.ts] === true ||
+					Object.values(disclosure.facets[message.ts] ?? {}).some(Boolean) ||
+					(action && disclosure.traces[traceDisclosureKey(action)] === true)
+				)
+			})
+		}
+		return choices
+	}, [disclosure, completedTurnActivity, groupedMessages, actionActivity])
+	useLayoutEffect(() => {
+		updateDisclosure((current) => {
+			const available = MAX_DISCLOSURES_PER_KIND - Object.keys(current.traces).length
+			if (available <= 0) return current
+			// Inferred closed defaults need no entry. Only inherit opened work into
+			// spare slots: refilling evicted defaults would loop and displace explicit choices.
+			const missing = Object.entries(expandedTraces)
+				.filter(([key, expanded]) => expanded && current.traces[key] === undefined)
+				.slice(-available)
+			if (!missing.length) return current
+			return { ...current, traces: { ...current.traces, ...Object.fromEntries(missing) } }
+		})
+	}, [expandedTraces, updateDisclosure])
+	const focusedActivityRef = useRef<{ taskKey?: string; messageTs: number; element: HTMLElement }>()
 	const setTraceExpanded = useCallback(
-		(id: number, expanded: boolean, kind: ActionActivity["kind"]) => {
-			setTraceExpansion((current) => ({
-				taskKey: transcriptTaskKey,
-				expanded: { ...(current.taskKey === transcriptTaskKey ? current.expanded : {}), [id]: expanded },
-				individualGroups: {
-					...(current.taskKey === transcriptTaskKey ? current.individualGroups : {}),
-					...(kind !== "worked" ? { [id]: true as const } : {}),
-				},
+		(id: number | string, expanded: boolean, kind: ActionActivity["kind"]) => {
+			updateDisclosure((current) => ({
+				...current,
+				traces: { ...current.traces, [traceDisclosureKey({ id, kind })]: expanded },
 			}))
 		},
-		[transcriptTaskKey],
+		[updateDisclosure],
 	)
 	const checkpointIndices = useMemo(() => {
 		const indices: number[] = []
@@ -2878,6 +2860,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		showScrollToBottom,
 		handleScrollToBottomClick,
 		releaseFollow,
+		preserveReadingAnchor,
 		setScrollerRef,
 		setContentRef,
 		handleScrollerScroll,
@@ -2886,6 +2869,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		handleScrollerPointerUp,
 		handleContentLoad,
 	} = useChatScrollController({
+		taskKey: transcriptTaskKey,
 		taskTs: task?.ts,
 		itemCount: groupedMessages.length,
 	})
@@ -2895,7 +2879,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		hasOlder: hasOlderTranscript,
 		loadOlder: loadOlderTranscript,
 		revealIndex: revealTranscriptIndex,
-	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, false, scrollMode === "FOLLOWING")
+	} = useProgressiveTranscript(groupedMessages, transcriptWindowKey, false, scrollMode === "FOLLOWING")
 
 	const bindTranscriptScroller = useCallback(
 		(element: HTMLDivElement | null) => {
@@ -2907,17 +2891,23 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useLayoutEffect(() => {
 		const focused = document.activeElement
 		const activity = focusedActivityRef.current
-		if (!activity || activity.taskKey !== transcriptTaskKey) return
-		// Hiding a focused element may already have returned focus to body before
-		// layout effects run. The capture handler retains the previous row identity.
-		if (focused !== document.body && !transcriptScrollerRef.current?.contains(focused)) return
-		const trace = actionActivity.get(activity.index)
-		if (trace && !expandedTraces[trace.id]) {
-			transcriptScrollerRef.current
-				?.querySelector<HTMLButtonElement>(`[data-activity-trace-id="${trace.id}"]`)
-				?.focus({ preventScroll: true })
+		if (isHidden || (activity && activity.taskKey !== transcriptTaskKey)) {
+			focusedActivityRef.current = undefined
+			return
 		}
-	}, [actionActivity, expandedTraces, transcriptTaskKey])
+		if (!activity) return
+		const previousHidden = !activity.element.isConnected || activity.element.closest("[hidden]") !== null
+		if (!previousHidden || (focused !== document.body && focused !== activity.element)) return
+		const index = groupedMessages.findIndex((message) => message.ts === activity.messageTs)
+		const parent = completedTurnActivity.get(index)
+		const child = actionActivity.get(index)
+		const trace = parent && !expandedTraces[traceDisclosureKey(parent)] ? parent : (child ?? parent)
+		if (!trace) return
+		const key = traceDisclosureKey(trace)
+		Array.from(transcriptScrollerRef.current?.querySelectorAll<HTMLButtonElement>("[data-activity-trace-id]") ?? [])
+			.find((button) => button.dataset.activityTraceId === key)
+			?.focus({ preventScroll: true })
+	}, [isHidden, groupedMessages, completedTurnActivity, actionActivity, expandedTraces, transcriptTaskKey])
 
 	// The floating controls are siblings of the transcript scroller, so wheel input
 	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
@@ -2926,36 +2916,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		transcriptScrollerRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
 	}, [])
 
-	// Expanding a row indicates the user is browsing; disable sticky follow.
-	// Placed after the hook call so releaseFollow is defined.
-	useEffect(() => {
-		const prev = prevExpandedRowsRef.current
-		let wasAnyRowExpandedByUser = false
-		if (prev) {
-			for (const [tsKey, isExpanded] of Object.entries(expandedRows)) {
-				const ts = Number(tsKey)
-				if (isExpanded && !(prev[ts] ?? false)) {
-					wasAnyRowExpandedByUser = true
-					break
-				}
-			}
-		}
-
-		if (wasAnyRowExpandedByUser) {
-			releaseFollow("row-expansion")
-		}
-
-		prevExpandedRowsRef.current = expandedRows
-	}, [expandedRows, releaseFollow])
-
 	const handleSetExpandedRow = useCallback(
 		(ts: number, expand?: boolean) => {
-			setExpandedRows((prev: Record<number, boolean>) => ({
-				...prev,
-				[ts]: expand === undefined ? !prev[ts] : expand,
+			updateDisclosure((current) => ({
+				...current,
+				rows: { ...current.rows, [ts]: expand === undefined ? !current.rows[ts] : expand },
 			}))
 		},
-		[setExpandedRows], // setExpandedRows is stable
+		[updateDisclosure],
 	)
 
 	const toggleRowExpansion = useCallback(
@@ -2965,6 +2933,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			handleSetExpandedRow(ts)
 		},
 		[handleSetExpandedRow, releaseFollow],
+	)
+	const handleDisclosureChange = useCallback(
+		(messageTs: number, facet: ChatRowDisclosureFacet, expanded: boolean) => {
+			releaseFollow("row-expansion")
+			updateDisclosure((current) => ({
+				...current,
+				facets: {
+					...current.facets,
+					[messageTs]: { ...current.facets[messageTs], [facet]: expanded },
+				},
+			}))
+		},
+		[releaseFollow, updateDisclosure],
 	)
 
 	// Checkpoint warnings are ephemeral state for the visible task.
@@ -3196,10 +3177,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = nextCursor
 
 		releaseFollow("checkpoint-navigation")
-		const trace = actionActivity.get(nextCheckpointIndex)
-		if (trace && !expandedTraces[trace.id]) {
+		const collapsedTraces = [
+			completedTurnActivity.get(nextCheckpointIndex),
+			actionActivity.get(nextCheckpointIndex),
+		].filter((trace): trace is ActionActivity => Boolean(trace && !expandedTraces[traceDisclosureKey(trace)]))
+		if (collapsedTraces.length > 0) {
 			pendingCheckpointIndexRef.current = nextCheckpointIndex
-			setTraceExpanded(trace.id, true, trace.kind)
+			for (const trace of collapsedTraces) setTraceExpanded(trace.id, true, trace.kind)
 			revealTranscriptIndex(nextCheckpointIndex)
 			return
 		}
@@ -3213,7 +3197,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		pendingCheckpointIndexRef.current = nextCheckpointIndex
 		revealTranscriptIndex(nextCheckpointIndex)
-	}, [checkpointIndices, releaseFollow, revealTranscriptIndex, actionActivity, expandedTraces, setTraceExpanded])
+	}, [
+		checkpointIndices,
+		releaseFollow,
+		revealTranscriptIndex,
+		completedTurnActivity,
+		actionActivity,
+		expandedTraces,
+		setTraceExpanded,
+	])
 
 	useEffect(() => {
 		const pendingCheckpointIndex = pendingCheckpointIndexRef.current
@@ -3241,6 +3233,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					message={messageOrGroup}
 					environment={chatRowEnvironment}
 					isExpanded={expandedRows[messageOrGroup.ts] || false}
+					disclosureState={disclosure.facets[messageOrGroup.ts]}
+					onDisclosureChange={handleDisclosureChange}
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
@@ -3289,6 +3283,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[
 			chatRowEnvironment,
 			expandedRows,
+			disclosure.facets,
+			handleDisclosureChange,
 			toggleRowExpansion,
 			modifiedMessages,
 			groupedMessages.length,
@@ -3400,9 +3396,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		<div
 			data-testid="chat-view"
 			onFocusCapture={(event) => {
-				const row = event.target.closest<HTMLElement>("[data-chat-message-index]")
+				const row = event.target.closest<HTMLElement>("[data-chat-message-ts]")
 				focusedActivityRef.current = row
-					? { taskKey: transcriptTaskKey, index: Number(row.dataset.chatMessageIndex) }
+					? {
+							taskKey: transcriptTaskKey,
+							messageTs: Number(row.dataset.chatMessageTs),
+							element: event.target,
+						}
 					: undefined
 			}}
 			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
@@ -3507,12 +3507,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								toggleRowExpansion={toggleRowExpansion}
 								renderedGroupedMessages={renderedGroupedMessages}
 								actionActivity={actionActivity}
+								completedTurnActivity={completedTurnActivity}
 								expandedTraces={expandedTraces}
 								fileChangeTurnsByEndIndex={fileChangeTurnsByEndIndex}
 								itemContent={itemContent}
 								loadOlderTranscript={loadOlderTranscript}
 								revealTranscriptIndex={revealTranscriptIndex}
 								releaseFollow={releaseFollow}
+								preserveReadingAnchor={preserveReadingAnchor}
 								setTraceExpanded={setTraceExpanded}
 								handleFileChangesExpandedChange={handleFileChangesExpandedChange}
 								loadOlderLabel={t("chat:transcript.loadOlder")}
@@ -3782,6 +3784,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									text: visibleMessageQueue[index].id,
 									taskId: visibleCurrentTaskId,
 									requestId,
+									...(visibleTurnId ? { expectedTurnId: visibleTurnId } : {}),
 								})
 							}
 						}}

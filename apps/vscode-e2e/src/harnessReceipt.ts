@@ -31,6 +31,7 @@ export async function writeHarnessReceipt(
 		providerMode: result.providerMode,
 		actualModelId: result.actualModelId ?? null,
 		actualReasoningEffort: result.actualReasoningEffort ?? null,
+		providerIdentity: result.providerIdentity ?? null,
 		profile: {
 			kind: result.profileDir ? "persistent" : "disposable",
 			sha256: createHash("sha256").update(result.userDataDir).digest("hex"),
@@ -39,6 +40,7 @@ export async function writeHarnessReceipt(
 		exitCode: result.exitCode,
 		execution: result.execution,
 		hostExitObserved: result.hostExitObserved,
+		hostCleanupVerified: result.hostCleanupVerified ?? null,
 		ownershipGate: result.ownershipGate ?? null,
 		requireAllTests: result.requireAllTests === true,
 		testCounts: result.testCounts ?? null,

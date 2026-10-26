@@ -15,6 +15,7 @@ interface MessageModificationConfirmationDialogProps {
 	open: boolean
 	onOpenChange: (open: boolean) => void
 	onConfirm: () => void
+	onCloseAutoFocus?: (event: Event) => void
 	type: "edit" | "delete" | "restart"
 }
 
@@ -22,6 +23,7 @@ export const MessageModificationConfirmationDialog: React.FC<MessageModification
 	open,
 	onOpenChange,
 	onConfirm,
+	onCloseAutoFocus,
 	type,
 }) => {
 	const { t } = useAppTranslation()
@@ -42,7 +44,7 @@ export const MessageModificationConfirmationDialog: React.FC<MessageModification
 
 	return (
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
-			<AlertDialogContent>
+			<AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
 				<AlertDialogHeader>
 					<AlertDialogTitle className="text-lg">{title}</AlertDialogTitle>
 					<AlertDialogDescription className="text-base">{description}</AlertDialogDescription>

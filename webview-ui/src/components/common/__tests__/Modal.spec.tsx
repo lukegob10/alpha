@@ -1,7 +1,8 @@
 import { useState } from "react"
 import userEvent from "@testing-library/user-event"
 
-import { fireEvent, render, screen, waitFor } from "@/utils/test-utils"
+import { cleanup, render, screen, waitFor } from "@/utils/test-utils"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 
 import { Modal } from "../Modal"
 
@@ -15,34 +16,45 @@ const ModalHarness = () => {
 			</button>
 			<Modal isOpen={isOpen} onClose={() => setIsOpen(false)} title="Preview dialog">
 				<button type="button">Dialog action</button>
+				<button type="button">Last dialog action</button>
 			</Modal>
 		</>
 	)
 }
 
 describe("Modal", () => {
-	it("provides dialog semantics, initial focus, and Escape dismissal", async () => {
-		const originalFocus = HTMLElement.prototype.focus
-		const focusSpy = vi.fn()
-		HTMLElement.prototype.focus = focusSpy
+	let restoreFocus: () => void
+
+	beforeEach(() => {
+		restoreFocus = installNativeTestFocus()
+	})
+
+	afterEach(() => {
+		cleanup()
+		restoreFocus()
+	})
+
+	it("names the dialog, contains keyboard focus, and restores its opener after Escape", async () => {
 		const user = userEvent.setup()
+		render(<ModalHarness />)
 
-		try {
-			render(<ModalHarness />)
+		const opener = screen.getByRole("button", { name: "Open preview" })
+		await user.click(opener)
 
-			const opener = screen.getByRole("button", { name: "Open preview" })
-			await user.click(opener)
+		const dialog = screen.getByRole("dialog", { name: "Preview dialog" })
+		const first = screen.getByRole("button", { name: "Dialog action" })
+		const last = screen.getByRole("button", { name: "Last dialog action" })
+		expect(dialog).toHaveAccessibleName("Preview dialog")
+		await waitFor(() => expect(first).toHaveFocus())
+		await user.tab({ shift: true })
+		expect(last).toHaveFocus()
+		await user.tab()
+		expect(first).toHaveFocus()
+		await user.tab()
+		expect(last).toHaveFocus()
+		await user.keyboard("{Escape}")
 
-			const dialog = screen.getByRole("dialog", { name: "Preview dialog" })
-			const dialogAction = screen.getByRole("button", { name: "Dialog action" })
-			expect(dialog).toBeInTheDocument()
-			await waitFor(() => expect(focusSpy.mock.contexts).toContain(dialogAction))
-
-			fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" })
-
-			expect(screen.queryByRole("dialog", { name: "Preview dialog" })).not.toBeInTheDocument()
-		} finally {
-			HTMLElement.prototype.focus = originalFocus
-		}
+		expect(screen.queryByRole("dialog", { name: "Preview dialog" })).not.toBeInTheDocument()
+		await waitFor(() => expect(opener).toHaveFocus())
 	})
 })

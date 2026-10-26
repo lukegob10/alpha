@@ -142,6 +142,105 @@ describe("importExport", () => {
 	})
 
 	describe("importSettings", () => {
+		it.each(["save", "rename", "delete", "activate", "mode"] as const)(
+			"preserves a concurrent profile %s while reading an unrelated settings import",
+			async (mutation) => {
+				await mockExtensionContext.secrets.store(
+					"roo_cline_config_api_config",
+					JSON.stringify({
+						currentApiConfigName: "kept",
+						apiConfigs: {
+							kept: { id: "kept-id", apiProvider: "openai", openAiModelId: "before" },
+							other: { id: "other-id", apiProvider: "vscode-lm" },
+						},
+						modeApiConfigs: { code: "kept-id" },
+						migrations: {
+							rateLimitSecondsMigrated: true,
+							openAiHeadersMigrated: true,
+							consecutiveMistakeLimitMigrated: true,
+							todoListEnabledMigrated: true,
+							claudeCodeLegacySettingsMigrated: true,
+						},
+					}),
+				)
+				const manager = new ProviderSettingsManager(mockExtensionContext)
+				await manager.initialize()
+				let enterRead!: () => void
+				let releaseRead!: () => void
+				const readEntered = new Promise<void>((resolve) => {
+					enterRead = resolve
+				})
+				const readHeld = new Promise<void>((resolve) => {
+					releaseRead = resolve
+				})
+				;(fs.readFile as Mock).mockImplementationOnce(async () => {
+					enterRead()
+					await readHeld
+					return JSON.stringify({
+						providerProfiles: {
+							currentApiConfigName: "added",
+							apiConfigs:
+								mutation === "activate" || mutation === "mode"
+									? {}
+									: { added: { id: "added-id", apiProvider: "vscode-lm" } },
+						},
+					})
+				})
+				const importing = importSettingsFromPath("/mock/settings.json", {
+					providerSettingsManager: manager,
+					contextProxy: mockContextProxy,
+					customModesManager: mockCustomModesManager,
+				})
+				try {
+					await readEntered
+					switch (mutation) {
+						case "save":
+							await manager.saveConfig(
+								{ id: "kept-id" },
+								{ apiProvider: "openai", openAiModelId: "after" },
+							)
+							break
+						case "rename":
+							await manager.renameProfile({ id: "kept-id" }, "renamed")
+							break
+						case "delete":
+							await manager.deleteConfig("other")
+							break
+						case "activate":
+							await manager.activateProfile({ id: "other-id" })
+							break
+						case "mode":
+							await manager.setModeConfig("code", "other-id")
+							break
+					}
+				} finally {
+					releaseRead()
+				}
+				const result = await importing
+				expect(result.success).toBe(true)
+				const saved = JSON.parse((await mockExtensionContext.secrets.get("roo_cline_config_api_config"))!)
+				switch (mutation) {
+					case "save":
+						expect(saved.apiConfigs.kept.openAiModelId).toBe("after")
+						break
+					case "rename":
+						expect(saved.apiConfigs).not.toHaveProperty("kept")
+						expect(saved.apiConfigs.renamed.id).toBe("kept-id")
+						break
+					case "delete":
+						expect(saved.apiConfigs).not.toHaveProperty("other")
+						break
+					case "activate":
+						expect(saved.currentApiConfigName).toBe("other")
+						expect(mockContextProxy.setValue).toHaveBeenCalledWith("currentApiConfigName", "other")
+						break
+					case "mode":
+						expect(saved.modeApiConfigs.code).toBe("other-id")
+						break
+				}
+			},
+		)
+
 		it.each([false, true])(
 			"remaps enhancement and delegated profile references after retained import repair (still invalid: %s)",
 			async (stillInvalid) => {
@@ -242,7 +341,10 @@ describe("importExport", () => {
 							second: { id: "duplicate-id", apiProvider: "openai" },
 						},
 					},
-					globalSettings: { subagentDefaultApiConfigId: "duplicate-id" },
+					globalSettings: {
+						subagentDefaultApiConfigId: "duplicate-id",
+						customModes: [{ slug: "custom", name: "Custom", roleDefinition: "mode", groups: ["read"] }],
+					},
 				}),
 			)
 			const result = await importSettingsFromPath("/mock/settings.json", {
@@ -254,6 +356,7 @@ describe("importExport", () => {
 			expect(result.error).toContain("Ambiguous imported profile identity")
 			expect(await mockExtensionContext.secrets.get("roo_cline_config_api_config")).toBe(before)
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
+			expect(mockCustomModesManager.updateCustomMode).not.toHaveBeenCalled()
 		})
 
 		it("should return success: false when user cancels file selection", async () => {
@@ -319,15 +422,13 @@ describe("importExport", () => {
 
 			expect(result.success).toBe(true)
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
-			expect(mockProviderSettingsManager.export).toHaveBeenCalled()
+			expect(mockProviderSettingsManager.export).not.toHaveBeenCalled()
 
 			expect(mockProviderSettingsManager.import).toHaveBeenCalledWith({
 				currentApiConfigName: "test",
 				apiConfigs: {
-					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
 					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
-				modeApiConfigs: {},
 			})
 
 			expect(mockContextProxy.setValues).toHaveBeenCalledWith({
@@ -440,14 +541,12 @@ describe("importExport", () => {
 
 			expect(result.success).toBe(true)
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
-			expect(mockProviderSettingsManager.export).toHaveBeenCalled()
+			expect(mockProviderSettingsManager.export).not.toHaveBeenCalled()
 			expect(mockProviderSettingsManager.import).toHaveBeenCalledWith({
 				currentApiConfigName: "test",
 				apiConfigs: {
-					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
 					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
-				modeApiConfigs: {},
 			})
 
 			// Should call setValues with an empty object since globalSettings is missing.
@@ -607,10 +706,8 @@ describe("importExport", () => {
 			expect(mockProviderSettingsManager.import).toHaveBeenCalledWith({
 				currentApiConfigName: "test",
 				apiConfigs: {
-					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
 					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
-				modeApiConfigs: {},
 			})
 			expect(mockContextProxy.setValues).toHaveBeenCalledWith({ mode: "code", autoApprovalEnabled: true })
 		})
@@ -693,12 +790,11 @@ describe("importExport", () => {
 
 			expect(result.success).toBe(true)
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
-			expect(mockProviderSettingsManager.export).toHaveBeenCalled()
+			expect(mockProviderSettingsManager.export).not.toHaveBeenCalled()
 
 			expect(mockProviderSettingsManager.import).toHaveBeenCalledWith({
 				currentApiConfigName: "openai-provider",
 				apiConfigs: {
-					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
 					"openai-provider": {
 						apiProvider: "openai" as ProviderName,
 						apiModelId: "gpt-4",
@@ -706,7 +802,6 @@ describe("importExport", () => {
 						id: "openai-id",
 					},
 				},
-				modeApiConfigs: {},
 			})
 
 			expect(mockContextProxy.setValues).toHaveBeenCalledWith({ mode: "code", autoApprovalEnabled: true })
@@ -876,6 +971,9 @@ describe("importExport", () => {
 			})
 
 			it("rejects an import whose selected profile is absent instead of substituting another profile", async () => {
+				const manager = new ProviderSettingsManager(mockExtensionContext)
+				await manager.initialize()
+				const before = await mockExtensionContext.secrets.get("roo_cline_config_api_config")
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				const mockFileContent = JSON.stringify({
@@ -894,29 +992,27 @@ describe("importExport", () => {
 							},
 						},
 					},
-					globalSettings: { mode: "code" },
+					globalSettings: {
+						mode: "code",
+						customModes: [{ slug: "custom", name: "Custom", roleDefinition: "mode", groups: ["read"] }],
+					},
 				})
 
 				;(fs.readFile as Mock).mockResolvedValue(mockFileContent)
 
-				mockProviderSettingsManager.export.mockResolvedValue({
-					currentApiConfigName: "default",
-					apiConfigs: { default: { apiProvider: "anthropic" as ProviderName, id: "default-id" } },
-				})
-
 				const result = await importSettings({
-					providerSettingsManager: mockProviderSettingsManager,
+					providerSettingsManager: manager,
 					contextProxy: mockContextProxy,
 					customModesManager: mockCustomModesManager,
 				})
 
-				// Import should fail since all profiles have schema validation errors
+				// Invalid profiles remain recoverable, but an absent selection must never be substituted.
 				expect(result.success).toBe(false)
 				expect(result.error).toContain('Selected profile "invalid-profile" was not found')
 				expect(result.error).toContain("No provider was substituted")
 
-				// Should NOT have called import since there were no valid profiles
-				expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
+				expect(await mockExtensionContext.secrets.get("roo_cline_config_api_config")).toBe(before)
+				expect(mockCustomModesManager.updateCustomMode).not.toHaveBeenCalled()
 			})
 
 			it("should show warning notification when importing with warnings via importSettingsWithFeedback", async () => {

@@ -1,4 +1,5 @@
 import { setImmediate } from "node:timers/promises"
+import path from "path"
 
 import { AlphaProvider } from "../AlphaProvider"
 import type { Task } from "../../task/Task"
@@ -12,14 +13,13 @@ function deferred<T>() {
 	return { promise, resolve }
 }
 
-function createHarness(taskId = "ticket-parent") {
+function createHarness(taskId = "ticket-parent", gate = new WorkspaceMutationGate()) {
 	const cancellation = new AbortController()
 	const task = {
 		taskId,
 		abort: false,
 		getTaskLifetimeCancellationSignal: () => cancellation.signal,
 	} as unknown as Task
-	const gate = new WorkspaceMutationGate()
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		workspaceMutationGate: gate,
 	}) as AlphaProvider
@@ -27,6 +27,50 @@ function createHarness(taskId = "ticket-parent") {
 }
 
 describe("AlphaProvider workspace mutation cancellation", () => {
+	it("serializes mutations and cancellation across sibling provider owners", async () => {
+		const storagePath = path.resolve("provider-shared-mutation-storage")
+		const sidebar = createHarness("sidebar-task", WorkspaceMutationGate.forGlobalStorage(storagePath))
+		const editor = createHarness(
+			"editor-task",
+			WorkspaceMutationGate.forGlobalStorage(path.join(storagePath, "nested", "..")),
+		)
+		const entered = deferred<void>()
+		const release = deferred<void>()
+		const order: string[] = []
+		const active = sidebar.provider.runWorkspaceMutation(sidebar.task, "sidebar edit", async () => {
+			order.push("sidebar:start")
+			entered.resolve()
+			await release.promise
+			order.push("sidebar:end")
+		})
+		await entered.promise
+		const cancelledEffect = vi.fn(async () => undefined)
+		const cancelled = editor.provider.runWorkspaceMutation(editor.task, "cancelled editor edit", cancelledEffect)
+		const rejected = expect(cancelled).rejects.toBeInstanceOf(WorkspaceMutationCancelledError)
+		editor.cancellation.abort()
+		const cleanup = editor.provider.runWorkspaceMutation(
+			editor.task,
+			"stopped editor cleanup",
+			async () => {
+				order.push("editor:cleanup")
+				return "cleanup complete"
+			},
+			{ allowStoppedTask: true },
+		)
+		try {
+			await rejected
+			expect(cancelledEffect).not.toHaveBeenCalled()
+			expect(order).toEqual(["sidebar:start"])
+			expect(editor.gate.runIfIdle("editor-task", "enter Plan", async () => undefined)).toBeUndefined()
+		} finally {
+			release.resolve()
+			await Promise.allSettled([active, cleanup])
+		}
+		await expect(active).resolves.toBeUndefined()
+		await expect(cleanup).resolves.toBe("cleanup complete")
+		expect(order).toEqual(["sidebar:start", "sidebar:end", "editor:cleanup"])
+	})
+
 	it("settles a cancelled queued task while the admitted mutation still owns the gate", async () => {
 		const { cancellation, task, gate, provider } = createHarness()
 		const entered = deferred<void>()

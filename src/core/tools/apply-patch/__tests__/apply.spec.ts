@@ -1,8 +1,40 @@
 import { applyChunksToContent, ApplyPatchError } from "../apply"
-import type { UpdateFileChunk } from "../parser"
+import { parsePatch, type UpdateFileChunk } from "../parser"
 
 describe("apply-patch apply", () => {
 	describe("applyChunksToContent", () => {
+		it.each(["\n", "\r\n"])("preserves fuzzy-matched context bytes with %j endings", (eol) => {
+			const original = `\uFEFF    const label = "a—b"\t${eol}value=old${eol}footer${eol}`
+			const [hunk] = parsePatch(
+				'*** Begin Patch\n*** Update File: test.txt\n@@\n const label = "a-b"\n-value=old\n+value=new\n footer\n*** End Patch',
+			).hunks
+			if (hunk?.type !== "UpdateFile") throw new Error("Expected update hunk")
+
+			expect(applyChunksToContent(original, hunk.path, hunk.chunks)).toBe(
+				original.replace("value=old", "value=new"),
+			)
+		})
+
+		it("preserves the context occurrence when identical patch lines remove an earlier occurrence", () => {
+			const [hunk] = parsePatch(
+				"*** Begin Patch\n*** Update File: test.txt\n@@\n-same\n same\n*** End Patch",
+			).hunks
+			if (hunk?.type !== "UpdateFile") throw new Error("Expected update hunk")
+
+			expect(applyChunksToContent("  same\n    same\n", hunk.path, hunk.chunks)).toBe("    same\n")
+		})
+
+		it("preserves contexts between unequal edited segments and a trailing newline sentinel", () => {
+			const [hunk] = parsePatch(
+				"*** Begin Patch\n*** Update File: test.txt\n@@\n one\n-old\n+new\n+extra\n two\n-remove\n three\n \n*** End of File\n*** End Patch",
+			).hunks
+			if (hunk?.type !== "UpdateFile") throw new Error("Expected update hunk")
+
+			expect(applyChunksToContent("  one\nold\n  two\nremove\n  three\n", hunk.path, hunk.chunks)).toBe(
+				"  one\nnew\nextra\n  two\n  three\n",
+			)
+		})
+
 		it("should apply simple replacement", () => {
 			const original = "foo\nbar\n"
 			const chunks: UpdateFileChunk[] = [
@@ -148,6 +180,27 @@ describe("apply-patch apply", () => {
 			]
 			const result = applyChunksToContent(original, "test.txt", chunks)
 			expect(result).toBe("foo\nbar\nBAZ\nqux\n")
+		})
+
+		it.each([false, true])("rejects EOF chunks that reuse consumed source lines (sentinel: %s)", (sentinel) => {
+			const chunks: UpdateFileChunk[] = [
+				{
+					changeContext: null,
+					oldLines: ["tail"],
+					newLines: ["first"],
+					isEndOfFile: false,
+				},
+				{
+					changeContext: null,
+					oldLines: sentinel ? ["tail", ""] : ["tail"],
+					newLines: sentinel ? ["second", ""] : ["second"],
+					isEndOfFile: true,
+				},
+			]
+
+			expect(() => applyChunksToContent("head\ntail\n", "test.txt", chunks)).toThrow(
+				"Failed to find expected lines",
+			)
 		})
 
 		it("should handle interleaved changes", () => {

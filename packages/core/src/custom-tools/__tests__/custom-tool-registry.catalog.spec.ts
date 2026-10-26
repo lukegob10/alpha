@@ -189,7 +189,10 @@ describe("owned custom tool catalogs", () => {
 	}, 60_000)
 
 	it("bounds native import generations across registry instances and fails explicitly at the ceiling", async () => {
-		await runScenario(`
+		// Exercise all 256 permanent Node imports, including filesystem refreshes, under the full-suite load.
+		// Keep the child deadline inside Vitest's deadline so execa terminates it before fixture cleanup.
+		await runScenario(
+			`
 			const directory = path.join(root, "tools")
 			let first
 			for (let version = 0; version < 256; version++) {
@@ -209,8 +212,10 @@ describe("owned custom tool catalogs", () => {
 			assert.match(stillExhausted.failed[0].error, /reload limit reached/)
 			await writeTool(directory, "changing", "version 0")
 			assert.equal(await invoke(catalog(await registry.loadFromDirectoryIfStale(directory)), "changing"), "version 0")
-		`)
-	}, 60_000)
+		`,
+			110_000,
+		)
+	}, 120_000)
 
 	it("bounds retained compiled generations and failed builds while retaining unrelated files", async () => {
 		await runScenario(`

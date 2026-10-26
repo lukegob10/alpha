@@ -1,44 +1,14 @@
-import { parseStackTrace, applySourceMapsToStack, enhanceErrorWithSourceMaps } from "../sourceMapUtils"
+import * as StackTrace from "stacktrace-js"
+import { applySourceMapsToStack, applySourceMapsToComponentStack, enhanceErrorWithSourceMaps } from "../sourceMapUtils"
 
-// Mock console.debug to avoid cluttering test output
-beforeEach(() => {
-	vi.spyOn(console, "debug").mockImplementation(() => {})
-})
+vi.mock("stacktrace-js", () => ({ fromError: vi.fn() }))
 
 describe("sourceMapUtils", () => {
-	describe("parseStackTrace", () => {
-		// Note: parseStackTrace is now a compatibility function
-		test("should correctly parse a Chrome-style stack trace", async () => {
-			const stackTrace = `Error: Test error
-    at Function.execute (webpack:///./src/components/App.tsx:123:45)
-    at Object.next (webpack:///./node_modules/react/index.js:76:21)
-    at eval (webpack:///./src/utils/helpers.ts:89:10)`
-
-			const frames = await parseStackTrace(stackTrace)
-
-			// Verify it still returns an array of frame objects
-			expect(frames).toBeInstanceOf(Array)
-			expect(frames.length).toBeGreaterThan(0)
-
-			// Check that the first frame has the expected properties
-			const firstFrame = frames[0]
-			expect(firstFrame).toHaveProperty("functionName")
-			expect(firstFrame).toHaveProperty("fileName")
-			expect(firstFrame).toHaveProperty("lineNumber")
-			expect(firstFrame).toHaveProperty("columnNumber")
-			expect(firstFrame).toHaveProperty("source")
-
-			// Verify the first frame has the correct values
-			expect(firstFrame.fileName).toBe("webpack:///./src/components/App.tsx")
-			expect(firstFrame.lineNumber).toBe(123)
-			expect(firstFrame.columnNumber).toBe(45)
-		})
-
-		test("should return empty array for empty stack", async () => {
-			expect(await parseStackTrace("")).toEqual([])
-			expect(await parseStackTrace(undefined as unknown as string)).toEqual([])
-		})
+	beforeEach(() => {
+		vi.mocked(StackTrace.fromError).mockReset().mockRejectedValue(new Error("Source map unavailable"))
+		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
+	afterEach(() => vi.restoreAllMocks())
 
 	describe("applySourceMapsToStack", () => {
 		test("should return original stack when source maps cannot be applied", async () => {
@@ -47,8 +17,6 @@ describe("sourceMapUtils", () => {
 
 			const result = await applySourceMapsToStack(stackTrace)
 
-			// For now, we expect it to return the original stack
-			// since we haven't implemented actual source map application
 			expect(result).toBe(stackTrace)
 		})
 
@@ -59,14 +27,26 @@ describe("sourceMapUtils", () => {
 		})
 	})
 
+	describe("applySourceMapsToComponentStack", () => {
+		test("retains component locations when the source maps cannot be loaded", async () => {
+			const stack = "\n    at App (webview-ui.js:123:45)"
+
+			expect(await applySourceMapsToComponentStack(stack)).toBe(stack)
+			expect(StackTrace.fromError).toHaveBeenCalledTimes(1)
+		})
+
+		test("does not resolve empty or unrecognized component locations", async () => {
+			expect(await applySourceMapsToComponentStack("")).toBe("")
+			expect(await applySourceMapsToComponentStack("\n    at App")).toBe("\n    at App")
+			expect(StackTrace.fromError).not.toHaveBeenCalled()
+		})
+	})
+
 	describe("enhanceErrorWithSourceMaps", () => {
 		test("should add sourceMappedStack property to error", async () => {
 			const error = new Error("Test error")
 			error.stack = `Error: Test error
     at Function.execute (webpack:///./src/components/App.tsx:123:45)`
-
-			// Mock the applySourceMapsToStack function
-			vi.spyOn(global.console, "error").mockImplementation(() => {})
 
 			const enhancedError = await enhanceErrorWithSourceMaps(error)
 
@@ -82,6 +62,18 @@ describe("sourceMapUtils", () => {
 
 			expect(enhancedError).toBe(error)
 			expect("sourceMappedStack" in enhancedError).toBe(false)
+		})
+
+		test("keeps the original error and component stacks when mapping is unavailable", async () => {
+			const error = new Error("Render error")
+			error.stack = "Error: Render error\n    at render (webview-ui.js:20:10)"
+			const componentStack = "\n    at App (webview-ui.js:123:45)"
+
+			const enhancedError = await enhanceErrorWithSourceMaps(error, componentStack)
+
+			expect(enhancedError).toBe(error)
+			expect(enhancedError.sourceMappedStack).toBe(error.stack)
+			expect(enhancedError.sourceMappedComponentStack).toBe(componentStack)
 		})
 	})
 })

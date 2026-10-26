@@ -14,6 +14,7 @@ import type { AgentResponseItem, AgentResponseOutcome } from "../agent/AgentResp
 import type { AssistantMessagePhase } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
 import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
+import type { ProviderStateScope } from "./providerStateScope"
 import {
 	assertAuthoritativeTranscriptMissing,
 	assertAuthoritativeTranscriptReplacementAllowed,
@@ -53,6 +54,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	/** Ordered canonical response evidence retained across persistence and context projection. */
 	agentResponseItems?: AgentResponseItem[]
 	agentResponseOutcome?: AgentResponseOutcome
+	/** Producing provider/model for new opaque replay state; absent on legacy transcripts. */
+	provider_state_scope?: ProviderStateScope
 	// For reasoning items stored in API history
 	type?: "reasoning"
 	summary?: any[]
@@ -68,6 +71,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	// For non-destructive condense: points to the condenseId of the summary that replaces this message
 	// Messages with condenseParent are filtered out when sending to API if the summary exists
 	condenseParent?: string
+	/** Producing summary for a carried user copy; removing that summary removes this copy. */
+	condenseCopyParent?: string
 	// For non-destructive truncation: unique identifier for truncation marker messages
 	truncationId?: string
 	// For non-destructive truncation: points to the truncationId of the marker that hides this message
@@ -125,12 +130,6 @@ export async function readApiMessages({
 					)
 				}
 				assertValidHistory(parsedData, taskId)
-				if (parsedData.length === 0) {
-					console.error(
-						`[Alpha-Debug] readApiMessages: Found OLD API conversation history file (claude_messages.json), but it's empty (parsed as []). TaskId: ${taskId}, Path: ${oldPath}`,
-					)
-				}
-
 				try {
 					// Commit the replacement before removing the fallback. resumeTaskFromHistory
 					// reads twice, so deleting the only durable copy here loses the task.
@@ -148,10 +147,6 @@ export async function readApiMessages({
 
 				return parsedData
 			}
-			// If we reach here, neither the new nor the old history file was found.
-			console.error(
-				`[Alpha-Debug] readApiMessages: API conversation history file not found for taskId: ${taskId}. Expected at: ${filePath}`,
-			)
 			return []
 		})
 	}

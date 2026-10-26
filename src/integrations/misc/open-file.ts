@@ -5,8 +5,6 @@ import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { t } from "../../i18n"
 
 interface OpenFileOptions {
-	create?: boolean
-	content?: string
 	line?: number
 }
 
@@ -83,36 +81,10 @@ export async function openFile(filePath: string, options: OpenFileOptions = {}) 
 			}
 			uriToProcess = successfulUri // It's an existing file
 		} else {
-			// Path was not found in any attempted locations. Consider creation.
-			if (
-				options.create &&
-				!(originalFilePathForError.endsWith("/") || originalFilePathForError.endsWith("\\"))
-			) {
-				let pathToCreateAt: string
-				if (originalFilePathForError.startsWith("./")) {
-					const relativePart = originalFilePathForError.slice(2)
-					if (workspaceRoot) {
-						pathToCreateAt = path.join(workspaceRoot, relativePart)
-					} else if (homeDir) {
-						pathToCreateAt = path.join(homeDir, relativePart)
-					} else {
-						pathToCreateAt = originalFilePathForError // Fallback: use original relative path
-					}
-				} else {
-					pathToCreateAt = originalFilePathForError // Absolute path
-				}
-
-				uriToProcess = vscode.Uri.file(pathToCreateAt)
-				const contentToCreate = options.content || ""
-				await vscode.workspace.fs.writeFile(uriToProcess, Buffer.from(contentToCreate, "utf8"))
-				// File is now created, uriToProcess points to it.
-			} else {
-				// Not creating, or it's a directory-like path that doesn't exist.
-				throw new Error(`Path does not exist: ${originalFilePathForError}`)
-			}
+			throw new Error(`Path does not exist: ${originalFilePathForError}`)
 		}
 
-		// At this point, uriToProcess points to an existing file or a newly created file.
+		// Opening a source never creates or changes it, including for stale webview requests.
 		// Check if the document is already open in a tab group that's not in the active editor's column
 		try {
 			for (const group of vscode.window.tabGroups.all) {

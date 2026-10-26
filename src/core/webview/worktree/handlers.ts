@@ -188,19 +188,9 @@ export async function handleSwitchWorktree(
 	try {
 		const worktreeUri = vscode.Uri.file(worktreePath)
 
-		if (newWindow) {
-			// Set the auto-open path so the new window opens Alpha sidebar.
-			await provider.contextProxy.setValue("worktreeAutoOpenPath", worktreePath)
-
-			// Open in new window.
-			await vscode.commands.executeCommand("vscode.openFolder", worktreeUri, { forceNewWindow: true })
-		} else {
-			// For current window, we need to flush pending state first since window will reload.
-			await provider.contextProxy.setValue("worktreeAutoOpenPath", worktreePath)
-
-			// Open in current window (this will reload the window).
-			await vscode.commands.executeCommand("vscode.openFolder", worktreeUri, { forceNewWindow: false })
-		}
+		// Persist the auto-open path before opening a folder can reload the current window.
+		await provider.contextProxy.setValue("worktreeAutoOpenPath", worktreePath)
+		await vscode.commands.executeCommand("vscode.openFolder", worktreeUri, { forceNewWindow: newWindow })
 
 		return {
 			success: true,

@@ -1,10 +1,58 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import {
+	existsSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	realpathSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { createRequire } from "node:module"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import vm from "node:vm"
 
 import { packageVsix } from "./package-vsix.mjs"
+
+const { parse } = createRequire(new URL("../packages/evals/package.json", import.meta.url))("yaml")
+const releaseSha = "0123456789abcdef0123456789abcdef01234567"
+
+function runRelease(root, { extraVsix = false } = {}) {
+	writeFileSync(path.join(root, "src", "package.json"), JSON.stringify({ version: "3.2.10" }))
+	writeFileSync(path.join(root, "CHANGELOG.md"), "# Changelog\n\n## 3.2.10\n\n- Release fixture.\n")
+	mkdirSync(path.join(root, "bin"))
+	const verifiedBytes = Buffer.from("verified Windows x64 package fixture")
+	writeFileSync(path.join(root, "bin", "alpha-3.2.10-win32-x64.vsix"), verifiedBytes)
+	if (extraVsix) writeFileSync(path.join(root, "bin", "unexpected.vsix"), "unexpected package")
+	const workflow = parse(readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
+	const publication = workflow.jobs["publish-release"].steps.find((step) => step.name === "Create GitHub release")
+	const script = `
+$ErrorActionPreference = "Stop"
+function gh {
+	if ($args[0] -eq "release" -and $args[1] -eq "view") {
+		$global:LASTEXITCODE = 1
+		return
+	}
+	if ($args[0] -ne "release" -or $args[1] -ne "create") { throw "Unexpected GitHub invocation" }
+	ConvertTo-Json -InputObject @($args) | Set-Content -LiteralPath release-args.json -Encoding utf8
+	$global:LASTEXITCODE = 0
+}
+${publication.run.replaceAll("${{ github.sha }}", releaseSha)}
+`
+	const scriptPath = path.join(root, "release.ps1")
+	writeFileSync(scriptPath, script)
+	const result = spawnSync(
+		process.platform === "win32" ? "pwsh.exe" : "pwsh",
+		["-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath],
+		{ cwd: root, encoding: "utf8", timeout: 20_000, windowsHide: true },
+	)
+	assert.ifError(result.error)
+	return { result, verifiedBytes }
+}
 
 function fixture(check) {
 	const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "alpha-vsix-package-")))
@@ -80,6 +128,24 @@ test("packaging rejects cross-host targets and ambiguous or unsupported argument
 		)
 })
 
+test("the Docker evaluator installs the package produced for its host target", () => {
+	const runner = readFileSync(new URL("../packages/evals/Dockerfile.runner", import.meta.url), "utf8")
+	const copyCommand = /node -e "([^"\r\n]*copyFileSync[^"\r\n]*)"/u.exec(runner)?.[1]
+	assert.ok(copyCommand, "The evaluator must retain a packaged VSIX for its extension runner")
+	for (const target of ["linux-x64", "linux-arm64"]) {
+		const copies = []
+		vm.runInNewContext(copyCommand, {
+			require: (name) => {
+				if (name === "node:fs") return { copyFileSync: (...args) => copies.push(args) }
+				if (name === "./src/package.json") return { name: "alpha", version: "1.2.3" }
+				if (name === "./src/lancedb-native.mjs") return { hostVsixTarget: () => target }
+				throw new Error(`Unexpected evaluator dependency: ${name}`)
+			},
+		})
+		assert.deepEqual(copies, [[`bin/alpha-1.2.3-${target}.vsix`, "bin/alpha-code.vsix"]])
+	}
+})
+
 test("release publication waits for the verified Windows x64 package only", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../src/package.json", import.meta.url), "utf8"))
 	assert.equal(manifest.scripts.vsix, "node ../scripts/package-vsix.mjs")
@@ -105,4 +171,42 @@ test("release publication waits for the verified Windows x64 package only", () =
 	assert.ok(publication.includes(".Count -ne $targets.Count"))
 	assert.match(publication, /Download the Windows x64 VSIX/u)
 	assert.doesNotMatch(workflow, /darwin-|linux-|win32-arm64|Intel macOS/u)
+})
+
+test("publication keeps the historical title and filename while preserving the verified Windows package", () => {
+	fixture(({ root }) => {
+		const { result, verifiedBytes } = runRelease(root)
+		assert.equal(result.status, 0, result.stderr || String(result.error))
+		const args = JSON.parse(readFileSync(path.join(root, "release-args.json"), "utf8").replace(/^\uFEFF/u, ""))
+		assert.deepEqual(args.slice(0, 3), ["release", "create", "vsix-v3.2.10-0123456"])
+		assert.equal(path.basename(args[3]), "alpha-3.2.10.vsix")
+		assert.deepEqual(args.slice(4, 6), ["--title", "Alpha VSIX v3.2.10 (0123456)"])
+		assert.equal(args[6], "--notes")
+		assert.match(args[7], /code --install-extension alpha-3\.2\.10\.vsix/u)
+		assert.deepEqual(args.slice(8), ["--target", releaseSha])
+		assert.deepEqual(readdirSync(path.join(root, "bin")), ["alpha-3.2.10.vsix"])
+		assert.deepEqual(readFileSync(args[3]), verifiedBytes)
+	})
+})
+
+test("publication refuses unexpected extra packages before publishing or renaming", () => {
+	fixture(({ root }) => {
+		const { result } = runRelease(root, { extraVsix: true })
+		assert.notEqual(result.status, 0)
+		assert.match(result.stderr, /Release must contain exactly one Windows x64 VSIX/u)
+		assert.equal(existsSync(path.join(root, "release-args.json")), false)
+		assert.deepEqual(readdirSync(path.join(root, "bin")).sort(), ["alpha-3.2.10-win32-x64.vsix", "unexpected.vsix"])
+	})
+})
+
+test("only release publication receives a repository write token", () => {
+	for (const file of ["code-qa.yml", "evals.yml", "release-vsix.yml"]) {
+		const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8")
+		assert.match(workflow, /^permissions:\r?\n {4}contents: read$/mu, file)
+		if (file !== "release-vsix.yml") assert.doesNotMatch(workflow, /contents: write/u, file)
+	}
+	const workflow = readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	const [validationAndPackaging, publication] = workflow.split("    publish-release:")
+	assert.doesNotMatch(validationAndPackaging, /contents: write/u)
+	assert.match(publication, /^ {8}permissions:\r?\n {12}contents: write$/mu)
 })

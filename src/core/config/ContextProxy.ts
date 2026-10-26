@@ -18,8 +18,7 @@ import {
 	isGlobalStateKey,
 	isProviderName,
 	isRetiredProvider,
-	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
-	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
+	RETIRED_SUBAGENT_SETTING_KEYS,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -41,10 +40,13 @@ const globalSettingsExportSchema = globalSettingsSchema.omit({
 })
 
 export class ContextProxy {
+	private static readonly credentialLocks = new WeakMap<vscode.ExtensionContext["secrets"], Promise<void>>()
+	private static readonly openAiHeadersSecretKey = "openAiHeaders"
 	private readonly originalContext: vscode.ExtensionContext
 
 	private stateCache: GlobalState
 	private secretCache: SecretState
+	private openAiHeadersRevision = 0
 	private _isInitialized = false
 
 	constructor(context: vscode.ExtensionContext) {
@@ -60,6 +62,8 @@ export class ContextProxy {
 
 	public async initialize() {
 		for (const key of GLOBAL_STATE_KEYS) {
+			// Keep the public settings shape while loading credential-bearing headers only through the secure reader.
+			if (key === "openAiHeaders") continue
 			try {
 				// Revert to original assignment
 				this.stateCache[key] = this.originalContext.globalState.get(key)
@@ -68,19 +72,7 @@ export class ContextProxy {
 			}
 		}
 
-		const promises = [
-			...SECRET_STATE_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error loading secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
-		]
-
-		await Promise.all(promises)
+		await this.loadSecrets("loading")
 
 		// Migration: inspect invalid/removed API providers without changing the saved value
 		await this.migrateInvalidApiProvider()
@@ -91,8 +83,7 @@ export class ContextProxy {
 		// Migration: Clear old default condensing prompt so users get the improved v2 default
 		await this.migrateOldDefaultCondensingPrompt()
 
-		// Older settings pages persisted the small managed-agent defaults as explicit values.
-		await this.migrateLegacySubagentBudgetDefaults()
+		await this.removeRetiredSubagentSettings()
 
 		this._isInitialized = true
 	}
@@ -174,35 +165,18 @@ export class ContextProxy {
 		}
 	}
 
-	/** Clear only the old default pair; retain custom budgets and frozen limits on existing tasks. */
-	private async migrateLegacySubagentBudgetDefaults() {
-		const migrationKey = "subagentBudgetDefaultsMigrationV1"
-		try {
-			const migrationState = this.originalContext.globalState.get<"started" | "done">(migrationKey)
-			if (migrationState === "done") return
-			if (migrationState !== "started") {
-				if (
-					this.stateCache.subagentMaxInputTokens !== LEGACY_SUBAGENT_MAX_INPUT_TOKENS ||
-					this.stateCache.subagentMaxOutputTokens !== LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS
-				) {
-					await this.originalContext.globalState.update(migrationKey, "done")
-					return
-				}
-				await this.originalContext.globalState.update(migrationKey, "started")
+	/** Idempotent retirement also prevents old imports from restoring removed preferences. */
+	private async removeRetiredSubagentSettings() {
+		for (const key of RETIRED_SUBAGENT_SETTING_KEYS) {
+			if (!isGlobalStateKey(key) || this.stateCache[key] === undefined) continue
+			this.stateCache[key] = undefined
+			try {
+				await this.originalContext.globalState.update(key, undefined)
+			} catch (error) {
+				logger.error(
+					`Failed to retire agent setting ${key}: ${error instanceof Error ? error.message : String(error)}`,
+				)
 			}
-			if (this.stateCache.subagentMaxInputTokens === LEGACY_SUBAGENT_MAX_INPUT_TOKENS) {
-				await this.originalContext.globalState.update("subagentMaxInputTokens", undefined)
-				this.stateCache.subagentMaxInputTokens = undefined
-			}
-			if (this.stateCache.subagentMaxOutputTokens === LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS) {
-				await this.originalContext.globalState.update("subagentMaxOutputTokens", undefined)
-				this.stateCache.subagentMaxOutputTokens = undefined
-			}
-			await this.originalContext.globalState.update(migrationKey, "done")
-		} catch (error) {
-			logger.error(
-				`Error migrating legacy subagent budget defaults: ${error instanceof Error ? error.message : String(error)}`,
-			)
 		}
 	}
 
@@ -311,6 +285,9 @@ export class ContextProxy {
 	}
 
 	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K]) {
+		if (key === "openAiHeaders") {
+			return this.storeOpenAiHeaders(providerSettingsSchema.shape.openAiHeaders.parse(value))
+		}
 		if (key === "newTaskReasoningPreference") {
 			// A quick-control acknowledgement must never expose an unpersisted choice.
 			return this.originalContext.globalState.update(key, value).then(() => {
@@ -342,6 +319,20 @@ export class ContextProxy {
 		// Update cache.
 		this.secretCache[key] = value
 
+		if (key === "vertexJsonCredentials") {
+			return this.withCredentialLock(async () => {
+				this.secretCache[key] = value
+				if (value === undefined) {
+					// Clear the legacy copy first so reload cannot restore removed credentials.
+					await this.originalContext.globalState.update(key, undefined)
+					await this.originalContext.secrets.delete(key)
+				} else {
+					await this.originalContext.secrets.store(key, value)
+					await this.originalContext.globalState.update(key, undefined)
+				}
+			})
+		}
+
 		// Write directly to context.
 		return value === undefined
 			? this.originalContext.secrets.delete(key)
@@ -353,18 +344,94 @@ export class ContextProxy {
 	 * This is useful when you need to ensure the cache has the latest values
 	 */
 	async refreshSecrets(): Promise<void> {
-		const promises = [
-			...SECRET_STATE_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error refreshing secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
+		await this.loadSecrets("refreshing")
+	}
+
+	private async loadSecrets(operation: "loading" | "refreshing"): Promise<void> {
+		const headersRevision = this.openAiHeadersRevision
+		await Promise.all([
+			...SECRET_STATE_KEYS.map((key) => {
+				const load = async () => {
+					let loaded = false
+					try {
+						this.secretCache[key] = await this.originalContext.secrets.get(key)
+						loaded = true
+					} catch (error) {
+						logger.error(
+							`Error ${operation} secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
+						)
+					}
+					if (key === "vertexJsonCredentials") await this.migrateLegacyVertexCredentials(loaded)
 				}
+				return key === "vertexJsonCredentials" ? this.withCredentialLock(load) : load()
 			}),
-		]
-		await Promise.all(promises)
+			this.withCredentialLock(() => this.loadOpenAiHeaders(headersRevision)),
+		])
+	}
+
+	private withCredentialLock(operation: () => Promise<void>): Promise<void> {
+		const previous = ContextProxy.credentialLocks.get(this.originalContext.secrets) ?? Promise.resolve()
+		const next = previous.then(operation)
+		ContextProxy.credentialLocks.set(
+			this.originalContext.secrets,
+			next.catch(() => {}),
+		)
+		return next
+	}
+
+	private storeOpenAiHeaders(headers: ProviderSettings["openAiHeaders"]): Promise<void> {
+		const serialized = headers === undefined ? undefined : JSON.stringify(headers)
+		this.openAiHeadersRevision++
+		this.stateCache.openAiHeaders = headers
+		return this.withCredentialLock(async () => {
+			if (serialized === undefined) {
+				// Remove plaintext first so a later reload cannot restore explicitly cleared headers.
+				await this.originalContext.globalState.update("openAiHeaders", undefined)
+				await this.originalContext.secrets.delete(ContextProxy.openAiHeadersSecretKey)
+			} else {
+				await this.originalContext.secrets.store(ContextProxy.openAiHeadersSecretKey, serialized)
+				await this.originalContext.globalState.update("openAiHeaders", undefined)
+			}
+		})
+	}
+
+	private async loadOpenAiHeaders(revision: number): Promise<void> {
+		try {
+			const serialized = await this.originalContext.secrets.get(ContextProxy.openAiHeadersSecretKey)
+			const legacy = this.originalContext.globalState.get<unknown>("openAiHeaders")
+			const headers = providerSettingsSchema.shape.openAiHeaders.parse(
+				serialized === undefined ? legacy : JSON.parse(serialized),
+			)
+			// A refresh started before a profile edit must not replace that edit's synchronous projection.
+			if (this.openAiHeadersRevision === revision) this.stateCache.openAiHeaders = headers
+			if (serialized === undefined && headers !== undefined) {
+				await this.originalContext.secrets.store(ContextProxy.openAiHeadersSecretKey, JSON.stringify(headers))
+			}
+			// Existing secure data wins; failed reads or writes leave both durable copies available for retry.
+			if (legacy !== undefined) await this.originalContext.globalState.update("openAiHeaders", undefined)
+		} catch {
+			logger.error(
+				"Could not load or migrate custom headers in SecretStorage; the operation will retry on refresh",
+			)
+		}
+	}
+
+	private async migrateLegacyVertexCredentials(secretLoaded: boolean): Promise<void> {
+		const key = "vertexJsonCredentials"
+		try {
+			const legacyValue = this.originalContext.globalState.get<unknown>(key)
+			if (typeof legacyValue !== "string") return
+
+			const storedValue = this.secretCache[key]
+			if (storedValue === undefined) this.secretCache[key] = legacyValue
+			// A failed read cannot establish whether a newer secret already exists.
+			if (!secretLoaded) return
+			if (storedValue === undefined) await this.originalContext.secrets.store(key, legacyValue)
+			// Remove plaintext only after an existing or newly stored secret is durable.
+			await this.originalContext.globalState.update(key, undefined)
+		} catch {
+			logger.error("Could not migrate legacy Vertex credentials to SecretStorage; migration will retry on reload")
+		}
 	}
 
 	private getAllSecretState(): SecretState {
@@ -465,6 +532,9 @@ export class ContextProxy {
 			...PROVIDER_SETTINGS_KEYS.filter((key) => !isSecretStateKey(key))
 				.filter((key) => this.stateCache[key] !== undefined)
 				.reduce((acc, key) => ({ ...acc, [key]: undefined }), {} as ProviderSettings),
+			openAiHeaders: undefined,
+			// Preserve profile replacement semantics from when this field lived in global state.
+			...(this.secretCache.vertexJsonCredentials !== undefined ? { vertexJsonCredentials: undefined } : {}),
 			...values,
 			...projection,
 		})
@@ -475,6 +545,7 @@ export class ContextProxy {
 	 */
 
 	public async setValue<K extends AlphaCodeSettingsKey>(key: K, value: AlphaCodeSettings[K]) {
+		if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) return
 		if (isSecretStateKey(key)) {
 			return this.storeSecret(key as SecretStateKey, value as string)
 		}
@@ -537,8 +608,15 @@ export class ContextProxy {
 		this.secretCache = {}
 
 		await Promise.all([
-			...GLOBAL_STATE_KEYS.map((key) => this.originalContext.globalState.update(key, undefined)),
-			...SECRET_STATE_KEYS.map((key) => this.originalContext.secrets.delete(key)),
+			...GLOBAL_STATE_KEYS.filter((key) => key !== "openAiHeaders").map((key) =>
+				this.originalContext.globalState.update(key, undefined),
+			),
+			this.storeOpenAiHeaders(undefined),
+			...SECRET_STATE_KEYS.map((key) =>
+				key === "vertexJsonCredentials"
+					? this.storeSecret(key, undefined)
+					: this.originalContext.secrets.delete(key),
+			),
 		])
 
 		await this.initialize()

@@ -23,6 +23,7 @@ describe("real Redis service contracts", () => {
 			expect(await client.sCard(getRunnersKey(runId))).toBe(1)
 			heartbeat = await startHeartbeat(runId, 4)
 			expect(await isHeartbeatActive(runId)).toBe(true)
+			await expect(startHeartbeat(runId, 4)).rejects.toThrow("active controller")
 			await deregisterRunner({ runId, taskId: 901 })
 			expect(await client.sCard(getRunnersKey(runId))).toBe(0)
 			await stopHeartbeat(runId, heartbeat)
@@ -30,6 +31,19 @@ describe("real Redis service contracts", () => {
 		} finally {
 			if (heartbeat) await stopHeartbeat(runId, heartbeat)
 			await deregisterRunner({ runId, taskId: 901 })
+		}
+	})
+
+	it("prevents a stale controller from deleting a newly acquired lease", async () => {
+		const runId = randomInt(1, 2 ** 48)
+		const first = await startHeartbeat(runId, 4)
+		await stopHeartbeat(runId, first)
+		const second = await startHeartbeat(runId, 4)
+		try {
+			await stopHeartbeat(runId, first)
+			expect(await isHeartbeatActive(runId)).toBe(true)
+		} finally {
+			await stopHeartbeat(runId, second)
 		}
 	})
 })

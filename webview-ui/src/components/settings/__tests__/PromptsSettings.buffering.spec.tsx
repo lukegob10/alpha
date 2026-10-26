@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import PromptsSettings from "../PromptsSettings"
@@ -25,19 +25,26 @@ vi.mock("@src/components/ui", () => ({
 	Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
 		<button {...props}>{children}</button>
 	),
-	Select: ({ value, onValueChange }: { value: string; onValueChange: (value: string) => void }) => (
+	Select: ({
+		value,
+		onValueChange,
+		children,
+	}: {
+		value: string
+		onValueChange: (value: string) => void
+		children: React.ReactNode
+	}) => (
 		<select
 			data-testid={["ENHANCE", "EXPLAIN"].includes(value) ? "support-prompt-type" : "enhancement-api-config"}
 			value={value}
 			onChange={(event) => onValueChange(event.target.value)}>
-			<option value="ENHANCE">Enhance</option>
-			<option value="EXPLAIN">Explain</option>
-			<option value="-">Current configuration</option>
-			<option value="config-1">Config 1</option>
+			{children}
 		</select>
 	),
 	SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-	SelectItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+	SelectItem: ({ children, value }: { children: React.ReactNode; value: string }) => (
+		<option value={value}>{children}</option>
+	),
 	SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 	SelectValue: () => null,
 	StandardTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -89,6 +96,15 @@ describe("PromptsSettings buffering", () => {
 			window.dispatchEvent(new MessageEvent("message", { data: { type: "enhancedPrompt", requestId, ...data } })),
 		)
 	}
+
+	it("keeps support prompts available without a legacy style selector", () => {
+		render(<PromptsSettings {...createProps()} />)
+		expect(screen.queryByText("settings:prompts.personality.label")).not.toBeInTheDocument()
+		expect(screen.getAllByRole("combobox")).toHaveLength(2)
+		expect(screen.getByTestId("support-prompt-type")).toHaveValue("ENHANCE")
+		expect(within(screen.getByTestId("support-prompt-type")).getAllByRole("option").length).toBeGreaterThan(1)
+		expect(postMessage).not.toHaveBeenCalled()
+	})
 
 	it("cancels preview without editing settings or replacing the draft with a late result", () => {
 		const props = createProps()

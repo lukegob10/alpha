@@ -2,15 +2,7 @@ import { createHash } from "crypto"
 import { describe, expect, it } from "vitest"
 import { subagentCommandApprovalPolicySchema, type SubagentCommandApprovalPolicy } from "@alpha-code/types"
 
-import {
-	createSubagentCommandApprovalPolicy,
-	findLongestPrefixMatch,
-	getCommandDecision,
-	getSingleCommandDecision,
-	getSubagentCommandDecision,
-	isAutoApprovedSingleCommand,
-	isAutoDeniedSingleCommand,
-} from "../commands"
+import { createSubagentCommandApprovalPolicy, getCommandDecision, getSubagentCommandDecision } from "../commands"
 
 function withPlatform(platform: NodeJS.Platform, run: () => void): void {
 	const original = Object.getOwnPropertyDescriptor(process, "platform")
@@ -52,10 +44,6 @@ describe("command approval token boundaries", () => {
 		["'git status' --short", "git status"],
 		["echo 'a b' c", "echo a 'b c'"],
 	])("does not inherit approval across a token boundary: %s", (command, rule) => {
-		expect(findLongestPrefixMatch(command, [rule])).toBeNull()
-		expect(isAutoApprovedSingleCommand(command, [rule])).toBe(false)
-		expect(isAutoApprovedSingleCommand(command, [rule], [])).toBe(false)
-		expect(getSingleCommandDecision(command, [rule], [])).toBe("ask_user")
 		expect(getCommandDecision(command, [rule], [])).toBe("ask_user")
 		const policy = createSubagentCommandApprovalPolicy([rule], [], "1".repeat(64))
 		expect(getSubagentCommandDecision(command, policy)).toBe("ask_user")
@@ -66,7 +54,6 @@ describe("command approval token boundaries", () => {
 		["pnpm test-extra", "pnpm test"],
 		["rm ./build-old", "rm ./build"],
 	])("does not apply a denial to a different complete token: %s", (command, rule) => {
-		expect(isAutoDeniedSingleCommand(command, ["*"], [rule])).toBe(false)
 		expect(getCommandDecision(command, ["*"], [rule])).toBe("auto_approve")
 		const policy = createSubagentCommandApprovalPolicy(["*"], [rule], "2".repeat(64))
 		expect(getSubagentCommandDecision(command, policy)).toBe("auto_approve")
@@ -83,8 +70,6 @@ describe("command approval token boundaries", () => {
 		['echo "*"', "echo '*'"],
 		['echo "[a-z]*"', "echo '[a-z]*'"],
 	])("approves equivalent complete executable/argument tokens: %s", (command, rule) => {
-		expect(isAutoApprovedSingleCommand(command, [rule], [])).toBe(true)
-		expect(getSingleCommandDecision(command, [rule], [])).toBe("auto_approve")
 		expect(getCommandDecision(command, [rule], [])).toBe("auto_approve")
 		const policy = createSubagentCommandApprovalPolicy([rule], [], "3".repeat(64))
 		expect(getSubagentCommandDecision(command, policy)).toBe("auto_approve")
@@ -228,9 +213,6 @@ describe("command approval token boundaries", () => {
 		["pnpm test --run", ["pnpm test --run"], ["pnpm test"]],
 		["git status", ["git status"], ["*"]],
 	])("keeps matching denials authoritative over more specific allows: %s", (command, allowed, denied) => {
-		expect(isAutoApprovedSingleCommand(command, allowed, denied)).toBe(false)
-		expect(isAutoDeniedSingleCommand(command, allowed, denied)).toBe(true)
-		expect(getSingleCommandDecision(command, allowed, denied)).toBe("auto_deny")
 		expect(getCommandDecision(command, allowed, denied)).toBe("auto_deny")
 		const policy = createSubagentCommandApprovalPolicy(allowed, denied, "5".repeat(64))
 		expect(getSubagentCommandDecision(command, policy)).toBe("auto_deny")
@@ -251,15 +233,6 @@ describe("command approval token boundaries", () => {
 			expect(getSubagentCommandDecision(command, policy)).toBe(decision)
 		}
 	})
-
-	it.each(["git status && rm ./build", "git status | git-impostor status", "git status\npnpm test"])(
-		"does not let a single-command helper approve a compound command: %s",
-		(command) => {
-			expect(findLongestPrefixMatch(command, ["git"])).toBeNull()
-			expect(isAutoApprovedSingleCommand(command, ["git"], [])).toBe(false)
-			expect(getSingleCommandDecision(command, ["git"], [])).toBe("ask_user")
-		},
-	)
 
 	it.each(['git "status', "git status &&", "git status |", "&& git status", "git status && || pnpm test", ";"])(
 		"asks for malformed or empty parsed commands: %s",
@@ -299,12 +272,6 @@ describe("command approval token boundaries", () => {
 		expect(getCommandDecision(command, allowed, [])).toBe("ask_user")
 		const policy = createSubagentCommandApprovalPolicy(allowed, [], "9".repeat(64))
 		expect(getSubagentCommandDecision(command, policy)).toBe("ask_user")
-	})
-
-	it("uses token count to select the most specific match while preserving the configured spelling", () => {
-		expect(findLongestPrefixMatch('"git" status --short', ["*", '"git"', "git status"])).toBe("git status")
-		expect(findLongestPrefixMatch("git status", ["  git       ", "git status"])).toBe("git status")
-		expect(findLongestPrefixMatch("git status", ["*", "  git  "])).toBe("  git  ")
 	})
 
 	it.each(["linux", "win32"] as const)("applies executable normalization at the %s host boundary", (platform) => {

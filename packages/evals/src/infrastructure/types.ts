@@ -20,6 +20,12 @@ export type ContainerSpec = {
 	network: string
 	limits: ContainerLimits
 	workingDirectory?: string
+	signal?: AbortSignal
+	pull?: "never"
+	readOnlyRootFilesystem?: boolean
+	dropAllCapabilities?: boolean
+	noNewPrivileges?: boolean
+	maxOutputBytes?: number
 }
 
 export type ContainerRecord = {

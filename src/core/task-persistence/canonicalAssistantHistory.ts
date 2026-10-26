@@ -1,8 +1,10 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import {
 	normalizeAssistantMessageMetadata,
+	snapshotGeminiResponse,
 	snapshotVscodeLmThinking,
 	type AssistantMessageMetadata,
+	type GeminiResponseHistoryBlock,
 	type VscodeLmThinkingHistoryBlock,
 } from "@alpha-code/types"
 
@@ -16,6 +18,7 @@ export type CanonicalAssistantHistoryItem =
 	| Anthropic.RedactedThinkingBlockParam
 	| { type: "reasoning"; text: string; signature?: string; outputIndex?: number }
 	| CanonicalEncryptedReasoningHistoryItem
+	| GeminiResponseHistoryBlock
 	| VscodeLmThinkingHistoryBlock
 
 /** Persisted source metadata is stripped only when projecting to a provider without message phases. */
@@ -67,6 +70,12 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 			continue
 		}
 		if (item.type === "reasoning") {
+			if (item.geminiResponse !== undefined) {
+				const geminiResponse = snapshotGeminiResponse(item.geminiResponse)
+				if (!geminiResponse) throw new Error("Canonical response contains invalid Gemini state.")
+				items.push({ type: "gemini_response", geminiResponse })
+				continue
+			}
 			const vscodeLmThinking = snapshotVscodeLmThinking(item.vscodeLmThinking)
 			if (vscodeLmThinking) {
 				items.push({ type: "vscode_lm_thinking", ...vscodeLmThinking })
@@ -145,7 +154,7 @@ export function buildCanonicalAnthropicAssistantHistoryContent(
 		| Anthropic.Messages.RedactedThinkingBlockParam
 	> = []
 	for (const item of items) {
-		if (item.type === "vscode_lm_thinking") continue
+		if (item.type === "vscode_lm_thinking" || item.type === "gemini_response") continue
 		if (item.type === "reasoning") {
 			if ("encrypted_content" in item) return undefined
 			if (!item.signature) {
@@ -172,6 +181,7 @@ export function buildCanonicalAssistantHistoryContent(
 		| Anthropic.ToolUseBlockParam
 		| Anthropic.RedactedThinkingBlockParam
 		| CanonicalEncryptedReasoningHistoryItem
+		| GeminiResponseHistoryBlock
 		| VscodeLmThinkingHistoryBlock
 	> = []
 

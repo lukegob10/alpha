@@ -1,8 +1,12 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { Content, Part } from "@google/genai"
+import { isDeepStrictEqual } from "node:util"
+
+import { snapshotGeminiResponse, type GeminiResponseHistoryBlock } from "@alpha-code/types"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
 import { t } from "../../i18n"
+import { sanitizeToolUseId } from "../../utils/tool-id"
 
 type ThoughtSignatureContentBlock = {
 	type: "thoughtSignature"
@@ -14,8 +18,54 @@ type ReasoningContentBlock = {
 	text: string
 }
 
-type ExtendedContentBlockParam = Anthropic.ContentBlockParam | ThoughtSignatureContentBlock | ReasoningContentBlock
+type ExtendedContentBlockParam =
+	| Anthropic.ContentBlockParam
+	| ThoughtSignatureContentBlock
+	| ReasoningContentBlock
+	| GeminiResponseHistoryBlock
 type ExtendedAnthropicContent = string | ExtendedContentBlockParam[]
+
+type GeminiConversionOptions = {
+	includeThoughtSignatures?: boolean
+	modelId?: string
+	toolIdToName?: Map<string, string>
+	toolIdToProviderId?: Map<string, string | undefined>
+}
+
+function getOriginalGeminiParts(
+	message: Anthropic.Messages.MessageParam,
+	options?: GeminiConversionOptions,
+): Part[] | undefined {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return undefined
+	const blocks = (message.content as ExtendedContentBlockParam[]).filter(
+		(block): block is GeminiResponseHistoryBlock => block.type === "gemini_response",
+	)
+	if (blocks.length === 0 || !options?.modelId) return undefined
+	if (blocks.length !== 1) throw new Error("Ambiguous Gemini response replay state in conversation history.")
+	const response = snapshotGeminiResponse(blocks[0]?.geminiResponse)
+	if (!response) throw new Error("Invalid Gemini response replay state in conversation history.")
+	if (response.modelId !== options.modelId) return undefined
+
+	const calls = message.content.filter((block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use")
+	const originalCalls = response.parts.flatMap((part) => (part.functionCall ? [part.functionCall] : []))
+	if (
+		calls.length !== originalCalls.length ||
+		calls.some((call, index) => {
+			const original = originalCalls[index]!
+			return (
+				call.name !== original.name ||
+				!isDeepStrictEqual(toFunctionToolInput(call.name, call.input), original.args ?? {}) ||
+				(original.id !== undefined && call.id !== original.id && call.id !== sanitizeToolUseId(original.id))
+			)
+		})
+	) {
+		throw new Error("Gemini response replay state does not match the canonical tool history.")
+	}
+	for (const [index, call] of calls.entries()) {
+		options.toolIdToProviderId?.set(call.id, originalCalls[index]?.id)
+	}
+	return response.parts
+}
 
 // Extension type to safely add thoughtSignature to Part
 type PartWithThoughtSignature = Part & {
@@ -28,7 +78,7 @@ function isThoughtSignatureContentBlock(block: ExtendedContentBlockParam): block
 
 export function convertAnthropicContentToGemini(
 	content: ExtendedAnthropicContent,
-	options?: { includeThoughtSignatures?: boolean; toolIdToName?: Map<string, string> },
+	options?: GeminiConversionOptions,
 ): Part[] {
 	const includeThoughtSignatures = options?.includeThoughtSignatures ?? true
 	const toolIdToName = options?.toolIdToName
@@ -65,6 +115,8 @@ export function convertAnthropicContentToGemini(
 		}
 
 		switch (block.type) {
+			case "gemini_response":
+				return []
 			case "text":
 				return { text: block.text }
 			case "image":
@@ -91,6 +143,9 @@ export function convertAnthropicContentToGemini(
 					...(functionCallSignature ? { thoughtSignature: functionCallSignature } : {}),
 				} as Part
 			case "tool_result": {
+				const providerToolId = options?.toolIdToProviderId?.has(block.tool_use_id)
+					? options.toolIdToProviderId.get(block.tool_use_id)
+					: block.tool_use_id
 				// Get tool name from the map (built from tool_use blocks in message history).
 				// The map must contain the tool name - if it doesn't, this indicates a bug
 				// where the conversation history is incomplete or tool_use blocks are missing.
@@ -106,7 +161,7 @@ export function convertAnthropicContentToGemini(
 				if (typeof block.content === "string" || block.content === undefined || block.content === null) {
 					return {
 						functionResponse: {
-							id: block.tool_use_id,
+							...(providerToolId !== undefined ? { id: providerToolId } : {}),
 							name: toolName,
 							response: { name: toolName, content: block.content ?? "" },
 						},
@@ -140,7 +195,7 @@ export function convertAnthropicContentToGemini(
 				return [
 					{
 						functionResponse: {
-							id: block.tool_use_id,
+							...(providerToolId !== undefined ? { id: providerToolId } : {}),
 							name: toolName,
 							response: { name: toolName, content: textParts.join("\n\n") },
 						},
@@ -196,8 +251,10 @@ export function convertAnthropicContentToGemini(
 
 export function convertAnthropicMessageToGemini(
 	message: Anthropic.Messages.MessageParam,
-	options?: { includeThoughtSignatures?: boolean; toolIdToName?: Map<string, string> },
+	options?: GeminiConversionOptions,
 ): Content[] {
+	const originalParts = getOriginalGeminiParts(message, options)
+	if (originalParts) return [{ role: "model", parts: originalParts }]
 	const parts = convertAnthropicContentToGemini(message.content, options)
 
 	if (parts.length === 0) {
@@ -215,15 +272,19 @@ export function convertAnthropicMessageToGemini(
 /** Resolve result names at each call occurrence, including provider-reused IDs. */
 export function convertAnthropicMessagesToGemini(
 	messages: Anthropic.Messages.MessageParam[],
-	options?: { includeThoughtSignatures?: boolean },
+	options?: Pick<GeminiConversionOptions, "includeThoughtSignatures" | "modelId">,
 ): Content[] {
 	const toolIdToName = new Map<string, string>()
+	const toolIdToProviderId = new Map<string, string | undefined>()
 	return normalizeToolHistory(messages).flatMap((message) => {
 		if (Array.isArray(message.content)) {
 			for (const block of message.content) {
-				if (block.type === "tool_use") toolIdToName.set(block.id, block.name)
+				if (block.type === "tool_use") {
+					toolIdToName.set(block.id, block.name)
+					toolIdToProviderId.delete(block.id)
+				}
 			}
 		}
-		return convertAnthropicMessageToGemini(message, { ...options, toolIdToName })
+		return convertAnthropicMessageToGemini(message, { ...options, toolIdToName, toolIdToProviderId })
 	})
 }

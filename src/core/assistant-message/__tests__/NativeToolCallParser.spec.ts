@@ -519,7 +519,7 @@ describe("NativeToolCallParser", () => {
 
 			it.each([
 				{ model: " " },
-				{ reasoning_effort: "ultra" },
+				{ reasoning_effort: "unsupported" },
 				{ fork_turns: "01" },
 				{ agent_type: "root admin" },
 				{ write_scope: ["src"] },

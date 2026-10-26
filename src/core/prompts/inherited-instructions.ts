@@ -11,6 +11,7 @@ const INHERITED_INSTRUCTION_ORIGINS: ReadonlySet<string> = new Set([
 	"agent-rules",
 	"generic-rules",
 	"alpha-subagent-inherited-instructions",
+	"alpha-memory",
 ] satisfies SystemPromptInstructionPart["origin"][])
 
 /**

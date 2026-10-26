@@ -61,6 +61,7 @@ export class SkillsManager {
 	private watcherRefreshRequested = false
 	private readonly notifyWebview: boolean
 	private readonly projectInstructionDiscovery: ProjectInstructionDiscoveryOptions
+	private bundledSkillsRoot?: string
 
 	constructor(
 		provider: AlphaProvider,
@@ -68,6 +69,8 @@ export class SkillsManager {
 		options: SkillsManagerOptions = {},
 	) {
 		this.providerRef = new WeakRef(provider)
+		const extensionPath = provider.contextProxy?.extensionUri?.fsPath
+		this.bundledSkillsRoot = extensionPath ? path.join(extensionPath, "assets", "skills") : undefined
 		this.notifyWebview = options.notifyWebview ?? true
 		const discovery =
 			options.projectInstructionDiscovery ??
@@ -435,9 +438,9 @@ export class SkillsManager {
 	}
 
 	private async assertWritablePath(candidate: string): Promise<void> {
-		const extensionPath = this.providerRef.deref()?.contextProxy?.extensionUri?.fsPath
-		if (!extensionPath) return
-		const bundledRoot = path.join(extensionPath, "assets", "skills")
+		// The installed boundary outlives the provider weak reference, including in-flight mutations during disposal.
+		const bundledRoot = this.getBundledSkillsRoot()
+		if (!bundledRoot) return
 		const contains = (directory: string, target: string) => {
 			const relative = path.relative(directory, target)
 			return (
@@ -451,6 +454,12 @@ export class SkillsManager {
 		if (contains(resolvedRoot, resolvedCandidate) || contains(resolvedCandidate, resolvedRoot)) {
 			throw new Error(t("skills:errors.builtin_read_only"))
 		}
+	}
+
+	private getBundledSkillsRoot(): string | undefined {
+		const extensionPath = this.providerRef.deref()?.contextProxy?.extensionUri?.fsPath
+		this.bundledSkillsRoot ??= extensionPath ? path.join(extensionPath, "assets", "skills") : undefined
+		return this.bundledSkillsRoot
 	}
 
 	/**
@@ -880,9 +889,9 @@ Add your skill instructions here.
 		const globalAlphaDir = getGlobalAlphaDirectory()
 		const globalAgentsDir = getGlobalAgentsDirectory()
 		const provider = this.providerRef.deref()
-		const extensionPath = provider?.contextProxy?.extensionUri?.fsPath
-		if (extensionPath) {
-			dirs.push({ dir: path.join(extensionPath, "assets", "skills"), source: "builtin" })
+		const bundledRoot = this.getBundledSkillsRoot()
+		if (bundledRoot) {
+			dirs.push({ dir: bundledRoot, source: "builtin" })
 		}
 		const cwd = this.workspacePath ?? provider?.cwd
 		const projectAlphaDir = cwd ? getProjectAlphaDirectoryForCwd(cwd) : null

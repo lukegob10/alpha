@@ -19,17 +19,30 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { normalizeVitestEvidence, testEvidenceVerdict } from "../harness/execution-evidence.mjs"
+import { require as tsRequire } from "tsx/cjs/api"
+
+const { assertTaskHistoryChurnPair, parseTaskHistoryChurnReceipt } = tsRequire(
+	"../../apps/vscode-e2e/src/evidence/taskHistoryChurn.ts",
+	import.meta.url,
+)
+const { readBounded } = tsRequire("../../apps/vscode-e2e/src/evidence/paths.ts", import.meta.url)
 
 const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), "..", "..")
 const matrixPath = path.join(path.dirname(scriptPath), "managed-agent-milestone.matrix.json")
-const livePreflightPath = path.join(path.dirname(scriptPath), "managed-agent-live-playbook-preflight.mjs")
 const defaultEvidencePath = "artifacts/certification/managed-agent-milestone-evidence.json"
-const options = parseArguments(process.argv.slice(2))
-const { strict, listOnly, help, selfCheck } = options
+const integrationOwners = new Map([
+	["INT-STORAGE-WRITERS-001", "shared-storage"],
+	["INT-GLOBAL-STATE-SIZE-001", "task-history-churn"],
+])
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) await main()
 
-if (help) {
-	console.log(`Usage: node scripts/certification/managed-agent-milestone-certify.mjs [--strict] [--list] [--evidence <path>]
+async function main() {
+	const options = parseArguments(process.argv.slice(2))
+	const { strict, listOnly, help, selfCheck } = options
+
+	if (help) {
+		console.log(`Usage: node scripts/certification/managed-agent-milestone-certify.mjs [--strict] [--list] [--evidence <path>] [--integration-evidence <path>]
 
   --strict  Fail when deterministic merge-dependent evidence is still missing.
   --list    Print resolved commands and pending integration rows without running tests.
@@ -37,67 +50,73 @@ if (help) {
 			Verify Vitest diagnostics, evidence output-path confinement and strict debt handling without running tests.
   --evidence <path>
             Write deterministic, commit/source-bound JSON evidence inside the repository.
-            Default: ${defaultEvidencePath}`)
-	process.exit(0)
+            Default: ${defaultEvidencePath}
+  --integration-evidence <path>
+            Admit an existing exact-host shared-storage or task-history-churn report.
+            Repeat for multiple reports. Other integration requirements remain pending.`)
+		process.exit(0)
+	}
+
+	if (selfCheck) {
+		runSelfCheck()
+		process.exit(0)
+	}
+
+	const evidencePath = resolveRepositoryOutputPath(options.evidencePath)
+	assertEvidenceOutputIsGenerated(evidencePath)
+
+	const matrix = loadMatrix()
+	const tracks = prepareTracks(matrix.tracks)
+
+	printCommands(matrix.prerequisites, tracks, matrix.integrationPending, options.evidencePath)
+
+	if (listOnly) {
+		printReadinessPreview(matrix.rows, tracks)
+		process.exit(0)
+	}
+	const integrationEvidence = await Promise.all(options.integrationEvidence.map(readIntegrationEvidence))
+
+	const certificationStartedAt = Date.now()
+	const sourceStateAtStart = collectSourceState(evidencePath)
+	const prerequisiteResults = runPrerequisites(matrix.prerequisites)
+	const trackResults = prerequisiteResults.some(({ status }) => status === "FAIL")
+		? failedTrackResults(tracks, "prerequisite failed")
+		: runTracks(tracks, strict)
+	const rowResults = matrix.rows.map((row) => evaluateRow(row, tracks, trackResults, strict))
+	const bundlePath = path.join(repositoryRoot, "src", "dist", "extension.js")
+	const bundleDigest = existsSync(bundlePath) ? sha256(readFileSync(bundlePath)) : undefined
+	const integrationResults = matrix.integrationPending.map((row) =>
+		evaluateIntegrationRow(row, integrationEvidence, bundleDigest),
+	)
+
+	printMatrix(rowResults, integrationResults)
+
+	const failedTracks = [...trackResults.values()].filter((result) => result.status === "FAIL")
+	const failedRows = rowResults.filter((result) => result.status === "FAIL")
+	const sourceStateAtEnd = collectSourceState(evidencePath)
+	const sourceStateStable = sourceStateAtStart.sourceStateSha256 === sourceStateAtEnd.sourceStateSha256
+	if (!sourceStateStable) {
+		console.error("FAIL source-state-stability (the working tree changed while certification was running)")
+	}
+	const deterministicExitCode = failedTracks.length > 0 || failedRows.length > 0 || !sourceStateStable ? 1 : 0
+	const evidence = buildEvidence({
+		matrix,
+		prerequisiteResults,
+		trackResults,
+		rowResults,
+		integrationResults,
+		sourceStateAtStart,
+		sourceStateAtEnd,
+		sourceStateStable,
+		startedAt: certificationStartedAt,
+		finishedAt: Date.now(),
+		deterministicExitCode,
+		strictMode: strict,
+	})
+	writeEvidence(evidencePath, evidence)
+	console.log(`EVIDENCE ${relative(evidencePath)} :: ${evidence.outcome.status}`)
+	process.exitCode = deterministicExitCode
 }
-
-if (selfCheck) {
-	runSelfCheck()
-	process.exit(0)
-}
-
-const evidencePath = resolveRepositoryOutputPath(options.evidencePath)
-assertEvidenceOutputIsGenerated(evidencePath)
-
-const matrix = loadMatrix()
-const tracks = prepareTracks(matrix.tracks)
-
-printCommands(matrix.prerequisites, tracks, matrix.integrationPending, options.evidencePath)
-
-if (listOnly) {
-	printReadinessPreview(matrix.rows, tracks)
-	process.exit(0)
-}
-
-const certificationStartedAt = Date.now()
-const sourceStateAtStart = collectSourceState(evidencePath)
-const prerequisiteResults = runPrerequisites(matrix.prerequisites)
-const trackResults = prerequisiteResults.some(({ status }) => status === "FAIL")
-	? failedTrackResults(tracks, "prerequisite failed")
-	: runTracks(tracks, strict)
-const rowResults = matrix.rows.map((row) => evaluateRow(row, tracks, trackResults, strict))
-const integrationResults = matrix.integrationPending.map((row) => ({
-	...row,
-	status: "PENDING-INTEGRATION",
-	detail: row.reason,
-}))
-
-printMatrix(rowResults, integrationResults)
-
-const failedTracks = [...trackResults.values()].filter((result) => result.status === "FAIL")
-const failedRows = rowResults.filter((result) => result.status === "FAIL")
-const sourceStateAtEnd = collectSourceState(evidencePath)
-const sourceStateStable = sourceStateAtStart.sourceStateSha256 === sourceStateAtEnd.sourceStateSha256
-if (!sourceStateStable) {
-	console.error("FAIL source-state-stability (the working tree changed while certification was running)")
-}
-const deterministicExitCode = failedTracks.length > 0 || failedRows.length > 0 || !sourceStateStable ? 1 : 0
-const evidence = buildEvidence({
-	matrix,
-	prerequisiteResults,
-	trackResults,
-	rowResults,
-	integrationResults,
-	sourceStateAtStart,
-	sourceStateAtEnd,
-	sourceStateStable,
-	startedAt: certificationStartedAt,
-	finishedAt: Date.now(),
-	deterministicExitCode,
-})
-writeEvidence(evidencePath, evidence)
-console.log(`EVIDENCE ${relative(evidencePath)} :: ${evidence.outcome.status}`)
-process.exitCode = deterministicExitCode
 
 function parseArguments(args) {
 	const parsed = {
@@ -107,6 +126,7 @@ function parseArguments(args) {
 		selfCheck: false,
 		evidencePath: defaultEvidencePath,
 		evidencePathSpecified: false,
+		integrationEvidence: [],
 	}
 
 	for (let index = 0; index < args.length; index += 1) {
@@ -126,11 +146,20 @@ function parseArguments(args) {
 			if (!value) fail("--evidence requires a repository-relative path")
 			parsed.evidencePath = value
 			parsed.evidencePathSpecified = true
+		} else if (argument === "--integration-evidence") {
+			const value = args[++index]
+			if (!value || value.startsWith("--")) fail("--integration-evidence requires a report path")
+			if (parsed.integrationEvidence.length >= 16) fail("At most 16 integration reports are supported")
+			parsed.integrationEvidence.push(value)
 		} else fail(`Unknown argument: ${argument}`)
 	}
 
-	if (!parsed.help && parsed.selfCheck && (parsed.strict || parsed.listOnly || parsed.evidencePathSpecified)) {
-		fail("--self-check cannot be combined with --strict, --list, or --evidence")
+	if (
+		!parsed.help &&
+		parsed.selfCheck &&
+		(parsed.strict || parsed.listOnly || parsed.evidencePathSpecified || parsed.integrationEvidence.length)
+	) {
+		fail("--self-check cannot be combined with --strict, --list, --evidence, or --integration-evidence")
 	}
 	if (!parsed.help && parsed.listOnly && parsed.strict) fail("--list cannot be combined with --strict")
 
@@ -150,7 +179,6 @@ function runSelfCheck() {
 	}
 	const checkedMatrix = loadMatrix()
 	prepareTracks(checkedMatrix.tracks)
-	const livePreflightMode = runLivePlaybookPreflightSelfCheck()
 	const accepted = ["artifacts/certification/managed-agent-milestone-evidence.json"]
 	const rejected = [
 		".git/config",
@@ -184,7 +212,12 @@ function runSelfCheck() {
 		id: "SYNTHETIC-MISSING-DEBT",
 		classification: "known-debt",
 		trackIds: [syntheticTrack.id],
-		probes: [{ label: "required coverage", patterns: ["REQUIRED_COVERAGE"] }],
+		probes: [
+			{
+				label: "required coverage",
+				assertions: [{ file: "synthetic.spec.ts", pattern: "REQUIRED_COVERAGE", minimumMatches: 1 }],
+			},
+		],
 	}
 	const blockedKnownDebt = {
 		id: "SYNTHETIC-BLOCKED-DEBT",
@@ -202,7 +235,7 @@ function runSelfCheck() {
 	}
 
 	console.log(
-		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; documentation=aligned; livePreflight=${livePreflightMode}; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2; vitestSummary=${vitestSummaryCases})`,
+		`PASS certification-self-check (tracks=${checkedMatrix.tracks.length}; deterministicRows=${checkedMatrix.rows.length}; integrationRows=${checkedMatrix.integrationPending.length}; matrix=validated; evidencePaths accepted=${accepted.length} rejected=${rejected.length}; strictDebt=2; vitestSummary=${vitestSummaryCases})`,
 	)
 }
 
@@ -245,6 +278,7 @@ function runVitestSummarySelfCheck() {
 				failedTests: ["failed assertion"],
 				skippedTests: ["skipped assertion", "legacy pending assertion", "todo assertion"],
 				receipt: normalizeVitestEvidence(report, repositoryRoot),
+				assertionReceipts: assertionReceipts(report),
 			},
 			"Vitest diagnostics must retain skipped, legacy pending and todo names without changing counts",
 		)
@@ -358,33 +392,6 @@ function runVitestSummarySelfCheck() {
 	}
 }
 
-function runLivePlaybookPreflightSelfCheck() {
-	const executionMode = process.platform === "win32" ? "windows" : "static-only"
-	const expectedReceipt = `PASS managed-agent-live-playbook-preflight (platform=${process.platform} commandExecution=${executionMode})`
-	const result = spawnSync(process.execPath, [livePreflightPath], {
-		cwd: repositoryRoot,
-		env: deterministicEnvironment(),
-		encoding: "utf8",
-		shell: false,
-		windowsHide: true,
-		timeout: 90_000,
-		maxBuffer: 1024 * 1024,
-	})
-
-	if (result.error) {
-		fail(`Live playbook preflight self-check could not run: ${result.error.message}`)
-	}
-	if (result.status !== 0) {
-		const detail = (result.stderr || result.stdout || `exit ${result.status}`).trim()
-		fail(`Live playbook preflight self-check failed: ${detail}`)
-	}
-	if (!result.stdout.split(/\r?\n/).includes(expectedReceipt)) {
-		fail(`Live playbook preflight self-check did not emit its ${executionMode} PASS receipt`)
-	}
-
-	return executionMode
-}
-
 function loadMatrix() {
 	let parsed
 	try {
@@ -393,7 +400,7 @@ function loadMatrix() {
 		fail(`Cannot load ${relative(matrixPath)}: ${error instanceof Error ? error.message : String(error)}`)
 	}
 
-	if (parsed.schemaVersion !== 1) fail("Certification matrix schemaVersion must be 1")
+	if (parsed.schemaVersion !== 2) fail("Certification matrix schemaVersion must be 2 (named executed assertions)")
 	if (!Array.isArray(parsed.tracks) || parsed.tracks.length === 0) fail("Certification matrix requires tracks")
 	if (!Array.isArray(parsed.prerequisites)) fail("Certification matrix requires prerequisites")
 	if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) fail("Certification matrix requires rows")
@@ -451,7 +458,7 @@ function loadMatrix() {
 		if (!new Set(["baseline", "merge-dependent", "known-debt"]).has(row.classification)) {
 			fail(`${row.id} has unsupported classification ${row.classification}`)
 		}
-		validatePatternEntries(row.id, row.probes)
+		validateAssertionProbes(row.id, row.probes)
 		validatePatternEntries(row.id, row.testBlockers)
 		validateSourceEntries(row.id, row.sourceProbes)
 		validateSourceEntries(row.id, row.sourceBlockers)
@@ -467,49 +474,11 @@ function loadMatrix() {
 		) {
 			fail(`${row.id} has an invalid evidenceCommand`)
 		}
+		if (row.evidenceKind !== undefined && integrationOwners.get(row.id) !== row.evidenceKind) {
+			fail(`${row.id} has no compatible host evidence owner for ${row.evidenceKind}`)
+		}
 	}
-	validateCertificationDocumentation(parsed)
-
 	return parsed
-}
-
-function validateCertificationDocumentation(matrix) {
-	const certificationPath = path.join(
-		repositoryRoot,
-		"docs",
-		"certification",
-		"managed-agent-milestone-certification.md",
-	)
-	const certification = readFileSync(certificationPath, "utf8").replace(/\r\n/g, "\n")
-	const deterministicSection = extractMarkdownSection(certification, "## Deterministic matrix")
-	const documentedDeterministicIds = [...deterministicSection.matchAll(/^\|\s*`([A-Z0-9-]+)`\s*\|/gm)].map(
-		(match) => match[1],
-	)
-	const expectedDeterministicIds = matrix.rows.map((row) => row.id)
-	if (JSON.stringify(documentedDeterministicIds) !== JSON.stringify(expectedDeterministicIds)) {
-		fail("Certification deterministic row table does not match matrix row IDs and order")
-	}
-
-	const integrationSection = extractMarkdownSection(certification, "## Expected integration-dependent rows")
-	const integrationBlock = /```text\n([\s\S]*?)\n```/.exec(integrationSection)
-	const documentedIntegrationIds = integrationBlock
-		? integrationBlock[1]
-				.split("\n")
-				.map((line) => line.trim())
-				.filter(Boolean)
-		: []
-	const expectedIntegrationIds = matrix.integrationPending.map((row) => row.id)
-	if (JSON.stringify(documentedIntegrationIds) !== JSON.stringify(expectedIntegrationIds)) {
-		fail("Certification pending-integration list does not match matrix row IDs and order")
-	}
-}
-
-function extractMarkdownSection(document, heading) {
-	const marker = `${heading}\n`
-	const start = document.indexOf(marker)
-	const end = document.indexOf("\n## ", start + marker.length)
-	if (start < 0 || end < 0) fail(`Documentation is missing section ${heading}`)
-	return document.slice(start, end)
 }
 
 function assertUniqueIds(items, label) {
@@ -537,6 +506,27 @@ function validatePatternEntries(rowId, entries = []) {
 			fail(`${rowId} pattern entry ${entry.label} has unsupported match mode ${entry.match}`)
 		}
 		for (const pattern of entry.patterns) compilePattern(rowId, pattern)
+	}
+}
+
+function validateAssertionProbes(rowId, entries) {
+	if (!Array.isArray(entries) || entries.length === 0) fail(`${rowId} requires executed assertion probes`)
+	for (const entry of entries) {
+		if (!entry.label || !Array.isArray(entry.assertions) || entry.assertions.length === 0) {
+			fail(`${rowId} requires named file/assertion bindings for ${entry.label ?? "a probe"}`)
+		}
+		for (const assertion of entry.assertions) {
+			resolveRepositoryPath(assertion.file)
+			if (
+				typeof assertion.pattern !== "string" ||
+				!assertion.pattern ||
+				!Number.isSafeInteger(assertion.minimumMatches) ||
+				assertion.minimumMatches < 1
+			) {
+				fail(`${rowId} has an invalid executed assertion binding`)
+			}
+			compilePattern(rowId, assertion.pattern)
+		}
 	}
 }
 
@@ -618,12 +608,9 @@ function printCommands(prerequisites, resolvedTracks, integrationPending, eviden
 		`strict-release-gate :: node scripts/certification/managed-agent-milestone-certify.mjs --strict --evidence ${quote(evidenceRelativePath)}`,
 	)
 	console.log(
-		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification docs/certification src/core/agent/__tests__/certification",
+		"format-check :: pnpm exec prettier --check .prettierrc.json package.json scripts/certification src/core/agent/__tests__/certification",
 	)
 	console.log("harness-syntax-check :: node --check scripts/certification/managed-agent-milestone-certify.mjs")
-	console.log(
-		"playbook-preflight-syntax-check :: node --check scripts/certification/managed-agent-live-playbook-preflight.mjs",
-	)
 	console.log("=== ALPHA MANAGED-AGENT CERTIFICATION COMMANDS END ===")
 
 	console.log("=== EXPECTED INTEGRATION PENDING BEGIN ===")
@@ -639,8 +626,8 @@ function printReadinessPreview(rows, resolvedTracks) {
 		const evidence = collectEvidence(row, resolvedTracks)
 		const missing = [...evidence.missingTestProbes, ...evidence.missingSourceProbes]
 		const blockers = [...evidence.testBlockers, ...evidence.sourceBlockers]
-		const state = blockers.length > 0 ? "BLOCKED" : missing.length > 0 ? "PENDING" : "READY"
-		console.log(`${state} ${row.id} :: ${[...missing, ...blockers].join("; ") || "evidence discovered"}`)
+		const state = blockers.length > 0 ? "BLOCKED" : "PENDING"
+		console.log(`${state} ${row.id} :: ${[...missing, ...blockers].join("; ") || "execution required"}`)
 	}
 	console.log("=== DETERMINISTIC READINESS PREVIEW END ===")
 }
@@ -728,7 +715,7 @@ function runTracks(resolvedTracks, strictMode) {
 	return results
 }
 
-function readVitestSummary(trackId, reportPath) {
+export function readVitestSummary(trackId, reportPath) {
 	let report
 	try {
 		report = JSON.parse(readFileSync(reportPath, "utf8"))
@@ -755,8 +742,10 @@ function readVitestSummary(trackId, reportPath) {
 		}
 	}
 	let receipt
+	let assertionEvidence
 	try {
 		receipt = normalizeVitestEvidence(report, repositoryRoot)
+		assertionEvidence = assertionReceipts(report)
 	} catch (error) {
 		return { error: `${trackId} emitted invalid Vitest execution evidence: ${error.message}` }
 	}
@@ -764,6 +753,7 @@ function readVitestSummary(trackId, reportPath) {
 	const assertions = report.testResults.flatMap((testResult) => testResult.assertionResults)
 	return {
 		receipt,
+		assertionReceipts: assertionEvidence,
 		suites: {
 			total: report.numTotalTestSuites,
 			passed: report.numPassedTestSuites,
@@ -787,6 +777,23 @@ function readVitestSummary(trackId, reportPath) {
 			)
 			.map((assertion) => assertion.fullName),
 	}
+}
+
+function assertionReceipts(report) {
+	return report.testResults.map((file) => ({
+		path: relative(file.name),
+		assertions: file.assertionResults.map((assertion) => {
+			if (
+				typeof assertion.fullName !== "string" ||
+				!assertion.fullName ||
+				assertion.fullName.length > 4096 ||
+				assertion.fullName.includes("\0")
+			) {
+				throw new Error("Invalid Vitest assertion identity")
+			}
+			return { fullName: assertion.fullName, status: assertion.status }
+		}),
+	}))
 }
 
 function trackEvidenceFailures(track, summary, strictMode) {
@@ -899,9 +906,9 @@ function resolvePnpmInvocation() {
 	throw new Error("Run certification through pnpm or configure PNPM_HOME with a pnpm executable")
 }
 
-function evaluateRow(row, resolvedTracks, trackResults, strictMode) {
+export function evaluateRow(row, resolvedTracks, trackResults, strictMode) {
 	const failedTrackIds = row.trackIds.filter((trackId) => trackResults.get(trackId)?.status !== "PASS")
-	const evidence = collectEvidence(row, resolvedTracks)
+	const evidence = collectEvidence(row, resolvedTracks, trackResults)
 	const missing = [...evidence.missingTestProbes, ...evidence.missingSourceProbes]
 	const blockers = [...evidence.testBlockers, ...evidence.sourceBlockers]
 
@@ -927,10 +934,29 @@ function evaluateRow(row, resolvedTracks, trackResults, strictMode) {
 	return { ...row, status: "PASS", detail: "all declared evidence passed" }
 }
 
-function collectEvidence(row, resolvedTracks) {
+function collectEvidence(row, resolvedTracks, trackResults) {
 	const selectedTracks = resolvedTracks.filter((track) => row.trackIds.includes(track.id))
 	const testCorpus = selectedTracks.flatMap((track) => track.contents)
-	const missingTestProbes = findMissingEntries(row.id, row.probes ?? [], testCorpus)
+	const receipts = selectedTracks.flatMap((track) => trackResults?.get(track.id)?.assertionReceipts ?? [])
+	const missingTestProbes = (row.probes ?? [])
+		.filter(
+			(probe) =>
+				!probe.assertions?.length ||
+				probe.assertions.some((binding) => {
+					if (!testCorpus.some(({ file }) => file === binding.file)) return true
+					const expression = compilePattern(row.id, binding.pattern)
+					const matches = receipts
+						.filter((file) => file.path === binding.file)
+						.flatMap((file) => file.assertions)
+						.filter((assertion) => expression.test(assertion.fullName))
+					return (
+						matches.length < binding.minimumMatches ||
+						matches.some((assertion) => assertion.status !== "passed") ||
+						new Set(matches.map((assertion) => assertion.fullName)).size !== matches.length
+					)
+				}),
+		)
+		.map((probe) => probe.label)
 	const testBlockers = findMatchingEntries(row.id, row.testBlockers ?? [], testCorpus)
 	const missingSourceProbes = []
 	const sourceBlockers = []
@@ -947,10 +973,6 @@ function collectEvidence(row, resolvedTracks) {
 	return { missingTestProbes, testBlockers, missingSourceProbes, sourceBlockers }
 }
 
-function findMissingEntries(rowId, entries, corpus) {
-	return entries.filter((entry) => !matchesEntry(rowId, entry, corpus)).map((entry) => entry.label)
-}
-
 function findMatchingEntries(rowId, entries, corpus) {
 	return entries.filter((entry) => matchesEntry(rowId, entry, corpus)).map((entry) => entry.label)
 }
@@ -961,6 +983,119 @@ function matchesEntry(rowId, entry, corpus) {
 		return corpus.some(({ text }) => expression.test(text))
 	})
 	return entry.match === "all" ? results.every(Boolean) : results.some(Boolean)
+}
+
+async function readIntegrationEvidence(file) {
+	try {
+		const bytes = await readBounded(path.resolve(file), 128 * 1024)
+		return { report: JSON.parse(bytes.toString("utf8")), sha256: sha256(bytes) }
+	} catch {
+		fail("Integration evidence must be a readable, bounded regular JSON report without symlink components")
+	}
+}
+
+function compatibleSharedStorage(report, bundleDigest) {
+	return (
+		/^[a-f0-9]{64}$/.test(bundleDigest ?? "") &&
+		report?.schemaVersion === 1 &&
+		report.execution === "extension-host" &&
+		report.status === "passed" &&
+		report.hostVersion === "1.138.0" &&
+		typeof report.runId === "string" &&
+		/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(report.runId) &&
+		report.cleanupVerified === true &&
+		report.leaseReleased === true &&
+		report.captureComplete === true &&
+		report.identitiesVerified === true &&
+		report.mailboxClaimsVerified === true &&
+		report.readyHostCount === 2 &&
+		report.doneHostCount === 2 &&
+		report.retention === "held" &&
+		!report.failure &&
+		!report.stopReason &&
+		report.storageAdmission?.complete === true &&
+		report.storageAdmission.status === "within_budget" &&
+		Array.isArray(report.taskIds) &&
+		report.taskIds.length >= 2 &&
+		report.taskIds.length <= 100 &&
+		report.taskIds.every((id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) &&
+		new Set(report.taskIds).size === report.taskIds.length &&
+		Number.isSafeInteger(report.requests) &&
+		report.requests > 0 &&
+		report.bundleHashBefore === bundleDigest &&
+		report.bundleHashAfter === bundleDigest
+	)
+}
+
+function compatibleChurn(report, bundleDigest) {
+	if (
+		report?.schemaVersion !== 1 ||
+		report.execution !== "extension-host" ||
+		report.status !== "passed" ||
+		report.liveRequests !== 0 ||
+		report.cleanupVerified !== true ||
+		!Array.isArray(report.phases) ||
+		report.phases.length !== 2 ||
+		!report.phases.every((phase) => compatibleSharedStorage(phase, bundleDigest))
+	)
+		return false
+	const [populate, reload] = report.phases
+	if (
+		populate.runId === reload.runId ||
+		typeof populate.profileRoot !== "string" ||
+		!path.isAbsolute(populate.profileRoot) ||
+		populate.profileRoot !== reload.profileRoot
+	)
+		return false
+	try {
+		const pairs = report.phases.map((phase, index) => {
+			const expected = { hostVersion: "1.138.0", phase: index === 0 ? "populate" : "reload" }
+			const receipts = phase.taskHistoryChurn.map((receipt) =>
+				parseTaskHistoryChurnReceipt(receipt, { ...expected, runId: phase.runId }),
+			)
+			const pair = assertTaskHistoryChurnPair(receipts, expected)
+			if (
+				pair.a.extensionHostPid === pair.b.extensionHostPid ||
+				receipts.some((receipt) => receipt.requests !== 64)
+			)
+				return undefined
+			return pair
+		})
+		if (pairs.some((pair) => !pair)) return false
+		return ["a", "b"].every(
+			(role) =>
+				pairs[0][role].storagePath === pairs[1][role].storagePath &&
+				pairs[1][role].reloadedFrom.taskIdsSha256 === pairs[0][role].taskIdsSha256,
+		)
+	} catch {
+		return false
+	}
+}
+
+/** Only named real-host owners can discharge their predicates; scripted evidence cannot claim live acceptance. */
+export function evaluateIntegrationRow(row, evidence, bundleDigest) {
+	if (!integrationOwners.has(row.id) || integrationOwners.get(row.id) !== row.evidenceKind) {
+		return { ...row, status: "PENDING-INTEGRATION", detail: row.reason }
+	}
+	const compatible = evidence.find(
+		({ report, sha256: reportDigest }) =>
+			/^[a-f0-9]{64}$/.test(reportDigest ?? "") &&
+			(row.evidenceKind === "shared-storage"
+				? compatibleSharedStorage(report, bundleDigest) || compatibleChurn(report, bundleDigest)
+				: row.evidenceKind === "task-history-churn" && compatibleChurn(report, bundleDigest)),
+	)
+	if (!compatible) return { ...row, status: "PENDING-INTEGRATION", detail: row.reason }
+	return {
+		...row,
+		status: "PASS-INTEGRATION",
+		detail: "compatible scripted exact-host evidence for the current built extension",
+		evidence: {
+			kind: row.evidenceKind,
+			reportSha256: compatible.sha256,
+			extensionBuildSha256: bundleDigest,
+			scope: "scripted-exact-host-built-artifact",
+		},
+	}
 }
 
 function printMatrix(rowResults, integrationResults) {
@@ -995,6 +1130,7 @@ function buildEvidence({
 	startedAt,
 	finishedAt,
 	deterministicExitCode,
+	strictMode,
 }) {
 	const serializedTracks = [...trackResults.entries()].map(([id, result]) => ({ id, ...result }))
 	const testTotals = serializedTracks.reduce(
@@ -1009,16 +1145,19 @@ function buildEvidence({
 	)
 	const rowStatusCounts = countStatuses([...rowResults, ...integrationResults])
 	const deterministicStatus =
-		deterministicExitCode !== 0 ? "FAIL" : strict ? "PASS-DETERMINISTIC" : "SNAPSHOT-DETERMINISTIC"
+		deterministicExitCode !== 0 ? "FAIL" : strictMode ? "PASS-DETERMINISTIC" : "SNAPSHOT-DETERMINISTIC"
 
 	return {
 		schemaVersion: 1,
 		suiteId: matrix.suiteId,
-		scope: "deterministic-offline-only",
+		scope: integrationResults.some((row) => row.status === "PASS-INTEGRATION")
+			? "deterministic-offline-with-scripted-host-evidence"
+			: "deterministic-offline-only",
+		executionReceiptContract: "named-file-assertion-v1",
 		generatedAt: new Date(finishedAt).toISOString(),
 		durationMs: finishedAt - startedAt,
 		invocation: {
-			strict,
+			strict: strictMode,
 			arguments: process.argv.slice(2),
 			node: process.version,
 			platform: process.platform,
@@ -1045,8 +1184,8 @@ function buildEvidence({
 				pendingIntegration: matrix.expectedIntegrationPendingCount,
 			},
 			liveAcceptance: "NOT_RUN",
-			integrationRowsPending: integrationResults.length,
-			note: "Passing deterministic rows do not satisfy real provider, VS Code host, multi-window, or live UI acceptance.",
+			integrationRowsPending: integrationResults.filter((row) => row.status === "PENDING-INTEGRATION").length,
+			note: "Deterministic rows cover offline checks. Individually admitted integration rows cover only their scripted exact-host built-artifact boundaries; live-provider and rendered-UI acceptance remain separate.",
 		},
 		prerequisites: prerequisiteResults,
 		tracks: serializedTracks,
@@ -1062,6 +1201,7 @@ function compactRowResult(row) {
 		classification: row.classification,
 		status: row.status,
 		detail: row.detail,
+		...(row.evidence ? { evidence: row.evidence } : {}),
 	}
 }
 

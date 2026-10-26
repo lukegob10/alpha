@@ -3473,6 +3473,99 @@ describe("ToolScheduler", () => {
 		}
 	})
 
+	it("settles a sibling effect-fence failure before blocked progress releases parallel admission", async () => {
+		vi.useFakeTimers()
+		const controller = new AbortController()
+		const progressEntered = deferred()
+		const releaseProgress = deferred()
+		const fenceFailed = deferred()
+		const task = makeTask()
+		const ask = vi.fn(async () => ({ response: "yesButtonClicked" as const }))
+		task.ask = ask
+		const actualDispatch = vi.fn()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const read = mcpDescriptor(
+			"mcp_read",
+			async ({ call, callbacks }) => {
+				if (!(await callbacks.askApproval("use_mcp_server", "read"))) return
+				actualDispatch(call.id)
+				callbacks.pushToolResult("read completed")
+			},
+			true,
+		)
+		registry.register(read)
+		const events: AgentTurnEvent[] = []
+		const startedEffects: string[] = []
+		let settled = false
+		const pending = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 2,
+			validateCall: () => {},
+			signal: controller.signal,
+			policy: createToolPolicySnapshot({
+				visibleTools: [read.name],
+				capabilities: { [read.name]: read.capabilities },
+			}),
+			onEffectStart: async (call) => {
+				startedEffects.push(call.id)
+				await progressEntered.promise
+				fenceFailed.resolve()
+				throw new Error("Effect-start persistence failed")
+			},
+			onEvent: async (event) => {
+				events.push(event)
+				if (event.type === "progress" && event.callId === "held-progress" && ask.mock.calls.length === 2) {
+					progressEntered.resolve()
+					await releaseProgress.promise
+				}
+			},
+		})
+			.run(
+				response(
+					{ id: "failing-effect", name: read.name },
+					{ id: "held-progress", name: read.name },
+					{ id: "queued-read", name: read.name },
+				),
+			)
+			.then((outcome) => {
+				settled = true
+				return outcome
+			})
+		try {
+			await fenceFailed.promise
+			await vi.advanceTimersByTimeAsync(0)
+			const settledBeforeProgress = settled
+			releaseProgress.resolve()
+			const outcome = await pending
+
+			expect(settledBeforeProgress).toBe(true)
+			expect(controller.signal.aborted).toBe(false)
+			expect(outcome).toMatchObject({
+				status: "failed",
+				failure: { kind: "effect_fence", callId: "failing-effect", message: "Effect-start persistence failed" },
+			})
+			expect(outcome.results.map((result) => result.status)).toEqual(["error", "error", "error"])
+			expect(resultIds(task)).toEqual(["failing-effect", "held-progress", "queued-read"])
+			expect(events.filter((event) => event.type === "tool_result").map((event) => event.callId)).toEqual([
+				"failing-effect",
+				"held-progress",
+				"queued-read",
+			])
+			expect(ask).toHaveBeenCalledTimes(2)
+			expect(startedEffects).toEqual(["failing-effect"])
+			expect(actualDispatch).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			releaseProgress.resolve()
+			controller.abort()
+			await pending
+			vi.useRealTimers()
+		}
+	})
+
 	it("fails closed when the transcript fence rejects before an effect", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
@@ -3657,10 +3750,14 @@ describe("ToolScheduler", () => {
 		const task = makeTask()
 		const controller = new AbortController()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const entered = deferred()
+		const release = deferred()
+		let executionSignal: AbortSignal | undefined
 		registry.register(
 			descriptor("read", "parallel", async ({ callbacks, signal }) => {
-				await wait(10)
-				expect(signal?.aborted).toBe(true)
+				executionSignal = signal
+				entered.resolve()
+				await release.promise
 				callbacks.pushToolResult("cancelled")
 			}),
 		)
@@ -3672,9 +3769,13 @@ describe("ToolScheduler", () => {
 			validateCall: () => {},
 			signal: controller.signal,
 		}).run(response({ id: "1", name: "read" }))
-		setTimeout(() => controller.abort(), 2)
+		await entered.promise
+		controller.abort()
+		release.resolve()
 
 		const outcome = await run
+		expect(executionSignal).toBeDefined()
+		expect(executionSignal?.aborted).toBe(true)
 		expect(outcome.status).toBe("aborted")
 		expect(resultIds(task)).toEqual([])
 	})

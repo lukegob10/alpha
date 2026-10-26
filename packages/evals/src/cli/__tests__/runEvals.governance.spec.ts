@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { canonicalJson, sha256 } from "../../evidence/index"
+import { summarizeRunOutcomes } from "../../lifecycle/index"
 
 const mocks = vi.hoisted(() => ({
 	findRun: vi.fn(),
 	findTrialForTask: vi.fn(),
 	getTasks: vi.fn(),
+	getRunOutcomeSummary: vi.fn(),
 	getPresentationModelCallPolicyEvents: vi.fn(),
 	finishRun: vi.fn(),
 	processTask: vi.fn(),
@@ -16,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 	updateTask: vi.fn(),
 	stopHeartbeat: vi.fn(),
 	startHeartbeat: vi.fn(),
+	assertHeartbeatOwnership: vi.fn(),
+	reconcileRunBeforeDispatch: vi.fn(),
 	closeLogger: vi.fn(),
 	logInfo: vi.fn(),
 }))
@@ -25,7 +29,12 @@ vi.mock("../processTask", () => ({
 	processTask: mocks.processTask,
 	processTaskInContainer: mocks.processTaskInContainer,
 }))
-vi.mock("../redis", () => ({ startHeartbeat: mocks.startHeartbeat, stopHeartbeat: mocks.stopHeartbeat }))
+vi.mock("../redis", () => ({
+	startHeartbeat: mocks.startHeartbeat,
+	stopHeartbeat: mocks.stopHeartbeat,
+	assertHeartbeatOwnership: mocks.assertHeartbeatOwnership,
+}))
+vi.mock("../reconcileRun", () => ({ reconcileRunBeforeDispatch: mocks.reconcileRunBeforeDispatch }))
 vi.mock("../utils", () => ({
 	Logger: class {
 		info = mocks.logInfo
@@ -71,12 +80,23 @@ describe("governed production scheduling", () => {
 		payloadDigest: sha256(canonicalJson(payload)),
 		late: false,
 	})
-	const terminalTrial = (taskId: number, status = "passed") => ({ status, attempts: [{ id: 100 + taskId }] })
+	const terminalTrial = (taskId: number, status = "passed") => ({
+		status,
+		attempts: [
+			{
+				id: 100 + taskId,
+				evidenceStatus: "valid",
+				evidenceBundleDigest: `sha256:${"a".repeat(64)}`,
+			},
+		],
+	})
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mocks.isDockerContainer.mockReturnValue(false)
 		mocks.startHeartbeat.mockResolvedValue(1)
+		mocks.assertHeartbeatOwnership.mockResolvedValue(undefined)
+		mocks.reconcileRunBeforeDispatch.mockResolvedValue(undefined)
 		tasks = [1, 2, 3].map((id) => ({
 			id,
 			finishedAt: null,
@@ -89,6 +109,29 @@ describe("governed production scheduling", () => {
 			policyEvent(attemptId),
 		])
 		mocks.getTasks.mockImplementation(async () => tasks)
+		mocks.getRunOutcomeSummary.mockImplementation(async () =>
+			summarizeRunOutcomes(
+				await Promise.all(
+					tasks.map(async (task) => {
+						const trial = await mocks.findTrialForTask(task.id)
+						return {
+							...task,
+							trial: trial && {
+								...trial,
+								finishedAt: task.finishedAt,
+								attempts: trial.attempts?.map((attempt: { id: number }) => ({
+									...attempt,
+									terminalStatus: trial.status,
+								})),
+							},
+						}
+					}),
+				),
+			),
+		)
+		mocks.updateTask.mockImplementation(async (taskId: number, values: object) =>
+			Object.assign(tasks.find(({ id }) => id === taskId)!, values),
+		)
 		mocks.processTask.mockImplementation(async ({ taskId }: { taskId: number }) => {
 			const task = tasks.find(({ id }) => id === taskId)!
 			task.finishedAt = new Date()
@@ -155,12 +198,12 @@ describe("governed production scheduling", () => {
 		expect(resetEvalsRepo).not.toHaveBeenCalled()
 	})
 
-	it("closes the logger when checkout validation rejects before heartbeat startup", async () => {
+	it("releases the owned controller lease when checkout validation rejects", async () => {
 		const error = new Error("unsafe checkout")
 		vi.mocked(resetEvalsRepo).mockRejectedValueOnce(error)
 		await expect(runEvals(run.id)).rejects.toBe(error)
-		expect(mocks.startHeartbeat).not.toHaveBeenCalled()
-		expect(mocks.stopHeartbeat).not.toHaveBeenCalled()
+		expect(mocks.startHeartbeat).toHaveBeenCalledOnce()
+		expect(mocks.stopHeartbeat).toHaveBeenCalledWith(run.id, 1)
 		expect(mocks.closeLogger).toHaveBeenCalledOnce()
 	})
 
@@ -474,8 +517,40 @@ describe("governed production scheduling", () => {
 	it("keeps legacy best-effort task scheduling after a task failure", async () => {
 		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: null, taskCostCapUsd: null })
 		mocks.processTask.mockRejectedValueOnce(new Error("legacy task failed"))
-		await runEvals(run.id)
+		await expect(runEvals(run.id)).rejects.toThrow("incomplete: 1")
 		expect(mocks.processTask.mock.calls.map(([input]) => input.taskId)).toEqual([1, 2, 3])
+		expect(mocks.finishRun).not.toHaveBeenCalled()
+	})
+
+	it.each(["infrastructure_error", "grader_error"])(
+		"finishes all best-effort tasks but rejects classified %s outcomes",
+		async (status) => {
+			mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: null, taskCostCapUsd: null })
+			mocks.findTrialForTask.mockImplementation(async (taskId: number) => terminalTrial(taskId, status))
+			await expect(runEvals(run.id)).rejects.toThrow("invalid outcomes")
+			expect(mocks.processTask.mock.calls.map(([input]) => input.taskId)).toEqual([1, 2, 3])
+			expect(mocks.finishRun).toHaveBeenCalledWith(run.id)
+		},
+	)
+
+	it("returns valid ordinary task failures for score reporting outside CI acceptance", async () => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: null, taskCostCapUsd: null })
+		mocks.findTrialForTask.mockImplementation(async (taskId: number) => terminalTrial(taskId, "outcome_failed"))
+		await expect(runEvals(run.id)).resolves.toMatchObject({
+			total: 3,
+			invalid: 0,
+			counts: { outcome_failed: 3 },
+		})
+	})
+
+	it("rejects a dispatch failure even when its task already has a passing terminal projection", async () => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: null, taskCostCapUsd: null })
+		mocks.processTask.mockImplementationOnce(async ({ taskId }: { taskId: number }) => {
+			tasks.find(({ id }) => id === taskId)!.finishedAt = new Date()
+			throw new Error("evidence seal failed after finalization")
+		})
+		await expect(runEvals(run.id)).rejects.toThrow('"failedDispatches":[1]')
 		expect(mocks.finishRun).toHaveBeenCalledWith(run.id)
+		expect(mocks.processTask).toHaveBeenCalledTimes(3)
 	})
 })

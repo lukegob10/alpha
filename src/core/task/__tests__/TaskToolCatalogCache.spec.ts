@@ -4,6 +4,7 @@ import {
 	vertexModels,
 	type CustomToolDefinition,
 	type McpServer,
+	type McpTool,
 	type ModelInfo,
 } from "@alpha-code/types"
 import { applyCopilotToolPreferences } from "../../../api/providers/utils/router-tool-preferences"
@@ -167,6 +168,11 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 		vi.fn(async () => ({ content: [{ type: "text", text: "Calendar record found." }] })),
 	)
 	const hub = Object.create(McpHub.prototype) as McpHub
+	// Object.create skips field initializers; real dispatch and catalog refresh retain their production ownership state.
+	for (const field of ["connectionControllers", "catalogRefreshControllers", "catalogChanges", "catalogRevisions"])
+		Reflect.set(hub, field, new Map())
+	Reflect.set(hub, "latestCatalogRefresh", new WeakMap())
+	Reflect.set(hub, "catalogErrors", new WeakMap())
 	hub.connections = servers.map((server, index) => ({
 		type: "connected",
 		server,
@@ -181,12 +187,159 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 		recordToolError: vi.fn(),
 		say: vi.fn(async () => {}),
 	} as unknown as Task
-	return { executionHost, requests }
+	return { executionHost, requests, hub }
+}
+
+function holdMcpCatalogRefresh(hub: McpHub) {
+	const started = deferred()
+	const tools = deferred<McpTool[]>()
+	const catalogs = hub as unknown as {
+		fetchToolsList(): Promise<McpTool[]>
+		fetchResourcesList(): Promise<[]>
+		fetchResourceTemplatesList(): Promise<[]>
+		notifyWebviewOfServerChanges(): Promise<void>
+	}
+	vi.spyOn(catalogs, "fetchToolsList").mockImplementation(async () => {
+		started.resolve()
+		return tools.promise
+	})
+	vi.spyOn(catalogs, "fetchResourcesList").mockResolvedValue([])
+	vi.spyOn(catalogs, "fetchResourceTemplatesList").mockResolvedValue([])
+	vi.spyOn(catalogs, "notifyWebviewOfServerChanges").mockResolvedValue()
+	const connection = hub.connections[0]
+	if (connection.type !== "connected") throw new Error("Expected connected MCP fixture")
+	const notification = hub["queueCatalogRefresh"](connection)
+	return { started: started.promise, tools, notification }
 }
 
 afterEach(() => vi.restoreAllMocks())
 
+describe("notified MCP catalog captures", () => {
+	it("blocks old bindings during refresh and waits before capturing the successor even when schemas are unchanged", async () => {
+		const { server, options } = fixture(1)
+		const { hub, requests, executionHost } = realMcpHost(options, [server])
+		const original = await capture(options)
+		const refresh = holdMcpCatalogRefresh(hub)
+		await refresh.started
+		let captured = false
+		const successor = capture(options).then((surface) => {
+			captured = true
+			return surface
+		})
+		const stale = await execute(original, [call(target)], { executionHost })
+		const capturedDuringRefresh = captured
+		refresh.tools.resolve(server.tools!)
+		await refresh.notification
+		const next = await successor
+
+		expect(stale.outcome.results[0].status).toBe("error")
+		expect(requests[0]).not.toHaveBeenCalled()
+		expect(capturedDuringRefresh).toBe(false)
+		expect(next).not.toBe(original)
+		const stillStale = await execute(original, [call(target, {}, "old-after-refresh")])
+		expect(stillStale.outcome.results[0].status).toBe("error")
+		const nextHost = host()
+		nextHost.taskFacade = executionHost.taskFacade
+		const current = await execute(next, [call(target, {}, "new-after-refresh")], { executionHost: nextHost })
+		expect(current.outcome.results[0].status).toBe("success")
+	})
+
+	it("releases a cancelled capture without cancelling the shared notified refresh", async () => {
+		const { server, options } = fixture(1)
+		const { hub, executionHost } = realMcpHost(options, [server])
+		const original = await capture(options)
+		const refresh = holdMcpCatalogRefresh(hub)
+		await refresh.started
+		const controller = new AbortController()
+		const waiting = capture({ ...options, signal: controller.signal })
+		const settled = waiting.catch((error: unknown) => error)
+		await execute(original, [call(target)], { executionHost })
+		const reason = new Error("cancelled catalog capture")
+		controller.abort(reason)
+		const result = await settled
+		refresh.tools.resolve(server.tools!)
+		await refresh.notification
+
+		expect(result).toBe(reason)
+		expect((await capture(options)).isCallable(target)).toBe(true)
+	})
+
+	it.each([false, true])(
+		"isolates a failed server while preserving builtins and other servers (replay declarations: %s)",
+		async (replay) => {
+			const { server, options } = fixture(1)
+			options.includeAllToolsWithRestrictions = replay
+			const working: McpServer = {
+				...server,
+				name: "docs",
+				tools: [{ ...server.tools![0], name: "read_docs" }],
+			}
+			const workingName = "mcp--docs--read_docs"
+			const { hub, requests, executionHost } = realMcpHost(options, [server, working])
+			const original = await capture(options)
+			const refresh = holdMcpCatalogRefresh(hub)
+			await refresh.started
+			refresh.tools.reject(new Error("notified catalog unavailable"))
+			await refresh.notification
+
+			const isolated = await capture(options)
+			expect(isolated.isCallable(target)).toBe(false)
+			expect(
+				isolated.schemas.some((schema) => schema.type === "function" && schema.function.name === target),
+			).toBe(replay)
+			const continued = host()
+			continued.taskFacade = executionHost.taskFacade
+			const progress = await execute(
+				isolated,
+				[
+					call("update_plan", { plan: [{ step: "Continue with available tools", status: "in_progress" }] }),
+					call(workingName, { query: "working server" }),
+				],
+				{ executionHost: continued },
+			)
+			expect(progress.outcome.results.map((result) => result.status)).toEqual(["success", "success"])
+			const continuedTask = continued.taskFacade
+			if (!continuedTask) throw new Error("Expected a task facade for the continued MCP fixture")
+			expect(continuedTask.todoList?.[0]?.content).toBe("Continue with available tools")
+			expect(requests[1]).toHaveBeenCalledOnce()
+			const stale = await execute(original, [call(target)], { executionHost })
+			expect(stale.outcome.results[0].status).toBe("error")
+			expect(requests[0]).not.toHaveBeenCalled()
+			const recovery = holdMcpCatalogRefresh(hub)
+			await recovery.started
+			recovery.tools.resolve(server.tools!)
+			await recovery.notification
+			expect((await capture(options)).isCallable(target)).toBe(true)
+			const stillStale = await execute(original, [call(target, {}, "before-recovery")])
+			expect(stillStale.outcome.results[0].status).toBe("error")
+		},
+	)
+})
+
 describe("TaskToolCatalogCache", () => {
+	it.each([0, 12])("retains captured memory authority through a cached catalog with %i MCP tools", async (count) => {
+		const { options } = fixture(count)
+		options.memoryToolsEnabled = true
+		const memoryNames = ["memories_list", "memories_read", "memories_search", "memories_add_ad_hoc_note"]
+		const enabled = await capture(options)
+		for (const name of memoryNames) {
+			expect(enabled.schemas.some((schema) => schema.type === "function" && schema.function.name === name)).toBe(
+				true,
+			)
+			expect(enabled.isCallable(name)).toBe(true)
+		}
+		expect(await capture(options)).toBe(enabled)
+
+		options.memoryToolsEnabled = false
+		const disabled = await capture(options)
+		for (const name of memoryNames) {
+			expect(disabled.schemas.some((schema) => schema.type === "function" && schema.function.name === name)).toBe(
+				false,
+			)
+			expect(disabled.isCallable(name)).toBe(false)
+		}
+	})
+
 	it("captures only validated MCP read-only hints and rejects annotation drift before dispatch", async () => {
 		const { options, server } = fixture(4)
 		server.tools![0].annotations = { readOnlyHint: true, destructiveHint: false }

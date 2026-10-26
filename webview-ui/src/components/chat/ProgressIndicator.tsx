@@ -1,16 +1,10 @@
-import { VSCodeProgressRing } from "@vscode/webview-ui-toolkit/react"
+import { LoaderCircle } from "lucide-react"
 
 export const ProgressIndicator = () => (
-	<div
-		style={{
-			width: "16px",
-			height: "16px",
-			display: "flex",
-			alignItems: "center",
-			justifyContent: "center",
-		}}>
-		<div style={{ transform: "scale(0.55)", transformOrigin: "center" }}>
-			<VSCodeProgressRing />
-		</div>
-	</div>
+	<LoaderCircle
+		data-testid="progress-indicator"
+		className="size-4 shrink-0 animate-spin motion-reduce:animate-none text-[var(--vscode-progressBar-background)]"
+		aria-hidden="true"
+		focusable="false"
+	/>
 )

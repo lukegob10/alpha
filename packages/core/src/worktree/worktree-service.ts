@@ -10,6 +10,7 @@ import * as path from "path"
 import { promisify } from "util"
 
 import type { BranchInfo, CreateWorktreeOptions, Worktree, WorktreeResult } from "./types.js"
+import { createWorktreeGitEnvironment } from "./git-environment.js"
 
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
@@ -24,7 +25,7 @@ export class WorktreeService {
 	 */
 	async checkGitInstalled(): Promise<boolean> {
 		try {
-			await execAsync("git --version")
+			await execAsync("git --version", { env: createWorktreeGitEnvironment() })
 			return true
 		} catch {
 			return false
@@ -36,7 +37,7 @@ export class WorktreeService {
 	 */
 	async checkGitRepo(cwd: string): Promise<boolean> {
 		try {
-			await execAsync("git rev-parse --git-dir", { cwd })
+			await execAsync("git rev-parse --git-dir", { cwd, env: createWorktreeGitEnvironment() })
 			return true
 		} catch {
 			return false
@@ -48,7 +49,10 @@ export class WorktreeService {
 	 */
 	async getGitRootPath(cwd: string): Promise<string | null> {
 		try {
-			const { stdout } = await execAsync("git rev-parse --show-toplevel", { cwd })
+			const { stdout } = await execAsync("git rev-parse --show-toplevel", {
+				cwd,
+				env: createWorktreeGitEnvironment(),
+			})
 			return stdout.trim()
 		} catch {
 			return null
@@ -60,7 +64,10 @@ export class WorktreeService {
 	 */
 	async getCurrentWorktreePath(cwd: string): Promise<string | null> {
 		try {
-			const { stdout } = await execAsync("git rev-parse --show-toplevel", { cwd })
+			const { stdout } = await execAsync("git rev-parse --show-toplevel", {
+				cwd,
+				env: createWorktreeGitEnvironment(),
+			})
 			return stdout.trim()
 		} catch {
 			return null
@@ -72,7 +79,10 @@ export class WorktreeService {
 	 */
 	async getCurrentBranch(cwd: string): Promise<string | null> {
 		try {
-			const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd })
+			const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", {
+				cwd,
+				env: createWorktreeGitEnvironment(),
+			})
 			const branch = stdout.trim()
 			return branch === "HEAD" ? null : branch
 		} catch {
@@ -85,7 +95,10 @@ export class WorktreeService {
 	 */
 	async listWorktrees(cwd: string): Promise<Worktree[]> {
 		try {
-			const { stdout } = await execAsync("git worktree list --porcelain", { cwd })
+			const { stdout } = await execAsync("git worktree list --porcelain", {
+				cwd,
+				env: createWorktreeGitEnvironment(),
+			})
 			return this.parseWorktreeOutput(stdout, cwd)
 		} catch {
 			return []
@@ -116,7 +129,7 @@ export class WorktreeService {
 				args.push("--detach", worktreePath)
 			}
 
-			await execFileAsync("git", args, { cwd })
+			await execFileAsync("git", args, { cwd, env: createWorktreeGitEnvironment() })
 
 			// Get the created worktree info
 			const worktrees = await this.listWorktrees(cwd)
@@ -154,12 +167,15 @@ export class WorktreeService {
 				args.push("--force")
 			}
 			args.push(worktreePath)
-			await execFileAsync("git", args, { cwd })
+			await execFileAsync("git", args, { cwd, env: createWorktreeGitEnvironment() })
 
 			// Also try to delete the branch if it exists
 			if (worktreeToDelete?.branch) {
 				try {
-					await execFileAsync("git", ["branch", "-d", worktreeToDelete.branch], { cwd })
+					await execFileAsync("git", ["branch", "-d", worktreeToDelete.branch], {
+						cwd,
+						env: createWorktreeGitEnvironment(),
+					})
 				} catch {
 					// Branch deletion is best-effort
 				}
@@ -185,11 +201,12 @@ export class WorktreeService {
 	 */
 	async getAvailableBranches(cwd: string, includeWorktreeBranches = false): Promise<BranchInfo> {
 		try {
+			const options = { cwd, env: createWorktreeGitEnvironment() }
 			// Run all git commands in parallel for better performance
 			const [worktrees, localResult, remoteResult, currentBranch] = await Promise.all([
 				this.listWorktrees(cwd),
-				execAsync('git branch --format="%(refname:short)"', { cwd }),
-				execAsync('git branch -r --format="%(refname:short)"', { cwd }),
+				execAsync('git branch --format="%(refname:short)"', options),
+				execAsync('git branch -r --format="%(refname:short)"', options),
 				this.getCurrentBranch(cwd),
 			])
 
@@ -231,7 +248,9 @@ export class WorktreeService {
 	 */
 	async checkoutBranch(cwd: string, branch: string): Promise<WorktreeResult> {
 		try {
-			await execFileAsync("git", ["checkout", branch], { cwd })
+			// git-switch's branch-only contract rejects checkout path restoration and option injection.
+			// Reviewed against https://git-scm.com/docs/git-switch on 2026-10-26.
+			await execFileAsync("git", ["switch", "--", branch], { cwd, env: createWorktreeGitEnvironment() })
 			return {
 				success: true,
 				message: `Checked out branch ${branch}`,

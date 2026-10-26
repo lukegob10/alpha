@@ -100,6 +100,24 @@ async function fixture() {
 }
 
 describe("file mutation receipt settlement", () => {
+	it.each(["explore", "review"] as const)(
+		"observes an inherited-permission %s's shared-workspace edit",
+		async (role) => {
+			const f = await fixture()
+			Object.assign(f.task, {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: { runtimePolicy: { authorityModel: "parent", mutate: true } },
+			})
+			await f.execute()
+			expect(f.store.getVerificationObligations()[0]).toMatchObject({
+				changedFiles: ["index.html"],
+				mutationReservations: [],
+			})
+			expect(f.task.suspendAfterCurrentTurn).not.toHaveBeenCalled()
+		},
+	)
+
 	it("settles the exact admitted receipt durably after a file write", async () => {
 		const f = await fixture()
 		await f.execute()

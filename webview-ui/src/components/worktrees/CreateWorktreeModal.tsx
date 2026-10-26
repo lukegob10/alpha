@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import prettyBytes from "pretty-bytes"
 
 import type { WorktreeDefaultsResponse, BranchInfo, WorktreeIncludeStatus } from "@alpha-code/types"
@@ -37,6 +37,7 @@ export const CreateWorktreeModal = ({
 	// UI state
 	const [isCreating, setIsCreating] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+	const pendingCreate = useRef<{ requestId: string; path: string; openAfterCreate: boolean }>()
 	const [copyProgress, setCopyProgress] = useState<{
 		bytesCopied: number
 		itemName: string
@@ -45,15 +46,21 @@ export const CreateWorktreeModal = ({
 	// Fetch defaults and branches on open
 	useEffect(() => {
 		if (open) {
+			setError(null)
 			vscode.postMessage({ type: "getWorktreeDefaults" })
 			vscode.postMessage({ type: "getAvailableBranches" })
 			vscode.postMessage({ type: "getWorktreeIncludeStatus" })
+		} else {
+			pendingCreate.current = undefined
+			setIsCreating(false)
+			setCopyProgress(null)
 		}
 	}, [open])
 
 	// Handle messages from extension
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
+			if (!open || !event.data || typeof event.data !== "object") return
 			const message = event.data
 			switch (message.type) {
 				case "worktreeDefaults": {
@@ -80,6 +87,7 @@ export const CreateWorktreeModal = ({
 					break
 				}
 				case "worktreeCopyProgress": {
+					if (!pendingCreate.current || message.requestId !== pendingCreate.current.requestId) break
 					setCopyProgress({
 						bytesCopied: message.copyProgressBytesCopied ?? 0,
 						itemName: message.copyProgressItemName ?? "",
@@ -87,13 +95,17 @@ export const CreateWorktreeModal = ({
 					break
 				}
 				case "worktreeResult": {
+					const pending = pendingCreate.current
+					if (!pending || message.requestId !== pending.requestId || typeof message.success !== "boolean")
+						break
+					pendingCreate.current = undefined
 					setIsCreating(false)
 					setCopyProgress(null)
 					if (message.success) {
-						if (openAfterCreate) {
+						if (pending.openAfterCreate) {
 							vscode.postMessage({
 								type: "switchWorktree",
-								worktreePath: worktreePath,
+								worktreePath: pending.path,
 								worktreeNewWindow: true,
 							})
 						}
@@ -109,20 +121,24 @@ export const CreateWorktreeModal = ({
 
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
-	}, [openAfterCreate, worktreePath, onSuccess, onClose])
+	}, [open, onSuccess, onClose])
 
 	const handleCreate = useCallback(() => {
+		if (!open || pendingCreate.current) return
+		const requestId = crypto.randomUUID()
+		pendingCreate.current = { requestId, path: worktreePath, openAfterCreate }
 		setError(null)
 		setIsCreating(true)
 
 		vscode.postMessage({
 			type: "createWorktree",
+			requestId,
 			worktreePath: worktreePath,
 			worktreeBranch: branchName,
 			worktreeBaseBranch: baseBranch,
 			worktreeCreateNewBranch: true,
 		})
-	}, [worktreePath, branchName, baseBranch])
+	}, [open, openAfterCreate, worktreePath, branchName, baseBranch])
 
 	const isValid = branchName.trim() && worktreePath.trim() && baseBranch.trim()
 

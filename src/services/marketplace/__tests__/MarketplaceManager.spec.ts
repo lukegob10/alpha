@@ -4,9 +4,6 @@ import type { MarketplaceItem } from "@alpha-code/types"
 
 import { MarketplaceManager } from "../MarketplaceManager"
 
-// Mock axios
-vi.mock("axios")
-
 // Mock TelemetryService
 vi.mock("../../../../packages/telemetry/src/TelemetryService", () => ({
 	TelemetryService: {
@@ -145,37 +142,16 @@ describe("MarketplaceManager", () => {
 	})
 
 	describe("getMarketplaceItems", () => {
-		it("should return items from API", async () => {
-			// Mock the config loader to return test data
-			const mockItems: MarketplaceItem[] = [
-				{
-					id: "test-mode",
-					name: "Test Mode",
-					description: "A test mode",
-					type: "mode",
-					content: "# Test Mode",
-				},
-			]
-
-			// Mock the loadAllItems method
-			vi.spyOn(manager["configLoader"], "loadAllItems").mockResolvedValue(mockItems)
-
-			const result = await manager.getMarketplaceItems()
-
-			expect(result.marketplaceItems).toHaveLength(1)
-			expect(result.marketplaceItems[0].name).toBe("Test Mode")
-			expect(result.organizationMcps).toHaveLength(0)
+		it("returns the empty remote catalog", async () => {
+			await expect(manager.getMarketplaceItems()).resolves.toEqual({
+				organizationMcps: [],
+				marketplaceItems: [],
+			})
 		})
 
-		it("should handle API errors gracefully", async () => {
-			// Mock the config loader to throw an error
-			vi.spyOn(manager["configLoader"], "loadAllItems").mockRejectedValue(new Error("API request failed"))
-
-			const result = await manager.getMarketplaceItems()
-
-			expect(result.marketplaceItems).toHaveLength(0)
-			expect(result.organizationMcps).toHaveLength(0)
-			expect(result.errors).toEqual(["API request failed"])
+		it("returns no remote items through current-item and filter queries", async () => {
+			await expect(manager.getCurrentItems()).resolves.toEqual([])
+			await expect(manager.updateWithFilteredItems({ type: "mcp", search: "server" })).resolves.toEqual([])
 		})
 	})
 
@@ -258,17 +234,6 @@ describe("MarketplaceManager", () => {
 			await manager.removeInstalledMarketplaceItem(item)
 
 			expect(manager["installer"].removeItem).toHaveBeenCalledWith(item, { target: "project" })
-		})
-	})
-
-	describe("cleanup", () => {
-		it("should clear API cache", async () => {
-			// Mock the clearCache method
-			vi.spyOn(manager["configLoader"], "clearCache")
-
-			await manager.cleanup()
-
-			expect(manager["configLoader"].clearCache).toHaveBeenCalled()
 		})
 	})
 })

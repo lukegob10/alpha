@@ -17,6 +17,90 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 }))
 
 describe("MarkdownBlock", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each([
+		["package.json:12", "./package.json"],
+		["file.ts:12", "./file.ts"],
+		["file.c++:12", "./file.c++"],
+		["src/app.ts:12-14", "./src/app.ts"],
+		["/work/src/app.ts:12", "/work/src/app.ts"],
+		["C:/work/src/app.ts:12", "C:/work/src/app.ts"],
+		[String.raw`C:\work\src\app.ts:12`, "C:/work/src/app.ts"],
+		["file:///work/src/a%20b.ts:12", "/work/src/a%20b.ts"],
+		["file:///C:/work/src/app.ts:12", "C:/work/src/app.ts"],
+		["file://localhost/C:/work/src/app.ts:12", "C:/work/src/app.ts"],
+		["FiLe:///C:/work/src/app.ts:12", "C:/work/src/app.ts"],
+	])("opens the local source %s at its line without rewriting absolute paths", (url, text) => {
+		render(<MarkdownBlock markdown={`[Source](${url})`} />)
+		fireEvent.click(screen.getByRole("link", { name: "Source" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "openFile", text, values: { line: 12 } })
+	})
+
+	it("renders a basename line link as a relative URL rather than a URI scheme", () => {
+		render(<MarkdownBlock markdown="[Source](package.json:12)" />)
+		expect(screen.getByRole("link", { name: "Source" })).toHaveAttribute("href", "./package.json:12")
+	})
+
+	it.each([
+		"https://example.com/page",
+		"http://example.com/page",
+		"mailto:help@example.com",
+		"#details",
+		"?view=details",
+		"//example.com/page",
+		"/%2fexample.com/page",
+		"%5c%5cserver%5cshare",
+	])("leaves browser navigation for %s without requesting a file", (url) => {
+		render(<MarkdownBlock markdown={`[Navigate](${url})`} />)
+		const link = screen.getByRole("link", { name: "Navigate" })
+		expect(link).toHaveAttribute("href", url)
+		let intercepted = false
+		document.addEventListener(
+			"click",
+			(event) => {
+				intercepted = event.defaultPrevented
+				event.preventDefault()
+			},
+			{ once: true },
+		)
+		fireEvent.click(link)
+
+		expect(intercepted).toBe(false)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"",
+		"command:workbench.action.closeWindow",
+		"command:/workbench.action.closeWindow",
+		"javascript:alert(1)",
+		"javascript:123",
+		"data:text/html,unsafe",
+		"vscode:workbench.action.closeWindow",
+		"alpha-document://open?uri=file%3A%2F%2F%2Fwork%2Freview.html&unknown=value",
+		"file://server/share/private.txt",
+		"file:////server/share/private.txt",
+		"file:///%5cserver/share/private.txt",
+		"file:///work/private.txt?create=true",
+	])("does not turn the blocked link %s into workspace navigation", (url) => {
+		render(<MarkdownBlock markdown={`[Blocked](${url})`} />)
+		fireEvent.click(screen.getByText("Blocked"))
+
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		if (url) expect(screen.getByText("Blocked")).not.toHaveAttribute("href", url)
+	})
+
+	it.each(["file:///C:/private/image.png", "C:/private/image.png"])(
+		"keeps the default image URL restrictions for %s",
+		(url) => {
+			render(<MarkdownBlock markdown={`![Preview](${url})`} />)
+			expect(screen.getByAltText("Preview")).not.toHaveAttribute("src", url)
+		},
+	)
+
 	it("routes explicit document links with durable URI/task identity", () => {
 		const link = "alpha-document://open?uri=file%3A%2F%2F%2FC%3A%2Fwork%2Freview.html&task=task-1"
 		render(<MarkdownBlock markdown={`[Review](${link})`} />)

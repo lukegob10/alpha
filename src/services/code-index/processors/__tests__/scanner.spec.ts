@@ -7,6 +7,12 @@ import { AlphaIgnoreController } from "../../../../core/ignore/AlphaIgnoreContro
 import { MAX_LIST_FILES_LIMIT_CODE_INDEX } from "../../constants"
 import { EmbeddingRequestError } from "../../shared/embedding-retry"
 
+// Unit fixtures use virtual paths; real junction admission is covered by indexing-containment.spec.ts.
+vi.mock("../../shared/get-relative-path", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../shared/get-relative-path")>()),
+	resolveIndexFilePath: vi.fn(async (filePath: string) => ({ absolutePath: filePath, relativePath: filePath })),
+}))
+
 // Mock TelemetryService
 vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {

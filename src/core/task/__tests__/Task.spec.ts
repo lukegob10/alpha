@@ -98,8 +98,6 @@ vi.mock("delay", () => ({
 	default: vi.fn().mockResolvedValue(undefined),
 }))
 
-import delay from "delay"
-
 vi.mock("uuid", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("uuid")>()
 	return {
@@ -217,7 +215,7 @@ vi.mock("fs/promises", async (importOriginal) => {
 	return {
 		...actual,
 		...mockFunctions,
-		default: mockFunctions,
+		default: { ...actual, ...mockFunctions },
 	}
 })
 
@@ -509,8 +507,8 @@ describe("Alpha", () => {
 			reasoningHandlerUsers: new Map(),
 		}) as Task
 
-		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "openrouter" })).toThrow(
-			"Unsupported API provider: openrouter",
+		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "ollama" })).toThrow(
+			"Unsupported API provider: ollama",
 		)
 		expect(task.apiConfiguration).toBe(apiConfiguration)
 		expect(task.api).toBe(api)
@@ -1037,12 +1035,16 @@ describe("Alpha", () => {
 			})
 
 			it("should persist VS Code LM stateful markers and only replay them to that provider", async () => {
+				const vscodeConfiguration: ProviderSettings = { ...mockApiConfig, apiProvider: "vscode-lm" }
 				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
+				// This fixture supplies the marker; capture its owner before testing foreign-provider replay.
+				alphaTask.apiConfiguration = vscodeConfiguration
+				Reflect.set(alphaTask, "effectiveApiConfiguration", vscodeConfiguration)
 				const statefulMarker = "bW9kZWxcXHJlc3BvbnNl"
 				;(alphaTask.api as any).getStatefulMarker = () => statefulMarker
 				vi.spyOn(alphaTask as any, "saveApiConversationHistory").mockResolvedValue(true)
@@ -1053,15 +1055,17 @@ describe("Alpha", () => {
 				})
 				const markerMessage = alphaTask.apiConversationHistory.at(-1)!
 				expect(markerMessage).toHaveProperty("vscodeLmStatefulMarker", statefulMarker)
+				expect(markerMessage).toHaveProperty("provider_state_scope", {
+					provider: "vscode-lm",
+					modelId: alphaTask.api.getModel().id,
+				})
 
-				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
+				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage], {
+					apiHandler: alphaTask.api,
+					apiConfiguration: mockApiConfig,
+				})
 				expect(anthropicHistory[0]).not.toHaveProperty("vscodeLmStatefulMarker")
 
-				alphaTask.apiConfiguration = {
-					...mockApiConfig,
-					apiProvider: "vscode-lm",
-				} as ProviderSettings
-				Reflect.set(alphaTask, "effectiveApiConfiguration", { ...alphaTask.apiConfiguration })
 				const vscodeLmHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
 
 				expect(vscodeLmHistory[0]).toMatchObject({
@@ -1558,7 +1562,29 @@ describe("Alpha", () => {
 		describe("Subtask Rate Limiting", () => {
 			let mockProvider: any
 			let mockApiConfig: any
-			let mockDelay: import("vitest").Mock
+			let restorePacingPresentation: (() => void) | undefined
+
+			function usePacingClock() {
+				vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] })
+				// Keep presentation I/O outside the clock-controlled provider-admission contract.
+				const say = vi.spyOn(Task.prototype, "say").mockResolvedValue(undefined)
+				restorePacingPresentation = () => say.mockRestore()
+			}
+
+			async function expectPacingInterval<T>(request: Promise<T>): Promise<T> {
+				const startedAt = performance.now()
+				let admitted = false
+				const result = request.then((value) => {
+					admitted = true
+					return value
+				})
+				await vi.advanceTimersByTimeAsync(4_999)
+				expect(admitted).toBe(false)
+				await vi.advanceTimersByTimeAsync(1)
+				const value = await result
+				expect(performance.now() - startedAt).toBe(5_000)
+				return value
+			}
 
 			beforeEach(() => {
 				vi.clearAllMocks()
@@ -1596,15 +1622,14 @@ describe("Alpha", () => {
 					releaseAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
 					acknowledgeWaitAgentResults: vi.fn().mockResolvedValue(undefined),
 				}
-
-				// Get the mocked delay function
-				mockDelay = delay as import("vitest").Mock
-				mockDelay.mockClear()
 			})
 
 			afterEach(() => {
 				// Clean up the global state after each test
 				Task.resetGlobalApiRequestTime()
+				restorePacingPresentation?.()
+				restorePacingPresentation = undefined
+				vi.useRealTimers()
 			})
 
 			it("persists local tool results before an interruptible provider-rate-limit wait", async () => {
@@ -2184,6 +2209,7 @@ describe("Alpha", () => {
 			})
 
 			it("uses the task-owned profile when the foreground profile has a rate limit", async () => {
+				usePacingClock()
 				mockProvider.getState.mockResolvedValue({
 					apiConfiguration: mockApiConfig,
 					mcpEnabled: false,
@@ -2196,7 +2222,6 @@ describe("Alpha", () => {
 					startTask: false,
 				})
 				await (limitedTask as any).maybeWaitForProviderRateLimit(0)
-				mockDelay.mockClear()
 
 				const child = new Task({
 					provider: mockProvider,
@@ -2207,10 +2232,12 @@ describe("Alpha", () => {
 
 				await (child as any).maybeWaitForProviderRateLimit(0)
 
-				expect(mockDelay).not.toHaveBeenCalled()
+				expect(performance.now()).toBe(0)
+				expect(child.getRequestPacingMetrics().waitCount).toBe(0)
 			})
 
 			it("uses the task-owned rate limit when the foreground profile has none", async () => {
+				usePacingClock()
 				mockProvider.getState.mockResolvedValue({
 					apiConfiguration: { ...mockApiConfig, rateLimitSeconds: 0 },
 					mcpEnabled: false,
@@ -2223,15 +2250,14 @@ describe("Alpha", () => {
 					startTask: false,
 				})
 				await (child as any).maybeWaitForProviderRateLimit(0)
-				mockDelay.mockClear()
+				expect(performance.now()).toBe(0)
 
-				await (child as any).maybeWaitForProviderRateLimit(0)
-
-				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
-				expect(mockDelay).toHaveBeenCalledWith(1000)
+				await expectPacingInterval(child["maybeWaitForProviderRateLimit"](0))
+				expect(performance.now()).toBe(5_000)
 			})
 
 			it("serializes simultaneous requests routed to the same stable profile", async () => {
+				usePacingClock()
 				const route = {
 					source: "role" as const,
 					resolution: "selected" as const,
@@ -2255,16 +2281,25 @@ describe("Alpha", () => {
 					subagentModelRoute: route,
 				})
 
-				await Promise.all([
-					(first as any).maybeWaitForProviderRateLimit(0),
-					(second as any).maybeWaitForProviderRateLimit(0),
-				])
+				const admissions: Array<{ task: string; at: number }> = []
+				const firstRequest = first["maybeWaitForProviderRateLimit"](0).then(() => {
+					admissions.push({ task: "first", at: performance.now() })
+				})
+				const secondRequest = second["maybeWaitForProviderRateLimit"](0).then(() => {
+					admissions.push({ task: "second", at: performance.now() })
+				})
+				await vi.advanceTimersByTimeAsync(0)
+				expect(admissions).toEqual([{ task: "first", at: 0 }])
 
-				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
-				expect(mockDelay).toHaveBeenCalledWith(1000)
+				await expectPacingInterval(Promise.all([firstRequest, secondRequest]))
+				expect(admissions).toEqual([
+					{ task: "first", at: 0 },
+					{ task: "second", at: 5_000 },
+				])
 			})
 
 			it("records task-local waits without misclassifying the configured shared lane as an error", async () => {
+				usePacingClock()
 				const route = {
 					source: "role" as const,
 					resolution: "selected" as const,
@@ -2289,7 +2324,7 @@ describe("Alpha", () => {
 				})
 
 				await (first as any).maybeWaitForProviderRateLimit(0)
-				await (second as any).maybeWaitForProviderRateLimit(0)
+				await expectPacingInterval(second["maybeWaitForProviderRateLimit"](0))
 
 				expect(first.getRequestPacingMetrics()).toEqual({
 					configuredIntervalSeconds: 5,
@@ -2330,6 +2365,7 @@ describe("Alpha", () => {
 			})
 
 			it("does not serialize simultaneous requests routed to different stable profiles", async () => {
+				usePacingClock()
 				const createRoutedTask = (profileId: string) =>
 					new Task({
 						provider: mockProvider,
@@ -2353,10 +2389,13 @@ describe("Alpha", () => {
 					(second as any).maybeWaitForProviderRateLimit(0),
 				])
 
-				expect(mockDelay).not.toHaveBeenCalled()
+				expect(performance.now()).toBe(0)
+				expect(first.getRequestPacingMetrics().waitCount).toBe(0)
+				expect(second.getRequestPacingMetrics().waitCount).toBe(0)
 			})
 
 			it("keeps legacy tasks on different providers in independent lanes", async () => {
+				usePacingClock()
 				const anthropicTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
@@ -2382,12 +2421,13 @@ describe("Alpha", () => {
 					(openAiTask as any).maybeWaitForProviderRateLimit(0),
 				])
 
-				expect(mockDelay).not.toHaveBeenCalled()
+				expect(performance.now()).toBe(0)
+				expect(anthropicTask.getRequestPacingMetrics().waitCount).toBe(0)
+				expect(openAiTask.getRequestPacingMetrics().waitCount).toBe(0)
 			})
 
 			it("should enforce rate limiting across parent and subtask", async () => {
-				// Add a spy to track getState calls
-				const getStateSpy = vi.spyOn(mockProvider, "getState")
+				usePacingClock()
 
 				// Create parent task
 				const parent = new Task({
@@ -2422,7 +2462,7 @@ describe("Alpha", () => {
 				await parentIterator.next()
 
 				// Verify no delay was applied for the first request
-				expect(mockDelay).not.toHaveBeenCalled()
+				expect(performance.now()).toBe(0)
 
 				// Create a subtask immediately after
 				const child = new Task({
@@ -2459,11 +2499,10 @@ describe("Alpha", () => {
 
 				// Make an API request with the child task
 				const childIterator = child.attemptApiRequest(0)
-				await childIterator.next()
+				await expectPacingInterval(childIterator.next())
 
 				// Verify rate limiting was applied
-				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
-				expect(mockDelay).toHaveBeenCalledWith(1000)
+				expect(performance.now()).toBe(5_000)
 
 				// Verify we used the non-error rate-limit wait message type (JSON format)
 				expect(saySpy).toHaveBeenCalledWith(
@@ -2475,9 +2514,10 @@ describe("Alpha", () => {
 
 				// Verify the wait message was finalized
 				expect(saySpy).toHaveBeenCalledWith("api_req_rate_limit_wait", undefined, undefined, false)
-			}, 10000) // Increase timeout to 10 seconds
+			})
 
 			it("should not apply rate limiting if enough time has passed", async () => {
+				usePacingClock()
 				// Create parent task
 				const parent = new Task({
 					provider: mockProvider,
@@ -2511,9 +2551,7 @@ describe("Alpha", () => {
 				await parentIterator.next()
 
 				// Simulate time passing (more than rate limit)
-				const originalPerformanceNow = performance.now
-				const mockTime = performance.now() + (mockApiConfig.rateLimitSeconds + 1) * 1000
-				performance.now = vi.fn(() => mockTime)
+				await vi.advanceTimersByTimeAsync(6_000)
 
 				// Create a subtask after time has passed
 				const child = new Task({
@@ -2533,13 +2571,12 @@ describe("Alpha", () => {
 				await childIterator.next()
 
 				// Verify no rate limiting was applied
-				expect(mockDelay).not.toHaveBeenCalled()
-
-				// Restore performance.now
-				performance.now = originalPerformanceNow
+				expect(performance.now()).toBe(6_000)
+				expect(child.getRequestPacingMetrics().waitCount).toBe(0)
 			})
 
 			it("should share rate limiting across multiple subtasks", async () => {
+				usePacingClock()
 				// Create parent task
 				const parent = new Task({
 					provider: mockProvider,
@@ -2571,6 +2608,7 @@ describe("Alpha", () => {
 				// Make an API request with the parent task
 				const parentIterator = parent.attemptApiRequest(0)
 				await parentIterator.next()
+				expect(performance.now()).toBe(0)
 
 				// Create first subtask
 				const child1 = new Task({
@@ -2587,14 +2625,10 @@ describe("Alpha", () => {
 
 				// Make an API request with the first child task
 				const child1Iterator = child1.attemptApiRequest(0)
-				await child1Iterator.next()
+				await expectPacingInterval(child1Iterator.next())
 
 				// Verify rate limiting was applied
-				const firstDelayCount = mockDelay.mock.calls.length
-				expect(firstDelayCount).toBe(mockApiConfig.rateLimitSeconds)
-
-				// Clear the mock to count new delays
-				mockDelay.mockClear()
+				expect(performance.now()).toBe(5_000)
 
 				// Create second subtask immediately after
 				const child2 = new Task({
@@ -2611,13 +2645,14 @@ describe("Alpha", () => {
 
 				// Make an API request with the second child task
 				const child2Iterator = child2.attemptApiRequest(0)
-				await child2Iterator.next()
+				await expectPacingInterval(child2Iterator.next())
 
 				// Verify rate limiting was applied again
-				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
-			}, 15000) // Increase timeout to 15 seconds
+				expect(performance.now()).toBe(10_000)
+			})
 
 			it("should handle rate limiting with zero rate limit", async () => {
+				usePacingClock()
 				// Update config to have zero rate limit
 				mockApiConfig.rateLimitSeconds = 0
 				mockProvider.getState.mockResolvedValue({
@@ -2675,10 +2710,13 @@ describe("Alpha", () => {
 				await childIterator.next()
 
 				// Verify no delay was applied
-				expect(mockDelay).not.toHaveBeenCalled()
+				expect(performance.now()).toBe(0)
+				expect(parent.getRequestPacingMetrics().waitCount).toBe(0)
+				expect(child.getRequestPacingMetrics().waitCount).toBe(0)
 			})
 
 			it("should reserve a lane even when the first request needs no delay", async () => {
+				usePacingClock()
 				// Create task
 				const task = new Task({
 					provider: mockProvider,
@@ -2710,12 +2748,11 @@ describe("Alpha", () => {
 				// Make an API request
 				const iterator = task.attemptApiRequest(0)
 				await iterator.next()
-
-				mockDelay.mockClear()
+				expect(performance.now()).toBe(0)
 
 				// A subsequent request on the same lane observes the first reservation.
-				await (task as any).maybeWaitForProviderRateLimit(0)
-				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
+				await expectPacingInterval(task["maybeWaitForProviderRateLimit"](0))
+				expect(performance.now()).toBe(5_000)
 			})
 		})
 
@@ -3138,7 +3175,15 @@ describe("Alpha", () => {
 				await (args[1] as () => void)()
 			})
 			await task.resumeWithEditedMessage("Replacement", images)
-			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
+			expect(say).toHaveBeenCalledWith(
+				opening ? "text" : "user_feedback",
+				"Replacement",
+				images,
+				undefined,
+				undefined,
+				undefined,
+				expect.objectContaining({ turn: null }),
+			)
 			expect(overwrite).not.toHaveBeenCalled()
 			expect(task.apiConversationHistory).toEqual(prefix)
 			expect(loop).toHaveBeenCalledWith(
@@ -3243,9 +3288,10 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{
+				expect.objectContaining({
 					queuedMessageIds: [queuedMessage.id],
-				},
+					turn: null,
+				}),
 			)
 			expect(
 				task["getQueuedInputReceipts"](
@@ -5926,9 +5972,6 @@ describe("Alpha", () => {
 				const abortSpy = vi.spyOn(mockAbortController, "abort")
 				task.currentRequestAbortController = mockAbortController
 
-				// Spy on console.log
-				const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
-
 				// Call cancelCurrentRequest
 				task.cancelCurrentRequest()
 
@@ -5937,12 +5980,6 @@ describe("Alpha", () => {
 
 				// Verify the controller was cleared
 				expect(task.currentRequestAbortController).toBeUndefined()
-
-				// Verify logging
-				expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Aborting current HTTP request"))
-
-				// Restore console.log
-				consoleLogSpy.mockRestore()
 			})
 
 			it("should handle missing AbortController gracefully", () => {
@@ -8708,7 +8745,7 @@ describe("Alpha", () => {
 			{ tail: "no-choices", autoApprovalEnabled: false },
 			{ tail: "no-choices", autoApprovalEnabled: true },
 		])(
-			"recovers metadata-only Copilot thinking followed by $tail with tool auto-approval=$autoApprovalEnabled",
+			"handles metadata-only Copilot thinking followed by $tail with tool auto-approval=$autoApprovalEnabled",
 			async ({ tail, autoApprovalEnabled }) => {
 				const task = createTask()
 				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
@@ -8744,6 +8781,29 @@ describe("Alpha", () => {
 							yield { type: "text", text: "Recovered answer." }
 						})(),
 					)
+
+				if (tail === "EOF") {
+					await expect(
+						task.runAgentRequests([{ type: "text", text: "start" }], false),
+					).resolves.toMatchObject({
+						status: "completed",
+						response: {
+							text: "",
+							reasoning: "",
+							items: [
+								expect.objectContaining({
+									vscodeLmThinking: expect.objectContaining({ id: "discarded-thinking" }),
+								}),
+							],
+						},
+					})
+					expect(request).toHaveBeenCalledOnce()
+					expect(ask).not.toHaveBeenCalled()
+					expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ type: "retry" }))
+					expect(JSON.stringify(task.apiConversationHistory)).toContain("discarded-thinking")
+					expect(JSON.stringify(task.apiConversationHistory)).toContain("discarded-signature")
+					return
+				}
 
 				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
 					status: "completed",
@@ -10450,7 +10510,7 @@ describe("Alpha", () => {
 					undefined,
 					undefined,
 					undefined,
-					{ queuedMessageIds: undefined },
+					expect.objectContaining({ queuedMessageIds: undefined, turn: null }),
 				)
 				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
 				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
@@ -10916,9 +10976,10 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{
+				expect.objectContaining({
 					queuedMessageIds: [followupId],
-				},
+					turn: null,
+				}),
 			)
 			expect(task.clineMessages.find((message) => message.say === "user_feedback")).toMatchObject({
 				queuedMessageIds: [followupId],
@@ -11036,7 +11097,7 @@ describe("Alpha", () => {
 				undefined,
 				undefined,
 				undefined,
-				{ queuedMessageIds: [firstQueuedMessage.id] },
+				expect.objectContaining({ queuedMessageIds: [firstQueuedMessage.id], turn: null }),
 			)
 			expect(task.messageQueueService.messages).toHaveLength(1)
 			expect(task.messageQueueService.messages[0]).toMatchObject({

@@ -139,7 +139,9 @@ describe("runBenchmarkModelCampaign", () => {
 			manifestDigest: `sha256:${"b".repeat(64)}`,
 			identityScope: "observed-entrypoint-and-manifest",
 		}
-		mocks.getTasks.mockResolvedValue([{ id: 101, benchmarkTaskIdentity: "task@1", iteration: 1 }])
+		mocks.getTasks.mockResolvedValue([
+			{ id: 101, benchmarkTaskIdentity: "task@1", benchmarkPartition: "development", iteration: 1 },
+		])
 		mocks.findTrialForTask.mockResolvedValue({ id: 10, status: "passed", variantIdentity: "installed-variant" })
 		mocks.getRuntimeVariantManifest.mockResolvedValue({ executionIdentity, identityStatus: "observed_entrypoint" })
 		try {

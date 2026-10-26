@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { managedSubagentWorktreeService } from "@alpha-code/core"
 import type { ApprovalMode } from "@alpha-code/types"
 
 import { createManagedPublicLifecycleHarness } from "./managedPublicLifecycleHarness"
@@ -40,7 +41,15 @@ async function startWorker(approvalMode: ApprovalMode = "auto") {
 		prepared,
 		fixture.root.getTaskLifetimeCancellationSignal(),
 	)
-	await turn.entered
+	const completion = fixture.runs.waitForResult(taskId)
+	if (!completion) throw new Error("Worker fixture launch did not expose its terminal result channel")
+	await Promise.race([
+		turn.entered,
+		completion.then((result) => {
+			const detail = result.summary.replace(/\s+/g, " ").slice(0, 512)
+			throw new Error(`Worker fixture ended before provider entry (${result.status}): ${detail}`)
+		}),
+	])
 	const child = fixture.provider.getLiveTask(taskId)
 	if (!child) throw new Error("Worker Task was not registered")
 	// Simulate an already-approved child effect at the transport boundary. Real
@@ -58,6 +67,13 @@ async function startWorker(approvalMode: ApprovalMode = "auto") {
 }
 
 describe("completed Worker integration", () => {
+	it("reports a Worker startup failure instead of waiting for unreachable provider entry", async () => {
+		vi.spyOn(managedSubagentWorktreeService, "create").mockRejectedValueOnce(
+			new Error("Fixture worktree startup failed"),
+		)
+		await expect(startWorker()).rejects.toThrow("Fixture worktree startup failed")
+	})
+
 	it.each(["ask", "auto", "bypass"] as const)(
 		"integrates approved %s Worker effects before publishing a result without a second review",
 		async (mode) => {

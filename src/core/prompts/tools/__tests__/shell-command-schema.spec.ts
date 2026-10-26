@@ -57,8 +57,10 @@ describe("command tool schemas", () => {
 
 	it("describes both native and intercepted apply_patch calls", () => {
 		if (applyPatch.type !== "function") throw new Error("apply_patch schema must be a function tool")
-		expect(applyPatch.function.description).toContain("Prefer this native tool with the patch argument")
-		expect(applyPatch.function.description).toContain("heredoc in exec_command is routed to the same handler")
+		expect(applyPatch.function.description).toContain("patch string in the patch argument")
+		expect(applyPatch.function.description).toContain("heredoc in exec_command uses the same handler")
+		expect(applyPatch.function.description).toContain("Control-marker lines must match exactly")
+		expect(applyPatch.function.description).toContain("Prefer workspace-relative file paths")
 	})
 
 	it("keeps the Plan allow-list contract in the exec_command description", () => {

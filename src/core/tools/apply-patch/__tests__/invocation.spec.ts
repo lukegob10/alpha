@@ -20,10 +20,21 @@ describe("Codex-style apply_patch command invocation", () => {
 		`echo ready && apply_patch <<'PATCH'\n${patch}\nPATCH`,
 		`apply_patch <<'PATCH'\n${patch}\nPATCH\necho done`,
 		"apply_patch --version",
+		`printf '%s' '${patch}'`,
 		`apply_patch @'\n${patch}\n'@`,
 	])("leaves other shell commands alone", (command) => {
 		expect(extractApplyPatchCommand(command)).toBeUndefined()
 	})
+
+	it.each([patch, `\n  ${patch}`, patch.replace("*** Begin Patch", "*** Begin Patch ***")])(
+		"rejects implicit patch text rather than running it as a command",
+		(command) => {
+			expect(extractApplyPatchCommand(command)).toMatchObject({
+				kind: "error",
+				message: expect.stringContaining("patch argument"),
+			})
+		},
+	)
 
 	it("returns a tool error for a recognized but unterminated heredoc", () => {
 		expect(extractApplyPatchCommand(`apply_patch <<'PATCH'\n${patch}\nWRONG`)).toEqual({
@@ -39,5 +50,15 @@ describe("Codex-style apply_patch command invocation", () => {
 			input.replace("old.txt", "src/old.txt").replace("new.txt", "src/new.txt"),
 		)
 		expect(rebaseApplyPatchPaths(patch, root, root)).toBe(patch)
+	})
+
+	it("rebases padded operation headers without changing marker-like update context", () => {
+		const root = path.join(path.sep, "workspace")
+		const input =
+			"*** Begin Patch\n*** Add File: added.txt\n+new\n  *** Update File: old.txt\n*** Move to: moved.txt\n@@\n *** Add File: literal.txt\n-old\n+new\n*** End Patch"
+
+		expect(rebaseApplyPatchPaths(input, root, path.join(root, "src"))).toBe(
+			"*** Begin Patch\n*** Add File: src/added.txt\n+new\n*** Update File: src/old.txt\n*** Move to: src/moved.txt\n@@\n *** Add File: literal.txt\n-old\n+new\n*** End Patch",
+		)
 	})
 })

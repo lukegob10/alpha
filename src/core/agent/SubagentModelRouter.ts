@@ -4,6 +4,7 @@ import {
 	type ProviderSettingsWithId,
 	type ReasoningEffortExtended,
 	type SubagentModelRouteState,
+	type TaskReasoningPreference,
 } from "@alpha-code/types"
 import { ProviderProfileUnavailableError } from "../config/ProviderProfileUnavailableError"
 
@@ -22,16 +23,24 @@ export interface ResolveSubagentModelRouteOptions {
 	role: SubagentRole
 	parentApiConfiguration: ProviderSettings
 	parentApiConfigName?: string
+	parentReasoningPreference?: TaskReasoningPreference
 	defaultProfileId?: string
 	profileByRole?: Partial<Record<SubagentRole, string>>
 	profileLoader: SubagentProfileLoader
 	requestedModelId?: string
 	requestedReasoningEffort?: ReasoningEffortExtended
+	defaultModelId?: string
+	defaultReasoningEffort?: ReasoningEffortExtended
+	agentModelId?: string
+	agentReasoningEffort?: ReasoningEffortExtended
+	resolveModelDefaultReasoningEffort?(configuration: ProviderSettings): Promise<ReasoningEffortExtended | undefined>
 }
 
 export interface ResolvedSubagentModelRoute {
 	apiConfiguration: ProviderSettings
 	apiConfigName: string
+	/** Explicit child choice so generic task creation cannot inherit newer parent settings. */
+	reasoningPreference?: TaskReasoningPreference
 	route: SubagentModelRouteState
 }
 
@@ -86,6 +95,7 @@ async function resolveParentRoute(
 	return {
 		apiConfiguration,
 		apiConfigName,
+		reasoningPreference: structuredClone(options.parentReasoningPreference ?? { kind: "default" }),
 		route: {
 			source,
 			resolution: fallback ? "fallback" : "selected",
@@ -135,6 +145,7 @@ async function resolveProfileRoute(options: ResolveSubagentModelRouteOptions): P
 	return {
 		apiConfiguration,
 		apiConfigName: profile.name,
+		reasoningPreference: { kind: "default" },
 		route: {
 			source,
 			resolution: "selected",
@@ -151,10 +162,15 @@ export function applySubagentSpawnOverrides(
 	base: ResolvedSubagentModelRoute,
 	requestedModelId?: string,
 	requestedReasoningEffort?: ReasoningEffortExtended,
+	resetReasoningForSelectedModel = true,
 ): ResolvedSubagentModelRoute {
 	if (!requestedModelId && !requestedReasoningEffort) return base
 
 	const apiConfiguration = snapshotProviderSettings(base.apiConfiguration)
+	if (resetReasoningForSelectedModel && requestedModelId && !requestedReasoningEffort) {
+		apiConfiguration.reasoningEffort = undefined
+		apiConfiguration.enableReasoningEffort = undefined
+	}
 	if (requestedModelId) {
 		switch (apiConfiguration.apiProvider) {
 			case "openai":
@@ -188,6 +204,12 @@ export function applySubagentSpawnOverrides(
 	return {
 		apiConfiguration,
 		apiConfigName: base.apiConfigName,
+		// The routed profile now owns an explicit effort or the selected model's
+		// default. An inherited task override must not supersede that decision.
+		reasoningPreference:
+			requestedReasoningEffort || (resetReasoningForSelectedModel && requestedModelId)
+				? { kind: "default" }
+				: structuredClone(base.reasoningPreference ?? { kind: "default" }),
 		route: {
 			...base.route,
 			source: "spawn",
@@ -202,6 +224,23 @@ export function applySubagentSpawnOverrides(
 export async function resolveSubagentModelRoute(
 	options: ResolveSubagentModelRouteOptions,
 ): Promise<ResolvedSubagentModelRoute> {
-	const base = await resolveProfileRoute(options)
-	return applySubagentSpawnOverrides(base, options.requestedModelId, options.requestedReasoningEffort)
+	const base = await resolveProfileRoute({
+		...options,
+		parentReasoningPreference: structuredClone(options.parentReasoningPreference ?? { kind: "default" }),
+	})
+	const selected = applySubagentSpawnOverrides(
+		base,
+		options.requestedModelId ?? options.defaultModelId,
+		options.requestedReasoningEffort ?? options.defaultReasoningEffort,
+	)
+	if (options.agentModelId && !options.agentReasoningEffort && !selected.apiConfiguration.reasoningEffort) {
+		const effort = await options.resolveModelDefaultReasoningEffort?.(selected.apiConfiguration)
+		if (effort) {
+			selected.apiConfiguration.reasoningEffort = effort
+			selected.apiConfiguration.enableReasoningEffort = effort !== "none"
+		}
+	}
+	// Custom agent settings are applied last. A custom model alone preserves the
+	// effort already resolved from the launch/default/parent settings, as in Codex.
+	return applySubagentSpawnOverrides(selected, options.agentModelId, options.agentReasoningEffort, false)
 }

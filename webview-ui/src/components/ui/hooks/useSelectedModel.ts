@@ -1,6 +1,10 @@
 import type { ProviderSettings, ModelInfo } from "@alpha-code/types"
 import {
 	isProviderName,
+	isCuratedProvider,
+	getModelId,
+	getProviderDefaultModelId,
+	getCuratedModelInfo,
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
 	getVscodeLlmContextWindow,
@@ -16,7 +20,7 @@ import {
 import { stringifyVsCodeLmModelSelector } from "../../../../../src/shared/vsCodeSelectorUtils"
 
 /**
- * Resolve the model metadata used by the webview from the four executable
+ * Resolve the model metadata used by the webview from the executable
  * providers. Provider discovery and model fetching belong to their provider
  * adapters; this hook only projects the current settings into UI metadata.
  */
@@ -25,6 +29,12 @@ export const useSelectedModel = (apiConfiguration?: ProviderSettings) => {
 
 	if (!isProviderName(provider)) {
 		return { provider, id: apiConfiguration?.apiModelId ?? "", info: undefined, isLoading: false, isError: false }
+	}
+
+	if (isCuratedProvider(provider)) {
+		const id = getModelId(apiConfiguration ?? { apiProvider: provider }) ?? getProviderDefaultModelId(provider)
+		const info = getCuratedModelInfo(provider, id)
+		return { provider, id, info, isLoading: false, isError: info === undefined }
 	}
 
 	if (provider === "vertex") {

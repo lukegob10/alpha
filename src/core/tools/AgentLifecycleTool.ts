@@ -80,17 +80,12 @@ export function optionalReason(value: unknown): string | undefined {
 
 export function resolveWaitTimeout(value: unknown): number {
 	if (value === undefined || value === null) return WAIT_AGENT_DEFAULT_TIMEOUT_MS
-	if (
-		typeof value !== "number" ||
-		!Number.isInteger(value) ||
-		value < WAIT_AGENT_MIN_TIMEOUT_MS ||
-		value > WAIT_AGENT_MAX_TIMEOUT_MS
-	) {
+	if (typeof value !== "number" || !Number.isInteger(value) || value > WAIT_AGENT_MAX_TIMEOUT_MS) {
 		throw new Error(
 			`timeout_ms must be an integer from ${WAIT_AGENT_MIN_TIMEOUT_MS} to ${WAIT_AGENT_MAX_TIMEOUT_MS}`,
 		)
 	}
-	return value
+	return Math.max(value, WAIT_AGENT_MIN_TIMEOUT_MS)
 }
 
 export function resolveUntilTerminal(value: unknown): boolean {
@@ -182,6 +177,14 @@ export async function runAgentLifecycleOperation(
 	operation: (provider: AgentLifecycleControlProvider) => Promise<unknown>,
 	beforePush?: (result: unknown) => Promise<void> | void,
 ): Promise<void> {
+	const cancelled = () => {
+		callbacks.setResultMetadata?.({ status: "cancelled" })
+		callbacks.pushToolResult(JSON.stringify({ status: "cancelled", tool: name }))
+	}
+	if (callbacks.signal?.aborted) {
+		cancelled()
+		return
+	}
 	const provider = task.providerRef.deref() as (Partial<AgentLifecycleControlProvider> & object) | undefined
 	if (typeof provider?.[method] !== "function") {
 		const error = new Error(`agent lifecycle capability ${method} is unavailable`)
@@ -191,6 +194,11 @@ export async function runAgentLifecycleOperation(
 	}
 
 	await publishLifecyclePresentation(name, task, "running", true)
+	if (callbacks.signal?.aborted) {
+		cancelled()
+		await publishLifecyclePresentation(name, task, "completed", false, { cancelled: true })
+		return
+	}
 	try {
 		const result = await operation(provider as AgentLifecycleControlProvider)
 		const serialized = JSON.stringify(result)

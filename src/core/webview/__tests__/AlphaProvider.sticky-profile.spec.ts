@@ -1,6 +1,7 @@
 // npx vitest run core/webview/__tests__/AlphaProvider.sticky-profile.spec.ts
 
 import * as vscode from "vscode"
+import fs from "fs/promises"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { AlphaProvider } from "../AlphaProvider"
 import { webviewMessageHandler } from "../webviewMessageHandler"
@@ -28,6 +29,7 @@ vi.mock("vscode", () => ({
 		showInformationMessage: vi.fn(),
 		showWarningMessage: vi.fn(),
 		showErrorMessage: vi.fn(),
+		showOpenDialog: vi.fn(),
 		onDidChangeActiveTextEditor: vi.fn(() => ({ dispose: vi.fn() })),
 	},
 	workspace: {
@@ -168,7 +170,7 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => {
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
-	return {
+	const mocked = {
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -214,6 +216,7 @@ vi.mock("fs/promises", () => {
 		access: vi.fn().mockResolvedValue(undefined),
 		rm: vi.fn().mockResolvedValue(undefined),
 	}
+	return { ...mocked, default: mocked }
 })
 
 vi.mock("proper-lockfile", () => ({
@@ -443,6 +446,85 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			patchHistory = (oldName, newName) => patchStoredNames(provider, oldName, newName)
 			vi.spyOn(provider.taskHistoryStore, "renameProviderProfile").mockImplementation(patchHistory)
 		})
+
+		it.each(["activate", "save"] as const)(
+			"finishes settings import projections before a queued profile %s",
+			async (mutation) => {
+				const filePath = "/test/import-settings.json"
+				vi.mocked(vscode.window.showOpenDialog).mockResolvedValue([{ fsPath: filePath } as vscode.Uri])
+				const readFile = vi.mocked(fs.readFile)
+				const fallbackRead = readFile.getMockImplementation()!
+				readFile.mockImplementation(async (file, options) =>
+					file === filePath
+						? JSON.stringify({
+								providerProfiles: {
+									currentApiConfigName: "saved",
+									apiConfigs: {
+										saved: {
+											id: "saved-id",
+											apiProvider: "openai",
+											openAiModelId: "imported-model",
+										},
+									},
+								},
+							})
+						: fallbackRead(file, options),
+				)
+				let release!: () => void
+				let enter!: () => void
+				const held = new Promise<void>((resolve) => (release = resolve))
+				const started = new Promise<void>((resolve) => (enter = resolve))
+				const setSettings = provider.contextProxy.setProviderSettings.bind(provider.contextProxy)
+				vi.spyOn(provider.contextProxy, "setProviderSettings").mockImplementationOnce(async (...args) => {
+					enter()
+					await held
+					await setSettings(...args)
+				})
+				const importing = webviewMessageHandler(provider, { type: "importSettings" })
+				await Promise.race([
+					started,
+					importing.then(() => {
+						throw new Error("Settings import did not reach its provider projection")
+					}),
+				])
+				const activate = vi.spyOn(provider.providerSettingsManager, "activateProfile")
+				const save = vi.spyOn(provider.providerSettingsManager, "saveConfig")
+				const changing =
+					mutation === "activate"
+						? provider.activateProviderProfile({ id: "other-id" })
+						: provider.upsertProviderProfile(
+								{ id: "saved-id" },
+								{ apiProvider: "openai", openAiModelId: "edited-model" },
+							)
+				let activationsWhileHeld: number
+				let savesWhileHeld: number
+				try {
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					activationsWhileHeld = activate.mock.calls.length
+					savesWhileHeld = save.mock.calls.length
+				} finally {
+					release()
+				}
+				await Promise.all([importing, changing])
+				readFile.mockImplementation(fallbackRead)
+				expect(activationsWhileHeld).toBe(0)
+				expect(savesWhileHeld).toBe(0)
+				expect(provider.contextProxy.getValue("currentApiConfigName")).toBe(
+					mutation === "activate" ? "other" : "saved",
+				)
+				expect(provider.contextProxy.getValue("apiProvider")).toBe(
+					mutation === "activate" ? "vscode-lm" : "openai",
+				)
+				if (mutation === "save") {
+					expect(provider.contextProxy.getValue("openAiModelId")).toBe("edited-model")
+					await expect(
+						provider.providerSettingsManager.getProfile({ id: "saved-id" }),
+					).resolves.toMatchObject({
+						openAiModelId: "edited-model",
+					})
+				}
+			},
+		)
 
 		it("renames foreground, background and saved task identity without changing handlers, settings, secrets or child routes", async () => {
 			const foreground = taskFixture("foreground")

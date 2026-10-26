@@ -1,4 +1,12 @@
-import { type OrganizationAllowList, type ProviderSettings, openAiModelInfoSaneDefaults } from "@alpha-code/types"
+import {
+	type OrganizationAllowList,
+	type ProviderSettings,
+	openAiModelInfoSaneDefaults,
+	curatedProviders,
+	curatedProviderApiKeyFields,
+	getProviderDefaultModelId,
+	getCuratedModelInfo,
+} from "@alpha-code/types"
 
 vi.mock("i18next", () => ({
 	default: {
@@ -158,11 +166,94 @@ describe("provider configuration validation", () => {
 
 	it("reports an explicit unsupported-provider error without rewriting the saved ID", () => {
 		const configuration = {
-			apiProvider: "openrouter",
+			apiProvider: "bedrock",
 			openRouterModelId: "legacy-model",
 		} as unknown as ProviderSettings
 		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBe(
 			"settings:providers.retiredProviderMessage",
 		)
+	})
+
+	it.each(curatedProviders)("requires the %s key and accepts its curated default model", (provider) => {
+		const keyField = curatedProviderApiKeyFields[provider]
+		const configuration: ProviderSettings = { apiProvider: provider, [keyField]: "test-key" }
+		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBeUndefined()
+		expect(validateApiConfiguration({ ...configuration, [keyField]: "  " })).toBe("settings:validation.apiKey")
+		expect(validateApiConfiguration({ apiProvider: provider, openAiApiKey: "other-provider-key" })).toBe(
+			"settings:validation.apiKey",
+		)
+	})
+
+	it.each(curatedProviders)("rejects an unavailable %s model without changing the saved ID", (provider) => {
+		const configuration: ProviderSettings = {
+			apiProvider: provider,
+			[curatedProviderApiKeyFields[provider]]: "test-key",
+			apiModelId: "unavailable-model",
+		}
+		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBe(
+			"settings:validation.modelAvailability",
+		)
+		expect(getModelValidationError(configuration)).toBe("settings:validation.modelAvailability")
+		expect(validateApiConfigurationExcludingModelErrors(configuration)).toBeUndefined()
+		expect(configuration.apiModelId).toBe("unavailable-model")
+	})
+
+	it("validates the legacy OpenRouter model identity instead of substituting the default", () => {
+		const configuration: ProviderSettings = {
+			apiProvider: "openrouter",
+			openRouterApiKey: "test-key",
+			openRouterModelId: getProviderDefaultModelId("openrouter"),
+		}
+		expect(validateApiConfiguration(configuration)).toBeUndefined()
+		expect(validateApiConfiguration({ ...configuration, openRouterModelId: "old-router-model" })).toBe(
+			"settings:validation.modelAvailability",
+		)
+	})
+
+	it("rejects unsupported saved endpoint settings without exposing their values", () => {
+		expect(
+			validateApiConfiguration({
+				apiProvider: "openai-native",
+				openAiNativeApiKey: "test-key",
+				openAiNativeBaseUrl: "https://private-proxy.example/v1",
+			}),
+		).toBe("settings:validation.unsupportedProviderSettings")
+	})
+
+	it.each([
+		["openai-native", 8, "settings:validation.responsesOutputTokenLimit"],
+		["openai-native", 16, undefined],
+		["xai", 8, undefined],
+	] as const)("validates the %s output cap %s against its exact protocol", (provider, modelMaxTokens, expected) => {
+		const configuration: ProviderSettings = {
+			apiProvider: provider,
+			[curatedProviderApiKeyFields[provider]]: "test-key",
+			includeMaxTokens: true,
+			modelMaxTokens,
+		}
+		expect(validateApiConfiguration(configuration)).toBe(expected)
+		expect(validateApiConfigurationExcludingModelErrors(configuration)).toBe(expected)
+	})
+
+	it.each(curatedProviders)("validates only emitted %s caps and checks its catalog maximum", (provider) => {
+		const model = getCuratedModelInfo(provider, getProviderDefaultModelId(provider))
+		if (typeof model?.maxTokens !== "number") throw new Error("Curated test model must declare an output limit")
+		const configuration: ProviderSettings = {
+			apiProvider: provider,
+			[curatedProviderApiKeyFields[provider]]: "test-key",
+			includeMaxTokens: true,
+		}
+		for (const modelMaxTokens of [0, 1.5, -2]) {
+			expect(validateApiConfiguration({ ...configuration, modelMaxTokens })).toBe(
+				"settings:validation.outputTokenLimit",
+			)
+		}
+		expect(validateApiConfiguration({ ...configuration, modelMaxTokens: -1 })).toBeUndefined()
+		expect(validateApiConfiguration({ ...configuration, modelMaxTokens: model.maxTokens + 1 })).toBe(
+			"settings:validation.modelOutputTokenLimit",
+		)
+		expect(
+			validateApiConfiguration({ ...configuration, includeMaxTokens: false, modelMaxTokens: 0 }),
+		).toBeUndefined()
 	})
 })

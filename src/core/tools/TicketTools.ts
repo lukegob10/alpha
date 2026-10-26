@@ -14,6 +14,7 @@ import {
 import type { ToolExecutionContext } from "./ToolRegistry"
 import { TicketStore } from "../../services/tickets/TicketStore"
 import type { TrustedToolProgressObservation } from "./BaseTool"
+import { reserveTicketMutationReceipt, serializeTicketFailure, serializeTicketResult } from "./serializeTicketResult"
 
 const fingerprint = (value: unknown) =>
 	createHash("sha256")
@@ -41,6 +42,11 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	if (call.partial) return
 	signal ??= callbacks.signal
 	const inspection = call.name === "list_tickets" ? "list" : call.name === "read_ticket" ? "read" : undefined
+	const fail = (status: "error" | "denied" | "cancelled", message: string) => {
+		const response = serializeTicketFailure(status, message, callbacks.getRemainingOutputChars?.())
+		callbacks.setResultMetadata?.({ status, ...(response.truncated ? { truncated: true } : {}) })
+		callbacks.pushToolResult(response.content)
+	}
 	const publish = async (activity: TicketActivity) => {
 		// Presentation failure cannot change a completed operation into a retryable failure.
 		try {
@@ -52,12 +58,15 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	try {
 		signal?.throwIfAborted()
 		if (task.abort) throw new Error("Ticket operation cancelled")
-		const store = await TicketStore.forWorkspace(task.cwd, undefined, signal)
+		// A private checkout changes file execution paths, not the inherited Tickets project.
+		const ticketWorkspace = task.taskKind === "subagent" ? task.historyWorkspacePath : task.cwd
+		const store = await TicketStore.forWorkspace(ticketWorkspace, undefined, signal)
 		const approveMutation = async (
 			operation: "create" | "update" | "delete",
 			name: string,
 			reference?: string,
 		): Promise<boolean> => {
+			reserveTicketMutationReceipt(callbacks.getRemainingOutputChars?.())
 			const approved = await callbacks.askApproval(
 				"tool",
 				JSON.stringify({
@@ -73,11 +82,13 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 			signal?.throwIfAborted()
 			if (task.abort) throw new Error("Ticket operation cancelled")
 			if (!approved) {
-				callbacks.setResultMetadata?.({ status: "denied" })
-				callbacks.pushToolResult(JSON.stringify({ status: "denied", message: "Ticket change declined" }))
+				fail("denied", "Ticket change declined")
 				return false
 			}
 			if (!task.canMutateWorkspace()) throw new Error("Ticket operation cancelled")
+			// Approval feedback consumes the same scheduler budget as the final result.
+			// Reserve only after it settles, before the store can commit any mutation.
+			reserveTicketMutationReceipt(callbacks.getRemainingOutputChars?.())
 			return true
 		}
 		signal?.throwIfAborted()
@@ -184,14 +195,16 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 						stateFingerprint: call.name === "delete_ticket" ? fingerprint(null) : ticketState(result),
 						...(previousStateFingerprint !== undefined ? { previousStateFingerprint } : {}),
 					}
-		callbacks.setResultMetadata?.({ status: "success", trustedProgress })
-		callbacks.pushToolResult(JSON.stringify({ status: "success", result }))
+		const response = serializeTicketResult(result, callbacks.getRemainingOutputChars?.())
+		callbacks.setResultMetadata?.({
+			status: "success",
+			trustedProgress,
+			...(response.truncated ? { truncated: true } : {}),
+		})
+		callbacks.pushToolResult(response.content)
 	} catch (error) {
 		const status = signal?.aborted || task.abort ? "cancelled" : "error"
 		if (inspection) await publish({ operation: inspection, state: status })
-		callbacks.setResultMetadata?.({ status })
-		callbacks.pushToolResult(
-			JSON.stringify({ status, message: error instanceof Error ? error.message : "Ticket operation failed" }),
-		)
+		fail(status, error instanceof Error ? error.message : "Ticket operation failed")
 	}
 }

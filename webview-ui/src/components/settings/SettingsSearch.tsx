@@ -1,8 +1,8 @@
-import { useRef, useEffect, useState, useCallback } from "react"
+import { useRef, useEffect, useState, useCallback, useId } from "react"
 import type { LucideIcon } from "lucide-react"
 
-import { useSettingsSearch, SearchResult, SearchableSettingData } from "./useSettingsSearch"
-import { SectionName } from "./SettingsView"
+import { useSettingsSearch, type SearchResult, type SearchableSettingData } from "./useSettingsSearch"
+import type { SectionName } from "./SettingsView"
 import { SettingsSearchInput } from "./SettingsSearchInput"
 import { SettingsSearchResults } from "./SettingsSearchResults"
 
@@ -14,8 +14,10 @@ interface SettingsSearchProps {
 
 export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchProps) {
 	const inputRef = useRef<HTMLInputElement>(null)
+	const resultsId = useId()
 	const { searchQuery, setSearchQuery, results, isOpen, setIsOpen, clearSearch } = useSettingsSearch({ index })
 	const [highlightedResultId, setHighlightedResultId] = useState<string | undefined>(undefined)
+	const isPopupOpen = isOpen && searchQuery.trim().length > 0
 
 	// Handle selection of a search result
 	const handleSelectResult = useCallback(
@@ -23,9 +25,9 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 			onNavigate(result.section, result.settingId)
 			clearSearch()
 			setHighlightedResultId(undefined)
-			// Keep focus in the input so dropdown remains open for follow-up search
+			// Keep focus in the input for follow-up searches.
 			setIsOpen(true)
-			requestAnimationFrame(() => inputRef.current?.focus())
+			inputRef.current?.focus()
 		},
 		[onNavigate, clearSearch, setIsOpen],
 	)
@@ -35,19 +37,24 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 		(direction: 1 | -1) => {
 			if (!results.length) return
 			const flatIds = results.map((r) => r.settingId)
-			const currentIndex = highlightedResultId ? flatIds.indexOf(highlightedResultId) : -1
+			const currentIndex = isOpen && highlightedResultId ? flatIds.indexOf(highlightedResultId) : -1
+			setIsOpen(true)
+			if (currentIndex < 0) {
+				setHighlightedResultId(direction === 1 ? flatIds[0] : flatIds[flatIds.length - 1])
+				return
+			}
 			const nextIndex = (currentIndex + direction + flatIds.length) % flatIds.length
 			setHighlightedResultId(flatIds[nextIndex])
 		},
-		[highlightedResultId, results],
+		[highlightedResultId, isOpen, results, setIsOpen],
 	)
 
 	const handleSearchKeyDown = useCallback(
 		(event: React.KeyboardEvent<HTMLInputElement>) => {
 			if (event.key === "Escape") {
+				event.preventDefault()
 				setIsOpen(false)
 				setHighlightedResultId(undefined)
-				inputRef.current?.blur()
 				return
 			}
 
@@ -65,7 +72,7 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 				return
 			}
 
-			if (event.key === "Enter" && highlightedResultId) {
+			if (event.key === "Enter" && isOpen && highlightedResultId) {
 				event.preventDefault()
 				const selected = results.find((r) => r.settingId === highlightedResultId)
 				if (selected) {
@@ -74,7 +81,7 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 				return
 			}
 		},
-		[handleSelectResult, highlightedResultId, moveHighlight, results, setIsOpen],
+		[handleSelectResult, highlightedResultId, isOpen, moveHighlight, results, setIsOpen],
 	)
 
 	// Reset highlight based on focus and available results
@@ -98,18 +105,31 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 	}, [highlightedResultId, isOpen])
 
 	return (
-		<div className="relative justify-end">
+		<div
+			className="relative justify-end"
+			onBlur={(event) => {
+				if (!event.currentTarget.contains(event.relatedTarget)) {
+					setIsOpen(false)
+					setHighlightedResultId(undefined)
+				}
+			}}>
 			<SettingsSearchInput
 				value={searchQuery}
-				onChange={setSearchQuery}
+				onChange={(value) => {
+					setSearchQuery(value)
+					setIsOpen(true)
+				}}
 				onFocus={() => setIsOpen(true)}
-				onBlur={() => setTimeout(() => setIsOpen(false), 200)}
 				onKeyDown={handleSearchKeyDown}
 				inputRef={inputRef}
+				isOpen={isPopupOpen}
+				resultsId={resultsId}
+				activeResultId={highlightedResultId ? `settings-search-result-${highlightedResultId}` : undefined}
 			/>
-			{searchQuery && isOpen && (
+			{isPopupOpen && (
 				<div className="absolute top-full left-0 w-full mt-2 border border-vscode-dropdown-border bg-vscode-dropdown-background rounded-2xl overflow-hidden shadow-xl z-50">
 					<SettingsSearchResults
+						id={resultsId}
 						results={results}
 						query={searchQuery}
 						onSelectResult={handleSelectResult}

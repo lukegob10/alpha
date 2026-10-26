@@ -1,7 +1,15 @@
 import { access, mkdir, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { lanes, selectLane } from "./catalog.mjs"
-import { columns, evidenceInventory, layerGaps, layers, surfaces } from "./inventory.mjs"
+import {
+	columns,
+	evidenceInventory,
+	hostDriverInventory,
+	hostTestInventory,
+	layerGaps,
+	layers,
+	surfaces,
+} from "./inventory.mjs"
 import { executionState, readExecutionJson, testEvidenceVerdict } from "./execution-evidence.mjs"
 import { comparableSource } from "./source.mjs"
 import { hostSuiteVerdict, outcomeCampaignVerdict } from "./host-evidence.mjs"
@@ -49,6 +57,7 @@ export function admitHarnessReport(
 		return invalid("missing_required_steps")
 	if (report.status !== "passed")
 		return invalid(report.status === "cancelled" ? "cancelled_execution" : "failed_execution", "executed-fail")
+	if (report.cleanupUnverified === true) return invalid("unverified_host_cleanup", "executed-fail")
 	for (const [index, step] of report.steps.entries()) {
 		if (!step || typeof step !== "object") return invalid("invalid_step")
 		const stepStarted = Date.parse(step.startedAt)
@@ -72,6 +81,7 @@ export function admitHarnessReport(
 		)
 			return invalid("missing_or_invalid_step_evidence")
 		const descriptor = lane.receipts?.[index] ?? (report.lane === "focused" ? { runner: "vitest" } : null)
+		if (step.evidence.cleanupVerified === false) return invalid("unverified_host_cleanup", "executed-fail")
 		if (descriptor && ["node", "vitest"].includes(descriptor.runner)) {
 			if (!step.evidence.receipt) return invalid("test_execution_receipt_unavailable")
 			const verdict = testEvidenceVerdict(step.evidence.receipt, strict || descriptor.requireAllTests)
@@ -386,6 +396,12 @@ export async function buildEvidenceMatrix({
 		toolchain: { node, pnpm, referenceHost: "1.138.0" },
 		interpretation:
 			"Inventory is distinct from execution. Cells retain missing, skipped and unavailable scope; machinery tests do not establish live quality or production evidence.",
+		hostCoverage: {
+			interpretation:
+				"Declared cadence and ownership only. Optional, scheduled and live definitions are not passing execution evidence.",
+			tests: hostTestInventory,
+			drivers: hostDriverInventory,
+		},
 		columns,
 		cells,
 		evidence,

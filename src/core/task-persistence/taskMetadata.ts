@@ -15,6 +15,7 @@ import type {
 	SubagentRole,
 	SubagentStopReason,
 	ApprovalMode,
+	TaskMemoryState,
 } from "@alpha-code/types"
 
 import { combineApiRequests } from "../../shared/combineApiRequests"
@@ -49,6 +50,7 @@ export type TaskMetadataOptions = {
 	reasoningPreference?: TaskReasoningPreference
 	reasoningState?: TaskReasoningState
 	approvalMode?: ApprovalMode
+	memory?: TaskMemoryState
 	workContext?: TaskWorkContext
 	designHandoff?: TaskDesignHandoff
 	/** Initial status for the task (e.g., "active" for child tasks) */
@@ -97,6 +99,7 @@ export async function taskMetadata({
 	reasoningPreference,
 	reasoningState,
 	approvalMode,
+	memory,
 	workContext,
 	designHandoff,
 	initialStatus,
@@ -198,6 +201,7 @@ export async function taskMetadata({
 		...(reasoningPreference && { reasoningPreference: structuredClone(reasoningPreference) }),
 		...(reasoningState && { reasoningState: structuredClone(reasoningState) }),
 		...(approvalMode && { approvalMode }),
+		...(memory && { memory: { ...memory } }),
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),
 		...(taskKind && { taskKind }),

@@ -1,3 +1,5 @@
+import path from "node:path"
+
 import type { HarnessClock, HarnessProcessRunner } from "../orchestration/index"
 import { ExecaHarnessProcessRunner, systemClock } from "../orchestration/index"
 
@@ -9,14 +11,17 @@ import {
 } from "../benchmark/index"
 import { persistGraderResults, type Task } from "../db/index"
 import { EVALS_REPO_PATH, type ExerciseLanguage, getTaskWorkspacePath } from "../exercises/index"
-import { canonicalJson, sha256 } from "../evidence/index"
+import { canonicalJson, FilesystemArtifactStore, sha256 } from "../evidence/index"
 import {
 	createDefaultGraderRegistry,
+	evidenceFromText,
 	resolveTaskGraderSpecs,
+	taskGradingTimeoutMs,
 	type EvalTraceEvent,
 	type GraderEvidence,
 	type GraderResult,
 	type GraderRunResult,
+	type CommandGraderSpec,
 } from "../grading/index"
 
 import type { Logger } from "./utils"
@@ -51,6 +56,7 @@ export type RunUnitTestOptions = {
 	) => Promise<GraderEvidence>
 	persist?: (attemptId: number, results: GraderResult[]) => Promise<unknown>
 	brokerRoot?: string | false
+	preparedVisibleCommands?: CommandGraderSpec["commands"]
 }
 
 export async function runUnitTest({
@@ -67,6 +73,7 @@ export async function runUnitTest({
 	evidenceSink,
 	persist = persistGraderResults,
 	brokerRoot = process.env.EVALS_GRADER_BROKER_ROOT || false,
+	preparedVisibleCommands,
 }: RunUnitTestOptions): Promise<GraderRunResult> {
 	const manifest = await resolveTaskManifest(task)
 	if (brokerRoot && manifest.graders.some(({ bundleId }) => bundleId)) {
@@ -81,32 +88,68 @@ export async function runUnitTest({
 				usage,
 				environment: environment ?? {},
 			},
-			120_000,
+			taskGradingTimeoutMs(manifest),
 		)
+		if (evidenceSink) {
+			const store = new FilesystemArtifactStore(path.resolve(brokerRoot, "..", "artifacts"))
+			for (const result of response.run.results) {
+				for (const evidence of result.evidence) {
+					if (evidence.kind !== "stdout" && evidence.kind !== "stderr" && evidence.kind !== "report") continue
+					const descriptor = response.artifacts.find((artifact) => artifact.digest === evidence.digest)
+					if (!descriptor && evidence.kind === "report") continue
+					if (!descriptor) throw new Error("Trusted grader evidence bytes are unavailable")
+					const bytes = await store.get(descriptor)
+					if (!bytes || bytes.length !== descriptor.sizeBytes || sha256(bytes) !== descriptor.digest)
+						throw new Error("Trusted grader evidence content identity mismatch")
+					await evidenceSink(evidence.id, evidence.kind, new TextDecoder().decode(bytes), evidence.mediaType)
+				}
+			}
+		}
 		await persist(attemptId, response.run.results)
 		return response.run
 	}
 	const privateBundle = await loadPrivateGraderBundle(manifest)
-	const specs = resolveTaskGraderSpecs({
-		task: manifest,
-		visibleCommands: visibleCommands[task.language],
-		privateGraders: privateBundle?.manifest.graders,
-	})
+	try {
+		const specs = resolveTaskGraderSpecs({
+			task: manifest,
+			visibleCommands: preparedVisibleCommands ?? visibleCommands[task.language],
+			privateGraders: privateBundle?.manifest.graders,
+		})
 
-	logger.info(`running ${specs.length} manifest grader(s) for ${manifest.id}@${manifest.version}`)
-	const result = await createDefaultGraderRegistry().execute(specs, {
-		workspaceRoot,
-		hiddenRoot: privateBundle?.root,
-		changedPaths,
-		trace,
-		usage,
-		environment,
-		processRunner,
-		clock,
-		evidenceSink,
-	})
-	await persist(attemptId, result.results)
-	return result
+		logger.info(`running ${specs.length} manifest grader(s) for ${manifest.id}@${manifest.version}`)
+		const result = await createDefaultGraderRegistry().execute(specs, {
+			workspaceRoot,
+			hiddenRoot: privateBundle?.root,
+			changedPaths,
+			trace,
+			usage,
+			environment,
+			processRunner,
+			clock,
+			evidenceSink,
+		})
+		if (privateBundle) {
+			const id = `${manifest.id}:executed-private-bundle`
+			const identity = {
+				schemaVersion: 1,
+				bundleId: privateBundle.manifest.id,
+				version: privateBundle.manifest.version,
+				contentDigest: privateBundle.contentDigest,
+				execution: "verified-private-snapshot",
+			}
+			const value = JSON.stringify(identity)
+			const evidence = evidenceSink
+				? await evidenceSink(id, "report", value, "application/json")
+				: evidenceFromText(id, "report", value, "application/json")
+			for (const [index, spec] of specs.entries())
+				if (spec.type === "command" && spec.cwd === "hidden")
+					result.results[index]!.evidence.push({ ...evidence, metadata: identity })
+		}
+		await persist(attemptId, result.results)
+		return result
+	} finally {
+		await privateBundle?.dispose?.()
+	}
 }
 
 async function resolveTaskManifest(task: Task): Promise<BenchmarkTaskManifest> {

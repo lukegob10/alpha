@@ -46,6 +46,13 @@ class MockApiHandler extends BaseProvider {
 	}
 }
 
+// One token per character makes oversized input deterministic without tokenizer work.
+class ContextBudgetFixtureHandler extends MockApiHandler {
+	override async countTokens(content: Anthropic.Messages.ContentBlockParam[]): Promise<number> {
+		return content.reduce((tokens, block) => tokens + (block.type === "text" ? block.text.length : 0), 0)
+	}
+}
+
 // Create a singleton instance for tests
 const mockApiHandler = new MockApiHandler()
 const taskId = "test-task-id"
@@ -267,6 +274,7 @@ describe("Context Management", () => {
 	 * Tests for the manageContext function
 	 */
 	describe("manageContext", () => {
+		const mockApiHandler = new ContextBudgetFixtureHandler()
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
 			supportsPromptCache: true,
@@ -276,7 +284,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message. ".repeat(200) },
+			{ role: "user", content: "Third message. ".repeat(20_000) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -622,7 +630,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 15002,
+					maxContextTokens: 15009,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -805,7 +813,7 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called with the right parameters
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
-					maxContextTokens: 12502,
+					maxContextTokens: 12509,
 					messages: messagesWithSmallContent,
 					apiHandler: mockApiHandler,
 					systemPrompt: "System prompt",
@@ -1310,6 +1318,7 @@ describe("Context Management", () => {
 	 * Tests for the getMaxTokens function (private but tested through manageContext)
 	 */
 	describe("getMaxTokens", () => {
+		const mockApiHandler = new ContextBudgetFixtureHandler()
 		// We'll test this indirectly through manageContext
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
@@ -1321,7 +1330,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message. ".repeat(200) },
+			{ role: "user", content: "Third message. ".repeat(20_000) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -1660,6 +1669,7 @@ describe("Context Management", () => {
 	 * Tests for newContextTokensAfterTruncation including system prompt
 	 */
 	describe("newContextTokensAfterTruncation", () => {
+		const mockApiHandler = new ContextBudgetFixtureHandler()
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
 			supportsPromptCache: true,
@@ -1673,7 +1683,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message. ".repeat(200) },
+				{ role: "user", content: "Third message. ".repeat(20_000) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]
@@ -1715,7 +1725,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message. ".repeat(200) },
+				{ role: "user", content: "Third message. ".repeat(20_000) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]

@@ -1,0 +1,275 @@
+schemaVersion: 1
+id: smoke-v2
+version: 1
+status: calibrating
+primaryModel: luna-high
+referenceModel: sol-high
+tasks:
+  - id: smoke-v2-plumbing
+    version: 1
+    partition: smoke
+    admission: calibrating
+    fixture: javascript/plumbing-normalize
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:original-synthetic-candidate
+      commit: candidate-v1-20261023
+      snapshotDigest: sha256:5bac61ad88b66727ea4707b89e798e8778763ee5f8be0e6fc3e3e99ccc5fcea2
+    family: smoke
+    capabilities:
+      - normalization
+      - validation
+    risk: medium
+    difficulty: foundation
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 1
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements:
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:0ca007c75a378c1f6710be588c247ed477cac7335eba83bdf83799e554a92b0f
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 30
+      toolCalls: 80
+      costUsd: 0.15
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    fixtureDigest: sha256:5bac61ad88b66727ea4707b89e798e8778763ee5f8be0e6fc3e3e99ccc5fcea2
+    promptDigest: sha256:984da8bbdbc32fee1397cb64929b5fb90de10fba2e6c35d3334a21e6e1a0e7eb
+  - id: smoke-v2-config
+    version: 1
+    partition: smoke
+    admission: calibrating
+    fixture: javascript/config-overrides
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:original-synthetic-candidate
+      commit: candidate-v1-20261023
+      snapshotDigest: sha256:247b4f32b685d304f0e10493d096ea70dd498d8f7f0c32123693b9549ef4ca47
+    family: smoke
+    capabilities:
+      - configuration-precedence
+      - validation
+    risk: medium
+    difficulty: foundation
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 1
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements:
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:0ca007c75a378c1f6710be588c247ed477cac7335eba83bdf83799e554a92b0f
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 30
+      toolCalls: 80
+      costUsd: 0.15
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    fixtureDigest: sha256:247b4f32b685d304f0e10493d096ea70dd498d8f7f0c32123693b9549ef4ca47
+    promptDigest: sha256:79e403251c2dbc6f35490c296bc22390f228e62130827e5593c792642f7c367e
+  - id: smoke-v2-receipts
+    version: 1
+    partition: smoke
+    admission: calibrating
+    fixture: javascript/command-receipts
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:original-synthetic-candidate
+      commit: candidate-v1-20261023
+      snapshotDigest: sha256:6d468013ebd18470142ca486c55244854b82ead7883e74736bc7a9acf78c7edf
+    family: smoke
+    capabilities:
+      - receipt-classification
+      - validation
+    risk: medium
+    difficulty: foundation
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 1
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements:
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:0ca007c75a378c1f6710be588c247ed477cac7335eba83bdf83799e554a92b0f
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 30
+      toolCalls: 80
+      costUsd: 0.15
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    fixtureDigest: sha256:6d468013ebd18470142ca486c55244854b82ead7883e74736bc7a9acf78c7edf
+    promptDigest: sha256:815e37a4220290ecb1f5f80ace04c5ad0192f84a6f82fc48136050045b924780
+  - id: smoke-v2-invoice
+    version: 1
+    partition: smoke
+    admission: calibrating
+    fixture: javascript/invoice-integration
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:original-synthetic-candidate
+      commit: candidate-v1-20261023
+      snapshotDigest: sha256:04cc555ae3e31cc796ba2cfe6d8950fa5f1d88dfa41b7ee8997ab0410effc4b0
+    family: smoke
+    capabilities:
+      - multi-module-integration
+      - validation
+    risk: medium
+    difficulty: foundation
+    contextBand: compact
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 2
+      allowedRoots:
+        - src
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/behavior.test.js
+      network: disabled
+    evidenceRequirements:
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:0ca007c75a378c1f6710be588c247ed477cac7335eba83bdf83799e554a92b0f
+    environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 30
+      toolCalls: 80
+      costUsd: 0.15
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    fixtureDigest: sha256:04cc555ae3e31cc796ba2cfe6d8950fa5f1d88dfa41b7ee8997ab0410effc4b0
+    promptDigest: sha256:9ddeb6df1709860d2cb825e3fdf6f3957826c7bd9e871f97ef9d5281b94d5dc7

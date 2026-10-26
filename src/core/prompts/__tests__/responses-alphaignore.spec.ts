@@ -13,12 +13,12 @@ describe("formatResponse.noToolsUsed", () => {
 	})
 })
 import { AlphaIgnoreController, LOCK_TEXT_SYMBOL } from "../../ignore/AlphaIgnoreController"
-import { fileExistsAtPath } from "../../../utils/fs"
+import { Stats } from "fs"
 import * as fs from "fs/promises"
+import path from "path"
 import { toPosix } from "./utils"
 
 // Mock dependencies
-vi.mock("../../../utils/fs")
 vi.mock("fs/promises")
 vi.mock("vscode", () => {
 	const mockDisposable = { dispose: vi.fn() }
@@ -37,7 +37,7 @@ vi.mock("vscode", () => {
 
 describe("RooIgnore Response Formatting", () => {
 	const TEST_CWD = "/test/path"
-	let mockFileExists: Mock<typeof fileExistsAtPath>
+	let mockLstat: Mock<typeof fs.lstat>
 	let mockReadFile: Mock<typeof fs.readFile>
 
 	beforeEach(() => {
@@ -45,11 +45,11 @@ describe("RooIgnore Response Formatting", () => {
 		vi.clearAllMocks()
 
 		// Setup fs mocks
-		mockFileExists = fileExistsAtPath as Mock<typeof fileExistsAtPath>
+		mockLstat = fs.lstat as Mock<typeof fs.lstat>
 		mockReadFile = fs.readFile as Mock<typeof fs.readFile>
 
 		// Default mock implementations
-		mockFileExists.mockResolvedValue(true)
+		mockLstat.mockResolvedValue(Object.create(Stats.prototype) as Stats)
 		mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**\n*.log")
 	})
 
@@ -226,6 +226,7 @@ describe("RooIgnore Response Formatting", () => {
 			// Create controller
 			const controller = new AlphaIgnoreController(TEST_CWD)
 			await controller.initialize()
+			expect(mockLstat).toHaveBeenCalledWith(path.join(TEST_CWD, ".alphaignore"))
 
 			// Get instructions
 			const instructions = controller.getInstructions()
@@ -248,11 +249,13 @@ describe("RooIgnore Response Formatting", () => {
 		 */
 		it("should return undefined when no .alphaignore exists", async () => {
 			// Set up no .alphaignore
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 
 			// Create controller without .alphaignore
 			const controller = new AlphaIgnoreController(TEST_CWD)
 			await controller.initialize()
+			expect(mockLstat).toHaveBeenCalledWith(path.join(TEST_CWD, ".alphaignore"))
+			expect(mockReadFile).not.toHaveBeenCalled()
 
 			// Should return undefined
 			expect(controller.getInstructions()).toBeUndefined()

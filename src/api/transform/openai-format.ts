@@ -8,6 +8,8 @@ import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
  * Options for converting Anthropic messages to OpenAI format.
  */
 export interface ConvertToOpenAiMessagesOptions {
+	/** Router reasoning blocks are opaque transactions and must retain their original IDs. */
+	preserveReasoningDetails?: boolean
 	/**
 	 * Optional function to normalize tool call IDs for providers with strict ID requirements.
 	 * When provided, this function will be applied to all tool_use IDs and tool_result tool_use_ids.
@@ -69,6 +71,8 @@ export function convertToOpenAiMessages(
 		if (!Array.isArray(details)) {
 			return undefined
 		}
+
+		if (options?.preserveReasoningDetails) return details
 
 		return details.map((detail: any) => {
 			// Strip `id` from openai-responses-v1 blocks because OpenAI's Responses API

@@ -34,12 +34,11 @@ export class IncidentPanel implements vscode.Disposable {
 	}
 
 	async open(): Promise<void> {
-		if (!this.provider.isIncidentDashboardEnabled()) return
+		if (this.disposed || !this.provider.isIncidentDashboardEnabled()) return
 		if (this.panel) {
 			this.panel.reveal()
 			return
 		}
-		if (this.disposed) return
 		const panel = vscode.window.createWebviewPanel("alpha.incidents", "Alpha Incidents", vscode.ViewColumn.Active, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
@@ -49,16 +48,23 @@ export class IncidentPanel implements vscode.Disposable {
 	}
 
 	private async attach(panel: vscode.WebviewPanel): Promise<void> {
-		if (!this.provider.isIncidentDashboardEnabled()) {
+		if (this.disposed || !this.provider.isIncidentDashboardEnabled()) {
 			panel.dispose()
 			return
 		}
 		if (this.panel && this.panel !== panel) this.panel.dispose()
 		panel.webview.options = { enableScripts: true, localResourceRoots: [this.context.extensionUri] }
 		this.panel = panel
-		panel.onDidDispose(() => this.close(), undefined, this.subscriptions)
+		panel.onDidDispose(
+			() => {
+				if (this.panel === panel) this.close()
+			},
+			undefined,
+			this.subscriptions,
+		)
 		panel.webview.onDidReceiveMessage(
 			(message: unknown) => {
+				if (this.disposed || this.panel !== panel || !this.provider.isIncidentDashboardEnabled()) return
 				if (!message || typeof message !== "object" || !("type" in message)) return
 				const detailRequest = incidentDashboardTurnDetailRequestSchema.safeParse(message)
 				const turnInvestigation = incidentDashboardStartTurnInvestigationSchema.safeParse(message)
@@ -87,7 +93,7 @@ export class IncidentPanel implements vscode.Disposable {
 			this.subscriptions,
 		)
 		this.unsubscribe = this.provider.subscribeIncidentDashboard(() => {
-			if (this.publishTimer) return
+			if (this.disposed || this.panel !== panel || this.publishTimer) return
 			this.publishTimer = setTimeout(() => {
 				this.publishTimer = undefined
 				void this.publish()
@@ -106,9 +112,14 @@ export class IncidentPanel implements vscode.Disposable {
 		const panel = this.panel
 		if (!panel) return
 		const revision = ++this.publishRevision
-		const snapshot = await this.provider.getIncidentDashboardSnapshot()
-		if (panel === this.panel && revision === this.publishRevision)
-			await panel.webview.postMessage({ type: "incidentDashboardUpdate", snapshot })
+		try {
+			const snapshot = await this.provider.getIncidentDashboardSnapshot()
+			if (panel === this.panel && revision === this.publishRevision)
+				await panel.webview.postMessage({ type: "incidentDashboardUpdate", snapshot })
+		} catch {
+			if (panel === this.panel && revision === this.publishRevision)
+				this.provider.log("Failed to publish incident dashboard snapshot")
+		}
 	}
 
 	private async publishTurnDetail(panel: vscode.WebviewPanel, turnId: string): Promise<void> {
@@ -119,11 +130,15 @@ export class IncidentPanel implements vscode.Disposable {
 			this.provider.log("Failed to load turn details")
 		}
 		if (panel !== this.panel) return
-		await panel.webview.postMessage({
-			type: "incidentDashboardTurnDetail",
-			turnId,
-			...(detail ? { detail } : {}),
-		})
+		try {
+			await panel.webview.postMessage({
+				type: "incidentDashboardTurnDetail",
+				turnId,
+				...(detail ? { detail } : {}),
+			})
+		} catch {
+			if (panel === this.panel) this.provider.log("Failed to publish incident dashboard turn details")
+		}
 	}
 
 	private close(): void {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { createToolPolicySnapshot, isCommandDeniedByPolicy, isPathAllowed } from "../../agent/ToolPolicy"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry, type ToolDescriptor } from "../ToolRegistry"
+import { supportsFunctionCallingRestrictions } from "../../../shared/api"
 
 function schema(name: string) {
 	return {
@@ -46,6 +47,21 @@ function registry() {
 }
 
 describe("TaskToolSurface", () => {
+	it.each(["vertex", "gemini"] as const)("keeps %s historical schemas without granting Plan writes", (provider) => {
+		const surface = createTaskToolSurface({
+			registry: registry(),
+			schemas: [schema("read_file"), schema("write_to_file")],
+			mode: "architect",
+			includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(provider),
+		})
+		expect(surface.schemas.map((tool) => tool.type === "function" && tool.function.name)).toEqual([
+			"read_file",
+			"write_to_file",
+		])
+		expect(surface.allowedFunctionNames).toEqual(["read_file"])
+		expect(surface.resolve("write_to_file")).toBeUndefined()
+		expect(surface.isCallable("write_to_file")).toBe(false)
+	})
 	it.each(["ask", "auto", "bypass"] as const)(
 		"captures the %s approval tier and carries it to child surfaces",
 		(mode) => {
@@ -230,6 +246,65 @@ describe("TaskToolSurface", () => {
 		expect(surface.schemas[0]).toMatchObject({
 			function: { name: "write_to_file", description: "canonical schema" },
 		})
+	})
+
+	it.each([
+		["tool_search", "discover_tools", false],
+		["tool_search", "discover_tools", true],
+		["update_plan", "update_todo_list", true],
+	] as const)(
+		"retains one %s and %s declaration in either catalog order (restricted: %s)",
+		(canonicalName, legacyName, restricted) => {
+			for (const names of [
+				[canonicalName, legacyName, legacyName, canonicalName],
+				[legacyName, canonicalName, canonicalName, legacyName],
+			]) {
+				const source = new ToolRegistry({ includeBuiltIns: false })
+				source.register(descriptor(canonicalName, readCapabilities))
+				const surface = createTaskToolSurface({
+					registry: source,
+					schemas: names.map(schema),
+					includeAllToolsWithRestrictions: restricted,
+				})
+
+				expect(surface.schemas.map((tool) => tool.type === "function" && tool.function.name).sort()).toEqual(
+					[canonicalName, legacyName].sort(),
+				)
+				expect(surface.allowedFunctionNames).toEqual([canonicalName])
+				expect(surface.resolve(legacyName)).toBe(surface.resolve(canonicalName))
+			}
+		},
+	)
+
+	it.each([
+		["update_todo_list", "update_plan"],
+		["update_plan", "update_todo_list"],
+	])("prefers the canonical plan schema outside restricted replay for %s then %s", (first, second) => {
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		source.register(descriptor("update_plan", readCapabilities))
+		const surface = createTaskToolSurface({ registry: source, schemas: [schema(first), schema(second)] })
+
+		expect(surface.schemas.map((tool) => tool.type === "function" && tool.function.name)).toEqual(["update_plan"])
+		expect(surface.allowedFunctionNames).toEqual(["update_plan"])
+	})
+
+	it("keeps retained history declarations without granting a disabled canonical tool", () => {
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		source.register(descriptor("update_plan", readCapabilities))
+		const surface = createTaskToolSurface({
+			registry: source,
+			schemas: [schema("update_todo_list"), schema("update_plan")],
+			disabledTools: ["update_plan"],
+			includeAllToolsWithRestrictions: true,
+		})
+
+		expect(surface.schemas.map((tool) => tool.type === "function" && tool.function.name)).toEqual([
+			"update_todo_list",
+			"update_plan",
+		])
+		expect(surface.allowedFunctionNames).toEqual([])
+		expect(surface.resolve("update_todo_list")).toBeUndefined()
+		expect(surface.resolve("update_plan")).toBeUndefined()
 	})
 
 	it.each([

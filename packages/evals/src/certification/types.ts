@@ -63,7 +63,33 @@ export const certificationSuiteSchema = z.object({
 	schemaVersion: z.literal(1),
 	id: z.string().min(1),
 	concurrency: z.number().int().positive(),
-	scenarios: z.array(certificationScenarioSchema).min(12).max(16),
+	scenarios: z
+		.array(certificationScenarioSchema)
+		.length(certificationKindSchema.options.length, {
+			message: "Suite must contain each required certification control exactly once",
+		})
+		.superRefine((scenarios, context) => {
+			const ids = new Set<string>()
+			const kinds = new Set<CertificationKind>()
+			for (const [index, scenario] of scenarios.entries()) {
+				if (ids.has(scenario.id)) {
+					context.addIssue({
+						code: "custom",
+						path: [index, "id"],
+						message: `Duplicate certification scenario ID: ${scenario.id}`,
+					})
+				}
+				if (kinds.has(scenario.kind)) {
+					context.addIssue({
+						code: "custom",
+						path: [index, "kind"],
+						message: `Duplicate required certification control: ${scenario.kind}`,
+					})
+				}
+				ids.add(scenario.id)
+				kinds.add(scenario.kind)
+			}
+		}),
 })
 
 export type CertificationKind = z.infer<typeof certificationKindSchema>

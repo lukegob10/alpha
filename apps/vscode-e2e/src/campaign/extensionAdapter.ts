@@ -3,6 +3,7 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 
 import { TEST_RUN_FAILURE_CODES } from "../runFailure"
+import { compareLiveProviderIdentity, isLiveProviderIdentityReceipt } from "../liveProviderIdentity"
 import { assertWorkflowResult, MAX_WORKFLOW_RESULT_BYTES } from "../scenarios/contracts"
 import { pnpmCommand, runOwnedProcess } from "./ownedProcess"
 import { applyPatchPlan } from "./patchPlan"
@@ -77,6 +78,30 @@ const blockObservedResult = (result: ScenarioResult, fingerprint: string): Scena
 	failure: { class: "infrastructure", fingerprint },
 })
 
+/** Only an exact run-owned host receipt can establish the provider that actually executed. */
+export function projectProviderIdentity(
+	result: ScenarioResult,
+	request: ScenarioRequest,
+	runner: Record<string, unknown> | undefined,
+	runId: string,
+	previous?: ScenarioResult["providerIdentity"],
+): ScenarioResult {
+	if (request.provider.mode !== "live-copilot") return result
+	const receipt = runner?.runId === runId ? runner.providerIdentity : undefined
+	if (!isLiveProviderIdentityReceipt(receipt))
+		return result.failure?.class === "authentication"
+			? result
+			: blockObservedResult(result, "provider_identity_unavailable")
+	const providerIdentity =
+		previous && receipt.status === "unchanged"
+			? compareLiveProviderIdentity(previous.before, receipt.after)
+			: receipt
+	const observed = { ...result, providerIdentity: structuredClone(providerIdentity) }
+	return providerIdentity.status === "unchanged"
+		? observed
+		: blockObservedResult(observed, `provider_identity_${providerIdentity.status}`)
+}
+
 const runnerFailureCodes: ReadonlySet<string> = new Set(TEST_RUN_FAILURE_CODES)
 
 function classifyFailure(category: string, code: string): FailureClass {
@@ -138,6 +163,18 @@ export function projectWorkflowResult(
 			outputTokens: candidate.usage?.outputTokens ?? null,
 			cost: candidate.usage?.cost ?? null,
 		},
+		...(candidate.usage
+			? {
+					performance: {
+						...(candidate.usage.inputTokens === undefined
+							? {}
+							: { inputTokens: candidate.usage.inputTokens }),
+						...(candidate.usage.outputTokens === undefined
+							? {}
+							: { outputTokens: candidate.usage.outputTokens }),
+					},
+				}
+			: {}),
 		actualHostVersion: candidate.hostVersion,
 		...(candidate.model.id ? { model: { id: candidate.model.id, effort: candidate.model.reasoningEffort } } : {}),
 		taskIds: candidate.taskIds,
@@ -246,6 +283,8 @@ export function createExtensionCampaignOperations(
 			let inputTokens: number | null = null
 			let outputTokens: number | null = null
 			let cost: number | null = null
+			let providerIdentity: ScenarioResult["providerIdentity"]
+			let lastObserved: ScenarioResult | undefined
 			const mergeUsage = (current: number | null, value: number | null) => {
 				if (!seenUsage) return value
 				if (current === null || value === null) return null
@@ -254,21 +293,28 @@ export function createExtensionCampaignOperations(
 			const phases =
 				request.scenarioId === "reload-continuation" ? (["prepare", "continue"] as const) : (["run"] as const)
 			for (const phase of phases) {
-				if (signal.aborted) throw new Error("Campaign cancelled")
+				if (signal.aborted) {
+					if (lastObserved) return blockObservedResult(lastObserved, "campaign_cancelled")
+					throw new Error("Campaign cancelled")
+				}
 				try {
 					await assertStorageAdmission(signal, context)
 				} catch (error) {
+					if (signal.aborted && lastObserved) return blockObservedResult(lastObserved, "campaign_cancelled")
 					if (!(error instanceof CampaignStorageError)) throw error
 					return {
+						...lastObserved,
 						...blocked(error.code),
-						usage: { requests: requestsUsed, inputTokens: null, outputTokens: null, cost: null },
+						usage: { requests: requestsUsed, inputTokens, outputTokens, cost },
 					}
 				}
+				if (signal.aborted && lastObserved) return blockObservedResult(lastObserved, "campaign_cancelled")
 				const remaining = Math.min(200, request.requestLimit - requestsUsed)
 				if (remaining <= 0)
 					return {
+						...lastObserved,
 						...blocked("request_budget_exhausted", "usage_limit"),
-						usage: { requests: requestsUsed, inputTokens: null, outputTokens: null, cost: null },
+						usage: { requests: requestsUsed, inputTokens, outputTokens, cost },
 					}
 				const runId = `${campaignPrefix}-${request.attemptId}-${phase}`
 				const record: PhaseRecord = {
@@ -337,10 +383,20 @@ export function createExtensionCampaignOperations(
 					runner?.runId === record.runId &&
 					runner.execution === "extension-host" &&
 					runner.hostExitObserved === true &&
-					runner.ownershipGate === "verified"
+					runner.ownershipGate === "verified" &&
+					(runner.hostCleanupVerified === undefined || runner.hostCleanupVerified === true) &&
+					(runner.captureHelperCleanupVerified === undefined || runner.captureHelperCleanupVerified === true)
 				if (!hostClosed && projection.result.failure?.class !== "authentication") {
 					projection.result = blockObservedResult(projection.result, "host_cleanup_unverified")
 				}
+				projection.result = projectProviderIdentity(
+					projection.result,
+					request,
+					runner,
+					record.runId,
+					providerIdentity,
+				)
+				providerIdentity = projection.result.providerIdentity
 				if (!processResult.cleanupVerified && processResult.signal !== null) {
 					projection.result = blockObservedResult(projection.result, "process_cleanup_unverified")
 				}
@@ -404,10 +460,17 @@ export function createExtensionCampaignOperations(
 				const combined = {
 					...projection.result,
 					usage: { requests: requestsUsed, inputTokens, outputTokens, cost },
+					...(projection.result.performance === undefined
+						? {}
+						: { performance: { ...projection.result.performance, inputTokens, outputTokens } }),
 				}
+				lastObserved = combined
 				if (projection.result.status !== "passed") return combined
 				if (phase === "prepare" && !projection.checkpointed)
-					return blocked("reload_checkpoint_missing", "lifecycle")
+					return {
+						...blockObservedResult(combined, "reload_checkpoint_missing"),
+						failure: { class: "lifecycle", fingerprint: "reload_checkpoint_missing" },
+					}
 				if (phase !== "prepare") return combined
 				// A reload is a new launch: finalize phase evidence before allowing it.
 				try {

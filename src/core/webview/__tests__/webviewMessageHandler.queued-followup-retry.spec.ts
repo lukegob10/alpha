@@ -183,7 +183,10 @@ describe("completed task queued follow-up retry", () => {
 			expect(queue.getClaimedMessageIds()).toEqual([])
 			expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
 				expect.objectContaining({
-					chatCommandResult: expect.objectContaining({ status: "rejected", errorCode: "task_unavailable" }),
+					chatCommandResult: expect.objectContaining({
+						status: "rejected",
+						errorCode: transition === "replaced" ? "stale_turn" : "task_unavailable",
+					}),
 				}),
 			)
 			queue.dispose()
@@ -219,4 +222,39 @@ describe("completed task queued follow-up retry", () => {
 			queue.dispose()
 		},
 	)
+
+	it("releases a completed follow-up selection if a successor turn starts while the old lifecycle drains", async () => {
+		const { task, queue, provider, prepare, resume, request } = completedTaskFixture()
+		Object.assign(task, { agentTurnId: "original" })
+		await queue.addMessageDurably("Retain the selected input", [], request.text)
+		const ending = barrier()
+		const selected = barrier()
+		Object.assign(task, { ownedLifecyclePromise: ending.promise })
+		const claim = queue.claimMessage.bind(queue)
+		vi.spyOn(queue, "claimMessage").mockImplementation((id) => {
+			const message = claim(id)
+			selected.resolve()
+			return message
+		})
+		const pending = webviewMessageHandler(provider, { ...request, expectedTurnId: "original" })
+		try {
+			await selected.promise
+			Reflect.set(task, "agentTurnId", "successor")
+			ending.resolve()
+			await pending
+			expect(prepare).not.toHaveBeenCalled()
+			expect(resume).not.toHaveBeenCalled()
+			expect(queue.getClaimedMessageIds()).toEqual([])
+			expect(queue.messages).toMatchObject([{ id: request.text, text: "Retain the selected input" }])
+			expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					chatCommandResult: expect.objectContaining({ status: "rejected", errorCode: "stale_turn" }),
+				}),
+			)
+		} finally {
+			ending.resolve()
+			await pending
+			queue.dispose()
+		}
+	})
 })

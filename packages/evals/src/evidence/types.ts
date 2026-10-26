@@ -29,9 +29,10 @@ export const REQUIRED_ARTIFACT_KINDS = [
 ] as const
 
 export type RequiredArtifactKind = (typeof REQUIRED_ARTIFACT_KINDS)[number]
-export type ArtifactKind = RequiredArtifactKind | "full_output" | "grader_evidence" | "other"
+export type ArtifactKind = RequiredArtifactKind | "full_output" | "grader_evidence" | "workspace_snapshot" | "other"
 export type ArtifactAccess = "private" | "reviewer" | "public"
 export type ArtifactUploadState = "complete" | "incomplete"
+export type ArtifactCaptureStatus = "captured" | "captured-empty" | "missing" | "unavailable" | "failed"
 
 export type ArtifactDescriptor = {
 	schemaVersion: typeof EVIDENCE_SCHEMA_VERSION
@@ -44,6 +45,8 @@ export type ArtifactDescriptor = {
 	access: ArtifactAccess
 	retention: "campaign" | "baseline" | "permanent"
 	uploadState: ArtifactUploadState
+	/** Absent on legacy records; upload completion alone does not establish capture completeness. */
+	captureStatus?: ArtifactCaptureStatus
 	createdAt: string
 }
 
@@ -54,6 +57,8 @@ export type EvidenceBundle = {
 	attemptId: string
 	taskIdentity: string
 	variantIdentity: string
+	identityStatus?: "attempt-bound" | "legacy-unavailable"
+	bundleDigest?: string
 	events: EvalEvent[]
 	artifacts: ArtifactDescriptor[]
 }
@@ -65,9 +70,12 @@ export type IntegrityIssue = {
 		| "event_payload_corrupt"
 		| "late_event_forbidden"
 		| "artifact_missing"
+		| "artifact_duplicate"
 		| "artifact_incomplete"
 		| "artifact_corrupt"
 		| "identity_mismatch"
+		| "bundle_digest_mismatch"
+		| "artifact_capture_incomplete"
 	detail: string
 }
 

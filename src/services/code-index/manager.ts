@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 import { ContextProxy } from "../../core/config/ContextProxy"
 import type { CodeIndexSearchResponse, VectorStoreSearchResult } from "./interfaces"
 import { IndexingState } from "./interfaces/manager"
-import { CodeIndexConfigManager } from "./config-manager"
+import { CodeIndexConfigManager, type CodeIndexConfigurationLoadOptions } from "./config-manager"
 import { CodeIndexStateManager } from "./state-manager"
 import { CodeIndexServiceFactory } from "./service-factory"
 import { CodeIndexSearchService } from "./search-service"
@@ -29,6 +29,8 @@ export class CodeIndexManager {
 	private _cacheManager: CacheManager | undefined
 
 	private _serviceLifecycleTail: Promise<void> = Promise.resolve()
+	private _disposed = false
+	private _pendingServiceDisposal?: () => void
 
 	public static getInstance(context: vscode.ExtensionContext, workspacePath?: string): CodeIndexManager | undefined {
 		// Resolve the workspace folder to get both fsPath and the real URI
@@ -51,7 +53,8 @@ export class CodeIndexManager {
 			workspacePath = folder.uri.fsPath
 		}
 
-		if (!CodeIndexManager.instances.has(workspacePath)) {
+		const existing = CodeIndexManager.instances.get(workspacePath)
+		if (!existing || existing._disposed) {
 			// folder may be undefined when workspacePath was provided but doesn't match
 			// any workspace folder (e.g. cwd passed from a tool). Fall back to file:// URI.
 			const folderUri =
@@ -124,7 +127,13 @@ export class CodeIndexManager {
 	}
 
 	private assertInitialized() {
-		if (!this._configManager || !this._orchestrator || !this._searchService || !this._cacheManager) {
+		if (
+			this._disposed ||
+			!this._configManager ||
+			!this._orchestrator ||
+			!this._searchService ||
+			!this._cacheManager
+		) {
 			throw new Error("CodeIndexManager not initialized. Call initialize() first.")
 		}
 	}
@@ -159,13 +168,18 @@ export class CodeIndexManager {
 	 * Must be called before using any other methods.
 	 * @returns Object indicating if a restart is needed
 	 */
-	public async initialize(contextProxy: ContextProxy): Promise<{ requiresRestart: boolean }> {
+	public async initialize(
+		contextProxy: ContextProxy,
+		options?: CodeIndexConfigurationLoadOptions,
+	): Promise<{ requiresRestart: boolean }> {
+		if (this._disposed) return { requiresRestart: false }
 		// 1. ConfigManager Initialization and Configuration Loading
 		if (!this._configManager) {
 			this._configManager = new CodeIndexConfigManager(contextProxy)
 		}
 		// Load configuration once to get current state and restart requirements
-		const { requiresRestart } = await this._configManager.loadConfiguration()
+		const { requiresRestart } = await this._configManager.loadConfiguration(options)
+		if (this._disposed) return { requiresRestart }
 
 		// 2. Check if feature is enabled
 		if (!this.isFeatureEnabled) {
@@ -192,6 +206,7 @@ export class CodeIndexManager {
 					await this.retireOrchestrator(currentOrchestrator)
 				}
 			})
+			if (this._disposed) return { requiresRestart }
 			this._stateManager.setSystemState(
 				"Error",
 				this._configManager.configurationError ?? t("embeddings:serviceFactory.codeIndexingNotConfigured"),
@@ -216,6 +231,7 @@ export class CodeIndexManager {
 		if (!this._cacheManager) {
 			this._cacheManager = new CacheManager(this.context, this.workspacePath)
 			await this._cacheManager.initialize()
+			if (this._disposed) return { requiresRestart }
 		}
 
 		// 6. Determine if Core Services Need Recreation
@@ -225,6 +241,7 @@ export class CodeIndexManager {
 
 		if (needsServiceRecreation) {
 			await this._recreateServices()
+			if (this._disposed) return { requiresRestart }
 		}
 
 		// 7. Handle Indexing Start/Restart
@@ -247,7 +264,7 @@ export class CodeIndexManager {
 	 * The indexing will continue asynchronously and progress will be reported through events.
 	 */
 	public async startIndexing(): Promise<void> {
-		if (!this.isFeatureEnabled || !this.isWorkspaceEnabled) {
+		if (this._disposed || !this.isFeatureEnabled || !this.isWorkspaceEnabled) {
 			return
 		}
 
@@ -315,7 +332,7 @@ export class CodeIndexManager {
 				}
 			}
 			// Clear error state
-			this._stateManager.setSystemState("Standby", "")
+			if (!this._disposed) this._stateManager.setSystemState("Standby", "")
 		} catch (error) {
 			// Log error but continue with recovery - clearing service instances is more important
 			console.error("Failed to clear error state during recovery:", error)
@@ -333,8 +350,13 @@ export class CodeIndexManager {
 	 * Cleans up the manager instance.
 	 */
 	public dispose(): void {
+		if (this._disposed) return
+		this._disposed = true
 		this.stopIndexing()
 		this._orchestrator?.dispose()
+		this._orchestrator = undefined
+		this._searchService = undefined
+		this._pendingServiceDisposal?.()
 		this._stateManager.dispose()
 	}
 
@@ -394,7 +416,8 @@ export class CodeIndexManager {
 	}
 
 	private enqueueServiceLifecycle(operation: () => Promise<void>): Promise<void> {
-		const result = this._serviceLifecycleTail.then(operation, operation)
+		const run = () => (this._disposed ? undefined : operation())
+		const result = this._serviceLifecycleTail.then(run, run)
 		this._serviceLifecycleTail = result.then(
 			() => undefined,
 			() => undefined,
@@ -412,6 +435,7 @@ export class CodeIndexManager {
 	private async recreateServicesExclusive(): Promise<void> {
 		if (this._orchestrator) {
 			await this.retireOrchestrator(this._orchestrator)
+			if (this._disposed) return
 		}
 		// Clear existing services to ensure clean state
 		this._orchestrator = undefined
@@ -447,56 +471,71 @@ export class CodeIndexManager {
 				location: "_recreateServices",
 			})
 		}
+		if (this._disposed) return
 
 		// Create AlphaIgnoreController instance
 		const alphaIgnoreController = new AlphaIgnoreController(workspacePath)
-		await alphaIgnoreController.initialize()
-
-		// (Re)Create shared service instances
-		const { embedder, vectorStore, parser, scanner, fileWatcher } = this._serviceFactory.createServices(
-			this.context,
-			this._cacheManager!,
-			ignoreInstance,
-			alphaIgnoreController,
-		)
-
-		// Validate embedder configuration before proceeding
-		const validationResult = await this._serviceFactory.validateEmbedder(embedder)
-		if (!validationResult.valid) {
-			fileWatcher.dispose()
-			const errorMessage = validationResult.error || "Embedder configuration validation failed"
-			this._stateManager.setSystemState("Error", errorMessage)
-			throw new Error(errorMessage)
+		let disposeResources = () => alphaIgnoreController.dispose()
+		let resourcesDisposed = false
+		const disposePending = () => {
+			if (resourcesDisposed) return
+			resourcesDisposed = true
+			disposeResources()
 		}
+		// Own resources before readiness; disposal cannot wait for network validation to finish.
+		this._pendingServiceDisposal = disposePending
+		let published = false
+		try {
+			await alphaIgnoreController.initialize()
+			if (this._disposed) return
 
-		// (Re)Initialize orchestrator
-		this._orchestrator = new CodeIndexOrchestrator(
-			this._configManager!,
-			this._stateManager,
-			this.workspacePath,
-			this._cacheManager!,
-			vectorStore,
-			scanner,
-			fileWatcher,
-		)
+			const { embedder, vectorStore, parser, scanner, fileWatcher } = this._serviceFactory.createServices(
+				this.context,
+				this._cacheManager!,
+				ignoreInstance,
+				alphaIgnoreController,
+			)
+			// The factory's watcher takes ownership of the shared ignore controller.
+			disposeResources = () => fileWatcher.dispose()
+			const validationResult = await this._serviceFactory.validateEmbedder(embedder)
+			if (this._disposed) return
+			if (!validationResult.valid) {
+				const errorMessage = validationResult.error || "Embedder configuration validation failed"
+				this._stateManager.setSystemState("Error", errorMessage)
+				throw new Error(errorMessage)
+			}
 
-		// (Re)Initialize search service
-		this._searchService = new CodeIndexSearchService(
-			this._configManager!,
-			this._stateManager,
-			embedder,
-			vectorStore,
-			{
-				workspacePath,
-				parser,
-				pendingFiles: (limit) => fileWatcher.getPendingFilePaths?.(limit) ?? [],
-				validateAccess: (filePath) =>
-					!ignoreInstance.ignores(filePath) && alphaIgnoreController.validateAccess(filePath),
-			},
-		)
-
-		// Clear any error state after successful recreation
-		this._stateManager.setSystemState("Standby", "")
+			const orchestrator = new CodeIndexOrchestrator(
+				this._configManager!,
+				this._stateManager,
+				this.workspacePath,
+				this._cacheManager!,
+				vectorStore,
+				scanner,
+				fileWatcher,
+			)
+			disposeResources = () => orchestrator.dispose()
+			const searchService = new CodeIndexSearchService(
+				this._configManager!,
+				this._stateManager,
+				embedder,
+				vectorStore,
+				{
+					workspacePath,
+					parser,
+					pendingFiles: (limit) => fileWatcher.getPendingFilePaths?.(limit) ?? [],
+					validateAccess: (filePath) =>
+						!ignoreInstance.ignores(filePath) && alphaIgnoreController.validateAccess(filePath),
+				},
+			)
+			this._orchestrator = orchestrator
+			this._searchService = searchService
+			published = true
+			this._stateManager.setSystemState("Standby", "")
+		} finally {
+			this._pendingServiceDisposal = undefined
+			if (!published) disposePending()
+		}
 	}
 
 	/**
@@ -506,8 +545,10 @@ export class CodeIndexManager {
 	 * If the configuration changes require a restart, the service will be restarted.
 	 */
 	public async handleSettingsChange(): Promise<void> {
+		if (this._disposed) return
 		if (this._configManager) {
 			const { requiresRestart } = await this._configManager.loadConfiguration()
+			if (this._disposed) return
 
 			const isFeatureEnabled = this.isFeatureEnabled
 			const isFeatureConfigured = this.isFeatureConfigured
@@ -519,6 +560,7 @@ export class CodeIndexManager {
 					this._orchestrator.stopIndexing()
 					await this._orchestrator.whenIdle()
 				}
+				if (this._disposed) return
 				this._stateManager.setSystemState("Standby", "Code indexing is disabled")
 				return
 			}
@@ -535,6 +577,7 @@ export class CodeIndexManager {
 						await this.retireOrchestrator(currentOrchestrator)
 					}
 				})
+				if (this._disposed) return
 				this._stateManager.setSystemState(
 					"Error",
 					this._configManager.configurationError ?? t("embeddings:serviceFactory.codeIndexingNotConfigured"),
@@ -548,10 +591,12 @@ export class CodeIndexManager {
 					if (!this._cacheManager) {
 						this._cacheManager = new CacheManager(this.context, this.workspacePath)
 						await this._cacheManager.initialize()
+						if (this._disposed) return
 					}
 
 					// Recreate services with new configuration
 					await this._recreateServices()
+					if (this._disposed) return
 					// The save handler sees the replacement services as initialized, so it will not call
 					// initialize() again. Start the replacement scan and watcher with the selected provider.
 					if (this.isFeatureEnabled && this.isFeatureConfigured && this.isWorkspaceEnabled) {

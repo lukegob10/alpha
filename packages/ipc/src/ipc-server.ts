@@ -21,7 +21,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 	private readonly _clients: Map<string, Socket>
 	private readonly _handleConnect = (socket: Socket) => this.onConnect(socket)
 	private readonly _handleDisconnect = (socket: Socket) => this.onDisconnect(socket)
-	private readonly _handleMessage = (data: unknown) => this.onMessage(data)
+	private readonly _handleMessage = (data: unknown, socket: Socket) => this.onMessage(data, socket)
 	private readonly _handleStart = () => this.onStart()
 
 	private _isListening = false
@@ -122,6 +122,8 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 	}
 
 	private async onConnect(socket: Socket) {
+		if (!this._isListening || this._isDisposed) return
+
 		const clientId = crypto.randomBytes(6).toString("hex")
 		this._clients.set(clientId, socket)
 		this.log(`[server#onConnect] clientId = ${clientId}, # clients = ${this._clients.size}`)
@@ -168,7 +170,9 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		}
 	}
 
-	private onMessage(data: unknown) {
+	private onMessage(data: unknown, socket: Socket) {
+		if (!this._isListening || this._isDisposed) return
+
 		if (typeof data !== "object") {
 			this.log(`[server#onMessage] invalid data type -> ${typeof data}`)
 			return
@@ -186,14 +190,13 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		const payload = result.data
 
 		if (payload.origin === IpcOrigin.Client) {
-			switch (payload.type) {
-				case IpcMessageType.TaskCommand:
-					this.emit(IpcMessageType.TaskCommand, payload.clientId, payload.data)
-					break
-				default:
-					this.log(`[server#onMessage] unhandled payload: ${JSON.stringify(payload)}`)
-					break
+			// The claimed reply address must belong to the transport that sent the command.
+			if (!socket || this._clients.get(payload.clientId) !== socket) {
+				this.log("[server#onMessage] client identity does not match the connected socket")
+				return
 			}
+
+			this.emit(IpcMessageType.TaskCommand, payload.clientId, payload.data)
 		}
 	}
 
@@ -202,21 +205,23 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 	}
 
 	public broadcast(message: IpcMessage) {
-		// this.log("[server#broadcast] message =", message)
-		ipc.server.broadcast("message", message)
+		if (!this._isListening || this._isDisposed) return
+		this._server?.broadcast("message", message)
 	}
 
 	public send(client: string | Socket, message: IpcMessage) {
-		// this.log("[server#send] message =", message)
+		if (!this._isListening || this._isDisposed) return
+		const server = this._server
+		if (!server) return
 
 		if (typeof client === "string") {
 			const socket = this._clients.get(client)
 
 			if (socket) {
-				ipc.server.emit(socket, "message", message)
+				server.emit(socket, "message", message)
 			}
 		} else {
-			ipc.server.emit(client, "message", message)
+			server.emit(client, "message", message)
 		}
 	}
 

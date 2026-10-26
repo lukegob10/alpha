@@ -4,11 +4,15 @@ import type { AlphaMessage, ExtensionMessage } from "@alpha-code/types"
 
 import { uiFixtureBarrier } from "../ui/fixtureBarrier"
 import { SELECTION_LAYOUT_ROUNDS, selectionLayoutStage } from "../ui/renderedSelectionLayout"
+import { UNATTENDED_TRANSCRIPT_CASES, unattendedStage } from "../ui/renderedUnattendedLifecycle"
+import { TURN_DISCLOSURE_THEMES } from "../ui/renderedTranscriptLifecycle"
 import { waitFor } from "./utils"
 
 interface TranscriptTask {
 	didComplete: boolean
 	clineMessages: AlphaMessage[]
+	apiConversationHistory: unknown[]
+	overwriteApiConversationHistory(messages: unknown[]): Promise<boolean>
 	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
 }
 
@@ -28,6 +32,7 @@ class TranscriptLifecycleAI {
 	private releaseMain?: () => void
 	private mainGate?: Promise<void>
 	private releaseSummary?: () => void
+	unattendedRound: number | undefined
 
 	holdMain(): void {
 		this.mainGate = new Promise<void>((resolve) => {
@@ -59,6 +64,16 @@ class TranscriptLifecycleAI {
 		this.mainRequests++
 		await this.mainGate
 		this.mainGate = undefined
+		if (this.unattendedRound !== undefined) {
+			for (let chunk = 0; chunk < 120; chunk++) {
+				yield { type: "text" as const, text: `Unattended streamed chunk ${chunk}. ` }
+			}
+			yield {
+				type: "text" as const,
+				text: `\n\nUNATTENDED_FINAL_${this.unattendedRound}\n\n\`\`\`typescript\n${"const unattendedAnswer = 42\n".repeat(80)}\`\`\``,
+			}
+			return
+		}
 		yield {
 			type: "text" as const,
 			text: `The fixture answer is 42. Turn ${this.mainRequests}.\n\n${"ARCHIVE_EVIDENCE ".repeat(1_000)}`,
@@ -87,6 +102,8 @@ suite("Transcript lifecycle renderer", function () {
 		assert.ok(process.env.ALPHA_UI_ACCEPTANCE_NONCE)
 		const api = globalThis.api
 		const original = api.getConfiguration()
+		const workbench = vscode.workspace.getConfiguration("workbench")
+		const originalTheme = workbench.get<string>("colorTheme")
 		const host = (api as unknown as { sidebarProvider: TranscriptHost }).sidebarProvider
 		const model = new TranscriptLifecycleAI()
 		try {
@@ -127,6 +144,22 @@ suite("Transcript lifecycle renderer", function () {
 			await vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction")
 			await uiFixtureBarrier("transcript-hydrated", { version: vscode.version, taskId })
 			for (const [index, cycle] of ["one", "two", "three"].entries()) {
+				// UI rows do not increase model context. Retain actual older work so
+				// each compaction has more to summarize than the previous summary alone.
+				const archive = Array.from({ length: 6 }, (_, item) => [
+					{
+						role: "user",
+						content: [{ type: "text", text: `Historical fixture ${cycle}-${item}: retain answer 42.` }],
+					},
+					{
+						role: "assistant",
+						content: [{ type: "text", text: `Historical answer 42. ${"ARCHIVE_EVIDENCE ".repeat(1_000)}` }],
+					},
+				]).flat()
+				assert.equal(
+					await task.overwriteApiConversationHistory([...task.apiConversationHistory, ...archive]),
+					true,
+				)
 				model.holdMain()
 				await api.sendMessage(`Continue fixture turn ${index + 2}, retaining the answer 42.`)
 				await waitFor(() => model.mainRequests === index + 2, { timeout: 20_000 })
@@ -134,13 +167,34 @@ suite("Transcript lifecycle renderer", function () {
 				await uiFixtureBarrier(`transcript-growing-${cycle}`, { version: vscode.version, taskId })
 				model.continueMain()
 				await waitFor(() => task.didComplete, { timeout: 30_000 })
+				if (cycle === "three") {
+					// Restored completed tasks expose this input boundary before manual compaction.
+					await task.overwriteAlphaMessages([
+						...task.clineMessages,
+						{
+							type: "ask",
+							ask: "resume_completed_task",
+							ts: Math.max(Date.now(), ...task.clineMessages.map((message) => message.ts)) + 1,
+							text: "Continue the completed fixture when ready.",
+							partial: false,
+						},
+					])
+					await host.postStateToWebview()
+				}
 				await uiFixtureBarrier(`transcript-compact-${cycle}`, { version: vscode.version, taskId })
-				// Automatic compaction projects the same start event while the task continues independently.
-				await host.postMessageToWebview({ type: "condenseTaskContextStarted", text: taskId })
-				const compacting = host.condenseTaskContext(taskId)
-				void compacting.catch(() => undefined)
+				// The third cycle starts through the UI, occupying the real global command lane during reload.
+				let compacting: Promise<void> | undefined
+				if (cycle !== "three") {
+					await host.postMessageToWebview({ type: "condenseTaskContextStarted", text: taskId })
+					compacting = host.condenseTaskContext(taskId)
+					void compacting.catch(() => undefined)
+				}
 				await waitFor(() => model.summaryRequests === index + 1, { timeout: 20_000 })
 				await uiFixtureBarrier(`transcript-busy-${cycle}`, { version: vscode.version, taskId })
+				if (cycle === "three") {
+					await vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction")
+					await uiFixtureBarrier("transcript-reloaded-busy", { version: vscode.version, taskId })
+				}
 				if (cycle === "two") {
 					await vscode.commands.executeCommand("workbench.action.toggleSidebarVisibility")
 					await appendRows(320)
@@ -159,6 +213,24 @@ suite("Transcript lifecycle renderer", function () {
 				await host.postStateToWebview()
 				await uiFixtureBarrier(`transcript-compacted-${cycle}`, { version: vscode.version, taskId })
 			}
+			for (const [round, testCase] of UNATTENDED_TRANSCRIPT_CASES.entries()) {
+				model.unattendedRound = round
+				model.holdMain()
+				await api.sendMessage(`Complete unattended fixture ${round}.`)
+				await waitFor(() => model.mainRequests === round + 5, { timeout: 20_000 })
+				if (testCase.mode === "hidden") {
+					await vscode.commands.executeCommand("workbench.action.toggleSidebarVisibility")
+				}
+				await uiFixtureBarrier(unattendedStage("start", round), { version: vscode.version, taskId })
+				for (let batch = 0; batch < 12; batch++) await appendRows(10)
+				model.continueMain()
+				await waitFor(() => task.didComplete, { timeout: 30_000 })
+				await host.postStateToWebview()
+				await uiFixtureBarrier(unattendedStage("complete", round), { version: vscode.version, taskId })
+				if (testCase.mode === "hidden") await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+				await uiFixtureBarrier(unattendedStage("returned", round), { version: vscode.version, taskId })
+			}
+			model.unattendedRound = undefined
 			await uiFixtureBarrier("transcript-browse", { version: vscode.version, taskId })
 			await appendRows(40)
 			await uiFixtureBarrier("transcript-browse-appended", { version: vscode.version, taskId })
@@ -184,7 +256,49 @@ suite("Transcript lifecycle renderer", function () {
 			}
 			// Native trace completion is asynchronous; keep the owned host alive until the driver collects it.
 			await uiFixtureBarrier("selection-layout-finished", { version: vscode.version, taskId })
-			assert.equal(model.mainRequests, 4)
+			const turn = { runId: `rendered-${process.env.ALPHA_UI_ACCEPTANCE_NONCE}`, turnId: "folded-turn" }
+			const timestamp = Math.max(Date.now(), ...task.clineMessages.map((message) => message.ts)) + 1
+			await task.overwriteAlphaMessages([
+				{
+					ts: timestamp,
+					type: "say",
+					say: "user_feedback",
+					text: "TURN_OPENING_EVIDENCE",
+					turn: { ...turn, inputKind: "start" },
+				},
+				{ ts: timestamp + 1, type: "say", say: "text", text: "TURN_COMMENTARY_EVIDENCE", turn },
+				{
+					ts: timestamp + 2,
+					type: "ask",
+					ask: "command",
+					text: "echo TURN_COMMAND_EVIDENCE",
+					isAnswered: true,
+					turn,
+				},
+				{ ts: timestamp + 3, type: "say", say: "command_output", text: "TURN_COMMAND_OUTPUT_EVIDENCE", turn },
+				{
+					ts: timestamp + 4,
+					type: "say",
+					say: "user_feedback",
+					text: "TURN_STEERING_EVIDENCE",
+					turn: { ...turn, inputKind: "steer" },
+				},
+				{ ts: timestamp + 5, type: "say", say: "reasoning", text: "TURN_REASONING_EVIDENCE", turn },
+				{
+					ts: timestamp + 6,
+					type: "say",
+					say: "text",
+					text: "TURN_FINAL_EVIDENCE",
+					turn: { ...turn, terminalStatus: "completed" },
+				},
+			])
+			await host.postStateToWebview()
+			await uiFixtureBarrier("transcript-turn-disclosure", { version: vscode.version, taskId })
+			for (const { stage, theme } of TURN_DISCLOSURE_THEMES) {
+				await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global)
+				await uiFixtureBarrier(stage, { version: vscode.version, taskId })
+			}
+			assert.equal(model.mainRequests, 4 + UNATTENDED_TRANSCRIPT_CASES.length)
 			assert.equal(model.summaryRequests, 3)
 		} finally {
 			model.continueMain()
@@ -192,6 +306,7 @@ suite("Transcript lifecycle renderer", function () {
 			await api.clearCurrentTask().catch(() => undefined)
 			await api.setConfiguration(original)
 			model.removeFromCache?.()
+			await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global)
 		}
 	})
 })

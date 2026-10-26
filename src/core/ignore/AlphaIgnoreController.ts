@@ -1,5 +1,4 @@
 import path from "path"
-import { fileExistsAtPath } from "../../utils/fs"
 import fs from "fs/promises"
 import ignore, { Ignore } from "ignore"
 import * as vscode from "vscode"
@@ -46,15 +45,9 @@ export class AlphaIgnoreController {
 
 		// Watch for changes and updates
 		this.disposables.push(
-			fileWatcher.onDidChange(() => {
-				this.loadAlphaIgnore()
-			}),
-			fileWatcher.onDidCreate(() => {
-				this.loadAlphaIgnore()
-			}),
-			fileWatcher.onDidDelete(() => {
-				this.loadAlphaIgnore()
-			}),
+			fileWatcher.onDidChange(() => this.loadAlphaIgnore()),
+			fileWatcher.onDidCreate(() => this.loadAlphaIgnore()),
+			fileWatcher.onDidDelete(() => this.loadAlphaIgnore()),
 		)
 
 		// Add fileWatcher itself to disposables
@@ -68,7 +61,15 @@ export class AlphaIgnoreController {
 		const generation = ++this.loadGeneration
 		try {
 			const ignorePath = path.join(this.cwd, ".alphaignore")
-			if (await fileExistsAtPath(ignorePath)) {
+			// Only confirmed absence may remove known restrictions. Inspect the entry
+			// itself so unreadable files and dangling policy links retain the last rules.
+			const ignoreFile = await fs.lstat(ignorePath).catch((error: unknown) => {
+				if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+					return undefined
+				}
+				throw error
+			})
+			if (ignoreFile) {
 				const content = await fs.readFile(ignorePath, "utf8")
 				const nextIgnoreInstance = ignore().add(content).add(".alphaignore")
 				if (generation !== this.loadGeneration) return
@@ -123,9 +124,10 @@ export class AlphaIgnoreController {
 	/**
 	 * Check if a terminal command should be allowed to execute based on file access patterns
 	 * @param command - Terminal command to validate
+	 * @param workingDirectory - Command working directory, relative to the workspace root when not absolute
 	 * @returns path of file that is being accessed if it is being accessed, undefined if command is allowed
 	 */
-	validateCommand(command: string): string | undefined {
+	validateCommand(command: string, workingDirectory: string = "."): string | undefined {
 		// Always allow if no .alphaignore exists
 		if (this.alphaIgnoreContent === undefined) {
 			return undefined
@@ -160,7 +162,7 @@ export class AlphaIgnoreController {
 				const inlinePathParameter = argument.match(/^-(?:LiteralPath|Path):(.+)$/i)
 				if (argument.startsWith("-") && !inlinePathParameter) continue
 				const candidatePath = inlinePathParameter?.[1] ?? argument
-				if (!this.validateAccess(candidatePath)) {
+				if (!this.validateAccess(path.resolve(this.cwd, workingDirectory, candidatePath))) {
 					return candidatePath
 				}
 			}

@@ -10,12 +10,14 @@ const mocks = vi.hoisted(() => {
 		providerSettingsManager: {},
 		customModesManager: {},
 		setScheduledTaskService: vi.fn(),
+		createTask: vi.fn().mockResolvedValue(undefined),
 		dispose: vi.fn().mockResolvedValue(undefined),
 	}
 
 	return {
 		outputChannel,
 		provider,
+		disposeProviders: vi.fn(async () => provider.dispose()),
 		shutdownGlobalStores: vi.fn().mockResolvedValue(undefined),
 		cleanupMcp: vi.fn().mockResolvedValue(undefined),
 		shutdownTelemetry: vi.fn(),
@@ -24,6 +26,11 @@ const mocks = vi.hoisted(() => {
 		loadEnvironment: vi.fn().mockResolvedValue(undefined),
 		initializeNetworkProxy: vi.fn().mockResolvedValue(undefined),
 		autoImportSettings: vi.fn().mockResolvedValue(undefined),
+		providerConstructed: vi.fn(),
+		startMemory: vi.fn(),
+		constructApi: vi.fn(),
+		initializeScheduledTasks: vi.fn().mockResolvedValue(undefined),
+		getCodeIndexManager: vi.fn(),
 		registerCommands: vi.fn(),
 		workspaceFolders: undefined as undefined | Array<{ uri: { fsPath: string } }>,
 		registerUriHandler: vi.fn((_handler: { handleUri: (uri: unknown) => unknown }) => ({
@@ -78,10 +85,11 @@ vi.mock("../../core/agent/AgentControlStore", () => ({
 	AgentControlStore: { shutdownGlobalStores: mocks.shutdownGlobalStores },
 }))
 vi.mock("../../core/webview/AlphaProvider", () => {
-	const AlphaProvider = vi.fn(function () {
+	const AlphaProvider = vi.fn(function (...args: unknown[]) {
+		mocks.providerConstructed(args[4])
 		return mocks.provider
 	})
-	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider" })
+	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider", disposeAll: mocks.disposeProviders })
 	return { AlphaProvider }
 })
 vi.mock("../../integrations/editor/DiffViewProvider", () => ({ DIFF_VIEW_URI_SCHEME: "alpha-diff" }))
@@ -92,11 +100,11 @@ vi.mock("../../services/mcp/McpServerManager", () => ({
 	McpServerManager: { cleanup: mocks.cleanupMcp },
 }))
 vi.mock("../../services/code-index/manager", () => ({
-	CodeIndexManager: { getInstance: vi.fn() },
+	CodeIndexManager: { getInstance: mocks.getCodeIndexManager },
 }))
 vi.mock("../../services/scheduled-tasks", () => ({
 	ScheduledTaskService: vi.fn(function () {
-		return { initialize: vi.fn().mockResolvedValue(undefined) }
+		return { initialize: mocks.initializeScheduledTasks }
 	}),
 }))
 vi.mock("../../services/tickets/TicketPanel", () => ({
@@ -106,7 +114,11 @@ vi.mock("../../services/tickets/TicketPanel", () => ({
 }))
 vi.mock("../../utils/migrateSettings", () => ({ migrateSettings: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("../../utils/autoImportSettings", () => ({ autoImportSettings: mocks.autoImportSettings }))
-vi.mock("../api", () => ({ API: vi.fn() }))
+vi.mock("../api", () => ({
+	API: vi.fn(function () {
+		mocks.constructApi()
+	}),
+}))
 vi.mock("../../activate", () => {
 	const CodeActionProvider = vi.fn()
 	Object.assign(CodeActionProvider, { providedCodeActionKinds: [] })
@@ -121,13 +133,97 @@ vi.mock("../../activate", () => {
 vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))
 
 import type * as vscode from "vscode"
-import { commands } from "vscode"
+import { commands, window } from "vscode"
 import { activate, deactivate } from "../../extension"
 
 describe("extension lifecycle", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mocks.workspaceFolders = undefined
+	})
+
+	it.each(["success", "failure"])(
+		"settles startup configuration before task surfaces and schedules are admitted (%s)",
+		async (outcome) => {
+			let settleImport!: () => void
+			let startImport!: () => void
+			const importStarted = new Promise<void>((resolve) => (startImport = resolve))
+			mocks.autoImportSettings.mockImplementationOnce(() => {
+				startImport()
+				return new Promise<void>((resolve, reject) => {
+					settleImport = () => {
+						if (outcome === "failure") reject(new Error("Import unavailable"))
+						else resolve()
+					}
+				})
+			})
+			mocks.providerConstructed.mockImplementationOnce((ready: Promise<void> = Promise.resolve()) => {
+				void ready.then(() => mocks.startMemory()).catch(() => undefined)
+			})
+			mocks.initializeScheduledTasks.mockImplementationOnce(async () => {
+				await mocks.provider.createTask("scheduled task")
+			})
+			vi.mocked(window.registerWebviewViewProvider).mockImplementationOnce(() => {
+				void mocks.provider.createTask("restored sidebar task")
+				return { dispose: vi.fn() }
+			})
+			const initializeIndex = vi.fn().mockResolvedValue({ requiresRestart: false })
+			mocks.getCodeIndexManager.mockReturnValueOnce({ initialize: initializeIndex, dispose: vi.fn() })
+			mocks.workspaceFolders = [{ uri: { fsPath: "/workspace" } }]
+			const context = {
+				extensionPath: "/extension",
+				extensionUri: {},
+				globalStorageUri: { fsPath: "/storage" },
+				globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+				subscriptions: [],
+			} as unknown as vscode.ExtensionContext
+			const activating = activate(context)
+			try {
+				await importStarted
+				expect(mocks.startMemory).not.toHaveBeenCalled()
+				expect(mocks.provider.createTask).not.toHaveBeenCalled()
+				expect(mocks.initializeScheduledTasks).not.toHaveBeenCalled()
+				expect(window.registerWebviewViewProvider).not.toHaveBeenCalled()
+				expect(mocks.registerCommands).not.toHaveBeenCalled()
+				expect(initializeIndex).not.toHaveBeenCalled()
+
+				settleImport()
+				await activating
+				expect(mocks.startMemory).toHaveBeenCalledOnce()
+				expect(mocks.initializeScheduledTasks).toHaveBeenCalledOnce()
+				expect(window.registerWebviewViewProvider).toHaveBeenCalledOnce()
+				expect(mocks.registerCommands).toHaveBeenCalledOnce()
+				expect(mocks.provider.createTask).toHaveBeenCalledWith("scheduled task")
+				expect(mocks.provider.createTask).toHaveBeenCalledWith("restored sidebar task")
+				expect(initializeIndex).toHaveBeenCalledWith(mocks.provider.contextProxy, { refreshSecrets: false })
+			} finally {
+				settleImport()
+				await activating
+				await deactivate()
+			}
+		},
+	)
+
+	it("does not start constructor memory work when activation fails after the import", async () => {
+		mocks.providerConstructed.mockImplementationOnce((ready: Promise<void> = Promise.resolve()) => {
+			void ready.then(() => mocks.startMemory()).catch(() => undefined)
+		})
+		mocks.constructApi.mockImplementationOnce(() => {
+			throw new Error("API initialization failed")
+		})
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		try {
+			await expect(activate(context)).rejects.toThrow("API initialization failed")
+			expect(mocks.startMemory).not.toHaveBeenCalled()
+		} finally {
+			await deactivate()
+		}
 	})
 
 	it("waits for command registration before auto-opening a switched worktree", async () => {
@@ -258,7 +354,7 @@ describe("extension lifecycle", () => {
 		await deactivate()
 	})
 
-	it("awaits sidebar provider disposal before shutting down global services", async () => {
+	it("awaits every task provider's disposal before shutting down global services", async () => {
 		let finishProviderDisposal!: () => void
 		mocks.provider.dispose.mockImplementationOnce(
 			() => new Promise<void>((resolve) => (finishProviderDisposal = resolve)),
@@ -278,6 +374,7 @@ describe("extension lifecycle", () => {
 		const deactivating = deactivate()
 
 		await vi.waitFor(() => expect(mocks.provider.dispose).toHaveBeenCalledOnce())
+		expect(mocks.disposeProviders).toHaveBeenCalledOnce()
 		expect(mocks.shutdownGlobalStores).not.toHaveBeenCalled()
 
 		finishProviderDisposal()
@@ -287,6 +384,26 @@ describe("extension lifecycle", () => {
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
 		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+	})
+
+	it("keeps shared services running until an editor provider finishes cleanup", async () => {
+		let finishEditor!: () => void
+		const editorCleanup = new Promise<void>((resolve) => (finishEditor = resolve))
+		mocks.disposeProviders.mockImplementationOnce(async () => {
+			await Promise.all([mocks.provider.dispose(), editorCleanup])
+		})
+		const deactivating = deactivate()
+		try {
+			await Promise.resolve()
+			expect(mocks.disposeProviders).toHaveBeenCalledOnce()
+			expect(mocks.shutdownGlobalStores).not.toHaveBeenCalled()
+			expect(mocks.cleanupMcp).not.toHaveBeenCalled()
+		} finally {
+			finishEditor()
+			await deactivating
+		}
+		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
+		expect(mocks.cleanupMcp).toHaveBeenCalledOnce()
 	})
 
 	it("finishes cleanup when the host has already closed its output channel", async () => {

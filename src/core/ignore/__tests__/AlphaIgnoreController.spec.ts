@@ -7,12 +7,10 @@ import * as vscode from "vscode"
 import * as path from "path"
 import * as fs from "fs/promises"
 import * as fsSync from "fs"
-import { fileExistsAtPath } from "../../../utils/fs"
 
 // Mock dependencies
 vi.mock("fs/promises")
 vi.mock("fs")
-vi.mock("../../../utils/fs")
 
 // Mock vscode
 vi.mock("vscode", () => {
@@ -49,7 +47,7 @@ vi.mock("vscode", () => {
 describe("AlphaIgnoreController", () => {
 	const TEST_CWD = "/test/path"
 	let controller: AlphaIgnoreController
-	let mockFileExists: Mock<typeof fileExistsAtPath>
+	let mockLstat: Mock<typeof fs.lstat>
 	let mockReadFile: Mock<typeof fs.readFile>
 	let mockWatcher: any
 
@@ -69,7 +67,9 @@ describe("AlphaIgnoreController", () => {
 		vscode.workspace.createFileSystemWatcher.mockReturnValue(mockWatcher)
 
 		// Setup fs mocks
-		mockFileExists = fileExistsAtPath as Mock<typeof fileExistsAtPath>
+		vi.mocked(fs.access).mockReset().mockResolvedValue(undefined)
+		mockLstat = fs.lstat as Mock<typeof fs.lstat>
+		mockLstat.mockResolvedValue(Object.create(fsSync.Stats.prototype) as fsSync.Stats)
 		mockReadFile = fs.readFile as Mock<typeof fs.readFile>
 
 		// Setup fsSync mocks with default behavior (return path as-is, like regular files)
@@ -86,14 +86,13 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should load .alphaignore patterns on initialization when file exists", async () => {
 			// Setup mocks to simulate existing .alphaignore file
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets.json")
 
 			// Initialize controller
 			await controller.initialize()
 
 			// Verify file was checked and read
-			expect(mockFileExists).toHaveBeenCalledWith(path.join(TEST_CWD, ".alphaignore"))
+			expect(mockLstat).toHaveBeenCalledWith(path.join(TEST_CWD, ".alphaignore"))
 			expect(mockReadFile).toHaveBeenCalledWith(path.join(TEST_CWD, ".alphaignore"), "utf8")
 
 			// Verify content was stored
@@ -111,7 +110,7 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should allow all access when .alphaignore doesn't exist", async () => {
 			// Setup mocks to simulate missing .alphaignore file
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 
 			// Initialize controller
 			await controller.initialize()
@@ -147,7 +146,6 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should handle errors when loading .alphaignore", async () => {
 			// Setup mocks to simulate error
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockRejectedValue(new Error("Test file read error"))
 
 			// Spy on console.error
@@ -164,7 +162,6 @@ describe("AlphaIgnoreController", () => {
 		})
 
 		it("keeps the last known-good policy while a reload is pending or fails", async () => {
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValueOnce("secrets/**")
 			await controller.initialize()
 
@@ -187,8 +184,44 @@ describe("AlphaIgnoreController", () => {
 			consoleSpy.mockRestore()
 		})
 
+		it.each(["EACCES", "EIO"])(
+			"retains known restrictions when the policy entry cannot be checked: %s",
+			async (code) => {
+				mockReadFile.mockResolvedValue("secrets/**")
+				await controller.initialize()
+				mockReadFile.mockClear()
+				const error = Object.assign(new Error("Cannot inspect policy"), { code })
+				vi.mocked(fs.access).mockRejectedValueOnce(error)
+				mockLstat.mockRejectedValueOnce(error)
+				const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+				try {
+					await controller.initialize()
+					expect(controller.validateAccess("secrets/key.json")).toBe(false)
+					expect(controller.alphaIgnoreContent).toBe("secrets/**")
+					expect(mockReadFile).not.toHaveBeenCalled()
+				} finally {
+					consoleSpy.mockRestore()
+				}
+			},
+		)
+
+		it("retains known restrictions when an existing policy link has a missing target", async () => {
+			mockReadFile.mockResolvedValue("secrets/**")
+			await controller.initialize()
+			const error = Object.assign(new Error("Missing link target"), { code: "ENOENT" })
+			vi.mocked(fs.access).mockRejectedValueOnce(error)
+			mockReadFile.mockRejectedValueOnce(error)
+			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				await controller.initialize()
+				expect(controller.validateAccess("secrets/key.json")).toBe(false)
+				expect(controller.alphaIgnoreContent).toBe("secrets/**")
+			} finally {
+				consoleSpy.mockRestore()
+			}
+		})
+
 		it("does not let an older overlapping reload replace newer rules", async () => {
-			mockFileExists.mockResolvedValue(true)
 			let resolveOlder!: (content: string) => void
 			let resolveNewer!: (content: string) => void
 			mockReadFile
@@ -221,7 +254,6 @@ describe("AlphaIgnoreController", () => {
 		})
 
 		it("treats an existing empty .alphaignore as an active policy file", async () => {
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("")
 			await controller.initialize()
 
@@ -233,7 +265,6 @@ describe("AlphaIgnoreController", () => {
 	describe("validateAccess", () => {
 		beforeEach(async () => {
 			// Setup .alphaignore content
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**\n*.log")
 			await controller.initialize()
 		})
@@ -284,7 +315,7 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should allow all access when no .alphaignore content", async () => {
 			// Create a new controller with no .alphaignore
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 			const emptyController = new AlphaIgnoreController(TEST_CWD)
 			await emptyController.initialize()
 
@@ -343,7 +374,6 @@ describe("AlphaIgnoreController", () => {
 	describe("validateCommand", () => {
 		beforeEach(async () => {
 			// Setup .alphaignore content
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**\n*.log")
 			await controller.initialize()
 		})
@@ -361,6 +391,42 @@ describe("AlphaIgnoreController", () => {
 			// Commands accessing allowed files should return undefined
 			expect(controller.validateCommand("cat src/app.ts")).toBeUndefined()
 			expect(controller.validateCommand("less README.md")).toBeUndefined()
+		})
+
+		it.each(["secrets", path.resolve(TEST_CWD, "secrets")])(
+			"blocks relative reads from the command working directory %s",
+			(workingDirectory) => {
+				expect(controller.validateCommand("cat keys.json", workingDirectory)).toBe("keys.json")
+				expect(controller.validateCommand("Get-Content -LiteralPath keys.json", workingDirectory)).toBe(
+					"keys.json",
+				)
+			},
+		)
+
+		it("resolves quoted, substituted, and named operands from the command working directory", () => {
+			expect(controller.validateCommand('cat "api keys.json"', "secrets")).toBe("api keys.json")
+			expect(controller.validateCommand('echo "$(cat keys.json)"', "secrets")).toBe("keys.json")
+			expect(controller.validateCommand("Get-Content -Path:keys.json", "secrets")).toBe("keys.json")
+		})
+
+		it("retains traversal and absolute-path handling from a command subdirectory", () => {
+			const ignoredPath = path.resolve(TEST_CWD, "secrets/keys.json")
+			expect(controller.validateCommand("cat ../secrets/keys.json", "src")).toBe("../secrets/keys.json")
+			expect(controller.validateCommand(`cat "${ignoredPath}"`, "src")).toBe(ignoredPath)
+			expect(controller.validateCommand("cat ../README.md", "src")).toBeUndefined()
+			expect(controller.validateCommand("cat app.ts", "src")).toBeUndefined()
+		})
+
+		it("checks a command working directory alias against its ignored canonical target", () => {
+			vi.mocked(fsSync.realpathSync).mockImplementation((filePath) => {
+				const candidate = filePath.toString()
+				if (candidate.endsWith(path.join("secret-alias", "keys.json"))) {
+					return path.resolve(TEST_CWD, "secrets/keys.json")
+				}
+				return candidate
+			})
+
+			expect(controller.validateCommand("cat keys.json", "secret-alias")).toBe("keys.json")
 		})
 
 		/**
@@ -426,7 +492,7 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should allow all commands when no .alphaignore exists", async () => {
 			// Create a new controller with no .alphaignore
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 			const emptyController = new AlphaIgnoreController(TEST_CWD)
 			await emptyController.initialize()
 
@@ -439,7 +505,6 @@ describe("AlphaIgnoreController", () => {
 	describe("filterPaths", () => {
 		beforeEach(async () => {
 			// Setup .alphaignore content
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**\n*.log")
 			await controller.initialize()
 		})
@@ -505,7 +570,6 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should generate formatted instructions when .alphaignore exists", async () => {
 			// Setup .alphaignore content
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules\n.git\nsecrets/**")
 			await controller.initialize()
 
@@ -524,7 +588,7 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should return undefined when no .alphaignore exists", async () => {
 			// Setup no .alphaignore
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 			await controller.initialize()
 
 			const instructions = controller.getInstructions()
@@ -555,12 +619,32 @@ describe("AlphaIgnoreController", () => {
 	})
 
 	describe("file watcher", () => {
+		it.each(["onDidChange", "onDidCreate", "onDidDelete"] as const)(
+			"retains known restrictions and settles a failed %s reload",
+			async (event) => {
+				mockReadFile.mockResolvedValue("secrets/**")
+				await controller.initialize()
+				const error = Object.assign(new Error("Cannot inspect policy"), { code: "EIO" })
+				vi.mocked(fs.access).mockRejectedValueOnce(error)
+				mockLstat.mockRejectedValueOnce(error)
+				const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+				try {
+					const reload = mockWatcher[event].mock.calls[0][0]
+					await expect(reload()).resolves.toBeUndefined()
+					expect(controller.alphaIgnoreContent).toBe("secrets/**")
+					expect(controller.validateAccess("secrets/key.json")).toBe(false)
+				} finally {
+					consoleSpy.mockRestore()
+				}
+			},
+		)
+
 		/**
 		 * Tests behavior when .alphaignore is created
 		 */
 		it("should reload .alphaignore when file is created", async () => {
 			// Setup initial state without .alphaignore
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 			await controller.initialize()
 
 			// Verify initial state
@@ -568,7 +652,7 @@ describe("AlphaIgnoreController", () => {
 			expect(controller.validateAccess("node_modules/package.json")).toBe(true)
 
 			// Setup for the test
-			mockFileExists.mockResolvedValue(false) // Initially no file exists
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 
 			// Create and initialize controller with no .alphaignore
 			controller = new AlphaIgnoreController(TEST_CWD)
@@ -578,7 +662,7 @@ describe("AlphaIgnoreController", () => {
 			expect(controller.alphaIgnoreContent).toBeUndefined()
 
 			// Now simulate file creation
-			mockFileExists.mockResolvedValue(true)
+			mockLstat.mockResolvedValue(Object.create(fsSync.Stats.prototype) as fsSync.Stats)
 			mockReadFile.mockResolvedValue("node_modules")
 
 			// Force reload of .alphaignore content manually
@@ -596,7 +680,6 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should reload .alphaignore when file is changed", async () => {
 			// Setup initial state with .alphaignore
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules")
 			await controller.initialize()
 
@@ -624,7 +707,6 @@ describe("AlphaIgnoreController", () => {
 		 */
 		it("should reset when .alphaignore is deleted", async () => {
 			// Setup initial state with .alphaignore
-			mockFileExists.mockResolvedValue(true)
 			mockReadFile.mockResolvedValue("node_modules")
 			await controller.initialize()
 
@@ -632,7 +714,7 @@ describe("AlphaIgnoreController", () => {
 			expect(controller.validateAccess("node_modules/package.json")).toBe(false)
 
 			// Simulate file deletion
-			mockFileExists.mockResolvedValue(false)
+			mockLstat.mockRejectedValue(Object.assign(new Error("File not found"), { code: "ENOENT" }))
 
 			// Find and trigger the onDelete handler
 			const onDeleteHandler = mockWatcher.onDidDelete.mock.calls[0][0]

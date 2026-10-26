@@ -412,6 +412,47 @@ test("pairing helper rejects a missing candidate sample", () => {
 	assert.throws(() => pairReports(reference, candidate, { declaredSampleCount: 2, promptIds }), /missing candidate/)
 })
 
+test("confounded lookup evidence remains descriptive and cannot be admitted as live", () => {
+	for (const identity of [{ modelId: null }, { reasoningPreference: "unknown" }, { cacheState: "unknown" }]) {
+		const reference = runEnvelope(
+			promptIds.map((id) => sampleReport(id, 0, identity)),
+			identity,
+		)
+		const candidate = runEnvelope(promptIds.map((id) => sampleReport(id, 0)))
+		const report = pairReports(reference, candidate, { declaredSampleCount: 1, promptIds })
+		assert.equal(report.admitted, false)
+		assert.equal(report.liveMeasurement, false)
+		assert.equal(report.samples.length, promptIds.length)
+		assert.equal(report.samples[0].delta.providerRequests.coverage, "unavailable")
+		assert.match(report.nonAdmissionReasons.join(" "), /unknown/)
+	}
+	const reference = runEnvelope(promptIds.map((id) => sampleReport(id, 0)))
+	const candidate = runEnvelope(promptIds.map((id) => sampleReport(id, 0, { measurementKind: "live-supplemental" })))
+	const report = pairReports(reference, candidate, { declaredSampleCount: 1, promptIds })
+	assert.equal(report.admitted, false)
+	assert.equal(report.liveMeasurement, false)
+	assert.match(report.nonAdmissionReasons.join(" "), /measurement kinds/)
+})
+
+test("only known explicitly declared lookup treatment differences are admitted", () => {
+	const reference = runEnvelope(promptIds.map((id) => sampleReport(id, 0)))
+	const identity = { modelId: "different-model" }
+	const candidate = runEnvelope(
+		promptIds.map((id) => sampleReport(id, 0, identity)),
+		identity,
+	)
+	const contract = { declaredSampleCount: 1, promptIds }
+	assert.equal(pairReports(reference, candidate, contract).admitted, false)
+	assert.equal(
+		pairReports(reference, candidate, { ...contract, allowedDifferenceFields: ["modelId"] }).admitted,
+		true,
+	)
+	assert.throws(
+		() => pairReports(reference, candidate, { ...contract, allowedDifferenceFields: ["measurementKind"] }),
+		/allowed difference/,
+	)
+})
+
 test("pairing rejects sample identities that disagree with their declared run", () => {
 	for (const role of ["reference", "candidate"]) {
 		for (const [field, value] of Object.entries({

@@ -134,6 +134,18 @@ const mockFs = {
 		throw error
 	}),
 
+	lstat: vi.fn().mockImplementation(async (path: string) => {
+		const isDirectory = mockDirectories.has(path)
+		if (!isDirectory && !mockFiles.has(path)) {
+			throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: "ENOENT" })
+		}
+		return {
+			isFile: () => !isDirectory,
+			isDirectory: () => isDirectory,
+			isSymbolicLink: () => false,
+		}
+	}),
+
 	rename: vi.fn().mockImplementation(async (oldPath: string, newPath: string) => {
 		// Check if the old file exists
 		if (mockFiles.has(oldPath)) {

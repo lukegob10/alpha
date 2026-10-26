@@ -303,6 +303,34 @@ describe("IpcClient transport contracts", () => {
 		expect(client.capabilities).toBeUndefined()
 	})
 
+	it("clears readiness and identity on explicit disconnect even when the backend emits no disconnect event", () => {
+		const { client, backend } = createClient()
+		const disconnected = vi.fn()
+		client.on(IpcMessageType.Disconnect, disconnected)
+		backend.deliver("connect")
+		backend.deliver("message", {
+			...acknowledgement("owned-client", identity),
+			data: {
+				...acknowledgement("owned-client", identity).data,
+				capabilities: { targetedTaskCancellation: true },
+			},
+		})
+		mocks.ipc.disconnect.mockImplementationOnce((id: string) => {
+			delete mocks.ipc.of[id]
+		})
+		client.disconnect()
+		expect(client.isConnected).toBe(false)
+		expect(client.isReady).toBe(false)
+		expect(client.clientId).toBeUndefined()
+		expect(client.executionIdentity).toBeUndefined()
+		expect(client.serverProcess).toBeUndefined()
+		expect(client.capabilities).toBeUndefined()
+		expect(disconnected).toHaveBeenCalledOnce()
+		backend.deliver("disconnect")
+		client.disconnect()
+		expect(disconnected).toHaveBeenCalledOnce()
+	})
+
 	it("isolates clients sharing a socket, including commands and disconnects", () => {
 		const first = createClient()
 		const second = createClient()
@@ -330,6 +358,8 @@ describe("IpcClient transport contracts", () => {
 
 	it("reports backend disconnect errors without throwing to cleanup callers", () => {
 		const { client, backend, log } = createClient()
+		const disconnected = vi.fn()
+		client.on(IpcMessageType.Disconnect, disconnected)
 		backend.deliver("connect")
 		backend.deliver("message", {
 			...acknowledgement(),
@@ -341,9 +371,13 @@ describe("IpcClient transport contracts", () => {
 			throw new Error("transport cleanup failed")
 		})
 		expect(() => client.disconnect()).not.toThrow()
+		expect(client.isConnected).toBe(false)
+		expect(client.isReady).toBe(false)
+		expect(client.clientId).toBeUndefined()
+		expect(client.executionIdentity).toBeUndefined()
+		expect(client.serverProcess).toBeUndefined()
 		expect(client.capabilities).toBeUndefined()
-		expect(log).toHaveBeenCalledExactlyOnceWith(
-			"[client#disconnect] error disconnecting -> transport cleanup failed",
-		)
+		expect(disconnected).toHaveBeenCalledOnce()
+		expect(log).toHaveBeenCalledWith("[client#disconnect] error disconnecting -> transport cleanup failed")
 	})
 })

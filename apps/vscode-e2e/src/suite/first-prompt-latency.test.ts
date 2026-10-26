@@ -7,6 +7,7 @@ import type { AlphaMessage, ProviderSettings } from "@alpha-code/types"
 
 import { withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
+import { latencyObservation } from "../evidence/latencyObservation"
 
 interface StartupTask {
 	taskId: string
@@ -137,6 +138,8 @@ suite("First prompt admission latency", function () {
 			}
 			const report = {
 				schemaVersion: 1,
+				...latencyObservation(),
+				sampleCount: samples.length,
 				hostVersion: vscode.version,
 				provider: "scripted",
 				boundary:

@@ -138,7 +138,7 @@ export interface CreateTaskOptions {
 	/** Whether to start the task loop immediately (default: true).
 	 *  When false, the caller must invoke `task.start()` manually. */
 	startTask?: boolean
-	/** Keep other live top-level tasks running when this task is created. */
+	/** Keep other live top-level tasks running (default: true). False explicitly replaces the selected task. */
 	preserveExisting?: boolean
 	/** Parent conversation for an independent primary task; separate from managed-agent parentTaskId. */
 	orchestrationParentTaskId?: string
@@ -171,7 +171,7 @@ export interface CreateTaskOptions {
 	historyWorkspacePath?: string
 	/** Private execution root used only to redact managed-worktree paths from model-visible output. */
 	subagentPrivateWorkspaceRoot?: string
-	/** Absolute time after which a sub-agent must stop researching and synthesize its result. */
+	/** @deprecated Historical task options remain readable; agent research has no separate deadline. */
 	subagentResearchDeadlineAt?: number
 }
 

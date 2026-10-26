@@ -137,34 +137,35 @@ export function copyPaths(copyPaths: [string, string, CopyPathOptions?][], srcDi
 				throw new Error("Copy destination cannot contain symbolic links")
 			if (current === outputRoot) break
 		}
+		const srcPath = resolveCopySourcePath(srcDir, srcRelPath)
+		let stats: fs.Stats
 		try {
-			const srcPath = resolveCopySourcePath(srcDir, srcRelPath)
-			const stats = fs.lstatSync(srcPath)
-
-			if (stats.isDirectory()) {
-				if (fs.existsSync(dstPath)) {
-					rmDir(dstPath)
-				}
-
-				fs.mkdirSync(dstPath, { recursive: true })
-
-				const count = copyDir(srcPath, dstPath, 0)
-				console.log(`[copyPaths] Copied ${count} files from ${srcRelPath} to ${dstRelPath}`)
-			} else {
-				fs.copyFileSync(srcPath, dstPath)
-				console.log(`[copyPaths] Copied ${srcRelPath} to ${dstRelPath}`)
-			}
+			stats = fs.lstatSync(srcPath)
 		} catch (error) {
-			if (options.optional) {
+			if (options.optional && error instanceof Error && "code" in error && error.code === "ENOENT") {
 				console.warn(`[copyPaths] Optional file not found: ${srcRelPath}`)
-			} else {
-				throw error
+				return
 			}
+			throw error
+		}
+
+		if (stats.isDirectory()) {
+			if (fs.existsSync(dstPath)) {
+				rmDir(dstPath)
+			}
+
+			fs.mkdirSync(dstPath, { recursive: true })
+
+			const count = copyDir(srcPath, dstPath, 0)
+			console.log(`[copyPaths] Copied ${count} files from ${srcRelPath} to ${dstRelPath}`)
+		} else {
+			fs.copyFileSync(srcPath, dstPath)
+			console.log(`[copyPaths] Copied ${srcRelPath} to ${dstRelPath}`)
 		}
 	})
 }
 
-export function copyWasms(srcDir: string, distDir: string): void {
+export function copyWasms(srcDir: string, distDir: string, treeSitterGrammarFiles: readonly string[]): void {
 	fs.mkdirSync(distDir, { recursive: true })
 
 	// Tiktoken WASM file.
@@ -203,14 +204,15 @@ export function copyWasms(srcDir: string, distDir: string): void {
 		throw new Error(`Directory does not exist: ${languageWasmDir}`)
 	}
 
-	// Dynamically read all WASM files from the directory instead of using a hardcoded list.
-	const wasmFiles = fs.readdirSync(languageWasmDir).filter((file) => file.endsWith(".wasm"))
-
-	wasmFiles.forEach((filename) => {
+	// The shared parser inventory covers production loaders and real grammar inspection consumers.
+	treeSitterGrammarFiles.forEach((filename) => {
+		if (!/^tree-sitter-[a-z0-9_]+\.wasm$/u.test(filename)) {
+			throw new Error(`Invalid tree-sitter grammar filename: ${filename}`)
+		}
 		fs.copyFileSync(path.join(languageWasmDir, filename), path.join(distDir, filename))
 	})
 
-	console.log(`[copyWasms] Copied ${wasmFiles.length} tree-sitter language wasms to ${distDir}`)
+	console.log(`[copyWasms] Copied ${treeSitterGrammarFiles.length} tree-sitter language wasms to ${distDir}`)
 
 	// Copy esbuild-wasm files for custom tool transpilation (cross-platform).
 	copyEsbuildWasmFiles(srcDir, distDir)

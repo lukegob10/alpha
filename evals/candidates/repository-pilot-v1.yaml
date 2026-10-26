@@ -1,0 +1,80 @@
+schemaVersion: 1
+id: repository-pilot-v1
+version: 1
+status: calibrating
+primaryModel: luna-high
+referenceModel: sol-high
+tasks:
+  - id: python-inventory-report
+    version: 1
+    partition: development
+    admission: calibrating
+    fixture: python/inventory-report
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:original-synthetic-candidate
+      commit: candidate-v1-20261023
+      snapshotDigest: sha256:39a3312dc862139d8a44ed97fbb9598697b83b382cc837912f7e01963ef4d945
+    family: repository-pilot
+    capabilities:
+      - csv-aggregation
+      - cli-integration
+      - validation
+    risk: medium
+    difficulty: challenging
+    contextBand: compact
+    editTopology:
+      kind: multi-file
+      minFiles: 2
+      maxFiles: 2
+      allowedRoots:
+        - inventory
+    validation:
+      commands:
+        - command: python
+          args:
+            - -B
+            - -m
+            - unittest
+            - discover
+            - -s
+            - test
+            - -v
+      network: disabled
+    evidenceRequirements:
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:0ca007c75a378c1f6710be588c247ed477cac7335eba83bdf83799e554a92b0f
+    environmentDigest: sha256:5fe4d8287cd90c6d71715eab7fa4dc5547838b3e4a9a214f0dc20d8a5cbe132c
+    restraint: false
+    budgets:
+      wallSeconds: 300
+      modelCalls: 30
+      toolCalls: 80
+      costUsd: 0.15
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    fixtureDigest: sha256:39a3312dc862139d8a44ed97fbb9598697b83b382cc837912f7e01963ef4d945
+    promptDigest: sha256:5f937551aece1b2035dbc643402ae47bc3dfb086cfb51007d8e62f759beae57c

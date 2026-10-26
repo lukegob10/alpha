@@ -81,6 +81,9 @@ async function runCli({
 		"syncVisibleKeylessReports",
 		"mergeModelCalibration",
 		"calibrationReportSchema",
+		"readCalibrationReport",
+		"resolveCalibrationReportPath",
+		"updateCalibrationReport",
 		"buildReviewSample",
 		"auditFrontierRelease",
 		"releaseFrontierSuite",
@@ -91,6 +94,7 @@ async function runCli({
 		"applySubsetMeasurements",
 		"certifyInitialFixtureStates",
 		"stringify",
+		"CalibrationReportValidationError",
 	]
 	await fs.writeFile(
 		fixture,
@@ -124,6 +128,7 @@ export async function runBenchmarkModelCampaign() {
 	return 42
 }
 export const EVALS_REPO_PATH = ${JSON.stringify(directory)}
+export const DEFAULT_BENCHMARK_SUBSET_FILE = "frontier-t1-v6.yaml"
 export const loadBenchmarkCatalog = async () => ({})
 export const loadBenchmarkSubset = async () => ({ taskReservationUsd: 0.06, hardCapUsd: 0.5 })
 export const selectBenchmarkSubset = () => ({ tasks: [{ id: "fixture-task" }], estimatedCostUsd: 0.04 })

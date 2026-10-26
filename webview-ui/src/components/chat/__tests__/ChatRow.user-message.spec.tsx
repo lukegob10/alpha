@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@/utils/test-utils"
+import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
 import userEvent from "@testing-library/user-event"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -174,6 +174,50 @@ describe("user message bubbles", () => {
 			editedMessageContent: "A revised opening prompt",
 			images: ["data:image/png;base64,aGVsbG8="],
 		})
+	})
+
+	it("retains edited text and attachments while host confirmation is cancelled or the restart fails", () => {
+		const { rerender } = renderMessage(false, true)
+		fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }))
+		const editor = screen.getByRole("textbox", { name: "Edit your message..." })
+		fireEvent.change(editor, { target: { value: "Keep this revised prompt" } })
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "selectedImages",
+						context: "edit",
+						messageTs: message.ts,
+						images: ["data:image/png;base64,bmV3"],
+					},
+				}),
+			)
+		})
+		const request = {
+			type: "submitEditedMessage",
+			value: message.ts,
+			taskId: environment.currentTaskId,
+			editedMessageContent: "Keep this revised prompt",
+			images: ["data:image/png;base64,aGVsbG8=", "data:image/png;base64,bmV3"],
+		}
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith(request)
+		expect(editor).toHaveValue(request.editedMessageContent)
+		expect(screen.getAllByRole("img")).toHaveLength(2)
+		// Cancelling confirmation leaves the same transcript. A failed restart can
+		// also refresh task state without replacing the original prompt.
+		rerender(messageElement(false, true))
+		expect(screen.getByRole("textbox", { name: "Edit your message..." })).toBe(editor)
+		rerender(
+			messageElement(false, true, {
+				...environment,
+				currentTaskItem: { id: "style-task", status: "failed" },
+			}),
+		)
+		expect(editor).toHaveValue(request.editedMessageContent)
+		expect(screen.getAllByRole("img")).toHaveLength(2)
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).toHaveBeenLastCalledWith(request)
 	})
 
 	it("right-aligns the message and its actions without losing their labels or task routing", () => {

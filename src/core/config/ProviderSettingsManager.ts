@@ -921,9 +921,8 @@ export class ProviderSettingsManager {
 						const supportsReasoningBudget =
 							modelInfo.supportsReasoningBudget || modelInfo.requiredReasoningBudget
 
-						// If the model doesn't support reasoning budgets, remove the token fields
+						// The output cap is independent of reasoning controls and must survive export.
 						if (!supportsReasoningBudget) {
-							delete configs[name].modelMaxTokens
 							delete configs[name].modelMaxThinkingTokens
 						}
 					} catch (error) {
@@ -944,6 +943,8 @@ export class ProviderSettingsManager {
 			return await this.lock(async () => {
 				const previous = await this.load()
 				const { profiles: imported } = readPersistedProviderProfiles(providerProfiles, () => this.generateId())
+				const hasImportedProfiles =
+					Object.keys(imported.apiConfigs).length + Object.keys(imported.retainedApiConfigs ?? {}).length > 0
 				const source: ProviderProfiles = {
 					...imported,
 					apiConfigs: { ...imported.apiConfigs },
@@ -984,6 +985,15 @@ export class ProviderSettingsManager {
 				}
 				if (Object.keys(retained).length) imported.retainedApiConfigs = retained
 				else delete imported.retainedApiConfigs
+				if (!hasImportedProfiles) imported.currentApiConfigName = previous.currentApiConfigName
+				else if (
+					!Object.hasOwn(imported.apiConfigs, imported.currentApiConfigName) &&
+					!Object.hasOwn(retained, imported.currentApiConfigName)
+				) {
+					throw new Error(
+						`Selected profile "${imported.currentApiConfigName}" was not found. No provider was substituted.`,
+					)
+				}
 				const remapId = createImportedProfileIdRemapper(source, imported)
 				for (const id of options.referencedIds ?? []) remapId(id)
 				imported.modeApiConfigs = {

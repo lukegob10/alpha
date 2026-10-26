@@ -1,208 +1,186 @@
-<p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=AlphaInc.alpha"><img src="https://img.shields.io/badge/VS_Code_Marketplace-007ACC?style=flat&logo=visualstudiocode&logoColor=white" alt="VS Code Marketplace"></a>
-</p>
+# Alpha Code
 
-# Alpha
+Alpha is a VS Code extension for planning, coding, debugging, and reviewing work with AI.
 
-> Your AI-Powered Dev Team, Right in Your Editor
+## Install
 
 Download the Windows x64 `.vsix` for Intel/AMD PCs from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest),
-then run **Extensions: Install from VSIX...** in VS Code 1.125 or newer.
+then run **Extensions: Install from VSIX...** in VS Code **1.125.0** or newer.
+The exact development and release reference host is VS Code **1.138.0**; it does not raise the installation minimum.
 
-## Welcome to Alpha
+## Work in Alpha
 
-Alpha keeps delegated work visible, prevents search loops, and makes active traces easier to follow.
+- Plan systems and changes in **Plan**, then implement, investigate, and debug in **Code**. Press `Shift+Tab` in the
+  chat composer to switch modes.
+- Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff.
+- Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
+- Use built-in skills, Alpha Tickets, the HTML document previewer, and scheduled tasks.
+- Connect MCP servers and use automatic context compaction for longer tasks.
 
-- One TypeScript turn engine coordinates model steps, tool calls, approvals, and delegated work across supported providers
-- Ask, Auto, and Full Access policies apply consistently to tool calls and child tasks
-- Alpha Tickets stays available as an eager, integrated set of agent tools
-- Completed work folds into a **Worked for** summary; expand it to inspect the full activity trace
-- Review the whole turn or open a per-file diff in Alpha Diff, with added and removed line counts
-- Automatic context compaction runs at safe boundaries when its configured threshold is reached
-- Managed-agent tasks open only after launch and retain accurate terminal reasons when startup fails
-- Repeated search-only steps trigger bounded evidence consolidation and concrete-action recovery
-- Folded command and edit traces pulse subtly while work is still running, with reduced-motion support
-- The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
+Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
+policy or workspace protections.
 
----
+Supported chat providers are native OpenAI, Anthropic, Gemini, xAI, OpenRouter, GCP Vertex AI, VS Code LM API, Stellar,
+and OpenAI Compatible. Native providers and OpenRouter offer a curated frontier-model catalog. Select the provider and
+model in Settings, enter that provider's API key, and click **Save**. Choose reasoning separately in the task composer;
+available levels follow the selected model. Existing OpenAI Compatible profiles keep their custom endpoints and models.
+Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
 
-## What Can Alpha Do For YOU?
+Enable optional local memory in **Settings → Context → Memories**, then **Save**. Use and generation have separate
+controls; background generation uses the selected provider and can incur model usage. Memory uses eligible idle
+conversations and stores `memory_summary.md` and `rollout_summaries/` under `~/.alpha/memories_v2/` (or
+`$ALPHA_HOME/memories_v2/`). Use changes apply to new conversations; generation changes also apply to the displayed
+conversation. Turning memory off retains its files. **Reset all memories** removes learned state without deleting
+conversations. Optional memory tools provide scoped retrieval and user-requested remember, correct, or forget notes.
 
-- Generate Code from natural language descriptions and specs
-- Keep day-to-day work focused with Plan and Code modes
-- Refactor & Debug existing code
-- Write & Update documentation
-- Answer Questions about your codebase
-- Automate repetitive tasks
-- Run parallel task sessions so one agent can continue in the background while you start or inspect another
-- Utilize MCP Servers
+Alpha uses the GitHub CLI (`gh`) through its command tool. Install it where the extension runs and authenticate with
+`gh auth login`. Commands use the selected approval policy.
 
-Supported chat providers are GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible.
-Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. See [provider compatibility and recovery](docs/provider-reduction.md)
-for saved configurations that reference a removed provider.
+The standalone Alpha CLI is retired. Development and evaluation commands run the real extension. Historical task and
+evaluation records remain readable.
 
-## Modes
+## Develop
 
-Alpha keeps the normal chat workflow focused:
-
-- Plan Mode: plan systems, specs, and migrations
-- Code Mode: everyday coding, investigation, debugging, orchestration, edits, and file operations
-
-Press `Shift+Tab` while the chat composer is focused to switch between Plan and Code.
-
-Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configurations remain compatible, but they are no longer offered in the normal mode selectors.
-
-## Resources
-
-- **[Project Docs](docs/README.md):** Maintained compatibility contracts and operating guides.
-- **[Evaluation inputs](evals/README.md):** Benchmark suites, fixtures, and historical evaluation evidence.
-- **[GitHub Issues](https://github.com/lukegob10/alpha/issues):** Report bugs, feature requests, and development questions.
-
----
-
-## Local Setup & Development
-
-### GitHub access
-
-Alpha uses the GitHub CLI (`gh`) through its normal command tool. Install and authenticate `gh` in the environment
-where the extension runs; see [GitHub CLI setup and compatibility](docs/github-cli.md). Command approvals and workspace
-restrictions still apply.
-
-### Release Automation
-
-The [release workflow](.github/workflows/release-vsix.yml) runs on `main` and publishes a verified Windows x64 VSIX GitHub release
-after the exact VS Code 1.138.0 host gate, outside-path command checks, packaging, and source-asset verification. It does
-not publish to the VS Code Marketplace.
-
-1. **Clone** the repo:
+Read [AGENTS.md](AGENTS.md) for engineering requirements. Use Node.js **24.21.0**, its pinned npm **11.19.0**, and
+pnpm **11.24.0**. pnpm is the repository package manager.
 
 ```sh
 git clone https://github.com/lukegob10/alpha.git
-```
-
-2. **Install dependencies**:
-
-```sh
+cd alpha
 pnpm install --frozen-lockfile
+pnpm --dir src rebuild @vscode/ripgrep
+pnpm --filter @alpha-code/types build
+pnpm harness doctor
 ```
 
-The repository pins Node.js 24.21.0, npm 11.19.0, and pnpm 11.24.0. Use those versions for reproducible builds and
-checks. pnpm remains the package manager; npm is pinned for bootstrap and CI tooling. The development runtime does not
-change the extension's VS Code 1.138.0 compatibility contract.
+Turbo orders workspace builds and reuses their outputs. Its ignored `.turbo/` data is disposable; local cache entries
+are pruned at the start of runs using seven-day retention and a 2 GB size target.
 
-3. **Run the extension**:
+Open the checkout in VS Code 1.138.0, select **Run Extension** in Run and Debug, and press `F5`. The
+[launch configuration](.vscode/launch.json) starts the [watch tasks](.vscode/tasks.json) and opens an Extension Development
+Host with webview hot reload. Extension code rebuilds automatically; restart the development host to load those changes.
+Select **Run Extension (debugger)** when you need breakpoint debugging.
 
-There are several ways to run the Alpha extension:
+## Testing
 
-### Development Mode (F5)
-
-For active development, use VSCode's built-in debugging:
-
-Press `F5` (or go to **Run** → **Start Debugging**) in VSCode. This will open a new VSCode window with the Alpha extension running.
-
-- Changes to the webview will appear immediately.
-- Changes to the core extension rebuild automatically; restart the development host to load them.
-
-If both Alpha Code and Alpha Tickets stay gray, select **Run Extension** in Run and Debug, then press `F5`. The
-standard profile runs the development build with webview hot reload without attaching a breakpoint debugger. You can
-also use **Run → Run Without Debugging** (`Ctrl+F5`). The optional **Run Extension (debugger)** profile is available
-when debugger attachment is working.
-
-The Windows VS Code 1.139.1 / bundled JavaScript Debugger 1.117.0 combination was observed on 2026-09-26 failing
-before Alpha activation: the debugger reported `ECONNREFUSED ::1:<port>`, followed by the development host's
-60-second ready-message timeout. The debugger's [extension-host attachment code](https://github.com/microsoft/vscode-js-debug/blob/main/src/targets/node/extensionHostAttacher.ts)
-uses `localhost`, while the host inspector listens on IPv4 loopback. Running without the debugger avoids this
-attachment failure; it does not change Alpha's VS Code 1.138.0 compatibility requirement.
-
-### Core checks
-
-The default checks cover the extension, webview, and VS Code E2E dependency graph:
+Start with the focused tests and owning typecheck in the [validation matrix](AGENTS.md#validation-matrix).
+Tooling checks execute workflow scripts with PowerShell 7 (`pwsh`), which must be on `PATH` on every platform.
+Use `pnpm harness list` for available checks. Common extension checks use the same harness as CI:
 
 ```sh
-pnpm lint
-pnpm check-types
-pnpm test
+pnpm harness run static
+pnpm harness run unit
+pnpm harness run host
 ```
 
-VS Code 1.125.0 is the minimum supported editor. The exact release-host contract runs on VS Code 1.138.0.
-See the [migration record](docs/vscode-1.138-migration.md) for compatibility changes and validation.
+Run build and host checks sequentially. The `host` lane runs the exact VS Code 1.138.0 smoke gate; minimum-host or
+host-adapter changes also require the compatibility gate:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
 pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 ```
 
-Optional retained workspace and evaluator checks are explicit:
+The `extended` lane covers instructions, HTML previews, storage recovery, and scheduled tasks; `confidence` runs the
+broader core gate. Offline evaluator checks use `pnpm test:evals:offline`; the
+[evaluator guide](packages/evals/README.md) covers service-backed checks and fixture authoring.
+
+### Reviewed improvement loop
+
+Run `pnpm --filter @alpha-code/evals benchmark:improve --help` for the evidence and feedback workflow. The
+[operator guide](evals/problem-solving/improvement-loop.md) walks through human adjudication, draft regression
+validation, ranked implementation handoffs, and fresh confirmation through the existing extension-host runner.
+It distinguishes full evaluator evidence, retained host observations, and opt-in future native captures.
+Offline controls and archived results do not establish live quality. Model review and live confirmation require
+explicit configuration and budgets; reports and handoffs remain tool artifacts, and generated tasks require review.
+
+### Live tests
+
+Live provider runs supplement deterministic checks and require their own credentials and run budget. Use three separate
+absolute profile, workspace, and artifact paths outside this checkout and normal VS Code data. Profile and workspace
+directories must initially be empty or absent. Initialize a dedicated profile after building the extension and runner:
 
 ```sh
-pnpm lint:all
-pnpm check-types:all
-pnpm test:all
+pnpm bundle
+pnpm --filter @alpha-code/vscode-webview build
+pnpm --dir apps/vscode-e2e compile
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>" --init-profile --setup
 ```
 
-Use `pnpm test:evals` or `pnpm test:evals:offline` for the evaluator package. Evaluator runs execute the real Alpha
-extension through VS Code; see [`packages/evals/README.md`](packages/evals/README.md) for their service prerequisites.
+Sign in inside the dedicated host. After discovery, repeat setup with the exact returned `--model-id` and a supported
+`--reasoning-effort`, then finish the readiness check. Omit `--init-profile` after initialization and `--setup` when
+running tests. Setup and model discovery do not prove that a task passed. Never copy credentials between profiles or
+reset unrelated editor data. See the [runner options](apps/vscode-e2e/src/runTest.ts) for current flags.
 
-### Automated VSIX Installation
-
-To build and install the extension as a VSIX package directly into VSCode:
+Claude has dedicated deterministic and live suites on VS Code 1.138.0. After the build commands above, run the
+mechanical fixture without credentials, then run the live suite with the exact Claude model ID returned by discovery:
 
 ```sh
-pnpm install:vsix [-y] [--editor=<command>]
+pnpm test:claude:mechanical
+pnpm test:claude:live --model-id "<exact-copilot-claude-model-id>" --reasoning-effort high --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>"
 ```
 
-This command will:
+Use a supported reasoning effort for the selected Claude model. Both commands require every selected test to execute;
+the live suite uses the signed-in dedicated profile and retains the actual model, host, request counts, and task results.
+An unavailable Claude model cannot fall back to another model or count as a live pass.
 
-- Ask which editor command to use (code/cursor/code-insiders) - defaults to 'code'
-- Replace any installed copy of the same extension version with VS Code's `--force` install option.
-- Build the latest VSIX package.
-- Install the newly built VSIX.
-- Prompt you to restart VS Code for changes to take effect.
+The live model matrix runs the same complete suite sequentially with **GPT 6 Luna / max**, **Claude Haiku 5.5 / high**,
+then **Grok 4.6 / low**, exclusively on **VS Code 1.138.0**. It prepares the build and deterministic host gates once,
+uses fresh scenario workspaces, and retains separate model reports plus a combined `matrix-result.json`. Every model
+must pass; missing models, unsupported effort, failed scenarios, and incomplete evidence cannot become a passing result.
+Source/build changes or a changed Copilot implementation invalidate the comparison. Model IDs are exact; no fallback is allowed.
 
-Options:
+After completing dedicated-profile setup, preview the plan without creating a campaign or making live requests:
 
-- `-y`: Skip all confirmation prompts and use defaults
-- `--editor=<command>`: Specify the editor command (e.g., `--editor=cursor` or `--editor=code-insiders`)
+```sh
+pnpm test:live:matrix --root "<absolute-campaign-root>" --profile-dir "<absolute-profile-root>" --dry-run
+```
 
-### Manual VSIX Installation
+Run the matrix with the same paths and `--init-root` for a new empty campaign root. Omit `--init-root` on subsequent runs:
 
-If you prefer to install the VSIX package manually:
+```sh
+pnpm test:live:matrix --root "<absolute-campaign-root>" --profile-dir "<absolute-profile-root>" --init-root
+```
 
-1.  First, build the VSIX package:
-    ```sh
-    pnpm vsix
-    ```
-2.  A host-targeted `.vsix` file will be generated in `bin/` (e.g., `bin/alpha-<version>-win32-x64.vsix` on Windows x64).
-3.  Install it manually using the VSCode CLI:
-    ```sh
-    code --install-extension bin/alpha-<version>-<target>.vsix
-    ```
+Each model gets one sample per scenario by default. `--max-requests` sets a separate request cap for each model;
+the preview shows their combined cap. `--samples` explicitly increases repetitions. Use `test:live:matrix:core` for
+the smaller core suite or `test:live:matrix:reliability` for lifecycle and recovery coverage. An ordinary model failure
+does not skip the remaining models; cancellation or changed comparison conditions stop further launches.
 
-GitHub releases provide the Windows x64 package for Intel/AMD PCs. Local builds remain targeted to the build host.
+## Package and install a local build
 
----
+```sh
+pnpm bundle
+pnpm vsix
+node scripts/verify-vsix-contents.mjs bin/alpha-<version>-<target>.vsix
+```
 
-We use [changesets](https://github.com/changesets/changesets) for versioning and publishing. Check our `CHANGELOG.md` for release notes.
+Substitute the generated filename from `bin/`, then install it with **Extensions: Install from VSIX...**.
+Local packages target the build host, such as `win32-x64` on Windows x64.
 
----
+For an automated build and installation, run `pnpm install:vsix`. It installs frozen dependencies, cleans generated build
+output, builds the VSIX, and asks before installing with `--force`. Use `--editor=code`, `--editor=code-insiders`, or
+`--editor=cursor` to select an editor command; `-y` skips prompts. Restart the editor after installation.
+
+The [release workflow](.github/workflows/release-vsix.yml) publishes a verified Windows x64 package as
+`alpha-<version>.vsix` to GitHub Releases after its validation gates. Local and retained CI packages keep their target
+suffix; the published download keeps the historical release filename. The workflow runs automatically for
+`src/package.json` changes on `main` and supports manual dispatch on a selected release branch. It does not publish to
+the VS Code Marketplace. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## Resources and contributions
+
+- [Engineering guide](AGENTS.md): architecture, compatibility, security, and validation requirements.
+- [Evaluation inputs](evals/): suites, fixtures, measurement contracts, and historical evidence.
+- [GitHub Issues](https://github.com/lukegob10/alpha/issues): bugs, feature requests, and development questions.
+
+Open an issue before starting a substantial contribution and follow [AGENTS.md](AGENTS.md).
+For intended agent behavior, compare current [Codex CLI source and tests](https://github.com/openai/codex) as required by
+the engineering guide; keep Alpha's own approval and workspace protections.
 
 ## Disclaimer
 
 **Please note** that Alpha, Inc does **not** make any representations or warranties regarding any code, models, or other tools provided or made available in connection with Alpha, any associated third-party tools, or any resulting outputs. You assume **all risks** associated with the use of any such tools or outputs; such tools are provided on an **"AS IS"** and **"AS AVAILABLE"** basis. Such risks may include, without limitation, intellectual property infringement, cyber vulnerabilities or attacks, bias, inaccuracies, errors, defects, viruses, downtime, property loss or damage, and/or personal injury. You are solely responsible for your use of any such tools or outputs (including, without limitation, the legality, appropriateness, and results thereof).
 
----
-
-## Contributing
-
-Open a [GitHub issue](https://github.com/lukegob10/alpha/issues) describing the problem or proposed change before
-starting a substantial contribution. Follow [AGENTS.md](AGENTS.md) for engineering and validation requirements.
-
----
-
 ## License
 
 [Apache 2.0 © 2025 Alpha, Inc.](./LICENSE)
-
----
-
-**Enjoy Alpha!** Whether you keep it on a short leash or let it roam autonomously, we can’t wait to see what you build.

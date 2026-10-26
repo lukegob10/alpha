@@ -74,7 +74,9 @@ describe("view_image decode validation", () => {
 		await rm(workspace, { recursive: true, force: true })
 	})
 
-	function execution(options: { approved?: boolean; ignored?: boolean; maxImageFileSize?: number } = {}) {
+	function execution(
+		options: { approved?: boolean; ignored?: boolean; maxImageFileSize?: number; maxTotalImageSize?: number } = {},
+	) {
 		const history: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam> = []
 		const ask = vi.fn(async () => ({
 			response: options.approved === false ? "noButtonClicked" : "yesButtonClicked",
@@ -93,7 +95,12 @@ describe("view_image decode validation", () => {
 			alphaIgnoreController: { validateAccess: vi.fn(() => !options.ignored) },
 			fileContextTracker: { trackFileContext },
 			providerRef: {
-				deref: () => ({ getState: async () => ({ maxImageFileSize: options.maxImageFileSize ?? 5 }) }),
+				deref: () => ({
+					getState: async () => ({
+						maxImageFileSize: options.maxImageFileSize ?? 5,
+						maxTotalImageSize: options.maxTotalImageSize ?? 20,
+					}),
+				}),
 			},
 			ask,
 			say: vi.fn(async () => {}),
@@ -208,16 +215,30 @@ describe("view_image decode validation", () => {
 		expect(run.trackFileContext).not.toHaveBeenCalled()
 	})
 
-	it("retains file-size limits before image publication", async () => {
+	it.each([
+		{ limit: "individual", settings: { maxImageFileSize: 0.000001 } },
+		{ limit: "total", settings: { maxTotalImageSize: 0.000001 } },
+	])("returns one error receipt when the image exceeds the $limit size limit", async ({ settings }) => {
 		await writeFile(path.join(workspace, "pixel.png"), pngBytes)
-		const run = execution({ maxImageFileSize: 0.000001 })
+		const run = execution(settings)
 
 		const outcome = await run.scheduler.run(response("pixel.png"))
 
 		expect(run.ask).toHaveBeenCalledOnce()
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0]).toMatchObject({ callId: "view-image-validation", status: "error" })
 		expect(JSON.stringify(outcome.results[0].content)).toMatch(/large|limit/i)
+		expect(run.pushToolResultToUserContent).toHaveBeenCalledOnce()
+		expect(run.history).toHaveLength(1)
+		expect(run.history[0]).toMatchObject({
+			type: "tool_result",
+			tool_use_id: "view-image-validation",
+			is_error: true,
+		})
 		expect(JSON.stringify(run.history)).not.toContain('"type":"image"')
 		expect(outcome.results[0].trustedProgress).toBeUndefined()
+		expect(run.trackFileContext).not.toHaveBeenCalled()
+		expect(run.task.didToolFailInCurrentTurn).toBe(true)
 	})
 
 	it("keeps protected paths on the deny path before approval", async () => {

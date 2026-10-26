@@ -1,4 +1,5 @@
 import * as assert from "assert"
+import * as vscode from "vscode"
 import { readFile } from "node:fs/promises"
 
 import {
@@ -16,12 +17,22 @@ import {
 import { waitFor, waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
 
-type ScriptChunk =
-	| { type: "text"; text: string }
-	| { type: "tool_call"; id: string; name: string; arguments: string }
-	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
+import {
+	COLLECT_CHILD_RESULTS,
+	ConcurrentThreadsAI,
+	findLatestToolResult,
+	type ScriptChunk,
+} from "../scenarios/concurrentThreadsFixture"
 
 interface CrossTaskHostProvider {
+	closeTask(taskId: string): Promise<void>
+	createIndependentTask(
+		parent: HostTask,
+		objective: string,
+		workspaceMode: "shared",
+		signal: undefined,
+		options: { notifyOnCompletion: true },
+	): Promise<{ task_id: string }>
 	createTask(
 		text: string,
 		images: undefined,
@@ -57,30 +68,9 @@ interface HostTask {
 	abort: boolean
 	didComplete: boolean
 	approveAsk(): void
+	submitUserMessage(text: string): Promise<void>
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
-}
-
-function findLatestToolResult(messages: unknown[]): string {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const content = (messages[index] as { content?: unknown } | undefined)?.content
-		if (!Array.isArray(content)) continue
-		for (let contentIndex = content.length - 1; contentIndex >= 0; contentIndex--) {
-			const block = content[contentIndex] as { type?: string; content?: unknown } | undefined
-			if (block?.type === "tool_result") {
-				if (typeof block.content === "string") return block.content
-				if (Array.isArray(block.content)) {
-					return block.content
-						.flatMap((item: { type?: string; text?: unknown }) =>
-							item.type === "text" && typeof item.text === "string" ? [item.text] : [],
-						)
-						.join("\n")
-				}
-				return JSON.stringify(block.content)
-			}
-		}
-	}
-	throw new Error("The scripted model did not receive a terminal tool result")
 }
 
 class CrossTaskAcceptanceAI {
@@ -329,6 +319,16 @@ class IndependentThreadAI {
 	peerFollowupStarted = false
 	peerSteeringStarted = false
 
+	getDiagnostics() {
+		return {
+			calls: this.calls.slice(-20),
+			turns: [...this.turns],
+			forkTaskId: this.forkTaskId,
+			peerFollowupStarted: this.peerFollowupStarted,
+			peerSteeringStarted: this.peerSteeringStarted,
+		}
+	}
+
 	async *createMessage(
 		_system: string,
 		messages: unknown[],
@@ -476,6 +476,281 @@ class IndependentThreadAI {
 
 suite("Cross-task deterministic Extension Host acceptance", function () {
 	setDefaultSuiteTimeout(this)
+
+	test("ten command/API launches keep every previous task running and respect capacity", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		assert.equal(vscode.version, "1.138.0")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI()
+		const taskIds: string[] = []
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result") {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 10,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			for (let index = 0; index < 10; index++) {
+				const taskId = await api.startNewTask({ configuration, text: `Concurrent command ${index + 1}` })
+				taskIds.push(taskId)
+				await waitFor(() => scripted.started.has(taskId), {
+					timeout: 15_000,
+					description: `worker ${index + 1} to start`,
+				})
+			}
+			assert.equal(scripted.started.size, 10)
+			const liveTasks = taskIds.map((taskId) => provider.getLiveTask(taskId))
+			const firstTaskId = taskIds[0]
+			assert.ok(firstTaskId)
+			await api.resumeTask(firstTaskId)
+			for (const [index, taskId] of taskIds.entries()) {
+				assert.equal(
+					provider.getLiveTask(taskId),
+					liveTasks[index],
+					"Opening a running chat must retain its runtime",
+				)
+			}
+			for (const taskId of taskIds) {
+				assert.equal(
+					provider.getLiveTask(taskId)?.abort,
+					false,
+					"Launching another root must not cancel this task",
+				)
+				assert.equal(provider.getLiveTask(taskId)?.didComplete, false)
+			}
+			await assert.rejects(
+				api.startNewTask({ configuration, text: "Exceeds capacity" }),
+				/Maximum live task limit/,
+			)
+			assert.ok(taskIds.every((id) => provider.getLiveTask(id)?.abort === false))
+			scripted.release()
+			await waitFor(() => taskIds.every((id) => completed.has(id)), {
+				timeout: 60_000,
+				description: "all ten roots to complete",
+			})
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const taskId of taskIds) await provider.closeTask(taskId)
+			await api.setConfiguration(original)
+		}
+	})
+
+	test("ten native child threads survive completion and are collected by an explicit human follow-up", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		assert.equal(vscode.version, "1.138.0")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI(10)
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result") {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		let rootId: string | undefined
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 11,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			rootId = await api.startNewTask({
+				configuration,
+				text: "Launch ten new chat threads for this project and collect their results.",
+			})
+			await waitFor(() => scripted.started.size === 10 && completed.has(rootId!), {
+				timeout: 60_000,
+				description: "ten children running after their coordinator completes",
+			})
+			const root = provider.getLiveTask(rootId)
+			assert.ok(root)
+			assert.equal(root.didComplete, true)
+			const childIds = new Set(scripted.children)
+			assert.equal(childIds.size, 10)
+			const listed = await provider.listIndependentTasks(root)
+			const children = listed.filter(({ task_id }) => childIds.has(task_id))
+			assert.equal(children.length, 10)
+			assert.deepEqual(new Set(children.map(({ task_id }) => task_id)), childIds)
+			assert.ok(children.every((child) => child.lifecycle === "running"))
+			for (const childId of scripted.children) {
+				assert.equal(provider.getLiveTask(childId)?.abort, false)
+				assert.equal(provider.getLiveTask(childId)?.didComplete, false)
+			}
+			scripted.release()
+			await waitFor(() => scripted.children.every((id) => completed.has(id)), {
+				timeout: 60_000,
+				description: "all ten native child threads to complete",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			for (const childId of scripted.children) await provider.getLiveTask(childId)?.waitForTermination()
+			await root.waitForTermination()
+			assert.equal(root.didComplete, true)
+			assert.equal(scripted.coordinatorRequests, 11, "Native thread completion must not wake its creator")
+			assert.equal(scripted.receivedResults.size, 0)
+			for (const childId of scripted.children) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationNotifyCompletion, false)
+				assert.equal(historyItem.orchestrationCompletionNotifications, undefined)
+			}
+			await root.submitUserMessage(COLLECT_CHILD_RESULTS)
+			await waitFor(
+				() => scripted.receivedResults.size === 10 && provider.getLiveTask(rootId!)?.didComplete === true,
+				{
+					timeout: 60_000,
+					description: "the coordinator to explicitly collect all ten native thread results",
+					onTimeout: () => scripted.getDiagnostics(),
+				},
+			)
+			assert.equal(provider.getLiveTask(rootId), root, "Collection must reuse the coordinator runtime")
+			assert.deepEqual(scripted.receivedResults, childIds)
+			for (const childId of scripted.children) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationParentTaskId, rootId)
+				assert.equal(historyItem.orchestrationCompletionNotifications, undefined)
+			}
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const childId of scripted.children) await provider.closeTask(childId)
+			if (rootId) await provider.closeTask(rootId)
+			await api.setConfiguration(original)
+		}
+	})
+
+	test("ten children with host completion notifications survive their coordinator and deliver one durable receipt each", async () => {
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		assert.equal(vscode.version, "1.138.0")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+		assert.ok(provider)
+		const original = api.getConfiguration()
+		const scripted = new ConcurrentThreadsAI(10, "host")
+		const childIds: string[] = []
+		const completed = new Set<string>()
+		const onCompleted = (taskId: string) => completed.add(taskId)
+		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && event.message.ask === "completion_result")
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		let rootId: string | undefined
+		try {
+			const configuration: AlphaCodeSettings = {
+				...original,
+				apiProvider: "fake-ai",
+				fakeAi: scripted,
+				mode: "code",
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				maxConcurrentTasks: 11,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+				enableCheckpoints: false,
+			}
+			rootId = await api.startNewTask({
+				configuration,
+				text: "Launch ten new chat threads for this project and collect their results.",
+			})
+			const root = provider.getLiveTask(rootId)
+			assert.ok(root)
+			await waitFor(() => scripted.coordinatorRequests === 1, {
+				description: "the coordinator request to own the host launch barrier",
+			})
+			for (let index = 0; index < 10; index++) {
+				const child = await provider.createIndependentTask(
+					root,
+					`Concurrent child ${index + 1}`,
+					"shared",
+					undefined,
+					{
+						notifyOnCompletion: true,
+					},
+				)
+				childIds.push(child.task_id)
+			}
+			scripted.registerHostChildren(childIds)
+			await waitFor(() => scripted.started.size === 10 && completed.has(rootId!), {
+				timeout: 60_000,
+				description: "ten host-notified children running after coordinator completion",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			assert.equal(new Set(childIds).size, 10)
+			assert.equal(root.didComplete, true)
+			for (const childId of childIds) {
+				assert.equal(provider.getLiveTask(childId)?.abort, false)
+				assert.equal(provider.getLiveTask(childId)?.didComplete, false)
+			}
+			scripted.release()
+			await waitFor(() => scripted.receivedResults.size === 10 && root.didComplete, {
+				timeout: 60_000,
+				description: "the coordinator to integrate all ten host completion messages",
+				onTimeout: () => scripted.getDiagnostics(),
+			})
+			assert.deepEqual(scripted.receivedResults, new Set(childIds))
+			assert.equal(provider.getLiveTask(rootId), root)
+			assert.ok(childIds.every((id) => completed.has(id)))
+			await waitFor(
+				async () => {
+					for (const childId of childIds) {
+						const { historyItem } = await provider.getTaskWithId(childId, {
+							includeApiConversationHistory: false,
+						})
+						if (!historyItem.orchestrationCompletionNotifications?.[0]?.deliveredAt) return false
+					}
+					return true
+				},
+				{ timeout: 30_000, description: "all child completion receipts to become durable" },
+			)
+			for (const childId of childIds) {
+				const { historyItem } = await provider.getTaskWithId(childId, { includeApiConversationHistory: false })
+				assert.equal(historyItem.orchestrationParentTaskId, rootId)
+				assert.equal(historyItem.orchestrationNotifyCompletion, true)
+				assert.equal(historyItem.orchestrationCompletionNotifications?.length, 1)
+				assert.ok(historyItem.orchestrationCompletionNotifications?.[0]?.deliveredAt)
+			}
+		} finally {
+			scripted.release()
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			for (const childId of childIds) await provider.closeTask(childId)
+			if (rootId) await provider.closeTask(rootId)
+			await api.setConfiguration(original)
+		}
+	})
 
 	test("creates, lists, stops, waits, and persists a parent-owned child through the model tool path", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
@@ -629,7 +904,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			await peer.flushApiConversationHistoryPersistence()
 
 			const orchestrator = await provider.createTask(
-				"Inspect and coordinate the existing independent conversation, preserving its separate identity.",
+				"Inspect and coordinate the existing independent conversation. Fork the existing conversation with its completed history, preserving its separate identity.",
 				undefined,
 				undefined,
 				{ preserveExisting: true, background: true, apiConfiguration: configuration },
@@ -641,6 +916,15 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				taskId: orchestrator.taskId,
 				isCompleted: () => orchestrator.didComplete,
 				timeout: 60_000,
+				onTimeout: () => ({
+					script: scripted.getDiagnostics(),
+					peer: { abort: peer.abort, completed: peer.didComplete, ask: peer.taskAsk?.ask },
+					orchestrator: {
+						abort: orchestrator.abort,
+						completed: orchestrator.didComplete,
+						ask: orchestrator.taskAsk?.ask,
+					},
+				}),
 			})
 			await orchestrator.waitForTermination()
 			await peer.waitForTermination()

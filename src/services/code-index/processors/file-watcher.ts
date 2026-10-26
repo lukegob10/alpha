@@ -16,6 +16,7 @@ import {
 } from "../constants"
 import type { BatchProcessingSummary, FileProcessingResult, IEmbedder, IFileWatcher, IVectorStore } from "../interfaces"
 import { relativeIndexPath } from "../shared/embedding-input"
+import { resolveIndexFilePath } from "../shared/get-relative-path"
 import { EmbeddingRateLimiter, waitForEmbeddingDelay } from "../shared/embedding-rate-limiter"
 import { prepareIndexPoints, withIndexingCancellation } from "../shared/file-indexing"
 import { scannerExtensions } from "../shared/supported-extensions"
@@ -85,7 +86,7 @@ export class FileWatcher implements IFileWatcher {
 		private readonly cacheManager: CacheManager,
 		private readonly embedder?: IEmbedder,
 		private readonly vectorStore?: IVectorStore,
-		private readonly ignoreInstance?: Ignore,
+		_ignoreInstance?: Ignore, // Retain the factory argument; admission reads current workspace rules.
 		ignoreController?: AlphaIgnoreController,
 		batchSegmentThreshold?: number,
 		embeddingRateLimitSeconds?: number,
@@ -369,12 +370,22 @@ export class FileWatcher implements IFileWatcher {
 			if (
 				!scannerExtensions.includes(path.extname(filePath).toLowerCase()) ||
 				isPathInIgnoredDirectory(relative) ||
-				!this.ignoreController.validateAccess(filePath) ||
-				this.ignoreInstance?.ignores(relative)
+				!this.ignoreController.validateAccess(filePath)
 			) {
 				return { path: filePath, status: "skipped", reason: "File is excluded from indexing" }
 			}
-			const uri = vscode.Uri.file(filePath)
+			const resolved = await withIndexingCancellation(
+				resolveIndexFilePath(filePath, this.workspacePath, signal),
+				signal,
+			)
+			if (
+				!resolved ||
+				isPathInIgnoredDirectory(resolved.relativePath) ||
+				!this.ignoreController.validateAccess(resolved.absolutePath)
+			) {
+				return { path: filePath, status: "skipped", reason: "File is excluded from indexing" }
+			}
+			const uri = vscode.Uri.file(resolved.absolutePath)
 			const stats = await withIndexingCancellation(vscode.workspace.fs.stat(uri), signal)
 			if (stats.size > MAX_FILE_SIZE_BYTES)
 				return { path: filePath, status: "processed_for_batching", pointsToUpsert: [] }

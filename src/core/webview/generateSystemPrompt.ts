@@ -6,6 +6,7 @@ import { buildApiHandler } from "../../api"
 import { SYSTEM_PROMPT } from "../prompts/system"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import { Package } from "../../shared/package"
+import { TaskMemoryContext } from "../../services/memory/TaskMemoryContext"
 
 import { AlphaProvider } from "./AlphaProvider"
 
@@ -27,7 +28,15 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 	const mode = message.mode ?? defaultModeSlug
 	const customModes = await provider.customModesManager.getCustomModes()
 
-	const alphaIgnoreInstructions = provider.getCurrentTask()?.alphaIgnoreController?.getInstructions()
+	const currentTask = provider.getCurrentTask()
+	const alphaIgnoreInstructions = currentTask?.alphaIgnoreController?.getInstructions()
+	const memoryContext = currentTask
+		? await currentTask.getMemoryContext?.()
+		: await new TaskMemoryContext({
+				settings: provider.getMemorySettings?.(),
+				rootPath: provider.getMemoryStore?.().rootPath ?? "",
+				readSummary: async () => provider.getMemoryStore?.().readSummary(),
+			}).getContext()
 
 	// Resolve model metadata and ID for the preview without relying on an active Alpha instance.
 	let modelInfo: { isStealthModel?: boolean } | undefined
@@ -58,6 +67,7 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 			todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 			useAgentRules: vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,
 			enableSubfolderRules: enableSubfolderRules ?? false,
+			memoryContext,
 			newTaskRequireTodos: vscode.workspace
 				.getConfiguration(Package.name)
 				.get<boolean>("newTaskRequireTodos", false),

@@ -93,8 +93,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setTerminalShellIntegrationDisabled: (value: boolean) => void
 	terminalZdotdir?: boolean
 	setTerminalZdotdir: (value: boolean) => void
-	setTtsEnabled: (value: boolean) => void
-	setTtsSpeed: (value: number) => void
 	setEnableCheckpoints: (value: boolean) => void
 	checkpointTimeout: number
 	setCheckpointTimeout: (value: number) => void
@@ -535,8 +533,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		deniedCommands: [],
 		soundEnabled: false,
 		soundVolume: 0.5,
-		ttsEnabled: false,
-		ttsSpeed: 1.0,
 		enableCheckpoints: true,
 		checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS, // Default to 15 seconds
 		language: "en", // Default language code
@@ -1125,7 +1121,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		openedTabs,
 		commands,
 		soundVolume: state.soundVolume,
-		ttsSpeed: state.ttsSpeed,
 		writeDelayMs: state.writeDelayMs,
 		marketplaceItems,
 		marketplaceInstalledMetadata,
@@ -1159,8 +1154,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setAllowedMaxCost: (value) => setState((prevState) => ({ ...prevState, allowedMaxCost: value })),
 		setSoundEnabled: (value) => setState((prevState) => ({ ...prevState, soundEnabled: value })),
 		setSoundVolume: (value) => setState((prevState) => ({ ...prevState, soundVolume: value })),
-		setTtsEnabled: (value) => setState((prevState) => ({ ...prevState, ttsEnabled: value })),
-		setTtsSpeed: (value) => setState((prevState) => ({ ...prevState, ttsSpeed: value })),
 		setEnableCheckpoints: (value) => setState((prevState) => ({ ...prevState, enableCheckpoints: value })),
 		setCheckpointTimeout: (value) => setState((prevState) => ({ ...prevState, checkpointTimeout: value })),
 		setWriteDelayMs: (value) => setState((prevState) => ({ ...prevState, writeDelayMs: value })),
@@ -1268,10 +1261,10 @@ export const useExtensionState = () => {
 	return context
 }
 
-/** Read the revision of a task transcript cached by the current webview. */
-export const useCachedTranscriptRevision = (taskId: string): number | undefined => {
-	const context = useContext(ExtensionStateContext)
-	return context?.getCachedTranscriptRevision(taskId)
+/** Read the current cache on interaction without subscribing opening controls to transcript ticks. */
+export const useCachedTranscriptRevisionReader = () => {
+	const context = useContext(ShellStateContext)
+	return context?.getCachedTranscriptRevision
 }
 
 export const useShellState = () => {

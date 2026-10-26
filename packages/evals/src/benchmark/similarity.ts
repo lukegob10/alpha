@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 
 import type { BenchmarkCatalog, PrivateAuthoringFingerprints } from "./contracts"
+import { benchmarkSourceLanguage } from "./corpus"
 
 export type SimilarityPair = {
 	left: string
@@ -11,6 +12,7 @@ export type SimilarityPair = {
 	tests: number
 	capabilities: number
 	duplicate: boolean
+	historical: boolean
 	reasons: string[]
 }
 
@@ -20,17 +22,27 @@ type Fingerprint = {
 	source: Set<string>
 	tests: Set<string>
 	capabilities: Set<string>
+	historical: boolean
 }
 
 export async function analyzeBenchmarkSimilarity(
 	catalog: BenchmarkCatalog,
 	root: string,
 	privateFingerprints?: PrivateAuthoringFingerprints,
-): Promise<{ pairs: SimilarityPair[]; duplicatePairs: SimilarityPair[]; privateDuplicatePairs: string[][] }> {
-	const tasks = [...catalog.tasks.values()]
-		.map(({ task }) => task)
-		.filter(({ partition }) => partition === "development" || partition === "regression")
-	const fingerprints = await Promise.all(tasks.map((task) => fingerprintTask(root, task)))
+): Promise<{
+	pairs: SimilarityPair[]
+	duplicatePairs: SimilarityPair[]
+	historicalDuplicatePairs: SimilarityPair[]
+	privateDuplicatePairs: string[][]
+}> {
+	const tasks = [...catalog.tasks.values()].filter(({ task }) => task.partition !== "holdout")
+	const fingerprints = await Promise.all(
+		tasks.map(async ({ task, suite }) => ({
+			...(await fingerprintTask(root, task)),
+			// Preserve the one known released legacy bank; new releases do not inherit this exception.
+			historical: suite.status === "released" && suite.id === "smoke-v1" && suite.version === 1,
+		})),
+	)
 	const pairs: SimilarityPair[] = []
 	for (let left = 0; left < fingerprints.length; left++) {
 		for (let right = left + 1; right < fingerprints.length; right++) {
@@ -46,11 +58,26 @@ export async function analyzeBenchmarkSimilarity(
 			if (tests >= 0.92) reasons.push("test-structure-near-duplicate")
 			if (capabilities === 1) reasons.push("identical-capabilities")
 			const duplicate = (prompt >= 0.88 && source >= 0.85) || (source >= 0.92 && tests >= 0.92)
-			pairs.push({ left: a.id, right: b.id, prompt, source, tests, capabilities, duplicate, reasons })
+			pairs.push({
+				left: a.id,
+				right: b.id,
+				prompt,
+				source,
+				tests,
+				capabilities,
+				duplicate,
+				historical: a.historical && b.historical,
+				reasons,
+			})
 		}
 	}
 	const privateDuplicatePairs = duplicatePrivateFingerprints(privateFingerprints)
-	return { pairs, duplicatePairs: pairs.filter(({ duplicate }) => duplicate), privateDuplicatePairs }
+	return {
+		pairs,
+		duplicatePairs: pairs.filter(({ duplicate, historical }) => duplicate && !historical),
+		historicalDuplicatePairs: pairs.filter(({ duplicate, historical }) => duplicate && historical),
+		privateDuplicatePairs,
+	}
 }
 
 async function fingerprintTask(
@@ -62,7 +89,7 @@ async function fingerprintTask(
 	const files = await listFiles(fixture)
 	const source = await readGroup(
 		fixture,
-		files.filter((file) => /(^|\/)src\//.test(file)),
+		files.filter((file) => benchmarkSourceLanguage(file) && !/(^|\/)(test|tests|__tests__)\//.test(file)),
 	)
 	const tests = await readGroup(
 		fixture,
@@ -74,6 +101,7 @@ async function fingerprintTask(
 		source: shingles(normalize(source, task.id), 4),
 		tests: shingles(normalize(tests, task.id), 4),
 		capabilities: new Set(task.capabilities),
+		historical: false,
 	}
 }
 

@@ -22,6 +22,16 @@ const writeHostPreflight = async (options: HostLaunchOptions, version = "1.138.0
 			actualVSCodeVersion: version,
 			status: code ? "blocked" : "passed",
 			ownershipGate: env.ALPHA_E2E_PROFILE_DIR ? "verified" : undefined,
+			...(env.ALPHA_E2E_PROVIDER_MODE === "live-copilot"
+				? {
+						providerIdentity: {
+							schemaVersion: 1,
+							before: { id: "github.copilot-chat", version: "0.66.0", entrypointSha256: "a".repeat(64) },
+							after: { id: "github.copilot-chat", version: "0.66.0", entrypointSha256: "a".repeat(64) },
+							status: "unchanged",
+						},
+					}
+				: {}),
 			code,
 		}),
 	)
@@ -711,6 +721,7 @@ test("uses the same launch seam with isolated paths and checks exact version for
 			scenarioId: "example",
 			scenarioPhase: "run",
 			extensionTestsEnv: {
+				ALPHA_HOME: "/forged/user/home",
 				ALPHA_E2E_EXPECTED_VSCODE_VERSION: "forged",
 				ALPHA_E2E_SCENARIO_ID: "forged",
 				ALPHA_E2E_SETUP_TIMEOUT_MS: "1",
@@ -719,6 +730,11 @@ test("uses the same launch seam with isolated paths and checks exact version for
 		{
 			launch: async (options) => {
 				assert.equal(options.reuseMachineInstall, false)
+				const alphaHome = options.extensionTestsEnv?.ALPHA_HOME
+				assert.ok(alphaHome)
+				assert.equal(await fs.realpath(path.dirname(alphaHome)), await fs.realpath(os.tmpdir()))
+				assert.match(path.basename(alphaHome), /^alpha-vscode-e2e-home-/)
+				assert.ok((await fs.stat(alphaHome)).isDirectory())
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.138.0")
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_SCENARIO_ID, "example")
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_REQUEST_LIMIT, "4")
@@ -738,6 +754,8 @@ test("uses the same launch seam with isolated paths and checks exact version for
 	assert.equal(result.status, "passed")
 	assert.equal(result.actualVSCodeVersion, "1.138.0")
 	assert.equal(result.retained, false)
+	assert.ok(result.alphaHome)
+	await assert.rejects(fs.stat(result.alphaHome), { code: "ENOENT" })
 	await assert.rejects(fs.stat(result.temporaryRoot!), { code: "ENOENT" })
 })
 

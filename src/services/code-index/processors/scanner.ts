@@ -5,7 +5,7 @@ import { Ignore } from "ignore"
 import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
 import { stat } from "fs/promises"
 import * as path from "path"
-import { generateRelativeFilePath } from "../shared/get-relative-path"
+import { generateRelativeFilePath, resolveIndexFilePath } from "../shared/get-relative-path"
 import { getWorkspacePathForContext } from "../../../utils/path"
 import { scannerExtensions } from "../shared/supported-extensions"
 import * as vscode from "vscode"
@@ -43,7 +43,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 		private readonly qdrantClient: IVectorStore,
 		private readonly codeParser: ICodeParser,
 		private readonly cacheManager: CacheManager,
-		private readonly ignoreInstance: Ignore,
+		_ignoreInstance: Ignore, // Retain the factory argument; admission reads current workspace rules.
 		batchSegmentThreshold?: number,
 		embeddingRateLimitSeconds?: number,
 	) {
@@ -115,7 +115,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 				return false
 			}
 
-			return !this.ignoreInstance.ignores(relativeFilePath)
+			return true
 		})
 		const ignoreController = new AlphaIgnoreController(directoryPath)
 		let supportedPaths: string[]
@@ -185,8 +185,17 @@ export class DirectoryScanner implements IDirectoryScanner {
 				if (signal?.aborted) return
 
 				try {
+					const resolved = await resolveIndexFilePath(filePath, directoryPath, signal)
+					if (
+						!resolved ||
+						isPathInIgnoredDirectory(resolved.relativePath) ||
+						!ignoreController.validateAccess(resolved.absolutePath)
+					) {
+						skippedCount++
+						return
+					}
 					// Check file size
-					const stats = await stat(filePath)
+					const stats = await stat(resolved.absolutePath)
 					if (stats.size > MAX_FILE_SIZE_BYTES) {
 						skippedCount++ // Skip large files
 						return
@@ -197,7 +206,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 
 					// Read file content
 					const content = await vscode.workspace.fs
-						.readFile(vscode.Uri.file(filePath))
+						.readFile(vscode.Uri.file(resolved.absolutePath))
 						.then((buffer) => Buffer.from(buffer).toString("utf-8"))
 
 					// Calculate current hash

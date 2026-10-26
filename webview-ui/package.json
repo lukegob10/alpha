@@ -62,7 +62,6 @@
 		"rehype-katex": "^7.0.1",
 		"remark-gfm": "^4.0.1",
 		"remark-math": "^6.0.0",
-		"remove-markdown": "^0.6.0",
 		"shell-quote": "^1.8.2",
 		"shiki": "^3.2.1",
 		"stacktrace-js": "^2.0.2",
@@ -88,10 +87,10 @@
 		"@types/react-dom": "^18.3.5",
 		"@types/vscode-webview": "^1.57.5",
 		"@vitejs/plugin-react": "^4.3.4",
-		"@vitest/ui": "^4.1.11",
+		"@vitest/ui": "^4.1.12",
 		"babel-plugin-react-compiler": "^1.0.0",
 		"jsdom": "^26.0.0",
 		"vite": "6.4.4",
-		"vitest": "^4.1.11"
+		"vitest": "^4.1.12"
 	}
 }

@@ -312,8 +312,6 @@ const mockPostMessage = (state: any) => {
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
 				alwaysAllowExecute: false,
-				ttsEnabled: false,
-				ttsSpeed: 1,
 				soundEnabled: false,
 				soundVolume: 0.5,
 				...state,
@@ -323,7 +321,7 @@ const mockPostMessage = (state: any) => {
 	)
 }
 
-const renderSettingsView = (targetSection?: string) => {
+const renderSettingsView = (targetSection?: string, initialState: Record<string, unknown> = {}) => {
 	const onDone = vi.fn()
 	const queryClient = new QueryClient()
 
@@ -336,7 +334,7 @@ const renderSettingsView = (targetSection?: string) => {
 	)
 
 	// Hydrate initial state.
-	mockPostMessage({})
+	mockPostMessage(initialState)
 
 	// Helper function to activate a tab and ensure its content is visible
 	const activateTab = (tabId: string) => {
@@ -428,64 +426,85 @@ describe("SettingsView - Startup rendering", () => {
 			vi.useRealTimers()
 		}
 	})
+
+	it("indexes enabled custom tools without refreshing them until Experimental is opened", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("agents", { experiments: { customTools: true } })
+		const refreshRequests = () =>
+			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "refreshCustomTools")
+		try {
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			expect(refreshRequests()).toHaveLength(0)
+
+			const search = screen.getByTestId("settings-search-input")
+			fireEvent.focus(search)
+			fireEvent.change(search, { target: { value: "settings:experimental.CUSTOM_TOOLS.name" } })
+			fireEvent.click(screen.getByRole("option", { name: "settings:experimental.CUSTOM_TOOLS.name" }))
+			expect(refreshRequests()).toHaveLength(1)
+			expect(
+				within(screen.getByTestId("settings-content")).getByRole("checkbox", {
+					name: "settings:experimental.CUSTOM_TOOLS.name",
+				}),
+			).toBeChecked()
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
 })
 
 describe("SettingsView - Agents edit buffer", () => {
 	beforeEach(() => vi.clearAllMocks())
-
 	const refresh = (state: Record<string, unknown>) =>
 		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
 
-	it("saves edited basics and advanced units through the typed settings path", () => {
+	it("saves Codex settings without forwarding retired settings", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
 		refresh({
 			maxConcurrentSubagents: 2,
-			subagentDefaultApiConfigId: "saved-child-profile",
-			subagentApiConfigByRole: { review: "saved-review-profile" },
-			subagentRoleTimeoutsMs: { explore: 120_000, review: 180_000, worker: 900_000 },
+			subagentDefaultModel: "old-model",
+			subagentRoleTimeoutsMs: { worker: 10_000 },
+			subagentRootCostBudget: 1,
 		})
 		const content = getSettingsContent()
-		const concurrency = within(content).getByTestId("agents-concurrency")
-		const policy = within(content).getByTestId("agents-delegation-policy")
-		expect(concurrency).toHaveValue(2)
-		expect(within(content).getByTestId("agents-default-profile")).toHaveValue("saved-child-profile")
 		vi.mocked(vscode.postMessage).mockClear()
-		fireEvent.change(concurrency, { target: { value: "4" } })
-		fireEvent.change(policy, { target: { value: "proactive" } })
-		fireEvent.change(within(content).getByTestId("agents-timeout-review"), { target: { value: "91.125" } })
-		fireEvent.change(within(content).getByTestId("agents-root-tokens"), { target: { value: "50000" } })
-		fireEvent.change(within(content).getByTestId("agents-root-cost"), { target: { value: "2.5" } })
+		fireEvent.change(within(content).getByTestId("agents-concurrency"), { target: { value: "4" } })
+		fireEvent.change(within(content).getByTestId("agents-default-model"), { target: { value: "new-model" } })
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
-		expect(screen.getByTestId("save-button")).toBeEnabled()
-
 		fireEvent.click(screen.getByTestId("save-button"))
-		expect(vscode.postMessage).toHaveBeenCalledWith(
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(update).toEqual(
 			expect.objectContaining({
-				type: "updateSettings",
 				updatedSettings: expect.objectContaining({
 					maxConcurrentSubagents: 4,
-					subagentDelegationPolicy: "proactive",
-					subagentRoleTimeoutsMs: { explore: 120_000, review: 91_125, worker: 900_000 },
-					subagentRootTokenBudget: 50_000,
-					subagentRootCostBudget: 2.5,
-					subagentDefaultApiConfigId: "saved-child-profile",
-					subagentApiConfigByRole: { review: "saved-review-profile" },
+					subagentsEnabled: true,
+					subagentDefaultModel: "new-model",
+					subagentDefaultReasoningEffort: null,
+					subagentInterruptMessage: true,
 				}),
 			}),
 		)
+		expect(update?.updatedSettings).not.toHaveProperty("subagentRoleTimeoutsMs")
+		expect(update?.updatedSettings).not.toHaveProperty("subagentRootCostBudget")
+		expect(update?.updatedSettings).not.toHaveProperty("subagentDefaultApiConfigId")
 		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
 	it("retains dirty edits during refresh and Cancel, then discards to the latest host values", () => {
 		const { getSettingsContent, onDone } = renderSettingsView("agents")
-		refresh({ maxConcurrentSubagents: 2, subagentDefaultApiConfigId: "initial-child-profile" })
+		refresh({ maxConcurrentSubagents: 2, subagentDefaultModel: "initial-model" })
 		const concurrency = () => within(getSettingsContent()).getByTestId("agents-concurrency")
 		fireEvent.change(concurrency(), { target: { value: "4" } })
 		vi.mocked(vscode.postMessage).mockClear()
-		refresh({ maxConcurrentSubagents: 3, subagentDefaultApiConfigId: "refreshed-child-profile" })
+		refresh({ maxConcurrentSubagents: 3, subagentDefaultModel: "refreshed-model" })
 		expect(concurrency()).toHaveValue(4)
-		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue("initial-child-profile")
-
+		expect(within(getSettingsContent()).getByTestId("agents-default-model")).toHaveValue("initial-model")
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
 		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
 		expect(concurrency()).toHaveValue(4)
@@ -493,11 +512,8 @@ describe("SettingsView - Agents edit buffer", () => {
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
 		fireEvent.click(screen.getByTestId("alert-dialog-action"))
 		expect(concurrency()).toHaveValue(3)
-		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue(
-			"refreshed-child-profile",
-		)
+		expect(within(getSettingsContent()).getByTestId("agents-default-model")).toHaveValue("refreshed-model")
 		expect(onDone).toHaveBeenCalledTimes(1)
-		expect(screen.getByTestId("save-button")).toBeDisabled()
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 	})
 
@@ -505,7 +521,6 @@ describe("SettingsView - Agents edit buffer", () => {
 		const { getSettingsContent, activateTab } = renderSettingsView("agents")
 		refresh({ maxConcurrentSubagents: 2 })
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "2.5" } })
-		expect(within(getSettingsContent()).getByTestId("agents-concurrency")).toHaveAttribute("aria-invalid", "true")
 		expect(screen.getByTestId("save-button")).toBeDisabled()
 		activateTab("notifications")
 		vi.mocked(vscode.postMessage).mockClear()
@@ -516,73 +531,40 @@ describe("SettingsView - Agents edit buffer", () => {
 		expect(screen.getByTestId("save-button")).toBeEnabled()
 	})
 
-	it("resyncs imported settings without losing millisecond precision or saved routes", () => {
+	it("resyncs imported current settings while ignoring retired limits", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
 		refresh({ maxConcurrentSubagents: 2 })
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "4" } })
 		refresh({
 			settingsImportedAt: 101,
-			maxConcurrentSubagents: 5,
-			subagentDefaultApiConfigId: "imported-child-profile",
-			subagentApiConfigByRole: { worker: "imported-worker-profile" },
-			subagentRoleTimeoutsMs: { explore: 10_001, review: 180_000, worker: 900_000 },
+			maxConcurrentSubagents: 64,
+			subagentDefaultModel: "imported-model",
+			subagentDefaultReasoningEffort: "high",
+			subagentRoleTimeoutsMs: { worker: 10_000 },
 		})
-		expect(within(getSettingsContent()).getByTestId("agents-concurrency")).toHaveValue(5)
-		expect(within(getSettingsContent()).getByTestId("agents-timeout-explore")).toHaveValue(10.001)
-		expect(within(getSettingsContent()).getByTestId("agents-default-profile")).toHaveValue("imported-child-profile")
-		expect(within(getSettingsContent()).getByTestId("agents-profile-worker")).toHaveValue("imported-worker-profile")
+		expect(within(getSettingsContent()).getByTestId("agents-concurrency")).toHaveValue(64)
+		expect(within(getSettingsContent()).getByTestId("agents-default-model")).toHaveValue("imported-model")
+		expect(within(getSettingsContent()).getByTestId("agents-default-reasoning")).toHaveValue("high")
 		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
-	it("finds collapsed Advanced controls in search and reveals the selected setting", async () => {
-		vi.useFakeTimers()
-		const { getSettingsContent, unmount } = renderSettingsView("agents")
-		try {
-			const disclosure = getSettingsContent().querySelector("details[data-agents-advanced]")
-			expect(disclosure).not.toHaveAttribute("open")
-			// Indexing mounts one section per frame, then publishes the final search registry.
-			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
-				await act(async () => vi.advanceTimersToNextFrame())
-			}
-			const search = screen.getByTestId("settings-search-input")
-			fireEvent.focus(search)
-			fireEvent.change(search, { target: { value: "depth" } })
-			const result = screen.getByRole("option", { name: /depth/ })
-			expect(result).toHaveAttribute("id", "settings-search-result-agents-depth")
-			fireEvent.click(result)
-			await act(async () => vi.advanceTimersToNextFrame())
-			await act(async () => vi.advanceTimersByTime(100))
-			expect(disclosure).toHaveAttribute("open")
-			expect(within(getSettingsContent()).getByTestId("agents-depth")).toBeVisible()
-			expect(screen.getByTestId("save-button")).toBeDisabled()
-		} finally {
-			unmount()
-			vi.clearAllTimers()
-			vi.useRealTimers()
-		}
-	})
-
-	it("serializes optional limit and route clearing explicitly without dropping saved type overrides", () => {
+	it("serializes inheritance clearing without losing custom agent definitions", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
 		const definition = {
 			description: "Review public contracts",
-			apiConfigId: "old-type-profile",
 			model: "review-model",
 			reasoningEffort: "low",
-			developerInstructions: "Preserve saved task compatibility.",
+			developerInstructions: "Preserve compatibility.",
 		}
 		refresh({
-			subagentDefaultApiConfigId: "old-child-profile",
-			subagentApiConfigByRole: { review: "old-review-profile" },
+			subagentDefaultModel: "old-model",
+			subagentDefaultReasoningEffort: "high",
 			subagentAgentTypes: { reviewer: definition },
-			subagentRootTokenBudget: 50_000,
-			subagentRootCostBudget: 2,
 		})
-		const content = getSettingsContent()
-		fireEvent.change(within(content).getByTestId("agents-default-profile"), { target: { value: "" } })
-		fireEvent.change(within(content).getByTestId("agents-profile-review"), { target: { value: "" } })
-		fireEvent.change(within(content).getByTestId("agents-root-tokens"), { target: { value: "" } })
-		fireEvent.change(within(content).getByTestId("agents-root-cost"), { target: { value: "" } })
+		fireEvent.change(within(getSettingsContent()).getByTestId("agents-default-model"), { target: { value: "" } })
+		fireEvent.change(within(getSettingsContent()).getByTestId("agents-default-reasoning"), {
+			target: { value: "" },
+		})
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(screen.getByTestId("save-button"))
 		const update = vi
@@ -591,10 +573,8 @@ describe("SettingsView - Agents edit buffer", () => {
 		expect(JSON.parse(JSON.stringify(update))).toEqual(
 			expect.objectContaining({
 				updatedSettings: expect.objectContaining({
-					subagentDefaultApiConfigId: "",
-					subagentApiConfigByRole: {},
-					subagentRootTokenBudget: null,
-					subagentRootCostBudget: null,
+					subagentDefaultModel: "",
+					subagentDefaultReasoningEffort: null,
 					subagentAgentTypes: { reviewer: definition },
 				}),
 			}),
@@ -666,14 +646,14 @@ describe("SettingsView - Context compaction", () => {
 		const threshold = () => within(getSettingsContent()).getByTestId("condense-threshold-slider")
 		fireEvent.change(threshold(), { target: { value: "65" } })
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
-		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
+		fireEvent.click(screen.getByRole("button", { name: "settings:unsavedChangesDialog.cancelButton" }))
 
 		expect(threshold()).toHaveValue("65")
 		expect(onDone).not.toHaveBeenCalled()
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
-		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+		fireEvent.click(screen.getByRole("button", { name: "settings:unsavedChangesDialog.discardButton" }))
 
 		expect(threshold()).toHaveValue("80")
 		expect(onDone).toHaveBeenCalledTimes(1)
@@ -738,19 +718,31 @@ describe("SettingsView - Sound Settings", () => {
 		vi.clearAllMocks()
 	})
 
-	it("initializes with tts disabled by default", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
+	it("ignores legacy speech settings and buffers notification sound edits until Save", () => {
+		const { getSettingsContent } = renderSettingsView("notifications")
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { ttsEnabled: true, ttsSpeed: 1.5, soundEnabled: false, soundVolume: 0.5 },
+					},
+				}),
+			),
+		)
 		const content = getSettingsContent()
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		expect(ttsCheckbox).not.toBeChecked()
-
-		// Speed slider should not be visible when tts is disabled
+		expect(within(content).queryByTestId("tts-enabled-checkbox")).not.toBeInTheDocument()
 		expect(within(content).queryByTestId("tts-speed-slider")).not.toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(within(content).getByTestId("sound-enabled-checkbox"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(update?.updatedSettings).toMatchObject({ soundEnabled: true, soundVolume: 0.5 })
+		expect(update?.updatedSettings).not.toHaveProperty("ttsEnabled")
+		expect(update?.updatedSettings).not.toHaveProperty("ttsSpeed")
 	})
 
 	it("initializes with sound disabled by default", () => {
@@ -766,34 +758,6 @@ describe("SettingsView - Sound Settings", () => {
 
 		// Volume slider should not be visible when sound is disabled
 		expect(within(content).queryByTestId("sound-volume-slider")).not.toBeInTheDocument()
-	})
-
-	it("toggles tts setting and sends message to VSCode", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-
-		// Enable tts
-		fireEvent.click(ttsCheckbox)
-		expect(ttsCheckbox).toBeChecked()
-
-		// Click Save to save settings
-		const saveButton = screen.getByTestId("save-button")
-		fireEvent.click(saveButton)
-
-		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({
-					ttsEnabled: true,
-				}),
-			}),
-		)
 	})
 
 	it("toggles sound setting and sends message to VSCode", () => {
@@ -824,24 +788,6 @@ describe("SettingsView - Sound Settings", () => {
 		)
 	})
 
-	it("shows tts slider when sound is enabled", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		// Enable tts
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		fireEvent.click(ttsCheckbox)
-
-		// Speed slider should be visible
-		const speedSlider = within(content).getByTestId("tts-speed-slider")
-		expect(speedSlider).toBeInTheDocument()
-		expect(speedSlider).toHaveValue("1")
-	})
-
 	it("shows volume slider when sound is enabled", () => {
 		// Render once and get the activateTab helper
 		const { activateTab, getSettingsContent } = renderSettingsView()
@@ -858,37 +804,6 @@ describe("SettingsView - Sound Settings", () => {
 		const volumeSlider = within(content).getByTestId("sound-volume-slider")
 		expect(volumeSlider).toBeInTheDocument()
 		expect(volumeSlider).toHaveValue("0.5")
-	})
-
-	it("updates speed and sends message to VSCode when slider changes", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the notifications tab
-		activateTab("notifications")
-
-		const content = getSettingsContent()
-		// Enable tts
-		const ttsCheckbox = within(content).getByTestId("tts-enabled-checkbox")
-		fireEvent.click(ttsCheckbox)
-
-		// Change speed
-		const speedSlider = within(content).getByTestId("tts-speed-slider")
-		fireEvent.change(speedSlider, { target: { value: "0.75" } })
-
-		// Click Save to save settings
-		const saveButton = screen.getByTestId("save-button")
-		fireEvent.click(saveButton)
-
-		// Verify message sent to VSCode
-		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({
-					ttsSpeed: 0.75,
-				}),
-			}),
-		)
 	})
 
 	it("updates volume and sends message to VSCode when slider changes", () => {

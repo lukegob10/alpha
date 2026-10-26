@@ -118,6 +118,24 @@ export class WorkflowScriptedAI {
 		this.removeRegistration?.()
 	}
 
+	/** Opted offline capture contract on the public cache fixture; this plan makes no solving claim. */
+	setProblemEvidenceContract(): void {
+		this.lastCommandCallId = undefined
+		this.budget.observeModel({ id: this.id, family: "scripted", vendor: "alpha-e2e" })
+		this.plan = [
+			{
+				name: "exec_command",
+				arguments: {
+					cmd: "node --test test/behavior.test.js",
+					workdir: this.workspace,
+					yield_time_ms: 10_000,
+				},
+			},
+		]
+		this.finalReport =
+			"This scripted harness contract sample retains the actual validation receipt. It does not establish benchmark solving quality."
+	}
+
 	setPhase(phase: WorkflowPromptName, step = 1): void {
 		this.finalReport = "The requested workflow step is complete."
 		this.lastCommandCallId = undefined

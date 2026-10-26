@@ -6,12 +6,86 @@ import {
 	confidenceHostFiles,
 	extendedHostFiles,
 	hostSuiteVerdict,
+	hostSuiteCleanupVerified,
 	outcomeCampaignVerdict,
+	renderedHostFiles,
 	smokeHostFiles,
+	stressHostFiles,
 	validateHostReceipt,
 } from "./host-evidence.mjs"
 
 import { hostReceipt, outcomeFixture } from "./fixtures/evidence.mjs"
+
+const closedSmokePrefix = (length) =>
+	smokeHostFiles.slice(0, length).map((file, index) => ({
+		...hostReceipt(file),
+		startedAt: new Date(Date.parse("2026-10-02T10:00:00Z") + index * 2000).toISOString(),
+		completedAt: new Date(Date.parse("2026-10-02T10:00:00Z") + index * 2000 + 1000).toISOString(),
+	}))
+
+test("a serial failed assertion can prove owned shutdown without proving full suite acceptance", () => {
+	const prefix = closedSmokePrefix(3)
+	Object.assign(prefix.at(-1), {
+		status: "failed",
+		exitCode: 1,
+		failure: "host-failed",
+		testCounts: { total: 1, passed: 0, pending: 0, executed: 1, failed: 1 },
+	})
+	assert.equal(hostSuiteVerdict(prefix, "smoke").status, "failed")
+	assert.equal(hostSuiteCleanupVerified(prefix, "smoke", 1), true)
+	assert.equal(hostSuiteCleanupVerified(closedSmokePrefix(smokeHostFiles.length), "smoke", 0), true)
+	assert.equal(
+		hostSuiteCleanupVerified(prefix.slice(0, -1), "smoke", 1),
+		false,
+		"a missing next host receipt is still unknown",
+	)
+	assert.equal(
+		hostSuiteCleanupVerified(prefix, "smoke", 0),
+		false,
+		"a partial roster needs the observed serial failure exit",
+	)
+	for (const mutate of [
+		(values) => (values[2].hostExitObserved = false),
+		(values) => (values[2].hostCleanupVerified = false),
+		(values) => (values[2].ownershipGate = null),
+		(values) => (values[2].execution = "test-seam"),
+		(values) => (values[2].actualHostVersion = "1.125.0"),
+		(values) => (values[2].exitCode = undefined),
+		(values) => (values[2].runId = values[0].runId),
+		(values) => (values[1].testFile = "unregistered.test"),
+		(values) => (values[1].startedAt = values[0].startedAt),
+	]) {
+		const unknown = structuredClone(prefix)
+		mutate(unknown)
+		assert.equal(hostSuiteCleanupVerified(unknown, "smoke", 1), false)
+	}
+})
+
+for (const [suite, files] of [
+	["rendered", renderedHostFiles],
+	["stress", stressHostFiles],
+]) {
+	test(`${suite} requires every complete scripted exact-host receipt and rejects partial or foreign evidence`, () => {
+		const receipts = files.map(hostReceipt)
+		assert.equal(hostSuiteVerdict(receipts, suite).status, "passed")
+		assert.equal(hostSuiteVerdict(receipts.slice(1), suite).reason, "incomplete_host_suite")
+		for (const mutate of [
+			(values) => (values[1].runId = values[0].runId),
+			(values) => (values[0].providerMode = "live-copilot"),
+			(values) => (values[0].actualHostVersion = "1.125.0"),
+			(values) => (values[0].testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }),
+			(values) => (values[0].testSelection.grep = "subset"),
+			(values) => (values[0].testSelection.forbidOnly = false),
+			(values) => (values[0].hostExitObserved = false),
+			(values) => (values[0].hostCleanupVerified = false),
+			(values) => (values[0].retentionStatus = "failed"),
+		]) {
+			const incomplete = structuredClone(receipts)
+			mutate(incomplete)
+			assert.equal(hostSuiteVerdict(incomplete, suite).status, "failed")
+		}
+	})
+}
 
 test("whole host suites reject filtered, focused, or legacy selection evidence", () => {
 	for (const selection of [
@@ -159,22 +233,30 @@ test("a completed disposable smoke receipt cannot infer ownership from passed te
 	assert.throws(() => validateHostReceipt(receipt), /receipt/)
 })
 
-test("smoke contracts require the provider selected by their canonical scripts", () => {
-	const receipts = smokeHostFiles.map((file) => ({
-		...hostReceipt(file),
-		providerMode: file === "vscode-lm-contract.test" ? "vscode-lm-fixture" : "scripted",
-	}))
+test("smoke contracts require the provider selected by their canonical scripts", async () => {
+	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
+	const receipts = manifest.scripts["test:smoke:1380:run"]
+		.split(" && ")
+		.filter((command) => command.includes("--file "))
+		.map((command) => ({
+			...hostReceipt(command.match(/--file ([\w.-]+)/)[1]),
+			providerMode: command.match(/--provider ([\w-]+)/)[1],
+		}))
 	assert.equal(hostSuiteVerdict(receipts, "smoke").status, "passed")
-	for (const index of [0, smokeHostFiles.indexOf("vscode-lm-contract.test")]) {
+	for (const index of [
+		0,
+		smokeHostFiles.indexOf("vscode-lm-contract.test"),
+		smokeHostFiles.indexOf("claude-copilot-contract.test"),
+	]) {
 		const modified = structuredClone(receipts)
 		modified[index].providerMode = modified[index].providerMode === "scripted" ? "vscode-lm-fixture" : "scripted"
 		assert.equal(hostSuiteVerdict(modified, "smoke").status, "failed")
 	}
 })
 
-test("confidence composes all thirteen smoke hosts and five core hosts without admitting unit fixtures", () => {
-	assert.equal(smokeHostFiles.length, 13)
-	assert.equal(confidenceHostFiles.length, 18)
+test("confidence composes all fifteen smoke hosts and five core hosts without admitting unit fixtures", () => {
+	assert.equal(smokeHostFiles.length, 15)
+	assert.equal(confidenceHostFiles.length, 20)
 	assert.deepEqual(confidenceHostFiles.slice(0, smokeHostFiles.length), smokeHostFiles)
 	const receipts = confidenceHostFiles.map(hostReceipt)
 	assert.equal(hostSuiteVerdict(receipts, "confidence").status, "passed")

@@ -4,10 +4,17 @@ import {
 	type ProviderSettings,
 	type OrganizationAllowList,
 	type ProviderName,
+	type ModelInfo,
 	modelIdKeysByProvider,
 	isProviderName,
 	isFauxProvider,
 	isCustomProvider,
+	isCuratedProvider,
+	curatedProviderApiKeyFields,
+	getModelId,
+	getProviderDefaultModelId,
+	getCuratedModelInfo,
+	getUnsupportedCuratedProviderSettings,
 	openAiModelInfoSaneDefaults,
 	resolveOptionalOutputTokenLimit,
 	resolveModelParameterApplicability,
@@ -37,10 +44,23 @@ export function validateApiConfiguration(
 		return organizationAllowListError.message
 	}
 
-	return undefined
+	return getCuratedModelValidationError(apiConfiguration)
 }
 
 function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): string | undefined {
+	if (isCuratedProvider(apiConfiguration.apiProvider)) {
+		const unsupportedFields = getUnsupportedCuratedProviderSettings(apiConfiguration.apiProvider, apiConfiguration)
+		if (unsupportedFields.length > 0) {
+			return i18next.t("settings:validation.unsupportedProviderSettings", {
+				fields: unsupportedFields.join(", "),
+			})
+		}
+		const key = apiConfiguration[curatedProviderApiKeyFields[apiConfiguration.apiProvider]]
+		if (typeof key !== "string" || !key.trim()) return i18next.t("settings:validation.apiKey")
+		const modelId = getModelId(apiConfiguration) ?? getProviderDefaultModelId(apiConfiguration.apiProvider)
+		const model = getCuratedModelInfo(apiConfiguration.apiProvider, modelId)
+		return model ? getOutputTokenLimitValidationError(apiConfiguration, modelId, model) : undefined
+	}
 	switch (apiConfiguration.apiProvider) {
 		case "vertex":
 			if (!hasVertexProjectAndLocation(apiConfiguration)) {
@@ -67,35 +87,7 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				return i18next.t("settings:validation.openAi")
 			}
 			const model = apiConfiguration.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults
-			const { route } = resolveModelParameterApplicability({
-				provider: "openai",
-				modelId: apiConfiguration.openAiModelId,
-				model,
-				settings: apiConfiguration,
-			})
-			try {
-				resolveOptionalOutputTokenLimit({
-					model,
-					settings: apiConfiguration,
-					route,
-				})
-			} catch (error) {
-				if (!(error instanceof RangeError)) throw error
-				const limit = apiConfiguration.modelMaxTokens ?? model.maxTokens
-				if (
-					route === "openai-responses" &&
-					typeof limit === "number" &&
-					Number.isSafeInteger(limit) &&
-					limit > 0 &&
-					limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS
-				) {
-					return i18next.t("settings:validation.responsesOutputTokenLimit", {
-						minimum: MIN_OPENAI_RESPONSES_OUTPUT_TOKENS,
-					})
-				}
-				return i18next.t("settings:validation.outputTokenLimit")
-			}
-			break
+			return getOutputTokenLimitValidationError(apiConfiguration, apiConfiguration.openAiModelId, model)
 		}
 		case "vscode-lm":
 			if (!apiConfiguration.vsCodeLmModelSelector) {
@@ -110,6 +102,52 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 			}
 	}
 
+	return undefined
+}
+
+/** Validate the same captured model and route that the provider uses when dispatching a request. */
+export function getOutputTokenLimitValidationError(
+	apiConfiguration: ProviderSettings,
+	modelId: string,
+	model: ModelInfo,
+): string | undefined {
+	const { route } = resolveModelParameterApplicability({
+		provider: apiConfiguration.apiProvider,
+		modelId,
+		model,
+		settings: apiConfiguration,
+	})
+	try {
+		resolveOptionalOutputTokenLimit({
+			model,
+			settings: apiConfiguration,
+			route,
+			enforceModelMaximum: isCuratedProvider(apiConfiguration.apiProvider),
+		})
+	} catch (error) {
+		if (!(error instanceof RangeError)) throw error
+		const limit = apiConfiguration.modelMaxTokens ?? model.maxTokens
+		if (
+			route === "openai-responses" &&
+			typeof limit === "number" &&
+			Number.isSafeInteger(limit) &&
+			limit > 0 &&
+			limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS
+		) {
+			return i18next.t("settings:validation.responsesOutputTokenLimit", {
+				minimum: MIN_OPENAI_RESPONSES_OUTPUT_TOKENS,
+			})
+		}
+		if (
+			typeof limit === "number" &&
+			Number.isSafeInteger(limit) &&
+			typeof model.maxTokens === "number" &&
+			limit > model.maxTokens
+		) {
+			return i18next.t("settings:validation.modelOutputTokenLimit", { maximum: model.maxTokens })
+		}
+		return i18next.t("settings:validation.outputTokenLimit")
+	}
 	return undefined
 }
 
@@ -239,6 +277,9 @@ function isValidVertexGatewayModelRoutingMap(value: ProviderSettings["modelRouti
 }
 
 function getModelIdForProvider(apiConfiguration: ProviderSettings, provider: ProviderName): string | undefined {
+	if (isCuratedProvider(provider)) {
+		return getModelId(apiConfiguration) ?? getProviderDefaultModelId(provider)
+	}
 	if (provider === "vscode-lm") {
 		return apiConfiguration.vsCodeLmModelSelector?.id
 	}
@@ -278,6 +319,16 @@ export function getModelValidationError(
 		return orgError.message
 	}
 
+	return getCuratedModelValidationError(apiConfiguration)
+}
+
+function getCuratedModelValidationError(apiConfiguration: ProviderSettings): string | undefined {
+	const provider = apiConfiguration.apiProvider
+	if (!isCuratedProvider(provider)) return undefined
+	const modelId = getModelId(apiConfiguration) ?? getProviderDefaultModelId(provider)
+	if (!getCuratedModelInfo(provider, modelId)) {
+		return i18next.t("settings:validation.modelAvailability", { modelId })
+	}
 	return undefined
 }
 

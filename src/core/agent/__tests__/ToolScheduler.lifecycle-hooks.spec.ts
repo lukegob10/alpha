@@ -11,6 +11,7 @@ import type { AgentToolCall } from "../AgentResponse"
 import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerOptions } from "../ToolScheduler"
 import type { ToolApprovalDecision } from "@alpha-code/types"
 import { createToolPolicySnapshot } from "../ToolPolicy"
+import { clearTaskSessionApprovalGrants } from "../../auto-approval/taskSessionApprovalGrants"
 
 beforeAll(() => {
 	i18next.addResourceBundle("en", "common", common, true, true)
@@ -134,6 +135,77 @@ function commandFixture(options: Partial<ToolSchedulerOptions> = {}) {
 }
 
 describe("lifecycle hooks retain native command approval receipts", () => {
+	it.each(["denied", "cancelled"] as const)(
+		"runs PermissionRequest before reusing an exact-command grant when the next hook is %s",
+		async (decision) => {
+			let enterHook!: () => void
+			let releaseHook!: () => void
+			const hookEntered = new Promise<void>((resolve) => {
+				enterHook = resolve
+			})
+			const hookReleased = new Promise<void>((resolve) => {
+				releaseHook = resolve
+			})
+			const controller = new AbortController()
+			const onEffectStart = vi.fn(async () => undefined)
+			const permissionRequest = vi.fn<NonNullable<ToolSchedulerOptions["permissionRequest"]>>()
+			permissionRequest.mockResolvedValueOnce({}).mockImplementationOnce(async () => {
+				if (decision === "cancelled") {
+					enterHook()
+					await hookReleased
+					return {}
+				}
+				return { denied: "The installed hook revoked this command" }
+			})
+			const { scheduler, host, effect, call } = commandFixture({
+				permissionRequest,
+				onEffectStart,
+				signal: controller.signal,
+				preserveAbortedResults: true,
+			})
+			host.taskId = `lifecycle-cached-hook-${decision}`
+			const requestToolApproval = vi.fn<NonNullable<ToolExecutionHost["requestToolApproval"]>>(
+				async (request) => {
+					if (!request.proposedAmendment) throw new Error("Expected an exact-command session amendment")
+					return { decision: "approve_with_amendment", amendment: request.proposedAmendment }
+				},
+			)
+			host.requestToolApproval = requestToolApproval
+			try {
+				const first = await scheduler.run([{ ...call, id: "approved-command" }])
+				expect(first.results[0].status).toBe("success")
+				const pending = scheduler.run([{ ...call, id: "cached-command" }])
+				if (decision === "cancelled") {
+					await Promise.race([
+						hookEntered,
+						pending.then(() => {
+							throw new Error("Cached approval bypassed permission revalidation")
+						}),
+					])
+					controller.abort(new Error("Stopped during permission revalidation"))
+					releaseHook()
+				}
+				const second = await pending
+
+				expect(permissionRequest).toHaveBeenCalledTimes(2)
+				expect(requestToolApproval).toHaveBeenCalledOnce()
+				expect(effect).toHaveBeenCalledOnce()
+				expect(onEffectStart).toHaveBeenCalledOnce()
+				expect(second.results).toEqual([
+					expect.objectContaining({ callId: "cached-command", status: decision }),
+				])
+				expect(host.userMessageContent).toEqual([
+					expect.objectContaining({ tool_use_id: "approved-command", is_error: false }),
+					expect.objectContaining({ tool_use_id: "cached-command", is_error: true }),
+				])
+			} finally {
+				releaseHook()
+				controller.abort()
+				clearTaskSessionApprovalGrants(host.taskId)
+			}
+		},
+	)
+
 	it("retains the host-owned row ID through a permitted rewritten command", async () => {
 		const rewritten = "git diff --stat"
 		const permissionRequest = vi.fn<NonNullable<ToolSchedulerOptions["permissionRequest"]>>(async () => ({}))

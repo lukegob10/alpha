@@ -1,7 +1,64 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { assistantVisibleText, isUnansweredCommandReview } from "../suite/live-transcript-support"
+import {
+	assistantVisibleText,
+	finalAssistantResponse,
+	isUnansweredCommandReview,
+} from "../suite/live-transcript-support"
+
+test("only the chronological final ordinary assistant response supplies final visible text", () => {
+	const completion = {
+		role: "assistant",
+		content: [{ type: "tool_use", id: "finish", name: "attempt_completion", input: { result: "250" } }],
+	}
+	const prior = { role: "assistant", content: "Earlier commentary mentions 400." }
+	assert.deepEqual(
+		finalAssistantResponse([
+			prior,
+			completion,
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "finish", is_error: true, content: "rejected" }],
+			},
+			{ role: "assistant", content: [{ type: "text", text: "400" }] },
+		]),
+		{ text: "400", toolCallCount: 0 },
+	)
+	assert.deepEqual(
+		finalAssistantResponse([
+			prior,
+			completion,
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "finish", content: "(tool did not return anything)" }],
+			},
+		]),
+		{ text: "", toolCallCount: 1 },
+		"earlier commentary cannot become the final answer of a tool completion",
+	)
+	assert.deepEqual(
+		finalAssistantResponse([
+			{ role: "user", content: "question" },
+			{ role: "assistant", content: "250" },
+		]),
+		{ text: "250", toolCallCount: 0 },
+	)
+	assert.deepEqual(
+		finalAssistantResponse([prior, { role: "assistant", content: [{ type: "reasoning", text: "250" }] }]),
+		{ text: "", toolCallCount: 0 },
+	)
+	assert.deepEqual(
+		finalAssistantResponse([
+			{
+				...completion,
+				content: [{ type: "text", text: "I will finish with 400." }, ...completion.content],
+			},
+		]),
+		{ text: "", toolCallCount: 1 },
+		"commentary in a completion call is separate from its terminal answer",
+	)
+})
 
 for (const answer of ["700", "250", "no refund window is stated"]) {
 	test(`the visible answer ${JSON.stringify(answer)} excludes reasoning and its summary`, () => {

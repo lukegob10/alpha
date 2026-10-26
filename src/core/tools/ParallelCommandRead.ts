@@ -39,8 +39,8 @@ export async function classifyCommandRead(
 	let start = 1
 	if (tokens[start] === "--no-pager" || tokens[start] === "-P") start++
 	const subcommand = tokens[start++]
+	if (!Object.hasOwn(GIT_OPTIONS, subcommand)) return undefined
 	const allowed = GIT_OPTIONS[subcommand]
-	if (!allowed) return undefined
 	const args = tokens.slice(start)
 	let pathsOnly = false
 	for (let index = 0; index < args.length; index++) {
@@ -297,7 +297,7 @@ async function captureRgRead(
 			) {
 				throw new Error("Prepared command authority or environment changed before launch")
 			}
-			if (await task.getTaskCommandDenialReason?.(command, requestedCwd))
+			if (await task.getTaskCommandDenialReason?.(command, requestedCwd, "audited-read"))
 				throw new ToolReadDeniedError("Prepared command authority was revoked")
 			const [currentRoot, currentCwd, currentExecutable, currentRoots] = await Promise.all([
 				fs.realpath(task.cwd),

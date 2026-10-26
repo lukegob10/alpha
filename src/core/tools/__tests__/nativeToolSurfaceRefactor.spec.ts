@@ -356,7 +356,7 @@ describe("native tool-surface refactor contract", () => {
 					apiConfiguration: { apiProvider: "openai" },
 					taskKind: "primary",
 					crossTaskRole,
-					userRequestText: "Create one independent task for parser review.",
+					userRequestText: "Create one independent task for parser review and fork this chat.",
 				})
 
 			const rootCode = await buildSurface("code", "root")
@@ -406,7 +406,11 @@ describe("native tool-surface refactor contract", () => {
 				wait_task: ["wait_threads"],
 				send_task_message: ["send_message_to_thread"],
 			}
-			const schemas = getNativeTools({ crossTaskRole: "root", includeCreateThreadSchema: true })
+			const schemas = getNativeTools({
+				crossTaskRole: "root",
+				includeCreateThreadSchema: true,
+				includeForkThreadSchema: true,
+			})
 			for (const [historical, current] of Object.entries(replacements)) {
 				const captured = createTaskToolSurface({ schemas, mode: "code", disabledTools: [historical] })
 				for (const name of current) {
@@ -520,6 +524,9 @@ describe("native tool-surface refactor contract", () => {
 				"codebase_search",
 				"list_tickets",
 				"read_ticket",
+				"memories_list",
+				"memories_read",
+				"memories_search",
 			])
 			expect(TOOL_GROUPS.command.tools).toEqual(["exec_command", "manage_command", "write_stdin"])
 			expect(TOOL_GROUPS.edit.tools).toEqual([
@@ -528,6 +535,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"memories_add_ad_hoc_note",
 				"create_goal",
 				"update_goal",
 			])

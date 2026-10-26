@@ -147,9 +147,9 @@ describe("Task.ask queued message drain", () => {
 		const pending = task.ask("command", "node script.js", false, { text: "../outside" }, false, true)
 		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
-		expect(task["addToAlphaMessages"]).toHaveBeenCalledWith(
-			expect.objectContaining({ progressStatus: { text: "../outside" } }),
-		)
+		expect(vi.mocked(task["addToAlphaMessages"]).mock.calls[0]?.[0]).toMatchObject({
+			progressStatus: { text: "../outside" },
+		})
 		task.handleWebviewAskResponse("noButtonClicked")
 		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
 	})
@@ -355,32 +355,39 @@ describe("Task.ask queued message drain", () => {
 		}
 	})
 
-	it("forwards a Worker's blocked approval even when later guidance is queued", async () => {
-		const task = await createAskOnlyTask()
-		const surfaceSubagentApproval = vi.fn(async () => undefined)
-		Object.assign(task, {
-			subagentRole: "worker",
-			providerRef: {
-				deref: () => ({
-					getState: async () => ({}),
-					isTaskOnScreen: () => true,
-					surfaceSubagentApproval,
-					clearSubagentApproval: async () => undefined,
-				}),
-			},
-		})
-		task.messageQueueService.addMessage("Then inspect the results")
-		const pending = task.ask("command", "node script.js", false, undefined, false, true)
-		try {
-			await vi.waitFor(() =>
-				expect(surfaceSubagentApproval).toHaveBeenCalledWith(task, "command", "node script.js"),
-			)
-			expect(task.messageQueueService.messages).toHaveLength(1)
-		} finally {
-			task.handleWebviewAskResponse("noButtonClicked")
-			await pending
-		}
-	})
+	it.each([
+		["worker", "command", "node script.js", "command"],
+		["explore", "command", "git status", "command"],
+		["review", "use_mcp_server", '{"type":"use_mcp_tool","serverName":"docs","toolName":"search"}', "mcp"],
+		["explore", "tool", '{"tool":"write_to_file","path":"answer.txt"}', "tool"],
+	] as const)(
+		"forwards a %s blocked %s approval while preserving queued guidance",
+		async (role, ask, text, approvalType) => {
+			const task = await createAskOnlyTask()
+			const surfaceSubagentApproval = vi.fn(async () => undefined)
+			Object.assign(task, {
+				taskKind: "subagent",
+				subagentRole: role,
+				providerRef: {
+					deref: () => ({
+						getState: async () => ({}),
+						isTaskOnScreen: () => true,
+						surfaceSubagentApproval,
+						clearSubagentApproval: async () => undefined,
+					}),
+				},
+			})
+			task.messageQueueService.addMessage("Then inspect the results")
+			const pending = task.ask(ask, text, false, undefined, false, true)
+			try {
+				await vi.waitFor(() => expect(surfaceSubagentApproval).toHaveBeenCalledWith(task, approvalType, text))
+				expect(task.messageQueueService.messages).toHaveLength(1)
+			} finally {
+				task.handleWebviewAskResponse("noButtonClicked")
+				await pending
+			}
+		},
+	)
 
 	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(
 		"consumes exactly one pre-queued message in FIFO order for %s",

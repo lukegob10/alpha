@@ -76,6 +76,43 @@ describe("AlphaProvider primary verification", () => {
 
 	const primaryObligation = () => store.getVerificationObligations({ parentTaskId: parent.taskId })[0]!
 
+	it.each(["explore", "review"] as const)("settles a shared %s mutation in its parent's ledger", async (role) => {
+		const child = {
+			taskId: "shared-child",
+			taskKind: "subagent",
+			subagentRole: role,
+			cwd: workspace,
+			subagentContextManifest: {
+				parentTaskId: parent.taskId,
+				runtimePolicy: { role, authorityModel: "parent", mutate: true },
+			},
+			getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+		} as Task
+		Reflect.set(provider, "subagentDescriptors", new Map([[child.taskId, { parent }]]))
+		await store.createAgent({
+			taskId: child.taskId,
+			parentTaskId: parent.taskId,
+			nickname: role,
+			role,
+			objective: "Correct the shared source",
+			status: "running",
+		})
+		await provider.reservePrimaryMutation(child, "shared-edit")
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(false)
+		await fs.writeFile(path.join(workspace, "src/a.ts"), "export const value = 2\n")
+		await expect(
+			provider.recordPrimaryMutation(
+				child,
+				await captureVerificationContent(workspace, ["src/a.ts"]),
+				false,
+				"shared-edit",
+			),
+		).resolves.toBe(true)
+		expect(primaryObligation()).toMatchObject({ changedFiles: ["src/a.ts"], mutationReservations: [] })
+		expect(store.getVerificationObligations({ parentTaskId: child.taskId })).toEqual([])
+		expect(store.getAgent(child.taskId)?.snapshot?.metadata?.sharedWorkspaceChangedFiles).toEqual(["src/a.ts"])
+	})
+
 	it("propagates task cancellation to reservation admission without creating mutation debt", async () => {
 		const cancellation = new AbortController()
 		parent.getTaskLifetimeCancellationSignal.mockReturnValue(cancellation.signal)

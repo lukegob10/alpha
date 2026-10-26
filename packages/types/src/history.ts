@@ -7,6 +7,7 @@ import { taskWorkContextSchema } from "./task-work-context.js"
 import { taskDesignHandoffSchema } from "./task-design-handoff.js"
 import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-reasoning.js"
 import { approvalModeSchema } from "./approval-mode.js"
+import { taskMemoryStateSchema } from "./memory.js"
 
 export const diagnosticTaskIdentitySchema = z.string().trim().min(1).max(128)
 
@@ -36,6 +37,7 @@ export const orchestrationCompletionNotificationSchema = z.object({
 
 export const historyItemSchema = z.object({
 	id: z.string(),
+	memory: taskMemoryStateSchema.optional(),
 	/** True only for host-created Alpha diagnostic sessions with a constrained read-only tool surface. */
 	diagnosticSession: z.boolean().optional(),
 	/** Bounded host-generated incident identity used to deduplicate diagnostics across reloads. */

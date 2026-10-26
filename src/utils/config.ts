@@ -39,13 +39,18 @@ export async function injectVariables<C extends InjectableConfigType>(
 ) {
 	const isObject = typeof config === "object"
 	let configString: string = isObject ? JSON.stringify(config) : config
+	const replacementText = (value: unknown): string => {
+		const text = String(value)
+		// Object replacements are embedded inside serialized JSON strings.
+		return isObject ? JSON.stringify(text).slice(1, -1) : text
+	}
 
 	for (const [key, value] of Object.entries(variables)) {
 		if (value == null) continue
 
 		if (typeof value === "string") {
 			// Normalize paths to forward slashes for cross-platform compatibility
-			configString = configString.replace(new RegExp(`\\$\\{${key}\\}`, "g"), value.toPosix())
+			configString = configString.replaceAll("${" + key + "}", () => replacementText(value.toPosix()))
 		} else {
 			// Handle nested variables (e.g., ${env:VAR_NAME})
 			configString = configString.replace(new RegExp(`\\$\\{${key}:([\\w]+)\\}`, "g"), (match, name) => {
@@ -53,11 +58,11 @@ export async function injectVariables<C extends InjectableConfigType>(
 
 				if (nestedValue == null) {
 					console.warn(`[injectVariables] variable "${name}" referenced but not found in "${key}"`)
-					return propNotFoundValue ?? match
+					return replacementText(propNotFoundValue ?? match)
 				}
 
 				// Normalize paths for string values
-				return typeof nestedValue === "string" ? nestedValue.toPosix() : nestedValue
+				return replacementText(typeof nestedValue === "string" ? nestedValue.toPosix() : nestedValue)
 			})
 		}
 	}

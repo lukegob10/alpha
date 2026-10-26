@@ -9,6 +9,8 @@ import type { TrialTerminalStatus } from "../lifecycle/index"
 import type { BenchmarkPartition } from "./publicTypes"
 import { loadBenchmarkCatalog } from "./loader"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
+import { readCalibrationReport, resolveCalibrationReportPath, updateCalibrationReport } from "./calibrationStore"
+import { benchmarkPartitionSchema, modelCalibrationStatusSchema } from "./contracts"
 import { assertCampaignBudgetAuthorized, type TierBudget } from "./budgets"
 import { sealCampaignExport } from "../experiments/campaign"
 import { canonicalJson, sha256 } from "../evidence/canonical"
@@ -22,7 +24,7 @@ export function resolveModelCampaignProvider(provider: string = "openai"): "open
 	throw new Error(`Unsupported campaign provider: ${provider}`)
 }
 
-export async function runBenchmarkModelCampaign(options: {
+export async function runBenchmarkModelCampaign(optionsValue: {
 	publicRoot: string
 	partition: ModelCampaignPartition | "visible" | "frontier"
 	modelRole: "luna-high" | "sol-high"
@@ -37,6 +39,13 @@ export async function runBenchmarkModelCampaign(options: {
 	highCostApproved?: boolean
 	evidenceOutput?: string
 }): Promise<number> {
+	const options = {
+		...optionsValue,
+		taskIds: optionsValue.taskIds ? [...optionsValue.taskIds] : undefined,
+		campaignBudget: optionsValue.campaignBudget ? { ...optionsValue.campaignBudget } : undefined,
+	}
+	const privateRoot = process.env.EVALS_PRIVATE_BENCHMARK_ROOT
+	const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
 	if (!options.modelId.trim()) throw new Error("A concrete provider model id is required")
 	const provider = resolveModelCampaignProvider(options.provider)
 	const apiKeyVariable = "OPENAI_API_KEY"
@@ -72,7 +81,7 @@ export async function runBenchmarkModelCampaign(options: {
 		apiProvider: provider,
 		reasoningEffort: "high",
 		openAiModelId: options.modelId,
-		openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+		openAiBaseUrl: baseUrl,
 	}
 	const run = await createRun({
 		model: options.modelId,
@@ -93,24 +102,25 @@ export async function runBenchmarkModelCampaign(options: {
 		highCostApproved: options.highCostApproved ?? false,
 		modelFallbackAllowed: false,
 	})
-	for (const task of selected) {
-		const [fixtureLanguage, fixtureExercise] = task.fixture.split("/")
-		const language = task.partition === "holdout" ? "javascript" : fixtureLanguage
-		const exercise = task.partition === "holdout" ? task.id : fixtureExercise
-		if (!language || !exercise) throw new Error(`Invalid task fixture ${task.fixture}`)
-		for (let iteration = 1; iteration <= iterations; iteration++) {
-			await createTask({
-				runId: run.id,
-				language: language as ExerciseLanguage,
-				exercise,
-				iteration,
-				benchmarkTaskIdentity: `${task.id}@${task.version}`,
-				benchmarkPartition: task.partition,
-			})
-		}
-	}
 	let executionFailure: { error: unknown } | undefined
+	const finalizationFailures: unknown[] = []
 	try {
+		for (const task of selected) {
+			const [fixtureLanguage, fixtureExercise] = task.fixture.split("/")
+			const language = task.partition === "holdout" ? "javascript" : fixtureLanguage
+			const exercise = task.partition === "holdout" ? task.id : fixtureExercise
+			if (!language || !exercise) throw new Error(`Invalid task fixture ${task.fixture}`)
+			for (let iteration = 1; iteration <= iterations; iteration++) {
+				await createTask({
+					runId: run.id,
+					language: language as ExerciseLanguage,
+					exercise,
+					iteration,
+					benchmarkTaskIdentity: `${task.id}@${task.version}`,
+					benchmarkPartition: task.partition,
+				})
+			}
+		}
 		await runEvals(run.id)
 	} catch (error) {
 		executionFailure = { error }
@@ -184,87 +194,135 @@ export async function runBenchmarkModelCampaign(options: {
 			)
 		}
 	} catch (error) {
-		if (executionFailure)
-			throw new AggregateError(
-				[executionFailure.error, error],
-				"Campaign execution and evidence export both failed",
-			)
-		throw error
+		finalizationFailures.push(error)
 	}
-	if (executionFailure) throw executionFailure.error
-	await ingestModelCampaign({
-		runId: run.id,
-		modelRole: options.modelRole,
-		publicRoot: options.publicRoot,
-		privateRoot: process.env.EVALS_PRIVATE_BENCHMARK_ROOT,
-	})
+	// Dispatch failure still leaves scheduled, incomplete, or excluded work that must stay visible.
+	try {
+		await ingestModelCampaign({
+			runId: run.id,
+			modelRole: options.modelRole,
+			publicRoot: options.publicRoot,
+			privateRoot,
+		})
+	} catch (error) {
+		finalizationFailures.push(error)
+	}
+	if (executionFailure) {
+		if (finalizationFailures.length)
+			throw new AggregateError(
+				[executionFailure.error, ...finalizationFailures],
+				"Campaign execution and finalization failed",
+				{ cause: executionFailure.error },
+			)
+		throw executionFailure.error
+	}
+	if (finalizationFailures.length === 1) throw finalizationFailures[0]
+	if (finalizationFailures.length) throw new AggregateError(finalizationFailures, "Campaign finalization failed")
 	return run.id
 }
 
-export async function ingestModelCampaign(options: {
+export async function ingestModelCampaign(optionsValue: {
 	runId: number
 	modelRole: "luna-high" | "sol-high"
 	publicRoot: string
 	privateRoot?: string
 }): Promise<void> {
+	const options = { ...optionsValue }
 	const tasks = await getTasks(options.runId)
 	const groups = new Map<string, typeof tasks>()
 	for (const task of tasks) {
-		if (!task.benchmarkTaskIdentity || !task.benchmarkPartition) continue
+		if (!task.benchmarkTaskIdentity && !task.benchmarkPartition) continue
+		if (!task.benchmarkTaskIdentity || !task.benchmarkPartition)
+			throw new Error(`Calibration task ${task.id} has incomplete benchmark identity or partition`)
 		groups.set(task.benchmarkTaskIdentity, [...(groups.get(task.benchmarkTaskIdentity) ?? []), task])
 	}
 	for (const [identity, taskRows] of groups) {
-		// One-pass research runs are valid baseline observations, but they do not
-		// satisfy the five-trial calibration contract. Keep their results in the
-		// run/task metrics and defer report merging until a calibration campaign.
-		if (taskRows.length < 5) continue
-		const partition = taskRows[0]!.benchmarkPartition!
+		const partitions = new Set(taskRows.map(({ benchmarkPartition }) => benchmarkPartition))
+		if (partitions.size !== 1) throw new Error(`Calibration task ${identity} has mixed benchmark partitions`)
+		const partition = benchmarkPartitionSchema.parse(taskRows[0]!.benchmarkPartition)
+		if (
+			new Set(taskRows.map(({ id }) => id)).size !== taskRows.length ||
+			new Set(taskRows.map(({ iteration }) => iteration)).size !== taskRows.length ||
+			taskRows.some(({ iteration }) => !Number.isSafeInteger(iteration) || iteration < 1)
+		)
+			throw new Error(`Calibration task ${identity} contains duplicate scheduled rows or invalid repetitions`)
 		if (partition === "holdout" && !options.privateRoot)
 			throw new Error("Private benchmark root is required to ingest holdout trials")
 		const reportRoot =
 			partition === "holdout"
 				? path.join(options.privateRoot!, "reports")
 				: path.join(options.publicRoot, "calibration")
-		const reportPath = path.join(reportRoot, `${identity.split("@")[0]}.keyless.json`)
-		let reportSource: string
-		try {
-			reportSource = await fs.readFile(reportPath, "utf8")
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-			throw error
+		const reportPath = await resolveCalibrationReportPath(reportRoot, identity)
+		// Do not query or fabricate controls for tasks without an existing keyless report.
+		if (!(await readCalibrationReport(reportPath)).report) continue
+		const trials: ModelCalibrationTrial[] = []
+		const delivered = []
+		const statusCounts = Object.fromEntries(modelCalibrationStatusSchema.options.map((status) => [status, 0]))
+		for (const task of taskRows) {
+			const trial = await findTrialForTask(task.id)
+			const parsedStatus = modelCalibrationStatusSchema.safeParse(trial ? trial.status : "missing")
+			if (!parsedStatus.success) throw new Error(`Calibration task ${task.id} has an unknown trial status`)
+			const status = parsedStatus.data
+			statusCounts[status]!++
+			const id = `run-${options.runId}-task-${task.id}`
+			delivered.push({
+				id,
+				status,
+				...(trial ? { attemptCount: trial.attemptCount, retryAssisted: trial.retryAssisted } : {}),
+			})
+			const outcome =
+				status === "missing" || status === "pending" || status === "running"
+					? undefined
+					: calibrationOutcome(status)
+			if (!outcome) continue
+			trials.push({
+				id,
+				taskIdentity: identity,
+				model: options.modelRole,
+				passed: outcome.passed,
+				unexpected: false,
+				safetyFailed: outcome.safetyFailed,
+				reviewed: false,
+			})
 		}
-		const trials = (
-			await Promise.all(
-				taskRows.map(async (task): Promise<ModelCalibrationTrial | undefined> => {
-					const trial = await findTrialForTask(task.id)
-					const outcome =
-						trial && trial.status !== "pending" && trial.status !== "running"
-							? calibrationOutcome(trial.status)
-							: undefined
-					if (!outcome) {
-						return undefined
-					}
-					return {
-						id: `run-${options.runId}-task-${task.id}`,
-						taskIdentity: identity,
-						model: options.modelRole,
-						passed: outcome.passed,
-						unexpected: false,
-						safetyFailed: outcome.safetyFailed,
-						reviewed: false,
-					}
-				}),
-			)
-		).filter((trial): trial is ModelCalibrationTrial => Boolean(trial))
-		if (trials.length < 5) continue
-		const report = mergeModelCalibration(JSON.parse(reportSource), trials)
-		await fs.writeFile(reportPath, JSON.stringify(report, null, 2) + "\n")
+		const delivery = {
+			model: options.modelRole,
+			taskIdentity: identity,
+			runId: options.runId,
+			scheduled: taskRows.length,
+			scoreable: trials.length,
+			excluded: taskRows.length - trials.length,
+			missing: statusCounts.missing,
+			statusCounts,
+			trials: delivered,
+		}
+		// Trial collection can overlap another model arm or human review. Merge only
+		// this arm into the latest locked report, never the pre-query snapshot.
+		await updateCalibrationReport(reportPath, (report) => {
+			if (!report) return undefined
+			if (report.taskIdentity !== identity)
+				throw new Error(`Calibration report identity mismatch for ${identity}`)
+			return mergeModelCalibration(report, trials, delivery)
+		})
 	}
 }
 
 export function calibrationOutcome(
 	status: TrialTerminalStatus,
 ): { passed: boolean; safetyFailed: boolean } | undefined {
-	if (["infrastructure_error", "grader_error", "cancelled", "human_handoff"].includes(status)) return undefined
-	return { passed: status === "passed", safetyFailed: status === "safety_failed" }
+	switch (status) {
+		case "infrastructure_error":
+		case "grader_error":
+		case "cancelled":
+		case "human_handoff":
+			return undefined
+		case "passed":
+		case "outcome_failed":
+		case "safety_failed":
+		case "budget_exhausted":
+		case "agent_error":
+			return { passed: status === "passed", safetyFailed: status === "safety_failed" }
+		default:
+			throw new Error("Unknown calibration trial status")
+	}
 }

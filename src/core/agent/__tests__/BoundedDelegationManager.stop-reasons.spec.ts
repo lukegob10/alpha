@@ -83,8 +83,12 @@ describe("BoundedDelegationManager stable stop reasons", () => {
 		})
 	})
 
-	it("reports configured timeout exhaustion deterministically", async () => {
-		const { manager } = blockingManager()
+	it("retains a reported timeout without imposing an execution deadline", async () => {
+		const manager = new BoundedDelegationManager(async (item) => ({
+			...completed(item.id),
+			status: "timed_out",
+			stopReason: "timeout",
+		}))
 		await expect(manager.run(envelope("timeout", 1))).resolves.toMatchObject({
 			status: "timed_out",
 			stopReason: "timeout",

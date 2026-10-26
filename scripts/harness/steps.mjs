@@ -71,6 +71,10 @@ export async function executeSteps({
 				verifying = true
 				step.evidence = await verify({ index, args, step })
 				if (step.evidence?.status !== "passed") step.status = "failed"
+				if (step.evidence?.cleanupVerified === false) {
+					report.cleanupUnverified = true
+					step.status = "failed"
+				}
 			}
 		} catch (error) {
 			step.status = signal.aborted ? "cancelled" : "failed"

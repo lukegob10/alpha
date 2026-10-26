@@ -508,6 +508,40 @@ describe("ReadFileTool", () => {
 			mockedIsSupportedImageContent.mockReturnValue(true)
 		})
 
+		it.each(["read_file", "view_image"] as const)(
+			"keeps direct %s image capability stable through approval without a captured callback",
+			async (tool) => {
+				const mockTask = createMockTask({ supportsImages: true })
+				const callbacks = createMockCallbacks()
+				callbacks.askApprovalResponse.mockImplementation(async () => {
+					mockTask.api.getModel.mockReturnValue({ info: { supportsImages: false } })
+					return { response: "yesButtonClicked" }
+				})
+				mockedValidateImageForProcessing.mockResolvedValue({ isValid: true, sizeInMB: 0.5 })
+				mockedProcessImageFile.mockResolvedValue({
+					dataUrl: "data:image/png;base64,cGl4ZWw=",
+					buffer: Buffer.from("pixel"),
+					sourceExtension: ".png",
+					outputExtension: ".png",
+					mimeType: "image/png",
+					sizeInKB: 1,
+					sizeInMB: 5 / 1024 ** 2,
+					notice: "Image processed successfully",
+				})
+				const task = mockTask as unknown as Parameters<typeof readFileTool.execute>[1]
+
+				if (tool === "view_image") await readFileTool.executeImage("pixel.png", task, callbacks)
+				else await readFileTool.execute({ path: "pixel.png" }, task, callbacks)
+
+				expect(callbacks.askApprovalResponse).toHaveBeenCalledOnce()
+				expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith([
+					{ type: "text", text: "File: pixel.png\nNote: Image processed successfully" },
+					{ type: "image", source: { type: "base64", media_type: "image/png", data: "cGl4ZWw=" } },
+				])
+				expect(mockTask.api.getModel).toHaveBeenCalledOnce()
+			},
+		)
+
 		it("rejects mismatched image-only source metadata despite a valid output signature", async () => {
 			const mockTask = createMockTask({ supportsImages: true })
 			const callbacks = createMockCallbacks()
@@ -597,6 +631,12 @@ describe("ReadFileTool", () => {
 			await readFileTool.execute({ path: "large-image.png" }, mockTask as any, callbacks)
 
 			expect(mockedProcessImageFile).not.toHaveBeenCalled()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"large-image.png",
+				"read_tool",
+			)
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			expect(callbacks.setResultMetadata).not.toHaveBeenCalledWith(expect.objectContaining({ status: "error" }))
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("exceeds the maximum allowed"),
 			)
@@ -615,6 +655,12 @@ describe("ReadFileTool", () => {
 			await readFileTool.execute({ path: "another-image.png" }, mockTask as any, callbacks)
 
 			expect(mockedProcessImageFile).not.toHaveBeenCalled()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"another-image.png",
+				"read_tool",
+			)
+			expect(mockTask.didToolFailInCurrentTurn).toBe(false)
+			expect(callbacks.setResultMetadata).not.toHaveBeenCalledWith(expect.objectContaining({ status: "error" }))
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("would exceed total memory"))
 		})
 

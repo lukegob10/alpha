@@ -385,6 +385,36 @@ suite("Rendered reasoning controls", function () {
 			await globalThis.api.cancelCurrentTask()
 			await provider.postStateToWebview()
 			await uiFixtureBarrier("activity-edge-stopped", { version: vscode.version, taskId: activity.taskId })
+
+			await provider.removeTaskFromStack({ taskId: activity.taskId })
+			heldResponse = undefined
+			const progress = await provider.createTask(
+				"Activity chip fixture: keep the working spinner visible.",
+				undefined,
+				undefined,
+				{
+					preserveExisting: true,
+					apiConfiguration: configuration,
+					taskApprovalMode: "ask",
+					enableCheckpoints: false,
+				},
+			)
+			createdTaskIds.push(progress.taskId)
+			await waitFor(() => !!heldResponse, { description: "held progress request" })
+			await vscode.workspace
+				.getConfiguration("workbench")
+				.update("colorTheme", "Default Dark Modern", vscode.ConfigurationTarget.Global)
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("progress-running", { version: vscode.version, taskId: progress.taskId })
+			await vscode.commands.executeCommand("workbench.action.toggleSidebarVisibility")
+			await uiFixtureBarrier("progress-hidden", { version: vscode.version, taskId: progress.taskId })
+			await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+			await uiFixtureBarrier("progress-revealed", { version: vscode.version, taskId: progress.taskId })
+			await vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction")
+			await uiFixtureBarrier("progress-reloaded", { version: vscode.version, taskId: progress.taskId })
+			await globalThis.api.cancelCurrentTask()
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("progress-stopped", { version: vscode.version, taskId: progress.taskId })
 		} finally {
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, completed)
 			await provider.contextProxy.setValue("autoSteer", originalAutoSteer)

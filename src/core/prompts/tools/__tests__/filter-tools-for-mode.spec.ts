@@ -2,7 +2,7 @@
 
 import type OpenAI from "openai"
 
-import { filterMcpToolsForMode, filterNativeToolsForMode } from "../filter-tools-for-mode"
+import { filterMcpToolsForMode, filterNativeToolsForMode, resolveToolAlias } from "../filter-tools-for-mode"
 
 function makeTool(name: string): OpenAI.Chat.ChatCompletionTool {
 	return {
@@ -14,6 +14,20 @@ function makeTool(name: string): OpenAI.Chat.ChatCompletionTool {
 		},
 	} as OpenAI.Chat.ChatCompletionTool
 }
+
+describe("resolveToolAlias", () => {
+	it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])(
+		"preserves the unknown name %s without interpreting inherited properties",
+		(name) => {
+			expect(resolveToolAlias(name)).toBe(name)
+		},
+	)
+
+	it("resolves supported aliases", () => {
+		expect(resolveToolAlias("execute_command")).toBe("exec_command")
+		expect(resolveToolAlias("update_todo_list")).toBe("update_plan")
+	})
+})
 
 describe("filterNativeToolsForMode - disabledTools", () => {
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [

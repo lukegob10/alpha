@@ -18,6 +18,10 @@ import {
 	ApiProviderError,
 	resolveModelParameterApplicability,
 	validateOptionalOutputTokenLimit,
+	snapshotGeminiResponse,
+	MAX_GEMINI_RESPONSE_PARTS,
+	MAX_GEMINI_RESPONSE_CHARACTERS,
+	type GeminiResponse,
 } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -32,6 +36,7 @@ import {
 	createApiStreamOutcome,
 	raceApiStreamAbort,
 	type ApiStream,
+	type ApiStreamUsageChunk,
 	type GroundingSource,
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
@@ -132,6 +137,7 @@ function createGeminiOutcome(
 	finishReason: string | undefined,
 	semanticOutputObserved: boolean,
 	metadata?: ApiHandlerCreateMessageMetadata,
+	hasContent = true,
 ) {
 	const normalizedReason = finishReason?.replace(/^FINISH_REASON_/, "")
 	const terminal = Boolean(normalizedReason && normalizedReason !== "UNSPECIFIED")
@@ -142,6 +148,8 @@ function createGeminiOutcome(
 		reason = "Gemini response reached the output token limit (finishReason=MAX_TOKENS)."
 	} else if (normalizedReason !== "STOP") {
 		reason = `Gemini response stopped with finish reason ${normalizedReason}.`
+	} else if (!hasContent) {
+		reason = "Gemini response completed without visible content or tool calls."
 	}
 
 	return createApiStreamOutcome({
@@ -154,16 +162,52 @@ function createGeminiOutcome(
 	})
 }
 
-/**
- * Internal Vertex Gemini transport shared by the Vertex provider adapter.
- *
- * Direct Gemini API authentication was intentionally removed. Keeping the
- * transport Vertex-scoped prevents a stale provider identifier from selecting
- * a Google API-key path while preserving Vertex's native Gemini behavior.
- */
-export abstract class VertexGeminiHandler extends BaseProvider implements SingleCompletionHandler {
+class GeminiResponseCapture {
+	private readonly parts: GeminiResponse["parts"] = []
+	private characters = 0
+	private hasFunctionCall = false
+
+	constructor(
+		private readonly modelId: string,
+		private readonly requireFunctionCallSignature: boolean,
+	) {}
+
+	add(parts: unknown[] | undefined): void {
+		if (!parts?.length) return
+		const snapshot = snapshotGeminiResponse({ modelId: this.modelId, parts })
+		if (!snapshot) throw new Error("Gemini returned invalid response replay state.")
+		this.characters += JSON.stringify(snapshot.parts).length
+		if (
+			this.parts.length + snapshot.parts.length > MAX_GEMINI_RESPONSE_PARTS ||
+			this.characters > MAX_GEMINI_RESPONSE_CHARACTERS
+		) {
+			throw new Error("Gemini response replay state exceeded the output limit.")
+		}
+		for (const part of snapshot.parts) {
+			if (part.functionCall && !this.hasFunctionCall) {
+				if (this.requireFunctionCallSignature && !part.thoughtSignature)
+					throw new Error("Gemini returned a function call without its thought signature.")
+				this.hasFunctionCall = true
+			}
+			this.parts.push(part)
+		}
+	}
+
+	snapshot(): GeminiResponse | undefined {
+		if (this.parts.length === 0) return undefined
+		const result = snapshotGeminiResponse({ modelId: this.modelId, parts: this.parts })
+		if (!result) throw new Error("Gemini returned invalid response replay state.")
+		return result
+	}
+}
+
+type GeminiTransport = { provider: "vertex" } | { provider: "gemini"; apiKey: string }
+
+/** Google protocol handling shared by explicitly selected direct and Vertex routes. */
+export abstract class GeminiTransportHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
-	readonly streamCapabilities = { lifecycle: true } as const
+	readonly streamCapabilities = { lifecycle: true, cancellation: true } as const
+	private readonly transportProvider: GeminiTransport["provider"]
 
 	private client: GoogleGenAI
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -173,14 +217,22 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 	private gatewayTransportSetupPromise?: Promise<void>
 	private lastThoughtSignature?: string
 	private lastResponseId?: string
-	// Keep the transport's established error label while the public provider ID
-	// remains `vertex`; this class is only an internal Vertex Gemini transport.
 	private readonly providerName = "Gemini"
 
-	constructor(options: ApiHandlerOptions) {
+	constructor(options: ApiHandlerOptions, transport: GeminiTransport = { provider: "vertex" }) {
 		super()
 
 		this.options = options
+		this.transportProvider = transport.provider
+		if (transport.provider === "gemini") {
+			// Pin the native route independently of Vertex settings and SDK environment defaults.
+			this.client = new GoogleGenAI({
+				apiKey: transport.apiKey,
+				vertexai: false,
+				httpOptions: { baseUrl: "https://generativelanguage.googleapis.com", apiVersion: "v1beta" },
+			})
+			return
+		}
 		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
 
 		const project = this.getConfiguredProjectId() ?? "not-provided"
@@ -722,24 +774,29 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		})
 		const requestMessages = prependUserInstructionContext(geminiMessages, userContext)
 
-		const contents = convertAnthropicMessagesToGemini(requestMessages, { includeThoughtSignatures })
+		const contents = convertAnthropicMessagesToGemini(requestMessages, { includeThoughtSignatures, modelId: model })
 
-		// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS).
 		// Google built-in tools (Grounding, URL Context) are mutually exclusive
 		// with function declarations in the Gemini API, so we always use
 		// function declarations when tools are provided.
-		const tools: GenerateContentConfig["tools"] = [
-			{
-				functionDeclarations: (metadata?.tools ?? []).map((tool) => ({
-					name: (tool as any).function.name,
-					description: (tool as any).function.description,
-					parametersJsonSchema: (tool as any).function.parameters,
-				})),
-			},
-		]
+		const tools: GenerateContentConfig["tools"] = metadata?.tools?.length
+			? [
+					{
+						functionDeclarations: metadata.tools.map((tool) => {
+							if (tool.type !== "function")
+								throw new Error("Gemini accepts only function tool definitions.")
+							return {
+								name: tool.function.name,
+								description: tool.function.description,
+								parametersJsonSchema: tool.function.parameters,
+							}
+						}),
+					},
+				]
+			: []
 
 		const { supportsTemperature } = resolveModelParameterApplicability({
-			provider: "vertex",
+			provider: this.transportProvider,
 			modelId: model,
 			model: info,
 			settings: this.options,
@@ -760,7 +817,9 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		// When provided, all tool definitions are passed to the model (so it can reference
 		// historical tool calls in conversation), but only the specified tools can be invoked.
 		// This takes precedence over tool_choice to ensure mode restrictions are honored.
-		if (metadata?.allowedFunctionNames && metadata.allowedFunctionNames.length > 0) {
+		if (metadata?.tool_choice === "none" || metadata?.allowedFunctionNames?.length === 0) {
+			config.toolConfig = { functionCallingConfig: { mode: FunctionCallingConfigMode.NONE } }
+		} else if (metadata?.allowedFunctionNames && metadata.allowedFunctionNames.length > 0) {
 			config.toolConfig = {
 				functionCallingConfig: {
 					// VALIDATED restricts function calls to the allowed set while still
@@ -776,8 +835,6 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 			if (choice === "auto") {
 				mode = FunctionCallingConfigMode.AUTO
-			} else if (choice === "none") {
-				mode = FunctionCallingConfigMode.NONE
 			} else if (choice === "required") {
 				// "required" means the model must call at least one tool; Gemini uses ANY for this.
 				mode = FunctionCallingConfigMode.ANY
@@ -804,7 +861,14 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			metadata?.signal?.throwIfAborted()
 			const requestContext = await this.getRequestContext(model)
 			metadata?.signal?.throwIfAborted()
-			const requestControl = createLinkedAbortController({ signal: metadata?.signal })
+			// Both Google routes require original signed Part boundaries on replay.
+			// Custom/older Vertex models can return unsigned calls; the curated native models require a signature.
+			// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures (2026-10-26)
+			const responseCapture = new GeminiResponseCapture(model, this.transportProvider === "gemini")
+			const requestControl = createLinkedAbortController({
+				signal: metadata?.signal,
+				deadline: metadata?.deadline,
+			})
 			const requestAbortController = requestControl.controller
 			const throwIfRequestAborted = () => {
 				if (!requestControl.signal.aborted) return
@@ -847,13 +911,42 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 			let emittedAnyStreamChunk = false
 			let semanticOutputObserved = false
+			let pendingUsage: ApiStreamUsageChunk | undefined
+			const captureUsage = (usage: GenerateContentResponseUsageMetadata | undefined) => {
+				if (!usage) return
+				const inputTokens = usage.promptTokenCount ?? 0
+				const candidateTokens = usage.candidatesTokenCount ?? 0
+				const cacheReadTokens = usage.cachedContentTokenCount
+				const reasoningTokens = usage.thoughtsTokenCount
+				pendingUsage = {
+					type: "usage",
+					inputTokens,
+					outputTokens: candidateTokens + (reasoningTokens ?? 0),
+					cacheReadTokens,
+					reasoningTokens,
+					totalCost: this.calculateCost({
+						info,
+						inputTokens,
+						outputTokens: candidateTokens,
+						cacheReadTokens,
+						reasoningTokens,
+					}),
+				}
+			}
+			const takeUsage = () => {
+				const usage = pendingUsage
+				pendingUsage = undefined
+				return usage
+			}
 
 			try {
-				if (this.options.vertexStreamingEnabled === false) {
+				throwIfRequestAborted()
+				if (this.transportProvider === "vertex" && this.options.vertexStreamingEnabled === false) {
 					const result = await awaitRequest(
 						requestContext.client.models.generateContent(params),
 						`${this.providerName} request for ${requestContext.model}`,
 					)
+					captureUsage(result.usageMetadata)
 
 					let toolCallCounter = 0
 					let hasContent = false
@@ -870,6 +963,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 							thoughtSignature?: string
 							functionCall?: { id?: string; name: string; args?: Record<string, unknown> }
 						}>) {
+							throwIfRequestAborted()
+							responseCapture.add([part])
 							const thoughtSignature = part.thoughtSignature
 							if (includeThoughtSignatures && thoughtSignature) {
 								this.lastThoughtSignature = thoughtSignature
@@ -884,12 +979,15 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 								hasContent = true
 								semanticOutputObserved = true
 								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
+								const geminiResponse = responseCapture.snapshot()
 								yield {
 									type: "tool_call",
 									id: callId,
 									name: part.functionCall.name,
 									arguments: JSON.stringify(part.functionCall.args ?? {}),
+									...(geminiResponse ? { geminiResponse } : {}),
 								}
+								throwIfRequestAborted()
 								yield { type: "tool_call_end", id: callId }
 								toolCallCounter++
 							} else if (part.text) {
@@ -911,35 +1009,18 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 						}
 					}
 
-					if (result.usageMetadata) {
-						const inputTokens = result.usageMetadata.promptTokenCount ?? 0
-						const candidateTokens = result.usageMetadata.candidatesTokenCount ?? 0
-						const cacheReadTokens = result.usageMetadata.cachedContentTokenCount
-						const reasoningTokens = result.usageMetadata.thoughtsTokenCount
-						// Gemini reports candidates and thoughts separately; canonical output includes both.
-						const outputTokens = candidateTokens + (reasoningTokens ?? 0)
-
-						yield {
-							type: "usage",
-							inputTokens,
-							outputTokens,
-							cacheReadTokens,
-							reasoningTokens,
-							totalCost: this.calculateCost({
-								info,
-								inputTokens,
-								outputTokens: candidateTokens,
-								cacheReadTokens,
-								reasoningTokens,
-							}),
-						}
-					}
+					const usage = takeUsage()
+					if (usage) yield usage
 
 					if (!hasContent) {
 						yield { type: "text", text: this.getNoVisibleContentMessage(candidate?.finishReason) }
 					}
 
-					yield createGeminiOutcome(candidate?.finishReason, semanticOutputObserved, metadata)
+					throwIfRequestAborted()
+					const geminiResponse = responseCapture.snapshot()
+					if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
+					throwIfRequestAborted()
+					yield createGeminiOutcome(candidate?.finishReason, semanticOutputObserved, metadata, hasContent)
 					return
 				}
 
@@ -948,7 +1029,6 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					`${this.providerName} stream request for ${requestContext.model}`,
 				)
 
-				let lastUsageMetadata: GenerateContentResponseUsageMetadata | undefined
 				let pendingGroundingMetadata: GroundingMetadata | undefined
 				let finalResponse: { responseId?: string } | undefined
 				let finishReason: string | undefined
@@ -959,6 +1039,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				resultIterator = result[Symbol.asyncIterator]()
 
 				while (true) {
+					throwIfRequestAborted()
 					const nextChunk = await raceApiStreamAbort(
 						withApiRequestTimeout(
 							resultIterator.next(),
@@ -985,6 +1066,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 					const chunk = nextChunk.value
 					emittedAnyStreamChunk = true
+					// Capture billing before yielding any part: cancellation can interrupt delivery of this same chunk.
+					captureUsage(chunk.usageMetadata)
 
 					// Track the final structured response (per SDK pattern: candidate.finishReason)
 					if (chunk.candidates && chunk.candidates[0]?.finishReason) {
@@ -1006,6 +1089,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 								thoughtSignature?: string
 								functionCall?: { id?: string; name: string; args: Record<string, unknown> }
 							}>) {
+								throwIfRequestAborted()
+								responseCapture.add([part])
 								// Capture thought signatures so they can be persisted into API history.
 								const thoughtSignature = part.thoughtSignature
 								// Persist thought signatures so they can be round-tripped in the next step.
@@ -1028,7 +1113,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 									// Emit as partial chunks for consistent handling with NativeToolCallParser
 									const callId =
 										part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
-									const args = JSON.stringify(part.functionCall.args)
+									const args = JSON.stringify(part.functionCall.args ?? {})
 
 									// Emit name first
 									yield {
@@ -1038,6 +1123,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 										name: part.functionCall.name,
 										arguments: undefined,
 									}
+									throwIfRequestAborted()
 
 									// Then emit arguments
 									yield {
@@ -1047,7 +1133,13 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 										name: undefined,
 										arguments: args,
 									}
-									yield { type: "tool_call_end", id: callId }
+									throwIfRequestAborted()
+									const geminiResponse = responseCapture.snapshot()
+									yield {
+										type: "tool_call_end",
+										id: callId,
+										...(geminiResponse ? { geminiResponse } : {}),
+									}
 
 									toolCallCounter++
 								} else {
@@ -1068,10 +1160,6 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 						semanticOutputObserved = true
 						yield { type: "text", text: chunk.text }
 					}
-
-					if (chunk.usageMetadata) {
-						lastUsageMetadata = chunk.usageMetadata
-					}
 				}
 
 				if (finalResponse?.responseId) {
@@ -1087,37 +1175,24 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					}
 				}
 
-				if (lastUsageMetadata) {
-					const inputTokens = lastUsageMetadata.promptTokenCount ?? 0
-					const candidateTokens = lastUsageMetadata.candidatesTokenCount ?? 0
-					const cacheReadTokens = lastUsageMetadata.cachedContentTokenCount
-					const reasoningTokens = lastUsageMetadata.thoughtsTokenCount
-					const outputTokens = candidateTokens + (reasoningTokens ?? 0)
-
-					yield {
-						type: "usage",
-						inputTokens,
-						outputTokens,
-						cacheReadTokens,
-						reasoningTokens,
-						totalCost: this.calculateCost({
-							info,
-							inputTokens,
-							outputTokens: candidateTokens,
-							cacheReadTokens,
-							reasoningTokens,
-						}),
-					}
-				}
+				const usage = takeUsage()
+				if (usage) yield usage
 
 				if (!hasContent) {
 					yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
 				}
 
 				// EOF is transport closure; only STOP is successful provider completion.
-				yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata)
+				throwIfRequestAborted()
+				const geminiResponse = responseCapture.snapshot()
+				if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
+				throwIfRequestAborted()
+				yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata, hasContent)
 				return
 			} catch (error) {
+				// Flush observed usage on failure/cancellation, never from finally: consumer return must stay terminal.
+				const usage = takeUsage()
+				if (usage) yield usage
 				if (metadata?.signal?.aborted) {
 					throwIfRequestAborted()
 					throw error
@@ -1227,7 +1302,13 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
 		throwIfSingleCompletionAborted(metadata)
 		const { id: model, info, maxTokens, reasoning: thinkingConfig } = this.getModel()
-		const maxOutputTokens = this.resolveMaxOutputTokens(info, maxTokens, thinkingConfig)
+		const requestedMaxOutputTokens = this.resolveMaxOutputTokens(info, maxTokens, thinkingConfig)
+		// Argon's single non-streaming GenerateContent hop is capped at 32K. Auxiliary
+		// completions do not opt into the SDK's automatic long-decode continuation.
+		const maxOutputTokens =
+			this.transportProvider === "gemini" && model === "gemini-4-argon" && requestedMaxOutputTokens !== undefined
+				? Math.min(requestedMaxOutputTokens, 32_768)
+				: requestedMaxOutputTokens
 		let didRetryForGatewayAuth = false
 		const requestTimeoutMs = getApiRequestTimeout()
 
@@ -1237,7 +1318,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			const requestControl = createLinkedAbortController({ signal: metadata?.signal })
 
 			const { supportsTemperature } = resolveModelParameterApplicability({
-				provider: "vertex",
+				provider: this.transportProvider,
 				modelId: model,
 				model: info,
 				settings: this.options,
@@ -1247,6 +1328,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				: undefined
 
 			const promptConfig: GenerateContentConfig = {
+				...(this.transportProvider === "gemini" ? { thinkingConfig } : {}),
 				httpOptions: this.mergeHttpOptions(
 					requestContext.httpOptions,
 					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
@@ -1276,6 +1358,14 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				let text = result.text ?? ""
 
 				const candidate = result.candidates?.[0]
+				if (
+					this.transportProvider === "gemini" &&
+					(candidate?.finishReason?.replace(/^FINISH_REASON_/, "") !== "STOP" || !text)
+				) {
+					throw new Error(
+						`Gemini completion did not finish successfully (${candidate?.finishReason ?? "missing finish reason"}).`,
+					)
+				}
 				if (candidate?.groundingMetadata) {
 					const citations = this.extractCitationsOnly(candidate.groundingMetadata)
 					if (citations) {
@@ -1390,3 +1480,6 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		return totalCost
 	}
 }
+
+// Preserve the established Vertex adapter import while sharing the same protocol implementation.
+export { GeminiTransportHandler as VertexGeminiHandler }

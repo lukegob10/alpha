@@ -1,5 +1,6 @@
 import * as path from "path"
 import * as fs from "fs/promises"
+import * as os from "os"
 import { randomUUID } from "crypto"
 
 import { prepareTestProfile, cleanupTestProfile } from "./testProfile"
@@ -16,12 +17,18 @@ import {
 	type TestSuiteSelection,
 	type TestRunFailureCode,
 } from "./runFailure"
-import { launchExtensionHost, HostLaunchCancelledError, type HostLaunchOptions } from "./hostLaunch"
+import {
+	launchExtensionHost,
+	HostLaunchCancelledError,
+	HostLaunchFailureError,
+	type HostLaunchOptions,
+} from "./hostLaunch"
 import {
 	prepareLiveSidecar,
 	readLiveHostReceipt,
 	LIVE_HOST_STARTED,
 	LIVE_HOST_COMPLETION,
+	validateLiveExecutionTimeout,
 	type HostLaunchKind,
 } from "./liveHostProtocol"
 import { readBounded } from "./evidence/paths"
@@ -34,6 +41,20 @@ import {
 import { finalizeRunEvidence, finalizeRunRetention, type RunRetentionReport } from "./runEvidence"
 import { validateLiveSetupTimeout } from "./suite/liveCopilot"
 import { writeHarnessReceipt } from "./harnessReceipt"
+import {
+	isLiveProviderIdentityReceipt,
+	LIVE_PROVIDER_EXTENSION_ID,
+	type LiveProviderIdentityReceipt,
+} from "./liveProviderIdentity"
+import {
+	prepareImprovementCapture,
+	validateImprovementCaptureOptions,
+	ImprovementCaptureHelperError,
+	type ImprovementCaptureResult,
+	type ImprovementCaptureState,
+	type ImprovementCaptureInvoker,
+} from "./evidence/improvementCapture"
+import { observeHostCaptureClosure, type HostCaptureClosure } from "./evidence/hostCaptureClosure"
 
 export type ProviderMode = "live" | "scripted" | "vscode-lm-fixture" | "live-copilot"
 
@@ -59,6 +80,8 @@ export interface ExtensionTestRunOptions {
 	setup?: boolean
 	/** No default deadline. Explicitly bounded interactive setup only. */
 	setupTimeoutMs?: number
+	/** Overall automatic live execution deadline; interactive setup has its own explicit deadline. */
+	executionTimeoutMs?: number
 	testFile?: string
 	testGrep?: string
 	/** Hard gates require the entire selected file, with grep and exclusive tests forbidden. */
@@ -68,6 +91,9 @@ export interface ExtensionTestRunOptions {
 	scenarioPhase?: "run" | "prepare" | "continue"
 	scenarioResultPath?: string
 	requestLimit?: number
+	/** Explicit private rich capture of one public problem-solving attempt; never inherited from the environment. */
+	improvementEvidence?: boolean
+	improvementTaskId?: string
 	/** Campaign phases remain protected until their controller has written its terminal report. */
 	retainEvidenceForCampaign?: boolean
 	evidenceRetention?: Pick<EvidenceRetentionOptions, "maxRuns" | "maxBytes" | "maxAgeMs">
@@ -90,21 +116,28 @@ export interface ExtensionTestRunResult {
 	artifactsDir: string
 	profileDir?: string
 	temporaryRoot?: string
+	alphaHome?: string
 	retained: boolean
 	actualVSCodeVersion?: string
 	actualModelId?: string
 	actualReasoningEffort?: string
+	providerIdentity?: LiveProviderIdentityReceipt
 	requireAllTests?: boolean
 	testCounts?: TestExecutionCounts
 	testSelection?: TestSuiteSelection
 	evidenceManifestPath?: string
 	captureComplete?: boolean
+	improvementEvidence?: ImprovementCaptureResult
 	evidenceFailure?: "evidence-failed"
 	retentionResultPath?: string
 	retention?: RunRetentionReport
 	status: "passed" | "failed" | "blocked"
 	execution: "test-seam" | "extension-host"
 	hostExitObserved: boolean
+	hostCleanupVerified?: boolean
+	hostCaptureClosure?: HostCaptureClosure
+	/** A helper's uncertain cleanup is independent from the VS Code host's own closure proof. */
+	captureHelperCleanupVerified?: boolean
 	launchedHostPid?: number
 	extensionHostPid?: number
 	extensionHostParentPid?: number
@@ -115,6 +148,11 @@ export interface ExtensionTestRunResult {
 }
 
 export interface ExtensionTestRunDependencies {
+	/** Private collector seam for deterministic lease/cancellation tests; never establishes a real host execution. */
+	improvementCaptureInvoker?: ImprovementCaptureInvoker
+	/** Owned launch/lease seams exercise failure cleanup without starting VS Code. */
+	launchHost?: typeof launchExtensionHost
+	acquireLease?: typeof acquireProfileLease
 	/** Explicit diagnostic override; deterministic gates retain their default extension-test host. */
 	launchKind?: HostLaunchKind
 	launch?: (options: HostLaunchOptions) => Promise<number>
@@ -125,7 +163,13 @@ export interface ExtensionTestRunDependencies {
 }
 
 const providerModes: readonly ProviderMode[] = ["live", "scripted", "vscode-lm-fixture", "live-copilot"]
-const flags = new Set(["--init-profile", "--setup", "--retain-evidence-for-campaign", "--require-all-tests"])
+const flags = new Set([
+	"--init-profile",
+	"--setup",
+	"--retain-evidence-for-campaign",
+	"--require-all-tests",
+	"--improvement-evidence",
+])
 const valueOptions = new Set([
 	"--provider",
 	"--vscode-version",
@@ -139,6 +183,7 @@ const valueOptions = new Set([
 	"--model-family",
 	"--reasoning-effort",
 	"--setup-timeout-ms",
+	"--execution-timeout-ms",
 	"--file",
 	"--grep",
 	"--run-id",
@@ -146,6 +191,7 @@ const valueOptions = new Set([
 	"--scenario-phase",
 	"--scenario-result-path",
 	"--request-limit",
+	"--improvement-task-id",
 ])
 
 export function readRunOptions(
@@ -180,6 +226,11 @@ export function readRunOptions(
 		throw new TestRunError("invalid-options", "Setup timeout must be an integer")
 	const setupTimeoutMs = timeout === undefined ? undefined : Number(timeout)
 	validateLiveSetupTimeout(setupTimeoutMs, parsed.has("--setup"))
+	const executionTimeout = parsed.get("--execution-timeout-ms")
+	if (executionTimeout !== undefined && !/^\d+$/.test(executionTimeout))
+		throw new TestRunError("invalid-options", "Execution timeout must be an integer")
+	const executionTimeoutMs = executionTimeout === undefined ? undefined : Number(executionTimeout)
+	validateLiveExecutionTimeout(executionTimeoutMs, parsed.has("--setup"))
 	const testGrep = parsed.get("--grep") ?? env.TEST_GREP
 	testSuiteMochaOptions({ testGrep, requireAllTests: parsed.has("--require-all-tests") })
 	return {
@@ -195,6 +246,7 @@ export function readRunOptions(
 		reasoningEffort: parsed.get("--reasoning-effort"),
 		setup: parsed.has("--setup"),
 		setupTimeoutMs,
+		executionTimeoutMs,
 		testFile: parsed.get("--file") ?? env.TEST_FILE,
 		testGrep,
 		requireAllTests: parsed.has("--require-all-tests"),
@@ -205,6 +257,8 @@ export function readRunOptions(
 		installedExtensionPath: parsed.get("--installed-extension"),
 		extensionDevelopmentPath: parsed.get("--extension-development-path"),
 		requestLimit: limit ? Number(limit) : undefined,
+		improvementEvidence: parsed.has("--improvement-evidence"),
+		improvementTaskId: parsed.get("--improvement-task-id"),
 		retainEvidenceForCampaign: parsed.has("--retain-evidence-for-campaign"),
 	}
 }
@@ -228,6 +282,7 @@ type HostPreflight = {
 	code?: string
 	actualModelId?: string
 	actualReasoningEffort?: string
+	providerIdentity?: LiveProviderIdentityReceipt
 	stage?: string
 	requireAllTests?: boolean
 	testCounts?: TestExecutionCounts
@@ -259,6 +314,8 @@ async function readHostPreflight(artifactsDir: string, runId: string): Promise<H
 			("testCounts" in host && !isTestExecutionCounts(host.testCounts))
 		)
 			throw new Error("Invalid host test counts")
+		if ("providerIdentity" in host && !isLiveProviderIdentityReceipt(host.providerIdentity))
+			throw new Error("Invalid live provider identity")
 		return host as HostPreflight
 	} catch {
 		throw new TestRunError("host-preflight-missing", "Missing or invalid host preflight evidence")
@@ -290,6 +347,10 @@ async function readVerifiedHostIdentity(result: ExtensionTestRunResult): Promise
 		// Missing identity cannot authorize offline repair, even when the direct host process closed.
 		return {}
 	}
+}
+
+function requireCaptureHelperCleanup(uncertain: boolean, cancelled?: boolean): void {
+	if (uncertain) throw new ImprovementCaptureHelperError(false, cancelled)
 }
 
 /** The same launch boundary serves the CLI, unit tests, and the external campaign controller. */
@@ -351,6 +412,10 @@ export async function runExtensionTests(
 	)
 		throw new TestRunError("invalid-options", "Invalid persistent host launch mode")
 	validateLiveSetupTimeout(options.setupTimeoutMs, options.setup === true)
+	validateLiveExecutionTimeout(options.executionTimeoutMs, options.setup === true)
+	validateImprovementCaptureOptions(options)
+	if (options.executionTimeoutMs !== undefined && launchKind !== "development-sidecar")
+		throw new TestRunError("invalid-options", "Execution timeout requires an automatic development sidecar")
 	if (options.retainEvidenceForCampaign !== undefined && typeof options.retainEvidenceForCampaign !== "boolean") {
 		throw new TestRunError("invalid-options", "Campaign retention hold must be a boolean")
 	}
@@ -416,6 +481,14 @@ export async function runExtensionTests(
 		)
 	}
 	const startedAt = new Date().toISOString()
+	// Fixtures use the real Git executable. Keep optional SCM observers isolated in live hosts too:
+	// bundled Copilot 0.53 crashes when a fixture repository opens.
+	// VS Code 1.138.0 languageModels.ts rejects duplicate vendor registrations (retrieved 2026-10-25).
+	// The deterministic Claude fixture owns the copilot vendor only in the vscode-lm-fixture lane.
+	const disabledExtensions = [
+		"vscode.git",
+		...(options.providerMode === "vscode-lm-fixture" ? [LIVE_PROVIDER_EXTENSION_ID] : []),
+	]
 	const liveExpected = { runId, nonce: randomUUID(), actualVSCodeVersion: options.vscodeVersion }
 	let repositoryBefore: RepositoryEvidence | undefined
 	const identity = {
@@ -426,15 +499,43 @@ export async function runExtensionTests(
 		...(sidecarPath ? { completionReceiptPath: path.join(artifactsDir, LIVE_HOST_COMPLETION) } : {}),
 		...profile,
 		artifactsDir,
-		execution: dependencies.launch ? ("test-seam" as const) : ("extension-host" as const),
+		execution:
+			dependencies.launch ||
+			dependencies.launchHost ||
+			dependencies.acquireLease ||
+			dependencies.improvementCaptureInvoker
+				? ("test-seam" as const)
+				: ("extension-host" as const),
 	}
 	let result: ExtensionTestRunResult | undefined
+	let improvementCapture: ImprovementCaptureState | undefined
 	let release: (() => Promise<void>) | undefined
 	let hostExitObserved = false
+	let hostCleanupVerified: boolean | undefined
+	let captureHelperCleanupVerified: boolean | undefined
+	let captureHelperCleanupUncertain = false
 	let launchedHostPid: number | undefined
+	let alphaHome: string | undefined
 	try {
 		if (options.signal?.aborted) throw new HostLaunchCancelledError()
-		release = profile.profileDir ? await acquireProfileLease(profile.userDataDir) : undefined
+		release = profile.profileDir
+			? await (dependencies.acquireLease ?? acquireProfileLease)(profile.userDataDir)
+			: undefined
+		// Extension activation may capture its host-local store before a test module loads.
+		// Every launch gets its own home, including launches using persistent editor profiles.
+		alphaHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-vscode-e2e-home-")))
+		improvementCapture = await prepareImprovementCapture(
+			{
+				options,
+				profile,
+				hostRunId: runId,
+				runDirectory: artifactsDir,
+				extensionId,
+				extensionRoot: extensionDevelopmentPath,
+				startedAt,
+			},
+			dependencies.improvementCaptureInvoker,
+		)
 		repositoryBefore = await captureRepositoryEvidence(profile.workspace)
 		await fs.writeFile(
 			path.join(artifactsDir, "launch.json"),
@@ -445,7 +546,8 @@ export async function runExtensionTests(
 					requestedHostVersion: options.vscodeVersion,
 					providerMode: options.providerMode,
 					launchKind,
-					fixtureIsolation: { disabledExtensions: ["vscode.git"], gitExecution: "native-cli" },
+					alphaHome,
+					fixtureIsolation: { disabledExtensions, gitExecution: "native-cli" },
 					...(sidecarPath ? { nonce: liveExpected.nonce, sharedDataDir: profile.sharedDataDir } : {}),
 					modelId: options.modelId,
 					modelFamily: options.modelFamily,
@@ -463,7 +565,7 @@ export async function runExtensionTests(
 		const exitCode = await (
 			dependencies.launch ??
 			((launchOptions: HostLaunchOptions) =>
-				launchExtensionHost(
+				(dependencies.launchHost ?? launchExtensionHost)(
 					launchOptions,
 					(pid) => {
 						launchedHostPid = pid
@@ -473,7 +575,15 @@ export async function runExtensionTests(
 		)({
 			extensionDevelopmentPath: developmentPaths.length === 1 ? developmentPaths[0]! : developmentPaths,
 			...(sidecarPath
-				? { launchKind: "development-sidecar" as const, liveHost: { artifactsDir, expected: liveExpected } }
+				? {
+						launchKind: "development-sidecar" as const,
+						liveHost: {
+							artifactsDir,
+							expected: liveExpected,
+							interactiveSetup: options.setup === true,
+							executionTimeoutMs: options.executionTimeoutMs,
+						},
+					}
 				: { launchKind: "extension-test" as const, extensionTestsPath }),
 			reuseMachineInstall: false,
 			launchArgs: [
@@ -483,13 +593,12 @@ export async function runExtensionTests(
 				`--extensions-dir=${profile.extensionsDir}`,
 				...(profile.sharedDataDir ? [`--shared-data-dir=${profile.sharedDataDir}`] : []),
 				"--new-window",
-				// Fixtures exercise the real Git executable, not VS Code's SCM API. Keep optional SCM observers
-				// isolated in live hosts too: bundled Copilot 0.53 crashes when a fixture repository opens.
-				"--disable-extension=vscode.git",
+				...disabledExtensions.map((id) => `--disable-extension=${id}`),
 			],
 			extensionTestsEnv: {
 				...process.env,
 				...options.extensionTestsEnv,
+				ALPHA_HOME: alphaHome,
 				ALPHA_E2E_EXTENSION_ID: extensionId,
 				ALPHA_E2E_INSTALLED_EXTENSION_DIR: options.installedExtensionPath,
 				ALPHA_E2E_LAUNCH_KIND: launchKind,
@@ -514,6 +623,8 @@ export async function runExtensionTests(
 				ALPHA_E2E_SCENARIO_PHASE: options.scenarioPhase,
 				ALPHA_E2E_SCENARIO_RESULT_PATH: scenarioResultPath,
 				ALPHA_E2E_REQUEST_LIMIT: options.requestLimit?.toString(),
+				ALPHA_E2E_IMPROVEMENT_EVIDENCE: options.improvementEvidence ? "1" : undefined,
+				ALPHA_E2E_IMPROVEMENT_TASK_ID: options.improvementTaskId,
 				ALPHA_E2E_REQUIRE_ALL_TESTS: options.requireAllTests ? "1" : "0",
 				TEST_FILE: options.testFile ?? (options.scenarioId ? "workflow.test" : undefined),
 				TEST_GREP: options.testGrep,
@@ -575,8 +686,16 @@ export async function runExtensionTests(
 			if (failure) throw new TestRunError(failure, "Required suite did not execute every selected test")
 		}
 		const failure = exitCode !== 0 || host.status !== "passed" ? testRunFailureCode(host, "host-failed") : undefined
+		if (
+			options.providerMode === "live-copilot" &&
+			!options.setup &&
+			!failure &&
+			host.providerIdentity?.status !== "unchanged"
+		)
+			throw new TestRunError("provider-unavailable", "Live provider identity is missing or changed")
 		result = {
 			...identity,
+			alphaHome,
 			...(completionStatus ? { completionStatus } : {}),
 			status: failure ? (host.status === "blocked" ? "blocked" : "failed") : "passed",
 			hostExitObserved,
@@ -584,6 +703,7 @@ export async function runExtensionTests(
 			actualVSCodeVersion: host.actualVSCodeVersion,
 			actualModelId: host.actualModelId,
 			actualReasoningEffort: host.actualReasoningEffort,
+			providerIdentity: host.providerIdentity,
 			requireAllTests: host.requireAllTests,
 			testCounts: host.testCounts,
 			testSelection: host.testSelection,
@@ -592,8 +712,16 @@ export async function runExtensionTests(
 			failure,
 		}
 	} catch (error) {
-		if (!dependencies.launch && error instanceof HostLaunchCancelledError) {
-			hostExitObserved = error.hostExitCode !== undefined
+		if (error instanceof ImprovementCaptureHelperError) {
+			captureHelperCleanupVerified = error.cleanupVerified
+			captureHelperCleanupUncertain ||= !error.cleanupVerified
+		}
+		if (
+			!dependencies.launch &&
+			(error instanceof HostLaunchCancelledError || error instanceof HostLaunchFailureError)
+		) {
+			hostExitObserved = error.hostExitObserved
+			hostCleanupVerified = error.cleanupVerified
 		}
 		// A thrown host error may include auth/provider payloads. Retain its host-side evidence without echoing it.
 		let failure = testRunFailureCode(error, "host-failed")
@@ -613,26 +741,39 @@ export async function runExtensionTests(
 		let requireAllTests: boolean | undefined
 		let testCounts: TestExecutionCounts | undefined
 		let testSelection: TestSuiteSelection | undefined
+		let providerIdentity: LiveProviderIdentityReceipt | undefined
+		let actualModelId: string | undefined
+		let actualReasoningEffort: string | undefined
 		try {
 			const host = await readHostPreflight(artifactsDir, runId)
-			failure = testRunFailureCode(host, failure)
+			if (!(error instanceof HostLaunchCancelledError || error instanceof HostLaunchFailureError))
+				failure = testRunFailureCode(host, failure)
 			actualVSCodeVersion = host.actualVSCodeVersion
 			ownershipGate = host.ownershipGate === "verified" ? "verified" : undefined
 			requireAllTests = host.requireAllTests
 			testCounts = host.testCounts
 			testSelection = host.testSelection
+			providerIdentity = host.providerIdentity
+			actualModelId = host.actualModelId
+			actualReasoningEffort = host.actualReasoningEffort
 		} catch {
 			/* Missing or invalid evidence cannot improve the known failure classification. */
 		}
 		result = {
 			...identity,
+			alphaHome,
 			status: failure === "host-failed" ? "failed" : "blocked",
 			hostExitObserved,
+			hostCleanupVerified,
+			captureHelperCleanupVerified,
 			actualVSCodeVersion,
 			ownershipGate,
 			requireAllTests,
 			testCounts,
 			testSelection,
+			providerIdentity,
+			actualModelId,
+			actualReasoningEffort,
 			exitCode: 1,
 			retained: true,
 			failure,
@@ -644,6 +785,24 @@ export async function runExtensionTests(
 				result.launchedHostPid = launchedHostPid
 				Object.assign(result, await readVerifiedHostIdentity(result))
 				try {
+					requireCaptureHelperCleanup(captureHelperCleanupUncertain, options.signal?.aborted)
+					if (improvementCapture) {
+						const closure = await observeHostCaptureClosure({
+							hostExitObserved: result.execution === "extension-host" && result.hostExitObserved,
+							previousCleanupVerified: result.hostCleanupVerified,
+							launchedHostPid,
+							extensionHostPid: result.extensionHostPid,
+							extensionHostParentPid: result.extensionHostParentPid,
+							userDataDir: result.userDataDir,
+						})
+						result.hostCaptureClosure = closure
+						result.hostCleanupVerified = hostCleanupVerified = closure.cleanupVerified
+						await fs.writeFile(
+							path.join(artifactsDir, "improvement", "host-closure.json"),
+							JSON.stringify(closure, null, 2) + "\n",
+							{ flag: "wx", mode: 0o600 },
+						)
+					}
 					await finalizeRunEvidence({
 						options,
 						profile,
@@ -653,17 +812,30 @@ export async function runExtensionTests(
 						startedAt,
 						repositoryBefore,
 						scenarioResultPath,
+						improvementCapture,
+						improvementCaptureInvoker: dependencies.improvementCaptureInvoker,
 					})
 					await dependencies.afterRun?.(result)
-				} catch {
+				} catch (error) {
+					if (error instanceof ImprovementCaptureHelperError) {
+						captureHelperCleanupVerified = error.cleanupVerified
+						captureHelperCleanupUncertain ||= !error.cleanupVerified
+					}
+					const failure = testRunFailureCode(error, "evidence-failed")
 					result = {
 						...result,
-						status: result.status === "passed" ? "failed" : result.status,
+						status:
+							result.status === "passed"
+								? failure === "host-cancelled"
+									? "blocked"
+									: "failed"
+								: result.status,
 						exitCode: result.exitCode || 1,
 						retained: true,
 						captureComplete: false,
-						failure: result.failure ?? "evidence-failed",
+						failure: result.failure ?? failure,
 						evidenceFailure: "evidence-failed",
+						captureHelperCleanupVerified,
 					}
 				}
 				if (result.failure) result.guidance = describeTestRunFailure({ code: result.failure }).guidance
@@ -673,10 +845,15 @@ export async function runExtensionTests(
 			}
 		} finally {
 			// A launcher that died without a numeric close leaves an uncertain host; keep its lease for offline inspection.
-			if (!launchedHostPid || hostExitObserved) await release?.()
+			if (
+				!captureHelperCleanupUncertain &&
+				(!launchedHostPid || (hostExitObserved && hostCleanupVerified !== false))
+			)
+				await release?.()
 		}
 	}
 	try {
+		requireCaptureHelperCleanup(captureHelperCleanupUncertain, options.signal?.aborted)
 		result.retention = await finalizeRunRetention(options, profile, result)
 	} catch {
 		// A missing retention sidecar is a closed failure too; no raw filesystem text escapes to callers.
@@ -699,6 +876,8 @@ export async function runExtensionTests(
 		result.guidance = describeTestRunFailure({ code: result.failure }).guidance
 	}
 	await cleanupTestProfile(profile, result.exitCode === 0)
+	if (alphaHome && result.exitCode === 0)
+		await fs.rm(alphaHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 	if (process.env.ALPHA_HARNESS_EVIDENCE_DIR && result.execution === "extension-host") {
 		try {
 			await writeHarnessReceipt(process.env.ALPHA_HARNESS_EVIDENCE_DIR, options, result, startedAt)

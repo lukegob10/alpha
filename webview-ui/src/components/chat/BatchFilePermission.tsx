@@ -1,6 +1,6 @@
 import { memo } from "react"
 
-import { ToolUseBlock, ToolUseBlockHeader } from "../common/ToolUseBlock"
+import { ToolUseBlock, ToolUseBlockHeaderButton } from "../common/ToolUseBlock"
 import { vscode } from "@src/utils/vscode"
 import { formatPathTooltip } from "@src/utils/formatPathTooltip"
 import { PathTooltip } from "../ui/PathTooltip"
@@ -33,7 +33,7 @@ export const BatchFilePermission = memo(({ files = [], onPermissionResponse, ts 
 					return (
 						<div key={`${file.path}-${index}-${ts}`} className="flex items-center gap-2">
 							<ToolUseBlock className="flex-1">
-								<ToolUseBlockHeader
+								<ToolUseBlockHeaderButton
 									onClick={() => vscode.postMessage({ type: "openFile", text: file.content })}>
 									{file.path?.startsWith(".") && <span>.</span>}
 									<PathTooltip
@@ -48,9 +48,12 @@ export const BatchFilePermission = memo(({ files = [], onPermissionResponse, ts 
 											)}
 										</span>
 									</PathTooltip>
-									<div className="flex-grow"></div>
-									<span className="codicon codicon-link-external text-[13.5px] my-[1px]" />
-								</ToolUseBlockHeader>
+									<span className="flex-grow" />
+									<span
+										aria-hidden="true"
+										className="codicon codicon-link-external text-[13.5px] my-[1px]"
+									/>
+								</ToolUseBlockHeaderButton>
 							</ToolUseBlock>
 						</div>
 					)

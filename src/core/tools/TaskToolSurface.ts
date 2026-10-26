@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import { MEMORY_TOOL_NAMES } from "../prompts/tools/native-tools/memories"
 import { diagnosticTaskIdentitySchema, type ApprovalMode } from "@alpha-code/types"
 
 import { digestValue } from "../agent/StepContext"
@@ -70,6 +71,8 @@ export interface TaskToolSurfaceInput {
 	readGrant?: TaskReadGrant
 	/** Host-owned capability flag persisted with diagnostic tasks and restored on reload. */
 	diagnosticSession?: boolean
+	/** Opt-in host capability, captured only for a primary root conversation. */
+	memoryToolsEnabled?: boolean
 	/** Incident task whose redacted evidence the diagnostic tool may read. */
 	diagnosticSourceTaskId?: string
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
@@ -98,6 +101,8 @@ export interface TaskToolSurface {
 	/** Host-owned diagnostic authority retained when a cached surface is projected. */
 	readonly diagnosticSession: boolean
 	readonly diagnosticSourceTaskId?: string
+	/** Captured host-local memory authority retained across catalog projections. */
+	readonly memoryToolsEnabled: boolean
 	/** Policy-aware lookup that fails closed for hidden or disabled names. */
 	readonly resolve: (name: string) => ToolDescriptor | undefined
 	readonly isCallable: (name: string) => boolean
@@ -172,9 +177,9 @@ function freezeValue<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 /**
- * Deduplicate provider definitions by canonical name and retain only schemas
- * that have one executable descriptor. Unknown functions remain unavailable;
- * keeping them in an allow-list would create a model/runtime split.
+ * Retain one provider definition per executable or supported history name.
+ * Unknown functions remain unavailable; keeping them in an allow-list would
+ * create a model/runtime split.
  */
 function normalizeSchemas(
 	schemas: readonly TaskToolSchema[],
@@ -194,37 +199,21 @@ function normalizeSchemas(
 		const canonicalName = canonicalizeToolName(schema.function.name)
 		if (!registry.resolve(canonicalName)) continue
 		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(canonicalName)) continue
-		const existingIndex = indexes.get(canonicalName)
+		// Saved-history declarations keep their wire names but share one canonical executable.
+		const key =
+			schema.function.name === "discover_tools" ||
+			(includeAllToolsWithRestrictions && schema.function.name === "update_todo_list")
+				? schema.function.name
+				: canonicalName
+		const existingIndex = indexes.get(key)
 		if (existingIndex !== undefined) {
-			if (
-				canonicalName === "tool_search" &&
-				schema.function.name === "discover_tools" &&
-				result[existingIndex]?.type === "function" &&
-				result[existingIndex].function.name === "tool_search"
-			) {
-				// Keep the old provider-history name alongside tool_search when a saved task uses it.
-				result.push(schema)
-				continue
-			}
-			if (
-				includeAllToolsWithRestrictions &&
-				canonicalName === "update_plan" &&
-				schema.function.name === "update_todo_list" &&
-				result[existingIndex]?.type === "function" &&
-				result[existingIndex].function.name === "update_plan"
-			) {
-				// Restricted providers may need the old declaration to replay a saved
-				// update_todo_list call. Its name stays out of the callable allow-list.
-				result.push(schema)
-				continue
-			}
 			// Keep schema selection aligned with ToolRegistry.getSchemaMap: when a
 			// provider sends both an alias and its canonical spelling, the canonical
 			// definition is authoritative even if it appears later in the catalog.
 			if (source.type === "function" && source.function.name === canonicalName) result[existingIndex] = schema
 			continue
 		}
-		indexes.set(canonicalName, result.length)
+		indexes.set(key, result.length)
 		result.push(schema)
 	}
 	return result
@@ -355,6 +344,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 	const providerSchemas = providedSchemas !== undefined ? capturedSchemas : registry.getSchemas()
 	const source = asPolicySource(input.policy)
 	const diagnosticSession = input.diagnosticSession === true
+	const memoryToolsEnabled = !diagnosticSession && input.taskKind !== "subagent" && input.memoryToolsEnabled === true
 	const includeAllToolsWithRestrictions = !diagnosticSession && input.includeAllToolsWithRestrictions === true
 	const profile = resolveProfile(input)
 
@@ -370,7 +360,8 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		: normalizeSchemas(providerSchemas, registry, true).filter(
 				(schema) =>
 					schema.type !== "function" ||
-					canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence",
+					(canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence" &&
+						(memoryToolsEnabled || !MEMORY_TOOL_NAMES.has(canonicalizeToolName(schema.function.name)))),
 			)
 	const schemaNames = functionNames(allSchemas)
 	const schemaNameSet = new Set(schemaNames)
@@ -483,6 +474,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		readGrant,
 		profile: { id: profile.id, digest: executionProfileDigest(profile) },
 		diagnosticSession,
+		memoryToolsEnabled,
 		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 	})
@@ -498,6 +490,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		digest,
 		profile,
 		diagnosticSession,
+		memoryToolsEnabled,
 		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 		resolve: (name: string) => {

@@ -50,4 +50,16 @@ describe("OpenMarkdownPreviewButton", () => {
 		fireEvent.click(screen.getByLabelText("Open markdown in preview"))
 		expect(postMessageMock).toHaveBeenCalledWith({ type: "openMarkdownPreview", text: complex })
 	})
+
+	it("keeps internal memory citation metadata out of preview content", () => {
+		render(
+			<TooltipProvider>
+				<OpenMarkdownPreviewButton
+					markdown={`${complex}\n<alpha-mem-citation>\n<rollout_ids>\nsource-1\n</rollout_ids>\n</alpha-mem-citation>`}
+				/>
+			</TooltipProvider>,
+		)
+		fireEvent.click(screen.getByLabelText("Open markdown in preview"))
+		expect(postMessageMock).toHaveBeenCalledWith({ type: "openMarkdownPreview", text: complex })
+	})
 })

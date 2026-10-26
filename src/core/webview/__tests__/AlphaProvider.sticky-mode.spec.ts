@@ -971,6 +971,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					id: taskId,
 					mode: "architect",
 				}),
+				{ preserveMode: false },
 			)
 		})
 
@@ -1059,6 +1060,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					id: taskId,
 					mode: "architect",
 				}),
+				{ preserveMode: false },
 			)
 		})
 	})

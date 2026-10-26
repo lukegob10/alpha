@@ -78,7 +78,21 @@ function computeReplacements(
 		}
 
 		if (found !== null) {
-			replacements.push([found, pattern.length, newSlice])
+			// Codex CLI 970111f6 preserves parsed context bytes even when fuzzy
+			// matching accepted different whitespace or punctuation in the patch.
+			let oldStart = 0
+			let newStart = 0
+			for (const [oldContext, newContext] of chunk.contextLineIndices ?? []) {
+				if (oldContext >= pattern.length || newContext >= newSlice.length) break
+				if (oldStart !== oldContext || newStart !== newContext) {
+					replacements.push([found + oldStart, oldContext - oldStart, newSlice.slice(newStart, newContext)])
+				}
+				oldStart = oldContext + 1
+				newStart = newContext + 1
+			}
+			if (oldStart !== pattern.length || newStart !== newSlice.length) {
+				replacements.push([found + oldStart, pattern.length - oldStart, newSlice.slice(newStart)])
+			}
 			lineIndex = found + pattern.length
 		} else {
 			throw new ApplyPatchError(

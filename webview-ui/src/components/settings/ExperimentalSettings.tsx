@@ -16,16 +16,14 @@ import { CustomToolsSettings } from "./CustomToolsSettings"
 
 type ExperimentalSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	experiments: Experiments
+	isActive: boolean
 	setExperimentEnabled: SetExperimentEnabled
-	apiConfiguration?: any
-	setApiConfigurationField?: any
 }
 
 export const ExperimentalSettings = ({
 	experiments,
+	isActive,
 	setExperimentEnabled,
-	apiConfiguration,
-	setApiConfigurationField,
 	className,
 	...props
 }: ExperimentalSettingsProps) => {
@@ -52,6 +50,7 @@ export const ExperimentalSettings = ({
 									label={label}>
 									<CustomToolsSettings
 										enabled={experiments[EXPERIMENT_IDS.CUSTOM_TOOLS] ?? false}
+										isActive={isActive}
 										onChange={(enabled) =>
 											setExperimentEnabled(EXPERIMENT_IDS.CUSTOM_TOOLS, enabled)
 										}

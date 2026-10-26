@@ -53,6 +53,7 @@ export const ALPHA_FEATURE_OVERLAY_ORIGIN = "alpha-feature-overlay" as const
 export const ALPHA_SUBAGENT_AUTHORITY_ORIGIN = "alpha-subagent-authority" as const
 export const ALPHA_SUBAGENT_INHERITED_INSTRUCTIONS_ORIGIN = "alpha-subagent-inherited-instructions" as const
 export const ALPHA_SKILL_CATALOG_ORIGIN = "alpha-skill-catalog" as const
+export const ALPHA_MEMORY_ORIGIN = "alpha-memory" as const
 
 export interface SystemEnvironmentInstructionPart {
 	role: "developer"
@@ -80,6 +81,7 @@ export interface SystemInstructionPart {
 		| typeof ALPHA_SUBAGENT_AUTHORITY_ORIGIN
 		| typeof ALPHA_SUBAGENT_INHERITED_INSTRUCTIONS_ORIGIN
 		| typeof ALPHA_SKILL_CATALOG_ORIGIN
+		| typeof ALPHA_MEMORY_ORIGIN
 	content: string
 }
 
@@ -158,6 +160,7 @@ function getAlphaToolContractSection(
 	subagentCanDelegate = false,
 	subagentDelegationPolicy?: "explicit-only" | "proactive",
 	isPlanMode = false,
+	subagentInheritsPermissions = false,
 ): string {
 	const patchToolGuidance =
 		"Prefer the supplied apply_patch tool for file patches, passing patch text in its declared input. Alpha also routes a complete standalone apply_patch heredoc in exec_command through the same patch tool and policy. Do not search for an apply_patch executable."
@@ -168,8 +171,11 @@ function getAlphaToolContractSection(
 			subagentCanDelegate,
 			subagentDelegationPolicy,
 			isPlanMode,
+			subagentInheritsPermissions,
 		)
-		return subagentRole === "worker" ? `${sharedToolUse}\n\n${patchToolGuidance}` : sharedToolUse
+		return subagentRole === "worker" || subagentInheritsPermissions
+			? `${sharedToolUse}\n\n${patchToolGuidance}`
+			: sharedToolUse
 	}
 	const delegationGuidance =
 		subagentDelegationPolicy === "explicit-only"
@@ -218,7 +224,7 @@ async function generatePrompt(
 	const modeConfig = getModeBySlug(mode, customModeConfigs) || planMode
 	const { roleDefinition, baseInstructions } = getModeSelection(mode, promptComponent, customModeConfigs)
 	const subagentRole = settings?.subagentRole
-	const isPlanMode = !subagentRole && mode === planModeSlug
+	const isPlanMode = (!subagentRole || settings?.subagentInheritsPermissions === true) && mode === planModeSlug
 
 	const hasMcpGroup = modeConfig.groups.some((groupEntry) => getGroupName(groupEntry) === "mcp")
 	const hasMcpServers = mcpHub && mcpHub.getServers().length > 0
@@ -291,11 +297,12 @@ async function generatePrompt(
 	const customInstructions = renderCustomInstructionParts(customInstructionParts)
 
 	const ticketSection =
-		!subagentRole && modeConfig.groups.some((entry) => getGroupName(entry) === "read")
+		(!subagentRole || settings?.subagentInheritsPermissions) &&
+		modeConfig.groups.some((entry) => getGroupName(entry) === "read")
 			? getTicketsSection(isPlanMode)
 			: ""
 	const mcpToolsSection =
-		!subagentRole && shouldIncludeMcp
+		(!subagentRole || settings?.subagentInheritsPermissions) && shouldIncludeMcp
 			? `====
 
 ALPHA MCP TOOLS
@@ -309,6 +316,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 			settings?.subagentCanDelegate,
 			settings?.subagentDelegationPolicy,
 			isPlanMode,
+			settings?.subagentInheritsPermissions,
 		),
 		ticketSection,
 		mcpToolsSection,
@@ -320,6 +328,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 					settings?.subagentCanDelegate,
 					settings?.subagentDelegationPolicy,
 					isPlanMode,
+					settings?.subagentInheritsPermissions,
 				)
 			: "",
 		modesSection,
@@ -350,8 +359,14 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 		origin: ALPHA_SKILL_CATALOG_ORIGIN,
 		content: skillsSection.catalog ? `\n\n${skillsSection.catalog}` : "",
 	}
+	const memoryPart: SystemInstructionPart = {
+		role: "user",
+		origin: ALPHA_MEMORY_ORIGIN,
+		// Managed children receive this exact text inside their inherited snapshot.
+		content: !subagentRole && settings?.memoryContext ? `\n\n${settings.memoryContext}` : "",
+	}
 	const inheritedInstructions = frozenSubagentInstructions.inherited.map(({ content }) => content).join("")
-	const userContext = `${inheritedInstructions}${skillCatalogPart.content}${hasUserDefinedRole ? roleDefinition : ""}${customInstructions}`
+	const userContext = `${inheritedInstructions}${skillCatalogPart.content}${memoryPart.content}${hasUserDefinedRole ? roleDefinition : ""}${customInstructions}`
 	const codexModelInstructionPart: CodexModelInstructionPart = {
 		role: "developer",
 		origin: CODEX_MODEL_INSTRUCTIONS_ORIGIN,
@@ -386,6 +401,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 			systemEnvironmentPart,
 			...frozenSubagentInstructions.inherited,
 			...(skillCatalogPart.content ? [skillCatalogPart] : []),
+			...(memoryPart.content ? [memoryPart] : []),
 			...userRoleDefinitionPart,
 			...customInstructionParts,
 			...(subagentAuthorityPart.content ? [subagentAuthorityPart] : []),

@@ -7,11 +7,13 @@ import type { AgentTurnEvent } from "../AgentTurnEvents"
 import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerOptions } from "../ToolScheduler"
 import { createToolPolicySnapshot, type ToolPolicyInput } from "../ToolPolicy"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
+import * as pathSafety from "../../tools/pathSafety"
 import { clearTaskSessionApprovalGrants } from "../../auto-approval/taskSessionApprovalGrants"
 
 const patch = "*** Begin Patch\n*** Add File: fixture.txt\n+must not write\n*** End Patch"
 
 afterEach(() => clearTaskSessionApprovalGrants("policy-denial-status"))
+afterEach(() => vi.restoreAllMocks())
 
 function deferred<T>() {
 	let resolve!: (value: T) => void
@@ -141,6 +143,86 @@ const denials: DenialCase[] = [
 ]
 
 describe("ToolScheduler policy denial status", () => {
+	it.each([
+		{ tool: "read_file", outsideWorkspace: undefined },
+		{ tool: "write_to_file", outsideWorkspace: undefined },
+		{ tool: "read_file", outsideWorkspace: "approval" as const },
+		{ tool: "write_to_file", outsideWorkspace: "approval" as const },
+	])("closes an unresolvable $tool path without suppressing its sibling ($outsideWorkspace)", async (testCase) => {
+		const { host, execute, onEffectStart, events, run } = fixture()
+		const blockedPath = path.resolve(host.cwd!, "unresolvable.txt")
+		const resolvePath = pathSafety.resolvePathWithExistingAncestor
+		vi.spyOn(pathSafety, "resolvePathWithExistingAncestor").mockImplementation((candidate) => {
+			if (candidate === blockedPath) throw new Error("Too many symbolic links while resolving workspace path")
+			return resolvePath(candidate)
+		})
+
+		const outcome = await run(
+			[
+				{ type: "tool_call", id: "unresolvable", name: testCase.tool, arguments: { path: blockedPath } },
+				{ type: "tool_call", id: "valid-sibling", name: "read_file", arguments: { path: "valid.txt" } },
+			],
+			{
+				policy: createToolPolicySnapshot({
+					visibleTools: [testCase.tool, "read_file"],
+					execution: { workspaceRoots: [host.cwd!], outsideWorkspace: testCase.outsideWorkspace },
+				}),
+			},
+		)
+
+		expect(outcome.status).toBe("completed")
+		expect(outcome.results.map(({ callId, status }) => ({ callId, status }))).toEqual([
+			{ callId: "unresolvable", status: "denied" },
+			{ callId: "valid-sibling", status: "success" },
+		])
+		expect(outcome.results[0].failure).toMatchObject({
+			reason: "policy_denied",
+			affectedScope: { kind: "workspace" },
+			effectsStarted: "no",
+			outcome: "known",
+		})
+		expect(events.filter((event) => event.type === "tool_result").map(({ callId }) => callId)).toEqual([
+			"unresolvable",
+			"valid-sibling",
+		])
+		expect(host.userMessageContent.filter((item) => item.type === "tool_result")).toHaveLength(2)
+		expect(execute).toHaveBeenCalledOnce()
+		expect(host.askApproval).not.toHaveBeenCalled()
+		expect(onEffectStart).not.toHaveBeenCalled()
+	})
+
+	it("denies a path that becomes unresolvable before dispatch and still closes its valid sibling", async () => {
+		const { host, execute, onEffectStart, events, run } = fixture()
+		const blockedPath = path.resolve(host.cwd!, "unresolvable.txt")
+		const resolvePath = pathSafety.resolvePathWithExistingAncestor
+		let unresolvable = false
+		vi.spyOn(pathSafety, "resolvePathWithExistingAncestor").mockImplementation((candidate) => {
+			if (candidate === blockedPath && unresolvable)
+				throw new Error("Too many symbolic links while resolving workspace path")
+			return resolvePath(candidate)
+		})
+
+		const outcome = await run(
+			[
+				{ type: "tool_call", id: "changed-target", name: "write_to_file", arguments: { path: blockedPath } },
+				{ type: "tool_call", id: "valid-sibling", name: "read_file", arguments: { path: "valid.txt" } },
+			],
+			{
+				beforeEffect: (call) => {
+					if (call.id === "changed-target") unresolvable = true
+				},
+			},
+		)
+
+		expect(outcome.status).toBe("completed")
+		expect(outcome.results.map(({ status }) => status)).toEqual(["denied", "success"])
+		expect(outcome.results[0].failure).toMatchObject({ reason: "policy_denied", effectsStarted: "no" })
+		expect(events.filter((event) => event.type === "tool_result")).toHaveLength(2)
+		expect(host.userMessageContent.filter((item) => item.type === "tool_result")).toHaveLength(2)
+		expect(execute).toHaveBeenCalledOnce()
+		expect(onEffectStart).not.toHaveBeenCalled()
+	})
+
 	it.each(denials)("publishes one denied receipt for $name without starting an effect", async (testCase) => {
 		const { host, execute, onEffectStart, events, run } = fixture()
 		const call: AgentToolCall = {

@@ -137,6 +137,37 @@ describe("injectVariables", () => {
 		expect(result).toEqual("Hello Hola")
 	})
 
+	it("treats replacement dollar sequences as literal values", async () => {
+		const value = "$& $` $' $$"
+
+		expect(await injectVariables("Token: ${value}", { value })).toBe(`Token: ${value}`)
+		expect(await injectVariables({ token: "${value}" }, { value })).toEqual({ token: value })
+	})
+
+	it("preserves JSON-sensitive replacement values without changing the config structure", async () => {
+		const value = '","command":"injected","value":"line one\nline two\tvalue'
+		const config = { headers: { Authorization: "${token}" }, args: ["${env:TOKEN}"] }
+
+		expect(await injectVariables(config, { token: value, env: { TOKEN: value } })).toEqual({
+			headers: { Authorization: value },
+			args: [value],
+		})
+		expect(config).toEqual({ headers: { Authorization: "${token}" }, args: ["${env:TOKEN}"] })
+	})
+
+	it("escapes a missing-variable fallback embedded in an object", async () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const fallback = 'missing "token"\nretry'
+
+		try {
+			expect(await injectVariables({ value: "${env:MISSING}" }, { env: {} }, fallback)).toEqual({
+				value: fallback,
+			})
+		} finally {
+			warning.mockRestore()
+		}
+	})
+
 	it("should handle undefined singular variable input", async () => {
 		const result = await injectVariables("Hello ${v}", { v: undefined })
 		expect(result).toEqual("Hello ${v}")

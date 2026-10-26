@@ -7,9 +7,9 @@ import {
 	type OrganizationAllowList,
 	type ProviderSettings,
 	isProviderName,
+	isCuratedProvider,
+	getModelId,
 	DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
-	vertexDefaultModelId,
-	stellarDefaultModelId,
 	resolveModelParameterApplicability,
 } from "@alpha-code/types"
 
@@ -29,6 +29,7 @@ import { filterProviders, filterModels } from "./utils/organizationFilters"
 import { SearchableSelect, Collapsible, CollapsibleTrigger, CollapsibleContent } from "@src/components/ui"
 
 import { OpenAICompatible, Stellar, Vertex, VSCodeLM } from "./providers"
+import { CuratedProvider } from "./providers/CuratedProvider"
 
 import { MODELS_BY_PROVIDER, PROVIDERS } from "./constants"
 import { inputEventTransform, noTransform } from "./transforms"
@@ -45,6 +46,8 @@ import { BookOpenText } from "lucide-react"
 
 export interface ApiOptionsProps {
 	uriScheme: string | undefined
+	/** Stable identity of the caller's settings buffer, independent of live profile refreshes. */
+	profileIdentity?: string
 	apiConfiguration: ProviderSettings
 	setApiConfigurationField: <K extends keyof ProviderSettings>(
 		field: K,
@@ -58,6 +61,7 @@ export interface ApiOptionsProps {
 
 const ApiOptions = ({
 	apiConfiguration,
+	profileIdentity,
 	setApiConfigurationField,
 	fromWelcomeView,
 	errorMessage,
@@ -110,8 +114,14 @@ const ApiOptions = ({
 		}
 	}, [selectedModelId, setApiConfigurationField, apiConfiguration.apiModelId, isUnsupportedSelectedProvider])
 
-	// Debounced refresh model updates, only executed 250ms after the user
-	// stops typing.
+	// Copilot discovery has no typed connection fields to debounce.
+	useEffect(() => {
+		if (selectedProvider === "vscode-lm") {
+			vscode.postMessage({ type: "requestVsCodeLmModels" })
+		}
+	}, [selectedProvider])
+
+	// Debounce OpenAI connection edits until the user stops typing.
 	useDebounce(
 		() => {
 			if (selectedProvider === "openai") {
@@ -124,8 +134,6 @@ const ApiOptions = ({
 						openAiHeaders: apiConfiguration.openAiHeaders ?? {},
 					},
 				})
-			} else if (selectedProvider === "vscode-lm") {
-				vscode.postMessage({ type: "requestVsCodeLmModels" })
 			}
 		},
 		250,
@@ -148,7 +156,12 @@ const ApiOptions = ({
 			undefined,
 			organizationAllowList,
 		)
-		setErrorMessage(apiValidationResult ?? (selectedProvider === "openai" ? outputTokenLimitError : undefined))
+		setErrorMessage(
+			apiValidationResult ??
+				(selectedProvider === "openai" || isCuratedProvider(selectedProvider)
+					? outputTokenLimitError
+					: undefined),
+		)
 	}, [
 		apiConfiguration,
 		organizationAllowList,
@@ -174,6 +187,7 @@ const ApiOptions = ({
 				// 1) If nothing is set, initialize to the provider default.
 				if (!modelId) {
 					setApiConfigurationField(field, defaultValue, false)
+					handleModelChangeSideEffects(provider, defaultValue, setApiConfigurationField)
 					return
 				}
 
@@ -193,30 +207,16 @@ const ApiOptions = ({
 				const isValidModel = !!filteredModels && Object.prototype.hasOwnProperty.call(filteredModels, modelId)
 				if (!isValidModel) {
 					setApiConfigurationField(field, defaultValue, false)
+					handleModelChangeSideEffects(provider, defaultValue, setApiConfigurationField)
 				}
 			}
 
-			const PROVIDER_MODEL_CONFIG: Partial<
-				Record<
-					ProviderName,
-					{
-						field: keyof ProviderSettings
-						default?: string
-					}
-				>
-			> = {
-				vertex: { field: "apiModelId", default: vertexDefaultModelId },
-				stellar: { field: "apiModelId", default: stellarDefaultModelId },
-				openai: { field: "openAiModelId" },
-			}
-
-			const config = PROVIDER_MODEL_CONFIG[value]
-			if (config) {
+			if (shouldUseGenericModelPicker(value)) {
 				validateAndResetModel(
 					value,
-					apiConfiguration[config.field] as string | undefined,
-					config.field,
-					config.default,
+					getModelId({ ...apiConfiguration, apiProvider: value }),
+					"apiModelId",
+					getDefaultModelIdForProvider(value),
 				)
 			}
 		},
@@ -278,11 +278,11 @@ const ApiOptions = ({
 
 		const options = providersWithModels.map(({ value, label }) => ({
 			value,
-			label,
+			label: t(`settings:providers.names.${value}`, { defaultValue: label }),
 		}))
 
 		return options
-	}, [organizationAllowList, apiConfiguration.apiProvider])
+	}, [organizationAllowList, apiConfiguration.apiProvider, t])
 
 	return (
 		<div className="flex flex-col gap-3">
@@ -318,6 +318,15 @@ const ApiOptions = ({
 				</div>
 			) : (
 				<>
+					{isCuratedProvider(selectedProvider) && (
+						<CuratedProvider
+							key={`${profileIdentity ?? ""}:${selectedProvider}`}
+							provider={selectedProvider}
+							apiConfiguration={apiConfiguration}
+							setApiConfigurationField={setApiConfigurationField}
+							onOutputTokenLimitError={setOutputTokenLimitError}
+						/>
+					)}
 					{selectedProvider === "vertex" && (
 						<Vertex
 							apiConfiguration={apiConfiguration}
@@ -362,6 +371,7 @@ const ApiOptions = ({
 									t("settings:labels.useCustomArn"),
 								)}
 								modelIdKey="apiModelId"
+								allowCustomModel={!isCuratedProvider(activeSelectedProvider)}
 								serviceName={getProviderServiceConfig(activeSelectedProvider).serviceName}
 								serviceUrl={getProviderServiceConfig(activeSelectedProvider).serviceUrl}
 								organizationAllowList={organizationAllowList}

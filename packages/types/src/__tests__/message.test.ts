@@ -11,6 +11,84 @@ import {
 } from "../message.js"
 import type { WebviewMessage } from "../vscode-extension-host.js"
 
+describe("message turn attribution", () => {
+	test("accepts saved messages without turn attribution", () => {
+		const legacy = { type: "say", say: "text", ts: 1, text: "An existing conversation" }
+		expect(alphaMessageSchema.parse(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy)
+	})
+
+	test("round trips canonical membership, input roles, and terminal boundaries", () => {
+		const identity = { runId: "run-1", turnId: "turn-1" }
+		const messages = [
+			{ type: "say", say: "text", ts: 1, text: "Build it", turn: { ...identity, inputKind: "start" } },
+			{
+				type: "say",
+				say: "user_feedback",
+				ts: 2,
+				text: "Use the existing API",
+				queuedMessageIds: ["steer-1"],
+				turn: { ...identity, inputKind: "steer" },
+			},
+			{ type: "say", say: "command_output", ts: 3, text: "Tests passed", turn: identity },
+			{
+				type: "say",
+				say: "text",
+				ts: 4,
+				text: "The change is complete",
+				turn: { ...identity, terminalStatus: "completed" },
+			},
+			{
+				type: "say",
+				say: "error",
+				ts: 5,
+				text: "The request failed",
+				turn: { ...identity, terminalStatus: "failed" },
+			},
+			{
+				type: "say",
+				say: "text",
+				ts: 6,
+				text: "Work was interrupted",
+				turn: { ...identity, terminalStatus: "interrupted" },
+			},
+		]
+		for (const message of messages) {
+			expect(alphaMessageSchema.parse(JSON.parse(JSON.stringify(message)))).toEqual(message)
+		}
+	})
+
+	test("rejects malformed or unbounded turn identities without accepting partial attribution", () => {
+		const message = { type: "say", say: "text", ts: 1, text: "Checking" }
+		for (const turn of [
+			{},
+			{ runId: "run-1" },
+			{ turnId: "turn-1" },
+			{ runId: "", turnId: "turn-1" },
+			{ runId: "run-1", turnId: " " },
+			{ runId: "\t", turnId: "turn-1" },
+			{ runId: "x".repeat(257), turnId: "turn-1" },
+			{ runId: "run-1", turnId: "x".repeat(257) },
+			{ runId: 1, turnId: "turn-1" },
+			null,
+		]) {
+			expect(alphaMessageSchema.safeParse({ ...message, turn }).success).toBe(false)
+		}
+	})
+
+	test("rejects unknown turn roles, nonterminal statuses, and extra attribution fields", () => {
+		const message = { type: "say", say: "text", ts: 1, text: "Checking" }
+		const identity = { runId: "run-1", turnId: "turn-1" }
+		for (const turn of [
+			{ ...identity, inputKind: "automatic" },
+			{ ...identity, terminalStatus: "in_progress" },
+			{ ...identity, terminalStatus: "cancelled" },
+			{ ...identity, expanded: true },
+		]) {
+			expect(alphaMessageSchema.safeParse({ ...message, turn }).success).toBe(false)
+		}
+	})
+})
+
 describe("ask messages", () => {
 	test("retains bounded queued input identities on feedback and accepts older saved messages", () => {
 		const legacy = { type: "say", say: "user_feedback", ts: 1, text: "Continue the task" }

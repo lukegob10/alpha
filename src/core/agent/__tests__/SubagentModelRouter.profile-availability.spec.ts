@@ -72,10 +72,12 @@ it("keeps the historical visible fallback for a genuinely missing explicit profi
 		parentApiConfiguration,
 		parentApiConfigName: "Parent",
 		defaultProfileId: "missing-id",
+		parentReasoningPreference: { kind: "effort", effort: "high" },
 		profileLoader,
 	})
 
 	expect(result.apiConfiguration).toEqual(parentApiConfiguration)
+	expect(result.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
 	expect(result.route).toMatchObject({ source: "default", resolution: "fallback", fallbackReason: "missing" })
 })
 
@@ -89,10 +91,12 @@ it("inherits a captured parent configuration despite an unavailable later saved 
 		role: "worker",
 		parentApiConfiguration,
 		parentApiConfigName: "Parent",
+		parentReasoningPreference: { kind: "off" },
 		profileLoader,
 	})
 
 	expect(result.apiConfiguration).toEqual(parentApiConfiguration)
+	expect(result.reasoningPreference).toEqual({ kind: "off" })
 	expect(result.route).toMatchObject({ source: "parent", resolution: "selected", modelId: "captured-parent-model" })
 	expect(profileLoader.assertProfileAvailable).not.toHaveBeenCalled()
 })

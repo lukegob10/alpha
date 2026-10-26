@@ -40,4 +40,14 @@ describe("managed child instruction capture", () => {
 	it("returns no guidance when the invoking step has no inheritable instructions", () => {
 		expect(selectInheritedInstructionFragments([])).toEqual([])
 	})
+
+	it("carries the parent's advisory memory into the exact child snapshot", () => {
+		const memory: ApiInstructionFragment = {
+			role: "user",
+			origin: "alpha-memory",
+			content: "Frozen advisory memory from the invoking step",
+		}
+		expect(selectInheritedInstructionFragments([memory])).toEqual([memory])
+		expect(selectInheritedInstructionFragments([{ ...memory, role: "developer" }])).toEqual([])
+	})
 })

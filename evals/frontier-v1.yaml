@@ -1,6 +1,8 @@
+# Revision 6 versions the prompt/hash revisions recorded in 8910093c and the new two-module outbox fixture.
+# Private hashes identify declared assets; calibration and paid/human admission remain separate requirements.
 schemaVersion: 1
 id: frontier-v1
-version: 1
+version: 6
 status: calibrating
 primaryModel: luna-high
 referenceModel: luna-high
@@ -36,11 +38,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -78,7 +80,7 @@ tasks:
       - environment
       - final_response
       - grader_evidence
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:8cd79bf103bfecf6873c108eb9a567c4898a7aa2c32804fc2da0160f903496b6
     promptDigest: sha256:255d3e15ba29956bd3028e71b68fe26e443fc48d0d565ca15ceaf64f572cf89a
@@ -113,11 +115,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -148,7 +150,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:f8c0742d9b14aede86df7d4ce41cb32adaec170f2dffc65f05c979d85bb3df13
     promptDigest: sha256:4d0914df61f34e49c204e681c625bb0f52da904a7933ded952ba359f93735784
@@ -183,11 +185,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -218,12 +220,12 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:57b5ea2241f5251f174fb8cd47cd4fdc7294d2372d42d482f1522fa3fd6ca1ab
     promptDigest: sha256:04845536dc7cca65e299485cf9d79343612736dc7181b79f7f76749f1303ef2d
   - id: repo-stream-backpressure
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
     fixture: javascript/repo-stream-backpressure
@@ -231,7 +233,7 @@ tasks:
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
+      snapshotDigest: sha256:69672cdb07be8868d73a17687bd538508f3d64efe4f716994fffa9e1de980bc6
     family: real-repository
     capabilities:
       - async-control-flow
@@ -253,11 +255,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -273,11 +275,11 @@ tasks:
       - id: usage
         version: 1
         alias: usage_limit
-    contextBand: long
+    contextBand: compact
     editTopology:
-      kind: cross-package
+      kind: single-file
       minFiles: 1
-      maxFiles: 8
+      maxFiles: 1
       allowedRoots:
         - src
     validation:
@@ -288,9 +290,9 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
+    fixtureDigest: sha256:69672cdb07be8868d73a17687bd538508f3d64efe4f716994fffa9e1de980bc6
     promptDigest: sha256:5b59e518bd9dd906f00dc96ae6efd5967de5db1fe2f1be777ae7dbc52a63b519
   - id: repo-workspace-package-order
     version: 1
@@ -323,11 +325,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -345,9 +347,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -358,7 +360,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:c1b10ec20be19f15492c88efaeee35bd33b826b981ead70bd2bf2bfcd08bb301
     promptDigest: sha256:385392e3a42cfcf3b231edc44d6dded7f58a755fa3929ee6883089d944f607ee
@@ -393,11 +395,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -415,9 +417,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -428,7 +430,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:2114cbc303529d15b0f1150e4804f2bfbd0649d122ff5e404d1e9e3a4643e159
     promptDigest: sha256:fc06e61f5248d17f510cb9e8e62640f00ff483ae90bad740d39cfcb78945c8ef
@@ -463,11 +465,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -498,7 +500,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:8db74ad50ffabc6ca5086811b18dc78090c7af907d89f22705815816b22e9549
     promptDigest: sha256:a1570ecc1fb5ea27c28563533dfe2f016903ad61132008497b4fe3dd677183f7
@@ -533,11 +535,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -568,7 +570,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:9e6f631251259f97a240e079a54a3ea2ac0c9576d56a2dba6601406506da2d2d
     promptDigest: sha256:d2646b5127f1b95e00f35f631ff1aaf999e0e06d278b341c9cd50f59c152799a
@@ -603,11 +605,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -625,9 +627,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -638,7 +640,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:1a26ea505e5400ee9089dc43fcb9e094f2b3b26c2d5bcbe19fdf8b2ea6c361da
     promptDigest: sha256:ae67071690cc9346ebaada1e26a34ccf6ee85b459cc4b32651d0360cedd00a74
@@ -673,11 +675,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -708,7 +710,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
     promptDigest: sha256:158b48bcbe5412d86854d5f529a3cba0d862ef8f42f3f9e06b55d87668777150
@@ -743,11 +745,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -765,9 +767,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -778,20 +780,20 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
     promptDigest: sha256:42cf7323b1f8e7029d33679765c1e2f6011dad7307fc66dccff385c389c6d4c4
   - id: repo-transaction-outbox
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
-    fixture: javascript/repo-transaction-outbox
+    fixture: javascript/repo-transaction-outbox-v2
     prompt: prompt.md
     repository:
       upstream: local-snapshot:real-repository
-      commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
+      commit: frontier-v1-visible-v6
+      snapshotDigest: sha256:5b1771b27c70448991cfba3585152ddd0fc09dfd47b440eee743c41b21afbf70
     family: real-repository
     capabilities:
       - transaction
@@ -813,11 +815,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -836,8 +838,8 @@ tasks:
     contextBand: medium
     editTopology:
       kind: multi-file
-      minFiles: 1
-      maxFiles: 4
+      minFiles: 2
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -848,10 +850,10 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
-    promptDigest: sha256:8ec5772db98214942944674a3966ec33023cb161b2a4c2155d1d6121e8f6786e
+    fixtureDigest: sha256:5b1771b27c70448991cfba3585152ddd0fc09dfd47b440eee743c41b21afbf70
+    promptDigest: sha256:8079826e1fa0995ed94eadfb2270e7c6d4ef555a248effac35ef722789b18635
   - id: repo-rate-limit-window
     version: 1
     partition: development
@@ -883,11 +885,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -918,7 +920,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:7a8a1871a0439ab1672f607fb67609e92a72c83b8ea6464181c8a2a98515d6c1
     promptDigest: sha256:a4a28111f05aae8ec733e52f9e20d50a00cfff0c49c1ce908001f7babde045f1
@@ -953,11 +955,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -975,9 +977,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -988,7 +990,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:ea58b30c06fcc966eafb1f81940f58de60226fe826844d876f0f1b5e53fd77dc
     promptDigest: sha256:59cf48e20d1d3cc5758c96dca1aa5d82d60c371df9d9a2242f84bd86aa64fede
@@ -1023,11 +1025,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1045,9 +1047,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1058,7 +1060,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:8c03df7c229014bd499b3c7b93bb9b7956aa6c33ff2c83b31e3f87d1061f7119
     promptDigest: sha256:284a0a522e92f7d2d8e103843eb6cb4ab88a907e09137d53ceb717e7d11ddb0c
@@ -1093,11 +1095,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1128,12 +1130,12 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
     promptDigest: sha256:81c4471cde5f814f1ae49893bce6cb786c6e58b28a38be912c252d7fc882dff3
   - id: alpha-repository-rules
-    version: 1
+    version: 2
     partition: regression
     admission: calibrating
     fixture: javascript/alpha-repository-rules
@@ -1141,7 +1143,7 @@ tasks:
     repository:
       upstream: local-snapshot:alpha-extension
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
+      snapshotDigest: sha256:edffbcf2b8a10db0a984fe03766d3d917527fe4030b8bc38714d3cee8f1eada7
     family: alpha-extension
     capabilities:
       - repository-instructions
@@ -1163,11 +1165,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1198,10 +1200,10 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
-    promptDigest: sha256:62e2deb07bd53734e614af01dfa9f7f37dcf044d1b28065885c6ec6463229e78
+    fixtureDigest: sha256:edffbcf2b8a10db0a984fe03766d3d917527fe4030b8bc38714d3cee8f1eada7
+    promptDigest: sha256:114833133b6eb09bee92d4d6f072f60df1415ceb96ffd1c3479e558154dbad5b
   - id: alpha-context-continuity
     version: 1
     partition: development
@@ -1233,11 +1235,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1255,9 +1257,9 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
+      kind: single-file
       minFiles: 1
-      maxFiles: 8
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1268,7 +1270,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:0b440b4e18f48423149a245896e4766578990b5f275fa228caadb08681f3946c
     promptDigest: sha256:07a7ee7e79a6c10de625f5f85085304b1157946ba2332e99cf16613c8478e051
@@ -1303,11 +1305,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1325,9 +1327,9 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
+      kind: single-file
       minFiles: 1
-      maxFiles: 8
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1338,7 +1340,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:25866833d0438c75188cf9adab2df881604a697cd9340bbcec712ce5bb5c714e
     promptDigest: sha256:d1d85d2bcb16e3eab198ddde68f067d0f2bcca82369853b859d89fb6af69e8df
@@ -1373,11 +1375,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1408,7 +1410,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:ce76f9d7348c824fba352932ceb1d07d551108759eab8db24dd5b32761c6e8fa
     promptDigest: sha256:a2b302bef24f3f7fbbf6d71da761eceac97b846c517d2451b1dbf7de626797f8
@@ -1443,11 +1445,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1465,9 +1467,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1478,7 +1480,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:6461ec65884edd380788924d5171b24f730474d7a457eab4c8630fc9868a18ec
     promptDigest: sha256:c4ac5f8697c2962f9fdfc8acc2a582000e23c7ab908fa4c0c890d5015602749e
@@ -1513,11 +1515,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1535,9 +1537,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1548,7 +1550,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:943fa77645748f16cc6b3123073143af0edba005d40d6f3fb355a1aafe088190
     promptDigest: sha256:f85f5a8fc79a8c09ec43f0442b38f477d87a226d72d2d867d083e5e097d404ee
@@ -1583,11 +1585,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1605,9 +1607,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1618,12 +1620,12 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
     promptDigest: sha256:516a64c669ae8d6ddbf36f9df2535f41a818b03611d1aeabc2b7ea3f1591f84c
   - id: alpha-scheduler-ordering
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
     fixture: javascript/alpha-scheduler-ordering
@@ -1631,7 +1633,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
+      snapshotDigest: sha256:8f6b0bb9d4568b5f6dcce70660e69bd7e0c61526b0f597ce7608417cd1332676
     family: long-horizon
     capabilities:
       - scheduler
@@ -1653,11 +1655,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1675,9 +1677,9 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
+      kind: single-file
       minFiles: 1
-      maxFiles: 8
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1688,10 +1690,10 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
-    promptDigest: sha256:812b59684dcad887a3f0195fcb7ec479495727b8b14c38d195b33751047222df
+    fixtureDigest: sha256:8f6b0bb9d4568b5f6dcce70660e69bd7e0c61526b0f597ce7608417cd1332676
+    promptDigest: sha256:6a27c8f2a50479f74049b769fb3078503e8415bbaf0c7398258dbac06309b89b
   - id: safety-path-policy
     version: 1
     partition: regression
@@ -1723,11 +1725,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1758,7 +1760,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:e3e832c5cf836bc2bea7c7ea7359e6cbab3371d18e697ddf6a55f60e162d99af
     promptDigest: sha256:4a92923f1edf5e3ccd3294b871f65d3ffa0f2b820fa719e61cbb68a6e4571a1d
@@ -1793,11 +1795,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1828,7 +1830,7 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:882ba83c2af65649627e09151fedfda7c58459521c06dd498f8499d3678c47bb
     promptDigest: sha256:58cc8bca3b78d6fd73dee5772ed15b6e8b451564c66968333607f1df1c61f954
@@ -1863,11 +1865,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1885,9 +1887,9 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
+      kind: single-file
       minFiles: 1
-      maxFiles: 4
+      maxFiles: 2
       allowedRoots:
         - src
     validation:
@@ -1898,12 +1900,12 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
     fixtureDigest: sha256:453d70a0677fac969f612daf25cfb5461949f49a165e0b814fd3b0c11b81d2bd
     promptDigest: sha256:544c4a8445ea9dbfb708803d7f7860cdb3810be938c82d17335afd15986205d0
   - id: stateful-api-idempotency
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
     fixture: javascript/stateful-api-idempotency
@@ -1911,7 +1913,7 @@ tasks:
     repository:
       upstream: local-snapshot:safety-stateful
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
+      snapshotDigest: sha256:2d852c8bb019722e14f011c0c210f0094776ac7a67aaed5ee51d305de948b8ab
     family: safety-stateful
     capabilities:
       - external-side-effects
@@ -1933,11 +1935,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -1953,11 +1955,11 @@ tasks:
       - id: usage
         version: 1
         alias: usage_limit
-    contextBand: long
+    contextBand: compact
     editTopology:
-      kind: cross-package
+      kind: single-file
       minFiles: 1
-      maxFiles: 8
+      maxFiles: 1
       allowedRoots:
         - src
     validation:
@@ -1968,10 +1970,10 @@ tasks:
             - test/behavior.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
-    promptDigest: sha256:c0800b19406ed36749ead739222108807300fd862702f94656f797b62aa828f3
+    fixtureDigest: sha256:2d852c8bb019722e14f011c0c210f0094776ac7a67aaed5ee51d305de948b8ab
+    promptDigest: sha256:3353737123e3e3dfc13164379f95f65df6502b8690528cb231cb8bc2018e3f03
   - id: holdout-001
     version: 1
     partition: holdout
@@ -2003,11 +2005,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2030,7 +2032,6 @@ tasks:
       maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2039,7 +2040,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:818a818809b0ce1f3c2cef13920f4e7bb9cbcee3843ab9f7fe2ea2391e646758
     promptDigest: sha256:3bb407ab118cdb62d6497275015a1232d1e1ad6e7d3c33237ee325836d135eb2
@@ -2074,11 +2075,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2096,12 +2097,11 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
-      minFiles: 2
-      maxFiles: 5
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2110,7 +2110,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:9711d63046d5c342e9d8464709564e53fce8ac5d32994bf2e2a7f8441ec2aab5
     promptDigest: sha256:db4753e1de12075f8bff751ef4bb9bae21b3d72484bdeefe028146663691e818
@@ -2145,11 +2145,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2167,12 +2167,11 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
-      minFiles: 3
-      maxFiles: 10
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2181,7 +2180,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:178c5ea7ad8663385c83ce716cca23121b9c10076a72d8f51584337d027e49df
     promptDigest: sha256:39d196da88b73b621e7478fb91e3539e4a07d647d4c8f665a7e3ae258343b1f4
@@ -2216,11 +2215,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2238,12 +2237,11 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
-      minFiles: 2
-      maxFiles: 5
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2252,7 +2250,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:fa47259f54c7f081c377aabd70007d1361075b4dae42bd1bd71c822e973fbd1d
     promptDigest: sha256:0108073797fb9c82314c2cac19506b992feb898125fb9a6a9321482076471ef0
@@ -2287,11 +2285,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2314,7 +2312,6 @@ tasks:
       maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2323,7 +2320,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:5d126173d9403fa76b648b86900f8bb1f848af5629cd3aef3488d1e5e0a032b1
     promptDigest: sha256:d3c7278f171a8eb9f3296d737a461e57c82f41ebc2b00e3f1046ed31e5cfd936
@@ -2358,11 +2355,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2380,12 +2377,11 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
-      minFiles: 2
-      maxFiles: 5
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2394,7 +2390,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:6b1dba98cc8a2c1fd0043958b2cce8447332b318266459259210b40c433d5f06
     promptDigest: sha256:e6f6b0c841c6b0d7f74866d27d12b189b4ad242488cc8b240b8baa0f4e406ac4
@@ -2429,11 +2425,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2451,12 +2447,11 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
-      minFiles: 3
-      maxFiles: 10
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2465,7 +2460,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:b8dcf70c351d05e81c54633b808f465d488e0fbf84b601a189f2e415e822f19c
     promptDigest: sha256:017a318cb2f2c42477a942d479fc613e88663019062d0a2ed03e67c5d0de2569
@@ -2500,11 +2495,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_traversal_cases
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2527,7 +2522,6 @@ tasks:
       maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2536,12 +2530,12 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:fb3b4d51dd3bec65add476a16c1618a264edf7feda9bd28d54cf010267be6ced
+    graderReferenceDigest: sha256:80901705c63d4dc838acf04edeb39fc544b8e3d74951a69896eeba15a58cd1d0
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
     promptDigest: sha256:b7cef5d52719579ef0a0f35b9185d1b344f3d45480024a758d82cde54670a347
   - id: holdout-009
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-009/workspace
@@ -2549,7 +2543,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1
-      snapshotDigest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
+      snapshotDigest: sha256:cf1cef885e443bf93ad6551a22d52155762c672b4b13571e7dc598ed4291533b
     family: safety-stateful
     capabilities:
       - policy-compliance
@@ -2571,11 +2565,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2593,12 +2587,11 @@ tasks:
         alias: usage_limit
     contextBand: long
     editTopology:
-      kind: cross-package
-      minFiles: 3
-      maxFiles: 10
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2607,12 +2600,12 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
-    promptDigest: sha256:ba98c589e88b42010f27c5eb305ee45fd15db5d4b0a3907bc3dd9d0a9ae9f000
+    fixtureDigest: sha256:cf1cef885e443bf93ad6551a22d52155762c672b4b13571e7dc598ed4291533b
+    promptDigest: sha256:46aebf7d4bde6d863d601b979e9c538ddeab9b973b62caaa731bde98b72b5146
   - id: holdout-010
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-010/workspace
@@ -2620,7 +2613,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1
-      snapshotDigest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
+      snapshotDigest: sha256:9026defcef273259fb899e76f6952759eaec53e2ed49a98c15c43f956f1a2469
     family: long-horizon
     capabilities:
       - repository-discovery
@@ -2642,11 +2635,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2664,12 +2657,11 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
-      minFiles: 2
-      maxFiles: 5
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2678,12 +2670,12 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
-    promptDigest: sha256:5a144a1a9fb5a5faa6eae6f0a95cb5a339489f97244cd30d95a50d506764c0a2
+    fixtureDigest: sha256:9026defcef273259fb899e76f6952759eaec53e2ed49a98c15c43f956f1a2469
+    promptDigest: sha256:9192db6a94524998b7687216aa8e86d48aba5ac3d7cf899d7593484e96eef3bc
   - id: holdout-011
-    version: 1
+    version: 2
     partition: holdout
     admission: calibrating
     fixture: tasks/holdout-011/workspace
@@ -2691,7 +2683,7 @@ tasks:
     repository:
       upstream: local-snapshot:long-horizon
       commit: frontier-v1
-      snapshotDigest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
+      snapshotDigest: sha256:4340250ca17cfb955a2ab2f64cc97a36bfdc93f3212261e55afe61862692782f
     family: long-horizon
     capabilities:
       - repository-discovery
@@ -2713,11 +2705,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2740,7 +2732,6 @@ tasks:
       maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2749,10 +2740,10 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
-    fixtureDigest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
-    promptDigest: sha256:94945e4e32c5daa9aa6a6dcae448a96f4e19fc97180b941e334566f44fbe8f44
+    fixtureDigest: sha256:4340250ca17cfb955a2ab2f64cc97a36bfdc93f3212261e55afe61862692782f
+    promptDigest: sha256:9c2146d6520c9b2785bb3f7794446ba2c2c9d05f345b3d934fca49afd571f42e
   - id: holdout-012
     version: 1
     partition: holdout
@@ -2784,11 +2775,11 @@ tasks:
         version: 1
         alias: visible_tests
       - id: private
-        version: 2
+        version: 5
         alias: hidden_tests
         bundleId: frontier-v1-graders
-        bundleVersion: 2
-        bundleDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e
+        bundleVersion: 5
+        bundleDigest: sha256:171e9ddd206c6ad27d83eab9548767c93b888edfc7aa02e24d7d3f50b8d81653
       - id: final-state
         version: 1
         alias: final_state
@@ -2806,12 +2797,11 @@ tasks:
         alias: usage_limit
     contextBand: medium
     editTopology:
-      kind: multi-file
-      minFiles: 2
-      maxFiles: 5
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
       allowedRoots:
         - src
-        - test
     validation:
       commands:
         - command: node
@@ -2820,7 +2810,7 @@ tasks:
             - test/workflow.test.js
       network: disabled
     evidenceRequirements: *a1
-    graderReferenceDigest: sha256:ab6cecad8d986741f253750155bee175d3cb57a7bc92758fa7cb08bca3ee8899
+    graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
     fixtureDigest: sha256:4eb52d6ebe6dcfc12c3e1a0e098ea002e2db4e6f5399efba3073b9e77bda75a5
     promptDigest: sha256:d370c85f89b353fcee4cd7f76f828367fd89828f7659a759c234ed836b092b19

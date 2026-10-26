@@ -100,7 +100,9 @@ export async function generateTaskTitle(
 		}
 
 		let response = ""
-		let outcome: "completed" | "failed" | "incomplete" | "cancelled" | undefined
+		// Lifecycle-aware transports need terminal success; legacy streams complete at EOF.
+		const requiresTerminalOutcome = handler.streamCapabilities?.lifecycle === true
+		let completed = !requiresTerminalOutcome
 		const stream = handler.createMessage(
 			titleInstructions,
 			[{ role: "user", content: buildTitleRequest(requestText) }],
@@ -120,7 +122,7 @@ export async function generateTaskTitle(
 		for await (const chunk of iterateApiStreamWithAbort(stream, signal)) {
 			if (chunk.type === "error") throw new Error("Title provider returned an error")
 			if (chunk.type === "outcome") {
-				outcome = chunk.status
+				completed = chunk.status === "completed" && (!requiresTerminalOutcome || chunk.terminal)
 				continue
 			}
 			if (chunk.type === "text") {
@@ -131,7 +133,7 @@ export async function generateTaskTitle(
 			}
 		}
 
-		if (signal.aborted || (outcome !== undefined && outcome !== "completed")) return undefined
+		if (signal.aborted || !completed) return undefined
 		return normalizeGeneratedTaskTitle(response)
 	} finally {
 		try {

@@ -10,6 +10,9 @@ export function campaignConfigDigest(config: CampaignConfig): string {
 				hosts: config.hosts.map((host) => host.version),
 				scenarioIds: config.scenarioIds,
 				samples: config.samples,
+				collectionMode: config.repair ? "reviewed-repair" : (config.collectionMode ?? "sample-only"),
+				decisionPlanDigest: config.decisionPlanDigest,
+				decisionTimeWindow: config.decisionTimeWindow,
 				budgets: config.budgets,
 				maxReproductions: config.maxReproductions,
 			}),
@@ -60,6 +63,17 @@ export function parseCampaignConfig(input: unknown, enableReviewedPatches = fals
 	const provider = object(value.provider)
 	if (provider.mode !== "scripted" && provider.mode !== "live-copilot") throw new Error("Invalid campaign provider")
 	const budgets = object(value.budgets)
+	if (
+		value.decisionPlanDigest !== undefined &&
+		(typeof value.decisionPlanDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.decisionPlanDigest))
+	)
+		throw new Error("Invalid campaign decision plan digest")
+	if (
+		value.collectionMode !== undefined &&
+		value.collectionMode !== "sample-only" &&
+		value.collectionMode !== "sample-then-diagnose"
+	)
+		throw new Error("Invalid campaign collection mode")
 	const hosts: CampaignHost[] = list(value.hosts, 2).map((entry) => {
 		const host = object(entry)
 		if (!HOST_VERSIONS.includes(host.version as CampaignHost["version"]))
@@ -86,6 +100,9 @@ export function parseCampaignConfig(input: unknown, enableReviewedPatches = fals
 			attemptTimeoutMs: integer(budgets.attemptTimeoutMs, 1_200_000),
 		},
 		maxReproductions: integer(value.maxReproductions ?? 2, 10),
+		...(value.collectionMode === undefined ? {} : { collectionMode: value.collectionMode }),
+		...(value.decisionPlanDigest === undefined ? {} : { decisionPlanDigest: value.decisionPlanDigest }),
+		...(value.decisionTimeWindow === undefined ? {} : { decisionTimeWindow: identifier(value.decisionTimeWindow) }),
 	}
 	if (provider.mode === "live-copilot" && !config.provider.modelId)
 		throw new Error("Live campaigns require a model ID")
@@ -98,6 +115,8 @@ export function parseCampaignConfig(input: unknown, enableReviewedPatches = fals
 		}
 	}
 	if (value.repair !== undefined) {
+		if (config.collectionMode !== undefined)
+			throw new Error("Reviewed repairs require synchronous failure reproduction")
 		const repair = object(value.repair)
 		if (!enableReviewedPatches || repair.enabled !== true)
 			throw new Error("Reviewed patches require explicit opt-in")

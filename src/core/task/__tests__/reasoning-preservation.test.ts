@@ -420,6 +420,10 @@ describe("Task reasoning preservation", () => {
 
 		// Mock API handler to provide encrypted reasoning data and response id
 		task.api = {
+			getModel: vi.fn().mockReturnValue({
+				id: "test-model",
+				info: { contextWindow: 16_000, supportsPromptCache: false },
+			}),
 			getEncryptedContent: vi.fn().mockReturnValue({
 				encrypted_content: "encrypted_payload",
 				id: "rs_test",

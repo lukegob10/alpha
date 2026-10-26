@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import type { ExtensionMessage } from "@alpha-code/types"
 import { McpHub } from "./McpHub"
 import { AlphaProvider } from "../../core/webview/AlphaProvider"
 
@@ -43,7 +44,10 @@ export class McpServerManager {
 			try {
 				// Double-check instance in case it was created while we were waiting
 				if (!this.instance) {
-					const hub = new McpHub(provider)
+					const hub = new McpHub(provider, {
+						getProvider: () => this.providers.values().next().value,
+						notifyProviders: (message) => this.notifyProviders(message),
+					})
 					try {
 						// Publish only after readiness and state storage succeed.
 						await hub.waitUntilReady()
@@ -84,12 +88,16 @@ export class McpServerManager {
 	/**
 	 * Notify all registered providers of server state changes.
 	 */
-	static notifyProviders(message: any): void {
-		this.providers.forEach((provider) => {
-			provider.postMessageToWebview(message).catch((error) => {
-				console.error("Failed to notify provider:", error)
-			})
-		})
+	static async notifyProviders(message: ExtensionMessage): Promise<void> {
+		await Promise.all(
+			[...this.providers].map(async (provider) => {
+				try {
+					await provider.postMessageToWebview(message)
+				} catch (error) {
+					console.error("Failed to notify provider:", error)
+				}
+			}),
+		)
 	}
 
 	/**

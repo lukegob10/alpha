@@ -30,7 +30,7 @@ function harness() {
 		cancelAgent: vi.fn(async () => ({ status: "cancelling" })),
 		closeAgent: vi.fn(async () => ({ status: "completed" })),
 	}
-	const say = vi.fn(async (..._args: unknown[]) => undefined)
+	const say = vi.fn(async (..._args: unknown[]): Promise<void> => undefined)
 	const task = {
 		providerRef: { deref: () => provider },
 		recordToolError: vi.fn(),
@@ -56,6 +56,42 @@ function harness() {
 }
 
 describe("agent lifecycle tools", () => {
+	it("does not dispatch a lifecycle mutation from an already interrupted step", async () => {
+		const { provider, task, callbacks, pushToolResult } = harness()
+		const interruption = new AbortController()
+		interruption.abort()
+		callbacks.signal = interruption.signal
+
+		await sendMessageTool.execute({ target: "/root/review", message: "Check this." }, task, callbacks)
+
+		expect(provider.sendMessageToAgent).not.toHaveBeenCalled()
+		expect(task.recordToolError).not.toHaveBeenCalled()
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+		expect(pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ status: "cancelled", tool: "send_message" }),
+		)
+	})
+
+	it("rechecks cancellation after publishing the running presentation", async () => {
+		const { provider, task, say, callbacks, pushToolResult } = harness()
+		const interruption = new AbortController()
+		callbacks.signal = interruption.signal
+		say.mockImplementationOnce(async () => interruption.abort())
+
+		await waitAgentTool.execute({}, task, callbacks)
+
+		expect(provider.waitForAgent).not.toHaveBeenCalled()
+		expect(task.recordToolError).not.toHaveBeenCalled()
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+		expect(pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ status: "cancelled", tool: "wait_agent" }),
+		)
+		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
+			lifecycleStatus: "completed",
+			cancelled: true,
+		})
+	})
+
 	it("publishes Codex-style native lifecycle schemas", () => {
 		const definitions = getNativeTools().flatMap((tool) =>
 			tool.type === "function" && lifecycleNames.includes(tool.function.name as any) ? [tool.function] : [],
@@ -272,7 +308,7 @@ describe("agent lifecycle tools", () => {
 
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
 		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
-		await waitAgentTool.execute({ timeout_ms: 9_999 }, task, callbacks)
+		await waitAgentTool.execute({ timeout_ms: 3_600_001 }, task, callbacks)
 		await waitAgentTool.execute({ target: "/root/review" }, task, callbacks)
 
 		expect(provider.sendMessageToAgent).not.toHaveBeenCalled()

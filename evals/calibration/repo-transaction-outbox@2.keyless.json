@@ -1,0 +1,56 @@
+{
+	"schemaVersion": 1,
+	"taskIdentity": "repo-transaction-outbox@2",
+	"calibrationScope": {
+		"schemaVersion": 1,
+		"kind": "keyless-fixture",
+		"measuredGraderIds": [
+			"repo-transaction-outbox.visible_tests",
+			"repo-transaction-outbox.hidden_tests",
+			"repo-transaction-outbox.final_state",
+			"repo-transaction-outbox.diff_scope",
+			"repo-transaction-outbox.static_boundary_check"
+		],
+		"unmeasuredGraderIds": ["repo-transaction-outbox.validation_after_edit", "repo-transaction-outbox.usage_limit"],
+		"executionEvidence": "not-measured",
+		"semanticEvidenceVersion": 1
+	},
+	"fixtureInitiallyFails": true,
+	"restraint": false,
+	"gold": {
+		"repetitions": 20,
+		"passed": 20
+	},
+	"broken": [
+		{
+			"id": "events-only",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "command_test_completion_missing"
+		},
+		{
+			"id": "orders-only",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "command_test_completion_missing"
+		},
+		{
+			"id": "unawaited-event",
+			"repetitions": 20,
+			"rejected": 20,
+			"expectedCode": "command_test_completion_missing"
+		}
+	],
+	"determinism": {
+		"repetitions": 50,
+		"distinctDigests": 1
+	},
+	"models": [],
+	"humanReview": {
+		"unresolvedFalsePositivePasses": 0,
+		"reviewedTrialIds": [],
+		"reviewer": "",
+		"qualityApproved": false
+	},
+	"admitted": false
+}

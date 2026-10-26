@@ -31,6 +31,7 @@ function fixture(approve = true, servers: McpServer[] = [server()]) {
 	}
 	const task = {
 		cwd: "/workspace",
+		markMemoryExternalContext: vi.fn(async () => undefined),
 		providerRef: { deref: () => ({ getMcpHub: () => hub }) },
 	} as unknown as Task
 	const callbacks = {
@@ -73,6 +74,10 @@ describe("MCP resource tools", () => {
 			listResources.mock.invocationCallOrder[0],
 		)
 		expect(listResources).toHaveBeenCalledWith("docs", "page-2", "project", undefined)
+		expect(task.markMemoryExternalContext).toHaveBeenCalledOnce()
+		expect(vi.mocked(task.markMemoryExternalContext).mock.invocationCallOrder[0]).toBeLessThan(
+			listResources.mock.invocationCallOrder[0],
+		)
 		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0])).toEqual({
 			server: "docs",
 			resources: [{ server: "docs", uri: "doc://one", name: "One" }],
@@ -85,6 +90,7 @@ describe("MCP resource tools", () => {
 		await listMcpResourceTemplatesTool.execute({}, task, callbacks)
 		expect(listResources).not.toHaveBeenCalled()
 		expect(listResourceTemplates).not.toHaveBeenCalled()
+		expect(task.markMemoryExternalContext).not.toHaveBeenCalled()
 		expect(callbacks.setResultMetadata).toHaveBeenCalledTimes(2)
 		expect(callbacks.setResultMetadata).toHaveBeenNthCalledWith(1, { status: "denied" })
 		expect(callbacks.setResultMetadata).toHaveBeenNthCalledWith(2, { status: "denied" })

@@ -15,6 +15,30 @@ vi.mock("@src/utils/clipboard", () => ({
 }))
 
 describe("Markdown proposed-plan rendering", () => {
+	it("omits internal memory metadata from rendered text and copy actions", () => {
+		const citation = "<alpha-mem-citation>\n<rollout_ids>\nsource-1\n</rollout_ids>\n</alpha-mem-citation>"
+		const { rerender } = render(<Markdown markdown={`Answer.\n${citation}`} />)
+		expect(screen.getByTestId("markdown-content")).toHaveTextContent("Answer.")
+		expect(screen.queryByText(/source-1/)).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenLastCalledWith("Answer.", expect.anything())
+		rerender(<Markdown markdown={"Answer.\n<alpha-mem-citation>\n<rollout_ids>\nsource-1"} partial />)
+		expect(screen.getByTestId("markdown-content")).toHaveTextContent("Answer.")
+		expect(screen.queryByText(/source-1/)).not.toBeInTheDocument()
+	})
+
+	it("retains proposed-plan behavior when the completed response ends with memory metadata", () => {
+		render(
+			<Markdown
+				markdown={
+					"<proposed_plan>\n# A plan\n</proposed_plan>\n<alpha-mem-citation>\n<rollout_ids>\nsource-1\n</rollout_ids>\n</alpha-mem-citation>"
+				}
+			/>,
+		)
+		expect(screen.getByLabelText("Proposed plan")).toBeInTheDocument()
+		expect(screen.getByTestId("markdown-content")).toHaveTextContent("# A plan")
+	})
+
 	it("shows response actions after the answer completes", () => {
 		const actions = <button>Preview answer</button>
 		const { rerender } = render(<Markdown markdown="Answer" partial actions={actions} />)

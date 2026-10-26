@@ -75,6 +75,27 @@ describe("TaskHistoryStore durable chat renaming", () => {
 		expect(reloaded.get(item.id)?.displayName).toBe("Cancellation fixes")
 	})
 
+	it("initializes a new transcript's mode and preserves later host selections", async () => {
+		const store = await makeStore()
+		await store.upsert({ ...item, mode: "architect", apiConfigName: "original" }, { preserveMode: true })
+		expect(await read()).toMatchObject({ mode: "architect", apiConfigName: "original" })
+		await store.upsert({ ...item, mode: "code", apiConfigName: "selected" })
+		await store.upsert(
+			{ ...item, mode: "architect", apiConfigName: "selected", tokensIn: 100 },
+			{ preserveMode: true },
+		)
+		expect(await read()).toMatchObject({ mode: "code", apiConfigName: "selected", tokensIn: 100 })
+		await store.upsert({ ...item, mode: "architect", apiConfigName: "renamed" })
+		expect(await read()).toMatchObject({ mode: "architect", apiConfigName: "renamed" })
+	})
+
+	it("initializes mode for legacy metadata that has no saved mode", async () => {
+		const store = await makeStore()
+		await store.upsert(item)
+		await store.upsert({ ...item, mode: "architect" }, { preserveMode: true })
+		expect(await read()).toMatchObject({ mode: "architect" })
+	})
+
 	it("persists generated titles without changing the prompt and yields to user names", async () => {
 		const store = await makeStore()
 		await store.upsert(item)

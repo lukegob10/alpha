@@ -12,14 +12,67 @@ vi.mock("../../../utils/storage", () => ({
 }))
 
 import { GlobalFileNames } from "../../../shared/globalFileNames"
+import { createAgentResponse } from "../AgentResponse"
 import {
 	AgentTurnEventLog,
 	projectPersistedAgentTurnEvent,
 	readAgentTurnEvents,
+	redactAgentTurnEvent,
 	type PersistedAgentTurnEvent,
 } from "../AgentTurnEventLog"
 
 describe("AgentTurnEventLog", () => {
+	it("persists shared canonical tool-call projections without treating aliases as cycles", async () => {
+		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-shared-"))
+		const log = new AgentTurnEventLog("task-shared", storagePath)
+		const response = createAgentResponse([
+			{
+				type: "tool_call",
+				id: "call-1",
+				name: "read_file",
+				arguments: { path: "file.ts", apiKey: "private-key" },
+			},
+		])
+		try {
+			await log.append({ type: "assistant_committed", response })
+			await log.close()
+			const [record] = await readAgentTurnEvents("task-shared", storagePath)
+			expect(record.event).toMatchObject({
+				type: "assistant_committed",
+				response: {
+					items: [{ type: "tool_call", arguments: { path: "file.ts", apiKey: "[redacted]" } }],
+					toolCalls: [{ type: "tool_call", arguments: { path: "file.ts", apiKey: "[redacted]" } }],
+				},
+			})
+			expect(JSON.stringify(record)).not.toContain("private-key")
+			expect(response.toolCalls[0].arguments).toEqual({ path: "file.ts", apiKey: "private-key" })
+		} finally {
+			await log.close()
+			await fs.rm(storagePath, { recursive: true, force: true })
+		}
+	})
+
+	it("redacts actual cycles while preserving repeated sibling output values", () => {
+		const shared = { path: "file.ts", password: "private-password" }
+		const output: Record<string, unknown> = { first: shared, second: shared }
+		output.self = output
+		expect(
+			redactAgentTurnEvent({
+				type: "tool_result",
+				callId: "call-1",
+				name: "read_file",
+				status: "success",
+				output,
+			}),
+		).toMatchObject({
+			output: {
+				first: { path: "file.ts", password: "[redacted]" },
+				second: { path: "file.ts", password: "[redacted]" },
+				self: "[circular]",
+			},
+		})
+	})
+
 	it("projects closed request purpose, usage provenance, and timeout codes without error contents", () => {
 		const record: PersistedAgentTurnEvent = {
 			taskId: "task",
