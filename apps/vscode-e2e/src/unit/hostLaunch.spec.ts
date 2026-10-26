@@ -3,11 +3,60 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import { execFile } from "node:child_process"
+import childProcess, { ChildProcess, execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { launchExtensionHost, HostLaunchCancelledError, HostLaunchFailureError } from "../hostLaunch"
 import { LIVE_HOST_STARTUP_TIMEOUT_MS } from "../liveHostProtocol"
 import { randomUUID } from "node:crypto"
+
+test("host cancellation joins its still-live POSIX group after the root closes", async (context) => {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
+	Object.defineProperty(process, "platform", { value: "linux" })
+	context.after(() => Object.defineProperty(process, "platform", originalPlatform))
+	context.mock.timers.enable({ apis: ["Date", "setTimeout"] })
+	const child = new ChildProcess()
+	Object.defineProperty(child, "pid", { value: 12345 })
+	context.mock.method(childProcess, "spawn", () => child)
+	context.mock.method(child, "kill", () => assert.fail("the closed root must not be killed"))
+	let groupStopped = false
+	const signals: (NodeJS.Signals | number | undefined)[] = []
+	context.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+		assert.equal(pid, -12345)
+		if (signal !== 0) signals.push(signal)
+		if (groupStopped) throw Object.assign(new Error("gone"), { code: "ESRCH" })
+		return true
+	})
+	const controller = new AbortController()
+	let finished = false
+	const pending = launchExtensionHost(
+		{
+			launchKind: "development-sidecar",
+			vscodeExecutablePath: "fixture-host",
+			extensionDevelopmentPath: process.cwd(),
+		},
+		() => controller.abort(),
+		controller.signal,
+	).then(
+		() => assert.fail("cancelled host unexpectedly succeeded"),
+		(error: unknown) => {
+			finished = true
+			return error
+		},
+	)
+	child.emit("close", 1, null)
+	await new Promise<void>((resolve) => setImmediate(resolve))
+	assert.equal(finished, false)
+	context.mock.timers.tick(1_000)
+	await new Promise<void>((resolve) => setImmediate(resolve))
+	assert.deepEqual(signals, ["SIGTERM", "SIGKILL"])
+	assert.equal(finished, false)
+	groupStopped = true
+	context.mock.timers.tick(10)
+	const failure = await pending
+	assert.ok(failure instanceof HostLaunchCancelledError)
+	assert.equal(failure.cleanupVerified, true)
+	assert.equal(failure.hostExitObserved, true)
+})
 
 test("a startup deadline terminates its owned child and reports verified cleanup", async (context) => {
 	context.mock.timers.enable({ apis: ["setTimeout"] })

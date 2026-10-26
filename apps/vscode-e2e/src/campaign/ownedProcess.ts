@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import process from "node:process"
 import * as path from "node:path"
 
@@ -39,6 +39,8 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576
 const DEFAULT_KILL_GRACE_MS = 1_000
 const MAX_TIMER_MS = 2_147_483_647
 const TASKKILL_TIMEOUT_MS = 5_000
+const PROCESS_SETTLEMENT_MS = 1_000
+const PROCESS_POLL_MS = 10
 
 /**
  * Run one directly spawned process and retain ownership of its termination boundary.
@@ -88,11 +90,10 @@ export async function runOwnedProcess(
 	const stderrCapture = new BoundedOutput(maxOutputBytes)
 	let closed = false
 	let finalized = false
+	let finishing = false
 	let abortRequested = false
 	let launchError: Error | undefined
 	let terminationPromise: Promise<TerminationOutcome> | undefined
-	let graceTimer: NodeJS.Timeout | undefined
-	let releaseGracePeriod: (() => void) | undefined
 	let onClose: ((exitCode: number | null, signal: NodeJS.Signals | null) => void) | undefined
 	let cleanupDeadlineTimer: NodeJS.Timeout | undefined
 	let rejectCompletion: ((reason?: unknown) => void) | undefined
@@ -103,50 +104,20 @@ export async function runOwnedProcess(
 		launchError ??= error
 	}
 
-	const clearGracePeriod = () => {
-		if (graceTimer) {
-			clearTimeout(graceTimer)
-			graceTimer = undefined
-		}
-		const release = releaseGracePeriod
-		releaseGracePeriod = undefined
-		release?.()
-		if (cleanupDeadlineTimer) {
-			clearTimeout(cleanupDeadlineTimer)
-			cleanupDeadlineTimer = undefined
-		}
-	}
-
-	const waitForGracePeriodOrClose = (): Promise<void> => {
-		if (closed || killGraceMs === 0) return Promise.resolve()
-
-		return new Promise<void>((resolve) => {
-			releaseGracePeriod = () => {
-				releaseGracePeriod = undefined
-				resolve()
-			}
-			graceTimer = setTimeout(() => {
-				graceTimer = undefined
-				releaseGracePeriod = undefined
-				resolve()
-			}, killGraceMs)
-		})
-	}
-
 	const onAbort = () => {
 		if (closed || abortRequested) return
 		abortRequested = true
-		terminationPromise = terminateOwnedProcess(child, child.pid, () => closed, waitForGracePeriodOrClose)
+		terminationPromise = terminateOwnedProcess(child, child.pid, () => closed, killGraceMs)
 		// The close handler awaits this same promise. Attach a handler now so a
 		// cleanup failure cannot become an unhandled rejection while close is pending.
 		void terminationPromise.catch(() => undefined)
 		cleanupDeadlineTimer = setTimeout(() => {
-			if (closed || finalized) return
+			if (finalized) return
 
 			// This is deliberately a last-resort root kill. It never targets an
 			// arbitrary PID and cannot establish descendant cleanup by itself.
 			try {
-				killChild(child, process.platform === "win32" ? undefined : "SIGKILL", () => closed)
+				if (!closed) killChild(child, process.platform === "win32" ? undefined : "SIGKILL", () => closed)
 			} catch {
 				// The caller receives an explicit cleanup failure below. Keeping the
 				// promise from resolving as a cancelled success is the safe outcome.
@@ -163,7 +134,7 @@ export async function runOwnedProcess(
 	}
 
 	const cleanupListeners = () => {
-		clearGracePeriod()
+		clearTimeout(cleanupDeadlineTimer)
 		options.signal?.removeEventListener("abort", onAbort)
 		child.stdout?.removeListener("data", onStdout)
 		child.stderr?.removeListener("data", onStderr)
@@ -174,10 +145,9 @@ export async function runOwnedProcess(
 	const completion = new Promise<OwnedProcessResult>((resolve, reject) => {
 		rejectCompletion = reject
 		const finish = async (exitCode: number | null, signal: NodeJS.Signals | null) => {
-			if (finalized) return
-			finalized = true
+			if (finalized || finishing) return
+			finishing = true
 			closed = true
-			clearGracePeriod()
 
 			let cleanupVerified = true
 			try {
@@ -187,9 +157,10 @@ export async function runOwnedProcess(
 				}
 			} catch {
 				cleanupVerified = false
-			} finally {
-				cleanupListeners()
 			}
+			if (finalized) return
+			finalized = true
+			cleanupListeners()
 
 			if (launchError) {
 				reject(launchError)
@@ -197,7 +168,7 @@ export async function runOwnedProcess(
 			}
 			if (!abortRequested && (exitCode === null || signal !== null)) cleanupVerified = false
 			if (process.platform === "win32" && !abortRequested) cleanupVerified = false
-			if (cleanupVerified && process.platform !== "win32") {
+			if (cleanupVerified && !abortRequested && process.platform !== "win32") {
 				cleanupVerified = verifyPosixProcessGroupGone(child.pid)
 			}
 
@@ -214,7 +185,6 @@ export async function runOwnedProcess(
 		onClose = (exitCode: number | null, signal: NodeJS.Signals | null) => {
 			if (closed) return
 			closed = true
-			clearGracePeriod()
 			void finish(exitCode, signal)
 		}
 
@@ -234,7 +204,7 @@ export async function runOwnedProcess(
 function cleanupDeadlineMs(killGraceMs: number): number {
 	// Windows tree termination owns a separate taskkill deadline and does not use the POSIX signal grace period.
 	const terminationBudgetMs = process.platform === "win32" ? TASKKILL_TIMEOUT_MS : killGraceMs
-	return Math.min(MAX_TIMER_MS, Math.max(1_000, terminationBudgetMs + 1_000))
+	return Math.min(MAX_TIMER_MS, Math.max(PROCESS_SETTLEMENT_MS, terminationBudgetMs + PROCESS_SETTLEMENT_MS))
 }
 
 function normalizeLimit(
@@ -260,7 +230,7 @@ class OwnedProcessCleanupError extends Error {
 	readonly cleanupVerified = false
 
 	constructor() {
-		super("Owned process cleanup did not reach close within the bounded deadline")
+		super("Owned process cleanup did not reach physical settlement within the bounded deadline")
 		this.name = "OwnedProcessCleanupError"
 	}
 }
@@ -316,13 +286,15 @@ export async function terminateOwnedProcess(
 	child: ChildProcess,
 	pid: number | undefined,
 	isClosed: () => boolean,
-	waitForGracePeriodOrClose: () => Promise<void>,
+	killGraceMs: number,
 ): Promise<TerminationOutcome> {
 	if (process.platform === "win32") {
 		return terminateWindowsProcess(child, pid, isClosed)
 	}
 
 	const errors: unknown[] = []
+	const started = Date.now()
+	const deadline = started + cleanupDeadlineMs(killGraceMs)
 	let forceSignalSent = false
 	try {
 		if (isValidPid(pid)) signalProcessGroup(pid, "SIGTERM")
@@ -331,18 +303,25 @@ export async function terminateOwnedProcess(
 		errors.push(error)
 	}
 
-	await waitForGracePeriodOrClose()
-	if (!isClosed()) {
+	if (!isValidPid(pid)) {
+		await waitForRootClose(child, isClosed, killGraceMs)
+		if (!isClosed()) killChild(child, "SIGKILL", isClosed)
+		return { cleanupVerified: false }
+	}
+
+	// The detached group outlives its leader. A root close cannot release this
+	// grace period, skip descendant escalation, or establish physical settlement.
+	let observation = await waitForProcessGroup(pid, Math.min(deadline, started + killGraceMs), child, isClosed)
+	if (observation.state !== "stopped") {
 		try {
-			if (isValidPid(pid)) signalProcessGroup(pid, "SIGKILL")
-			else killChild(child, "SIGKILL", isClosed)
+			signalProcessGroup(pid, "SIGKILL")
 			forceSignalSent = true
 		} catch (error) {
 			errors.push(error)
 		}
 	}
 
-	if (!forceSignalSent && !isClosed()) {
+	if (observation.state !== "stopped" && !forceSignalSent && !isClosed()) {
 		try {
 			// If group signaling failed, killing the owned root is still safer
 			// than allowing it to run indefinitely. This deliberately verifies
@@ -353,7 +332,78 @@ export async function terminateOwnedProcess(
 		}
 	}
 
-	return { cleanupVerified: errors.length === 0 && isValidPid(pid) }
+	if (observation.state !== "stopped") observation = await waitForProcessGroup(pid, deadline, child, isClosed)
+	const signalFailures = errors.filter(
+		(error) =>
+			!(
+				process.platform === "darwin" &&
+				observation.independentlyVerified &&
+				error instanceof Error &&
+				isErrno(error.cause, "EPERM")
+			),
+	)
+	return { cleanupVerified: observation.state === "stopped" && signalFailures.length === 0 }
+}
+
+interface ProcessGroupObservation {
+	state: "stopped" | "live" | "unknown"
+	independentlyVerified?: boolean
+}
+
+async function waitForProcessGroup(
+	pid: number,
+	deadline: number,
+	child: ChildProcess,
+	isClosed: () => boolean,
+): Promise<ProcessGroupObservation> {
+	while (true) {
+		const observation = await observeProcessGroup(pid, deadline)
+		const remaining = deadline - Date.now()
+		if (observation.state === "stopped" || remaining <= 0) return observation
+		const delay = Math.min(PROCESS_POLL_MS, remaining)
+		if (isClosed()) await new Promise<void>((resolve) => setTimeout(resolve, delay))
+		else await waitForRootClose(child, isClosed, delay)
+	}
+}
+
+async function observeProcessGroup(pid: number, deadline: number): Promise<ProcessGroupObservation> {
+	try {
+		process.kill(-pid, 0)
+		return { state: "live" }
+	} catch (error) {
+		if (isErrno(error, "ESRCH")) return { state: "stopped" }
+		if (process.platform !== "darwin" || !isErrno(error, "EPERM")) return { state: "unknown" }
+	}
+	const remaining = deadline - Date.now()
+	if (remaining <= 0) return { state: "unknown" }
+	// Darwin killpg skips zombies and reports EPERM for a zombie-only group.
+	// Reaping belongs to their parent/init; independently prove that no member
+	// can execute rather than accepting EPERM or waiting indefinitely for ESRCH.
+	return new Promise((resolve) => {
+		execFile("ps", ["-eo", "pgid=,stat="], { timeout: remaining, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+			if (error || !stdout.trim()) return resolve({ state: "unknown" })
+			let live = false
+			for (const row of stdout.trim().split("\n")) {
+				const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(row)
+				if (!match || !match[1] || !match[2]) return resolve({ state: "unknown" })
+				if (Number(match[1]) === pid && !/^[ZXx]/.test(match[2])) live = true
+			}
+			resolve({ state: live ? "live" : "stopped", independentlyVerified: true })
+		})
+	})
+}
+
+function waitForRootClose(child: ChildProcess, isClosed: () => boolean, graceMs: number): Promise<void> {
+	if (isClosed() || graceMs === 0) return Promise.resolve()
+	return new Promise((resolve) => {
+		const finish = () => {
+			clearTimeout(timer)
+			child.removeListener("close", finish)
+			resolve()
+		}
+		const timer = setTimeout(finish, graceMs)
+		child.once("close", finish)
+	})
 }
 
 async function terminateWindowsProcess(

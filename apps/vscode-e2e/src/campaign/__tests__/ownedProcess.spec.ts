@@ -32,6 +32,145 @@ function mockWindowsProcesses(context: TestContext) {
 	return { child, taskkill, childKill, spawner }
 }
 
+function mockPosixProcesses(context: TestContext, platform = "linux") {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
+	Object.defineProperty(process, "platform", { value: platform })
+	context.after(() => Object.defineProperty(process, "platform", originalPlatform))
+	context.mock.timers.enable({ apis: ["Date", "setTimeout"] })
+	const child = new ChildProcess()
+	Object.defineProperty(child, "pid", { value: 12345 })
+	context.mock.method(childProcess, "spawn", () => child)
+	const childKill = context.mock.method(child, "kill", () => true)
+	let group: "live" | "gone" | "denied" = "live"
+	const signals: (NodeJS.Signals | number | undefined)[] = []
+	context.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+		assert.equal(pid, -12345, "only the originally owned process group may be signalled")
+		if (signal !== 0) signals.push(signal)
+		if (group === "gone") throw Object.assign(new Error("gone"), { code: "ESRCH" })
+		if (group === "denied") throw Object.assign(new Error("denied"), { code: "EPERM" })
+		return true
+	})
+	return { child, childKill, signals, setGroup: (state: typeof group) => (group = state) }
+}
+
+async function settleContinuations(): Promise<void> {
+	await new Promise<void>((resolve) => setImmediate(resolve))
+}
+
+test("POSIX cancellation joins and escalates a live group after its root closes", async (context) => {
+	const { child, childKill, signals, setGroup } = mockPosixProcesses(context)
+	const controller = new AbortController()
+	const running = runOwnedProcess(
+		{ executable: "fixture-node", args: [], cwd: process.cwd() },
+		{ signal: controller.signal, killGraceMs: 25 },
+	)
+	let finished = false
+	void running.then(() => (finished = true))
+	controller.abort()
+	child.emit("close", null, "SIGTERM")
+	await settleContinuations()
+	assert.equal(finished, false, "root close must not release a still-live descendant")
+	assert.deepEqual(signals, ["SIGTERM"])
+	context.mock.timers.tick(25)
+	await settleContinuations()
+	assert.deepEqual(signals, ["SIGTERM", "SIGKILL"])
+	assert.equal(finished, false, "signal delivery must not substitute for physical exit")
+	setGroup("gone")
+	context.mock.timers.tick(10)
+	assert.equal((await running).cleanupVerified, true)
+	assert.equal(childKill.mock.callCount(), 0, "a closed root handle must never be killed again")
+})
+
+test("POSIX cancellation awaits a transient descendant exit without unnecessary escalation", async (context) => {
+	const { child, signals, setGroup } = mockPosixProcesses(context)
+	const controller = new AbortController()
+	const running = runOwnedProcess(
+		{ executable: "fixture-node", args: [], cwd: process.cwd() },
+		{ signal: controller.signal, killGraceMs: 25 },
+	)
+	controller.abort()
+	child.emit("close", null, "SIGTERM")
+	await settleContinuations()
+	setGroup("gone")
+	context.mock.timers.tick(10)
+	assert.equal((await running).cleanupVerified, true)
+	assert.deepEqual(signals, ["SIGTERM"])
+})
+
+test("POSIX cleanup stays unverified when a live group survives escalation after root close", async (context) => {
+	const { child, childKill, signals } = mockPosixProcesses(context)
+	const controller = new AbortController()
+	const running = runOwnedProcess(
+		{ executable: "fixture-node", args: [], cwd: process.cwd() },
+		{ signal: controller.signal, killGraceMs: 25 },
+	)
+	const rejected = assert.rejects(running, { name: "OwnedProcessCleanupError", cleanupVerified: false })
+	controller.abort()
+	child.emit("close", null, "SIGTERM")
+	await settleContinuations()
+	context.mock.timers.tick(25)
+	await settleContinuations()
+	context.mock.timers.tick(1_000)
+	await rejected
+	assert.deepEqual(signals, ["SIGTERM", "SIGKILL"])
+	assert.equal(childKill.mock.callCount(), 0)
+	assert.equal(child.listenerCount("close"), 0)
+})
+
+for (const state of ["zombie", "live", "unavailable", "malformed", "empty"] as const) {
+	test(`Darwin EPERM requires independent stopped-group evidence: ${state}`, async (context) => {
+		const { child, childKill, setGroup } = mockPosixProcesses(context, "darwin")
+		const inspected = context.mock.method(
+			childProcess,
+			"execFile",
+			(
+				file: string,
+				args: readonly string[],
+				options: { timeout?: number },
+				callback: (error: Error | null, stdout: string, stderr: string) => void,
+			) => {
+				assert.equal(file, "ps")
+				assert.deepEqual(args, ["-eo", "pgid=,stat="])
+				assert.ok(options.timeout! > 0 && options.timeout! <= 1_025)
+				queueMicrotask(() =>
+					callback(
+						state === "unavailable" ? new Error("process state unavailable") : null,
+						state === "empty"
+							? ""
+							: state === "malformed"
+								? "unrecognized state"
+								: `12345 ${state === "zombie" ? "Z" : "S"}\n999 S\n`,
+						"",
+					),
+				)
+				return new ChildProcess()
+			},
+		)
+		setGroup("denied")
+		const controller = new AbortController()
+		const running = runOwnedProcess(
+			{ executable: "fixture-node", args: [], cwd: process.cwd() },
+			{ signal: controller.signal, killGraceMs: 25 },
+		)
+		const rejected =
+			state === "zombie"
+				? undefined
+				: assert.rejects(running, { name: "OwnedProcessCleanupError", cleanupVerified: false })
+		controller.abort()
+		child.emit("close", null, "SIGTERM")
+		await settleContinuations()
+		if (state === "zombie") assert.equal((await running).cleanupVerified, true)
+		else {
+			context.mock.timers.tick(25)
+			await settleContinuations()
+			context.mock.timers.tick(1_000)
+			await rejected
+		}
+		assert.ok(inspected.mock.callCount() > 0)
+		assert.equal(childKill.mock.callCount(), 0)
+	})
+}
+
 test("Windows cancellation waits for tree termination within taskkill's process budget", async (context) => {
 	const { child, taskkill, childKill, spawner } = mockWindowsProcesses(context)
 	const controller = new AbortController()

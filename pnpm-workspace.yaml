@@ -17,7 +17,7 @@ overrides:
     tar-fs: ">=3.1.1"
     tar: "7.5.22"
     esbuild: "0.28.1"
-    undici: "6.28.1"
+    undici: "6.29.1"
     basic-ftp: "5.3.1"
     fast-xml-parser: "5.5.6"
     shell-quote: "1.11.0"
@@ -42,12 +42,12 @@ overrides:
     "@xmldom/xmldom": "0.8.15"
     axios: "1.20.0"
     "ajv@6": "6.15.0"
-    body-parser: "2.3.0"
+    body-parser: "2.4.0"
     browserslist: "4.28.7"
     diff: "5.2.2"
     dompurify: "3.4.17"
     drizzle-orm: "0.45.2"
-    fast-uri: "3.1.8"
+    fast-uri: "3.1.9"
     fflate: "0.8.3"
     flatted: "3.4.2"
     follow-redirects: "1.16.1"
@@ -76,7 +76,7 @@ overrides:
     proxy-addr: "2.0.8"
     qs: "6.16.0"
     rollup: "4.59.0"
-    serialize-javascript: "7.0.5"
+    serialize-javascript: "7.1.3"
     smol-toml: "1.9.0"
     source-map-js: "1.2.2"
     tinypool: "2.1.2"
@@ -92,3 +92,5 @@ overrides:
 patchedDependencies:
     braces@3.0.3: patches/braces@3.0.3.patch
     sprintf-js@1.1.3: patches/sprintf-js@1.1.3.patch
+    # Preserve v3 schema contracts while backporting the upstream collection-size security fix to both parsers.
+    zod@3.25.76: patches/zod@3.25.76.patch
