@@ -1,7 +1,8 @@
 import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
 
-import { act, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -102,6 +103,61 @@ const openActions = async (user: ReturnType<typeof userEvent.setup>, nickname: s
 
 describe("SubagentGroupCard", () => {
 	beforeEach(() => postMessage.mockReset())
+
+	describe("confirmation opener focus", () => {
+		let restoreFocus: () => void
+
+		beforeEach(() => {
+			restoreFocus = installNativeTestFocus()
+		})
+
+		afterEach(() => {
+			cleanup()
+			restoreFocus()
+		})
+
+		it.each([
+			["Enter", "{Enter}", "Apply changes", "Apply Worker changes?"],
+			["Space", " ", "Discard", "Discard Worker changes?"],
+			["ArrowDown", "{ArrowDown}", "Apply changes", "Apply Worker changes?"],
+			["split pointer", undefined, "Apply changes", "Apply Worker changes?"],
+		] as const)(
+			"restores the connected trigger after Escape when opened with %s",
+			async (_input, key, action, title) => {
+				const user = userEvent.setup()
+				render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
+				sendChangeSetCapability(true, "Ready")
+				const trigger = screen.getByRole("button", { name: "Actions for Maple" })
+				const clicks = vi.fn()
+				trigger.addEventListener("click", clicks)
+				if (key === undefined) {
+					await user.pointer({ target: trigger, keys: "[MouseLeft>]" })
+					const menu = screen.getByRole("menu")
+					expect(document.body.style.pointerEvents).toBe("none")
+					// The modal menu owns hit testing before release; the opener need not receive a click.
+					await user.pointer({ target: menu, keys: "[/MouseLeft]" })
+				} else {
+					trigger.focus()
+					await user.keyboard(key)
+				}
+				expect(clicks).not.toHaveBeenCalled()
+				await user.click(screen.getByRole("menuitem", { name: action }))
+				expect(screen.getByRole("dialog", { name: title })).toBeVisible()
+				await user.keyboard("{Escape}")
+
+				await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+				expect(trigger.isConnected).toBe(true)
+				expect(screen.getByRole("button", { name: "Actions for Maple" })).toBe(trigger)
+				await waitFor(() => expect(trigger).toHaveFocus())
+				expect(postMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "applySubagentChangeSet" }),
+				)
+				expect(postMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "discardSubagentChangeSet" }),
+				)
+			},
+		)
+	})
 
 	it("renders active agents as compact task rows without verbose trace detail", () => {
 		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)

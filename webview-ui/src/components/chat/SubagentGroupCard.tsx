@@ -470,6 +470,15 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 													<button
 														type="button"
 														aria-label={`Actions for ${agent.nickname}`}
+														onPointerDownCapture={(event) => {
+															// Radix opens on pointerdown/keydown and can prevent the later click.
+															if (event.button === 0 && !event.ctrlKey)
+																actionTriggerRef.current = event.currentTarget
+														}}
+														onKeyDownCapture={(event) => {
+															if (["Enter", " ", "ArrowDown"].includes(event.key))
+																actionTriggerRef.current = event.currentTarget
+														}}
 														onClick={(event) => {
 															actionTriggerRef.current = event.currentTarget
 														}}
