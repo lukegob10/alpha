@@ -13,6 +13,7 @@
 - Improve scheduled-task durability and timezone recurrence, ticket recovery, indexing containment, and MCP configuration and catalog consistency.
 - Remove retired text-to-speech controls and dependencies while retaining notification sounds, and remove superseded internal reports.
 - Keep Windows x64 package verification and restore the historical `alpha-<version>.vsix` download filename and `Alpha VSIX v<version> (<commit>)` release title.
+- Repair release workflow validation and patch test tooling while retaining strict host and evaluator gates.
 - Update the extension version and in-app release announcement together for Alpha 3.2.10. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
 
 ## 3.2.9

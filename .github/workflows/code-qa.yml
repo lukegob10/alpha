@@ -185,10 +185,13 @@ jobs:
         name: VS Code 1.138.0 rendered UI contracts
         runs-on: windows-latest
         timeout-minutes: 45
-        env:
-            TEMP: ${{ runner.temp }}
-            TMP: ${{ runner.temp }}
         steps:
+            # Runner state is unavailable in job-level environment expressions.
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types

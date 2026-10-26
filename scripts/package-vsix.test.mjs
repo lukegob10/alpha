@@ -45,12 +45,12 @@ ${publication.run.replaceAll("${{ github.sha }}", releaseSha)}
 `
 	const scriptPath = path.join(root, "release.ps1")
 	writeFileSync(scriptPath, script)
-	const result = spawnSync("pwsh.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath], {
-		cwd: root,
-		encoding: "utf8",
-		timeout: 20_000,
-		windowsHide: true,
-	})
+	const result = spawnSync(
+		process.platform === "win32" ? "pwsh.exe" : "pwsh",
+		["-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath],
+		{ cwd: root, encoding: "utf8", timeout: 20_000, windowsHide: true },
+	)
+	assert.ifError(result.error)
 	return { result, verifiedBytes }
 }
 
@@ -173,43 +173,31 @@ test("release publication waits for the verified Windows x64 package only", () =
 	assert.doesNotMatch(workflow, /darwin-|linux-|win32-arm64|Intel macOS/u)
 })
 
-test(
-	"publication keeps the historical title and filename while preserving the verified Windows package",
-	{
-		skip: process.platform !== "win32",
-	},
-	() => {
-		fixture(({ root }) => {
-			const { result, verifiedBytes } = runRelease(root)
-			assert.equal(result.status, 0, result.stderr || String(result.error))
-			const args = JSON.parse(readFileSync(path.join(root, "release-args.json"), "utf8").replace(/^\uFEFF/u, ""))
-			assert.deepEqual(args.slice(0, 3), ["release", "create", "vsix-v3.2.10-0123456"])
-			assert.equal(path.basename(args[3]), "alpha-3.2.10.vsix")
-			assert.deepEqual(args.slice(4, 6), ["--title", "Alpha VSIX v3.2.10 (0123456)"])
-			assert.equal(args[6], "--notes")
-			assert.match(args[7], /code --install-extension alpha-3\.2\.10\.vsix/u)
-			assert.deepEqual(args.slice(8), ["--target", releaseSha])
-			assert.deepEqual(readdirSync(path.join(root, "bin")), ["alpha-3.2.10.vsix"])
-			assert.deepEqual(readFileSync(args[3]), verifiedBytes)
-		})
-	},
-)
+test("publication keeps the historical title and filename while preserving the verified Windows package", () => {
+	fixture(({ root }) => {
+		const { result, verifiedBytes } = runRelease(root)
+		assert.equal(result.status, 0, result.stderr || String(result.error))
+		const args = JSON.parse(readFileSync(path.join(root, "release-args.json"), "utf8").replace(/^\uFEFF/u, ""))
+		assert.deepEqual(args.slice(0, 3), ["release", "create", "vsix-v3.2.10-0123456"])
+		assert.equal(path.basename(args[3]), "alpha-3.2.10.vsix")
+		assert.deepEqual(args.slice(4, 6), ["--title", "Alpha VSIX v3.2.10 (0123456)"])
+		assert.equal(args[6], "--notes")
+		assert.match(args[7], /code --install-extension alpha-3\.2\.10\.vsix/u)
+		assert.deepEqual(args.slice(8), ["--target", releaseSha])
+		assert.deepEqual(readdirSync(path.join(root, "bin")), ["alpha-3.2.10.vsix"])
+		assert.deepEqual(readFileSync(args[3]), verifiedBytes)
+	})
+})
 
-test(
-	"publication refuses unexpected extra packages before publishing or renaming",
-	{
-		skip: process.platform !== "win32",
-	},
-	() => {
-		fixture(({ root }) => {
-			const { result } = runRelease(root, { extraVsix: true })
-			assert.notEqual(result.status, 0)
-			assert.match(result.stderr, /Release must contain exactly one Windows x64 VSIX/u)
-			assert.equal(existsSync(path.join(root, "release-args.json")), false)
-			assert.deepEqual(readdirSync(path.join(root, "bin")), ["alpha-3.2.10-win32-x64.vsix", "unexpected.vsix"])
-		})
-	},
-)
+test("publication refuses unexpected extra packages before publishing or renaming", () => {
+	fixture(({ root }) => {
+		const { result } = runRelease(root, { extraVsix: true })
+		assert.notEqual(result.status, 0)
+		assert.match(result.stderr, /Release must contain exactly one Windows x64 VSIX/u)
+		assert.equal(existsSync(path.join(root, "release-args.json")), false)
+		assert.deepEqual(readdirSync(path.join(root, "bin")).sort(), ["alpha-3.2.10-win32-x64.vsix", "unexpected.vsix"])
+	})
+})
 
 test("only release publication receives a repository write token", () => {
 	for (const file of ["code-qa.yml", "evals.yml", "release-vsix.yml"]) {

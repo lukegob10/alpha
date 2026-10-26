@@ -64,6 +64,7 @@ Select **Run Extension (debugger)** when you need breakpoint debugging.
 ## Testing
 
 Start with the focused tests and owning typecheck in the [validation matrix](AGENTS.md#validation-matrix).
+Tooling checks execute workflow scripts with PowerShell 7 (`pwsh`), which must be on `PATH` on every platform.
 Use `pnpm harness list` for available checks. Common extension checks use the same harness as CI:
 
 ```sh

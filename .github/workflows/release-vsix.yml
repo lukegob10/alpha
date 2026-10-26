@@ -23,11 +23,15 @@ jobs:
         needs: evaluator-contracts
         runs-on: windows-latest
         timeout-minutes: 120
-        env:
-            TEMP: ${{ runner.temp }}
-            TMP: ${{ runner.temp }}
 
         steps:
+            # Runner state is unavailable in job-level environment expressions.
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
             - name: Checkout code
               uses: actions/checkout@v5
               with:

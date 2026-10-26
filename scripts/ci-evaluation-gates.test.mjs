@@ -1,6 +1,9 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import vm from "node:vm"
 
@@ -8,6 +11,54 @@ const { parse } = createRequire(new URL("../packages/evals/package.json", import
 const workflow = (name) => parse(readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8"))
 const runs = (job) => job.steps.filter((step) => typeof step.run === "string")
 const command = (job, expected) => runs(job).find((step) => step.run === expected)
+
+test("runner state is not referenced in workflow or job environment expressions", () => {
+	for (const file of readdirSync(new URL("../.github/workflows/", import.meta.url))) {
+		if (!/\.ya?ml$/u.test(file)) continue
+		const config = workflow(file)
+		const runnerExpression = /\$\{\{[^}]*\brunner\s*(?:\.|\[)/u
+		assert.doesNotMatch(JSON.stringify(config.env ?? {}), runnerExpression, `${file}: env`)
+		for (const [jobId, job] of Object.entries(config.jobs ?? {})) {
+			assert.doesNotMatch(JSON.stringify(job.env ?? {}), runnerExpression, `${file}: jobs.${jobId}.env`)
+		}
+	}
+})
+
+test("Windows acceptance jobs configure runner-owned temporary directories before other steps", () => {
+	const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "alpha-ci-tempenv-")))
+	try {
+		const jobs = [
+			workflow("code-qa.yml").jobs["vscode-1380-rendered"],
+			workflow("release-vsix.yml").jobs["release-vsix"],
+		]
+		const runnerTemp = path.join(root, "runner temp with spaces")
+		for (const [index, job] of jobs.entries()) {
+			const setup = job.steps[0]
+			assert.equal(setup.shell, "pwsh")
+			const environmentFile = path.join(root, `environment-${index}.txt`)
+			const result = spawnSync(
+				process.platform === "win32" ? "pwsh.exe" : "pwsh",
+				["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", setup.run],
+				{
+					env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: environmentFile },
+					encoding: "utf8",
+					timeout: 20_000,
+					windowsHide: true,
+				},
+			)
+			assert.ifError(result.error)
+			assert.equal(result.status, 0, result.stderr)
+			assert.deepEqual(readFileSync(environmentFile, "utf8").trim().split(/\r?\n/u), [
+				`TEMP=${runnerTemp}`,
+				`TMP=${runnerTemp}`,
+			])
+		}
+	} finally {
+		assert.equal(path.dirname(root), realpathSync(os.tmpdir()))
+		assert.match(path.basename(root), /^alpha-ci-tempenv-/u)
+		rmSync(root, { recursive: true, force: true })
+	}
+})
 
 test("labeled evaluation campaigns rerun updated commits without dispatching for unrelated labels", () => {
 	const config = workflow("evals.yml")
