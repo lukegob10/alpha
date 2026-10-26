@@ -28,13 +28,13 @@ test("Windows acceptance jobs configure runner-owned temporary directories befor
 	const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "alpha-ci-tempenv-")))
 	try {
 		const jobs = [
-			workflow("code-qa.yml").jobs["vscode-1380-rendered"],
+			...Object.values(workflow("code-qa.yml").jobs).filter((job) => job["runs-on"] === "windows-latest"),
 			workflow("release-vsix.yml").jobs["release-vsix"],
 		]
 		const runnerTemp = path.join(root, "runner temp with spaces")
 		for (const [index, job] of jobs.entries()) {
 			const setup = job.steps[0]
-			assert.equal(setup.shell, "pwsh")
+			assert.equal(setup.shell, "pwsh", job.name)
 			const environmentFile = path.join(root, `environment-${index}.txt`)
 			const result = spawnSync(
 				process.platform === "win32" ? "pwsh.exe" : "pwsh",

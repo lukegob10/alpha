@@ -331,6 +331,16 @@ class IndependentThreadAI {
 	peerFollowupStarted = false
 	peerSteeringStarted = false
 
+	getDiagnostics() {
+		return {
+			calls: this.calls.slice(-20),
+			turns: [...this.turns],
+			forkTaskId: this.forkTaskId,
+			peerFollowupStarted: this.peerFollowupStarted,
+			peerSteeringStarted: this.peerSteeringStarted,
+		}
+	}
+
 	async *createMessage(
 		_system: string,
 		messages: unknown[],
@@ -694,9 +704,12 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			const root = provider.getLiveTask(rootId)
 			assert.ok(root)
 			assert.equal(root.didComplete, true)
-			assert.equal(new Set(scripted.children).size, 10)
-			const children = await provider.listIndependentTasks(root)
+			const childIds = new Set(scripted.children)
+			assert.equal(childIds.size, 10)
+			const listed = await provider.listIndependentTasks(root)
+			const children = listed.filter(({ task_id }) => childIds.has(task_id))
 			assert.equal(children.length, 10)
+			assert.deepEqual(new Set(children.map(({ task_id }) => task_id)), childIds)
 			assert.ok(children.every((child) => child.lifecycle === "running"))
 			for (const childId of scripted.children) {
 				assert.equal(provider.getLiveTask(childId)?.abort, false)
@@ -888,7 +901,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			await peer.flushApiConversationHistoryPersistence()
 
 			const orchestrator = await provider.createTask(
-				"Inspect and coordinate the existing independent conversation, preserving its separate identity.",
+				"Inspect and coordinate the existing independent conversation. Fork the existing conversation with its completed history, preserving its separate identity.",
 				undefined,
 				undefined,
 				{ preserveExisting: true, background: true, apiConfiguration: configuration },
@@ -900,6 +913,15 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				taskId: orchestrator.taskId,
 				isCompleted: () => orchestrator.didComplete,
 				timeout: 60_000,
+				onTimeout: () => ({
+					script: scripted.getDiagnostics(),
+					peer: { abort: peer.abort, completed: peer.didComplete, ask: peer.taskAsk?.ask },
+					orchestrator: {
+						abort: orchestrator.abort,
+						completed: orchestrator.didComplete,
+						ask: orchestrator.taskAsk?.ask,
+					},
+				}),
 			})
 			await orchestrator.waitForTermination()
 			await peer.waitForTermination()

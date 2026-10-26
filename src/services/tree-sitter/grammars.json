@@ -10,6 +10,7 @@
 	"html": "tree-sitter-html.wasm",
 	"java": "tree-sitter-java.wasm",
 	"javascript": "tree-sitter-javascript.wasm",
+	"json": "tree-sitter-json.wasm",
 	"kotlin": "tree-sitter-kotlin.wasm",
 	"lua": "tree-sitter-lua.wasm",
 	"ocaml": "tree-sitter-ocaml.wasm",

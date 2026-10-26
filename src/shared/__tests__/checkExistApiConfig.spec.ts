@@ -6,10 +6,12 @@ describe("checkExistKey", () => {
 		expect(checkExistKey(undefined)).toBe(false)
 		expect(checkExistKey({})).toBe(false)
 		expect(checkExistKey({ apiProvider: "openai", openAiApiKey: undefined })).toBe(false)
+		expect(checkExistKey({ apiProvider: "openrouter" })).toBe(false)
 	})
 
 	it.each<ProviderSettings>([
 		{ apiProvider: "openai", openAiApiKey: "test-key" },
+		{ apiProvider: "openrouter", openRouterApiKey: "test-key" },
 		{ apiProvider: "vertex", vertexProjectId: "test-project" },
 		{ apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "test-model" } },
 		{
@@ -17,7 +19,7 @@ describe("checkExistKey", () => {
 			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
 			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
 		},
-	])("recognizes configured retained provider $apiProvider", (config) => {
+	])("recognizes configured supported provider $apiProvider", (config) => {
 		expect(checkExistKey(config)).toBe(true)
 	})
 
@@ -25,10 +27,18 @@ describe("checkExistKey", () => {
 		expect(checkExistKey({ apiProvider: "fake-ai" })).toBe(true)
 	})
 
-	it.each(["openai-codex", "qwen-code", "openrouter"] as const)(
+	it.each(["openai-codex", "qwen-code"] as const)(
 		"rejects retired %s even with unrelated credentials",
 		(apiProvider) => {
 			expect(checkExistKey({ apiProvider, openAiApiKey: "test-key" })).toBe(false)
 		},
 	)
+
+	it("rejects an unsupported saved provider even with credentials", () => {
+		const savedConfig = {
+			apiProvider: "unsupported-provider",
+			openRouterApiKey: "test-key",
+		} as unknown as ProviderSettings
+		expect(checkExistKey(savedConfig)).toBe(false)
+	})
 })

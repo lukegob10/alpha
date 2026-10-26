@@ -204,7 +204,7 @@ export function copyWasms(srcDir: string, distDir: string, treeSitterGrammarFile
 		throw new Error(`Directory does not exist: ${languageWasmDir}`)
 	}
 
-	// The extension's loader inventory owns which vendor grammars are part of its runtime.
+	// The shared parser inventory covers production loaders and real grammar inspection consumers.
 	treeSitterGrammarFiles.forEach((filename) => {
 		if (!/^tree-sitter-[a-z0-9_]+\.wasm$/u.test(filename)) {
 			throw new Error(`Invalid tree-sitter grammar filename: ${filename}`)

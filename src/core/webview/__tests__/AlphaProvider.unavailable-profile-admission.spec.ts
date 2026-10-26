@@ -7,24 +7,25 @@ import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"
 import { ProviderSettingsManager, ProviderProfileUnavailableError } from "../../config/ProviderSettingsManager"
 
-const { constructTask } = vi.hoisted(() => ({ constructTask: vi.fn() }))
+const { constructTask, admitted } = vi.hoisted(() => ({
+	constructTask: vi.fn(),
+	admitted: new Error("Task constructor admitted"),
+}))
 
 vi.mock("../../task/Task", () => ({
 	Task: class {
 		constructor(options: unknown) {
 			constructTask(options)
-			throw new Error("Task constructor admitted")
+			throw admitted
 		}
 	},
 }))
 
 afterEach(() => constructTask.mockClear())
 
-const admitted = new Error("Reached task replacement after provider admission")
-
 const createProvider = (entries: ProviderSettingsEntry[]) => {
 	const removeTaskFromStack = vi.fn(async (): Promise<void> => {
-		throw admitted
+		throw new Error("Unexpected task replacement")
 	})
 	const state = { currentApiConfigName: "Broken", apiProvider: "openai", openAiModelId: "previous-provider-settings" }
 	const updateGlobalState = vi.fn(async () => undefined)
@@ -82,7 +83,7 @@ describe("unavailable provider profile admission", () => {
 	it("admits a fresh prompt with one saved-profile read when secret storage is slow", async () => {
 		vi.useFakeTimers()
 		try {
-			const { provider } = createProvider([])
+			const { provider, removeTaskFromStack } = createProvider([])
 			const content = JSON.stringify({
 				currentApiConfigName: "Broken",
 				apiConfigs: { Broken: { id: "profile-id", apiProvider: "openai", openAiModelId: "saved-model" } },
@@ -95,39 +96,40 @@ describe("unavailable provider profile admission", () => {
 			secrets.get.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(content), 50)))
 			Object.assign(provider, { providerSettingsManager: manager })
 			const began = Date.now()
-			let admissionMs: number | undefined
 			const submission = provider.createTask("Inspect the startup path").then(
-				() => {
-					throw new Error("Expected the task replacement boundary")
-				},
-				(error: unknown) => {
-					expect(error).toBe(admitted)
-					admissionMs = Date.now() - began
-				},
+				() => ({ error: undefined, admissionMs: Date.now() - began }),
+				(error: unknown) => ({ error, admissionMs: Date.now() - began }),
 			)
 			await vi.advanceTimersByTimeAsync(100)
-			await submission
+			const { error, admissionMs } = await submission
+			expect(error).toBe(admitted)
 			expect({ secretReads: secrets.get.mock.calls.length, admissionMs }).toEqual({
 				secretReads: 1,
 				admissionMs: 50,
 			})
+			expect(removeTaskFromStack).not.toHaveBeenCalled()
 		} finally {
 			vi.useRealTimers()
 		}
 	})
 
-	it.each(["invalid", "unsupported"] as const)(
-		"rejects a new task using an %s selected profile before replacing existing work",
-		async (availability) => {
+	it.each([
+		["invalid", undefined],
+		["invalid", false],
+		["unsupported", undefined],
+		["unsupported", false],
+	] as const)(
+		"rejects a new task using an %s selected profile with preserveExisting=%s before side effects",
+		async (availability, preserveExisting) => {
 			const { provider, removeTaskFromStack } = createProvider([
 				{ id: "broken-id", name: "Broken", availability, invalidFields: ["modelTemperature"] },
 			])
 
-			await expect(provider.createTask("Use the selected profile")).rejects.toMatchObject({
-				name: "ProviderProfileUnavailableError",
-				code: availability,
-			})
+			await expect(
+				provider.createTask("Use the selected profile", undefined, undefined, { preserveExisting }),
+			).rejects.toMatchObject({ name: "ProviderProfileUnavailableError", code: availability })
 			expect(removeTaskFromStack).not.toHaveBeenCalled()
+			expect(constructTask).not.toHaveBeenCalled()
 		},
 	)
 
@@ -216,12 +218,19 @@ describe("unavailable provider profile admission", () => {
 				taskApiConfigName: "Captured",
 			}),
 		).rejects.toBe(admitted)
-		expect(removeTaskFromStack).toHaveBeenCalledOnce()
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
+		expect(constructTask).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiConfiguration: { apiProvider: "openai", openAiModelId: "captured-model" },
+				taskApiConfigName: "Captured",
+			}),
+		)
 	})
 
 	it("retains legacy context-only settings when no unavailable saved entry exists", async () => {
-		const { provider } = createProvider([])
+		const { provider, removeTaskFromStack } = createProvider([])
 		await expect(provider.createTask("Legacy context-only setup")).rejects.toBe(admitted)
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
 	})
 
 	it("propagates profile-storage failure without replacing the current task", async () => {
@@ -239,9 +248,8 @@ describe("unavailable provider profile admission", () => {
 			apiProvider: "vscode-lm",
 			vsCodeLmModelSelector: { id: "selected-model" },
 		})
-		removeTaskFromStack.mockResolvedValueOnce(undefined)
-
 		await expect(provider.createTask("Use the committed selection")).rejects.toThrow("Task constructor admitted")
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
 		expect(constructTask).toHaveBeenCalledWith(
 			expect.objectContaining({
 				apiConfiguration: { apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "selected-model" } },
@@ -256,8 +264,6 @@ describe("unavailable provider profile admission", () => {
 			openAiModelId: "saved-model",
 			openAiBaseUrl: "https://example.invalid/provider",
 		})
-		removeTaskFromStack.mockResolvedValueOnce(undefined)
-
 		await expect(
 			provider.createTask(
 				"Use the requested model",
@@ -267,6 +273,7 @@ describe("unavailable provider profile admission", () => {
 				{ openAiModelId: "explicit-model" },
 			),
 		).rejects.toThrow("Task constructor admitted")
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
 		expect(constructTask).toHaveBeenCalledWith(
 			expect.objectContaining({
 				apiConfiguration: expect.objectContaining({

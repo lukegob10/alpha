@@ -43,6 +43,8 @@ function needsVisibleAttention(message: AlphaMessage): boolean {
 	if (message.toolApprovalRequest && message.isAnswered !== true) return true
 	if (message.type === "ask" && message.isAnswered !== true && message.ask !== "completion_result") return true
 	if (message.type !== "say") return false
+	// Submitted answers remain part of the visible conversation after their turn's work is folded.
+	if (message.say === "user_feedback" && message.userInputResponse !== undefined) return true
 	if (message.say === "async_user_input" && message.isAnswered !== true) return true
 	if (
 		message.say === "error" ||

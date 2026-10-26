@@ -1635,12 +1635,7 @@ describe("Rules directory reading", () => {
 		vi.clearAllMocks()
 	})
 
-	it.skipIf(process.platform === "win32")("should correctly format multiple files from directory", async () => {
-		// Simulate .alpha/rules directory exists
-		statMock.mockResolvedValueOnce({
-			isDirectory: vi.fn().mockReturnValue(true),
-		} as any)
-
+	it("should correctly format multiple files from directory", async () => {
 		// Simulate listing files
 		readdirMock.mockResolvedValueOnce([
 			{ name: "file1.txt", isFile: () => true, parentPath: "/fake/path/.alpha/rules" },
@@ -1648,18 +1643,17 @@ describe("Rules directory reading", () => {
 			{ name: "file3.txt", isFile: () => true, parentPath: "/fake/path/.alpha/rules" },
 		] as any)
 
-		statMock.mockImplementation((path) => {
-			// Handle both Unix and Windows path separators
-			const normalizedPath = path.toString().replace(/\\/g, "/")
-			expect([
+		statMock.mockImplementation(async (filePath: PathLike) => {
+			const normalizedPath = filePath.toString().replace(/\\/g, "/")
+			const isDirectory = normalizedPath === "/fake/path/.alpha/rules"
+			const isFile = [
 				"/fake/path/.alpha/rules/file1.txt",
 				"/fake/path/.alpha/rules/file2.txt",
 				"/fake/path/.alpha/rules/file3.txt",
-			]).toContain(normalizedPath)
+			].includes(normalizedPath)
+			if (!isDirectory && !isFile) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
 
-			return Promise.resolve({
-				isFile: vi.fn().mockReturnValue(true),
-			}) as any
+			return { isFile: () => isFile, isDirectory: () => isDirectory }
 		})
 
 		readFileMock.mockImplementation((filePath: PathLike) => {

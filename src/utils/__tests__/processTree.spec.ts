@@ -120,6 +120,67 @@ describe("owned detached POSIX process groups", () => {
 		expect(kill).toHaveBeenCalledWith(123, "SIGKILL")
 	})
 
+	it.each([false, true])("confirms a Darwin zombie-only group after EPERM (graceful: %s)", async (graceful) => {
+		Object.defineProperty(process, "platform", { value: "darwin" })
+		psTree.mockImplementation((_pid, callback) => callback(null, [{ PID: "124" }]))
+		kill.mockImplementation((pid) => {
+			if (pid < 0) throw Object.assign(new Error("no signalable group members"), { code: "EPERM" })
+			return true
+		})
+		execFile.mockImplementation((_file, _args, _options, callback) => {
+			callback(null, "123 123 Z\n124 123 Z\n999 999 R\n", "")
+		})
+		await expect(terminateProcessTree([123], { detachedProcessGroup: 123, graceful })).resolves.toBeUndefined()
+		expect(kill.mock.calls).toEqual([
+			...(graceful ? [[-123, "SIGTERM"]] : []),
+			[124, "SIGKILL"],
+			[123, "SIGKILL"],
+			[-123, "SIGKILL"],
+		])
+		expect(execFile).toHaveBeenCalledExactlyOnceWith(
+			"ps",
+			["-eo", "pid=,pgid=,stat="],
+			expect.objectContaining({ timeout: 5_000 }),
+			expect.any(Function),
+		)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("retains Darwin EPERM when an owned group still has a living member", async () => {
+		Object.defineProperty(process, "platform", { value: "darwin" })
+		kill.mockImplementation((pid) => {
+			if (pid < 0) throw Object.assign(new Error("group permission denied"), { code: "EPERM" })
+			return true
+		})
+		execFile.mockImplementation((_file, _args, _options, callback) => callback(null, "124 123 R\n", ""))
+		const rejected = expect(terminateProcessTree([123], { detachedProcessGroup: 123 })).rejects.toMatchObject({
+			errors: [
+				expect.objectContaining({ message: "Failed to signal owned process group 123" }),
+				expect.objectContaining({ message: "Timed out waiting for the terminated process tree to stop" }),
+			],
+		})
+		await vi.advanceTimersByTimeAsync(5_000)
+		await rejected
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("retains Darwin EPERM when physical process state cannot be inspected", async () => {
+		Object.defineProperty(process, "platform", { value: "darwin" })
+		kill.mockImplementation((pid) => {
+			if (pid < 0) throw Object.assign(new Error("group permission denied"), { code: "EPERM" })
+			return true
+		})
+		execFile.mockImplementation((_file, _args, _options, callback) => {
+			callback(Object.assign(new Error("ps unavailable"), { code: "EACCES" }), "", "")
+		})
+		await expect(terminateProcessTree([123], { detachedProcessGroup: 123 })).rejects.toMatchObject({
+			errors: [
+				expect.objectContaining({ message: "Failed to signal owned process group 123" }),
+				expect.objectContaining({ message: "Failed to inspect terminated process-tree state" }),
+			],
+		})
+	})
+
 	it("bounds settlement of a group whose surviving member does not stop", async () => {
 		execFile.mockImplementation((_file, _args, _options, callback) => callback(null, "124 123 R\n", ""))
 		const rejected = expect(terminateProcessTree([123], { detachedProcessGroup: 123 })).rejects.toThrow(

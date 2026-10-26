@@ -10,6 +10,7 @@ describe("path safety", () => {
 	let outside: string
 
 	beforeEach(() => {
+		// Keep the host spelling so aliases such as macOS /var exercise canonicalization.
 		temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-path-safety-"))
 		root = path.join(temporaryDirectory, "workspace")
 		outside = path.join(temporaryDirectory, "outside")
@@ -30,7 +31,9 @@ describe("path safety", () => {
 		const alias = path.join(root, "alias")
 		linkDirectory(target, alias)
 
-		expect(resolvePathWithExistingAncestor(path.join(alias, "new.txt"))).toBe(path.join(target, "new.txt"))
+		expect(resolvePathWithExistingAncestor(path.join(alias, "new.txt"))).toBe(
+			path.join(fs.realpathSync(outside), "pending", "new.txt"),
+		)
 		expect(isPathWithinRoot(root, path.join(alias, "new.txt"))).toBe(false)
 	})
 
@@ -41,7 +44,9 @@ describe("path safety", () => {
 		linkDirectory(second, first)
 		linkDirectory(target, second)
 
-		expect(resolvePathWithExistingAncestor(path.join(first, "new.txt"))).toBe(path.join(target, "new.txt"))
+		expect(resolvePathWithExistingAncestor(path.join(first, "new.txt"))).toBe(
+			path.join(fs.realpathSync(outside), "pending", "new.txt"),
+		)
 		expect(isPathWithinRoot(root, path.join(first, "new.txt"))).toBe(false)
 	})
 
@@ -51,9 +56,27 @@ describe("path safety", () => {
 		linkDirectory(target, alias)
 
 		expect(isPathWithinRoot(root, path.join(target, "new.txt"))).toBe(true)
-		expect(resolvePathWithExistingAncestor(path.join(alias, "new.txt"))).toBe(path.join(target, "new.txt"))
+		expect(resolvePathWithExistingAncestor(path.join(alias, "new.txt"))).toBe(
+			path.join(fs.realpathSync(root), "..notes", "pending", "new.txt"),
+		)
 		expect(isPathWithinRoot(root, path.join(alias, "new.txt"))).toBe(true)
 	})
+
+	it.each([true, false])(
+		"canonicalizes an existing alias ancestor before appending missing paths (in-root: %s)",
+		(inside) => {
+			const target = inside ? path.join(root, "existing") : outside
+			if (inside) fs.mkdirSync(target)
+			const alias = path.join(root, "existing-alias")
+			linkDirectory(target, alias)
+			const candidate = path.join(alias, "pending", "nested", "new.txt")
+
+			expect(resolvePathWithExistingAncestor(candidate)).toBe(
+				path.join(fs.realpathSync(target), "pending", "nested", "new.txt"),
+			)
+			expect(isPathWithinRoot(root, candidate)).toBe(inside)
+		},
+	)
 
 	it("preserves canonical containment for existing aliases and a linked workspace root", () => {
 		const alias = path.join(root, "alias")

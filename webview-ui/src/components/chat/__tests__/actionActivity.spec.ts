@@ -92,6 +92,69 @@ describe("action activity projection", () => {
 		expect(activity.has(3)).toBe(false)
 	})
 
+	it.each(["terminal update", "reload", "receipt replacement"] as const)(
+		"keeps a structured input receipt visible after canonical completion and %s",
+		(publication) => {
+			const turn = { runId: "input-run", turnId: "input-turn" }
+			const receipt: AlphaMessage = {
+				ts: 300,
+				type: "say",
+				say: "user_feedback",
+				text: "Which environment should I use?\nStaging",
+				userInputResponse: {
+					questions: [
+						{ header: "Environment", question: "Which environment should I use?", answers: ["Staging"] },
+					],
+				},
+				turn,
+			}
+			const messages: AlphaMessage[] = [
+				{
+					ts: 100,
+					type: "say",
+					say: "user_feedback",
+					text: "Inspect the project",
+					turn: { ...turn, inputKind: "start" },
+				},
+				{
+					ts: 200,
+					type: "ask",
+					ask: "followup",
+					text: "Which environment should I use?",
+					isAnswered: true,
+					turn,
+				},
+				receipt,
+				{ ts: 400, type: "say", say: "reasoning", text: "Operational details", turn },
+				{ ts: 500, type: "ask", ask: "command", text: "pnpm test", isAnswered: true, turn },
+				{
+					ts: 600,
+					type: "say",
+					say: "text",
+					text: "Verified",
+					partial: true,
+					turn: { ...turn, terminalStatus: "completed" },
+				},
+			]
+			expect(getCompletedTurnActivity(messages).size).toBe(0)
+			let completed = messages.map((message) => (message.ts === 600 ? { ...message, partial: false } : message))
+			if (publication === "reload") completed = JSON.parse(JSON.stringify(completed))
+			if (publication === "receipt replacement") {
+				const beforeReceipt = completed.map((message) =>
+					message.ts === receipt.ts ? { ...message, userInputResponse: undefined } : message,
+				)
+				expect(getCompletedTurnActivity(beforeReceipt).has(2)).toBe(true)
+				completed = beforeReceipt.map((message) => (message.ts === receipt.ts ? { ...receipt } : message))
+			}
+
+			const activity = getCompletedTurnActivity(completed)
+			expect(activity.has(2)).toBe(false)
+			expect([...activity.keys()]).toEqual([1, 3, 4])
+			expect(activity.get(1)).toMatchObject({ kind: "worked", count: 3, memberIndices: [1, 3, 4] })
+			expect(getActionActivity(completed).has(2)).toBe(false)
+		},
+	)
+
 	it("uses a completed ordinary assistant message as the turn boundary", () => {
 		const messages: AlphaMessage[] = [
 			{ ts: 200, type: "say", say: "text", text: "Checking the implementation." },

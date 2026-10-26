@@ -178,6 +178,7 @@ function independentCreationFixture() {
 describe("Cross-task orchestration host", () => {
 	it.each([
 		"This chat is long. Create a new chat and work on tickets ALPHA-42 and ALPHA-43.",
+		"Inspect and coordinate the existing independent conversation, preserving its separate identity.",
 		"Fix the parser.",
 		"Fork this chat. Actually, don't fork it.",
 	])("refuses to copy history without a current human fork request: %s", async (request) => {
@@ -1488,7 +1489,11 @@ describe("Cross-task orchestration host", () => {
 
 	it("forks committed peer history into an idle persisted task without launching a turn", async () => {
 		const { provider, internals, tasks, history } = createProviderFixture()
-		const caller = createTask({ metadata: { task: "Fork this chat." } })
+		const caller = createTask({
+			metadata: {
+				task: "Inspect and coordinate the existing independent conversation. Fork the existing conversation with its completed history, preserving its separate identity.",
+			},
+		})
 		const api = [
 			{
 				role: "user",

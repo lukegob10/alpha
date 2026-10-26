@@ -43,13 +43,14 @@ export async function terminateProcessTree(roots: readonly number[], options: Pr
 	const errors: unknown[] = discoveryResults.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],
 	)
+	const groupSignalErrors: unknown[] = []
 	if (group !== undefined && options.graceful) {
 		try {
 			if (signalProcessGroup(group, "SIGTERM")) {
 				await new Promise<void>((resolve) => setTimeout(resolve, PROCESS_TERMINATION_GRACE_MS))
 			}
 		} catch (error) {
-			errors.push(error)
+			groupSignalErrors.push(error)
 		}
 	}
 
@@ -78,14 +79,29 @@ export async function terminateProcessTree(roots: readonly number[], options: Pr
 			// owned group still includes those children after they are re-parented.
 			signalProcessGroup(group, "SIGKILL")
 		} catch (error) {
-			errors.push(error)
+			groupSignalErrors.push(error)
 		}
 	}
+	let physicalSettlementConfirmed = false
+	let settlementFailure: unknown
 	try {
 		await waitForPosixProcessSettlement(terminatedPids, group)
+		physicalSettlementConfirmed = true
 	} catch (error) {
-		errors.push(error)
+		settlementFailure = error
 	}
+	for (const error of groupSignalErrors) {
+		// Darwin killpg skips zombies and can return EPERM for a stopped group.
+		// Only independent observation of every owned PID/group can establish that
+		// race; a live member or unavailable process state remains a cleanup failure.
+		const exitedDarwinGroup =
+			process.platform === "darwin" &&
+			physicalSettlementConfirmed &&
+			error instanceof Error &&
+			(error.cause as NodeJS.ErrnoException | undefined)?.code === "EPERM"
+		if (!exitedDarwinGroup) errors.push(error)
+	}
+	if (settlementFailure) errors.push(settlementFailure)
 	throwTerminationErrors(errors)
 }
 

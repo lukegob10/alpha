@@ -114,6 +114,11 @@ jobs:
         runs-on: windows-latest
         timeout-minutes: 45
         steps:
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             - name: Checkout code
               uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
@@ -152,6 +157,11 @@ jobs:
         runs-on: windows-latest
         timeout-minutes: 60
         steps:
+            - name: Configure runner temporary directories
+              shell: pwsh
+              run: |
+                  "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+                  "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
             - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types

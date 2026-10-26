@@ -524,6 +524,9 @@ describe("native tool-surface refactor contract", () => {
 				"codebase_search",
 				"list_tickets",
 				"read_ticket",
+				"memories_list",
+				"memories_read",
+				"memories_search",
 			])
 			expect(TOOL_GROUPS.command.tools).toEqual(["exec_command", "manage_command", "write_stdin"])
 			expect(TOOL_GROUPS.edit.tools).toEqual([
@@ -532,6 +535,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"memories_add_ad_hoc_note",
 				"create_goal",
 				"update_goal",
 			])

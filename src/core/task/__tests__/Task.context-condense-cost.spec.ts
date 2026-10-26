@@ -292,14 +292,23 @@ describe("failed summary cost receipts", () => {
 			expect(fallbacks).toHaveLength(1)
 			expect(fallbacks[0]).toMatchObject({
 				contextCondenseErrorCost: 0.01,
-				contextTruncation: { truncationId: "fallback-1" },
+				// System instructions and three retained records each cost 10 fixture tokens.
+				contextTruncation: { truncationId: "fallback-1", prevContextTokens: 100, newContextTokens: 40 },
 			})
 			expect(
 				task.clineMessages.some(
 					(row) => row.say === "condense_context_error" || row.say === "condense_context",
 				),
 			).toBe(false)
-			expect(Task.prototype.getTokenUsage.call(task)).toMatchObject({ totalCost: 2.01, contextTokens: 120 })
+			const usage = Task.prototype.getTokenUsage.call(task)
+			expect(usage).toMatchObject({
+				totalCost: 2.01,
+				totalTokensIn: 100,
+				totalTokensOut: 20,
+				contextTokens: 40,
+			})
+			task.clineMessages = JSON.parse(JSON.stringify(task.clineMessages))
+			expect(Task.prototype.getTokenUsage.call(task)).toEqual(usage)
 		},
 	)
 	it("charges a fitting nonreducing proactive summary as unchanged without a false error receipt", async () => {

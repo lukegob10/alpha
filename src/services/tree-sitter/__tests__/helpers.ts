@@ -3,6 +3,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import tsxQuery from "../queries/tsx"
 import { Parser, Language } from "web-tree-sitter"
+import treeSitterGrammars from "../grammars.json"
 
 vi.mock("fs/promises")
 export const mockedFs = vi.mocked(fs)
@@ -108,10 +109,13 @@ export async function testParseSourceCodeDefinitions(
 }
 
 // Helper function to inspect tree structure
-export async function inspectTreeStructure(content: string, language: string = "typescript"): Promise<string> {
+export async function inspectTreeStructure(
+	content: string,
+	language: keyof typeof treeSitterGrammars = "typescript",
+): Promise<string> {
 	const { Parser, Language } = await initializeTreeSitter()
 	const parser = new Parser()
-	const wasmPath = path.join(process.cwd(), `dist/tree-sitter-${language}.wasm`)
+	const wasmPath = path.join(process.cwd(), "dist", treeSitterGrammars[language])
 	const lang = await Language.load(wasmPath)
 	parser.setLanguage(lang)
 

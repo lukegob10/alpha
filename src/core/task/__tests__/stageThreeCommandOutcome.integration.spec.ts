@@ -74,6 +74,8 @@ async function createFixtureDirectories(): Promise<{
 }
 
 afterEach(async () => {
+	vi.useRealTimers()
+	vi.restoreAllMocks()
 	const directories = [...temporaryDirectories]
 	temporaryDirectories.clear()
 	await Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true })))
@@ -182,6 +184,9 @@ class ControlledProcess extends EventEmitter {
 			this.rejectOutputFinalization = reject
 		})
 		void this.outputFinalization.catch(() => undefined)
+		this.once("shell_execution_complete", (details: ExitCodeDetails) =>
+			callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess),
+		)
 		callbacks.onProcessCreated?.(this as unknown as AlphaTerminalProcess)
 	}
 
@@ -246,7 +251,7 @@ class ControlledProcess extends EventEmitter {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
 		await this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess)
-		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
+		this.emit("shell_execution_complete", details)
 		this._isSettled = true
 		this.emit("completed", output)
 		await this.finishOutput()
@@ -259,7 +264,7 @@ class ControlledProcess extends EventEmitter {
 	): Promise<void> {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
-		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
+		this.emit("shell_execution_complete", details)
 		const outputCompletion = Promise.resolve(
 			this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess),
 		)
@@ -273,7 +278,7 @@ class ControlledProcess extends EventEmitter {
 	completeWithoutOutputCallback(details: ExitCodeDetails): void {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
-		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
+		this.emit("shell_execution_complete", details)
 		this._isSettled = true
 		this.emit("completed", "")
 		this.resolveCompletion()
@@ -284,7 +289,7 @@ class ControlledProcess extends EventEmitter {
 		output = "late successful output after process failure",
 	): Promise<void> {
 		if (!this.completionStarted) throw new Error("Controlled process has not failed")
-		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
+		this.emit("shell_execution_complete", details)
 		await this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess)
 	}
 
@@ -1001,7 +1006,7 @@ describe("Stage Three command outcome integration", () => {
 		})
 	})
 
-	it("settles timeout debt under the admitted token when abort emits no terminal callback", async () => {
+	it("preserves unconfirmed timeout debt under the admitted token when abort emits no terminal callback", async () => {
 		await withTaskHarness(async (harness) => {
 			vi.useFakeTimers()
 			const terminal = controlledTerminal(harness.workspacePath)
@@ -1017,14 +1022,16 @@ describe("Stage Three command outcome integration", () => {
 					command: "pnpm test",
 					commandExecutionTimeout: 25,
 				})
+				const rejected = expect(run).rejects.toThrow("process cleanup failed")
 				await terminal.runStarted.promise
 				await vi.advanceTimersByTimeAsync(25)
-
-				const [rejected, result] = await run
 				const reservation = harness.provider.reservePrimaryMutation.mock.calls[0]?.[1]
-
-				expect(rejected).toBe(false)
-				expect(String(result)).toContain("terminated")
+				expect(terminal.processForTest!.wasAborted()).toBe(true)
+				expect(terminal.processForTest!.isSettled).toBe(false)
+				expect(harness.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(harness.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+				await vi.advanceTimersByTimeAsync(11_000)
+				await rejected
 				expect(harness.provider.recordPrimaryMutation).toHaveBeenCalledExactlyOnceWith(
 					harness.task,
 					{ __unobserved_command_scope__: reservation },

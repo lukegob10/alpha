@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest"
+import fs from "fs"
+import os from "os"
+import path from "path"
 
 import {
 	createToolPolicySnapshot,
@@ -7,13 +10,15 @@ import {
 	resolveCommandTimeoutMs,
 } from "../ToolPolicy"
 
-function policy() {
+const defaultWorkspaceRoot = path.join(path.parse(process.cwd()).root, "workspace")
+
+function policy(workspaceRoot = defaultWorkspaceRoot) {
 	return createToolPolicySnapshot({
 		visibleTools: ["read_file", "execute_command"],
 		allowedTools: ["read_file", "execute_command"],
 		disabledTools: [],
 		execution: {
-			workspaceRoots: ["F:/workspace"],
+			workspaceRoots: [workspaceRoot],
 			command: {
 				allowedPrefixes: ["git"],
 				deniedPrefixes: ["git push"],
@@ -45,10 +50,20 @@ describe("ToolPolicy", () => {
 	})
 
 	it("allows workspace paths and rejects traversal outside the workspace", () => {
-		const snapshot = policy()
+		const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-tool-policy-"))
+		try {
+			const workspace = path.join(temporaryDirectory, "workspace")
+			fs.mkdirSync(workspace)
+			const snapshot = policy(workspace)
 
-		expect(isPathAllowed(snapshot, "src/index.ts", "F:/workspace")).toBe(true)
-		expect(isPathAllowed(snapshot, "../outside.txt", "F:/workspace")).toBe(false)
+			expect(isPathAllowed(snapshot, "src/index.ts", workspace)).toBe(true)
+			expect(isPathAllowed(snapshot, "../outside.txt", workspace)).toBe(false)
+			expect(
+				isPathAllowed(snapshot, path.join(temporaryDirectory, "workspace-sibling", "index.ts"), workspace),
+			).toBe(false)
+		} finally {
+			fs.rmSync(temporaryDirectory, { recursive: true, force: true })
+		}
 	})
 
 	it("fails closed for path and command checks in a read-only diagnostic policy", () => {
@@ -62,7 +77,7 @@ describe("ToolPolicy", () => {
 			},
 		})
 
-		expect(isPathAllowed(snapshot, "src/index.ts", "F:/workspace")).toBe(false)
+		expect(isPathAllowed(snapshot, "src/index.ts", defaultWorkspaceRoot)).toBe(false)
 		expect(isCommandDeniedByPolicy(snapshot, "git status")).toBe(true)
 		expect(snapshot.summary).toContain("diagnostic evidence reader only")
 		expect(snapshot.summary).not.toContain("Command approval: follows global")
