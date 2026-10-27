@@ -19,6 +19,8 @@ it("namespaces owned benchmark sockets without changing legacy endpoints", () =>
 it("keeps container launch argument-safe", () => {
 	const launch = vscodeLaunch("/space name", true, "linux")
 	expect(launch.command).toBe("xvfb-run")
+	expect(launch.args).toContain("--user-data-dir")
+	expect(launch.args[launch.args.indexOf("--user-data-dir") + 1]).toBe("/alpha/.vscode")
 	expect(launch.args.at(-1)).toBe("/space name")
 })
 

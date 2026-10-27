@@ -619,10 +619,10 @@ describe("processTaskInContainer lifecycle integration", () => {
 		})
 		const spec = mocks.processRun.mock.calls[0]![0]
 		expect(JSON.stringify(spec.args)).not.toContain("secret-canary")
-		expect(spec.args).toContain("ROO_CODE_CLOUD_TOKEN")
+		expect(spec.args).toContain("ALPHA_CODE_CLOUD_TOKEN")
 		expect(spec.args).toContain("OPENAI_API_KEY")
 		expect(spec.env).toMatchObject({
-			ROO_CODE_CLOUD_TOKEN: "job-secret-canary",
+			ALPHA_CODE_CLOUD_TOKEN: "job-secret-canary",
 			OPENAI_API_KEY: "nested-secret-canary",
 			EVALS_RUNNER_IMAGE_ID: "sha256:test-image",
 			EVALS_NETWORK_MODE: "evals_default",

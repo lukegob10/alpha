@@ -203,9 +203,9 @@ export const runTaskInVscode = async ({
 		)
 		const env: Record<string, string> = {
 			...(process.env as Record<string, string>),
-			ROO_CODE_IPC_SOCKET_PATH: ipcSocketPath,
+			ALPHA_CODE_IPC_SOCKET_PATH: ipcSocketPath,
 		}
-		if (jobToken) env.ROO_CODE_CLOUD_TOKEN = jobToken
+		if (jobToken) env.ALPHA_CODE_CLOUD_TOKEN = jobToken
 		const cancelSignal = controller.signal
 		const logDir = containerized
 			? `/var/log/evals/runs/${run.id}`
@@ -550,7 +550,7 @@ export const runTaskInVscode = async ({
 		const loggableSays: AlphaSay[] = [
 			"error",
 			"command_output",
-			"rooignore_error",
+			"alphaignore_error",
 			"diff_error",
 			"condense_context",
 			"condense_context_error",

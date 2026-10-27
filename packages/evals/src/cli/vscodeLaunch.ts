@@ -70,7 +70,7 @@ export function vscodeLaunch(
 			"--disable-lcd-text",
 			"--no-sandbox",
 			"--user-data-dir",
-			"/roo/.vscode",
+			"/alpha/.vscode",
 			"--password-store=basic",
 			...args,
 		],
