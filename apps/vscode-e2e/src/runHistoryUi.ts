@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto"
 import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { CdpConnection } from "./ui/cdp"
+import { createRenderedAcceptanceControls } from "./ui/renderedAcceptance"
 import { activateNativeChatHeader, readNativeChatHeader } from "./ui/nativeChatHeader"
 import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
@@ -111,31 +112,6 @@ export function historyPointerProbeExpression(selector: string, action: "install
 		const observed={document:{readyState:String(d.readyState).slice(0,16),focused:d.hasFocus()},frame:frame?{connected:frame.isConnected===true,currentDocument:frame.contentDocument===d,bounds:f,hit:center&&f?describe(document.elementFromPoint(center.x+f.left,center.y+f.top),frame):null}:null,row:row?{connected:row.isConnected===true,currentDocument:row.ownerDocument===d,hovered:row.matches(':hover'),bounds:r,center,hit:center?describe(d.elementFromPoint(center.x,center.y),row):null}:null,eventCount:probe?.eventCount??0,events:probe?.events.slice(0,8)??[]};
 		return observed;
 	})()`
-}
-
-/** Each hover starts with a fresh native entry into the iframe after keyboard-driven layout changes. */
-export async function enterHistoryFrame(
-	origin: { x: number; y: number },
-	target: { x: number; y: number },
-	move: (point: { x: number; y: number }) => Promise<void>,
-): Promise<void> {
-	assert.ok(
-		[origin.x, origin.y, target.x, target.y].every(Number.isFinite) &&
-			origin.x >= 0 &&
-			origin.y >= 0 &&
-			target.x >= origin.x &&
-			target.y >= origin.y,
-		"History pointer coordinates must address the current frame",
-	)
-	const outside =
-		origin.x > 0
-			? { x: Math.max(0, origin.x - 1), y: target.y }
-			: origin.y > 0
-				? { x: target.x, y: Math.max(0, origin.y - 1) }
-				: undefined
-	assert.ok(outside, "History frame has no in-viewport pointer entry boundary")
-	await move(outside)
-	await move(target)
 }
 
 /** Diagnostic failures must not replace the interaction's result or its original assertion. */
@@ -485,6 +461,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				)
 			}
 		}
+		const controls = createRenderedAcceptanceControls(connection, sessionId, abort.signal)
 		let pointerInteractionSequence = 0
 		const inspectHistoryInteraction = async (taskId: string, baseline: HistoryStyleMetrics) => {
 			const rowSelector = `[data-testid="task-item-${taskId}"]`
@@ -523,28 +500,20 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 					assert.ok(typeof originX === "number" && typeof originY === "number")
 					diagnostic.localPoint = point
 					diagnostic.frameQuad = model.content.slice(0, 8)
-					diagnostic.dispatchedPoint = { x: originX + point.x, y: originY + point.y }
+					diagnostic.workbenchPoint = { x: originX + point.x, y: originY + point.y }
 					await record("beforeDispatch", () =>
 						evaluate(historyPointerProbeExpression(rowSelector, "snapshot")),
 					)
 					await record("workbenchHit", () =>
 						evaluate(
-							`(()=>{const point=${javascriptLiteral(diagnostic.dispatchedPoint)},e=document.elementFromPoint(point.x,point.y);return {focused:document.hasFocus(),hit:e?{tag:String(e.tagName).slice(0,32),testId:e.getAttribute('data-testid')?.slice(0,80)??null}:null}})()`,
+							`(()=>{const point=${javascriptLiteral(diagnostic.workbenchPoint)},e=document.elementFromPoint(point.x,point.y);return {focused:document.hasFocus(),hit:e?{tag:String(e.tagName).slice(0,32),testId:e.getAttribute('data-testid')?.slice(0,80)??null}:null}})()`,
 							pageSession,
 							false,
 						),
 					)
-					await enterHistoryFrame(
-						{ x: originX, y: originY },
-						{ x: originX + point.x, y: originY + point.y },
-						async (position) => {
-							await connection.request(
-								"Input.dispatchMouseEvent",
-								{ type: "mouseMoved", ...position },
-								pageSession,
-							)
-						},
-					)
+					// CDP coordinates belong to the input handler's renderer; use its own stable frame geometry.
+					diagnostic.dispatchTarget = "webview"
+					diagnostic.dispatchedPoint = await controls.hover(`d.querySelector(${selector})`)
 					await Promise.all([
 						record("afterDispatch", () => evaluate(historyPointerProbeExpression(rowSelector, "snapshot"))),
 						check(`d.querySelector(${selector}).matches(':hover')`),

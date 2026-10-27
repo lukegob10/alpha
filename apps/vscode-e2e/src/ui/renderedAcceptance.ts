@@ -79,12 +79,7 @@ export function createRenderedAcceptanceControls(
 			() => waitUntil(() => evaluate<boolean>(expression, deadline), deadline, "rendered_control_timeout"),
 			deadline,
 		)
-	const click = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
-		ensureActive(deadline)
-		await evaluate(
-			`(()=>{const e=${element};e?.scrollIntoView({block:'center',behavior:'instant'});return true})()`,
-			deadline,
-		)
+	const hover = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
 		const samePosition = (left: RenderedControlPosition, right: RenderedControlPosition) =>
 			left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
 		const waitForPosition = async (): Promise<RenderedControlPosition> => {
@@ -131,6 +126,15 @@ export function createRenderedAcceptanceControls(
 			if (samePosition(position, afterMove)) break
 			position = afterMove
 		}
+		return position
+	}
+	const click = async (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) => {
+		ensureActive(deadline)
+		await evaluate(
+			`(()=>{const e=${element};e?.scrollIntoView({block:'center',behavior:'instant'});return true})()`,
+			deadline,
+		)
+		const position = await hover(element, deadline)
 		ensureActive(deadline)
 		let pressAttempted = false
 		try {
@@ -162,7 +166,7 @@ export function createRenderedAcceptanceControls(
 		}
 		ensureActive(deadline)
 	}
-	return { evaluate, check, click }
+	return { evaluate, check, hover, click }
 }
 
 /** Drives rendered controls only; the existing EH fixture verifies authoritative settings, files and task state. */

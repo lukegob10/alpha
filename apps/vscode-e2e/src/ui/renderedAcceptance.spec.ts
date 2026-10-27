@@ -27,6 +27,7 @@ class ControlledRenderer implements Pick<CdpConnection, "request"> {
 	frame = 0
 	selected = false
 	mouseButtonHeld = false
+	scrollCount = 0
 	readonly requests: string[] = []
 	readonly input: Record<string, unknown>[] = []
 	readonly inputFrames: number[] = []
@@ -40,7 +41,11 @@ class ControlledRenderer implements Pick<CdpConnection, "request"> {
 	private readonly frameWaiters: (() => void)[] = []
 	private readonly context
 
-	constructor(private readonly scenario: Scenario = "moving") {
+	constructor(
+		private readonly scenario: Scenario = "moving",
+		initiallyVisible = false,
+	) {
+		this.scrolled = initiallyVisible
 		const moving = scenario === "moving" || scenario === "replaced"
 		const optionRectangle = (original: boolean) =>
 			rectangle(
@@ -80,6 +85,7 @@ class ControlledRenderer implements Pick<CdpConnection, "request"> {
 				getAnimations: () => [],
 				scrollIntoView: () => {
 					this.scrolled = true
+					this.scrollCount++
 				},
 			}
 			label.parentElement = option
@@ -491,6 +497,22 @@ test("trusted input retargets an option that moves after pointer hover", async (
 		assert.equal(input.y, 172)
 	}
 })
+
+for (const scenario of ["moving", "replaced-document", "hover-moves"] as const) {
+	test(`trusted hover waits for the ${scenario} target in its owned renderer without clicking or scrolling`, async () => {
+		const renderer = new ControlledRenderer(scenario, true)
+		const { hover } = createRenderedAcceptanceControls(renderer, sessionId)
+		const position = await renderer.paintUntilComplete(hover(optionExpression))
+		assert.deepEqual(position, { x: 484, y: 172, width: 120, height: 24 })
+		assert.ok(renderer.input.length > 0)
+		assert.ok(renderer.input.every((input) => input.type === "mouseMoved"))
+		assert.equal(renderer.input.at(-1)?.y, 172)
+		assert.equal(renderer.selected, false)
+		assert.equal(renderer.mouseButtonHeld, false)
+		assert.equal(renderer.scrollCount, 0, "Hover preserves the layout used by the visual assertions")
+		assert.ok(renderer.frame >= 4, "Input follows stable paint observations before and after the move")
+	})
+}
 
 test("an expired control deadline fails before scrolling, painting, or sending input", async () => {
 	const renderer = new ControlledRenderer()
